@@ -1,6 +1,7 @@
 import { cleanup, effect, Input, signal, Text, View } from "nsh";
 import { isAvailable, Menu } from "nsh/desktop";
 import { keymap } from "nsh/keymap";
+import { tc } from "../theme";
 
 const GEN = "http://127.0.0.1:8787";
 const get = (p: string) =>
@@ -86,12 +87,12 @@ function TitleBox(props: {
           accessibilityLabel="double-click to rename"
         >
           <Text
-            style={{ color: "#f5f5f5", fontSize: 12.5, fontWeight: "600" }}
+            style={{ color: tc("#f5f5f5"), fontSize: 12.5, fontWeight: "600" }}
             numberOfLines={1}
           >
             {props.item.title}
           </Text>
-          <Text style={{ color: "#f5f5f566", fontSize: 10 }}>✎</Text>
+          <Text style={{ color: tc("#f5f5f566"), fontSize: 10 }}>✎</Text>
         </View>
       }
     >
@@ -111,10 +112,10 @@ function TitleBox(props: {
         style={{
           fontSize: 12.5,
           fontWeight: "600",
-          color: "#f5f5f5",
+          color: tc("#f5f5f5"),
           paddingVertical: 1,
           paddingHorizontal: 5,
-          backgroundColor: "#f5f5f50f",
+          backgroundColor: tc("#f5f5f50f"),
           borderRadius: 5,
         }}
       />
@@ -166,10 +167,10 @@ function TagBox(props: {
             borderRadius: 999,
             paddingHorizontal: 7,
             paddingVertical: 2,
-            backgroundColor: "#f5f5f50f",
+            backgroundColor: tc("#f5f5f50f"),
           }}
         >
-          <Text style={{ color: "#f5f5f566", fontSize: 9 }}>+tag</Text>
+          <Text style={{ color: tc("#f5f5f566"), fontSize: 9 }}>+tag</Text>
         </View>
       }
     >
@@ -177,7 +178,7 @@ function TagBox(props: {
         ref={input}
         defaultValue=""
         placeholder="+tag"
-        placeholderTextColor="#f5f5f566"
+        placeholderTextColor={tc("#f5f5f566")}
         returnKeyType="done"
         autoFocus
         onChangeText={(t) => (latest = t)}
@@ -191,10 +192,10 @@ function TagBox(props: {
         style={{
           width: 56,
           fontSize: 10,
-          color: "#f5f5f5",
+          color: tc("#f5f5f5"),
           paddingVertical: 2,
           paddingHorizontal: 6,
-          backgroundColor: "#f5f5f50f",
+          backgroundColor: tc("#f5f5f50f"),
           borderRadius: 6,
         }}
       />
@@ -290,10 +291,10 @@ export function WidgetShelf() {
         borderRadius: 7,
         paddingHorizontal: 8,
         paddingVertical: 4,
-        backgroundColor: on ? "#f5f5f514" : "transparent",
+        backgroundColor: on ? tc("#f5f5f514") : "transparent",
       }}
     >
-      <Text style={{ color: on ? "#f5f5f5" : "#f5f5f585", fontSize: 12 }}>{g}</Text>
+      <Text style={{ color: on ? tc("#f5f5f5") : "#f5f5f585", fontSize: 12 }}>{g}</Text>
     </View>
   );
 
@@ -305,10 +306,10 @@ export function WidgetShelf() {
         borderRadius: 999,
         paddingHorizontal: 10,
         paddingVertical: 3,
-        backgroundColor: on ? color : "#f5f5f50f",
+        backgroundColor: on ? color : tc("#f5f5f50f"),
       }}
     >
-      <Text style={{ color: on ? "#f5f5f5" : "#f5f5f5a8", fontSize: 10, fontWeight: "600" }}>
+      <Text style={{ color: on ? tc("#f5f5f5") : tc("#f5f5f5a8"), fontSize: 10, fontWeight: "600" }}>
         {label}
       </Text>
     </View>
@@ -321,8 +322,8 @@ export function WidgetShelf() {
         width: "48%",
         borderRadius: 14,
         borderWidth: 1,
-        borderColor: "#f5f5f51f",
-        backgroundColor: "#1f1f1f",
+        borderColor: tc("#f5f5f51f"),
+        backgroundColor: tc("#1f1f1f"),
         padding: 12,
         gap: 7,
       }}
@@ -333,7 +334,7 @@ export function WidgetShelf() {
             width: 30,
             height: 30,
             borderRadius: 9,
-            backgroundColor: KIND_COLOR[w().kinds[0]] || "#f5f5f585",
+            backgroundColor: tc(KIND_COLOR[w().kinds[0]] || "#f5f5f585"),
             alignItems: "center",
             justifyContent: "center",
           }}
@@ -342,7 +343,7 @@ export function WidgetShelf() {
             {w().title.slice(0, 1).toUpperCase()}
           </Text>
         </View>
-        <Text style={{ color: "#f5f5f566", fontSize: 9.5, flex: 1 }}>
+        <Text style={{ color: tc("#f5f5f566"), fontSize: 9.5, flex: 1 }}>
           {w().name}.tsx · {w().publishedAt?.slice(0, 10)}
         </Text>
         {act("↗", () => post("/popout", { name: w().name }), false)}
@@ -363,12 +364,12 @@ export function WidgetShelf() {
                 borderRadius: 999,
                 paddingHorizontal: 7,
                 paddingVertical: 2,
-                backgroundColor: (KIND_COLOR[k()] || "#f5f5f585") + "26",
+                backgroundColor: tc(KIND_COLOR[k()] || "#f5f5f585") + "26",
               }}
             >
               <Text
                 style={{
-                  color: KIND_COLOR[k()] || "#f5f5f585",
+                  color: tc(KIND_COLOR[k()] || "#f5f5f585"),
                   fontSize: 9,
                   fontWeight: "700",
                 }}
@@ -392,10 +393,10 @@ export function WidgetShelf() {
                 borderRadius: 999,
                 paddingHorizontal: 7,
                 paddingVertical: 2,
-                backgroundColor: "#f5f5f50f",
+                backgroundColor: tc("#f5f5f50f"),
               }}
             >
-              <Text style={{ color: "#f5f5f5a8", fontSize: 9 }}>#{t()}</Text>
+              <Text style={{ color: tc("#f5f5f5a8"), fontSize: 9 }}>#{t()}</Text>
             </View>
           )}
         </Each>
@@ -419,10 +420,10 @@ export function WidgetShelf() {
             borderRadius: 8,
             paddingHorizontal: 9,
             paddingVertical: 4,
-            backgroundColor: "#f5f5f514",
+            backgroundColor: tc("#f5f5f514"),
           }}
         >
-          <Text style={{ color: "#f5f5f5", fontSize: 10.5 }}>
+          <Text style={{ color: tc("#f5f5f5"), fontSize: 10.5 }}>
             {sent() === w().name ? "＋ chat ✓" : "＋ chat"}
           </Text>
         </View>
@@ -433,21 +434,21 @@ export function WidgetShelf() {
   return (
     <View class="gap-3 px-4 py-4">
       <View class="flex-row items-center justify-between">
-        <Text style={{ color: "#f5f5f566", fontSize: 12, fontWeight: "600" }}>
+        <Text style={{ color: tc("#f5f5f566"), fontSize: 12, fontWeight: "600" }}>
           {"MINI APPS — " + shown().length}
         </Text>
         <Input
           value={q()}
           onChangeText={(t) => q.set(t)}
           placeholder="filter…"
-          placeholderTextColor="#f5f5f566"
+          placeholderTextColor={tc("#f5f5f566")}
           style={{
             width: 140,
             fontSize: 11,
-            color: "#f5f5f5",
+            color: tc("#f5f5f5"),
             paddingVertical: 4,
             paddingHorizontal: 10,
-            backgroundColor: "#f5f5f50f",
+            backgroundColor: tc("#f5f5f50f"),
             borderRadius: 8,
           }}
         />
@@ -456,7 +457,7 @@ export function WidgetShelf() {
         {chip("all", kind() === "all" && !tag(), () => {
           kind.set("all");
           tag.set("");
-        }, "#f5f5f53d")}
+        }, tc("#f5f5f53d"))}
         {chip("db", kind() === "db", () => kind.set(kind() === "db" ? "all" : "db"), KIND_COLOR.db)}
         {chip("api", kind() === "api", () => kind.set(kind() === "api" ? "all" : "api"), KIND_COLOR.api)}
         {chip("keys", kind() === "keys", () => kind.set(kind() === "keys" ? "all" : "keys"), KIND_COLOR.keys)}
@@ -472,7 +473,7 @@ export function WidgetShelf() {
         <Each of={shown()} key={(i) => i.name}>{(w) => card(w)}</Each>
       </View>
       <If when={!shown().length}>
-        <Text style={{ color: "#f5f5f566", fontSize: 13 }}>
+        <Text style={{ color: tc("#f5f5f566"), fontSize: 13 }}>
           Nothing here — publish a generated card with ⬆, or loosen the filter.
         </Text>
       </If>
