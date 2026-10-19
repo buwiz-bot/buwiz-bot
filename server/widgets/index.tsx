@@ -29,7 +29,7 @@ const KIND_COLOR: Record<string, string> = {
   db: "#10a37f",
   api: "#5e6ad2",
   keys: "#f2994a",
-  mem: "#8e8e93",
+  mem: "#f5f5f585",
 };
 
 function TitleBox(props: {
@@ -86,12 +86,12 @@ function TitleBox(props: {
           accessibilityLabel="double-click to rename"
         >
           <Text
-            style={{ color: "#ececec", fontSize: 12.5, fontWeight: "600" }}
+            style={{ color: "#f5f5f5", fontSize: 12.5, fontWeight: "600" }}
             numberOfLines={1}
           >
             {props.item.title}
           </Text>
-          <Text style={{ color: "#52525b", fontSize: 10 }}>✎</Text>
+          <Text style={{ color: "#f5f5f566", fontSize: 10 }}>✎</Text>
         </View>
       }
     >
@@ -111,10 +111,10 @@ function TitleBox(props: {
         style={{
           fontSize: 12.5,
           fontWeight: "600",
-          color: "#ececec",
+          color: "#f5f5f5",
           paddingVertical: 1,
           paddingHorizontal: 5,
-          backgroundColor: "#262626",
+          backgroundColor: "#f5f5f50f",
           borderRadius: 5,
         }}
       />
@@ -166,10 +166,10 @@ function TagBox(props: {
             borderRadius: 999,
             paddingHorizontal: 7,
             paddingVertical: 2,
-            backgroundColor: "#262626",
+            backgroundColor: "#f5f5f50f",
           }}
         >
-          <Text style={{ color: "#6e6e73", fontSize: 9 }}>+tag</Text>
+          <Text style={{ color: "#f5f5f566", fontSize: 9 }}>+tag</Text>
         </View>
       }
     >
@@ -177,7 +177,7 @@ function TagBox(props: {
         ref={input}
         defaultValue=""
         placeholder="+tag"
-        placeholderTextColor="#6e6e73"
+        placeholderTextColor="#f5f5f566"
         returnKeyType="done"
         autoFocus
         onChangeText={(t) => (latest = t)}
@@ -191,10 +191,10 @@ function TagBox(props: {
         style={{
           width: 56,
           fontSize: 10,
-          color: "#d4d4d8",
+          color: "#f5f5f5",
           paddingVertical: 2,
           paddingHorizontal: 6,
-          backgroundColor: "#262626",
+          backgroundColor: "#f5f5f50f",
           borderRadius: 6,
         }}
       />
@@ -290,10 +290,10 @@ export function WidgetShelf() {
         borderRadius: 7,
         paddingHorizontal: 8,
         paddingVertical: 4,
-        backgroundColor: on ? "#2f2f2f" : "transparent",
+        backgroundColor: on ? "#f5f5f514" : "transparent",
       }}
     >
-      <Text style={{ color: on ? "#ececec" : "#8e8e93", fontSize: 12 }}>{g}</Text>
+      <Text style={{ color: on ? "#f5f5f5" : "#f5f5f585", fontSize: 12 }}>{g}</Text>
     </View>
   );
 
@@ -305,10 +305,10 @@ export function WidgetShelf() {
         borderRadius: 999,
         paddingHorizontal: 10,
         paddingVertical: 3,
-        backgroundColor: on ? color : "#262626",
+        backgroundColor: on ? color : "#f5f5f50f",
       }}
     >
-      <Text style={{ color: on ? "#ececec" : "#a3a3a3", fontSize: 10, fontWeight: "600" }}>
+      <Text style={{ color: on ? "#f5f5f5" : "#f5f5f5a8", fontSize: 10, fontWeight: "600" }}>
         {label}
       </Text>
     </View>
@@ -321,8 +321,8 @@ export function WidgetShelf() {
         width: "48%",
         borderRadius: 14,
         borderWidth: 1,
-        borderColor: "#2a2a2a",
-        backgroundColor: "#181818",
+        borderColor: "#f5f5f51f",
+        backgroundColor: "#1f1f1f",
         padding: 12,
         gap: 7,
       }}
@@ -333,7 +333,7 @@ export function WidgetShelf() {
             width: 30,
             height: 30,
             borderRadius: 9,
-            backgroundColor: KIND_COLOR[w().kinds[0]] || "#8e8e93",
+            backgroundColor: KIND_COLOR[w().kinds[0]] || "#f5f5f585",
             alignItems: "center",
             justifyContent: "center",
           }}
@@ -342,7 +342,7 @@ export function WidgetShelf() {
             {w().title.slice(0, 1).toUpperCase()}
           </Text>
         </View>
-        <Text style={{ color: "#6e6e73", fontSize: 9.5, flex: 1 }}>
+        <Text style={{ color: "#f5f5f566", fontSize: 9.5, flex: 1 }}>
           {w().name}.tsx · {w().publishedAt?.slice(0, 10)}
         </Text>
         {act("↗", () => post("/popout", { name: w().name }), false)}
@@ -363,12 +363,12 @@ export function WidgetShelf() {
                 borderRadius: 999,
                 paddingHorizontal: 7,
                 paddingVertical: 2,
-                backgroundColor: (KIND_COLOR[k()] || "#8e8e93") + "26",
+                backgroundColor: (KIND_COLOR[k()] || "#f5f5f585") + "26",
               }}
             >
               <Text
                 style={{
-                  color: KIND_COLOR[k()] || "#8e8e93",
+                  color: KIND_COLOR[k()] || "#f5f5f585",
                   fontSize: 9,
                   fontWeight: "700",
                 }}
@@ -392,10 +392,10 @@ export function WidgetShelf() {
                 borderRadius: 999,
                 paddingHorizontal: 7,
                 paddingVertical: 2,
-                backgroundColor: "#262626",
+                backgroundColor: "#f5f5f50f",
               }}
             >
-              <Text style={{ color: "#a3a3a3", fontSize: 9 }}>#{t()}</Text>
+              <Text style={{ color: "#f5f5f5a8", fontSize: 9 }}>#{t()}</Text>
             </View>
           )}
         </Each>
@@ -419,10 +419,10 @@ export function WidgetShelf() {
             borderRadius: 8,
             paddingHorizontal: 9,
             paddingVertical: 4,
-            backgroundColor: "#2f2f2f",
+            backgroundColor: "#f5f5f514",
           }}
         >
-          <Text style={{ color: "#ececec", fontSize: 10.5 }}>
+          <Text style={{ color: "#f5f5f5", fontSize: 10.5 }}>
             {sent() === w().name ? "＋ chat ✓" : "＋ chat"}
           </Text>
         </View>
@@ -433,21 +433,21 @@ export function WidgetShelf() {
   return (
     <View class="gap-3 px-4 py-4">
       <View class="flex-row items-center justify-between">
-        <Text style={{ color: "#6e6e73", fontSize: 12, fontWeight: "600" }}>
+        <Text style={{ color: "#f5f5f566", fontSize: 12, fontWeight: "600" }}>
           {"MINI APPS — " + shown().length}
         </Text>
         <Input
           value={q()}
           onChangeText={(t) => q.set(t)}
           placeholder="filter…"
-          placeholderTextColor="#6e6e73"
+          placeholderTextColor="#f5f5f566"
           style={{
             width: 140,
             fontSize: 11,
-            color: "#ececec",
+            color: "#f5f5f5",
             paddingVertical: 4,
             paddingHorizontal: 10,
-            backgroundColor: "#262626",
+            backgroundColor: "#f5f5f50f",
             borderRadius: 8,
           }}
         />
@@ -456,7 +456,7 @@ export function WidgetShelf() {
         {chip("all", kind() === "all" && !tag(), () => {
           kind.set("all");
           tag.set("");
-        }, "#3f3f46")}
+        }, "#f5f5f53d")}
         {chip("db", kind() === "db", () => kind.set(kind() === "db" ? "all" : "db"), KIND_COLOR.db)}
         {chip("api", kind() === "api", () => kind.set(kind() === "api" ? "all" : "api"), KIND_COLOR.api)}
         {chip("keys", kind() === "keys", () => kind.set(kind() === "keys" ? "all" : "keys"), KIND_COLOR.keys)}
@@ -472,7 +472,7 @@ export function WidgetShelf() {
         <Each of={shown()} key={(i) => i.name}>{(w) => card(w)}</Each>
       </View>
       <If when={!shown().length}>
-        <Text style={{ color: "#6e6e73", fontSize: 13 }}>
+        <Text style={{ color: "#f5f5f566", fontSize: 13 }}>
           Nothing here — publish a generated card with ⬆, or loosen the filter.
         </Text>
       </If>

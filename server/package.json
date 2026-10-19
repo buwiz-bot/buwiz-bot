@@ -11,6 +11,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.133.0"
+    "@anthropic-ai/sdk": "^0.133.0",
+    "exceljs": "4.4.0",
+    "mammoth": "1.13.0",
+    "mermaid": "12.1.0",
+    "shiki": "4.5.0"
   }
 }
