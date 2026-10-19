@@ -364,7 +364,7 @@ export function WidgetShelf() {
                 borderRadius: 999,
                 paddingHorizontal: 7,
                 paddingVertical: 2,
-                backgroundColor: tc(KIND_COLOR[k()] || "#f5f5f585") + "26",
+                backgroundColor: tc((KIND_COLOR[k()] || "#f5f5f585").slice(0, 7) + "26"),
               }}
             >
               <Text
