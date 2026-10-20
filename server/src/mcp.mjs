@@ -37,62 +37,144 @@ export function ensureClient(row) {
   return p;
 }
 
-// Minimal Streamable-HTTP MCP client for `type:"http"` plugin servers:
-// POST JSON-RPC with Accept json+sse, carry mcp-session-id between calls.
-function httpClient(row) {
-  const url = row.url;
-  let sessionId = null;
-  const rpc = async (method, params, notify = false) => {
-    const body = { jsonrpc: "2.0", method, ...(notify ? {} : { id: Math.floor(Math.random() * 1e9) }), ...(params ? { params } : {}) };
-    const headers = {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      "mcp-protocol-version": "2025-03-26",
-    };
-    if (sessionId) headers["mcp-session-id"] = sessionId;
-    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-    const sid = r.headers.get("mcp-session-id");
-    if (sid) sessionId = sid;
-    if (notify || r.status === 202) return null;
-    if (!r.ok) throw new Error(`http ${r.status}`);
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("text/event-stream")) {
-      const text = await r.text();
-      let last = null;
-      for (const line of text.split("\n")) {
-        if (line.startsWith("data:")) { try { last = JSON.parse(line.slice(5)); } catch {} }
-      }
-      if (last?.error) throw new Error(last.error.message || "rpc error");
-      return last?.result ?? last;
+// ── OAuth for remote servers ─────────────────────────────────────────────
+// MCP's Authorization spec (RFC 9728 resource metadata → RFC 8414 auth-server
+// metadata → RFC 7591 dynamic client registration → browser authorize →
+// localhost callback → token exchange). The SDK's client/auth.js drives it;
+// we supply storage (the row's `auth` JSON column), the browser launch and
+// the loopback redirect endpoint. Tokens persist, so reconnects reuse them
+// and the SDK refreshes them when they expire.
+import http from "node:http";
+import { execFile } from "node:child_process";
+import os from "node:os";
+
+let authHooks = null; // {loadAuth(id), saveAuth(id, obj), done(id)} — app-server wires the db
+export const setAuthHooks = (h) => (authHooks = h);
+
+const pending = new Map(); // id -> {provider, url, expiry}
+let cbServer = null;
+let cbPort = 0;
+
+function openUrl(u) {
+  const cmd = os.platform() === "darwin" ? "open" : os.platform() === "win32" ? "cmd" : "xdg-open";
+  const args = os.platform() === "win32" ? ["/c", "start", "", u] : [u];
+  execFile(cmd, args, () => {});
+}
+
+const donePage = (title) =>
+  `<body style="background:#1f1f1f;color:#f5f5f5;font:15px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><div style="font-size:22px;font-weight:600">${title}</div><div style="color:#f5f5f58f;margin-top:8px">You can close this window.</div></div></body>`;
+
+async function finishAuth(id, code) {
+  const p = pending.get(id);
+  if (!p) throw new Error("no pending flow");
+  const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+  await auth(p.provider, { serverUrl: p.url, authorizationCode: code });
+  pending.delete(id);
+  authHooks?.done(id);
+}
+
+function ensureCallbackServer() {
+  if (cbServer) return Promise.resolve();
+  cbServer = http.createServer((req, res) => {
+    const u = new URL(req.url || "/", "http://x");
+    const id = decodeURIComponent(u.pathname.match(/^\/oauth\/callback\/(.+)$/)?.[1] || "");
+    res.setHeader("content-type", "text/html");
+    const code = u.searchParams.get("code");
+    const errTxt = u.searchParams.get("error");
+    if (!id || (!code && !errTxt) || !pending.has(id)) {
+      res.statusCode = 400;
+      res.end(donePage("Authentication failed"));
+      return;
     }
-    const j = await r.json();
-    if (j?.error) throw new Error(j.error.message || "rpc error");
-    return j?.result ?? j;
-  };
+    if (errTxt) {
+      pending.delete(id);
+      res.end(donePage("Authentication failed"));
+      return;
+    }
+    res.end(donePage("Connected"));
+    finishAuth(id, code).catch(() => {});
+  });
+  return new Promise((resolve) =>
+    cbServer.listen(0, "127.0.0.1", () => {
+      cbPort = cbServer.address().port;
+      resolve();
+    }),
+  );
+}
+
+// OAuthClientProvider backed by the row's `auth` JSON column. Reads go
+// through loadAuth each call so sequential SDK writes never overwrite each
+// other (client_info first, verifier and tokens later).
+function providerFor(row) {
+  const state = () => authHooks?.loadAuth(row.id) || {};
+  const save = (patch) => authHooks?.saveAuth(row.id, { ...state(), ...patch });
   return {
-    listTools: async () => {
-      await rpc("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "grok-shell", version: "1.0.0" } });
-      await rpc("notifications/initialized", null, true);
-      return rpc("tools/list", {});
+    get redirectUrl() {
+      return `http://127.0.0.1:${cbPort}/oauth/callback/${encodeURIComponent(row.id)}`;
     },
-    callTool: async ({ name, arguments: args }) => rpc("tools/call", { name, arguments: args || {} }),
-    close: () => {},
+    get clientMetadata() {
+      return {
+        client_name: "Grok Shell",
+        redirect_uris: [this.redirectUrl],
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      };
+    },
+    clientInformation() { return state().client_info; },
+    async saveClientInformation(i) { save({ client_info: i }); },
+    tokens() { return state().tokens; },
+    async saveTokens(t) { save({ tokens: t }); },
+    redirectToAuthorization(u) { openUrl(String(u)); },
+    async saveCodeVerifier(v) { save({ verifier: v }); },
+    codeVerifier() { return state().verifier || ""; },
   };
+}
+
+// POST /mcp/auth — kick the browser flow for a remote server. AUTHORIZED
+// means stored tokens already satisfy the server; REDIRECT means the tab is
+// open and finishAuth() completes it from the loopback callback.
+export async function beginAuth(row) {
+  if (!row.url) throw new Error("not a remote server");
+  await ensureCallbackServer();
+  const provider = providerFor(row);
+  const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+  const result = await auth(provider, { serverUrl: row.url });
+  if (result === "AUTHORIZED") {
+    authHooks?.done(row.id);
+    return { ok: true, authorized: true };
+  }
+  clearTimeout(pending.get(row.id)?.timer);
+  pending.set(row.id, {
+    provider,
+    url: row.url,
+    timer: setTimeout(() => pending.delete(row.id), 10 * 60 * 1000),
+  });
+  return { ok: true, redirected: true };
 }
 
 async function connect(row) {
   const rec = { client: null, tools: [], err: null };
   try {
+    const [{ Client }] = await Promise.all([import("@modelcontextprotocol/sdk/client/index.js")]);
     if (row.url) {
-      const client = httpClient(row);
+      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+      const transport = new StreamableHTTPClientTransport(new URL(row.url), {
+        // A provider makes the transport drive the full auth flow on a 401
+        // (which opens a browser tab) — only supply it once tokens exist so
+        // plain probes just surface UnauthorizedError instead of popping
+        // a tab on every status check.
+        authProvider: row.auth ? providerFor(row) : undefined,
+      });
+      const client = new Client({ name: "grok-shell", version: "1.0.0" });
+      await client.connect(transport);
       const { tools } = await client.listTools();
       rec.client = client;
       rec.tools = tools || [];
       console.log(`  mcp ${row.id}: connected (http), ${rec.tools.length} tools`);
       return rec;
     }
-    const [{ Client }, { StdioClientTransport }] = await Promise.all([
-      import("@modelcontextprotocol/sdk/client/index.js"),
+    const [{ StdioClientTransport }] = await Promise.all([
       import("@modelcontextprotocol/sdk/client/stdio.js"),
     ]);
     const transport = new StdioClientTransport({

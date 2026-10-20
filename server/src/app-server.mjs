@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileMeta, highlight, mockDocx, mockFiles, mockPptx, mockXlsx, renderFile } from "./files.mjs";
 import { callOfficeTool, ensureOfficeMcp, officeCaps, officeCreateBytes, officeMarkdown, officeMcpTools, officePkgRoot } from "./office.mjs";
-import { anthropicTools as mcpAnthropicTools, callTool as mcpCallTool, ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName, statusOf as mcpStatus } from "./mcp.mjs";
+import { anthropicTools as mcpAnthropicTools, beginAuth as mcpBeginAuth, callTool as mcpCallTool, ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName, setAuthHooks as mcpSetAuthHooks, statusOf as mcpStatus } from "./mcp.mjs";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -370,6 +370,8 @@ try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
 // Per-tool off switches on a connected server (JSON array of tool names).
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN disabled_tools TEXT"); } catch {}
+// OAuth client state for remote servers (JSON: client_info, tokens, verifier).
+try { db.exec("ALTER TABLE mcp_servers ADD COLUMN auth TEXT"); } catch {}
 // Private skills — instructions the user (or the agent for them) authored.
 // Enabled bodies are injected into the agent system prompt.
 try {
@@ -2492,6 +2494,19 @@ async function mcpUpsertServer({ id, name, command, args, env, bot, url } = {}) 
   };
 }
 
+// OAuth persistence for remote MCP servers — mcp.mjs reads/writes the
+// row's `auth` JSON through these; done() drops the cached client so the
+// next ensureClient() connects with fresh tokens.
+mcpSetAuthHooks({
+  loadAuth: (id) => {
+    const row = db.prepare("SELECT auth FROM mcp_servers WHERE id=?").get(String(id));
+    try { return JSON.parse(row?.auth || "{}"); } catch { return {}; }
+  },
+  saveAuth: (id, obj) =>
+    db.prepare("UPDATE mcp_servers SET auth=? WHERE id=?").run(JSON.stringify(obj), String(id)),
+  done: (id) => mcpInvalidate(id),
+});
+
 // Resolve a server row by id, or by name (exact, then slugged).
 function mcpServerRow({ id, name } = {}) {
   if (id)
@@ -4308,6 +4323,26 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
       }
+    });
+    return;
+  }
+  // POST /mcp/auth {id} — kick the OAuth browser flow for a remote server.
+  if (req.method === "POST" && req.url === "/mcp/auth") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      (async () => {
+        res.setHeader("content-type", "application/json");
+        try {
+          const { id } = JSON.parse(body || "{}");
+          const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id || ""));
+          if (!row) throw new Error("no such server");
+          res.end(JSON.stringify(await mcpBeginAuth(row)));
+        } catch (e) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+        }
+      })();
     });
     return;
   }
