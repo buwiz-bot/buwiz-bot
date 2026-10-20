@@ -358,6 +358,8 @@ db.exec(`
 
 // A user turn's reply quote and attachments (JSON).
 try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
+// A branch may carry an optional name (e.g. "slow-ball") — versions.label.
+try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
 // A card pins the artifact version it rendered (turns.v → versions.v).
 try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
 // Grok's sidebar organization: pinned tiles, named sections, hidden bots.
@@ -1589,7 +1591,9 @@ const verFile = (name, v) => {
 };
 const versionsOf = (name) =>
   db
-    .prepare("SELECT v,parent,created_at FROM versions WHERE name=? ORDER BY v")
+    .prepare(
+      "SELECT v,parent,created_at,label FROM versions WHERE name=? ORDER BY v",
+    )
     .all(name);
 // Chunk ids must be flat <stem>.js (nsh-js validates) — "R6@v3" ships as
 // "R6v3.js". R-names are digits-only so the mapping can't collide.
@@ -1600,7 +1604,7 @@ const chunkKey = (key) => key.replace(/^R(\d+)@v(\d+)$/, "R$1v$2");
 // consumer that names the bare artifact (baked index, /module, /popout)
 // sees current. A revise off a non-head version parents the new version
 // there — a branch, never a rewrite.
-function writeVersion(name, code, parent, prompt) {
+function writeVersion(name, code, parent, prompt, label) {
   const dir = join(GEN_DIR, name);
   mkdirSync(dir, { recursive: true });
   const v =
@@ -1609,8 +1613,12 @@ function writeVersion(name, code, parent, prompt) {
   const vFile = join(dir, `${verSlug(name)}.v${v}.tsx`);
   writeFileSync(vFile, code);
   db.prepare(
-    "INSERT INTO versions(name,v,parent,prompt,created_at) VALUES(?,?,?,?,?)",
-  ).run(name, v, parent ?? null, String(prompt || "").slice(0, 500) || null, Date.now());
+    "INSERT INTO versions(name,v,parent,prompt,created_at,label) VALUES(?,?,?,?,?,?)",
+  ).run(
+    name, v, parent ?? null,
+    String(prompt || "").slice(0, 500) || null, Date.now(),
+    String(label || "").trim().slice(0, 40) || null,
+  );
   db.prepare("INSERT OR REPLACE INTO heads(name,v) VALUES(?,?)").run(name, v);
   writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
   // A published Mini App is the same artifact — its file mirrors head too.
@@ -1814,6 +1822,7 @@ const TOOLS = [
       properties: {
         name: { type: "string", description: "the artifact id, e.g. R6" },
         base_v: { type: "number", description: "version to revise from (default: current); revising an older version starts a branch" },
+        branch_name: { type: "string", description: "optional short name for the branch when base_v isn't the current version (e.g. \"slow-ball\")" },
         code: { type: "string", description: "the complete revised TSX module (same contract as generate_app)" },
         caption: { type: "string", description: "optional one-line markdown caption" },
         title: { type: "string", description: "optional new product name" },
@@ -1956,11 +1965,13 @@ async function toolGenerateApp(job, thread, input) {
     };
   // Revising off a specific version (base_v) branches; default parent is the
   // current pointer. Nothing earlier is touched — cards keep their version.
+  const headBefore = revName ? headOf(name) : null;
   const parent = revName
     ? db.prepare("SELECT v FROM versions WHERE name=? AND v=?").get(name, Number(input.base_v) || 0)
         ? Number(input.base_v)
-        : headOf(name)
+        : headBefore
     : null;
+  const branched = revName && parent != null && parent !== headBefore;
   // The apps row lands FIRST so writeVersion names the file <slug>.v<n>.tsx.
   const prior = db
     .prepare("SELECT title,file FROM apps WHERE name=?")
@@ -1970,7 +1981,10 @@ async function toolGenerateApp(job, thread, input) {
   db.prepare(
     "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
   ).run(name, title, file);
-  const v = writeVersion(name, code, parent, job?.prompt || input.caption || "");
+  const v = writeVersion(
+    name, code, parent, job?.prompt || input.caption || "",
+    input.branch_name,
+  );
   thread.turns.push({
     role: "ai",
     name,
@@ -1981,8 +1995,11 @@ async function toolGenerateApp(job, thread, input) {
   job.cards = (job.cards || 0) + 1;
   writeIndex();
   console.log(`✓ ${name}@v${v}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
+  const branchNote = branched
+    ? ` — this is a new branch off v${parent}${input.branch_name ? ` named "${String(input.branch_name).trim().slice(0, 40)}"` : ""}; mention the fork to the user (they can rename it in Library history)`
+    : "";
   return {
-    content: `mounted as ${name} v${v} — the card is live in the conversation. Library now launches v${v}; earlier versions stay on the tree.`,
+    content: `mounted as ${name} v${v}${branchNote} — the card is live in the conversation. Library now launches v${v}; earlier versions stay on the tree.`,
   };
 }
 
@@ -3597,6 +3614,27 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     });
     return;
   }
+  // POST /app/version/label {name, v, label} — name or rename a branch.
+  // Empty label clears it.
+  if (req.method === "POST" && req.url === "/app/version/label") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { name, v, label } = JSON.parse(body || "{}");
+        const r = db
+          .prepare("UPDATE versions SET label=? WHERE name=? AND v=?")
+          .run(String(label || "").trim().slice(0, 40) || null, String(name || ""), Number(v));
+        if (!r.changes) throw new Error("no such version");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
   // GET /artifacts?q=&thread=<id> — the composer's @ picker: mini-apps the
   // current thread knows first, then every artifact/file globally.
   if (req.method === "GET" && req.url.split("?")[0] === "/artifacts") {
@@ -3781,18 +3819,20 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     });
     return;
   }
-  // POST /app/delete {name} — remove an artifact everywhere: published copy,
-  // generated source, kv state, meta row. Turns keep their reference and the
-  // card degrades to "module missing" (same as /bot/delete's cleanup).
+  // POST /app/delete {name, everywhere?} — remove an artifact: generated
+  // source, versions, kv state, meta row, transcript turns. The published
+  // Mini App copy survives unless {everywhere:true} — delete is chat-side
+  // cleanup by default, like /bot/delete.
   if (req.method === "POST" && req.url === "/app/delete") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { name } = JSON.parse(body || "{}");
+        const { name, everywhere } = JSON.parse(body || "{}");
         if (!/^R\d+$/.test(String(name || "")))
           throw new Error(`no such module ${name}`);
-        db.prepare("DELETE FROM widgets WHERE name=?").run(name);
+        if (everywhere)
+          db.prepare("DELETE FROM widgets WHERE name=?").run(name);
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
         db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
@@ -3821,12 +3861,14 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
           try {
             rmSync(join(GEN_DIR, name), { recursive: true, force: true });
           } catch {}
-          try {
-            unlinkSync(join(WIDGETS_DIR, `${name}.tsx`));
-          } catch {}
+          if (everywhere) {
+            try {
+              unlinkSync(join(WIDGETS_DIR, `${name}.tsx`));
+            } catch {}
+          }
           try {
             unlinkSync(join(CHUNK_DIR, `${name}.js`));
-            unlinkSync(join(CHUNK_DIR, `${name}w.js`));
+            if (everywhere) unlinkSync(join(CHUNK_DIR, `${name}w.js`));
             for (const f of readdirSync(CHUNK_DIR))
               if (f.startsWith(`${name}v`) && f.endsWith(".js"))
                 unlinkSync(join(CHUNK_DIR, f));
