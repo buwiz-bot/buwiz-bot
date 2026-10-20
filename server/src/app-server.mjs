@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileMeta, highlight, mockDocx, mockFiles, mockPptx, mockXlsx, renderFile } from "./files.mjs";
 import { callOfficeTool, ensureOfficeMcp, officeCaps, officeCreateBytes, officeMarkdown, officeMcpTools, officePkgRoot } from "./office.mjs";
+import { anthropicTools as mcpAnthropicTools, callTool as mcpCallTool, ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName, statusOf as mcpStatus } from "./mcp.mjs";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -351,6 +352,11 @@ db.exec(`
     name TEXT NOT NULL, v INTEGER NOT NULL, parent INTEGER,
     prompt TEXT, created_at INTEGER, PRIMARY KEY(name, v));
   CREATE TABLE IF NOT EXISTS heads(name TEXT PRIMARY KEY, v INTEGER NOT NULL);
+  -- User-connected MCP servers: bot NULL = every bot sees the tools,
+  -- bot=<id> scopes them to that bot's thread.
+  CREATE TABLE IF NOT EXISTS mcp_servers(
+    id TEXT PRIMARY KEY, name TEXT, command TEXT, args TEXT, env TEXT,
+    enabled INTEGER DEFAULT 1, bot TEXT, created_at INTEGER);
   CREATE TABLE IF NOT EXISTS timeclock(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     clock_in TEXT NOT NULL, clock_out TEXT);
@@ -1897,6 +1903,7 @@ Artifacts are versioned: every app you mount keeps its versions under one name (
 
 Compose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.
 
+Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to.
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
 
 When you DO write a widget module, this contract applies:
@@ -2215,6 +2222,15 @@ async function execTool(job, thread, block) {
       return await toolArtifact(block, block.input || {});
     if (block.name.startsWith("office_"))
       return await toolOffice(job, thread, block);
+    const mm = parseMcpName(block.name);
+    if (mm) {
+      const row = db
+        .prepare("SELECT * FROM mcp_servers WHERE id=?")
+        .get(mm[0]);
+      if (!row) return { content: `mcp server ${mm[0]} is not configured`, is_error: true };
+      setJob(job, "tool", `${row.name || mm[0]}: ${mm[1]}`);
+      return await mcpCallTool(row, mm[1], block.input || {});
+    }
     return { content: `unknown tool ${block.name}`, is_error: true };
   } catch (e) {
     return {
@@ -2247,13 +2263,29 @@ function toolActivity(name, input = {}) {
   return TOOL_ACTIVITY[name] || ["working", "Working"];
 }
 
-function toolList() {
+// A thread's bot scopes which connected MCP servers the agent sees:
+// global servers (bot IS NULL) plus servers bound to this bot.
+async function mcpToolDefs(thread) {
+  const bot = store.bots.find((b) => b.threadId === thread?.id);
+  const rows = db
+    .prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)")
+    .all(bot?.id || "");
+  const defs = [];
+  for (const row of rows) {
+    const rec = await mcpEnsure(row);
+    defs.push(...mcpAnthropicTools(row.id, rec.tools));
+  }
+  return defs;
+}
+
+async function toolList(thread) {
   // The bundled BetterOffice MCP server contributes its office_* surface once
   // connected (office_create stays ours — its version mounts the file card).
   const office = officeMcpTools();
+  const mcp = await mcpToolDefs(thread);
   return serverSearch
-    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...office]
-    : [...TOOLS, ...office, CLIENT_SEARCH];
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...office, ...mcp]
+    : [...TOOLS, ...office, ...mcp, CLIENT_SEARCH];
 }
 
 async function agentTurn(job, prompt, thread) {
@@ -2280,7 +2312,7 @@ async function agentTurn(job, prompt, thread) {
         model: MODEL,
         max_tokens: MAX_TOKENS,
         system: agentSystem(),
-        tools: toolList(),
+        tools: await toolList(thread),
         messages,
       };
       if (agentStream) {
@@ -3627,6 +3659,137 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
           .prepare("UPDATE versions SET label=? WHERE name=? AND v=?")
           .run(String(label || "").trim().slice(0, 40) || null, String(name || ""), Number(v));
         if (!r.changes) throw new Error("no such version");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
+  // ————— Connected MCP servers —————
+  // GET /mcp/servers → live status per server (never echoes env values).
+  if (req.method === "GET" && req.url === "/mcp/servers") {
+    const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at").all();
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        servers: rows.map((r) => {
+          const st = mcpStatus(r.id);
+          return {
+            id: r.id,
+            name: r.name,
+            command: r.command,
+            args: JSON.parse(r.args || "[]"),
+            envKeys: Object.keys(JSON.parse(r.env || "{}")),
+            enabled: !!r.enabled,
+            bot: r.bot,
+            status: r.enabled ? st.status : "off",
+            tools: st.tools,
+            err: st.err || null,
+          };
+        }),
+      }),
+    );
+    return;
+  }
+  // POST /mcp/servers {id?, name, command, args?, env?, bot?} — add or edit;
+  // the server is probed immediately so the reply carries its real status.
+  if (req.method === "POST" && req.url === "/mcp/servers") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, name, command, args, env, bot } = JSON.parse(body || "{}");
+        const cur = id
+          ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
+          : null;
+        const finalName = String(name ?? cur?.name ?? "").trim();
+        const finalCommand = String(command ?? cur?.command ?? "").trim();
+        if (!finalName) throw new Error("server needs a name");
+        if (!finalCommand) throw new Error("server needs a command");
+        const sid =
+          (id && String(id)) ||
+          (() => {
+            const base = finalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "srv";
+            let s = base, i = 2;
+            while (db.prepare("SELECT id FROM mcp_servers WHERE id=?").get(s)) s = `${base}-${i++}`;
+            return s;
+          })();
+        // Omitted fields keep their stored values — a partial POST edits.
+        const argList =
+          args === undefined
+            ? JSON.parse(cur?.args || "[]")
+            : Array.isArray(args)
+              ? args.map(String)
+              : String(args || "").trim().split(/\s+/).filter(Boolean);
+        const envObj =
+          env === undefined
+            ? JSON.parse(cur?.env || "{}")
+            : env && typeof env === "object"
+              ? env
+              : Object.fromEntries(
+                  String(env || "")
+                    .split("\n")
+                    .map((l) => l.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/))
+                    .filter(Boolean)
+                    .map((m) => [m[1], m[2]]),
+                );
+        const botId =
+          bot === undefined ? cur?.bot ?? null
+          : bot && store.bots.some((b) => b.id === bot) ? bot
+          : null;
+        db.prepare(
+          "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?))",
+        ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now());
+        mcpInvalidate(sid); // config changed → drop any cached client
+        const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
+        const rec = await mcpEnsure(row); // probe now so the UI gets truth
+        const st = mcpStatus(sid);
+        res.end(
+          JSON.stringify({
+            ok: true, id: sid,
+            status: rec.client ? "connected" : "error",
+            tools: st.tools, err: st.err || null,
+          }),
+        );
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
+  // POST /mcp/server/state {id, enabled} — toggle without deleting config.
+  if (req.method === "POST" && req.url === "/mcp/server/state") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, enabled } = JSON.parse(body || "{}");
+        const r = db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, String(id || ""));
+        if (!r.changes) throw new Error("no such server");
+        if (!enabled) mcpInvalidate(String(id));
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
+  // POST /mcp/server/delete {id} — kill the client and drop the row.
+  if (req.method === "POST" && req.url === "/mcp/server/delete") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id } = JSON.parse(body || "{}");
+        mcpInvalidate(String(id));
+        db.prepare("DELETE FROM mcp_servers WHERE id=?").run(String(id || ""));
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.statusCode = 400;
