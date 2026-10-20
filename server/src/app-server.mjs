@@ -356,7 +356,7 @@ db.exec(`
   -- bot=<id> scopes them to that bot's thread.
   CREATE TABLE IF NOT EXISTS mcp_servers(
     id TEXT PRIMARY KEY, name TEXT, command TEXT, args TEXT, env TEXT,
-    enabled INTEGER DEFAULT 1, bot TEXT, created_at INTEGER);
+    enabled INTEGER DEFAULT 1, bot TEXT, created_at INTEGER, url TEXT);
   CREATE TABLE IF NOT EXISTS timeclock(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     clock_in TEXT NOT NULL, clock_out TEXT);
@@ -366,6 +366,8 @@ db.exec(`
 try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
 // A branch may carry an optional name (e.g. "slow-ball") — versions.label.
 try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
+// Remote (streamable-HTTP) MCP servers carry url instead of command.
+try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
 // Marketplace plugins the user installed (cloned under plugins/<name>).
 try { db.exec("CREATE TABLE IF NOT EXISTS installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER)"); } catch {}
 
@@ -2355,14 +2357,15 @@ async function toolList(thread) {
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields
 // keep their stored values so a partial call edits an existing row.
-async function mcpUpsertServer({ id, name, command, args, env, bot } = {}) {
+async function mcpUpsertServer({ id, name, command, args, env, bot, url } = {}) {
   const cur = id
     ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
     : null;
   const finalName = String(name ?? cur?.name ?? "").trim();
+  const finalUrl = String(url ?? cur?.url ?? "").trim();
   const finalCommand = String(command ?? cur?.command ?? "").trim();
   if (!finalName) throw new Error("server needs a name");
-  if (!finalCommand) throw new Error("server needs a command");
+  if (!finalCommand && !finalUrl) throw new Error("server needs a command or url");
   const sid =
     (id && String(id)) ||
     (() => {
@@ -2394,8 +2397,8 @@ async function mcpUpsertServer({ id, name, command, args, env, bot } = {}) {
     : bot && store.bots.some((b) => b.id === bot) ? bot
     : null;
   db.prepare(
-    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?))",
-  ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now());
+    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at,url) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?),?)",
+  ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now(), finalUrl || null);
   mcpInvalidate(sid); // config changed → drop any cached client
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
   const rec = await mcpEnsure(row); // probe now so the reply carries real status
@@ -3878,19 +3881,26 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === name);
         if (!p) throw new Error(`unknown plugin ${name}`);
         const dir = join(PLUGINS_DIR, p.name);
-        if (!existsSync(join(dir, ".git"))) {
-          rmSync(dir, { recursive: true, force: true });
-          mkdirSync(dirname(dir), { recursive: true });
-          const url = String(p.source?.url || "").replace(/\.git$/, "");
-          await git(["clone", "--depth", "1", url, dir]);
-          if (p.source?.sha) {
-            try {
-              await git(["-C", dir, "fetch", "--depth", "1", "origin", p.source.sha]);
-              await git(["-C", dir, "checkout", "-q", p.source.sha]);
-            } catch {}
+        let root;
+        if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
+          // Vendored inside the marketplace catalog itself (external_plugins/<name>).
+          root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
+          if (!existsSync(root)) throw new Error(`vendored source missing for ${name}`);
+        } else {
+          if (!existsSync(join(dir, ".git"))) {
+            rmSync(dir, { recursive: true, force: true });
+            mkdirSync(dirname(dir), { recursive: true });
+            const url = String(p.source?.url || "").replace(/\.git$/, "");
+            await git(["clone", "--depth", "1", url, dir]);
+            if (p.source?.sha) {
+              try {
+                await git(["-C", dir, "fetch", "--depth", "1", "origin", p.source.sha]);
+                await git(["-C", dir, "checkout", "-q", p.source.sha]);
+              } catch {}
+            }
           }
+          root = p.source?.path ? join(dir, p.source.path) : dir;
         }
-        const root = p.source?.path ? join(dir, p.source.path) : dir;
         // Plugin repos declare MCP servers under different manifest names:
         // .mcp.json (claude/mcp convention), gemini-extension.json, or mcp.json.
         const added = [];
@@ -3901,9 +3911,10 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
           try { mcp = JSON.parse(readFileSync(mcpFile, "utf8")); } catch { continue; }
           const servers = mcp.mcpServers || mcp.mcp || {};
           for (const [srvName, cfg] of Object.entries(servers)) {
-            if (!cfg || typeof cfg !== "object" || !cfg.command) continue;
+            if (!cfg || typeof cfg !== "object" || (!cfg.command && !cfg.url)) continue;
             const r = await mcpUpsertServer({
               name: srvName,
+              url: cfg.url || (cfg.type === "http" ? cfg.url : undefined),
               command: cfg.command,
               args: cfg.args,
               env: cfg.env,
@@ -3955,6 +3966,95 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     });
     return;
   }
+  // Where a plugin's content lives: its clone for url sources, the vendored
+  // catalog dir for local sources. Null when a url plugin isn't installed.
+  function pluginRoot(p) {
+    if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
+      const root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
+      return existsSync(root) ? root : null;
+    }
+    const dir = join(PLUGINS_DIR, p.name);
+    if (!existsSync(dir)) return null;
+    return p.source?.path ? join(dir, p.source.path) : dir;
+  }
+  // What a plugin ships: skills/commands/agents (name + description from
+  // SKILL.md-style frontmatter), hook/lsp/settings presence, declared MCP
+  // server names. Powers the detail page.
+  function pluginInventory(root) {
+    const listDir = (sub, { md = false } = {}) => {
+      const base = join(root, sub);
+      if (!existsSync(base)) return [];
+      try {
+        return readdirSync(base).map((n) => {
+          const entry = { name: n.replace(/\.md$/, ""), description: "" };
+          const file = md ? join(base, n) : join(base, n, "SKILL.md");
+          try {
+            const head = readFileSync(file, "utf8").slice(0, 3000);
+            entry.description =
+              head.match(/^description:\s*>?-?\s*\n?((?:\s+.+\n?)+)/m)?.[1]?.replace(/\s+/g, " ").trim() ||
+              head.match(/^description:\s*(.+)$/m)?.[1]?.trim() ||
+              "";
+          } catch {}
+          return entry;
+        });
+      } catch { return []; }
+    };
+    const manifest = [".mcp.json", "gemini-extension.json", "mcp.json"]
+      .map((m) => { try { return JSON.parse(readFileSync(join(root, m), "utf8")); } catch { return null; } })
+      .find((m) => m && Object.keys(m.mcpServers || m.mcp || {}).length);
+    let meta = {};
+    try { meta = JSON.parse(readFileSync(join(root, ".grok-plugin/plugin.json"), "utf8")); } catch {}
+    try { if (!meta.name) meta = JSON.parse(readFileSync(join(root, "plugin.json"), "utf8")); } catch {}
+    return {
+      skills: listDir("skills"),
+      commands: listDir("commands", { md: true }),
+      agents: listDir("agents", { md: true }),
+      hooks: existsSync(join(root, "hooks/hooks.json")),
+      lsp: existsSync(join(root, ".lsp.json")),
+      mcp: Object.entries(manifest?.mcpServers || manifest?.mcp || {}).map(([n, c]) => ({
+        name: n, transport: c?.url || c?.type === "http" ? "remote" : "command",
+      })),
+      manifest: { author: meta.author?.name || null, version: meta.version || null, license: meta.license || null },
+    };
+  }
+  // GET /plugins/detail?name=<name> — catalog entry + content inventory +
+  // live status of its registered MCP servers.
+  if (req.method === "GET" && req.url?.startsWith("/plugins/detail")) {
+    const name = new URL(req.url, "http://x").searchParams.get("name");
+    const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === name);
+    res.setHeader("content-type", "application/json");
+    if (!p) { res.statusCode = 404; res.end('{"error":"unknown plugin"}'); return; }
+    const inst = db.prepare("SELECT meta FROM installed_plugins WHERE name=?").get(name);
+    const root = pluginRoot(p);
+    const inv = root ? pluginInventory(root) : { skills: [], commands: [], agents: [], hooks: false, lsp: false, mcp: [], manifest: {} };
+    const mcp = inv.mcp.map((s) => {
+      const row = db.prepare("SELECT * FROM mcp_servers WHERE name=?").get(s.name);
+      const st = row ? mcpStatus(row.id) : { status: "off", tools: 0 };
+      return { ...s, id: row?.id || null, status: row ? (row.enabled ? st.status : "off") : "not-added", tools: st.tools, err: st.err || null };
+    });
+    res.end(JSON.stringify({
+      name: p.name, description: p.description, category: p.category || "other",
+      homepage: p.homepage || null, source: p.source?.type === "local" ? "marketplace" : (p.source?.url || null),
+      installed: !!inst, meta: inst ? JSON.parse(inst.meta || "{}") : null,
+      ...inv, mcp,
+    }));
+    return;
+  }
+  // GET /plugins/skill?plugin=<name>&skill=<skill> — the SKILL.md body.
+  if (req.method === "GET" && req.url?.startsWith("/plugins/skill")) {
+    const q = new URL(req.url, "http://x").searchParams;
+    const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === q.get("plugin"));
+    res.setHeader("content-type", "application/json");
+    const root = p && pluginRoot(p);
+    const file = root && join(root, "skills", String(q.get("skill") || ""), "SKILL.md");
+    if (!file || !existsSync(file)) { res.statusCode = 404; res.end('{"error":"no such skill"}'); return; }
+    const body = readFileSync(file, "utf8");
+    res.end(JSON.stringify({
+      name: q.get("skill"), body,
+      description: body.match(/^description:\s*>?-?\s*\n?((?:\s+.+\n?)+)/m)?.[1]?.replace(/\s+/g, " ").trim() || body.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "",
+    }));
+    return;
+  }
   // ————— Connected MCP servers —————
   // GET /mcp/servers → live status per server (never echoes env values).
   if (req.method === "GET" && req.url === "/mcp/servers") {
@@ -3968,6 +4068,7 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
             id: r.id,
             name: r.name,
             command: r.command,
+            url: r.url || null,
             args: JSON.parse(r.args || "[]"),
             envKeys: Object.keys(JSON.parse(r.env || "{}")),
             enabled: !!r.enabled,

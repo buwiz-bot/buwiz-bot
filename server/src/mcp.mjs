@@ -37,9 +37,60 @@ export function ensureClient(row) {
   return p;
 }
 
+// Minimal Streamable-HTTP MCP client for `type:"http"` plugin servers:
+// POST JSON-RPC with Accept json+sse, carry mcp-session-id between calls.
+function httpClient(row) {
+  const url = row.url;
+  let sessionId = null;
+  const rpc = async (method, params, notify = false) => {
+    const body = { jsonrpc: "2.0", method, ...(notify ? {} : { id: Math.floor(Math.random() * 1e9) }), ...(params ? { params } : {}) };
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-03-26",
+    };
+    if (sessionId) headers["mcp-session-id"] = sessionId;
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+    const sid = r.headers.get("mcp-session-id");
+    if (sid) sessionId = sid;
+    if (notify || r.status === 202) return null;
+    if (!r.ok) throw new Error(`http ${r.status}`);
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("text/event-stream")) {
+      const text = await r.text();
+      let last = null;
+      for (const line of text.split("\n")) {
+        if (line.startsWith("data:")) { try { last = JSON.parse(line.slice(5)); } catch {} }
+      }
+      if (last?.error) throw new Error(last.error.message || "rpc error");
+      return last?.result ?? last;
+    }
+    const j = await r.json();
+    if (j?.error) throw new Error(j.error.message || "rpc error");
+    return j?.result ?? j;
+  };
+  return {
+    listTools: async () => {
+      await rpc("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "grok-shell", version: "1.0.0" } });
+      await rpc("notifications/initialized", null, true);
+      return rpc("tools/list", {});
+    },
+    callTool: async ({ name, arguments: args }) => rpc("tools/call", { name, arguments: args || {} }),
+    close: () => {},
+  };
+}
+
 async function connect(row) {
   const rec = { client: null, tools: [], err: null };
   try {
+    if (row.url) {
+      const client = httpClient(row);
+      const { tools } = await client.listTools();
+      rec.client = client;
+      rec.tools = tools || [];
+      console.log(`  mcp ${row.id}: connected (http), ${rec.tools.length} tools`);
+      return rec;
+    }
     const [{ Client }, { StdioClientTransport }] = await Promise.all([
       import("@modelcontextprotocol/sdk/client/index.js"),
       import("@modelcontextprotocol/sdk/client/stdio.js"),
