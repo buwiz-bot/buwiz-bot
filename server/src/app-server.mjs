@@ -3312,6 +3312,41 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     });
     return;
   }
+  // POST /app/delete {name} — remove an artifact everywhere: published copy,
+  // generated source, kv state, meta row. Turns keep their reference and the
+  // card degrades to "module missing" (same as /bot/delete's cleanup).
+  if (req.method === "POST" && req.url === "/app/delete") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { name } = JSON.parse(body || "{}");
+        if (!/^R\d+$/.test(String(name || "")))
+          throw new Error(`no such module ${name}`);
+        db.prepare("DELETE FROM widgets WHERE name=?").run(name);
+        db.prepare("DELETE FROM kv WHERE name=?").run(name);
+        db.prepare("DELETE FROM apps WHERE name=?").run(name);
+        // Rewrite the shelf + index before the files go — a live import of a
+        // missing module is a parse error that kills the whole feed.
+        writeShelf();
+        writeIndex();
+        setTimeout(() => {
+          try {
+            unlinkSync(join(GEN_DIR, `${name}.tsx`));
+          } catch {}
+          try {
+            unlinkSync(join(WIDGETS_DIR, `${name}.tsx`));
+          } catch {}
+        }, 700);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
   if (req.method === "POST" && req.url === "/reuse") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -4078,6 +4113,9 @@ ${deskBlock}
 const exact = (mod as any).popoutSize as { w?: number; h?: number } | undefined;
 const wantW = Math.min(720, Math.max(240, Math.round(exact?.w ?? (mod as any).popoutWidth ?? ${POP_W})));
 const capH = ${capH};
+// The hidden title bar still paints the traffic lights over the top ~26pt —
+// the strip is real chrome: pad the module below it, add it to the frame.
+const STRIP = 26;
 if (isAvailable) {
   Window.setTitle("widget · " + ${JSON.stringify(name)});
   Window.setTitleBar("hidden", 32); // natural height: the lights land at AppKit's own (9,9) spot
@@ -4087,16 +4125,16 @@ if (isAvailable) {
     Window.setLevel("desktopIcon");
     Window.setFrame({
       x: DESK.w - 24 - wantW,
-      y: DESK.h - 60 - ${wantH} - DESK.slot * 500,
+      y: DESK.h - 60 - ${wantH} - STRIP - DESK.slot * 500,
       width: wantW,
-      height: ${wantH},
+      height: ${wantH} + STRIP,
     });
   } else {
     // A regular window level: aerospace keeps it out of the tile grid (a
     // free-standing window), but it stacks normally — it can sit behind
     // other windows and comes forward when focused, not pinned on top.
     Window.setLevel("normal");
-    Window.setFrame({ width: wantW, height: ${wantH} });
+    Window.setFrame({ width: wantW, height: ${wantH} + STRIP });
     // A spawned host process has no activation context — without this the
     // window orders in behind the front app, never key (grayed lights).
     Window.orderFront();
@@ -4126,7 +4164,7 @@ const hug = (raw: number) => {
       return;
     }
     lastH = pendingH;
-    Window.setFrame({ height: pendingH, anchorTop: true, animated: true });
+    Window.setFrame({ height: pendingH + STRIP, anchorTop: true, animated: true });
   }, 150);
 };
 mount(() => (
@@ -4139,15 +4177,16 @@ mount(() => (
       overflow: "hidden",
     }}
   >
-    <View onLayout={(e) => hug(e.height)}>
-      <R />
+    <View style={{ paddingTop: STRIP }}>
+      <View onLayout={(e) => hug(e.height)}>
+        <R />
+      </View>
     </View>
-    {/* The drag holdout: invisible, and above the module — presses on the
+    {/* The drag holdout: invisible, and above the strip — presses on the
         top 26pt move the window instead of reaching the app, so canvas
-        and pressable apps stay movable. The contract asks modules to keep
-        this strip free of controls. */}
+        and pressable apps stay movable. */}
     <View
-      style={{ position: "absolute", top: 0, left: 0, right: 0, height: 26 }}
+      style={{ position: "absolute", top: 0, left: 0, right: 0, height: STRIP }}
       desktop={{ windowDrag: true }}
     />
   </View>
@@ -4185,7 +4224,7 @@ mount(() => (
           "--app-id",
           `${BUNDLE_ID}.widget`,
           "--window-size",
-          `${wantW}x${wantH}`,
+          `${wantW}x${wantH + 26}`,
         ],
         {
           detached: true,
