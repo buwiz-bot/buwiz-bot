@@ -1891,6 +1891,50 @@ const TOOLS = [
       required: ["name"],
     },
   },
+  {
+    name: "mcp_install",
+    description: "Install a stdio MCP server and connect it — its tools become callable from your next step. Use when the user wants an external capability you lack (filesystem, GitHub, Slack, a database, …). command is the executable (npx, uvx, node, python, …), args its arguments, env the KEY=VALUE pairs it needs (ask the user for any secrets; never invent them). scope \"bot\" binds it to this bot only; default shares it with every bot.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "short label, e.g. \"github\"" },
+        command: { type: "string" },
+        args: { type: "array", items: { type: "string" }, description: "e.g. [\"-y\",\"@modelcontextprotocol/server-github\"]" },
+        env: { type: "object", additionalProperties: { type: "string" } },
+        scope: { type: "string", enum: ["all", "bot"] },
+      },
+      required: ["name", "command"],
+    },
+  },
+  {
+    name: "mcp_uninstall",
+    description: "Remove an MCP server connection entirely — its tools disappear. id is the slug mcp_install returned (mcp_list shows them); or pass the server's name.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "mcp_enable",
+    description: "Re-enable a disabled MCP server (id or name) — its tools return next step.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "mcp_disable",
+    description: "Disable an MCP server (id or name) without removing its configuration — its tools are withheld until mcp_enable.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "mcp_list",
+    description: "List configured MCP servers: id, name, status, tool count, scope, env key names.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 const agentSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
@@ -1903,7 +1947,7 @@ Artifacts are versioned: every app you mount keeps its versions under one name (
 
 Compose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.
 
-Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to.
+Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. When the user wants a capability you don't have, install it yourself with mcp_install (a stdio MCP server command — npx/uvx/node/…); it connects immediately and its mcp_* tools are callable from your next step. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
 
 When you DO write a widget module, this contract applies:
@@ -2222,6 +2266,8 @@ async function execTool(job, thread, block) {
       return await toolArtifact(block, block.input || {});
     if (block.name.startsWith("office_"))
       return await toolOffice(job, thread, block);
+    if (/^mcp_(install|uninstall|enable|disable|list)$/.test(block.name))
+      return await toolMcpAdmin(thread, block.name, block.input || {});
     const mm = parseMcpName(block.name);
     if (mm) {
       const row = db
@@ -2250,6 +2296,11 @@ const TOOL_ACTIVITY = {
   generate_app: ["writing", "Drafting the file"],
   generate_image: ["generating", "Generating a photo"],
   query_source: ["connecting", "Connecting to a third party app"],
+  mcp_install: ["connecting", "Installing an app connection"],
+  mcp_uninstall: ["working", "Removing an app connection"],
+  mcp_enable: ["connecting", "Enabling an app connection"],
+  mcp_disable: ["working", "Disabling an app connection"],
+  mcp_list: ["working", "Listing app connections"],
 };
 
 function toolActivity(name, input = {}) {
@@ -2286,6 +2337,115 @@ async function toolList(thread) {
   return serverSearch
     ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...office, ...mcp]
     : [...TOOLS, ...office, ...mcp, CLIENT_SEARCH];
+}
+
+// Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields
+// keep their stored values so a partial call edits an existing row.
+async function mcpUpsertServer({ id, name, command, args, env, bot } = {}) {
+  const cur = id
+    ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
+    : null;
+  const finalName = String(name ?? cur?.name ?? "").trim();
+  const finalCommand = String(command ?? cur?.command ?? "").trim();
+  if (!finalName) throw new Error("server needs a name");
+  if (!finalCommand) throw new Error("server needs a command");
+  const sid =
+    (id && String(id)) ||
+    (() => {
+      const base = finalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "srv";
+      let s = base, i = 2;
+      while (db.prepare("SELECT id FROM mcp_servers WHERE id=?").get(s)) s = `${base}-${i++}`;
+      return s;
+    })();
+  const argList =
+    args === undefined
+      ? JSON.parse(cur?.args || "[]")
+      : Array.isArray(args)
+        ? args.map(String)
+        : String(args || "").trim().split(/\s+/).filter(Boolean);
+  const envObj =
+    env === undefined
+      ? JSON.parse(cur?.env || "{}")
+      : env && typeof env === "object"
+        ? env
+        : Object.fromEntries(
+            String(env || "")
+              .split("\n")
+              .map((l) => l.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/))
+              .filter(Boolean)
+              .map((m) => [m[1], m[2]]),
+          );
+  const botId =
+    bot === undefined ? cur?.bot ?? null
+    : bot && store.bots.some((b) => b.id === bot) ? bot
+    : null;
+  db.prepare(
+    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?))",
+  ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now());
+  mcpInvalidate(sid); // config changed → drop any cached client
+  const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
+  const rec = await mcpEnsure(row); // probe now so the reply carries real status
+  const st = mcpStatus(sid);
+  return {
+    id: sid,
+    status: rec.client ? "connected" : "error",
+    tools: st.tools,
+    toolNames: rec.tools.map((t) => mcpAnthropicTools(sid, [t])[0]?.name ?? ""),
+    err: st.err || null,
+  };
+}
+
+// Resolve a server row by id, or by name (exact, then slugged).
+function mcpServerRow({ id, name } = {}) {
+  if (id)
+    return db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id));
+  const n = String(name || "").trim();
+  if (!n) return null;
+  const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+  return (
+    db.prepare("SELECT * FROM mcp_servers WHERE name=?").get(n) ||
+    db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(slug)
+  );
+}
+
+// mcp_install / mcp_uninstall / mcp_enable / mcp_disable / mcp_list — the
+// model manages the same mcp_servers registry the Connect tab edits.
+async function toolMcpAdmin(thread, tool, input) {
+  if (tool === "mcp_list") {
+    const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at").all();
+    if (!rows.length) return { content: "no MCP servers configured" };
+    const line = (r) => {
+      const s = mcpStatus(r.id);
+      const envKeys = Object.keys(JSON.parse(r.env || "{}"));
+      return `${r.id} — ${r.name} · ${r.enabled ? s.status + ` (${s.tools} tools)` : "disabled"} · scope: ${r.bot ? `bot ${r.bot}` : "all bots"}${envKeys.length ? ` · env: ${envKeys.join(",")}` : ""}${s.err ? ` · err: ${s.err}` : ""}`;
+    };
+    return { content: rows.map(line).join("\n") };
+  }
+  if (tool === "mcp_install") {
+    const bot = store.bots.find((b) => b.threadId === thread?.id);
+    const r = await mcpUpsertServer({
+      name: input.name,
+      command: input.command,
+      args: input.args,
+      env: input.env,
+      bot: input.scope === "bot" && bot ? bot.id : null,
+    });
+    if (r.status !== "connected")
+      return { content: `mcp install of "${input.name}" failed: ${r.err || "could not connect"} — check the command and args`, is_error: true };
+    return { content: `installed "${input.name}" as server ${r.id} — connected, ${r.tools} tool(s) now callable: ${r.toolNames.join(", ") || "none discovered"}` };
+  }
+  const row = mcpServerRow(input);
+  if (!row)
+    return { content: `no MCP server matches ${input.id || input.name || "?"} — mcp_list shows the ids`, is_error: true };
+  if (tool === "mcp_uninstall") {
+    mcpInvalidate(row.id);
+    db.prepare("DELETE FROM mcp_servers WHERE id=?").run(row.id);
+    return { content: `removed MCP server ${row.id} (${row.name}) — its tools are gone` };
+  }
+  const enabled = tool === "mcp_enable";
+  db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
+  mcpInvalidate(row.id);
+  return { content: `${row.id} (${row.name}) ${enabled ? "enabled — its tools return next step" : "disabled — its tools are withheld"}` };
 }
 
 async function agentTurn(job, prompt, thread) {
@@ -3701,59 +3861,8 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { id, name, command, args, env, bot } = JSON.parse(body || "{}");
-        const cur = id
-          ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
-          : null;
-        const finalName = String(name ?? cur?.name ?? "").trim();
-        const finalCommand = String(command ?? cur?.command ?? "").trim();
-        if (!finalName) throw new Error("server needs a name");
-        if (!finalCommand) throw new Error("server needs a command");
-        const sid =
-          (id && String(id)) ||
-          (() => {
-            const base = finalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "srv";
-            let s = base, i = 2;
-            while (db.prepare("SELECT id FROM mcp_servers WHERE id=?").get(s)) s = `${base}-${i++}`;
-            return s;
-          })();
-        // Omitted fields keep their stored values — a partial POST edits.
-        const argList =
-          args === undefined
-            ? JSON.parse(cur?.args || "[]")
-            : Array.isArray(args)
-              ? args.map(String)
-              : String(args || "").trim().split(/\s+/).filter(Boolean);
-        const envObj =
-          env === undefined
-            ? JSON.parse(cur?.env || "{}")
-            : env && typeof env === "object"
-              ? env
-              : Object.fromEntries(
-                  String(env || "")
-                    .split("\n")
-                    .map((l) => l.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/))
-                    .filter(Boolean)
-                    .map((m) => [m[1], m[2]]),
-                );
-        const botId =
-          bot === undefined ? cur?.bot ?? null
-          : bot && store.bots.some((b) => b.id === bot) ? bot
-          : null;
-        db.prepare(
-          "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?))",
-        ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now());
-        mcpInvalidate(sid); // config changed → drop any cached client
-        const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
-        const rec = await mcpEnsure(row); // probe now so the UI gets truth
-        const st = mcpStatus(sid);
-        res.end(
-          JSON.stringify({
-            ok: true, id: sid,
-            status: rec.client ? "connected" : "error",
-            tools: st.tools, err: st.err || null,
-          }),
-        );
+        const r = await mcpUpsertServer(JSON.parse(body || "{}"));
+        res.end(JSON.stringify({ ok: true, ...r }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
