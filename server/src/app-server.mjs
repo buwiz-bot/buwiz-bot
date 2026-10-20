@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileMeta, highlight, mockDocx, mockFiles, mockPptx, mockXlsx, renderFile } from "./files.mjs";
 import { callOfficeTool, ensureOfficeMcp, officeCaps, officeCreateBytes, officeMarkdown, officeMcpTools, officePkgRoot } from "./office.mjs";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -29,15 +29,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
 
 const APP_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const GEN_DIR = join(APP_ROOT, "generated");
+// Packaged mode: GROK_DATA_DIR points at a writable dir (~/Library/Application
+// Support/Grok Shell) — generated/, widgets/, windows/, .stage all live there
+// instead of inside the read-only .app bundle. widgets/ is seeded from the
+// shipped copy on first launch (the launcher does the copy).
+const DATA_DIR = process.env.GROK_DATA_DIR || APP_ROOT;
+const GEN_DIR = join(DATA_DIR, "generated");
 // Candidates are compiled+typechecked here first — OUTSIDE the app's import
 // graph — so a bad module never reaches the dev server (no red overlay flash).
-const STAGE_DIR = join(APP_ROOT, "server", ".stage");
+const STAGE_DIR = join(DATA_DIR, ".stage");
 const PORT = Number(process.env.PORT || 8787);
 // Providers: Claude goes through opencodex's Anthropic Messages endpoint by
 // default (OPENCODEX_URL — it owns the real key; the client key is a dummy).
@@ -63,6 +69,8 @@ const NSH = process.env.NSH || "nsh";
 const NSH_HOST =
   process.env.NSH_HOST ||
   (NSH.includes("/") ? join(dirname(NSH), "nsh-macos-host") : "nsh-macos-host");
+// Bundle id the packaged app and its pop-out windows share (nsh.json's "id").
+const BUNDLE_ID = process.env.GROK_BUNDLE_ID || "dev.goldcoders.grokshell";
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
 // context; every Claude call made for it goes to opencodex's Anthropic
 // Messages endpoint with that model instead (fast = its "--fast" variant,
@@ -135,13 +143,13 @@ function jobJson(job) {
 //   widgets         — published copies of generated modules (the shelf)
 //   kv              — per-widget persisted state, written by the widgets
 //                     themselves through GET/POST /state
-const WIDGETS_DIR = join(APP_ROOT, "widgets");
+const WIDGETS_DIR = join(DATA_DIR, "widgets");
 // Pop-out size, applied through Window.setFrame (nsh patch: setFrame/setLevel
 // on nsh/desktop — see NSH-FEATURE-REQUEST.md / longbridge/nsh#60).
 const POP_W = process.env.POP_W || "360";
 const POP_H = process.env.POP_H || "480";
 // Pop-out windows get a tiny frozen mount wrapper each (windows/pop-<n>.tsx).
-const WINDOWS_DIR = join(APP_ROOT, "windows");
+const WINDOWS_DIR = join(DATA_DIR, "windows");
 mkdirSync(WINDOWS_DIR, { recursive: true }); // runtime dir — absent on a fresh clone
 
 const openWindows = new Map(); // "mode:name" → child process
@@ -266,7 +274,7 @@ mount(() => (
             join(outDir, "bundle.nshc"),
             "--name",
             `snap · ${name}`,
-            "--size",
+            "--window-size",
             `${w}x${h}`,
             // Mount → settle → capture → exit. The host runs the steps
             // once the window shows; quit ends the process.
@@ -4128,16 +4136,37 @@ mount(() => (
 ));
 `,
       );
+      // Production path: compile the wrapper once (cached by content) and
+      // launch a bare host on the bundle — no `nsh run`, no dev server.
+      const wrapperFile = join(WINDOWS_DIR, `pop-${name}.tsx`);
+      const buildKey = createHash("sha1")
+        .update(readFileSync(wrapperFile))
+        .digest("hex")
+        .slice(0, 10);
+      const buildDir = join(WINDOWS_DIR, `.pop-${name}-${buildKey}`);
+      const bundleFile = join(buildDir, "bundle.nshc");
+      if (!existsSync(bundleFile)) {
+        mkdirSync(buildDir, { recursive: true });
+        const b = spawnSync(NSH, ["build", wrapperFile, "-o", buildDir], {
+          encoding: "utf8",
+        });
+        if (b.status !== 0 || !existsSync(bundleFile)) {
+          const err = (b.stderr || b.stdout || "").trim().split("\n").pop();
+          return res.end(
+            JSON.stringify({ ok: false, error: `build failed: ${err}` }),
+          );
+        }
+      }
       const child = spawn(
-        NSH,
+        NSH_HOST,
         [
-          "run",
-          join(WINDOWS_DIR, `pop-${name}.tsx`),
-          "--target",
-          "macos",
+          "--bundle",
+          bundleFile,
           "--name",
           `mini app · ${name}`,
-          "--size",
+          "--app-id",
+          `${BUNDLE_ID}.widget`,
+          "--window-size",
           `${wantW}x${wantH}`,
         ],
         {
