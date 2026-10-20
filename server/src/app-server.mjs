@@ -2063,11 +2063,20 @@ async function artifactBlocks(rels) {
 async function userContent(prompt, extra, ctx = []) {
   const quote = extra?.reply?.text ? `> ${extra.reply.text.replace(/\n/g, "\n> ")}\n\n` : "";
   const text = quote + (prompt || "(see the attachments)");
-  const files = (extra?.attachments || []).filter((a) => a.uri?.startsWith("file://"));
+  const files = (extra?.attachments || []).filter(
+    (a) => a.uri?.startsWith("file://") || a.uri?.startsWith("module://"),
+  );
   if (!files.length && !ctx.length) return text;
   const blocks = [...ctx];
   for (const a of files) {
-    const path = decodeURIComponent(a.uri.slice(7));
+    // module://R<n> resolves to the artifact's TSX — reply-attaching a mini
+    // app hands the model its full source so it can iterate on it.
+    const path = a.uri.startsWith("module://")
+      ? [GEN_DIR, WIDGETS_DIR]
+          .map((d) => join(d, `${a.uri.slice(9)}.tsx`))
+          .find(existsSync)
+      : decodeURIComponent(a.uri.slice(7));
+    if (!path) continue;
     try {
       if (a.kind === "image") {
         blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(path).toString("base64") } });
@@ -2948,8 +2957,11 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     res.setHeader("content-type", "application/json");
     return res.end(
       /^R\d+$/.test(name) && file
-        ? JSON.stringify({ source: readFileSync(file, "utf8") })
-        : JSON.stringify({ source: "" }),
+        ? JSON.stringify({
+            source: readFileSync(file, "utf8"),
+            published: !!widgetRow(name),
+          })
+        : JSON.stringify({ source: "", published: !!widgetRow(name) }),
     );
   }
   if (req.method === "POST" && req.url === "/copy") {
