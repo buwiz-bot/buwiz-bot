@@ -366,6 +366,20 @@ db.exec(`
 try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
 // A branch may carry an optional name (e.g. "slow-ball") — versions.label.
 try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
+// Marketplace plugins the user installed (cloned under plugins/<name>).
+try { db.exec("CREATE TABLE IF NOT EXISTS installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER)"); } catch {}
+
+// The plugin marketplace catalog (agent-plugins.org format), vendored from
+// hexuria/plugin-marketplace — the modal's browse list.
+const PLUGIN_CATALOG = (() => {
+  try { return JSON.parse(readFileSync(join(APP_ROOT, "server/plugins/marketplace.json"), "utf8")); }
+  catch { return { plugins: [] }; }
+})();
+const PLUGINS_DIR = join(DATA_DIR, "plugins");
+const git = (args) =>
+  new Promise((ok, fail) =>
+    execFile("git", args, { timeout: 120000 }, (err, out) => (err ? fail(err) : ok(out))),
+  );
 // A card pins the artifact version it rendered (turns.v → versions.v).
 try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
 // Grok's sidebar organization: pinned tiles, named sections, hidden bots.
@@ -3819,6 +3833,120 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
           .prepare("UPDATE versions SET label=? WHERE name=? AND v=?")
           .run(String(label || "").trim().slice(0, 40) || null, String(name || ""), Number(v));
         if (!r.changes) throw new Error("no such version");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
+  // ————— Plugin marketplace (agent-plugins.org catalog) —————
+  // GET /plugins/catalog → marketplace entries + installed flags.
+  if (req.method === "GET" && req.url === "/plugins/catalog") {
+    res.setHeader("content-type", "application/json");
+    const installed = new Map(
+      db.prepare("SELECT name, meta FROM installed_plugins").all().map((r) => [r.name, r.meta]),
+    );
+    res.end(
+      JSON.stringify({
+        marketplace: PLUGIN_CATALOG.name || "marketplace",
+        plugins: (PLUGIN_CATALOG.plugins || []).map((p) => ({
+          name: p.name,
+          description: p.description || "",
+          category: p.category || "other",
+          homepage: p.homepage || null,
+          domains: p.domains || [],
+          keywords: p.keywords || [],
+          installed: installed.has(p.name),
+          meta: installed.has(p.name) ? JSON.parse(installed.get(p.name) || "{}") : null,
+        })),
+      }),
+    );
+    return;
+  }
+  // POST /plugins/install {name} — clone the plugin repo into
+  // plugins/<name>, register its .mcp.json servers, inventory the pieces
+  // (skills/commands/agents/hooks/lsp) so later steps can wire them up.
+  if (req.method === "POST" && req.url === "/plugins/install") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { name } = JSON.parse(body || "{}");
+        const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === name);
+        if (!p) throw new Error(`unknown plugin ${name}`);
+        const dir = join(PLUGINS_DIR, p.name);
+        if (!existsSync(join(dir, ".git"))) {
+          rmSync(dir, { recursive: true, force: true });
+          mkdirSync(dirname(dir), { recursive: true });
+          const url = String(p.source?.url || "").replace(/\.git$/, "");
+          await git(["clone", "--depth", "1", url, dir]);
+          if (p.source?.sha) {
+            try {
+              await git(["-C", dir, "fetch", "--depth", "1", "origin", p.source.sha]);
+              await git(["-C", dir, "checkout", "-q", p.source.sha]);
+            } catch {}
+          }
+        }
+        const root = p.source?.path ? join(dir, p.source.path) : dir;
+        // Plugin repos declare MCP servers under different manifest names:
+        // .mcp.json (claude/mcp convention), gemini-extension.json, or mcp.json.
+        const added = [];
+        for (const manifest of [".mcp.json", "gemini-extension.json", "mcp.json"]) {
+          const mcpFile = join(root, manifest);
+          if (!existsSync(mcpFile)) continue;
+          let mcp;
+          try { mcp = JSON.parse(readFileSync(mcpFile, "utf8")); } catch { continue; }
+          const servers = mcp.mcpServers || mcp.mcp || {};
+          for (const [srvName, cfg] of Object.entries(servers)) {
+            if (!cfg || typeof cfg !== "object" || !cfg.command) continue;
+            const r = await mcpUpsertServer({
+              name: srvName,
+              command: cfg.command,
+              args: cfg.args,
+              env: cfg.env,
+            });
+            added.push(r.id);
+          }
+          if (Object.keys(servers).length) break;
+        }
+        // Inventory the pieces the plugin ships.
+        const kinds = [];
+        for (const k of ["skills", "commands", "agents"])
+          if (existsSync(join(root, k))) kinds.push(k);
+        for (const f of ["hooks/hooks.json", ".lsp.json", "settings.json"])
+          if (existsSync(join(root, f))) kinds.push(f);
+        db.prepare(
+          "INSERT OR REPLACE INTO installed_plugins(name, meta, created_at) VALUES(?,?,COALESCE((SELECT created_at FROM installed_plugins WHERE name=?),?))",
+        ).run(
+          p.name,
+          JSON.stringify({ mcp: added, kinds, path: p.source?.path || "" }),
+          p.name,
+          Date.now(),
+        );
+        res.end(JSON.stringify({ ok: true, name: p.name, mcp: added, kinds }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e).slice(0, 300) }));
+      }
+    });
+    return;
+  }
+  // POST /plugins/uninstall {name} — remove the record + cloned files; its
+  // .mcp.json servers were registered under their own ids and stay (they are
+  // ordinary entries in mcp_servers — the Connect tab manages them).
+  if (req.method === "POST" && req.url === "/plugins/uninstall") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { name } = JSON.parse(body || "{}");
+        const n = String(name || "");
+        db.prepare("DELETE FROM installed_plugins WHERE name=?").run(n);
+        if (/^[\w.-]+$/.test(n)) rmSync(join(PLUGINS_DIR, n), { recursive: true, force: true });
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.statusCode = 400;
