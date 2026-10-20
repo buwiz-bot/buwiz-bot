@@ -25,10 +25,11 @@ import {
   readFileSync,
   statSync,
   readdirSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -745,11 +746,13 @@ function writeIndex() {
     .map((f) => f.slice(0, -4));
   // Every version on every artifact's tree is addressable: a card pins its
   // own "R6@v3" module, while the bare "R6" key is always the current one.
+  // Version files are <slug>.v<n>.tsx inside generated/<name>/.
   const vers = gen.flatMap((n) => {
     try {
-      return readdirSync(join(GEN_DIR, n))
-        .filter((f) => /^v\d+\.tsx$/.test(f))
-        .map((f) => ({ n, k: f.slice(0, -4) }));
+      return readdirSync(join(GEN_DIR, n)).flatMap((f) => {
+        const m = f.match(/\.v(\d+)\.tsx$/);
+        return m ? [{ n, v: Number(m[1]), file: f.slice(0, -4) }] : [];
+      });
     } catch {
       return [];
     }
@@ -759,19 +762,19 @@ function writeIndex() {
     "|" +
     [...pubs].sort().join(",") +
     "|" +
-    vers.map((x) => `${x.n}@${x.k}`).sort().join(",");
+    vers.map((x) => `${x.n}@${x.file}`).sort().join(",");
   if (key !== lastModuleKey) {
     lastModuleKey = key;
     const imports = [
       ...gen.map((n) => `import ${n} from "./${n}";`),
-      ...vers.map((x) => `import ${x.n}${x.k} from "./${x.n}/${x.k}";`),
+      ...vers.map((x) => `import ${x.n}v${x.v} from "./${x.n}/${x.file}";`),
       // Published widgets get a w-suffix key so a module that exists in both
       // dirs can appear in both turn kinds without a duplicate binding.
       ...pubs.map((n) => `import ${n}w from "../widgets/${n}";`),
     ].join("\n");
     const map = [
       ...gen.map((n) => `  ${JSON.stringify(n)}: ${n},`),
-      ...vers.map((x) => `  ${JSON.stringify(`${x.n}@${x.k}`)}: ${x.n}${x.k},`),
+      ...vers.map((x) => `  ${JSON.stringify(`${x.n}@v${x.v}`)}: ${x.n}v${x.v},`),
       ...pubs.map((n) => `  ${JSON.stringify(n + "w")}: ${n}w,`),
     ].join("\n");
     writeFileSync(
@@ -1560,6 +1563,30 @@ function walkFiles(dir, base = dir, out = []) {
 
 const headOf = (name) =>
   db.prepare("SELECT v FROM heads WHERE name=?").get(name)?.v ?? null;
+// Version files are named <slug>.v<n>.tsx inside generated/<name>/ — slug
+// is the artifact's file label (or title slug, else the R-name). Renaming
+// the artifact's file name or title batch-renames every version's file.
+const verSlug = (name) => {
+  const meta =
+    db.prepare("SELECT file,title FROM apps WHERE name=?").get(name) || {};
+  // apps.file/title slugs carry their ".tsx" — the version file appends
+  // ".v<n>" before it.
+  return (meta.file || slugFile(meta.title) || `${name}.tsx`).replace(
+    /\.tsx$/i,
+    "",
+  );
+};
+const verFile = (name, v) => {
+  const dir = join(GEN_DIR, name);
+  try {
+    const f = readdirSync(dir).find((x) =>
+      new RegExp(`\\.v${v}\\.tsx$`).test(x),
+    );
+    return f ? join(dir, f) : null;
+  } catch {
+    return null;
+  }
+};
 const versionsOf = (name) =>
   db
     .prepare("SELECT v,parent,created_at FROM versions WHERE name=? ORDER BY v")
@@ -1579,7 +1606,8 @@ function writeVersion(name, code, parent, prompt) {
   const v =
     (db.prepare("SELECT MAX(v) AS m FROM versions WHERE name=?").get(name)
       ?.m || 0) + 1;
-  writeFileSync(join(dir, `v${v}.tsx`), code);
+  const vFile = join(dir, `${verSlug(name)}.v${v}.tsx`);
+  writeFileSync(vFile, code);
   db.prepare(
     "INSERT INTO versions(name,v,parent,prompt,created_at) VALUES(?,?,?,?,?)",
   ).run(name, v, parent ?? null, String(prompt || "").slice(0, 500) || null, Date.now());
@@ -1587,7 +1615,7 @@ function writeVersion(name, code, parent, prompt) {
   writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
   // A published Mini App is the same artifact — its file mirrors head too.
   if (widgetRow(name)) writeFileSync(join(WIDGETS_DIR, `${name}.tsx`), code);
-  emitChunk(chunkKey(`${name}@v${v}`), join(dir, `v${v}.tsx`));
+  emitChunk(chunkKey(`${name}@v${v}`), vFile);
   emitChunk(name, join(GEN_DIR, `${name}.tsx`));
   return v;
 }
@@ -1595,8 +1623,8 @@ function writeVersion(name, code, parent, prompt) {
 // The current pointer moves; nothing is rewritten — later versions stay on
 // the tree as siblings of whatever branches off the reverted one.
 function setHead(name, v) {
-  const file = join(GEN_DIR, name, `v${v}.tsx`);
-  if (!existsSync(file)) return false;
+  const file = verFile(name, v);
+  if (!file || !existsSync(file)) return false;
   db.prepare("INSERT OR REPLACE INTO heads(name,v) VALUES(?,?)").run(name, v);
   const code = readFileSync(file, "utf8");
   writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
@@ -1933,7 +1961,7 @@ async function toolGenerateApp(job, thread, input) {
         ? Number(input.base_v)
         : headOf(name)
     : null;
-  const v = writeVersion(name, code, parent, job?.prompt || input.caption || "");
+  // The apps row lands FIRST so writeVersion names the file <slug>.v<n>.tsx.
   const prior = db
     .prepare("SELECT title,file FROM apps WHERE name=?")
     .get(name) || {};
@@ -1942,6 +1970,7 @@ async function toolGenerateApp(job, thread, input) {
   db.prepare(
     "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
   ).run(name, title, file);
+  const v = writeVersion(name, code, parent, job?.prompt || input.caption || "");
   thread.turns.push({
     role: "ai",
     name,
@@ -2138,9 +2167,7 @@ async function toolArtifact(block, input) {
   }
   if (block.name === "view_code") {
     const v = input.v ? Number(input.v) : headOf(name);
-    const file = v
-      ? join(GEN_DIR, name, `v${v}.tsx`)
-      : join(GEN_DIR, `${name}.tsx`);
+    const file = v ? verFile(name, v) : join(GEN_DIR, `${name}.tsx`);
     if (!existsSync(file))
       return { content: `no source for ${name}${v ? `@v${v}` : ""}`, is_error: true };
     return {
@@ -3265,7 +3292,7 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     const name = mm?.[1] || "";
     const ver = mm?.[2] ? Number(mm[2]) : null;
     const file = ver
-      ? join(GEN_DIR, name, `v${ver}.tsx`)
+      ? verFile(name, ver)
       : [GEN_DIR, WIDGETS_DIR]
           .map((d) => join(d, `${name}.tsx`))
           .find(existsSync);
@@ -3524,6 +3551,22 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         db.prepare(
           "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
         ).run(name, t, f);
+        // A rename moves the whole batch: every <old>.v<n>.tsx in the
+        // artifact's dir becomes <new-slug>.v<n>.tsx, and the index re-points
+        // at the new paths. (Chunk ids stay flat R<n>v<k>.js — name-stable.)
+        const oldSlug = (cur.file || slugFile(cur.title) || `${name}.tsx`).replace(/\.tsx$/i, "");
+        const newSlug = (f || slugFile(t) || `${name}.tsx`).replace(/\.tsx$/i, "");
+        if (newSlug !== oldSlug) {
+          const dir = join(GEN_DIR, name);
+          try {
+            for (const x of readdirSync(dir)) {
+              const m = x.match(/\.v(\d+)\.tsx$/);
+              if (m)
+                renameSync(join(dir, x), join(dir, `${newSlug}.v${m[1]}.tsx`));
+            }
+          } catch {}
+          writeIndex();
+        }
         res.setHeader("content-type", "application/json");
         res.end(
           JSON.stringify({ ok: true, title: t || "", file: f || `${name}.tsx` }),
@@ -4520,11 +4563,11 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
       }
       // v pins the pop-out to that version's file (a card pops out what it
       // shows); no v = the current head mirror.
-      const verFile = popV ? join(GEN_DIR, name, `v${popV}.tsx`) : null;
+      const verFilePath = popV ? verFile(name, popV) : null;
       const widgetFile = join(WIDGETS_DIR, `${name}.tsx`);
       const genFile = join(GEN_DIR, `${name}.tsx`);
-      const file = verFile && existsSync(verFile)
-        ? verFile
+      const file = verFilePath && existsSync(verFilePath)
+        ? verFilePath
         : popV
           ? null
           : existsSync(widgetFile)
@@ -4534,8 +4577,8 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
               : null;
       if (!file)
         return res.end(JSON.stringify({ ok: false, error: "no such module" }));
-      const rel = verFile && file === verFile
-        ? `../generated/${name}/v${popV}`
+      const rel = verFilePath && file === verFilePath
+        ? `../generated/${name}/${basename(file).slice(0, -4)}`
         : file === widgetFile
           ? `../widgets/${name}`
           : `../generated/${name}`;
@@ -4818,12 +4861,26 @@ for (const f of readdirSync(GEN_DIR)) {
   try {
     const dir = join(GEN_DIR, m[1]);
     mkdirSync(dir, { recursive: true });
-    if (!existsSync(join(dir, "v1.tsx")))
-      copyFileSync(join(GEN_DIR, f), join(dir, "v1.tsx"));
+    const v1 = join(dir, `${verSlug(m[1])}.v1.tsx`);
+    if (!verFile(m[1], 1)) copyFileSync(join(GEN_DIR, f), v1);
     db.prepare(
       "INSERT OR IGNORE INTO versions(name,v,parent,prompt,created_at) VALUES(?,1,NULL,NULL,?)",
     ).run(m[1], statSync(join(GEN_DIR, f)).mtimeMs);
     db.prepare("INSERT OR IGNORE INTO heads(name,v) VALUES(?,1)").run(m[1]);
+  } catch {}
+}
+// Pre-slug version files (v<n>.tsx) rename to <slug>.v<n>.tsx.
+for (const d of readdirSync(GEN_DIR)) {
+  if (!/^R\d+$/.test(d)) continue;
+  try {
+    for (const x of readdirSync(join(GEN_DIR, d))) {
+      const m = x.match(/^v(\d+)\.tsx$/);
+      if (m)
+        renameSync(
+          join(GEN_DIR, d, x),
+          join(GEN_DIR, d, `${verSlug(d)}.v${m[1]}.tsx`),
+        );
+    }
   } catch {}
 }
 writeIndex();
@@ -4847,7 +4904,7 @@ writeIndex();
     if (!/^R\d+$/.test(d)) continue;
     try {
       for (const vf of readdirSync(join(GEN_DIR, d))) {
-        const vm = vf.match(/^v(\d+)\.tsx$/);
+        const vm = vf.match(/\.v(\d+)\.tsx$/);
         if (!vm) continue;
         const key = `${d}v${vm[1]}`;
         if (!existsSync(join(CHUNK_DIR, `${key}.js`)))
