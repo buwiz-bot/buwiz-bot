@@ -118,6 +118,17 @@ mkdirSync(STAGE_DIR, { recursive: true });
 for (const f of readdirSync(STAGE_DIR))
   if (f.endsWith(".tsx") || f.startsWith("out-"))
     rmSync(join(STAGE_DIR, f), { recursive: true, force: true });
+// `nsh check` needs a tsconfig.json in the candidate's directory. It extends
+// .nsh/tsconfig.json — the build step (which always runs first) regenerates
+// .nsh/ and its types there — and scopes its include to the stage files
+// themselves (a broken leftover would otherwise fail every later check).
+writeFileSync(
+  join(STAGE_DIR, "tsconfig.json"),
+  JSON.stringify({
+    extends: "./.nsh/tsconfig.json",
+    include: ["*.ts", "*.tsx"],
+  }) + "\n",
+);
 
 // ————— live job status (polled by the app via GET /status?id=N) —————
 const jobs = new Map();
