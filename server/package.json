@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:office-editor": "esbuild tools/office/editor/editor.jsx --bundle --format=esm --splitting --outdir=tools/office/editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node tools/office/editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" tools/office/editor/dist/generated/ 2>/dev/null; done"
   },
   "keywords": [],
   "author": "",
@@ -13,15 +14,21 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
     "@betteroffice/docx": "^0.4.3",
+    "@betteroffice/docx-react": "^0.4.3",
     "@betteroffice/fonts": "^0.4.0",
     "@betteroffice/pptx": "^0.2.0",
+    "@betteroffice/pptx-react": "^0.2.0",
     "@betteroffice/xlsx": "^0.3.0",
+    "@betteroffice/xlsx-react": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@napi-rs/canvas": "^1.0.8",
+    "esbuild": "^0.28.2",
     "exceljs": "4.4.0",
     "image-size": "^2.0.4",
     "mammoth": "1.13.0",
     "mermaid": "12.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "shiki": "4.5.0",
     "zod": "^4.6.7"
   }
