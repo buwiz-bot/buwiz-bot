@@ -55,11 +55,14 @@ const MODEL =
 // polished game runs 400+ lines; 6k truncated mid-file and produced mocks.
 const MAX_TOKENS = Number(process.env.GEN_MAX_TOKENS || 20000);
 const MOCK = !!process.env.MOCK;
-// Prefer the patched nsh checkout (Window.setFrame/setLevel — our fork of
-// longbridge/nsh, PR #61) over the installed CLI; NSH env overrides either.
-const NSH_ROOT = "/Volumes/goldcoders/Projects/nsh/target";
-const LOCAL_NSH = ["release", "debug"].map((k) => join(NSH_ROOT, k, "nsh")).find(existsSync);
-const NSH = process.env.NSH || LOCAL_NSH || "nsh";
+// nsh binary for stage typechecks and pop-outs: $NSH, else `nsh` on PATH.
+// Needs the patched fork (Window.setFrame/setLevel, onContextMenu —
+// upstream longbridge/nsh lacks them); put your build on PATH or point NSH
+// (and NSH_HOST for the dev-host binary) at it.
+const NSH = process.env.NSH || "nsh";
+const NSH_HOST =
+  process.env.NSH_HOST ||
+  (NSH.includes("/") ? join(dirname(NSH), "nsh-macos-host") : "nsh-macos-host");
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
 // context; every Claude call made for it goes to opencodex's Anthropic
 // Messages endpoint with that model instead (fast = its "--fast" variant,
@@ -249,7 +252,7 @@ mount(() => (
     // fast enough for WidgetKit's timeline budget (nsh run's dev-server
     // session took ~19 s and the extension's load got killed).
     const outDir = join(WINDOWS_DIR, `.snap-${name}`);
-    const host = join(dirname(NSH), "nsh-macos-host");
+    const host = NSH_HOST;
     execFile(
       NSH,
       ["build", snap, "-o", outDir],
