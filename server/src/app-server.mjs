@@ -368,6 +368,11 @@ try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
 try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
 // Remote (streamable-HTTP) MCP servers carry url instead of command.
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
+// Private skills — instructions the user (or the agent for them) authored.
+// Enabled bodies are injected into the agent system prompt.
+try {
+  db.exec("CREATE TABLE IF NOT EXISTS skills(id TEXT PRIMARY KEY, name TEXT, description TEXT, body TEXT, enabled INTEGER DEFAULT 1, created_at INTEGER)");
+} catch {}
 // Marketplace plugins the user installed (cloned under plugins/<name>).
 try { db.exec("CREATE TABLE IF NOT EXISTS installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER)"); } catch {}
 
@@ -1951,6 +1956,61 @@ const TOOLS = [
     description: "List configured MCP servers: id, name, status, tool count, scope, env key names.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "skill_create",
+    description: "Create a private skill — saved instructions you follow whenever they apply. Use when the user teaches you a procedure, a preference, or a slash-command-like workflow they want kept (\"remember to always…\", \"when I say X, do Y\"). instructions is the full skill body in markdown.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "kebab-case id, e.g. \"draft-x-post\"" },
+        description: { type: "string", description: "one line — when to use it" },
+        instructions: { type: "string", description: "the skill body in markdown" },
+      },
+      required: ["name", "description", "instructions"],
+    },
+  },
+  {
+    name: "skill_update",
+    description: "Edit a private skill (id or name) — description and/or instructions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        name: { type: "string" },
+        description: { type: "string" },
+        instructions: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "skill_delete",
+    description: "Delete a private skill (id or name) permanently.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "skill_enable",
+    description: "Re-enable a private skill (id or name) — its instructions apply again.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "skill_disable",
+    description: "Disable a private skill (id or name) — kept, but its instructions stop applying.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, name: { type: "string" } },
+    },
+  },
+  {
+    name: "skill_list",
+    description: "List private skills: id, name, enabled, description.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 const agentSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
@@ -1966,8 +2026,22 @@ Compose tools: search the web or query a source first, then build the widget aro
 Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. When the user wants a capability you don't have, install it yourself with mcp_install (a stdio MCP server command — npx/uvx/node/…); it connects immediately and its mcp_* tools are callable from your next step. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
 
+Private skills: the user teaches you procedures — when they explain a workflow to keep, skill_create saves it (kebab-case name, one-line description, full instructions). skill_update, skill_delete, skill_enable, skill_disable and skill_list manage them. Enabled skill instructions are appended below — follow them whenever the request matches the skill's description.
+${privateSkillsInject()}
+
 When you DO write a widget module, this contract applies:
 ${contractFor("__NAME__")}`;
+
+// Enabled private-skill bodies, appended to the agent system prompt so the
+// model actually follows them.
+function privateSkillsInject() {
+  try {
+    const rows = db.prepare("SELECT name, description, body FROM skills WHERE enabled=1 ORDER BY created_at").all();
+    if (!rows.length) return "";
+    const parts = rows.map((r) => `### ${r.name}\n${r.description}\n${String(r.body || "").slice(0, 8000)}`);
+    return `\nPrivate skills (active — follow when applicable):\n${parts.join("\n\n")}`.slice(0, 30000);
+  } catch { return ""; }
+}
 
 // ————— tool executors —————
 
@@ -2284,6 +2358,8 @@ async function execTool(job, thread, block) {
       return await toolOffice(job, thread, block);
     if (/^mcp_(install|uninstall|enable|disable|list)$/.test(block.name))
       return await toolMcpAdmin(thread, block.name, block.input || {});
+    if (/^skill_(create|update|delete|enable|disable|list)$/.test(block.name))
+      return toolSkillAdmin(block.name, block.input || {});
     const mm = parseMcpName(block.name);
     if (mm) {
       const row = db
@@ -2313,6 +2389,7 @@ const TOOL_ACTIVITY = {
   generate_image: ["generating", "Generating a photo"],
   query_source: ["connecting", "Connecting to a third party app"],
   mcp_install: ["connecting", "Installing an app connection"],
+  skill_create: ["thinking", "Saving a skill"],
   mcp_uninstall: ["working", "Removing an app connection"],
   mcp_enable: ["connecting", "Enabling an app connection"],
   mcp_disable: ["working", "Disabling an app connection"],
@@ -2463,6 +2540,54 @@ async function toolMcpAdmin(thread, tool, input) {
   db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
   mcpInvalidate(row.id);
   return { content: `${row.id} (${row.name}) ${enabled ? "enabled — its tools return next step" : "disabled — its tools are withheld"}` };
+}
+
+// skill_create / skill_update / skill_delete / skill_enable / skill_disable /
+// skill_list — private skills the model follows via the system prompt.
+const skillSlug = (s) =>
+  String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "skill";
+function skillRow(input) {
+  if (input?.id) {
+    const r = db.prepare("SELECT * FROM skills WHERE id=?").get(String(input.id));
+    if (r) return r;
+  }
+  if (input?.name)
+    return db.prepare("SELECT * FROM skills WHERE name=? OR id=?").get(String(input.name), skillSlug(input.name));
+  return null;
+}
+function toolSkillAdmin(tool, input) {
+  if (tool === "skill_list") {
+    const rows = db.prepare("SELECT * FROM skills ORDER BY created_at").all();
+    if (!rows.length) return { content: "no private skills yet" };
+    return { content: rows.map((r) => `${r.id} — ${r.name}${r.enabled ? "" : " (disabled)"} · ${r.description}`).join("\n") };
+  }
+  if (tool === "skill_create") {
+    const name = skillSlug(input.name);
+    const cur = db.prepare("SELECT id FROM skills WHERE id=?").get(name);
+    db.prepare(
+      "INSERT OR REPLACE INTO skills(id,name,description,body,enabled,created_at) VALUES(?,?,?,?,COALESCE((SELECT enabled FROM skills WHERE id=?),1),COALESCE((SELECT created_at FROM skills WHERE id=?),?))",
+    ).run(name, String(input.name || name).slice(0, 80), String(input.description || "").slice(0, 400), String(input.instructions || input.body || ""), name, name, Date.now());
+    return { content: `${cur ? "updated" : "created"} private skill "${name}" — its instructions apply to every bot's next step` };
+  }
+  const row = skillRow(input);
+  if (!row)
+    return { content: `no private skill matches ${input.id || input.name || "?"} — skill_list shows the ids`, is_error: true };
+  if (tool === "skill_update") {
+    db.prepare("UPDATE skills SET name=?, description=?, body=? WHERE id=?").run(
+      input.name !== undefined ? String(input.name).slice(0, 80) : row.name,
+      input.description !== undefined ? String(input.description).slice(0, 400) : row.description,
+      input.instructions !== undefined || input.body !== undefined ? String(input.instructions ?? input.body) : row.body,
+      row.id,
+    );
+    return { content: `skill "${row.id}" updated — applies from the next step` };
+  }
+  if (tool === "skill_delete") {
+    db.prepare("DELETE FROM skills WHERE id=?").run(row.id);
+    return { content: `deleted private skill "${row.id}"` };
+  }
+  const enabled = tool === "skill_enable";
+  db.prepare("UPDATE skills SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
+  return { content: `skill "${row.id}" ${enabled ? "enabled — instructions apply" : "disabled — instructions withheld"}` };
 }
 
 async function agentTurn(job, prompt, thread) {
@@ -4053,6 +4178,71 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
       name: q.get("skill"), body,
       description: body.match(/^description:\s*>?-?\s*\n?((?:\s+.+\n?)+)/m)?.[1]?.replace(/\s+/g, " ").trim() || body.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "",
     }));
+    return;
+  }
+  // ————— Private skills —————
+  // GET /skills → the user's own skills (what the agent writes with
+  // skill_* tools; not plugin-shipped skills).
+  if (req.method === "GET" && req.url === "/skills") {
+    const rows = db.prepare("SELECT * FROM skills ORDER BY created_at").all();
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      skills: rows.map((r) => ({ id: r.id, name: r.name, description: r.description, body: r.body, enabled: !!r.enabled })),
+    }));
+    return;
+  }
+  // POST /skills {id?, name, description, instructions} — create or edit.
+  if (req.method === "POST" && req.url === "/skills") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const b = JSON.parse(body || "{}");
+        const id = b.id ? String(b.id) : String(b.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "skill";
+        const cur = db.prepare("SELECT * FROM skills WHERE id=?").get(id);
+        if (!cur && !String(b.instructions || b.body || "").trim()) throw new Error("skill needs instructions");
+        db.prepare(
+          "INSERT OR REPLACE INTO skills(id,name,description,body,enabled,created_at) VALUES(?,?,?,?,COALESCE((SELECT enabled FROM skills WHERE id=?),1),COALESCE((SELECT created_at FROM skills WHERE id=?),?))",
+        ).run(
+          id,
+          String(b.name ?? cur?.name ?? id).slice(0, 80),
+          String(b.description ?? cur?.description ?? "").slice(0, 400),
+          String(b.instructions ?? b.body ?? cur?.body ?? ""),
+          id, id, Date.now(),
+        );
+        res.end(JSON.stringify({ ok: true, id }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e).slice(0, 300) }));
+      }
+    });
+    return;
+  }
+  // POST /skills/state {id, enabled}
+  if (req.method === "POST" && req.url === "/skills/state") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, enabled } = JSON.parse(body || "{}");
+        db.prepare("UPDATE skills SET enabled=? WHERE id=?").run(enabled ? 1 : 0, String(id || ""));
+        res.end('{"ok":true}');
+      } catch (e) { res.statusCode = 400; res.end('{"ok":false}'); }
+    });
+    return;
+  }
+  // POST /skills/delete {id}
+  if (req.method === "POST" && req.url === "/skills/delete") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      const { id } = JSON.parse(body || "{}");
+      db.prepare("DELETE FROM skills WHERE id=?").run(String(id || ""));
+      res.end('{"ok":true}');
+    });
     return;
   }
   // ————— Connected MCP servers —————
