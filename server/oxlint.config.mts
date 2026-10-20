@@ -24,7 +24,7 @@ export default defineConfig({
     "widgets/R*.tsx", // published Mini Apps are runtime artifacts
     "windows/**",
     "out/**",
-    "tools/office/editor/dist/**",
+    "server/office/editor/dist/**",
     // Vendored/generated mark engine assets: motion.mjs is a verbatim
     // extraction of Grok Bot's client engine; *.data.ts are baked solver
     // tables. Not owned style.

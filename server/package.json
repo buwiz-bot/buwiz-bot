@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:office-editor": "esbuild tools/office/editor/editor.jsx --bundle --format=esm --splitting --outdir=tools/office/editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node tools/office/editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" tools/office/editor/dist/generated/ 2>/dev/null; done"
+    "build:office-editor": "esbuild server/office/editor/editor.jsx --bundle --format=esm --splitting --outdir=server/office/editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node server/office/editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" server/office/editor/dist/generated/ 2>/dev/null; done"
   },
   "keywords": [],
   "author": "",

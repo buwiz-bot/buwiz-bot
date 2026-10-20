@@ -15,6 +15,6 @@
 - `oxlint.config.mts` (not `.ts`) for the same reason.
 - Extra repo-specific ignores in the config: `.nsh/`, `.stow/`,
   `generated/`, `widgets/R*.tsx`, `windows/`, `out/`,
-  `tools/office/editor/dist/`, `app/mark/motion.mjs`, `app/mark/*.data.ts`
+  `server/office/editor/dist/`, `app/mark/motion.mjs`, `app/mark/*.data.ts`
   (vendored/generated mark-engine assets).
 - Effect plugin not enabled: no direct `effect` dependency.
