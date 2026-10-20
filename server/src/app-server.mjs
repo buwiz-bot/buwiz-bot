@@ -104,11 +104,18 @@ const anthropic = anthropicDirect && {
 };
 const choiceFor = (threadId) => {
   const b = store.bots.find((x) => x.threadId === threadId);
-  if (b?.model) return { model: b.model, effort: b.effort || "", fast: !!b.fast };
   const m = metaGet("model");
-  return m ? { model: m, effort: metaGet("effort") || "", fast: metaGet("fast") === "1" } : null;
+  const base = b?.model
+    ? { model: b.model, effort: b.effort || "", fast: !!b.fast }
+    : m
+      ? { model: m, effort: metaGet("effort") || "", fast: metaGet("fast") === "1" }
+      : null;
+  // Status labels credit the bot, not the engine: "Grok is thinking" in a
+  // bot's thread, "claude-haiku-5-5 is thinking" in a plain session.
+  return b?.name ? { ...(base || {}), name: b.name } : base;
 };
-const labelOf = (c) => (c?.model ? c.model + (c.fast ? "--fast" : "") : MODEL);
+const labelOf = (c) =>
+  c?.name || (c?.model ? c.model + (c.fast ? "--fast" : "") : MODEL);
 
 mkdirSync(GEN_DIR, { recursive: true });
 mkdirSync(STAGE_DIR, { recursive: true });
