@@ -169,6 +169,11 @@ const POP_H = process.env.POP_H || "480";
 // Pop-out windows get a tiny frozen mount wrapper each (windows/pop-<n>.tsx).
 const WINDOWS_DIR = join(DATA_DIR, "windows");
 mkdirSync(WINDOWS_DIR, { recursive: true }); // runtime dir — absent on a fresh clone
+// Modules generated after the app's bundle was built load through
+// __nsh_import("<name>.js"), which the host serves from NSH_CHUNK_DIR (set
+// by the packaged launcher; dev hosts rebuild the whole bundle instead).
+const CHUNK_DIR = join(DATA_DIR, "chunks");
+mkdirSync(CHUNK_DIR, { recursive: true });
 
 const openWindows = new Map(); // "mode:name" → child process
 const deskSlots = new Map(); // name → desktop column slot index
@@ -339,6 +344,12 @@ db.exec(`
   -- Artifacts the user deleted: turns keep naming them (the card shows the
   -- "module missing" tombstone) but Library must never list them again.
   CREATE TABLE IF NOT EXISTS tombstones(name TEXT PRIMARY KEY);
+  -- One artifact, a version tree: generated/<name>/v<k>.tsx is immutable;
+  -- heads is the "current" pointer (revert moves it, never rewrites).
+  CREATE TABLE IF NOT EXISTS versions(
+    name TEXT NOT NULL, v INTEGER NOT NULL, parent INTEGER,
+    prompt TEXT, created_at INTEGER, PRIMARY KEY(name, v));
+  CREATE TABLE IF NOT EXISTS heads(name TEXT PRIMARY KEY, v INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS timeclock(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     clock_in TEXT NOT NULL, clock_out TEXT);
@@ -346,6 +357,8 @@ db.exec(`
 
 // A user turn's reply quote and attachments (JSON).
 try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
+// A card pins the artifact version it rendered (turns.v → versions.v).
+try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
 // Grok's sidebar organization: pinned tiles, named sections, hidden bots.
 for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER DEFAULT 0", "image TEXT", "crop TEXT", "model TEXT", "effort TEXT", "fast INTEGER DEFAULT 0"]) {
   try { db.exec(`ALTER TABLE bots ADD COLUMN ${col}`); } catch {}
@@ -395,6 +408,7 @@ function loadStore() {
                 caption: u.caption || "",
                 reaction: u.reaction || "",
                 retries: u.retries || 0,
+                v: u.v ?? null,
                 widget: !!u.widget,
                 ...(u.meta ? { files: JSON.parse(u.meta).files } : {}),
               },
@@ -562,8 +576,8 @@ function persist() {
       "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const iu = db.prepare(
-      `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta,v)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     store.bots.forEach((b, k) =>
       ib.run(b.id, b.name, b.shape, b.color, b.threadId ?? null, k,
@@ -581,6 +595,7 @@ function persist() {
           u.reply || u.attachments?.length || u.files?.length
             ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files })
             : null,
+          u.v ?? null,
         ),
       );
     });
@@ -728,17 +743,35 @@ function writeIndex() {
   const pubs = readdirSync(WIDGETS_DIR)
     .filter((f) => /^R\d+\.tsx$/.test(f) && f !== "index.tsx")
     .map((f) => f.slice(0, -4));
-  const key = [...gen].sort().join(",") + "|" + [...pubs].sort().join(",");
+  // Every version on every artifact's tree is addressable: a card pins its
+  // own "R6@v3" module, while the bare "R6" key is always the current one.
+  const vers = gen.flatMap((n) => {
+    try {
+      return readdirSync(join(GEN_DIR, n))
+        .filter((f) => /^v\d+\.tsx$/.test(f))
+        .map((f) => ({ n, k: f.slice(0, -4) }));
+    } catch {
+      return [];
+    }
+  });
+  const key =
+    [...gen].sort().join(",") +
+    "|" +
+    [...pubs].sort().join(",") +
+    "|" +
+    vers.map((x) => `${x.n}@${x.k}`).sort().join(",");
   if (key !== lastModuleKey) {
     lastModuleKey = key;
     const imports = [
       ...gen.map((n) => `import ${n} from "./${n}";`),
+      ...vers.map((x) => `import ${x.n}${x.k} from "./${x.n}/${x.k}";`),
       // Published widgets get a w-suffix key so a module that exists in both
       // dirs can appear in both turn kinds without a duplicate binding.
       ...pubs.map((n) => `import ${n}w from "../widgets/${n}";`),
     ].join("\n");
     const map = [
       ...gen.map((n) => `  ${JSON.stringify(n)}: ${n},`),
+      ...vers.map((x) => `  ${JSON.stringify(`${x.n}@${x.k}`)}: ${x.n}${x.k},`),
       ...pubs.map((n) => `  ${JSON.stringify(n + "w")}: ${n}w,`),
     ].join("\n");
     writeFileSync(
@@ -1495,6 +1528,85 @@ function fixImports(code) {
   return code;
 }
 
+// Compiles one module file into a runtime-loadable chunk
+// (CHUNK_DIR/<name>.js). `nsh build` on the module alone produces a bundle
+// whose namespace's `default` is the component — the chunk shape
+// __nsh_import resolves. Best-effort: a failure leaves the card on its
+// "module missing" path, same as before chunks existed.
+async function emitChunk(name, srcFile) {
+  const out = join(STAGE_DIR, `chunk-${name}`);
+  rmSync(out, { recursive: true, force: true });
+  const err = await runNsh(["build", srcFile, "--out", out]);
+  if (err)
+    return console.log(
+      `chunk ${name}: ${String(err).trim().split("\n").pop()}`,
+    );
+  try {
+    copyFileSync(join(out, "bundle.js"), join(CHUNK_DIR, `${name}.js`));
+  } catch {}
+}
+
+// workspace files (OUT_DIR recursively) as {name, rel} for the @ picker.
+function walkFiles(dir, base = dir, out = []) {
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walkFiles(p, base, out);
+      else out.push({ name: e.name, rel: p.slice(base.length + 1) });
+    }
+  } catch {}
+  return out;
+}
+
+const headOf = (name) =>
+  db.prepare("SELECT v FROM heads WHERE name=?").get(name)?.v ?? null;
+const versionsOf = (name) =>
+  db
+    .prepare("SELECT v,parent,created_at FROM versions WHERE name=? ORDER BY v")
+    .all(name);
+// Chunk ids must be flat <stem>.js (nsh-js validates) — "R6@v3" ships as
+// "R6v3.js". R-names are digits-only so the mapping can't collide.
+const chunkKey = (key) => key.replace(/^R(\d+)@v(\d+)$/, "R$1v$2");
+
+// A generated artifact's immutable version files live under
+// generated/<name>/v<k>.tsx; generated/<name>.tsx mirrors the head so every
+// consumer that names the bare artifact (baked index, /module, /popout)
+// sees current. A revise off a non-head version parents the new version
+// there — a branch, never a rewrite.
+function writeVersion(name, code, parent, prompt) {
+  const dir = join(GEN_DIR, name);
+  mkdirSync(dir, { recursive: true });
+  const v =
+    (db.prepare("SELECT MAX(v) AS m FROM versions WHERE name=?").get(name)
+      ?.m || 0) + 1;
+  writeFileSync(join(dir, `v${v}.tsx`), code);
+  db.prepare(
+    "INSERT INTO versions(name,v,parent,prompt,created_at) VALUES(?,?,?,?,?)",
+  ).run(name, v, parent ?? null, String(prompt || "").slice(0, 500) || null, Date.now());
+  db.prepare("INSERT OR REPLACE INTO heads(name,v) VALUES(?,?)").run(name, v);
+  writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
+  // A published Mini App is the same artifact — its file mirrors head too.
+  if (widgetRow(name)) writeFileSync(join(WIDGETS_DIR, `${name}.tsx`), code);
+  emitChunk(chunkKey(`${name}@v${v}`), join(dir, `v${v}.tsx`));
+  emitChunk(name, join(GEN_DIR, `${name}.tsx`));
+  return v;
+}
+
+// The current pointer moves; nothing is rewritten — later versions stay on
+// the tree as siblings of whatever branches off the reverted one.
+function setHead(name, v) {
+  const file = join(GEN_DIR, name, `v${v}.tsx`);
+  if (!existsSync(file)) return false;
+  db.prepare("INSERT OR REPLACE INTO heads(name,v) VALUES(?,?)").run(name, v);
+  const code = readFileSync(file, "utf8");
+  writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
+  if (widgetRow(name)) writeFileSync(join(WIDGETS_DIR, `${name}.tsx`), code);
+  emitChunk(name, join(GEN_DIR, `${name}.tsx`));
+  writeIndex();
+  writeShelf();
+  return true;
+}
+
 // Compile + typecheck the staged candidate; the app on the device is untouched
 // until this passes. Entry/output are per-module so concurrent chats don't
 // clobber each other's validation.
@@ -1665,6 +1777,77 @@ const TOOLS = [
       required: ["path"],
     },
   },
+  {
+    name: "revise_app",
+    description:
+      "Revise an existing mini-app artifact in place: writes the code as a NEW version on top of base_v (default: the current version) and makes it what Library launches. ALWAYS use this — never generate_app — when the user asks to change, fix, or iterate an app that already exists (its current source is in the conversation wherever the artifact was replied to or @-mentioned). base_v names the version to branch from.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "the artifact id, e.g. R6" },
+        base_v: { type: "number", description: "version to revise from (default: current); revising an older version starts a branch" },
+        code: { type: "string", description: "the complete revised TSX module (same contract as generate_app)" },
+        caption: { type: "string", description: "optional one-line markdown caption" },
+        title: { type: "string", description: "optional new product name" },
+        slug: { type: "string", description: "optional kebab-case display filename" },
+      },
+      required: ["name", "code"],
+    },
+  },
+  {
+    name: "launch_app",
+    description: "Open a mini-app artifact in its own pop-out window — the current version unless v is given.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" }, v: { type: "number" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "close_app",
+    description: "Close a mini-app's open pop-out windows.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "promote_app",
+    description: "Promote a mini-app artifact into the user's Mini Apps library (publish). demote_app removes it from Mini Apps without deleting it.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "demote_app",
+    description: "Remove a mini-app artifact from Mini Apps (unpublish) — the artifact and its versions stay in the conversation's Library.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "set_version",
+    description: "Move an artifact's current pointer to version v — a revert. Later versions stay on the tree; the next revise off a reverted version starts a branch.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" }, v: { type: "number" } },
+      required: ["name", "v"],
+    },
+  },
+  {
+    name: "view_code",
+    description: "Read a mini-app artifact's TSX source — version v, or the current version when v is omitted.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" }, v: { type: "number" } },
+      required: ["name"],
+    },
+  },
 ];
 
 const agentSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
@@ -1672,6 +1855,8 @@ const agentSystem = () => `You are the assistant inside a generative-UI chat app
 Reply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).
 
 When a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. "Tiny Trajectory") and slug (kebab-case, e.g. tiny-trajectory) — they name the app in the user's Library.
+
+Artifacts are versioned: every app you mount keeps its versions under one name (R<n>), and each card in the conversation pins the version it rendered. When the user asks to change, fix, restyle, or extend an app that already exists — especially when they replied to its card or @-mentioned it, so its source is attached — call revise_app with that name; never rebuild it as a new artifact. To iterate an older version on purpose, pass base_v — that starts a branch the user can see in the Library's version history. launch_app pops an app into its own window, close_app closes it, promote_app/demote_app publish/unpublish to Mini Apps, set_version reverts the current pointer, view_code reads any version's source.
 
 Compose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.
 
@@ -1715,7 +1900,14 @@ async function toolGenerateApp(job, thread, input) {
         "not a module: it needs `export default` on a component returning JSX.",
       is_error: true,
     };
-  const name = `R${++seq}`;
+  // input.name (set by revise_app) revises an existing artifact: the code is
+  // a new version parented to base_v (or current), never an overwrite.
+  const revName = /^R\d+$/.test(String(input.name || ""))
+    ? String(input.name)
+    : null;
+  if (revName && !existsSync(join(GEN_DIR, `${revName}.tsx`)))
+    return { content: `no such artifact ${revName}`, is_error: true };
+  const name = revName || `R${++seq}`;
   setJob(job, "checking", `nsh build + typecheck ${name}.tsx`);
   code = code.split("__NAME__").join(name);
   // Models that self-name their state key (const S = "tipcalc") save under a
@@ -1734,23 +1926,35 @@ async function toolGenerateApp(job, thread, input) {
       content: `nsh check rejected ${name}:\n${err.slice(0, 3000)}\nFix the module and call generate_app again with the corrected code.`,
       is_error: true,
     };
-  writeFileSync(join(GEN_DIR, `${name}.tsx`), code);
+  // Revising off a specific version (base_v) branches; default parent is the
+  // current pointer. Nothing earlier is touched — cards keep their version.
+  const parent = revName
+    ? db.prepare("SELECT v FROM versions WHERE name=? AND v=?").get(name, Number(input.base_v) || 0)
+        ? Number(input.base_v)
+        : headOf(name)
+    : null;
+  const v = writeVersion(name, code, parent, job?.prompt || input.caption || "");
+  const prior = db
+    .prepare("SELECT title,file FROM apps WHERE name=?")
+    .get(name) || {};
+  const title = String(input.title || "").trim().slice(0, 60) || prior.title || null;
+  const file = slugFile(input.slug) || prior.file || null;
   db.prepare(
     "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
-  ).run(
-    name,
-    String(input.title || "").trim().slice(0, 60) || null,
-    slugFile(input.slug) || null,
-  );
+  ).run(name, title, file);
   thread.turns.push({
     role: "ai",
     name,
+    v,
     label: labelOf(modelCtx.getStore()),
     caption: String(input.caption || ""),
   });
   job.cards = (job.cards || 0) + 1;
-  console.log(`✓ ${name}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
-  return { content: `mounted as ${name} — the card is live in the conversation.` };
+  writeIndex();
+  console.log(`✓ ${name}@v${v}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
+  return {
+    content: `mounted as ${name} v${v} — the card is live in the conversation. Library now launches v${v}; earlier versions stay on the tree.`,
+  };
 }
 
 async function toolGenerateImage(job, thread, input) {
@@ -1769,10 +1973,11 @@ async function toolGenerateImage(job, thread, input) {
   const file = `img-${Date.now()}.png`;
   writeFileSync(join(ASSETS_DIR, file), buf);
   const name = `R${++seq}`;
-  writeFileSync(join(GEN_DIR, `${name}.tsx`), imageModule(file, prompt));
+  const v = writeVersion(name, imageModule(file, prompt), null, prompt);
   thread.turns.push({
     role: "ai",
     name,
+    v,
     label: "image",
     caption: String(input.caption || ""),
   });
@@ -1885,10 +2090,76 @@ async function toolOffice(job, thread, block) {
   return r;
 }
 
+// Artifact action tools ride the same endpoints the UI uses (self-POST over
+// the loopback server — always listening by the time a tool runs), except
+// view_code/set_version which are pure reads/writes of the version store.
+async function toolArtifact(block, input) {
+  const name = String(input.name || "");
+  if (!/^R\d+$/.test(name))
+    return { content: `bad artifact name ${name}`, is_error: true };
+  const self = async (path, b) => {
+    const r = await fetch(`http://127.0.0.1:8787${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b),
+    });
+    return r.json().catch(() => ({}));
+  };
+  if (block.name === "launch_app") {
+    const r = await self("/popout", { name, ...(input.v ? { v: Number(input.v) } : {}) });
+    return r?.ok
+      ? { content: `${name}${input.v ? ` v${input.v}` : ""} opened in its own window.` }
+      : { content: `launch failed: ${r?.error || "no such module"}`, is_error: true };
+  }
+  if (block.name === "close_app") {
+    let n = 0;
+    for (const [k, child] of openWindows)
+      if (k.split(":")[1]?.startsWith(`${name}@`) || k.split(":")[1] === name)
+        try { child.kill(); n++; } catch {}
+    return { content: n ? `closed ${n} window(s).` : `no open window for ${name}.` };
+  }
+  if (block.name === "promote_app") {
+    const r = await self("/publish", { name });
+    return r?.ok
+      ? { content: `${name} is now in Mini Apps.` }
+      : { content: `promote failed: ${r?.error || "?"}`, is_error: true };
+  }
+  if (block.name === "demote_app") {
+    const r = await self("/unpublish", { name });
+    return r?.ok
+      ? { content: `${name} removed from Mini Apps.` }
+      : { content: `demote failed: ${r?.error || "?"}`, is_error: true };
+  }
+  if (block.name === "set_version") {
+    const v = Number(input.v);
+    return setHead(name, v)
+      ? { content: `${name} now points at v${v} — Library launches it; later versions stay on the tree.` }
+      : { content: `no version ${v} on ${name}`, is_error: true };
+  }
+  if (block.name === "view_code") {
+    const v = input.v ? Number(input.v) : headOf(name);
+    const file = v
+      ? join(GEN_DIR, name, `v${v}.tsx`)
+      : join(GEN_DIR, `${name}.tsx`);
+    if (!existsSync(file))
+      return { content: `no source for ${name}${v ? `@v${v}` : ""}`, is_error: true };
+    return {
+      content: `<code name="${name}@v${v ?? ""}">\n${readFileSync(file, "utf8").slice(0, 60000)}\n</code>`,
+    };
+  }
+  return { content: `unknown artifact tool ${block.name}`, is_error: true };
+}
+
 async function execTool(job, thread, block) {
   try {
     if (block.name === "generate_app")
       return await toolGenerateApp(job, thread, block.input || {});
+    if (block.name === "revise_app") {
+      const input = { ...(block.input || {}) };
+      if (!/^R\d+$/.test(String(input.name || "")))
+        return { content: "revise_app needs the artifact name (R<n>)", is_error: true };
+      return await toolGenerateApp(job, thread, input);
+    }
     if (block.name === "generate_image")
       return await toolGenerateImage(job, thread, block.input || {});
     if (block.name === "fetch_url") return await toolFetchUrl(block.input || {});
@@ -1896,6 +2167,8 @@ async function execTool(job, thread, block) {
       return await toolQuerySource(block.input || {});
     if (block.name === "web_search")
       return await toolWebSearch(block.input || {});
+    if (/^(launch_app|close_app|promote_app|demote_app|set_version|view_code)$/.test(block.name))
+      return await toolArtifact(block, block.input || {});
     if (block.name.startsWith("office_"))
       return await toolOffice(job, thread, block);
     return { content: `unknown tool ${block.name}`, is_error: true };
@@ -2069,13 +2342,19 @@ async function userContent(prompt, extra, ctx = []) {
   if (!files.length && !ctx.length) return text;
   const blocks = [...ctx];
   for (const a of files) {
-    // module://R<n> resolves to the artifact's TSX — reply-attaching a mini
-    // app hands the model its full source so it can iterate on it.
-    const path = a.uri.startsWith("module://")
-      ? [GEN_DIR, WIDGETS_DIR]
-          .map((d) => join(d, `${a.uri.slice(9)}.tsx`))
-          .find(existsSync)
-      : decodeURIComponent(a.uri.slice(7));
+    // module://R<n>[@v<k>] resolves to the artifact's TSX (that exact
+    // version when pinned) — reply-attaching a mini app hands the model its
+    // full source so it can iterate on it.
+    const mm = a.uri.match(/^module:\/\/(R\d+)(?:@v(\d+))?$/);
+    const path = mm
+      ? mm[2]
+        ? join(GEN_DIR, mm[1], `v${mm[2]}.tsx`)
+        : [GEN_DIR, WIDGETS_DIR]
+            .map((d) => join(d, `${mm[1]}.tsx`))
+            .find(existsSync)
+      : a.uri.startsWith("module://")
+        ? null
+        : decodeURIComponent(a.uri.slice(7));
     if (!path) continue;
     try {
       if (a.kind === "image") {
@@ -2156,6 +2435,12 @@ async function generate(job, prompt) {
     job.result = "reply";
     return;
   }
+  // A module://R<n>[@v<k>] attachment = "iterate on this artifact": the run
+  // produces a new version of it (reply-to-revise), not a new artifact.
+  const attachRev = (job.extra?.attachments || [])
+    .map((a) => (a.uri || "").match(/^module:\/\/(R\d+)(?:@v(\d+))?$/) || null)
+    .find(Boolean);
+  if (attachRev) job.revise = { name: attachRev[1], base_v: Number(attachRev[2]) || null };
   const useTools = !MOCK && PROVIDER === "anthropic";
   if (!job.retry && useTools) {
     // Tool-call agent — the model decides: text answer, tool calls, widget
@@ -2176,8 +2461,16 @@ async function generate(job, prompt) {
     // Conversation ≠ generation — "hi" gets a text reply, not a greeting card.
     // a turn carrying files is a question about them: the widget generator
     // never sees file contents, so it always answers in chat
-    const hasFiles = !!(job.ctx?.length || job.extra?.attachments?.length);
-    const intent = hasFiles ? "chat" : await classifyIntent(prompt);
+    // a bare module attach still wants generation — it's a revise request.
+    const nonModule = (job.extra?.attachments || []).some(
+      (a) => !a.uri?.startsWith("module://"),
+    );
+    const hasFiles = !!job.ctx?.length || nonModule;
+    const intent = job.revise
+      ? "ui"
+      : !hasFiles
+        ? await classifyIntent(prompt)
+        : "chat";
     if (intent === "chat") {
       setJob(job, "thinking", `${labelOf(modelCtx.getStore())} is replying`);
       if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
@@ -2192,16 +2485,32 @@ async function generate(job, prompt) {
       return;
     }
   }
-  if (job.retry) {
-    // Try-again: regenerate INTO the same module file — the card hot-patches
-    // in place instead of appending a duplicate reply.
-    name = job.retry;
-    aiTurn =
-      thread.turns.find(
-        (t) => t.role === "ai" && t.name === name && t.widget,
-      ) || thread.turns.find((t) => t.role === "ai" && t.name === name);
-    if (!aiTurn) aiTurn = { role: "ai", name, label: labelOf(modelCtx.getStore()) };
-    aiTurn.retries = (aiTurn.retries || 0) + 1;
+  // Revises (Try-again, or a module:// attachment = reply-to-iterate) mint a
+  // NEW version of the same artifact: the old card keeps its version and a
+  // fresh card lands. baseV records the branch point — the card's own
+  // version for a retry, the explicit @v / current pointer for an attach.
+  let baseV = null;
+  if (job.retry || job.revise) {
+    name = job.retry || job.revise.name;
+    const prior =
+      thread.turns.find((t) => t.role === "ai" && t.name === name && t.widget) ||
+      thread.turns.find((t) => t.role === "ai" && t.name === name);
+    baseV = job.retry
+      ? prior?.v ?? headOf(name)
+      : (job.revise.base_v ?? headOf(name)) ?? prior?.v ?? null;
+    if (!job.retry) {
+      // A reply-to-iterate carries a real user prompt; Try-again reuses the
+      // card's original one — no duplicate user turn.
+      if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
+      thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
+    }
+    aiTurn = {
+      role: "ai",
+      name,
+      label: labelOf(modelCtx.getStore()),
+      retries: (prior?.retries || 0) + 1,
+    };
+    thread.turns.push(aiTurn);
   } else {
     seq += 1;
     name = `R${seq}`;
@@ -2268,10 +2577,10 @@ async function generate(job, prompt) {
   // new file and the device shows [UNRESOLVED_IMPORT]. A published module is
   // the live one — the shelf and pop-out wrappers import widgets/<name> — so
   // when that file exists the retry must patch it, not a stale generated copy.
-  const outDir = existsSync(join(WIDGETS_DIR, `${name}.tsx`))
-    ? WIDGETS_DIR
-    : dirOf(aiTurn);
-  writeFileSync(join(outDir, `${name}.tsx`), ok ? lastCode : errorCard(err || "unknown"));
+  // Versioned write: generated/<name>/v<k>.tsx is immutable, the bare
+  // <name>.tsx (and a published widget copy) mirror the new head.
+  const v = writeVersion(name, ok ? lastCode : errorCard(err || "unknown"), baseV, prompt);
+  aiTurn.v = v;
   await new Promise((r) => setTimeout(r, 500));
   writeIndex(); // one live write → one clean hot patch on the device
   const line = `${name}.tsx via ${used}`;
@@ -2950,16 +3259,23 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     );
   }
   if (req.method === "GET" && req.url.startsWith("/module")) {
-    const name = new URL(req.url, "http://x").searchParams.get("name") || "";
-    const file = [GEN_DIR, WIDGETS_DIR]
-      .map((d) => join(d, `${name}.tsx`))
-      .find(existsSync);
+    // name is "R<n>" (current) or "R<n>@v<k>" (a pinned version).
+    const raw = new URL(req.url, "http://x").searchParams.get("name") || "";
+    const mm = raw.match(/^(R\d+)(?:@v(\d+))?$/);
+    const name = mm?.[1] || "";
+    const ver = mm?.[2] ? Number(mm[2]) : null;
+    const file = ver
+      ? join(GEN_DIR, name, `v${ver}.tsx`)
+      : [GEN_DIR, WIDGETS_DIR]
+          .map((d) => join(d, `${name}.tsx`))
+          .find(existsSync);
     res.setHeader("content-type", "application/json");
     return res.end(
-      /^R\d+$/.test(name) && file
+      name && file && existsSync(file)
         ? JSON.stringify({
             source: readFileSync(file, "utf8"),
             published: !!widgetRow(name),
+            v: ver ?? headOf(name),
           })
         : JSON.stringify({ source: "", published: !!widgetRow(name) }),
     );
@@ -3178,6 +3494,8 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         subtitle: prompt.replace(/\s+/g, " ").slice(0, 120),
         published: published.has(u.name),
         mtime: existsSync(file) ? statSync(file).mtimeMs : 0,
+        v: headOf(u.name),
+        versions: versionsOf(u.name),
       });
     }
     res.setHeader("content-type", "application/json");
@@ -3216,6 +3534,85 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
       }
     });
     return;
+  }
+  // POST /app/version {name, v} — the current pointer moves to v. Revert
+  // keeps later versions on the tree; the next revise off it branches.
+  if (req.method === "POST" && req.url === "/app/version") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { name, v } = JSON.parse(body || "{}");
+        if (!setHead(String(name || ""), Number(v)))
+          throw new Error(`no such version`);
+        res.end(JSON.stringify({ ok: true, v: Number(v) }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return;
+  }
+  // GET /artifacts?q=&thread=<id> — the composer's @ picker: mini-apps the
+  // current thread knows first, then every artifact/file globally.
+  if (req.method === "GET" && req.url.split("?")[0] === "/artifacts") {
+    const u = new URL(req.url, "http://x");
+    const q = (u.searchParams.get("q") || "").toLowerCase();
+    const tid = u.searchParams.get("thread") || "";
+    const t = tid && store.list.find((x) => x.id === tid);
+    const scoped = new Set(
+      (t?.turns || [])
+        .filter((x) => x.role === "ai" && /^R\d+$/.test(x.name || ""))
+        .map((x) => x.name),
+    );
+    const tomb = new Set(
+      db.prepare("SELECT name FROM tombstones").all().map((r) => r.name),
+    );
+    const pubs = new Set(
+      db.prepare("SELECT name FROM widgets").all().map((r) => r.name),
+    );
+    const metas = new Map(
+      db.prepare("SELECT name,title,file FROM apps").all().map((r) => [r.name, r]),
+    );
+    const items = [];
+    for (const f of readdirSync(GEN_DIR)) {
+      const m = f.match(/^R\d+/);
+      if (!m || !/^R\d+\.tsx$/.test(f) || tomb.has(m[0])) continue;
+      const meta = metas.get(m[0]) || {};
+      const title = meta.title || m[0];
+      if (q && !m[0].toLowerCase().includes(q) && !title.toLowerCase().includes(q))
+        continue;
+      items.push({
+        kind: "app",
+        name: m[0],
+        title,
+        file: meta.file || f,
+        v: headOf(m[0]),
+        published: pubs.has(m[0]),
+        uri: `module://${m[0]}`,
+        scope: scoped.has(m[0]) ? "thread" : "global",
+      });
+    }
+    // @-mentionable files: everything the workspace has produced.
+    for (const f of walkFiles(OUT_DIR)) {
+      if (q && !f.name.toLowerCase().includes(q)) continue;
+      items.push({
+        kind: "file",
+        name: f.name,
+        title: f.name,
+        file: f.rel,
+        uri: `file://${join(OUT_DIR, f.rel)}`,
+        scope: "global",
+      });
+    }
+    items.sort(
+      (a, b) =>
+        (a.scope === "thread" ? 0 : 1) - (b.scope === "thread" ? 0 : 1) ||
+        String(a.title).localeCompare(String(b.title)),
+    );
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ items: items.slice(0, 40) }));
   }
   // The model picker's catalog: opencodex's models (its "--fast" twins fold
   // into a `fast` flag), each with its effort ladder and default.
@@ -3301,7 +3698,11 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         db.prepare(
           "INSERT OR REPLACE INTO widgets(name,title,prompt,published_at) VALUES(?,?,?,?)",
         ).run(name, title, prompt, new Date().toISOString());
+        // packaged Mini Apps cards mount through the chunk dir, not the
+        // baked bundle — emit the w-key chunk at publish time.
+        emitChunk(`${name}w`, join(WIDGETS_DIR, `${name}.tsx`));
         writeShelf();
+        writeIndex();
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true, title }));
       } catch (e) {
@@ -3375,9 +3776,21 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
             unlinkSync(join(GEN_DIR, `${name}.tsx`));
           } catch {}
           try {
+            rmSync(join(GEN_DIR, name), { recursive: true, force: true });
+          } catch {}
+          try {
             unlinkSync(join(WIDGETS_DIR, `${name}.tsx`));
           } catch {}
+          try {
+            unlinkSync(join(CHUNK_DIR, `${name}.js`));
+            unlinkSync(join(CHUNK_DIR, `${name}w.js`));
+            for (const f of readdirSync(CHUNK_DIR))
+              if (f.startsWith(`${name}v`) && f.endsWith(".js"))
+                unlinkSync(join(CHUNK_DIR, f));
+          } catch {}
         }, 700);
+        db.prepare("DELETE FROM versions WHERE name=?").run(name);
+        db.prepare("DELETE FROM heads WHERE name=?").run(name);
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
@@ -4087,15 +4500,16 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      let name = "", mode = "float";
+      let name = "", mode = "float", popV = null;
       try {
         const j = JSON.parse(body || "{}");
         name = j.name || "";
         mode = j.mode === "desktop" ? "desktop" : "float";
+        popV = j.v ? Number(j.v) : null;
       } catch {}
       res.setHeader("content-type", "application/json");
       if (!/^R\d+$/.test(name)) return res.end(JSON.stringify({ ok: false }));
-      const key = `${mode}:${name}`;
+      const key = `${mode}:${name}${popV ? `@v${popV}` : ""}`;
       // Already open: raise the live window instead of rewriting the
       // wrapper under it — a rewrite hot-reloads the dev session and the
       // module remounts, wiping its in-memory state.
@@ -4104,17 +4518,27 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         raiseWidget(`widget · ${name}`);
         return res.end(JSON.stringify({ ok: true, already: true }));
       }
+      // v pins the pop-out to that version's file (a card pops out what it
+      // shows); no v = the current head mirror.
+      const verFile = popV ? join(GEN_DIR, name, `v${popV}.tsx`) : null;
       const widgetFile = join(WIDGETS_DIR, `${name}.tsx`);
       const genFile = join(GEN_DIR, `${name}.tsx`);
-      const file = existsSync(widgetFile)
-        ? widgetFile
-        : existsSync(genFile)
-          ? genFile
-          : null;
+      const file = verFile && existsSync(verFile)
+        ? verFile
+        : popV
+          ? null
+          : existsSync(widgetFile)
+            ? widgetFile
+            : existsSync(genFile)
+              ? genFile
+              : null;
       if (!file)
         return res.end(JSON.stringify({ ok: false, error: "no such module" }));
-      const rel =
-        file === widgetFile ? `../widgets/${name}` : `../generated/${name}`;
+      const rel = verFile && file === verFile
+        ? `../generated/${name}/v${popV}`
+        : file === widgetFile
+          ? `../widgets/${name}`
+          : `../generated/${name}`;
       const bounds = desktopBounds();
       // The window hugs content height up to three quarters of the screen.
       const capH = Math.max(560, Math.floor(bounds.h * 0.75));
@@ -4139,9 +4563,10 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
       const wantH = sizeM
         ? Math.min(capH, Math.max(120, Math.round(Number(sizeM[2]))))
         : Number(POP_H);
+      const popName = popV ? `${name}@${popV}` : name;
       mkdirSync(WINDOWS_DIR, { recursive: true });
       writeFileSync(
-        join(WINDOWS_DIR, `pop-${name}.tsx`),
+        join(WINDOWS_DIR, `pop-${name}${popV ? `-${popV}` : ""}.tsx`),
         `import { mount, View } from "nsh";
 import { isAvailable, Window } from "nsh/desktop";
 import { colorScheme } from "nsh/device";
@@ -4157,7 +4582,7 @@ const capH = ${capH};
 // the strip is real chrome: pad the module below it, add it to the frame.
 const STRIP = 26;
 if (isAvailable) {
-  Window.setTitle("widget · " + ${JSON.stringify(name)});
+  Window.setTitle("widget · " + ${JSON.stringify(popName)});
   Window.setTitleBar("hidden", 32); // natural height: the lights land at AppKit's own (9,9) spot
   if (DESK) {
     // a desktop widget: behind every window, on the desktop surface —
@@ -4235,12 +4660,12 @@ mount(() => (
       );
       // Production path: compile the wrapper once (cached by content) and
       // launch a bare host on the bundle — no `nsh run`, no dev server.
-      const wrapperFile = join(WINDOWS_DIR, `pop-${name}.tsx`);
+      const wrapperFile = join(WINDOWS_DIR, `pop-${name}${popV ? `-${popV}` : ""}.tsx`);
       const buildKey = createHash("sha1")
         .update(readFileSync(wrapperFile))
         .digest("hex")
         .slice(0, 10);
-      const buildDir = join(WINDOWS_DIR, `.pop-${name}-${buildKey}`);
+      const buildDir = join(WINDOWS_DIR, `.pop-${name}${popV ? `-${popV}` : ""}-${buildKey}`);
       const bundleFile = join(buildDir, "bundle.nshc");
       if (!existsSync(bundleFile)) {
         mkdirSync(buildDir, { recursive: true });
@@ -4383,6 +4808,54 @@ ensureOfficeMcp(OUT_DIR).catch(() => {});
 // Materialise generated/index.tsx so a fresh clone typechecks before the
 // first generation lands (generated/ is gitignored — nothing tracks it).
 writeIndex();
+
+// Migrate pre-versioning artifacts: the file as it stands becomes v1, the
+// head pointer opens on it. (Cards rendered before `v` existed resolve the
+// bare name — the head mirror — which is what they'd show anyway.)
+for (const f of readdirSync(GEN_DIR)) {
+  const m = f.match(/^(R\d+)\.tsx$/);
+  if (!m || headOf(m[1])) continue;
+  try {
+    const dir = join(GEN_DIR, m[1]);
+    mkdirSync(dir, { recursive: true });
+    if (!existsSync(join(dir, "v1.tsx")))
+      copyFileSync(join(GEN_DIR, f), join(dir, "v1.tsx"));
+    db.prepare(
+      "INSERT OR IGNORE INTO versions(name,v,parent,prompt,created_at) VALUES(?,1,NULL,NULL,?)",
+    ).run(m[1], statSync(join(GEN_DIR, f)).mtimeMs);
+    db.prepare("INSERT OR IGNORE INTO heads(name,v) VALUES(?,1)").run(m[1]);
+  } catch {}
+}
+writeIndex();
+
+// Backfill runtime chunks for modules that predate them (the packaged app
+// imports these through NSH_CHUNK_DIR; without a chunk its card shows
+// "module missing"). Version files get their own chunks — a card pins the
+// exact version it rendered.
+(async () => {
+  for (const dir of [GEN_DIR, WIDGETS_DIR]) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir)) {
+      const m = f.match(/^(R\d+)\.tsx$/);
+      if (!m) continue;
+      const key = dir === WIDGETS_DIR ? `${m[1]}w` : m[1];
+      if (!existsSync(join(CHUNK_DIR, `${key}.js`)))
+        await emitChunk(key, join(dir, f));
+    }
+  }
+  for (const d of readdirSync(GEN_DIR)) {
+    if (!/^R\d+$/.test(d)) continue;
+    try {
+      for (const vf of readdirSync(join(GEN_DIR, d))) {
+        const vm = vf.match(/^v(\d+)\.tsx$/);
+        if (!vm) continue;
+        const key = `${d}v${vm[1]}`;
+        if (!existsSync(join(CHUNK_DIR, `${key}.js`)))
+          await emitChunk(key, join(GEN_DIR, d, vf));
+      }
+    } catch {}
+  }
+})().catch(() => {});
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`app-server on http://127.0.0.1:${PORT}`);
