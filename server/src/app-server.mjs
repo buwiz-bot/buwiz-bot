@@ -3352,6 +3352,20 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
         db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
+        // Scrub the transcript too: every ai turn naming the artifact goes,
+        // and the user prompt directly above it (the "name:" delete rule),
+        // across all threads — a delete must never leave a "module missing"
+        // card behind.
+        for (const t of store.list) {
+          const drop = new Set();
+          t.turns.forEach((u, i) => {
+            if (u.role === "ai" && u.name === name) {
+              drop.add(i);
+              if (t.turns[i - 1]?.role === "user") drop.add(i - 1);
+            }
+          });
+          if (drop.size) t.turns = t.turns.filter((_, i) => !drop.has(i));
+        }
         // Rewrite the shelf + index before the files go — a live import of a
         // missing module is a parse error that kills the whole feed.
         writeShelf();
