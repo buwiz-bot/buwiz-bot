@@ -336,6 +336,9 @@ db.exec(`
     color TEXT NOT NULL, thread_id TEXT, ord INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS kv(name TEXT PRIMARY KEY, data TEXT);
   CREATE TABLE IF NOT EXISTS apps(name TEXT PRIMARY KEY, title TEXT, file TEXT);
+  -- Artifacts the user deleted: turns keep naming them (the card shows the
+  -- "module missing" tombstone) but Library must never list them again.
+  CREATE TABLE IF NOT EXISTS tombstones(name TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS timeclock(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     clock_in TEXT NOT NULL, clock_out TEXT);
@@ -3135,12 +3138,22 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     const metas = new Map(
       db.prepare("SELECT name,title,file FROM apps").all().map((r) => [r.name, r]),
     );
+    const tomb = new Set(
+      db.prepare("SELECT name FROM tombstones").all().map((r) => r.name),
+    );
     const seen = new Set();
     const apps = [];
     for (let i = t.turns.length - 1; i >= 0; i--) {
       const u = t.turns[i];
-      if (u.role !== "ai" || !u.name || seen.has(u.name)) continue;
+      if (u.role !== "ai" || !u.name || seen.has(u.name) || tomb.has(u.name))
+        continue;
       seen.add(u.name);
+      // A name with no file anywhere was deleted before tombstones
+      // existed — same zombie, same filter.
+      const gone =
+        !existsSync(join(GEN_DIR, `${u.name}.tsx`)) &&
+        !existsSync(join(WIDGETS_DIR, `${u.name}.tsx`));
+      if (gone) continue;
       let prompt = "";
       for (let j = i - 1; j >= 0; j--) if (t.turns[j].role === "user") { prompt = t.turns[j].text || ""; break; }
       const file = join(GEN_DIR, `${u.name}.tsx`);
@@ -3326,6 +3339,7 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         db.prepare("DELETE FROM widgets WHERE name=?").run(name);
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
+        db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
         // Rewrite the shelf + index before the files go — a live import of a
         // missing module is a parse error that kills the whole feed.
         writeShelf();
