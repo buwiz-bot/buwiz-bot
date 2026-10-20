@@ -368,6 +368,8 @@ try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
 try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
 // Remote (streamable-HTTP) MCP servers carry url instead of command.
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
+// Per-tool off switches on a connected server (JSON array of tool names).
+try { db.exec("ALTER TABLE mcp_servers ADD COLUMN disabled_tools TEXT"); } catch {}
 // Private skills — instructions the user (or the agent for them) authored.
 // Enabled bodies are injected into the agent system prompt.
 try {
@@ -2417,7 +2419,8 @@ async function mcpToolDefs(thread) {
   const defs = [];
   for (const row of rows) {
     const rec = await mcpEnsure(row);
-    defs.push(...mcpAnthropicTools(row.id, rec.tools));
+    const off = new Set(JSON.parse(row.disabled_tools || "[]"));
+    defs.push(...mcpAnthropicTools(row.id, rec.tools.filter((t) => !off.has(t.name))));
   }
   return defs;
 }
@@ -4305,6 +4308,39 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
       }
+    });
+    return;
+  }
+  // GET /mcp/tools?id=<id> — discovered tools with per-tool enabled flags.
+  if (req.method === "GET" && req.url?.startsWith("/mcp/tools")) {
+    const id = new URL(req.url, "http://x").searchParams.get("id");
+    const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id || ""));
+    res.setHeader("content-type", "application/json");
+    if (!row) { res.statusCode = 404; res.end('{"error":"no such server"}'); return; }
+    const off = new Set(JSON.parse(row.disabled_tools || "[]"));
+    mcpEnsure(row).then((rec) => {
+      res.end(JSON.stringify({
+        tools: rec.tools.map((t) => ({ name: t.name, description: t.description || "", enabled: !off.has(t.name) })),
+        status: rec.client ? "connected" : "error",
+      }));
+    });
+    return;
+  }
+  // POST /mcp/tools/state {id, tool, enabled} — per-tool switch.
+  if (req.method === "POST" && req.url === "/mcp/tools/state") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, tool, enabled } = JSON.parse(body || "{}");
+        const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id || ""));
+        if (!row) throw new Error("no such server");
+        const off = new Set(JSON.parse(row.disabled_tools || "[]"));
+        if (enabled) off.delete(String(tool)); else off.add(String(tool));
+        db.prepare("UPDATE mcp_servers SET disabled_tools=? WHERE id=?").run(JSON.stringify([...off]), row.id);
+        res.end('{"ok":true}');
+      } catch (e) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error: String(e?.message || e) })); }
     });
     return;
   }
