@@ -39,12 +39,13 @@ const GEN_DIR = join(APP_ROOT, "generated");
 // graph — so a bad module never reaches the dev server (no red overlay flash).
 const STAGE_DIR = join(APP_ROOT, "server", ".stage");
 const PORT = Number(process.env.PORT || 8787);
-// Providers: Anthropic Messages API when ANTHROPIC_API_KEY is set (default
-// model claude-haiku-5-5), otherwise any OpenAI-compatible endpoint —
-// OpenRouter by default, or GEN_BASE_URL=https://api.openai.com/v1 etc.
-const PROVIDER =
-  process.env.GEN_PROVIDER ||
-  (process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai");
+// Providers: Claude goes through opencodex's Anthropic Messages endpoint by
+// default (OPENCODEX_URL — it owns the real key; the client key is a dummy).
+// GEN_PROVIDER=openai + GEN_BASE_URL/GEN_MODEL selects an OpenAI-compatible
+// backend instead. Direct-to-Anthropic escape hatch: set ANTHROPIC_BASE_URL
+// (+ ANTHROPIC_API_KEY) explicitly — never inferred, so a stray env key can
+// no longer silently bypass the gateway.
+const PROVIDER = process.env.GEN_PROVIDER || "anthropic";
 const BASE_URL =
   process.env.GEN_BASE_URL || "https://openrouter.ai/api/v1";
 const MODEL =
@@ -59,15 +60,18 @@ const MOCK = !!process.env.MOCK;
 const NSH_ROOT = "/Volumes/goldcoders/Projects/nsh/target";
 const LOCAL_NSH = ["release", "debug"].map((k) => join(NSH_ROOT, k, "nsh")).find(existsSync);
 const NSH = process.env.NSH || LOCAL_NSH || "nsh";
-const anthropicDirect =
-  PROVIDER === "anthropic" && process.env.ANTHROPIC_API_KEY
-    ? new Anthropic()
-    : null;
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
 // context; every Claude call made for it goes to opencodex's Anthropic
 // Messages endpoint with that model instead (fast = its "--fast" variant,
 // effort as output_config.effort / reasoning_effort).
 const OPENCODEX = process.env.OPENCODEX_URL || "http://localhost:8080";
+const anthropicDirect =
+  PROVIDER === "anthropic"
+    ? new Anthropic({
+        baseURL: process.env.ANTHROPIC_BASE_URL || OPENCODEX,
+        apiKey: process.env.ANTHROPIC_API_KEY || "opencodex",
+      })
+    : null;
 const modelCtx = new AsyncLocalStorage();
 let opencodex = null;
 const routed = (params) => {
@@ -2111,8 +2115,7 @@ async function generate(job, prompt) {
     job.result = "reply";
     return;
   }
-  const useTools =
-    !MOCK && PROVIDER === "anthropic" && !!process.env.ANTHROPIC_API_KEY;
+  const useTools = !MOCK && PROVIDER === "anthropic";
   if (!job.retry && useTools) {
     // Tool-call agent — the model decides: text answer, tool calls, widget
     // cards, or a composition (search → build). Cards land as they pass the
@@ -2170,9 +2173,7 @@ async function generate(job, prompt) {
   // llm → llm with the compiler error → canned mock, whichever compiles first.
   const useLlm =
     !MOCK &&
-    !!(PROVIDER === "anthropic"
-      ? process.env.ANTHROPIC_API_KEY
-      : process.env.OPENROUTER_API_KEY);
+    (PROVIDER === "anthropic" || !!process.env.OPENROUTER_API_KEY);
   let lastCode;
   let lastCaption = "";
   let err = null;
