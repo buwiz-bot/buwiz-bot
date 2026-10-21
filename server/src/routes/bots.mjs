@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, PROVIDER, MODEL, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
-import { feedVariant, imageSize, optimizeImage } from "../files.mjs";
+import { feedVariant, imageSize, isAnimated, optimizeImage } from "../files.mjs";
 import { nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex } from "../state.mjs";
 import { anthropic } from "../model.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
@@ -160,7 +160,8 @@ export default async function handle(req, res) {
           // before decode; feed is the ≤1120px derivative the feed decodes
           // instead of the full-res original
           const dims = image ? imageSize(out) : video && thumb ? imageSize(thumb) : {};
-          const feed = image ? feedVariant(out) : null;
+          const animated = image && isAnimated(out, ext);
+          const feed = image ? feedVariant(out, ext === "svg" || animated) : null;
           return {
             uri: `file://${out}`,
             thumb: thumb ? `file://${thumb}` : "",
@@ -169,6 +170,7 @@ export default async function handle(req, res) {
             ext,
             kind: image ? "image" : video ? "video" : "file",
             size: existsSync(out) ? statSync(out).size : 0,
+            ...(animated ? { animated: true } : {}),
             ...dims,
           };
         });
