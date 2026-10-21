@@ -18,6 +18,10 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEEDS = join(HERE, "office", "seeds");
 const MCP_MAIN = join(HERE, "office", "mcp-main.ts");
+// the packaged app ships mcp-main bundled to .js — its SDK/zod deps are
+// inlined, so it needs no --experimental-transform-types and no node_modules
+// beyond the vendored @betteroffice engines
+const MCP_MAIN_MJS = join(HERE, "office", "mcp-main.js");
 
 // The packages only declare "import" export conditions, so CJS
 // require.resolve reports ERR_PACKAGE_PATH_NOT_EXPORTED — resolve through
@@ -224,9 +228,12 @@ export async function ensureOfficeMcp(root) {
       import("@modelcontextprotocol/sdk/client/index.js"),
       import("@modelcontextprotocol/sdk/client/stdio.js"),
     ]);
+    const bundled = existsSync(MCP_MAIN_MJS);
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: ["--experimental-transform-types", MCP_MAIN, "--root", root],
+      args: bundled
+        ? [MCP_MAIN_MJS, "--root", root]
+        : ["--experimental-transform-types", MCP_MAIN, "--root", root],
       stderr: "pipe",
     });
     const client = new Client({ name: "grok-shell", version: "1.0.0" });
