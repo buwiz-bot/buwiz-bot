@@ -2015,6 +2015,19 @@ const TOOLS = [
     description: "List private skills: id, name, enabled, description.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "shell_run",
+    description: "Run a shell command on the user's Mac (zsh login shell, so the user's PATH — homebrew, cargo, nodenv, local CLIs — is available). Returns stdout+stderr and the exit code; long output is truncated. Use it for local tasks the user asks for: listing/reading files, running CLIs like aui, checking processes, git, building. Keep commands non-interactive — no sudo, no editors, no prompts; timeout_ms caps runtime (default 30s, max 180s).",
+    input_schema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "the exact zsh command line" },
+        cwd: { type: "string", description: "working directory; defaults to the user's home" },
+        timeout_ms: { type: "number" },
+      },
+      required: ["command"],
+    },
+  },
 ];
 
 const agentSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
@@ -2031,6 +2044,8 @@ Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user c
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
 
 Private skills: the user teaches you procedures — when they explain a workflow to keep, skill_create saves it (kebab-case name, one-line description, full instructions). skill_update, skill_delete, skill_enable, skill_disable and skill_list manage them. Enabled skill instructions are appended below — follow them whenever the request matches the skill's description.
+
+Local shell: shell_run executes commands on the user's machine — their login PATH applies, so installed CLIs work. Use it when a request needs local state or a local tool instead of guessing; keep commands short and non-interactive.
 ${privateSkillsInject()}
 
 When you DO write a widget module, this contract applies:
@@ -2200,6 +2215,27 @@ async function toolFetchUrl(input) {
   return { content: text || "(empty page)" };
 }
 
+// shell_run — a real zsh login shell on the user's machine (`-l` loads their
+// PATH: homebrew, cargo, nodenv, …). Non-interactive by contract; capped.
+function toolShell(input) {
+  const command = String(input.command || "").trim();
+  if (!command) return { content: "shell_run needs a command", is_error: true };
+  const timeout = Math.min(Math.max(Number(input.timeout_ms) || 30000, 1000), 180000);
+  const cwd = input.cwd ? String(input.cwd) : process.env.HOME || "/";
+  return new Promise((resolve) => {
+    execFile("/bin/zsh", ["-lc", command], { cwd, timeout, maxBuffer: 8 << 20, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
+      let out = "";
+      if (stdout) out += stdout.trimEnd();
+      if (stderr) out += (out ? "\n" : "") + stderr.trimEnd();
+      if (err) {
+        const code = err.killed ? "timeout" : (err.code ?? "?");
+        out += `${out ? "\n" : ""}(exit ${code})`;
+      }
+      resolve({ content: (out || "(no output)").slice(0, 50000), is_error: !!err });
+    });
+  });
+}
+
 async function toolQuerySource(input) {
   const src = String(input.source || "");
   const url =
@@ -2352,6 +2388,7 @@ async function execTool(job, thread, block) {
     if (block.name === "generate_image")
       return await toolGenerateImage(job, thread, block.input || {});
     if (block.name === "fetch_url") return await toolFetchUrl(block.input || {});
+    if (block.name === "shell_run") return await toolShell(block.input || {});
     if (block.name === "query_source")
       return await toolQuerySource(block.input || {});
     if (block.name === "web_search")
@@ -2394,6 +2431,7 @@ const TOOL_ACTIVITY = {
   query_source: ["connecting", "Connecting to a third party app"],
   mcp_install: ["connecting", "Installing an app connection"],
   skill_create: ["thinking", "Saving a skill"],
+  shell_run: ["working", "Running a command"],
   mcp_uninstall: ["working", "Removing an app connection"],
   mcp_enable: ["connecting", "Enabling an app connection"],
   mcp_disable: ["working", "Disabling an app connection"],
