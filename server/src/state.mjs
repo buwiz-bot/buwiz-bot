@@ -114,6 +114,10 @@ try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
 for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER DEFAULT 0", "image TEXT", "crop TEXT", "model TEXT", "effort TEXT", "fast INTEGER DEFAULT 0"]) {
   try { db.exec(`ALTER TABLE bots ADD COLUMN ${col}`); } catch {}
 }
+// Chat rows carry Grok's sidebar states too: hidden, archived.
+for (const col of ["hidden INTEGER DEFAULT 0", "archived INTEGER DEFAULT 0"]) {
+  try { db.exec(`ALTER TABLE threads ADD COLUMN ${col}`); } catch {}
+}
 
 export const metaGet = (k) => db.prepare("SELECT v FROM meta WHERE k=?").get(k)?.v;
 export const metaSet = (k, v) =>
@@ -144,6 +148,8 @@ function loadStore() {
     s.list.push({
       id: t.id,
       title: t.title,
+      hidden: !!t.hidden,
+      archived: !!t.archived,
       turns: db
         .prepare("SELECT * FROM turns WHERE thread_id=? ORDER BY seq")
         .all(t.id)
@@ -240,7 +246,7 @@ export function persist() {
     db.exec("DELETE FROM turns");
     db.exec("DELETE FROM bots");
     const it = db.prepare(
-      "INSERT INTO threads(id,title,ord) VALUES(?,?,?)",
+      "INSERT INTO threads(id,title,ord,hidden,archived) VALUES(?,?,?,?,?)",
     );
     const ib = db.prepare(
       "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -256,7 +262,7 @@ export function persist() {
         b.model || null, b.effort || null, b.fast ? 1 : 0),
     );
     store.list.forEach((t, i) => {
-      it.run(t.id, t.title, i);
+      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0);
       t.turns.forEach((u, j) => {
         // a still-building placeholder is in-flight work, not history
         if (u.building) return;
