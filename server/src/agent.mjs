@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import {
-  ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PROVIDER,
+  ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PORT, PROVIDER,
   STAGE_DIR, WIDGETS_DIR, outFile,
 } from "./config.mjs";
 import {
@@ -19,7 +19,7 @@ import {
 import {
   checkCandidate, errorCard, fixImports, headOf, mockModule, writeVersion,
 } from "./pipeline.mjs";
-import { fileMeta, mockDocx, mockFiles, renderFile } from "./files.mjs";
+import { fileMeta, fileRecord, mockDocx, mockFiles, mockImages, renderFile } from "./files.mjs";
 import { officeMarkdown } from "./office.mjs";
 import {
   TOOLS, agentSystem, execTool, mcpToolDefs, toolActivity, toolList,
@@ -172,7 +172,10 @@ export async function userContent(prompt, extra, ctx = []) {
     if (!path) continue;
     try {
       if (a.kind === "image") {
-        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(path).toString("base64") } });
+        // vision caps at ~5MB/image — a huge upload's feed derivative
+        // (≤1120px) is what the model sees; the original stays for display
+        const modelPath = (a.size || 0) > 4_500_000 && a.feed ? decodeURIComponent(String(a.feed).slice(7)) : path;
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(modelPath).toString("base64") } });
       } else {
         const m = fileMeta(path, a.name);
         const body = await fileBody(path, m);
@@ -195,6 +198,36 @@ export async function generate(job, prompt) {
   if (!job.retry && /^\/mock\b/i.test(prompt.trim())) {
     const rel = `m${Date.now().toString(36)}`;
     const dir = join(OUT_DIR, rel);
+    // "/mock images n [ar]": n numbered tiles; aspect as `16x9`, `4:3`, `16/9`
+    // or a decimal (1.78). Without one the tiles cycle every shape, so a
+    // single message exercises portrait, landscape and square rows.
+    const im = prompt.trim().match(/^\/mock\s+images?\s+(\d+)(?:\s+(\d+(?:\.\d+)?)\s*[x:/]\s*(\d+(?:\.\d+)?)|\s+(\d+(?:\.\d+)?))?/i);
+    if (im) {
+      const n = Math.max(1, Math.min(24, +im[1] || 1));
+      const ar = im[3] ? [+im[2], +im[3]] : im[4] ? [+im[4], 1] : null;
+      const files = mockImages(dir, n, ar).map((p) => fileRecord(p, `${rel}/${p.split("/").pop()}`));
+      // Grok's test: the images ride the user turn as attachments (FileTile
+      // row) AND the reply as files (MediaGallery) — both render paths get
+      // exercised by one command.
+      const attachments = files.map((f) => ({
+        uri: `http://127.0.0.1:${PORT}/file/raw/${f.path.split("/").map(encodeURIComponent).join("/")}`,
+        thumb: `http://127.0.0.1:${PORT}/file/raw/${(f.feed || f.path).split("/").map(encodeURIComponent).join("/")}`,
+        name: f.name, ext: f.ext, kind: "image", size: f.size, width: f.width, height: f.height,
+      }));
+      if (thread.turns.length === 0) thread.title = `Mock images ×${n}`;
+      thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}), attachments });
+      thread.turns.push({
+        role: "ai",
+        text: `${n} mock image${n === 1 ? "" : "s"}${ar ? ` at ${ar[0]}:${ar[1]}` : " across cycled aspects"} — sized ${files.map((f) => `${f.width}×${f.height}`).slice(0, 6).join(", ")}${n > 6 ? ", …" : ""}.`,
+        label: "mock",
+        files,
+      });
+      writeIndex();
+      setJob(job, "done", `${n} images`);
+      job.done = true;
+      job.result = "reply";
+      return;
+    }
     const paths = mockFiles(dir);
     // the office samples are the real BetterOffice demo docs (server/office/
     // seeds/ — betteroffice-demo.docx, showcase.xlsx, presentation.pptx), so
@@ -226,10 +259,7 @@ export async function generate(job, prompt) {
       copyFileSync(join(ATTACH_DIR, movs[0]), join(dir, "replay.mov"));
       paths.push(join(dir, "demo.mov"), join(dir, "replay.mov"));
     }
-    const files = paths.map((p) => {
-      const m = fileMeta(p);
-      return { path: `${rel}/${p.split("/").pop()}`, ...m, ...(m.poster ? { poster: `${rel}/${m.poster}` } : {}) };
-    });
+    const files = paths.map((p) => fileRecord(p, `${rel}/${p.split("/").pop()}`));
     // an image whose file is gone: the gallery shows "Image unavailable"
     const firstImg = files.findIndex((f) => f.kind === "image");
     files.splice(firstImg + 1, 0, { path: `${rel}/missing.png`, name: "missing.png", ext: "png", size: 0, kind: "image", variant: "media" });
