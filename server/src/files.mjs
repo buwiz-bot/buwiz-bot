@@ -7,7 +7,7 @@
 // `renderFile(path)` returns the payload the app draws natively; PDF / HTML /
 // media are served over http and shown in a web view / video player.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { deflateSync, inflateSync } from "node:zlib";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -617,15 +617,47 @@ function optimizeJpeg(buf) {
   return Buffer.concat(out);
 }
 
-/** Display derivative for the feed: long edge ≤1120px (~560pt @2x). A 24MP
- *  upload no longer decodes full-res into a 300pt tile — the original is
- *  untouched for the lightbox. Kept only when it's actually smaller. */
-export function feedVariant(path) {
-  const feed = path.replace(/\.[^.]+$/, "") + ".feed.png";
+/** Does this image carry frames? A live decode of an animated tile burns the
+ *  scroll budget — the feed shows a static first frame instead (Grok does the
+ *  same), the original still plays in the lightbox. */
+export function isAnimated(path, ext = extOf(path)) {
+  if (ext === "gif") return true;
   try {
-    execFileSync("sips", ["-Z", "1120", path, "--out", feed], { stdio: "ignore", timeout: 20000 });
-    if (existsSync(feed) && statSync(feed).size < statSync(path).size) return feed;
-    unlinkSync(feed);
+    const fd = openSync(path, "r");
+    const head = Buffer.alloc(4096);
+    const n = readSync(fd, head, 0, 4096, 0);
+    closeSync(fd);
+    const b = head.subarray(0, n);
+    if (ext === "webp") return b.includes(Buffer.from("ANMF")) || b.includes(Buffer.from("ANIM"));
+    if (ext === "png") return b.includes(Buffer.from("acTL"));
+  } catch {}
+  return false;
+}
+
+/** Display derivative for the feed: long edge ≤1120px (~560pt @2x), always a
+ *  static PNG. A 24MP upload no longer decodes full-res into a 300pt tile, and
+ *  animated / vector media (GIF, animated WebP/APNG, SVG) collapse to a first
+ *  frame — the feed decodes once and never re-encodes per tick. The original
+ *  is untouched for the lightbox. `force` keeps a larger derivative when the
+ *  alternative is live decode or a web view; otherwise kept only when smaller. */
+export function feedVariant(path, force = false) {
+  const feed = path.replace(/\.[^.]+$/, "") + ".feed.png";
+  const dir = path.slice(0, path.lastIndexOf("/"));
+  try {
+    if (extOf(path) === "svg") {
+      // sips can't read SVG — Quick Look rasterizes it (first frame)
+      execFileSync("qlmanage", ["-t", "-s", "1120", "-o", dir, path], { stdio: "ignore", timeout: 20000 });
+      if (existsSync(`${path}.png`)) renameSync(`${path}.png`, feed);
+    } else {
+      try {
+        execFileSync("sips", ["-Z", "1120", path, "--out", feed], { stdio: "ignore", timeout: 20000 });
+      } catch {
+        // sips can't read animated WebP/AVIF — ImageMagick's first frame
+        execFileSync("magick", [`${path}[0]`, feed], { stdio: "ignore", timeout: 20000 });
+      }
+    }
+    if (existsSync(feed) && (force || statSync(feed).size < statSync(path).size)) return feed;
+    if (existsSync(feed)) unlinkSync(feed);
   } catch {}
   return null;
 }
@@ -635,10 +667,12 @@ export function feedVariant(path) {
 export function fileRecord(p, relFile) {
   const m = fileMeta(p);
   const dirRel = relFile.slice(0, relFile.length - basename(relFile).length);
-  const feed = m.kind === "image" && m.ext !== "svg" ? feedVariant(p) : null;
+  const animated = m.kind === "image" && isAnimated(p, m.ext);
+  const feed = m.kind === "image" ? feedVariant(p, m.ext === "svg" || animated) : null;
   return {
     path: relFile,
     ...m,
+    ...(animated ? { animated: true } : {}),
     ...(feed ? { feed: dirRel + basename(feed) } : {}),
     ...(m.poster ? { poster: dirRel + m.poster } : {}),
   };
