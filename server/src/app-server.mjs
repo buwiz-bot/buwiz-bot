@@ -144,7 +144,17 @@ const jobs = new Map();
 let nextJobId = 1;
 
 function setJob(job, phase, detail = "") {
-  if (job) Object.assign(job, { phase, detail, seq: job.seq + 1 });
+  if (!job) return;
+  Object.assign(job, { phase, detail, seq: job.seq + 1 });
+  // a building card mirrors the job's phase — the placeholder's status line
+  if (job.turn?.building) job.turn.status = detail || phase;
+  // a job that ends with a card still mid-build drops the placeholder
+  if (phase === "done" && job.turn?.building) {
+    const turns = store.list.find((t) => t.id === job.thread)?.turns;
+    const i = turns?.indexOf(job.turn) ?? -1;
+    if (i >= 0) turns.splice(i, 1);
+    job.turn = null;
+  }
 }
 
 function jobJson(job) {
@@ -444,7 +454,7 @@ function loadStore() {
                 retries: u.retries || 0,
                 v: u.v ?? null,
                 widget: !!u.widget,
-                ...(u.meta ? { files: JSON.parse(u.meta).files } : {}),
+                ...(u.meta ? JSON.parse(u.meta) : {}),
               },
         ),
     });
@@ -621,17 +631,19 @@ function persist() {
     );
     store.list.forEach((t, i) => {
       it.run(t.id, t.title, i);
-      t.turns.forEach((u, j) =>
+      t.turns.forEach((u, j) => {
+        // a still-building placeholder is in-flight work, not history
+        if (u.building) return;
         iu.run(
           t.id, j, u.role, u.text ?? null, u.name ?? null, u.label ?? null,
           u.caption ?? null, u.reaction ?? null, u.retries ?? 0,
           u.widget ? 1 : 0,
-          u.reply || u.attachments?.length || u.files?.length
-            ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files })
+          u.reply || u.attachments?.length || u.files?.length || u.art
+            ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files, art: u.art })
             : null,
           u.v ?? null,
-        ),
-      );
+        );
+      });
     });
     metaSet("active", store.active);
     metaSet("sections", JSON.stringify(store.sections || []));
@@ -749,6 +761,17 @@ const dirOf = (t) => (t.widget ? WIDGETS_DIR : GEN_DIR);
 // The turns the app renders — plain JSON so a thread switch is a data swap,
 // not a code rebuild. `i` is the turn's index (DelBtn keys off it).
 function turnsJson(thread = activeThread()) {
+  // `art` rides the turn; its title is resolved live from the apps table so
+  // a rename shows on every card of that artifact without rewriting turns.
+  const appTitles = new Map(
+    db.prepare("SELECT name,title FROM apps").all().map((r) => [r.name, r.title]),
+  );
+  const art = (t) => {
+    const a = t.art || {};
+    const title = (t.name && appTitles.get(t.name)) || a.title || null;
+    if (!title && !a.desc && !a.w && !a.h) return undefined;
+    return { title, desc: a.desc || "", w: a.w || 0, h: a.h || 0 };
+  };
   return thread.turns.map((t, i) => ({
     i,
     role: t.role,
@@ -762,6 +785,10 @@ function turnsJson(thread = activeThread()) {
     reply: t.reply || null,
     attachments: t.attachments || [],
     files: t.files || [],
+    v: t.v ?? null,
+    art: art(t),
+    building: t.building || undefined,
+    status: t.status || undefined,
   }));
 }
 
@@ -1760,7 +1787,21 @@ const TOOLS = [
         title: {
           type: "string",
           description:
-            'optional short product name for the app (e.g. "Tiny Trajectory") — the Library lists it under this',
+            'short product name shown as the card\'s title (e.g. "Tic Tac Toe") — always set it; the Library also lists the app under this',
+        },
+        desc: {
+          type: "string",
+          description:
+            'one-line description of what the app does, shown under the title (e.g. "Two-player noughts and crosses")',
+        },
+        layout: {
+          type: "object",
+          description:
+            "the app's intended render size in points — the card's placeholder is drawn at exactly this size while it loads, so declare the size you designed for",
+          properties: {
+            width: { type: "number" },
+            height: { type: "number" },
+          },
         },
         slug: {
           type: "string",
@@ -1780,6 +1821,9 @@ const TOOLS = [
       properties: {
         prompt: { type: "string", description: "rich description of the image to generate" },
         caption: { type: "string", description: "optional one-line markdown caption" },
+        title: { type: "string", description: 'short product name shown as the card\'s title (e.g. "Sunset Over The Marina")' },
+        width: { type: "number", description: "image width in pixels (default 768, up to 2048) — declare the real size you want" },
+        height: { type: "number", description: "image height in pixels (default 768, up to 2048)" },
       },
       required: ["prompt"],
     },
@@ -1857,6 +1901,8 @@ const TOOLS = [
         code: { type: "string", description: "the complete revised TSX module (same contract as generate_app)" },
         caption: { type: "string", description: "optional one-line markdown caption" },
         title: { type: "string", description: "optional new product name" },
+        desc: { type: "string", description: "optional one-line description of what changed, shown under the title" },
+        layout: { type: "object", description: "optional revised intended render size in points", properties: { width: { type: "number" }, height: { type: "number" } } },
         slug: { type: "string", description: "optional kebab-case display filename" },
       },
       required: ["name", "code"],
@@ -2034,7 +2080,7 @@ const agentSystem = () => `You are the assistant inside a generative-UI chat app
 
 Reply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).
 
-When a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. "Tiny Trajectory") and slug (kebab-case, e.g. tiny-trajectory) — they name the app in the user's Library.
+When a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. "Tiny Trajectory"), desc (one line about what it does), layout (the width/height in points you designed it for) and slug (kebab-case, e.g. tiny-trajectory) — title and desc head the card in chat, layout sizes its placeholder exactly, and title/slug name the app in the user's Library.
 
 Artifacts are versioned: every app you mount keeps its versions under one name (R<n>), and each card in the conversation pins the version it rendered. When the user asks to change, fix, restyle, or extend an app that already exists — especially when they replied to its card or @-mentioned it, so its source is attached — call revise_app with that name; never rebuild it as a new artifact. To iterate an older version on purpose, pass base_v — that starts a branch the user can see in the Library's version history. launch_app pops an app into its own window, close_app closes it, promote_app/demote_app publish/unpublish to Mini Apps, set_version reverts the current pointer, view_code reads any version's source.
 
@@ -2064,7 +2110,26 @@ function privateSkillsInject() {
 
 // ————— tool executors —————
 
-function imageModule(file, prompt) {
+// The model's declared artifact metadata rides the turn (`art`): title and
+// one-line description for the card header, declared width/height so the
+// placeholder is drawn at the exact size the content will occupy.
+const clampDim = (n, lo, hi) => {
+  const v = Math.round(Number(n));
+  return v >= lo && v <= hi ? v : 0;
+};
+function artOf(input) {
+  const lay = input.layout || {};
+  const art = {
+    title: String(input.title || "").trim().slice(0, 60) || null,
+    desc: String(input.desc || "").trim().slice(0, 140) || "",
+    w: clampDim(lay.width ?? input.width, 60, 2048),
+    h: clampDim(lay.height ?? input.height, 60, 2048),
+  };
+  return art.title || art.desc || art.w || art.h ? art : null;
+}
+
+function imageModule(file, prompt, w, h) {
+  const ar = w && h ? `, aspectRatio: ${(w / h).toFixed(4)}` : "";
   return `import { signal, Text, View } from "nsh";
 import { Image } from "nsh/image";
 
@@ -2073,7 +2138,7 @@ export default function R() {
   return (
     <View class="gap-2">
       <If when={!failed()}>
-        <Image src="asset:/generated/assets/${file}" resizeMode="cover" onError={() => failed.set(true)} class="h-64 w-full rounded-xl" />
+        <Image src="asset:/generated/assets/${file}" resizeMode="cover" onError={() => failed.set(true)} style={{ width: "100%"${ar}, borderRadius: 12 }} />
       </If>
       <If when={failed()}>
         <Text class="text-sm text-zinc-500">image failed to load</Text>
@@ -2117,12 +2182,38 @@ async function toolGenerateApp(job, thread, input) {
     );
   code = fixImports(code);
   writeFileSync(join(STAGE_DIR, `${name}.tsx`), code);
-  const err = await checkCandidate(name);
-  if (err)
-    return {
-      content: `nsh check rejected ${name}:\n${err.slice(0, 3000)}\nFix the module and call generate_app again with the corrected code.`,
-      is_error: true,
-    };
+  // The card exists before the check: it renders as an exact-size
+  // placeholder whose status line mirrors the job's phase. A failed call
+  // removes it again — the model's retry makes a fresh one.
+  const turn = {
+    role: "ai",
+    name,
+    building: true,
+    status: "checking types…",
+    label: labelOf(modelCtx.getStore()),
+    caption: String(input.caption || ""),
+    art: artOf(input),
+  };
+  thread.turns.push(turn);
+  if (job) job.turn = turn;
+  const dropTurn = () => {
+    const i = thread.turns.indexOf(turn);
+    if (i >= 0) thread.turns.splice(i, 1);
+    if (job?.turn === turn) job.turn = null;
+  };
+  try {
+    const err = await checkCandidate(name);
+    if (err) {
+      dropTurn();
+      return {
+        content: `nsh check rejected ${name}:\n${err.slice(0, 3000)}\nFix the module and call generate_app again with the corrected code.`,
+        is_error: true,
+      };
+    }
+  } catch (e) {
+    dropTurn();
+    throw e;
+  }
   // Revising off a specific version (base_v) branches; default parent is the
   // current pointer. Nothing earlier is touched — cards keep their version.
   const headBefore = revName ? headOf(name) : null;
@@ -2145,13 +2236,11 @@ async function toolGenerateApp(job, thread, input) {
     name, code, parent, job?.prompt || input.caption || "",
     input.branch_name,
   );
-  thread.turns.push({
-    role: "ai",
-    name,
-    v,
-    label: labelOf(modelCtx.getStore()),
-    caption: String(input.caption || ""),
-  });
+  // the placeholder turn becomes the real card — pinned to this version
+  turn.v = v;
+  delete turn.building;
+  delete turn.status;
+  if (job?.turn === turn) job.turn = null;
   job.cards = (job.cards || 0) + 1;
   writeIndex();
   console.log(`✓ ${name}@v${v}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
@@ -2167,26 +2256,53 @@ async function toolGenerateImage(job, thread, input) {
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "prompt is required", is_error: true };
   setJob(job, "generating", `image: ${prompt.slice(0, 60)}`);
+  const w = clampDim(input.width, 128, 2048) || 768;
+  const h = clampDim(input.height, 128, 2048) || 768;
+  const art = artOf(input) || { title: null, desc: "", w: 0, h: 0 };
+  if (!art.w) { art.w = w; art.h = h; }
+  const turn = {
+    role: "ai",
+    building: true,
+    status: "generating image…",
+    label: "image",
+    caption: String(input.caption || ""),
+    art,
+  };
+  thread.turns.push(turn);
+  if (job) job.turn = turn;
+  const dropTurn = () => {
+    const i = thread.turns.indexOf(turn);
+    if (i >= 0) thread.turns.splice(i, 1);
+    if (job?.turn === turn) job.turn = null;
+  };
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
     prompt,
-  )}?width=768&height=768&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(90000) });
-  if (!r.ok)
-    return { content: `image service returned ${r.status}`, is_error: true };
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length < 2000)
+  )}?width=${w}&height=${h}&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
+  let buf;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(90000) });
+    if (!r.ok) {
+      dropTurn();
+      return { content: `image service returned ${r.status}`, is_error: true };
+    }
+    buf = Buffer.from(await r.arrayBuffer());
+  } catch (e) {
+    dropTurn();
+    throw e;
+  }
+  if (buf.length < 2000) {
+    dropTurn();
     return { content: "image service returned no image", is_error: true };
+  }
   const file = `img-${Date.now()}.png`;
   writeFileSync(join(ASSETS_DIR, file), buf);
   const name = `R${++seq}`;
-  const v = writeVersion(name, imageModule(file, prompt), null, prompt);
-  thread.turns.push({
-    role: "ai",
-    name,
-    v,
-    label: "image",
-    caption: String(input.caption || ""),
-  });
+  const v = writeVersion(name, imageModule(file, prompt, w, h), null, prompt);
+  turn.name = name;
+  turn.v = v;
+  delete turn.building;
+  delete turn.status;
+  if (job?.turn === turn) job.turn = null;
   job.cards = (job.cards || 0) + 1;
   console.log(`✓ ${name}.tsx image (${prompt.slice(0, 50)})`);
   return {
@@ -3710,6 +3826,11 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
             source: readFileSync(file, "utf8"),
             published: !!widgetRow(name),
             v: ver ?? headOf(name),
+            head: headOf(name),
+            versions: versionsOf(name),
+            title:
+              db.prepare("SELECT title FROM apps WHERE name=?").get(name)
+                ?.title || null,
           })
         : JSON.stringify({ source: "", published: !!widgetRow(name) }),
     );
