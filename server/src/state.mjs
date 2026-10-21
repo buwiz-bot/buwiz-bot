@@ -375,7 +375,7 @@ export function turnsJson(thread = activeThread()) {
 // modules changes — never on a thread switch or a new text turn. That keeps
 // the conversation a data-driven view: no bundle rebuild, no blank flash.
 let lastModuleKey = "";
-export function writeIndex() {function writeIndex() {
+export function writeIndex() {
   const gen = readdirSync(GEN_DIR)
     .filter((f) => /^R\d+\.tsx$/.test(f) && f !== "index.tsx")
     .map((f) => f.slice(0, -4));
@@ -428,7 +428,6 @@ export function writeIndex() {function writeIndex() {
 // STATIC: it renders metadata cards from GET /catalog and never mounts a
 // live widget, so the tab stays light no matter how many apps exist.
 // A mini-app runs where the user chooses: ↗ pops its own window, ＋chat
-}
 // writeShelf lives in templates.mjs — its body was a 480-line embedded TSX
 // template, now a real file read at call time.
 export function writeShelf() {
