@@ -1,8 +1,9 @@
 // routes/bots.mjs — extracted from app-server.mjs
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, PROVIDER, MODEL, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
+import { feedVariant, imageSize, optimizeImage } from "../files.mjs";
 import { nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex } from "../state.mjs";
 import { anthropic } from "../model.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
@@ -139,8 +140,10 @@ export default async function handle(req, res) {
           const video = /^(mov|mp4|m4v|webm|avi|mkv)$/.test(ext);
           const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
           const out = join(ATTACH_DIR, image ? `${id}.png` : `${id}-${name}`);
-          if (image) execFileSync("sips", ["-s", "format", "png", src, "--out", out], { stdio: "ignore" });
-          else copyFileSync(src, out);
+          if (image) {
+            execFileSync("sips", ["-s", "format", "png", src, "--out", out], { stdio: "ignore" });
+            optimizeImage(out); // lossless: metadata chunks out, IDAT redeflated
+          } else copyFileSync(src, out);
           // a 256px thumbnail: sips for images, Quick Look's frame for video
           let thumb = "";
           try {
@@ -153,12 +156,20 @@ export default async function handle(req, res) {
               if (existsSync(ql)) thumb = ql;
             }
           } catch {}
+          // dims at record time → the gallery/bubble reserves its aspect box
+          // before decode; feed is the ≤1120px derivative the feed decodes
+          // instead of the full-res original
+          const dims = image ? imageSize(out) : video && thumb ? imageSize(thumb) : {};
+          const feed = image ? feedVariant(out) : null;
           return {
             uri: `file://${out}`,
             thumb: thumb ? `file://${thumb}` : "",
+            feed: feed ? `file://${feed}` : "",
             name,
             ext,
             kind: image ? "image" : video ? "video" : "file",
+            size: existsSync(out) ? statSync(out).size : 0,
+            ...dims,
           };
         });
         res.end(JSON.stringify({ ok: true, files }));

@@ -7,7 +7,8 @@
 // `renderFile(path)` returns the payload the app draws natively; PDF / HTML /
 // media are served over http and shown in a web view / video player.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { deflateSync, inflateSync } from "node:zlib";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHighlighter } from "shiki";
@@ -61,7 +62,7 @@ export function fileMeta(path, name = basename(path)) {
   return meta;
 }
 
-function imageSize(path) {
+export function imageSize(path) {
   // sips can't read SVG: take its width/height, or the viewBox
   if (/\.svg$/i.test(path)) {
     try {
@@ -436,3 +437,209 @@ export async function mockDocx(dir) {
   return out;
 }
 export { copyFileSync };
+
+// ————— media pipeline: sizes, lossless optimize, feed derivatives —————
+
+/** Minimal PNG writer — zlib'd RGBA scanlines, no external tools. */
+const CRC_T = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c | 0;
+  }
+  return t;
+})();
+const crc32 = (buf) => {
+  let c = ~0;
+  for (const b of buf) c = CRC_T[(c ^ b) & 0xff] ^ (c >>> 8);
+  return ~c | 0;
+};
+const pngChunk = (type, data) => {
+  const b = Buffer.alloc(data.length + 12);
+  b.writeUInt32BE(data.length, 0);
+  b.write(type, 4, "ascii");
+  data.copy(b, 8);
+  b.writeInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), data.length + 8);
+  return b;
+};
+/** paint(x, y) → [r,g,b,a] */
+export function pngEncode(w, h, paint) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6; // 8-bit RGBA
+  const raw = Buffer.alloc(h * (1 + w * 4));
+  for (let y = 0; y < h; y++) {
+    const row = y * (1 + w * 4);
+    raw[row] = 0; // filter: none
+    for (let x = 0; x < w; x++) {
+      const [r, g, b, a] = paint(x, y);
+      const o = row + 1 + x * 4;
+      raw[o] = r;
+      raw[o + 1] = g;
+      raw[o + 2] = b;
+      raw[o + 3] = a;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw, { level: 9 })),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// 3×5 digit glyphs for mock tiles
+const DIGIT = {
+  "0": [7, 5, 5, 5, 7], "1": [2, 6, 2, 2, 7], "2": [7, 1, 7, 4, 7], "3": [7, 1, 7, 1, 7],
+  "4": [5, 5, 7, 1, 1], "5": [7, 4, 7, 1, 7], "6": [7, 4, 7, 5, 7], "7": [7, 1, 1, 2, 2],
+  "8": [7, 5, 7, 5, 7], "9": [7, 5, 7, 1, 7], "+": [0, 2, 7, 2, 0],
+};
+const hexRgb = (s) => [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
+const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+
+/** A labeled mock tile PNG at an exact size — no external tools, so n of
+ *  them are cheap. Digit drawn 3×5 in white, centered on a soft diagonal. */
+function mockTile(w, h, label, c0, c1) {
+  const [r0, g0, b0] = hexRgb(c0);
+  const [r1, g1, b1] = hexRgb(c1);
+  const text = String(label);
+  const s = Math.max(2, Math.floor(Math.min(w, h) / 9)); // pixel block
+  const gw = text.length * 4 * s - s, gh = 5 * s;
+  const gx = Math.floor((w - gw) / 2), gy = Math.floor((h - gh) / 2);
+  const on = (x, y) => {
+    const dy = Math.floor((y - gy) / s);
+    if (dy < 0 || dy > 4) return false;
+    const k = Math.floor((x - gx) / s);
+    if (k < 0 || k >= text.length * 4 - 1 || k % 4 === 3) return false; // col 3 of each char is the gap
+    return !!(DIGIT[text[Math.floor(k / 4)]]?.[dy] & (4 >> (k % 4)));
+  };
+  return pngEncode(w, h, (x, y) => {
+    if (on(x, y)) return [255, 255, 255, 255];
+    const t = (x + y) / (w + h);
+    return [lerp(r0, r1, t), lerp(g0, g1, t), lerp(b0, b1, t), 255];
+  });
+}
+
+const MOCK_ASPECTS = [[16, 9], [1, 1], [4, 5], [3, 2], [9, 16], [4, 3], [3, 4], [2, 1]];
+const MOCK_COLORS = [["#ef4444", "#b91c1c"], ["#3b82f6", "#1e40af"], ["#22c55e", "#15803d"], ["#f59e0b", "#b45309"], ["#8b5cf6", "#6d28d9"], ["#06b6d4", "#0e7490"], ["#ec4899", "#be185d"], ["#f97316", "#c2410c"]];
+
+/** n numbered tiles; `ar` = [w,h] fixes every tile to that aspect, else they
+ *  cycle landscape → square → portrait so one message exercises all rows. */
+export function mockImages(dir, n, ar) {
+  mkdirSync(dir, { recursive: true });
+  const paths = [];
+  for (let i = 0; i < n; i++) {
+    const [aw, ah] = ar || MOCK_ASPECTS[i % MOCK_ASPECTS.length];
+    const longEdge = 640;
+    const w = aw >= ah ? longEdge : Math.round((longEdge * aw) / ah);
+    const h = aw >= ah ? Math.round((longEdge * ah) / aw) : longEdge;
+    const p = join(dir, `mock-${i + 1}.png`);
+    writeFileSync(p, mockTile(w, h, i + 1, ...MOCK_COLORS[i % MOCK_COLORS.length]));
+    paths.push(p);
+  }
+  return paths;
+}
+
+/** Lossless byte diet: PNG drops ancillary chunks (EXIF/text/etc, keeps
+ *  color-critical iCCP/sRGB/gAMA/cHRM) and re-deflates IDAT at level 9;
+ *  JPEG drops APPn/COM markers (metadata, embedded thumbs). Pixels are
+ *  never touched — and the rewrite only lands when it's actually smaller. */
+export function optimizeImage(path) {
+  try {
+    const buf = readFileSync(path);
+    const out = buf[0] === 0x89 && buf[1] === 0x50 ? optimizePng(buf) : buf[0] === 0xff && buf[1] === 0xd8 ? optimizeJpeg(buf) : null;
+    if (out && out.length < buf.length) writeFileSync(path, out);
+    return out ? Math.max(0, buf.length - out.length) : 0;
+  } catch {
+    return 0;
+  }
+}
+const PNG_KEEP = new Set(["IHDR", "PLTE", "tRNS", "iCCP", "sRGB", "gAMA", "cHRM", "IEND"]);
+function optimizePng(buf) {
+  const segs = [];
+  for (let p = 8; p + 8 <= buf.length; ) {
+    const len = buf.readUInt32BE(p);
+    const type = buf.toString("ascii", p + 4, p + 8);
+    const end = p + 12 + len;
+    if (end > buf.length) return null;
+    segs.push({ type, data: buf.subarray(p + 8, p + 8 + len) });
+    p = end;
+    if (type === "IEND") break;
+  }
+  const idat = segs.filter((s) => s.type === "IDAT");
+  if (!idat.length || segs[0]?.type !== "IHDR") return null;
+  let idatOut;
+  try {
+    idatOut = deflateSync(inflateSync(Buffer.concat(idat.map((s) => s.data))), { level: 9 });
+  } catch {
+    return null;
+  }
+  let wrote = false;
+  const out = [buf.subarray(0, 8)];
+  for (const s of segs) {
+    if (s.type === "IDAT") {
+      if (!wrote) {
+        out.push(pngChunk("IDAT", idatOut));
+        wrote = true;
+      }
+      continue;
+    }
+    if (PNG_KEEP.has(s.type)) out.push(pngChunk(s.type, s.data));
+  }
+  return Buffer.concat(out);
+}
+function optimizeJpeg(buf) {
+  if (buf.length < 4) return null;
+  const out = [buf.subarray(0, 2)]; // SOI
+  for (let p = 2; p + 4 <= buf.length; ) {
+    if (buf[p] !== 0xff) {
+      out.push(buf.subarray(p)); // entropy-coded stream — copy verbatim
+      break;
+    }
+    const marker = buf[p + 1];
+    if (marker === 0xda) {
+      out.push(buf.subarray(p)); // SOS + image data to the end
+      break;
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      out.push(buf.subarray(p, p + 2)); // standalone markers
+      p += 2;
+      continue;
+    }
+    const len = buf.readUInt16BE(p + 2);
+    if (p + 2 + len > buf.length) return null;
+    if (!((marker >= 0xe0 && marker <= 0xef) || marker === 0xfe)) out.push(buf.subarray(p, p + 2 + len));
+    p += 2 + len;
+  }
+  return Buffer.concat(out);
+}
+
+/** Display derivative for the feed: long edge ≤1120px (~560pt @2x). A 24MP
+ *  upload no longer decodes full-res into a 300pt tile — the original is
+ *  untouched for the lightbox. Kept only when it's actually smaller. */
+export function feedVariant(path) {
+  const feed = path.replace(/\.[^.]+$/, "") + ".feed.png";
+  try {
+    execFileSync("sips", ["-Z", "1120", path, "--out", feed], { stdio: "ignore", timeout: 20000 });
+    if (existsSync(feed) && statSync(feed).size < statSync(path).size) return feed;
+    unlinkSync(feed);
+  } catch {}
+  return null;
+}
+
+/** A turn's file record: fileMeta dims + a feed derivative for images.
+ *  `relFile` is the file's path relative to the out dir ("/file/raw/" key). */
+export function fileRecord(p, relFile) {
+  const m = fileMeta(p);
+  const dirRel = relFile.slice(0, relFile.length - basename(relFile).length);
+  const feed = m.kind === "image" && m.ext !== "svg" ? feedVariant(p) : null;
+  return {
+    path: relFile,
+    ...m,
+    ...(feed ? { feed: dirRel + basename(feed) } : {}),
+    ...(m.poster ? { poster: dirRel + m.poster } : {}),
+  };
+}

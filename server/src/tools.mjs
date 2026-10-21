@@ -8,7 +8,7 @@ import { ASSETS_DIR, GEN_DIR, OUT_DIR, STAGE_DIR, git, outFile } from "./config.
 import { db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
 import { checkCandidate, errorCard, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
-import { fileMeta } from "./files.mjs";
+import { fileMeta, fileRecord } from "./files.mjs";
 import { callOfficeTool, officeCreateBytes, officeMcpTools } from "./office.mjs";
 import {
   anthropicTools as mcpAnthropicTools, callTool as mcpCallTool,
@@ -686,8 +686,7 @@ export function toolReact(thread, input) {
 export function cardOfficeFile(thread, rel) {
   const p = outFile(rel);
   if (!p || !existsSync(p)) return;
-  const m = fileMeta(p);
-  thread.turns.push({ role: "ai", label: "office", files: [{ path: rel, ...m }] });
+  thread.turns.push({ role: "ai", label: "office", files: [fileRecord(p, rel)] });
 }
 
 export async function toolOffice(job, thread, block) {
