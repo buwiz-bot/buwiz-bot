@@ -1909,6 +1909,19 @@ const TOOLS = [
     },
   },
   {
+    name: "react",
+    description:
+      "Attach an emoji reaction to a message in the conversation — like an iMessage tapback. Omit index to react to the latest user message; an empty emoji clears the reaction.",
+    input_schema: {
+      type: "object",
+      properties: {
+        emoji: { type: "string", description: "the emoji, e.g. 👍 — empty string removes the reaction" },
+        index: { type: "number", description: "0-based turn index in this conversation (default: latest user message)" },
+      },
+      required: ["emoji"],
+    },
+  },
+  {
     name: "launch_app",
     description: "Open a mini-app artifact in its own pop-out window — the current version unless v is given.",
     input_schema: {
@@ -2391,6 +2404,22 @@ async function toolWebSearch(input) {
   return { content: results.join("\n\n") || "(no results)" };
 }
 
+// The agent's tapback — same store the /react endpoint writes, so a
+// tool-made reaction lands on the user bubble's top-left badge identically.
+function toolReact(thread, input) {
+  const emoji = Array.from(String(input.emoji || "")).slice(0, 16).join("");
+  let i = Number.isInteger(input.index) ? Number(input.index) : -1;
+  if (i < 0 || i >= thread.turns.length) {
+    for (i = thread.turns.length - 1; i >= 0; i--)
+      if (thread.turns[i].role === "user") break;
+  }
+  const turn = thread.turns[i];
+  if (!turn) return { content: "no message to react to", is_error: true };
+  turn.reaction = emoji || undefined;
+  writeIndex();
+  return { content: emoji ? `reacted ${emoji} to turn ${i}` : `cleared reaction on turn ${i}` };
+}
+
 // A file an office tool produced becomes a card on its own turn — like a
 // widget card, it lands the moment it exists instead of waiting for the reply.
 function cardOfficeFile(thread, rel) {
@@ -2503,6 +2532,7 @@ async function execTool(job, thread, block) {
     }
     if (block.name === "generate_image")
       return await toolGenerateImage(job, thread, block.input || {});
+    if (block.name === "react") return toolReact(thread, block.input || {});
     if (block.name === "fetch_url") return await toolFetchUrl(block.input || {});
     if (block.name === "shell_run") return await toolShell(block.input || {});
     if (block.name === "query_source")
