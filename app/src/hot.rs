@@ -50,6 +50,19 @@ pub(crate) fn hot_area() -> impl IntoElement {
         Some(px(44.0)),
     );
 
+    // `ROX_MINI=R<n>`: debug-mount a generated widget alone in the window —
+    // the same fetch → compile → AppView path the chat cards take, without
+    // needing a widget turn to be on screen.
+    if let Ok(app) = std::env::var("ROX_MINI") {
+        if !app.is_empty() {
+            return view()
+                .flex_1()
+                .h_full()
+                .bg(theme::MAIN)
+                .child(crate::mini::mini_app(&app, 0.0));
+        }
+    }
+
     view()
         .flex_1()
         .h_full()

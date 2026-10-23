@@ -16,9 +16,14 @@ use crate::theme;
 pub(crate) fn app_card(art: Art) -> impl IntoElement {
     let app = art.app.clone();
     let app2 = art.app.clone();
+    // The model declares the size (`art.w`/`art.h`); the card is capped
+    // like the TSX (`min(w,560)`, aspect ratio for the body height).
+    let card_w = if art.w > 0.0 { (art.w as f32).min(560.0) } else { 480.0 };
+    let ar = if art.w > 0.0 && art.h > 0.0 { (art.w / art.h) as f32 } else { 4.0 / 3.0 };
+    let body_h = (card_w / ar).clamp(80.0, 560.0);
     view()
         .mt_1()
-        .w(px(340.0))
+        .w(px(card_w))
         .bg(theme::CARD)
         .rounded(px(12.0))
         .border_1()
@@ -41,28 +46,46 @@ pub(crate) fn app_card(art: Art) -> impl IntoElement {
                 ),
         )
         .child(
-            // Body: where the generated TSX ran; a Rust build shows the
-            // placeholder and offers the detail pane instead.
+            // Body: the live mini app (compiled TSX running in its own
+            // engine inside this element), or the load/compile error.
             view()
-                .h(px(120.0))
+                .h(px(body_h))
                 .m_2()
-                .bg(theme::CARD2)
                 .rounded(px(8.0))
-                .items_center()
-                .justify_center()
-                .child(
-                    text("Generated app")
-                        .text_size(px(12.0))
-                        .text_color(theme::GHOST),
-                )
-                .child(
-                    text(app.clone())
-                        .text_size(px(10.0))
-                        .font_family("monospace")
-                        .text_color(theme::GHOST)
-                        .pt_1(),
-                ),
+                .child(crate::mini::mini_app(&art.app, body_h - 4.0)),
         )
+        .child(when(
+            {
+                let has = !art.desc.is_empty();
+                move || has
+            },
+            {
+                let d = art.desc.clone();
+                move || {
+                    text(d.clone())
+                        .text_size(px(11.0))
+                        .text_color(theme::MUTED)
+                        .mx_3()
+                        .mb_1()
+                        .into_element()
+                }
+            },
+        ))
+        .child({
+            let err_app = art.app.clone();
+            let err_app2 = art.app.clone();
+            view().mx_2().mb_1().child(when(
+                move || !store().mini_err(&err_app).get().is_empty(),
+                move || {
+                    let err = store().mini_err(&err_app2).get();
+                    text(format!("widget: {err}"))
+                        .text_size(px(10.0))
+                        .text_color(theme::DOWN)
+                        .number_of_lines(2)
+                        .into_element()
+                },
+            ))
+        })
         .child(
             view()
                 .flex_row()
@@ -82,7 +105,23 @@ pub(crate) fn app_card(art: Art) -> impl IntoElement {
                         serde_json::json!({"thread": thread, "app": app2}),
                     );
                     st.refresh_thread_apps();
-                })),
+                }))
+                .child({
+                    let pop = art.app.clone();
+                    card_action("popout", "Pop out", move || store().popout(&pop))
+                })
+                .child({
+                    let ret = art.app.clone();
+                    let ret2 = art.app.clone();
+                    when(
+                        move || !store().mini_err(&ret).get().is_empty(),
+                        move || {
+                            let r = ret2.clone();
+                            card_action("retry", "Retry", move || store().retry_mini(&r))
+                                .into_element()
+                        },
+                    )
+                }),
         )
 }
 
