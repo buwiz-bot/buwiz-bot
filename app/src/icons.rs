@@ -11,6 +11,9 @@ pub(crate) fn icon(name: &str) -> impl IntoElement {
     let (ch, size): (&'static str, f32) = match name {
         "plus" => ("+", 16.0),
         "send" => ("↑", 15.0),
+        "mic" => ("♪", 14.0),
+        "attach" => ("⌘", 14.0),
+        "arrowUp" => ("↑", 15.0),
         "close" => ("✕", 12.0),
         "dots" => ("···", 14.0),
         "chev-down" => ("⌄", 14.0),

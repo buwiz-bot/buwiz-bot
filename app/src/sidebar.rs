@@ -122,7 +122,7 @@ fn rail() -> impl IntoElement {
                     store().palette.set(true)
                 }))
                 .child(rail_button("settings", "Models", || {
-                    store().models_open.set(true)
+                    crate::models::open_list()
                 })),
         )
 }

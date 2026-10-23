@@ -267,68 +267,11 @@ fn bot_profile() -> impl IntoElement {
         )
 }
 
-/// `ModelPill(choice)` — the bot's model + effort, opening the picker
-/// (modelpicker.tsx:60).
+/// `ModelPill(choice)` — the shared pill (`models::model_pill`,
+/// modelpicker.tsx:60): the bot's model + effort label, opening the
+/// anchored popover.
 fn model_pill() -> View {
-    let hovered = signal(false);
-    view()
-        .flex_row()
-        .items_center()
-        .gap_1()
-        .h(px(28.0))
-        .px(px(10.0))
-        .rounded(px(14.0))
-        .bg(move || {
-            if store().models_open.get() || hovered.get() {
-                theme::HOVER
-            } else {
-                theme::SUBTLE
-            }
-        })
-        .child(
-            text(move || {
-                let (m, _, _) = store().choice();
-                store()
-                    .models
-                    .get()
-                    .iter()
-                    .find(|x| x.id == m)
-                    .map(|x| x.label.clone())
-                    .unwrap_or_else(|| crate::store::pretty_model(&m))
-            })
-            .text_size(px(12.0))
-            .text_color(theme::TEXT)
-            .number_of_lines(1),
-        )
-        .child(
-            text(move || {
-                let (_, e, fast) = store().choice();
-                let mut l = String::new();
-                if !e.is_empty() {
-                    l = e.clone();
-                }
-                if fast {
-                    if !l.is_empty() {
-                        l.push(' ');
-                    }
-                    l.push('⚡');
-                }
-                l
-            })
-            .text_size(px(12.0))
-            .text_color(theme::MUTED),
-        )
-        .child(text("⌄").text_size(px(10.0)).text_color(theme::MUTED))
-        .label("Select model")
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_press(|| {
-            let st = store();
-            if st.models.get_untracked().is_empty() {
-                st.load_models();
-            }
-            st.models_open.set(true);
-        })
+    view().child(crate::models::model_pill())
 }
 
 /// The Details|Library|Computer|Connect pills (App.tsx:2605).

@@ -1,84 +1,151 @@
-//! The composer dock (`App.tsx`'s input area): pending attachments, the
-//! reply banner, the multiline input with a send button, and the model
-//! pill. Submits on Enter (`SubmitBehavior::Submit`).
+//! The composer (Grok's, App.tsx:2153): one card — the reply chip, the
+//! attachment strip, then the input with `+` at the lower-left and
+//! ModelPill + dictate + send/voice at the lower-right. A short draft
+//! overlays the controls on the single input row (its padding reserves
+//! them); `composerTall` (a newline, 64+ chars, a reply or attachments)
+//! moves them into a 40pt band under the input. The agent status row
+//! floats above the card. The `+` opens the attach menu at the button.
 
 use nsh_core::ui::prelude::*;
 
 use crate::icons::icon;
 use crate::live::store;
 use crate::statusfx;
+use crate::store::AtItem;
 use crate::theme;
 
-/// The bottom dock.
+fn right_w() -> Signal<f32> {
+    store().composer_right_w
+}
+/// `dockH` — the floating composer's height; the transcript pads its
+/// end by it (App.tsx:179).
+pub(crate) fn dock_h() -> Signal<f32> {
+    store().composer_dock_h
+}
+/// `plusMenu` — the + button's measured page position.
+pub(crate) fn plus_menu() -> Signal<Option<(f32, f32)>> {
+    store().plus_menu
+}
+fn plus_hover() -> Signal<String> {
+    store().plus_hover
+}
+fn attach_hover() -> Signal<String> {
+    store().attach_hover
+}
+fn at_items() -> Signal<Vec<AtItem>> {
+    store().at_items
+}
+fn at_start() -> Signal<i64> {
+    store().at_start
+}
+fn at_seq() -> Signal<u64> {
+    store().at_seq
+}
+
+fn json_s(v: &serde_json::Value, k: &str) -> String {
+    v.get(k)
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// `composerTall` — several lines, a long line, or a reply / attachments
+/// (App.tsx:491).
+fn composer_tall() -> bool {
+    let st = store();
+    st.draft.get().contains('\n')
+        || st.draft.get().len() > 64
+        || st.reply_to.get().is_some()
+        || !st.attachments.get().is_empty()
+}
+
+/// `sendFill` — the bot's color, or the adaptive light fill on neutral
+/// bots (white / gray / plain chats) (App.tsx:254).
+fn send_fill() -> AdaptiveColor {
+    let bot_color = store()
+        .active_bot()
+        .and_then(|b| b.color.parse::<Hsla>().ok());
+    let neutral = match &bot_color {
+        None => true,
+        Some(c) => {
+            let hex = c.to_hex().to_uppercase();
+            hex == "#FFFFFF" || hex == "#777777"
+        }
+    };
+    if neutral {
+        theme::TEXT
+    } else {
+        bot_color.map(AdaptiveColor::from).unwrap_or(theme::BUBBLE)
+    }
+}
+/// `sendInk` (App.tsx:255).
+fn send_ink() -> AdaptiveColor {
+    let bot_color = store()
+        .active_bot()
+        .and_then(|b| b.color.parse::<Hsla>().ok());
+    let neutral = match &bot_color {
+        None => true,
+        Some(c) => {
+            let hex = c.to_hex().to_uppercase();
+            hex == "#FFFFFF" || hex == "#777777"
+        }
+    };
+    if neutral {
+        theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.0706, 1.0))
+    } else {
+        theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 1.0, 1.0))
+    }
+}
+
+/// `tc("#f5f5f5<a>")`.
+fn tc(a: f32) -> AdaptiveColor {
+    theme::tone(theme::hsla(0.0, 0.0, 0.11, a), theme::hsla(0.0, 0.0, 0.96, a))
+}
+
+/// `composerTip` — 12pt on the elevated surface, above the button
+/// (App.tsx:499).
+fn composer_tip(label: &str) -> impl IntoElement {
+    view()
+        .absolute()
+        .bottom(px(34.0))
+        .right(px(0.0))
+        .py(px(4.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
+        .bg(theme::CARD)
+        .border(px(0.5))
+        .border_color(theme::BORDER_F)
+        .child(
+            text(label.to_owned())
+                .number_of_lines(1)
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(theme::TEXT),
+        )
+}
+
+/// The bottom dock (App.tsx:2157).
 pub(crate) fn composer() -> impl IntoElement {
-    let dock_h = signal(22.0f32);
     view()
         .absolute()
         .bottom(px(0.0))
         .left(px(0.0))
         .right(px(0.0))
-        .px_4()
-        .pb_3()
-        .child(reply_banner())
-        .child(attachment_strip())
+        .pointer_events(PointerEvents::BoxNone)
+        .on_layout(|b: &Bounds<Points>| dock_h().set(b.size.height.0))
+        // agent status row — the mark + shimmering label (App.tsx:2164).
         .child(
             view()
-                .flex_row()
-                .items_end()
-                .gap_2()
-                .bg(theme::DOCK)
-                .rounded(px(16.0))
-                .border_1()
-                .border_color(theme::BORDER_S)
-                .pl_3()
-                .pr_2()
-                .py_2()
-                .child(attach_button())
-                .child(
-                    input()
-                        .flex_1()
-                        .value(move || store().draft.get())
-                        .multiline(true)
-                        .submit_behavior(if is_desktop() {
-                            SubmitBehavior::Submit
-                        } else {
-                            SubmitBehavior::Newline
-                        })
-                        .return_key_type(ReturnKeyType::Send)
-                        .placeholder("Message…")
-                        .placeholder_color(|| color(theme::GHOST))
-                        .text_size(px(14.0))
-                        .line_height(px(20.0))
-                        .text_color(theme::TEXT)
-                        .on_change(move |v: &str| store().draft.set(v.to_owned()))
-                        .on_content_size_change(move |size: &Size<Points>| {
-                            dock_h.set(size.height.clamp(px(22.0), px(160.0)).0);
-                        })
-                        .on_submit(move |_: &str| store().send())
-                        .h(move || px(dock_h.get() + 20.0)),
-                )
-                .child(send_button()),
-        )
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .pt_2()
-                .child(model_pill())
-                .child(view().flex_1())
+                .self_center()
+                .w_full()
+                .max_w(px(992.0))
+                .px(px(20.0))
+                .pb(px(4.0))
                 .child(dynamic(move || {
-                    // `agent() = agentRuns()[activeId()]` — the row only
-                    // mounts while the run's own thread is open; reading
-                    // `active_bot` tracked here keeps the mark in step
-                    // with avatar edits.
                     let st = store();
                     if st.agent().is_none() {
                         return view().into_element();
                     }
-                    // `agentSet`'s row: the active bot's mark playing the
-                    // run state + the ambient fx + the label.
-                    // `seed={agent().bot ?? activeBot()?.id ?? "status"}`.
                     let bot = st.active_bot();
                     let seed = st
                         .agent()
@@ -101,170 +168,616 @@ pub(crate) fn composer() -> impl IntoElement {
                     .into_element()
                 })),
         )
-}
-
-fn model_pill() -> impl IntoElement {
-    let hovered = signal(false);
-    view()
-        .label("Choose model")
+        // the dock shares the transcript's column (App.tsx:2188).
         .child(
             view()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .px_2()
-                .py(px(4.0))
-                .rounded(px(12.0))
-                .bg(move || if hovered.get() { theme::HOVER } else { theme::PILL_BG })
-                .border_1()
-                .border_color(theme::BORDER_F)
-                .child(
-                    text(move || {
-                        let st = store();
-                        let id = st.model.get();
-                        st.models
-                            .get()
-                            .iter()
-                            .find(|m| m.id == id)
-                            .map(|m| m.label.clone())
-                            .unwrap_or(if id.is_empty() { "model".to_owned() } else { id })
-                    })
-                    .text_size(px(11.0))
-                    .text_color(theme::MUTED),
-                )
-                .child(icon("chev-down")),
+                .self_center()
+                .w_full()
+                .max_w(px(992.0))
+                .px_4()
+                .pb_4()
+                .child(dock_card()),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_press(|| store().models_open.set(true))
 }
 
-fn send_button() -> impl IntoElement {
-    let hovered = signal(false);
+/// The card: radius 18, 0.5px border at 12%, a soft shadow; the reply
+/// chip, attachment strip and input area live inside (App.tsx:2189).
+fn dock_card() -> View {
     view()
-        .label("Send")
+        .bg(theme::CARD)
+        .rounded(px(18.0))
+        .border(px(0.5))
+        .border_color(theme::BORDER_S)
+        // `0 2px 8px -1px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08)`.
+        .shadow([
+            BoxShadow {
+                offset_x: px(0.0),
+                offset_y: px(2.0),
+                blur: px(8.0),
+                spread: px(-1.0),
+                color: hsla(0.0, 0.0, 0.0, 0.12).into(),
+                inset: false,
+            },
+            BoxShadow {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur: px(2.0),
+                spread: px(0.0),
+                color: hsla(0.0, 0.0, 0.0, 0.08).into(),
+                inset: false,
+            },
+        ])
+        .overflow_hidden()
+        .child(reply_chip())
+        .child(attachment_strip())
+        .child(input_area())
+}
+
+/// The reply chip inside the card (App.tsx:2199): 💬︎ + the collapsed
+/// quote + a close.
+fn reply_chip() -> impl IntoElement {
+    dynamic(|| {
+        let Some(r) = store().reply_to.get() else {
+            return view().into_element();
+        };
+        let quote: String = r
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect();
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .pt(px(10.0))
+            .px_3()
+            .child(text("💬︎").text_size(px(12.0)).text_color(tc(0.54)))
+            .child(
+                text(format!("“{quote}”"))
+                    .number_of_lines(1)
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .line_height(px(18.0))
+                    .text_color(tc(0.54)),
+            )
+            .child(
+                view()
+                    .p_1()
+                    .label("Cancel reply")
+                    .on_press(|| store().reply_to.set(None))
+                    .child(icon("close")),
+            )
+            .into_element()
+    })
+}
+
+/// The attachment strip — a horizontal row of 64pt `FileTile`s, each
+/// with a hover ✕ badge (App.tsx:2210).
+fn attachment_strip() -> impl IntoElement {
+    dynamic(|| {
+        if store().attachments.get().is_empty() {
+            return view().into_element();
+        }
+        scroll()
+            .horizontal()
+            .child(
+                view()
+                    .flex_row()
+                    .py(px(6.0))
+                    .px_3()
+                    .gap_2()
+                    .child(each(
+                        || store().attachments.get(),
+                        |a| format!("{}:{}", a.url, a.name),
+                        |a, _| attach_tile(a),
+                    )),
+            )
+            .into_element()
+    })
+}
+
+/// One 64pt tile + the hover remove badge (App.tsx:2214).
+fn attach_tile(a: ReadSignal<crate::store::Attach>) -> impl IntoElement {
+    let key = {
+        let a = a.get();
+        if a.url.is_empty() { a.path.clone() } else { a.url.clone() }
+    };
+    let key_in = key.clone();
+    let key_out = key.clone();
+    let key_show = key.clone();
+    let label = a.get().name.clone();
+    view()
+        .size(px(64.0))
+        .label(if label.is_empty() { key.clone() } else { label })
+        .on_hover_in(move || attach_hover().set(key_in.clone()))
+        .on_hover_out(move || {
+            if attach_hover().get_untracked() == key_out {
+                attach_hover().set(String::new())
+            }
+        })
+        .child(crate::files::file_tile(&a.get(), 64.0))
+        .child(when(
+            move || attach_hover().get() == key_show,
+            move || {
+                let key = a.get().url.clone();
+                view()
+                    .absolute()
+                    .top(px(2.0))
+                    .right(px(3.0))
+                    .size(px(20.0))
+                    .rounded(px(10.0))
+                    .bg(theme::TEXT)
+                    .items_center()
+                    .justify_center()
+                    .label("Remove")
+                    .on_press(move || {
+                        store()
+                            .attachments
+                            .update(|l| l.retain(|x| x.url != key))
+                    })
+                    .child(
+                        text("✕")
+                            .text_size(px(10.0))
+                            .text_color(theme::tone(
+                                theme::hsla(0.0, 0.0, 0.96, 1.0),
+                                theme::hsla(0.0, 0.0, 0.07, 1.0),
+                            )),
+                    )
+            },
+        ))
+}
+
+/// The input area: the @-picker, the capped input wrapper, and the
+/// absolute controls (App.tsx:2247).
+fn input_area() -> impl IntoElement {
+    view()
+        .child(at_picker())
+        // the wrapper carries the cap: the input's box otherwise grows
+        // to all its text (App.tsx:2274).
         .child(
             view()
-                .size(px(32.0))
-                .rounded(px(16.0))
+                .pb(move || px(if composer_tall() { 40.0 } else { 0.0 }))
+                .max_h(move || px(if composer_tall() { 174.0 } else { 40.0 }))
+                .overflow_hidden()
+                .child(the_input()),
+        )
+        .child(plus_button())
+        .child(right_controls())
+}
+
+/// `Input` — 14/20, capped at 6 lines; short drafts keep one row
+/// between + and the controls, tall ones go full width above the
+/// controls band (App.tsx:2275).
+fn the_input() -> Input {
+    input()
+        .value(move || store().draft.get())
+        .multiline(true)
+        .submit_behavior(if is_desktop() {
+            SubmitBehavior::Submit
+        } else {
+            SubmitBehavior::Newline
+        })
+        .return_key_type(ReturnKeyType::Send)
+        .placeholder(move || {
+            let st = store();
+            if st.reply_to.get().is_some() {
+                "Reply…".to_owned()
+            } else if !st.attachments.get().is_empty() {
+                "Add a message, or hit send".to_owned()
+            } else if let Some(b) = st.active_bot() {
+                format!("Message {}", b.name)
+            } else {
+                "Ask for a UI…".to_owned()
+            }
+        })
+        .placeholder_color(|| color(tc(0.54)))
+        .text_size(px(14.0))
+        .line_height(px(20.0))
+        .text_color(theme::TEXT)
+        .on_change(move |v: &str| draft_changed(v))
+        .on_submit(move |_: &str| store().send())
+        .pl(move || px(if composer_tall() { 12.0 } else { 44.0 }))
+        .pr(move || {
+            px(if composer_tall() {
+                12.0
+            } else {
+                right_w().get() + 16.0
+            })
+        })
+        .pt(px(10.0))
+        .pb(move || px(if composer_tall() { 4.0 } else { 10.0 }))
+        .min_h(move || px(if composer_tall() { 34.0 } else { 40.0 }))
+        .max_h(move || px(if composer_tall() { 134.0 } else { 40.0 }))
+}
+
+/// The `+` button — measures itself and opens the menu at its page
+/// position (App.tsx:2308).
+fn plus_button() -> impl IntoElement {
+    let node = element_ref();
+    view()
+        .absolute()
+        .left(px(8.0))
+        .bottom(px(6.0))
+        .child(
+            view()
+                .element_ref(&node)
+                .size(px(28.0))
+                .rounded(px(14.0))
+                .bg(tc(0.06))
                 .items_center()
                 .justify_center()
-                .bg(move || {
-                    if hovered.get() {
-                        theme::ACCENT
-                    } else {
-                        theme::CARD2
-                    }
+                .label("Composer actions")
+                .on_press(move || {
+                    spawn(async move {
+                        if let Some(m) = node.measure().await {
+                            plus_menu().set(Some((m.page.x.0, m.page.y.0)));
+                        }
+                    });
                 })
-                .child(icon("send")),
+                .child(icon("plus")),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_press(|| store().send())
 }
 
-fn attach_button() -> impl IntoElement {
+/// The lower-right row: `ModelPill` + dictate + send/voice
+/// (App.tsx:2322). `onLayout` keeps `rightW` for the input's padding.
+fn right_controls() -> impl IntoElement {
     view()
-        .label("Attach")
+        .absolute()
+        .right(px(8.0))
+        .bottom(px(6.0))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .on_layout(|b: &Bounds<Points>| right_w().set(b.size.width.0))
+        .child(crate::models::model_pill())
         .child(
+            // dictate — a stub like ⌘D's "coming soon" run.
             view()
                 .size(px(28.0))
                 .rounded(px(14.0))
                 .items_center()
                 .justify_center()
-                .child(icon("paperclip")),
+                .label("Dictate")
+                .on_hover_in(|| attach_hover().set("__dictate".into()))
+                .on_hover_out(|| attach_hover().set(String::new()))
+                .on_press(|| store().dictate_stub())
+                .child(icon("mic"))
+                .child(when(
+                    || attach_hover().get() == "__dictate",
+                    || composer_tip("Click or hold ⌘D to dictate"),
+                )),
         )
-        .on_press(|| {
+        .child(dynamic(|| {
             let st = store();
-            st.ctx.set(Some(crate::store::CtxMenu {
-                x: 60.0,
-                y: 500.0,
-                items: vec![crate::store::CtxItem::row(
-                    "Attach is host-side",
-                    "paperclip",
-                    "noop",
-                    String::new(),
-                )],
-            }));
-        })
-}
-
-fn reply_banner() -> impl IntoElement {
-    dynamic(|| {
-        let Some(r) = store().reply_to.get() else {
-            return view().into_element();
-        };
-        view()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .mb_1()
-            .bg(theme::CARD)
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(theme::BORDER_F)
-            .child(icon("reply"))
-            .child(
+            let has = !st.draft.get().trim().is_empty() || !st.attachments.get().is_empty();
+            if has {
                 view()
-                    .flex_1()
+                    .size(px(28.0))
+                    .rounded(px(14.0))
+                    .bg(move || send_fill())
+                    .items_center()
+                    .justify_center()
+                    .label("Send message")
+                    .on_press(|| store().send())
                     .child(
-                        text(r.name)
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::MUTED),
+                        text("↑")
+                            .text_size(px(15.0))
+                            .text_color(move || send_ink()),
                     )
-                    .child(
-                        text(r.text)
-                            .text_size(px(12.0))
-                            .text_color(theme::DIM)
-                            .number_of_lines(1),
-                    ),
-            )
-            .child(
+                    .into_element()
+            } else {
+                // voice chat — the waveform glyph; decorative for now.
                 view()
-                    .label("Cancel reply")
-                    .child(icon("close"))
-                    .on_press(|| store().reply_to.set(None)),
-            )
-            .into_element()
-    })
+                    .size(px(28.0))
+                    .rounded(px(14.0))
+                    .bg(move || send_fill())
+                    .items_center()
+                    .justify_center()
+                    .label("Start voice chat")
+                    .on_hover_in(|| attach_hover().set("__voice".into()))
+                    .on_hover_out(|| attach_hover().set(String::new()))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(1.5))
+                            .children([5.0f32, 9.0, 13.0, 9.0, 5.0].into_iter().map(|h| {
+                                view()
+                                    .w(px(1.8))
+                                    .h(px(h))
+                                    .rounded(px(1.0))
+                                    .bg(move || send_ink())
+                                    .into_element()
+                            })),
+                    )
+                    .child(when(
+                        || attach_hover().get() == "__voice",
+                        || composer_tip("Start voice chat"),
+                    ))
+                    .into_element()
+            }
+        }))
 }
 
-fn attachment_strip() -> impl IntoElement {
+/// `draftChanged` — the draft's signal + the @-mention scan: typing
+/// `@<query>` opens the artifact/file picker (App.tsx:463).
+fn draft_changed(t: &str) {
+    let st = store();
+    st.draft.set(t.to_owned());
+    let i = if at_start().get_untracked() >= 0 {
+        at_start().get_untracked() as usize
+    } else {
+        t.rfind('@').unwrap_or(usize::MAX)
+    };
+    if i == usize::MAX {
+        at_items().set(Vec::new());
+        at_start().set(-1);
+        return;
+    }
+    let tail = &t[i + 1..];
+    if tail.chars().any(|c| c.is_whitespace()) || tail.len() > 40 {
+        at_items().set(Vec::new());
+        at_start().set(-1);
+        return;
+    }
+    at_start().set(i as i64);
+    let n = at_seq().get_untracked() + 1;
+    at_seq().set(n);
+    let thread = st.active_id.get_untracked();
+    let q = tail.to_owned();
+    spawn(async move {
+        let v = crate::client::get(&format!(
+            "/artifacts?thread={}&q={}",
+            crate::client::urlenc(&thread),
+            crate::client::urlenc(&q)
+        ))
+        .await;
+        if at_seq().get_untracked() != n {
+            return;
+        }
+        let items: Vec<AtItem> = v
+            .and_then(|v| {
+                v.get("items").and_then(|x| x.as_array()).map(|l| {
+                    l.iter()
+                        .map(|x| AtItem {
+                            kind: json_s(x, "kind"),
+                            name: json_s(x, "name"),
+                            title: json_s(x, "title"),
+                            file: json_s(x, "file"),
+                            v: x.get("v").and_then(|n| n.as_i64()).unwrap_or(0),
+                            uri: json_s(x, "uri"),
+                            scope: json_s(x, "scope"),
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        at_items().set(items);
+    });
+}
+
+/// `atPick` — the @ tail becomes the item's title and its uri stages as
+/// an attachment the server resolves (App.tsx:476).
+fn at_pick(it: &AtItem) {
+    let st = store();
+    let t = st.draft.get_untracked();
+    let i = at_start().get_untracked().max(0) as usize;
+    let name = if it.title.is_empty() {
+        it.name.clone()
+    } else {
+        it.title.clone()
+    };
+    st.draft.set(format!("{}{} ", &t[..i.min(t.len())], name));
+    at_items().set(Vec::new());
+    at_start().set(-1);
+    st.attachments.update(|a| {
+        a.push(crate::store::Attach {
+            kind: "file".to_owned(),
+            name: name.clone(),
+            url: it.uri.clone(),
+            ..Default::default()
+        })
+    });
+}
+
+/// The @-mention dropdown — this thread's apps first, then global
+/// (App.tsx:2250).
+fn at_picker() -> impl IntoElement {
     dynamic(|| {
-        let atts = store().attachments.get();
-        if atts.is_empty() {
+        let items = at_items().get();
+        if items.is_empty() {
             return view().into_element();
         }
         view()
-            .flex_row()
-            .flex_wrap()
-            .gap_2()
-            .pb_2()
-            .child(each(
-                move || store().attachments.get(),
-                |a| a.path.clone(),
-                |a_sig, _| {
-                    let a = a_sig.get();
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .px_2()
-                        .py(px(4.0))
-                        .bg(theme::CARD2)
-                        .rounded(px(7.0))
-                        .child(icon("folder"))
-                        .child(
-                            text(if a.name.is_empty() { a.path.clone() } else { a.name.clone() })
-                                .text_size(px(11.0))
-                                .text_color(theme::MUTED)
-                                .number_of_lines(1),
-                        )
-                },
-            ))
+            .mb(px(6.0))
+            .rounded(px(10.0))
+            .bg(theme::CARD)
+            .border(px(0.5))
+            .border_color(theme::BORDER_F)
+            .py(px(4.0))
+            .max_h(px(220.0))
+            .overflow_hidden()
+            .children(items.into_iter().map(at_row))
             .into_element()
     })
+}
+
+fn at_row(it: AtItem) -> impl IntoElement {
+    let meta = if it.kind == "app" {
+        format!(
+            "{}{}{}",
+            it.name,
+            if it.v > 0 { format!(" · v{}", it.v) } else { String::new() },
+            if it.scope == "thread" { " · this chat" } else { "" },
+        )
+    } else {
+        it.file.clone()
+    };
+    let it2 = it.clone();
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px(px(10.0))
+        .py(px(6.0))
+        .on_press(move || at_pick(&it2))
+        .child(
+            view()
+                .size(px(20.0))
+                .rounded(px(5.0))
+                .items_center()
+                .justify_center()
+                .bg(if it.kind == "app" {
+                    AdaptiveColor::from(crate::plugins::hue(&it.name))
+                } else {
+                    tc(0.10)
+                })
+                .child(
+                    text(if it.kind == "app" { "</>" } else { "doc" })
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if it.kind == "app" {
+                            theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 1.0, 1.0))
+                        } else {
+                            tc(0.54)
+                        }),
+                ),
+        )
+        .child(
+            text(if it.title.is_empty() {
+                it.name.clone()
+            } else {
+                it.title.clone()
+            })
+            .number_of_lines(1)
+            .flex_1()
+            .text_size(px(13.0))
+            .text_color(theme::TEXT),
+        )
+        .child(text(meta).text_size(px(11.0)).text_color(tc(0.40)))
+}
+
+/// `plusMenu` — the small card just above the + button
+/// (App.tsx:3368): Attach files · Teach a task. Mounted at the root.
+pub(crate) fn plus_layer() -> impl IntoElement {
+    dynamic(|| {
+        let Some((x, y)) = plus_menu().get() else {
+            return view().into_element();
+        };
+        view()
+            .size_full()
+            .absolute()
+            .child(
+                view()
+                    .size_full()
+                    .on_press(|| plus_menu().set(None)),
+            )
+            .child(
+                view()
+                    .absolute()
+                    .left(px(x - 4.0))
+                    .top(px(y - 6.0 - 64.0))
+                    .w(px(172.0))
+                    .p_1()
+                    .rounded(px(10.0))
+                    .bg(theme::CARD)
+                    .border(px(0.5))
+                    .border_color(theme::BORDER_F)
+                    // `0 8px 20px -4px rgba(0,0,0,0.4)`.
+                    .shadow([BoxShadow {
+                        offset_x: px(0.0),
+                        offset_y: px(8.0),
+                        blur: px(20.0),
+                        spread: px(-4.0),
+                        color: hsla(0.0, 0.0, 0.0, 0.4).into(),
+                        inset: false,
+                    }])
+                    .on_press(|| {})
+                    .child(plus_row(
+                        "attach",
+                        "Attach files",
+                        true,
+                        || store().pick_attachments(),
+                    ))
+                    .child(plus_row("teach", "Teach a task", false, || {})),
+            )
+            .into_element()
+    })
+}
+
+/// One `+`-menu row — the teach row is disabled at 0.5 with a red
+/// record dot for an icon (App.tsx:3411).
+fn plus_row(id: &str, label: &str, enabled: bool, run: impl Fn() + 'static) -> impl IntoElement {
+    let id = id.to_owned();
+    let id2 = id.clone();
+    let id3 = id.clone();
+    let label = label.to_owned();
+    let is_teach = id == "teach";
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(28.0))
+        .px_2()
+        .rounded(px(6.0))
+        .bg(move || {
+            if enabled && plus_hover().get() == id {
+                tc(0.06)
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .on_hover_in(move || plus_hover().set(id2.clone()))
+        .on_hover_out(move || {
+            if plus_hover().get_untracked() == id3 {
+                plus_hover().set(String::new())
+            }
+        })
+        .on_press(move || {
+            if !enabled {
+                return;
+            }
+            plus_menu().set(None);
+            run();
+        })
+        .child(
+            view()
+                .w(px(14.0))
+                .items_center()
+                .child(if is_teach {
+                    // a bordered circle with a red center (App.tsx:3413).
+                    view()
+                        .size(px(11.0))
+                        .rounded(px(6.0))
+                        .border(px(1.5))
+                        .border_color(theme::tone(
+                            theme::hsla(0.98, 0.82, 0.57, 1.0),
+                            theme::hsla(0.98, 0.82, 0.57, 1.0),
+                        ))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            view()
+                                .size(px(5.0))
+                                .rounded(px(3.0))
+                                .bg(theme::tone(
+                                    theme::hsla(0.98, 0.82, 0.57, 1.0),
+                                    theme::hsla(0.98, 0.82, 0.57, 1.0),
+                                )),
+                        )
+                        .into_element()
+                } else {
+                    icon("attach").into_element()
+                }),
+        )
+        .child(
+            text(label)
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(theme::TEXT),
+        )
 }

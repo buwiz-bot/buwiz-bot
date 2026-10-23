@@ -32,7 +32,7 @@ fn run(act: &str) {
     match act {
         "new" => st.new_thread(),
         "bot" => st.bot_modal.set(true),
-        "models" => st.models_open.set(true),
+        "models" => crate::models::open_list(),
         "side" => st
             .side_mode
             .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned()),
