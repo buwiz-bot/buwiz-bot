@@ -220,6 +220,16 @@ pub struct CtxMenu {
     pub items: Vec<CtxItem>,
 }
 
+/// `agentRuns[thread]` — the run live in a thread (App.tsx:113):
+/// `bot` is the credited persona (None when the thread has none), the
+/// mark plays `state`, the status row reads `label`.
+#[derive(Clone, PartialEq)]
+pub struct AgentRun {
+    pub state: String,
+    pub label: String,
+    pub bot: Option<String>,
+}
+
 /// The transient "job settled" flash (agent finished / failed): the bot's
 /// mark plays `state` for a few seconds (`settle()` in App.tsx).
 #[derive(Clone, PartialEq)]
@@ -411,15 +421,9 @@ pub struct Store {
 
     /// Sending / jobs.
     pub sending: Signal<bool>,
-    /// The status row's label (`detail || phase`).
-    pub run_status: Signal<String>,
-    /// The status mark's state (`PHASE_STATE[phase] ?? "working"`).
-    pub run_state: Signal<String>,
-    /// The bot the run is credited to (`agentRuns[].bot` in App.tsx).
-    pub run_bot: Signal<String>,
-    /// The thread the run belongs to — `agentRuns` is keyed by thread, so
-    /// the status row only mounts while its own thread is open.
-    pub run_thread: Signal<String>,
+    /// `agentRuns` — the live run per thread; a thread's status row and
+    /// its bot's mark read their own entry (App.tsx:113).
+    pub agent_runs: Signal<BTreeMap<String, AgentRun>>,
     /// `emphBot` — the bot id hovered through the status row; "" when off.
     /// Emphasizes both the status mark and the matching sidebar mark.
     pub emph_bot: Signal<String>,
@@ -492,10 +496,7 @@ impl Store {
             reply_to: signal(None),
             at_open: signal(false),
             sending: signal(false),
-            run_status: signal(String::new()),
-            run_state: signal(String::new()),
-            run_bot: signal(String::new()),
-            run_thread: signal(String::new()),
+            agent_runs: signal(BTreeMap::new()),
             emph_bot: signal(String::new()),
             settled: signal(None),
             models: signal(Vec::new()),
@@ -746,13 +747,41 @@ impl Store {
             .collect()
     }
 
-    /// `botSt(id)` — a bot's mark state: the run's state while it runs
-    /// (when the run is credited to it), the settle outcome for a few
-    /// seconds after, else `idle`.
+    /// `agent()` — the run of the open thread (`agentRuns()[activeId()]`).
+    pub fn agent(&'static self) -> Option<AgentRun> {
+        self.agent_runs
+            .get()
+            .get(&self.active_id.get())
+            .cloned()
+    }
+
+    /// `agentSet(thread, bot, v)` — set or clear a thread's run.
+    pub fn agent_set(
+        &'static self,
+        thread: String,
+        bot: Option<String>,
+        v: Option<(String, String)>,
+    ) {
+        self.agent_runs.update(|m| {
+            if let Some((state, label)) = v {
+                m.insert(thread, AgentRun { state, label, bot });
+            } else {
+                m.remove(&thread);
+            }
+        });
+    }
+
+    /// `botSt(id)` — a bot's mark state: its run's activity while it
+    /// runs (any thread), the settle outcome for a few seconds after,
+    /// else `idle` (App.tsx:249).
     pub fn bot_st(&'static self, id: &str) -> String {
-        let state = self.run_state.get();
-        if !state.is_empty() && self.run_bot.get() == id {
-            return state;
+        if let Some(r) = self
+            .agent_runs
+            .get()
+            .values()
+            .find(|r| r.bot.as_deref() == Some(id))
+        {
+            return r.state.clone();
         }
         if let Some(st) = self.settled.get().as_ref() {
             if st.bot == id {
@@ -899,10 +928,72 @@ impl Store {
 
     // -- chat --------------------------------------------------------------
 
+    /// `mockStatus(arg)` — the `/status:` slash command (App.tsx:143):
+    /// `/status:demo` cycles every state, `/status:<name>` sets one,
+    /// `/status:off|idle|clear` stops. Local only — never hits `/chat`.
+    pub fn mock_status(&'static self, arg: &str) {
+        let thread = self.active_id.get_untracked();
+        let bot = self.active_bot_untracked().map(|b| b.id);
+        self.settled.set(None);
+        if arg.is_empty() || arg == "off" || arg == "idle" || arg == "clear" {
+            self.agent_set(thread, bot, None);
+            return;
+        }
+        if arg == "demo" {
+            // `names = STATES.filter(n => n !== "idle")`, 1.7s each.
+            let names: Vec<&'static str> = crate::mark::STATES
+                .iter()
+                .map(|(n, _)| *n)
+                .filter(|n| *n != "idle")
+                .collect();
+            if let Some(first) = names.first() {
+                let label = crate::statusfx::status_label(first);
+                self.agent_set(
+                    thread.clone(),
+                    bot.clone(),
+                    Some((first.to_string(), format!("{first} — {label}"))),
+                );
+            }
+            spawn(async move {
+                for name in names.iter().skip(1) {
+                    timer(std::time::Duration::from_millis(1700)).await;
+                    let label = crate::statusfx::status_label(name);
+                    self.agent_set(
+                        thread.clone(),
+                        bot.clone(),
+                        Some((name.to_string(), format!("{name} — {label}"))),
+                    );
+                }
+                timer(std::time::Duration::from_millis(1700)).await;
+                self.agent_set(thread, bot, None);
+            });
+            return;
+        }
+        if crate::mark::STATES.iter().any(|(n, _)| *n == arg) {
+            let label = crate::statusfx::status_label(arg);
+            self.agent_set(thread, bot, Some((arg.to_owned(), label)));
+        } else {
+            self.agent_set(
+                thread,
+                bot,
+                Some((
+                    "idle".to_owned(),
+                    format!("unknown status \"{arg}\" — try /status:demo"),
+                )),
+            );
+        }
+    }
+
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
         let text = self.draft.get_untracked().trim().to_owned();
         if text.is_empty() || self.sending.get_untracked() {
+            return;
+        }
+        // `/status:` is a local command — the TSX never posts it.
+        if let Some(arg) = text.strip_prefix("/status:") {
+            self.draft.set(String::new());
+            self.mock_status(arg.trim());
             return;
         }
         let reply_to = self.reply_to.get_untracked();
@@ -919,11 +1010,13 @@ impl Store {
         // `agentSet(thread, bot, {state:"working",label:statusLabel("working")})`
         // — the run is credited to the open thread's bot so its marks can
         // play the state.
-        self.run_bot
-            .set(self.active_bot_untracked().map(|b| b.id).unwrap_or_default());
-        self.run_thread.set(self.active_id.get_untracked());
-        self.run_state.set("working".to_owned());
-        self.run_status.set(crate::statusfx::status_label("working"));
+        let thread = self.active_id.get_untracked();
+        let bot = self.active_bot_untracked().map(|b| b.id);
+        self.agent_set(
+            thread.clone(),
+            bot.clone(),
+            Some(("working".to_owned(), crate::statusfx::status_label("working"))),
+        );
         spawn(async move {
             // /chat reads {prompt, reply:{i,text,files}, attachments} and
             // runs on the server's active thread — select first so the
@@ -938,19 +1031,30 @@ impl Store {
                 "reply": reply_to.map(|r| serde_json::json!({"i": r.i, "text": r.text})),
                 "attachments": files,
             });
+            let mut job = None;
             if let Some(v) = client::post("/chat", body).await {
                 // The job id is a number in the payload.
-                let id = v
+                job = v
                     .get("id")
                     .and_then(|x| x.as_i64().or_else(|| x.as_str().and_then(|s| s.parse().ok())));
-                if let Some(id) = id {
-                    self.watch_run(id.to_string()).await;
+            }
+            match job {
+                Some(id) => self.watch_run(id.to_string(), thread, bot).await,
+                // `agentSet(thread, bot, {state:"failed",…})` then drop
+                // the row — the server never queued the run.
+                None => {
+                    self.agent_set(
+                        thread.clone(),
+                        bot.clone(),
+                        Some((
+                            "failed".to_owned(),
+                            "no generator — run the app server".to_owned(),
+                        )),
+                    );
+                    self.agent_set(thread, bot, None);
                 }
             }
             self.sending.set(false);
-            self.run_status.set(String::new());
-            self.run_state.set(String::new());
-            self.run_thread.set(String::new());
             // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
             self.emph_bot.set(String::new());
             self.refresh_turns();
@@ -959,15 +1063,20 @@ impl Store {
 
     /// Poll `/status?id=` until the run settles; each tick refreshes turns
     /// so streamed text lands without waiting for the end. The payload is
-    /// `{id, seq, phase, detail, done}`.
-    async fn watch_run(&'static self, job: String) {
+    /// `{id, seq, phase, detail, done}`. `thread`/`bot` are the run's
+    /// `agentRuns` key and credit.
+    async fn watch_run(&'static self, job: String, thread: String, bot: Option<String>) {
         for _ in 0..600 {
             let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
             let status = if detail.is_empty() { phase.clone() } else { detail };
-            self.run_status.set(status.clone());
-            self.run_state.set(phase_state(&phase).to_owned());
+            // `agentSet(thread, bot, {state, label})` every tick.
+            self.agent_set(
+                thread.clone(),
+                bot.clone(),
+                Some((phase_state(&phase).to_owned(), status.clone())),
+            );
             self.refresh_turns();
             self.refresh_threads();
             if v.get("done").and_then(|x| x.as_bool()).unwrap_or(false)
@@ -981,15 +1090,12 @@ impl Store {
                 // Grok: `settle(bot, /^(failed|generator error)/.test(detail)
                 //   ? "failed" : "finished")`.
                 let ok = !(status.starts_with("failed") || status.starts_with("generator error"));
-                let bot = self.run_bot.get_untracked();
-                self.run_state.set(String::new());
-                self.run_status.set(String::new());
-                self.run_thread.set(String::new());
+                self.agent_set(thread, bot.clone(), None);
                 self.emph_bot.set(String::new());
                 self.settled.set(Some(Settle {
                     name: s(&v, "name"),
                     ok,
-                    bot,
+                    bot: bot.unwrap_or_default(),
                     state: if ok { "finished".into() } else { "failed".into() },
                 }));
                 let settled = self.settled;

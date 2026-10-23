@@ -24,6 +24,16 @@ pub(crate) fn hot_area() -> impl IntoElement {
     let st = store();
     st.boot();
 
+    // `ROX_STATUS=<state|demo>`: debug-mount the run-status surface —
+    // the composer status row and bot marks play the state without a
+    // `/status:` send (same `agentSet` path, no server).
+    if let Ok(s) = std::env::var("ROX_STATUS") {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(1500)).await;
+            store().mock_status(&s);
+        });
+    }
+
     // ⌘K palette, ⌘N new chat — the shell's bindings.
     on_key("mod+k", |_| store().palette.set(true));
     on_key("mod+n", |_| store().new_thread());

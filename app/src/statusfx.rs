@@ -164,8 +164,12 @@ pub(crate) fn morph_kind(state: &str) -> &'static str {
 /// `FxOverlay({fx,size,ink})` — `drawFx`'s ambient ring around the mark on
 /// a `size*1.5` canvas overhanging the cell by `size*0.25`. `state` is the
 /// run-state signal; `morphKind` decides what (if anything) is drawn.
-pub(crate) fn fx_overlay(state: Signal<String>, size: f32, ink: String) -> impl IntoElement {
-    fx_overlay_fn(std::rc::Rc::new(move || state.get()), size, ink)
+pub(crate) fn fx_overlay(
+    state: std::rc::Rc<dyn Fn() -> String>,
+    size: f32,
+    ink: String,
+) -> impl IntoElement {
+    fx_overlay_fn(state, size, ink)
 }
 
 /// `fx_overlay` with a state *source* — `botSt` closures and anything else
@@ -209,12 +213,12 @@ pub(crate) fn fx_overlay_fn(
 
 /// `StatusAvatar` — the status row's mark: it always plays the run state,
 /// and a click pokes it through `UN` (spin → bounce → nod). `state` is the
-/// run-state signal (`run_state`), read inside the mark's paint; `emph_src`
-/// is the `emphasized` prop read (`emphBot() !== ""`).
+/// run-state source (`agent().state`), read inside the mark's paint;
+/// `emph_src` is the `emphasized` prop read (`emphBot() !== ""`).
 pub(crate) fn status_avatar(
     shape: String,
     color: String,
-    state: Signal<String>,
+    state_src: std::rc::Rc<dyn Fn() -> String>,
     size: f32,
     emph_src: std::rc::Rc<dyn Fn() -> bool>,
     seed: Option<String>,
@@ -228,7 +232,7 @@ pub(crate) fn status_avatar(
             shape,
             color,
             size,
-            state_src: Some(std::rc::Rc::new(move || state.get())),
+            state_src: Some(state_src),
             paused: false,
             emph_src: Some(emph_src),
             pokes: Some(pokes),
@@ -244,13 +248,14 @@ pub(crate) fn status_avatar(
 }
 
 /// The status row — mark + ambient fx + the shimmering label (`StatusFx`
-/// in statusfx.tsx). `state` is the run-state signal (`run_state`). Hover
-/// sets `emphBot` to the run's bot (`agent().bot ?? activeBot()?.id` —
-/// here `seed`), which emphasizes this mark and the matching rail mark.
+/// in statusfx.tsx). `state_src` reads the run's state (the thread's
+/// `agentRuns` entry). Hover sets `emphBot` to the run's bot
+/// (`agent().bot ?? activeBot()?.id` — here `seed`), which emphasizes
+/// this mark and the matching rail mark.
 pub(crate) fn status_fx(
     shape: String,
     color: String,
-    state: Signal<String>,
+    state_src: std::rc::Rc<dyn Fn() -> String>,
     size: f32,
     seed: Option<String>,
     label: impl Fn() -> String + 'static,
@@ -266,8 +271,8 @@ pub(crate) fn status_fx(
         .child(
             view()
                 .size(px(size))
-                .child(status_avatar(shape, color, state, size, emph, seed))
-                .child(fx_overlay(state, size, theme::FAINT.dark.to_hex())),
+                .child(status_avatar(shape, color, state_src.clone(), size, emph, seed))
+                .child(fx_overlay(state_src, size, theme::FAINT.dark.to_hex())),
         )
         .child(shimmer(label))
 }

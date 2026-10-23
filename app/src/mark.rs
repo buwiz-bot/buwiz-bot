@@ -2290,10 +2290,12 @@ impl Mark {
     }
     /// `load(clip, {isPlaying, transition, phase})` — `clip` is a `CLIPS` entry.
     pub(crate) fn load(&mut self, c: &'static clips::Clip, is_playing: bool, bridge: bool, phase: f64) {
-        let name = if self.e_load.as_ref().map_or(true, |e| e.name == c.name) {
-            self.e_load.as_ref().unwrap().name
-        } else {
+        // `clip.name || prev?.name || "recipe"` — a nameless clip
+        // inherits the loaded one's name, else the recipe default.
+        let name = if !c.name.is_empty() {
             c.name
+        } else {
+            self.e_load.as_ref().map(|e| e.name).unwrap_or("recipe")
         };
         let d = Loaded {
             clip: RunClip::from_static(c),
