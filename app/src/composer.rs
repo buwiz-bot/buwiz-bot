@@ -67,36 +67,39 @@ pub(crate) fn composer() -> impl IntoElement {
                 .pt_2()
                 .child(model_pill())
                 .child(view().flex_1())
-                .child(when(
+                .child(dynamic(move || {
                     // `agent() = agentRuns()[activeId()]` — the row only
-                    // mounts while the run's own thread is open.
-                    move || store().agent().is_some(),
-                    || {
-                        // `agentSet`'s row: the active bot's mark playing
-                        // the run state + the ambient fx + the label.
-                        // `seed={agent().bot ?? activeBot()?.id ?? "status"}`.
-                        let st = store();
-                        let bot = st.active_bot_untracked();
-                        let seed = st
-                            .agent()
-                            .and_then(|a| a.bot)
-                            .or_else(|| bot.as_ref().map(|b| b.id.clone()))
-                            .unwrap_or_else(|| "status".to_owned());
-                        let (shape, color) = bot
-                            .map(|b| (b.shape, b.color))
-                            .unwrap_or_else(|| ("blob".into(), "#FFFFFF".into()));
-                        statusfx::status_fx(
-                            shape,
-                            color,
-                            std::rc::Rc::new(|| {
-                                store().agent().map(|a| a.state).unwrap_or_default()
-                            }),
-                            20.0,
-                            Some(seed),
-                            move || store().agent().map(|a| a.label).unwrap_or_default(),
-                        )
-                    },
-                )),
+                    // mounts while the run's own thread is open; reading
+                    // `active_bot` tracked here keeps the mark in step
+                    // with avatar edits.
+                    let st = store();
+                    if st.agent().is_none() {
+                        return view().into_element();
+                    }
+                    // `agentSet`'s row: the active bot's mark playing the
+                    // run state + the ambient fx + the label.
+                    // `seed={agent().bot ?? activeBot()?.id ?? "status"}`.
+                    let bot = st.active_bot();
+                    let seed = st
+                        .agent()
+                        .and_then(|a| a.bot)
+                        .or_else(|| bot.as_ref().map(|b| b.id.clone()))
+                        .unwrap_or_else(|| "status".to_owned());
+                    let (shape, color) = bot
+                        .map(|b| (b.shape, b.color))
+                        .unwrap_or_else(|| ("blob".into(), "#FFFFFF".into()));
+                    statusfx::status_fx(
+                        shape,
+                        color,
+                        std::rc::Rc::new(|| {
+                            store().agent().map(|a| a.state).unwrap_or_default()
+                        }),
+                        20.0,
+                        Some(seed),
+                        move || store().agent().map(|a| a.label).unwrap_or_default(),
+                    )
+                    .into_element()
+                })),
         )
 }
 

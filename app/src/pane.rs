@@ -48,10 +48,10 @@ pub(crate) fn pane() -> impl IntoElement {
                 }),
             ),
         )
-        // `avatarEditing`'s floating editor card — absolute, above the
-        // profile (App.tsx:3163).
-        .child(editor_overlay())
 }
+
+/// `avatarEditing`'s floating editor card — mounted at the root layers so
+/// its scrim covers the whole window (App.tsx:3163).
 
 /// `pane top` — the window-drag strip's right side: the theme toggle and
 /// the close button, both 36pt circles (App.tsx:2474).
@@ -119,10 +119,13 @@ fn bot_profile() -> impl IntoElement {
     // follow/edit drivers (App.tsx:205-207).
     let gaze = BlobGaze::new();
     let edit = BlobEdit::new();
+    let edit_k = crate::avatar::FadeValue::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
     let edit2 = edit.clone();
     let edit3 = edit.clone();
+    let edit_k2 = edit_k.clone();
+    let edit_k3 = edit_k.clone();
     view()
         .flex_1()
         .child(
@@ -143,10 +146,12 @@ fn bot_profile() -> impl IntoElement {
                         .items_center()
                         .justify_center()
                         .on_hover_in(move || {
+                            edit_k.timing(1.0, 220.0);
                             edit.to(1.0);
                             store().avatar_hover.set(true);
                         })
                         .on_hover_out(move || {
+                            edit_k2.timing(0.0, 380.0);
                             edit3.to(0.0);
                             store().avatar_hover.set(false);
                         })
@@ -166,26 +171,24 @@ fn bot_profile() -> impl IntoElement {
                             })
                             .into_element(),
                         )
-                        // The hover veil — the image avatar's darken sits
-                        // under the pencil (App.tsx:2551).
+                        // The hover pen at `editK` opacity — the avatar
+                        // itself darkens via `edit`, no veil (App.tsx:2547).
                         .child(
                             view()
                                 .absolute()
                                 .size_full()
-                                .rounded(px(32.0))
                                 .items_center()
                                 .justify_center()
-                                .bg(move || {
-                                    if store().avatar_hover.get() {
-                                        ac("#00000066", theme::PANE.dark)
+                                .opacity(move || {
+                                    if store().avatar_editing.get() {
+                                        0.0
                                     } else {
-                                        AdaptiveColor::TRANSPARENT
+                                        edit_k3.get()
                                     }
                                 })
-                                .child(when(
-                                    || store().avatar_hover.get(),
-                                    || text("✎").text_size(px(22.0)).text_color(white()).into_element(),
-                                )),
+                                .child(
+                                    text("✎").text_size(px(22.0)).text_color(white()),
+                                ),
                         ),
                 )
                 // The name field — Enter commits `updateBot {name}`

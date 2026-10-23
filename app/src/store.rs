@@ -1900,6 +1900,26 @@ impl Store {
                 }
             }
         });
+        // The slim `bot` embedded on each `/threads` row carries
+        // name/shape/color — keep it in step so anything reading it
+        // (`active_bot`'s fallback, thread pills) reflects the edit.
+        self.threads.update(|rows| {
+            for t in rows.iter_mut() {
+                let Some(tb) = t.bot.as_mut() else { continue };
+                if tb.id != id {
+                    continue;
+                }
+                if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
+                    tb.name = v.to_owned();
+                }
+                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
+                    tb.shape = v.to_owned();
+                }
+                if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
+                    tb.color = v.to_owned();
+                }
+            }
+        });
         let mut body = patch;
         body["id"] = id.into();
         client::post_bg("/bot/update".to_owned(), body);

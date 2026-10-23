@@ -67,7 +67,7 @@ fn rail() -> impl IntoElement {
                     .child(each(
                         || store().pinned_bots(),
                         |b| b.id.clone(),
-                        |b, _| rail_btn(b.get()),
+                        |b, _| rail_btn(b),
                     ))
                     .child(each(
                         || store().bot_groups(),
@@ -87,7 +87,7 @@ fn rail() -> impl IntoElement {
                                 .child(each(
                                     move || g2.get().2,
                                     |b| b.id.clone(),
-                                    |b, _| rail_btn(b.get()),
+                                    |b, _| rail_btn(b),
                                 ))
                         },
                     ))
@@ -107,7 +107,7 @@ fn rail() -> impl IntoElement {
                                             .collect::<Vec<_>>()
                                     },
                                     |t| t.id.clone(),
-                                    |t, _| rail_chat(t.get()),
+                                    |t, _| rail_chat(t),
                                 ))
                         },
                     )),
@@ -190,15 +190,14 @@ fn rail_rule() -> impl IntoElement {
 /// `railBtn` (App.tsx:1183) — the bot's rail plate: a 54px rounded plate
 /// holding the 44px mark in a 36px cell, the `:rail` gaze, the run state
 /// and the ambient overlay over a photo.
-fn rail_btn(b: RoxBot) -> impl IntoElement {
-    let b2 = b.clone();
-    let app = b.id.clone();
-    let tid = b.thread_id.clone();
-    let tid2 = b.thread_id.clone();
-    let bid = b.id.clone();
-    let bid3 = b.id.clone();
-    let has_image = !b.image.is_empty();
-    let name = b.name.clone();
+fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
+    let b0 = b.get();
+    let app = b0.id.clone();
+    let tid = b0.thread_id.clone();
+    let tid2 = b0.thread_id.clone();
+    let bid = b0.id.clone();
+    let bid3 = b0.id.clone();
+    let name = b0.name.clone();
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
@@ -206,7 +205,6 @@ fn rail_btn(b: RoxBot) -> impl IntoElement {
     // `railPop` — measure the tile, then anchor the card at its edge
     // (the `popSeq` guard drops the answer if hover already ended).
     let node = element_ref();
-    let b_pop = b.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let state_src2 = state_src.clone();
@@ -231,35 +229,41 @@ fn rail_btn(b: RoxBot) -> impl IntoElement {
                 .size(px(36.0))
                 .items_center()
                 .justify_center()
-                .child(bot_avatar(crate::avatar::BotAvatarProps {
-                    size: 44.0,
-                    box_: Some(36.0),
-                    state_src: Some(state_src),
-                    emph_src: Some(std::rc::Rc::new(move || {
-                        store().emph_bot.get() == bid3
-                    })),
-                    gaze: Some(gaze2),
-                    ..crate::avatar::BotAvatarProps::bot(&b, 44.0)
+                .child(dynamic(move || {
+                    let bv = b.get();
+                    bot_avatar(crate::avatar::BotAvatarProps {
+                        size: 44.0,
+                        box_: Some(36.0),
+                        state_src: Some(state_src.clone()),
+                        emph_src: Some(std::rc::Rc::new({
+                            let bid3 = bid3.clone();
+                            move || store().emph_bot.get() == bid3
+                        })),
+                        gaze: Some(gaze2.clone()),
+                        ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
+                    })
+                    .into_element()
                 }))
-                .when(has_image, |v| {
-                    v.child(when(
-                        move || crate::statusfx::morph_kind(&state_src2()) != "none",
-                        move || {
-                            crate::statusfx::fx_overlay_fn(
-                                state_src3.clone(),
-                                36.0,
-                                theme::FAINT.dark.to_hex(),
-                            )
-                        },
-                    ))
-                }),
+                .child(when(
+                    move || {
+                        !b.get().image.is_empty()
+                            && crate::statusfx::morph_kind(&state_src2()) != "none"
+                    },
+                    move || {
+                        crate::statusfx::fx_overlay_fn(
+                            state_src3.clone(),
+                            36.0,
+                            theme::FAINT.dark.to_hex(),
+                        )
+                    },
+                )),
         )
         .on_hover_in(move || {
             hovered.set(true);
             let st = store();
             let seq = st.pop_seq.get() + 1;
             st.pop_seq.set(seq);
-            let b_pop = b_pop.clone();
+            let b_pop = b.get();
             spawn(async move {
                 if let Some(m) = node.measure().await {
                     let st = store();
@@ -294,24 +298,18 @@ fn rail_btn(b: RoxBot) -> impl IntoElement {
             }
         })
         .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::bot_items(&b2))
+            crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
         .label(name)
 }
 
 /// The rail's chat tile: a `hue(title)` circle with the title's first
 /// letter (App.tsx:1877).
-fn rail_chat(t: ThreadMeta) -> impl IntoElement {
-    let id = t.id.clone();
-    let id2 = t.id.clone();
-    let name = t.name.clone();
-    let initial = t
-        .name
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .collect::<String>();
+fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
+    let t0 = t.get();
+    let id = t0.id.clone();
+    let id2 = t0.id.clone();
+    let name = t0.name.clone();
     let hovered = signal(false);
     view()
         .size(px(54.0))
@@ -331,21 +329,29 @@ fn rail_chat(t: ThreadMeta) -> impl IntoElement {
             view()
                 .size(px(36.0))
                 .rounded(px(18.0))
-                .bg(hue(&t.name))
+                .bg(move || hue(&t.get().name))
                 .items_center()
                 .justify_center()
                 .child(
-                    text(initial)
-                        .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(white()),
+                    text(move || {
+                        t.get()
+                            .name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .collect::<String>()
+                    })
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(white()),
                 ),
         )
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
         .on_press(move || store().open_thread(id.clone()))
         .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::chat_items(&t))
+            crate::ctx::open(e, crate::ctx::chat_items(&t.get()))
         })
         .label(name)
 }
@@ -397,7 +403,7 @@ fn full_sidebar() -> impl IntoElement {
                                 .child(each(
                                     || store().pinned_bots(),
                                     |b| b.id.clone(),
-                                    |b, _| pin_tile(b.get()),
+                                    |b, _| pin_tile(b),
                                 ))
                         },
                     ))
@@ -422,7 +428,7 @@ fn full_sidebar() -> impl IntoElement {
                                         each(
                                             move || g3.get().2,
                                             |b| b.id.clone(),
-                                            |b, _| bot_row(b.get()),
+                                            |b, _| bot_row(b),
                                         )
                                     },
                                 ))
@@ -437,7 +443,7 @@ fn full_sidebar() -> impl IntoElement {
                             each(
                                 || store().chats(),
                                 |t| t.id.clone(),
-                                |t, _| thread_row(t.get()),
+                                |t, _| thread_row(t),
                             )
                         },
                     ))
@@ -458,7 +464,7 @@ fn full_sidebar() -> impl IntoElement {
                                         each(
                                             || store().hidden_bots(),
                                             |b| b.id.clone(),
-                                            |b, _| bot_row(b.get()),
+                                            |b, _| bot_row(b),
                                         )
                                     },
                                 ))
@@ -479,7 +485,7 @@ fn full_sidebar() -> impl IntoElement {
                                         each(
                                             || store().hidden_chats(),
                                             |t| t.id.clone(),
-                                            |t, _| thread_row(t.get()),
+                                            |t, _| thread_row(t),
                                         )
                                     },
                                 ))
@@ -500,7 +506,7 @@ fn full_sidebar() -> impl IntoElement {
                                         each(
                                             || store().archived_chats(),
                                             |t| t.id.clone(),
-                                            |t, _| thread_row(t.get()),
+                                            |t, _| thread_row(t),
                                         )
                                     },
                                 ))
@@ -609,10 +615,10 @@ fn head_button(name: &'static str, label: &'static str, on: impl Fn() + 'static)
         .on_press(move || on())
 }
 
-fn thread_row(t: ThreadMeta) -> impl IntoElement {
+fn thread_row(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
     let st = store();
-    let id = t.id.clone();
-    let tid = t.id.clone();
+    let id = t.get().id.clone();
+    let tid = t.get().id.clone();
     let hovered = signal(false);
     let active = move || st.active_id.get() == tid;
     view()
@@ -634,10 +640,13 @@ fn thread_row(t: ThreadMeta) -> impl IntoElement {
                     }
                 })
                 .child(
-                    text(if t.name.is_empty() { "New chat".to_owned() } else { t.name.clone() })
-                        .text_size(px(13.0))
-                        .text_color(theme::TEXT)
-                        .flex_1()
+                    text(move || {
+                        let v = t.get();
+                        if v.name.is_empty() { "New chat".to_owned() } else { v.name }
+                    })
+                    .text_size(px(13.0))
+                    .text_color(theme::TEXT)
+                    .flex_1()
                         .number_of_lines(1),
                 ),
         )
@@ -645,21 +654,17 @@ fn thread_row(t: ThreadMeta) -> impl IntoElement {
         .on_hover_out(move || hovered.set(false))
         .on_press(move || st.open_thread(id.clone()))
         .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::chat_items(&t))
+            crate::ctx::open(e, crate::ctx::chat_items(&t.get()))
         })
 }
 
-fn bot_row(b: RoxBot) -> impl IntoElement {
+fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let hovered = signal(false);
-    let b2 = b.clone();
-    let app = b.id.clone();
-    let name = b.name.clone();
-    let desc = b.desc.clone();
-    let bid = b.id.clone();
-    let bid2 = b.id.clone();
-    let bid3 = b.id.clone();
-    let tid = b.thread_id.clone();
-    let has_image = !b.image.is_empty();
+    let b0 = b.get();
+    let app = b0.id.clone();
+    let bid = b0.id.clone();
+    let bid3 = b0.id.clone();
+    let tid = b0.thread_id.clone();
     // `railGaze(b.id + ":row")` — the mark follows the pointer over the row.
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
@@ -667,6 +672,7 @@ fn bot_row(b: RoxBot) -> impl IntoElement {
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let state_src2 = state_src.clone();
+    let state_src3 = state_src.clone();
     view()
         .child(
             view()
@@ -684,53 +690,50 @@ fn bot_row(b: RoxBot) -> impl IntoElement {
                         .size(px(36.0))
                         .items_center()
                         .justify_center()
-                        .child(bot_avatar(crate::avatar::BotAvatarProps {
-                            size: 44.0,
-                            box_: Some(36.0),
-                            state_src: Some(state_src),
-                            // `emphasized={emphBot() === b().id}` — the
-                            // status row's hover reaches this mark too.
-                            emph_src: Some(std::rc::Rc::new(move || {
-                                store().emph_bot.get() == bid3
-                            })),
-                            gaze: Some(gaze2),
-                            ..crate::avatar::BotAvatarProps::bot(&b, 44.0)
+                        .child(dynamic(move || {
+                            let bv = b.get();
+                            bot_avatar(crate::avatar::BotAvatarProps {
+                                size: 44.0,
+                                box_: Some(36.0),
+                                state_src: Some(state_src.clone()),
+                                // `emphasized={emphBot() === b().id}` — the
+                                // status row's hover reaches this mark too.
+                                emph_src: Some(std::rc::Rc::new({
+                                    let bid3 = bid3.clone();
+                                    move || store().emph_bot.get() == bid3
+                                })),
+                                gaze: Some(gaze2.clone()),
+                                ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
+                            })
+                            .into_element()
                         }))
                         // `FxOverlay` over a photo avatar while the run's
                         // morph is ambient-backed.
-                        .when(has_image, |v| {
-                            v.child(when(
-                                {
-                                    let bid2 = bid2.clone();
-                                    move || {
-                                        crate::statusfx::morph_kind(&store().bot_st(&bid2))
-                                            != "none"
-                                    }
-                                },
-                                {
-                                    let src = state_src2.clone();
-                                    move || {
-                                        crate::statusfx::fx_overlay_fn(
-                                            src.clone(),
-                                            36.0,
-                                            theme::FAINT.dark.to_hex(),
-                                        )
-                                    }
-                                },
-                            ))
-                        }),
+                        .child(when(
+                            move || {
+                                !b.get().image.is_empty()
+                                    && crate::statusfx::morph_kind(&state_src2()) != "none"
+                            },
+                            move || {
+                                crate::statusfx::fx_overlay_fn(
+                                    state_src3.clone(),
+                                    36.0,
+                                    theme::FAINT.dark.to_hex(),
+                                )
+                            },
+                        )),
                 )
                 .child(
                     view()
                         .flex_1()
                         .child(
-                            text(name)
+                            text(move || b.get().name)
                                 .text_size(px(13.0))
                                 .text_color(theme::TEXT)
                                 .number_of_lines(1),
                         )
                         .child(
-                            text(desc)
+                            text(move || b.get().desc)
                                 .text_size(px(11.0))
                                 .text_color(theme::GHOST)
                                 .number_of_lines(1),
@@ -760,28 +763,26 @@ fn bot_row(b: RoxBot) -> impl IntoElement {
             }
         })
         .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::bot_items(&b2))
+            crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
 }
 
 /// `pinTile` (App.tsx:1108) — a pinned bot's 95×92 tile: the 72px mark in
 /// a 60px cell (with the `:pin` gaze), the ambient overlay over a photo,
 /// and the name under it.
-fn pin_tile(b: RoxBot) -> impl IntoElement {
-    let b2 = b.clone();
-    let app = b.id.clone();
-    let name = b.name.clone();
-    let tid = b.thread_id.clone();
-    let tid2 = b.thread_id.clone();
-    let bid = b.id.clone();
-    let bid3 = b.id.clone();
-    let has_image = !b.image.is_empty();
+fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
+    let b0 = b.get();
+    let app = b0.id.clone();
+    let name = b0.name.clone();
+    let tid = b0.thread_id.clone();
+    let tid2 = b0.thread_id.clone();
+    let bid = b0.id.clone();
+    let bid3 = b0.id.clone();
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
     // `railPop` — same hover card as the rail tiles.
     let node = element_ref();
-    let b_pop = b.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let state_src2 = state_src.clone();
@@ -808,33 +809,37 @@ fn pin_tile(b: RoxBot) -> impl IntoElement {
                 .size(px(60.0))
                 .items_center()
                 .justify_center()
-                .child(bot_avatar(crate::avatar::BotAvatarProps {
-                    size: 72.0,
-                    box_: Some(60.0),
-                    state_src: Some(state_src),
-                    emph_src: Some(std::rc::Rc::new(move || {
-                        store().emph_bot.get() == bid3
-                    })),
-                    gaze: Some(gaze2),
-                    ..crate::avatar::BotAvatarProps::bot(&b, 72.0)
+                .child(dynamic(move || {
+                    let bv = b.get();
+                    bot_avatar(crate::avatar::BotAvatarProps {
+                        size: 72.0,
+                        box_: Some(60.0),
+                        state_src: Some(state_src.clone()),
+                        emph_src: Some(std::rc::Rc::new({
+                            let bid3 = bid3.clone();
+                            move || store().emph_bot.get() == bid3
+                        })),
+                        gaze: Some(gaze2.clone()),
+                        ..crate::avatar::BotAvatarProps::bot(&bv, 72.0)
+                    })
+                    .into_element()
                 }))
-                .when(has_image, |v| {
-                    v.child(when(
-                        move || {
-                            crate::statusfx::morph_kind(&state_src2()) != "none"
-                        },
-                        move || {
-                            crate::statusfx::fx_overlay_fn(
-                                state_src3.clone(),
-                                60.0,
-                                theme::FAINT.dark.to_hex(),
-                            )
-                        },
-                    ))
-                }),
+                .child(when(
+                    move || {
+                        !b.get().image.is_empty()
+                            && crate::statusfx::morph_kind(&state_src2()) != "none"
+                    },
+                    move || {
+                        crate::statusfx::fx_overlay_fn(
+                            state_src3.clone(),
+                            60.0,
+                            theme::FAINT.dark.to_hex(),
+                        )
+                    },
+                )),
         )
         .child(
-            text(name.clone())
+            text(move || b.get().name)
                 .text_size(px(12.0))
                 .text_color(theme::TEXT)
                 .number_of_lines(1)
@@ -844,7 +849,7 @@ fn pin_tile(b: RoxBot) -> impl IntoElement {
             let st = store();
             let seq = st.pop_seq.get() + 1;
             st.pop_seq.set(seq);
-            let b_pop = b_pop.clone();
+            let b_pop = b.get();
             spawn(async move {
                 if let Some(m) = node.measure().await {
                     let st = store();
@@ -879,7 +884,7 @@ fn pin_tile(b: RoxBot) -> impl IntoElement {
             }
         })
         .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::bot_items(&b2))
+            crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
         .label(name)
 }
