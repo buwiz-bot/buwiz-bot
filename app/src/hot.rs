@@ -6,6 +6,7 @@
 
 use nsh_core::ui::prelude::*;
 
+use crate::botmodal;
 use crate::chat;
 use crate::composer;
 use crate::ctx;
@@ -34,14 +35,53 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
-    // ⌘K palette, ⌘N new chat — the shell's bindings.
+    // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
+    // details, theme, the New-Bot sheet, the work tab, dictation demo
+    // and mod+1…9 chat switching.
     on_key("mod+k", |_| store().palette.set(true));
-    on_key("mod+n", |_| store().new_thread());
-    on_key("mod+b", |_| {
+    on_key("mod+b", |_| store().side_shown.update(|v| *v = !*v));
+    on_key("mod+shift+h", |_| {
         let st = store();
+        st.side_shown.set(true);
         st.side_mode
             .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned());
     });
+    on_key("mod+shift+b", |_| store().right_open.update(|v| *v = !*v));
+    on_key("mod+t", |_| store().dark.update(|v| *v = !*v));
+    on_key("mod+n", |_| store().bot_modal.set(true));
+    on_key("mod+shift+m", |_| {
+        let st = store();
+        st.tab
+            .set(if st.tab.get_untracked() == "work" { "chat" } else { "work" }.to_owned());
+    });
+    on_key("mod+d", |_| {
+        let st = store();
+        let tid = st.active_id.get_untracked();
+        if tid.is_empty() {
+            return;
+        }
+        let bot = st.active_bot_untracked().map(|b| b.id);
+        st.agent_set(
+            tid.clone(),
+            bot,
+            Some(("dictating".to_owned(), "Dictation is coming soon".to_owned())),
+        );
+        spawn(async move {
+            timer(std::time::Duration::from_millis(2400)).await;
+            let st = store();
+            if st.agent().map(|a| a.label) == Some("Dictation is coming soon".to_owned()) {
+                st.agent_set(tid, st.active_bot_untracked().map(|b| b.id), None);
+            }
+        });
+    });
+    for k in 1..=9u8 {
+        on_key(&format!("mod+{k}"), move |_| {
+            let st = store();
+            if let Some(t) = st.chats().get((k - 1) as usize) {
+                st.open_thread(t.id.clone());
+            }
+        });
+    }
 
     // Appearance follows the store's `dark` toggle.
     effect(|| {
@@ -118,6 +158,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
+        .child(botmodal::layer())
         .child(palette::layer())
         .child(models::layer())
         .child(files::layer())
