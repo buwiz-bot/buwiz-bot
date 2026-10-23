@@ -67,14 +67,41 @@ pub(crate) fn composer() -> impl IntoElement {
                 .pt_2()
                 .child(model_pill())
                 .child(view().flex_1())
-                .child(dynamic(|| {
-                    let status = store().run_status.get();
-                    if status.is_empty() {
-                        view().into_element()
-                    } else {
-                        statusfx::shimmer(move || status.clone()).into_element()
-                    }
-                })),
+                .child(when(
+                    move || {
+                        let st = store();
+                        // `agent() = agentRuns()[activeId()]` — the row only
+                        // mounts while the run's own thread is open.
+                        !st.run_status.get().is_empty()
+                            && st.run_thread.get() == st.active_id.get()
+                    },
+                    || {
+                        // `agentSet`'s row: the active bot's mark playing
+                        // the run state + the ambient fx + the label.
+                        // `seed={agent().bot ?? activeBot()?.id ?? "status"}`.
+                        let st = store();
+                        let bot = st.active_bot_untracked();
+                        let seed = {
+                            let rb = st.run_bot.get_untracked();
+                            if rb.is_empty() {
+                                bot.as_ref().map(|b| b.id.clone())
+                            } else {
+                                Some(rb)
+                            }
+                        };
+                        let (shape, color) = bot
+                            .map(|b| (b.shape, b.color))
+                            .unwrap_or_else(|| ("blob".into(), "#FFFFFF".into()));
+                        statusfx::status_fx(
+                            shape,
+                            color,
+                            store().run_state,
+                            20.0,
+                            seed,
+                            move || store().run_status.get(),
+                        )
+                    },
+                )),
         )
 }
 

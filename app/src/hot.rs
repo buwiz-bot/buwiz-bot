@@ -126,6 +126,19 @@ fn top_bar() -> impl IntoElement {
         .pt(px(4.0))
         .window_drag(true)
         .child(
+            // `BotAvatar` in Grok's chat-header pill: static (paused), the
+            // thread's bot mark when the thread has a persona.
+            when(move || store().active_bot().is_some(), || {
+                let b = store().active_bot_untracked().unwrap_or_default();
+                crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
+                    size: 24.0,
+                    box_: Some(22.0),
+                    paused: true,
+                    ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
+                })
+            }),
+        )
+        .child(
             text(move || {
                 let st = store();
                 let id = st.active_id.get();

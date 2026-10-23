@@ -19,6 +19,7 @@ mod files;
 mod hot;
 mod icons;
 pub mod live;
+mod mark;
 mod md;
 pub mod mini;
 mod models;

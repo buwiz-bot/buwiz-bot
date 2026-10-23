@@ -19,15 +19,53 @@ pub struct ThreadMeta {
     pub id: String,
     pub name: String,
     pub created: f64,
+    /// The bot that owns this thread (`bot` on the `/threads` row).
+    pub bot: Option<ThreadBot>,
+    /// Sidebar state (`hidden`/`archived` columns; `lastApp` for the
+    /// detail pane's default tab).
+    pub hidden: bool,
+    pub archived: bool,
+    pub last_app: String,
 }
 
-/// A row of `GET /catalog` — an agent (bot) the shell can open.
+/// The `bot` field of a `/threads` row — the persona behind the chat.
+#[derive(Clone, PartialEq, Default)]
+pub struct ThreadBot {
+    pub id: String,
+    pub name: String,
+    pub shape: String,
+    pub color: String,
+}
+
+/// An avatar photo's zoom/pan (`crop` on a bot): `{s, x, y}`.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Crop {
+    pub s: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A row of the `bots` array of `GET /threads` — an agent (bot) persona.
 #[derive(Clone, PartialEq, Default)]
 pub struct BotMeta {
     pub id: String,
     pub name: String,
     pub emoji: String,
+    /// The row's subtitle (`preview` on the server payload).
     pub desc: String,
+    /// The blob's picker shape (`avatar.shape`, default `blob`).
+    pub shape: String,
+    /// The blob's picker color (`avatar.color`, default `#FFFFFF`).
+    pub color: String,
+    /// The thread this persona owns (opened on row press).
+    pub thread_id: String,
+    /// A photo avatar's URI (`image`); the mark is drawn when empty.
+    pub image: String,
+    /// The photo's crop (`{s,x,y}`).
+    pub crop: Option<Crop>,
+    pub hidden: bool,
+    pub pinned: bool,
+    pub section: String,
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -124,11 +162,16 @@ pub struct CtxMenu {
     pub items: Vec<CtxItem>,
 }
 
-/// The transient "job settled" toast (agent finished / failed).
+/// The transient "job settled" flash (agent finished / failed): the bot's
+/// mark plays `state` for a few seconds (`settle()` in App.tsx).
 #[derive(Clone, PartialEq)]
 pub struct Settle {
     pub name: String,
     pub ok: bool,
+    /// The bot that ran (`agentRuns`' `bot`), for `bot_st`.
+    pub bot: String,
+    /// The state its mark shows while settled (`finished` / `failed`).
+    pub state: String,
 }
 
 /// What the lightbox / file viewer shows.
@@ -148,6 +191,53 @@ pub struct ReplyTo {
     pub text: String,
 }
 
+/// `PHASE_STATE` (App.tsx:35) — a generation phase → a Grok agent state.
+fn phase_state(phase: &str) -> &'static str {
+    match phase {
+        "thinking" => "thinking",
+        "searching" => "searching",
+        "browsing" => "reading",
+        "reading" => "reading",
+        "connecting" => "orbit",
+        "writing" => "writing",
+        "coding" => "coding",
+        "generating" => "progress",
+        "running-commands" => "running",
+        "on-its-computer" => "computing",
+        "on-your-computer" => "controlling",
+        "working" => "working",
+        "messaging" => "sending",
+        "sending" => "sending",
+        "waiting" => "waiting",
+        "queued" => "working",
+        "tool" => "working",
+        "streaming" => "streaming",
+        "checking" => "running",
+        "retrying" => "writing",
+        "fallback" => "working",
+        "publishing" => "uploading",
+        _ => "working",
+    }
+}
+
+/// `activeBot()`'s merge: the open thread's `bot`, completed from the
+/// catalog row when the persona exists there.
+fn active_bot_of(id: &str, threads: &[ThreadMeta], bots: &[BotMeta]) -> Option<BotMeta> {
+    let tb = threads.iter().find(|t| t.id == id)?.bot.as_ref()?;
+    Some(
+        bots.iter()
+            .find(|b| b.id == tb.id)
+            .cloned()
+            .unwrap_or_else(|| BotMeta {
+                id: tb.id.clone(),
+                name: tb.name.clone(),
+                shape: tb.shape.clone(),
+                color: tb.color.clone(),
+                ..Default::default()
+            }),
+    )
+}
+
 fn s(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned()
 }
@@ -156,6 +246,9 @@ fn i64of(v: &serde_json::Value, k: &str) -> i64 {
 }
 fn f64of(v: &serde_json::Value, k: &str) -> f64 {
     v.get(k).and_then(|x| x.as_f64()).unwrap_or_default()
+}
+fn b(v: &serde_json::Value, k: &str) -> bool {
+    v.get(k).and_then(|x| x.as_bool()).unwrap_or_default()
 }
 fn list(v: &serde_json::Value, k: &str) -> Vec<serde_json::Value> {
     v.get(k).and_then(|x| x.as_array()).cloned().unwrap_or_default()
@@ -209,6 +302,11 @@ impl Turn {
                 let name = s(v, "name");
                 let ver = i64of(v, "v");
                 Art {
+                    // Grok's key is `v ? name@v<k> : widget ? name+"w" :
+                    // name`, but the `w` suffix is Grok's *bundled
+                    // registry* namespacing — `/module?name=` only accepts
+                    // `R<n>` / `R<n>@v<k>` and searches WIDGETS_DIR itself
+                    // for a bare name, so widget turns fetch `name` too.
                     app: if ver > 0 { format!("{name}@v{ver}") } else { name },
                     file: s(a, "file"),
                     title: s(a, "title"),
@@ -235,6 +333,10 @@ pub struct Store {
     /// Sidebar data.
     pub threads: Signal<Vec<ThreadMeta>>,
     pub bots: Signal<Vec<BotMeta>>,
+    /// The bot catalog's named sections (`/threads`' top-level `sections`).
+    pub sections: Signal<Vec<String>>,
+    /// `collapsedSecs` — `__hidden`, `__hiddenChats`, `__archived` start
+    /// collapsed; named sections start open (absent ⇒ false).
     pub collapsed: Signal<BTreeMap<String, bool>>,
 
     /// The open thread and its content.
@@ -251,7 +353,18 @@ pub struct Store {
 
     /// Sending / jobs.
     pub sending: Signal<bool>,
+    /// The status row's label (`detail || phase`).
     pub run_status: Signal<String>,
+    /// The status mark's state (`PHASE_STATE[phase] ?? "working"`).
+    pub run_state: Signal<String>,
+    /// The bot the run is credited to (`agentRuns[].bot` in App.tsx).
+    pub run_bot: Signal<String>,
+    /// The thread the run belongs to — `agentRuns` is keyed by thread, so
+    /// the status row only mounts while its own thread is open.
+    pub run_thread: Signal<String>,
+    /// `emphBot` — the bot id hovered through the status row; "" when off.
+    /// Emphasizes both the status mark and the matching sidebar mark.
+    pub emph_bot: Signal<String>,
     pub settled: Signal<Option<Settle>>,
 
     /// Models.
@@ -302,7 +415,12 @@ impl Store {
         Store {
             threads: signal(Vec::new()),
             bots: signal(Vec::new()),
-            collapsed: signal(BTreeMap::new()),
+            sections: signal(Vec::new()),
+            collapsed: signal(BTreeMap::from([
+                ("__hidden".to_owned(), true),
+                ("__hiddenChats".to_owned(), true),
+                ("__archived".to_owned(), true),
+            ])),
             active_id: signal(String::new()),
             turns: signal(Vec::new()),
             revealed: signal(false),
@@ -313,6 +431,10 @@ impl Store {
             at_open: signal(false),
             sending: signal(false),
             run_status: signal(String::new()),
+            run_state: signal(String::new()),
+            run_bot: signal(String::new()),
+            run_thread: signal(String::new()),
+            emph_bot: signal(String::new()),
             settled: signal(None),
             models: signal(Vec::new()),
             model: signal(String::new()),
@@ -351,9 +473,8 @@ impl Store {
             }
             self.refresh_turns();
             self.refresh_thread_apps();
-            if let Some(v) = client::get("/catalog").await {
-                self.set_bots(v);
-            }
+            // Bots ride the `/threads` payload (`bots`), not `/catalog`
+            // (which is the widget shelf's data).
             if let Some(v) = client::get("/models").await {
                 self.set_models(v);
             }
@@ -378,8 +499,80 @@ impl Store {
                 id: s(t, "id"),
                 name: s(t, "title"),
                 created: f64of(t, "created"),
+                hidden: b(t, "hidden"),
+                archived: b(t, "archived"),
+                last_app: s(t, "lastApp"),
+                bot: {
+                    let b = &t["bot"];
+                    if b.is_null() {
+                        None
+                    } else {
+                        Some(ThreadBot {
+                            id: s(b, "id"),
+                            name: s(b, "name"),
+                            shape: {
+                                let v = s(b, "shape");
+                                if v.is_empty() { "blob".into() } else { v }
+                            },
+                            color: {
+                                let v = s(b, "color");
+                                if v.is_empty() { "#FFFFFF".into() } else { v }
+                            },
+                        })
+                    }
+                },
             })
             .collect();
+        // The personas (`bots` on the same payload) drive the Agents
+        // section and `active_bot`/`bot_st`.
+        self.bots.set(
+            list(&v, "bots")
+                .iter()
+                .map(|b| BotMeta {
+                    id: s(b, "id"),
+                    name: s(b, "name"),
+                    emoji: s(b, "emoji"),
+                    desc: {
+                        let v = s(b, "preview");
+                        let v = if v.is_empty() { s(b, "desc") } else { v };
+                        if v.is_empty() { "No messages yet".into() } else { v }
+                    },
+                    shape: {
+                        let v = s(&b["avatar"], "shape");
+                        let v = if v.is_empty() { s(b, "shape") } else { v };
+                        if v.is_empty() { "blob".into() } else { v }
+                    },
+                    color: {
+                        let v = s(&b["avatar"], "color");
+                        let v = if v.is_empty() { s(b, "color") } else { v };
+                        if v.is_empty() { "#FFFFFF".into() } else { v }
+                    },
+                    thread_id: s(b, "threadId"),
+                    image: s(b, "image"),
+                    crop: {
+                        let c = &b["crop"];
+                        if c.is_null() {
+                            None
+                        } else {
+                            Some(Crop {
+                                s: f64of(c, "s"),
+                                x: f64of(c, "x"),
+                                y: f64of(c, "y"),
+                            })
+                        }
+                    },
+                    hidden: self::b(b, "hidden"),
+                    pinned: self::b(b, "pinned"),
+                    section: s(b, "section"),
+                })
+                .collect(),
+        );
+        self.sections.set(
+            list(&v, "sections")
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect(),
+        );
         // The server names its active thread; open that one on first load.
         let active = s(&v, "active");
         if !active.is_empty() && self.active_id.get_untracked().is_empty() {
@@ -390,18 +583,130 @@ impl Store {
         self.threads.set(rows);
     }
 
-    fn set_bots(&self, v: serde_json::Value) {
-        self.bots.set(
-            list(&v, "apps")
-                .iter()
-                .map(|b| BotMeta {
-                    id: s(b, "id"),
-                    name: s(b, "name"),
-                    emoji: s(b, "emoji"),
-                    desc: s(b, "desc"),
-                })
-                .collect(),
-        );
+    /// `activeBot()` — the bot owning the open thread, merged with the
+    /// catalog row when one exists (the thread payload carries only
+    /// `id/name/shape/color`; `bots` adds `image`/`crop`).
+    pub fn active_bot(&'static self) -> Option<BotMeta> {
+        let id = self.active_id.get();
+        let threads = self.threads.get();
+        let bots = self.bots.get();
+        active_bot_of(&id, &threads, &bots)
+    }
+
+    /// `active_bot` without tracking — for one-shot reads inside element
+    /// builders (a `when`'s `then`), where a tracked read would rebuild
+    /// the branch on every `/threads` refresh.
+    pub fn active_bot_untracked(&'static self) -> Option<BotMeta> {
+        let id = self.active_id.get_untracked();
+        let threads = self.threads.get_untracked();
+        let bots = self.bots.get_untracked();
+        active_bot_of(&id, &threads, &bots)
+    }
+
+    /// `pinnedBots()` — the rail tiles' set (pinned, not hidden).
+    pub fn pinned_bots(&'static self) -> Vec<BotMeta> {
+        self.bots
+            .get()
+            .into_iter()
+            .filter(|b| b.pinned && !b.hidden)
+            .collect()
+    }
+
+    /// `hiddenBots()` — the collapsed "Hidden Bots" section.
+    pub fn hidden_bots(&'static self) -> Vec<BotMeta> {
+        self.bots
+            .get()
+            .into_iter()
+            .filter(|b| b.hidden)
+            .collect()
+    }
+
+    /// `botGroups()` — `sections()`' named groups of unpinned, unhidden
+    /// bots, plus "Unassigned" for the rest.
+    pub fn bot_groups(&'static self) -> Vec<(String, String, Vec<BotMeta>)> {
+        let bots = self.bots.get();
+        let vis: Vec<&BotMeta> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
+        let sections = self.sections.get();
+        let known: std::collections::BTreeSet<&str> =
+            sections.iter().map(String::as_str).collect();
+        let mut groups: Vec<(String, String, Vec<BotMeta>)> = self
+            .sections
+            .get()
+            .iter()
+            .map(|n| {
+                (
+                    n.clone(),
+                    n.clone(),
+                    vis.iter()
+                        .filter(|b| b.section == *n)
+                        .map(|b| (*b).clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .filter(|g| !g.2.is_empty())
+            .collect();
+        let un: Vec<BotMeta> = vis
+            .iter()
+            .filter(|b| b.section.is_empty() || !known.contains(b.section.as_str()))
+            .map(|b| (*b).clone())
+            .collect();
+        if !un.is_empty() {
+            groups.push(("__un".to_owned(), "Unassigned".to_owned(), un));
+        }
+        groups
+    }
+
+    /// `chats()` — visible chats: not bot-owned, not hidden, not archived.
+    pub fn chats(&'static self) -> Vec<ThreadMeta> {
+        self.threads
+            .get()
+            .into_iter()
+            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+            .collect()
+    }
+
+    /// `hiddenChats()` / `archivedChats()` — the collapsed sections below.
+    pub fn hidden_chats(&'static self) -> Vec<ThreadMeta> {
+        self.threads
+            .get()
+            .into_iter()
+            .filter(|t| t.bot.is_none() && t.hidden)
+            .collect()
+    }
+
+    pub fn archived_chats(&'static self) -> Vec<ThreadMeta> {
+        self.threads
+            .get()
+            .into_iter()
+            .filter(|t| t.bot.is_none() && t.archived)
+            .collect()
+    }
+
+    /// `botSt(id)` — a bot's mark state: the run's state while it runs
+    /// (when the run is credited to it), the settle outcome for a few
+    /// seconds after, else `idle`.
+    pub fn bot_st(&'static self, id: &str) -> String {
+        let state = self.run_state.get();
+        if !state.is_empty() && self.run_bot.get() == id {
+            return state;
+        }
+        if let Some(st) = self.settled.get().as_ref() {
+            if st.bot == id {
+                return st.state.clone();
+            }
+        }
+        "idle".to_owned()
+    }
+
+    /// Re-pull `/threads` (rows + `bots`): run-status ticks call it like
+    /// App.tsx's `refreshThreads`, so names, previews and avatars stay
+    /// fresh while a run streams.
+    pub fn refresh_threads(&'static self) {
+        spawn(async move {
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
     }
 
     fn set_models(&self, v: serde_json::Value) {
@@ -433,12 +738,30 @@ impl Store {
         if self.active_id.get_untracked() == id {
             return;
         }
+        // `if (!agent()) emphBot.set("")` — the status row unmounts when
+        // switching away from the run's thread.
+        self.emph_bot.set(String::new());
         self.turns.set(Vec::new());
         *self.turns_json.borrow_mut() = String::new();
         let sel = id.clone();
         spawn(async move {
             client::post("/thread/select", serde_json::json!({"id": sel})).await;
             self.active_id.set(id.clone());
+            // `d.list.find(t => t.id === d.active)?.lastApp` — the pane
+            // re-opens the thread's pinned app (or clears its state).
+            let app = self
+                .threads
+                .get_untracked()
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.last_app.clone())
+                .unwrap_or_default();
+            if app.is_empty() {
+                self.detail.set(Vec::new());
+                self.detail_app.set(String::new());
+            } else if self.detail_app.get_untracked() != app {
+                self.load_detail(app);
+            }
             self.refresh_turns();
             self.refresh_thread_apps();
         });
@@ -529,7 +852,14 @@ impl Store {
         self.attachments.set(Vec::new());
         self.reply_to.set(None);
         self.sending.set(true);
-        self.run_status.set("sending".to_owned());
+        // `agentSet(thread, bot, {state:"working",label:statusLabel("working")})`
+        // — the run is credited to the open thread's bot so its marks can
+        // play the state.
+        self.run_bot
+            .set(self.active_bot_untracked().map(|b| b.id).unwrap_or_default());
+        self.run_thread.set(self.active_id.get_untracked());
+        self.run_state.set("working".to_owned());
+        self.run_status.set(crate::statusfx::status_label("working"));
         spawn(async move {
             // /chat reads {prompt, reply:{i,text,files}, attachments} and
             // runs on the server's active thread — select first so the
@@ -555,6 +885,10 @@ impl Store {
             }
             self.sending.set(false);
             self.run_status.set(String::new());
+            self.run_state.set(String::new());
+            self.run_thread.set(String::new());
+            // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
+            self.emph_bot.set(String::new());
             self.refresh_turns();
         });
     }
@@ -567,18 +901,38 @@ impl Store {
             let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
-            let status = if detail.is_empty() { phase } else { detail };
+            let status = if detail.is_empty() { phase.clone() } else { detail };
             self.run_status.set(status.clone());
+            self.run_state.set(phase_state(&phase).to_owned());
             self.refresh_turns();
+            self.refresh_threads();
             if v.get("done").and_then(|x| x.as_bool()).unwrap_or(false)
                 || status == "done"
                 || status == "error"
                 || status == "failed"
             {
+                // `agentSet(thread, bot, null)` then `settle(bot, …)`:
+                // the status row hides, and the bot's mark flashes the
+                // outcome for 8s.
+                // Grok: `settle(bot, /^(failed|generator error)/.test(detail)
+                //   ? "failed" : "finished")`.
+                let ok = !(status.starts_with("failed") || status.starts_with("generator error"));
+                let bot = self.run_bot.get_untracked();
+                self.run_state.set(String::new());
+                self.run_status.set(String::new());
+                self.run_thread.set(String::new());
+                self.emph_bot.set(String::new());
                 self.settled.set(Some(Settle {
                     name: s(&v, "name"),
-                    ok: status == "done",
+                    ok,
+                    bot,
+                    state: if ok { "finished".into() } else { "failed".into() },
                 }));
+                let settled = self.settled;
+                spawn(async move {
+                    timer(std::time::Duration::from_secs(8)).await;
+                    settled.set(None);
+                });
                 break;
             }
             timer(std::time::Duration::from_millis(700)).await;
