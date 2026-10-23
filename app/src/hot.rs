@@ -106,6 +106,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         let st = store();
         st.shelf_renaming.set(String::new());
         st.shelf_tagging.set(String::new());
+        st.avatar_editing.set(false);
     });
     for k in 1..=9u8 {
         on_key(&format!("mod+{k}"), move |_| {
@@ -195,58 +196,110 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
         .child(pane::rename_overlay())
+        .child(pane::editor_overlay())
         .child(botmodal::layer())
         .child(palette::layer())
         .child(models::layer())
         .child(files::layer())
 }
 
-/// The floating top bar: thread title + actions, over the transcript.
+/// The floating top bar (App.tsx:2375): the centered header pill —
+/// `BotAvatar(24/22 paused)` + the bot's name + a hover chevron — pressing
+/// it toggles the detail pane; the "Details" button sits right.
 fn top_bar() -> impl IntoElement {
     let hovered = signal(false);
+    let pill_hover = signal(false);
     view()
         .absolute()
         .top(px(0.0))
         .left(px(0.0))
         .right(px(0.0))
         .h(px(52.0))
-        .flex_row()
-        .items_center()
-        .px_4()
-        .pt(px(4.0))
         .window_drag(true)
         .child(
-            // `BotAvatar` in Grok's chat-header pill: static (paused), the
-            // thread's bot mark when the thread has a persona.
-            when(move || store().active_bot().is_some(), || {
-                let b = store().active_bot_untracked().unwrap_or_default();
-                crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
-                    size: 24.0,
-                    box_: Some(22.0),
-                    paused: true,
-                    ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
-                })
-            }),
-        )
-        .child(
-            text(move || {
-                let st = store();
-                let id = st.active_id.get();
-                st.threads
-                    .get()
-                    .iter()
-                    .find(|t| t.id == id)
-                    .map(|t| if t.name.is_empty() { "New chat".to_owned() } else { t.name.clone() })
-                    .unwrap_or_default()
-            })
-            .text_size(px(13.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme::TEXT)
-            .number_of_lines(1),
-        )
-        .child(view().flex_1())
-        .child(
+            // Center layer — the pill is `position:absolute` centered in
+            // the TSX so side controls never shift it.
             view()
+                .absolute()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .window_drag(true)
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(38.0))
+                        .pl(move || {
+                            if store().active_bot().is_some() {
+                                px(8.0)
+                            } else {
+                                px(16.0)
+                            }
+                        })
+                        .pr(move || {
+                            if pill_hover.get() && !store().right_open.get() {
+                                px(10.0)
+                            } else {
+                                px(16.0)
+                            }
+                        })
+                        .rounded(px(19.0))
+                        .bg(move || {
+                            if pill_hover.get() {
+                                theme::HOVER
+                            } else {
+                                theme::CARD2
+                            }
+                        })
+                        .border(px(0.5))
+                        .border_color(theme::BORDER_F)
+                        .on_hover_in(move || pill_hover.set(true))
+                        .on_hover_out(move || pill_hover.set(false))
+                        .on_press(|| store().right_open.update(|v| *v = !*v))
+                        .label(move || {
+                            store()
+                                .active_bot()
+                                .map(|b| b.name)
+                                .unwrap_or_else(|| "Rox".to_owned())
+                        })
+                        .child(dynamic(move || {
+                            let Some(b) = store().active_bot() else {
+                                return view().into_element();
+                            };
+                            crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
+                                size: 24.0,
+                                box_: Some(22.0),
+                                paused: true,
+                                ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
+                            })
+                            .into_element()
+                        }))
+                        .child(
+                            text(move || {
+                                store()
+                                    .active_bot()
+                                    .map(|b| b.name)
+                                    .unwrap_or_else(|| "Rox".to_owned())
+                            })
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
+                        )
+                        .child(when(
+                            move || pill_hover.get() && !store().right_open.get(),
+                            || icon("chev-right").into_element(),
+                        )),
+                ),
+        )
+        .child(
+            // Right side keeps its own row so the pill stays centered.
+            view()
+                .absolute()
+                .right(px(16.0))
+                .top(px(11.0))
                 .label("Details")
                 .child(
                     view()

@@ -91,6 +91,44 @@ impl BlobPokes {
     }
 }
 
+/// `createAnimatedValue` for style-bound fades (opacity/transform, not
+/// canvas): a signal stepped toward `target` every 16ms, reaching it in
+/// `ms` milliseconds — the TSX's `panelEditK.timing(1, {duration:220})`.
+pub(crate) struct FadeValue {
+    v: Signal<f32>,
+    target: Cell<f32>,
+    ms: Cell<f32>,
+}
+
+impl FadeValue {
+    pub(crate) fn new() -> Rc<Self> {
+        let f = Rc::new(Self {
+            v: signal(0.0),
+            target: Cell::new(0.0),
+            ms: Cell::new(300.0),
+        });
+        set_interval(Duration::from_millis(16), {
+            let f = f.clone();
+            move || {
+                let (v, target) = (f.v.get_untracked(), f.target.get());
+                if (target - v).abs() > 0.002 {
+                    let step = (16.0 / f.ms.get().max(16.0)).min(1.0);
+                    f.v.set(v + (target - v).signum() * step.min((target - v).abs()));
+                }
+            }
+        });
+        f
+    }
+    /// `timing(to, {duration: ms})`.
+    pub(crate) fn timing(&self, to: f32, ms: f32) {
+        self.target.set(to);
+        self.ms.set(ms);
+    }
+    pub(crate) fn get(&self) -> f32 {
+        self.v.get()
+    }
+}
+
 /// `blobEdit()` — the picker's drag-to-recolor amount (`s.target`).
 pub(crate) struct BlobEdit {
     pub(crate) target: Cell<f64>,
@@ -510,18 +548,75 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
         })
 }
 
-/// `SleepingBlob` — the computer-asleep mark (blob.tsx:399): a paused
-/// `sleeping` state blob at `size/0.82` with the gaze pinned.
+/// `SleepingBlob` (blob.tsx:399): the paused sleeping mark breathing
+/// (opacity .85→1, scale 1→1.04 over 2.4s) plus three `z` glyphs that
+/// rise and fade in a 2.4s loop, staggered by 800ms.
 pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoElement {
-    bot_blob(BotBlobProps {
-        shape: shape.to_owned(),
-        color: ink.to_owned(),
-        size: size / 0.82,
-        state: "sleeping",
-        paused: true,
-        gaze_at: Some([0.0, 0.0]),
-        ..Default::default()
-    })
+    // Same 60fps tick `bot_blob`'s painter subscribes to — here it drives
+    // the breathing + zzz phases directly on the style bindings.
+    let clock = signal(0.0f64);
+    set_interval(Duration::from_millis(16), {
+        let clock = clock.clone();
+        move || clock.update(|c| *c += 0.016)
+    });
+    let breath = move || 0.5 - 0.5 * (std::f64::consts::TAU * (clock.get() % 2.4) / 2.4).cos() as f32;
+    let z_phase = move |i: usize| {
+        let p = (clock.get() - i as f64 * 0.8) / 2.4;
+        if p < 0.0 {
+            0.0f32
+        } else {
+            (p % 1.0) as f32
+        }
+    };
+    let ink_c = AdaptiveColor::from(
+        ink.parse::<Hsla>().unwrap_or(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        }),
+    );
+    let z_tops = [-11.0f32, -14.0f32, -3.0f32];
+    view()
+        .size(px(size))
+        .child(
+            view()
+                .size(px(size))
+                .opacity(move || 0.85 + 0.15 * breath())
+                .scale(move || 1.0 + 0.04 * breath())
+                .child(bot_blob(BotBlobProps {
+                    shape: shape.to_owned(),
+                    color: ink.to_owned(),
+                    size: size / 0.82,
+                    state: "sleeping",
+                    paused: true,
+                    gaze_at: Some([0.0, 0.0]),
+                    ..Default::default()
+                })),
+        )
+        .children((0..3usize).map(|i| {
+            let zp = z_phase.clone();
+            let zp2 = z_phase.clone();
+            let zp3 = z_phase.clone();
+            text("z")
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ink_c)
+                .absolute()
+                .left(px(size - 3.0 + i as f32 * 4.0))
+                .top(px(z_tops[i]))
+                .opacity(move || {
+                    let p = zp(i);
+                    if p < 0.25 {
+                        p / 0.25
+                    } else {
+                        (1.0 - p) / 0.75
+                    }
+                })
+                .translate_y(move || px(-12.0 * zp2(i)))
+                .scale(move || 0.6 + 0.4 * zp3(i))
+                .into_element()
+        }))
 }
 
 /// `dot` — a static mark (no clock): the rest pose, painted once, for
