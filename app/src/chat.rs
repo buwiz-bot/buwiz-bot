@@ -30,7 +30,9 @@ pub(crate) fn transcript() -> impl IntoElement {
         .element_ref(&list)
         .px_4()
         .pt(px(56.0)) // under the top overlay bar
-        .pb_4(),
+        // `paddingBottom: dockH() + 24` — the transcript clears the
+        // floating composer (App.tsx:2132).
+        .pb(move || px(crate::composer::dock_h().get() + 24.0)),
     )
 }
 

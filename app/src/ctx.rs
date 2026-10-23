@@ -30,7 +30,7 @@ fn act(it: &CtxItem) {
         "new" => st.new_thread(),
         "bot-modal" => st.bot_modal.set(true),
         "palette" => st.palette.set(true),
-        "models" => st.models_open.set(true),
+        "models" => crate::models::open_list(),
         "chat-hide" => st.update_thread(arg, Some(it.flag), None),
         "chat-archive" => st.update_thread(arg, None, Some(it.flag)),
         "chat-del" => st.delete_thread(arg.to_owned()),
@@ -83,6 +83,7 @@ fn act(it: &CtxItem) {
             st.shelf_tagging.set(arg.to_owned());
         }
         "shelf-regen" => st.retry_widget(arg),
+        "plugin-cat" => st.plugin_cat.set(arg.to_owned()),
         "shelf-pin" => st.pin_widget(arg, it.flag),
         "shelf-archive" => st.widget_meta(arg, serde_json::json!({"archived": it.flag})),
         "shelf-delete" => st.unpublish(arg),

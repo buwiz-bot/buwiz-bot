@@ -61,6 +61,8 @@ pub struct McpServer {
     pub id: String,
     pub name: String,
     pub command: String,
+    /// `url` — set on remote transports (null on the wire → "").
+    pub url: String,
     pub args: Vec<String>,
     pub enabled: bool,
     pub bot: String,
@@ -77,6 +79,98 @@ pub struct McpForm {
     pub args: String,
     pub env: String,
     pub scope: String,
+}
+
+/// A row of `GET /plugins/catalog` — `{name,description,category,homepage,
+/// domains,keywords,installed,meta}` (App.tsx:1362).
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginRow {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub homepage: String,
+    pub domains: Vec<String>,
+    pub keywords: Vec<String>,
+    pub installed: bool,
+    /// `meta.mcp` — the connector ids the plugin ships (the connected-page
+    /// dedupe key; not counted twice against standalone servers).
+    pub meta_mcp: Vec<String>,
+}
+
+/// One `pluginNav` frame — `{page,name?,id?}`; empty string = absent
+/// (App.tsx:1308).
+#[derive(Clone, PartialEq)]
+pub struct PluginNav {
+    pub page: String,
+    pub name: String,
+    pub id: String,
+}
+
+impl PluginNav {
+    pub fn market() -> Self {
+        Self { page: "market".into(), name: String::new(), id: String::new() }
+    }
+}
+
+/// A connector row inside `GET /plugins/detail`'s `mcp` —
+/// `{name,transport,id,status,tools,err}` (`id` may be null → "not-added").
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginMcp {
+    pub id: String,
+    pub name: String,
+    pub transport: String,
+    pub status: String,
+    pub tools: i64,
+    pub err: String,
+}
+
+/// A plugin's skill/command row (`{name,description}`).
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginSkill {
+    pub name: String,
+    pub description: String,
+}
+
+/// `GET /plugins/detail` — the plugin page's body (App.tsx:1332).
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginDetail {
+    pub installed: bool,
+    pub description: String,
+    pub category: String,
+    pub homepage: String,
+    /// `manifest.author` (falls back to the homepage host's first label).
+    pub author: String,
+    /// `meta.mcp` — connector ids for the connected-page dedupe.
+    pub meta_mcp: Vec<String>,
+    pub mcp: Vec<PluginMcp>,
+    pub skills: Vec<PluginSkill>,
+    pub commands: Vec<PluginSkill>,
+}
+
+/// A row of `GET /skills` — the user's own skill (App.tsx:1336).
+#[derive(Clone, PartialEq, Default)]
+pub struct PrivateSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub enabled: bool,
+}
+
+/// `GET /plugins/skill`'s `{description,body}` (App.tsx:1333).
+#[derive(Clone, PartialEq, Default)]
+pub struct SkillBody {
+    pub description: String,
+    pub body: String,
+}
+
+/// A row of `GET /mcp/tools?id=` — `{name,description,enabled}`
+/// (App.tsx:1431).
+#[derive(Clone, PartialEq, Default)]
+pub struct McpTool {
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
 }
 
 /// `appRename` — the library's rename prompt: `{name, field, v?}` where
@@ -484,6 +578,31 @@ pub struct ReplyTo {
     pub text: String,
 }
 
+/// `open` (modelpicker.tsx:57) — the model popover's mode and the pill's
+/// page rect it anchors to.
+#[derive(Clone, PartialEq)]
+pub struct ModelsOpen {
+    /// "effort" | "list"
+    pub mode: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// One `/artifacts` row for the @-mention picker
+/// (`{kind, name, title, file, v, uri, scope}`).
+#[derive(Clone, PartialEq)]
+pub struct AtItem {
+    pub kind: String,
+    pub name: String,
+    pub title: String,
+    pub file: String,
+    pub v: i64,
+    pub uri: String,
+    pub scope: String,
+}
+
 /// `PHASE_STATE` (App.tsx:35) — a generation phase → a Grok agent state.
 fn phase_state(phase: &str) -> &'static str {
     match phase {
@@ -655,6 +774,27 @@ pub struct Store {
     pub draft: Signal<String>,
     pub attachments: Signal<Vec<Attach>>,
     pub reply_to: Signal<Option<ReplyTo>>,
+    /// `open` (modelpicker.tsx:57) — the model popover's mode and the
+    /// pill's page rect it anchors to.
+    pub models_pop: Signal<Option<ModelsOpen>>,
+    /// `dockH` — the floating composer's measured height; the transcript
+    /// pads its end by it (App.tsx:179).
+    pub composer_dock_h: Signal<f32>,
+    /// `rightW` — the right-controls row's width; the input's right
+    /// padding reserves it (App.tsx:490).
+    pub composer_right_w: Signal<f32>,
+    /// `plusMenu` — the + button's measured page position.
+    pub plus_menu: Signal<Option<(f32, f32)>>,
+    /// `plusHover` — the + menu row under the pointer.
+    pub plus_hover: Signal<String>,
+    /// `attachHover` — hovered tile's uri, or "__dictate" / "__voice".
+    pub attach_hover: Signal<String>,
+    /// `atItems` — the @-mention picker's rows; empty closes it.
+    pub at_items: Signal<Vec<AtItem>>,
+    /// `atStart` — the draft offset the active @-query began at (-1 = none).
+    pub at_start: Signal<i64>,
+    /// `atSeq` — stale `/artifacts` answers are dropped by generation.
+    pub at_seq: Signal<u64>,
     pub at_open: Signal<bool>,
 
     /// Sending / jobs.
@@ -731,7 +871,8 @@ pub struct Store {
     pub light_zoom: Signal<f64>,
     pub light_stage: Signal<(f64, f64)>,
     pub light_diag: Signal<(f64, f64)>,
-    pub models_open: Signal<bool>,
+    /// (the model popover's `open` lives in `models.rs` via `live::keep` —
+    /// `models_open` is gone with the old card.)
     /// `sectionPrompt` — the bot id awaiting a new section name, or None.
     pub section_prompt: Signal<Option<String>>,
     /// `sectionName` — the prompt's draft.
@@ -783,6 +924,51 @@ pub struct Store {
     pub avatar_gen_prompt: Signal<String>,
     pub avatar_gen_busy: Signal<bool>,
 
+    // ————— Plugins marketplace (App.tsx:1291–1640 + the modal) —————
+    /// `pluginsOpen` — the modal's visibility.
+    pub plugins_open: Signal<bool>,
+    /// `pluginNav` — the nav stack; `[{page:"market"}]` at open.
+    pub plugin_nav: Signal<Vec<PluginNav>>,
+    /// `plugins` — the `/plugins/catalog` rows.
+    pub plugins: Signal<Vec<PluginRow>>,
+    /// `pluginDetails` — `/plugins/detail` per plugin name.
+    pub plugin_details: Signal<BTreeMap<String, PluginDetail>>,
+    /// `skillBodies` — `/plugins/skill` per `plugin/skill` key.
+    pub skill_bodies: Signal<BTreeMap<String, SkillBody>>,
+    /// `privateSkills` — `/skills`, the user's own skills.
+    pub private_skills: Signal<Vec<PrivateSkill>>,
+    /// `mcpToolsMap` — `/mcp/tools` per server id.
+    pub mcp_tools: Signal<BTreeMap<String, Vec<McpTool>>>,
+    /// `toolsOpenIds` — expanded "N of M enabled" sections.
+    pub tools_open: Signal<BTreeMap<String, bool>>,
+    /// `pluginBusy` — install/uninstall in flight (plugin name).
+    pub plugin_busy: Signal<String>,
+    /// `pluginCat`/`pluginQuery` — the market's category pill + search.
+    pub plugin_cat: Signal<String>,
+    pub plugin_query: Signal<String>,
+    /// `dropSel`/`dropHidden`/`fieldW` — the search combo box state.
+    pub drop_sel: Signal<usize>,
+    pub drop_hidden: Signal<bool>,
+    pub field_w: Signal<f32>,
+    /// Hover signals — `hoverPlugin`/`hoverAdd`/`hoverInst` names;
+    /// `hoverChip`/`hoverTpl`/`hoverX` booleans.
+    pub hover_plugin: Signal<String>,
+    pub hover_add: Signal<String>,
+    pub hover_inst: Signal<String>,
+    pub hover_chip: Signal<bool>,
+    pub hover_tpl: Signal<bool>,
+    pub hover_x: Signal<bool>,
+    /// `skillsExpanded`/`showAllInstalled` — page-local expands.
+    pub skills_expanded: Signal<bool>,
+    pub show_all_installed: Signal<bool>,
+    /// `psId`/`psName`/`psDesc`/`psBody` — the private-skill editor draft.
+    pub ps_id: Signal<String>,
+    pub ps_name: Signal<String>,
+    pub ps_desc: Signal<String>,
+    pub ps_body: Signal<String>,
+    /// `accountOpen` — the account popover (rail plate / sidebar footer).
+    pub account_open: Signal<bool>,
+
     /// Theme.
     pub dark: Signal<bool>,
 
@@ -822,6 +1008,15 @@ impl Store {
             draft: signal(String::new()),
             attachments: signal(Vec::new()),
             reply_to: signal(None),
+            models_pop: signal(None),
+            composer_dock_h: signal(96.0),
+            composer_right_w: signal(150.0),
+            plus_menu: signal(None),
+            plus_hover: signal(String::new()),
+            attach_hover: signal(String::new()),
+            at_items: signal(Vec::new()),
+            at_start: signal(-1),
+            at_seq: signal(0),
             at_open: signal(false),
             sending: signal(false),
             agent_runs: signal(BTreeMap::new()),
@@ -877,6 +1072,33 @@ impl Store {
             app_rename: signal(None),
             app_rename_text: signal(String::new()),
             avatar_gen_prompt: signal(String::new()),
+            plugins_open: signal(false),
+            plugin_nav: signal(vec![PluginNav::market()]),
+            plugins: signal(Vec::new()),
+            plugin_details: signal(BTreeMap::new()),
+            skill_bodies: signal(BTreeMap::new()),
+            private_skills: signal(Vec::new()),
+            mcp_tools: signal(BTreeMap::new()),
+            tools_open: signal(BTreeMap::new()),
+            plugin_busy: signal(String::new()),
+            plugin_cat: signal("All".to_owned()),
+            plugin_query: signal(String::new()),
+            drop_sel: signal(0),
+            drop_hidden: signal(false),
+            field_w: signal(0.0),
+            hover_plugin: signal(String::new()),
+            hover_add: signal(String::new()),
+            hover_inst: signal(String::new()),
+            hover_chip: signal(false),
+            hover_tpl: signal(false),
+            hover_x: signal(false),
+            skills_expanded: signal(false),
+            show_all_installed: signal(false),
+            ps_id: signal(String::new()),
+            ps_name: signal(String::new()),
+            ps_desc: signal(String::new()),
+            ps_body: signal(String::new()),
+            account_open: signal(false),
             avatar_gen_busy: signal(false),
             palette: signal(false),
             viewing: signal(None),
@@ -892,7 +1114,7 @@ impl Store {
             light_zoom: signal(1.0f64),
             light_stage: signal((0.0, 0.0)),
             light_diag: signal((0.0, 0.0)),
-            models_open: signal(false),
+            // `models_open` removed — see the note on the struct.
             dark: signal(true),
             turns_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -1527,6 +1749,7 @@ impl Store {
                         id: s(r, "id"),
                         name: s(r, "name"),
                         command: s(r, "command"),
+                        url: s(r, "url"),
                         args: list(r, "args")
                             .iter()
                             .filter_map(|a| a.as_str().map(str::to_owned))
@@ -1621,6 +1844,520 @@ impl Store {
             self.fetch_mcp();
             self.mcp_busy.set(false);
         });
+    }
+
+    // ————— Plugins marketplace (App.tsx:1291–1640) —————
+
+    /// `pluginsOpen.set(true)` — reset the nav, fetch, start the 3s poll
+    /// (the `effect` at App.tsx:1389).
+    pub fn open_plugins(&'static self) {
+        if self.plugins_open.get_untracked() {
+            return;
+        }
+        self.plugins_open.set(true);
+        self.plugin_nav.set(vec![PluginNav::market()]);
+        self.plugin_query.set(String::new());
+        self.fetch_plugins();
+        self.fetch_mcp();
+        self.fetch_skills();
+    }
+
+    /// `pluginsOpen.set(false)` — the effect's reset branch.
+    pub fn close_plugins(&'static self) {
+        self.plugins_open.set(false);
+        self.plugin_nav.set(vec![PluginNav::market()]);
+        self.plugin_query.set(String::new());
+    }
+
+    /// The 3s poll while the modal is open (App.tsx:1394): catalog +
+    /// servers + skills, plus the top detail page (OAuth lands here).
+    pub fn watch_plugins(&'static self) {
+        set_interval(std::time::Duration::from_secs(3), move || {
+            if !self.plugins_open.get_untracked() {
+                return;
+            }
+            self.fetch_plugins();
+            self.fetch_mcp();
+            self.fetch_skills();
+            let top = self.plugin_nav.get_untracked().last().cloned();
+            if let Some(top) = top {
+                if top.page == "plugin" && !top.name.is_empty() {
+                    let name = top.name.clone();
+                    self.fetch_plugin_detail(&name);
+                    spawn(async move {
+                        timer(std::time::Duration::from_millis(60)).await;
+                        if let Some(d) = self.plugin_details.get_untracked().get(&name) {
+                            for m in &d.mcp {
+                                if !m.id.is_empty() {
+                                    self.fetch_mcp_tools(&m.id);
+                                }
+                            }
+                        }
+                    });
+                }
+                if top.page == "mcp" && !top.id.is_empty() {
+                    self.fetch_mcp_tools(&top.id);
+                }
+            }
+        });
+    }
+
+    /// `pushNav` — the page's fetch side effects (App.tsx:1311).
+    pub fn push_nav(&'static self, page: &str, name: &str, id: &str) {
+        let p = PluginNav {
+            page: page.to_owned(),
+            name: name.to_owned(),
+            id: id.to_owned(),
+        };
+        self.plugin_nav.update(|n| n.push(p.clone()));
+        match page {
+            "plugin" if !name.is_empty() => {
+                self.fetch_plugin_detail(name);
+                let name = name.to_owned();
+                spawn(async move {
+                    timer(std::time::Duration::from_millis(60)).await;
+                    if let Some(d) = self.plugin_details.get_untracked().get(&name) {
+                        for m in &d.mcp {
+                            if !m.id.is_empty() {
+                                self.fetch_mcp_tools(&m.id);
+                            }
+                        }
+                    }
+                });
+            }
+            "mcp" if !id.is_empty() => self.fetch_mcp_tools(id),
+            "skill" if !name.is_empty() && !id.is_empty() => {
+                self.fetch_skill_body(name, id);
+            }
+            "skill" => {
+                // private editor — seed the fields (blank = new skill).
+                let sk = self
+                    .private_skills
+                    .get_untracked()
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned();
+                self.ps_id.set(sk.as_ref().map(|s| s.id.clone()).unwrap_or_default());
+                self.ps_name.set(sk.as_ref().map(|s| s.name.clone()).unwrap_or_default());
+                self.ps_desc.set(sk.as_ref().map(|s| s.description.clone()).unwrap_or_default());
+                self.ps_body.set(sk.as_ref().map(|s| s.body.clone()).unwrap_or_default());
+            }
+            "connected" => {
+                self.fetch_skills();
+                for pl in self.plugins.get_untracked().iter().filter(|x| x.installed) {
+                    let name = pl.name.clone();
+                    self.fetch_plugin_detail(&name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `popNav`.
+    pub fn pop_nav(&'static self) {
+        self.plugin_nav.update(|n| {
+            n.pop();
+        });
+        if self.plugin_nav.get_untracked().is_empty() {
+            self.plugin_nav.set(vec![PluginNav::market()]);
+        }
+    }
+
+    /// `pluginPage` — the top frame's page.
+    pub fn plugin_page(&self) -> String {
+        self.plugin_nav
+            .get()
+            .last()
+            .map(|n| n.page.clone())
+            .unwrap_or_else(|| "market".into())
+    }
+
+    /// `fetchPlugins` — catalog rows; dedupe like the TSX (`JSON.stringify`
+    /// compare) so the 3s poll doesn't churn the grid.
+    pub fn fetch_plugins(&'static self) {
+        spawn(async move {
+            let Some(v) = client::get("/plugins/catalog").await else { return };
+            let rows: Vec<PluginRow> = list(&v, "plugins")
+                .iter()
+                .map(|r| PluginRow {
+                    name: s(r, "name"),
+                    description: s(r, "description"),
+                    category: s(r, "category"),
+                    homepage: s(r, "homepage"),
+                    domains: list(r, "domains")
+                        .iter()
+                        .filter_map(|a| a.as_str().map(str::to_owned))
+                        .collect(),
+                    keywords: list(r, "keywords")
+                        .iter()
+                        .filter_map(|a| a.as_str().map(str::to_owned))
+                        .collect(),
+                    installed: self::b(r, "installed"),
+                    meta_mcp: r
+                        .get("meta")
+                        .map(|m| {
+                            list(m, "mcp")
+                                .iter()
+                                .filter_map(|a| a.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect();
+            if rows != self.plugins.get_untracked() {
+                // fetch each installed plugin's detail once for the
+                // connected-chip dedupe.
+                for pl in rows.iter().filter(|x| x.installed) {
+                    if !self.plugin_details.get_untracked().contains_key(&pl.name) {
+                        self.fetch_plugin_detail(&pl.name);
+                    }
+                }
+                self.plugins.set(rows);
+            }
+        });
+    }
+
+    /// `fetchPluginDetail` (App.tsx:1354).
+    pub fn fetch_plugin_detail(&'static self, name: &str) {
+        let url = format!("/plugins/detail?name={}", client::urlenc(name));
+        let name = name.to_owned();
+        spawn(async move {
+            let Some(v) = client::get(&url).await else { return };
+            if v.get("error").and_then(|e| e.as_str()).map(|e| !e.is_empty()).unwrap_or(false) {
+                return;
+            }
+            let d = PluginDetail {
+                installed: self::b(&v, "installed"),
+                description: s(&v, "description"),
+                category: s(&v, "category"),
+                homepage: s(&v, "homepage"),
+                author: v
+                    .get("manifest")
+                    .map(|m| s(m, "author"))
+                    .unwrap_or_default(),
+                meta_mcp: v
+                    .get("meta")
+                    .map(|m| {
+                        list(m, "mcp")
+                            .iter()
+                            .filter_map(|a| a.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                mcp: list(&v, "mcp")
+                    .iter()
+                    .map(|m| PluginMcp {
+                        id: s(m, "id"),
+                        name: s(m, "name"),
+                        transport: s(m, "transport"),
+                        status: s(m, "status"),
+                        tools: m.get("tools").and_then(|x| x.as_i64()).unwrap_or(0),
+                        err: s(m, "err"),
+                    })
+                    .collect(),
+                skills: list(&v, "skills")
+                    .iter()
+                    .map(|x| PluginSkill { name: s(x, "name"), description: s(x, "description") })
+                    .collect(),
+                commands: list(&v, "commands")
+                    .iter()
+                    .map(|x| PluginSkill { name: s(x, "name"), description: s(x, "description") })
+                    .collect(),
+            };
+            self.plugin_details.update(|m| {
+                m.insert(name, d);
+            });
+        });
+    }
+
+    /// `fetchSkillBody` (App.tsx:1358).
+    pub fn fetch_skill_body(&'static self, plugin: &str, skill: &str) {
+        let url = format!(
+            "/plugins/skill?plugin={}&skill={}",
+            client::urlenc(plugin),
+            client::urlenc(skill)
+        );
+        let key = format!("{plugin}/{skill}");
+        spawn(async move {
+            let Some(v) = client::get(&url).await else { return };
+            if v.get("error").and_then(|e| e.as_str()).map(|e| !e.is_empty()).unwrap_or(false) {
+                return;
+            }
+            let d = SkillBody {
+                description: s(&v, "description"),
+                body: s(&v, "body"),
+            };
+            self.skill_bodies.update(|m| {
+                m.insert(key, d);
+            });
+        });
+    }
+
+    /// `fetchSkills` — the private skills list (App.tsx:1337).
+    pub fn fetch_skills(&'static self) {
+        spawn(async move {
+            let Some(v) = client::get("/skills").await else { return };
+            let rows: Vec<PrivateSkill> = list(&v, "skills")
+                .iter()
+                .map(|r| PrivateSkill {
+                    id: s(r, "id"),
+                    name: s(r, "name"),
+                    description: s(r, "description"),
+                    body: s(r, "body"),
+                    enabled: self::b(r, "enabled"),
+                })
+                .collect();
+            if rows != self.private_skills.get_untracked() {
+                self.private_skills.set(rows);
+            }
+        });
+    }
+
+    /// `fetchMcpTools` (App.tsx:1433).
+    pub fn fetch_mcp_tools(&'static self, id: &str) {
+        let url = format!("/mcp/tools?id={}", client::urlenc(id));
+        let id = id.to_owned();
+        spawn(async move {
+            let Some(v) = client::get(&url).await else { return };
+            let tools: Vec<McpTool> = list(&v, "tools")
+                .iter()
+                .map(|t| McpTool {
+                    name: s(t, "name"),
+                    description: s(t, "description"),
+                    enabled: self::b(t, "enabled"),
+                })
+                .collect();
+            if !tools.is_empty() {
+                self.mcp_tools.update(|m| {
+                    m.insert(id, tools);
+                });
+            }
+        });
+    }
+
+    /// `toggleMcpTool` (App.tsx:1437).
+    pub fn toggle_mcp_tool(&'static self, id: &str, tool: &str, enabled: bool) {
+        let (id, tool) = (id.to_owned(), tool.to_owned());
+        spawn(async move {
+            let _ = client::post(
+                "/mcp/tools/state",
+                serde_json::json!({"id": id, "tool": tool, "enabled": enabled}),
+            )
+            .await;
+            self.fetch_mcp_tools(&id);
+        });
+    }
+
+    /// `retryServer` (App.tsx:1439).
+    pub fn retry_server(&'static self, id: &str, plugin: &str) {
+        let (id, plugin) = (id.to_owned(), plugin.to_owned());
+        spawn(async move {
+            let _ = client::post("/mcp/servers", serde_json::json!({"id": id})).await;
+            self.fetch_mcp();
+            if !plugin.is_empty() {
+                self.fetch_plugin_detail(&plugin);
+            }
+        });
+    }
+
+    /// `needsAuth` — `/401|403|unauthor|forbidden|auth/i` (App.tsx:1449);
+    /// "unauthor" contains "auth", so the substring set suffices.
+    pub fn needs_auth(err: &str) -> bool {
+        let e = err.to_lowercase();
+        !e.is_empty()
+            && (e.contains("401") || e.contains("403") || e.contains("auth") || e.contains("forbidden"))
+    }
+
+    /// `authOrRetry` — remote + auth-ish → browser OAuth, else re-probe
+    /// (App.tsx:1442).
+    pub fn auth_or_retry(&'static self, id: &str, transport: &str, err: &str, plugin: &str) {
+        if id.is_empty() {
+            return;
+        }
+        if transport == "remote" && Self::needs_auth(err) {
+            let id = id.to_owned();
+            spawn(async move {
+                let _ = client::post("/mcp/auth", serde_json::json!({"id": id})).await;
+            });
+        } else {
+            self.retry_server(id, plugin);
+        }
+    }
+
+    /// `installPlugin` (App.tsx:1407).
+    pub fn install_plugin(&'static self, name: &str) {
+        if !self.plugin_busy.get_untracked().is_empty() {
+            return;
+        }
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        spawn(async move {
+            let _ = client::post("/plugins/install", serde_json::json!({"name": name})).await;
+            self.fetch_plugins();
+            self.fetch_mcp();
+            self.fetch_plugin_detail(&name);
+            self.plugin_busy.set(String::new());
+        });
+    }
+
+    /// `uninstallPlugin` (App.tsx:1419).
+    pub fn uninstall_plugin(&'static self, name: &str) {
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        spawn(async move {
+            let _ = client::post("/plugins/uninstall", serde_json::json!({"name": name})).await;
+            self.fetch_plugins();
+            self.fetch_plugin_detail(&name);
+            self.pop_nav();
+            self.plugin_busy.set(String::new());
+        });
+    }
+
+    /// `savePrivateSkill` — `POST /skills` then refetch (App.tsx:1346).
+    pub fn save_private_skill(&'static self) {
+        let (id, name, desc, body) = (
+            self.ps_id.get_untracked(),
+            self.ps_name.get_untracked(),
+            self.ps_desc.get_untracked(),
+            self.ps_body.get_untracked(),
+        );
+        spawn(async move {
+            let mut j = serde_json::json!({
+                "name": name.trim(),
+                "description": desc.trim(),
+                "instructions": body,
+            });
+            if !id.is_empty() {
+                j["id"] = serde_json::json!(id);
+            }
+            let _ = client::post("/skills", j).await;
+            self.fetch_skills();
+        });
+    }
+
+    /// The private editor's Delete Skill (App.tsx:4152).
+    pub fn delete_private_skill(&'static self) {
+        let id = self.ps_id.get_untracked();
+        if id.is_empty() {
+            return;
+        }
+        spawn(async move {
+            let _ = client::post("/skills/delete", serde_json::json!({"id": id})).await;
+            self.fetch_skills();
+            self.pop_nav();
+        });
+    }
+
+    /// `pluginCats` — `["All", ...unique categories]` (App.tsx:1450).
+    pub fn plugin_cats(&self) -> Vec<String> {
+        let mut cats: Vec<String> = vec!["All".into()];
+        for p in self.plugins.get().iter() {
+            let c = p.category.clone();
+            let c = c
+                .chars()
+                .next()
+                .map(|f| f.to_uppercase().collect::<String>() + &c[1..])
+                .unwrap_or(c);
+            if !c.is_empty() && !cats.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                cats.push(c);
+            }
+        }
+        cats
+    }
+
+    /// `pluginList` — category + query filters (App.tsx:1451).
+    pub fn plugin_list(&self) -> Vec<PluginRow> {
+        let q = self.plugin_query.get().trim().to_lowercase();
+        let cat = self.plugin_cat.get();
+        let mut list = self.plugins.get();
+        if cat != "All" {
+            list.retain(|p| p.category.eq_ignore_ascii_case(&cat));
+        }
+        if !q.is_empty() {
+            list.retain(|p| {
+                format!("{} {} {}", p.name, p.description, p.keywords.join(" "))
+                    .to_lowercase()
+                    .contains(&q)
+            });
+        }
+        list
+    }
+
+    /// `pluginTitle` — `n.replace(/[-_]+/g," ").replace(/\b\w/g,upper)`
+    /// (App.tsx:1458).
+    pub fn plugin_title(n: &str) -> String {
+        let mut out = String::with_capacity(n.len());
+        let mut word_start = true;
+        for c in n.chars() {
+            if c == '-' || c == '_' {
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                word_start = true;
+            } else {
+                out.push(if word_start { c.to_ascii_uppercase() } else { c });
+                word_start = false;
+            }
+        }
+        out
+    }
+
+    /// `connItems` — installed plugins + standalone MCP servers
+    /// (App.tsx:3528): `(installed, standalone)`.
+    pub fn conn_items(&self) -> (Vec<PluginRow>, Vec<McpServer>) {
+        let inst: Vec<PluginRow> = self
+            .plugins
+            .get()
+            .into_iter()
+            .filter(|p| p.installed)
+            .collect();
+        let details = self.plugin_details.get();
+        let ids: std::collections::BTreeSet<String> = inst
+            .iter()
+            .flat_map(|p| {
+                details
+                    .get(&p.name)
+                    .map(|d| d.meta_mcp.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let standalone: Vec<McpServer> = self
+            .mcp_servers
+            .get()
+            .into_iter()
+            .filter(|s| !ids.contains(&s.id))
+            .collect();
+        (inst, standalone)
+    }
+
+    /// `dropOpen` — the search combo box (App.tsx:1524).
+    pub fn drop_open(&self) -> bool {
+        self.plugins_open.get()
+            && self.plugin_page() == "market"
+            && !self.plugin_query.get().is_empty()
+            && !self.drop_hidden.get()
+            && !self.plugin_list().is_empty()
+    }
+
+    /// `dropMove` — ↑/↓ over `pluginList` (App.tsx:1529).
+    pub fn drop_move(&self, d: i64) {
+        let n = self.plugin_list().len() as i64;
+        if n == 0 {
+            return;
+        }
+        let i = (self.drop_sel.get_untracked() as i64 + d).clamp(0, n - 1);
+        self.drop_sel.set(i as usize);
+    }
+
+    /// `dropChoose` — Enter opens the selected row (App.tsx:1525).
+    pub fn drop_choose(&'static self) {
+        let name = self
+            .plugin_list()
+            .get(self.drop_sel.get_untracked())
+            .map(|p| p.name.clone());
+        if let Some(name) = name {
+            self.push_nav("plugin", &name, "");
+        }
     }
 
     /// `openAvatarEditor`/`closeAvatarEditor` (App.tsx:1666).
@@ -1801,9 +2538,6 @@ impl Store {
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
         let text = self.draft.get_untracked().trim().to_owned();
-        if text.is_empty() || self.sending.get_untracked() {
-            return;
-        }
         // `/status:` is a local command — the TSX never posts it.
         if let Some(arg) = text.strip_prefix("/status:") {
             self.draft.set(String::new());
@@ -1811,12 +2545,25 @@ impl Store {
             return;
         }
         let reply_to = self.reply_to.get_untracked();
+        // The attachments go over verbatim — the server forwards them to
+        // the model (picked files carry `uri`, reply files `path`).
         let files: Vec<serde_json::Value> = self
             .attachments
             .get_untracked()
             .iter()
-            .map(|a| serde_json::json!({"path": a.path, "name": a.name, "mime": a.mime}))
+            .map(|a| {
+                serde_json::json!({
+                    "uri": a.url, "path": a.path, "name": a.name, "mime": a.mime,
+                    "kind": a.kind, "ext": a.ext, "size": a.size,
+                    "thumb": a.thumb, "feed": a.feed, "poster": a.poster,
+                    "width": a.width, "height": a.height,
+                    "duration": a.duration, "animated": a.animated,
+                })
+            })
             .collect();
+        if (text.is_empty() && files.is_empty()) || self.sending.get_untracked() {
+            return;
+        }
         self.draft.set(String::new());
         self.attachments.set(Vec::new());
         self.reply_to.set(None);
@@ -1872,6 +2619,45 @@ impl Store {
             // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
             self.emph_bot.set(String::new());
             self.refresh_turns();
+        });
+    }
+
+    /// ⌘D's dictation stub — a "coming soon" run that clears itself
+    /// after 2.4s (hot.rs's `mod+d` handler / the mic button).
+    pub fn dictate_stub(&'static self) {
+        let tid = self.active_id.get_untracked();
+        if tid.is_empty() {
+            return;
+        }
+        let bot = self.active_bot_untracked().map(|b| b.id);
+        self.agent_set(
+            tid.clone(),
+            bot,
+            Some(("dictating".to_owned(), "Dictation is coming soon".to_owned())),
+        );
+        spawn(async move {
+            timer(std::time::Duration::from_millis(2400)).await;
+            if self.agent().map(|a| a.label) == Some("Dictation is coming soon".to_owned()) {
+                self.agent_set(tid, self.active_bot_untracked().map(|b| b.id), None);
+            }
+        });
+    }
+
+    /// `pickAttachments` — `POST /attach/pick` runs the host's file
+    /// picker; the answer's `files` join the staged attachments
+    /// (App.tsx:493).
+    pub fn pick_attachments(&'static self) {
+        spawn(async move {
+            if let Some(v) = client::post("/attach/pick", serde_json::json!({})).await {
+                let files: Vec<Attach> = v
+                    .get("files")
+                    .and_then(|x| x.as_array())
+                    .map(|l| l.iter().map(Attach::of).collect())
+                    .unwrap_or_default();
+                if !files.is_empty() {
+                    self.attachments.update(|a| a.extend(files));
+                }
+            }
         });
     }
 

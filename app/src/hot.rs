@@ -15,6 +15,7 @@ use crate::icons::icon;
 use crate::live::store;
 use crate::models;
 use crate::palette;
+use crate::plugins;
 use crate::pane;
 use crate::sidebar;
 use crate::theme;
@@ -24,6 +25,7 @@ use crate::theme;
 pub(crate) fn hot_area() -> impl IntoElement {
     let st = store();
     st.boot();
+    st.watch_plugins();
 
     // `ROX_STATUS=<state|demo>`: debug-mount the run-status surface —
     // the composer status row and bot marks play the state without a
@@ -49,6 +51,22 @@ pub(crate) fn hot_area() -> impl IntoElement {
         spawn(async move {
             timer(std::time::Duration::from_millis(800)).await;
             store().tab.set("work".to_owned());
+        });
+    }
+
+    // `ROX_PLUGINS=1`: open the Connect Apps modal at boot.
+    if std::env::var("ROX_PLUGINS").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(900)).await;
+            store().open_plugins();
+        });
+    }
+
+    // `ROX_MODELS=effort|list`: open the model popover at boot.
+    if let Ok(mode) = std::env::var("ROX_MODELS") {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(900)).await;
+            crate::models::dev_open(&mode);
         });
     }
 
@@ -82,26 +100,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         st.tab
             .set(if st.tab.get_untracked() == "work" { "chat" } else { "work" }.to_owned());
     });
-    on_key("mod+d", |_| {
-        let st = store();
-        let tid = st.active_id.get_untracked();
-        if tid.is_empty() {
-            return;
-        }
-        let bot = st.active_bot_untracked().map(|b| b.id);
-        st.agent_set(
-            tid.clone(),
-            bot,
-            Some(("dictating".to_owned(), "Dictation is coming soon".to_owned())),
-        );
-        spawn(async move {
-            timer(std::time::Duration::from_millis(2400)).await;
-            let st = store();
-            if st.agent().map(|a| a.label) == Some("Dictation is coming soon".to_owned()) {
-                st.agent_set(tid, st.active_bot_untracked().map(|b| b.id), None);
-            }
-        });
-    });
+    on_key("mod+d", |_| store().dictate_stub());
     on_key("escape", |_| {
         let st = store();
         st.shelf_renaming.set(String::new());
@@ -110,6 +109,16 @@ pub(crate) fn hot_area() -> impl IntoElement {
         // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
         st.light_close();
         st.viewing.set(None);
+        crate::models::close();
+        crate::composer::plus_menu().set(None);
+        // the plugins modal pops a page, or closes at the market page.
+        if st.plugins_open.get_untracked() {
+            if st.plugin_nav.get_untracked().len() > 1 {
+                st.pop_nav();
+            } else {
+                st.close_plugins();
+            }
+        }
     });
     // lightbox prev/next + table navigation / TSV copy — the viewer's
     // keydown listener (fileviewer.tsx:783).
@@ -131,14 +140,32 @@ pub(crate) fn hot_area() -> impl IntoElement {
     });
     on_key("up", |_| {
         let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+        // the search combo's arrow nav (App.tsx:1416) rides the same
+        // keys while the drop is open.
+        if st.plugins_open.get_untracked() && st.drop_open() {
+            let n = st.plugin_list().len();
+            if n > 0 {
+                st.drop_sel.update(|i| *i = (*i + n - 1) % n);
+            }
+        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
             st.sel_move(-1, 0, false);
         }
     });
     on_key("down", |_| {
         let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+        if st.plugins_open.get_untracked() && st.drop_open() {
+            let n = st.plugin_list().len();
+            if n > 0 {
+                st.drop_sel.update(|i| *i = (*i + 1) % n);
+            }
+        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
             st.sel_move(1, 0, false);
+        }
+    });
+    on_key("enter", |_| {
+        let st = store();
+        if st.plugins_open.get_untracked() && st.drop_open() {
+            st.drop_choose();
         }
     });
     on_key("shift+left", |_| {
@@ -263,8 +290,10 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(botmodal::layer())
         .child(palette::layer())
         .child(models::layer())
+        .child(composer::plus_layer())
         .child(files::layer())
         .child(files::lightbox_layer())
+        .child(plugins::layer())
 }
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
