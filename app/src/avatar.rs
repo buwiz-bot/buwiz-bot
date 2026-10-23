@@ -12,7 +12,7 @@ use nsh_core::ui::prelude::*;
 
 use crate::mark::{self, PaintOpts, UhSize, V2};
 use crate::mark::{gaze_advance, gaze_set, GazeState};
-use crate::store::BotMeta;
+use crate::store::RoxBot;
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -465,7 +465,7 @@ pub(crate) struct BotAvatarProps {
 
 impl BotAvatarProps {
     /// Filled from a catalog bot: shape, color, photo, seed.
-    pub(crate) fn bot(b: &BotMeta, size: f32) -> Self {
+    pub(crate) fn bot(b: &RoxBot, size: f32) -> Self {
         Self {
             shape: b.shape.clone(),
             color: b.color.clone(),
