@@ -240,7 +240,7 @@ impl Inner {
             .state_src
             .as_ref()
             .map(|f| mark::state_name(&f()))
-            .unwrap_or(props.state);
+            .unwrap_or_else(|| mark::state_name(props.state));
         let resting = props.paused || state == "idle";
         let dir = mark::Director::new(&mut mark, state, seed, box_ < 48.0, resting, None);
         let initial = props
@@ -290,7 +290,7 @@ impl Inner {
             .state_src
             .as_ref()
             .map(|f| mark::state_name(&f()))
-            .unwrap_or(props.state);
+            .unwrap_or_else(|| mark::state_name(props.state));
         if state != self.last_state {
             if state == "idle" {
                 self.grace_until = now + Duration::from_millis(1400);
