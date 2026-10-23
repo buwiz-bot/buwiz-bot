@@ -1,0 +1,7 @@
+{
+  "name": "Rox",
+  "id": "dev.goldcoders.rox",
+  "appearance": "system",
+  "rust": ".",
+  "root": "App"
+}
