@@ -106,6 +106,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
             }),
         )
         .child(ctx::layer())
+        .child(ctx::prompt_layer())
         .child(palette::layer())
         .child(models::layer())
         .child(files::layer())

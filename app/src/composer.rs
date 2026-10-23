@@ -181,12 +181,12 @@ fn attach_button() -> impl IntoElement {
             st.ctx.set(Some(crate::store::CtxMenu {
                 x: 60.0,
                 y: 500.0,
-                items: vec![crate::store::CtxItem {
-                    label: "Attach is host-side".to_owned(),
-                    icon: "paperclip".to_owned(),
-                    danger: false,
-                    act: "noop".to_owned(),
-                }],
+                items: vec![crate::store::CtxItem::row(
+                    "Attach is host-side",
+                    "paperclip",
+                    "noop",
+                    String::new(),
+                )],
             }));
         })
 }

@@ -145,13 +145,71 @@ pub struct ThreadApp {
 #[derive(Clone, PartialEq)]
 pub struct Kv(pub String, pub String);
 
-/// A context-menu item (the custom card, not a native menu).
+/// A context-menu item (the custom card, not a native menu) — the TSX's
+/// `CtxItem`: label/icon/red checked rows, `sep` hairlines and `submenu`
+/// flyouts. `act`/`arg` are the dispatch pair (`"verb"` + payload).
 #[derive(Clone, PartialEq)]
 pub struct CtxItem {
     pub label: String,
     pub icon: String,
     pub danger: bool,
+    pub checked: bool,
+    pub sep: bool,
+    /// The toggle value for flip verbs (hide → true, show → false).
+    pub flag: bool,
     pub act: String,
+    pub arg: String,
+    pub submenu: Vec<CtxItem>,
+}
+
+impl CtxItem {
+    /// A labelled row.
+    pub fn row(label: &str, icon: &str, act: &str, arg: String) -> Self {
+        Self {
+            label: label.to_owned(),
+            icon: icon.to_owned(),
+            danger: false,
+            checked: false,
+            sep: false,
+            flag: false,
+            act: act.to_owned(),
+            arg,
+            submenu: Vec::new(),
+        }
+    }
+
+    /// `flag` — the toggle's target value.
+    pub fn to(mut self, v: bool) -> Self {
+        self.flag = v;
+        self
+    }
+
+    /// `checked` — a submenu row's current membership mark.
+    pub fn on(mut self, v: bool) -> Self {
+        self.checked = v;
+        self
+    }
+
+    /// A red destructive row.
+    pub fn danger(label: &str, icon: &str, act: &str, arg: String) -> Self {
+        let mut it = Self::row(label, icon, act, arg);
+        it.danger = true;
+        it
+    }
+
+    /// A hairline separator (`{sep: true}` in the TSX).
+    pub fn separator() -> Self {
+        let mut it = Self::row("", "", "", String::new());
+        it.sep = true;
+        it
+    }
+
+    /// A row that opens a flyout (`submenu`).
+    pub fn parent(label: &str, icon: &str, submenu: Vec<CtxItem>) -> Self {
+        let mut it = Self::row(label, icon, "", String::new());
+        it.submenu = submenu;
+        it
+    }
 }
 
 /// The popover the shell shows on right-click / long-press / "more".
@@ -388,6 +446,10 @@ pub struct Store {
     pub palette: Signal<bool>,
     pub viewing: Signal<Option<FileView>>,
     pub models_open: Signal<bool>,
+    /// `sectionPrompt` — the bot id awaiting a new section name, or None.
+    pub section_prompt: Signal<Option<String>>,
+    /// `sectionName` — the prompt's draft.
+    pub section_name: Signal<String>,
 
     /// Theme.
     pub dark: Signal<bool>,
@@ -449,6 +511,8 @@ impl Store {
             thread_apps: signal(Vec::new()),
             tab: signal("chat".to_owned()),
             ctx: signal(None),
+            section_prompt: signal(None),
+            section_name: signal(String::new()),
             palette: signal(false),
             viewing: signal(None),
             models_open: signal(false),
@@ -960,17 +1024,102 @@ impl Store {
         );
     }
 
+    /// `deleteThread` — `POST /thread/delete`; the reply carries the
+    /// server's new `active` when the open thread was removed.
     pub fn delete_thread(&'static self, id: String) {
         spawn(async move {
-            let _ = client::post("/thread/delete", serde_json::json!({"id": id})).await;
+            let r = client::post("/thread/delete", serde_json::json!({"id": id})).await;
+            let next = r.as_ref().map(|v| s(v, "active")).unwrap_or_default();
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
             if self.active_id.get_untracked() == id {
-                if let Some(t) = self.threads.get_untracked().first() {
+                if !next.is_empty() {
+                    self.open_thread(next);
+                } else if let Some(t) = self.threads.get_untracked().first() {
                     self.open_thread(t.id.clone());
                 }
+            } else {
+                self.refresh_turns();
             }
+        });
+    }
+
+    /// `updateThread` — optimistic `hidden`/`archived` patch +
+    /// `POST /thread/update` (App.tsx:853).
+    pub fn update_thread(&'static self, id: &str, hidden: Option<bool>, archived: Option<bool>) {
+        self.threads.update(|rows| {
+            for t in rows.iter_mut() {
+                if t.id == id {
+                    if let Some(h) = hidden {
+                        t.hidden = h;
+                    }
+                    if let Some(a) = archived {
+                        t.archived = a;
+                    }
+                }
+            }
+        });
+        let mut body = serde_json::json!({"id": id});
+        if let Some(h) = hidden {
+            body["hidden"] = h.into();
+        }
+        if let Some(a) = archived {
+            body["archived"] = a.into();
+        }
+        client::post_bg("/thread/update".to_owned(), body);
+    }
+
+    /// `updateBot` — optimistic patch + `POST /bot/update` (App.tsx's
+    /// updateBot: pinned/section/hidden/shape/color/model…).
+    pub fn update_bot(&'static self, id: &str, patch: serde_json::Value) {
+        self.bots.update(|rows| {
+            for b in rows.iter_mut() {
+                if b.id != id {
+                    continue;
+                }
+                if let Some(v) = patch.get("pinned").and_then(|x| x.as_bool()) {
+                    b.pinned = v;
+                }
+                if let Some(v) = patch.get("hidden").and_then(|x| x.as_bool()) {
+                    b.hidden = v;
+                }
+                if let Some(v) = patch.get("section").and_then(|x| x.as_str()) {
+                    b.section = v.to_owned();
+                }
+                if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
+                    b.name = v.to_owned();
+                }
+                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
+                    b.shape = v.to_owned();
+                }
+                if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
+                    b.color = v.to_owned();
+                }
+            }
+        });
+        let mut body = patch;
+        body["id"] = id.into();
+        client::post_bg("/bot/update".to_owned(), body);
+    }
+
+    /// `moveToSection` — group a bot under a named section (creating it)
+    /// and clear its pin (App.tsx:822).
+    pub fn move_to_section(&'static self, id: &str, name: &str) {
+        if !name.is_empty() && !self.sections.get_untracked().iter().any(|s| s == name) {
+            self.sections.update(|v| v.push(name.to_owned()));
+        }
+        self.update_bot(id, serde_json::json!({"section": name, "pinned": false}));
+    }
+
+    /// `deleteBot` — `POST /bot/delete`, then refresh threads + turns.
+    pub fn delete_bot(&'static self, id: String) {
+        spawn(async move {
+            let _ = client::post("/bot/delete", serde_json::json!({"id": id})).await;
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+            self.refresh_turns();
         });
     }
 
