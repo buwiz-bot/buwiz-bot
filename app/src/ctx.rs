@@ -6,6 +6,10 @@
 //! Items carry a verb in `act`, a payload in `arg` and a toggle value
 //! in `flag`; `act()` is the dispatch table the TSX built inline.
 
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
+
 use nsh_core::ui::prelude::*;
 
 use crate::icons::icon;
@@ -149,9 +153,39 @@ pub(crate) fn layer() -> impl IntoElement {
 fn ctx_card(menu: CtxMenu) -> impl IntoElement {
     let items = menu.items.clone();
     let items2 = menu.items.clone();
-    // `ctxSub` — the main-row index whose flyout is open (or -1).
+    // `ctxSub` — the main-row index whose flyout is open (or -1). It
+    // only moves on row hover-in, never on hover-out, so the pointer can
+    // leave the parent row and reach the flyout.
     let sub = signal(-1i64);
     let sub2 = sub;
+    // `ctxSubT` — while a flyout is open, retargeting `sub` is delayed
+    // 350ms so crossing sibling rows on the way in doesn't close it; a
+    // flyout row's hover-in cancels the pending move. `pending` is the
+    // generation the delayed task must still see when it wakes.
+    let pending = Rc::new(Cell::new(0u64));
+    let sub_set = {
+        let pending = pending.clone();
+        Rc::new(move |idx: i64| {
+            let cur = sub.get_untracked();
+            let tok = pending.get().wrapping_add(1);
+            pending.set(tok);
+            if cur >= 0 && idx != cur {
+                let pending = pending.clone();
+                spawn(async move {
+                    timer(Duration::from_millis(350)).await;
+                    if pending.get() == tok {
+                        sub.set(idx);
+                    }
+                });
+            } else {
+                sub.set(idx);
+            }
+        }) as Rc<dyn Fn(i64)>
+    };
+    let sub_cancel = {
+        let pending = pending.clone();
+        Rc::new(move || pending.set(pending.get().wrapping_add(1))) as Rc<dyn Fn()>
+    };
     view()
         .size_full()
         .absolute()
@@ -176,7 +210,9 @@ fn ctx_card(menu: CtxMenu) -> impl IntoElement {
                 .child(each(
                     move || items.clone(),
                     |it| it.label.clone(),
-                    move |it, i| ctx_row(it.get(), i.get() as usize, sub),
+                    move |it, i| {
+                        ctx_row(it.get(), i.get() as usize, sub, sub_set.clone())
+                    },
                 )),
         )
         .child(
@@ -195,6 +231,7 @@ fn ctx_card(menu: CtxMenu) -> impl IntoElement {
                     menu.x + CTX_W - 8.0,
                     menu.y + row_top(&items2, i as usize) - CTX_PAD,
                     it.submenu.clone(),
+                    sub_cancel.clone(),
                 )
                 .into_element()
             }),
@@ -202,7 +239,9 @@ fn ctx_card(menu: CtxMenu) -> impl IntoElement {
 }
 
 /// One card of items — the main card and each flyout share it.
-fn menu_card(x: f32, y: f32, items: Vec<CtxItem>) -> impl IntoElement {
+/// `cancel` is the flyout rows' `isSub` hover-in: entering a flyout row
+/// cancels any pending `sub` move so the flyout stays open.
+fn menu_card(x: f32, y: f32, items: Vec<CtxItem>, cancel: Rc<dyn Fn()>) -> impl IntoElement {
     view()
         .absolute()
         .left(px(x))
@@ -216,7 +255,7 @@ fn menu_card(x: f32, y: f32, items: Vec<CtxItem>) -> impl IntoElement {
         .child(each(
             move || items.clone(),
             |it| it.label.clone(),
-            |it, _| ctx_row_leaf(it.get()),
+            move |it, _| ctx_row_leaf(it.get(), cancel.clone()),
         ))
 }
 
@@ -305,7 +344,9 @@ pub(crate) fn prompt_layer() -> impl IntoElement {
 }
 
 /// A flyout row (no nested submenu — the TSX's sub-items are leaves).
-fn ctx_row_leaf(it: CtxItem) -> impl IntoElement {
+/// `isSub` rows never touch `ctxSub`; their hover-in cancels a pending
+/// close so the pointer can arrive from the parent row.
+fn ctx_row_leaf(it: CtxItem, cancel: Rc<dyn Fn()>) -> impl IntoElement {
     if it.sep {
         return view()
             .h(px(1.0))
@@ -335,14 +376,24 @@ fn ctx_row_leaf(it: CtxItem) -> impl IntoElement {
         .when(it.checked, |v| {
             v.child(text("✓").text_size(px(12.0)).text_color(theme::ACCENT))
         })
-        .on_hover_in(move || hovered.set(true))
+        .on_hover_in(move || {
+            cancel();
+            hovered.set(true)
+        })
         .on_hover_out(move || hovered.set(false))
         .on_press(move || act(&it))
         .into_element()
 }
 
-/// A main-card row; `idx` feeds the card-level `sub` (`ctxSub`).
-fn ctx_row(it: CtxItem, idx: usize, sub: Signal<i64>) -> impl IntoElement {
+/// A main-card row. Hover-in is `ctxSubSet(it.submenu ? idx : -1)`;
+/// `sub` never moves on hover-out. The highlight is the row's own
+/// hover or an open flyout pointing back at it.
+fn ctx_row(
+    it: CtxItem,
+    idx: usize,
+    sub: Signal<i64>,
+    sub_set: Rc<dyn Fn(i64)>,
+) -> impl IntoElement {
     if it.sep {
         return view()
             .h(px(1.0))
@@ -354,6 +405,8 @@ fn ctx_row(it: CtxItem, idx: usize, sub: Signal<i64>) -> impl IntoElement {
     let idx = idx as i64;
     let color = if it.danger { theme::DOWN } else { theme::TEXT };
     let has_sub = !it.submenu.is_empty();
+    let hovered = signal(false);
+    let sub_set2 = sub_set.clone();
     view()
         .flex_row()
         .items_center()
@@ -361,7 +414,7 @@ fn ctx_row(it: CtxItem, idx: usize, sub: Signal<i64>) -> impl IntoElement {
         .px_3()
         .h(px(CTX_ROW))
         .bg(move || {
-            if sub.get() == idx {
+            if hovered.get() || has_sub && sub.get() == idx {
                 theme::HOVER
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -376,14 +429,15 @@ fn ctx_row(it: CtxItem, idx: usize, sub: Signal<i64>) -> impl IntoElement {
         .when(has_sub, |v| {
             v.child(text("›").text_size(px(13.0)).text_color(theme::MUTED))
         })
-        .on_hover_in(move || sub.set(idx))
-        .on_hover_out(move || {
-            if sub.get_untracked() == idx {
-                sub.set(-1)
-            }
+        .on_hover_in(move || {
+            hovered.set(true);
+            sub_set(if has_sub { idx } else { -1 })
         })
+        .on_hover_out(move || hovered.set(false))
         .on_press(move || {
-            if !has_sub {
+            if has_sub {
+                sub_set2(idx)
+            } else {
                 act(&it)
             }
         })
