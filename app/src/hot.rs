@@ -35,6 +35,15 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
+    // `ROX_PANE=1`: open the right detail pane at boot — keypress
+    // automation can't reach the window, so screenshots need the env.
+    if std::env::var("ROX_PANE").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(800)).await;
+            store().right_open.set(true);
+        });
+    }
+
     // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
     // details, theme, the New-Bot sheet, the work tab, dictation demo
     // and mod+1…9 chat switching.
@@ -158,6 +167,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
+        .child(pane::rename_overlay())
         .child(botmodal::layer())
         .child(palette::layer())
         .child(models::layer())

@@ -8,7 +8,7 @@ use nsh_core::ui::prelude::*;
 use crate::avatar::bot_avatar;
 use crate::icons::icon;
 use crate::live::store;
-use crate::store::{BotMeta, ThreadMeta};
+use crate::store::{RoxBot, ThreadMeta};
 use crate::theme;
 
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
@@ -190,7 +190,7 @@ fn rail_rule() -> impl IntoElement {
 /// `railBtn` (App.tsx:1183) — the bot's rail plate: a 54px rounded plate
 /// holding the 44px mark in a 36px cell, the `:rail` gaze, the run state
 /// and the ambient overlay over a photo.
-fn rail_btn(b: BotMeta) -> impl IntoElement {
+fn rail_btn(b: RoxBot) -> impl IntoElement {
     let b2 = b.clone();
     let app = b.id.clone();
     let tid = b.thread_id.clone();
@@ -649,7 +649,7 @@ fn thread_row(t: ThreadMeta) -> impl IntoElement {
         })
 }
 
-fn bot_row(b: BotMeta) -> impl IntoElement {
+fn bot_row(b: RoxBot) -> impl IntoElement {
     let hovered = signal(false);
     let b2 = b.clone();
     let app = b.id.clone();
@@ -767,7 +767,7 @@ fn bot_row(b: BotMeta) -> impl IntoElement {
 /// `pinTile` (App.tsx:1108) — a pinned bot's 95×92 tile: the 72px mark in
 /// a 60px cell (with the `:pin` gaze), the ambient overlay over a photo,
 /// and the name under it.
-fn pin_tile(b: BotMeta) -> impl IntoElement {
+fn pin_tile(b: RoxBot) -> impl IntoElement {
     let b2 = b.clone();
     let app = b.id.clone();
     let name = b.name.clone();

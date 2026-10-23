@@ -45,6 +45,15 @@ fn act(it: &CtxItem) {
             st.section_name.set(String::new());
             st.section_prompt.set(Some(arg.to_owned()));
         }
+        "app-rename-title" | "app-rename-file" | "app-rename-label" => {
+            st.app_action(verb, arg.to_owned())
+        }
+        "publish" | "unpublish" | "app-delete" | "app-delete-everywhere" => {
+            st.app_action(verb, arg.to_owned())
+        }
+        "mcp-enable" | "mcp-disable" | "mcp-reconnect" | "mcp-delete" => {
+            st.mcp_verb(verb, arg.to_owned())
+        }
         _ => {}
     }
 }
@@ -74,7 +83,7 @@ pub(crate) fn chat_items(t: &crate::store::ThreadMeta) -> Vec<CtxItem> {
 
 /// `botItems` — a bot row's menu (App.tsx:831): pin, Move to ▸,
 /// hide/show, delete.
-pub(crate) fn bot_items(b: &crate::store::BotMeta) -> Vec<CtxItem> {
+pub(crate) fn bot_items(b: &crate::store::RoxBot) -> Vec<CtxItem> {
     let st = store();
     let mut sub: Vec<CtxItem> = st
         .sections
@@ -123,6 +132,50 @@ pub(crate) fn add_items() -> Vec<CtxItem> {
     vec![
         CtxItem::row("New bot", "newChat", "bot-modal", String::new()),
         CtxItem::row("New chat", "edit", "new", String::new()),
+    ]
+}
+
+/// `appMenu` — a library row's menu (App.tsx:1639): rename title/file,
+/// publish, delete.
+pub(crate) fn app_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
+    let published = a.published;
+    let mut items = vec![
+        CtxItem::row("Rename Title…", "edit", "app-rename-title", a.app.clone()),
+        CtxItem::row("Rename File Name…", "edit", "app-rename-file", a.app.clone()),
+        CtxItem::separator(),
+        CtxItem::row(
+            if published { "Remove from Mini Apps" } else { "Promote to Mini Apps" },
+            "gpts",
+            if published { "unpublish" } else { "publish" },
+            a.app.clone(),
+        ),
+        CtxItem::separator(),
+        CtxItem::danger("Delete…", "trash", "app-delete", a.app.clone()),
+    ];
+    if published {
+        items.push(CtxItem::danger(
+            "Delete Everywhere…",
+            "trash",
+            "app-delete-everywhere",
+            a.app.clone(),
+        ));
+    }
+    items
+}
+
+/// `mcpMenu` — a connected server's menu (App.tsx:1602): enable,
+/// reconnect, remove.
+pub(crate) fn mcp_items(s: &crate::store::McpServer) -> Vec<CtxItem> {
+    vec![
+        CtxItem::row(
+            if s.enabled { "Disable" } else { "Enable" },
+            if s.enabled { "powerOff" } else { "power" },
+            if s.enabled { "mcp-disable" } else { "mcp-enable" },
+            s.id.clone(),
+        ),
+        CtxItem::row("Reconnect", "refresh", "mcp-reconnect", s.id.clone()),
+        CtxItem::separator(),
+        CtxItem::danger("Remove…", "trash", "mcp-delete", s.id.clone()),
     ]
 }
 
