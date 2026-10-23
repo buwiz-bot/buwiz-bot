@@ -20,6 +20,7 @@ mod hot;
 mod icons;
 pub mod live;
 mod md;
+pub mod mini;
 mod models;
 mod palette;
 mod pane;

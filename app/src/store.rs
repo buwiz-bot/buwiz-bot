@@ -54,10 +54,14 @@ pub struct Reply {
 /// A generated artifact a turn's card points at (`art`).
 #[derive(Clone, PartialEq, Default)]
 pub struct Art {
+    /// The module key for `/module?name=`: `R<n>` or a pinned `R<n>@v<k>`.
     pub app: String,
     pub file: String,
     pub title: String,
+    pub desc: String,
     pub kind: String,
+    pub w: f64,
+    pub h: f64,
 }
 
 /// One turn of `GET /turns?thread=`.
@@ -197,15 +201,22 @@ impl Turn {
             reply: v.get("reply").map(|r| Reply { name: s(r, "name"), text: s(r, "text") }),
             attachments,
             files: files.iter().map(Attach::of).collect(),
-            art: v
-                .get("widget")
-                .and_then(|w| w.as_bool())
-                .unwrap_or(false)
-                .then(|| Art {
-                app: s(v, "app"),
-                file: s(v, "file"),
-                title: s(v, "title"),
-                kind: s(v, "kind"),
+            // A turn names a module in `name` ("R15") and describes the
+            // artifact in `art`; `v` pins a version (`R15@v3`). The shell's
+            // rule: `tt.name` set → app card, else message.
+            art: (!s(v, "name").is_empty() && v.get("art").is_some()).then(|| {
+                let a = v.get("art").unwrap();
+                let name = s(v, "name");
+                let ver = i64of(v, "v");
+                Art {
+                    app: if ver > 0 { format!("{name}@v{ver}") } else { name },
+                    file: s(a, "file"),
+                    title: s(a, "title"),
+                    desc: s(a, "desc"),
+                    kind: s(a, "kind"),
+                    w: f64of(a, "w"),
+                    h: f64of(a, "h"),
+                }
             }),
             building: v.get("building").and_then(|x| x.as_bool()).unwrap_or(false),
             status: s(v, "status"),
@@ -271,6 +282,19 @@ pub struct Store {
     /// The dedupe cache: raw JSON of the last /turns payload, so identical
     /// polls don't dirty the list.
     pub turns_json: std::cell::RefCell<String>,
+
+    /// Compiled mini-app sources, per module name (`R<n>`): the JS the
+    /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
+    pub minis: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+    /// Display titles of mini apps (from `/module`), for card headers.
+    pub mini_titles: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+    /// Per-module load/compile errors, shown in the card.
+    pub mini_errs: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+
+    /// The owner the store was made under (the anchor's — it outlives
+    /// remounts). Lazily-made signals must live under it, not under
+    /// whatever binding happened to ask first.
+    owner: Owner,
 }
 
 impl Store {
@@ -308,17 +332,25 @@ impl Store {
             models_open: signal(false),
             dark: signal(true),
             turns_json: std::cell::RefCell::new(String::new()),
+            minis: std::cell::RefCell::new(std::collections::HashMap::new()),
+            mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
+            owner: Owner::current(),
         }
     }
 
     // -- boot --------------------------------------------------------------
 
-    /// The initial loads: threads, bots, models, prefs.
+    /// The initial loads: threads, bots, models, prefs, then the active
+    /// thread's turns and pinned apps (`set_threads` picks the server's
+    /// `active`).
     pub fn boot(&'static self) {
         spawn(async move {
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
+            self.refresh_turns();
+            self.refresh_thread_apps();
             if let Some(v) = client::get("/catalog").await {
                 self.set_bots(v);
             }
@@ -340,11 +372,19 @@ impl Store {
     }
 
     fn set_threads(&self, v: serde_json::Value) {
-        let rows: Vec<ThreadMeta> = list(&v, "threads")
+        let rows: Vec<ThreadMeta> = list(&v, "list")
             .iter()
-            .map(|t| ThreadMeta { id: s(t, "id"), name: s(t, "name"), created: f64of(t, "created") })
+            .map(|t| ThreadMeta {
+                id: s(t, "id"),
+                name: s(t, "title"),
+                created: f64of(t, "created"),
+            })
             .collect();
-        if !rows.is_empty() && self.active_id.get_untracked().is_empty() {
+        // The server names its active thread; open that one on first load.
+        let active = s(&v, "active");
+        if !active.is_empty() && self.active_id.get_untracked().is_empty() {
+            self.active_id.set(active);
+        } else if !rows.is_empty() && self.active_id.get_untracked().is_empty() {
             self.active_id.set(rows[0].id.clone());
         }
         self.threads.set(rows);
@@ -386,16 +426,22 @@ impl Store {
 
     // -- thread ------------------------------------------------------------
 
-    /// Open a thread: load its turns and start watching its status.
+    /// Open a thread: select it server-side, then load its turns and
+    /// start watching its status. (`/turns` always answers the server's
+    /// active thread — `?thread=` is ignored.)
     pub fn open_thread(&'static self, id: String) {
         if self.active_id.get_untracked() == id {
             return;
         }
-        self.active_id.set(id.clone());
         self.turns.set(Vec::new());
         *self.turns_json.borrow_mut() = String::new();
-        self.refresh_turns();
-        self.refresh_thread_apps();
+        let sel = id.clone();
+        spawn(async move {
+            client::post("/thread/select", serde_json::json!({"id": sel})).await;
+            self.active_id.set(id.clone());
+            self.refresh_turns();
+            self.refresh_thread_apps();
+        });
     }
 
     /// One `/turns` fetch for the open thread; dedupes on raw JSON so a
@@ -406,7 +452,12 @@ impl Store {
             return;
         }
         spawn(async move {
-            let Some(v) = client::get(&format!("/turns?thread={id}")).await else { return };
+            let Some(v) = client::get("/turns").await else { return };
+            // The server may still be on the previous thread for a beat;
+            // keep the stale response out of the list.
+            if s(&v, "active") != id {
+                return;
+            }
             let raw = v.to_string();
             if raw == *self.turns_json.borrow() {
                 return;
@@ -520,10 +571,10 @@ impl Store {
         }
     }
 
-    /// `POST /threads` — a fresh chat.
+    /// `POST /thread/new` — a fresh chat.
     pub fn new_thread(&'static self) {
         spawn(async move {
-            if let Some(v) = client::post("/threads", serde_json::json!({})).await {
+            if let Some(v) = client::post("/thread/new", serde_json::json!({})).await {
                 if let Some(v) = client::get("/threads").await {
                     self.set_threads(v);
                 }
@@ -535,12 +586,15 @@ impl Store {
     }
 
     pub fn rename_thread(&'static self, id: String, name: String) {
-        client::post_bg(format!("/threads/{id}"), serde_json::json!({"name": name}));
+        client::post_bg(
+            "/thread/update".to_owned(),
+            serde_json::json!({"id": id, "title": name}),
+        );
     }
 
     pub fn delete_thread(&'static self, id: String) {
         spawn(async move {
-            let _ = client::del(&format!("/threads/{id}")).await;
+            let _ = client::post("/thread/delete", serde_json::json!({"id": id})).await;
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
@@ -580,6 +634,84 @@ impl Store {
         let next = !self.fast.get_untracked();
         self.fast.set(next);
         client::post_bg("/prefs".to_owned(), serde_json::json!({"fast": next}));
+    }
+
+    // -- mini apps ---------------------------------------------------------
+
+    /// The compiled JS of widget `app` (`R<n>`), compiled lazily:
+    /// `GET /module`, then `compile_module`. The signal starts empty
+    /// (the component shows nothing until the code lands).
+    pub fn mini_source(&'static self, app: &str) -> Signal<String> {
+        if let Some(s) = self.minis.borrow().get(app) {
+            return *s;
+        }
+        let sig = self.owner.run(|| signal(String::new()));
+        self.minis.borrow_mut().insert(app.to_owned(), sig);
+        let name = app.to_owned();
+        spawn(async move {
+            let Some(v) = client::get(&format!("/module?name={name}")).await else {
+                self.mini_err(&name).set("server unreachable".to_owned());
+                return;
+            };
+            let title = v.get("title").and_then(|x| x.as_str()).unwrap_or_default();
+            self.mini_title(&name).set(title.to_owned());
+            let src = s(&v, "source");
+            if src.is_empty() {
+                self.mini_err(&name).set("empty module".to_owned());
+                return;
+            }
+            match crate::mini::compile_widget(&name, &src) {
+                Ok(js) => {
+                    self.mini_err(&name).set(String::new());
+                    sig.set(js);
+                }
+                Err(e) => {
+                    log::warn!("mini {name}: compile failed: {e}");
+                    let first = e.lines().next().unwrap_or("compile failed");
+                    self.mini_err(&name).set(first.to_owned());
+                }
+            }
+        });
+        sig
+    }
+
+    /// The display title of widget `app` (set when `mini_source` loads).
+    pub fn mini_source_title(&'static self, app: &str) -> Signal<String> {
+        if let Some(s) = self.mini_titles.borrow().get(app) {
+            return *s;
+        }
+        let sig = self.owner.run(|| signal(String::new()));
+        self.mini_titles.borrow_mut().insert(app.to_owned(), sig);
+        sig
+    }
+
+    /// The load/compile error of widget `app` (`""` = none/loading).
+    pub fn mini_err(&'static self, app: &str) -> Signal<String> {
+        if let Some(s) = self.mini_errs.borrow().get(app) {
+            return *s;
+        }
+        let sig = self.owner.run(|| signal(String::new()));
+        self.mini_errs.borrow_mut().insert(app.to_owned(), sig);
+        sig
+    }
+
+    /// Drop the cached bundle + error so the next `mini_source` refetches.
+    pub fn retry_mini(&'static self, app: &str) {
+        self.minis.borrow_mut().remove(app);
+        self.mini_err(app).set(String::new());
+        self.mini_source(app);
+    }
+
+    /// Open the widget in the server's own window (`POST /popout`).
+    pub fn popout(&'static self, app: &str) {
+        client::post_bg(
+            "/popout".to_owned(),
+            serde_json::json!({"name": app}),
+        );
+    }
+
+    fn mini_title(&'static self, app: &str) -> Signal<String> {
+        self.mini_source_title(app)
     }
 }
 

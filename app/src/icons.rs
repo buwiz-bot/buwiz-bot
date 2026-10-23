@@ -23,6 +23,8 @@ pub(crate) fn icon(name: &str) -> impl IntoElement {
         "chat" => ("✎", 14.0),
         "box" => ("▢", 13.0),
         "pin" => ("⊙", 13.0),
+        "popout" => ("↗", 14.0),
+        "retry" => ("↻", 14.0),
         "bolt" => ("⚡", 13.0),
         "folder" => ("▤", 14.0),
         "paperclip" => ("⌘", 13.0),

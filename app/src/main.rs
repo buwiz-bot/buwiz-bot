@@ -24,15 +24,14 @@ fn ui_sets() -> Vec<nsh_core::ui::Registry> {
 fn main() -> impl std::process::Termination {
     env_logger::init();
     platform::set_ui_sets(ui_sets());
-    platform::run_app(
-        platform::AppSource::Rust(app_root()),
-        platform::AppOptions {
-            title: "Rox".to_owned(),
-            app_id: "dev.goldcoders.rox".to_owned(),
-            size: (1100, 760),
-            ..Default::default()
-        },
-    )
+    let options = platform::AppOptions {
+        title: "Rox".to_owned(),
+        app_id: "dev.goldcoders.rox".to_owned(),
+        size: (1100, 760),
+        ..Default::default()
+    };
+    rox::mini::register_mini_app(&options.components);
+    platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 
 #[cfg(target_os = "ios")]
