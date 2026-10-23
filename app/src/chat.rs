@@ -93,6 +93,83 @@ fn user_row(t: Turn) -> impl IntoElement {
 // Agent row
 // ---------------------------------------------------------------------------
 
+/// `ArtPlaceholder` — the gray box a building artifact renders before its
+/// module exists (shell.tsx:188): title, optional `art.desc`, and an
+/// aspect-ratio box shimmering `t.status` with a `w×h` corner label.
+fn art_placeholder(t: &Turn) -> impl IntoElement {
+    let art = t.art.clone().unwrap_or_default();
+    let w = (if art.w > 0.0 { art.w } else { 480.0 } as f64).min(560.0) as f32;
+    let ar = if art.w > 0.0 && art.h > 0.0 { art.w / art.h } else { 4.0 / 3.0 } as f32;
+    let title = if !art.title.is_empty() {
+        art.title.clone()
+    } else if t.label == "image" {
+        "Image".to_owned()
+    } else {
+        "Mini app".to_owned()
+    };
+    let desc = art.desc.clone();
+    let status = if t.status.is_empty() { "Loading…".to_owned() } else { t.status.clone() };
+    let dims = if art.w > 0.0 && art.h > 0.0 {
+        Some(format!("{}×{}", art.w, art.h))
+    } else {
+        None
+    };
+    view()
+        .w(px(w))
+        .max_w(percentage(100.0))
+        .bg(theme::CARD)
+        .rounded(px(16.0))
+        .border_1()
+        .border_color(theme::BORDER_F)
+        .p_3()
+        .child(
+            text(title)
+                .text_size(px(14.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::TEXT)
+                .number_of_lines(1),
+        )
+        .when(!desc.is_empty(), |v| {
+            v.child(
+                text(desc.clone())
+                    .text_size(px(12.0))
+                    .text_color(theme::FAINT)
+                    .pt(px(2.0))
+                    .number_of_lines(1),
+            )
+        })
+        .child(
+            view()
+                .w(px(w - 24.0))
+                .h(px(((w - 24.0) / ar).max(1.0)))
+                .mt(px(10.0))
+                .rounded(px(10.0))
+                .bg(theme::CARD2)
+                .items_center()
+                .justify_center()
+                .child(
+                    view()
+                        .w(px(170.0))
+                        .child(crate::statusfx::shimmer_at(
+                            move || status.clone(),
+                            12.0,
+                            theme::FAINT,
+                            theme::TEXT,
+                        )),
+                )
+                .when_some(dims, |v, d| {
+                    v.child(
+                        text(d)
+                            .absolute()
+                            .right(px(8.0))
+                            .bottom(px(6.0))
+                            .text_size(px(10.5))
+                            .text_color(theme::GHOST),
+                    )
+                }),
+        )
+}
+
 fn agent_row(t: Turn) -> impl IntoElement {
     let name = t.name.clone();
     let caption = t.caption.clone();
@@ -128,7 +205,27 @@ fn agent_row(t: Turn) -> impl IntoElement {
         .child(reply_quote(&t))
         .child(markdown(move || body.clone(), move || streaming))
         .child(attach_strip(&t))
-        .when(has_card, |v| v.child(app_card(t.art.clone().unwrap())))
+        // A building artifact renders its declared placeholder — before
+        // the module exists, the card is a gray box shimmering the job's
+        // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
+        // still compiling (`d === "loading"`) shows it too, until
+        // `mini_source` lands or `mini_err` reports.
+        .when(has_card && t.building, |v| v.child(art_placeholder(&t)))
+        .when(has_card && !t.building, |v| {
+            let app = t.art.clone().map(|a| a.app).unwrap_or_default();
+            let t2 = t.clone();
+            let t3 = t.clone();
+            v.child(
+                when(
+                    move || {
+                        store().mini_source(&app).get().is_empty()
+                            && store().mini_err(&app).get().is_empty()
+                    },
+                    move || art_placeholder(&t2).into_element(),
+                )
+                .otherwise(move || app_card(t3.art.clone().unwrap()).into_element()),
+            )
+        })
         .child(
             // Action bar: reply / react / more.
             view()

@@ -1,26 +1,585 @@
-//! The agent avatar (`app/blob.tsx`): the TS version is an animated
-//! blob; the Rust version is a rounded disc with the bot's emoji (or
-//! initial), tinted per agent.
+//! The agent avatar (`app/blob.tsx`) — a native `canvas()` port of `BotBlob`:
+//! the `Mark`/`Director` engine from `mark.rs` advances on a 60fps clock
+//! signal, and each paint either draws the live `Uh` tree through
+//! `paint_tree` or — for a settled resting mark — the baked `paint_rest`
+//! frames. `blobGaze`/`blobPokes`/`blobEdit` keep their JS shapes.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use nsh_core::ui::prelude::*;
 
+use crate::mark::{self, PaintOpts, UhSize, V2};
+use crate::mark::{gaze_advance, gaze_set, GazeState};
 use crate::store::BotMeta;
 use crate::theme;
 
-/// A bot's disc: emoji over a tinted circle.
-pub(crate) fn bot_avatar(bot: BotMeta, size: f32) -> impl IntoElement {
-    let face = if bot.emoji.is_empty() {
-        bot.name.chars().next().unwrap_or('?').to_uppercase().to_string()
-    } else {
-        bot.emoji.clone()
-    };
+// ---------------------------------------------------------------------------
+// `blobGaze`/`blobPokes`/`blobEdit`
+// ---------------------------------------------------------------------------
+
+/// `blobGaze()` — the pointer-follow target shared between the outer view
+/// (`follow`) and the canvas (`target`/`ver`).
+pub(crate) struct BlobGaze {
+    target: Cell<Option<V2>>,
+    ver: Cell<u32>,
+    v: Signal<u32>,
+}
+
+impl BlobGaze {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            target: Cell::new(None),
+            ver: Cell::new(0),
+            v: signal(0),
+        })
+    }
+    fn change(&self, next: Option<V2>) {
+        if self.target.get() == next {
+            return;
+        }
+        self.target.set(next);
+        self.ver.set(self.ver.get() + 1);
+        self.v.update(|v| *v += 1);
+    }
+    /// Pointer moved inside the mark cell: `follow(event, cx, cy, reach=60)`.
+    pub(crate) fn follow(&self, event_x: f64, event_y: f64, cx: f64, cy: f64, reach: f64) {
+        let clamp = |v: f64| v.clamp(-1.0, 1.0);
+        self.change(Some([
+            clamp((event_x - cx) / reach),
+            clamp(-(event_y - cy) / reach),
+        ]));
+    }
+    pub(crate) fn rest(&self) {
+        self.change(None);
+    }
+    pub(crate) fn target(&self) -> Option<V2> {
+        self.target.get()
+    }
+    pub(crate) fn ver(&self) -> u32 {
+        self.ver.get()
+    }
+    fn subscribe(&self) {
+        self.v.get();
+    }
+}
+
+/// `blobPokes()` — queued `poke(kind, {turns})`s the canvas drains.
+pub(crate) struct BlobPokes {
+    queue: RefCell<Vec<(&'static str, f64)>>,
+    v: Signal<u32>,
+}
+
+impl BlobPokes {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            queue: RefCell::new(vec![]),
+            v: signal(0),
+        })
+    }
+    pub(crate) fn fire(&self, kind: &str, turns: Option<f64>) {
+        let kind = mark::UN.iter().copied().find(|k| *k == kind).unwrap_or(mark::UN[0]);
+        self.queue.borrow_mut().push((kind, turns.unwrap_or(1.0)));
+        self.v.update(|v| *v += 1);
+    }
+    fn drain(&self) -> Vec<(&'static str, f64)> {
+        self.queue.borrow_mut().drain(..).collect()
+    }
+    fn subscribe(&self) {
+        self.v.get();
+    }
+}
+
+/// `blobEdit()` — the picker's drag-to-recolor amount (`s.target`).
+pub(crate) struct BlobEdit {
+    pub(crate) target: Cell<f64>,
+    v: Signal<u32>,
+}
+
+impl BlobEdit {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            target: Cell::new(0.0),
+            v: signal(0),
+        })
+    }
+    pub(crate) fn to(&self, target: f64) {
+        self.target.set(target);
+        self.v.update(|v| *v += 1);
+    }
+    fn subscribe(&self) {
+        self.v.get();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `BotBlob`
+// ---------------------------------------------------------------------------
+
+/// `BotBlobProps` — `shape` is the picker name (`blob`, `cloud`, …),
+/// `state` a `STATES` name, `paused` pins the resting pose.
+pub(crate) struct BotBlobProps {
+    pub shape: String,
+    pub color: String,
+    pub size: f32,
+    pub state: &'static str,
+    /// A live state source (run status, `botSt`): read on every paint, so
+    /// the canvas painter subscribes to whatever it reads. Wins over
+    /// `state` when set.
+    pub state_src: Option<Rc<dyn Fn() -> String>>,
+    pub paused: bool,
+    pub emphasized: bool,
+    /// A live emphasis source (`emphBot`): read on every paint. Wins over
+    /// `emphasized` when set.
+    pub emph_src: Option<Rc<dyn Fn() -> bool>>,
+    pub gaze: Option<Rc<BlobGaze>>,
+    pub edit: Option<Rc<BlobEdit>>,
+    pub pokes: Option<Rc<BlobPokes>>,
+    pub morph_shape: bool,
+    pub seed: Option<String>,
+    pub gaze_at: Option<V2>,
+    /// The theme's base lightness (white ink flips to black on light themes).
+    pub light: bool,
+}
+
+impl Default for BotBlobProps {
+    fn default() -> Self {
+        Self {
+            shape: "blob".into(),
+            color: "#FFFFFF".into(),
+            size: 22.0,
+            state: "idle",
+            state_src: None,
+            paused: false,
+            emphasized: false,
+            emph_src: None,
+            gaze: None,
+            edit: None,
+            pokes: None,
+            morph_shape: false,
+            seed: None,
+            gaze_at: None,
+            light: false,
+        }
+    }
+}
+
+/// The per-canvas engine + prop mirrors (`draw`'s locals in `BotBlob`).
+struct Inner {
+    tab: Rc<mark::Tables>,
+    mark: mark::Mark,
+    dir: mark::Director,
+    gs: GazeState,
+    last_shape: String,
+    last_state: &'static str,
+    last_compact: bool,
+    last_emphasis: bool,
+    last_resting: bool,
+    last_gaze_ver: u32,
+    was_playing: bool,
+    live_until: Instant,
+    grace_until: Instant,
+    ek: f64,
+    prev_clock: f64,
+    asleep: bool,
+}
+
+impl Inner {
+    fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
+        let body = mark::yn(&props.shape);
+        let seed = props
+            .seed
+            .as_deref()
+            .map(mark::rp)
+            .unwrap_or_else(|| (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(1)) | 1);
+        let box_ = props.size as f64 * 0.82;
+        let mut mark = mark::Mark::new(&tab, Some(body), 1.0, false, false, seed);
+        let state = props
+            .state_src
+            .as_ref()
+            .map(|f| mark::state_name(&f()))
+            .unwrap_or(props.state);
+        let resting = props.paused || state == "idle";
+        let dir = mark::Director::new(&mut mark, state, seed, box_ < 48.0, resting, None);
+        let initial = props
+            .gaze
+            .as_ref()
+            .and_then(|g| g.target())
+            .or(props.gaze_at);
+        mark.set_gaze(initial);
+        let mut gs = GazeState::default();
+        gaze_set(&mut gs, initial);
+        let now = Instant::now();
+        Self {
+            tab,
+            mark,
+            dir,
+            gs,
+            last_shape: props.shape.clone(),
+            last_state: state,
+            last_compact: box_ < 48.0,
+            last_emphasis: false,
+            last_resting: resting,
+            last_gaze_ver: props.gaze.as_ref().map_or(0, |g| g.ver()),
+            was_playing: false,
+            live_until: now,
+            grace_until: now,
+            ek: 0.0,
+            prev_clock: 0.0,
+            asleep: true,
+        }
+    }
+
+    /// `draw`'s prop-diff section (blob.tsx: shape/state/compact/emphasis/
+    /// gaze/pokes/resting), then the clock advance.
+    fn sync(&mut self, props: &BotBlobProps, _clock: f64) -> bool {
+        let now = Instant::now();
+        let mut dirty = false;
+        if props.shape != self.last_shape {
+            self.mark.set_body(mark::yn(&props.shape), false);
+            if props.morph_shape {
+                self.grace_until = now + Duration::from_millis(1400);
+            }
+            self.live_until = now + Duration::from_millis(1200);
+            self.last_shape = props.shape.clone();
+            dirty = true;
+        }
+        let state = props
+            .state_src
+            .as_ref()
+            .map(|f| mark::state_name(&f()))
+            .unwrap_or(props.state);
+        if state != self.last_state {
+            if state == "idle" {
+                self.grace_until = now + Duration::from_millis(1400);
+            }
+            self.dir.set_state_pub(&mut self.mark, state);
+            self.last_state = state;
+            dirty = true;
+        }
+        let compact = (props.size as f64 * 0.82) < 48.0;
+        if compact != self.last_compact {
+            self.dir.set_compact(compact);
+            self.last_compact = compact;
+        }
+        let emphasized = props
+            .emph_src
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or(props.emphasized);
+        if emphasized != self.last_emphasis {
+            self.dir.set_emphasis(&mut self.mark, emphasized);
+            self.live_until = now + Duration::from_millis(400);
+            self.last_emphasis = emphasized;
+        }
+        if let Some(gaze) = &props.gaze {
+            if gaze.ver() != self.last_gaze_ver {
+                let target = gaze.target().or(props.gaze_at);
+                self.mark.set_gaze(target);
+                gaze_set(&mut self.gs, target);
+                self.last_gaze_ver = gaze.ver();
+            }
+        }
+        if let Some(pokes) = &props.pokes {
+            for (kind, turns) in pokes.drain() {
+                self.mark.poke(kind, turns);
+                self.live_until = now + Duration::from_millis(1500);
+            }
+        }
+        let resting = props.paused || (state == "idle" && now >= self.grace_until);
+        if resting != self.last_resting {
+            self.dir.set_resting(&mut self.mark, resting);
+            self.last_resting = resting;
+        }
+        dirty
+    }
+
+    /// `draw`'s live branch: advance clocks, update `ek`, mirror the
+    /// rest-pose hold reset.
+    fn advance(&mut self, props: &BotBlobProps, clock: f64, resting: bool, live: bool) {
+        let edit_target = props.edit.as_ref().map_or(0.0, |e| e.target.get());
+        let mut dt = 0.0;
+        if live {
+            if self.asleep {
+                self.prev_clock = clock;
+                self.asleep = false;
+            } else {
+                dt = (clock - self.prev_clock).clamp(0.0, 0.1);
+                self.prev_clock = clock;
+            }
+            if dt > 0.0 {
+                if !resting {
+                    self.dir.advance(&mut self.mark, dt);
+                }
+                self.mark.advance(dt);
+                gaze_advance(&mut self.gs, dt);
+                self.ek += (edit_target - self.ek) * (1.0 - (-14.0 * dt).exp());
+            }
+        } else {
+            self.asleep = true;
+            if let Some(g) = &props.gaze {
+                g.subscribe();
+            }
+            if let Some(e) = &props.edit {
+                e.subscribe();
+            }
+            if let Some(p) = &props.pokes {
+                p.subscribe();
+            }
+        }
+        let playing = self.mark.is_playing();
+        if self.was_playing && !playing {
+            self.gs.hold = 0.0;
+        }
+        self.was_playing = playing;
+    }
+
+    /// `draw`'s paint section.
+    fn paint(&mut self, p: Painter, props: &BotBlobProps, resting: bool) -> Painter {
+        let size = props.size as f64;
+        let canvas_size = size * 1.5;
+        let box_ = size * 0.82;
+        let extent = (box_ * (0.92 / 0.6) * 100.0).round() / 100.0;
+        let x = (canvas_size - extent) / 2.0;
+        let y = x;
+        let ink = mark::ink_of(&props.color, props.light);
+        let ink_paint = if self.ek > 0.001 {
+            mark::darken(&ink, 0.7 * self.ek)
+        } else {
+            ink.clone()
+        };
+        let playing = self.mark.is_playing();
+        let now = Instant::now();
+        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until {
+            if let Some(bytes) = mark::rest_bytes(&props.shape) {
+                return mark::paint_rest(p, &bytes, &self.gs, x, y, extent, &ink_paint);
+            }
+        }
+        let frame = self.mark.frame();
+        let tree = mark::uh(
+            &frame,
+            &PaintOpts {
+                ink: [0.0, 0.0, 0.0],
+                spot: [0.0, 0.0, 0.0],
+                cutout: true,
+                ink_paint: Some(ink_paint),
+                spot_paint: None,
+            },
+            extent,
+            "m",
+            &UhSize {
+                display_size: Some(box_),
+                extent,
+            },
+            &self.tab,
+        );
+        mark::paint_tree(p, &tree, x, y, extent)
+    }
+}
+
+/// `BotBlob` — a `size`-cell `View` with a `size*1.5` canvas overhanging it.
+pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
+    let size = props.size;
+    let canvas_size = size * 1.5;
+    let offset = -size * 0.25;
+    // `startClock` — the shared 60fps tick the painter subscribes to.
+    let clock = signal(0.0f64);
+    set_interval(Duration::from_millis(16), {
+        let clock = clock.clone();
+        move || clock.update(|c| *c += 0.016)
+    });
+    let tab = Rc::new(mark::tables());
+    let st = Rc::new(RefCell::new(Inner::new(&props, tab)));
+    let props = Rc::new(props);
+    view()
+        .size(px(size))
+        .child(
+            canvas(move || {
+                let t = clock.get();
+                let mut st = st.borrow_mut();
+                let props = &*props;
+                st.sync(props, t);
+                let now = Instant::now();
+                let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
+                let live = !resting
+                    || !st.mark.is_settled()
+                    || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.ek).abs() > 0.002
+                    || st.grace_until > now;
+                st.advance(props, t, resting, live);
+                st.paint(Painter::new(), props, resting)
+            })
+            .size(px(canvas_size))
+            .absolute()
+            .left(px(offset))
+            .top(px(offset)),
+        )
+}
+
+/// `CroppedImage` — a bot's photo avatar: the image zoomed and panned by
+/// `crop` inside a circle (blob.tsx:459).
+pub(crate) fn cropped_image(uri: &str, size: f32, crop: Option<crate::store::Crop>) -> impl IntoElement {
+    let zoom = crop.map(|c| c.s).unwrap_or(1.0).max(0.01) as f32;
+    let (dx, dy) = crop.map(|c| (c.x as f32, c.y as f32)).unwrap_or((0.0, 0.0));
     view()
         .size(px(size))
         .rounded(px(size / 2.0))
-        .bg(theme::ACCENT_TINT)
+        .overflow_hidden()
+        .bg(theme::PILL_BG)
+        .child(
+            image(crate::files::media_url(uri))
+                .absolute()
+                .w(px(size * zoom))
+                .h(px(size * zoom))
+                .left(px((size - size * zoom) / 2.0 + dx * size))
+                .top(px((size - size * zoom) / 2.0 + dy * size)),
+        )
+}
+
+/// `BotAvatar`'s props (blob.tsx:500) — the mark or, when the bot has a
+/// photo, the cropped image; `box_` is the photo's diameter
+/// (`size*0.82` by default).
+#[derive(Default)]
+pub(crate) struct BotAvatarProps {
+    pub shape: String,
+    pub color: String,
+    pub image: String,
+    pub crop: Option<crate::store::Crop>,
+    pub size: f32,
+    pub box_: Option<f32>,
+    pub state: &'static str,
+    pub state_src: Option<Rc<dyn Fn() -> String>>,
+    pub paused: bool,
+    pub emphasized: bool,
+    pub emph_src: Option<Rc<dyn Fn() -> bool>>,
+    pub gaze: Option<Rc<BlobGaze>>,
+    pub edit: Option<Rc<BlobEdit>>,
+    pub pokes: Option<Rc<BlobPokes>>,
+    pub morph_shape: bool,
+    pub seed: Option<String>,
+    pub gaze_at: Option<V2>,
+}
+
+impl BotAvatarProps {
+    /// Filled from a catalog bot: shape, color, photo, seed.
+    pub(crate) fn bot(b: &BotMeta, size: f32) -> Self {
+        Self {
+            shape: b.shape.clone(),
+            color: b.color.clone(),
+            image: b.image.clone(),
+            crop: b.crop,
+            size,
+            seed: Some(b.id.clone()),
+            ..Default::default()
+        }
+    }
+}
+
+/// `BotAvatar` — the mark cell: a `BotBlob` at `size` or, when `image`
+/// is set, the `CroppedImage` photo at `box_` (blob.tsx:500).
+pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
+    let box_ = p.box_.unwrap_or((p.size * 0.82).round());
+    view()
+        .size(px(p.size))
         .items_center()
         .justify_center()
-        .child(text(face).text_size(px(size * 0.5)).text_color(theme::ACCENT))
+        .when(!p.image.is_empty(), |v| {
+            v.child(cropped_image(&p.image, box_, p.crop))
+        })
+        .when(p.image.is_empty(), |v| {
+            v.child(bot_blob(BotBlobProps {
+                shape: p.shape,
+                color: p.color,
+                size: p.size,
+                state: p.state,
+                state_src: p.state_src,
+                paused: p.paused,
+                emphasized: p.emphasized,
+                emph_src: p.emph_src,
+                gaze: p.gaze,
+                edit: p.edit,
+                pokes: p.pokes,
+                morph_shape: p.morph_shape,
+                seed: p.seed,
+                gaze_at: p.gaze_at,
+                ..Default::default()
+            }))
+        })
+}
+
+/// `SleepingBlob` — the computer-asleep mark (blob.tsx:399): a paused
+/// `sleeping` state blob at `size/0.82` with the gaze pinned.
+pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoElement {
+    bot_blob(BotBlobProps {
+        shape: shape.to_owned(),
+        color: ink.to_owned(),
+        size: size / 0.82,
+        state: "sleeping",
+        paused: true,
+        gaze_at: Some([0.0, 0.0]),
+        ..Default::default()
+    })
+}
+
+/// `dot` — a static mark (no clock): the rest pose, painted once, for
+/// lists where an animating canvas would be wasted.
+pub(crate) fn dot(shape: &str, color: &str, size: f32) -> impl IntoElement {
+    let box_ = size as f64 * 0.82;
+    let extent = (box_ * (0.92 / 0.6) * 100.0).round() / 100.0;
+    let canvas_size = size as f64 * 1.5;
+    let offset = -size * 0.25;
+    let x = (canvas_size - extent) / 2.0;
+    let ink = mark::ink_of(color, false);
+    let tab = Rc::new(mark::tables());
+    let mut mark = mark::Mark::new(&tab, Some(mark::yn(shape)), 1.0, false, false, 1);
+    mark.rest();
+    let frame = mark.frame();
+    let tree = mark::uh(
+        &frame,
+        &PaintOpts {
+            ink: [0.0, 0.0, 0.0],
+            spot: [0.0, 0.0, 0.0],
+            cutout: true,
+            ink_paint: Some(ink.clone()),
+            spot_paint: None,
+        },
+        extent,
+        "m",
+        &UhSize {
+            display_size: Some(box_),
+            extent,
+        },
+        &tab,
+    );
+    let bytes = mark::rest_bytes(shape);
+    view().size(px(size)).child(
+        canvas(move || {
+            let p = Painter::new();
+            if let Some(b) = &bytes {
+                mark::paint_rest(p, b, &GazeState::default(), x, x, extent, &ink)
+            } else {
+                mark::paint_tree(p, &tree, x, x, extent)
+            }
+        })
+        .size(px(canvas_size as f32))
+        .absolute()
+        .left(px(offset))
+        .top(px(offset)),
+    )
+}
+
+/// `blob` — the live animated mark (what `bot_blob` draws, with plain args).
+pub(crate) fn blob(shape: &str, color: &str, size: f32, state: &'static str) -> impl IntoElement {
+    bot_blob(BotBlobProps {
+        shape: shape.to_owned(),
+        color: color.to_owned(),
+        size,
+        state,
+        ..Default::default()
+    })
 }
 
 /// A small colored dot (run status: running / ok / failed).

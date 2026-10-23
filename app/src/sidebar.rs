@@ -1,6 +1,8 @@
 //! The left column (`shell.tsx`'s sidebar): the app title, "New chat",
 //! the thread list, and the agents catalog at the bottom.
 
+use std::str::FromStr;
+
 use nsh_core::ui::prelude::*;
 
 use crate::avatar::bot_avatar;
@@ -16,23 +18,108 @@ pub(crate) fn sidebar() -> impl IntoElement {
         .otherwise(rail)
 }
 
+/// `AVATAR_HUES` — the chat-initial circle colors (`hue(t.title)`).
+const AVATAR_HUES: [&str; 7] = [
+    "#1884fc", "#32bb78", "#f2994a", "#eb5757", "#9b51e0", "#2d9cdb", "#f2c94c",
+];
+
+/// `hue(s)` — the title's char-code sum picks a stable hue.
+fn hue(s: &str) -> Hsla {
+    let i: usize = s.chars().map(|c| c as usize).sum::<usize>() % AVATAR_HUES.len();
+    Hsla::from_str(AVATAR_HUES[i]).unwrap_or(theme::MUTED.light)
+}
+
+/// The icon rail (`railView`, App.tsx:1830): bot plates for pinned + the
+/// named groups, rules between, chat-initial tiles below.
 fn rail() -> impl IntoElement {
     view()
-        .w(px(52.0))
+        .w(px(88.0))
         .h_full()
         .bg(theme::SIDEBAR)
         .border_r_1()
         .border_r_color(theme::BORDER_F)
-        .items_center()
-        .pt(px(46.0)) // clear the hidden title bar's traffic lights
-        .gap_2()
-        .child(rail_button("chat", "New chat", || store().new_thread()))
-        .child(rail_button("search", "Palette", || store().palette.set(true)))
         .child(
-            view().flex_1(),
+            // Under the traffic lights: expand + new-chat.
+            view()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .pt(px(46.0))
+                .pb_2()
+                .window_drag(true)
+                .child(rail_button("panel", "Expand", || {
+                    store().side_mode.set("full".to_owned())
+                }))
+                .child(rail_button("chat", "New chat", || store().new_thread())),
         )
-        .child(rail_button("settings", "Models", || store().models_open.set(true)))
-        .pb_2()
+        .child(
+            scroll().flex_1().child(
+                view()
+                    .items_center()
+                    .gap_1()
+                    .pb(px(28.0))
+                    .child(each(
+                        || store().pinned_bots(),
+                        |b| b.id.clone(),
+                        |b, _| rail_btn(b.get()),
+                    ))
+                    .child(each(
+                        || store().bot_groups(),
+                        |(k, _, _)| k.clone(),
+                        |g, i| {
+                            let g2 = g.clone();
+                            let i2 = i.clone();
+                            view()
+                                .items_center()
+                                .gap_1()
+                                .child(when(
+                                    move || {
+                                        i2.get() > 0 || !store().pinned_bots().is_empty()
+                                    },
+                                    rail_rule,
+                                ))
+                                .child(each(
+                                    move || g2.get().2,
+                                    |b| b.id.clone(),
+                                    |b, _| rail_btn(b.get()),
+                                ))
+                        },
+                    ))
+                    .child(when(
+                        || !store().chats().is_empty(),
+                        || {
+                            view()
+                                .items_center()
+                                .gap_1()
+                                .child(rail_rule())
+                                .child(each(
+                                    || {
+                                        store()
+                                            .chats()
+                                            .into_iter()
+                                            .take(12)
+                                            .collect::<Vec<_>>()
+                                    },
+                                    |t| t.id.clone(),
+                                    |t, _| rail_chat(t.get()),
+                                ))
+                        },
+                    )),
+            ),
+        )
+        .child(
+            view()
+                .items_center()
+                .gap_2()
+                .pb_2()
+                .child(rail_button("search", "Palette", || {
+                    store().palette.set(true)
+                }))
+                .child(rail_button("settings", "Models", || {
+                    store().models_open.set(true)
+                })),
+        )
 }
 
 fn rail_button(name: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
@@ -51,6 +138,145 @@ fn rail_button(name: &'static str, label: &'static str, on: impl Fn() + 'static)
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
         .on_press(move || on())
+}
+
+/// `railRule` — the 54×0.5 hairline between rail groups.
+fn rail_rule() -> impl IntoElement {
+    view()
+        .w(px(54.0))
+        .h(px(0.5))
+        .bg(theme::BORDER_S)
+        .my(px(6.0))
+}
+
+/// `railBtn` (App.tsx:1183) — the bot's rail plate: a 54px rounded plate
+/// holding the 44px mark in a 36px cell, the `:rail` gaze, the run state
+/// and the ambient overlay over a photo.
+fn rail_btn(b: BotMeta) -> impl IntoElement {
+    let app = b.id.clone();
+    let tid = b.thread_id.clone();
+    let tid2 = b.thread_id.clone();
+    let bid = b.id.clone();
+    let bid3 = b.id.clone();
+    let has_image = !b.image.is_empty();
+    let name = b.name.clone();
+    let gaze = crate::avatar::BlobGaze::new();
+    let gaze2 = gaze.clone();
+    let gaze3 = gaze.clone();
+    let hovered = signal(false);
+    let state_src: std::rc::Rc<dyn Fn() -> String> =
+        std::rc::Rc::new(move || store().bot_st(&bid));
+    let state_src2 = state_src.clone();
+    let state_src3 = state_src.clone();
+    view()
+        .size(px(54.0))
+        .rounded(px(10.0))
+        .items_center()
+        .justify_center()
+        .bg(move || {
+            if store().active_id.get() == tid2 {
+                theme::ACTIVE
+            } else if hovered.get() {
+                theme::HOVER
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .child(
+            view()
+                .size(px(36.0))
+                .items_center()
+                .justify_center()
+                .child(bot_avatar(crate::avatar::BotAvatarProps {
+                    size: 44.0,
+                    box_: Some(36.0),
+                    state_src: Some(state_src),
+                    emph_src: Some(std::rc::Rc::new(move || {
+                        store().emph_bot.get() == bid3
+                    })),
+                    gaze: Some(gaze2),
+                    ..crate::avatar::BotAvatarProps::bot(&b, 44.0)
+                }))
+                .when(has_image, |v| {
+                    v.child(when(
+                        move || crate::statusfx::morph_kind(&state_src2()) != "none",
+                        move || {
+                            crate::statusfx::fx_overlay_fn(
+                                state_src3.clone(),
+                                36.0,
+                                theme::FAINT.dark.to_hex(),
+                            )
+                        },
+                    ))
+                }),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_move(move |e: &HoverEvent| {
+            // `railGaze(b.id+":rail").follow(e, 27, 27, 18)` — plate center.
+            gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 27.0, 27.0, 18.0);
+        })
+        .on_hover_out(move || {
+            hovered.set(false);
+            gaze3.rest();
+        })
+        .on_press(move || {
+            let st = store();
+            if !tid.is_empty() {
+                st.open_thread(tid.clone());
+            } else {
+                st.load_detail(app.clone());
+                st.right_open.set(true);
+            }
+        })
+        .label(name)
+}
+
+/// The rail's chat tile: a `hue(title)` circle with the title's first
+/// letter (App.tsx:1877).
+fn rail_chat(t: ThreadMeta) -> impl IntoElement {
+    let id = t.id.clone();
+    let id2 = t.id.clone();
+    let name = t.name.clone();
+    let initial = t
+        .name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .collect::<String>();
+    let hovered = signal(false);
+    view()
+        .size(px(54.0))
+        .rounded(px(10.0))
+        .items_center()
+        .justify_center()
+        .bg(move || {
+            if store().active_id.get() == id2 {
+                theme::ACTIVE
+            } else if hovered.get() {
+                theme::HOVER
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .child(
+            view()
+                .size(px(36.0))
+                .rounded(px(18.0))
+                .bg(hue(&t.name))
+                .items_center()
+                .justify_center()
+                .child(
+                    text(initial)
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(white()),
+                ),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || store().open_thread(id.clone()))
+        .label(name)
 }
 
 fn full_sidebar() -> impl IntoElement {
@@ -86,30 +312,212 @@ fn full_sidebar() -> impl IntoElement {
                 view()
                     .px_2()
                     .pb_2()
-                    .child(section_label("Chats"))
-                    .child(each(
-                        || store().threads.get(),
-                        |t| t.id.clone(),
-                        |t, _| thread_row(t.get()),
+                    // `pinnedBots` — the wrap row of tiles (App.tsx:1967).
+                    .child(when(
+                        || !store().pinned_bots().is_empty(),
+                        || {
+                            view()
+                                .flex_row()
+                                .flex_wrap()
+                                .justify_center()
+                                .gap_2()
+                                .pt(px(6.0))
+                                .pb_2()
+                                .child(each(
+                                    || store().pinned_bots(),
+                                    |b| b.id.clone(),
+                                    |b, _| pin_tile(b.get()),
+                                ))
+                        },
                     ))
-                    .child(section_label("Agents"))
+                    // `botGroups` — named sections + "Unassigned", each a
+                    // collapsible `secHeader` block.
                     .child(each(
-                        || store().bots.get(),
-                        |b| b.id.clone(),
-                        |b, _| bot_row(b.get()),
+                        || store().bot_groups(),
+                        |(k, _, _)| k.clone(),
+                        |g, _| {
+                            let g2 = g.clone();
+                            let (key, title) = {
+                                let v = g.get();
+                                (v.0.clone(), v.1.clone())
+                            };
+                            let key2 = key.clone();
+                            view()
+                                .child(sec_header(key, title, None))
+                                .child(when(
+                                    move || !collapsed(&key2),
+                                    move || {
+                                        let g3 = g2.clone();
+                                        each(
+                                            move || g3.get().2,
+                                            |b| b.id.clone(),
+                                            |b, _| bot_row(b.get()),
+                                        )
+                                    },
+                                ))
+                        },
+                    ))
+                    // `chats` — the plain list; bot threads live behind
+                    // their persona rows.
+                    .child(sec_header("__chats".to_owned(), "Chats".to_owned(), None))
+                    .child(when(
+                        || !collapsed("__chats"),
+                        || {
+                            each(
+                                || store().chats(),
+                                |t| t.id.clone(),
+                                |t, _| thread_row(t.get()),
+                            )
+                        },
+                    ))
+                    // `hiddenBots` / `hiddenChats` / `archivedChats` —
+                    // collapsed by default (`collapsedSecs` init).
+                    .child(when(
+                        || !store().hidden_bots().is_empty(),
+                        || {
+                            view()
+                                .child(sec_header(
+                                    "__hidden".to_owned(),
+                                    "Hidden Bots".to_owned(),
+                                    Some(std::rc::Rc::new(|| store().hidden_bots().len())),
+                                ))
+                                .child(when(
+                                    || !collapsed("__hidden"),
+                                    || {
+                                        each(
+                                            || store().hidden_bots(),
+                                            |b| b.id.clone(),
+                                            |b, _| bot_row(b.get()),
+                                        )
+                                    },
+                                ))
+                        },
+                    ))
+                    .child(when(
+                        || !store().hidden_chats().is_empty(),
+                        || {
+                            view()
+                                .child(sec_header(
+                                    "__hiddenChats".to_owned(),
+                                    "Hidden Chats".to_owned(),
+                                    Some(std::rc::Rc::new(|| store().hidden_chats().len())),
+                                ))
+                                .child(when(
+                                    || !collapsed("__hiddenChats"),
+                                    || {
+                                        each(
+                                            || store().hidden_chats(),
+                                            |t| t.id.clone(),
+                                            |t, _| thread_row(t.get()),
+                                        )
+                                    },
+                                ))
+                        },
+                    ))
+                    .child(when(
+                        || !store().archived_chats().is_empty(),
+                        || {
+                            view()
+                                .child(sec_header(
+                                    "__archived".to_owned(),
+                                    "Archived".to_owned(),
+                                    Some(std::rc::Rc::new(|| store().archived_chats().len())),
+                                ))
+                                .child(when(
+                                    || !collapsed("__archived"),
+                                    || {
+                                        each(
+                                            || store().archived_chats(),
+                                            |t| t.id.clone(),
+                                            |t, _| thread_row(t.get()),
+                                        )
+                                    },
+                                ))
+                        },
                     )),
             ),
         )
 }
 
-fn section_label(label: &'static str) -> impl IntoElement {
-    text(label)
-        .text_size(px(11.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme::GHOST)
+/// `collapsedSecs()[key]` — absent means open (named sections); the
+/// `__hidden*`/`__archived` keys start collapsed from the store's init.
+fn collapsed(key: &str) -> bool {
+    store()
+        .collapsed
+        .get()
+        .get(key)
+        .copied()
+        .unwrap_or(false)
+}
+
+/// `secHeader` — a tappable section title; the chevron appears on hover
+/// and the count sits beside it (`toggleSec` on press).
+fn sec_header(
+    key: String,
+    title: String,
+    count: Option<std::rc::Rc<dyn Fn() -> usize>>,
+) -> impl IntoElement {
+    let key2 = key.clone();
+    let key3 = key.clone();
+    let hovered = signal(false);
+    view()
+        .h(px(30.0))
+        .flex_row()
+        .items_center()
+        .pt(px(8.0))
+        .pb(px(6.0))
         .px_2()
-        .pt(px(14.0))
-        .pb(px(4.0))
+        .rounded(px(6.0))
+        .gap(px(6.0))
+        .bg(move || {
+            if hovered.get() {
+                theme::HOVER
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .child(
+            text(title)
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .flex_1()
+                .number_of_lines(1),
+        )
+        .when(count.is_some(), |v| {
+            v.child(
+                text(move || count.as_ref().map(|c| c().to_string()).unwrap_or_default())
+                    .text_size(px(12.0))
+                    .text_color(theme::MUTED),
+            )
+        })
+        .child(
+            text(move || {
+                if store()
+                    .collapsed
+                    .get()
+                    .get(&key3)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    "›"
+                } else {
+                    "⌄"
+                }
+            })
+            .text_size(px(13.0))
+            .text_color(theme::MUTED)
+            .opacity(move || if hovered.get() { 1.0f32 } else { 0.0f32 }),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || {
+            // `toggleSec(k)`
+            let key = key2.clone();
+            store().collapsed.update(|m| {
+                let e = m.entry(key).or_insert(false);
+                *e = !*e;
+            });
+        })
 }
 
 fn head_button(name: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
@@ -172,6 +580,18 @@ fn bot_row(b: BotMeta) -> impl IntoElement {
     let app = b.id.clone();
     let name = b.name.clone();
     let desc = b.desc.clone();
+    let bid = b.id.clone();
+    let bid2 = b.id.clone();
+    let bid3 = b.id.clone();
+    let tid = b.thread_id.clone();
+    let has_image = !b.image.is_empty();
+    // `railGaze(b.id + ":row")` — the mark follows the pointer over the row.
+    let gaze = crate::avatar::BlobGaze::new();
+    let gaze2 = gaze.clone();
+    let gaze3 = gaze.clone();
+    let state_src: std::rc::Rc<dyn Fn() -> String> =
+        std::rc::Rc::new(move || store().bot_st(&bid));
+    let state_src2 = state_src.clone();
     view()
         .child(
             view()
@@ -182,7 +602,49 @@ fn bot_row(b: BotMeta) -> impl IntoElement {
                 .py(px(7.0))
                 .rounded(px(8.0))
                 .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(bot_avatar(b, 22.0))
+                .child(
+                    // Grok's 36px cell holding the 44px BotAvatar
+                    // (box = 44*0.82 = 36).
+                    view()
+                        .size(px(36.0))
+                        .items_center()
+                        .justify_center()
+                        .child(bot_avatar(crate::avatar::BotAvatarProps {
+                            size: 44.0,
+                            box_: Some(36.0),
+                            state_src: Some(state_src),
+                            // `emphasized={emphBot() === b().id}` — the
+                            // status row's hover reaches this mark too.
+                            emph_src: Some(std::rc::Rc::new(move || {
+                                store().emph_bot.get() == bid3
+                            })),
+                            gaze: Some(gaze2),
+                            ..crate::avatar::BotAvatarProps::bot(&b, 44.0)
+                        }))
+                        // `FxOverlay` over a photo avatar while the run's
+                        // morph is ambient-backed.
+                        .when(has_image, |v| {
+                            v.child(when(
+                                {
+                                    let bid2 = bid2.clone();
+                                    move || {
+                                        crate::statusfx::morph_kind(&store().bot_st(&bid2))
+                                            != "none"
+                                    }
+                                },
+                                {
+                                    let src = state_src2.clone();
+                                    move || {
+                                        crate::statusfx::fx_overlay_fn(
+                                            src.clone(),
+                                            36.0,
+                                            theme::FAINT.dark.to_hex(),
+                                        )
+                                    }
+                                },
+                            ))
+                        }),
+                )
                 .child(
                     view()
                         .flex_1()
@@ -201,10 +663,114 @@ fn bot_row(b: BotMeta) -> impl IntoElement {
                 ),
         )
         .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_hover_move(move |e: &HoverEvent| {
+            // `railGaze(...).follow(e, 26, 27, 18)` — the 36px cell's center
+            // in row coordinates: here 12px pad + 18px half-cell = 30, and
+            // the row half-height is (7 + 36 + 7) / 2 = 25.
+            gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 30.0, 25.0, 18.0);
+        })
+        .on_hover_out(move || {
+            hovered.set(false);
+            gaze3.rest();
+        })
         .on_press(move || {
             let st = store();
-            st.load_detail(app.clone());
-            st.right_open.set(true);
+            // `selectThread(b.threadId)` — open the persona's chat; the
+            // detail pane stays the fallback for a bot with none.
+            if !tid.is_empty() {
+                st.open_thread(tid.clone());
+            } else {
+                st.load_detail(app.clone());
+                st.right_open.set(true);
+            }
         })
+}
+
+/// `pinTile` (App.tsx:1108) — a pinned bot's 95×92 tile: the 72px mark in
+/// a 60px cell (with the `:pin` gaze), the ambient overlay over a photo,
+/// and the name under it.
+fn pin_tile(b: BotMeta) -> impl IntoElement {
+    let app = b.id.clone();
+    let name = b.name.clone();
+    let tid = b.thread_id.clone();
+    let tid2 = b.thread_id.clone();
+    let bid = b.id.clone();
+    let bid3 = b.id.clone();
+    let has_image = !b.image.is_empty();
+    let gaze = crate::avatar::BlobGaze::new();
+    let gaze2 = gaze.clone();
+    let gaze3 = gaze.clone();
+    let state_src: std::rc::Rc<dyn Fn() -> String> =
+        std::rc::Rc::new(move || store().bot_st(&bid));
+    let state_src2 = state_src.clone();
+    let state_src3 = state_src.clone();
+    view()
+        .w(px(95.0))
+        .h(px(92.0))
+        .rounded(px(10.0))
+        .pt(px(6.0))
+        .px_2()
+        .pb(px(4.0))
+        .gap(px(6.0))
+        .items_center()
+        .bg(move || {
+            if store().active_id.get() == tid2 {
+                theme::ACTIVE
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .child(
+            view()
+                .size(px(60.0))
+                .items_center()
+                .justify_center()
+                .child(bot_avatar(crate::avatar::BotAvatarProps {
+                    size: 72.0,
+                    box_: Some(60.0),
+                    state_src: Some(state_src),
+                    emph_src: Some(std::rc::Rc::new(move || {
+                        store().emph_bot.get() == bid3
+                    })),
+                    gaze: Some(gaze2),
+                    ..crate::avatar::BotAvatarProps::bot(&b, 72.0)
+                }))
+                .when(has_image, |v| {
+                    v.child(when(
+                        move || {
+                            crate::statusfx::morph_kind(&state_src2()) != "none"
+                        },
+                        move || {
+                            crate::statusfx::fx_overlay_fn(
+                                state_src3.clone(),
+                                60.0,
+                                theme::FAINT.dark.to_hex(),
+                            )
+                        },
+                    ))
+                }),
+        )
+        .child(
+            text(name.clone())
+                .text_size(px(12.0))
+                .text_color(theme::TEXT)
+                .number_of_lines(1)
+                .max_w(px(79.0)),
+        )
+        .on_hover_move(move |e: &HoverEvent| {
+            // `railGaze(b.id+":pin").follow(e, 47.5, 36, 30)` — the tile's
+            // center (95/2=47.5) and mark row's center (~36px from top).
+            gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 47.5, 36.0, 30.0);
+        })
+        .on_hover_out(move || gaze3.rest())
+        .on_press(move || {
+            let st = store();
+            if !tid.is_empty() {
+                st.open_thread(tid.clone());
+            } else {
+                st.load_detail(app.clone());
+                st.right_open.set(true);
+            }
+        })
+        .label(name)
 }

@@ -1,10 +1,14 @@
 //! Status text effects (`app/statusfx.tsx`): the shimmering "working"
-//! line under a run — text with a sweep highlight animating across it.
-//! The Rust version is a pulse: the phrase dims and brightens on a
-//! keyframe while the run is live.
+//! line under a run — text with a gradient highlight sweeping across it,
+//! drawn on a canvas exactly as Grok does.
 
+use std::cell::Cell;
+use std::time::Duration;
+
+use nsh_core::canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline};
 use nsh_core::ui::prelude::*;
 
+use crate::mark;
 use crate::theme;
 
 /// `STATUS_LABEL` from `app/statusfx.tsx` — a run state's display string.
@@ -79,12 +83,59 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-/// Shimmering status text — `Thinking…`-style lines under agent runs.
+/// `ShimmerText` (statusfx.tsx:309) — the run's status line drawn on a
+/// canvas: `measureText` sizes the band, a linear-gradient highlight
+/// sweeps across every 1.9s, `fillText` clamps to the canvas width. The
+/// canvas is `flexGrow: 1; minWidth: 60; height: size+8`. Grok's
+/// `color`/`hi` (`#f5f5f58a`, `tc("#f5f5f5")`) are `MUTED`/`TEXT` here.
+/// The label is verbatim (`agent().label` is already display text).
 pub(crate) fn shimmer(label: impl Fn() -> String + 'static) -> impl IntoElement {
-    text(move || status_label(&label()))
-        .text_size(px(12.0))
-        .text_color(theme::DIM)
-        .animation(KeyframeAnimation::new(Keyframes::Pulse).duration(1400.0))
+    shimmer_at(label, 11.0, theme::MUTED, theme::TEXT)
+}
+
+/// `shimmer` with Grok's `size`/`color`/`hi` (11+MUTED+TEXT for the
+/// status row, 12+FAINT+TEXT for `ArtPlaceholder`).
+pub(crate) fn shimmer_at(
+    label: impl Fn() -> String + 'static,
+    size: f32,
+    base: AdaptiveColor,
+    hi: AdaptiveColor,
+) -> impl IntoElement {
+    let font = format!("{size}px -apple-system, system-ui, sans-serif");
+    let clock = signal(0.0f64);
+    set_interval(Duration::from_millis(16), {
+        let clock = clock.clone();
+        move || clock.update(|c| *c += 0.016)
+    });
+    let bounds = signal(Bounds::<Points>::default());
+    canvas(move || {
+        let t = clock.get();
+        let text = label();
+        let size = bounds.get().size;
+        let w = (measure_text(&font, &text).0 as f64)
+            .min(size.width.0 as f64)
+            .max(0.0);
+        let band = 30.0f64.max(w * 0.4);
+        let cx = -band + ((t % 1.9) / 1.9) * (w + band * 2.0);
+        let (base, hi) = (color(base), color(hi));
+        let g = CanvasGradient::linear(
+            point(px((cx - band) as f32), px(0.0)),
+            point(px((cx + band) as f32), px(0.0)),
+        )
+        .add_color_stop(percentage(0.0), base)
+        .add_color_stop(percentage(0.5), hi)
+        .add_color_stop(percentage(1.0), base);
+        Painter::new()
+            .font(&font)
+            .text_baseline(CanvasTextBaseline::Middle)
+            .text_align(CanvasTextAlign::Left)
+            .fill_style(g)
+            .fill_text_max_width(&text, 0.0f32, size.height.0 / 2.0, size.width)
+    })
+    .on_layout(move |b: &Bounds<Points>| bounds.set(*b))
+    .h(px(size + 8.0))
+    .flex_1()
+    .min_w(px(60.0))
 }
 
 /// A plain (non-animated) status line.
@@ -92,4 +143,131 @@ pub(crate) fn status_line(label: impl Fn() -> String + 'static) -> impl IntoElem
     text(move || label())
         .text_size(px(12.0))
         .text_color(theme::FAINT)
+}
+
+// ---------------------------------------------------------------------------
+// `morphKind`/`FxOverlay`/`StatusAvatar`/`StatusFx` — statusfx.tsx's canvas
+// parts (the ambient `drawFx` around the mark, and the poked status blob).
+// ---------------------------------------------------------------------------
+
+/// `morphKind(state)` — a run state's ambient-fx kind (`"none"` when not
+/// morph-backed).
+pub(crate) fn morph_kind(state: &str) -> &'static str {
+    mark::STATES
+        .iter()
+        .find(|(n, _)| *n == state)
+        .and_then(|(_, d)| d.morph)
+        .and_then(mark::vx)
+        .unwrap_or("none")
+}
+
+/// `FxOverlay({fx,size,ink})` — `drawFx`'s ambient ring around the mark on
+/// a `size*1.5` canvas overhanging the cell by `size*0.25`. `state` is the
+/// run-state signal; `morphKind` decides what (if anything) is drawn.
+pub(crate) fn fx_overlay(state: Signal<String>, size: f32, ink: String) -> impl IntoElement {
+    fx_overlay_fn(std::rc::Rc::new(move || state.get()), size, ink)
+}
+
+/// `fx_overlay` with a state *source* — `botSt` closures and anything else
+/// readable inside the paint (which subscribes to what it reads).
+pub(crate) fn fx_overlay_fn(
+    state: std::rc::Rc<dyn Fn() -> String>,
+    size: f32,
+    ink: String,
+) -> impl IntoElement {
+    let canvas_size = size * 1.5;
+    let offset = -size * 0.25;
+    let ink = ink;
+    // `startFx` — the shared overlay clock.
+    let clock = signal(0.0f64);
+    set_interval(Duration::from_millis(16), {
+        let clock = clock.clone();
+        move || clock.update(|c| *c += 0.016)
+    });
+    canvas(move || {
+        let t = clock.get();
+        let fx = morph_kind(&state());
+        let mut p = Painter::new();
+        if fx != "none" {
+            p = mark::draw_fx(
+                p,
+                fx,
+                canvas_size as f64,
+                canvas_size as f64,
+                t,
+                &ink,
+            );
+        }
+        p
+    })
+    .pointer_events(PointerEvents::None)
+    .absolute()
+    .left(px(offset))
+    .top(px(offset))
+    .size(px(canvas_size))
+}
+
+/// `StatusAvatar` — the status row's mark: it always plays the run state,
+/// and a click pokes it through `UN` (spin → bounce → nod). `state` is the
+/// run-state signal (`run_state`), read inside the mark's paint; `emph_src`
+/// is the `emphasized` prop read (`emphBot() !== ""`).
+pub(crate) fn status_avatar(
+    shape: String,
+    color: String,
+    state: Signal<String>,
+    size: f32,
+    emph_src: std::rc::Rc<dyn Fn() -> bool>,
+    seed: Option<String>,
+) -> impl IntoElement {
+    let pokes = crate::avatar::BlobPokes::new();
+    let index = Cell::new(0usize);
+    let pokes2 = pokes.clone();
+    view()
+        .size(px(size))
+        .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+            shape,
+            color,
+            size,
+            state_src: Some(std::rc::Rc::new(move || state.get())),
+            paused: false,
+            emph_src: Some(emph_src),
+            pokes: Some(pokes),
+            seed,
+            ..Default::default()
+        }))
+        .on_press(move || {
+            let i = index.get();
+            index.set(i + 1);
+            pokes2.fire(mark::UN[i % mark::UN.len()], None);
+        })
+        .label("Agent activity mark")
+}
+
+/// The status row — mark + ambient fx + the shimmering label (`StatusFx`
+/// in statusfx.tsx). `state` is the run-state signal (`run_state`). Hover
+/// sets `emphBot` to the run's bot (`agent().bot ?? activeBot()?.id` —
+/// here `seed`), which emphasizes this mark and the matching rail mark.
+pub(crate) fn status_fx(
+    shape: String,
+    color: String,
+    state: Signal<String>,
+    size: f32,
+    seed: Option<String>,
+    label: impl Fn() -> String + 'static,
+) -> impl IntoElement {
+    let emph: std::rc::Rc<dyn Fn() -> bool> =
+        std::rc::Rc::new(|| !crate::live::store().emph_bot.get().is_empty());
+    let bot = seed.clone().unwrap_or_default();
+    view()
+        .gap(px(7.0))
+        .items_center()
+        .on_hover_in(move || crate::live::store().emph_bot.set(bot.clone()))
+        .on_hover_out(|| crate::live::store().emph_bot.set(String::new()))
+        .child(
+            view()
+                .size(px(size))
+                .child(status_avatar(shape, color, state, size, emph, seed))
+                .child(fx_overlay(state, size, theme::FAINT.dark.to_hex())),
+        )
+        .child(shimmer(label))
 }
