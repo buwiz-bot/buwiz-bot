@@ -52,7 +52,8 @@ pub(crate) fn hot_area() -> impl IntoElement {
 
     // `ROX_MINI=R<n>`: debug-mount a generated widget alone in the window —
     // the same fetch → compile → AppView path the chat cards take, without
-    // needing a widget turn to be on screen.
+    // needing a widget turn to be on screen. `ROX_CARD=R<n>` mounts the
+    // turn's whole card instead, chrome and fixed body height included.
     if let Ok(app) = std::env::var("ROX_MINI") {
         if !app.is_empty() {
             return view()
@@ -60,6 +61,21 @@ pub(crate) fn hot_area() -> impl IntoElement {
                 .h_full()
                 .bg(theme::MAIN)
                 .child(crate::mini::mini_app(&app, 0.0));
+        }
+    }
+    if let Ok(app) = std::env::var("ROX_CARD") {
+        if !app.is_empty() {
+            return view()
+                .flex_1()
+                .h_full()
+                .bg(theme::MAIN)
+                .p_4()
+                .child(crate::widgets::app_card(crate::store::Art {
+                    app,
+                    title: "debug card".to_owned(),
+                    desc: String::new(),
+                    ..Default::default()
+                }));
         }
     }
 
