@@ -518,8 +518,7 @@ impl Store {
         if text.is_empty() || self.sending.get_untracked() {
             return;
         }
-        let thread = self.active_id.get_untracked();
-        let reply_to = self.reply_to.get_untracked().map(|r| r.i);
+        let reply_to = self.reply_to.get_untracked();
         let files: Vec<serde_json::Value> = self
             .attachments
             .get_untracked()
@@ -532,18 +531,26 @@ impl Store {
         self.sending.set(true);
         self.run_status.set("sending".to_owned());
         spawn(async move {
+            // /chat reads {prompt, reply:{i,text,files}, attachments} and
+            // runs on the server's active thread — select first so the
+            // reply lands on the visible one.
+            client::post(
+                "/thread/select",
+                serde_json::json!({"id": self.active_id.get_untracked()}),
+            )
+            .await;
             let body = serde_json::json!({
-                "thread": thread,
-                "text": text,
-                "model": self.model.get_untracked(),
-                "effort": self.effort.get_untracked(),
-                "fast": self.fast.get_untracked(),
-                "reply": reply_to,
-                "files": files,
+                "prompt": text,
+                "reply": reply_to.map(|r| serde_json::json!({"i": r.i, "text": r.text})),
+                "attachments": files,
             });
             if let Some(v) = client::post("/chat", body).await {
-                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                    self.watch_run(id.to_owned()).await;
+                // The job id is a number in the payload.
+                let id = v
+                    .get("id")
+                    .and_then(|x| x.as_i64().or_else(|| x.as_str().and_then(|s| s.parse().ok())));
+                if let Some(id) = id {
+                    self.watch_run(id.to_string()).await;
                 }
             }
             self.sending.set(false);
@@ -553,14 +560,21 @@ impl Store {
     }
 
     /// Poll `/status?id=` until the run settles; each tick refreshes turns
-    /// so streamed text lands without waiting for the end.
+    /// so streamed text lands without waiting for the end. The payload is
+    /// `{id, seq, phase, detail, done}`.
     async fn watch_run(&'static self, job: String) {
         for _ in 0..600 {
             let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
-            let status = s(&v, "status");
+            let phase = s(&v, "phase");
+            let detail = s(&v, "detail");
+            let status = if detail.is_empty() { phase } else { detail };
             self.run_status.set(status.clone());
             self.refresh_turns();
-            if status == "done" || status == "error" || status == "failed" {
+            if v.get("done").and_then(|x| x.as_bool()).unwrap_or(false)
+                || status == "done"
+                || status == "error"
+                || status == "failed"
+            {
                 self.settled.set(Some(Settle {
                     name: s(&v, "name"),
                     ok: status == "done",
