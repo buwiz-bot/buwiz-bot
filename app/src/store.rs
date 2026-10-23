@@ -128,6 +128,139 @@ pub struct Attach {
     pub ext: String,
     pub size: f64,
     pub feed: String,
+    /// `fileMeta`'s card-illustration variant (`pdf`, `docx`,
+    /// `spreadsheet`, `media`, `audio`, `generic`, …).
+    pub variant: String,
+    /// Audio/video length in seconds.
+    pub duration: f64,
+    /// The audio waveform's 48 peaks (0..1).
+    pub peaks: Vec<f64>,
+    /// Media pixel size.
+    pub width: f64,
+    pub height: f64,
+    /// A video's poster frame (`file/raw` key).
+    pub poster: String,
+    /// Multi-frame source (gif / animated webp / apng).
+    pub animated: bool,
+}
+
+/// `GET /file/render`'s answer (`Rendered` in fileviewer.tsx).
+#[derive(Clone, PartialEq, Default)]
+pub struct Rendered {
+    pub error: String,
+    /// The BetterOffice engine's path under the server (`/office/…`) — a
+    /// WebView paints it; absent, the classic renderers apply.
+    pub office: String,
+    /// Markdown/docx extracted text.
+    pub text: Option<String>,
+    /// Shiki-highlighted lines: `[content, dark color, light color]`
+    /// spans per line.
+    pub lines: Vec<Vec<(String, String, String)>>,
+    /// Workbook sheets.
+    pub sheets: Vec<Sheet>,
+    /// `r.json !== undefined` — `null` is a valid tree root.
+    pub has_json: bool,
+    pub json: serde_json::Value,
+}
+
+/// A workbook sheet (`{name, rows, bold, widths}`).
+#[derive(Clone, PartialEq, Default)]
+pub struct Sheet {
+    pub name: String,
+    pub rows: Vec<Vec<String>>,
+    pub bold: Vec<Vec<bool>>,
+    /// Column widths in characters (the file's own), when it has them.
+    pub widths: Vec<f64>,
+}
+
+impl Rendered {
+    /// The `/file/render` response: `{...meta, error?, office?, text?,
+    /// lines?, sheets?, json?}`.
+    fn of(v: &serde_json::Value) -> Rendered {
+        Rendered {
+            error: s(v, "error"),
+            office: s(v, "office"),
+            text: v.get("text").and_then(|x| x.as_str()).map(String::from),
+            lines: list(v, "lines")
+                .iter()
+                .map(|line| {
+                    line.as_array()
+                        .map(|spans| {
+                            spans
+                                .iter()
+                                .map(|sp| {
+                                    let a = sp.as_array();
+                                    (
+                                        a.and_then(|a| a.first())
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_owned(),
+                                        a.and_then(|a| a.get(1))
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_owned(),
+                                        a.and_then(|a| a.get(2))
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_owned(),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect(),
+            sheets: list(v, "sheets")
+                .iter()
+                .map(|sh| Sheet {
+                    name: s(sh, "name"),
+                    rows: list(sh, "rows")
+                        .iter()
+                        .map(|r| {
+                            r.as_array()
+                                .map(|cells| {
+                                    cells
+                                        .iter()
+                                        .map(|c| c.as_str().unwrap_or("").to_owned())
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                    bold: list(sh, "bold")
+                        .iter()
+                        .map(|r| {
+                            r.as_array()
+                                .map(|cells| {
+                                    cells.iter().map(|c| c.as_bool().unwrap_or(false)).collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                    widths: list(sh, "widths")
+                        .iter()
+                        .map(|w| w.as_f64().unwrap_or(0.0))
+                        .collect(),
+                })
+                .collect(),
+            has_json: v.get("json").is_some(),
+            json: v.get("json").cloned().unwrap_or(serde_json::Value::Null),
+        }
+    }
+}
+
+/// A lightbox item (`LightItem` in lightbox.tsx): image, video, or a
+/// mermaid `diagram` (`code` is its source).
+#[derive(Clone, PartialEq, Default)]
+pub struct LightItem {
+    pub kind: String,
+    pub uri: String,
+    pub name: String,
+    pub path: String,
+    pub poster: String,
+    pub w: f64,
+    pub h: f64,
+    pub code: String,
 }
 
 /// The reply quote under a turn.
@@ -343,15 +476,6 @@ pub struct ShelfItem {
     pub tags: Vec<String>,
 }
 
-/// What the lightbox / file viewer shows.
-#[derive(Clone, PartialEq)]
-pub struct FileView {
-    pub title: String,
-    pub path: String,
-    pub body: String,
-    pub kind: String,
-}
-
 /// The composer reply target.
 #[derive(Clone, PartialEq)]
 pub struct ReplyTo {
@@ -430,11 +554,23 @@ impl Attach {
             path: s(v, "path"),
             name: s(v, "name"),
             mime: s(v, "mime"),
-            url: s(v, "url"),
+            // attachments carry `uri` (a full URL), reply files carry
+            // `path` (a /file/raw key) — `url` accepts either spelling.
+            url: if s(v, "url").is_empty() { s(v, "uri") } else { s(v, "url") },
             thumb: s(v, "thumb"),
             ext: s(v, "ext"),
             size: f64of(v, "size"),
             feed: s(v, "feed"),
+            variant: s(v, "variant"),
+            duration: f64of(v, "duration"),
+            peaks: list(v, "peaks")
+                .iter()
+                .map(|x| x.as_f64().unwrap_or(0.0))
+                .collect(),
+            width: f64of(v, "width"),
+            height: f64of(v, "height"),
+            poster: s(v, "poster"),
+            animated: b(v, "animated"),
         }
     }
 }
@@ -572,7 +708,29 @@ pub struct Store {
     /// Overlays.
     pub ctx: Signal<Option<CtxMenu>>,
     pub palette: Signal<bool>,
-    pub viewing: Signal<Option<FileView>>,
+    /// `viewing` (fileviewer.tsx) — the file the fullscreen viewer shows.
+    pub viewing: Signal<Option<Attach>>,
+    /// `rendered` — `GET /file/render`'s answer for `viewing`.
+    pub rendered: Signal<Option<Rendered>>,
+    /// `sheet` — the workbook tab open.
+    pub sheet_idx: Signal<usize>,
+    /// `htmlMode` — an html file's Preview / Source toggle.
+    pub html_mode: Signal<String>,
+    /// `selA`/`selB` — the sheet selection's anchor and moving end (r,c).
+    pub sel_a: Signal<Option<(usize, usize)>>,
+    pub sel_b: Signal<Option<(usize, usize)>>,
+    /// `hintOpen` — the sheet grid's usage hint.
+    pub hint_open: Signal<bool>,
+    /// `audio_cur` — the id of the card/player currently playing; a card
+    /// pauses when another claims it (`stopAudio`/`stopCurrent`).
+    pub audio_cur: Signal<u64>,
+    /// Lightbox (lightbox.tsx): the open strip, its index, the image zoom,
+    /// the measured stage, and a diagram's reported card size.
+    pub light_items: Signal<Vec<LightItem>>,
+    pub light_idx: Signal<usize>,
+    pub light_zoom: Signal<f64>,
+    pub light_stage: Signal<(f64, f64)>,
+    pub light_diag: Signal<(f64, f64)>,
     pub models_open: Signal<bool>,
     /// `sectionPrompt` — the bot id awaiting a new section name, or None.
     pub section_prompt: Signal<Option<String>>,
@@ -722,6 +880,18 @@ impl Store {
             avatar_gen_busy: signal(false),
             palette: signal(false),
             viewing: signal(None),
+            rendered: signal(None),
+            sheet_idx: signal(0usize),
+            html_mode: signal("preview".to_owned()),
+            sel_a: signal(None),
+            sel_b: signal(None),
+            hint_open: signal(true),
+            audio_cur: signal(0u64),
+            light_items: signal(Vec::new()),
+            light_idx: signal(0usize),
+            light_zoom: signal(1.0f64),
+            light_stage: signal((0.0, 0.0)),
+            light_diag: signal((0.0, 0.0)),
             models_open: signal(false),
             dark: signal(true),
             turns_json: std::cell::RefCell::new(String::new()),
@@ -1923,6 +2093,184 @@ impl Store {
         let mut body = patch;
         body["id"] = id.into();
         client::post_bg("/bot/update".to_owned(), body);
+    }
+
+    // ——————————————————— files (fileviewer.tsx / lightbox.tsx) ———————————————————
+
+    /// `raw(f)` — the server's bytes of a reply file.
+    pub fn file_raw_url(path: &str) -> String {
+        let enc = path
+            .split('/')
+            .map(|p| crate::client::urlenc(p))
+            .collect::<Vec<_>>()
+            .join("/");
+        format!("{}/file/raw/{enc}", crate::client::GEN)
+    }
+
+    /// `toLight(f)` — a reply file as a lightbox item.
+    pub fn to_light(f: &Attach) -> LightItem {
+        if f.kind == "video" {
+            LightItem {
+                kind: "video".into(),
+                uri: Self::file_raw_url(&f.path),
+                name: f.name.clone(),
+                path: f.path.clone(),
+                poster: if f.poster.is_empty() {
+                    String::new()
+                } else {
+                    Self::file_raw_url(&f.poster)
+                },
+                w: f.width,
+                h: f.height,
+                ..Default::default()
+            }
+        } else {
+            // attachments have a full `uri` and no path — the raw key is
+            // only for generated files.
+            let uri = if f.path.is_empty() {
+                f.url.clone()
+            } else {
+                Self::file_raw_url(&f.path)
+            };
+            LightItem {
+                kind: "image".into(),
+                uri,
+                name: f.name.clone(),
+                path: f.path.clone(),
+                w: f.width,
+                h: f.height,
+                ..Default::default()
+            }
+        }
+    }
+
+    /// `openLightbox(list, at)`.
+    pub fn open_lightbox(&'static self, items: Vec<LightItem>, at: usize) {
+        self.light_diag.set((0.0, 0.0));
+        self.light_zoom.set(1.0);
+        let last = items.len().saturating_sub(1);
+        self.light_idx.set(at.min(last));
+        self.light_items.set(items);
+    }
+
+    /// `step(d)` — wraps, resets zoom (lightbox.tsx).
+    pub fn light_step(&'static self, d: i64) {
+        let n = self.light_items.get_untracked().len() as i64;
+        if n < 2 {
+            return;
+        }
+        let i = (self.light_idx.get_untracked() as i64 + d).rem_euclid(n) as usize;
+        self.light_idx.set(i);
+        self.light_zoom.set(1.0);
+    }
+
+    pub fn light_close(&'static self) {
+        self.light_items.set(Vec::new());
+    }
+
+    pub fn light_open(&'static self) -> bool {
+        !self.light_items.get().is_empty()
+    }
+
+    /// `stopAudio` — pauses whichever card/player is sounding by clearing
+    /// the claimed id (players bind `paused` to "not me").
+    pub fn stop_audio(&'static self) {
+        self.audio_cur.set(0);
+    }
+
+    /// `openFile(f)` — media opens the lightbox, everything else the
+    /// fullscreen viewer fed by `GET /file/render?path=`.
+    pub fn open_file(&'static self, f: &Attach) {
+        self.stop_audio();
+        if f.kind == "image" || f.kind == "video" {
+            self.open_lightbox(vec![Self::to_light(f)], 0);
+            return;
+        }
+        self.viewing.set(Some(f.clone()));
+        self.rendered.set(None);
+        self.sheet_idx.set(0);
+        self.html_mode.set("preview".to_owned());
+        self.sel_a.set(None);
+        self.sel_b.set(None);
+        let path = f.path.clone();
+        spawn(async move {
+            let url = format!(
+                "{}/file/render?path={}",
+                crate::client::GEN,
+                crate::client::urlenc(&path)
+            );
+            let r = match client::get(&url).await {
+                Some(d) => Rendered::of(&d),
+                None => Rendered {
+                    error: "fetch failed".to_owned(),
+                    ..Default::default()
+                },
+            };
+            let st = crate::live::store();
+            if st.viewing.get_untracked().map(|v| v.path) == Some(path.clone()) {
+                st.rendered.set(Some(r));
+            }
+        });
+    }
+
+    /// `saveFile(f)` — the download button posts `/file/save`.
+    pub fn save_file(&'static self, path: &str) {
+        client::post_bg(
+            "/file/save".to_owned(),
+            serde_json::json!({ "path": path }),
+        );
+    }
+
+    /// `post("/copy", {text})` — the server's clipboard route.
+    pub fn copy_text(&'static self, text: &str) {
+        client::post_bg("/copy".to_owned(), serde_json::json!({ "text": text }));
+    }
+
+    /// `curSheet` — the open workbook tab, clamped to what rendered.
+    pub fn cur_sheet(&'static self) -> Option<Sheet> {
+        let r = self.rendered.get()?;
+        let sh = r.sheets.get(self.sheet_idx.get_untracked().min(r.sheets.len().saturating_sub(1)))?;
+        Some(sh.clone())
+    }
+
+    /// `inSel(r,c)` — inside the selection rectangle.
+    pub fn in_sel(&'static self, r: usize, c: usize) -> bool {
+        let (Some(a), Some(b)) = (self.sel_a.get(), self.sel_b.get()) else {
+            return false;
+        };
+        r >= a.0.min(b.0) && r <= a.0.max(b.0) && c >= a.1.min(b.1) && c <= a.1.max(b.1)
+    }
+
+    /// The arrow keys' selection move (`useTableKeys`): Shift extends.
+    pub fn sel_move(&'static self, dr: i64, dc: i64, extend: bool) {
+        let (Some(sh), Some(b)) = (self.cur_sheet(), self.sel_b.get_untracked()) else {
+            return;
+        };
+        let rows = sh.rows.len().max(1) as i64 - 1;
+        let cols = (sh.rows.iter().map(|x| x.len()).max().unwrap_or(1).max(1)) as i64 - 1;
+        let n = (
+            (b.0 as i64 + dr).clamp(0, rows) as usize,
+            (b.1 as i64 + dc).clamp(0, cols) as usize,
+        );
+        self.sel_b.set(Some(n));
+        if !extend {
+            self.sel_a.set(Some(n));
+        }
+    }
+
+    /// `mod+c` over a selection — TSV to the server's clipboard.
+    pub fn copy_sel(&'static self) {
+        let (Some(sh), Some(a), Some(b)) =
+            (self.cur_sheet(), self.sel_a.get_untracked(), self.sel_b.get_untracked())
+        else {
+            return;
+        };
+        let text = sh.rows[a.0.min(b.0)..=a.0.max(b.0)]
+            .iter()
+            .map(|row| row[a.1.min(b.1)..=a.1.max(b.1).min(row.len().saturating_sub(1))].join("\t"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.copy_text(&text);
     }
 
     /// `moveToSection` — group a bot under a named section (creating it)

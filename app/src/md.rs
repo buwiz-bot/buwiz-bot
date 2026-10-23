@@ -2,7 +2,10 @@
 //! Rust port of `app/md.tsx`: tighter headings, code copy action, a
 //! streaming caret, selectable blocks.
 
-use nsh_base::{MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts, text_view};
+use nsh_base::{
+    MarkdownExtension, MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts,
+    text_view::document::CustomNode, text_view,
+};
 use nsh_core::ui::{StyleRefinement, prelude::*};
 
 use crate::theme;
@@ -48,6 +51,16 @@ pub(crate) fn markdown(
     let streaming = computed(streaming);
     text_view()
         .markdown(move || Some(SharedString::from(md())))
+        // ```mermaid fences become `mermaid` custom nodes, drawn by the
+        // web-view block (md.tsx's `MermaidBlock`).
+        .extensions(vec![MarkdownExtension::language("mermaid", "mermaid")])
+        .render_custom(|node: &CustomNode| {
+            if node.name == "mermaid" {
+                crate::files::mermaid_block(&node.text).into_element()
+            } else {
+                view().into_element()
+            }
+        })
         .options(move || MarkdownOptions {
             streaming: streaming.get(),
             ..MarkdownOptions::default()

@@ -55,8 +55,7 @@ pub(crate) fn empty_state() -> impl IntoElement {
 }
 
 fn turn_row(t: Turn) -> impl IntoElement {
-    let user = t.role == "user";
-    if user {
+    if t.role == "user" {
         user_row(t).into_element()
     } else {
         agent_row(t).into_element()
@@ -71,21 +70,44 @@ fn user_row(t: Turn) -> impl IntoElement {
     let body = t.text.clone();
     let reply = t.reply.clone();
     let atts = t.attachments.clone();
-    let files = t.files.clone();
     view()
-        .flex_row()
-        .justify_end()
         .py(px(3.0))
+        .items_end()
+        .gap_1()
+        // attached images/files sit above the bubble (shell.tsx:427):
+        // right-aligned wrap row, `FileTile` 72 for files, 120 for media
+        .when(!atts.is_empty(), |v| {
+            v.child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .justify_end()
+                    .gap(px(6.0))
+                    .max_w(px(560.0))
+                    .children(atts.iter().map(|a| {
+                        crate::files::file_tile(
+                            a,
+                            if a.kind == "image" || a.kind == "video" {
+                                120.0
+                            } else {
+                                72.0
+                            },
+                        )
+                        .into_element()
+                    })),
+            )
+        })
         .child(
-            view()
-                .max_w(px(520.0))
-                .bg(theme::BUBBLE)
-                .rounded(px(14.0))
-                .px_3()
-                .py_2()
-                .child(quote_block(reply))
-                .child(markdown(move || body.clone(), || false))
-                .child(attach_strip_parts(atts, files)),
+            view().flex_row().justify_end().child(
+                view()
+                    .max_w(px(560.0))
+                    .bg(theme::BUBBLE)
+                    .rounded(px(18.0))
+                    .px_3()
+                    .py(px(7.0))
+                    .child(quote_block(reply))
+                    .child(markdown(move || body.clone(), || false)),
+            ),
         )
 }
 
@@ -204,7 +226,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
         )
         .child(reply_quote(&t))
         .child(markdown(move || body.clone(), move || streaming))
-        .child(attach_strip(&t))
+        .child(files_section(&t))
         // A building artifact renders its declared placeholder — before
         // the module exists, the card is a gray box shimmering the job's
         // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
@@ -311,27 +333,127 @@ fn quote_block(reply: Option<crate::store::Reply>) -> impl IntoElement {
     })
 }
 
-fn attach_strip(t: &Turn) -> impl IntoElement {
-    attach_strip_parts(t.attachments.clone(), t.files.clone())
-}
-
-fn attach_strip_parts(atts: Vec<Attach>, files: Vec<Attach>) -> impl IntoElement {
-    let all: Vec<Attach> = atts.into_iter().chain(files).collect();
-    if all.is_empty() {
+/// `t.files` (shell.tsx:507): images/videos group into `MediaGallery`;
+/// audio gets `AudioCard`, everything else `FileCard` — each wrapped in
+/// `artifact` (hover action bar: react / reply / ⋯ menu).
+fn files_section(t: &Turn) -> impl IntoElement {
+    let files = t.files.clone();
+    if files.is_empty() {
         return view().into_element();
     }
+    let i = t.i;
+    let msg = t.text.clone();
+    // the AudioCard waveform's played tint is the user bubble fill — the
+    // active bot's color when set, else the neutral fill.
+    let tint = store()
+        .active_bot_untracked()
+        .and_then(|b| b.color.parse::<Hsla>().ok())
+        .map(AdaptiveColor::from)
+        .unwrap_or(theme::BUBBLE);
+    let media: Vec<Attach> = files
+        .iter()
+        .filter(|f| f.kind == "image" || f.kind == "video")
+        .cloned()
+        .collect();
+    let rest: Vec<Attach> = files
+        .iter()
+        .filter(|f| f.kind != "image" && f.kind != "video")
+        .cloned()
+        .collect();
     view()
-        .flex_row()
-        .flex_wrap()
         .gap_2()
-        .pt_1()
-        .child(each(
-            move || all.clone(),
-            |f| f.path.clone(),
-            |f_sig, _| {
-                let f = f_sig.get();
-                crate::files::file_tile(f).into_element()
-            },
-        ))
+        .w_full()
+        .max_w(px(560.0))
+        .when(!media.is_empty(), |v| {
+            v.child(artifact(crate::files::media_gallery(media).into_element(), i, None, &msg))
+        })
+        .children(rest.iter().map(|f| {
+            let card = if f.kind == "audio" {
+                crate::files::audio_card(f, tint).into_element()
+            } else {
+                crate::files::file_card(f).into_element()
+            };
+            artifact(card, i, Some(f.clone()), &msg).into_element()
+        }))
         .into_element()
+}
+
+/// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —
+/// ☺ react, ↩ reply (files travel with the reply), ⋯ menu.
+fn artifact(node: AnyElement, i: i64, f: Option<Attach>, msg: &str) -> impl IntoElement {
+    let hov = signal(false);
+    let items = crate::ctx::artifact_items(i, f.as_ref(), msg);
+    let node_ref = element_ref();
+    let reply_label = f
+        .as_ref()
+        .map(|f| format!("📎 {}", f.name))
+        .unwrap_or_else(|| msg.chars().take(120).collect());
+    view()
+        .self_start()
+        .gap_1()
+        .max_w(percentage(1.0))
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .child(node)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_end()
+                .gap(px(2.0))
+                .opacity(move || if hov.get() { 1.0_f32 } else { 0.0 })
+                .child(
+                    view()
+                        .label("React")
+                        .size(px(26.0))
+                        .rounded(px(6.0))
+                        .items_center()
+                        .justify_center()
+                        .child(text("☺").text_size(px(13.0)).text_color(theme::MUTED))
+                        .on_press(move || store().react(i, "👍".to_owned())),
+                )
+                .child(
+                    view()
+                        .label("Reply")
+                        .size(px(26.0))
+                        .rounded(px(6.0))
+                        .items_center()
+                        .justify_center()
+                        .child(text("↩").text_size(px(13.0)).text_color(theme::MUTED))
+                        .on_press(move || {
+                            let st = store();
+                            let name = st
+                                .active_bot_untracked()
+                                .map(|b| b.name)
+                                .unwrap_or_default();
+                            st.reply_to.set(Some(crate::store::ReplyTo {
+                                i,
+                                name,
+                                text: reply_label.clone(),
+                            }));
+                        }),
+                )
+                .child(
+                    view()
+                        .label("More")
+                        .element_ref(&node_ref)
+                        .size(px(26.0))
+                        .rounded(px(6.0))
+                        .items_center()
+                        .justify_center()
+                        .child(text("⋯").text_size(px(13.0)).text_color(theme::MUTED))
+                        .on_press(move || {
+                            let items = items.clone();
+                            spawn(async move {
+                                if let Some(m) = node_ref.measure().await {
+                                    crate::ctx::open_at(
+                                        m.page.x.0,
+                                        m.page.y.0 + m.frame.size.height.0,
+                                        items,
+                                    );
+                                }
+                            });
+                        }),
+                ),
+        )
 }

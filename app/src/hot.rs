@@ -107,6 +107,69 @@ pub(crate) fn hot_area() -> impl IntoElement {
         st.shelf_renaming.set(String::new());
         st.shelf_tagging.set(String::new());
         st.avatar_editing.set(false);
+        // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
+        st.light_close();
+        st.viewing.set(None);
+    });
+    // lightbox prev/next + table navigation / TSV copy — the viewer's
+    // keydown listener (fileviewer.tsx:783).
+    on_key("left", |_| {
+        let st = store();
+        if !st.light_items.get_untracked().is_empty() {
+            st.light_step(-1);
+        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(0, -1, false);
+        }
+    });
+    on_key("right", |_| {
+        let st = store();
+        if !st.light_items.get_untracked().is_empty() {
+            st.light_step(1);
+        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(0, 1, false);
+        }
+    });
+    on_key("up", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(-1, 0, false);
+        }
+    });
+    on_key("down", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(1, 0, false);
+        }
+    });
+    on_key("shift+left", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(0, -1, true);
+        }
+    });
+    on_key("shift+right", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(0, 1, true);
+        }
+    });
+    on_key("shift+up", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(-1, 0, true);
+        }
+    });
+    on_key("shift+down", |_| {
+        let st = store();
+        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
+            st.sel_move(1, 0, true);
+        }
+    });
+    on_key("mod+c", |_| {
+        let st = store();
+        if st.sel_b.get_untracked().is_some() {
+            st.copy_sel();
+        }
     });
     for k in 1..=9u8 {
         on_key(&format!("mod+{k}"), move |_| {
@@ -201,6 +264,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(palette::layer())
         .child(models::layer())
         .child(files::layer())
+        .child(files::lightbox_layer())
 }
 
 /// The floating top bar (App.tsx:2375): the centered header pill —

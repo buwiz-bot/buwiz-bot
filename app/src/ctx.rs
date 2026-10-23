@@ -54,6 +54,24 @@ fn act(it: &CtxItem) {
         "mcp-enable" | "mcp-disable" | "mcp-reconnect" | "mcp-delete" => {
             st.mcp_verb(verb, arg.to_owned())
         }
+        // file turns (`⋯` on an artifact): copy arbitrary text or open a
+        // reply file by `turn_i|path`.
+        "copy" => st.copy_text(arg),
+        "file-open" => {
+            let (i_s, path) = arg.split_once('|').unwrap_or(("", arg));
+            let i: i64 = i_s.parse().unwrap_or(-1);
+            if let Some(t) = st.turns.get_untracked().iter().find(|t| t.i == i) {
+                if let Some(f) = t
+                    .files
+                    .iter()
+                    .chain(t.attachments.iter())
+                    .find(|f| f.path == path)
+                {
+                    let f = f.clone();
+                    st.open_file(&f);
+                }
+            }
+        }
         "shelf-popout" => st.popout(arg),
         "shelf-pin-desktop" => st.popout_desktop(arg),
         "shelf-rename" => {
@@ -93,6 +111,38 @@ pub(crate) fn chat_items(t: &crate::store::ThreadMeta) -> Vec<CtxItem> {
         CtxItem::separator(),
         CtxItem::danger("Delete", "trash", "chat-del", t.id.clone()),
     ]
+}
+
+/// The `⋯` menu under a reply artifact (shell.tsx:360): Open + Copy file
+/// name only when the artifact is a single file; Copy message always.
+/// `i` is the turn index the file lookup scopes to (`file-open`).
+pub(crate) fn artifact_items(
+    i: i64,
+    f: Option<&crate::store::Attach>,
+    message: &str,
+) -> Vec<CtxItem> {
+    let mut items: Vec<CtxItem> = Vec::new();
+    if let Some(f) = f {
+        items.push(CtxItem::row(
+            "Open",
+            "eye",
+            "file-open",
+            format!("{i}|{}", f.path),
+        ));
+        items.push(CtxItem::row(
+            "Copy file name",
+            "copy",
+            "copy",
+            f.name.clone(),
+        ));
+    }
+    items.push(CtxItem::row(
+        "Copy message",
+        "copy",
+        "copy",
+        message.to_owned(),
+    ));
+    items
 }
 
 /// `botItems` — a bot row's menu (App.tsx:831): pin, Move to ▸,
