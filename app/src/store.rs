@@ -220,6 +220,16 @@ pub struct CtxMenu {
     pub items: Vec<CtxItem>,
 }
 
+/// `railPop` — the bot hover card in the rail / pinned tiles
+/// (App.tsx:738): `cy` is the hovered element's measured vertical
+/// center, `x` its right edge plus the 6px gap.
+#[derive(Clone, PartialEq)]
+pub struct RailPop {
+    pub bot: BotMeta,
+    pub cy: f32,
+    pub x: f32,
+}
+
 /// `agentRuns[thread]` — the run live in a thread (App.tsx:113):
 /// `bot` is the credited persona (None when the thread has none), the
 /// mark plays `state`, the status row reads `label`.
@@ -454,6 +464,11 @@ pub struct Store {
     pub section_prompt: Signal<Option<String>>,
     /// `sectionName` — the prompt's draft.
     pub section_name: Signal<String>,
+    /// `railPop` — the bot hover card's target, or None.
+    pub rail_pop: Signal<Option<RailPop>>,
+    /// `popSeq` — the measure-response generation: a stale measure (the
+    /// pointer already left) must not open the card.
+    pub pop_seq: std::cell::Cell<u64>,
 
     /// Theme.
     pub dark: Signal<bool>,
@@ -514,6 +529,8 @@ impl Store {
             ctx: signal(None),
             section_prompt: signal(None),
             section_name: signal(String::new()),
+            rail_pop: signal(None),
+            pop_seq: std::cell::Cell::new(0),
             palette: signal(false),
             viewing: signal(None),
             models_open: signal(false),

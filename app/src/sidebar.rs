@@ -165,11 +165,16 @@ fn rail_btn(b: BotMeta) -> impl IntoElement {
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
     let hovered = signal(false);
+    // `railPop` — measure the tile, then anchor the card at its edge
+    // (the `popSeq` guard drops the answer if hover already ended).
+    let node = element_ref();
+    let b_pop = b.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
+        .element_ref(&node)
         .size(px(54.0))
         .rounded(px(10.0))
         .items_center()
@@ -211,13 +216,34 @@ fn rail_btn(b: BotMeta) -> impl IntoElement {
                     ))
                 }),
         )
-        .on_hover_in(move || hovered.set(true))
+        .on_hover_in(move || {
+            hovered.set(true);
+            let st = store();
+            let seq = st.pop_seq.get() + 1;
+            st.pop_seq.set(seq);
+            let b_pop = b_pop.clone();
+            spawn(async move {
+                if let Some(m) = node.measure().await {
+                    let st = store();
+                    if st.pop_seq.get() == seq {
+                        st.rail_pop.set(Some(crate::store::RailPop {
+                            bot: b_pop,
+                            cy: m.page.y.0 + m.frame.size.height.0 / 2.0,
+                            x: m.page.x.0 + m.frame.size.width.0 + 6.0,
+                        }));
+                    }
+                }
+            });
+        })
         .on_hover_move(move |e: &HoverEvent| {
             // `railGaze(b.id+":rail").follow(e, 27, 27, 18)` — plate center.
             gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 27.0, 27.0, 18.0);
         })
         .on_hover_out(move || {
             hovered.set(false);
+            let st = store();
+            st.pop_seq.set(st.pop_seq.get() + 1);
+            st.rail_pop.set(None);
             gaze3.rest();
         })
         .on_press(move || {
@@ -715,11 +741,15 @@ fn pin_tile(b: BotMeta) -> impl IntoElement {
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
+    // `railPop` — same hover card as the rail tiles.
+    let node = element_ref();
+    let b_pop = b.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
+        .element_ref(&node)
         .w(px(95.0))
         .h(px(92.0))
         .rounded(px(10.0))
@@ -772,12 +802,35 @@ fn pin_tile(b: BotMeta) -> impl IntoElement {
                 .number_of_lines(1)
                 .max_w(px(79.0)),
         )
+        .on_hover_in(move || {
+            let st = store();
+            let seq = st.pop_seq.get() + 1;
+            st.pop_seq.set(seq);
+            let b_pop = b_pop.clone();
+            spawn(async move {
+                if let Some(m) = node.measure().await {
+                    let st = store();
+                    if st.pop_seq.get() == seq {
+                        st.rail_pop.set(Some(crate::store::RailPop {
+                            bot: b_pop,
+                            cy: m.page.y.0 + m.frame.size.height.0 / 2.0,
+                            x: m.page.x.0 + m.frame.size.width.0 + 6.0,
+                        }));
+                    }
+                }
+            });
+        })
         .on_hover_move(move |e: &HoverEvent| {
             // `railGaze(b.id+":pin").follow(e, 47.5, 36, 30)` — the tile's
             // center (95/2=47.5) and mark row's center (~36px from top).
             gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 47.5, 36.0, 30.0);
         })
-        .on_hover_out(move || gaze3.rest())
+        .on_hover_out(move || {
+            let st = store();
+            st.pop_seq.set(st.pop_seq.get() + 1);
+            st.rail_pop.set(None);
+            gaze3.rest();
+        })
         .on_press(move || {
             let st = store();
             if !tid.is_empty() {
@@ -791,4 +844,69 @@ fn pin_tile(b: BotMeta) -> impl IntoElement {
             crate::ctx::open(e, crate::ctx::bot_items(&b2))
         })
         .label(name)
+}
+
+/// `railPop` (App.tsx:3011) — the bot hover card: avatar + name over a
+/// 2-line preview, vertically centered on the hovered element's measured
+/// center at its right edge + 6px.
+pub(crate) fn rail_pop_layer() -> impl IntoElement {
+    dynamic(|| {
+        let Some(pop) = store().rail_pop.get() else {
+            return view().into_element();
+        };
+        let preview = if pop.bot.desc.is_empty() {
+            "No messages yet".to_owned()
+        } else {
+            pop.bot.desc.clone()
+        };
+        // h = pad(20) + name row(18) + gap(4) + lines(≤2 × 18)
+        let lines = ((preview.len() as f32 / 34.0).ceil().max(1.0)).min(2.0);
+        let h = 20.0 + 18.0 + 4.0 + lines * 18.0;
+        let top = (pop.cy - h / 2.0).max(8.0);
+        view()
+            .absolute()
+            .left(px(pop.x))
+            .top(px(top))
+            .w(px(260.0))
+            .p(px(10.0))
+            .gap(px(4.0))
+            .rounded(px(12.0))
+            .bg(theme::MENU_BG)
+            .border_1()
+            .border_color(theme::BORDER_S)
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .h(px(18.0))
+                    .child(
+                        view()
+                            .size(px(16.0))
+                            .items_center()
+                            .justify_center()
+                            .child(bot_avatar(crate::avatar::BotAvatarProps {
+                                size: 20.0,
+                                box_: Some(16.0),
+                                paused: true,
+                                ..crate::avatar::BotAvatarProps::bot(&pop.bot, 20.0)
+                            })),
+                    )
+                    .child(
+                        text(pop.bot.name.clone())
+                            .flex_1()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
+                    ),
+            )
+            .child(
+                text(preview)
+                    .text_size(px(13.0))
+                    .text_color(theme::MUTED)
+                    .number_of_lines(2),
+            )
+            .into_element()
+    })
 }
