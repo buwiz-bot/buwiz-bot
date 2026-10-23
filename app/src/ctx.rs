@@ -54,6 +54,20 @@ fn act(it: &CtxItem) {
         "mcp-enable" | "mcp-disable" | "mcp-reconnect" | "mcp-delete" => {
             st.mcp_verb(verb, arg.to_owned())
         }
+        "shelf-popout" => st.popout(arg),
+        "shelf-pin-desktop" => st.popout_desktop(arg),
+        "shelf-rename" => {
+            st.shelf_rename_text.set(String::new());
+            st.shelf_renaming.set(arg.to_owned());
+        }
+        "shelf-tag" => {
+            st.shelf_tag_text.set(String::new());
+            st.shelf_tagging.set(arg.to_owned());
+        }
+        "shelf-regen" => st.retry_widget(arg),
+        "shelf-pin" => st.pin_widget(arg, it.flag),
+        "shelf-archive" => st.widget_meta(arg, serde_json::json!({"archived": it.flag})),
+        "shelf-delete" => st.unpublish(arg),
         _ => {}
     }
 }
@@ -161,6 +175,40 @@ pub(crate) fn app_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
         ));
     }
     items
+}
+
+/// The shelf card's menu (`openMenu` in widgets/index.tsx:227): popout,
+/// desktop pin, rename/tag editors, regenerate, nominate, archive, delete.
+pub(crate) fn shelf_items(i: &crate::store::ShelfItem) -> Vec<CtxItem> {
+    vec![
+        CtxItem::row("Open window", "popout", "shelf-popout", i.name.clone()),
+        CtxItem::row("Pin to desktop", "pin", "shelf-pin-desktop", i.name.clone()),
+        CtxItem::separator(),
+        CtxItem::row("Rename…", "edit", "shelf-rename", i.name.clone()),
+        CtxItem::row("Add tag…", "tag", "shelf-tag", i.name.clone()),
+        CtxItem::row("Regenerate", "refresh", "shelf-regen", i.name.clone()),
+        CtxItem::row(
+            if i.pinned { "Unpin" } else { "Nominate (★)" },
+            "pin",
+            "shelf-pin",
+            i.name.clone(),
+        )
+        .to(!i.pinned),
+        CtxItem::row(
+            if i.archived { "Unarchive" } else { "Archive" },
+            "archive",
+            "shelf-archive",
+            i.name.clone(),
+        )
+        .to(!i.archived),
+        CtxItem::separator(),
+        CtxItem::danger(
+            "Delete from Mini Apps",
+            "trash",
+            "shelf-delete",
+            i.name.clone(),
+        ),
+    ]
 }
 
 /// `mcpMenu` — a connected server's menu (App.tsx:1602): enable,
