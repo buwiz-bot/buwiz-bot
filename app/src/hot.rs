@@ -44,6 +44,25 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
+    // `ROX_WORK=1`: open the Mini Apps work tab at boot.
+    if std::env::var("ROX_WORK").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(800)).await;
+            store().tab.set("work".to_owned());
+        });
+    }
+
+    // `ROX_OPEN=<thread>`: open a thread at boot for screenshots —
+    // `open_thread` is the row-press path (select + turns + apps).
+    if let Ok(t) = std::env::var("ROX_OPEN") {
+        if !t.is_empty() {
+            spawn(async move {
+                timer(std::time::Duration::from_millis(1200)).await;
+                store().open_thread(t);
+            });
+        }
+    }
+
     // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
     // details, theme, the New-Bot sheet, the work tab, dictation demo
     // and mod+1…9 chat switching.
@@ -82,6 +101,11 @@ pub(crate) fn hot_area() -> impl IntoElement {
                 st.agent_set(tid, st.active_bot_untracked().map(|b| b.id), None);
             }
         });
+    });
+    on_key("escape", |_| {
+        let st = store();
+        st.shelf_renaming.set(String::new());
+        st.shelf_tagging.set(String::new());
     });
     for k in 1..=9u8 {
         on_key(&format!("mod+{k}"), move |_| {
@@ -150,7 +174,10 @@ pub(crate) fn hot_area() -> impl IntoElement {
                 .flex_1()
                 .h_full()
                 .child(dynamic(|| {
-                    if store().turns.get().is_empty() {
+                    let st = store();
+                    if st.tab.get() == "work" {
+                        crate::shelf::work_tab().into_element()
+                    } else if st.turns.get().is_empty() {
                         chat::empty_state().into_element()
                     } else {
                         chat::transcript().into_element()

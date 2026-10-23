@@ -26,6 +26,7 @@ pub mod mini;
 mod models;
 mod palette;
 mod pane;
+mod shelf;
 mod sidebar;
 mod statusfx;
 mod store;

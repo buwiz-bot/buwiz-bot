@@ -330,6 +330,19 @@ pub struct Settle {
     pub state: String,
 }
 
+/// A published mini app — one `GET /catalog` row for the work shelf
+/// (`widgets/index.tsx`'s `Item`).
+#[derive(Clone, PartialEq, Default)]
+pub struct ShelfItem {
+    pub name: String,
+    pub title: String,
+    pub published_at: String,
+    pub kinds: Vec<String>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub tags: Vec<String>,
+}
+
 /// What the lightbox / file viewer shows.
 #[derive(Clone, PartialEq)]
 pub struct FileView {
@@ -453,8 +466,9 @@ impl Turn {
             // A turn names a module in `name` ("R15") and describes the
             // artifact in `art`; `v` pins a version (`R15@v3`). The shell's
             // rule: `tt.name` set → app card, else message.
-            art: (!s(v, "name").is_empty() && v.get("art").is_some()).then(|| {
-                let a = v.get("art").unwrap();
+            art: (!s(v, "name").is_empty()).then(|| {
+                let a = v.get("art").cloned().unwrap_or(serde_json::Value::Null);
+                let a = &a;
                 let name = s(v, "name");
                 let ver = i64of(v, "v");
                 Art {
@@ -537,6 +551,23 @@ pub struct Store {
     pub detail_app: Signal<String>,
     pub thread_apps: Signal<Vec<RoxApp>>,
     pub tab: Signal<String>,
+    /// The work shelf's `/catalog` rows (`WidgetShelf`'s `list`).
+    pub shelf_list: Signal<Vec<ShelfItem>>,
+    /// `q` — the shelf's filter text.
+    pub shelf_q: Signal<String>,
+    /// `kind` — `all|db|api|keys|mem|arch`.
+    pub shelf_kind: Signal<String>,
+    /// `tag` — a `#tag` filter, or empty.
+    pub shelf_tag: Signal<String>,
+    /// `sent` — the card whose "＋ chat" reuse just landed (flashes ✓).
+    pub shelf_sent: Signal<String>,
+    /// `renaming` — the card being title-edited (its `name`, "" = none).
+    pub shelf_renaming: Signal<String>,
+    /// `tagging` — the card being tag-edited.
+    pub shelf_tagging: Signal<String>,
+    /// The rename/tag inputs' drafts.
+    pub shelf_rename_text: Signal<String>,
+    pub shelf_tag_text: Signal<String>,
 
     /// Overlays.
     pub ctx: Signal<Option<CtxMenu>>,
@@ -652,6 +683,15 @@ impl Store {
             detail_meta: signal(None),
             thread_apps: signal(Vec::new()),
             tab: signal("chat".to_owned()),
+            shelf_list: signal(Vec::new()),
+            shelf_q: signal(String::new()),
+            shelf_kind: signal("all".to_owned()),
+            shelf_tag: signal(String::new()),
+            shelf_sent: signal(String::new()),
+            shelf_renaming: signal(String::new()),
+            shelf_tagging: signal(String::new()),
+            shelf_rename_text: signal(String::new()),
+            shelf_tag_text: signal(String::new()),
             ctx: signal(None),
             section_prompt: signal(None),
             section_name: signal(String::new()),
@@ -721,6 +761,7 @@ impl Store {
                 }
             }
         });
+        self.watch_shelf();
     }
 
     fn set_threads(&self, v: serde_json::Value) {
@@ -2016,6 +2057,153 @@ impl Store {
             "/popout".to_owned(),
             serde_json::json!({"name": app}),
         );
+    }
+
+    /// `POST /popout {name, mode:"desktop"}` — the card's Pin-to-desktop.
+    pub fn popout_desktop(&'static self, app: &str) {
+        client::post_bg(
+            "/popout".to_owned(),
+            serde_json::json!({"name": app, "mode": "desktop"}),
+        );
+    }
+
+    // -- work shelf --------------------------------------------------------
+
+    /// `GET /catalog` → `shelf_list` (`WidgetShelf`'s `load`).
+    pub fn load_shelf(&'static self) {
+        spawn(async move {
+            let Some(v) = client::get("/catalog").await else { return };
+            let rows: Vec<ShelfItem> = list(&v, "list")
+                .iter()
+                .map(|i| ShelfItem {
+                    name: s(i, "name"),
+                    title: s(i, "title"),
+                    published_at: s(i, "publishedAt"),
+                    kinds: list(i, "kinds")
+                        .iter()
+                        .filter_map(|k| k.as_str().map(|x| x.to_owned()))
+                        .collect(),
+                    pinned: b(i, "pinned"),
+                    archived: b(i, "archived"),
+                    tags: list(i, "tags")
+                        .iter()
+                        .filter_map(|t| t.as_str().map(|x| x.to_owned()))
+                        .collect(),
+                })
+                .collect();
+            self.shelf_list.set(rows);
+        });
+    }
+
+    /// The 3s catalog poll, on while the work tab is up (`WidgetShelf`'s
+    /// `setInterval(load, 3000)`).
+    pub fn watch_shelf(&'static self) {
+        spawn(async move {
+            loop {
+                if self.tab.get_untracked() == "work" {
+                    self.load_shelf();
+                }
+                timer(std::time::Duration::from_millis(3000)).await;
+            }
+        });
+    }
+
+    /// `POST /widget-meta` — rename (`title`), tag (`tags`), archive
+    /// (`archived`); the catalog reloads after the write.
+    pub fn widget_meta(&'static self, app: &str, patch: serde_json::Value) {
+        let mut body = patch;
+        body["name"] = serde_json::Value::String(app.to_owned());
+        spawn(async move {
+            if client::post("/widget-meta", body).await.is_some() {
+                self.load_shelf();
+            }
+        });
+    }
+
+    /// `POST /pin {name,pinned}` — Nominate (★) / Unpin on the shelf card.
+    pub fn pin_widget(&'static self, app: &str, pinned: bool) {
+        let app = app.to_owned();
+        spawn(async move {
+            if client::post("/pin", serde_json::json!({"name": app, "pinned": pinned}))
+                .await
+                .is_some()
+            {
+                self.load_shelf();
+            }
+        });
+    }
+
+    /// `POST /unpublish` — "Delete from Mini Apps".
+    pub fn unpublish(&'static self, app: &str) {
+        let app = app.to_owned();
+        spawn(async move {
+            if client::post("/unpublish", serde_json::json!({"name": app}))
+                .await
+                .is_some()
+            {
+                self.load_shelf();
+            }
+        });
+    }
+
+    /// `POST /retry {name}` — Regenerate: re-prompt the model against the
+    /// same request and patch the published file.
+    pub fn retry_widget(&'static self, app: &str) {
+        client::post_bg("/retry".to_owned(), serde_json::json!({"name": app}));
+    }
+
+    /// `POST /reuse` — "＋ chat": drops the app into a turn; the card's
+    /// label flashes `＋ chat ✓` for 1.5s.
+    pub fn reuse_widget(&'static self, app: &str) {
+        let app = app.to_owned();
+        spawn(async move {
+            if client::post("/reuse", serde_json::json!({"name": app}))
+                .await
+                .is_some()
+            {
+                self.shelf_sent.set(app.to_owned());
+                timer(std::time::Duration::from_millis(1500)).await;
+                if self.shelf_sent.get_untracked() == app {
+                    self.shelf_sent.set(String::new());
+                }
+            }
+        });
+    }
+
+    /// The shelf's visible rows — `shown()`: text/tag match plus the
+    /// kind filter (archived rows hide unless `arch` is selected).
+    pub fn shelf_shown(&'static self) -> Vec<ShelfItem> {
+        let q = self.shelf_q.get().to_lowercase();
+        let kind = self.shelf_kind.get();
+        let tag = self.shelf_tag.get();
+        self.shelf_list
+            .get()
+            .into_iter()
+            .filter(|i| {
+                let hay =
+                    format!("{} {} {}", i.title, i.name, i.tags.join(" ")).to_lowercase();
+                let m = (tag.is_empty() || i.tags.contains(&tag))
+                    && (q.is_empty() || hay.contains(&q));
+                if kind == "arch" {
+                    i.archived && m
+                } else {
+                    !i.archived && (kind == "all" || i.kinds.contains(&kind)) && m
+                }
+            })
+            .collect()
+    }
+
+    /// `allTags` — every tag across the catalog, deduped.
+    pub fn shelf_tags(&'static self) -> Vec<String> {
+        let mut t: Vec<String> = self
+            .shelf_list
+            .get()
+            .iter()
+            .flat_map(|i| i.tags.clone())
+            .collect();
+        t.sort();
+        t.dedup();
+        t
     }
 
     fn mini_title(&'static self, app: &str) -> Signal<String> {
