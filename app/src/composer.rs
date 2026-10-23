@@ -68,37 +68,32 @@ pub(crate) fn composer() -> impl IntoElement {
                 .child(model_pill())
                 .child(view().flex_1())
                 .child(when(
-                    move || {
-                        let st = store();
-                        // `agent() = agentRuns()[activeId()]` — the row only
-                        // mounts while the run's own thread is open.
-                        !st.run_status.get().is_empty()
-                            && st.run_thread.get() == st.active_id.get()
-                    },
+                    // `agent() = agentRuns()[activeId()]` — the row only
+                    // mounts while the run's own thread is open.
+                    move || store().agent().is_some(),
                     || {
                         // `agentSet`'s row: the active bot's mark playing
                         // the run state + the ambient fx + the label.
                         // `seed={agent().bot ?? activeBot()?.id ?? "status"}`.
                         let st = store();
                         let bot = st.active_bot_untracked();
-                        let seed = {
-                            let rb = st.run_bot.get_untracked();
-                            if rb.is_empty() {
-                                bot.as_ref().map(|b| b.id.clone())
-                            } else {
-                                Some(rb)
-                            }
-                        };
+                        let seed = st
+                            .agent()
+                            .and_then(|a| a.bot)
+                            .or_else(|| bot.as_ref().map(|b| b.id.clone()))
+                            .unwrap_or_else(|| "status".to_owned());
                         let (shape, color) = bot
                             .map(|b| (b.shape, b.color))
                             .unwrap_or_else(|| ("blob".into(), "#FFFFFF".into()));
                         statusfx::status_fx(
                             shape,
                             color,
-                            store().run_state,
+                            std::rc::Rc::new(|| {
+                                store().agent().map(|a| a.state).unwrap_or_default()
+                            }),
                             20.0,
-                            seed,
-                            move || store().run_status.get(),
+                            Some(seed),
+                            move || store().agent().map(|a| a.label).unwrap_or_default(),
                         )
                     },
                 )),
