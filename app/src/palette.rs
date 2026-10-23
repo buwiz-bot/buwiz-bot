@@ -18,6 +18,7 @@ struct Command {
 fn commands() -> Vec<Command> {
     vec![
         Command { label: "New chat", icon: "chat", hint: "", act: "new" },
+        Command { label: "New bot", icon: "agent", hint: "", act: "bot" },
         Command { label: "Choose model", icon: "agent", hint: "", act: "models" },
         Command { label: "Toggle sidebar", icon: "panel", hint: "", act: "side" },
         Command { label: "Toggle details", icon: "panel", hint: "", act: "details" },
@@ -30,6 +31,7 @@ fn run(act: &str) {
     st.palette.set(false);
     match act {
         "new" => st.new_thread(),
+        "bot" => st.bot_modal.set(true),
         "models" => st.models_open.set(true),
         "side" => st
             .side_mode

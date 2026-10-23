@@ -11,6 +11,7 @@
 //! app's store under the root owner so the whole model survives remounts.
 
 mod avatar;
+mod botmodal;
 mod chat;
 mod client;
 mod composer;

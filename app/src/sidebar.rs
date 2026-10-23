@@ -11,11 +11,16 @@ use crate::live::store;
 use crate::store::{BotMeta, ThreadMeta};
 use crate::theme;
 
-/// The rail/full sidebar — `side_mode` picks slim icons or the list.
+/// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
 pub(crate) fn sidebar() -> impl IntoElement {
-    let mode = move || store().side_mode.get();
-    when(move || mode() == "full", full_sidebar)
-        .otherwise(rail)
+    when(
+        move || store().side_shown.get(),
+        || {
+            when(move || store().side_mode.get() == "full", full_sidebar)
+                .otherwise(rail)
+                .into_element()
+        },
+    )
 }
 
 /// `AVATAR_HUES` — the chat-initial circle colors (`hue(t.title)`).
@@ -51,7 +56,7 @@ fn rail() -> impl IntoElement {
                 .child(rail_button("panel", "Expand", || {
                     store().side_mode.set("full".to_owned())
                 }))
-                .child(rail_button("chat", "New chat", || store().new_thread())),
+                .child(new_menu_button("newChat", "New Bot", 36.0, 9.0)),
         )
         .child(
             scroll().flex_1().child(
@@ -138,6 +143,39 @@ fn rail_button(name: &'static str, label: &'static str, on: impl Fn() + 'static)
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
         .on_press(move || on())
+}
+
+/// `newMenu` (App.tsx:973) — open the add-menu below the measured
+/// button (or at the fallback corner when the measure is lost).
+fn open_add_menu(node: ElementRef) {
+    spawn(async move {
+        let at = node.measure().await.map(|m| {
+            (m.page.x.0, m.page.y.0 + m.frame.size.height.0.max(36.0) + 6.0)
+        });
+        let (x, y) = at.unwrap_or((20.0, 700.0));
+        crate::ctx::open_at(x, y, crate::ctx::add_items());
+    });
+}
+
+/// The rail / header "New Bot" button: opens `addMenu` on press.
+fn new_menu_button(name: &'static str, label: &'static str, size: f32, radius: f32) -> impl IntoElement {
+    let node = element_ref();
+    let hovered = signal(false);
+    view()
+        .element_ref(&node)
+        .label(label)
+        .child(
+            view()
+                .size(px(size))
+                .rounded(px(radius))
+                .items_center()
+                .justify_center()
+                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                .child(icon(name)),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || open_add_menu(node))
 }
 
 /// `railRule` — the 54×0.5 hairline between rail groups.
@@ -335,7 +373,7 @@ fn full_sidebar() -> impl IntoElement {
                         .text_color(theme::TEXT)
                         .flex_1(),
                 )
-                .child(head_button("plus", "New chat", || store().new_thread()))
+                .child(new_menu_button("plus", "New Bot", 26.0, 7.0))
                 .child(head_button("panel", "Collapse", || {
                     store().side_mode.set("rail".to_owned())
                 })),

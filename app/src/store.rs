@@ -448,6 +448,8 @@ pub struct Store {
 
     /// Layout.
     pub side_mode: Signal<String>,
+    /// `sideShown` — `mod+b` toggles it; `sideEff = shown ? mode : "hidden"`.
+    pub side_shown: Signal<bool>,
     pub right_open: Signal<bool>,
     pub detail_tab: Signal<String>,
     pub detail: Signal<Vec<Kv>>,
@@ -469,6 +471,15 @@ pub struct Store {
     /// `popSeq` — the measure-response generation: a stale measure (the
     /// pointer already left) must not open the card.
     pub pop_seq: std::cell::Cell<u64>,
+    /// `botModal` — the "Create New Bot" sheet is open.
+    pub bot_modal: Signal<bool>,
+    /// `botName`/`botShape`/`botColor` — the picker's draft.
+    pub bot_name: Signal<String>,
+    pub bot_shape: Signal<String>,
+    pub bot_color: Signal<String>,
+    /// `botHover` — the sheet's hovered control ("close", "cancel",
+    /// "s:<shape>").
+    pub bot_hover: Signal<String>,
 
     /// Theme.
     pub dark: Signal<bool>,
@@ -520,6 +531,7 @@ impl Store {
             effort: signal(String::new()),
             fast: signal(false),
             side_mode: signal("full".to_owned()),
+            side_shown: signal(true),
             right_open: signal(false),
             detail_tab: signal("state".to_owned()),
             detail: signal(Vec::new()),
@@ -531,6 +543,11 @@ impl Store {
             section_name: signal(String::new()),
             rail_pop: signal(None),
             pop_seq: std::cell::Cell::new(0),
+            bot_modal: signal(false),
+            bot_name: signal(String::new()),
+            bot_shape: signal("blob".to_owned()),
+            bot_color: signal("#1084FE".to_owned()),
+            bot_hover: signal(String::new()),
             palette: signal(false),
             viewing: signal(None),
             models_open: signal(false),
@@ -1136,6 +1153,39 @@ impl Store {
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
                     self.open_thread(id.to_owned());
                 }
+            }
+        });
+    }
+
+    /// `createBot` (App.tsx:627): `POST /bot/new` with the picker's
+    /// draft, open the bot's new thread, adopt the returned turns.
+    pub fn create_bot(&'static self) {
+        let name = self.bot_name.get_untracked().trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        self.bot_modal.set(false);
+        let shape = self.bot_shape.get_untracked();
+        let color = self.bot_color.get_untracked();
+        spawn(async move {
+            let Some(v) = client::post(
+                "/bot/new",
+                serde_json::json!({"name": name, "shape": shape, "color": color}),
+            )
+            .await
+            else {
+                return;
+            };
+            if let Some(tid) = v
+                .get("bot")
+                .and_then(|b| b.get("threadId"))
+                .and_then(|t| t.as_str())
+            {
+                self.open_thread(tid.to_owned());
+            }
+            self.bot_name.set(String::new());
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
             }
         });
     }

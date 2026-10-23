@@ -28,6 +28,7 @@ fn act(it: &CtxItem) {
     let (verb, arg) = (it.act.as_str(), it.arg.as_str());
     match verb {
         "new" => st.new_thread(),
+        "bot-modal" => st.bot_modal.set(true),
         "palette" => st.palette.set(true),
         "models" => st.models_open.set(true),
         "chat-hide" => st.update_thread(arg, Some(it.flag), None),
@@ -117,16 +118,30 @@ pub(crate) fn bot_items(b: &crate::store::BotMeta) -> Vec<CtxItem> {
     ]
 }
 
+/// `addMenu` (App.tsx:979) — the "+" button's two-item menu.
+pub(crate) fn add_items() -> Vec<CtxItem> {
+    vec![
+        CtxItem::row("New bot", "newChat", "bot-modal", String::new()),
+        CtxItem::row("New chat", "edit", "new", String::new()),
+    ]
+}
+
 /// `openCtx` — clamp the card inside the window like the TSX.
 pub(crate) fn open(e: &ContextMenuEvent, items: Vec<CtxItem>) {
+    open_at(e.page_position.x.0, e.page_position.y.0, items)
+}
+
+/// The same open at explicit page coords — the add-menu's measured
+/// button position (App.tsx's `addMenu`).
+pub(crate) fn open_at(x: f32, y: f32, items: Vec<CtxItem>) {
     let h = CTX_PAD * 2.0
         + items
             .iter()
             .map(|i| if i.sep { CTX_SEP } else { CTX_ROW })
             .sum::<f32>();
     // `winW()/windowSize` — conservative clamps; the scrim covers the rest.
-    let x = (e.page_position.x.0 - 4.0).max(4.0);
-    let y = (e.page_position.y.0 - 4.0).max(4.0).min(1400.0 - h);
+    let x = (x - 4.0).max(4.0);
+    let y = (y - 4.0).max(4.0).min(1400.0 - h);
     store().ctx.set(Some(CtxMenu { x, y, items }));
 }
 
