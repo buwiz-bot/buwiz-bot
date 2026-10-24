@@ -3699,19 +3699,29 @@ impl Store {
     }
 
     /// Open the widget in the server's own window (`POST /popout`).
+    /// `app` carries the version as `name@v<k>` (Grok's `Art.app` key);
+    /// the route wants them split — `name` bare, `v` a number.
     pub fn popout(&'static self, app: &str) {
-        client::post_bg(
-            "/popout".to_owned(),
-            serde_json::json!({"name": app}),
-        );
+        let mut body = serde_json::json!({"name": app});
+        if let Some((n, v)) = app.split_once('@') {
+            body["name"] = serde_json::json!(n);
+            if let Ok(v) = v.trim_start_matches('v').parse::<i64>() {
+                body["v"] = serde_json::json!(v);
+            }
+        }
+        client::post_bg("/popout".to_owned(), body);
     }
 
     /// `POST /popout {name, mode:"desktop"}` — the card's Pin-to-desktop.
     pub fn popout_desktop(&'static self, app: &str) {
-        client::post_bg(
-            "/popout".to_owned(),
-            serde_json::json!({"name": app, "mode": "desktop"}),
-        );
+        let mut body = serde_json::json!({"name": app, "mode": "desktop"});
+        if let Some((n, v)) = app.split_once('@') {
+            body["name"] = serde_json::json!(n);
+            if let Ok(v) = v.trim_start_matches('v').parse::<i64>() {
+                body["v"] = serde_json::json!(v);
+            }
+        }
+        client::post_bg("/popout".to_owned(), body);
     }
 
     // -- work shelf --------------------------------------------------------
