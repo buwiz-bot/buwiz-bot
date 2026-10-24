@@ -353,6 +353,7 @@ fn input_area() -> impl IntoElement {
 /// controls band (App.tsx:2275).
 fn the_input() -> Input {
     input()
+        .label("Message input")
         .value(move || store().draft.get())
         .multiline(true)
         .submit_behavior(if is_desktop() {
