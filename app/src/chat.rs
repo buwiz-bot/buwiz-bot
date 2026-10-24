@@ -55,9 +55,18 @@ pub(crate) fn transcript() -> impl IntoElement {
                             .w_full()
                             .max_w(px(992.0))
                             .px_4()
-                            .child(turn_row(
-                                store().turns.get_untracked()[at.index()].clone(),
-                            )),
+                            // The cell's row is bound, not its index's:
+                            // recycled cells re-render for their new
+                            // index, and a turn's streamed text lands in
+                            // place (gallery's `item`/`dynamic` pair).
+                            .child(dynamic(move || {
+                                let Some(t) =
+                                    store().turns.get().get(at.index()).cloned()
+                                else {
+                                    return view().into_element();
+                                };
+                                turn_row(t).into_element()
+                            })),
                     )
             },
         )
