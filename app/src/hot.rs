@@ -122,6 +122,19 @@ pub(crate) fn hot_area(
         }
     }
 
+    // `ROX_SCROLL=<px>`: scroll the transcript to a pixel offset at
+    // boot — `open_thread`'s scrollToEnd lands on the latest, so shots
+    // of earlier content (the file cards) need a jump back.
+    if let Ok(off) = std::env::var("ROX_SCROLL") {
+        let off = off.trim().parse::<f32>().unwrap_or(0.0);
+        spawn(async move {
+            timer(std::time::Duration::from_millis(2400)).await;
+            if let Some(l) = store().chat_list.borrow().clone() {
+                l.scroll_to_offset(px(off), false);
+            }
+        });
+    }
+
     // `ROX_SEND=<text>`: fill the draft and send at boot — synthetic
     // input can't drive the composer, so stream verification needs it.
     if let Ok(msg) = std::env::var("ROX_SEND") {
