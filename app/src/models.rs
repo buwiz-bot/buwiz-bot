@@ -5,7 +5,6 @@
 //! (`GET /models`).
 
 use std::str::FromStr;
-use std::time::Duration;
 
 use nsh_core::ui::prelude::*;
 
@@ -295,13 +294,9 @@ fn tip(left: Option<f32>, right: Option<f32>, top: f32, label: &str) -> impl Int
 // ————— effort card (modelpicker.tsx:197) —————
 
 fn effort_card(o: &ModelsOpen) -> impl IntoElement {
-    // top-effort effects: a 2.4s shimmer sweep + twinkling sparkles, one
-    // 60fps clock driving both (the TSX's Animated loops).
-    let clock = signal(0.0f64);
-    set_interval(Duration::from_millis(16), {
-        let clock = clock.clone();
-        move || clock.update(|c| *c += 0.016)
-    });
+    // top-effort effects: a 2.4s shimmer sweep + twinkling sparkles on the
+    // store's shared ~30fps clock (the TSX's Animated loops).
+    let clock = crate::live::store().frame_clock();
     let hover = signal(String::new());
     // untracked: an eager `efforts()` read here would make the layer's
     // `dynamic` rebuild the card (and remount the slider mid-drag) on

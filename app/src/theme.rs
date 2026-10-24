@@ -5,6 +5,8 @@
 //! ra-jit's evaluator yet, and a function whose consts cannot be evaluated
 //! goes to cargo, not a patch.
 
+use std::str::FromStr;
+
 use nsh_core::ui::prelude::*;
 
 pub const fn tone(light: Hsla, dark: Hsla) -> AdaptiveColor {
@@ -21,6 +23,10 @@ pub const MAIN: AdaptiveColor = tone(hsla(0.0, 0.0, 0.99, 1.0), hsla(0.0, 0.0, 0
 pub const BUBBLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.12, 1.0));
 pub const CARD: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.122, 1.0));
 pub const CARD2: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0, 0.141, 1.0));
+/// The avatar editor's floating card — `tc("#1f1f1f")` (App.tsx:3180):
+/// solid #fff on light, #1f1f1f on dark (CARD2's 6% light side reads as
+/// transparent over the pane).
+pub const EDITOR: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.122, 1.0));
 pub const MENU_BG: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.165, 1.0));
 pub const DOCK: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.8), hsla(0.0, 0.0, 0.086, 0.8));
 
@@ -53,3 +59,39 @@ pub const PAGE: AdaptiveColor = MAIN;
 
 /// The status dot and running accents of an agent's card.
 pub const RUNNING: AdaptiveColor = tone(hsla(0.58, 0.90, 0.50, 1.0), hsla(0.58, 0.90, 0.65, 1.0));
+
+/// theme.ts `tc`: `#f5f5f5<alpha>` dark neutrals map to `#1c1c1c` in light
+/// (with Sand's alpha remap); the SOLID table covers the opaque neutrals;
+/// everything else is one color in both modes.
+pub(crate) fn tc(hex: &str) -> AdaptiveColor {
+    let d = Hsla::from_str(hex).unwrap_or_default();
+    let k = hex.to_lowercase();
+    let l = match k.as_str() {
+        "#0e0e0e" => "#f5f5f5",
+        "#121212" | "#1f1f1f" => "#ffffff",
+        "#161616" => "#fcfcfc",
+        "#1a1a1a" => "#fafafa",
+        "#222222" | "#242424" => "#1c1c1c0f",
+        "#262626" | "#2a2a2a" | "#2c2c2c" => "#1c1c1c14",
+        _ => {
+            if let Some(a) = k.strip_prefix("#f5f5f5") {
+                let a = match a {
+                    "a8" => "ad",
+                    "8a" => "8f",
+                    "e6" => "eb",
+                    "a3" => "a8",
+                    a => a,
+                };
+                return AdaptiveColor {
+                    light: Hsla::from_str(&format!("#1c1c1c{a}")).unwrap_or(d),
+                    dark: d,
+                };
+            }
+            return AdaptiveColor { light: d, dark: d };
+        }
+    };
+    AdaptiveColor {
+        light: Hsla::from_str(l).unwrap_or(d),
+        dark: d,
+    }
+}

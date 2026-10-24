@@ -90,7 +90,9 @@ fn body() -> impl IntoElement {
             dynamic(|| {
                 let st = store();
                 let shape = st.bot_shape.get();
-                let color = crate::mark::ink_of(&st.bot_color.get(), !st.dark.get());
+                // Raw swatch — `BotBlob`'s painter resolves `inkOf` per
+                // theme itself (blob.tsx:70).
+                let color = st.bot_color.get();
                 view()
                     .size(px(96.0))
                     .items_center()
@@ -133,10 +135,7 @@ fn body() -> impl IntoElement {
 /// The shape grid (`BOT_SHAPES`): 48pt cells in the picked ink; the
 /// ring marks the pick, a fainter one the hover.
 fn shapes() -> impl IntoElement {
-    let color = {
-        let st = store();
-        crate::mark::ink_of(&st.bot_color.get(), !st.dark.get())
-    };
+    let color = store().bot_color.get();
     view()
         .w(px(272.0))
         .mt_4()

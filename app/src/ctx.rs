@@ -57,6 +57,14 @@ fn act(it: &CtxItem) {
         // file turns (`⋯` on an artifact): copy arbitrary text or open a
         // reply file by `turn_i|path`.
         "copy" => st.copy_text(arg),
+        // `more()`'s Delete (shell.tsx:307): `post("/turn/delete", {key})`.
+        "turn-del" => {
+            crate::client::post_bg(
+                "/turn/delete".to_owned(),
+                serde_json::json!({"key": arg}),
+            );
+            st.refresh_turns();
+        }
         "file-open" => {
             let (i_s, path) = arg.split_once('|').unwrap_or(("", arg));
             let i: i64 = i_s.parse().unwrap_or(-1);
@@ -144,6 +152,23 @@ pub(crate) fn artifact_items(
         message.to_owned(),
     ));
     items
+}
+
+/// `more()` on a message row (shell.tsx:301): Copy + Delete; `i` is the
+/// turn index, posted as `key: "idx:<i>"`.
+pub(crate) fn msg_items(i: i64) -> Vec<CtxItem> {
+    let text = store()
+        .turns
+        .get_untracked()
+        .iter()
+        .find(|t| t.i == i)
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    vec![
+        CtxItem::row("Copy", "copy", "copy", text),
+        CtxItem::separator(),
+        CtxItem::danger("Delete", "trash", "turn-del", format!("idx:{i}")),
+    ]
 }
 
 /// `botItems` — a bot row's menu (App.tsx:831): pin, Move to ▸,

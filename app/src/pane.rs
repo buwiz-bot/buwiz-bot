@@ -64,10 +64,16 @@ fn top_bar() -> impl IntoElement {
         .gap_2()
         .px_3()
         .h(px(TOP))
-        .child(pane_circle_btn("theme", move || {
-            if store().dark.get() { "moon" } else { "sun" }
+        .child(pane_circle_btn("theme", || {
+            // App.tsx:2492 — the pref's own icon, not the resolved scheme.
+            match store().theme_pref.get().as_str() {
+                "light" => "sun",
+                "dark" => "moon",
+                _ => "systemTheme",
+            }
         }, || {
-            store().dark.update(|v| *v = !*v);
+            let st = store();
+            st.set_theme(st.next_theme());
         }))
         .child(pane_circle_btn("close", || "close", || {
             store().right_open.set(false);
@@ -1262,7 +1268,7 @@ pub(crate) fn editor_overlay() -> impl IntoElement {
                     .top(px(TOP + 8.0 + 64.0 + 6.0))
                     .w(px(297.0))
                     .rounded(px(16.0))
-                    .bg(theme::CARD2)
+                    .bg(theme::EDITOR)
                     .border_1()
                     .border_color(theme::BORDER_F)
                     .child(editor_tabs())
@@ -1392,9 +1398,11 @@ fn bot_tab() -> impl IntoElement {
                                     .into_element()
                             },
                         ))
+                        // App.tsx:3248 — the adaptive swatch raw; the
+                        // painter resolves `inkOf` per theme.
                         .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
                             shape: sh.into(),
-                            color: crate::mark::ink_of("#FFFFFF", !st.dark.get_untracked()),
+                            color: "#FFFFFF".to_owned(),
                             size: 44.0,
                             paused: true,
                             ..Default::default()
@@ -1439,7 +1447,12 @@ fn bot_tab() -> impl IntoElement {
                             view()
                                 .size(px(24.0))
                                 .rounded(px(12.0))
-                                .bg(Hsla::from_str(&crate::mark::ink_of(c, !st.dark.get_untracked())).unwrap_or(theme::TEXT.dark)),
+                                // `inkOf(c())` on a style binding — follows
+                                // the env memo when the theme flips.
+                                .bg(move || {
+                                    Hsla::from_str(&crate::mark::ink_of(c, !dark()))
+                                        .unwrap_or_else(|_| theme::TEXT.dark)
+                                }),
                         )
                         .into_element()
                 })),
@@ -1756,7 +1769,7 @@ pub(crate) fn rename_overlay() -> impl IntoElement {
             .absolute()
             .items_center()
             .justify_center()
-            .bg(ac(if st.dark.get() { "#00000080" } else { "#00000040" }, theme::PANE.dark))
+            .bg(move || ac(if dark() { "#00000080" } else { "#00000040" }, theme::PANE.dark))
             .on_press(|| store().app_rename.set(None))
             .child(
                 view()

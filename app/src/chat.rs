@@ -4,7 +4,6 @@
 
 use nsh_core::ui::prelude::*;
 
-use crate::icons::icon;
 use crate::live::store;
 use crate::md::markdown;
 use crate::store::{Attach, Turn};
@@ -50,6 +49,27 @@ pub(crate) fn transcript() -> impl IntoElement {
         })
         .follow_end(px(40.0))
         .element_ref(&list)
+        // `chatScrolling` (shell.tsx:88) — true from the first scroll
+        // event until ~160ms after the last; hover handlers read it to
+        // skip their signal writes (every write is a commit).
+        .on_scroll({
+            let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
+            move |_: &ScrollEvent| {
+                let st = store();
+                if !st.chat_scrolling.get_untracked() {
+                    st.chat_scrolling.set(true);
+                }
+                let e = epoch.get().wrapping_add(1);
+                epoch.set(e);
+                let epoch = epoch.clone();
+                spawn(async move {
+                    timer(std::time::Duration::from_millis(160)).await;
+                    if epoch.get() == e {
+                        store().chat_scrolling.set(false);
+                    }
+                });
+            }
+        })
         .flex_1()
         .px_4()
         .pt(px(56.0)) // under the top overlay bar
@@ -95,10 +115,32 @@ fn user_row(t: Turn) -> impl IntoElement {
     let body = t.text.clone();
     let reply = t.reply.clone();
     let atts = t.attachments.clone();
+    let i = t.i;
+    // shell.tsx:425 — the row's `hover` gates the action bar; during a
+    // scroll `chatScrolling` skips the writes (every write is a commit).
+    let hov = signal(false);
+    let hov2 = hov.clone();
+    let bar_opacity = move || {
+        if hov.get() && !store().chat_scrolling.get() {
+            1.0f32
+        } else {
+            0.0
+        }
+    };
     view()
         .py(px(3.0))
         .items_end()
         .gap_1()
+        .on_hover_in(move || {
+            if !store().chat_scrolling.get_untracked() {
+                hov2.set(true);
+            }
+        })
+        .on_hover_out(move || {
+            if !store().chat_scrolling.get_untracked() {
+                hov.set(false);
+            }
+        })
         // attached images/files sit above the bubble (shell.tsx:427):
         // right-aligned wrap row, `FileTile` 72 for files, 120 for media
         .when(!atts.is_empty(), |v| {
@@ -133,6 +175,27 @@ fn user_row(t: Turn) -> impl IntoElement {
                     .child(quote_block(reply))
                     .child(markdown(move || body.clone(), || false)),
             ),
+        )
+        // `bar(true, false)` (shell.tsx:472) — right-aligned, no react on
+        // your own bubbles: reply + ⋯ only.
+        .child(
+            view()
+                .flex_row()
+                .justify_end()
+                .gap(px(2.0))
+                .opacity(bar_opacity)
+                .child(act("↩", "reply", move || {
+                    let st = store();
+                    let tr = st.turns.get_untracked();
+                    if let Some(tt) = tr.iter().find(|x| x.i == i) {
+                        st.reply_to.set(Some(crate::store::ReplyTo {
+                            i: tt.i,
+                            name: tt.name.clone(),
+                            text: tt.text.chars().take(120).collect(),
+                        }));
+                    }
+                }))
+                .child(more_act(i)),
         )
 }
 
@@ -225,9 +288,30 @@ fn agent_row(t: Turn) -> impl IntoElement {
     let i = t.i;
     let reaction = t.reaction.clone();
     let has_card = t.art.is_some();
+    // shell.tsx:254 `hov` — gates the action bar's opacity; the writes are
+    // skipped while `chatScrolling` (every write is a commit).
+    let hov = signal(false);
+    let hov2 = hov.clone();
+    let bar_opacity = move || {
+        if hov.get() && !store().chat_scrolling.get() {
+            1.0f32
+        } else {
+            0.0
+        }
+    };
     view()
         .py(px(3.0))
         .max_w(px(640.0))
+        .on_hover_in(move || {
+            if !store().chat_scrolling.get_untracked() {
+                hov2.set(true);
+            }
+        })
+        .on_hover_out(move || {
+            if !store().chat_scrolling.get_untracked() {
+                hov.set(false);
+            }
+        })
         .child(
             // Sender line: name + caption.
             view()
@@ -273,13 +357,32 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 .otherwise(move || app_card(t3.art.clone().unwrap()).into_element()),
             )
         })
+        // The reaction badge (shell.tsx:377's tapback circle) — always
+        // visible, so it lives outside the hover-gated bar.
+        .when(!reaction.is_empty(), move |v| {
+            v.child(
+                view().items_end().child(
+                    text(reaction.clone())
+                        .text_size(px(12.0))
+                        .px_2()
+                        .py(px(2.0))
+                        .bg(theme::CARD2)
+                        .rounded(px(10.0)),
+                ),
+            )
+        })
         .child(
-            // Action bar: reply / react / more.
+            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:504), shown
+            // only while the row is hovered.
             view()
                 .flex_row()
-                .gap_1()
+                .gap(px(2.0))
                 .pt_1()
-                .child(action("reply", "Reply", move || {
+                .opacity(bar_opacity)
+                .child(act("☺", "react", move || {
+                    store().react(i, "👍".to_owned());
+                }))
+                .child(act("↩", "reply", move || {
                     let st = store();
                     let tr = st.turns.get_untracked();
                     if let Some(tt) = tr.iter().find(|x| x.i == i) {
@@ -290,42 +393,47 @@ fn agent_row(t: Turn) -> impl IntoElement {
                         }));
                     }
                 }))
-                .child(action("smile", "React", move || {
-                    store().react(i, "👍".to_owned());
-                }))
-                .when(!reaction.is_empty(), move |v| {
-                    v.child(
-                        text(reaction.clone())
-                            .text_size(px(12.0))
-                            .px_2()
-                            .py(px(2.0))
-                            .bg(theme::CARD2)
-                            .rounded(px(10.0)),
-                    )
-                }),
+                .child(more_act(i)),
         )
 }
 
-fn action(
-    name: &'static str,
+/// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
+/// rounded plate. No icon drawing: Grok's glyphs are text.
+fn act(
+    glyph: &'static str,
     label: &'static str,
     on: impl Fn() + 'static,
 ) -> impl IntoElement {
     let hovered = signal(false);
     view()
         .label(label)
-        .child(
-            view()
-                .size(px(26.0))
-                .rounded(px(6.0))
-                .items_center()
-                .justify_center()
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(icon(name)),
-        )
+        .size(px(24.0))
+        .rounded(px(6.0))
+        .items_center()
+        .justify_center()
+        .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .child(text(glyph).text_size(px(15.0)).text_color(theme::DIM))
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
         .on_press(move || on())
+}
+
+/// `more()` (shell.tsx:301) — the ⋯ button opening the turn's menu
+/// (Copy / Delete) anchored under itself.
+fn more_act(i: i64) -> impl IntoElement {
+    let node_ref = element_ref();
+    act("⋯", "more", move || {
+        let node_ref = node_ref.clone();
+        spawn(async move {
+            if let Some(m) = node_ref.measure().await {
+                crate::ctx::open_at(
+                    m.page.x.0,
+                    m.page.y.0 + m.frame.size.height.0,
+                    crate::ctx::msg_items(i),
+                );
+            }
+        });
+    })
 }
 
 fn reply_quote(t: &Turn) -> impl IntoElement {
