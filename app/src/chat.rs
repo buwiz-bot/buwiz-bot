@@ -664,12 +664,19 @@ fn files_section(t: &Turn) -> impl IntoElement {
         .filter(|f| f.kind != "image" && f.kind != "video")
         .cloned()
         .collect();
+    let reaction = t.reaction.clone();
     view()
         .gap_2()
         .w_full()
         .max_w(px(560.0))
         .when(!media.is_empty(), |v| {
-            v.child(artifact(crate::files::media_gallery(media).into_element(), i, None, &msg))
+            v.child(artifact(
+                crate::files::media_gallery(media).into_element(),
+                i,
+                None,
+                &msg,
+                &reaction,
+            ))
         })
         .children(rest.iter().map(|f| {
             let card = if f.kind == "audio" {
@@ -677,14 +684,21 @@ fn files_section(t: &Turn) -> impl IntoElement {
             } else {
                 crate::files::file_card(f).into_element()
             };
-            artifact(card, i, Some(f.clone()), &msg).into_element()
+            artifact(card, i, Some(f.clone()), &msg, &reaction).into_element()
         }))
         .into_element()
 }
 
 /// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —
-/// ☺ react, ↩ reply (files travel with the reply), ⋯ menu.
-fn artifact(node: AnyElement, i: i64, f: Option<Attach>, msg: &str) -> impl IntoElement {
+/// ☺ react, ↩ reply (files travel with the reply), ⋯ menu — and the
+/// turn's tapback knocked out at its top-right (`badge("right")`).
+fn artifact(
+    node: AnyElement,
+    i: i64,
+    f: Option<Attach>,
+    msg: &str,
+    reaction: &str,
+) -> impl IntoElement {
     let hov = signal(false);
     let items = crate::ctx::artifact_items(i, f.as_ref(), msg);
     let node_ref = element_ref();
@@ -708,6 +722,9 @@ fn artifact(node: AnyElement, i: i64, f: Option<Attach>, msg: &str) -> impl Into
         })
         .on_hover_out(move || hov.set(false))
         .child(node)
+        .when(!reaction.is_empty(), |v| {
+            v.child(tapback(i, reaction.to_owned(), true))
+        })
         .child(
             view()
                 .flex_row()
