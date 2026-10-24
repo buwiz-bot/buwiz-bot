@@ -45,6 +45,19 @@ pub const ACTIVE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.10), hsla(0.0, 0.0
 pub const SUBTLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.04), hsla(0.0, 0.0, 0.96, 0.04));
 pub const PILL_BG: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.94), hsla(0.0, 0.0, 0.14, 0.94));
 
+/// `agentFill` (shell.tsx:11): the agent bubble — `#1f1f1f` on dark, 6%
+/// black on light (Grok's "light grey, not white").
+pub const AGENT_BUBBLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.122, 1.0));
+/// Its hairline — `tc("#f5f5f50f")` (shell.tsx:489).
+pub const AGENT_BORDER: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0, 0.96, 0.06));
+
+// Inside a filled user bubble the ink is the dark ramp in both modes —
+// `OnFill` makes `tc` pass dark values through (theme.ts:34). The quote
+// row's two whites are literals, not `tc` (`#ffffffb3` / `#ffffffcc`).
+pub const ON_FILL: AdaptiveColor = tone(hsla(0.0, 0.0, 0.96, 1.0), hsla(0.0, 0.0, 0.96, 1.0));
+pub const ON_FILL_QUOTE: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.8), hsla(0.0, 0.0, 1.0, 0.8));
+pub const ON_FILL_ICON: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.7), hsla(0.0, 0.0, 1.0, 0.7));
+
 // Accents (TS: UP, DOWN, ACCENT, PURPLE).
 pub const UP: AdaptiveColor = tone(hsla(0.37, 0.90, 0.38, 1.0), hsla(0.37, 0.90, 0.55, 1.0));
 pub const UP_TINT: AdaptiveColor = tone(hsla(0.37, 0.90, 0.38, 0.12), hsla(0.37, 0.90, 0.55, 0.12));
@@ -94,4 +107,51 @@ pub(crate) fn tc(hex: &str) -> AdaptiveColor {
         light: Hsla::from_str(l).unwrap_or(d),
         dark: d,
     }
+}
+
+/// `BUBBLE` (theme.ts:47) — the user bubble's fill per canonical bot
+/// color: [dark Fill, light FillHover]. Adaptive/gray bots fall through
+/// to the neutral bubble: 18% `#f5f5f5` on dark, `#1c1c1c` on light.
+fn bubble_pair(color: &str) -> (&'static str, &'static str) {
+    match color {
+        "#FC2C3E" => ("#cf2b35", "#c82532"),
+        "#F9670E" => ("#cd5309", "#d2550a"),
+        "#F69412" => ("#c8770c", "#c2730b"),
+        "#14C370" => ("#0e9f5a", "#0d9655"),
+        "#13B8A3" => ("#0e9886", "#0d9381"),
+        "#1884FC" => ("#116dd2", "#126fd4"),
+        "#905AFB" => ("#7845d7", "#7442d1"),
+        "#FB3499" => ("#cf297e", "#c82779"),
+        "#A16B39" => ("#8c5d31", "#86592e"),
+        _ => ("#f5f5f52e", "#1c1c1c"),
+    }
+}
+
+/// `OnFill` (theme.ts:34) — inside a filled user bubble `tc` passes the
+/// dark value through in both themes; `always_dark` is the same collapse
+/// for a ready `AdaptiveColor`.
+pub(crate) fn always_dark(c: AdaptiveColor) -> AdaptiveColor {
+    AdaptiveColor {
+        light: c.dark,
+        dark: c.dark,
+    }
+}
+
+/// `bubbleFill` for an explicit bot color (theme.ts:58).
+pub(crate) fn bubble_fill_of(color: &str) -> AdaptiveColor {
+    let (d, l) = bubble_pair(&crate::mark::norm_color(color));
+    AdaptiveColor {
+        light: Hsla::from_str(l).unwrap_or_default(),
+        dark: Hsla::from_str(d).unwrap_or_default(),
+    }
+}
+
+/// `bubbleFill` — the active bot's bubble fill. Tracked: a `.bg` binding
+/// re-runs it when `active_bot` changes (App.tsx:245's `bubbleColor`).
+pub(crate) fn bubble_fill() -> AdaptiveColor {
+    let color = crate::live::store()
+        .active_bot()
+        .map(|b| b.color)
+        .unwrap_or_default();
+    bubble_fill_of(&color)
 }

@@ -10,22 +10,28 @@ use nsh_core::ui::{StyleRefinement, prelude::*};
 
 use crate::theme;
 
-fn parts() -> TextViewParts {
+fn parts(on_fill: bool) -> TextViewParts {
     use TextViewPart as P;
     let heading = |size: f32, line: f32| {
         move |s: StyleRefinement| s.text_size(px(size)).line_height(px(line))
     };
+    // `OnFill` collapses every `tc` to its dark value (theme.ts:34); the
+    // inline-code gold `#e8b339` is a literal in md.tsx and stays.
+    let d = move |c: AdaptiveColor| if on_fill { theme::always_dark(c) } else { c };
     TextViewParts::new()
         .part(P::Heading1, heading(20.0, 26.0))
         .part(P::Heading2, heading(17.0, 22.0))
         .part(P::Heading3, heading(15.0, 22.0))
-        .part(P::Code, |s| s.text_color(theme::ACCENT))
-        .part(P::CodeBlockCode, |s| s.text_color(theme::TEXT))
-        .part(P::CodeBlock, |s| {
-            s.bg(theme::CARD2)
+        .part(P::Code, |s| s.text_color(theme::tone(
+            theme::hsla(0.116, 0.79, 0.57, 1.0),
+            theme::hsla(0.116, 0.79, 0.57, 1.0),
+        )))
+        .part(P::CodeBlockCode, move |s| s.text_color(d(theme::TEXT)))
+        .part(P::CodeBlock, move |s| {
+            s.bg(d(theme::CARD2))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(theme::BORDER_F)
+                .border_color(d(theme::BORDER_F))
         })
 }
 
@@ -41,13 +47,17 @@ fn caret() -> impl IntoElement {
 }
 
 /// The Markdown `md` gives. While `streaming` holds the document is read
-/// as still arriving and the caret ends it. `on_fill` is the text color
-/// inside a user bubble (the reply root's own color everywhere else).
+/// as still arriving and the caret ends it. `on_fill` renders the dark
+/// ramp in both themes — inside a colored user bubble `OnFill` makes
+/// `tc` pass dark values through (theme.ts:34).
 pub(crate) fn markdown(
     md: impl Fn() -> String + 'static,
     streaming: impl Fn() -> bool + 'static,
+    on_fill: impl Fn() -> bool + 'static,
 ) -> impl IntoElement {
-    provide_context(parts());
+    // The flag is per-row constant (user → true, agent → false) so parts
+    // are built once with the right ramp.
+    provide_context(parts(on_fill()));
     let streaming = computed(streaming);
     text_view()
         .markdown(move || Some(SharedString::from(md())))
@@ -74,5 +84,11 @@ pub(crate) fn markdown(
         .gap_3()
         .text_size(px(15.0))
         .line_height(px(21.0))
-        .text_color(theme::TEXT)
+        .text_color(move || {
+            if on_fill() {
+                theme::ON_FILL
+            } else {
+                theme::TEXT
+            }
+        })
 }

@@ -1457,7 +1457,7 @@ pub(crate) fn layer() -> impl IntoElement {
                                 .w(percentage(1.0))
                                 .max_w(px(760.0))
                                 .p(px(24.0))
-                                .child(crate::md::markdown(move || t.clone(), || false)),
+                                .child(crate::md::markdown(move || t.clone(), || false, || false)),
                         )
                         .into_element(),
                     None => view().into_element(),
