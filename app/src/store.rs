@@ -359,11 +359,13 @@ pub struct LightItem {
     pub code: String,
 }
 
-/// The reply quote under a turn.
+/// The reply quote under a turn (`reply:{i,text}` — `i` jumps to it,
+/// shell.tsx:454).
 #[derive(Clone, PartialEq, Default)]
 pub struct Reply {
     pub name: String,
     pub text: String,
+    pub i: i64,
 }
 
 /// A generated artifact a turn's card points at (`art`).
@@ -572,6 +574,23 @@ pub struct ShelfItem {
     pub tags: Vec<String>,
 }
 
+/// `PillAnchor` (shell.tsx:575) — the one emoji pill's measured bar rect
+/// in page coords, whether it flips above / right-anchors, and the turn
+/// it reacts to. `slot` names the owning bar — `"msg"` or
+/// `"art:<path>"` — so only that bar stays lit while the pill is open.
+#[derive(Clone, PartialEq)]
+pub struct PillAnchor {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub flip: bool,
+    pub right: bool,
+    pub i: i64,
+    pub slot: String,
+    pub current: String,
+}
+
 /// One `/widgets` row the ⌘K palette lists (`miniApps`, App.tsx:769).
 #[derive(Clone, PartialEq)]
 pub struct PaletteApp {
@@ -748,7 +767,16 @@ impl Turn {
             reaction: s(v, "reaction"),
             widget: v.get("widget").and_then(|x| x.as_bool()).unwrap_or(false),
             v: i64of(v, "v"),
-            reply: v.get("reply").map(|r| Reply { name: s(r, "name"), text: s(r, "text") }),
+            // `reply` arrives `null` on ordinary turns — `get` still
+            // returns `Some(&Null)`, so the null check is explicit.
+            reply: v
+                .get("reply")
+                .filter(|r| !r.is_null())
+                .map(|r| Reply {
+                    name: s(r, "name"),
+                    text: s(r, "text"),
+                    i: i64of(r, "i"),
+                }),
             attachments,
             files: files.iter().map(Attach::of).collect(),
             // A turn names a module in `name` ("R15") and describes the
@@ -888,6 +916,13 @@ pub struct Store {
     /// `miniApps` — the `/widgets` rows fetched while the palette is
     /// open (App.tsx:769).
     pub palette_apps: Signal<Vec<PaletteApp>>,
+    /// `pillAnchor` (shell.tsx:582) — the open emoji pill's anchor, or
+    /// None. One app-level overlay renders it.
+    pub pill: Signal<Option<PillAnchor>>,
+    /// `pillGuard` (shell.tsx:570) — the pill's touch marks it before the
+    /// root's bubble-phase handler runs, so a press inside the pill isn't
+    /// read as a click-away. The root consumes and clears it per touch.
+    pub pill_guard: std::cell::Cell<bool>,
     /// `viewing` (fileviewer.tsx) — the file the fullscreen viewer shows.
     pub viewing: Signal<Option<Attach>>,
     /// `rendered` — `GET /file/render`'s answer for `viewing`.
@@ -922,6 +957,9 @@ pub struct Store {
     /// `popSeq` — the measure-response generation: a stale measure (the
     /// pointer already left) must not open the card.
     pub pop_seq: std::cell::Cell<u64>,
+    /// The transcript's `virtual_list` handle — the reply-quote jump
+    /// scrolls it (`onJump`, shell.tsx:454).
+    pub chat_list: std::cell::RefCell<Option<ElementRef>>,
     /// `botModal` — the "Create New Bot" sheet is open.
     pub bot_modal: Signal<bool>,
     /// `botName`/`botShape`/`botColor` — the picker's draft.
@@ -1109,6 +1147,7 @@ impl Store {
             section_name: signal(String::new()),
             rail_pop: signal(None),
             pop_seq: std::cell::Cell::new(0),
+            chat_list: std::cell::RefCell::new(None),
             bot_modal: signal(false),
             bot_name: signal(String::new()),
             bot_shape: signal("blob".to_owned()),
@@ -1164,6 +1203,8 @@ impl Store {
             palette_q: signal(String::new()),
             palette_sel: signal(0),
             palette_apps: signal(Vec::new()),
+            pill: signal(None),
+            pill_guard: std::cell::Cell::new(false),
             viewing: signal(None),
             rendered: signal(None),
             sheet_idx: signal(0usize),
@@ -1843,6 +1884,7 @@ impl Store {
         self.palette_q.set(String::new());
         self.palette_sel.set(0);
         self.ctx.set(None);
+        self.pill.set(None);
         self.bot_modal.set(false);
         self.account_open.set(false);
         self.rail_pop.set(None);
@@ -3496,10 +3538,29 @@ impl Store {
         });
     }
 
-    /// `POST /turns/:i/react` — toggle a reaction emoji.
+    /// `react` (shell.tsx:299) — `POST /react {key: "idx:<i>", r}`; the
+    /// empty string clears the tapback.
     pub fn react(&'static self, i: i64, emoji: String) {
-        client::post_bg("/react".to_owned(), serde_json::json!({"i": i, "reaction": emoji}));
+        client::post_bg(
+            "/react".to_owned(),
+            serde_json::json!({"key": format!("idx:{i}"), "r": emoji}),
+        );
         self.refresh_turns();
+    }
+
+    /// `openPill` (shell.tsx:586) — a bar reported its measured rect;
+    /// the pill anchors to it (`right` anchors the pill's right edge to
+    /// the bar's right edge, `flip` lifts it above when it would clip
+    /// the window's bottom).
+    pub fn open_pill(&'static self, a: PillAnchor) {
+        self.pill.set(Some(a));
+    }
+    /// `closeP` — the pill's owner, a scroll tick or `reset_fresh` closes
+    /// it. `i = -1` closes unconditionally.
+    pub fn close_pill(&'static self, i: i64) {
+        if i < 0 || self.pill.get_untracked().as_ref().map_or(false, |a| a.i == i) {
+            self.pill.set(None);
+        }
     }
 
     /// `choice()` — the active bot's choice when one's open, else the

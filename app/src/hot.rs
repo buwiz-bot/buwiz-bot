@@ -5,6 +5,7 @@
 //! answered `Restart` by the daemon, not applied.
 
 use nsh_core::ui::prelude::*;
+use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::botmodal;
 use crate::chat;
@@ -395,11 +396,47 @@ pub(crate) fn hot_area() -> impl IntoElement {
             }));
     }
 
+    // `ROX_PILL=1`: open the emoji pill at a fixed anchor — verifies the
+    // overlay renders, positions and paints without a synthetic click.
+    let rox_pill = std::env::var("ROX_PILL").is_ok();
+    if rox_pill {
+        spawn(async move {
+            // Past the transcript's layout settle — its scroll ticks
+            // legitimately close the pill.
+            timer(std::time::Duration::from_millis(2000)).await;
+            store().open_pill(crate::store::PillAnchor {
+                x: 300.0,
+                y: 300.0,
+                w: 120.0,
+                h: 24.0,
+                flip: false,
+                right: false,
+                i: -1,
+                slot: "msg".to_owned(),
+                current: "❤️".to_owned(),
+            });
+        });
+    }
+
     view()
         .flex_1()
         .h_full()
         .flex_row()
         .bg(theme::MAIN)
+        // Click-away for the emoji pill, the native-menu way
+        // (App.tsx:1927): touches propagate innermost-first, so the pill
+        // marks `pillGuard` before this hears the same touch — a start
+        // that arrives unmarked landed anywhere else and dismisses. No
+        // overlay, so hovers and presses still reach every surface.
+        .on_touch(|e: &TouchEvent| {
+            if e.phase == TouchPhase::Start {
+                let st = store();
+                let inside = st.pill_guard.replace(false);
+                if !inside {
+                    st.close_pill(-1);
+                }
+            }
+        })
         .child(sidebar::sidebar())
         .child(
             // Main column: transcript + floating top bar + composer dock.
@@ -424,6 +461,8 @@ pub(crate) fn hot_area() -> impl IntoElement {
                 pane::pane().into_element()
             }),
         )
+        // The emoji pill (zIndex 49) rides under the ctx menu (51).
+        .child(chat::pill_layer())
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
@@ -451,6 +490,23 @@ fn top_bar() -> impl IntoElement {
         .right(px(0.0))
         .h(px(52.0))
         .window_drag(true)
+        // The chat scrolls under a fading gradient (App.tsx:2382):
+        // `rgba(22,22,22,0.96) → 0.7 @55% → 0`; `tg` swaps the stops to
+        // white on light.
+        .bg_linear_to_b()
+        .gradient_from(theme::tone(
+            theme::hsla(0.0, 0.0, 1.0, 0.96),
+            theme::hsla(0.0, 0.0, 0.086, 0.96),
+        ))
+        .gradient_via(theme::tone(
+            theme::hsla(0.0, 0.0, 1.0, 0.7),
+            theme::hsla(0.0, 0.0, 0.086, 0.7),
+        ))
+        .gradient_via_position(percentage(0.55))
+        .gradient_to(theme::tone(
+            theme::hsla(0.0, 0.0, 1.0, 0.0),
+            theme::hsla(0.0, 0.0, 0.086, 0.0),
+        ))
         .child(
             // Center layer — the pill is `position:absolute` centered in
             // the TSX so side controls never shift it.
