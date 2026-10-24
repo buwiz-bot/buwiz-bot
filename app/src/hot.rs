@@ -70,13 +70,50 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
-    // `ROX_OPEN=<thread>`: open a thread at boot for screenshots —
-    // `open_thread` is the row-press path (select + turns + apps).
+    // `ROX_SIDE=rail|full`: pin the sidebar mode for screenshots.
+    if let Ok(m) = std::env::var("ROX_SIDE") {
+        store().side_shown.set(true);
+        store().side_mode.set(m);
+    }
+
+    // `ROX_ACCOUNT=1`: open the account popover at boot.
+    if std::env::var("ROX_ACCOUNT").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(900)).await;
+            store().account_open.set(true);
+        });
+    }
+
+    // `ROX_TAB=library|details|…`: pin the detail pane's tab.
+    if let Ok(tb) = std::env::var("ROX_TAB") {
+        store().detail_tab.set(tb);
+    }
+
+    // `ROX_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
+    // screenshots — `open_thread` is the row-press path (select + turns +
+    // apps). A list replays an agent switch with a beat between opens.
     if let Ok(t) = std::env::var("ROX_OPEN") {
         if !t.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
-                store().open_thread(t);
+                for (i, id) in t.split(',').enumerate() {
+                    if i > 0 {
+                        timer(std::time::Duration::from_millis(900)).await;
+                    }
+                    store().open_thread(id.trim().to_owned());
+                }
+            });
+        }
+    }
+
+    // `ROX_SEND=<text>`: fill the draft and send at boot — synthetic
+    // input can't drive the composer, so stream verification needs it.
+    if let Ok(msg) = std::env::var("ROX_SEND") {
+        if !msg.is_empty() {
+            spawn(async move {
+                timer(std::time::Duration::from_millis(1200)).await;
+                store().draft.set(msg);
+                store().send();
             });
         }
     }
@@ -285,6 +322,7 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
+        .child(sidebar::account_pop_layer())
         .child(pane::rename_overlay())
         .child(pane::editor_overlay())
         .child(botmodal::layer())

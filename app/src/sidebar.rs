@@ -6,7 +6,7 @@ use std::str::FromStr;
 use nsh_core::ui::prelude::*;
 
 use crate::avatar::bot_avatar;
-use crate::icons::icon;
+use crate::icons::{icon, icon_sized};
 use crate::live::store;
 use crate::store::{RoxBot, ThreadMeta};
 use crate::theme;
@@ -44,19 +44,18 @@ fn rail() -> impl IntoElement {
         .border_r_1()
         .border_r_color(theme::BORDER_F)
         .child(
-            // Under the traffic lights: expand + new-chat.
+            // Under the traffic lights: the expand toggle alone (Grok's
+            // rail top — New lives in the footer).
             view()
                 .flex_row()
                 .items_center()
                 .justify_center()
-                .gap_2()
                 .pt(px(46.0))
                 .pb_2()
                 .window_drag(true)
                 .child(rail_button("panel", "Expand", || {
                     store().side_mode.set("full".to_owned())
-                }))
-                .child(new_menu_button("newChat", "New Bot", 36.0, 9.0)),
+                })),
         )
         .child(
             scroll().flex_1().child(
@@ -113,18 +112,59 @@ fn rail() -> impl IntoElement {
                     )),
             ),
         )
+        // The rail footer — New / Plugins / Account on the shared 54×36
+        // plates (App.tsx:1904; the account plate stays 54 tall).
         .child(
             view()
                 .items_center()
-                .gap_2()
+                .gap(px(2.0))
+                .pt(px(6.0))
                 .pb_2()
-                .child(rail_button("search", "Palette", || {
-                    store().palette.set(true)
+                .child(rail_plate("newChat", "New Bot", 17.0, 36.0, || {
+                    // `newMenu` opens below the button — the footer plate
+                    // is near the window bottom, so anchor it a fixed
+                    // distance up (the add-menu is ~5 rows).
+                    crate::ctx::open_at(20.0, window().height.0 - 270.0, crate::ctx::add_items());
                 }))
-                .child(rail_button("settings", "Models", || {
-                    crate::models::open_list()
-                })),
+                .child(rail_plate("plugins", "Plugins", 13.0, 36.0, || {
+                    store().open_plugins()
+                }))
+                .child(
+                    view()
+                        .size(px(54.0))
+                        .rounded(px(10.0))
+                        .items_center()
+                        .justify_center()
+                        .child(account_circle()),
+                ),
         )
+}
+
+/// `railPlate(key, 36)` — the 54-wide hover plate with a sized icon,
+/// shared by the rail's action buttons (App.tsx:1173).
+fn rail_plate(
+    name: &'static str,
+    label: &'static str,
+    icon_size: f32,
+    h: f32,
+    on: impl Fn() + 'static,
+) -> impl IntoElement {
+    let hovered = signal(false);
+    view()
+        .label(label)
+        .child(
+            view()
+                .w(px(54.0))
+                .h(px(h))
+                .rounded(px(10.0))
+                .items_center()
+                .justify_center()
+                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                .child(icon_sized(name, icon_size)),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || on())
 }
 
 fn rail_button(name: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
@@ -192,8 +232,6 @@ fn rail_rule() -> impl IntoElement {
 /// and the ambient overlay over a photo.
 fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let app = b0.id.clone();
-    let tid = b0.thread_id.clone();
     let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
@@ -290,10 +328,11 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         })
         .on_press(move || {
             let st = store();
-            if !tid.is_empty() {
-                st.open_thread(tid.clone());
+            let bv = b.get();
+            if !bv.thread_id.is_empty() {
+                st.open_thread(bv.thread_id);
             } else {
-                st.load_detail(app.clone());
+                st.load_detail(bv.id);
                 st.right_open.set(true);
             }
         })
@@ -514,6 +553,184 @@ fn full_sidebar() -> impl IntoElement {
                     )),
             ),
         )
+        // The footer — account circle (→ popover) + the Plugins pill
+        // (App.tsx:2024).
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_4()
+                .pb_4()
+                .child(account_circle())
+                .child(
+                    view()
+                        .flex_1()
+                        .h(px(36.0))
+                        .rounded(px(18.0))
+                        .bg(theme::CARD)
+                        .flex_row()
+                        .items_center()
+                        .gap(px(7.0))
+                        .px(px(14.0))
+                        .child(icon_sized("plugins", 11.0))
+                        .child(
+                            text("Plugins")
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::TEXT)
+                                .number_of_lines(1),
+                        )
+                        .on_press(|| store().open_plugins())
+                        .label("Plugins"),
+                ),
+        )
+}
+
+/// `accountOpen` circle — Grok's "UI" initials tile (circleBtn +
+/// `tc("#1f1f1f")` = `CARD`); the rail's plate is the same tile (App.tsx
+/// 1910 & 2028).
+fn account_circle() -> impl IntoElement {
+    view()
+        .size(px(36.0))
+        .rounded(px(18.0))
+        .bg(move || {
+            if store().account_open.get() {
+                theme::CARD2
+            } else {
+                theme::CARD
+            }
+        })
+        .items_center()
+        .justify_center()
+        .child(
+            text("UI")
+                .text_size(px(14.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::DIM),
+        )
+        .on_press(|| store().account_open.update(|v| *v = !*v))
+        .label("Account")
+}
+
+/// The account popover (App.tsx:3099): scrim closes on press +
+/// right-click; the card anchors above the footer circle — header (avatar
+/// + "uriah / Local account"), Mini Apps / Plugins / Settings, then the
+/// inert account rows.
+pub(crate) fn account_pop_layer() -> impl IntoElement {
+    dynamic(|| {
+        if !store().account_open.get() {
+            return view().into_element();
+        }
+        fn pop_row(label: &'static str, icon_name: &'static str, on: impl Fn() + 'static) -> View {
+            let hovered = signal(false);
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .h(px(30.0))
+                .rounded(px(6.0))
+                .bg(move || {
+                    if hovered.get() {
+                        theme::HOVER
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
+                .child(view().w(px(16.0)).items_center().child(icon(icon_name)))
+                .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
+                .on_hover_in(move || hovered.set(true))
+                .on_hover_out(move || hovered.set(false))
+                .on_press(move || on())
+        }
+        let divider = || {
+            view()
+                .h(px(0.5))
+                .mx_1()
+                .my_1()
+                .bg(theme::BORDER_S)
+        };
+        view()
+            .absolute()
+            .size_full()
+            .child(
+                view()
+                    .absolute()
+                    .size_full()
+                    .on_press(|| store().account_open.set(false))
+                    .on_context_menu(|_: &ContextMenuEvent| store().account_open.set(false)),
+            )
+            .child(
+                view()
+                    .absolute()
+                    .left(px(12.0))
+                    .bottom(px(64.0))
+                    .w(px(240.0))
+                    .bg(theme::MENU_BG)
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(theme::BORDER_S)
+                    .p(px(5.0))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .px(px(10.0))
+                            .py(px(10.0))
+                            .child(
+                                view()
+                                    .size(px(32.0))
+                                    .rounded(px(16.0))
+                                    .bg(theme::CARD)
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text("UI")
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::TEXT),
+                                    ),
+                            )
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .child(
+                                        text("uriah")
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::TEXT),
+                                    )
+                                    .child(
+                                        text("Local account")
+                                            .text_size(px(12.0))
+                                            .text_color(theme::DIM),
+                                    ),
+                            ),
+                    )
+                    .child(divider())
+                    .child(pop_row("Mini Apps", "gpts", || {
+                        store().tab.set("work".to_owned());
+                        store().account_open.set(false);
+                    }))
+                    .child(pop_row("Plugins", "plugins", || {
+                        store().open_plugins();
+                        store().account_open.set(false);
+                    }))
+                    .child(pop_row("Settings", "settings", || {
+                        store().account_open.set(false);
+                    }))
+                    .child(divider())
+                    .child(pop_row("Add account", "addAccount", || {
+                        store().account_open.set(false);
+                    }))
+                    .child(pop_row("Log out", "logout", || {
+                        store().account_open.set(false);
+                    })),
+            )
+            .into_element()
+    })
 }
 
 /// `collapsedSecs()[key]` — absent means open (named sections); the
@@ -661,10 +878,8 @@ fn thread_row(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
 fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let hovered = signal(false);
     let b0 = b.get();
-    let app = b0.id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
-    let tid = b0.thread_id.clone();
     // `railGaze(b.id + ":row")` — the mark follows the pointer over the row.
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
@@ -754,11 +969,14 @@ fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_press(move || {
             let st = store();
             // `selectThread(b.threadId)` — open the persona's chat; the
-            // detail pane stays the fallback for a bot with none.
-            if !tid.is_empty() {
-                st.open_thread(tid.clone());
+            // detail pane stays the fallback for a bot with none. Read the
+            // row's signal: a `threadId` captured at mount goes stale when
+            // `/threads` refreshes.
+            let bv = b.get();
+            if !bv.thread_id.is_empty() {
+                st.open_thread(bv.thread_id);
             } else {
-                st.load_detail(app.clone());
+                st.load_detail(bv.id);
                 st.right_open.set(true);
             }
         })
@@ -772,9 +990,7 @@ fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
 /// and the name under it.
 fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let app = b0.id.clone();
     let name = b0.name.clone();
-    let tid = b0.thread_id.clone();
     let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
@@ -876,10 +1092,11 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         })
         .on_press(move || {
             let st = store();
-            if !tid.is_empty() {
-                st.open_thread(tid.clone());
+            let bv = b.get();
+            if !bv.thread_id.is_empty() {
+                st.open_thread(bv.thread_id);
             } else {
-                st.load_detail(app.clone());
+                st.load_detail(bv.id);
                 st.right_open.set(true);
             }
         })

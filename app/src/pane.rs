@@ -373,7 +373,6 @@ fn library_tab() -> impl IntoElement {
         .child(when(
             || store().thread_apps.get().is_empty(),
             || {
-                let name = store().active_bot().map(|b| b.name).unwrap_or_default();
                 view()
                     .child(pane_label("Library".into()))
                     .child(
@@ -381,9 +380,15 @@ fn library_tab() -> impl IntoElement {
                             .py(px(14.0))
                             .px(px(13.0))
                             .child(
-                                text(format!("Files {name} makes show up here."))
-                                    .text_size(px(13.0))
-                                    .text_color(theme::DIM),
+                                text(move || {
+                                    let name = store()
+                                        .active_bot()
+                                        .map(|b| b.name)
+                                        .unwrap_or_default();
+                                    format!("Files {name} makes show up here.")
+                                })
+                                .text_size(px(13.0))
+                                .text_color(theme::DIM),
                             ),
                     )
                     .into_element()
@@ -393,12 +398,20 @@ fn library_tab() -> impl IntoElement {
             || store().library_groups(),
             |g| g.0.clone(),
             |g, _| {
-                let (label, items) = g.get();
+                // The group's rows come from a second `each` on the live
+                // signal: the outer key is the label, so an agent switch
+                // that lands in the same buckets ("Older" → "Older")
+                // would keep the first agent's `items` forever.
+                let label = g.get_untracked().0;
                 view()
                     .pb(px(22.0))
                     .child(pane_label(label))
                     .child(
-                        pane_card().children(items.into_iter().map(|a| app_row(a).into_element())),
+                        pane_card().child(each(
+                            move || g.get().1,
+                            |a| a.app.clone(),
+                            |a, _| app_row(a).into_element(),
+                        )),
                     )
                     .into_element()
             },
@@ -406,14 +419,13 @@ fn library_tab() -> impl IntoElement {
 }
 
 /// A library row — the icon tile, title/file, `v<n>` chip, `ago` (App.tsx:2648).
-fn app_row(a: RoxApp) -> impl IntoElement {
-    let name = a.app.clone();
-    let tile_hue = hue(&a.app);
+fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
+    let a0 = a.get();
+    let name = a0.app.clone();
+    let tile_hue = hue(&a0.app);
+    let n_chip = a0.app.clone();
     let a_ctx = a.clone();
     let a_tree = a.clone();
-    let has_v = a.v > 0;
-    let v_num = a.v;
-    let n_chip = a.app.clone();
     view()
         .child(
             view()
@@ -425,7 +437,7 @@ fn app_row(a: RoxApp) -> impl IntoElement {
                 .rounded(px(8.0))
                 .on_press(move || store().popout(&name))
                 .on_context_menu(move |e: &ContextMenuEvent| {
-                    crate::ctx::open(e, crate::ctx::app_items(&a_ctx))
+                    crate::ctx::open(e, crate::ctx::app_items(&a_ctx.get()))
                 })
                 .child(
                     // `hue(name)` tile — `</>` on the deterministic color.
@@ -446,29 +458,39 @@ fn app_row(a: RoxApp) -> impl IntoElement {
                     view()
                         .flex_1()
                         .child(
-                            text(a.title.clone())
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT)
-                                .number_of_lines(1),
+                            text({
+                                let a = a.clone();
+                                move || a.get().title
+                            })
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
                         )
                         .child(
-                            text(a.file.clone())
-                                .text_size(px(12.0))
-                                .text_color(theme::MUTED)
-                                .number_of_lines(1),
+                            text({
+                                let a = a.clone();
+                                move || a.get().file
+                            })
+                            .text_size(px(12.0))
+                            .text_color(theme::MUTED)
+                            .number_of_lines(1),
                         ),
                 )
                 .child(when(
-                    move || has_v,
+                    {
+                        let a = a.clone();
+                        move || a.get().v > 0
+                    },
                     move || {
                         let n = n_chip.clone();
+                        let a2 = a.clone();
                         view()
                             .rounded(px(6.0))
                             .px(px(6.0))
                             .py(px(2.0))
                             .bg(theme::HOVER)
                             .child(
-                                text(format!("v{} ⎇", v_num))
+                                text(move || format!("v{} ⎇", a2.get().v))
                                     .text_size(px(11.0))
                                     .font_family("monospace")
                                     .text_color(theme::TEXT),
@@ -485,25 +507,26 @@ fn app_row(a: RoxApp) -> impl IntoElement {
                     },
                 ))
                 .child(
-                    text(Store::ago(a.mtime))
+                    text(move || Store::ago(a.get().mtime))
                         .text_size(px(13.0))
                         .text_color(theme::MUTED),
                 ),
         )
-        .child(version_tree(&a_tree))
+        .child(version_tree(a_tree))
 }
 
 /// The `v<n> ⎇` tree — newest first; a click moves the pointer
 /// (App.tsx:2689).
-fn version_tree(a: &RoxApp) -> impl IntoElement {
-    let n = a.app.clone();
-    let has_versions = !a.versions.is_empty();
-    let cur_v = a.v;
-    let name = a.app.clone();
-    let mut versions = a.versions.clone();
-    versions.sort_by(|x, y| y.v.cmp(&x.v));
-    let open = move || store().vers_open.get() == n && has_versions;
+fn version_tree(a: ReadSignal<RoxApp>) -> impl IntoElement {
+    let a0 = a.get();
+    let n = a0.app.clone();
+    let name = a0.app.clone();
+    let open = move || store().vers_open.get() == n && !a.get().versions.is_empty();
     when(open, move || {
+        let cur = a.get();
+        let cur_v = cur.v;
+        let mut versions = cur.versions.clone();
+        versions.sort_by(|x, y| y.v.cmp(&x.v));
         view()
             .pl_3()
             .py(px(2.0))

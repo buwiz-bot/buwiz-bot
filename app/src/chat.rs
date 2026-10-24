@@ -11,13 +11,35 @@ use crate::store::{Attach, Turn};
 use crate::theme;
 use crate::widgets::app_card;
 
-/// The scrollable conversation. `follow_end` keeps the view pinned while
-/// a reply streams in.
+/// The scrollable conversation. Opens on the latest turn (the TSX's
+/// `openThread` scrollToEnd + `revealed`), `follow_end` pins the bottom
+/// while a reply streams in.
 pub(crate) fn transcript() -> impl IntoElement {
     let st = store();
     let list = element_ref();
     // Poll turns while the thread is open.
     set_interval(std::time::Duration::from_millis(1500), move || st.refresh_turns());
+    // Mount hidden, snap to the end, reveal (App.tsx:289-300): the first
+    // snap lands pre-frame via `initialScrollIndex`; these converge to the
+    // true end as unmeasured rows measure — the command's pin retargets.
+    let revealed = signal(true);
+    {
+        let list = list.clone();
+        let revealed = revealed.clone();
+        effect(move || {
+            store().active_id.get();
+            revealed.set(false);
+            let list = list.clone();
+            let revealed = revealed.clone();
+            spawn(async move {
+                timer(std::time::Duration::from_millis(150)).await;
+                list.scroll_to_end(false);
+                timer(std::time::Duration::from_millis(400)).await;
+                list.scroll_to_end(false);
+                revealed.set(true);
+            });
+        });
+    }
     view().flex_1().child(
         virtual_list(
             move || store().turns.get().len(),
@@ -28,6 +50,7 @@ pub(crate) fn transcript() -> impl IntoElement {
         })
         .follow_end(px(40.0))
         .element_ref(&list)
+        .flex_1()
         .px_4()
         .pt(px(56.0)) // under the top overlay bar
         // `paddingBottom: dockH() + 24` — the transcript clears the
