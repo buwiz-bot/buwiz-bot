@@ -49,9 +49,14 @@ pub async fn del(path: &str) -> Option<serde_json::Value> {
 }
 
 /// Fire-and-forget POST used by mutations (rename, delete, react…).
+/// Detached: these run from press handlers that close their own layer
+/// (emoji pill, context menu) right after calling, and a task spawned
+/// under the caller's owner dies with it before the post can send.
 pub fn post_bg(path: String, body: serde_json::Value) {
-    spawn(async move {
-        let _ = post(&path, body).await;
+    Owner::detached().run(|| {
+        spawn(async move {
+            let _ = post(&path, body).await;
+        });
     });
 }
 

@@ -3539,13 +3539,28 @@ impl Store {
     }
 
     /// `react` (shell.tsx:299) — `POST /react {key: "idx:<i>", r}`; the
-    /// empty string clears the tapback.
+    /// empty string clears the tapback. The shell updates its signal
+    /// before the post (`reaction.set(next)`): the turn updates first,
+    /// and the refetch waits on the post inside the same task. The task
+    /// is detached — `react` runs from the emoji pill's press, which
+    /// closes (disposes) the pill right after, and a task spawned under
+    /// the pill's owner would be cancelled before the post even sent.
     pub fn react(&'static self, i: i64, emoji: String) {
-        client::post_bg(
-            "/react".to_owned(),
-            serde_json::json!({"key": format!("idx:{i}"), "r": emoji}),
-        );
-        self.refresh_turns();
+        let mut turns = self.turns.get_untracked();
+        if let Some(t) = turns.iter_mut().find(|t| t.i == i) {
+            t.reaction = emoji.clone();
+            self.turns.set(turns);
+        }
+        Owner::detached().run(|| {
+            spawn(async move {
+                let _ = client::post(
+                    "/react",
+                    serde_json::json!({"key": format!("idx:{i}"), "r": emoji}),
+                )
+                .await;
+                self.refresh_turns();
+            });
+        });
     }
 
     /// `openPill` (shell.tsx:586) — a bar reported its measured rect;
