@@ -73,6 +73,41 @@ fn sidebar_toggle(size: f32, radius: f32, plated: bool) -> impl IntoElement {
         })
 }
 
+/// `blurEdge` (App.tsx:1810) — a gradient strip melting the scroll's edge
+/// into the sidebar color: `rgba(c,0.94) → 0.6@60% → 0` at the top,
+/// mirrored at the bottom (`0 → 0.6@40% → 0.94`).
+fn blur_edge(top: bool, h: f32) -> impl IntoElement {
+    let (a0, a1, a2) = if top {
+        (0.94, 0.6, 0.0)
+    } else {
+        (0.0, 0.6, 0.94)
+    };
+    let pos = if top { 0.6 } else { 0.4 };
+    view()
+        .pointer_events(PointerEvents::None)
+        .absolute()
+        .left(px(0.0))
+        .right(px(0.0))
+        .h(px(h))
+        .when(top, |v| v.top(px(0.0)))
+        .when(!top, |v| v.bottom(px(0.0)))
+        .z_index(2)
+        .bg_linear_to_b()
+        .gradient_from(theme::tone(
+            theme::hsla(0.0, 0.0, 0.96, a0),
+            theme::hsla(0.0, 0.0, 0.055, a0),
+        ))
+        .gradient_via(theme::tone(
+            theme::hsla(0.0, 0.0, 0.96, a1),
+            theme::hsla(0.0, 0.0, 0.055, a1),
+        ))
+        .gradient_via_position(percentage(pos))
+        .gradient_to(theme::tone(
+            theme::hsla(0.0, 0.0, 0.96, a2),
+            theme::hsla(0.0, 0.0, 0.055, a2),
+        ))
+}
+
 /// `AVATAR_HUES` — the chat-initial circle colors (`hue(t.title)`).
 const AVATAR_HUES: [&str; 7] = [
     "#1884fc", "#32bb78", "#f2994a", "#eb5757", "#9b51e0", "#2d9cdb", "#f2c94c",
@@ -108,16 +143,23 @@ fn rail() -> impl IntoElement {
                 })),
         )
         .child(
-            scroll().flex_1().child(
-                view()
-                    .items_center()
-                    .gap_1()
-                    .pb(px(28.0))
-                    .child(each(
-                        || store().pinned_bots(),
-                        |b| b.id.clone(),
-                        |b, _| rail_btn(b),
-                    ))
+            view()
+                .flex_1()
+                // `blurEdge("top", 44+54+6)` / `("bottom", 28)` melt the
+                // scroll's ends into the panel (App.tsx:1894).
+                .child(blur_edge(true, 104.0))
+                .child(blur_edge(false, 28.0))
+                .child(
+                    scroll().flex_1().child(
+                        view()
+                            .items_center()
+                            .gap_1()
+                            .pb(px(28.0))
+                            .child(each(
+                                || store().pinned_bots(),
+                                |b| b.id.clone(),
+                                |b, _| rail_btn(b),
+                            ))
                     .child(each(
                         || store().bot_groups(),
                         |(k, _, _)| k.clone(),
@@ -160,6 +202,7 @@ fn rail() -> impl IntoElement {
                                 ))
                         },
                     )),
+                ),
             ),
         )
         // The rail footer — New / Plugins / Account on the shared 54×36
@@ -466,11 +509,17 @@ fn full_sidebar() -> impl IntoElement {
                 .child(new_menu_button("newChat", "New Bot", 36.0, 18.0)),
         )
         .child(
-            scroll().flex_1().child(
-                view()
-                    .px_2()
-                    .pb_2()
-                    // `pinnedBots` — the wrap row of tiles (App.tsx:1967).
+            view()
+                .flex_1()
+                // `blurEdge("top", TOP)` / `("bottom", 28)` (App.tsx:1964).
+                .child(blur_edge(true, 60.0))
+                .child(blur_edge(false, 28.0))
+                .child(
+                    scroll().flex_1().child(
+                        view()
+                            .px_2()
+                            .pb_2()
+                            // `pinnedBots` — the wrap row of tiles (App.tsx:1967).
                     .child(when(
                         || !store().pinned_bots().is_empty(),
                         || {
@@ -593,6 +642,7 @@ fn full_sidebar() -> impl IntoElement {
                                 ))
                         },
                     )),
+                ),
             ),
         )
         // The footer — account circle (→ popover) + the Plugins pill
