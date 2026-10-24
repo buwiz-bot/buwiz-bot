@@ -725,6 +725,7 @@ fn plugin_row(p: PluginRow) -> impl IntoElement {
         .child(plug_tile(&p.name, 38.0))
         .child(
             view()
+                .flex_shrink(1.0)
                 .min_w(px(0.0))
                 .max_w(px(200.0))
                 .child(

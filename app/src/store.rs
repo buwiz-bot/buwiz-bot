@@ -3868,25 +3868,34 @@ impl Store {
     }
 }
 
-/// `prettyModel` — a display name for a model id.
+/// `prettyModel` (modelpicker.tsx:38): "gpt-6.1-sol" → "GPT-6.1 Sol",
+/// "xai/grok-4.6" → "Grok 4.6"; other providers' routes show as-is.
 pub(crate) fn pretty_model(id: &str) -> String {
     if id.is_empty() {
         return "Default".to_owned();
     }
-    if !id.contains('/') && !id.starts_with("grok") && !id.starts_with("x") {
+    let (ns, rest) = match id.split_once('/') {
+        Some((n, r)) => (n, r),
+        None => ("", id),
+    };
+    if !ns.is_empty() && !ns.eq_ignore_ascii_case("xai") {
         return id.to_owned();
     }
-    if let Some(rest) = id.strip_prefix("gpt-") {
-        return format!("GPT-{rest}");
+    let title = |w: &str| {
+        let mut c = w.chars();
+        match c.next() {
+            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            None => String::new(),
+        }
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+    if parts.first() == Some(&"gpt") {
+        let mut s = format!("GPT-{}", parts.get(1).copied().unwrap_or(""));
+        for p in &parts[2.min(parts.len())..] {
+            s.push(' ');
+            s.push_str(&title(p));
+        }
+        return s;
     }
-    id.split('-')
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.iter().map(|p| title(p)).collect::<Vec<_>>().join(" ")
 }
