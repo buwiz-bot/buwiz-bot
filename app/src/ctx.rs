@@ -475,6 +475,7 @@ pub(crate) fn prompt_layer() -> impl IntoElement {
             .child(
                 view()
                     .size_full()
+                    .absolute()
                     .bg(hsla(0.0, 0.0, 0.0, 0.4))
                     .on_press(|| store().section_prompt.set(None)),
             )
