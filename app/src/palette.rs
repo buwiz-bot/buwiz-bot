@@ -104,7 +104,7 @@ fn palette_row(c: Command) -> impl IntoElement {
                 .px_3()
                 .py(px(8.0))
                 .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(icon(c.icon))
+                .child(crate::icons::icon_sized(c.icon, 13.0))
                 .child(
                     text(c.label)
                         .text_size(px(13.0))

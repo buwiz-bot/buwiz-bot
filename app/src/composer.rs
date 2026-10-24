@@ -8,7 +8,7 @@
 
 use nsh_core::ui::prelude::*;
 
-use crate::icons::icon;
+use crate::icons::{self, icon};
 use crate::live::store;
 use crate::statusfx;
 use crate::store::AtItem;
@@ -462,11 +462,7 @@ fn right_controls() -> impl IntoElement {
                     .justify_center()
                     .label("Send message")
                     .on_press(|| store().send())
-                    .child(
-                        text("↑")
-                            .text_size(px(15.0))
-                            .text_color(move || send_ink()),
-                    )
+                    .child(icons::icon_ink("arrowUp", 15.0, send_ink))
                     .into_element()
             } else {
                 // voice chat — the waveform glyph; decorative for now.

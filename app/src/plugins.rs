@@ -41,9 +41,12 @@ pub(crate) fn hue(s: &str) -> Hsla {
     Hsla::from_str(HUES[i]).unwrap_or(theme::ACCENT.dark)
 }
 
-/// `plugTile` — the connector tile: the brand logo when the icon set grows
-/// the brand paths, else the hue letter tile (App.tsx:1460).
+/// `plugTile` — the connector tile: the brand logo when the icon set has
+/// the brand's paths, else the hue letter tile (App.tsx:1460).
 fn plug_tile(name: &str, size: f32) -> impl IntoElement {
+    if crate::icons::has_brand(name) {
+        return crate::icons::brand_tile(name, size).into_element();
+    }
     let initial = name
         .chars()
         .next()
@@ -63,11 +66,15 @@ fn plug_tile(name: &str, size: f32) -> impl IntoElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark)),
         )
+        .into_element()
 }
 
 /// `chipTile` — the overlapped logo in the "N connected" chip
 /// (App.tsx:1468).
 fn chip_tile(name: &str, size: f32) -> impl IntoElement {
+    if crate::icons::has_brand(name) {
+        return crate::icons::brand_chip(name, size).into_element();
+    }
     let initial = name
         .chars()
         .next()
@@ -87,6 +94,7 @@ fn chip_tile(name: &str, size: f32) -> impl IntoElement {
                 .font_weight(FontWeight::BOLD)
                 .text_color(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark)),
         )
+        .into_element()
 }
 
 /// The overlay layer — mounted on the root stack.
