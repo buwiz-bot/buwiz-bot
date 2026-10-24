@@ -1156,7 +1156,7 @@ impl Store {
         self.watch_shelf();
     }
 
-    fn set_threads(&self, v: serde_json::Value) {
+    fn set_threads(&'static self, v: serde_json::Value) {
         let rows: Vec<ThreadMeta> = list(&v, "list")
             .iter()
             .map(|t| ThreadMeta {
@@ -1248,6 +1248,9 @@ impl Store {
             self.active_id.set(rows[0].id.clone());
         }
         self.threads.set(rows);
+        // App.tsx's effect tracks `threads()` too — a refresh that lands
+        // new app metadata (a run finishing) refetches the Library.
+        self.refresh_thread_apps();
     }
 
     /// `activeBot()` — the bot owning the open thread, merged with the
@@ -1506,6 +1509,10 @@ impl Store {
         }
         spawn(async move {
             if let Some(v) = client::get(&format!("/thread/apps?thread={id}")).await {
+                // A stale fetch must not overwrite the list after a switch.
+                if self.active_id.get_untracked() != id {
+                    return;
+                }
                 self.thread_apps.set(
                     list(&v, "apps")
                         .iter()
