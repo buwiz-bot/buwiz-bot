@@ -1762,7 +1762,7 @@ impl Store {
     /// the palette doubles as the bot search, hidden bots excluded —
     /// then the published mini apps.
     pub fn palette_items(&'static self) -> Vec<PaletteItem> {
-        let pref = self.theme_pref.get_untracked();
+        let pref = self.theme_pref.get();
         let mut items = vec![
             PaletteItem {
                 title: "New Bot".into(),
@@ -1795,7 +1795,7 @@ impl Store {
         ];
         for b in self
             .bots
-            .get_untracked()
+            .get()
             .iter()
             .filter(|b| !b.hidden && !b.thread_id.is_empty())
         {
@@ -1812,7 +1812,7 @@ impl Store {
                 act: PaletteAct::Bot(b.thread_id.clone()),
             });
         }
-        for w in self.palette_apps.get_untracked() {
+        for w in self.palette_apps.get() {
             // titles saved from a failed first compile read as errors:
             // use the prompt (App.tsx:786).
             let title = if w.title.is_empty()
@@ -1845,7 +1845,7 @@ impl Store {
 
     /// `results` (palette.tsx:24) — substring match on title+subtitle.
     pub fn palette_results(&'static self) -> Vec<PaletteItem> {
-        let q = self.palette_q.get_untracked().trim().to_lowercase();
+        let q = self.palette_q.get().trim().to_lowercase();
         let all = self.palette_items();
         if q.is_empty() {
             all

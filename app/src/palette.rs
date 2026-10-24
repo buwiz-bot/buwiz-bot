@@ -179,7 +179,7 @@ fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoE
                         !store().palette_q.get().trim().is_empty() && ix.get() < 9
                     },
                     move || {
-                        text(format!("⌘{}", ix.get() + 1))
+                        text(move || format!("⌘{}", ix.get() + 1))
                             .text_size(px(11.0))
                             .text_color(theme::GHOST)
                             .into_element()
