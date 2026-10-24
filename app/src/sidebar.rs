@@ -857,14 +857,46 @@ fn thread_row(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
                     }
                 })
                 .child(
-                    text(move || {
-                        let v = t.get();
-                        if v.name.is_empty() { "New chat".to_owned() } else { v.name }
-                    })
-                    .text_size(px(13.0))
-                    .text_color(theme::TEXT)
-                    .flex_1()
-                        .number_of_lines(1),
+                    // `chatRow`'s 36px letter circle (App.tsx:1091).
+                    view()
+                        .size(px(36.0))
+                        .rounded(px(18.0))
+                        .bg(move || hue(&t.get().name))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text(move || {
+                                t.get()
+                                    .name
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('?')
+                                    .to_uppercase()
+                                    .collect::<String>()
+                            })
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+                        ),
+                )
+                .child(
+                    view()
+                        .flex_1()
+                        .child(
+                            text(move || {
+                                let v = t.get();
+                                if v.name.is_empty() { "New chat".to_owned() } else { v.name }
+                            })
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
+                        )
+                        .child(
+                            text(move || format!("{} messages", t.get().count))
+                                .text_size(px(11.0))
+                                .text_color(theme::GHOST)
+                                .number_of_lines(1),
+                        ),
                 ),
         )
         .on_hover_in(move || hovered.set(true))

@@ -18,6 +18,8 @@ use crate::client;
 pub struct ThreadMeta {
     pub id: String,
     pub name: String,
+    /// Turn count (`count` on the `/threads` row) — the row's subtitle.
+    pub count: i64,
     pub created: f64,
     /// The bot that owns this thread (`bot` on the `/threads` row).
     pub bot: Option<ThreadBot>,
@@ -1206,6 +1208,7 @@ impl Store {
             .map(|t| ThreadMeta {
                 id: s(t, "id"),
                 name: s(t, "title"),
+                count: i64of(t, "count"),
                 created: f64of(t, "created"),
                 hidden: b(t, "hidden"),
                 archived: b(t, "archived"),
