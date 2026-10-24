@@ -95,7 +95,7 @@ fn pane_circle_btn(
                 theme::CARD2
             }
         })
-        .child(icon_view(name()))
+        .child(dynamic(move || icon_view(name()).into_element()))
         .on_hover_in(move || store().pane_btn_hover.set(key.to_owned()))
         .on_hover_out(|| store().pane_btn_hover.set(String::new()))
         .on_press(on_press)

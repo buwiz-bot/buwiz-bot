@@ -670,8 +670,8 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                 pick((from as f32 + e.gesture.delta.x.0 / step()).round() as i32);
             }
         })
-        .on_responder_release(move |_| drag3.set(None))
-        .on_responder_terminate(move |_| drag4.set(None))
+        .on_responder_release(move |_: &ResponderEvent| drag3.set(None))
+        .on_responder_terminate(move |_: &ResponderEvent| drag4.set(None))
 }
 
 // ————— model list (modelpicker.tsx:350) —————
