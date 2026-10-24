@@ -37,7 +37,10 @@ fn run(act: &str) {
             .side_mode
             .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned()),
         "details" => st.right_open.update(|v| *v = !*v),
-        "theme" => st.dark.update(|v| *v = !*v),
+        "theme" => {
+            let next = st.next_theme();
+            st.set_theme(next);
+        }
         _ => {}
     }
 }

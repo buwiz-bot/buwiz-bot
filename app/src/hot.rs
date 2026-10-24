@@ -89,6 +89,15 @@ pub(crate) fn hot_area() -> impl IntoElement {
         store().detail_tab.set(tb);
     }
 
+    // `ROX_AVATAR=1`: open the avatar editor card at boot (after any
+    // `ROX_OPEN` thread lands so `activeBot` exists).
+    if std::env::var("ROX_AVATAR").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(2600)).await;
+            store().open_avatar_editor();
+        });
+    }
+
     // `ROX_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
     // screenshots — `open_thread` is the row-press path (select + turns +
     // apps). A list replays an agent switch with a beat between opens.
@@ -130,7 +139,10 @@ pub(crate) fn hot_area() -> impl IntoElement {
             .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned());
     });
     on_key("mod+shift+b", |_| store().right_open.update(|v| *v = !*v));
-    on_key("mod+t", |_| store().dark.update(|v| *v = !*v));
+    on_key("mod+t", |_| {
+        let st = store();
+        st.set_theme(st.next_theme());
+    });
     on_key("mod+n", |_| store().bot_modal.set(true));
     on_key("mod+shift+m", |_| {
         let st = store();
@@ -244,12 +256,13 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
-    // Appearance follows the store's `dark` toggle.
+    // Appearance follows `themePref` (theme.ts): System resolves to the
+    // OS scheme inside the engine.
     effect(|| {
-        set_color_scheme(if store().dark.get() {
-            Appearance::Dark
-        } else {
-            Appearance::Light
+        set_color_scheme(match store().theme_pref.get().as_str() {
+            "light" => Appearance::Light,
+            "dark" => Appearance::Dark,
+            _ => Appearance::System,
         });
     });
 

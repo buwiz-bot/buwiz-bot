@@ -969,8 +969,17 @@ pub struct Store {
     /// `accountOpen` — the account popover (rail plate / sidebar footer).
     pub account_open: Signal<bool>,
 
-    /// Theme.
-    pub dark: Signal<bool>,
+    /// `themePref` — "system" | "dark" | "light" (theme.ts). The shown
+    /// scheme is the engine's: `ambient::dark()` resolves System for you.
+    pub theme_pref: Signal<String>,
+    /// `chatScrolling` (shell.tsx) — set while the transcript scrolls;
+    /// hover handlers skip writes then (every write is a commit).
+    pub chat_scrolling: Signal<bool>,
+    /// `startClock`'s shared ~30fps tick — every animating canvas
+    /// (blobs, status fx, shimmers) subscribes to this one signal
+    /// instead of spawning its own interval.
+    pub frame_clock: Signal<f64>,
+    frame_started: std::cell::Cell<bool>,
 
     /// The dedupe cache: raw JSON of the last /turns payload, so identical
     /// polls don't dirty the list.
@@ -1115,7 +1124,10 @@ impl Store {
             light_stage: signal((0.0, 0.0)),
             light_diag: signal((0.0, 0.0)),
             // `models_open` removed — see the note on the struct.
-            dark: signal(true),
+            theme_pref: signal("dark".to_owned()),
+            chat_scrolling: signal(false),
+            frame_clock: signal(0.0),
+            frame_started: std::cell::Cell::new(false),
             turns_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -1151,9 +1163,41 @@ impl Store {
                 if let Some(f) = v.get("fast").and_then(|x| x.as_bool()) {
                     self.fast.set(f);
                 }
+                if let Some(t) = v.get("theme").and_then(|x| x.as_str()) {
+                    self.theme_pref.set(t.to_owned());
+                }
             }
         });
         self.watch_shelf();
+    }
+
+    /// `startClock` — one shared ~30fps signal every animating canvas
+    /// subscribes to (blob.tsx:91). Started lazily on first avatar/fx
+    /// mount; a per-canvas `set_interval` would mean one tree commit per
+    /// avatar per frame — that was the hover stutter.
+    pub fn frame_clock(&'static self) -> Signal<f64> {
+        if !self.frame_started.replace(true) {
+            let clock = self.frame_clock;
+            set_interval(std::time::Duration::from_millis(33), move || {
+                clock.update(|c| *c += 0.033);
+            });
+        }
+        self.frame_clock
+    }
+
+    /// `setTheme` (App.tsx:765) — the pref and the POST.
+    pub fn set_theme(&'static self, t: &str) {
+        self.theme_pref.set(t.to_owned());
+        client::post_bg("/prefs".to_owned(), serde_json::json!({"theme": t}));
+    }
+
+    /// `nextTheme` (theme.ts): Light → Dark → System → Light.
+    pub fn next_theme(&self) -> &'static str {
+        match self.theme_pref.get_untracked().as_str() {
+            "light" => "dark",
+            "dark" => "system",
+            _ => "light",
+        }
     }
 
     fn set_threads(&'static self, v: serde_json::Value) {

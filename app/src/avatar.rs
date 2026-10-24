@@ -20,11 +20,12 @@ use crate::theme;
 // ---------------------------------------------------------------------------
 
 /// `blobGaze()` — the pointer-follow target shared between the outer view
-/// (`follow`) and the canvas (`target`/`ver`).
+/// (`follow`) and the canvas (`target`/`ver`). Plain cells, no signal: the
+/// TS keeps gaze in a mutable ref the clock loop reads untracked — a signal
+/// write per mousemove was a tree commit per event (the hover jank).
 pub(crate) struct BlobGaze {
     target: Cell<Option<V2>>,
     ver: Cell<u32>,
-    v: Signal<u32>,
 }
 
 impl BlobGaze {
@@ -32,7 +33,6 @@ impl BlobGaze {
         Rc::new(Self {
             target: Cell::new(None),
             ver: Cell::new(0),
-            v: signal(0),
         })
     }
     fn change(&self, next: Option<V2>) {
@@ -41,7 +41,6 @@ impl BlobGaze {
         }
         self.target.set(next);
         self.ver.set(self.ver.get() + 1);
-        self.v.update(|v| *v += 1);
     }
     /// Pointer moved inside the mark cell: `follow(event, cx, cy, reach=60)`.
     pub(crate) fn follow(&self, event_x: f64, event_y: f64, cx: f64, cy: f64, reach: f64) {
@@ -60,34 +59,26 @@ impl BlobGaze {
     pub(crate) fn ver(&self) -> u32 {
         self.ver.get()
     }
-    fn subscribe(&self) {
-        self.v.get();
-    }
 }
 
-/// `blobPokes()` — queued `poke(kind, {turns})`s the canvas drains.
+/// `blobPokes()` — queued `poke(kind, {turns})`s the canvas drains on its
+/// next clock tick (≤33ms, like the TS loop reading `pokes.q`).
 pub(crate) struct BlobPokes {
     queue: RefCell<Vec<(&'static str, f64)>>,
-    v: Signal<u32>,
 }
 
 impl BlobPokes {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             queue: RefCell::new(vec![]),
-            v: signal(0),
         })
     }
     pub(crate) fn fire(&self, kind: &str, turns: Option<f64>) {
         let kind = mark::UN.iter().copied().find(|k| *k == kind).unwrap_or(mark::UN[0]);
         self.queue.borrow_mut().push((kind, turns.unwrap_or(1.0)));
-        self.v.update(|v| *v += 1);
     }
     fn drain(&self) -> Vec<(&'static str, f64)> {
         self.queue.borrow_mut().drain(..).collect()
-    }
-    fn subscribe(&self) {
-        self.v.get();
     }
 }
 
@@ -129,25 +120,20 @@ impl FadeValue {
     }
 }
 
-/// `blobEdit()` — the picker's drag-to-recolor amount (`s.target`).
+/// `blobEdit()` — the picker's drag-to-recolor amount (`s.target`), a cell
+/// the clock-tick paint reads like the TS `editK` ref.
 pub(crate) struct BlobEdit {
     pub(crate) target: Cell<f64>,
-    v: Signal<u32>,
 }
 
 impl BlobEdit {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             target: Cell::new(0.0),
-            v: signal(0),
         })
     }
     pub(crate) fn to(&self, target: f64) {
         self.target.set(target);
-        self.v.update(|v| *v += 1);
-    }
-    fn subscribe(&self) {
-        self.v.get();
     }
 }
 
@@ -177,8 +163,6 @@ pub(crate) struct BotBlobProps {
     pub morph_shape: bool,
     pub seed: Option<String>,
     pub gaze_at: Option<V2>,
-    /// The theme's base lightness (white ink flips to black on light themes).
-    pub light: bool,
 }
 
 impl Default for BotBlobProps {
@@ -198,7 +182,6 @@ impl Default for BotBlobProps {
             morph_shape: false,
             seed: None,
             gaze_at: None,
-            light: false,
         }
     }
 }
@@ -359,15 +342,6 @@ impl Inner {
             }
         } else {
             self.asleep = true;
-            if let Some(g) = &props.gaze {
-                g.subscribe();
-            }
-            if let Some(e) = &props.edit {
-                e.subscribe();
-            }
-            if let Some(p) = &props.pokes {
-                p.subscribe();
-            }
         }
         let playing = self.mark.is_playing();
         if self.was_playing && !playing {
@@ -384,7 +358,10 @@ impl Inner {
         let extent = (box_ * (0.92 / 0.6) * 100.0).round() / 100.0;
         let x = (canvas_size - extent) / 2.0;
         let y = x;
-        let ink = mark::ink_of(&props.color, props.light);
+        // `inkOf` (blob.tsx:70): "#FFFFFF" is the adaptive swatch — black on
+        // light themes. Reading `dark()` inside the painter subscribes it
+        // to the env memo, so a theme flip repaints.
+        let ink = mark::ink_of(&props.color, !dark());
         let ink_paint = if self.ek > 0.001 {
             mark::darken(&ink, 0.7 * self.ek)
         } else {
@@ -424,12 +401,9 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    // `startClock` — the shared 60fps tick the painter subscribes to.
-    let clock = signal(0.0f64);
-    set_interval(Duration::from_millis(16), {
-        let clock = clock.clone();
-        move || clock.update(|c| *c += 0.016)
-    });
+    // `startClock` — the store's one shared ~30fps tick (blob.tsx:89). A
+    // per-blob interval was one tree commit per avatar per frame.
+    let clock = crate::live::store().frame_clock();
     let tab = Rc::new(mark::tables());
     let st = Rc::new(RefCell::new(Inner::new(&props, tab)));
     let props = Rc::new(props);
@@ -552,13 +526,9 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
 /// (opacity .85→1, scale 1→1.04 over 2.4s) plus three `z` glyphs that
 /// rise and fade in a 2.4s loop, staggered by 800ms.
 pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoElement {
-    // Same 60fps tick `bot_blob`'s painter subscribes to — here it drives
+    // Same shared ~30fps tick `bot_blob` subscribes to — here it drives
     // the breathing + zzz phases directly on the style bindings.
-    let clock = signal(0.0f64);
-    set_interval(Duration::from_millis(16), {
-        let clock = clock.clone();
-        move || clock.update(|c| *c += 0.016)
-    });
+    let clock = crate::live::store().frame_clock();
     let breath = move || 0.5 - 0.5 * (std::f64::consts::TAU * (clock.get() % 2.4) / 2.4).cos() as f32;
     let z_phase = move |i: usize| {
         let p = (clock.get() - i as f64 * 0.8) / 2.4;
@@ -568,14 +538,15 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
             (p % 1.0) as f32
         }
     };
-    let ink_c = AdaptiveColor::from(
-        ink.parse::<Hsla>().unwrap_or(Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 1.0,
-            a: 1.0,
-        }),
-    );
+    let ink_c = theme::tc(ink);
+    // Resolved now (the `dark()` read rebuilds the enclosing `dynamic` on a
+    // theme flip) — the blob painter's `ink_of` would leave a `tc` neutral
+    // unmapped since it only special-cases the #FFFFFF swatch.
+    let ink_s = if dark() {
+        ink.to_owned()
+    } else {
+        theme::tc(ink).light.to_hex()
+    };
     let z_tops = [-11.0f32, -14.0f32, -3.0f32];
     view()
         .size(px(size))
@@ -586,7 +557,7 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
                 .scale(move || 1.0 + 0.04 * breath())
                 .child(bot_blob(BotBlobProps {
                     shape: shape.to_owned(),
-                    color: ink.to_owned(),
+                    color: ink_s.clone(),
                     size: size / 0.82,
                     state: "sleeping",
                     paused: true,

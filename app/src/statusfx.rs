@@ -3,7 +3,6 @@
 //! drawn on a canvas exactly as Grok does.
 
 use std::cell::Cell;
-use std::time::Duration;
 
 use nsh_core::canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline};
 use nsh_core::ui::prelude::*;
@@ -102,11 +101,9 @@ pub(crate) fn shimmer_at(
     hi: AdaptiveColor,
 ) -> impl IntoElement {
     let font = format!("{size}px -apple-system, system-ui, sans-serif");
-    let clock = signal(0.0f64);
-    set_interval(Duration::from_millis(16), {
-        let clock = clock.clone();
-        move || clock.update(|c| *c += 0.016)
-    });
+    // The store's shared ~30fps clock — one commit per frame, not one per
+    // shimmer (statusfx's `startFx` is the same shared-clock idea).
+    let clock = crate::live::store().frame_clock();
     let bounds = signal(Bounds::<Points>::default());
     canvas(move || {
         let t = clock.get();
@@ -182,12 +179,8 @@ pub(crate) fn fx_overlay_fn(
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
     let ink = ink;
-    // `startFx` — the shared overlay clock.
-    let clock = signal(0.0f64);
-    set_interval(Duration::from_millis(16), {
-        let clock = clock.clone();
-        move || clock.update(|c| *c += 0.016)
-    });
+    // `startFx` — the store's shared ~30fps overlay clock.
+    let clock = crate::live::store().frame_clock();
     canvas(move || {
         let t = clock.get();
         let fx = morph_kind(&state());
