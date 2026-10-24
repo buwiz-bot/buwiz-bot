@@ -303,7 +303,14 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
         move || clock.update(|c| *c += 0.016)
     });
     let hover = signal(String::new());
-    let h = if efforts().is_empty() { 56.0 } else { 92.0 };
+    // untracked: an eager `efforts()` read here would make the layer's
+    // `dynamic` rebuild the card (and remount the slider mid-drag) on
+    // every `pick`.
+    let h = if untracked(|| efforts().is_empty()) {
+        56.0
+    } else {
+        92.0
+    };
     card(o, h)
         .p_2()
         .child(
@@ -314,45 +321,49 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                 // fast button — only on models with a "--fast" twin;
                 // elsewhere an empty seat.
                 .child(
-                    if model_of(&choice().0).map(|m| m.fast).unwrap_or(false) {
-                        let h1 = hover.clone();
-                        let h2 = hover.clone();
-                        let h3 = hover.clone();
-                        view()
-                            .size(px(28.0))
-                            .rounded(px(8.0))
-                            .items_center()
-                            .justify_center()
-                            .label("Fast mode")
-                            .bg(move || {
-                                let (_, _, f) = choice();
-                                if f {
-                                    hx("#f5b4002e")
-                                } else if h1.get() == "fast" {
-                                    tc(0.08)
-                                } else {
-                                    AdaptiveColor::TRANSPARENT
-                                }
-                            })
-                            .on_hover_in(move || h2.set("fast".into()))
-                            .on_hover_out(move || h3.set(String::new()))
-                            .on_press(|| store().toggle_fast())
-                            .child(
-                                text("ϟ")
-                                    .text_size(px(14.0))
-                                    .text_color(move || {
+                    when(
+                        move || model_of(&choice().0).map(|m| m.fast).unwrap_or(false),
+                        {
+                            let hover = hover.clone();
+                            move || {
+                                let h1 = hover.clone();
+                                let h2 = hover.clone();
+                                let h3 = hover.clone();
+                                view()
+                                    .size(px(28.0))
+                                    .rounded(px(8.0))
+                                    .items_center()
+                                    .justify_center()
+                                    .label("Fast mode")
+                                    .bg(move || {
                                         let (_, _, f) = choice();
                                         if f {
-                                            hx("#f5b400")
+                                            hx("#f5b4002e")
+                                        } else if h1.get() == "fast" {
+                                            tc(0.08)
                                         } else {
-                                            tc(0.54)
+                                            AdaptiveColor::TRANSPARENT
                                         }
-                                    }),
-                            )
-                            .into_element()
-                    } else {
-                        view().size(px(28.0)).into_element()
-                    },
+                                    })
+                                    .on_hover_in(move || h2.set("fast".into()))
+                                    .on_hover_out(move || h3.set(String::new()))
+                                    .on_press(|| store().toggle_fast())
+                                    .child(
+                                        text("ϟ")
+                                            .text_size(px(14.0))
+                                            .text_color(move || {
+                                                let (_, _, f) = choice();
+                                                if f {
+                                                    hx("#f5b400")
+                                                } else {
+                                                    tc(0.54)
+                                                }
+                                            }),
+                                    )
+                            }
+                        },
+                    )
+                    .otherwise(|| view().size(px(28.0))),
                 )
                 // centered: effort name + "model ›" → list mode.
                 .child(
@@ -488,13 +499,11 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
 /// The stepped slider — `drag.panHandlers` on a 200×22 track
 /// (modelpicker.tsx:277).
 fn slider(clock: Signal<f64>) -> impl IntoElement {
-    // the drag's `from` index + grab x while held; the pointer's x over
-    // the track (the grant's `locationX`).
-    let drag = signal(None::<(i32, f32)>);
-    let track_x = signal(0.0f32);
+    // the step the grant landed on (`from`), while the drag is held.
+    let drag = signal(None::<i32>);
     let drag2 = drag.clone();
     let drag3 = drag.clone();
-    let track_x2 = track_x.clone();
+    let drag4 = drag.clone();
     const SPARKS: [(f32, f32, f32); 10] = [
         (0.06, 0.3, 2.0), (0.14, 0.7, 1.5), (0.22, 0.4, 2.5), (0.31, 0.75, 1.5),
         (0.38, 0.25, 2.0), (0.47, 0.6, 1.5), (0.55, 0.35, 2.5), (0.63, 0.72, 2.0),
@@ -505,6 +514,9 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
         .h(px(KNOB))
         .self_center()
         .justify_center()
+        // the children (fill, dots, knob) are visuals only: `locationX`
+        // stays track-local no matter where the grab lands.
+        .pointer_events(PointerEvents::BoxOnly)
         // track
         .child(
             view()
@@ -524,16 +536,36 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                 .h(px(KNOB))
                 .rounded(px(KNOB / 2.0))
                 .overflow_hidden()
-                .when(!is_top(), |v| v.bg(hx("#1e86fc")))
-                .when(is_top(), |v| {
-                    v.bg_linear(deg(90.0))
-                        .gradient_from(hx("#4f6bff"))
-                        .gradient_via(hx("#7c5cf0"))
-                        .gradient_to(hx("#a26bfa"))
+                // solid blue, with the violet `backgroundImage` over it —
+                // reactive stops (transparent until Ultra) so the fill
+                // view itself never remounts mid-drag.
+                .bg(hx("#1e86fc"))
+                .bg_linear(deg(90.0))
+                .gradient_from(move || {
+                    if is_top() {
+                        hx("#4f6bff")
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
+                .gradient_via(move || {
+                    if is_top() {
+                        hx("#7c5cf0")
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
+                .gradient_to(move || {
+                    if is_top() {
+                        hx("#a26bfa")
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
                 })
                 // the light band sweeping across (2400ms loop).
-                .when(is_top(), |v| {
-                    v.child(
+                .child(when(move || is_top(), {
+                    let clock = clock.clone();
+                    move || {
                         view()
                             .absolute()
                             .top(px(0.0))
@@ -549,36 +581,42 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                             .translate_x(move || {
                                 let p = (clock.get() % 2.4) / 2.4;
                                 px(-50.0 + (TRACK + 50.0) * p as f32)
-                            }),
-                    )
-                })
+                            })
+                    }
+                }))
                 // drifting sparkles, twinkling out of phase.
-                .when(is_top(), |v| {
-                    v.children(SPARKS.iter().enumerate().map(|(k, (x, y, r))| {
-                        let r = *r;
-                        let kk = k as f64;
-                        view()
-                            .absolute()
-                            .left(px(x * (TRACK - KNOB)))
-                            .top(px(y * KNOB - r / 2.0))
-                            .size(px(r))
-                            .rounded(px(r / 2.0))
-                            .bg(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark))
-                            .opacity(move || {
-                                let t = clock.get();
-                                // 600+k*170 up / 700+k*130 down, k*260
-                                // offset — as a sine in the same period.
-                                let per = (600.0 + kk * 170.0 + 700.0 + kk * 130.0) / 1000.0;
-                                let ph = ((t * 1000.0 + kk * 260.0) / (per * 1000.0))
-                                    * std::f64::consts::TAU;
-                                (0.15 + 0.85 * (0.5 + 0.5 * ph.sin())) as f32
-                            })
-                            .translate_x(move || {
-                                let p = (clock.get() % 2.4) / 2.4;
-                                px(6.0 * p as f32)
-                            })
-                    }))
-                }),
+                .child(when(move || is_top(), {
+                    let clock = clock.clone();
+                    move || {
+                        view().size_full().children(SPARKS.iter().enumerate().map(
+                            |(k, (x, y, r))| {
+                                let r = *r;
+                                let kk = k as f64;
+                                view()
+                                    .absolute()
+                                    .left(px(x * (TRACK - KNOB)))
+                                    .top(px(y * KNOB - r / 2.0))
+                                    .size(px(r))
+                                    .rounded(px(r / 2.0))
+                                    .bg(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark))
+                                    .opacity(move || {
+                                        let t = clock.get();
+                                        // 600+k*170 up / 700+k*130 down, k*260
+                                        // offset — as a sine in the same period.
+                                        let per = (600.0 + kk * 170.0 + 700.0 + kk * 130.0)
+                                            / 1000.0;
+                                        let ph = ((t * 1000.0 + kk * 260.0) / (per * 1000.0))
+                                            * std::f64::consts::TAU;
+                                        (0.15 + 0.85 * (0.5 + 0.5 * ph.sin())) as f32
+                                    })
+                                    .translate_x(move || {
+                                        let p = (clock.get() % 2.4) / 2.4;
+                                        px(6.0 * p as f32)
+                                    })
+                            },
+                        ))
+                    }
+                })),
         )
         // the step dots.
         .child(each(
@@ -618,20 +656,22 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                     inset: false,
                 }]),
         )
-        // pan — grant snaps to the tapped step; moves pick by `dx`.
-        .on_mouse_move(move |p: &nsh_core::Point<nsh_core::Points>| {
-            track_x.set(p.x.0);
-            if let Some((from, gx)) = drag.get() {
-                pick((from as f32 + (p.x.0 - gx) / step()).round() as i32);
-            }
-        })
-        .on_press_down(move || {
-            let x = track_x2.get();
-            let from = ((x - KNOB / 2.0) / step()).round() as i32;
-            drag2.set(Some((from, x)));
+        // pan — grant snaps to the tapped step by `locationX`; moves
+        // pick by `dx` (modelpicker.tsx:143).
+        .claim_touches(TouchClaim::on_start())
+        .keep_touches(true)
+        .on_responder_grant(move |e: &ResponderEvent| {
+            let from = ((e.location.x.0 - KNOB / 2.0) / step()).round() as i32;
+            drag.set(Some(from));
             pick(from);
         })
-        .on_press_up(move || drag3.set(None))
+        .on_responder_move(move |e: &ResponderEvent| {
+            if let Some(from) = drag2.get() {
+                pick((from as f32 + e.gesture.delta.x.0 / step()).round() as i32);
+            }
+        })
+        .on_responder_release(move |_| drag3.set(None))
+        .on_responder_terminate(move |_| drag4.set(None))
 }
 
 // ————— model list (modelpicker.tsx:350) —————
