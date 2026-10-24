@@ -205,15 +205,11 @@ fn bot_profile() -> impl IntoElement {
                         .mx(px(40.0))
                         .child(
                             input()
-                                .value(move || {
-                                    let b = store().active_bot();
-                                    let draft = store().bot_edit_name.get();
-                                    if draft.is_empty() {
-                                        b.map(|x| x.name).unwrap_or_default()
-                                    } else {
-                                        draft
-                                    }
-                                })
+                                // `value={botEditName()}` — the draft is
+                                // the text, empty included; the store
+                                // reseeds it only when the bot or its
+                                // name actually changes.
+                                .value(move || store().bot_edit_name.get())
                                 .on_change(|v: &str| store().bot_edit_name.set(v.to_owned()))
                                 .on_submit(|_: &str| {
                                     let st = store();
@@ -222,11 +218,12 @@ fn bot_profile() -> impl IntoElement {
                                     if !n.is_empty() && n != b.name {
                                         st.update_bot(&b.id, serde_json::json!({"name": n}));
                                     }
-                                    st.bot_edit_name.set(String::new());
                                 })
                                 .placeholder("Bot name")
                                 .placeholder_color(|| color(theme::GHOST))
                                 .text_size(px(17.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_center()
                                 .text_color(theme::TEXT)
                                 .rounded(px(8.0))
                                 .py(px(2.0))

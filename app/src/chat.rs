@@ -42,7 +42,21 @@ pub(crate) fn transcript() -> impl IntoElement {
     view().flex_1().child(
         virtual_list(
             move || store().turns.get().len(),
-            move |at| turn_row(store().turns.get_untracked()[at.index()].clone()),
+            // `TurnCell` — every row lives in the shared centered column
+            // `min(960, width-32)` so the transcript's edges meet the
+            // composer's card (App.tsx:2127).
+            move |at| {
+                view()
+                    .items_center()
+                    .child(
+                        view()
+                            .w_full()
+                            .max_w(px(960.0))
+                            .child(turn_row(
+                                store().turns.get_untracked()[at.index()].clone(),
+                            )),
+                    )
+            },
         )
         .keys(move || {
             store().turns.get().iter().map(|t| t.i.to_string()).collect::<Vec<_>>()
@@ -136,11 +150,9 @@ fn user_row(t: Turn) -> impl IntoElement {
                 hov2.set(true);
             }
         })
-        .on_hover_out(move || {
-            if !store().chat_scrolling.get_untracked() {
-                hov.set(false);
-            }
-        })
+        // `hover_out` always clears — skipping it during a scroll leaves
+        // `hov` stuck true and the bar lit at rest once scrolling ends.
+        .on_hover_out(move || hov.set(false))
         // attached images/files sit above the bubble (shell.tsx:427):
         // right-aligned wrap row, `FileTile` 72 for files, 120 for media
         .when(!atts.is_empty(), |v| {
@@ -307,11 +319,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 hov2.set(true);
             }
         })
-        .on_hover_out(move || {
-            if !store().chat_scrolling.get_untracked() {
-                hov.set(false);
-            }
-        })
+        .on_hover_out(move || hov.set(false))
         .child(
             // Sender line: name + caption.
             view()

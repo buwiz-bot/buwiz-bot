@@ -572,6 +572,37 @@ pub struct ShelfItem {
     pub tags: Vec<String>,
 }
 
+/// One `/widgets` row the ⌘K palette lists (`miniApps`, App.tsx:769).
+#[derive(Clone, PartialEq)]
+pub struct PaletteApp {
+    pub name: String,
+    pub title: String,
+    pub prompt: String,
+}
+
+/// One row of the command palette (`PaletteItem`, palette.tsx:10).
+#[derive(Clone, PartialEq)]
+pub struct PaletteItem {
+    pub title: String,
+    pub subtitle: String,
+    /// An icon name, or — when no icon matches — a glyph drawn as text
+    /// (palette.tsx:105): an agent row's letter.
+    pub icon: String,
+    pub checked: bool,
+    pub act: PaletteAct,
+}
+
+/// What a palette row runs (`run`, palette.tsx:16).
+#[derive(Clone, PartialEq)]
+pub enum PaletteAct {
+    BotModal,
+    Theme(&'static str),
+    /// `POST /popout` for a published mini app.
+    App(String),
+    /// Open an agent's chat thread.
+    Bot(String),
+}
+
 /// The composer reply target.
 #[derive(Clone, PartialEq)]
 pub struct ReplyTo {
@@ -850,6 +881,13 @@ pub struct Store {
     /// Overlays.
     pub ctx: Signal<Option<CtxMenu>>,
     pub palette: Signal<bool>,
+    /// `query`/`sel` — the ⌘K palette's search text + keyboard index
+    /// (palette.tsx:22-23).
+    pub palette_q: Signal<String>,
+    pub palette_sel: Signal<i64>,
+    /// `miniApps` — the `/widgets` rows fetched while the palette is
+    /// open (App.tsx:769).
+    pub palette_apps: Signal<Vec<PaletteApp>>,
     /// `viewing` (fileviewer.tsx) — the file the fullscreen viewer shows.
     pub viewing: Signal<Option<Attach>>,
     /// `rendered` — `GET /file/render`'s answer for `viewing`.
@@ -903,8 +941,12 @@ pub struct Store {
     pub avatar_editing: Signal<bool>,
     pub avatar_edit_tab: Signal<String>,
     pub avatar_err: Signal<String>,
-    /// `botEditName` — the profile name field's draft.
+    /// `botEditName` — the profile name field's draft, re-seeded by
+    /// `seed_bot_edit_name` when the open bot (or its name) changes;
+    /// `bot_edit_src` is the `(id,name)` the current draft came from
+    /// (App.tsx:256-259).
     pub bot_edit_name: Signal<String>,
+    pub bot_edit_src: std::cell::RefCell<Option<(String, String)>>,
     /// The avatar draft picked/generated for the crop editor
     /// (`draft`/`draftCrop`): `{uri,name,w,h}`.
     pub avatar_draft: Signal<Option<AvatarDraft>>,
@@ -986,6 +1028,12 @@ pub struct Store {
     /// The dedupe cache: raw JSON of the last /turns payload, so identical
     /// polls don't dirty the list.
     pub turns_json: std::cell::RefCell<String>,
+    /// The `/threads` payload's three sections, kept as raw JSON the same
+    /// way — an unchanged poll must not re-render the sidebar (App.tsx's
+    /// `threadsJ`/`botsJ` compare, App.tsx:384).
+    threads_list_json: std::cell::RefCell<String>,
+    bots_json: std::cell::RefCell<String>,
+    sections_json: std::cell::RefCell<String>,
 
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
     /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
@@ -1072,6 +1120,7 @@ impl Store {
             avatar_edit_tab: signal("bot".into()),
             avatar_err: signal(String::new()),
             bot_edit_name: signal(String::new()),
+            bot_edit_src: std::cell::RefCell::new(None),
             avatar_draft: signal(None),
             draft_crop: signal(Crop { s: 1.0, x: 0.0, y: 0.0 }),
             mcp_servers: signal(Vec::new()),
@@ -1112,6 +1161,9 @@ impl Store {
             account_open: signal(false),
             avatar_gen_busy: signal(false),
             palette: signal(false),
+            palette_q: signal(String::new()),
+            palette_sel: signal(0),
+            palette_apps: signal(Vec::new()),
             viewing: signal(None),
             rendered: signal(None),
             sheet_idx: signal(0usize),
@@ -1131,6 +1183,9 @@ impl Store {
             frame_clock: signal(0.0),
             frame_started: std::cell::Cell::new(false),
             turns_json: std::cell::RefCell::new(String::new()),
+            threads_list_json: std::cell::RefCell::new(String::new()),
+            bots_json: std::cell::RefCell::new(String::new()),
+            sections_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -1203,6 +1258,24 @@ impl Store {
     }
 
     fn set_threads(&'static self, v: serde_json::Value) {
+        // `threadsJ`/`botsJ`/`sections` compares (App.tsx:384): a poll
+        // that changed nothing must not re-render — and must not reseed
+        // drafts riding on `bots`/`threads`.
+        let list_j = v.get("list").map(|x| x.to_string()).unwrap_or_default();
+        let bots_j = v.get("bots").map(|x| x.to_string()).unwrap_or_default();
+        let secs_j = v.get("sections").map(|x| x.to_string()).unwrap_or_default();
+        let threads_changed = list_j != *self.threads_list_json.borrow();
+        let bots_changed = bots_j != *self.bots_json.borrow();
+        let secs_changed = secs_j != *self.sections_json.borrow();
+        if threads_changed {
+            *self.threads_list_json.borrow_mut() = list_j;
+        }
+        if bots_changed {
+            *self.bots_json.borrow_mut() = bots_j;
+        }
+        if secs_changed {
+            *self.sections_json.borrow_mut() = secs_j;
+        }
         let rows: Vec<ThreadMeta> = list(&v, "list")
             .iter()
             .map(|t| ThreadMeta {
@@ -1236,7 +1309,8 @@ impl Store {
             .collect();
         // The personas (`bots` on the same payload) drive the Agents
         // section and `active_bot`/`bot_st`.
-        self.bots.set(
+        if bots_changed {
+            self.bots.set(
             list(&v, "bots")
                 .iter()
                 .map(|b| RoxBot {
@@ -1280,13 +1354,16 @@ impl Store {
                     fast: self::b(b, "fast"),
                 })
                 .collect(),
-        );
-        self.sections.set(
-            list(&v, "sections")
-                .iter()
-                .filter_map(|x| x.as_str().map(str::to_owned))
-                .collect(),
-        );
+            );
+        }
+        if secs_changed {
+            self.sections.set(
+                list(&v, "sections")
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect(),
+            );
+        }
         // The server names its active thread; open that one on first load.
         let active = s(&v, "active");
         if !active.is_empty() && self.active_id.get_untracked().is_empty() {
@@ -1294,10 +1371,17 @@ impl Store {
         } else if !rows.is_empty() && self.active_id.get_untracked().is_empty() {
             self.active_id.set(rows[0].id.clone());
         }
-        self.threads.set(rows);
+        if threads_changed {
+            self.threads.set(rows);
+        }
+        // `botEditName`'s seed effect (App.tsx:257) — with `bots` deduped
+        // it only reseeds on a real bot/active change, never mid-typing.
+        self.seed_bot_edit_name();
         // App.tsx's effect tracks `threads()` too — a refresh that lands
         // new app metadata (a run finishing) refetches the Library.
-        self.refresh_thread_apps();
+        if threads_changed || bots_changed {
+            self.refresh_thread_apps();
+        }
     }
 
     /// `activeBot()` — the bot owning the open thread, merged with the
@@ -1492,6 +1576,9 @@ impl Store {
         if self.active_id.get_untracked() == id {
             return;
         }
+        // `selectThread` (App.tsx:613) — the row press is also the way
+        // back out of the work shelf to the chat.
+        self.tab.set("chat".to_owned());
         // `if (!agent()) emphBot.set("")` — the status row unmounts when
         // switching away from the run's thread.
         self.emph_bot.set(String::new());
@@ -1501,6 +1588,7 @@ impl Store {
         spawn(async move {
             client::post("/thread/select", serde_json::json!({"id": sel})).await;
             self.active_id.set(id.clone());
+            self.seed_bot_edit_name();
             // `d.list.find(t => t.id === d.active)?.lastApp` — the pane
             // re-opens the thread's pinned app (or clears its state).
             let app = self
@@ -1516,6 +1604,277 @@ impl Store {
                 self.detail_app.set(String::new());
             } else if self.detail_app.get_untracked() != app {
                 self.load_detail(app);
+            }
+            self.refresh_turns();
+            self.refresh_thread_apps();
+        });
+    }
+
+    /// `effect(() => botEditName.set(activeBot()?.name || ""))`
+    /// (App.tsx:257) — reseed the profile name draft when the open bot,
+    /// or its name, changes; typed text (including the empty draft)
+    /// survives between real changes.
+    fn seed_bot_edit_name(&'static self) {
+        let key = self.active_bot_untracked().map(|b| (b.id, b.name));
+        if *self.bot_edit_src.borrow() != key {
+            self.bot_edit_name
+                .set(key.as_ref().map(|(_, n)| n.clone()).unwrap_or_default());
+            *self.bot_edit_src.borrow_mut() = key;
+        }
+    }
+
+    /// The ⌘1…9 slots (`sidebarBots`, App.tsx:764) — pinned bots first,
+    /// then the named groups sorted alphabetically with each group's
+    /// bots ranked by latest interaction (`count` is the only activity
+    /// signal `/threads` carries), then Unassigned, then the plain
+    /// chats. Hidden bots never take a slot.
+    pub fn shortcut_threads(&'static self) -> Vec<String> {
+        let bots = self.bots.get_untracked();
+        let threads = self.threads.get_untracked();
+        let count_of = |tid: &str| {
+            threads
+                .iter()
+                .find(|t| t.id == tid)
+                .map(|t| t.count)
+                .unwrap_or(0)
+        };
+        let mut out: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |tid: &str| {
+            if !tid.is_empty() && !seen.contains(tid) {
+                seen.insert(tid.to_owned());
+                out.push(tid.to_owned());
+            }
+        };
+        for b in bots.iter().filter(|b| b.pinned && !b.hidden) {
+            push(&b.thread_id);
+        }
+        let vis: Vec<&RoxBot> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
+        let sections = self.sections.get_untracked();
+        let known: std::collections::BTreeSet<&str> =
+            sections.iter().map(String::as_str).collect();
+        let mut names: Vec<&String> = sections.iter().collect();
+        names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        for n in names {
+            let mut items: Vec<&RoxBot> =
+                vis.iter().filter(|b| b.section == *n).copied().collect();
+            items.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+            for b in items {
+                push(&b.thread_id);
+            }
+        }
+        let mut un: Vec<&RoxBot> = vis
+            .iter()
+            .filter(|b| b.section.is_empty() || !known.contains(b.section.as_str()))
+            .copied()
+            .collect();
+        un.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+        for b in un {
+            push(&b.thread_id);
+        }
+        for t in threads
+            .iter()
+            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+        {
+            push(&t.id);
+        }
+        out.truncate(9);
+        out
+    }
+
+    /// `mod+k` — open the palette; the `/widgets` fetch rides the same
+    /// "while open" effect as the TSX (App.tsx:770).
+    pub fn toggle_palette(&'static self) {
+        if self.palette.get_untracked() {
+            self.close_palette();
+            return;
+        }
+        self.palette.set(true);
+        self.palette_q.set(String::new());
+        self.palette_sel.set(0);
+        spawn(async move {
+            let Some(v) = client::get("/widgets").await else { return };
+            self.palette_apps.set(
+                v.as_array()
+                    .map(|l| {
+                        l.iter()
+                            .map(|w| PaletteApp {
+                                name: s(w, "name"),
+                                title: s(w, "title"),
+                                prompt: s(w, "prompt"),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
+        });
+    }
+
+    /// `close` (palette.tsx:29) — hide and reset the query + selection.
+    pub fn close_palette(&'static self) {
+        self.palette.set(false);
+        self.palette_q.set(String::new());
+        self.palette_sel.set(0);
+    }
+
+    /// `paletteItems` (App.tsx:778): the commands, then the agents —
+    /// the palette doubles as the bot search, hidden bots excluded —
+    /// then the published mini apps.
+    pub fn palette_items(&'static self) -> Vec<PaletteItem> {
+        let pref = self.theme_pref.get_untracked();
+        let mut items = vec![
+            PaletteItem {
+                title: "New Bot".into(),
+                subtitle: String::new(),
+                icon: "newChat".into(),
+                checked: false,
+                act: PaletteAct::BotModal,
+            },
+            PaletteItem {
+                title: "Theme: System".into(),
+                subtitle: "Settings · Appearance".into(),
+                icon: "systemTheme".into(),
+                checked: pref == "system",
+                act: PaletteAct::Theme("system"),
+            },
+            PaletteItem {
+                title: "Theme: Light".into(),
+                subtitle: "Settings · Appearance".into(),
+                icon: "sun".into(),
+                checked: pref == "light",
+                act: PaletteAct::Theme("light"),
+            },
+            PaletteItem {
+                title: "Theme: Dark".into(),
+                subtitle: "Settings · Appearance".into(),
+                icon: "moon".into(),
+                checked: pref == "dark",
+                act: PaletteAct::Theme("dark"),
+            },
+        ];
+        for b in self
+            .bots
+            .get_untracked()
+            .iter()
+            .filter(|b| !b.hidden && !b.thread_id.is_empty())
+        {
+            items.push(PaletteItem {
+                title: b.name.clone(),
+                subtitle: "Agent".into(),
+                icon: b
+                    .name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().collect())
+                    .unwrap_or_else(|| "gpts".into()),
+                checked: false,
+                act: PaletteAct::Bot(b.thread_id.clone()),
+            });
+        }
+        for w in self.palette_apps.get_untracked() {
+            // titles saved from a failed first compile read as errors:
+            // use the prompt (App.tsx:786).
+            let title = if w.title.is_empty()
+                || w
+                    .title
+                    .to_lowercase()
+                    .split(|c: char| c.is_alphanumeric())
+                    .any(|p| ["error", "implicit", "annotat", "module"].contains(&p))
+            {
+                if w.prompt.is_empty() { w.name.clone() } else { w.prompt.clone() }
+            } else {
+                w.title.clone()
+            };
+            let title: String = title
+                .chars()
+                .filter(|c| !['*', '_', '`', '#'].contains(c))
+                .collect::<String>()
+                .trim()
+                .to_owned();
+            items.push(PaletteItem {
+                title,
+                subtitle: "Mini app".into(),
+                icon: "gpts".into(),
+                checked: false,
+                act: PaletteAct::App(w.name.clone()),
+            });
+        }
+        items
+    }
+
+    /// `results` (palette.tsx:24) — substring match on title+subtitle.
+    pub fn palette_results(&'static self) -> Vec<PaletteItem> {
+        let q = self.palette_q.get_untracked().trim().to_lowercase();
+        let all = self.palette_items();
+        if q.is_empty() {
+            all
+        } else {
+            all.into_iter()
+                .filter(|i| {
+                    format!("{} {}", i.title, i.subtitle)
+                        .to_lowercase()
+                        .contains(&q)
+                })
+                .collect()
+        }
+    }
+
+    /// `runAt(i)` (palette.tsx:34) — close, then run the result.
+    pub fn palette_run_at(&'static self, i: usize) {
+        let Some(it) = self.palette_results().get(i).cloned() else {
+            return;
+        };
+        self.close_palette();
+        match it.act {
+            PaletteAct::BotModal => self.bot_modal.set(true),
+            PaletteAct::Theme(t) => self.set_theme(t),
+            PaletteAct::App(name) => {
+                client::post_bg("/popout".to_owned(), serde_json::json!({ "name": name }))
+            }
+            PaletteAct::Bot(tid) => self.open_thread(tid),
+        }
+    }
+
+    /// ⌘R — back to a fresh launch: reload the model from the server and
+    /// drop every transient overlay, draft, and scroll state.
+    pub fn reset_fresh(&'static self) {
+        self.tab.set("chat".to_owned());
+        self.palette.set(false);
+        self.palette_q.set(String::new());
+        self.palette_sel.set(0);
+        self.ctx.set(None);
+        self.bot_modal.set(false);
+        self.account_open.set(false);
+        self.rail_pop.set(None);
+        self.section_prompt.set(None);
+        self.section_name.set(String::new());
+        self.avatar_editing.set(false);
+        self.avatar_hover.set(false);
+        self.app_rename.set(None);
+        self.vers_open.set(String::new());
+        self.reply_to.set(None);
+        self.attachments.set(Vec::new());
+        self.draft.set(String::new());
+        self.at_items.set(Vec::new());
+        self.at_open.set(false);
+        self.at_start.set(-1);
+        self.emph_bot.set(String::new());
+        self.settled.set(None);
+        self.chat_scrolling.set(false);
+        self.shelf_renaming.set(String::new());
+        self.shelf_tagging.set(String::new());
+        self.light_close();
+        self.viewing.set(None);
+        crate::models::close();
+        crate::composer::plus_menu().set(None);
+        if self.plugins_open.get_untracked() {
+            self.close_plugins();
+        }
+        self.turns.set(Vec::new());
+        *self.turns_json.borrow_mut() = String::new();
+        spawn(async move {
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
             }
             self.refresh_turns();
             self.refresh_thread_apps();
@@ -2930,6 +3289,10 @@ impl Store {
                 }
             }
         });
+        // The optimistic `bots` write already carries a `name` patch —
+        // advance the draft seed so a same-name server echo doesn't
+        // reseed over a fresh edit.
+        self.seed_bot_edit_name();
         let mut body = patch;
         body["id"] = id.into();
         client::post_bg("/bot/update".to_owned(), body);
