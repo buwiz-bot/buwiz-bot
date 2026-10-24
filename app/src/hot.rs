@@ -418,10 +418,12 @@ pub(crate) fn hot_area(
             }));
     }
 
-    // `ROX_PILL=1`: open the emoji pill at a fixed anchor — verifies the
-    // overlay renders, positions and paints without a synthetic click.
-    let rox_pill = std::env::var("ROX_PILL").is_ok();
-    if rox_pill {
+    // `ROX_PILL=1` (or `ROX_PILL=<turn index>`): open the emoji pill at a
+    // fixed anchor — verifies the overlay renders, positions and paints
+    // without a synthetic click. A turn index attaches picks to a real
+    // turn so the tapback badge can be checked end to end.
+    if let Ok(pill) = std::env::var("ROX_PILL") {
+        let i = pill.parse::<i64>().unwrap_or(-1);
         spawn(async move {
             // Past the transcript's layout settle — its scroll ticks
             // legitimately close the pill.
@@ -433,7 +435,7 @@ pub(crate) fn hot_area(
                 h: 24.0,
                 flip: false,
                 right: false,
-                i: -1,
+                i,
                 slot: "msg".to_owned(),
                 current: "❤️".to_owned(),
             });
