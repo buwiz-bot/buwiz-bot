@@ -127,10 +127,48 @@ pub(crate) fn hot_area() -> impl IntoElement {
         }
     }
 
+    // `ROX_PALETTE=<query>`: open the ⌘K card at boot — synthetic keys
+    // can't reach `on_key`, so palette verification needs it.
+    if let Ok(q) = std::env::var("ROX_PALETTE") {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(1400)).await;
+            let st = store();
+            st.toggle_palette();
+            if !q.is_empty() {
+                st.palette_q.set(q);
+            }
+        });
+    }
+
+    // `ROX_SLOTS=1`: print the ⌘1…9 slot order once the model loads.
+    if std::env::var("ROX_SLOTS").is_ok() {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(1500)).await;
+            let st = store();
+            let slots = st.shortcut_threads();
+            let threads = st.threads.get_untracked();
+            let bots = st.bots.get_untracked();
+            for (i, id) in slots.iter().enumerate() {
+                let name = threads
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default();
+                let bot = bots
+                    .iter()
+                    .find(|b| b.thread_id == *id)
+                    .map(|b| format!("{} (pinned={} section={} hidden={})", b.name, b.pinned, b.section, b.hidden))
+                    .unwrap_or_else(|| "chat".to_owned());
+                eprintln!("[slot {}] {} — {} — {}", i + 1, id, name, bot);
+            }
+        });
+    }
+
     // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
-    // details, theme, the New-Bot sheet, the work tab, dictation demo
-    // and mod+1…9 chat switching.
-    on_key("mod+k", |_| store().palette.set(true));
+    // details, theme, the New-Bot sheet, the work tab, dictation demo,
+    // ⌘R reload (the web app's reload) and mod+1…9 chat switching.
+    on_key("mod+k", |_| store().toggle_palette());
+    on_key("mod+r", |_| store().reset_fresh());
     on_key("mod+b", |_| store().side_shown.update(|v| *v = !*v));
     on_key("mod+shift+h", |_| {
         let st = store();
@@ -152,6 +190,9 @@ pub(crate) fn hot_area() -> impl IntoElement {
     on_key("mod+d", |_| store().dictate_stub());
     on_key("escape", |_| {
         let st = store();
+        if st.palette.get_untracked() {
+            st.close_palette();
+        }
         st.shelf_renaming.set(String::new());
         st.shelf_tagging.set(String::new());
         st.avatar_editing.set(false);
@@ -189,9 +230,15 @@ pub(crate) fn hot_area() -> impl IntoElement {
     });
     on_key("up", |_| {
         let st = store();
+        // palette.tsx:33 — the palette's arrow nav first.
+        if st.palette.get_untracked() {
+            let n = st.palette_results().len();
+            if n > 0 {
+                st.palette_sel.update(|i| *i = (*i + n as i64 - 1) % n as i64);
+            }
         // the search combo's arrow nav (App.tsx:1416) rides the same
         // keys while the drop is open.
-        if st.plugins_open.get_untracked() && st.drop_open() {
+        } else if st.plugins_open.get_untracked() && st.drop_open() {
             let n = st.plugin_list().len();
             if n > 0 {
                 st.drop_sel.update(|i| *i = (*i + n - 1) % n);
@@ -202,7 +249,12 @@ pub(crate) fn hot_area() -> impl IntoElement {
     });
     on_key("down", |_| {
         let st = store();
-        if st.plugins_open.get_untracked() && st.drop_open() {
+        if st.palette.get_untracked() {
+            let n = st.palette_results().len();
+            if n > 0 {
+                st.palette_sel.update(|i| *i = (*i + 1) % n as i64);
+            }
+        } else if st.plugins_open.get_untracked() && st.drop_open() {
             let n = st.plugin_list().len();
             if n > 0 {
                 st.drop_sel.update(|i| *i = (*i + 1) % n);
@@ -213,7 +265,9 @@ pub(crate) fn hot_area() -> impl IntoElement {
     });
     on_key("enter", |_| {
         let st = store();
-        if st.plugins_open.get_untracked() && st.drop_open() {
+        if st.palette.get_untracked() {
+            st.palette_run_at(st.palette_sel.get_untracked() as usize);
+        } else if st.plugins_open.get_untracked() && st.drop_open() {
             st.drop_choose();
         }
     });
@@ -247,11 +301,21 @@ pub(crate) fn hot_area() -> impl IntoElement {
             st.copy_sel();
         }
     });
+    // `mod+1…9` (App.tsx:797) — the visible sidebar order: pinned,
+    // groups A→Z by latest interaction, Unassigned, then chats. While
+    // the palette has a query they run that result instead
+    // (palette.tsx:48).
     for k in 1..=9u8 {
         on_key(&format!("mod+{k}"), move |_| {
             let st = store();
-            if let Some(t) = st.chats().get((k - 1) as usize) {
-                st.open_thread(t.id.clone());
+            if st.palette.get_untracked() {
+                if !st.palette_q.get_untracked().trim().is_empty() {
+                    st.palette_run_at((k - 1) as usize);
+                }
+                return;
+            }
+            if let Some(id) = st.shortcut_threads().get((k - 1) as usize) {
+                st.open_thread(id.clone());
             }
         });
     }
@@ -302,6 +366,34 @@ pub(crate) fn hot_area() -> impl IntoElement {
                 }));
         }
     }
+    // `ROX_GAZE=1`: two resting blobs pinned to opposite gaze targets —
+    // verifies set_gaze → unsettled → advance → paint_rest end to end.
+    if std::env::var("ROX_GAZE").is_ok() {
+        return view()
+            .flex_1()
+            .h_full()
+            .bg(theme::MAIN)
+            .items_center()
+            .justify_center()
+            .flex_row()
+            .gap(px(40.0))
+            .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+                shape: "blob".to_owned(),
+                color: "#FFFFFF".to_owned(),
+                size: 80.0,
+                state: "idle",
+                gaze_at: Some([-0.9, 0.9]),
+                ..Default::default()
+            }))
+            .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+                shape: "blob".to_owned(),
+                color: "#FFFFFF".to_owned(),
+                size: 80.0,
+                state: "idle",
+                gaze_at: Some([0.9, -0.9]),
+                ..Default::default()
+            }));
+    }
 
     view()
         .flex_1()
@@ -349,9 +441,8 @@ pub(crate) fn hot_area() -> impl IntoElement {
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
 /// `BotAvatar(24/22 paused)` + the bot's name + a hover chevron — pressing
-/// it toggles the detail pane; the "Details" button sits right.
+/// it toggles the detail pane. Grok has no right-side control here.
 fn top_bar() -> impl IntoElement {
-    let hovered = signal(false);
     let pill_hover = signal(false);
     view()
         .absolute()
@@ -437,31 +528,5 @@ fn top_bar() -> impl IntoElement {
                             || icon("chev-right").into_element(),
                         )),
                 ),
-        )
-        .child(
-            // Right side keeps its own row so the pill stays centered.
-            view()
-                .absolute()
-                .right(px(16.0))
-                .top(px(11.0))
-                .label("Details")
-                .child(
-                    view()
-                        .size(px(30.0))
-                        .rounded(px(8.0))
-                        .items_center()
-                        .justify_center()
-                        .bg(move || {
-                            if hovered.get() {
-                                theme::HOVER
-                            } else {
-                                AdaptiveColor::TRANSPARENT
-                            }
-                        })
-                        .child(icon("panel")),
-                )
-                .on_hover_in(move || hovered.set(true))
-                .on_hover_out(move || hovered.set(false))
-                .on_press(|| store().right_open.update(|v| *v = !*v)),
         )
 }

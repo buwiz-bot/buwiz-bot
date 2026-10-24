@@ -21,6 +21,56 @@ pub(crate) fn sidebar() -> impl IntoElement {
                 .into_element()
         },
     )
+    // `sideEff === "hidden"` (App.tsx:2454): the toggle floats right of
+    // the traffic lights, on their line.
+    .otherwise(|| {
+        view()
+            .absolute()
+            .left(px(79.0))
+            .top(px(8.0))
+            .child(sidebar_toggle(28.0, 7.0, false))
+            .into_element()
+    })
+}
+
+/// `panelGlyph` button (App.tsx:721): press toggles the sidebar
+/// (`toggleSide`), right-click flips full↔rail (`toggleSideMode`).
+fn sidebar_toggle(size: f32, radius: f32, plated: bool) -> impl IntoElement {
+    let hovered = signal(false);
+    view()
+        .label("toggle sidebar")
+        .child(
+            view()
+                .size(px(size))
+                .rounded(px(radius))
+                .items_center()
+                .justify_center()
+                .bg(move || {
+                    if plated {
+                        theme::CARD2
+                    } else if hovered.get() {
+                        theme::HOVER
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
+                .child(icon("panel")),
+        )
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(|| store().side_shown.update(|v| *v = !*v))
+        .on_context_menu(|_: &ContextMenuEvent| {
+            let st = store();
+            st.side_shown.set(true);
+            st.side_mode.set(
+                if st.side_mode.get_untracked() == "full" {
+                    "rail"
+                } else {
+                    "full"
+                }
+                .to_owned(),
+            );
+        })
 }
 
 /// `AVATAR_HUES` — the chat-initial circle colors (`hue(t.title)`).
@@ -197,10 +247,10 @@ fn open_add_menu(node: ElementRef) {
     });
 }
 
-/// The rail / header "New Bot" button: opens `addMenu` on press.
+/// The header's "New" button (`circleBtn`, App.tsx:984): a solid
+/// `tc("#1f1f1f")` plate that opens `addMenu` below itself on press.
 fn new_menu_button(name: &'static str, label: &'static str, size: f32, radius: f32) -> impl IntoElement {
     let node = element_ref();
-    let hovered = signal(false);
     view()
         .element_ref(&node)
         .label(label)
@@ -210,11 +260,9 @@ fn new_menu_button(name: &'static str, label: &'static str, size: f32, radius: f
                 .rounded(px(radius))
                 .items_center()
                 .justify_center()
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(icon(name)),
+                .bg(theme::CARD2)
+                .child(icon_sized(name, 18.0)),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
         .on_press(move || open_add_menu(node))
 }
 
@@ -403,25 +451,19 @@ fn full_sidebar() -> impl IntoElement {
         .border_r_1()
         .border_r_color(theme::BORDER_F)
         .child(
-            // Header — doubles as the window drag strip.
+            // Header (App.tsx:1950): traffic lights left, round controls
+            // right — toggle + New — over the window-drag strip.
             view()
                 .flex_row()
                 .items_center()
+                .justify_end()
+                .gap_2()
                 .px_4()
                 .pt(px(46.0))
                 .pb_2()
                 .window_drag(true)
-                .child(
-                    text("Rox")
-                        .text_size(px(15.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::TEXT)
-                        .flex_1(),
-                )
-                .child(new_menu_button("plus", "New Bot", 26.0, 7.0))
-                .child(head_button("panel", "Collapse", || {
-                    store().side_mode.set("rail".to_owned())
-                })),
+                .child(sidebar_toggle(36.0, 18.0, true))
+                .child(new_menu_button("newChat", "New Bot", 36.0, 18.0)),
         )
         .child(
             scroll().flex_1().child(
@@ -812,24 +854,6 @@ fn sec_header(
                 *e = !*e;
             });
         })
-}
-
-fn head_button(name: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
-    let hovered = signal(false);
-    view()
-        .label(label)
-        .child(
-            view()
-                .size(px(26.0))
-                .rounded(px(7.0))
-                .items_center()
-                .justify_center()
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(icon(name)),
-        )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_press(move || on())
 }
 
 fn thread_row(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
