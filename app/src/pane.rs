@@ -17,7 +17,7 @@ use crate::store::{AppMeta, Crop, McpServer, Store, RoxApp};
 use crate::theme;
 
 /// The pane's top bar height — the TSX's `TOP`.
-const TOP: f32 = 60.0;
+pub(crate) const TOP: f32 = 60.0;
 /// The pane's width (`width: 320`).
 const W: f32 = 320.0;
 /// The 64pt profile avatar's crop box (`CROP = 84` in the TSX editor).

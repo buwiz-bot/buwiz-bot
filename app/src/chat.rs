@@ -91,10 +91,13 @@ pub(crate) fn transcript() -> impl IntoElement {
             }
         })
         .flex_1()
-        .pt(px(56.0)) // under the top overlay bar
-        // `paddingBottom: dockH() + 24` — the transcript clears the
-        // floating composer (App.tsx:2132).
-        .pb(move || px(crate::composer::dock_h().get() + 24.0)),
+        // `contentContainerStyle` (App.tsx:2132) — the padding and the
+        // 20pt row gap are content insets, not view padding: rows slide
+        // under the top bar while scrolling, and the last row ends 24pt
+        // above the floating composer.
+        .content_padding_top(px(crate::pane::TOP + 16.0))
+        .content_padding_bottom(move || px(crate::composer::dock_h().get() + 24.0))
+        .row_gap(px(20.0)),
     )
 }
 
@@ -148,7 +151,6 @@ fn user_row(t: Turn) -> impl IntoElement {
         }
     };
     view()
-        .py(px(3.0))
         .items_end()
         .gap_1()
         .on_hover_in(move || {
@@ -413,7 +415,10 @@ fn agent_row(t: Turn) -> impl IntoElement {
     // (shell.tsx:315's `ref`).
     let bar_ref = element_ref();
     view()
-        .py(px(3.0))
+        // shell.tsx:481 — the agent column's `gap: 4` spaces the bubble,
+        // its bar, and the artifacts uniformly; the 20pt turn separation
+        // is the list's `row_gap`, not per-row padding.
+        .gap_1()
         .on_hover_in(move || {
             if !store().chat_scrolling.get_untracked() {
                 hov2.set(true);
@@ -461,35 +466,13 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     .child(markdown(move || body.clone(), move || streaming, || false)),
             ),
         )
-        .child(files_section(&t))
-        // A building artifact renders its declared placeholder — before
-        // the module exists, the card is a gray box shimmering the job's
-        // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
-        // still compiling (`d === "loading"`) shows it too, until
-        // `mini_source` lands or `mini_err` reports.
-        .when(has_card && t.building, |v| v.child(art_placeholder(&t)))
-        .when(has_card && !t.building, |v| {
-            let app = t.art.clone().map(|a| a.app).unwrap_or_default();
-            let t2 = t.clone();
-            let t3 = t.clone();
-            v.child(
-                when(
-                    move || {
-                        store().mini_source(&app).get().is_empty()
-                            && store().mini_err(&app).get().is_empty()
-                    },
-                    move || art_placeholder(&t2).into_element(),
-                )
-                .otherwise(move || app_card(t3.art.clone().unwrap()).into_element()),
-            )
-        })
         .child(
-            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:504), shown
-            // only while the row is hovered (or its pill is open).
+            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
+            // the bubble before the artifacts, shown only while the row is
+            // hovered (or its pill is open).
             view()
                 .flex_row()
                 .gap(px(2.0))
-                .pt_1()
                 .element_ref(&bar_ref)
                 .opacity(move || {
                     if store()
@@ -517,6 +500,28 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 }))
                 .child(more_act(i)),
         )
+        .child(files_section(&t))
+        // A building artifact renders its declared placeholder — before
+        // the module exists, the card is a gray box shimmering the job's
+        // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
+        // still compiling (`d === "loading"`) shows it too, until
+        // `mini_source` lands or `mini_err` reports.
+        .when(has_card && t.building, |v| v.child(art_placeholder(&t)))
+        .when(has_card && !t.building, |v| {
+            let app = t.art.clone().map(|a| a.app).unwrap_or_default();
+            let t2 = t.clone();
+            let t3 = t.clone();
+            v.child(
+                when(
+                    move || {
+                        store().mini_source(&app).get().is_empty()
+                            && store().mini_err(&app).get().is_empty()
+                    },
+                    move || art_placeholder(&t2).into_element(),
+                )
+                .otherwise(move || app_card(t3.art.clone().unwrap()).into_element()),
+            )
+        })
 }
 
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
