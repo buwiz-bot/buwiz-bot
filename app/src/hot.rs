@@ -22,8 +22,14 @@ use crate::sidebar;
 use crate::theme;
 
 /// The app: sidebar · transcript · composer · detail pane, plus the
-/// overlay layers (palette, model picker, ctx menu, file viewer).
-pub(crate) fn hot_area() -> impl IntoElement {
+/// overlay layers (palette, model picker, ctx menu, file viewer). The
+/// `remount`/`note`/`seconds` signals come from the root ([`App`]) so
+/// the stats pill keeps counting across remounts.
+pub(crate) fn hot_area(
+    remount: Signal<u64>,
+    note: Signal<String>,
+    seconds: Signal<u64>,
+) -> impl IntoElement {
     let st = store();
     st.boot();
     st.watch_plugins();
@@ -189,6 +195,9 @@ pub(crate) fn hot_area() -> impl IntoElement {
             .set(if st.tab.get_untracked() == "work" { "chat" } else { "work" }.to_owned());
     });
     on_key("mod+d", |_| store().dictate_stub());
+    // ⌘⇧R toggles the ra-jit stats pill (a dev HUD, not in the TSX).
+    let live_bar_show = crate::live::keep("rox.livebar.show", || true);
+    on_key("mod+shift+r", move |_| live_bar_show.update(|v| *v = !*v));
     on_key("escape", |_| {
         let st = store();
         if st.palette.get_untracked() {
@@ -418,6 +427,43 @@ pub(crate) fn hot_area() -> impl IntoElement {
         });
     }
 
+    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot`: open an overlay at boot
+    // — verifies each layer mounts and paints without synthetic input.
+    if let Ok(ov) = std::env::var("ROX_OVERLAY") {
+        spawn(async move {
+            timer(std::time::Duration::from_millis(2000)).await;
+            let st = store();
+            match ov.as_str() {
+                "ctx" => crate::ctx::open_at(
+                    420.0,
+                    320.0,
+                    vec![
+                        crate::store::CtxItem::row("Rename", "pencilLine", "copy", "x".into()),
+                        crate::store::CtxItem::row("Duplicate", "copy", "copy", "y".into())
+                            .on(true),
+                        crate::store::CtxItem::separator(),
+                        crate::store::CtxItem::danger("Delete", "trash", "copy", "z".into()),
+                    ],
+                ),
+                "prompt" => st
+                    .section_prompt
+                    .set(Some(st.active_bot().map(|b| b.id).unwrap_or_default())),
+                "plus" => crate::composer::plus_menu().set(Some((140.0, 620.0))),
+                "bot" => st.bot_modal.set(true),
+                "lightbox" => st.open_lightbox(
+                    vec![crate::store::LightItem {
+                        kind: "image".into(),
+                        uri: "file:///tmp/rox_lightbox.png".into(),
+                        name: "rox_lightbox.png".into(),
+                        ..Default::default()
+                    }],
+                    0,
+                ),
+                _ => {}
+            }
+        });
+    }
+
     view()
         .flex_1()
         .h_full()
@@ -476,6 +522,83 @@ pub(crate) fn hot_area() -> impl IntoElement {
         .child(files::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
+        .child(stats_bar(remount, note, seconds, live_bar_show))
+}
+
+/// The ra-jit stats pill — an FPS-style floating HUD (was the bottom bar):
+/// the last patch's report (`applied: N functions in …µs`), the remount
+/// count and the uptime. ⌘⇧R toggles it and it drags anywhere; both its
+/// visibility and its spot survive remounts through `keep`.
+fn stats_bar(
+    remount: Signal<u64>,
+    note: Signal<String>,
+    seconds: Signal<u64>,
+    show: Signal<bool>,
+) -> impl IntoElement {
+    let pos = crate::live::keep("rox.livebar.pos", || {
+        (12.0f32, (window().height.0 - 46.0).max(0.0))
+    });
+    let dx = animated_value(0.0);
+    let dy = animated_value(0.0);
+    dynamic(move || {
+        if !show.get() {
+            return view().into_element();
+        }
+        let (x, y) = pos.get();
+        view()
+            .absolute()
+            .left(px(x))
+            .top(px(y))
+            .pan_values(Some(&dx), Some(&dy))
+            .bind_translate_x(&dx)
+            .bind_translate_y(&dy)
+            .on_pan_end(move |e: &PanEvent| {
+                let win = window();
+                pos.update(|p| {
+                    p.0 = (p.0 + e.translation.x.0).clamp(4.0, (win.width.0 - 230.0).max(4.0));
+                    p.1 = (p.1 + e.translation.y.0).clamp(4.0, (win.height.0 - 30.0).max(4.0));
+                });
+                dx.set(0.0);
+                dy.set(0.0);
+            })
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(9.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .bg(theme::PILL_BG)
+            .border(px(0.5))
+            .border_color(theme::BORDER_F)
+            .child(
+                text(move || note.get())
+                    .text_size(px(11.0))
+                    .font_family("monospace")
+                    .text_color(theme::TEXT),
+            )
+            .child(
+                text(move || format!("remounts {}", remount.get()))
+                    .text_size(px(11.0))
+                    .font_family("monospace")
+                    .text_color(theme::UP),
+            )
+            .child(
+                text(move || {
+                    let s = seconds.get();
+                    if s >= 3600 {
+                        format!("up {}h{}m", s / 3600, s % 3600 / 60)
+                    } else if s >= 60 {
+                        format!("up {}m{}s", s / 60, s % 60)
+                    } else {
+                        format!("up {}s", s)
+                    }
+                })
+                .text_size(px(11.0))
+                .font_family("monospace")
+                .text_color(theme::MUTED),
+            )
+            .into_element()
+    })
 }
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
