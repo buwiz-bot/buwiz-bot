@@ -647,12 +647,13 @@ fn files_section(t: &Turn) -> impl IntoElement {
     let i = t.i;
     let msg = t.text.clone();
     // the AudioCard waveform's played tint is the user bubble fill — the
-    // active bot's color when set, else the neutral fill.
-    let tint = store()
-        .active_bot_untracked()
-        .and_then(|b| b.color.parse::<Hsla>().ok())
-        .map(AdaptiveColor::from)
-        .unwrap_or(theme::BUBBLE);
+    // active bot's color when set, else the neutral 18%-white fill.
+    let tint = theme::bubble_fill_of(
+        &store()
+            .active_bot_untracked()
+            .map(|b| b.color)
+            .unwrap_or_default(),
+    );
     let media: Vec<Attach> = files
         .iter()
         .filter(|f| f.kind == "image" || f.kind == "video")

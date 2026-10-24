@@ -625,6 +625,7 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
         dark: Hsla { a: tint.dark.a * 0.55, ..tint.dark },
     };
     const W: f32 = 93.0;
+    let bars = peaks.len().div_ceil(2).max(1) as f64;
     card_box()
         .child(a.node())
         .child(
@@ -716,7 +717,7 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
                                         .bg(move || {
                                             let (d, t) =
                                                 (a4.dur.get(), a4.time.get());
-                                            if d > 0.0 && (i as f64 / 24.0) < t / d {
+                                            if d > 0.0 && (i as f64 / bars) < t / d {
                                                 tint
                                             } else {
                                                 fade
