@@ -59,14 +59,21 @@ pub(crate) fn transcript() -> impl IntoElement {
                             // recycled cells re-render for their new
                             // index, and a turn's streamed text lands in
                             // place (gallery's `item`/`dynamic` pair).
-                            .child(dynamic(move || {
-                                let Some(t) =
-                                    store().turns.get().get(at.index()).cloned()
-                                else {
-                                    return view().into_element();
-                                };
-                                turn_row(t).into_element()
-                            })),
+                            .child({
+                                // The row's own turn, compared: a change to
+                                // any other turn (a streamed chunk, a
+                                // reaction, a poll) no longer rebuilds this
+                                // row — its markdown, its live mini app.
+                                let row = computed(move || {
+                                    store().turns.with(|t| t.get(at.index()).cloned())
+                                });
+                                dynamic(move || {
+                                    let Some(t) = row.get() else {
+                                        return view().into_element();
+                                    };
+                                    turn_row(t).into_element()
+                                })
+                            }),
                     )
             },
         )
@@ -198,9 +205,15 @@ fn user_row(t: Turn) -> impl IntoElement {
             // padding 7×12, `maxWidth 560` (shell.tsx:438). Inside it
             // `OnFill` holds — the quote row and Markdown keep the dark
             // ramp in both themes.
-            view().flex_row().justify_end().child(
+            // `flex-row w-full` (shell.tsx:434): a full-width row gives the
+            // bubble a definite width to shrink into; a hugging row let a
+            // long message run off the column's left edge unwrapped.
+            view().flex_row().w_full().justify_end().child(
                 view()
                     .max_w(px(560.0))
+                    // `flexShrink: 1` — wrap inside a narrow column
+                    // instead of running under the pane.
+                    .flex_shrink(1.0)
                     .bg(move || theme::bubble_fill())
                     .rounded(px(18.0))
                     .px_3()
@@ -239,7 +252,7 @@ fn user_row(t: Turn) -> impl IntoElement {
 /// painted in the page color centered on the bubble's outer top corner,
 /// holding a 30pt chip with the emoji. `right` picks the corner (user →
 /// left, agent → right); pressing it clears the reaction.
-fn tapback(i: i64, reaction: String, right: bool) -> impl IntoElement {
+pub(crate) fn tapback(i: i64, reaction: String, right: bool) -> impl IntoElement {
     view()
         .absolute()
         .top(px(-27.0))
@@ -347,7 +360,7 @@ fn art_placeholder(t: &Turn) -> impl IntoElement {
     };
     view()
         .w(px(w))
-        .max_w(percentage(100.0))
+        .max_w(percentage(1.0))
         .bg(theme::CARD)
         .rounded(px(16.0))
         .border_1()
@@ -402,7 +415,6 @@ fn art_placeholder(t: &Turn) -> impl IntoElement {
 }
 
 fn agent_row(t: Turn) -> impl IntoElement {
-    let name = t.name.clone();
     let caption = t.caption.clone();
     let body = t.text.clone();
     let streaming = t.building;
@@ -423,6 +435,44 @@ fn agent_row(t: Turn) -> impl IntoElement {
     // `msgBar` — the emoji pill anchors to its measured rect
     // (shell.tsx:315's `ref`).
     let bar_ref = element_ref();
+    // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503): under a
+    // message bubble here; a card mounts it in its own row instead
+    // (`CardShell`'s bar, shell.tsx:1103).
+    let bar = move || -> AnyElement {
+            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
+        // the bubble before the artifacts, shown only while the row is
+        // hovered (or its pill is open).
+        view()
+            .flex_row()
+            .gap(px(2.0))
+            .element_ref(&bar_ref)
+            .opacity(move || {
+                if store()
+                    .pill
+                    .get()
+                    .as_ref()
+                    .map_or(false, |a| a.i == i && a.slot == "msg")
+                {
+                    1.0
+                } else {
+                    bar_opacity()
+                }
+            })
+            .child(react_act(i, false, bar_ref, "msg".to_owned()))
+            .child(act("↩", "reply", move || {
+                let st = store();
+                let tr = st.turns.get_untracked();
+                if let Some(tt) = tr.iter().find(|x| x.i == i) {
+                    st.reply_to.set(Some(crate::store::ReplyTo {
+                        i: tt.i,
+                        name: tt.name.clone(),
+                        text: tt.text.chars().take(120).collect(),
+                    }));
+                }
+            }))
+            .child(more_act(i))
+            .into_element()
+    };
     view()
         // shell.tsx:481 — the agent column's `gap: 4` spaces the bubble,
         // its bar, and the artifacts uniformly; the 20pt turn separation
@@ -434,35 +484,23 @@ fn agent_row(t: Turn) -> impl IntoElement {
             }
         })
         .on_hover_out(move || hov.set(false))
-        .child(
-            // Sender line: name + caption.
-            view()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .when(!name.is_empty() || !caption.is_empty(), |v| {
-                    v.child(
-                        text(name.clone())
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::FAINT),
-                    )
-                    .child(
-                        text(caption.clone())
-                            .text_size(px(11.0))
-                            .text_color(theme::GHOST)
-                            .number_of_lines(1),
-                    )
-                }),
-        )
-        .child(reply_quote(&t))
+        // shell.tsx:479 — a turn naming a module (`tt.name`) is an app
+        // card and nothing else: no sender line, no message bubble (the
+        // module name and an empty bubble were leaking through).
+        // Only real children: an empty view still takes the column's 4pt
+        // gap, where Grok's `<If>` renders nothing (bot rows sat ~4.5pt
+        // looser than Grok's).
+        .when(!has_card && t.reply.is_some(), |v| v.child(reply_quote(&t)))
         // The agent bubble (shell.tsx:484): `agentFill` + a hairline,
         // radius 18, padding 16×10, `maxWidth 560`, hugging its content
         // on the row's left edge; the tapback knocks out top-right.
-        .child(
+        .when(!has_card, |v| v.child(
             view().flex_row().w_full().justify_start().child(
                 view()
                     .max_w(px(560.0))
+                    // `flexShrink: 1` — wrap inside a narrow column
+                    // instead of running under the pane.
+                    .flex_shrink(1.0)
                     .bg(theme::AGENT_BUBBLE)
                     .rounded(px(18.0))
                     .border_1()
@@ -474,42 +512,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     })
                     .child(markdown(move || body.clone(), move || streaming, || false)),
             ),
-        )
-        .child(
-            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
-            // the bubble before the artifacts, shown only while the row is
-            // hovered (or its pill is open).
-            view()
-                .flex_row()
-                .gap(px(2.0))
-                .element_ref(&bar_ref)
-                .opacity(move || {
-                    if store()
-                        .pill
-                        .get()
-                        .as_ref()
-                        .map_or(false, |a| a.i == i && a.slot == "msg")
-                    {
-                        1.0
-                    } else {
-                        bar_opacity()
-                    }
-                })
-                .child(react_act(i, false, bar_ref, "msg".to_owned()))
-                .child(act("↩", "reply", move || {
-                    let st = store();
-                    let tr = st.turns.get_untracked();
-                    if let Some(tt) = tr.iter().find(|x| x.i == i) {
-                        st.reply_to.set(Some(crate::store::ReplyTo {
-                            i: tt.i,
-                            name: tt.name.clone(),
-                            text: tt.text.chars().take(120).collect(),
-                        }));
-                    }
-                }))
-                .child(more_act(i)),
-        )
-        .child(files_section(&t))
+        ))
         // A building artifact renders its declared placeholder — before
         // the module exists, the card is a gray box shimmering the job's
         // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
@@ -519,7 +522,15 @@ fn agent_row(t: Turn) -> impl IntoElement {
         .when(has_card && !t.building, |v| {
             let app = t.art.clone().map(|a| a.app).unwrap_or_default();
             let t2 = t.clone();
-            let t3 = t.clone();
+            let shell = crate::widgets::CardShell {
+                art: t.art.clone().unwrap_or_default(),
+                label: t.label.clone(),
+                v: t.v,
+                caption,
+                reaction,
+                i,
+                bar: Some(std::rc::Rc::new(bar)),
+            };
             v.child(
                 when(
                     move || {
@@ -528,9 +539,12 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     },
                     move || art_placeholder(&t2).into_element(),
                 )
-                .otherwise(move || app_card(t3.art.clone().unwrap()).into_element()),
+                .otherwise(move || app_card(shell.clone()).into_element()),
             )
         })
+        .when(!has_card, |v| v.child(bar()))
+        .when(!t.files.is_empty(), |v| v.child(files_section(&t)))
+
 }
 
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
@@ -610,10 +624,19 @@ fn more_act(i: i64) -> impl IntoElement {
         let node_ref = node_ref.clone();
         spawn(async move {
             if let Some(m) = node_ref.measure().await {
+                let card = store()
+                    .turns
+                    .get_untracked()
+                    .iter()
+                    .find(|t| t.i == i)
+                    .and_then(|t| t.art.as_ref().map(|a| a.app.clone()));
                 crate::ctx::open_at(
                     m.page.x.0,
                     m.page.y.0 + m.frame.size.height.0,
-                    crate::ctx::msg_items(i),
+                    match card {
+                        Some(app) => crate::ctx::card_items(i, &app),
+                        None => crate::ctx::msg_items(i),
+                    },
                 );
             }
         });

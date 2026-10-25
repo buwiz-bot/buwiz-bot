@@ -296,7 +296,7 @@ fn tip(left: Option<f32>, right: Option<f32>, top: f32, label: &str) -> impl Int
 fn effort_card(o: &ModelsOpen) -> impl IntoElement {
     // top-effort effects: a 2.4s shimmer sweep + twinkling sparkles on the
     // store's shared ~30fps clock (the TSX's Animated loops).
-    let clock = crate::live::store().frame_clock();
+    let clock = || crate::live::store().tick();
     let hover = signal(String::new());
     // untracked: an eager `efforts()` read here would make the layer's
     // `dynamic` rebuild the card (and remount the slider mid-drag) on
@@ -493,7 +493,7 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
 
 /// The stepped slider — `drag.panHandlers` on a 200×22 track
 /// (modelpicker.tsx:277).
-fn slider(clock: Signal<f64>) -> impl IntoElement {
+fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
     // the step the grant landed on (`from`), while the drag is held.
     let drag = signal(None::<i32>);
     let drag2 = drag.clone();
@@ -559,7 +559,7 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                 })
                 // the light band sweeping across (2400ms loop).
                 .child(when(move || is_top(), {
-                    let clock = clock.clone();
+                    let clock = clock;
                     move || {
                         view()
                             .absolute()
@@ -574,14 +574,14 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                             )
                             .gradient_to(AdaptiveColor::TRANSPARENT)
                             .translate_x(move || {
-                                let p = (clock.get() % 2.4) / 2.4;
+                                let p = (clock() % 2.4) / 2.4;
                                 px(-50.0 + (TRACK + 50.0) * p as f32)
                             })
                     }
                 }))
                 // drifting sparkles, twinkling out of phase.
                 .child(when(move || is_top(), {
-                    let clock = clock.clone();
+                    let clock = clock;
                     move || {
                         view().size_full().children(SPARKS.iter().enumerate().map(
                             |(k, (x, y, r))| {
@@ -595,7 +595,7 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                                     .rounded(px(r / 2.0))
                                     .bg(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark))
                                     .opacity(move || {
-                                        let t = clock.get();
+                                        let t = clock();
                                         // 600+k*170 up / 700+k*130 down, k*260
                                         // offset — as a sine in the same period.
                                         let per = (600.0 + kk * 170.0 + 700.0 + kk * 130.0)
@@ -605,7 +605,7 @@ fn slider(clock: Signal<f64>) -> impl IntoElement {
                                         (0.15 + 0.85 * (0.5 + 0.5 * ph.sin())) as f32
                                     })
                                     .translate_x(move || {
-                                        let p = (clock.get() % 2.4) / 2.4;
+                                        let p = (clock() % 2.4) / 2.4;
                                         px(6.0 * p as f32)
                                     })
                             },

@@ -24,6 +24,7 @@ const REST_FB: usize = (REST_N + 2 * REST_EN) * 2;
 
 thread_local! {
     static PATHS: RefCell<HashMap<String, Path>> = RefCell::new(HashMap::new());
+    static RESTS: RefCell<HashMap<&'static str, std::rc::Rc<[u8]>>> = RefCell::new(HashMap::new());
 }
 
 /// `pathOf` — cached `svg_path`.
@@ -323,11 +324,11 @@ fn b64(data: &str) -> Vec<u8> {
     out
 }
 
-/// `restOf(shape)` — decoded resting frames (`None` when unbaked).
-pub(crate) fn rest_bytes(shape: &str) -> Option<Vec<u8>> {
-    REST.iter()
-        .find(|(n, _)| *n == shape)
-        .map(|(_, d)| b64(d))
+/// `restOf(shape)` — decoded resting frames (`None` when unbaked),
+/// decoded once per shape: a resting mark repaints on every gaze step.
+pub(crate) fn rest_bytes(shape: &str) -> Option<std::rc::Rc<[u8]>> {
+    let (name, data) = REST.iter().find(|(n, _)| *n == shape)?;
+    Some(RESTS.with(|c| c.borrow_mut().entry(name).or_insert_with(|| b64(data).into()).clone()))
 }
 
 /// `GazeState` — `se()`'s gaze state mirrored for `paintRest`.

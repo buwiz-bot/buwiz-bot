@@ -1062,6 +1062,11 @@ pub struct Store {
     /// instead of spawning its own interval.
     pub frame_clock: Signal<f64>,
     frame_started: std::cell::Cell<bool>,
+    /// A canvas read the clock since the last tick: keep ticking.
+    frame_want: std::cell::Cell<bool>,
+    /// The detached root the ticker runs under — no component owns it,
+    /// so unmounting the avatar that started it cannot stop it.
+    frame_owner: std::cell::Cell<Option<Owner>>,
 
     /// The dedupe cache: raw JSON of the last /turns payload, so identical
     /// polls don't dirty the list.
@@ -1080,6 +1085,17 @@ pub struct Store {
     pub mini_titles: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
     /// Per-module load/compile errors, shown in the card.
     pub mini_errs: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+    /// `cardHeights` (shell.tsx) — each mini app's measured natural
+    /// height, so a recycled row frames at it at once instead of the
+    /// declared height and then growing.
+    pub mini_heights: std::cell::RefCell<std::collections::HashMap<String, f32>>,
+    /// The Pele helper (`pele/serve.mjs`): its base URL once started, and
+    /// the child (it exits when its stdin, held here, closes).
+    pub pele: std::cell::RefCell<Option<(String, std::process::Child)>>,
+    /// Rendered diagrams by theme + code (`mermaid::diagram`).
+    pub diagrams: std::cell::RefCell<
+        std::collections::HashMap<String, Signal<Option<Result<crate::mermaid::Diagram, String>>>>,
+    >,
 
     /// The owner the store was made under (the anchor's — it outlives
     /// remounts). Lazily-made signals must live under it, not under
@@ -1223,6 +1239,8 @@ impl Store {
             chat_scrolling: signal(false),
             frame_clock: signal(0.0),
             frame_started: std::cell::Cell::new(false),
+            frame_want: std::cell::Cell::new(false),
+            frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
             bots_json: std::cell::RefCell::new(String::new()),
@@ -1230,6 +1248,9 @@ impl Store {
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
+            mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
+            pele: std::cell::RefCell::new(None),
+            diagrams: std::cell::RefCell::new(std::collections::HashMap::new()),
             owner: Owner::current(),
         }
     }
@@ -1269,18 +1290,44 @@ impl Store {
         self.watch_shelf();
     }
 
-    /// `startClock` — one shared ~30fps signal every animating canvas
-    /// subscribes to (blob.tsx:91). Started lazily on first avatar/fx
-    /// mount; a per-canvas `set_interval` would mean one tree commit per
-    /// avatar per frame — that was the hover stutter.
-    pub fn frame_clock(&'static self) -> Signal<f64> {
+    /// Runs `f` under the store's owner: signals made there live as long
+    /// as the store (caches keyed outside any component).
+    pub(crate) fn in_store<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.owner.run(f)
+    }
+
+    /// `startClock`/`clock()` — the shared ~30fps clock in seconds, read
+    /// tracked: the canvas or binding reading it runs again next frame.
+    /// Only what animates now reads it (blob.tsx reads `clock()` only
+    /// while live), and the ticker stops one frame after nothing did, so
+    /// a window of resting avatars costs no frames at all.
+    pub fn tick(&'static self) -> f64 {
+        self.frame_want.set(true);
         if !self.frame_started.replace(true) {
             let clock = self.frame_clock;
-            set_interval(std::time::Duration::from_millis(33), move || {
-                clock.update(|c| *c += 0.033);
+            let (owner, _) = nsh_core::ui::create_root(|| {
+                spawn(async move {
+                    let st = crate::live::store();
+                    // Real elapsed time on top of where the last run
+                    // stopped: late ticks advance the marks by what passed,
+                    // and a restart never jumps.
+                    let base = clock.get_untracked();
+                    let epoch = std::time::Instant::now();
+                    loop {
+                        timer(std::time::Duration::from_millis(33)).await;
+                        if !st.frame_want.replace(false) {
+                            break;
+                        }
+                        clock.set(base + epoch.elapsed().as_secs_f64());
+                    }
+                    st.frame_started.set(false);
+                })
             });
+            if let Some(done) = self.frame_owner.replace(Some(owner)) {
+                done.dispose();
+            }
         }
-        self.frame_clock
+        self.frame_clock.get()
     }
 
     /// `setTheme` (App.tsx:765) — the pref and the POST.

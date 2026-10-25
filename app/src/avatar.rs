@@ -19,13 +19,41 @@ use crate::theme;
 // `blobGaze`/`blobPokes`/`blobEdit`
 // ---------------------------------------------------------------------------
 
+/// The `v` signal of `blobGaze`/`blobEdit`/`blobPokes`: a resting canvas
+/// subscribes to it to wake (blob.tsx's `gaze?.v()` in the not-live
+/// branch). Only an armed wake writes — a live canvas reads the latest
+/// value untracked on its next frame, so a mousemove is never a commit.
+struct Wake {
+    v: Signal<u32>,
+    armed: Cell<bool>,
+}
+
+impl Wake {
+    fn new() -> Self {
+        Self {
+            v: signal(0),
+            armed: Cell::new(false),
+        }
+    }
+    fn ping(&self) {
+        if self.armed.replace(false) {
+            self.v.try_set(self.v.get_untracked().wrapping_add(1));
+        }
+    }
+    /// Subscribes the running binding to the next `ping`.
+    fn arm(&self) {
+        self.armed.set(true);
+        let _ = self.v.try_get();
+    }
+}
+
 /// `blobGaze()` — the pointer-follow target shared between the outer view
-/// (`follow`) and the canvas (`target`/`ver`). Plain cells, no signal: the
-/// TS keeps gaze in a mutable ref the clock loop reads untracked — a signal
-/// write per mousemove was a tree commit per event (the hover jank).
+/// (`follow`) and the canvas (`target`/`ver`). Cells the canvas reads
+/// untracked, plus the wake a resting canvas sleeps on.
 pub(crate) struct BlobGaze {
     target: Cell<Option<V2>>,
     ver: Cell<u32>,
+    wake: Wake,
 }
 
 impl BlobGaze {
@@ -33,6 +61,7 @@ impl BlobGaze {
         Rc::new(Self {
             target: Cell::new(None),
             ver: Cell::new(0),
+            wake: Wake::new(),
         })
     }
     fn change(&self, next: Option<V2>) {
@@ -41,6 +70,7 @@ impl BlobGaze {
         }
         self.target.set(next);
         self.ver.set(self.ver.get() + 1);
+        self.wake.ping();
     }
     /// Pointer moved inside the mark cell: `follow(event, cx, cy, reach=60)`.
     pub(crate) fn follow(&self, event_x: f64, event_y: f64, cx: f64, cy: f64, reach: f64) {
@@ -65,17 +95,20 @@ impl BlobGaze {
 /// next clock tick (≤33ms, like the TS loop reading `pokes.q`).
 pub(crate) struct BlobPokes {
     queue: RefCell<Vec<(&'static str, f64)>>,
+    wake: Wake,
 }
 
 impl BlobPokes {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             queue: RefCell::new(vec![]),
+            wake: Wake::new(),
         })
     }
     pub(crate) fn fire(&self, kind: &str, turns: Option<f64>) {
         let kind = mark::UN.iter().copied().find(|k| *k == kind).unwrap_or(mark::UN[0]);
         self.queue.borrow_mut().push((kind, turns.unwrap_or(1.0)));
+        self.wake.ping();
     }
     fn drain(&self) -> Vec<(&'static str, f64)> {
         self.queue.borrow_mut().drain(..).collect()
@@ -85,35 +118,47 @@ impl BlobPokes {
 /// `createAnimatedValue` for style-bound fades (opacity/transform, not
 /// canvas): a signal stepped toward `target` every 16ms, reaching it in
 /// `ms` milliseconds — the TSX's `panelEditK.timing(1, {duration:220})`.
+/// The stepping task runs only while the value is moving.
 pub(crate) struct FadeValue {
     v: Signal<f32>,
     target: Cell<f32>,
     ms: Cell<f32>,
+    running: Cell<bool>,
+    owner: Owner,
 }
 
 impl FadeValue {
     pub(crate) fn new() -> Rc<Self> {
-        let f = Rc::new(Self {
+        Rc::new(Self {
             v: signal(0.0),
             target: Cell::new(0.0),
             ms: Cell::new(300.0),
-        });
-        set_interval(Duration::from_millis(16), {
-            let f = f.clone();
-            move || {
-                let (v, target) = (f.v.get_untracked(), f.target.get());
-                if (target - v).abs() > 0.002 {
-                    let step = (16.0 / f.ms.get().max(16.0)).min(1.0);
-                    f.v.set(v + (target - v).signum() * step.min((target - v).abs()));
-                }
-            }
-        });
-        f
+            running: Cell::new(false),
+            owner: Owner::current(),
+        })
     }
     /// `timing(to, {duration: ms})`.
-    pub(crate) fn timing(&self, to: f32, ms: f32) {
+    pub(crate) fn timing(self: &Rc<Self>, to: f32, ms: f32) {
         self.target.set(to);
         self.ms.set(ms);
+        if self.running.replace(true) {
+            return;
+        }
+        let f = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                loop {
+                    let (v, target) = (f.v.get_untracked(), f.target.get());
+                    if (target - v).abs() <= 0.002 {
+                        break;
+                    }
+                    let step = (16.0 / f.ms.get().max(16.0)).min(1.0);
+                    f.v.set(v + (target - v).signum() * step.min((target - v).abs()));
+                    timer(Duration::from_millis(16)).await;
+                }
+                f.running.set(false);
+            })
+        });
     }
     pub(crate) fn get(&self) -> f32 {
         self.v.get()
@@ -124,16 +169,19 @@ impl FadeValue {
 /// the clock-tick paint reads like the TS `editK` ref.
 pub(crate) struct BlobEdit {
     pub(crate) target: Cell<f64>,
+    wake: Wake,
 }
 
 impl BlobEdit {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             target: Cell::new(0.0),
+            wake: Wake::new(),
         })
     }
     pub(crate) fn to(&self, target: f64) {
         self.target.set(target);
+        self.wake.ping();
     }
 }
 
@@ -257,7 +305,7 @@ impl Inner {
 
     /// `draw`'s prop-diff section (blob.tsx: shape/state/compact/emphasis/
     /// gaze/pokes/resting), then the clock advance.
-    fn sync(&mut self, props: &BotBlobProps, _clock: f64) -> bool {
+    fn sync(&mut self, props: &BotBlobProps) -> bool {
         let now = Instant::now();
         let mut dirty = false;
         if props.shape != self.last_shape {
@@ -401,26 +449,38 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    // `startClock` — the store's one shared ~30fps tick (blob.tsx:89). A
-    // per-blob interval was one tree commit per avatar per frame.
-    let clock = crate::live::store().frame_clock();
-    let tab = Rc::new(mark::tables());
-    let st = Rc::new(RefCell::new(Inner::new(&props, tab)));
+    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
     let props = Rc::new(props);
     view()
         .size(px(size))
         .child(
             canvas(move || {
-                let t = clock.get();
                 let mut st = st.borrow_mut();
                 let props = &*props;
-                st.sync(props, t);
+                st.sync(props);
                 let now = Instant::now();
                 let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
                 let live = !resting
                     || !st.mark.is_settled()
                     || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.ek).abs() > 0.002
                     || st.grace_until > now;
+                // Live: the shared clock repaints it next frame. Settled:
+                // sleep until gaze, edit or a poke wakes it (blob.tsx's
+                // not-live branch), so resting avatars cost no frames.
+                let t = if live {
+                    crate::live::store().tick()
+                } else {
+                    if let Some(g) = &props.gaze {
+                        g.wake.arm();
+                    }
+                    if let Some(e) = &props.edit {
+                        e.wake.arm();
+                    }
+                    if let Some(p) = &props.pokes {
+                        p.wake.arm();
+                    }
+                    0.0
+                };
                 st.advance(props, t, resting, live);
                 st.paint(Painter::new(), props, resting)
             })
@@ -526,12 +586,12 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
 /// (opacity .85→1, scale 1→1.04 over 2.4s) plus three `z` glyphs that
 /// rise and fade in a 2.4s loop, staggered by 800ms.
 pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoElement {
-    // Same shared ~30fps tick `bot_blob` subscribes to — here it drives
-    // the breathing + zzz phases directly on the style bindings.
-    let clock = crate::live::store().frame_clock();
-    let breath = move || 0.5 - 0.5 * (std::f64::consts::TAU * (clock.get() % 2.4) / 2.4).cos() as f32;
+    // Same shared ~30fps tick `bot_blob` runs on — here it drives the
+    // breathing + zzz phases directly on the style bindings.
+    let clock = || crate::live::store().tick();
+    let breath = move || 0.5 - 0.5 * (std::f64::consts::TAU * (clock() % 2.4) / 2.4).cos() as f32;
     let z_phase = move |i: usize| {
-        let p = (clock.get() - i as f64 * 0.8) / 2.4;
+        let p = (clock() - i as f64 * 0.8) / 2.4;
         if p < 0.0 {
             0.0f32
         } else {
@@ -599,7 +659,7 @@ pub(crate) fn dot(shape: &str, color: &str, size: f32) -> impl IntoElement {
     let offset = -size * 0.25;
     let x = (canvas_size - extent) / 2.0;
     let ink = mark::ink_of(color, false);
-    let tab = Rc::new(mark::tables());
+    let tab = mark::shared_tables();
     let mut mark = mark::Mark::new(&tab, Some(mark::yn(shape)), 1.0, false, false, 1);
     mark.rest();
     let frame = mark.frame();

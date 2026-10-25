@@ -22,6 +22,7 @@ mod icons;
 pub mod live;
 mod mark;
 mod md;
+mod mermaid;
 pub mod mini;
 mod models;
 mod palette;
@@ -34,7 +35,6 @@ mod store;
 mod theme;
 mod widgets;
 
-use std::time::Duration;
 
 use nsh_core::ui::prelude::*;
 
@@ -57,16 +57,13 @@ fn native(registry: &mut Registry) {
 }
 
 /// The shell: the hot area in a `dynamic` that rebuilds on each patch.
-/// This view runs once, when the app starts — its signals and its
-/// interval therefore outlive every remount, which is what makes the
-/// stats pill a witness that the process never stopped.
+/// This view runs once, when the app starts — its signals therefore
+/// outlive every remount, so the live pill's count keeps climbing.
 #[component]
 pub fn App() -> impl IntoElement {
     let remount = signal(0u64);
-    let note = signal("ra-jit live".to_owned());
+    let note = signal(String::new());
     live::install(remount, note);
-    let seconds = signal(0u64);
-    set_interval(Duration::from_secs(1), move || seconds.update(|s| *s += 1));
     live::init();
 
     view()
@@ -77,7 +74,7 @@ pub fn App() -> impl IntoElement {
             view().flex_1().child(each(
                 move || vec![remount.get()],
                 |&n| n,
-                move |_, _| hot::hot_area(remount, note, seconds),
+                move |_, _| hot::hot_area(remount, note),
             )),
         )
 }

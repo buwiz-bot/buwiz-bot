@@ -57,6 +57,18 @@ fn act(it: &CtxItem) {
         // file turns (`⋯` on an artifact): copy arbitrary text or open a
         // reply file by `turn_i|path`.
         "copy" => st.copy_text(arg),
+        "card-details" => {
+            st.load_detail(arg.to_owned());
+            st.right_open.set(true);
+        }
+        "card-pin" => {
+            let thread = st.active_id.get_untracked();
+            crate::client::post_bg(
+                "/thread/apps".to_owned(),
+                serde_json::json!({"thread": thread, "app": arg}),
+            );
+            st.refresh_thread_apps();
+        }
         // `more()`'s Delete (shell.tsx:307): `post("/turn/delete", {key})`.
         "turn-del" => {
             crate::client::post_bg(
@@ -152,6 +164,23 @@ pub(crate) fn artifact_items(
         message.to_owned(),
     ));
     items
+}
+
+/// `CardShell`'s ⋯ menu (shell.tsx:806) — the card's actions live here,
+/// not in a row inside the card: details, pin to the chat, open in a
+/// window, desktop widget, try again, delete.
+pub(crate) fn card_items(i: i64, app: &str) -> Vec<CtxItem> {
+    vec![
+        CtxItem::row("Details", "panel", "card-details", app.to_owned()),
+        CtxItem::row("Pin to Chat", "pin", "card-pin", app.to_owned()),
+        CtxItem::separator(),
+        CtxItem::row("Open in Window", "popout", "shelf-popout", app.to_owned()),
+        CtxItem::row("Add to Desktop Widget", "pin", "shelf-pin-desktop", app.to_owned()),
+        CtxItem::separator(),
+        CtxItem::row("Try Again", "retry", "shelf-regen", app.to_owned()),
+        CtxItem::separator(),
+        CtxItem::danger("Delete", "trash", "turn-del", format!("idx:{i}")),
+    ]
 }
 
 /// `more()` on a message row (shell.tsx:301): Copy + Delete; `i` is the
