@@ -152,9 +152,11 @@ pub(crate) fn composer() -> impl IntoElement {
                         .and_then(|a| a.bot)
                         .or_else(|| bot.as_ref().map(|b| b.id.clone()))
                         .unwrap_or_else(|| "status".to_owned());
-                    let (shape, color) = bot
-                        .map(|b| (b.shape, b.color))
-                        .unwrap_or_else(|| ("blob".into(), "#FFFFFF".into()));
+                    // A plain chat has no bot: Grok's own mark, white on
+                    // dark and black on light.
+                    let (shape, color) = bot.map(|b| (b.shape, b.color)).unwrap_or_else(|| {
+                        ("blob".into(), "#FFFFFF".into())
+                    });
                     statusfx::status_fx(
                         shape,
                         color,
@@ -371,7 +373,8 @@ fn the_input() -> Input {
             } else if let Some(b) = st.active_bot() {
                 format!("Message {}", b.name)
             } else {
-                "Ask for a UI…".to_owned()
+                // A plain chat talks to the app itself.
+                format!("Message {}", crate::app_name())
             }
         })
         .placeholder_color(|| color(tc(0.54)))

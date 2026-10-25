@@ -255,7 +255,10 @@ pub(crate) fn status_fx(
     let emph: std::rc::Rc<dyn Fn() -> bool> =
         std::rc::Rc::new(|| !crate::live::store().emph_bot.get().is_empty());
     let bot = seed.clone().unwrap_or_default();
+    // `flexDirection: "row"` (App.tsx:2168): the mark, then its label, on
+    // the column's left edge — a column centered the mark alone.
     view()
+        .flex_row()
         .gap(px(7.0))
         .items_center()
         .on_hover_in(move || crate::live::store().emph_bot.set(bot.clone()))

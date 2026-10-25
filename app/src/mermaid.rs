@@ -24,8 +24,14 @@ pub(crate) struct Diagram {
 /// renders, then the image or why it could not be drawn (no Node, a
 /// parse error) — the caller falls back to the web view then.
 pub(crate) fn diagram(code: &str, dark: bool) -> Signal<Option<Result<Diagram, String>>> {
+    diagram_at(code, dark, 2)
+}
+
+/// [`diagram`] rasterized at `scale`× (the lightbox asks for 4× so a
+/// zoomed diagram stays sharp).
+pub(crate) fn diagram_at(code: &str, dark: bool, scale: u8) -> Signal<Option<Result<Diagram, String>>> {
     let theme = if dark { "dark" } else { "light" };
-    let key = format!("{theme}\0{code}");
+    let key = format!("{theme}\0{scale}\0{code}");
     let st = store();
     if let Some(sig) = st.diagrams.borrow().get(&key) {
         return *sig;
@@ -37,7 +43,7 @@ pub(crate) fn diagram(code: &str, dark: bool) -> Signal<Option<Result<Diagram, S
         spawn(async move {
             let result = match base_url() {
                 Err(e) => Err(e),
-                Ok(base) => request(&base, &code, theme).await,
+                Ok(base) => request(&base, &code, theme, scale).await,
             };
             if let Err(e) = &result {
                 log::warn!("mermaid: {e}");
@@ -48,10 +54,10 @@ pub(crate) fn diagram(code: &str, dark: bool) -> Signal<Option<Result<Diagram, S
     sig
 }
 
-async fn request(base: &str, code: &str, theme: &str) -> Result<Diagram, String> {
+async fn request(base: &str, code: &str, theme: &str, scale: u8) -> Result<Diagram, String> {
     let v = crate::client::post(
         &format!("{base}/render"),
-        serde_json::json!({"code": code, "theme": theme}),
+        serde_json::json!({"code": code, "theme": theme, "scale": scale}),
     )
     .await
     .ok_or("pele helper did not answer")?;

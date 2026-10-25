@@ -120,6 +120,15 @@ fn body() -> impl IntoElement {
                     input()
                         .value(move || store().bot_name.get())
                         .placeholder("Name your Bot")
+                        // Type straight away: the modal opens on its field.
+                        .auto_focus(true)
+                        // A focused field takes Escape for itself (it would
+                        // only leave the field): close the modal from here.
+                        .on_key_press(|key: &str| {
+                            if key == "Escape" {
+                                store().bot_modal.set(false);
+                            }
+                        })
                         .placeholder_color(|| color(theme::GHOST))
                         .text_size(px(13.0))
                         .text_color(theme::TEXT)
@@ -212,7 +221,7 @@ fn colors() -> impl IntoElement {
                 let hex = c.get();
                 let hex2 = hex.clone();
                 let hex3 = hex.clone();
-                let ink = crate::mark::ink_of(&hex, false);
+                let hex4 = hex.clone();
                 view()
                     .size(px(32.0))
                     .rounded(px(16.0))
@@ -230,7 +239,12 @@ fn colors() -> impl IntoElement {
                         view()
                             .size(px(24.0))
                             .rounded(px(12.0))
-                            .bg(Hsla::from_str(&ink).unwrap_or(Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })),
+                            // `#FFFFFF` is the primary swatch: black on light, white
+                            // on dark, as the avatar paints it (`ink_of`).
+                            .bg(move || {
+                                let ink = crate::mark::ink_of(&hex4, !dark());
+                                Hsla::from_str(&ink).unwrap_or(Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
+                            }),
                     )
                     .on_press(move || store().bot_color.set(hex2.clone()))
                     .label(format!("{hex3} character color"))
@@ -293,4 +307,152 @@ fn footer() -> impl IntoElement {
                 )
                 .on_press(|| store().create_bot()),
         )
+}
+
+/// "Choose a primary Bot" (Grok Bot's): the agents with a search field;
+/// the pick is checked, Confirm makes it the primary Bot.
+pub(crate) fn main_picker_layer() -> impl IntoElement {
+    dynamic(|| {
+        if store().main_pick.get().is_none() {
+            return view().into_element();
+        }
+        let close = || store().main_pick.set(None);
+        view()
+            .size_full()
+            .absolute()
+            .items_center()
+            .justify_center()
+            .bg(theme::tone(theme::hsla(0.0, 0.0, 0.0, 0.25), theme::hsla(0.0, 0.0, 0.0, 0.5)))
+            .on_press(close)
+            .child(
+                view()
+                    .w(px(420.0))
+                    .rounded(px(16.0))
+                    .bg(theme::POPOVER)
+                    .border_1()
+                    .border_color(theme::BORDER_F)
+                    .overflow_hidden()
+                    // A press inside the card stays in it.
+                    .on_press(|| {})
+                    .child(
+                        text("Choose a primary Bot")
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::TEXT)
+                            .px_4()
+                            .py_3(),
+                    )
+                    .child(
+                        view().px_4().pb_2().child(
+                            input()
+                                .value(|| store().main_pick_q.get())
+                                .on_change(|v: &str| store().main_pick_q.set(v.to_owned()))
+                                .on_key_press(|k: &str| {
+                                    if k == "Escape" {
+                                        store().main_pick.set(None);
+                                    }
+                                })
+                                .auto_focus(true)
+                                .placeholder("Search")
+                                .placeholder_color(|| color(theme::GHOST))
+                                .text_size(px(13.0))
+                                .text_color(theme::TEXT)
+                                .h(px(34.0))
+                                .px(px(10.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(theme::BORDER_S),
+                        ),
+                    )
+                    .child(
+                        scroll().max_h(px(320.0)).child(view().px_2().pb_2().child(each(
+                            || {
+                                let q = store().main_pick_q.get().trim().to_lowercase();
+                                store()
+                                    .bots
+                                    .get()
+                                    .into_iter()
+                                    .filter(|b| q.is_empty() || b.name.to_lowercase().contains(&q))
+                                    .collect::<Vec<_>>()
+                            },
+                            |b| b.id.clone(),
+                            |b, _| {
+                                let id = b.get_untracked().id;
+                                let id2 = id.clone();
+                                let id3 = id.clone();
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_3()
+                                    .h(px(44.0))
+                                    .px_2()
+                                    .rounded(px(8.0))
+                                    .bg(move || {
+                                        if store().main_pick.get().as_deref() == Some(id.as_str()) {
+                                            theme::HOVER
+                                        } else {
+                                            AdaptiveColor::TRANSPARENT
+                                        }
+                                    })
+                                    .on_press(move || store().main_pick.set(Some(id2.clone())))
+                                    .child(dynamic(move || {
+                                        bot_avatar(crate::avatar::BotAvatarProps {
+                                            box_: Some(26.0),
+                                            paused: true,
+                                            ..crate::avatar::BotAvatarProps::bot(&b.get(), 30.0)
+                                        })
+                                        .into_element()
+                                    }))
+                                    .child(
+                                        text(move || b.get().name)
+                                            .text_size(px(14.0))
+                                            .text_color(theme::TEXT)
+                                            .flex_1()
+                                            .number_of_lines(1),
+                                    )
+                                    .child(when(
+                                        move || store().main_pick.get().as_deref() == Some(id3.as_str()),
+                                        || text("✓").text_size(px(14.0)).text_color(theme::TEXT).into_element(),
+                                    ))
+                                    .into_element()
+                            },
+                        ))),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .px_4()
+                            .py_3()
+                            .border_t_1()
+                            .border_t_color(theme::BORDER_S)
+                            .child(dialog_button("Cancel", false, close))
+                            .child(dialog_button("Confirm", true, || {
+                                let st = store();
+                                if let Some(id) = st.main_pick.get_untracked() {
+                                    st.set_main_bot(&id);
+                                }
+                                st.main_pick.set(None);
+                            })),
+                    ),
+            )
+            .into_element()
+    })
+}
+
+fn dialog_button(label: &'static str, primary: bool, on: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .h(px(30.0))
+        .px_3()
+        .rounded(px(15.0))
+        .items_center()
+        .justify_center()
+        .bg(if primary { theme::TEXT } else { theme::SUBTLE })
+        .child(
+            text(label)
+                .text_size(px(13.0))
+                .text_color(if primary { theme::POPOVER } else { theme::TEXT }),
+        )
+        .on_press(on)
 }

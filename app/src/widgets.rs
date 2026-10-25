@@ -12,14 +12,13 @@ use crate::store::Art;
 use crate::theme;
 
 /// What a card turn carries into `CardShell` (shell.tsx:640): the
-/// artifact, the turn's label/version/caption/reaction and its index.
+/// artifact, the turn's label/version/caption and its index.
 #[derive(Clone, Default)]
 pub(crate) struct CardShell {
     pub art: Art,
     pub label: String,
     pub v: i64,
     pub caption: String,
-    pub reaction: String,
     pub i: i64,
     /// The turn's hover bar (☺ ↩ ⋯), mounted under the card.
     pub bar: Option<std::rc::Rc<dyn Fn() -> AnyElement>>,
@@ -30,7 +29,7 @@ pub(crate) struct CardShell {
 /// `w×h` and scaled to fit (shell.tsx:911): `min(1, 560/w, 560/h,
 /// (column-24)/w)`, so a narrow window never pushes it under the pane.
 pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
-    let CardShell { art, label, v, caption, reaction, i, bar } = shell;
+    let CardShell { art, label, v, caption, i, bar } = shell;
     let dw = if art.w > 0.0 { art.w as f32 } else { 480.0 };
     let dh = if art.h > 0.0 { art.h as f32 } else { (dw * 0.75).round() };
     // the measured column width; 0 until the first layout.
@@ -70,9 +69,8 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
         .border_1()
         .border_color(theme::BORDER_F)
         .p_3()
-        .when(!reaction.is_empty(), |v| {
-            v.child(crate::chat::tapback(i, reaction.clone(), true))
-        })
+        .child(crate::chat::highlight_ring(i, 16.0))
+        .child(crate::chat::reaction_badge(i, "msg".to_owned(), true))
         .child(
             view()
                 .flex_row()
@@ -178,22 +176,38 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
         })
         .child(
             // `self-start`, `iw + 24` wide: the card, then its bar row —
-            // `mt-1.5`, `minHeight 24`, the actions at the card's right
-            // edge (shell.tsx:1103).
+            // `mt-1.5`, `minHeight 24`, the actions on the left: the
+            // card's tapback sits at its top-right corner.
             view()
                 .w(move || px(iw() + 24.0))
                 .max_w(percentage(1.0))
                 .child(card)
                 .when(bar.is_some(), |c| {
                     let bar = bar.clone().unwrap_or_else(|| std::rc::Rc::new(|| view().into_element()));
+                    let app = art.app.clone();
+                    let app2 = art.app.clone();
+                    let status = move || store().card_status.with(|m| m.get(&app).cloned());
                     c.child(
                         view()
                             .mt(px(6.0))
                             .min_h(px(24.0))
                             .flex_row()
                             .items_center()
-                            .justify_end()
-                            .child(bar()),
+                            .child(bar())
+                            .child(view().flex_1())
+                            // `work` / `extra` (shell.tsx:1106): a retry's
+                            // phase, dim; a note ("↗ window opened"), green.
+                            .child(
+                                text(move || status().map(|(t, _)| t).unwrap_or_default())
+                                    .text_size(px(11.0))
+                                    .number_of_lines(1)
+                                    .text_color(move || {
+                                        let note = store()
+                                            .card_status
+                                            .with(|m| m.get(&app2).is_some_and(|(_, n)| *n));
+                                        if note { theme::UP } else { theme::DIM }
+                                    }),
+                            ),
                     )
                 }),
         )

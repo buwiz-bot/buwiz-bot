@@ -105,12 +105,10 @@ fn sidebar_toggle(w: f32, h: f32, radius: f32, plate: Plate) -> impl IntoElement
 /// into the sidebar color: `rgba(c,0.94) → 0.6@60% → 0` at the top,
 /// mirrored at the bottom (`0 → 0.6@40% → 0.94`).
 fn blur_edge(top: bool, h: f32) -> impl IntoElement {
-    let (a0, a1, a2) = if top {
-        (0.94, 0.6, 0.0)
-    } else {
-        (0.0, 0.6, 0.94)
-    };
-    let pos = if top { 0.6 } else { 0.4 };
+    // Grok Bot's list mask (`linear-gradient(transparent 0, #000 28px, …
+    // #000 calc(100% - 48px), transparent)`), drawn as the sidebar's color
+    // fading to clear over the list's edge.
+    let (a0, a2) = if top { (1.0, 0.0) } else { (0.0, 1.0) };
     view()
         .pointer_events(PointerEvents::None)
         .absolute()
@@ -125,11 +123,6 @@ fn blur_edge(top: bool, h: f32) -> impl IntoElement {
             theme::hsla(0.0, 0.0, 0.96, a0),
             theme::hsla(0.0, 0.0, 0.055, a0),
         ))
-        .gradient_via(theme::tone(
-            theme::hsla(0.0, 0.0, 0.96, a1),
-            theme::hsla(0.0, 0.0, 0.055, a1),
-        ))
-        .gradient_via_position(percentage(pos))
         .gradient_to(theme::tone(
             theme::hsla(0.0, 0.0, 0.96, a2),
             theme::hsla(0.0, 0.0, 0.055, a2),
@@ -517,16 +510,11 @@ fn full_sidebar() -> impl IntoElement {
         .border_r(px(0.5))
         .border_r_color(theme::BORDER_F)
         .child(
-            // Header (App.tsx:1950): traffic lights left, round controls
-            // right — toggle + New — floating over the list, which blurs
-            // as it scrolls under.
+            // Header: traffic lights left, round controls right — toggle +
+            // New — on the sidebar's own solid strip, as Grok Bot's: the
+            // list starts below it and never shows behind the lights.
             view()
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
                 .h(px(60.0))
-                .z_index(3)
                 .flex_row()
                 .items_center()
                 .justify_end()
@@ -539,13 +527,13 @@ fn full_sidebar() -> impl IntoElement {
         .child(
             view()
                 .flex_1()
-                // `blurEdge("top", TOP)` / `("bottom", 28)` (App.tsx:1964).
-                .child(blur_edge(true, 60.0))
-                .child(blur_edge(false, 28.0))
+                // The list's edges fade (Grok Bot's 28 / 48pt mask).
+                .child(blur_edge(true, 28.0))
+                .child(blur_edge(false, 48.0))
                 .child(
                     scroll().flex_1().child(
                         view()
-                            .pt(px(64.0))
+                            .pt(px(4.0))
                             .px(px(12.0))
                             .pb(px(32.0))
                             .gap(px(10.0))
@@ -589,6 +577,25 @@ fn full_sidebar() -> impl IntoElement {
                                             move || g3.get().2,
                                             |b| b.id.clone(),
                                             |b, _| bot_row(b),
+                                        )
+                                    },
+                                ))
+                        },
+                    ))
+                    // Mini Apps — apps pinned from their cards (⋯ → Pin to
+                    // Sidebar); only while there are any.
+                    .child(when(
+                        || !store().pinned_apps.get().is_empty(),
+                        || {
+                            view()
+                                .child(sec_header("__apps".to_owned(), "Mini Apps".to_owned(), None))
+                                .child(when(
+                                    || !collapsed("__apps"),
+                                    || {
+                                        each(
+                                            || store().pinned_apps.get(),
+                                            |p| p.app.clone(),
+                                            |p, _| pinned_app_row(p),
                                         )
                                     },
                                 ))
@@ -832,10 +839,6 @@ pub(crate) fn account_pop_layer() -> impl IntoElement {
                             ),
                     )
                     .child(divider())
-                    .child(pop_row("Mini Apps", "gpts", || {
-                        store().tab.set("work".to_owned());
-                        store().account_open.set(false);
-                    }))
                     .child(pop_row("Plugins", "plugins", || {
                         store().open_plugins();
                         store().account_open.set(false);
@@ -936,6 +939,59 @@ fn sec_header(
         })
 }
 
+/// A Mini Apps row: the app's `</>` tile on its hue and its title; a
+/// press opens it in its own window, the context menu shows the card in
+/// its chat or unpins it.
+fn pinned_app_row(p: ReadSignal<crate::store::PinnedApp>) -> impl IntoElement {
+    let p0 = p.get_untracked();
+    let (app, app_ctx) = (p0.app.clone(), p0.app.clone());
+    let hovered = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || {
+            let st = store();
+            if let Some(p) = st.pinned(&app) {
+                st.popout_sized(&p.app, p.w, p.h, false);
+            }
+        })
+        .on_context_menu(move |e: &ContextMenuEvent| {
+            crate::ctx::open(e, crate::ctx::pinned_items(&app_ctx))
+        })
+        .child(
+            view()
+                .size(px(36.0))
+                .rounded(px(9.0))
+                .bg(hue(crate::store::app_name(&p0.app)))
+                .items_center()
+                .justify_center()
+                .child(
+                    text("</>")
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+                ),
+        )
+        .child(
+            view()
+                .flex_1()
+                .child(
+                    text(move || p.get().title)
+                        .text_size(px(13.0))
+                        .text_color(theme::TEXT)
+                        .number_of_lines(1),
+                )
+                .child(text("Mini app").text_size(px(12.0)).text_color(theme::MUTED)),
+        )
+}
+
 fn thread_row(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
     let st = store();
     let id = t.get().id.clone();
@@ -1033,7 +1089,21 @@ fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .px_3()
                 .py(px(7.0))
                 .rounded(px(8.0))
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                // The open bot's row is lit, as a chat row is (Grok's
+                // active row).
+                .bg(move || {
+                    let open = {
+                        let tid = b.get().thread_id;
+                        !tid.is_empty() && store().active_id.get() == tid
+                    };
+                    if open {
+                        theme::ACTIVE
+                    } else if hovered.get() {
+                        theme::HOVER
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
                 .child(
                     // Grok's 36px cell holding the 44px BotAvatar
                     // (box = 44*0.82 = 36).
@@ -1058,6 +1128,7 @@ fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
                             })
                             .into_element()
                         }))
+                        .child(main_badge(b, 15.0))
                         // `FxOverlay` over a photo avatar while the run's
                         // morph is ambient-backed.
                         .child(when(
@@ -1124,6 +1195,34 @@ fn bot_row(b: ReadSignal<RoxBot>) -> impl IntoElement {
 /// `pinTile` (App.tsx:1108) — a pinned bot's 95×92 tile: the 72px mark in
 /// a 60px cell (with the `:pin` gaze), the ambient overlay over a photo,
 /// and the name under it.
+/// The primary Bot's star (Grok Bot's "Main Bot" badge): an orange disc
+/// ringed in the page color on the avatar's bottom-right.
+fn main_badge(b: ReadSignal<RoxBot>, size: f32) -> impl IntoElement {
+    when(
+        move || store().is_main_bot(&b.get().id),
+        move || {
+            view()
+                .absolute()
+                .right(px(-2.0))
+                .bottom(px(-2.0))
+                .size(px(size))
+                .rounded(px(size / 2.0))
+                .items_center()
+                .justify_center()
+                .bg(theme::tone(theme::hsla(0.098, 0.92, 0.52, 1.0), theme::hsla(0.098, 0.92, 0.52, 1.0)))
+                .border(px(1.5))
+                .border_color(theme::SIDEBAR)
+                .label("Main Bot")
+                .child(
+                    text("★")
+                        .text_size(px(size * 0.6))
+                        .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+                )
+                .into_element()
+        },
+    )
+}
+
 fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
     let name = b0.name.clone();
@@ -1176,6 +1275,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                     })
                     .into_element()
                 }))
+                .child(main_badge(b, 20.0))
                 .child(when(
                     move || {
                         !b.get().image.is_empty()
@@ -1197,6 +1297,18 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .number_of_lines(1)
                 .max_w(px(79.0)),
         )
+        // Its label under the name (Grok Bot's tile).
+        .child(when(
+            move || !b.get().label.is_empty(),
+            move || {
+                text(move || b.get().label)
+                    .text_size(px(11.0))
+                    .text_color(theme::MUTED)
+                    .number_of_lines(1)
+                    .max_w(px(79.0))
+                    .into_element()
+            },
+        ))
         .on_hover_in(move || {
             let st = store();
             let seq = st.pop_seq.get() + 1;
