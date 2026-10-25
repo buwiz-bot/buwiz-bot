@@ -4898,6 +4898,33 @@ impl Store {
         });
     }
 
+    /// View Code: mini app `key`'s source in the file viewer, highlighted
+    /// like any code file — `R<n>` its current version, a card's
+    /// `R<n>@v<k>` the version it shows. `file` names it (else the
+    /// Library's file name, else `R<n>.tsx`).
+    pub fn view_code(&'static self, key: &str, file: &str) {
+        let name = app_name(key);
+        let file = Some(file.to_owned())
+            .filter(|f| !f.is_empty())
+            .or_else(|| {
+                self.thread_apps
+                    .with_untracked(|v| v.iter().find(|a| a.app == name).map(|a| a.filename.clone()))
+            })
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| format!("{name}.tsx"));
+        let label = match key.split_once("@v") {
+            Some((_, v)) => format!("{file} · v{v}"),
+            None => file,
+        };
+        self.open_file(&Attach {
+            kind: "text".into(),
+            path: format!("app:{key}"),
+            name: label,
+            ext: "tsx".into(),
+            ..Default::default()
+        });
+    }
+
     /// `saveFile(f)` — the download button posts `/file/save`.
     pub fn save_file(&'static self, path: &str) {
         client::post_bg(
