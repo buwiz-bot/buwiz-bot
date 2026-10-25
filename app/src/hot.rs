@@ -172,169 +172,14 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
-    // details, theme, the New-Bot sheet, the work tab, dictation demo,
-    // ⌘R reload (the web app's reload) and mod+1…9 chat switching.
-    on_key("mod+k", |_| store().toggle_palette());
-    // Grok Bot's page zoom: ⌘= / ⌘+ larger, ⌘- smaller, ⌘0 back to 100%.
-    on_key("mod+plus", |_| store().zoom_step(1));
-    on_key("mod+shift+plus", |_| store().zoom_step(1));
-    on_key("mod+minus", |_| store().zoom_step(-1));
-    on_key("mod+0", |_| store().zoom_step(0));
-    on_key("mod+r", |_| store().reset_fresh());
-    on_key("mod+b", |_| store().side_shown.update(|v| *v = !*v));
-    on_key("mod+shift+h", |_| {
-        let st = store();
-        st.side_shown.set(true);
-        st.side_mode
-            .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned());
-    });
-    on_key("mod+shift+b", |_| store().right_open.update(|v| *v = !*v));
-    on_key("mod+t", |_| {
-        let st = store();
-        st.set_theme(st.next_theme());
-    });
-    on_key("mod+n", |_| store().bot_modal.set(true));
-    // ⌘⇧N — a new plain chat (the compose menu's "New chat").
-    on_key("mod+shift+n", |_| store().new_thread());
-    on_key("mod+d", |_| store().dictate_stub());
-    // ⌘⇧R toggles the ra-jit stats pill (a dev HUD, not in the TSX).
+    // The keyboard: every shortcut is a command in `keys` (mounted at the
+    // root, remappable in Settings › Keyboard). Back / forward (⌘[ / ⌘])
+    // walk the places `history` records.
+    crate::history::track();
+    crate::keys::track_sel();
+    // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`)
     let live_bar_show = crate::live::keep("rox.livebar.show", || true);
-    on_key("mod+shift+r", move |_| live_bar_show.update(|v| *v = !*v));
-    on_key("escape", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            st.close_palette();
-        }
-        st.bot_modal.set(false);
-        st.vers_pop.set(None);
-        st.app_details.set(None);
-        st.main_pick.set(None);
-        st.avatar_editing.set(false);
-        // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
-        st.light_close();
-        st.viewing.set(None);
-        crate::models::close();
-        crate::composer::plus_menu().set(None);
-        // the plugins modal pops a page, or closes at the market page.
-        if st.plugins_open.get_untracked() {
-            if st.plugin_nav.get_untracked().len() > 1 {
-                st.pop_nav();
-            } else {
-                st.close_plugins();
-            }
-        }
-    });
-    // lightbox prev/next + table navigation / TSV copy — the viewer's
-    // keydown listener (fileviewer.tsx:783).
-    on_key("left", |_| {
-        let st = store();
-        if !st.light_items.get_untracked().is_empty() {
-            st.light_step(-1);
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, -1, false);
-        }
-    });
-    on_key("right", |_| {
-        let st = store();
-        if !st.light_items.get_untracked().is_empty() {
-            st.light_step(1);
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, 1, false);
-        }
-    });
-    on_key("up", |_| {
-        let st = store();
-        // palette.tsx:33 — the palette's arrow nav first.
-        if st.palette.get_untracked() {
-            let n = st.palette_results().len();
-            if n > 0 {
-                st.palette_sel.update(|i| *i = (*i + n as i64 - 1) % n as i64);
-            }
-        // the search combo's arrow nav (App.tsx:1416) rides the same
-        // keys while the drop is open.
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            let n = st.plugin_list().len();
-            if n > 0 {
-                st.drop_sel.update(|i| *i = (*i + n - 1) % n);
-            }
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(-1, 0, false);
-        }
-    });
-    on_key("down", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            let n = st.palette_results().len();
-            if n > 0 {
-                st.palette_sel.update(|i| *i = (*i + 1) % n as i64);
-            }
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            let n = st.plugin_list().len();
-            if n > 0 {
-                st.drop_sel.update(|i| *i = (*i + 1) % n);
-            }
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(1, 0, false);
-        }
-    });
-    on_key("enter", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            st.palette_run_at(st.palette_sel.get_untracked() as usize);
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            st.drop_choose();
-        }
-    });
-    on_key("shift+left", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, -1, true);
-        }
-    });
-    on_key("shift+right", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, 1, true);
-        }
-    });
-    on_key("shift+up", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(-1, 0, true);
-        }
-    });
-    on_key("shift+down", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(1, 0, true);
-        }
-    });
-    on_key("mod+c", |_| {
-        let st = store();
-        if st.sel_b.get_untracked().is_some() {
-            st.copy_sel();
-        }
-    });
-    // `mod+1…9` (App.tsx:797) — the visible sidebar order: pinned,
-    // groups' bots by latest interaction, bots without a group, then
-    // chats. While
-    // the palette has a query they run that result instead
-    // (palette.tsx:48).
-    for k in 1..=9u8 {
-        on_key(&format!("mod+{k}"), move |_| {
-            let st = store();
-            if st.palette.get_untracked() {
-                if !st.palette_q.get_untracked().trim().is_empty() {
-                    st.palette_run_at((k - 1) as usize);
-                }
-                return;
-            }
-            if let Some(id) = st.shortcut_threads().get((k - 1) as usize) {
-                st.open_thread(id.clone());
-            }
-        });
-    }
+    store().livebar.set(Some(live_bar_show));
 
     // Appearance follows `themePref` (theme.ts): System resolves to the
     // OS scheme inside the engine.
@@ -542,9 +387,6 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         )
         // The emoji pill (zIndex 49) rides under the ctx menu (51).
         .child(chat::pill_layer())
-        .child(ctx::layer())
-        .child(ctx::prompt_layer())
-        .child(ctx::color_layer())
         .child(sidebar::rail_pop_layer())
         .child(sidebar::account_pop_layer())
         .child(pane::rename_overlay())
@@ -559,6 +401,13 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(files::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
+        // above every modal: Settings, then the menus and their prompts
+        // (a menu opened from the viewer or a modal shows over it)
+        .child(crate::botdetails::layer())
+        .child(crate::settings::layer())
+        .child(ctx::layer())
+        .child(ctx::prompt_layer())
+        .child(ctx::color_layer())
         .child(stats_bar(remount, note, live_bar_show))
 }
 

@@ -1531,7 +1531,10 @@ pub(crate) fn layer() -> impl IntoElement {
         let body: AnyElement = if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
             unavailable(&f, "Couldn't load preview", &r.unwrap().error).into_element()
         } else if !office.is_empty() {
+            let page = element_ref();
+            OFFICE_PAGE.with(|p| p.set(Some(page)));
             web_view(format!("{}{office}", crate::client::GEN))
+                .element_ref(&page)
                 .flex_1()
                 // shows through the (transparent) WKWebView until the editor
                 // paints: light is the editor page's own `#f5f5f5` body.
@@ -1750,6 +1753,20 @@ pub(crate) fn layer() -> impl IntoElement {
                                 .collect::<Vec<_>>(),
                         ))
                     })
+                    // a mini app's code: the version shown, a menu of the others
+                    .child(version_chip(f.clone()))
+                    // ⌘K: the file's actions
+                    .child(
+                        view()
+                            .label("File actions")
+                            .size(px(32.0))
+                            .rounded(px(16.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(tc("#f5f5f50f"))
+                            .child(text("⋯").text_size(px(15.0)).text_color(tc("#f5f5f5a8")))
+                            .on_press(viewer_actions),
+                    )
                     .child(
                         view()
                             .label("Download")
@@ -2307,4 +2324,244 @@ fn audio_player_view(f: &Attach) -> impl IntoElement {
                         .on_press(move || a.muted.update(|m| *m = !*m)),
                 ),
         )
+}
+
+// ——————————————— the viewer's versions and actions (⌘K) ———————————————
+
+thread_local! {
+    /// The viewer's Office editor page, while one shows (its Save).
+    static OFFICE_PAGE: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
+}
+
+/// The open file's versions: (its key — a mini app's name, a file's own
+/// path —, versions oldest first, the current one). Filled by
+/// `Store::view_code` and, for a file, `load_file_versions`.
+pub(crate) fn viewer_versions() -> Signal<(String, Vec<i64>, i64)> {
+    store().viewer_versions
+}
+
+/// A saved file's version path (`.versions/<path>/v<n>.<ext>`): the file's
+/// own path and the number.
+fn file_version(path: &str) -> Option<(String, i64)> {
+    let rest = path.strip_prefix(".versions/")?;
+    let (rel, last) = rest.rsplit_once('/')?;
+    let n = last.strip_prefix('v')?.split('.').next()?.parse().ok()?;
+    Some((rel.to_owned(), n))
+}
+
+/// What the viewer shows, versioned: its key and the version shown (the
+/// current one when the path names none).
+fn shown_version(f: &Attach) -> Option<(String, i64)> {
+    let (key, v) = if let Some(key) = f.path.strip_prefix("app:") {
+        match key.split_once("@v") {
+            Some((n, v)) => (n.to_owned(), v.parse().ok()),
+            None => (key.to_owned(), None),
+        }
+    } else if let Some((rel, n)) = file_version(&f.path) {
+        (rel, Some(n))
+    } else {
+        (f.path.clone(), None)
+    };
+    let (shown, _, head) = viewer_versions().get_untracked();
+    let v = v.unwrap_or(if shown == key { head } else { 0 });
+    Some((key, v))
+}
+
+/// The file (or mini app code) at version `v` of `key`, for the viewer.
+fn open_version(f: &Attach, key: &str, v: i64, head: i64) {
+    let st = store();
+    if f.path.starts_with("app:") {
+        let k = if v == head { key.to_owned() } else { format!("{key}@v{v}") };
+        st.view_code(&k, &f.name);
+        return;
+    }
+    let path = if v == head {
+        key.to_owned()
+    } else {
+        let ext = key.rsplit_once('.').map(|(_, e)| e).unwrap_or("bin");
+        format!(".versions/{key}/v{v}.{ext}")
+    };
+    st.open_file(&Attach { path, ..f.clone() });
+}
+
+/// Fetches the versions of the reply file at `path` (`GET /file/versions`).
+pub(crate) fn load_file_versions(path: &str) {
+    let key = file_version(path).map(|(rel, _)| rel).unwrap_or_else(|| path.to_owned());
+    spawn(async move {
+        let url = format!("/file/versions?path={}", crate::client::urlenc(&key));
+        let Some(v) = crate::client::get(&url).await else { return };
+        let vs: Vec<i64> = v
+            .get("versions")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.get("v")?.as_i64()).collect())
+            .unwrap_or_default();
+        let head = v.get("v").and_then(|x| x.as_i64()).unwrap_or(0);
+        viewer_versions().set((key, vs, head));
+    });
+}
+
+/// The version menu's rows for the viewer's file.
+fn version_items(f: &Attach) -> Vec<crate::store::CtxItem> {
+    let Some((key, shown)) = shown_version(f) else { return Vec::new() };
+    let (k, vs, head) = viewer_versions().get_untracked();
+    if k != key {
+        return Vec::new();
+    }
+    vs.iter()
+        .rev()
+        .map(|v| {
+            let label = if *v == head { format!("v{v} · current") } else { format!("v{v}") };
+            crate::store::CtxItem::row(&label, "history", "viewer-version", v.to_string()).on(*v == shown)
+        })
+        .collect()
+}
+
+/// A version picked from the viewer's menu.
+pub(crate) fn viewer_open_version(v: i64) {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let Some((key, _)) = shown_version(&f) else { return };
+    let (k, _, head) = viewer_versions().get_untracked();
+    if k == key {
+        open_version(&f, &key, v, head);
+    }
+}
+
+/// ⌘⇧[ / ⌘⇧]: the viewer's file one version older (-1) or newer.
+pub(crate) fn viewer_version_step(d: i64) {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let Some((key, shown)) = shown_version(&f) else { return };
+    let (k, vs, head) = viewer_versions().get_untracked();
+    if k != key || vs.is_empty() {
+        return;
+    }
+    let at = vs.iter().position(|v| *v == shown).unwrap_or(vs.len() - 1) as i64;
+    let next = vs[(at + d).clamp(0, vs.len() as i64 - 1) as usize];
+    if next != shown {
+        open_version(&f, &key, next, head);
+    }
+}
+
+/// Whether the viewer shows an Office document in its editor.
+fn office_open() -> bool {
+    store().rendered.get_untracked().is_some_and(|r| !r.office.is_empty())
+}
+
+/// ⌘S in the viewer: an Office document saves through its editor — the
+/// file gets the edits, and the save becomes its next version — then the
+/// version list catches up.
+pub(crate) fn viewer_save() {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    if !office_open() {
+        return;
+    }
+    if let Some(page) = OFFICE_PAGE.with(std::cell::Cell::get) {
+        page.inject_java_script("window.roxSave && window.roxSave(); true;");
+    }
+    let path = f.path.clone();
+    spawn(async move {
+        timer(std::time::Duration::from_millis(1500)).await;
+        load_file_versions(&path);
+        store().refresh_thread_apps();
+    });
+}
+
+/// What Print can do with the open file: text (code, markdown, JSON,
+/// HTML source) or an image.
+fn printable(f: &Attach) -> Option<&'static str> {
+    match f.kind.as_str() {
+        "image" => Some("image"),
+        "text" | "markdown" | "json" | "html" | "docx" => Some("text"),
+        _ => None,
+    }
+}
+
+/// ⌘P in the viewer: the system print panel for the file's text or
+/// image; a file Rox can't lay out (PDF, slides, sheets) opens in its own
+/// app, which prints it.
+pub(crate) fn viewer_print() {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    match printable(&f) {
+        Some("image") => crate::keys::print("image", Store::file_raw_url(&f.path), &f.name),
+        Some(_) => {
+            let r = st.rendered.get_untracked();
+            let text = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_else(|| {
+                r.as_ref()
+                    .map(|r| {
+                        r.lines
+                            .iter()
+                            .map(|l| l.iter().map(|(t, _, _)| t.as_str()).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default()
+            });
+            if !text.is_empty() {
+                crate::keys::print("text", text, &f.name);
+            }
+        }
+        _ => st.open_externally(&f.path),
+    }
+}
+
+/// ⌘K in the viewer: the file's actions — its versions (a mini app's
+/// code), Print, Download, open in its own app, copy its name, close.
+pub(crate) fn viewer_actions() {
+    use crate::store::CtxItem;
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let mut items = Vec::new();
+    let versions = version_items(&f);
+    if versions.len() > 1 {
+        items.push(CtxItem::parent("Versions", "history", versions));
+        items.push(CtxItem::separator());
+    }
+    if office_open() {
+        items.push(CtxItem::row("Save as New Version", "download", "viewer-save", String::new()));
+    }
+    if printable(&f).is_some() {
+        items.push(CtxItem::row("Print…", "document", "viewer-print", String::new()));
+    }
+    items.push(CtxItem::row("Download", "download", "viewer-download", String::new()));
+    if !f.path.starts_with("app:") {
+        items.push(CtxItem::row("Open in Its App", "popout", "viewer-open", String::new()));
+    }
+    items.push(CtxItem::row("Copy File Name", "copy", "copy", f.name.clone()));
+    items.push(CtxItem::separator());
+    items.push(CtxItem::row("Close", "close", "viewer-close", String::new()));
+    let win = window();
+    crate::ctx::open_at(win.width.0 - 240.0, 56.0, items);
+}
+
+/// The viewer header's version chip for a mini app's code ("v2 ▾"; its
+/// menu lists every version) — nothing for other files or a single
+/// version.
+fn version_chip(f: Attach) -> impl IntoElement {
+    dynamic(move || {
+        let (app, vs, _) = viewer_versions().get();
+        let Some((name, shown)) = shown_version(&f) else { return view().into_element() };
+        if app != name || vs.len() < 2 {
+            return view().into_element();
+        }
+        let f2 = f.clone();
+        view()
+            .label("Versions")
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .h(px(28.0))
+            .px_3()
+            .rounded(px(14.0))
+            .bg(tc("#f5f5f50f"))
+            .child(text(format!("v{shown}")).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+            .child(text("▾").text_size(px(10.0)).text_color(tc("#f5f5f58f")))
+            .on_press(move || {
+                let win = window();
+                crate::ctx::open_at(win.width.0 - 300.0, 52.0, version_items(&f2));
+            })
+            .into_element()
+    })
 }

@@ -272,6 +272,8 @@ pub struct RoxBot {
     pub instructions: String,
     pub memories: Vec<BotMemory>,
     pub integrations: Vec<BotIntegration>,
+    /// Its last edit (Bot Details' "Last updated"), epoch ms; 0 if never.
+    pub updated_at: f64,
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -1078,6 +1080,9 @@ pub struct PaletteItem {
 #[derive(Clone, PartialEq)]
 pub enum PaletteAct {
     BotModal,
+    /// The current bot's details: view (false) or edit (true).
+    BotDetails(bool),
+    Settings,
     NewChat,
     Theme(&'static str),
     /// A mini app in a sidebar group: open it in its window.
@@ -1099,6 +1104,15 @@ pub struct BotIntegration {
     pub id: String,
     pub name: String,
     pub kind: String,
+    /// What it does and its logo (`/plugins/icon/…`, "" when none).
+    pub description: String,
+    pub icon: String,
+}
+
+impl BotIntegration {
+    pub fn of(i: &serde_json::Value) -> Self {
+        Self { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind"), description: s(i, "description"), icon: s(i, "icon") }
+    }
 }
 
 /// The composer reply target. `files` are what the replied-to message
@@ -1507,6 +1521,12 @@ pub struct Store {
 
     /// Overlays.
     pub ctx: Signal<Option<CtxMenu>>,
+    /// The open menu's keyboard state: the row whose flyout is open (-1
+    /// none), whether the keys act in that flyout, the highlighted row of
+    /// the card the keys act in (-1 none).
+    pub ctx_sub: Signal<i64>,
+    pub ctx_in_sub: Signal<bool>,
+    pub ctx_sel: Signal<i64>,
     pub palette: Signal<bool>,
     /// `query`/`sel` — the ⌘K palette's search text + keyboard index
     /// (palette.tsx:22-23).
@@ -1560,6 +1580,47 @@ pub struct Store {
     pub group_prompt: Signal<Option<GroupPrompt>>,
     /// The prompt's draft.
     pub group_name: Signal<String>,
+    /// The user's keyboard shortcuts: command id → keystrokes, only those
+    /// changed from the defaults (`keymap.json`, `GET/POST /keymap`).
+    pub keymap: Signal<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Bot Details: the bot and mode, its page stack ("main", "context",
+    /// "integrations", "add", "memory:<id>"), and the edit drafts.
+    pub bot_details: Signal<Option<crate::botdetails::BotDetails>>,
+    pub bd_nav: Signal<Vec<String>>,
+    pub bd_desc: Signal<String>,
+    pub bd_instr: Signal<String>,
+    pub bd_mem: Signal<String>,
+    /// Settings (⌘,) and its open page ("keyboard").
+    pub settings_open: Signal<bool>,
+    pub settings_page: Signal<String>,
+    /// Settings › Keyboard is recording a key for (command id, slot).
+    pub key_record: Signal<Option<(String, usize)>>,
+    /// The open chat's message position (its turn index), for ⌘↑ / ⌘↓,
+    /// ⌘U and ⌘Y: kept per chat (`sel_marks`), moved by a link to a
+    /// message and, after a scroll settles, to the bottom message in view.
+    /// The ring shows only while the keys walk it (`sel_shown`).
+    pub sel_msg: Signal<Option<i64>>,
+    pub sel_shown: Signal<bool>,
+    pub sel_marks: std::cell::RefCell<std::collections::BTreeMap<String, i64>>,
+    /// When the keys last moved the position (their scroll isn't the
+    /// user's).
+    pub sel_stepped: std::cell::Cell<Option<std::time::Instant>>,
+    /// The selected message's ring, for placing its menu (⌘U).
+    pub sel_ring: std::cell::Cell<Option<ElementRef>>,
+    /// Settings › Keyboard's search and its last note; the highlighted
+    /// shortcut (-1 none) and `$` suggestion.
+    pub settings_query: Signal<String>,
+    pub settings_sel: Signal<i64>,
+    pub settings_sug: Signal<i64>,
+    pub settings_note: Signal<String>,
+    /// The last menu action asked for, numbered (`rox/keys` sends it).
+    pub keys_send: Signal<(u64, String)>,
+    /// The last print job, numbered: (n, "text" | "image", payload, title).
+    pub keys_print: Signal<(u64, String, String, String)>,
+    /// The viewer's mini app code: (app, its versions, the current one).
+    pub viewer_versions: Signal<(String, Vec<i64>, i64)>,
+    /// The ra-jit stats pill's switch (⌘⇧R), set by the hot area.
+    pub livebar: std::cell::Cell<Option<Signal<bool>>>,
     /// Color › Custom…: the group whose color is being picked, and the
     /// picker's `#rrggbb` draft.
     pub color_edit: Signal<Option<String>>,
@@ -1836,8 +1897,33 @@ impl Store {
             lib_filter: signal("all".to_owned()),
             tab: signal("chat".to_owned()),
             ctx: signal(None),
+            ctx_sub: signal(-1),
+            ctx_in_sub: signal(false),
+            ctx_sel: signal(-1),
             group_prompt: signal(None),
             group_name: signal(String::new()),
+            keymap: signal(Default::default()),
+            bot_details: signal(None),
+            bd_nav: signal(vec!["main".to_owned()]),
+            bd_desc: signal(String::new()),
+            bd_instr: signal(String::new()),
+            bd_mem: signal(String::new()),
+            settings_open: signal(false),
+            settings_page: signal("keyboard".to_owned()),
+            key_record: signal(None),
+            sel_msg: signal(None),
+            sel_shown: signal(false),
+            sel_marks: Default::default(),
+            sel_stepped: std::cell::Cell::new(None),
+            sel_ring: std::cell::Cell::new(None),
+            settings_query: signal(String::new()),
+            settings_sel: signal(-1),
+            settings_sug: signal(0),
+            settings_note: signal(String::new()),
+            keys_send: signal((0, String::new())),
+            keys_print: signal((0, String::new(), String::new(), String::new())),
+            viewer_versions: signal((String::new(), Vec::new(), 0)),
+            livebar: std::cell::Cell::new(None),
             color_edit: signal(None),
             color_draft: signal(String::new()),
             unassigned_name: signal("Unassigned".to_owned()),
@@ -2036,6 +2122,9 @@ impl Store {
             if let Some(v) = client::get("/models").await {
                 self.set_models(v);
             }
+            if let Some(v) = client::get("/keymap").await {
+                self.keymap.set(crate::keys::overrides_of(&v));
+            }
             if let Some(v) = client::get("/prefs").await {
                 if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                     self.model.set(m.to_owned());
@@ -2213,8 +2302,9 @@ impl Store {
                         .collect(),
                     integrations: list(b, "integrations")
                         .iter()
-                        .map(|i| BotIntegration { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind") })
+                        .map(BotIntegration::of)
                         .collect(),
+                    updated_at: f64of(b, "updated_at"),
                 })
                 .collect(),
             );
@@ -2624,6 +2714,11 @@ impl Store {
         };
         items.push(action("New Chat", "", "newChat", false, PaletteAct::NewChat));
         items.push(action("New Bot", "", "newChat", false, PaletteAct::BotModal));
+        if let Some(b) = self.active_bot() {
+            items.push(action("Bot Details (current)", &b.name, "panel", false, PaletteAct::BotDetails(false)));
+            items.push(action("Edit Bot Details (current)", &b.name, "edit", false, PaletteAct::BotDetails(true)));
+        }
+        items.push(action("Settings", "Keyboard shortcuts", "settings", false, PaletteAct::Settings));
         items.push(action("Theme: System", "Settings · Appearance", "systemTheme", pref == "system", PaletteAct::Theme("system")));
         items.push(action("Theme: Light", "Settings · Appearance", "sun", pref == "light", PaletteAct::Theme("light")));
         items.push(action("Theme: Dark", "Settings · Appearance", "moon", pref == "dark", PaletteAct::Theme("dark")));
@@ -2655,6 +2750,8 @@ impl Store {
         self.close_palette();
         match it.act {
             PaletteAct::BotModal => self.bot_modal.set(true),
+            PaletteAct::BotDetails(edit) => crate::botdetails::open_current(edit),
+            PaletteAct::Settings => crate::settings::toggle(),
             PaletteAct::NewChat => self.new_thread(),
             PaletteAct::Theme(t) => self.set_theme(t),
             PaletteAct::App(app) => self.popout(&app),
@@ -4749,6 +4846,12 @@ impl Store {
                 if let Some(v) = patch.get("fast").and_then(|x| x.as_bool()) {
                     b.fast = v;
                 }
+                if let Some(v) = patch.get("description").and_then(|x| x.as_str()) {
+                    b.description = v.to_owned();
+                }
+                if let Some(v) = patch.get("instructions").and_then(|x| x.as_str()) {
+                    b.instructions = v.to_owned();
+                }
             }
         });
         // The slim `bot` embedded on each `/threads` row carries
@@ -4873,6 +4976,10 @@ impl Store {
         }
         self.viewing.set(Some(f.clone()));
         self.rendered.set(None);
+        // a reply file's saved versions (a mini app's come with View Code)
+        if !f.path.starts_with("app:") {
+            crate::files::load_file_versions(&f.path);
+        }
         self.sheet_idx.set(0);
         self.html_mode.set("preview".to_owned());
         self.sel_a.set(None);
@@ -4898,6 +5005,42 @@ impl Store {
         });
     }
 
+    /// Moves the open chat's message position to turn `i`, showing its
+    /// ring (`shown`) or not, and remembers it for that chat.
+    pub fn set_sel(&'static self, i: i64, shown: bool) {
+        let chat = self.active_id.get_untracked();
+        self.sel_marks.borrow_mut().insert(chat, i);
+        batch(|| {
+            self.sel_msg.set(Some(i));
+            self.sel_shown.set(shown);
+        });
+    }
+
+    /// Reply to turn `i` (⌘Y), as its ↩ does: a card's reply names it
+    /// (`app · <title> v<n>`, `image · …`) and sends its module along.
+    pub fn reply_to_turn(&'static self, i: i64) {
+        let tr = self.turns.get_untracked();
+        let Some(tt) = tr.iter().find(|x| x.i == i) else { return };
+        let label = match &tt.art {
+            Some(a) => format!(
+                "{} · {}{}",
+                if a.kind == "image" { "image" } else { "app" },
+                if a.title.is_empty() { &tt.name } else { &a.title },
+                if tt.v > 0 { format!(" v{}", tt.v) } else { String::new() }
+            ),
+            None if !tt.text.is_empty() => tt.text.chars().take(120).collect(),
+            None if !tt.caption.is_empty() => tt.caption.chars().take(120).collect(),
+            None => tt.name.clone(),
+        };
+        let files = tt
+            .art
+            .as_ref()
+            .filter(|a| !a.app.is_empty())
+            .map(|a| vec![format!("module://{}", a.app)])
+            .unwrap_or_default();
+        self.reply_to.set(Some(ReplyTo { i: tt.i, name: tt.name.clone(), text: label, files }));
+    }
+
     /// View Code: mini app `key`'s source in the file viewer, highlighted
     /// like any code file — `R<n>` its current version, a card's
     /// `R<n>@v<k>` the version it shows. `file` names it (else the
@@ -4912,17 +5055,28 @@ impl Store {
             })
             .filter(|f| !f.is_empty())
             .unwrap_or_else(|| format!("{name}.tsx"));
-        let label = match key.split_once("@v") {
-            Some((_, v)) => format!("{file} · v{v}"),
-            None => file,
-        };
         self.open_file(&Attach {
             kind: "text".into(),
             path: format!("app:{key}"),
-            name: label,
+            name: file,
             ext: "tsx".into(),
             ..Default::default()
         });
+        // the version picker's list (`/artifact/info`'s history)
+        let name = name.to_owned();
+        spawn_detached(async move {
+            let Some(v) = client::get(&format!("/artifact/info?id={name}")).await else { return };
+            let mut vs: Vec<i64> = list(&v, "history").iter().filter_map(|h| h.get("v")?.as_i64()).collect();
+            vs.sort_unstable();
+            let head = v.get("v").and_then(|x| x.as_i64()).unwrap_or(0);
+            crate::files::viewer_versions().set((name, vs, head));
+        });
+    }
+
+    /// Opens a reply's file in its own app (Preview, Pages, Keynote, …):
+    /// `POST /file/open`.
+    pub fn open_externally(&'static self, path: &str) {
+        client::post_bg("/file/open".to_owned(), serde_json::json!({ "path": path }));
     }
 
     /// `saveFile(f)` — the download button posts `/file/save`.
@@ -5377,6 +5531,29 @@ impl Store {
         );
     }
 
+    /// Adds a memory to bot `id` ("" `memory_id`) or rewrites one
+    /// (`POST /bot/memory`); the list comes back from the server.
+    pub fn save_memory(&'static self, id: &str, memory_id: &str, text: &str) {
+        let body = if memory_id.is_empty() {
+            serde_json::json!({ "id": id, "op": "add", "text": text })
+        } else {
+            serde_json::json!({ "id": id, "op": "update", "memoryId": memory_id, "text": text })
+        };
+        let id = id.to_owned();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let Some(r) = client::post("/bot/memory", body).await else { return };
+                let list: Vec<BotMemory> =
+                    self::list(&r, "memories").iter().map(|m| BotMemory { id: s(m, "id"), text: s(m, "text") }).collect();
+                self.bots.update(|bots| {
+                    if let Some(b) = bots.iter_mut().find(|b| b.id == id) {
+                        b.memories = list;
+                    }
+                });
+            })
+        });
+    }
+
     /// Forgets memory `memory_id` of bot `id` (`POST /bot/memory`).
     pub fn forget_memory(&'static self, id: &str, memory_id: &str) {
         let (id, memory_id) = (id.to_owned(), memory_id.to_owned());
@@ -5406,7 +5583,7 @@ impl Store {
                 let Some(r) = r else { return };
                 let list: Vec<BotIntegration> = self::list(&r, "integrations")
                     .iter()
-                    .map(|i| BotIntegration { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind") })
+                    .map(BotIntegration::of)
                     .collect();
                 self.bots.update(|bots| {
                     if let Some(b) = bots.iter_mut().find(|b| b.id == id) {
@@ -5900,6 +6077,8 @@ impl Store {
     /// Rings turn `i` (Grok Bot's `data-highlighted` row): 1.3s, then a
     /// 0.4s fade.
     pub fn flash(&'static self, i: i64) {
+        // a link's message is where the keys start from next
+        self.set_sel(i, false);
         self.highlight.set(Some(i));
         self.highlight_on.set(true);
         Owner::detached().run(|| {

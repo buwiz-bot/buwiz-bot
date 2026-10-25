@@ -360,11 +360,26 @@ fn input_area() -> impl IntoElement {
         .child(right_controls())
 }
 
+thread_local! {
+    /// The message field, for ⌘L.
+    static FIELD: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
+}
+
+/// ⌘L: the keyboard into the message field (Grok Bot's).
+pub(crate) fn focus() {
+    if let Some(field) = FIELD.with(std::cell::Cell::get) {
+        field.focus();
+    }
+}
+
 /// `Input` — 14/20, capped at 6 lines; short drafts keep one row
 /// between + and the controls, tall ones go full width above the
 /// controls band (App.tsx:2275).
 fn the_input() -> Input {
+    let field = element_ref();
+    FIELD.with(|f| f.set(Some(field)));
     input()
+        .element_ref(&field)
         .label("Message input")
         .value(move || store().draft.get())
         .multiline(true)

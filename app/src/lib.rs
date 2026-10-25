@@ -12,6 +12,7 @@
 
 mod appdetails;
 mod avatar;
+mod botdetails;
 mod botmodal;
 mod chat;
 mod client;
@@ -19,8 +20,10 @@ mod composer;
 mod ctx;
 mod dotgrid;
 mod files;
+mod history;
 mod hot;
 mod icons;
+pub mod keys;
 pub mod live;
 mod mark;
 mod md;
@@ -29,6 +32,7 @@ pub mod mini;
 mod models;
 mod palette;
 mod pane;
+mod settings;
 mod plugins;
 mod sidebar;
 mod statusfx;
@@ -113,4 +117,8 @@ pub fn App() -> impl IntoElement {
         // ⌘= / ⌘- / ⌘0: the window's zoom (outside the hot area, so a
         // remount never drops it).
         .child(zoom::zoom_host())
+        // the keymap's AppKit side (menu keys, actions, the recorder,
+        // printing) and its bindings
+        .child(keys::host())
+        .child(keys::bindings())
 }
