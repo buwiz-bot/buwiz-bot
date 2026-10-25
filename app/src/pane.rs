@@ -31,8 +31,10 @@ pub(crate) fn pane() -> impl IntoElement {
     view()
         .w(px(W))
         .h_full()
-        .bg(theme::CARD)
-        .border_l_1()
+        // `tc("#121212")` — #121212 on dark, white on light (App.tsx:2469);
+        // CARD (#1f1f1f) only matched on light. 0.5pt hairline like Grok's.
+        .bg(theme::PANE)
+        .border_l(px(0.5))
         .border_l_color(theme::BORDER_F)
         .child(top_bar())
         .child(
@@ -64,6 +66,7 @@ fn top_bar() -> impl IntoElement {
         .gap_2()
         .px_3()
         .h(px(TOP))
+        .window_drag(true)
         .child(pane_circle_btn("theme", || {
             // App.tsx:2492 — the pref's own icon, not the resolved scheme.
             match store().theme_pref.get().as_str() {
@@ -95,10 +98,12 @@ fn pane_circle_btn(
         .border_1()
         .border_color(theme::BORDER_F)
         .bg(move || {
+            // `circleBtn().backgroundColor` = `tc("#1f1f1f")`, hover
+            // `tc("#262626")` (App.tsx:2490).
             if store().pane_btn_hover.get() == key {
-                theme::HOVER
+                theme::tc("#262626")
             } else {
-                theme::CARD2
+                theme::CARD
             }
         })
         .child(dynamic(move || icon_view(name()).into_element()))
@@ -111,8 +116,10 @@ fn pane_circle_btn(
         })
 }
 
+/// `<Icon size={15} color="#f5f5f5e6" />` (App.tsx:2493) — the pane's
+/// round buttons ink brighter than the default `DIM` glyphs.
 fn icon_view(name: &'static str) -> impl IntoElement {
-    icon(name)
+    crate::icons::icon_ink(name, 15.0, || theme::tc("#f5f5f5e6"))
 }
 
 // ————————————————————————— variant A: the bot profile —————————————————————————
@@ -1849,12 +1856,9 @@ fn ac(hex: &str, fallback: Hsla) -> AdaptiveColor {
 }
 
 /// `hue(name)` — the library tile's deterministic color (App.tsx:102).
+/// Grok's `AVATAR_HUES` — the same table as the sidebar and plugins.
 fn hue(s: &str) -> AdaptiveColor {
-    const AVATAR_HUES: [&str; 7] = [
-        "#8e6ee8", "#4f9df7", "#37b4a6", "#e0703c", "#e2536e", "#5fa34a", "#b8894a",
-    ];
-    let i: usize = s.chars().map(|c| c as usize).sum::<usize>() % AVATAR_HUES.len();
-    let c = Hsla::from_str(AVATAR_HUES[i]).unwrap_or(theme::ACCENT.dark);
+    let c = crate::plugins::hue(s);
     AdaptiveColor { light: c, dark: c }
 }
 

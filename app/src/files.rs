@@ -109,12 +109,57 @@ fn mermaid_url(code: &str, mode: &str) -> String {
     format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::GEN)
 }
 
-/// `MermaidBlock` (md.tsx:119): a ```mermaid fence drawn by mermaid.js
-/// in a web view sized to the diagram — the page posts its measured
-/// `{w,h}`; the sizes cache (the TSX's `mermaidSizes` map) lets a remount
-/// lay out at the final height at once. A press layer over it opens the
-/// diagram in the lightbox (the web view swallows presses itself).
+/// `MermaidBlock` (md.tsx:119): a ```mermaid fence as a native SVG image
+/// rendered by Pele (`mermaid::diagram`) at its natural size, scaled down
+/// to the column. Only when Pele cannot draw it (no Node, a diagram it
+/// does not parse) does it fall back to mermaid.js in a web view. A press
+/// opens the diagram in the lightbox.
 pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
+    let code = code.to_owned();
+    let code_p = code.clone();
+    view()
+        .max_w(percentage(1.0))
+        .child(dynamic(move || {
+            let d = crate::mermaid::diagram(&code, dark());
+            match d.get() {
+                // Rendering (well under a millisecond once the helper is
+                // up): hold the line's height.
+                None => view().h(px(24.0)).into_element(),
+                Some(Ok(g)) => image(g.uri.clone())
+                    .w(px(g.w))
+                    .max_w(percentage(1.0))
+                    .aspect_ratio(g.w / g.h)
+                    .into_element(),
+                Some(Err(_)) => mermaid_web(&code).into_element(),
+            }
+        }))
+        .child(
+            view()
+                .absolute()
+                .inset(px(0.0))
+                .label("Open diagram")
+                .on_press(move || {
+                    store().open_lightbox(
+                        vec![crate::store::LightItem {
+                            kind: "diagram".to_owned(),
+                            uri: String::new(),
+                            name: "Diagram".to_owned(),
+                            path: String::new(),
+                            poster: String::new(),
+                            w: 0.0,
+                            h: 0.0,
+                            code: code_p.clone(),
+                        }],
+                        0,
+                    );
+                }),
+        )
+}
+
+/// The fallback: mermaid.js in a web view sized to the diagram — the
+/// page posts its measured `{w,h}`; the sizes cache (the TSX's
+/// `mermaidSizes` map) lets a remount lay out at the final height at once.
+fn mermaid_web(code: &str) -> impl IntoElement {
     let sizes = crate::live::keep("mermaid-sizes", std::collections::HashMap::<String, (f64, f64)>::new);
     let code = code.to_owned();
     let size = signal(
@@ -146,27 +191,6 @@ pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
                             size.set((w, h));
                         }
                     }
-                }),
-        )
-        .child(
-            view()
-                .absolute()
-                .inset(px(0.0))
-                .label("Open diagram")
-                .on_press(move || {
-                    store().open_lightbox(
-                        vec![crate::store::LightItem {
-                            kind: "diagram".to_owned(),
-                            uri: String::new(),
-                            name: "Diagram".to_owned(),
-                            path: String::new(),
-                            poster: String::new(),
-                            w: 0.0,
-                            h: 0.0,
-                            code: code_v.clone(),
-                        }],
-                        0,
-                    );
                 }),
         )
 }

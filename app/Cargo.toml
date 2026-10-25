@@ -26,3 +26,13 @@ nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }
 [lib]
 name = "rox"
 path = "src/lib.rs"
+
+# Dependencies at full speed in dev builds — only `rox` itself stays a
+# debug build (ra-jit patches it). nsh's own workspace sets these per hot
+# crate (QuickJS, taffy, objc2, …), but profiles only apply from the root
+# manifest, so rox ran them unoptimized. `debug-assertions = false` also
+# turns off objc2's per-message signature verification, which took about
+# two thirds of the main thread while switching chats.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false

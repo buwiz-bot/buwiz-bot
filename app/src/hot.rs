@@ -23,13 +23,9 @@ use crate::theme;
 
 /// The app: sidebar · transcript · composer · detail pane, plus the
 /// overlay layers (palette, model picker, ctx menu, file viewer). The
-/// `remount`/`note`/`seconds` signals come from the root ([`App`]) so
-/// the stats pill keeps counting across remounts.
-pub(crate) fn hot_area(
-    remount: Signal<u64>,
-    note: Signal<String>,
-    seconds: Signal<u64>,
-) -> impl IntoElement {
+/// `remount`/`note` signals come from the root ([`App`]) so the live
+/// pill keeps counting across remounts.
+pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoElement {
     let st = store();
     st.boot();
     st.watch_plugins();
@@ -371,7 +367,7 @@ pub(crate) fn hot_area(
                 .flex_1()
                 .h_full()
                 .bg(theme::MAIN)
-                .child(crate::mini::mini_app(&app, 0.0));
+                .child(crate::mini::mini_app(&app, 0.0, None, None));
         }
     }
     if let Ok(app) = std::env::var("ROX_CARD") {
@@ -381,10 +377,12 @@ pub(crate) fn hot_area(
                 .h_full()
                 .bg(theme::MAIN)
                 .p_4()
-                .child(crate::widgets::app_card(crate::store::Art {
-                    app,
-                    title: "debug card".to_owned(),
-                    desc: String::new(),
+                .child(crate::widgets::app_card(crate::widgets::CardShell {
+                    art: crate::store::Art {
+                        app,
+                        title: "debug card".to_owned(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }));
         }
@@ -479,6 +477,10 @@ pub(crate) fn hot_area(
         });
     }
 
+    // Only empty ↔ non-empty swaps the transcript for the empty state: a
+    // dynamic reading `turns` itself rebuilt the whole list (and snapped it
+    // to the end) on every reaction, poll and streamed chunk.
+    let no_turns = computed(|| store().turns.with(|t| t.is_empty()));
     view()
         .flex_1()
         .h_full()
@@ -504,11 +506,11 @@ pub(crate) fn hot_area(
             view()
                 .flex_1()
                 .h_full()
-                .child(dynamic(|| {
+                .child(dynamic(move || {
                     let st = store();
                     if st.tab.get() == "work" {
                         crate::shelf::work_tab().into_element()
-                    } else if st.turns.get().is_empty() {
+                    } else if no_turns.get() {
                         chat::empty_state().into_element()
                     } else {
                         chat::transcript().into_element()
@@ -517,6 +519,7 @@ pub(crate) fn hot_area(
                 .child(top_bar())
                 .child(composer::composer()),
         )
+        .child(sidebar::hidden_toggle_layer())
         .child(
             when(move || store().right_open.get(), || {
                 pane::pane().into_element()
@@ -537,24 +540,23 @@ pub(crate) fn hot_area(
         .child(files::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
-        .child(stats_bar(remount, note, seconds, live_bar_show))
+        .child(stats_bar(remount, note, live_bar_show))
 }
 
-/// The ra-jit stats pill — an FPS-style floating HUD (was the bottom bar):
-/// the last patch's report (`applied: N functions in …µs`), the remount
-/// count and the uptime. ⌘⇧R toggles it and it drags anywhere; both its
-/// visibility and its spot survive remounts through `keep`.
-fn stats_bar(
-    remount: Signal<u64>,
-    note: Signal<String>,
-    seconds: Signal<u64>,
-    show: Signal<bool>,
-) -> impl IntoElement {
+/// The ra-jit live pill: a status dot (green live · amber the edit needs
+/// a restart · red a patch was declined · grey no ra-jit daemon) and ↻
+/// with the remount count; hovering shows the last report. ⌘⇧R toggles
+/// it and it drags anywhere; both survive remounts through `keep`.
+fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> impl IntoElement {
     let pos = crate::live::keep("rox.livebar.pos", || {
-        (12.0f32, (window().height.0 - 46.0).max(0.0))
+        (12.0f32, (window().height.0 - 40.0).max(0.0))
     });
     let dx = animated_value(0.0);
     let dy = animated_value(0.0);
+    let hovered = signal(false);
+    // `<state>:<message>` (live.rs `install`).
+    let state = move || note.get().split_once(':').map(|(s, _)| s.to_owned()).unwrap_or_default();
+    let message = move || note.get().split_once(':').map(|(_, m)| m.to_owned()).unwrap_or_default();
     dynamic(move || {
         if !show.get() {
             return view().into_element();
@@ -570,51 +572,63 @@ fn stats_bar(
             .on_pan_end(move |e: &PanEvent| {
                 let win = window();
                 pos.update(|p| {
-                    p.0 = (p.0 + e.translation.x.0).clamp(4.0, (win.width.0 - 230.0).max(4.0));
-                    p.1 = (p.1 + e.translation.y.0).clamp(4.0, (win.height.0 - 30.0).max(4.0));
+                    p.0 = (p.0 + e.translation.x.0).clamp(4.0, (win.width.0 - 60.0).max(4.0));
+                    p.1 = (p.1 + e.translation.y.0).clamp(4.0, (win.height.0 - 26.0).max(4.0));
                 });
                 dx.set(0.0);
                 dy.set(0.0);
             })
+            .on_hover_in(move || hovered.set(true))
+            .on_hover_out(move || hovered.set(false))
+            .label(move || message())
             .flex_row()
             .items_center()
-            .gap(px(10.0))
-            .px(px(9.0))
+            .gap(px(6.0))
+            .px(px(8.0))
             .py(px(4.0))
-            .rounded(px(8.0))
+            .rounded(px(10.0))
             .bg(theme::PILL_BG)
             .border(px(0.5))
             .border_color(theme::BORDER_F)
             .child(
-                text(move || note.get())
+                view().size(px(7.0)).rounded(px(3.5)).bg(move || match state().as_str() {
+                    "live" | "applied" => theme::UP,
+                    "restart" => theme::tone(
+                        theme::hsla(0.09, 0.95, 0.45, 1.0),
+                        theme::hsla(0.09, 0.95, 0.58, 1.0),
+                    ),
+                    "declined" => theme::DOWN,
+                    _ => theme::GHOST,
+                }),
+            )
+            .child(crate::icons::icon_ink("retry", 11.0, || theme::MUTED))
+            .child(
+                text(move || remount.get().to_string())
                     .text_size(px(11.0))
                     .font_family("monospace")
-                    .text_color(theme::TEXT),
+                    .text_color(theme::MUTED),
             )
-            .child(
-                text(move || format!("remounts {}", remount.get()))
-                    .text_size(px(11.0))
-                    .font_family("monospace")
-                    .text_color(theme::UP),
-            )
-            .child(
-                text(move || {
-                    let s = seconds.get();
-                    if s >= 3600 {
-                        format!("up {}h{}m", s / 3600, s % 3600 / 60)
-                    } else if s >= 60 {
-                        format!("up {}m{}s", s / 60, s % 60)
-                    } else {
-                        format!("up {}s", s)
-                    }
-                })
-                .text_size(px(11.0))
-                .font_family("monospace")
-                .text_color(theme::MUTED),
-            )
+            .child(when(
+                move || hovered.get(),
+                move || {
+                    text(move || message())
+                        .text_size(px(11.0))
+                        .font_family("monospace")
+                        .text_color(theme::TEXT)
+                        .number_of_lines(1)
+                        .max_w(px(420.0))
+                        .into_element()
+                },
+            ))
             .into_element()
     })
 }
+
+/// The header pill's fills: `tc("#242424")` / `tc("#2c2c2c")` on dark,
+/// `#ffffff` / `#f7f7f7` on light; the border `#ffffff14` / `#0000001a`.
+const PILL: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.141, 1.0));
+const PILL_HOVER: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 0.969, 1.0), theme::hsla(0.0, 0.0, 0.173, 1.0));
+const PILL_BORDER: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 0.0, 0.102), theme::hsla(0.0, 0.0, 1.0, 0.078));
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
 /// `BotAvatar(24/22 paused)` + the bot's name + a hover chevron — pressing
@@ -626,7 +640,8 @@ fn top_bar() -> impl IntoElement {
         .top(px(0.0))
         .left(px(0.0))
         .right(px(0.0))
-        .h(px(52.0))
+        // `TOP` — the controls' strip, level with the traffic lights.
+        .h(px(60.0))
         .window_drag(true)
         // The chat scrolls under a fading gradient (App.tsx:2382):
         // `rgba(22,22,22,0.96) → 0.7 @55% → 0`; `tg` swaps the stops to
@@ -654,7 +669,10 @@ fn top_bar() -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .window_drag(true)
-                .child(
+                // Rebuilt on a theme flip: the shadow is a fixed style and
+                // differs per theme (`#00000066` dark, `#0000001f` light).
+                .child(dynamic(move || {
+                    let shadow_a = if dark() { 0.4 } else { 0.12 };
                     view()
                         .flex_row()
                         .items_center()
@@ -675,15 +693,25 @@ fn top_bar() -> impl IntoElement {
                             }
                         })
                         .rounded(px(19.0))
+                        // Grok: a solid elevated card (not a tint), hairline
+                        // border + soft shadow (App.tsx:2411).
                         .bg(move || {
                             if pill_hover.get() {
-                                theme::HOVER
+                                PILL_HOVER
                             } else {
-                                theme::CARD2
+                                PILL
                             }
                         })
                         .border(px(0.5))
-                        .border_color(theme::BORDER_F)
+                        .border_color(PILL_BORDER)
+                        .shadow([BoxShadow {
+                            offset_x: px(0.0),
+                            offset_y: px(2.0),
+                            blur: px(8.0),
+                            spread: px(0.0),
+                            color: theme::hsla(0.0, 0.0, 0.0, shadow_a).into(),
+                            inset: false,
+                        }])
                         .on_hover_in(move || pill_hover.set(true))
                         .on_hover_out(move || pill_hover.set(false))
                         .on_press(|| store().right_open.update(|v| *v = !*v))
@@ -720,7 +748,8 @@ fn top_bar() -> impl IntoElement {
                         .child(when(
                             move || pill_hover.get() && !store().right_open.get(),
                             || icon("chev-right").into_element(),
-                        )),
-                ),
+                        ))
+                        .into_element()
+                })),
         )
 }

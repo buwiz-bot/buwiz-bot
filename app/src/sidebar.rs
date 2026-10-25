@@ -21,38 +21,66 @@ pub(crate) fn sidebar() -> impl IntoElement {
                 .into_element()
         },
     )
-    // `sideEff === "hidden"` (App.tsx:2454): the toggle floats right of
-    // the traffic lights, on their line.
-    .otherwise(|| {
-        view()
-            .absolute()
-            .left(px(79.0))
-            .top(px(8.0))
-            .child(sidebar_toggle(28.0, 7.0, false))
-            .into_element()
-    })
+}
+
+/// `sideEff === "hidden"` (App.tsx:2454): the toggle floats right of the
+/// traffic lights, on their line. Mounted after the main column (z 5) so
+/// the top bar's drag strip never sits over it.
+pub(crate) fn hidden_toggle_layer() -> impl IntoElement {
+    when(
+        move || !store().side_shown.get(),
+        || {
+            // `titleBar().height` can report a bogus toolbar measurement —
+            // clamp to the 44pt bar we request (App.tsx:2456).
+            #[cfg(target_os = "macos")]
+            let bar = nsh_core::ui::desktop::title_bar();
+            #[cfg(not(target_os = "macos"))]
+            let bar = Edges::<Points>::default();
+            let h = if bar.top.0 > 0.0 { bar.top.0.min(44.0) } else { 44.0 };
+            let left = if bar.left.0 > 0.0 { bar.left.0 } else { 77.0 };
+            view()
+                .absolute()
+                .top(px(h / 2.0 - 14.0))
+                .left(px(left + 2.0))
+                .z_index(5)
+                .child(sidebar_toggle(28.0, 28.0, 7.0, Plate::None))
+                .into_element()
+        },
+    )
+}
+
+/// The toggle's backing: Grok's `circleBtn` (a solid `#1f1f1f` disc), the
+/// rail's shared hover plate, or nothing (the hidden-sidebar glyph).
+#[derive(Clone, Copy, PartialEq)]
+enum Plate {
+    Solid,
+    Hover,
+    None,
+}
+
+/// `railPlate`'s hover fill — `tc("#f5f5f50f")` (App.tsx:1176).
+fn plate_hover() -> AdaptiveColor {
+    theme::tc("#f5f5f50f")
 }
 
 /// `panelGlyph` button (App.tsx:721): press toggles the sidebar
-/// (`toggleSide`), right-click flips full↔rail (`toggleSideMode`).
-fn sidebar_toggle(size: f32, radius: f32, plated: bool) -> impl IntoElement {
+/// (`toggleSide`), right-click flips full↔rail (`toggleSideMode`) — the
+/// same pair on every placement: full header, rail top, hidden.
+fn sidebar_toggle(w: f32, h: f32, radius: f32, plate: Plate) -> impl IntoElement {
     let hovered = signal(false);
     view()
         .label("toggle sidebar")
         .child(
             view()
-                .size(px(size))
+                .w(px(w))
+                .h(px(h))
                 .rounded(px(radius))
                 .items_center()
                 .justify_center()
-                .bg(move || {
-                    if plated {
-                        theme::CARD2
-                    } else if hovered.get() {
-                        theme::HOVER
-                    } else {
-                        AdaptiveColor::TRANSPARENT
-                    }
+                .bg(move || match plate {
+                    Plate::Solid => theme::CARD,
+                    Plate::Hover if hovered.get() => plate_hover(),
+                    _ => AdaptiveColor::TRANSPARENT,
                 })
                 .child(icon("panel")),
         )
@@ -125,35 +153,48 @@ fn rail() -> impl IntoElement {
     view()
         .w(px(88.0))
         .h_full()
+        .pb_2()
         .bg(theme::SIDEBAR)
-        .border_r_1()
+        .border_r(px(0.5))
         .border_r_color(theme::BORDER_F)
-        .child(
-            // Under the traffic lights: the expand toggle alone (Grok's
-            // rail top — New lives in the footer).
-            view()
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .pt(px(46.0))
-                .pb_2()
-                .window_drag(true)
-                .child(rail_button("panel", "Expand", || {
-                    store().side_mode.set("full".to_owned())
-                })),
-        )
         .child(
             view()
                 .flex_1()
                 // `blurEdge("top", 44+54+6)` / `("bottom", 28)` melt the
-                // scroll's ends into the panel (App.tsx:1894).
+                // scroll's ends into the panel (App.tsx:1894); the list
+                // runs under the toggle row from the window's top.
                 .child(blur_edge(true, 104.0))
                 .child(blur_edge(false, 28.0))
+                // the window-drag strip under the traffic lights, then the
+                // toggle on a 54×44 hover plate (App.tsx:1896).
+                .child(
+                    view()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .h(px(44.0))
+                        .z_index(3)
+                        .window_drag(true),
+                )
+                .child(
+                    view()
+                        .absolute()
+                        .top(px(44.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .h(px(54.0))
+                        .items_center()
+                        .justify_center()
+                        .z_index(3)
+                        .child(sidebar_toggle(54.0, 44.0, 10.0, Plate::Hover)),
+                )
                 .child(
                     scroll().flex_1().child(
                         view()
                             .items_center()
                             .gap_1()
+                            .pt(px(44.0 + 54.0 + 4.0))
                             .pb(px(28.0))
                             .child(each(
                                 || store().pinned_bots(),
@@ -252,26 +293,8 @@ fn rail_plate(
                 .rounded(px(10.0))
                 .items_center()
                 .justify_center()
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
                 .child(icon_sized(name, icon_size)),
-        )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_press(move || on())
-}
-
-fn rail_button(name: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
-    let hovered = signal(false);
-    view()
-        .label(label)
-        .child(
-            view()
-                .size(px(36.0))
-                .rounded(px(9.0))
-                .items_center()
-                .justify_center()
-                .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .child(icon(name)),
         )
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
@@ -303,7 +326,7 @@ fn new_menu_button(name: &'static str, label: &'static str, size: f32, radius: f
                 .rounded(px(radius))
                 .items_center()
                 .justify_center()
-                .bg(theme::CARD2)
+                .bg(theme::CARD)
                 .child(icon_sized(name, 18.0)),
         )
         .on_press(move || open_add_menu(node))
@@ -346,9 +369,9 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .justify_center()
         .bg(move || {
             if store().active_id.get() == tid2 {
-                theme::ACTIVE
+                theme::tc("#f5f5f514")
             } else if hovered.get() {
-                theme::HOVER
+                plate_hover()
             } else {
                 AdaptiveColor::TRANSPARENT
             }
@@ -448,9 +471,9 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
         .justify_center()
         .bg(move || {
             if store().active_id.get() == id2 {
-                theme::ACTIVE
+                theme::tc("#f5f5f514")
             } else if hovered.get() {
-                theme::HOVER
+                plate_hover()
             } else {
                 AdaptiveColor::TRANSPARENT
             }
@@ -488,24 +511,29 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
 
 fn full_sidebar() -> impl IntoElement {
     view()
-        .w(px(250.0))
+        .w(px(240.0))
         .h_full()
         .bg(theme::SIDEBAR)
-        .border_r_1()
+        .border_r(px(0.5))
         .border_r_color(theme::BORDER_F)
         .child(
             // Header (App.tsx:1950): traffic lights left, round controls
-            // right — toggle + New — over the window-drag strip.
+            // right — toggle + New — floating over the list, which blurs
+            // as it scrolls under.
             view()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .h(px(60.0))
+                .z_index(3)
                 .flex_row()
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .px_4()
-                .pt(px(46.0))
-                .pb_2()
+                .pr(px(16.0))
                 .window_drag(true)
-                .child(sidebar_toggle(36.0, 18.0, true))
+                .child(sidebar_toggle(36.0, 36.0, 18.0, Plate::Solid))
                 .child(new_menu_button("newChat", "New Bot", 36.0, 18.0)),
         )
         .child(
@@ -517,8 +545,10 @@ fn full_sidebar() -> impl IntoElement {
                 .child(
                     scroll().flex_1().child(
                         view()
-                            .px_2()
-                            .pb_2()
+                            .pt(px(64.0))
+                            .px(px(12.0))
+                            .pb(px(32.0))
+                            .gap(px(10.0))
                             // `pinnedBots` — the wrap row of tiles (App.tsx:1967).
                     .child(when(
                         || !store().pinned_bots().is_empty(),

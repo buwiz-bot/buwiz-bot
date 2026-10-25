@@ -113,10 +113,18 @@ pub fn keep<T: PartialEq + Clone + 'static>(name: &'static str, init: impl FnOnc
 /// Call it once, under the root, which is never remounted itself: the
 /// `Live` it holds and the interval it spawns belong to that owner.
 pub fn install(remount: Signal<u64>, note: Signal<String>) {
+    // `note` is `<state>:<message>` — `live`, `applied`, `restart`,
+    // `declined` or `off` (no ra-jit daemon: a plain `cargo run`) — the
+    // pill shows the state as a dot and the message on hover.
     LIVE.with(|live| {
         if live.borrow().is_none() {
             *live.borrow_mut() = ra_jit_live::Live::start().ok();
         }
+        note.set(if live.borrow().is_some() {
+            "live:ra-jit live".to_owned()
+        } else {
+            "off:ra-jit is not connected (plain cargo run)".to_owned()
+        });
     });
     set_interval(POLL, move || {
         let outcome =
@@ -129,9 +137,10 @@ pub fn install(remount: Signal<u64>, note: Signal<String>) {
                 let line = outcome.to_string();
                 snapshot();
                 remount.update(|v| *v = v.wrapping_add(1));
-                note.set(line);
+                note.set(format!("applied:{line}"));
             }
-            other => note.set(other.to_string()),
+            ra_jit_live::Outcome::Restart(_) => note.set(format!("restart:{outcome}")),
+            ra_jit_live::Outcome::Declined(_) => note.set(format!("declined:{outcome}")),
         }
     });
 }
