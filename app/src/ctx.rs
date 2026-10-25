@@ -16,7 +16,7 @@ use crate::icons::icon;
 use crate::{live::store, store::CtxItem, store::CtxMenu, theme};
 
 /// The TSX's metrics: CTX_ROW 30, CTX_SEP 9, CTX_PAD 5, CTX_W 220.
-const CTX_W: f32 = 220.0;
+pub(crate) const CTX_W: f32 = 220.0;
 const CTX_ROW: f32 = 30.0;
 const CTX_SEP: f32 = 9.0;
 const CTX_PAD: f32 = 5.0;
@@ -179,6 +179,20 @@ fn run(it: &CtxItem) {
             let (key, file) = arg.split_once('\u{1f}').unwrap_or((arg, ""));
             st.view_code(key, file);
         }
+        "viewer-print" => crate::files::viewer_print(),
+        "viewer-save" => crate::files::viewer_save(),
+        "viewer-version" => crate::files::viewer_open_version(arg.parse().unwrap_or(0)),
+        "viewer-download" => {
+            if let Some(f) = st.viewing.get_untracked() {
+                st.save_file(&f.path);
+            }
+        }
+        "viewer-open" => {
+            if let Some(f) = st.viewing.get_untracked() {
+                st.open_externally(&f.path);
+            }
+        }
+        "viewer-close" => st.viewing.set(None),
         "lib-hide" => st.archive_library_item(arg, true),
         "lib-unhide" => st.archive_library_item(arg, false),
         "lib-delete" => st.delete_library_file(arg),
@@ -630,7 +644,15 @@ pub(crate) fn open_near(x: f32, top: f32, bottom: f32, items: Vec<CtxItem>) {
     } else {
         top + 4.0 - h
     };
-    store().ctx.set(Some(CtxMenu { x, y: y.max(4.0), items }));
+    let st = store();
+    batch(|| {
+        // a message's menu says so after opening (`ctx_owner`)
+        st.ctx_owner.set(None);
+        st.ctx_sub.set(-1);
+        st.ctx_in_sub.set(false);
+        st.ctx_sel.set(-1);
+        st.ctx.set(Some(CtxMenu { x, y: y.max(4.0), items }));
+    });
 }
 
 /// A row's top offset inside the card (`ctxRowTop`): rows before it
@@ -659,7 +681,7 @@ fn ctx_card(menu: CtxMenu) -> impl IntoElement {
     // `ctxSub` — the main-row index whose flyout is open (or -1). It
     // only moves on row hover-in, never on hover-out, so the pointer can
     // leave the parent row and reach the flyout.
-    let sub = signal(-1i64);
+    let sub = store().ctx_sub;
     let sub2 = sub;
     // `ctxSubT` — while a flyout is open, retargeting `sub` is delayed
     // 350ms so crossing sibling rows on the way in doesn't close it; a
@@ -760,7 +782,7 @@ fn menu_card(x: f32, y: f32, items: Vec<CtxItem>, cancel: Rc<dyn Fn()>) -> impl 
         .child(each(
             move || items.clone(),
             |it| it.label.clone(),
-            move |it, _| ctx_row_leaf(it.get(), cancel.clone()),
+            move |it, i| ctx_row_leaf(it.get(), i.get() as usize, cancel.clone()),
         ))
 }
 
@@ -1035,7 +1057,7 @@ fn row_icon(name: &str) -> AnyElement {
 /// A flyout row (no nested submenu — the TSX's sub-items are leaves).
 /// `isSub` rows never touch `ctxSub`; their hover-in cancels a pending
 /// close so the pointer can arrive from the parent row.
-fn ctx_row_leaf(it: CtxItem, cancel: Rc<dyn Fn()>) -> impl IntoElement {
+fn ctx_row_leaf(it: CtxItem, idx: usize, cancel: Rc<dyn Fn()>) -> impl IntoElement {
     if it.sep {
         return view()
             .h(px(1.0))
@@ -1046,6 +1068,9 @@ fn ctx_row_leaf(it: CtxItem, cancel: Rc<dyn Fn()>) -> impl IntoElement {
     }
     let color = if it.danger { theme::DOWN } else { theme::TEXT };
     let hovered = signal(false);
+    let idx = idx as i64;
+    let st = store();
+    let keyed = move || st.ctx_in_sub.get() && st.ctx_sel.get() == idx;
     view()
         .flex_row()
         .items_center()
@@ -1053,7 +1078,7 @@ fn ctx_row_leaf(it: CtxItem, cancel: Rc<dyn Fn()>) -> impl IntoElement {
         .px_3()
         .h(px(CTX_ROW))
         .bg(move || {
-            if hovered.get() {
+            if hovered.get() || keyed() {
                 theme::HOVER
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -1065,6 +1090,7 @@ fn ctx_row_leaf(it: CtxItem, cancel: Rc<dyn Fn()>) -> impl IntoElement {
         .when(it.checked, |v| {
             v.child(text("✓").text_size(px(12.0)).text_color(theme::ACCENT))
         })
+        .child(key_hint(true, idx))
         .on_hover_in(move || {
             cancel();
             hovered.set(true)
@@ -1096,6 +1122,8 @@ fn ctx_row(
     let has_sub = !it.submenu.is_empty();
     let hovered = signal(false);
     let sub_set2 = sub_set.clone();
+    let st = store();
+    let keyed = move || !st.ctx_in_sub.get() && st.ctx_sel.get() == idx;
     view()
         .flex_row()
         .items_center()
@@ -1103,7 +1131,7 @@ fn ctx_row(
         .px_3()
         .h(px(CTX_ROW))
         .bg(move || {
-            if hovered.get() || has_sub && sub.get() == idx {
+            if hovered.get() || keyed() || has_sub && sub.get() == idx {
                 theme::HOVER
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -1115,6 +1143,7 @@ fn ctx_row(
         .when(it.checked, |v| {
             v.child(text("✓").text_size(px(12.0)).text_color(theme::ACCENT))
         })
+        .child(key_hint(false, idx))
         .when(has_sub, |v| {
             v.child(text("›").text_size(px(13.0)).text_color(theme::MUTED))
         })
@@ -1131,4 +1160,133 @@ fn ctx_row(
             }
         })
         .into_element()
+}
+
+// ——————————————— the open menu from the keyboard ———————————————
+
+/// The rows the menu keys act in: the open flyout's while they are in it,
+/// else the main card's.
+fn keyed_items() -> Vec<CtxItem> {
+    let st = store();
+    let Some(menu) = st.ctx.get_untracked() else { return Vec::new() };
+    let sub = st.ctx_sub.get_untracked();
+    if st.ctx_in_sub.get_untracked() && sub >= 0 {
+        menu.items.get(sub as usize).map(|i| i.submenu.clone()).unwrap_or_default()
+    } else {
+        menu.items
+    }
+}
+
+/// The index of the `n`th (1-based) row that isn't a separator.
+fn nth_row(items: &[CtxItem], n: usize) -> Option<usize> {
+    items.iter().enumerate().filter(|(_, i)| !i.sep).nth(n.checked_sub(1)?).map(|(i, _)| i)
+}
+
+/// A row's number among its card's rows (1-based), separators skipped.
+fn row_number(items: &[CtxItem], idx: usize) -> Option<usize> {
+    (!items.get(idx)?.sep).then(|| items[..idx].iter().filter(|i| !i.sep).count() + 1)
+}
+
+/// The key that picks row `idx` of the main card (`in_sub` false) or the
+/// flyout, shown while that card has the keys.
+fn key_hint(in_sub: bool, idx: i64) -> impl IntoElement {
+    dynamic(move || {
+        let st = store();
+        // the card the keys act in shows its keys (the main card until
+        // Tab moves them into the flyout)
+        if st.ctx_in_sub.get() != in_sub {
+            return view().into_element();
+        }
+        let items = keyed_items();
+        let Some(n) = row_number(&items, idx as usize).filter(|n| *n <= 9) else {
+            return view().into_element();
+        };
+        let Some(c) = crate::keys::COMMANDS.iter().find(|c| c.id == format!("menu.pick_{n}")) else {
+            return view().into_element();
+        };
+        let Some(k) = crate::keys::keys_of(c).into_iter().next() else { return view().into_element() };
+        text(key_label(&k)).text_size(px(11.0)).text_color(theme::FAINT).into_element()
+    })
+}
+
+/// ⌘1…⌘9: runs the nth row of the card the keys act in — a row with a
+/// flyout opens it and moves the keys into it.
+pub(crate) fn menu_pick(n: usize) {
+    let st = store();
+    let items = keyed_items();
+    let Some(i) = nth_row(&items, n) else { return };
+    open_or_run(i, &items);
+}
+
+fn open_or_run(i: usize, items: &[CtxItem]) {
+    let st = store();
+    let it = &items[i];
+    if !it.submenu.is_empty() && !st.ctx_in_sub.get_untracked() {
+        batch(|| {
+            st.ctx_sub.set(i as i64);
+            st.ctx_in_sub.set(true);
+            st.ctx_sel.set(nth_row(&it.submenu, 1).map_or(-1, |x| x as i64));
+        });
+        return;
+    }
+    act(it);
+}
+
+/// ↑ / ↓: the highlight one row up or down (separators skipped, wraps).
+pub(crate) fn menu_move(d: i64) {
+    let st = store();
+    let items = keyed_items();
+    let rows: Vec<usize> = items.iter().enumerate().filter(|(_, i)| !i.sep).map(|(i, _)| i).collect();
+    if rows.is_empty() {
+        return;
+    }
+    let cur = st.ctx_sel.get_untracked();
+    let at = rows.iter().position(|r| *r as i64 == cur);
+    let next = match at {
+        None if d > 0 => 0,
+        None => rows.len() - 1,
+        Some(p) => (p as i64 + d).rem_euclid(rows.len() as i64) as usize,
+    };
+    st.ctx_sel.set(rows[next] as i64);
+}
+
+/// ↩: runs the highlighted row (or opens its flyout).
+pub(crate) fn menu_enter() {
+    let st = store();
+    let items = keyed_items();
+    let sel = st.ctx_sel.get_untracked();
+    if sel >= 0 && (sel as usize) < items.len() {
+        open_or_run(sel as usize, &items);
+    }
+}
+
+/// Tab / →: the keys into a flyout — the highlighted row's, the open
+/// one, or the first row that has one.
+pub(crate) fn menu_into_sub() {
+    let st = store();
+    if st.ctx_in_sub.get_untracked() {
+        return;
+    }
+    let Some(menu) = st.ctx.get_untracked() else { return };
+    let sel = st.ctx_sel.get_untracked();
+    let open = st.ctx_sub.get_untracked();
+    let pick = [sel, open]
+        .into_iter()
+        .find(|i| *i >= 0 && menu.items.get(*i as usize).is_some_and(|it| !it.submenu.is_empty()))
+        .or_else(|| menu.items.iter().position(|it| !it.submenu.is_empty()).map(|i| i as i64));
+    if let Some(i) = pick {
+        open_or_run(i as usize, &menu.items);
+    }
+}
+
+/// ⇧Tab / ←: the keys back to the main card, on the flyout's row.
+pub(crate) fn menu_out_of_sub() {
+    let st = store();
+    if !st.ctx_in_sub.get_untracked() {
+        return;
+    }
+    batch(|| {
+        st.ctx_in_sub.set(false);
+        st.ctx_sel.set(st.ctx_sub.get_untracked());
+    });
 }

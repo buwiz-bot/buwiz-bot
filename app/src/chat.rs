@@ -56,6 +56,10 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     // The first viewable row and the last scroll position: what the spot
     // the chat is left at is saved from, once scrolling settles.
     let first_row = std::rc::Rc::new(std::cell::Cell::new(None::<usize>));
+    // the last row the list reports in view (the message field covers
+    // the bottom of it) and the viewport's height
+    let last_row = std::rc::Rc::new(std::cell::Cell::new(None::<usize>));
+    let view_h = std::rc::Rc::new(std::cell::Cell::new(0.0f32));
     let last_scroll = std::rc::Rc::new(std::cell::Cell::new((0.0f32, false)));
     // Where it opens: it mounts when its chat becomes the shown one.
     let opening = opening_for(&mine);
@@ -184,25 +188,36 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         // skip their signal writes (every write is a commit).
         .on_viewable_items_change({
             let first_row = first_row.clone();
-            move |v: &ViewableItems| first_row.set(v.viewable.map(|(first, _)| first))
+            let last_row = last_row.clone();
+            move |v: &ViewableItems| {
+                first_row.set(v.viewable.map(|(first, _)| first));
+                last_row.set(v.viewable.map(|(_, last)| last));
+            }
         })
         .on_scroll({
             let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let mine = mine.clone();
             let list = list.clone();
             let first_row = first_row.clone();
+            let last_row = last_row.clone();
+            let view_h = view_h.clone();
             let last_scroll = last_scroll.clone();
             move |e: &ScrollEvent| {
                 let st = store();
                 let y = e.offset.y.0;
+                view_h.set(e.size.height.0);
                 let at_end = y + e.size.height.0 >= e.content_size.height.0 - 48.0;
                 last_scroll.set((y, at_end));
                 if at_end && st.new_below.get_untracked().is_some() {
                     st.new_below.set(None);
                 }
                 // An anchored pill would float off its bar once the
-                // content moves — dismiss it (App.tsx:2126).
+                // content moves — dismiss it (App.tsx:2126); a message's
+                // menu too.
                 st.close_pill(-1);
+                if st.ctx_owner.get_untracked().is_some() && st.ctx.get_untracked().is_some() {
+                    st.ctx.set(None);
+                }
                 if !st.chat_scrolling.get_untracked() {
                     st.chat_scrolling.set(true);
                 }
@@ -211,6 +226,8 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                 let epoch = epoch.clone();
                 let (mine, list, first_row, last_scroll) =
                     (mine.clone(), list.clone(), first_row.clone(), last_scroll.clone());
+                let last_row = last_row.clone();
+                let view_h = view_h.clone();
                 spawn(async move {
                     timer(std::time::Duration::from_millis(160)).await;
                     if epoch.get() != e {
@@ -223,6 +240,25 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                     // opened again.
                     if !shown.get_untracked() {
                         return;
+                    }
+                    // The message position follows a scroll the keys didn't
+                    // make: the bottom message in view, ring hidden. The
+                    // view ends at the message field's top (the list runs on
+                    // under it): the last row starting 24pt above that.
+                    let keyed = st.sel_stepped.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(900));
+                    if !keyed && st.active_id.get_untracked() == mine {
+                        let cutoff = last_scroll.get().0 + view_h.get() - crate::composer::dock_h().get_untracked();
+                        let (first, last) = (first_row.get().unwrap_or(0), last_row.get().unwrap_or(0));
+                        let mut pick = None;
+                        for r in (first..=last).rev() {
+                            if list.item_offset(r).await.is_some_and(|top| top + 24.0 <= cutoff) {
+                                pick = Some(r);
+                                break;
+                            }
+                        }
+                        if let Some(i) = pick.and_then(|r| st.turns.with_untracked(|t| t.get(r).map(|t| t.i))) {
+                            st.set_sel(i, false);
+                        }
                     }
                     let (y, at_end) = last_scroll.get();
                     let last = st.turns.with_untracked(|t| t.last().map_or(-1, |t| t.i));
@@ -830,11 +866,27 @@ fn agent_row(t: Turn) -> impl IntoElement {
 
 /// Grok Bot's highlighted message (a jump's target): a 3px ring in the
 /// text color just outside the bubble (`box-shadow: 0 0 0 3px`), which
-/// fades out (`Store::flash`). Mounted only on that turn.
+/// fades out (`Store::flash`); the message ⌘↑ / ⌘↓ selected keeps one in
+/// the accent color. Mounted only on that turn.
 pub(crate) fn highlight_ring(i: i64, radius: f32) -> impl IntoElement {
     when(
-        move || store().highlight.get() == Some(i),
+        move || store().highlight.get() == Some(i) || store().sel_shown.get() && store().sel_msg.get() == Some(i),
         move || {
+            if store().sel_shown.get_untracked() && store().sel_msg.get_untracked() == Some(i) {
+                let ring = element_ref();
+                store().sel_ring.set(Some(ring));
+                return view()
+                    .element_ref(&ring)
+                    .absolute()
+                    .top(px(-3.0))
+                    .bottom(px(-3.0))
+                    .left(px(-3.0))
+                    .right(px(-3.0))
+                    .rounded(px(radius + 3.0))
+                    .border(px(3.0))
+                    .border_color(theme::ACCENT)
+                    .into_element();
+            }
             view()
                 .absolute()
                 .top(px(-3.0))
@@ -956,8 +1008,8 @@ fn more_act(i: i64, slot: String, items: impl Fn() -> Vec<crate::store::CtxItem>
     act_at("⋯", "more", move |x, y| {
         let st = store();
         st.close_pill(-1);
-        st.ctx_owner.set(Some((i, slot.clone())));
         crate::ctx::open_near(x, y, y + ACT, items());
+        st.ctx_owner.set(Some((i, slot.clone())));
     })
 }
 

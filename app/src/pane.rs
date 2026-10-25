@@ -443,16 +443,11 @@ fn details_tab() -> impl IntoElement {
         )
 }
 
-/// The bot's context in Details: its description, its instructions
-/// (folded: the bot keeps them, you change them by asking it), its
-/// memories and its integrations.
+/// The bot's context in Details: its description, and a row to its Bot
+/// Details (instructions, memories, skills, integrations live there).
 fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
-    let name = b.name.clone();
     let id = b.id.clone();
-    let id_int = b.id.clone();
-    let show_instr = signal(false);
-    let instructions = b.instructions.clone();
-    let has_instr = !instructions.trim().is_empty();
+    let hov = signal(false);
     view()
         .when(!b.description.trim().is_empty(), |v| {
             // In a full-width box so the text wraps at the pane's edge.
@@ -465,163 +460,21 @@ fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
                 ),
             )
         })
-        .when(has_instr, |v| {
-            v.child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px_3()
-                    .pb(px(10.0))
-                    .on_press(move || show_instr.update(|o| *o = !*o))
-                    .child(text("Instructions").text_size(px(13.0)).text_color(theme::DIM))
-                    .child(
-                        text(move || if show_instr.get() { "⌄" } else { "›" })
-                            .text_size(px(13.0))
-                            .text_color(theme::DIM),
-                    ),
-            )
-            .child(when(
-                move || show_instr.get(),
-                move || {
-                    pane_card()
-                        .py(px(12.0))
-                        .px(px(13.0))
-                        .mb(px(14.0))
-                        .child(
-                            text(instructions.clone())
-                                .text_size(px(12.0))
-                                .line_height(px(18.0))
-                                .text_color(theme::DIM),
-                        )
-                        .into_element()
-                },
-            ))
-        })
-        .child(pane_label("Memories".into()))
-        .child(
-            pane_card()
-                .mb(px(14.0))
-                .when(b.memories.is_empty(), |c| {
-                    c.py(px(12.0)).px(px(13.0)).child(
-                        text(format!("Nothing yet. Tell {name} “remember …” in chat."))
-                            .text_size(px(13.0))
-                            .text_color(theme::DIM),
-                    )
-                })
-                .children(b.memories.iter().map(|m| {
-                    let (id, mid) = (id.clone(), m.id.clone());
-                    removable_row(m.text.clone(), String::new(), move || {
-                        store().forget_memory(&id, &mid)
-                    })
-                    .into_element()
-                })),
-        )
         .child(
             view()
                 .flex_row()
                 .items_center()
-                .justify_between()
-                .pr_3()
-                .child(pane_label("Integrations".into()))
-                .child(
-                    text("+ Add")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pb(px(10.0))
-                        .on_press(move || {
-                            let st = store();
-                            st.fetch_mcp();
-                            let have: Vec<String> = st
-                                .active_bot_untracked()
-                                .map(|b| b.integrations.iter().map(|i| i.id.clone()).collect())
-                                .unwrap_or_default();
-                            let items: Vec<crate::store::CtxItem> = st
-                                .mcp_servers
-                                .get_untracked()
-                                .iter()
-                                .filter(|m| !have.contains(&m.id))
-                                .map(|m| {
-                                    crate::store::CtxItem::row(
-                                        &m.name,
-                                        "plugins",
-                                        "bot-int-add",
-                                        format!("{}|{}", id_int, m.id),
-                                    )
-                                })
-                                .collect();
-                            let items = if items.is_empty() {
-                                vec![crate::store::CtxItem::row("Every connected app is added", "check", "", String::new())]
-                            } else {
-                                items
-                            };
-                            crate::ctx::open_at(window().width.0 - 260.0, 300.0, items);
-                        }),
-                ),
-        )
-        .child(
-            pane_card()
+                .mx_1()
                 .mb(px(14.0))
-                .when(b.integrations.is_empty(), |c| {
-                    c.py(px(12.0)).px(px(13.0)).child(
-                        text(format!("None yet. Apps {name} uses show up here, or add one."))
-                            .text_size(px(13.0))
-                            .text_color(theme::DIM),
-                    )
-                })
-                .children(b.integrations.iter().map(|i| {
-                    let (id, iid) = (b.id.clone(), i.id.clone());
-                    let kind = match i.kind.as_str() {
-                        "plugin" => "Plugin",
-                        "mcp" => "Connector",
-                        "skill" => "Skill",
-                        k => k,
-                    };
-                    removable_row(i.name.clone(), kind.to_owned(), move || {
-                        store().bot_integration(&id, &iid, false)
-                    })
-                    .into_element()
-                })),
-        )
-}
-
-/// A card row with a × that shows on hover (a memory, an integration).
-fn removable_row(title: String, sub: String, on_remove: impl Fn() + 'static) -> impl IntoElement {
-    let hov = signal(false);
-    view()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .py(px(8.0))
-        .px(px(11.0))
-        .rounded(px(8.0))
-        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
-        .child(
-            view()
-                .flex_1()
-                .min_w(px(0.0))
-                .child(
-                    text(title)
-                        .text_size(px(13.0))
-                        .line_height(px(18.0))
-                        .text_color(theme::TEXT),
-                )
-                .when(!sub.is_empty(), |v| {
-                    v.child(text(sub).text_size(px(11.0)).text_color(theme::MUTED))
-                }),
-        )
-        .child(
-            view()
-                .size(px(20.0))
-                .rounded(px(5.0))
-                .items_center()
-                .justify_center()
-                .opacity(move || if hov.get() { 1.0f32 } else { 0.0 })
-                .label("Remove")
-                .child(text("×").text_size(px(14.0)).text_color(theme::DIM))
-                .on_press(on_remove),
+                .px_2()
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                .on_hover_in(move || hov.set(true))
+                .on_hover_out(move || hov.set(false))
+                .child(text("Context and integrations").text_size(px(13.0)).text_color(theme::TEXT).flex_1())
+                .child(text("›").text_size(px(15.0)).text_color(theme::MUTED))
+                .on_press(move || crate::botdetails::open(&id, false)),
         )
 }
 

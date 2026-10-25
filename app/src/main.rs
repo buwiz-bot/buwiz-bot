@@ -150,6 +150,7 @@ fn main() -> impl std::process::Termination {
     };
     rox::mini::register_mini_app(&options.components);
     rox::zoom::register_zoom(&options.components);
+    rox::keys::register_keys(&options.components);
     platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 
