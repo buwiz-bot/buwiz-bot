@@ -148,6 +148,12 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                                     rows.with(|t| t.get(at.index()).cloned()).map(
                                         |mut t| {
                                             t.reaction.clear();
+                                            // A building card's phase and
+                                            // a card's revise flag neither:
+                                            // the placeholders read them
+                                            // live, not off the row.
+                                            t.status.clear();
+                                            t.revising = false;
                                             t
                                         },
                                     )
@@ -376,7 +382,15 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
     // (a hidden transcript keeps its own).
     let body = t.text.clone();
     let reply = t.reply.clone();
-    let atts = t.attachments.clone();
+    // Text narrower than the circle's inside (a one-letter "a") sits
+    // centered in it, as in Grok Bot; anything wider stays left-aligned
+    // (centering wide text let it overflow the bubble).
+    let tiny = reply.is_none()
+        && !body.contains('\n')
+        && measure_text("400 15px -apple-system, system-ui, sans-serif", body.trim()).0 < BUBBLE_MIN - 24.0;
+    // A replied-to card travels as a module:// attachment for the model; the
+    // quote already shows it, so it gets no tile of its own.
+    let atts: Vec<_> = t.attachments.iter().filter(|a| !a.url.starts_with("module://")).cloned().collect();
     let i = t.i;
     // shell.tsx:425 — the row's `hover` gates the action bar; during a
     // scroll `chatScrolling` skips the writes (every write is a commit).
@@ -435,9 +449,9 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
                 view()
                     .max_w(px(560.0))
                     // Never narrower than tall: a one-letter message is a
-                    // 36pt circle, as in Grok Bot (its text left-aligned
-                    // there too — centering it let wide text overflow).
+                    // 36pt circle, as in Grok Bot.
                     .min_w(px(BUBBLE_MIN))
+                    .when(tiny, |v| v.items_center())
                     // `flexShrink: 1` — wrap inside a narrow column
                     // instead of running under the pane.
                     .flex_shrink(1.0)
@@ -466,6 +480,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
                             i: tt.i,
                             name: tt.name.clone(),
                             text: tt.text.chars().take(120).collect(),
+                            ..Default::default()
                         }));
                     }
                 }))
@@ -574,81 +589,81 @@ fn fill_quote(reply: Option<crate::store::Reply>) -> impl IntoElement {
 // Agent row
 // ---------------------------------------------------------------------------
 
-/// `ArtPlaceholder` — the gray box a building artifact renders before its
-/// module exists (shell.tsx:188): title, optional `art.desc`, and an
-/// aspect-ratio box shimmering `t.status` with a `w×h` corner label.
+/// `ArtPlaceholder` — what a building artifact renders before its module
+/// exists (shell.tsx:188), drawn as ChatGPT's generation placeholder: a
+/// dot grid at the output's declared `w×h`, fitted to the column as the
+/// finished card will be (`min(1, 560/w, 560/h)`). An image is the grid
+/// alone; a mini app keeps its card's title/desc header over it, as an
+/// office file does its file name over a page / slide / sheet grid. The
+/// turn id keys the grid's progress, so a rebuilt row never restarts it.
 fn art_placeholder(t: &Turn) -> impl IntoElement {
     let art = t.art.clone().unwrap_or_default();
-    let w = (if art.w > 0.0 { art.w } else { 480.0 } as f64).min(560.0) as f32;
-    let ar = if art.w > 0.0 && art.h > 0.0 { art.w / art.h } else { 4.0 / 3.0 } as f32;
-    let title = if !art.title.is_empty() {
-        art.title.clone()
-    } else if t.label == "image" {
-        "Image".to_owned()
-    } else {
-        "Mini app".to_owned()
+    let image = t.label == "image";
+    let dw = if art.w > 0.0 { art.w as f32 } else { 480.0 };
+    let dh = if art.h > 0.0 { art.h as f32 } else { (dw * 0.75).round() };
+    // A mini app's card padding around the grid; a bare image has none.
+    let pad = if image { 0.0 } else { 24.0 };
+    // The measured column width; 0 until the first layout.
+    let avail = signal(0.0f32);
+    let fit = move || {
+        let f = 1.0f32.min(560.0 / dw).min(560.0 / dh);
+        let a = avail.get();
+        if a > 0.0 { f.min(((a - pad) / dw).max(0.0)) } else { f }
     };
-    let desc = art.desc.clone();
-    let status = if t.status.is_empty() { "Loading…".to_owned() } else { t.status.clone() };
-    let dims = if art.w > 0.0 && art.h > 0.0 {
-        Some(format!("{}×{}", art.w, art.h))
+    let iw = move || (dw * fit()).round().max(140.0);
+    let ih = move || (dh * iw() / dw).round();
+    let tau = if image { crate::dotgrid::TAU_IMAGE } else { crate::dotgrid::TAU_APP };
+    let grid = view()
+        .w(move || px(iw()))
+        .h(move || px(ih()))
+        .child(crate::dotgrid::dot_grid(t.id.clone(), tau));
+    let body = if image {
+        grid.into_element()
     } else {
-        None
-    };
-    view()
-        .w(px(w))
-        .max_w(percentage(1.0))
-        .bg(theme::CARD)
-        .rounded(px(16.0))
-        .border_1()
-        .border_color(theme::BORDER_F)
-        .p_3()
-        .child(
-            text(title)
-                .text_size(px(14.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::TEXT)
-                .number_of_lines(1),
-        )
-        .when(!desc.is_empty(), |v| {
-            v.child(
-                text(desc.clone())
-                    .text_size(px(12.0))
-                    .text_color(theme::FAINT)
-                    .pt(px(2.0))
+        let title = match (art.title.is_empty(), art.kind.as_str()) {
+            (false, _) => art.title.clone(),
+            (true, "presentation") => "Presentation".to_owned(),
+            (true, "spreadsheet") => "Spreadsheet".to_owned(),
+            (true, "document" | "pdf") => "Document".to_owned(),
+            _ => "Mini app".to_owned(),
+        };
+        let desc = art.desc.clone();
+        view()
+            .w(move || px(iw() + pad))
+            .max_w(percentage(1.0))
+            .bg(theme::CARD)
+            .rounded(px(16.0))
+            .border_1()
+            .border_color(theme::BORDER_F)
+            .p_3()
+            .child(
+                text(title)
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::TEXT)
                     .number_of_lines(1),
             )
-        })
-        .child(
-            view()
-                .w(px(w - 24.0))
-                .h(px(((w - 24.0) / ar).max(1.0)))
-                .mt(px(10.0))
-                .rounded(px(10.0))
-                .bg(theme::CARD2)
-                .items_center()
-                .justify_center()
-                .child(
-                    view()
-                        .w(px(170.0))
-                        .child(crate::statusfx::shimmer_at(
-                            move || status.clone(),
-                            12.0,
-                            theme::FAINT,
-                            theme::TEXT,
-                        )),
+            .when(!desc.is_empty(), |v| {
+                v.child(
+                    text(desc.clone())
+                        .text_size(px(12.0))
+                        .text_color(theme::FAINT)
+                        .pt(px(2.0))
+                        .number_of_lines(1),
                 )
-                .when_some(dims, |v, d| {
-                    v.child(
-                        text(d)
-                            .absolute()
-                            .right(px(8.0))
-                            .bottom(px(6.0))
-                            .text_size(px(10.5))
-                            .text_color(theme::GHOST),
-                    )
-                }),
-        )
+            })
+            .child(grid.mt(px(10.0)))
+            .into_element()
+    };
+    view()
+        .w_full()
+        .items_start()
+        .on_layout(move |b: &Bounds<Points>| {
+            if (b.size.width.0 - avail.get_untracked()).abs() >= 0.5 {
+                avail.set(b.size.width.0);
+            }
+        })
+        .child(body)
 }
 
 fn agent_row(t: Turn) -> impl IntoElement {
@@ -657,6 +672,9 @@ fn agent_row(t: Turn) -> impl IntoElement {
     let streaming = t.building;
     let i = t.i;
     let has_card = t.art.is_some();
+    // a reply with no text (only files or Drive links, or nothing left)
+    // shows no bubble — an empty one otherwise sits above its cards
+    let bubble = !has_card && !(body.trim().is_empty() && !streaming);
     // shell.tsx:254 `hov` — gates the action bar's opacity; the writes are
     // skipped while `chatScrolling` (every write is a commit).
     let hov = signal(false);
@@ -695,10 +713,12 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     let tr = st.turns.get_untracked();
                     if let Some(tt) = tr.iter().find(|x| x.i == i) {
                         // `onReply(i, text || caption || name)`; a card's is
-                        // `app · <title> v<n>` (shell.tsx:1140).
+                        // `app · <title> v<n>` (shell.tsx:1140), an image
+                        // card's `image · …`.
                         let label = match &tt.art {
                             Some(a) => format!(
-                                "app · {}{}",
+                                "{} · {}{}",
+                                if a.kind == "image" { "image" } else { "app" },
                                 if a.title.is_empty() { &tt.name } else { &a.title },
                                 if tt.v > 0 { format!(" v{}", tt.v) } else { String::new() }
                             ),
@@ -706,10 +726,20 @@ fn agent_row(t: Turn) -> impl IntoElement {
                             None if !tt.caption.is_empty() => tt.caption.chars().take(120).collect(),
                             None => tt.name.clone(),
                         };
+                        // A card goes along as its module (shell.tsx:1120): the
+                        // server hands the model its source, or an image card's
+                        // image.
+                        let files = tt
+                            .art
+                            .as_ref()
+                            .filter(|a| !a.app.is_empty())
+                            .map(|a| vec![format!("module://{}", a.app)])
+                            .unwrap_or_default();
                         st.reply_to.set(Some(crate::store::ReplyTo {
                             i: tt.i,
                             name: tt.name.clone(),
                             text: label,
+                            files,
                         }));
                     }
                 }))
@@ -739,7 +769,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
         // The agent bubble (shell.tsx:484): `agentFill` + a hairline,
         // radius 18, padding 16×10, `maxWidth 560`, hugging its content
         // on the row's left edge; the tapback knocks out top-right.
-        .when(!has_card, |v| v.child(
+        .when(bubble, |v| v.child(
             view().flex_row().w_full().justify_start().child(
                 view()
                     .max_w(px(560.0))
@@ -764,8 +794,8 @@ fn agent_row(t: Turn) -> impl IntoElement {
             ),
         ))
         // A building artifact renders its declared placeholder — before
-        // the module exists, the card is a gray box shimmering the job's
-        // phase (`ArtPlaceholder` in shell.tsx). A fetched module that is
+        // the module exists, the card is the dot grid filling in at the
+        // output's size (`ArtPlaceholder` in shell.tsx). A fetched module that is
         // still compiling (`d === "loading"`) shows it too, until
         // `mini_source` lands or `mini_err` reports.
         .when(has_card && t.building, |v| v.child(art_placeholder(&t)))
@@ -773,6 +803,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
             let app = t.art.clone().map(|a| a.app).unwrap_or_default();
             let t2 = t.clone();
             let shell = crate::widgets::CardShell {
+                id: t.id.clone(),
                 art: t.art.clone().unwrap_or_default(),
                 label: t.label.clone(),
                 v: t.v,
@@ -793,6 +824,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
         })
         .when(!has_card, |v| v.child(bar()))
         .when(!t.files.is_empty(), |v| v.child(files_section(&t)))
+        .when(!t.links.is_empty(), |v| v.child(links_section(&t)))
 
 }
 
@@ -1026,6 +1058,16 @@ fn files_section(t: &Turn) -> impl IntoElement {
         .into_element()
 }
 
+/// `t.links`: the Drive files the reply made or changed, one card each
+/// (opens in the browser).
+fn links_section(t: &Turn) -> impl IntoElement {
+    view()
+        .gap_2()
+        .w_full()
+        .max_w(px(560.0))
+        .children(t.links.iter().map(|l| crate::files::link_card(l).into_element()))
+}
+
 /// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —
 /// ☺ react, ↩ reply (files travel with the reply), ⋯ menu — and the
 /// turn's tapback knocked out at its top-right (`badge("right")`).
@@ -1041,6 +1083,8 @@ fn artifact(
     // bar owns its own pill slot.
     let slot = format!("art:{}", f.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| "gallery".to_owned()));
     let slot2 = slot.clone();
+    // The file itself goes along with a reply on it (App.tsx:580).
+    let reply_file = f.as_ref().map(|f| f.path.clone()).filter(|p| !p.is_empty());
     let reply_label = f
         .as_ref()
         .map(|f| format!("📎 {}", f.name))
@@ -1078,6 +1122,7 @@ fn artifact(
                 move || {
                     let slot = slot.clone();
                     let reply_label = reply_label.clone();
+                    let reply_file = reply_file.clone();
                     let items = items.clone();
                     view()
                         .flex_row()
@@ -1094,6 +1139,7 @@ fn artifact(
                                 i,
                                 name,
                                 text: reply_label.clone(),
+                                files: reply_file.iter().cloned().collect(),
                             }));
                         }))
                         .child(more_act(i, slot, move || items.clone()))

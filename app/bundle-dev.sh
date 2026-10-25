@@ -4,7 +4,8 @@
 # and which declares the `rox://` URL scheme, then registers it with
 # LaunchServices so `open "rox://chat/<thread>?m=<turn>"` reaches Rox.
 # Launch Rox through it (`open -a ~/Applications/Rox.app`) so links go to the
-# running copy instead of starting a second one.
+# running copy instead of starting a second one; copy a fresh build in first
+# (`cp target/debug/rox ~/Applications/Rox.app/Contents/MacOS/rox-bin`).
 set -euo pipefail
 
 APP="$HOME/Applications/Rox.app"
@@ -51,9 +52,14 @@ PLIST
 
 cat > "$APP/Contents/MacOS/rox" <<SH
 #!/bin/sh
-# Dev launcher: the checkout's debug build, with local automation on.
+# Dev launcher: the checkout's debug build, with local automation on. A
+# copy inside the bundle (rox-bin, refreshed by whoever relaunches) is
+# preferred: started by LaunchServices, loading the binary straight off the
+# external volume waits on a files-and-folders permission.
 export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=dev-secret ROX_FPS=0
-exec "$BIN" "\$@"
+BIN="\$(dirname "\$0")/rox-bin"
+[ -x "\$BIN" ] || BIN="$BIN"
+exec "\$BIN" "\$@"
 SH
 chmod +x "$APP/Contents/MacOS/rox"
 

@@ -319,6 +319,40 @@ pub(crate) fn file_tile(a: &Attach, size: f32) -> impl IntoElement {
         })
 }
 
+/// A small square icon for a file in a list (the Library): an image's or
+/// video's own picture, else the extension glyph on its accent.
+pub(crate) fn file_icon(a: &Attach, size: f32) -> impl IntoElement {
+    let pic = if !a.thumb.is_empty() {
+        media_url(&a.thumb)
+    } else if a.kind == "image" || (a.kind == "video" && !a.poster.is_empty()) {
+        let src = if a.kind == "video" { &a.poster } else if a.feed.is_empty() { &a.path } else { &a.feed };
+        Store::file_raw_url(src)
+    } else {
+        String::new()
+    };
+    let (glyph, color) = ext_icon(&ext_of(&a.name, &a.ext));
+    let tile = view()
+        .size(px(size))
+        .rounded(px(size * 0.25))
+        .overflow_hidden()
+        .items_center()
+        .justify_center();
+    if !pic.is_empty() {
+        return tile
+            .bg(theme::CARD2)
+            .child(image(pic).resize_mode(ResizeMode::Cover).fade_duration(0.0).size(px(size)))
+            .into_element();
+    }
+    tile.bg(color.opacity(0.16))
+        .child(
+            text(glyph)
+                .text_size(px(if glyph.chars().count() > 2 { size * 0.3 } else { size * 0.5 }))
+                .font_weight(FontWeight::BOLD)
+                .text_color(color),
+        )
+        .into_element()
+}
+
 // ——————————————————— DocGlyph (`Xg` + `XF`) ———————————————————
 
 /// Grok's 44pt document illustration: a 32×40 page (40×34 for slides),
@@ -430,11 +464,16 @@ fn doc_glyph(variant: &str) -> impl IntoElement {
 /// `FileName` — the stem truncates, the extension always shows.
 fn file_name(name: &str) -> impl IntoElement {
     let (stem, ext) = stem_ext(name);
+    // the stem shrinks (ellipsis) so a long name stops short of the
+    // card's trailing button instead of running under it
     view()
         .flex_row()
+        .min_w(px(0.0))
         .child(
             text(stem)
                 .number_of_lines(1)
+                .flex_shrink(1.0)
+                .min_w(px(0.0))
                 .text_size(px(14.0))
                 .line_height(px(20.0))
                 .font_weight(FontWeight::MEDIUM)
@@ -506,6 +545,42 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
                 .child(save_btn(f)),
         )
         .on_press(move || store().open_file(&f2))
+}
+
+/// A Drive file the reply made or changed — `FileCard`'s 230×64 box: its
+/// type tile with the Google badge, name, "Google Doc · Google Drive";
+/// a press opens it in the browser.
+pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
+    let url = l.link.clone();
+    let hov = signal(false);
+    let name = if l.name.is_empty() { format!("Untitled {}", l.file_type) } else { l.name.clone() };
+    let kind = if l.file_type.is_empty() { "File" } else { l.file_type.as_str() };
+    view()
+        .label(format!("Open {name} in Google Drive"))
+        .child(
+            card_box()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(64.0))
+                .pl(px(12.0))
+                .pr(px(12.0))
+                .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
+                .on_hover_in(move || hov.set(true))
+                .on_hover_out(move || hov.set(false))
+                .child(crate::appdetails::connector_tile(&l.kind, &l.name, 36.0))
+                .child(
+                    view().flex_1().min_w(px(0.0)).child(file_name(&name)).child(
+                        text(format!("{kind} · Google Drive"))
+                            .number_of_lines(1)
+                            .text_size(px(13.0))
+                            .line_height(px(18.0))
+                            .text_color(tc("#f5f5f5ad")),
+                    ),
+                )
+                .child(crate::icons::icon_ink("arrowUpRight", 14.0, || tc("#f5f5f5a8"))),
+        )
+        .on_press(move || store().open_link(&url))
 }
 
 // ——————————————————— audio (`useAudio` + AudioCard) ———————————————————
@@ -1458,7 +1533,12 @@ pub(crate) fn layer() -> impl IntoElement {
         } else if !office.is_empty() {
             web_view(format!("{}{office}", crate::client::GEN))
                 .flex_1()
-                .bg(AdaptiveColor::from(Hsla::from_str("#161616").unwrap_or_default()))
+                // shows through the (transparent) WKWebView until the editor
+                // paints: light is the editor page's own `#f5f5f5` body.
+                .bg(theme::tone(
+                    Hsla::from_str("#f5f5f5").unwrap_or_default(),
+                    Hsla::from_str("#161616").unwrap_or_default(),
+                ))
                 .into_element()
         } else {
             match f.kind.as_str() {
@@ -1705,7 +1785,12 @@ pub(crate) fn layer() -> impl IntoElement {
                 view()
                     .flex_1()
                     .bg(if code_bg {
-                        tc("#212121")
+                        // `#212121` is outside `tc`'s light table (it would
+                        // stay dark in light mode): white on light.
+                        theme::tone(
+                            theme::hsla(0.0, 0.0, 1.0, 1.0),
+                            Hsla::from_str("#212121").unwrap_or_default(),
+                        )
                     } else {
                         AdaptiveColor::TRANSPARENT
                     })

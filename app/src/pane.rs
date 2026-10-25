@@ -2,7 +2,7 @@
 //! when the open thread has no bot, the app card. Variant A carries the
 //! editable avatar (hover → darkened + pencil + the Bot|Generate|Upload
 //! editor card), the name field, the model pill and the
-//! Details|Library|Computer|Connect tabs; variant B the app's meta,
+//! Details|Library|Computer tabs; variant B the app's meta,
 //! `/state/:app` kvs and the window/pin/publish buttons.
 
 use std::str::FromStr;
@@ -11,9 +11,8 @@ use nsh_core::ui::prelude::*;
 use nsh_core::ui::View;
 
 use crate::avatar::{bot_avatar, sleeping_blob, BlobEdit, BlobGaze, BotAvatarProps};
-use crate::icons::icon;
 use crate::live::store;
-use crate::store::{AppMeta, Crop, McpServer, Store, RoxApp};
+use crate::store::{AppMeta, Crop, Store, RoxApp};
 use crate::theme;
 
 /// The pane's top bar height — the TSX's `TOP`.
@@ -42,7 +41,7 @@ pub(crate) fn pane() -> impl IntoElement {
                 dynamic(move || {
                     // A plain chat gets the same profile as an agent (the
                     // app's default avatar, its own title): Details,
-                    // Library, Computer and Connect apply to both.
+                    // Library and Computer apply to both.
                     if st.active_bot().is_some() || !st.active_id.get().is_empty() {
                         bot_profile().into_element()
                     } else if st.detail_meta.get().is_some() {
@@ -349,9 +348,11 @@ fn model_pill() -> View {
     view().child(crate::models::model_pill())
 }
 
-/// The Details|Library|Computer|Connect pills (App.tsx:2605).
+/// The Details|Library|Computer pills (App.tsx:2605).
 fn tab_pills() -> impl IntoElement {
-    let tabs = ["details", "library", "computer", "connect"];
+    // Connect left the pane: connectors are the Plugins window's, and the
+    // agent installs / lists / toggles them by tool (mcp_*, skill_*).
+    let tabs = ["details", "library", "computer"];
     view()
         .flex_row()
         .gap(px(1.0))
@@ -383,23 +384,16 @@ fn tab_pills() -> impl IntoElement {
                         }
                     }),
                 )
-                .on_press(move || {
-                    let st = store();
-                    st.detail_tab.set(tb.to_owned());
-                    if tb == "connect" {
-                        st.fetch_mcp();
-                    }
-                })
+                .on_press(move || store().detail_tab.set(tb.to_owned()))
                 .into_element()
         }))
 }
 
-/// The tab's body — one of the four cards (App.tsx:2626).
+/// The tab's body — Details, Library or Computer.
 fn detail_body() -> impl IntoElement {
     match store().detail_tab.get().as_str() {
         "library" => library_tab().into_element(),
         "computer" => computer_tab().into_element(),
-        "connect" => connect_tab().into_element(),
         _ => details_tab().into_element(),
     }
 }
@@ -577,7 +571,13 @@ fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
                 })
                 .children(b.integrations.iter().map(|i| {
                     let (id, iid) = (b.id.clone(), i.id.clone());
-                    removable_row(i.name.clone(), i.kind.clone(), move || {
+                    let kind = match i.kind.as_str() {
+                        "plugin" => "Plugin",
+                        "mcp" => "Connector",
+                        "skill" => "Skill",
+                        k => k,
+                    };
+                    removable_row(i.name.clone(), kind.to_owned(), move || {
                         store().bot_integration(&id, &iid, false)
                     })
                     .into_element()
@@ -643,7 +643,12 @@ fn library_tab() -> impl IntoElement {
                                         .active_bot()
                                         .map(|b| b.name)
                                         .unwrap_or_default();
-                                    format!("Files {name} makes show up here.")
+                                    // a plain chat has no bot to name
+                                    if name.is_empty() {
+                                        "Files made in this chat show up here.".to_owned()
+                                    } else {
+                                        format!("Files {name} makes show up here.")
+                                    }
                                 })
                                 .text_size(px(13.0))
                                 .text_color(theme::DIM),
@@ -652,6 +657,7 @@ fn library_tab() -> impl IntoElement {
                     .into_element()
             },
         ))
+        .child(when(|| !store().thread_apps.get().is_empty(), || lib_chips().into_element()))
         .child(each(
             || store().library_groups(),
             |g| g.0.clone(),
@@ -676,15 +682,72 @@ fn library_tab() -> impl IntoElement {
         ))
 }
 
-/// A library row — the icon tile, title/file, `v<n>` chip, `ago` (App.tsx:2648).
+/// The kind chips over the Library: All, then each kind the chat has
+/// made, with its count; the pick holds for the session (`lib_filter`).
+fn lib_chips() -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(6.0))
+        .px_1()
+        .pb(px(14.0))
+        .child(dynamic(|| {
+            let cur = store().lib_kind();
+            // Full width, so the chips wrap inside the pane instead of
+            // running past its edge.
+            view()
+                .w_full()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(6.0))
+                .children(store().lib_chips().into_iter().map(|(kind, label, n)| {
+                    lib_chip(kind, label, n, cur == kind).into_element()
+                }))
+                .into_element()
+        }))
+}
+
+fn lib_chip(kind: &'static str, label: &'static str, n: usize, on: bool) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .h(px(26.0))
+        .px(px(10.0))
+        .rounded(px(13.0))
+        .bg(move || {
+            if on {
+                theme::ACTIVE
+            } else if hov.get() {
+                theme::HOVER
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .border_1()
+        .border_color(if on { AdaptiveColor::TRANSPARENT } else { theme::BORDER_F })
+        .child(
+            text(label)
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if on { theme::TEXT } else { theme::DIM }),
+        )
+        .child(text(n.to_string()).text_size(px(12.0)).text_color(theme::MUTED))
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .on_press(move || store().lib_filter.set(kind.to_owned()))
+        .label(format!("Show {label}"))
+}
+
+/// A library row — the icon tile, title/file, the version picker chip,
+/// `ago` (App.tsx:2648).
 fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
     let a0 = a.get();
-    let name = a0.app.clone();
-    let tile_hue = hue(&a0.app);
     let n_chip = a0.app.clone();
     let a_ctx = a.clone();
-    let a_tree = a.clone();
     let focus = a0.app.clone();
+    let press = a.clone();
     view()
         .child(
             view()
@@ -702,25 +765,19 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         AdaptiveColor::TRANSPARENT
                     }
                 })
-                .on_press(move || store().popout(&name))
+                // Each kind opens with its own handler: a mini app pops
+                // out, an image opens in the lightbox, a file in the viewer.
+                .on_press(move || store().open_library_item(&press.get_untracked()))
                 .on_context_menu(move |e: &ContextMenuEvent| {
-                    crate::ctx::open(e, crate::ctx::app_items(&a_ctx.get()))
+                    let at = (e.page_position.x.0, e.page_position.y.0);
+                    crate::ctx::open(e, crate::ctx::app_items(&a_ctx.get(), at))
                 })
-                .child(
-                    // `hue(name)` tile — `</>` on the deterministic color.
-                    view()
-                        .size(px(24.0))
-                        .rounded(px(5.0))
-                        .items_center()
-                        .justify_center()
-                        .bg(tile_hue)
-                        .child(
-                            text("</>")
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(white()),
-                        ),
-                )
+                // The square tile: an app's icon, an image's thumbnail, a
+                // file's set icon or its type tile.
+                .child({
+                    let a = a.clone();
+                    dynamic(move || crate::appdetails::artifact_tile(&a.get(), 28.0).into_element())
+                })
                 .child(
                     view()
                         .flex_1()
@@ -736,7 +793,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .child(
                             text({
                                 let a = a.clone();
-                                move || a.get().file
+                                move || subtitle(&a.get())
                             })
                             .text_size(px(12.0))
                             .text_color(theme::MUTED)
@@ -749,28 +806,12 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         move || a.get().v > 0
                     },
                     move || {
-                        let n = n_chip.clone();
                         let a2 = a.clone();
-                        view()
-                            .rounded(px(6.0))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .bg(theme::HOVER)
-                            .child(
-                                text(move || format!("v{} ⎇", a2.get().v))
-                                    .text_size(px(11.0))
-                                    .font_family("monospace")
-                                    .text_color(theme::TEXT),
-                            )
-                            .on_press(move || {
-                                let st = store();
-                                st.vers_open.set(if st.vers_open.get_untracked() == n {
-                                    String::new()
-                                } else {
-                                    n.clone()
-                                });
-                            })
-                            .into_element()
+                        crate::versions::version_chip(n_chip.clone(), move || {
+                            let a = a2.get();
+                            (a.v, a.versions)
+                        })
+                        .into_element()
                     },
                 ))
                 .child(
@@ -779,113 +820,50 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .text_color(theme::MUTED),
                 ),
         )
-        .child(version_tree(a_tree))
 }
 
-/// The `v<n> ⎇` tree — newest first; a click moves the pointer
-/// (App.tsx:2689).
-fn version_tree(a: ReadSignal<RoxApp>) -> impl IntoElement {
-    let a0 = a.get();
-    let n = a0.app.clone();
-    let name = a0.app.clone();
-    let open = move || store().vers_open.get() == n && !a.get().versions.is_empty();
-    when(open, move || {
-        let cur = a.get();
-        let cur_v = cur.v;
-        let mut versions = cur.versions.clone();
-        versions.sort_by(|x, y| y.v.cmp(&x.v));
-        view()
-            .pl_3()
-            .py(px(2.0))
-            .children(versions.iter().map(|vr| {
-                let cur = vr.v == cur_v;
-                let v = vr.v;
-                let v2 = vr.v;
-                let created = vr.created_at;
-                let name = name.clone();
-                let name2 = name.clone();
-                let label = vr.label.clone();
-                let label2 = label.clone();
-                let parent = vr.parent;
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(7.0))
-                    .py(px(4.0))
-                    .px_2()
-                    .on_press(move || store().set_version(name.clone(), v))
-                    .child(
-                        text(if cur { "●" } else { "○" })
-                            .text_size(px(11.0))
-                            .text_color(if cur {
-                                Hsla::from_str("#32bb78").unwrap_or(theme::ACCENT.dark)
-                            } else {
-                                theme::GHOST.dark
-                            }),
-                    )
-                    .child(
-                        text(format!("v{v2}"))
-                            .text_size(px(12.0))
-                            .font_family("monospace")
-                            .text_color(if cur { theme::TEXT.dark } else { theme::MUTED.dark }),
-                    )
-                    .children(if label.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            text(label.clone())
-                                .text_size(px(11.0))
-                                .text_color(Hsla::from_str("#c4b0ff").unwrap_or(theme::TEXT.dark))
-                                .max_w(px(90.0))
-                                .number_of_lines(1)
-                                .into_element(),
-                        )
-                    })
-                    .children(if parent.is_some() && parent != Some(v2 - 1) {
-                        Some(
-                            text(format!("⎇ from v{}", parent.unwrap_or(0)))
-                                .text_size(px(11.0))
-                                .text_color(Hsla::from_str("#b16dff").unwrap_or(theme::TEXT.dark))
-                                .into_element(),
-                        )
-                    } else {
-                        None
-                    })
-                    .child(
-                        view()
-                            .rounded(px(5.0))
-                            .px(px(3.0))
-                            .child(icon("edit"))
-                            .on_press(move || {
-                                let st = store();
-                                st.app_rename_text.set(label2.clone());
-                                st.app_rename.set(Some(crate::store::AppRename {
-                                    name: name2.clone(),
-                                    field: "label".into(),
-                                    v: Some(v2),
-                                }));
-                            }),
-                    )
-                    .children(if cur {
-                        Some(
-                            text("current")
-                                .text_size(px(11.0))
-                                .text_color(Hsla::from_str("#32bb78").unwrap_or(theme::ACCENT.dark))
-                                .into_element(),
-                        )
-                    } else {
-                        None
-                    })
-                    .child(
-                        text(Store::ago(created))
-                            .text_size(px(11.0))
-                            .text_color(theme::GHOST)
-                            .flex_1(),
-                    )
-                    .into_element()
-            }))
-            .into_element()
-    })
+/// A library row's second line: the kind and what is known of it —
+/// "Mini app · 360×480", "Image · 1024×1024", "PDF · 2 pages",
+/// "Sheet · 3 sheets", "Document · 12 KB"; a connector's file its type
+/// and where it lives — "Google Doc · Google Drive".
+pub(crate) fn subtitle(a: &RoxApp) -> String {
+    let m = &a.meta;
+    if a.storage.connector() {
+        let kind = if m.file_type.is_empty() { "File" } else { m.file_type.as_str() };
+        return format!("{kind} · {}", a.storage.place_name());
+    }
+    let plural = |n: i64, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+    let size = || (m.size > 0.0).then(|| crate::files::fmt_size(m.size));
+    let ext = || {
+        let e = crate::files::ext_of(&a.filename, &m.ext);
+        if e.is_empty() { "File".to_owned() } else { e.to_uppercase() }
+    };
+    let (label, detail) = match a.kind.as_str() {
+        "app" => ("Mini app".to_owned(), (a.w > 0.0).then(|| format!("{}×{}", a.w, a.h))),
+        "image" => ("Image".to_owned(), (a.w > 0.0).then(|| format!("{}×{}", a.w, a.h))),
+        "pdf" => ("PDF".to_owned(), (m.pages > 0).then(|| plural(m.pages, "page")).or_else(size)),
+        "spreadsheet" => (
+            "Sheet".to_owned(),
+            (!m.sheets.is_empty()).then(|| plural(m.sheets.len() as i64, "sheet")).or_else(size),
+        ),
+        "presentation" => ("Slides".to_owned(), (m.slides > 0).then(|| plural(m.slides, "slide")).or_else(size)),
+        "document" => ("Document".to_owned(), (m.pages > 0).then(|| plural(m.pages, "page")).or_else(size)),
+        "media" => (
+            if a.attach.as_ref().is_some_and(|f| f.kind == "audio") { "Audio" } else { "Video" }.to_owned(),
+            (m.duration > 0.0).then(|| clock(m.duration)).or_else(size),
+        ),
+        _ => (ext(), size()),
+    };
+    match detail {
+        Some(d) => format!("{label} · {d}"),
+        None => label,
+    }
+}
+
+/// A media length as m:ss.
+fn clock(secs: f64) -> String {
+    let s = secs.round() as i64;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 /// Computer — the sleeping avatar card (App.tsx:2814).
@@ -924,280 +902,6 @@ fn computer_tab() -> impl IntoElement {
             .pt(px(10.0)),
         )
 }
-
-/// Connect — the MCP servers card + the "Connect app" form (App.tsx:2735).
-fn connect_tab() -> impl IntoElement {
-    let st = store();
-    if st.mcp_servers.get_untracked().is_empty() && !st.mcp_form_open.get_untracked() {
-        st.fetch_mcp();
-    }
-    view()
-        .child(pane_label("Connected apps".into()))
-        .child(
-            pane_card()
-                .child(when(
-                    || store().mcp_servers.get().is_empty(),
-                    || {
-                        let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                        text(format!("No apps connected yet. Add an MCP server below — its tools become available to {name}."))
-                            .text_size(px(13.0))
-                            .text_color(theme::DIM)
-                            .py(px(10.0))
-                            .px(px(13.0))
-                            .into_element()
-                    },
-                ))
-                .child(each(
-                    || store().mcp_servers.get(),
-                    |s| s.id.clone(),
-                    |s, _| mcp_row(s.get()),
-                )),
-        )
-        .child(mcp_form_card().mt(px(10.0)))
-}
-
-/// An MCP server row — status dot, name + GLOBAL, `tools · command args`.
-fn mcp_row(s: McpServer) -> impl IntoElement {
-    let s2 = s.clone();
-    let id_hue = hue(&s.id);
-    let name = s.name.clone();
-    let bot = s.bot.clone();
-    let cmd = format!("{} {}", s.command, s.args.join(" ")).trim().to_owned();
-    let tools = s.tools;
-    let err = s.err.clone();
-    let status = s.status.clone();
-    let subtitle = match status.as_str() {
-        "connected" => format!("{} tools · {}", tools, cmd),
-        "error" => format!("error — {}", if err.is_empty() { "failed to start".to_owned() } else { err }),
-        "off" => format!("off · {}", cmd),
-        _ => cmd,
-    };
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(9.0))
-        .py(px(8.0))
-        .px(px(10.0))
-        .on_context_menu(move |e: &ContextMenuEvent| {
-            crate::ctx::open(e, crate::ctx::mcp_items(&s2))
-        })
-        .child(
-            view()
-                .size(px(24.0))
-                .rounded(px(6.0))
-                .items_center()
-                .justify_center()
-                .bg(id_hue)
-                .child(
-                    text("⬡")
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(white()),
-                ),
-        )
-        .child(
-            view()
-                .flex_1()
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            text(name)
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT)
-                                .number_of_lines(1),
-                        )
-                        .child(when(
-                            move || bot.is_empty(),
-                            || {
-                                text("GLOBAL")
-                                    .text_size(px(9.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(Hsla::from_str("#8fb6ff").unwrap_or(theme::ACCENT.dark))
-                                    .into_element()
-                            },
-                        )),
-                )
-                .child(
-                    text(subtitle)
-                        .text_size(px(11.0))
-                        .text_color(theme::MUTED)
-                        .number_of_lines(1),
-                ),
-        )
-        .child(
-            view()
-                .size(px(8.0))
-                .rounded(px(4.0))
-                .bg(match status.as_str() {
-                    "connected" => Hsla::from_str("#32bb78").unwrap_or(theme::ACCENT.dark),
-                    "error" => Hsla::from_str("#ff5f57").unwrap_or(theme::TEXT.dark),
-                    "off" => theme::GHOST.dark,
-                    _ => Hsla::from_str("#febc2e").unwrap_or(theme::TEXT.dark),
-                }),
-        )
-}
-
-/// The "Connect app" form — four fields, the scope pills, Connect
-/// (App.tsx:2775).
-fn mcp_form_card() -> View {
-    view()
-        .bg(theme::CARD2)
-        .rounded(px(12.0))
-        .border_1()
-        .border_color(theme::BORDER_F)
-        .py(px(10.0))
-        .px_3()
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .on_press(|| store().mcp_form_open.update(|v| *v = !*v))
-                .child(
-                    text(move || {
-                        if store().mcp_form_open.get() { "− Cancel".to_owned() } else { "＋ Connect app".to_owned() }
-                    })
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT),
-                )
-                .child(
-                    text(move || {
-                        if store().mcp_form_open.get() { String::new() } else { "stdio MCP server".into() }
-                    })
-                    .text_size(px(11.0))
-                    .text_color(theme::DIM),
-                ),
-        )
-        .child(when(
-            || store().mcp_form_open.get(),
-            || {
-                view()
-                    .pt_2()
-                    .children(
-                        [("name", "Name (e.g. Linear)"), ("command", "Command (e.g. npx)"), ("args", "Args (e.g. -y @modelcontextprotocol/server-…)"), ("env", "Env (KEY=V; KEY2=V2) — optional")]
-                            .into_iter()
-                            .map(|(f, ph)| {
-                                view()
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_color(theme::BORDER_S)
-                                    .bg(theme::MAIN)
-                                    .px(px(9.0))
-                                    .child(
-                                        input()
-                                            .value(move || {
-                                                let form = store().mcp_form.get();
-                                                match f {
-                                                    "name" => form.name,
-                                                    "command" => form.command,
-                                                    "args" => form.args,
-                                                    _ => form.env,
-                                                }
-                                            })
-                                            .on_change(move |v: &str| {
-                                                store().mcp_form.update(|form| match f {
-                                                    "name" => form.name = v.to_owned(),
-                                                    "command" => form.command = v.to_owned(),
-                                                    "args" => form.args = v.to_owned(),
-                                                    _ => form.env = v.to_owned(),
-                                                })
-                                            })
-                                            .placeholder(ph)
-                                            .placeholder_color(|| color(theme::GHOST))
-                                            .text_size(px(12.0))
-                                            .text_color(theme::TEXT)
-                                            .py(px(7.0)),
-                                    )
-                                    .mt_2()
-                                    .into_element()
-                            }),
-                    )
-                    .child(
-                        // `scope` — all bots vs this one (App.tsx:2800).
-                        view()
-                            .flex_row()
-                            .gap(px(6.0))
-                            .mt_2()
-                            .children(["all", "bot"].into_iter().map(|sc| {
-                                view()
-                                    .rounded(px(999.0))
-                                    .px(px(10.0))
-                                    .py(px(5.0))
-                                    .border_1()
-                                    .border_color(move || {
-                                        if store().mcp_form.get().scope == sc {
-                                            theme::BORDER_S
-                                        } else {
-                                            theme::BORDER_F
-                                        }
-                                    })
-                                    .bg(move || {
-                                        if store().mcp_form.get().scope == sc {
-                                            theme::HOVER
-                                        } else {
-                                            AdaptiveColor::TRANSPARENT
-                                        }
-                                    })
-                                    .child(
-                                        text(if sc == "all" {
-                                            "All bots".to_owned()
-                                        } else {
-                                            let n = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                                            format!("{n} only")
-                                        })
-                                        .text_size(px(11.0))
-                                        .text_color(move || {
-                                            if store().mcp_form.get().scope == sc {
-                                                theme::TEXT
-                                            } else {
-                                                theme::DIM
-                                            }
-                                        }),
-                                    )
-                                    .on_press(move || {
-                                        store().mcp_form.update(|f| f.scope = sc.to_owned())
-                                    })
-                                    .into_element()
-                            })),
-                    )
-                    .child(when(
-                        || !store().mcp_err.get().is_empty(),
-                        || {
-                            text(|| store().mcp_err.get())
-                                .text_size(px(11.0))
-                                .text_color(Hsla::from_str("#ff8f89").unwrap_or(theme::TEXT.dark))
-                                .mt_2()
-                                .into_element()
-                        },
-                    ))
-                    .child(
-                        view()
-                            .mt_2()
-                            .self_start()
-                            .rounded(px(999.0))
-                            .bg(theme::TEXT)
-                            .px(px(14.0))
-                            .py(px(7.0))
-                            .child(
-                                text(move || {
-                                    if store().mcp_busy.get() { "Connecting…" } else { "Connect" }
-                                })
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme::CARD),
-                            )
-                            .on_press(|| store().add_mcp_server()),
-                    )
-                    .into_element()
-            },
-        ))
-}
-
-// ————————————————————————— variant B: the app card —————————————————————————
 
 /// `detail() && !activeBot()` — the app detail: tile, title, pills,
 /// kvs, actions (App.tsx:2845).
@@ -1252,13 +956,7 @@ fn app_detail() -> impl IntoElement {
                 store()
                     .detail_meta
                     .get()
-                    .map(|m| {
-                        format!(
-                            "app · {}.tsx{}",
-                            m.name,
-                            if m.pinned { " · ★ pinned" } else { "" }
-                        )
-                    })
+                    .map(|m| format!("app · {}.tsx", m.name))
                     .unwrap_or_default()
             })
             .text_size(px(11.0))
@@ -1394,7 +1092,7 @@ fn state_row(kv: crate::store::Kv) -> impl IntoElement {
         )
 }
 
-/// The action buttons — `Open window`, pin/unpin, `Save to Mini Apps`
+/// The action buttons — `Open window`, `Save to Mini Apps`
 /// (App.tsx:2963).
 fn app_actions() -> View {
     view()
@@ -1404,26 +1102,6 @@ fn app_actions() -> View {
                 let Some(m) = store().detail_meta.get_untracked() else { return };
                 store().popout(&m.name);
             }),
-        )
-        .child(
-            action_btn_dyn(
-                || {
-                    if store().detail_meta.get().map(|m| m.pinned).unwrap_or(false) {
-                        "Unpin from desktop widget"
-                    } else {
-                        "Pin to desktop widget"
-                    }
-                },
-                false,
-                || {
-                    let Some(m) = store().detail_meta.get_untracked() else { return };
-                    let st = store();
-                    spawn(async move {
-                        let _ = client_post("/pin", serde_json::json!({"name": m.name, "pinned": !m.pinned})).await;
-                        st.refresh_threads();
-                    });
-                },
-            ),
         )
         .child(when(
             || !store().detail_meta.get().map(|m| m.published).unwrap_or(true),
@@ -1442,29 +1120,6 @@ fn app_actions() -> View {
 }
 
 fn action_btn(label: &'static str, accent: bool, on_press: impl Fn() + 'static) -> impl IntoElement {
-    view()
-        .rounded(px(10.0))
-        .bg(if accent {
-            Hsla::from_str("#1884fc").unwrap_or(theme::ACCENT.dark)
-        } else {
-            theme::HOVER.dark
-        })
-        .py(px(9.0))
-        .items_center()
-        .child(
-            text(label)
-                .text_size(px(13.0))
-                .font_weight(if accent { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
-                .text_color(if accent { white() } else { color(theme::TEXT) }),
-        )
-        .on_press(on_press)
-}
-
-fn action_btn_dyn(
-    label: impl Fn() -> &'static str + 'static,
-    accent: bool,
-    on_press: impl Fn() + 'static,
-) -> impl IntoElement {
     view()
         .rounded(px(10.0))
         .bg(if accent {
@@ -2012,19 +1667,16 @@ fn crop_editor(d: crate::store::AvatarDraft, show_name: bool) -> impl IntoElemen
 
 // ————————————————————————— the app rename modal —————————————————————————
 
-/// `appRename`'s modal — a full-window scrim with a centered 320pt card:
-/// field-specific title, the input, Cancel / Rename (App.tsx:4190).
+/// `appRename`'s modal — a full-window scrim with a centered 320pt card
+/// naming a version branch: the input, Cancel / Rename (App.tsx:4190).
 pub(crate) fn rename_overlay() -> impl IntoElement {
     dynamic(|| {
         let st = store();
         let Some(r) = st.app_rename.get() else {
             return view().into_element();
         };
-        let (title, placeholder) = match r.field.as_str() {
-            "file" => ("Rename File Name".to_owned(), "file-name.tsx".to_owned()),
-            "label" => (format!("Name Branch · v{}", r.v.unwrap_or(0)), "branch name (e.g. slow-ball)".to_owned()),
-            _ => ("Rename Title".to_owned(), "App title".to_owned()),
-        };
+        let (title, placeholder) =
+            (format!("Name Branch · v{}", r.v.unwrap_or(0)), "branch name (e.g. slow-ball)".to_owned());
         view()
             .size_full()
             .absolute()
