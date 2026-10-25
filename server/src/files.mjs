@@ -348,17 +348,20 @@ export async function renderFile(path, rel) {
 }
 
 // ————— mock response: one file of every kind, no model call —————
-export function mockFiles(dir) {
+// `only` (a Set of extensions, or null) narrows it to one kind — "/mock pdf".
+export function mockFiles(dir, only = null) {
   mkdirSync(dir, { recursive: true });
   const out = [];
+  const wantExt = (e) => !only || only.has(e);
   const put = (name, data) => {
+    if (!wantExt(name.split(".").pop().toLowerCase())) return null;
     const p = join(dir, name);
     writeFileSync(p, data);
     out.push(p);
     return p;
   };
   // a few images for the gallery (different aspects), and an unknown type
-  try {
+  if (wantExt("png")) try {
     const shots = [["sunset", 640, 400, "#f59e0b", "#ef4444"], ["ocean", 400, 600, "#06b6d4", "#3b82f6"], ["forest", 600, 600, "#22c55e", "#14532d"], ["night", 800, 450, "#6366f1", "#0f172a"]];
     for (const [n, w, h, a, b] of shots) {
       const svg = join(dir, `.${n}.svg`);
@@ -371,21 +374,24 @@ export function mockFiles(dir) {
     }
   } catch {}
   // animated media: a GIF and a WebP (ImageMagick) and an SVG with SMIL animation
-  try {
+  if (wantExt("gif") || wantExt("webp")) try {
     const frames = [];
     for (let i = 0; i < 20; i++) {
       const x = 40 + Math.round(240 * Math.abs(Math.sin((i / 20) * Math.PI)));
       frames.push("(", "-size", "320x180", "xc:#0f172a", "-fill", `hsl(${i * 18},80%,60%)`, "-draw", `circle ${x},110 ${x + 22},110`, "-fill", "#ffffff", "-pointsize", "20", "-draw", `text 16,34 'animated GIF ${i + 1}/20'`, ")");
     }
+    // the gif is the webp's source: build it either way, list it only when asked
     execFileSync("magick", ["-delay", "6", "-loop", "0", ...frames, join(dir, "bounce.gif")], { stdio: "ignore", timeout: 20000 });
-    out.push(join(dir, "bounce.gif"));
-    execFileSync("magick", [join(dir, "bounce.gif"), "-loop", "0", join(dir, "spin.webp")], { stdio: "ignore", timeout: 20000 });
-    out.push(join(dir, "spin.webp"));
+    if (wantExt("gif")) out.push(join(dir, "bounce.gif"));
+    if (wantExt("webp")) {
+      execFileSync("magick", [join(dir, "bounce.gif"), "-loop", "0", join(dir, "spin.webp")], { stdio: "ignore", timeout: 20000 });
+      out.push(join(dir, "spin.webp"));
+    }
   } catch {}
   put("pulse.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#ec4899"/></linearGradient></defs><rect width="480" height="270" rx="20" fill="url(#g)"/><text x="32" y="56" font-family="Helvetica" font-size="28" font-weight="bold" fill="#fff">Animated SVG</text><circle cx="380" cy="80" r="30" fill="#fde047"><animate attributeName="r" values="22;38;22" dur="1.6s" repeatCount="indefinite"/></circle><polygon points="120,230 180,130 240,230" fill="#ffffff99"><animateTransform attributeName="transform" type="rotate" from="0 180 196" to="360 180 196" dur="4s" repeatCount="indefinite"/></polygon></svg>');
   put("contact.vcf", "BEGIN:VCARD\nVERSION:3.0\nFN:Kiffy Bot\nEND:VCARD\n");
   // an image (inline in the reply, as Grok's)
-  try {
+  if (wantExt("png")) try {
     const svg = join(dir, ".chip.svg");
     writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="420" height="210"><rect width="420" height="210" rx="18" fill="#2f7bf6"/><text x="210" y="122" font-family="Helvetica" font-size="34" fill="#fff" text-anchor="middle">SVG SAMPLE</text></svg>');
     execFileSync("qlmanage", ["-t", "-s", "420", "-o", dir, svg], { stdio: "ignore", timeout: 15000 });
@@ -393,27 +399,47 @@ export function mockFiles(dir) {
     execFileSync("sips", ["-c", "210", "420", join(dir, "chip.png")], { stdio: "ignore" });
     out.push(join(dir, "chip.png"));
   } catch {}
-  put("README.md", "# Grok Shell\n\nA **native** generative-UI chat.\n\n- Grok-style sidebar\n- Model picker via *opencodex*\n- File viewers\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n| Feature | Status |\n| --- | --- |\n| Viewers | done |\n");
+  // a full GitHub-Flavored Markdown showcase (vendored in fixtures/) — every
+  // element the markdown viewer must render, not the old stub
+  if (wantExt("md")) {
+    const readmeFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "README.md");
+    copyFileSync(readmeFixture, join(dir, "README.md"));
+    out.push(join(dir, "README.md"));
+  }
   put("main.rs", `use std::collections::HashMap;\n\n/// Counts words in a sentence.\nfn count_words(text: &str) -> HashMap<&str, usize> {\n    let mut counts = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word).or_insert(0) += 1;\n    }\n    counts\n}\n\nfn main() {\n    let counts = count_words("the quick brown fox jumps over the lazy dog the end");\n    let mut pairs: Vec<_> = counts.into_iter().collect();\n    pairs.sort_by(|a, b| b.1.cmp(&a.1));\n    for (word, n) in pairs.iter().take(3) {\n        println!("{word}: {n}");\n    }\n}\n`);
   put("App.tsx", `import { signal, Text, View } from "nsh";\n\nexport default function Counter() {\n  const n = signal(0);\n  return (\n    <View onPress={() => n.update((v) => v + 1)}>\n      <Text>{\`Clicked \${n()} times\`}</Text>\n    </View>\n  );\n}\n`);
   put("data.json", JSON.stringify({ bot: "Kiffy", model: { id: "gpt-6-luna", effort: "max", fast: false }, tags: ["native", "nsh"], count: 3, ok: true }));
   put("budget.csv", "Category,Q1,Q2,Q3,Q4\nRent,3000,3000,3100,3100\nSoftware,420,460,510,505\nTravel,1200,300,900,1500\nMeals,260,310,280,330\n");
   put("notes.txt", "Meeting notes — Oct 19\n\n1. Ship file viewers\n2. Verify parity with Grok Bot\n3. Mock responses so tests cost nothing\n");
-  put("page.html", "<!doctype html><html><body style=\"font-family:-apple-system;padding:24px\"><h1>Hello from HTML</h1><p>Rendered in a web view, as Grok's HTML preview.</p></body></html>");
+  // an interactive analytics dashboard (vendored in fixtures/) — responsive
+  // grid, canvas charts, live feed; exercises the web-view preview properly
+  if (wantExt("html")) {
+    const pageFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "page.html");
+    copyFileSync(pageFixture, join(dir, "page.html"));
+    out.push(join(dir, "page.html"));
+  }
   // docx and pdf via macOS tools; xlsx via exceljs (async, best effort)
-  try {
+  if (wantExt("pdf")) try {
     const html = put(".memo-src.html", "<h1>Quarterly memo</h1><p>Revenue grew <b>18%</b> quarter over quarter.</p><ul><li>Launch the viewer</li><li>Hire two engineers</li></ul><table border=1><tr><th>Region</th><th>Sales</th></tr><tr><td>APAC</td><td>1.2M</td></tr><tr><td>EMEA</td><td>0.9M</td></tr></table>");
     out.splice(out.indexOf(html), 1);
-    const pdf = execFileSync("cupsfilter", ["-m", "application/pdf", join(dir, "notes.txt")], { stdio: ["ignore", "pipe", "ignore"] });
-    writeFileSync(join(dir, "report.pdf"), pdf);
-    out.push(join(dir, "report.pdf"));
+    // a real, element-rich PDF (vendored in fixtures/) — exercises every part
+    // of the viewer, unlike the plain-text cupsfilter page it replaces
+    const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "PDF_Elements_Showcase.pdf");
+    copyFileSync(fixture, join(dir, "PDF_Elements_Showcase.pdf"));
+    out.push(join(dir, "PDF_Elements_Showcase.pdf"));
   } catch {}
-  try {
+  if (wantExt("m4a") || wantExt("wav") || wantExt("aiff")) try {
+    // the aiff is the source the others convert from — make it either way
     execFileSync("say", ["-o", join(dir, "voice.aiff"), "This is a mock audio file."], { stdio: "ignore" });
-    execFileSync("afconvert", ["-f", "m4af", "-d", "aac", join(dir, "voice.aiff"), join(dir, "voice.m4a")], { stdio: "ignore" });
-    out.push(join(dir, "voice.m4a"));
-    execFileSync("afconvert", ["-f", "WAVE", "-d", "LEI16@22050", join(dir, "voice.aiff"), join(dir, "tone.wav")], { stdio: "ignore" });
-    out.push(join(dir, "tone.wav"));
+    if (wantExt("aiff")) out.push(join(dir, "voice.aiff"));
+    if (wantExt("m4a")) {
+      execFileSync("afconvert", ["-f", "m4af", "-d", "aac", join(dir, "voice.aiff"), join(dir, "voice.m4a")], { stdio: "ignore" });
+      out.push(join(dir, "voice.m4a"));
+    }
+    if (wantExt("wav")) {
+      execFileSync("afconvert", ["-f", "WAVE", "-d", "LEI16@22050", join(dir, "voice.aiff"), join(dir, "tone.wav")], { stdio: "ignore" });
+      out.push(join(dir, "tone.wav"));
+    }
   } catch {}
   return out;
 }
