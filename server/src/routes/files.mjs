@@ -2,7 +2,8 @@
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serverFile, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, outFile } from "../config.mjs";
+import { serverFile, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, GEN_DIR, WIDGETS_DIR, outFile } from "../config.mjs";
+import { headOf, verFile } from "../pipeline.mjs";
 import { sendRanged } from "../state.mjs";
 import { osa } from "../avatars.mjs";
 import { highlight, renderFile } from "../files.mjs";
@@ -55,7 +56,7 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
   // Reply files (Grok's file cards → fullscreen viewer)
   if (req.method === "GET" && req.url.startsWith("/file/render?")) {
     const q = new URL(req.url, "http://x").searchParams;
-    const p = outFile(q.get("path") || "");
+    const p = viewerFile(q.get("path") || "");
     res.setHeader("content-type", "application/json");
     if (!p) return res.end(JSON.stringify({ error: "bad path" }));
     renderFile(p, q.get("path") || "")
@@ -158,7 +159,7 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     req.on("end", () => {
       const { path, asset, name: as } = JSON.parse(body || "{}");
       const bare = String(asset || "").split("/").pop();
-      const p = asset ? (bare ? join(ASSETS_DIR, bare) : null) : outFile(path || "");
+      const p = asset ? (bare ? join(ASSETS_DIR, bare) : null) : viewerFile(path || "");
       res.setHeader("content-type", "application/json");
       if (!p || !existsSync(p)) return res.end(JSON.stringify({ ok: false }));
       const name = String(as || p.split("/").pop()).split("/").pop().replace(/["\\]/g, "");
@@ -202,4 +203,17 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     return sendRanged(req, res, path, type);
   }
   return false;
+}
+
+// A file the viewer opens: a reply's file (a path under the files dir) or
+// a mini app's source — `app:R<n>` (the current version) or
+// `app:R<n>@v<k>` (a card's pinned one), for View Code.
+function viewerFile(path) {
+  const m = /^app:(R\d+)(?:@v(\d+))?$/.exec(path);
+  if (!m) return outFile(path);
+  if (m[2]) return verFile(m[1], Number(m[2]));
+  // the current version's own file (its name downloads), else the module
+  const v = headOf(m[1]);
+  const head = [v && verFile(m[1], v), join(GEN_DIR, `${m[1]}.tsx`), join(WIDGETS_DIR, `${m[1]}.tsx`)].filter(Boolean);
+  return head.find((p) => existsSync(p)) || null;
 }
