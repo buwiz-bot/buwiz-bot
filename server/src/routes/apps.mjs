@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, readFileSync, readdirSync,
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 import { GEN_DIR, MODEL, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W, POP_H, WINDOWS_DIR, CHUNK_DIR, OUT_DIR } from "../config.mjs";
-import { openWindows, deskSlots, db, metaGet, metaSet, slugFile, store, activeThread, getLinearKey, writeIndex, writeShelf, widgetRow } from "../state.mjs";
+import { uuidv7, openWindows, deskSlots, db, metaGet, metaSet, slugFile, store, activeThread, getLinearKey, writeIndex, writeShelf, widgetRow } from "../state.mjs";
 import { emitChunk, walkFiles, headOf, verFile, versionsOf, setHead } from "../pipeline.mjs";
 import { desktopBounds, allocDeskSlot, raiseWidget, renderShot } from "../windows.mjs";
 
@@ -385,6 +385,7 @@ export default async function handle(req, res) {
         if (!widgetRow(name) || !existsSync(join(WIDGETS_DIR, `${name}.tsx`)))
           throw new Error(`no published widget ${name}`);
         activeThread().turns.push({
+          id: uuidv7(),
           role: "ai",
           name,
           label: "widget",
@@ -626,12 +627,17 @@ export default async function handle(req, res) {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      let name = "", mode = "float", popV = null;
+      let name = "", mode = "float", popV = null, hintW = 0, hintH = 0;
       try {
         const j = JSON.parse(body || "{}");
         name = j.name || "";
         mode = j.mode === "desktop" ? "desktop" : "float";
         popV = j.v ? Number(j.v) : null;
+        // The size the caller already laid the app out at (a chat card:
+        // its declared width, its measured height), so the window opens
+        // at it instead of POP_H and then hugging down.
+        hintW = Number(j.w) > 0 ? Number(j.w) : 0;
+        hintH = Number(j.h) > 0 ? Number(j.h) : 0;
       } catch {}
       res.setHeader("content-type", "application/json");
       if (!/^R\d+$/.test(name)) return res.end(JSON.stringify({ ok: false }));
@@ -684,11 +690,13 @@ export default async function handle(req, res) {
       );
       const wantW = Math.min(
         720,
-        Math.max(240, Math.round(Number(sizeM?.[1] ?? widthM?.[1] ?? POP_W))),
+        Math.max(240, Math.round(Number(sizeM?.[1] ?? widthM?.[1] ?? (hintW || POP_W)))),
       );
       const wantH = sizeM
         ? Math.min(capH, Math.max(120, Math.round(Number(sizeM[2]))))
-        : Number(POP_H);
+        : hintH
+          ? Math.min(capH, Math.max(120, Math.round(hintH)))
+          : Number(POP_H);
       const popName = popV ? `${name}@${popV}` : name;
       mkdirSync(WINDOWS_DIR, { recursive: true });
       writeFileSync(
@@ -702,7 +710,7 @@ ${deskBlock}
 // (canvas apps, games); \`export const popoutWidth\` sets the width and
 // the height hugs the content; neither → ${POP_W}pt wide, hugged height.
 const exact = (mod as any).popoutSize as { w?: number; h?: number } | undefined;
-const wantW = Math.min(720, Math.max(240, Math.round(exact?.w ?? (mod as any).popoutWidth ?? ${POP_W})));
+const wantW = Math.min(720, Math.max(240, Math.round(exact?.w ?? (mod as any).popoutWidth ?? ${hintW || POP_W})));
 const capH = ${capH};
 // The hidden title bar still paints the traffic lights over the top ~26pt —
 // the strip is real chrome: pad the module below it, add it to the frame.
@@ -737,7 +745,7 @@ if (isAvailable) {
 // under 12pt is wobble, not layout. anchorTop keeps the top edge fixed —
 // the window grows and shrinks at its bottom edge. popoutSize-h modules
 // opt out of hugging entirely: their frame is exactly what they asked.
-let lastH = 0, pendingH = 0, pendingT = 0, timer: any = null;
+let lastH = ${hintH ? wantH : 0}, pendingH = 0, pendingT = 0, timer: any = null;
 const hug = (raw: number) => {
   if (!isAvailable || exact?.h) return;
   const h = Math.max(120, Math.min(capH, Math.ceil(raw)));

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { execFile, execFileSync } from "node:child_process";
+import { randomFillSync } from "node:crypto";
 import { CHUNK_DIR, GEN_DIR, WIDGETS_DIR } from "./config.mjs";
 
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
@@ -13,6 +14,38 @@ import { CHUNK_DIR, GEN_DIR, WIDGETS_DIR } from "./config.mjs";
 // Messages endpoint with that model instead (fast = its "--fast" variant,
 // effort as output_config.effort / reasoning_effort).
 export const modelCtx = new AsyncLocalStorage();
+
+// Permanent ids: UUID v7 (RFC 9562) — 48-bit unix-ms timestamp, version 7,
+// variant 10, the rest random. rand_a (12 bits) counts up within the same
+// millisecond so ids minted back-to-back stay monotonic. Threads carry `uid`
+// next to their "t<n>" id; turns carry `id` next to their index `i`.
+let v7Ms = -1;
+let v7Ctr = 0;
+export function uuidv7(ms = Date.now()) {
+  ms = Math.max(0, Math.floor(ms));
+  const b = randomFillSync(Buffer.alloc(16));
+  let ctr = ((b[6] & 0x0f) << 8) | b[7];
+  if (ms > v7Ms) {
+    v7Ms = ms;
+    v7Ctr = ctr &= 0x7ff; // leave headroom to count up
+  } else if (ms === v7Ms) {
+    if (v7Ctr >= 0xfff) {
+      ms = v7Ms = ms + 1;
+      v7Ctr = 0;
+    } else v7Ctr++;
+    ctr = v7Ctr;
+  }
+  b.writeUIntBE(ms, 0, 6);
+  b[6] = 0x70 | (ctr >> 8);
+  b[7] = ctr & 0xff;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+const v7Time = (id) =>
+  typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(id)
+    ? parseInt(id.replace(/-/g, "").slice(0, 12), 16)
+    : undefined;
 
 // ————— live job status (polled by the app via GET /status?id=N) —————
 export const jobs = new Map();
@@ -110,8 +143,15 @@ try {
 // Marketplace plugins the user installed (cloned under plugins/<name>).
 try { db.exec("CREATE TABLE IF NOT EXISTS installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER)"); } catch {}
 try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
+// Permanent UUID v7 ids (turns.id is a per-persist rowid, not stable).
+try { db.exec("ALTER TABLE threads ADD COLUMN uid TEXT"); } catch {}
+try { db.exec("ALTER TABLE turns ADD COLUMN uid TEXT"); } catch {}
 // Grok's sidebar organization: pinned tiles, named sections, hidden bots.
-for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER DEFAULT 0", "image TEXT", "crop TEXT", "model TEXT", "effort TEXT", "fast INTEGER DEFAULT 0"]) {
+for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER DEFAULT 0", "image TEXT", "crop TEXT", "model TEXT", "effort TEXT", "fast INTEGER DEFAULT 0", "label TEXT",
+  // A bot's own context, filled on demand: description + instructions
+  // (seeded on create, the bot edits them), memories [{id,text,at}] and
+  // integrations [{id,kind,at,via}] as JSON arrays.
+  "description TEXT", "instructions TEXT", "memories TEXT", "integrations TEXT"]) {
   try { db.exec(`ALTER TABLE bots ADD COLUMN ${col}`); } catch {}
 }
 // Chat rows carry Grok's sidebar states too: hidden, archived.
@@ -137,6 +177,22 @@ export const slugFile = (s) => {
     .replace(/-+$/g, "");
   return /^[a-z0-9][a-z0-9-]{0,39}$/.test(slug) ? `${slug}.tsx` : "";
 };
+// Defaults a new bot starts with — hidden from the user, rewritten by the
+// bot itself (bot_profile_update) when asked.
+export const botDefaults = (name) => ({
+  description: `${name} is a personal assistant bot in Grok Shell.`,
+  instructions:
+    `Stay in character as ${name}. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.`,
+});
+const jsonList = (s) => {
+  try {
+    const v = JSON.parse(s || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+};
+
 function loadStore() {
   const s = {
     active: metaGet("active") || "t1",
@@ -147,6 +203,7 @@ function loadStore() {
   for (const t of db.prepare("SELECT * FROM threads ORDER BY ord").all())
     s.list.push({
       id: t.id,
+      ...(t.uid ? { uid: t.uid } : {}),
       title: t.title,
       hidden: !!t.hidden,
       archived: !!t.archived,
@@ -155,9 +212,10 @@ function loadStore() {
         .all(t.id)
         .map((u) =>
           u.role === "user"
-            ? { role: "user", text: u.text, ...(u.meta ? JSON.parse(u.meta) : {}) }
+            ? { role: "user", ...(u.uid ? { id: u.uid } : {}), text: u.text, ...(u.meta ? JSON.parse(u.meta) : {}) }
             : {
                 role: "ai",
+                ...(u.uid ? { id: u.uid } : {}),
                 text: u.text ?? null,
                 name: u.name,
                 label: u.label || "",
@@ -185,6 +243,13 @@ function loadStore() {
       model: b.model || "",
       effort: b.effort || "",
       fast: !!b.fast,
+      label: b.label || "",
+      // NULL = never set (a bot made before contexts existed) → defaults;
+      // "" = the bot deliberately cleared it.
+      description: b.description ?? botDefaults(b.name).description,
+      instructions: b.instructions ?? botDefaults(b.name).instructions,
+      memories: jsonList(b.memories),
+      integrations: jsonList(b.integrations),
     });
   s.sections = JSON.parse(metaGet("sections") || "[]");
   return s;
@@ -206,6 +271,7 @@ if (store.list.length === 0 && existsSync(LEGACY_STATE)) {
     list: [
       {
         id: "t1",
+        uid: uuidv7(),
         title: "first chat",
         turns: existsSync(LEGACY_TURNS)
           ? JSON.parse(readFileSync(LEGACY_TURNS, "utf8"))
@@ -246,23 +312,25 @@ export function persist() {
     db.exec("DELETE FROM turns");
     db.exec("DELETE FROM bots");
     const it = db.prepare(
-      "INSERT INTO threads(id,title,ord,hidden,archived) VALUES(?,?,?,?,?)",
+      "INSERT INTO threads(id,title,ord,hidden,archived,uid) VALUES(?,?,?,?,?,?)",
     );
     const ib = db.prepare(
-      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const iu = db.prepare(
-      `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta,v)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta,v,uid)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     store.bots.forEach((b, k) =>
       ib.run(b.id, b.name, b.shape, b.color, b.threadId ?? null, k,
         b.pinned ? 1 : 0, b.section || null, b.hidden ? 1 : 0,
         b.image || null, b.crop ? JSON.stringify(b.crop) : null,
-        b.model || null, b.effort || null, b.fast ? 1 : 0),
+        b.model || null, b.effort || null, b.fast ? 1 : 0, b.label || null,
+        b.description ?? null, b.instructions ?? null,
+        JSON.stringify(b.memories || []), JSON.stringify(b.integrations || [])),
     );
     store.list.forEach((t, i) => {
-      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0);
+      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()));
       t.turns.forEach((u, j) => {
         // a still-building placeholder is in-flight work, not history
         if (u.building) return;
@@ -274,6 +342,7 @@ export function persist() {
             ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files, art: u.art })
             : null,
           u.v ?? null,
+          (u.id ||= uuidv7()),
         );
       });
     });
@@ -300,6 +369,46 @@ export let threadSeq =
   Math.max(0, ...store.list.map((t) => Number(t.id.slice(1)) || 0)) + 1;
 export const activeThread = () =>
   store.list.find((t) => t.id === store.active) || store.list[0];
+// A thread by its "t<n>" id or its permanent uid.
+export const findThread = (key) =>
+  key ? store.list.find((t) => t.id === key || t.uid === key) : undefined;
+
+// Backfill uids/ids for rows written before they existed, then persist so
+// they stay stable. Timestamps: an id that already exists keeps its own; an
+// artifact turn uses its version's created_at; everything else falls in
+// creation order (thread number, then turn order) right after the previous
+// known time. Idempotent — only rows missing an id are touched.
+function backfillIds() {
+  if (!store.list.some((t) => !t.uid || t.turns.some((u) => !u.id))) return false;
+  const vt = new Map();
+  for (const r of db.prepare("SELECT name,v,created_at FROM versions WHERE created_at IS NOT NULL").all()) {
+    const ms = Number(r.created_at);
+    if (!Number.isFinite(ms) || ms <= 0) continue;
+    vt.set(`${r.name}@${r.v}`, ms);
+    if (!(vt.get(r.name) <= ms)) vt.set(r.name, ms);
+  }
+  const items = [];
+  const byAge = [...store.list].sort(
+    (a, b) => (Number(a.id.slice(1)) || 0) - (Number(b.id.slice(1)) || 0),
+  );
+  for (const t of byAge) {
+    items.push({ t, known: v7Time(t.uid) });
+    for (const u of t.turns)
+      items.push({
+        u,
+        known: v7Time(u.id) ?? (u.name ? vt.get(`${u.name}@${u.v}`) ?? vt.get(u.name) : undefined),
+      });
+  }
+  const first = items.findIndex((x) => x.known != null);
+  let prev = first < 0 ? Date.now() - items.length - 1 : items[first].known - first - 1;
+  for (const x of items) {
+    prev = x.known != null && x.known > prev ? x.known : prev + 1;
+    if (x.t && !x.t.uid) x.t.uid = uuidv7(prev);
+    if (x.u && !x.u.id) x.u.id = uuidv7(prev);
+  }
+  return true;
+}
+if (backfillIds()) persist();
 
 // ————— data sources —————
 // Generated widgets fetch these on 127.0.0.1:8787 — the only host the
@@ -358,6 +467,7 @@ export function turnsJson(thread = activeThread()) {
   };
   return thread.turns.map((t, i) => ({
     i,
+    id: (t.id ||= uuidv7()),
     role: t.role,
     text: t.text || "",
     name: t.name || "",

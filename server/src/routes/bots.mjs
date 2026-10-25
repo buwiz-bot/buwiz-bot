@@ -1,10 +1,11 @@
 // routes/bots.mjs — extracted from app-server.mjs
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, PROVIDER, MODEL, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
-import { feedVariant, imageSize, isAnimated, optimizeImage } from "../files.mjs";
-import { nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex } from "../state.mjs";
+import { feedVariant, imageSize, isAnimated } from "../files.mjs";
+import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
+import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, setBotProfile } from "../botctx.mjs";
 import { anthropic } from "../model.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
 
@@ -20,31 +21,25 @@ export default async function handle(req, res) {
         if (!name?.trim()) throw new Error("bot needs a name");
         const tid = `t${nextThreadSeq()}`;
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
-        store.list.unshift({ id: tid, title: name.trim(), turns: [] });
-        store.bots.push({
+        store.list.unshift({ id: tid, uid: uuidv7(), title: name.trim(), turns: [] });
+        // its own context starts seeded (description, instructions) and
+        // empty (memories, integrations) — everything else fills on demand
+        const bot = {
           id,
           name: name.trim(),
           shape: shape || "blob",
           color: color || "#1084FE",
           threadId: tid,
-        });
+          ...botDefaults(name.trim()),
+          memories: [],
+          integrations: [],
+        };
+        store.bots.push(bot);
         store.active = tid;
         writeIndex();
         persist();
         res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify({
-            ok: true,
-            bot: {
-              id,
-              name: name.trim(),
-              shape: shape || "blob",
-              color: color || "#1084FE",
-              threadId: tid,
-            },
-            turns: turnsJson(),
-          }),
-        );
+        res.end(JSON.stringify({ ok: true, bot, turns: turnsJson() }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
@@ -57,10 +52,16 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id, name, shape, color, pinned, section, hidden, image, crop, model, effort, fast } = JSON.parse(body || "{}");
+        const { id, name, shape, color, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
-        if (name?.trim()) bot.name = name.trim();
+        if (name?.trim() && name.trim() !== bot.name) {
+          // untouched defaults follow a rename; edited ones stay
+          const was = botDefaults(bot.name), now = botDefaults(name.trim());
+          if (bot.description === was.description) bot.description = now.description;
+          if (bot.instructions === was.instructions) bot.instructions = now.instructions;
+          bot.name = name.trim();
+        }
         if (shape) bot.shape = shape;
         if (color) bot.color = color;
         if (pinned !== undefined) bot.pinned = !!pinned;
@@ -70,6 +71,8 @@ export default async function handle(req, res) {
         if (model !== undefined) bot.model = String(model);
         if (effort !== undefined) bot.effort = String(effort);
         if (fast !== undefined) bot.fast = !!fast;
+        // Grok Bot's "Add a label": a short tagline under the name.
+        setBotProfile(bot, { label, description, instructions });
         if (section !== undefined) {
           bot.section = String(section).trim();
           store.sections ??= [];
@@ -80,6 +83,50 @@ export default async function handle(req, res) {
         persist();
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // A bot's memories: {id, op:"add", text} | {id, op:"remove", memoryId}.
+  if (req.method === "POST" && req.url === "/bot/memory") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, op, text, memoryId } = JSON.parse(body || "{}");
+        const bot = store.bots.find((b) => b.id === id);
+        if (!bot) throw new Error(`unknown bot ${id}`);
+        if (op === "add") memoryAdd(bot, text);
+        else if (op === "remove") memoryRemove(bot, String(memoryId || ""));
+        else throw new Error(`unknown op ${op}`);
+        res.end(JSON.stringify({ ok: true, memories: bot.memories }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // A bot's integrations: {id, op:"add"|"remove", integration} — integration
+  // is an mcp server id, plugin name or skill id ("kind:id" or {id,kind}
+  // to disambiguate).
+  if (req.method === "POST" && req.url === "/bot/integration") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { id, op, integration } = JSON.parse(body || "{}");
+        const bot = store.bots.find((b) => b.id === id);
+        if (!bot) throw new Error(`unknown bot ${id}`);
+        if (op === "add") integrationAdd(bot, integration, "user");
+        else if (op === "remove") integrationRemove(bot, integration);
+        else throw new Error(`unknown op ${op}`);
+        res.end(JSON.stringify({ ok: true, integrations: integrationsOf(bot) }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
@@ -115,7 +162,7 @@ export default async function handle(req, res) {
         store.list = store.list.filter((t) => t.id !== bot.threadId);
         // never leave the app threadless — /threads dereferences one
         if (!store.list.length)
-          store.list.push({ id: `t${nextThreadSeq()}`, title: "new chat", turns: [] });
+          store.list.push({ id: `t${nextThreadSeq()}`, uid: uuidv7(), title: "new chat", turns: [] });
         if (store.active === bot.threadId) store.active = store.list[0].id;
         writeIndex();
         res.setHeader("content-type", "application/json");
@@ -131,51 +178,59 @@ export default async function handle(req, res) {
   // images are normalized to PNG for the model, documents kept as they are.
   if (req.method === "POST" && req.url === "/attach/pick") {
     res.setHeader("content-type", "application/json");
-    osa('set fs to choose file with prompt "Attach photos & files" with multiple selections allowed\nset out to ""\nrepeat with f in fs\nset out to out & POSIX path of f & linefeed\nend repeat\nreturn out')
-      .then((list) => {
-        const files = list.split("\n").filter(Boolean).map((src) => {
-          const name = src.split("/").pop();
-          const ext = (name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-          const image = /^(png|jpe?g|gif|heic|webp|tiff?|bmp)$/.test(ext);
-          const video = /^(mov|mp4|m4v|webm|avi|mkv)$/.test(ext);
-          const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-          const out = join(ATTACH_DIR, image ? `${id}.png` : `${id}-${name}`);
-          if (image) {
-            execFileSync("sips", ["-s", "format", "png", src, "--out", out], { stdio: "ignore" });
-            optimizeImage(out); // lossless: metadata chunks out, IDAT redeflated
-          } else copyFileSync(src, out);
-          // a 256px thumbnail: sips for images, Quick Look's frame for video
-          let thumb = "";
-          try {
-            if (image) {
-              thumb = join(ATTACH_DIR, `${id}.thumb.png`);
-              execFileSync("sips", ["-Z", "256", out, "--out", thumb], { stdio: "ignore" });
-            } else if (video) {
-              execFileSync("qlmanage", ["-t", "-s", "256", "-o", ATTACH_DIR, out], { stdio: "ignore", timeout: 15000 });
-              const ql = `${out}.png`;
-              if (existsSync(ql)) thumb = ql;
-            }
-          } catch {}
-          // dims at record time → the gallery/bubble reserves its aspect box
-          // before decode; feed is the ≤1120px derivative the feed decodes
-          // instead of the full-res original
-          const dims = image ? imageSize(out) : video && thumb ? imageSize(thumb) : {};
-          const animated = image && isAnimated(out, ext);
-          const feed = image ? feedVariant(out, ext === "svg" || animated) : null;
-          return {
-            uri: `file://${out}`,
-            thumb: thumb ? `file://${thumb}` : "",
-            feed: feed ? `file://${feed}` : "",
-            name,
-            ext,
-            kind: image ? "image" : video ? "video" : "file",
-            size: existsSync(out) ? statSync(out).size : 0,
-            ...(animated ? { animated: true } : {}),
-            ...dims,
-          };
-        });
-        res.end(JSON.stringify({ ok: true, files }));
-      })
+    osa('set fs to choose file with prompt "Attach photos & files" with multiple selections allowed\nset out to ""\nrepeat with f in fs\nset out to out & POSIX path of f & linefeed\nend repeat\nreturn out').then(async (list) => {
+      // Staging a file is what the composer waits on, so it stays cheap:
+      // PNG/JPEG/GIF/WebP are copied as they are (only HEIC/TIFF/BMP, which
+      // the model can't read, become PNG — a JPEG turned PNG was ~6x the
+      // bytes), there is no level-9 re-deflate (~1s a screenshot, ~6s a
+      // photo), and the thumbnail and feed run as child processes, every
+      // file at once, so the server's loop stays free meanwhile.
+      const run = (cmd, args, timeout = 20000) =>
+        new Promise((ok) => execFile(cmd, args, { timeout }, (err) => ok(!err)));
+      const files = await Promise.all(list.split("\n").filter(Boolean).map(async (src) => {
+        const name = src.split("/").pop();
+        const ext = (name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
+        const image = /^(png|jpe?g|gif|heic|webp|tiff?|bmp)$/.test(ext);
+        const video = /^(mov|mp4|m4v|webm|avi|mkv)$/.test(ext);
+        const keep = /^(png|jpe?g|gif|webp)$/.test(ext);
+        const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const out = join(ATTACH_DIR, image ? `${id}.${keep ? ext : "png"}` : `${id}-${name}`);
+        if (image && !keep) await run("sips", ["-s", "format", "png", src, "--out", out]);
+        else copyFileSync(src, out);
+        const animated = image && isAnimated(out, ext);
+        let thumb = "", feed = "";
+        if (image) {
+          // the feed keeps the file's format (a photo stays JPEG), and
+          // counts only when smaller — or as a static first frame of motion
+          const fext = keep && ext !== "gif" ? ext : "png";
+          const t = join(ATTACH_DIR, `${id}.thumb.png`);
+          const f = join(ATTACH_DIR, `${id}.feed.${fext}`);
+          const feedArgs = fext === "png" ? ["-s", "format", "png", "-Z", "1120", out, "--out", f] : ["-Z", "1120", out, "--out", f];
+          const [okT, okF] = await Promise.all([
+            run("sips", ["-s", "format", "png", "-Z", "256", out, "--out", t]),
+            run("sips", feedArgs).then((ok) => ok || run("magick", [`${out}[0]`, f])),
+          ]);
+          if (okT && existsSync(t)) thumb = t;
+          if (okF && existsSync(f) && (animated || statSync(f).size < statSync(out).size)) feed = f;
+          else if (existsSync(f)) unlinkSync(f);
+        } else if (video) {
+          if ((await run("qlmanage", ["-t", "-s", "256", "-o", ATTACH_DIR, out], 15000)) && existsSync(`${out}.png`)) thumb = `${out}.png`;
+        }
+        const dims = image ? imageSize(out) : video && thumb ? imageSize(thumb) : {};
+        return {
+          uri: `file://${out}`,
+          thumb: thumb ? `file://${thumb}` : "",
+          feed: feed ? `file://${feed}` : "",
+          name,
+          ext,
+          kind: image ? "image" : video ? "video" : "file",
+          size: existsSync(out) ? statSync(out).size : 0,
+          ...(animated ? { animated: true } : {}),
+          ...dims,
+        };
+      }));
+      res.end(JSON.stringify({ ok: true, files }));
+    })
       .catch(() => res.end(JSON.stringify({ ok: false, cancelled: true, files: [] })));
     return true;
   }

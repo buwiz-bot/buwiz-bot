@@ -11,7 +11,7 @@ import {
 } from "./config.mjs";
 import {
   activeThread, db, jobs, modelCtx, nextSeq, seq, setJob, store, writeIndex,
-  writeShelf,
+  writeShelf, uuidv7,
 } from "./state.mjs";
 import {
   anthropic, askModel, chatReply, classifyIntent, labelOf,
@@ -49,7 +49,7 @@ export async function agentTurn(job, prompt, thread) {
       const params = {
         model: MODEL,
         max_tokens: MAX_TOKENS,
-        system: agentSystem(),
+        system: agentSystem(thread),
         tools: await toolList(thread),
         messages,
       };
@@ -175,7 +175,7 @@ export async function userContent(prompt, extra, ctx = []) {
         // vision caps at ~5MB/image — a huge upload's feed derivative
         // (≤1120px) is what the model sees; the original stays for display
         const modelPath = (a.size || 0) > 4_500_000 && a.feed ? decodeURIComponent(String(a.feed).slice(7)) : path;
-        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(modelPath).toString("base64") } });
+        blocks.push({ type: "image", source: { type: "base64", media_type: IMG_TYPE[modelPath.split(".").pop().toLowerCase()] || "image/png", data: readFileSync(modelPath).toString("base64") } });
       } else {
         const m = fileMeta(path, a.name);
         const body = await fileBody(path, m);
@@ -215,8 +215,9 @@ export async function generate(job, prompt) {
         name: f.name, ext: f.ext, kind: "image", size: f.size, width: f.width, height: f.height,
       }));
       if (thread.turns.length === 0) thread.title = `Mock images ×${n}`;
-      thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}), attachments });
+      thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}), attachments });
       thread.turns.push({
+        id: uuidv7(),
         role: "ai",
         text: `${n} mock image${n === 1 ? "" : "s"}${ar ? ` at ${ar[0]}:${ar[1]}` : " across cycled aspects"} — sized ${files.map((f) => `${f.width}×${f.height}`).slice(0, 6).join(", ")}${n > 6 ? ", …" : ""}.`,
         label: "mock",
@@ -266,8 +267,9 @@ export async function generate(job, prompt) {
     // "/mock media": just the gallery (images · videos) and the diagram
     if (/media/i.test(prompt)) files.splice(0, files.length, ...files.filter((f) => f.kind === "image" || f.kind === "video"));
     if (thread.turns.length === 0) thread.title = "Mock files";
-    thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
+    thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
     thread.turns.push({
+      id: uuidv7(),
       role: "ai",
       text: `Here are ${files.length} sample files — one of each kind the viewer handles.\n\n\`\`\`mermaid\nflowchart LR\n  A[You ask] --> B[Kiffy makes the file] --> C[You click to view]\n\`\`\``,
       label: "mock",
@@ -291,9 +293,9 @@ export async function generate(job, prompt) {
     // cards, or a composition (search → build). Cards land as they pass the
     // compiler; the final text answer lands last.
     if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
-    thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
+    thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
     const text = await agentTurn(job, prompt, thread);
-    if (text) thread.turns.push({ role: "ai", text, label: labelOf(modelCtx.getStore()) });
+    if (text) thread.turns.push({ id: uuidv7(), role: "ai", text, label: labelOf(modelCtx.getStore()) });
     writeIndex();
     console.log(`✓ turn via ${labelOf(modelCtx.getStore())} (${prompt.slice(0, 60)}) — ${job.cards || 0} card(s)`);
     setJob(job, "done", job.cards ? `${job.cards} card(s)` : "replied");
@@ -319,8 +321,8 @@ export async function generate(job, prompt) {
       setJob(job, "thinking", `${labelOf(modelCtx.getStore())} is replying`);
       if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
       const text = await chatReply(prompt, thread, job);
-      thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
-      thread.turns.push({ role: "ai", text, label: labelOf(modelCtx.getStore()) });
+      thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
+      thread.turns.push({ id: uuidv7(), role: "ai", text, label: labelOf(modelCtx.getStore()) });
       writeIndex();
       console.log(`✓ reply (${prompt.slice(0, 60)})`);
       setJob(job, "done", "replied");
@@ -346,9 +348,10 @@ export async function generate(job, prompt) {
       // A reply-to-iterate carries a real user prompt; Try-again reuses the
       // card's original one — no duplicate user turn.
       if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
-      thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
+      thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
     }
     aiTurn = {
+      id: uuidv7(),
       role: "ai",
       name,
       label: labelOf(modelCtx.getStore()),
@@ -358,8 +361,8 @@ export async function generate(job, prompt) {
   } else {
     name = `R${nextSeq()}`;
     if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
-    thread.turns.push({ role: "user", text: prompt, ...(job.extra || {}) });
-    aiTurn = { role: "ai", name, label: labelOf(modelCtx.getStore()) };
+    thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
+    aiTurn = { id: uuidv7(), role: "ai", name, label: labelOf(modelCtx.getStore()) };
     thread.turns.push(aiTurn);
   }
 
