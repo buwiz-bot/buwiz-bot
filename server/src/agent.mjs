@@ -381,7 +381,9 @@ export async function generate(job, prompt) {
       const ALIAS = {
         markdown: "md", text: "txt", rust: "rs", vcard: "vcf", doc: "docx",
         xls: "xlsx", ppt: "pptx", sheet: "xlsx", deck: "pptx", video: "mov",
-        image: "png", images: "png",
+        image: "png", images: "png", document: "docx", word: "docx",
+        excel: "xlsx", spreadsheet: "xlsx", powerpoint: "pptx",
+        presentation: "pptx", slides: "pptx",
       };
       const exts = word === "audio" ? ["m4a", "wav", "aiff"] : [ALIAS[word] || word];
       const KNOWN = new Set([
@@ -393,6 +395,7 @@ export async function generate(job, prompt) {
       if (exts.some((e) => !KNOWN.has(e))) {
         text = `No mock for \`${word}\` — try one of: ${[...KNOWN].sort().join(", ")} (or \`files\`, \`media\`, \`images n\`, \`audio\`).`;
       } else {
+        mkdirSync(dir, { recursive: true }); // emitOffice/emitMovs copy before mockFiles runs
         for (const e of exts) {
           if (OFFICE[e]) await emitOffice(e, paths);
           else if (e === "mov") emitMovs(paths);
