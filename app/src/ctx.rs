@@ -174,6 +174,11 @@ fn run(it: &CtxItem) {
         }
         "lib-show" => st.show_library_item(arg),
         "lib-details" => st.open_details(arg),
+        // `<module key>␟<file name>`: a mini app's source in the viewer
+        "app-code" => {
+            let (key, file) = arg.split_once('\u{1f}').unwrap_or((arg, ""));
+            st.view_code(key, file);
+        }
         "lib-hide" => st.archive_library_item(arg, true),
         "lib-unhide" => st.archive_library_item(arg, false),
         "lib-delete" => st.delete_library_file(arg),
@@ -338,6 +343,9 @@ pub(crate) fn group_art_items(gid: &str, a: &crate::store::RoxApp) -> Vec<CtxIte
             at.clone(),
         ),
     ];
+    if a.kind == "app" {
+        items.push(CtxItem::row("View Code", "code", "app-code", format!("{}\u{1f}{}", a.app, a.filename)));
+    }
     // only a file on this Mac downloads; Drive keeps its own
     if a.kind != "app" && a.storage.place == "mac" {
         items.push(CtxItem::row("Download", "download", "group-download", at.clone()));
@@ -450,6 +458,8 @@ pub(crate) fn card_items(i: i64, app: &str) -> Vec<CtxItem> {
         archive,
         CtxItem::separator(),
         CtxItem::row("Open in Window", "popout", "card-popout", at),
+        // the version this card shows
+        CtxItem::row("View Code", "code", "app-code", format!("{app}\u{1f}")),
         CtxItem::separator(),
         CtxItem::row("Try Again", "retry", "card-retry", app.to_owned()),
         CtxItem::row("Copy Link", "chainLink", "copy", store().turn_link(i)),
@@ -548,6 +558,9 @@ pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem
             id.clone(),
         ),
     ];
+    if app {
+        items.push(CtxItem::row("View Code", "code", "app-code", format!("{id}\u{1f}{}", a.filename)));
+    }
     if a.v > 0 && !a.versions.is_empty() {
         items.push(CtxItem::row(
             "Versions",
