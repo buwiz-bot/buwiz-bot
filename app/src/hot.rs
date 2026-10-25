@@ -207,6 +207,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
             st.close_palette();
         }
         st.bot_modal.set(false);
+        st.vers_pop.set(None);
+        st.app_details.set(None);
         st.main_pick.set(None);
         st.avatar_editing.set(false);
         // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
@@ -315,7 +317,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         }
     });
     // `mod+1…9` (App.tsx:797) — the visible sidebar order: pinned,
-    // groups A→Z by latest interaction, Unassigned, then chats. While
+    // groups' bots by latest interaction, bots without a group, then
+    // chats. While
     // the palette has a query they run that result instead
     // (palette.tsx:48).
     for k in 1..=9u8 {
@@ -434,7 +437,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot`: open an overlay at boot
+    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot|palette|appdetails:<R n>`: open an overlay at boot
     // — verifies each layer mounts and paints without synthetic input.
     if let Ok(ov) = std::env::var("ROX_OVERLAY") {
         spawn(async move {
@@ -452,11 +455,11 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                         crate::store::CtxItem::danger("Delete", "trash", "copy", "z".into()),
                     ],
                 ),
-                "prompt" => st
-                    .section_prompt
-                    .set(Some(st.active_bot().map(|b| b.id).unwrap_or_default())),
+                "prompt" => st.group_prompt.set(Some(crate::store::GroupPrompt::New(None))),
                 "plus" => crate::composer::plus_menu().set(Some((140.0, 620.0))),
                 "bot" => st.bot_modal.set(true),
+                "palette" => st.palette.set(true),
+                o if o.starts_with("appdetails:") => st.open_app_details(&o["appdetails:".len()..]),
                 "lightbox" => st.open_lightbox(
                     vec![crate::store::LightItem {
                         kind: "image".into(),
@@ -467,6 +470,22 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                     0,
                 ),
                 _ => {}
+            }
+        });
+    }
+
+    // Local automation (`GPUI_AGENT=1`, the dev bundle) has no secondary
+    // click: a line `<x> <y> <menu> <arg…>` written to
+    // $TMPDIR/rox-agent-menu opens that right-click menu at (x, y) —
+    // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>.
+    if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
+        spawn(async move {
+            let path = std::env::temp_dir().join("rox-agent-menu");
+            loop {
+                timer(std::time::Duration::from_millis(300)).await;
+                let Ok(line) = std::fs::read_to_string(&path) else { continue };
+                let _ = std::fs::remove_file(&path);
+                agent_menu(line.trim());
             }
         });
     }
@@ -525,9 +544,12 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(chat::pill_layer())
         .child(ctx::layer())
         .child(ctx::prompt_layer())
+        .child(ctx::color_layer())
         .child(sidebar::rail_pop_layer())
         .child(sidebar::account_pop_layer())
         .child(pane::rename_overlay())
+        .child(crate::appdetails::layer())
+        .child(crate::versions::layer())
         .child(pane::editor_overlay())
         .child(botmodal::layer())
         .child(botmodal::main_picker_layer())
@@ -758,4 +780,32 @@ fn top_bar() -> impl IntoElement {
                         .into_element()
                 })),
         )
+}
+
+/// Opens the right-click menu a `rox-agent-menu` line names (see the
+/// watcher in `hot_area`).
+fn agent_menu(line: &str) {
+    let f: Vec<&str> = line.split_whitespace().collect();
+    let (Some(x), Some(y)) = (f.first().and_then(|v| v.parse::<f32>().ok()), f.get(1).and_then(|v| v.parse::<f32>().ok())) else {
+        return;
+    };
+    let st = store();
+    let items = match f.get(2..).unwrap_or_default() {
+        ["section", key] => crate::ctx::section_header_items(key),
+        ["group", gid] => match st.groups.with_untracked(|gs| gs.iter().find(|g| g.id == *gid).cloned()) {
+            Some(g) => crate::ctx::group_header_items(&g),
+            None => return,
+        },
+        ["lib", id] => match st.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == *id).cloned()) {
+            Some(a) => crate::ctx::app_items(&a, (x, y)),
+            None => return,
+        },
+        ["card", i, app] => crate::ctx::card_items(i.parse().unwrap_or(-1), app),
+        ["bot", id] => match st.bots.with_untracked(|v| v.iter().find(|b| b.id == *id).cloned()) {
+            Some(b) => crate::ctx::bot_items(&b),
+            None => return,
+        },
+        _ => return,
+    };
+    crate::ctx::open_at(x, y, items);
 }

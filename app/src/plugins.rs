@@ -43,7 +43,11 @@ pub(crate) fn hue(s: &str) -> Hsla {
 
 /// `plugTile` — the connector tile: the brand logo when the icon set has
 /// the brand's paths, else the hue letter tile (App.tsx:1460).
-fn plug_tile(name: &str, size: f32) -> impl IntoElement {
+pub(crate) fn plug_tile(name: &str, size: f32) -> impl IntoElement {
+    let url = store().plugin_icon(name);
+    if !url.is_empty() {
+        return logo_tile(url, size, size * 0.25).into_element();
+    }
     if crate::icons::has_brand(name) {
         return crate::icons::brand_tile(name, size).into_element();
     }
@@ -69,9 +73,32 @@ fn plug_tile(name: &str, size: f32) -> impl IntoElement {
         .into_element()
 }
 
+/// A catalog logo (served by the app server) on a white plate, clipped
+/// to the tile's radius — Grok Bot's plugin tiles.
+/// Grok Bot's plugin tile: a white rounded plate in both themes (dark
+/// marks like Vercel's stay visible), a 0.5pt `#1c1c1c14` edge, the
+/// square logo inset 12%.
+fn logo_tile(url: String, size: f32, _radius: f32) -> impl IntoElement {
+    let inner = (size * 0.76).round();
+    view()
+        .size(px(size))
+        .rounded(px((size * 0.28).round()))
+        .overflow_hidden()
+        .bg(white())
+        .border(px(0.5))
+        .border_color(Hsla::from_str("#1c1c1c14").unwrap_or(theme::ACCENT.dark))
+        .items_center()
+        .justify_center()
+        .child(image(url).w(px(inner)).h(px(inner)))
+}
+
 /// `chipTile` — the overlapped logo in the "N connected" chip
 /// (App.tsx:1468).
 fn chip_tile(name: &str, size: f32) -> impl IntoElement {
+    let url = store().plugin_icon(name);
+    if !url.is_empty() {
+        return logo_tile(url, size, size * 0.3).into_element();
+    }
     if crate::icons::has_brand(name) {
         return crate::icons::brand_chip(name, size).into_element();
     }
@@ -146,9 +173,27 @@ fn modal() -> impl IntoElement {
                 .child(
                     view()
                         .absolute()
-                        .top(px((MK_BAND - 34.0) / 2.0))
-                        .right(px(MK_HEAD - 8.0 - 34.0))
-                        .size(px(34.0))
+                        .top(move || {
+                            if store().plugin_page() == "market" {
+                                px((MK_BAND - 34.0) / 2.0)
+                            } else {
+                                px(10.0)
+                            }
+                        })
+                        .right(move || {
+                            if store().plugin_page() == "market" {
+                                px(MK_HEAD - 8.0 - 34.0)
+                            } else {
+                                px(10.0)
+                            }
+                        })
+                        .size(move || {
+                            if store().plugin_page() == "market" {
+                                px(34.0)
+                            } else {
+                                px(28.0)
+                            }
+                        })
                         .rounded(px(17.0))
                         .z_index(4)
                         .items_center()
@@ -164,7 +209,13 @@ fn modal() -> impl IntoElement {
                         .on_hover_in(|| store().hover_x.set(true))
                         .on_hover_out(|| store().hover_x.set(false))
                         .on_press(|| store().close_plugins())
-                        .child(icon("close")),
+                        .child(dynamic(|| {
+                            if store().plugin_page() == "market" {
+                                icon("close")
+                            } else {
+                                crate::icons::icon_ink("gb-close", 16.0, || theme::DIM)
+                            }
+                        })),
                 )
                 .child(
                     when(|| store().plugin_page() == "market", market_page)
@@ -174,7 +225,10 @@ fn modal() -> impl IntoElement {
                                     when(|| store().plugin_page() == "plugin", plugin_page)
                                         .otherwise(|| {
                                             when(|| store().plugin_page() == "mcp", mcp_page)
-                                                .otherwise(skill_page)
+                                                .otherwise(|| {
+                                                    when(|| store().plugin_page() == "setup", setup_page)
+                                                        .otherwise(skill_page)
+                                                })
                                         })
                                 })
                         })
@@ -183,50 +237,86 @@ fn modal() -> impl IntoElement {
         )
 }
 
-/// The 48-tall back bar shared by the inner pages (App.tsx:3755):
-/// `chev` pages show "‹ Connect Apps"; the rest a bare chevron with the
-/// page title centered.
+/// The 48-tall detail bar shared by the inner pages (Grok Bot's
+/// `sand-settings-detail-bar`: 10pt padding, a 28pt round back button —
+/// or the "‹ Connect Apps" pill on the manager — and the page title
+/// centered in 14pt/500).
 fn back_bar(chev_title: Option<&'static str>, center: &str) -> impl IntoElement {
     let center = center.to_owned();
-    view()
+    let hov = signal(false);
+    let back = view()
+        .h(px(28.0))
+        .rounded(px(999.0))
         .flex_row()
         .items_center()
+        .label("Back")
+        .bg(move || {
+            if hov.get() || chev_title.is_some() {
+                if hov.get() { tc(0.10) } else { tc(0.06) }
+            } else {
+                AdaptiveColor::TRANSPARENT
+            }
+        })
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .on_press(|| store().pop_nav());
+    let back = match chev_title {
+        Some(t) => back
+            .pl(px(6.0))
+            .pr(px(10.0))
+            .gap(px(2.0))
+            .child(view().size(px(20.0)).items_center().justify_center().child(
+                crate::icons::icon_ink("gb-back", 16.0, || tc(0.68)),
+            ))
+            .child(
+                text(t)
+                    .text_size(px(13.0))
+                    .line_height(px(18.0))
+                    .text_color(tc(0.68)),
+            ),
+        None => back.w(px(28.0)).justify_center().child(crate::icons::icon_ink(
+            "gb-back",
+            16.0,
+            || theme::DIM,
+        )),
+    };
+    view()
         .h(px(48.0))
-        .px(px(14.0))
+        .p(px(10.0))
         .child(
             view()
-                .flex_row()
+                .absolute()
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .left(px(140.0))
+                .right(px(140.0))
                 .items_center()
-                .gap(px(6.0))
-                .w(px(90.0))
-                .on_press(|| store().pop_nav())
-                .child(icon("chevronBack"))
-                .when(chev_title.is_some(), |v| {
-                    v.child(
-                        text(chev_title.unwrap_or_default())
-                            .text_size(px(14.0))
-                            .text_color(theme::DIM),
-                    )
-                }),
-        )
-        .child(
-            view()
-                .flex_1()
-                .items_center()
+                .justify_center()
                 .child(
                     text(center)
                         .number_of_lines(1)
                         .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .line_height(px(20.0))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::TEXT),
                 ),
         )
-        .child(view().w(px(90.0)))
+        .child(view().flex_row().child(back))
 }
 
 // ═══ MARKET page (App.tsx:3522) ═══
 
 fn market_page() -> impl IntoElement {
+    // A new category starts at the top (the virtual list would otherwise
+    // keep the old scroll offset).
+    let body = element_ref();
+    let b2 = body.clone();
+    effect(move || {
+        let _ = store().plugin_cat.get();
+        let _ = store().plugin_query.get();
+        store().plugin_limit.set(60);
+        b2.scroll_to_offset(px(0.0), false);
+    });
     view()
         .flex_1()
         // fixed header — search row + Bot templates; the hairline is
@@ -250,7 +340,7 @@ fn market_page() -> impl IntoElement {
                 ),
         )
         .child(
-            scroll().flex_1().child(
+            scroll().flex_1().element_ref(&body).child(
                 view()
                     .pl(px(MK_LEFT))
                     .pr(px(MK_RIGHT))
@@ -300,34 +390,35 @@ fn market_page() -> impl IntoElement {
                                 .self_center()
                         },
                     ))
+                    // Home ("All", no query): Recommended + six per
+                    // category with View all, like Grok Bot's browse page.
                     .child(when(
-                        || {
-                            store().plugin_query.get().is_empty()
-                                && store().plugin_cat.get() == "All"
-                                && !store().plugin_list().is_empty()
-                        },
+                        || store().plugin_query.get().is_empty() && store().plugin_cat.get() == "All",
                         || {
                             view()
-                                .child(section_head("Recommended for you", "All", 10.0))
-                                .child(grid2(|| {
-                                    store().plugin_list().into_iter().take(6).collect()
-                                }))
+                                .child(when(
+                                    || !store().plugin_recommended().is_empty(),
+                                    || {
+                                        view()
+                                            .child(section_head(crate::store::RECOMMENDED, crate::store::RECOMMENDED, 10.0))
+                                            .child(grid2(|| store().plugin_recommended().into_iter().take(6).collect()))
+                                    },
+                                ))
+                                .child(each(
+                                    || store().plugin_cats().into_iter().filter(|c| c != "All").collect::<Vec<_>>(),
+                                    |c| c.clone(),
+                                    |c, _| cat_section(c.get()),
+                                ))
                         },
                     ))
-                    .child(each(
+                    // A category (or a search): its full list, virtualized
+                    // inside the page's scroll.
+                    .child(when(
                         || {
-                            store()
-                                .plugin_cats()
-                                .into_iter()
-                                .filter(|c| {
-                                    c != "All"
-                                        && (store().plugin_cat.get() == "All"
-                                            || store().plugin_cat.get() == *c)
-                                })
-                                .collect::<Vec<_>>()
+                            (!store().plugin_query.get().is_empty() || store().plugin_cat.get() != "All")
+                                && !store().plugin_list().is_empty()
                         },
-                        |c| c.clone(),
-                        |c, _| cat_section(c.get()),
+                        full_list,
                     )),
             ),
         )
@@ -610,24 +701,58 @@ fn section_head(label: &'static str, cat: &'static str, top: f32) -> impl IntoEl
 
 fn cat_section(cat: String) -> impl IntoElement {
     let label = cat.clone();
-    let cat2 = cat.clone();
     view()
         .child(section_head_owned(&label, 22.0))
-        .child(grid2(move || {
-            store()
-                .plugin_list()
-                .into_iter()
-                .filter(|p| p.category.eq_ignore_ascii_case(&cat))
-                .collect()
+        .child(grid2(move || store().plugins_in(&cat).into_iter().take(6).collect()))
+}
+
+/// Every plugin of the selected category / search, two per row — 60 at a
+/// time ("Show more" adds the next 60) so a long list stays cheap.
+fn full_list() -> impl IntoElement {
+    view()
+        .child(
+            text(|| {
+                let st = store();
+                if !st.plugin_query.get().is_empty() {
+                    "Results".to_owned()
+                } else {
+                    st.plugin_cat.get()
+                }
+            })
+            .text_size(px(13.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme::TEXT)
+            .pt(px(10.0))
+            .pb_1(),
+        )
+        .child(grid2(|| {
+            let n = store().plugin_limit.get();
+            store().plugin_list().into_iter().take(n).collect()
         }))
         .child(when(
-            move || {
-                store()
-                    .plugin_list()
-                    .iter()
-                    .any(|p| p.category.eq_ignore_ascii_case(&cat2))
+            || store().plugin_list().len() > store().plugin_limit.get(),
+            || {
+                let hov = signal(false);
+                view().items_center().pt(px(10.0)).child(
+                    view()
+                        .h(px(30.0))
+                        .px(px(16.0))
+                        .rounded(px(15.0))
+                        .justify_center()
+                        .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
+                        .on_hover_in(move || hov.set(true))
+                        .on_hover_out(move || hov.set(false))
+                        .on_press(|| store().plugin_limit.update(|n| *n += 60))
+                        .child(
+                            text(|| {
+                                let left = store().plugin_list().len().saturating_sub(store().plugin_limit.get());
+                                format!("Show more ({left})")
+                            })
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT),
+                        ),
+                )
             },
-            || view().h(px(0.0)),
         ))
 }
 
@@ -733,7 +858,7 @@ fn plugin_row(p: PluginRow) -> impl IntoElement {
                 .min_w(px(0.0))
                 .max_w(px(200.0))
                 .child(
-                    text(Store::plugin_title(&p.name))
+                    text(if p.display_name.is_empty() { Store::plugin_title(&p.name) } else { p.display_name.clone() })
                         .number_of_lines(1)
                         .text_size(px(13.0))
                         .font_weight(FontWeight::MEDIUM)
@@ -862,7 +987,7 @@ fn drop_layer() -> impl IntoElement {
                             )
                             .child(plug_tile(&p.get().name, 24.0))
                             .child(
-                                text(Store::plugin_title(&p.get().name))
+                                text(store().plugin_display(&p.get().name))
                                     .number_of_lines(1)
                                     .flex_1()
                                     .text_size(px(13.0))
@@ -884,7 +1009,10 @@ enum ConnItem {
 }
 
 fn connected_page() -> impl IntoElement {
+    // Fills the card: its scroll is `flex_1`, with no height of its
+    // own the page drew nothing.
     view()
+        .flex_1()
         .child(back_bar(Some("Connect Apps"), ""))
         .child(
             scroll().flex_1().child(
@@ -1266,7 +1394,252 @@ fn conn_tile(item: ConnItem) -> impl IntoElement {
     }
 }
 
-// ═══ PLUGIN detail page (App.tsx:3861) ═══
+// ═══ Detail pages (plugin / MCP server / private skill) ═══
+//
+// Grok Bot's `sand-plugins-detail` pages, measured off its live DOM: a
+// 22/32/28 settings pane; 56pt header tile + 17pt/500 title; 12pt section
+// labels (8/14/6 padding); white cards with a 0.5pt 8% hairline, radius
+// 14, 8pt vertical padding and 10/14 rows; 13pt rows over 12pt captions.
+
+/// `--sand-text-secondary` (#1c1c1cad) — descriptions, "View Source".
+fn ink2() -> AdaptiveColor {
+    tc(0.68)
+}
+
+/// `--sand-text-tertiary` (#1c1c1c8f) — labels, captions, row icons.
+fn ink3() -> AdaptiveColor {
+    tc(0.56)
+}
+
+fn pair(light: &str, dark: &str) -> AdaptiveColor {
+    let d = Hsla::from_str(dark).unwrap_or(theme::ACCENT.dark);
+    theme::tone(Hsla::from_str(light).unwrap_or(d), d)
+}
+
+/// `--sand-text-success-primary` / `-danger-` / `-warn-` (light from
+/// Grok Bot; dark the Grok Shell palette's).
+fn ok_ink() -> AdaptiveColor {
+    pair("#00854a", "#32bb78")
+}
+fn danger_ink() -> AdaptiveColor {
+    pair("#cd2834", "#ff6b64")
+}
+fn warn_ink() -> AdaptiveColor {
+    pair("#aa6300", "#ffb224")
+}
+
+/// `--sand-bg-primary` + `--sand-text-inverted` — the filled button.
+fn primary_bg() -> AdaptiveColor {
+    pair("#1c1c1c", "#f5f5f5")
+}
+fn primary_ink() -> AdaptiveColor {
+    pair("#fcfcfc", "#1c1c1c")
+}
+
+fn white() -> Hsla {
+    Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark)
+}
+
+/// A detail card: white on light, a faint wash on dark; 0.5pt hairline.
+fn card() -> View {
+    view()
+        .bg(theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.96, 0.03)))
+        .border(px(0.5))
+        .border_color(tc(0.08))
+        .rounded(px(14.0))
+        .overflow_hidden()
+}
+
+/// `sectionLabel` — 12pt tertiary, 8/14/6 padding (30 tall).
+fn sec_label(label: impl Into<String>) -> impl IntoElement {
+    text(label.into())
+        .text_size(px(12.0))
+        .line_height(px(16.0))
+        .text_color(ink3())
+        .pt(px(8.0))
+        .pb(px(6.0))
+        .px(px(14.0))
+}
+
+/// "Apps 1" / "Skills 33" — the label in primary ink, the count after.
+fn count_label(label: &'static str, count: impl Fn() -> usize + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .pt(px(8.0))
+        .pb(px(6.0))
+        .px(px(14.0))
+        .child(text(label).text_size(px(12.0)).line_height(px(16.0)).text_color(theme::TEXT))
+        .child(
+            text(move || count().to_string())
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3()),
+        )
+}
+
+/// A 26-tall small button (`size: sm`): secondary = 6% fill, danger =
+/// light-red fill + red ink, primary = filled, ghost = bare.
+#[derive(Clone, Copy, PartialEq)]
+enum Btn {
+    Secondary,
+    Danger,
+    DangerSolid,
+    Primary,
+    Ghost,
+}
+
+fn sm_btn(
+    kind: Btn,
+    label: impl Fn() -> String + 'static,
+    on: impl Fn() + 'static,
+) -> impl IntoElement {
+    let hov = signal(false);
+    let (bg, bg_hov, ink) = match kind {
+        Btn::Secondary => (tc(0.06), tc(0.10), theme::TEXT),
+        Btn::Danger => (
+            pair("#fb2b3e17", "#ff5f5726"),
+            pair("#fb2b3e2b", "#ff5f573d"),
+            danger_ink(),
+        ),
+        Btn::DangerSolid => (
+            pair("#e72e3b", "#e72e3b"),
+            pair("#c82532", "#c82532"),
+            AdaptiveColor::from(white()),
+        ),
+        Btn::Primary => (primary_bg(), primary_bg(), primary_ink()),
+        Btn::Ghost => (AdaptiveColor::TRANSPARENT, tc(0.06), theme::TEXT),
+    };
+    view()
+        .h(px(26.0))
+        .rounded(px(13.0))
+        .px(px(10.0))
+        .items_center()
+        .justify_center()
+        .bg(move || if hov.get() { bg_hov } else { bg })
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .on_press(move || on())
+        .child(
+            text(label)
+                .number_of_lines(1)
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink),
+        )
+}
+
+/// The header's 36-tall pills (Share / Uninstall / Add): 6% fill, 14pt.
+fn pill_btn(
+    glyph: Option<&'static str>,
+    label: impl Fn() -> String + 'static,
+    on: impl Fn() + 'static,
+) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .h(px(36.0))
+        .rounded(px(999.0))
+        .px(px(16.0))
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(4.0))
+        .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .on_press(move || on())
+        .when(glyph.is_some(), |v| {
+            v.child(
+                view()
+                    .size(px(18.0))
+                    .items_center()
+                    .justify_center()
+                    .child(icon_ink(glyph.unwrap_or_default(), 14.0, || theme::TEXT)),
+            )
+        })
+        .child(
+            text(label)
+                .text_size(px(14.0))
+                .line_height(px(20.0))
+                .text_color(theme::TEXT),
+        )
+}
+
+fn icon_ink(name: &str, size: f32, ink: impl Fn() -> AdaptiveColor + 'static) -> AnyElement {
+    crate::icons::icon_ink(name, size, ink)
+}
+
+/// A 13pt row with a 16pt glyph and a 12pt caption (Apps / Skills).
+fn glyph_row(glyph: &'static str, title: String, caption: String) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .child(icon_ink(glyph, 16.0, ink3))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    text(title)
+                        .number_of_lines(1)
+                        .text_size(px(13.0))
+                        .line_height(px(18.0))
+                        .text_color(theme::TEXT),
+                )
+                .child(
+                    text(caption)
+                        .number_of_lines(1)
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
+                        .text_color(ink3()),
+                ),
+        )
+}
+
+/// `dl` row — 13pt term, 13pt tertiary value right-aligned, 38 tall.
+fn info_row(label: &'static str, value: impl Fn() -> String + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_start()
+        .justify_between()
+        .gap(px(20.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .child(
+            text(label)
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(theme::TEXT),
+        )
+        .child(
+            text(value)
+                .number_of_lines(2)
+                .flex_shrink(1.0)
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(ink3()),
+        )
+}
+
+/// The detail pages' scroll body — the 22/32/28 settings pane.
+fn pane() -> View {
+    view().pt(px(22.0)).px(px(32.0)).pb(px(28.0))
+}
+
+/// The status word of an account / server row.
+fn status_text(label: &str, ink: AdaptiveColor) -> AnyElement {
+    text(label.to_owned())
+        .text_size(px(13.0))
+        .line_height(px(18.0))
+        .text_color(ink)
+        .into_element()
+}
+
+// ═══ PLUGIN detail page ═══
 
 fn plugin_page() -> impl IntoElement {
     let name = store()
@@ -1275,155 +1648,178 @@ fn plugin_page() -> impl IntoElement {
         .last()
         .map(|n| n.name.clone())
         .unwrap_or_default();
-    let n_acc = name.clone();
-    let n_acc2 = name.clone();
-    let n_apps = name.clone();
-    let n_apps2 = name.clone();
-    let n_tools = name.clone();
-    let n_skills = name.clone();
-    let n_skills2 = name.clone();
-    let n_cmds = name.clone();
-    let n_cmds2 = name.clone();
+    let title = store().plugin_display(&name);
     let n_desc = name.clone();
+    let n_acc = name.clone();
+    let n_setup = name.clone();
+    let n_setup2 = name.clone();
+    let n_tools = name.clone();
+    let n_apps = name.clone();
+    let n_skills = name.clone();
+    let n_src = name.clone();
+    let n_copy = name.clone();
+    let n_share = name.clone();
     view()
-        .child(back_bar(None, ""))
+        .flex_1()
+        .child(back_bar(None, &title))
         .child(
             scroll().flex_1().child(
-                view()
-                    .px(px(21.0))
-                    .pb(px(28.0))
-                    // header: icon + name + View Source ↗ ··· Add/Uninstall
+                pane()
+                    // header: tile + name/copy-link + View Source ↗ ··· Share, Uninstall
                     .child(
                         view()
                             .flex_row()
-                            .items_start()
-                            .gap(px(14.0))
-                            .pb(px(14.0))
-                            .child(plug_tile(&name, 56.0))
+                            .items_center()
+                            .h(px(56.0))
+                            .child(
+                                view()
+                                    .size(px(56.0))
+                                    .rounded(px(16.0))
+                                    .overflow_hidden()
+                                    .border(px(0.5))
+                                    .border_color(tc(0.08))
+                                    .child(plug_tile(&name, 56.0)),
+                            )
                             .child(
                                 view()
                                     .flex_1()
                                     .min_w(px(0.0))
+                                    .ml(px(12.0))
+                                    .gap(px(2.0))
                                     .child(
-                                        text(Store::plugin_title(&name))
-                                            .text_size(px(16.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::TEXT),
+                                        view()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(4.0))
+                                            .child(
+                                                text(title.clone())
+                                                    .number_of_lines(1)
+                                                    .text_size(px(17.0))
+                                                    .line_height(px(24.0))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme::TEXT),
+                                            )
+                                            .child({
+                                                let hov = signal(false);
+                                                view()
+                                                    .size(px(20.0))
+                                                    .rounded(px(6.0))
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .label("Copy link to this plugin")
+                                                    .bg(move || {
+                                                        if hov.get() {
+                                                            tc(0.06)
+                                                        } else {
+                                                            AdaptiveColor::TRANSPARENT
+                                                        }
+                                                    })
+                                                    .on_hover_in(move || hov.set(true))
+                                                    .on_hover_out(move || hov.set(false))
+                                                    .on_press(move || store().copy_plugin_link(&n_copy))
+                                                    .child(icon_ink("gb-link", 12.0, || theme::DIM))
+                                            }),
                                     )
                                     .child(
-                                        text("View Source ↗")
-                                            .text_size(px(12.0))
-                                            .text_color(tc(0.56))
-                                            .pt(px(2.0)),
+                                        view()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(4.0))
+                                            .on_press(move || {
+                                                let d = store()
+                                                    .plugin_details
+                                                    .get_untracked()
+                                                    .get(&n_src)
+                                                    .cloned()
+                                                    .unwrap_or_default();
+                                                let url = if d.source.is_empty() { d.homepage } else { d.source };
+                                                if !url.is_empty() {
+                                                    store().open_link(&url);
+                                                }
+                                            })
+                                            .child(
+                                                text("View Source")
+                                                    .text_size(px(13.0))
+                                                    .line_height(px(18.0))
+                                                    .text_color(ink2()),
+                                            )
+                                            .child(icon_ink("gb-arrow-up-right", 13.0, ink2)),
                                     ),
                             )
-                            .child(install_btn(name.clone())),
+                            .child(
+                                view()
+                                    .flex_row()
+                                    .gap(px(8.0))
+                                    .ml(px(12.0))
+                                    .child(pill_btn(
+                                        Some("gb-link"),
+                                        || {
+                                            if store().plugin_copied.get() {
+                                                "Copied".to_owned()
+                                            } else {
+                                                "Share".to_owned()
+                                            }
+                                        },
+                                        move || store().copy_plugin_link(&n_share),
+                                    ))
+                                    // Edit setup — installed plugins with setup values.
+                                    .child(when(
+                                        move || {
+                                            store()
+                                                .plugin_details
+                                                .get()
+                                                .get(&n_setup)
+                                                .map(|d| d.installed && !d.fields.is_empty())
+                                                .unwrap_or(false)
+                                        },
+                                        move || {
+                                            let n = n_setup2.clone();
+                                            pill_btn(None, || "Setup".to_owned(), move || store().open_setup(&n, "edit"))
+                                        },
+                                    ))
+                                    .child(install_btn(name.clone())),
+                            ),
                     )
                     // description — detail's, else the catalog row's.
                     .child(
                         text(move || {
                             let st = store();
                             let dd = st.plugin_details.get().get(&n_desc).cloned();
-                            dd.and_then(|d| {
-                                if d.description.is_empty() {
-                                    None
-                                } else {
-                                    Some(d.description)
-                                }
-                            })
-                            .or_else(|| {
-                                st.plugins
-                                    .get()
-                                    .iter()
-                                    .find(|p| p.name == n_desc)
-                                    .map(|p| p.description.clone())
-                            })
-                            .unwrap_or_default()
-                        })
-                        .text_size(px(13.0))
-                        .text_color(tc(0.8))
-                        .pb_4(),
-                    )
-                    // Accounts — one row per connector.
-                    .child(when(
-                        move || {
-                            store()
-                                .plugin_details
-                                .get()
-                                .get(&n_acc)
-                                .map(|d| !d.mcp.is_empty())
-                                .unwrap_or(false)
-                        },
-                        move || accounts_card(n_acc2.clone()),
-                    ))
-                    // Apps (connectors)
-                    .child(when(
-                        move || {
-                            store()
-                                .plugin_details
-                                .get()
-                                .get(&n_apps)
-                                .map(|d| !d.mcp.is_empty())
-                                .unwrap_or(false)
-                        },
-                        move || apps_card(n_apps2.clone()),
-                    ))
-                    // Tools — collapsible per connector.
-                    .child(each(
-                        move || {
-                            store()
-                                .plugin_details
-                                .get()
-                                .get(&n_tools)
-                                .map(|d| {
-                                    d.mcp
+                            dd.map(|d| d.description)
+                                .filter(|d| !d.is_empty())
+                                .or_else(|| {
+                                    st.plugins
+                                        .get()
                                         .iter()
-                                        .filter(|m| !m.id.is_empty())
-                                        .map(|m| m.id.clone())
-                                        .collect::<Vec<_>>()
+                                        .find(|p| p.name == n_desc)
+                                        .map(|p| p.description.clone())
                                 })
                                 .unwrap_or_default()
-                        },
-                        |id| id.clone(),
-                        |id, _| mcp_tools_section(id.get()),
-                    ))
-                    // Skills.
-                    .child(when(
-                        move || {
-                            store()
-                                .plugin_details
-                                .get()
-                                .get(&n_skills)
-                                .map(|d| !d.skills.is_empty())
-                                .unwrap_or(false)
-                        },
-                        move || skills_card(n_skills2.clone()),
-                    ))
-                    // Commands.
-                    .child(when(
-                        move || {
-                            store()
-                                .plugin_details
-                                .get()
-                                .get(&n_cmds)
-                                .map(|d| !d.commands.is_empty())
-                                .unwrap_or(false)
-                        },
-                        move || commands_card(n_cmds2.clone()),
-                    ))
-                    // Information.
-                    .child(info_card(&name)),
+                        })
+                        .text_size(px(14.0))
+                        .line_height(px(20.0))
+                        .text_color(ink2())
+                        .pt(px(12.0)),
+                    )
+                    .child(
+                        view()
+                            .pt(px(24.0))
+                            .gap(px(16.0))
+                            .child(accounts_section(n_acc))
+                            .child(plugin_tools_section(n_tools))
+                            .child(apps_section(n_apps))
+                            .child(skills_section(n_skills))
+                            .child(info_section(&name)),
+                    ),
             ),
         )
 }
 
-/// Add / Uninstall pill — `installed` read live off the detail.
+/// Add / Uninstall — `installed` read live off the detail.
 fn install_btn(name: String) -> impl IntoElement {
     let n = name.clone();
     let n_un = name.clone();
-    let n_un2 = name.clone();
-    let n_in = name.clone();
-    let n_in2 = name.clone();
+    let n_in = name;
     when(
         move || {
             store()
@@ -1435,641 +1831,722 @@ fn install_btn(name: String) -> impl IntoElement {
         },
         move || {
             let n_un = n_un.clone();
-            let n_un2 = n_un2.clone();
-            view()
-                .h(px(32.0))
-                .rounded(px(999.0))
-                .bg(tc(0.07))
-                .px(px(14.0))
-                .items_center()
-                .justify_center()
-                .on_press(move || store().uninstall_plugin(&n_un))
-                .child(
-                    text(move || {
-                        if store().plugin_busy.get() == n_un2 {
-                            "…".to_owned()
-                        } else {
-                            "Uninstall".to_owned()
-                        }
-                    })
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::TEXT),
-                )
+            let n_lab = n_un.clone();
+            pill_btn(
+                None,
+                move || {
+                    if store().plugin_busy.get() == n_lab {
+                        "Removing…".to_owned()
+                    } else {
+                        "Uninstall".to_owned()
+                    }
+                },
+                move || store().uninstall_plugin(&n_un),
+            )
         },
     )
     .otherwise(move || {
         let n_in = n_in.clone();
-        let n_in2 = n_in2.clone();
+        let n_lab = n_in.clone();
+        let hov = signal(false);
         view()
-            .h(px(32.0))
+            .h(px(36.0))
             .rounded(px(999.0))
-            .bg(tc(0.96))
-            .px_4()
+            .px(px(16.0))
             .items_center()
             .justify_center()
+            .bg(move || if hov.get() { pair("#363636", "#e0e0e0") } else { primary_bg() })
+            .on_hover_in(move || hov.set(true))
+            .on_hover_out(move || hov.set(false))
             .on_press(move || store().install_plugin(&n_in))
             .child(
                 text(move || {
-                    if store().plugin_busy.get() == n_in2 {
+                    if store().plugin_busy.get() == n_lab {
                         "Adding…".to_owned()
                     } else {
                         "Add".to_owned()
                     }
                 })
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(hx("#1f1f1f")),
+                .text_size(px(14.0))
+                .line_height(px(20.0))
+                .text_color(primary_ink()),
             )
     })
 }
 
-fn accounts_card(name: String) -> impl IntoElement {
-    let n = name.clone();
-    let n2 = name.clone();
-    view()
-        .child(
-            text("Accounts")
-                .text_size(px(12.0))
-                .text_color(theme::DIM)
-                .pl(px(2.0))
-                .pb_2(),
-        )
-        .child(
-            view()
-                .rounded(px(12.0))
-                .bg(tc(0.04))
-                .px(px(14.0))
-                .child(each(
-                    move || {
-                        store()
-                            .plugin_details
-                            .get()
-                            .get(&n)
-                            .map(|d| d.mcp.clone())
-                            .unwrap_or_default()
-                    },
-                    |m| m.id.clone() + &m.name,
-                    move |m, i| account_row(m.get(), n2.clone(), i.get() > 0),
-                ))
-                .child(
-                    view()
-                        .border_t(px(0.5))
-                        .border_t_color(tc(0.07))
-                        .py_3()
-                        .child(
-                            text("＋ Add Another Account")
-                                .text_size(px(13.0))
-                                .text_color(theme::DIM),
+/// The plugin's remote (OAuth) connectors — the ones with accounts.
+fn remote_connectors(plugin: &str) -> Vec<crate::store::PluginMcp> {
+    store()
+        .plugin_details
+        .get()
+        .get(plugin)
+        .map(|d| d.mcp.iter().filter(|m| m.transport == "remote").cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Accounts — one card per remote connector of an added plugin: an account row each (a
+/// not-yet-registered connector shows its "default" slot), then "Add
+/// Another Account". Rebuilt on detail / edit-state changes only.
+fn accounts_section(plugin: String) -> impl IntoElement {
+    dynamic(move || {
+        // Accounts belong to an added plugin; before that the Apps list
+        // already names its connectors (Grok Bot does the same).
+        let installed = store().plugin_details.get().get(&plugin).is_some_and(|d| d.installed);
+        let conns = if installed { remote_connectors(&plugin) } else { Vec::new() };
+        if conns.is_empty() {
+            return view().into_element();
+        }
+        let many = conns.len() > 1;
+        let mut col = view().gap(px(16.0));
+        for m in conns {
+            let label = if many {
+                format!("Accounts · {}", m.name)
+            } else {
+                "Accounts".to_owned()
+            };
+            if !m.unavailable.is_empty() {
+                col = col.child(
+                    view().child(sec_label(label)).child(
+                        card().py(px(8.0)).child(
+                            view()
+                                .px(px(14.0))
+                                .py(px(10.0))
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(
+                                    text(m.unavailable.clone())
+                                        .flex_1()
+                                        .text_size(px(13.0))
+                                        .line_height(px(18.0))
+                                        .text_color(ink3()),
+                                )
+                                .child(status_text("Unavailable", ink3())),
                         ),
-                ),
-        )
+                    ),
+                );
+                continue;
+            }
+            let mut accounts = m.accounts.clone();
+            if accounts.is_empty() {
+                accounts.push(crate::store::PluginAccount {
+                    label: "default".into(),
+                    status: "not-added".into(),
+                    note: if m.needs.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Add {} in Setup to connect", m.needs.join(", "))
+                    },
+                    ..Default::default()
+                });
+            }
+            let mut c = card().py(px(8.0));
+            for (i, a) in accounts.into_iter().enumerate() {
+                c = c.child(account_row(&plugin, &m.name, a, i == 0));
+            }
+            c = c.child(add_account(&plugin, &m.name));
+            col = col.child(view().child(sec_label(label)).child(c));
+        }
+        col.into_element()
+    })
 }
 
 fn account_row(
-    m: crate::store::PluginMcp,
-    plugin: String,
-    sep: bool,
-) -> impl IntoElement {
-    let status = m.status.clone();
-    let status2 = m.status.clone();
-    let err = m.err.clone();
-    let err2 = m.err.clone();
+    plugin: &str,
+    server: &str,
+    a: crate::store::PluginAccount,
+    is_default: bool,
+) -> AnyElement {
+    let st = store();
+    let editing = !a.id.is_empty() && st.acct_edit.get() == a.id;
+    let confirm = st.acct_confirm.get();
+    let busy = st.plugin_busy.get();
+    let err = st.acct_err.get();
+    let (plugin, server) = (plugin.to_owned(), server.to_owned());
+    if editing {
+        let (p1, p2, p3) = (plugin.clone(), plugin.clone(), plugin.clone());
+        let (id1, id2, id3) = (a.id.clone(), a.id.clone(), a.id.clone());
+        let confirming = confirm == a.id;
+        let removable = !is_default;
+        let signed_in = a.authed;
+        let id4 = a.id.clone();
+        let mut row = view()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(14.0))
+            .py(px(6.0))
+            .child(
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(26.0))
+                    .rounded(px(8.0))
+                    .bg(tc(0.04))
+                    .px(px(8.0))
+                    .justify_center()
+                    .child(
+                        input()
+                            .value(move || store().acct_edit_val.get())
+                            .placeholder("Account label")
+                            .placeholder_color(|| color(tc(0.4)))
+                            .auto_focus(true)
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .h(px(26.0))
+                            .on_change(|t: &str| store().acct_edit_val.set(t.to_owned()))
+                            .on_submit(move |_: &str| {
+                                let v = store().acct_edit_val.get_untracked();
+                                store().rename_account(&id1, &v, &p1)
+                            })
+                            .on_key_press(|k: &str| {
+                                if k == "Escape" {
+                                    store().acct_edit.set(String::new());
+                                }
+                            }),
+                    ),
+            )
+            .child(sm_btn(Btn::Primary, || "Save".into(), move || {
+                let v = store().acct_edit_val.get_untracked();
+                store().rename_account(&id2, &v, &p2)
+            }));
+        if removable || signed_in {
+            let verb = if removable { "Remove" } else { "Disconnect" };
+            row = row.child(sm_btn(
+                if confirming { Btn::DangerSolid } else { Btn::Danger },
+                move || {
+                    if confirming {
+                        format!("Confirm {verb}")
+                    } else {
+                        verb.to_owned()
+                    }
+                },
+                move || {
+                    if !confirming {
+                        store().acct_confirm.set(id3.clone());
+                    } else if removable {
+                        store().remove_account(&id3, &p3)
+                    } else {
+                        store().disconnect_account(&id3, &p3)
+                    }
+                },
+            ));
+        }
+        let _ = id4;
+        return row
+            .child(sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                store().acct_edit.set(String::new());
+                store().acct_confirm.set(String::new());
+            }))
+            .into_element();
+    }
+    let needs = Store::needs_auth(&a.err);
+    let id = a.id.clone();
+    // Setup values missing (e.g. the user's own OAuth Client ID): the row
+    // says what, and Authenticate waits for them.
+    let blocked: Vec<String> = st
+        .plugin_details
+        .get_untracked()
+        .get(&plugin)
+        .and_then(|d| d.mcp.iter().find(|m| m.name == server).map(|m| m.needs.clone()))
+        .unwrap_or_default();
+    let blocked = !blocked.is_empty();
+    let connected_note = if a.status == "connected" && a.note.starts_with("Connected") { a.note.clone() } else { String::new() };
+    let (status, ink): (String, AdaptiveColor) = match a.status.as_str() {
+        "connected" if !connected_note.is_empty() => (connected_note.clone(), ok_ink()),
+        "connected" => ("Connected".into(), ok_ink()),
+        "not-added" | "needs-auth" => ("Needs auth".into(), warn_ink()),
+        "error" if needs => ("Needs auth".into(), warn_ink()),
+        "error" => ("Error".into(), danger_ink()),
+        "off" => ("Disconnected".into(), ink3()),
+        _ => ("Starting".into(), ink3()),
+    };
+    // the action beside the status: Authenticate (OAuth), Reconnect
+    // (a failed probe), Connect (a disabled row).
+    let action: Option<(&'static str, Box<dyn Fn()>)> = match a.status.as_str() {
+        _ if blocked && a.status != "connected" => {
+            let p = plugin.clone();
+            Some(("Setup", Box::new(move || store().open_setup(&p, "edit"))))
+        }
+        "not-added" => {
+            let (p, s) = (plugin.clone(), server.clone());
+            Some(("Authenticate", Box::new(move || store().connect_account(&p, &s, ""))))
+        }
+        "needs-auth" => {
+            let (p, s) = (plugin.clone(), server.clone());
+            if is_default {
+                Some(("Authenticate", Box::new(move || store().connect_account(&p, &s, ""))))
+            } else {
+                let i = id.clone();
+                Some(("Authenticate", Box::new(move || store().auth_account(&i, &p))))
+            }
+        }
+        "error" if needs => {
+            let (p, i) = (plugin.clone(), id.clone());
+            Some(("Authenticate", Box::new(move || store().auth_account(&i, &p))))
+        }
+        "error" => {
+            let (p, i) = (plugin.clone(), id.clone());
+            Some(("Reconnect", Box::new(move || store().retry_server(&i, &p))))
+        }
+        "off" if is_default => {
+            let (p, s) = (plugin.clone(), server.clone());
+            Some(("Connect", Box::new(move || store().connect_account(&p, &s, ""))))
+        }
+        "off" => {
+            let i = id.clone();
+            Some(("Connect", Box::new(move || store().set_server_enabled(&i, true))))
+        }
+        _ => None,
+    };
+    let busy_here = busy == format!("auth:{}", a.id) || (a.id.is_empty() && busy == format!("connect:{server}"));
+    let label = a.label.clone();
+    let edit_id = a.id.clone();
+    let edit_label = a.label.clone();
+    let mut right = view()
+        .flex_row()
+        .items_center()
+        .gap(px(7.0))
+        .child(status_text(&status, ink));
+    if let Some((verb, f)) = action {
+        right = right.child(sm_btn(
+            Btn::Secondary,
+            move || if busy_here { "Opening…".to_owned() } else { verb.to_owned() },
+            move || f(),
+        ));
+    }
+    let show_err = a.status == "error" && !needs && !a.err.is_empty();
     view()
-        .border_t(if sep { px(0.5) } else { px(0.0) })
-        .border_t_color(tc(0.07))
-        .py_3()
+        .px(px(14.0))
+        .py(px(10.0))
         .child(
             view()
                 .flex_row()
                 .items_center()
+                .min_h(px(18.0))
                 .child(
-                    text("default ⌘")
-                        .number_of_lines(1)
-                        .flex_1()
-                        .text_size(px(13.0))
-                        .text_color(theme::TEXT),
-                )
-                .child(match status.as_str() {
-                    "connected" => text("Connected")
-                        .text_size(px(12.0))
-                        .text_color(hx("#32bb78"))
-                        .into_element(),
-                    "error" => {
-                        let needs = Store::needs_auth(&err);
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .child(
-                                text(if needs { "Needs auth" } else { "Error" })
-                                    .text_size(px(12.0))
-                                    .text_color(if needs {
-                                        hx("#ffb224")
-                                    } else {
-                                        hx("#ff5f57")
-                                    })
-                                    .pr_3(),
-                            )
-                            .child(
-                                view()
-                                    .h(px(26.0))
-                                    .rounded(px(999.0))
-                                    .bg(tc(0.07))
-                                    .px_3()
-                                    .items_center()
-                                    .justify_center()
-                                    .on_press(move || {
-                                        store().auth_or_retry(
-                                            &m.id,
-                                            &m.transport,
-                                            &m.err,
-                                            &plugin,
-                                        )
-                                    })
-                                    .child(
-                                        text("Retry")
-                                            .text_size(px(12.0))
-                                            .text_color(theme::TEXT),
-                                    ),
-                            )
-                            .into_element()
-                    }
-                    _ => text(if status.is_empty() {
-                        "Idle".to_owned()
-                    } else {
-                        status.clone()
-                    })
-                    .text_size(px(12.0))
-                    .text_color(theme::DIM)
-                    .into_element(),
-                }),
-        )
-        .when(status2 == "error" && !Store::needs_auth(&err2) && !err2.is_empty(), |v| {
-            v.child(
-                text(format!("Failed to load connector. Details: {}", err2))
-                    .number_of_lines(3)
-                    .text_size(px(11.0))
-                    .text_color(theme::DIM)
-                    .pt_1(),
-            )
-        })
-}
-
-fn apps_card(name: String) -> impl IntoElement {
-    let n = name.clone();
-    view()
-        .child(
-            text(move || {
-                let n = store()
-                    .plugin_details
-                    .get()
-                    .get(&name)
-                    .map(|d| d.mcp.len())
-                    .unwrap_or(0);
-                format!("Apps  {n}")
-            })
-            .text_size(px(12.0))
-            .text_color(theme::DIM)
-            .pl(px(2.0))
-            .pt_4()
-            .pb_2(),
-        )
-        .child(
-            view().rounded(px(12.0)).bg(tc(0.04)).child(each(
-                move || {
-                    store()
-                        .plugin_details
-                        .get()
-                        .get(&n)
-                        .map(|d| d.mcp.clone())
-                        .unwrap_or_default()
-                },
-                |m| m.id.clone() + &m.name,
-                |m, _| {
-                    let m = m.get();
                     view()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .flex_row()
                         .items_center()
-                        .gap(px(10.0))
-                        .px(px(14.0))
-                        .py(px(11.0))
-                        .child(text("🔌").text_size(px(13.0)).text_color(theme::DIM))
+                        .gap(px(5.0))
                         .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .child(
-                                    text(m.name.clone())
-                                        .number_of_lines(1)
-                                        .text_size(px(13.0))
-                                        .text_color(theme::TEXT),
-                                )
-                                .child(
-                                    text(format!(
-                                        "Connector{}",
-                                        if m.transport == "remote" { " · remote" } else { "" }
-                                    ))
-                                    .number_of_lines(1)
-                                    .text_size(px(11.0))
-                                    .text_color(theme::DIM),
-                                ),
+                            text(label)
+                                .number_of_lines(1)
+                                .text_size(px(13.0))
+                                .line_height(px(18.0))
+                                .text_color(theme::TEXT),
                         )
-                },
-            )),
+                        .when(!edit_id.is_empty(), move |v| {
+                            v.child(
+                                view()
+                                    .size(px(14.0))
+                                    .items_center()
+                                    .justify_center()
+                                    .label("Edit account")
+                                    .on_press(move || {
+                                        store().acct_edit_val.set(edit_label.clone());
+                                        store().acct_confirm.set(String::new());
+                                        store().acct_edit.set(edit_id.clone());
+                                    })
+                                    .child(icon_ink("gb-pencil", 10.0, ink3)),
+                            )
+                        }),
+                )
+                .child(right),
         )
+        .when(!a.note.is_empty() && !a.note.starts_with("Connected"), |v| {
+            v.child(
+                text(a.note.clone())
+                    .number_of_lines(2)
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .text_color(ink3())
+                    .pt(px(4.0)),
+            )
+        })
+        .when(show_err, |v| {
+            v.child(
+                text(format!("Failed to load connector. Details: {}", a.err))
+                    .number_of_lines(3)
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .text_color(ink3())
+                    .pt(px(4.0)),
+            )
+        })
+        .when(is_default && a.id.is_empty() && !err.is_empty() && store().acct_add.get_untracked().is_empty(), |v| {
+            v.child(
+                text(err.clone())
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .text_color(danger_ink())
+                    .pt(px(4.0)),
+            )
+        })
+        .into_element()
 }
 
-/// `toolSwitch` — Grok's blue pill toggle (App.tsx:1554).
-fn tool_switch(
-    on: impl Fn() -> bool + 'static,
-    on_toggle: impl Fn() + 'static,
-) -> impl IntoElement {
+/// "+ Add Another Account" → the inline label form (Grok's: a label
+/// field, Authorize, Cancel). Authorize registers the account and opens
+/// its OAuth tab (`/plugins/connect`).
+fn add_account(plugin: &str, server: &str) -> AnyElement {
+    let st = store();
+    let open = st.acct_add.get() == server;
+    let (plugin, server) = (plugin.to_owned(), server.to_owned());
+    if !open {
+        let hov = signal(false);
+        return view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
+            .on_hover_in(move || hov.set(true))
+            .on_hover_out(move || hov.set(false))
+            .on_press(move || {
+                store().acct_add_val.set(String::new());
+                store().acct_err.set(String::new());
+                store().acct_edit.set(String::new());
+                store().acct_add.set(server.clone());
+            })
+            .child(icon_ink("gb-plus", 10.0, ink2))
+            .child(
+                text("Add Another Account")
+                    .text_size(px(13.0))
+                    .line_height(px(18.0))
+                    .text_color(ink2()),
+            )
+            .into_element();
+    }
+    let busy = st.plugin_busy.get() == format!("connect:{server}");
+    let err = st.acct_err.get();
+    let (p1, s1, p2, s2) = (plugin.clone(), server.clone(), plugin, server);
+    view()
+        .px(px(14.0))
+        .py(px(6.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h(px(26.0))
+                        .rounded(px(8.0))
+                        .bg(tc(0.04))
+                        .px(px(8.0))
+                        .justify_center()
+                        .child(
+                            input()
+                                .value(move || store().acct_add_val.get())
+                                .placeholder("Label this account, e.g. work or personal")
+                                .placeholder_color(|| color(tc(0.4)))
+                                .auto_focus(true)
+                                .text_size(px(13.0))
+                                .text_color(theme::TEXT)
+                                .h(px(26.0))
+                                .on_change(|t: &str| store().acct_add_val.set(t.to_owned()))
+                                .on_submit(move |_: &str| {
+                                    let v = store().acct_add_val.get_untracked();
+                                    if !v.trim().is_empty() {
+                                        store().connect_account(&p1, &s1, &v)
+                                    }
+                                })
+                                .on_key_press(|k: &str| {
+                                    if k == "Escape" {
+                                        store().acct_add.set(String::new());
+                                    }
+                                }),
+                        ),
+                )
+                .child(sm_btn(
+                    Btn::Primary,
+                    move || if busy { "Opening…".into() } else { "Authorize".into() },
+                    move || {
+                        let v = store().acct_add_val.get_untracked();
+                        if !v.trim().is_empty() {
+                            store().connect_account(&p2, &s2, &v)
+                        }
+                    },
+                ))
+                .child(sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                    store().acct_add.set(String::new());
+                    store().acct_err.set(String::new());
+                })),
+        )
+        .when(!err.is_empty(), |v| {
+            v.child(
+                text(err.clone())
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .text_color(danger_ink())
+                    .pt(px(4.0)),
+            )
+        })
+        .into_element()
+}
+
+/// Tools — per connected connector: "N of M enabled ⌄" opening the
+/// per-tool switches (Grok shows it once the connector is connected).
+fn plugin_tools_section(plugin: String) -> impl IntoElement {
+    each(
+        move || {
+            store()
+                .plugin_details
+                .get()
+                .get(&plugin)
+                .map(|d| {
+                    d.mcp
+                        .iter()
+                        .filter(|m| !m.id.is_empty() && m.status == "connected")
+                        .map(|m| m.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        },
+        |id| id.clone(),
+        |id, _| view().child(tools_section(id.get())),
+    )
+}
+
+/// `toolSwitch` — Grok Bot's 26×16 switch: blue track, 12pt knob.
+fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() + 'static) -> impl IntoElement {
     let on2 = std::rc::Rc::new(on);
     let on3 = on2.clone();
     view()
-        .w(px(40.0))
-        .h(px(24.0))
-        .rounded(px(12.0))
+        .w(px(26.0))
+        .h(px(16.0))
+        .rounded(px(8.0))
         .justify_center()
-        .bg(move || {
-            if (on2)() {
-                hx("#0a84ff")
-            } else {
-                tc(0.12)
-            }
-        })
+        .bg(move || if (on2)() { pair("#1680f3", "#1e86fc") } else { tc(0.15) })
         .on_press(move || on_toggle())
         .child(
             view()
-                .size(px(20.0))
-                .rounded(px(10.0))
-                .bg(Hsla::from_str("#ffffff").unwrap_or(theme::ACCENT.dark))
-                .ml(move || {
-                    if (on3)() {
-                        px(16.0)
-                    } else {
-                        px(0.0)
-                    }
-                }),
+                .size(px(12.0))
+                .rounded(px(6.0))
+                .bg(white())
+                .ml(move || if (on3)() { px(12.0) } else { px(2.0) }),
         )
 }
 
-/// `mcpToolsSection` — "N of M enabled" collapsible (App.tsx:1563).
-fn mcp_tools_section(server_id: String) -> impl IntoElement {
+/// "Tools" + the collapsible "N of M enabled" card (hidden until the
+/// server's tools are known).
+fn tools_section(server_id: String) -> impl IntoElement {
     let id = server_id.clone();
+    let id_has = server_id.clone();
     let id2 = server_id.clone();
     let id3 = server_id.clone();
     let id4 = server_id.clone();
     let id5 = server_id;
-    view()
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .pt_4()
-                .pb_2()
-                .on_press(move || {
-                    let open = store()
-                        .tools_open
-                        .get_untracked()
-                        .get(&id)
-                        .copied()
-                        .unwrap_or(false);
-                    let id2 = id.clone();
-                    store().tools_open.update(|m| {
-                        m.insert(id2, !open);
-                    });
-                })
-                .child(
-                    text("Tools")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0)),
-                )
-                .child(
-                    text(move || {
-                        let st = store();
-                        let tools = st
-                            .mcp_tools
-                            .get()
-                            .get(&id2)
-                            .cloned()
-                            .unwrap_or_default();
-                        let on = tools.iter().filter(|t| t.enabled).count();
-                        let open = st
-                            .tools_open
-                            .get()
-                            .get(&id2)
-                            .copied()
-                            .unwrap_or(false);
-                        format!(
-                            "{} of {} enabled {}",
-                            on,
-                            tools.len(),
-                            if open { "⌃" } else { "⌄" }
-                        )
-                    })
-                    .text_size(px(12.0))
-                    .text_color(theme::DIM),
-                ),
-        )
-        .child(when(
-            move || {
-                store()
-                    .tools_open
-                    .get()
-                    .get(&id3)
-                    .copied()
-                    .unwrap_or(false)
-            },
-            move || {
-                let id4 = id4.clone();
-                let id5 = id5.clone();
-                view().rounded(px(12.0)).bg(tc(0.04)).child(each(
-                    move || {
-                        store()
-                            .mcp_tools
-                            .get()
-                            .get(&id4)
-                            .cloned()
-                            .unwrap_or_default()
-                    },
-                    |t| t.name.clone(),
-                    move |t, _| {
-                        let sid = id5.clone();
-                        let name = t.get().name.clone();
+    when(
+        move || store().mcp_tools.get().get(&id_has).map(|t| !t.is_empty()).unwrap_or(false),
+        move || {
+            let (id, id2, id3, id4, id5) = (id.clone(), id2.clone(), id3.clone(), id4.clone(), id5.clone());
+            let id_chev = id2.clone();
+            view().child(sec_label("Tools")).child(
+                card()
+                    .child(
                         view()
                             .flex_row()
                             .items_center()
-                            .gap(px(10.0))
                             .px(px(14.0))
-                            .py(px(11.0))
-                            .child(icon("tool"))
+                            .py(px(10.0))
+                            .on_press(move || {
+                                let open = store().tools_open.get_untracked().get(&id).copied().unwrap_or(false);
+                                let k = id.clone();
+                                store().tools_open.update(|m| {
+                                    m.insert(k, !open);
+                                });
+                            })
                             .child(
-                                text(move || t.get().name)
-                                    .number_of_lines(1)
-                                    .flex_1()
-                                    .text_size(px(13.0))
-                                    .text_color(theme::TEXT),
+                                text(move || {
+                                    let tools = store().mcp_tools.get().get(&id2).cloned().unwrap_or_default();
+                                    let on = tools.iter().filter(|t| t.enabled).count();
+                                    format!("{} of {} enabled", on, tools.len())
+                                })
+                                .flex_1()
+                                .text_size(px(13.0))
+                                .line_height(px(18.0))
+                                .text_color(theme::TEXT),
                             )
-                            .child(tool_switch(
-                                move || t.get().enabled,
-                                move || {
-                                    let on = t.get().enabled;
-                                    store().toggle_mcp_tool(&sid, &name, !on)
+                            .child(dynamic(move || {
+                                let open = store().tools_open.get().get(&id_chev).copied().unwrap_or(false);
+                                icon_ink(if open { "gb-chevron-up" } else { "gb-chevron-down" }, 10.0, ink3)
+                            })),
+                    )
+                    .child(when(
+                        move || store().tools_open.get().get(&id3).copied().unwrap_or(false),
+                        move || {
+                            let (id4, id5) = (id4.clone(), id5.clone());
+                            view().child(each(
+                                move || store().mcp_tools.get().get(&id4).cloned().unwrap_or_default(),
+                                |t| t.name.clone(),
+                                move |t, _| {
+                                    let sid = id5.clone();
+                                    let name = t.get().name.clone();
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .px(px(14.0))
+                                        .py(px(10.0))
+                                        .child(
+                                            text(move || t.get().name)
+                                                .number_of_lines(1)
+                                                .flex_1()
+                                                .text_size(px(13.0))
+                                                .line_height(px(18.0))
+                                                .text_color(theme::TEXT),
+                                        )
+                                        .child(tool_switch(
+                                            move || t.get().enabled,
+                                            move || {
+                                                let on = t.get().enabled;
+                                                store().toggle_mcp_tool(&sid, &name, !on)
+                                            },
+                                        ))
                                 },
                             ))
-                    },
-                ))
-            },
-        ))
+                        },
+                    )),
+            )
+        },
+    )
 }
 
-fn skills_card(name: String) -> impl IntoElement {
-    let n = name.clone();
-    let n2 = name.clone();
-    let n3 = name.clone();
-    let n4 = name.clone();
-    let n_head = name;
-    view()
-        .child(
-            text(move || {
-                let n = store()
-                    .plugin_details
-                    .get()
-                    .get(&n_head)
-                    .map(|d| d.skills.len())
-                    .unwrap_or(0);
-                format!("Skills  {n}")
-            })
-            .text_size(px(12.0))
-            .text_color(theme::DIM)
-            .pl(px(2.0))
-            .pt_4()
-            .pb_2(),
-        )
-        .child(
-            view().rounded(px(12.0)).bg(tc(0.04)).child(each(
-                move || {
-                    store()
-                        .plugin_details
-                        .get()
-                        .get(&n)
-                        .map(|d| {
-                            let list = d.skills.clone();
-                            if store().skills_expanded.get() {
-                                list
-                            } else {
-                                list.into_iter().take(5).collect()
-                            }
+fn apps_section(plugin: String) -> impl IntoElement {
+    let n = plugin.clone();
+    let n2 = plugin.clone();
+    when(
+        move || store().plugin_details.get().get(&n).map(|d| !d.mcp.is_empty()).unwrap_or(false),
+        move || {
+            let n2 = n2.clone();
+            let n3 = n2.clone();
+            view()
+                .child(count_label("Apps", move || {
+                    store().plugin_details.get().get(&n2).map(|d| d.mcp.len()).unwrap_or(0)
+                }))
+                .child(card().py(px(8.0)).child(each(
+                    move || store().plugin_details.get().get(&n3).map(|d| d.mcp.clone()).unwrap_or_default(),
+                    |m| m.name.clone(),
+                    |m, _| glyph_row("gb-plug", m.get().name, "Connector".into()),
+                )))
+        },
+    )
+}
+
+/// Skills — read-only rows (only private skills open a page); five,
+/// then "N more".
+fn skills_section(plugin: String) -> impl IntoElement {
+    let n = plugin.clone();
+    let n2 = plugin;
+    when(
+        move || store().plugin_details.get().get(&n).map(|d| !d.skills.is_empty()).unwrap_or(false),
+        move || {
+            let (a, b, c) = (n2.clone(), n2.clone(), n2.clone());
+            let d2 = n2.clone();
+            view()
+                .child(count_label("Skills", move || {
+                    store().plugin_details.get().get(&a).map(|d| d.skills.len()).unwrap_or(0)
+                }))
+                .child(
+                    card()
+                        .pt(px(8.0))
+                        .pb(move || {
+                            let many = store().plugin_details.get().get(&d2).map(|d| d.skills.len() > 5).unwrap_or(false);
+                            if many { px(0.0) } else { px(8.0) }
                         })
-                        .unwrap_or_default()
-                },
-                |s| s.name.clone(),
-                move |s, _| {
-                    let sk = s.get();
-                    let pname = n3.clone();
-                    let skn = sk.name.clone();
-                    view()
-                        .flex_row()
-                        .gap(px(10.0))
-                        .px(px(14.0))
-                        .py(px(11.0))
-                        .items_start()
-                        .on_press(move || {
-                            store().push_nav("skill", &pname, &skn)
-                        })
-                        .child(
-                            text("📦")
-                                .text_size(px(14.0))
-                                .text_color(theme::DIM)
-                                .pt(px(1.0)),
-                        )
-                        .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .child(
-                                    text(sk.name.clone())
-                                        .number_of_lines(1)
+                        .child(each(
+                            move || {
+                                let list = store().plugin_details.get().get(&b).map(|d| d.skills.clone()).unwrap_or_default();
+                                if store().skills_expanded.get() {
+                                    list
+                                } else {
+                                    list.into_iter().take(5).collect()
+                                }
+                            },
+                            |s| s.name.clone(),
+                            |s, _| {
+                                let sk = s.get();
+                                glyph_row("gb-cube", sk.name, sk.description)
+                            },
+                        ))
+                        .child(when(
+                            {
+                                let c = c.clone();
+                                move || store().plugin_details.get().get(&c).map(|d| d.skills.len() > 5).unwrap_or(false)
+                            },
+                            move || {
+                                let c = c.clone();
+                                let hov = signal(false);
+                                view()
+                                    .flex_row()
+                                    .justify_end()
+                                    .px(px(14.0))
+                                    .py(px(10.0))
+                                    .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
+                                    .on_hover_in(move || hov.set(true))
+                                    .on_hover_out(move || hov.set(false))
+                                    .on_press(|| store().skills_expanded.update(|v| *v = !*v))
+                                    .child(
+                                        text(move || {
+                                            let n = store().plugin_details.get().get(&c).map(|d| d.skills.len()).unwrap_or(0);
+                                            if store().skills_expanded.get() {
+                                                "Show less".to_owned()
+                                            } else {
+                                                format!("{} more", n.saturating_sub(5))
+                                            }
+                                        })
                                         .text_size(px(13.0))
-                                        .text_color(theme::TEXT),
-                                )
-                                .child(
-                                    text(sk.description.clone())
-                                        .number_of_lines(2)
-                                        .text_size(px(11.0))
-                                        .text_color(theme::DIM),
-                                ),
-                        )
-                },
-            )),
-        )
-        .child(when(
-            move || {
-                store()
-                    .plugin_details
-                    .get()
-                    .get(&n2)
-                    .map(|d| d.skills.len() > 5)
-                    .unwrap_or(false)
-            },
-            move || {
-                let n4 = n4.clone();
-                text(move || {
-                    let n = store()
-                        .plugin_details
-                        .get()
-                        .get(&n4)
-                        .map(|d| d.skills.len())
-                        .unwrap_or(0);
-                    if store().skills_expanded.get() {
-                        "Show less".to_owned()
-                    } else {
-                        format!("{} more", n.saturating_sub(5))
-                    }
-                })
-                .text_size(px(12.0))
-                .text_color(theme::DIM)
-                .pt(px(10.0))
-                .self_center()
-                .on_press(|| store().skills_expanded.update(|v| *v = !*v))
-            },
-        ))
+                                        .line_height(px(18.0))
+                                        .text_color(ink3()),
+                                    )
+                            },
+                        )),
+                )
+        },
+    )
 }
 
-fn commands_card(name: String) -> impl IntoElement {
-    let n = name.clone();
-    view()
-        .child(
-            text(move || {
-                let n = store()
-                    .plugin_details
-                    .get()
-                    .get(&name)
-                    .map(|d| d.commands.len())
-                    .unwrap_or(0);
-                format!("Commands  {n}")
-            })
-            .text_size(px(12.0))
-            .text_color(theme::DIM)
-            .pl(px(2.0))
-            .pt_4()
-            .pb_2(),
-        )
-        .child(
-            view().rounded(px(12.0)).bg(tc(0.04)).child(each(
-                move || {
-                    store()
-                        .plugin_details
-                        .get()
-                        .get(&n)
-                        .map(|d| d.commands.clone())
-                        .unwrap_or_default()
-                },
-                |c| c.name.clone(),
-                |c, _| {
-                    view()
-                        .flex_row()
-                        .gap(px(10.0))
-                        .px(px(14.0))
-                        .py(px(10.0))
-                        .child(icon("command"))
-                        .child(
-                            text(c.get().name)
-                                .number_of_lines(1)
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT),
-                        )
-                },
-            )),
-        )
-}
-
-fn info_card(name: &str) -> impl IntoElement {
+fn info_section(name: &str) -> impl IntoElement {
     let n_cap = name.to_owned();
     let n_dev = name.to_owned();
     let n_cat = name.to_owned();
     let n_web = name.to_owned();
-    view()
-        .child(
-            text("Information")
-                .text_size(px(12.0))
-                .text_color(theme::DIM)
-                .pl(px(2.0))
-                .pt_4()
-                .pb_2(),
-        )
-        .child(
-            view()
-                .rounded(px(12.0))
-                .bg(tc(0.04))
-                .px(px(14.0))
-                .child(info_row(
-                    "Capabilities",
-                    move || {
-                        let d = store()
-                            .plugin_details
-                            .get()
-                            .get(&n_cap)
-                            .cloned()
-                            .unwrap_or_default();
-                        format!(
-                            "{} app{}, {} skill{}",
-                            d.mcp.len(),
-                            if d.mcp.len() == 1 { "" } else { "s" },
-                            d.skills.len(),
-                            if d.skills.len() == 1 { "" } else { "s" },
-                        )
-                    },
-                    false,
-                ))
-                .child(info_row(
-                    "Developer",
-                    move || {
-                        let d = store()
-                            .plugin_details
-                            .get()
-                            .get(&n_dev)
-                            .cloned()
-                            .unwrap_or_default();
-                        if !d.author.is_empty() {
-                            d.author
-                        } else {
-                            host_label(&d.homepage)
-                        }
-                    },
-                    true,
-                ))
-                .child(info_row(
-                    "Category",
-                    move || {
-                        let d = store()
-                            .plugin_details
-                            .get()
-                            .get(&n_cat)
-                            .cloned()
-                            .unwrap_or_default();
-                        Store::plugin_title(&d.category)
-                    },
-                    true,
-                ))
-                .child(info_row(
-                    "Website",
-                    move || {
-                        let d = store()
-                            .plugin_details
-                            .get()
-                            .get(&n_web)
-                            .cloned()
-                            .unwrap_or_default();
-                        host(&d.homepage)
-                    },
-                    true,
-                ))
-                .child(info_row("Availability", || "Public".into(), true)),
-        )
+    let n_av = name.to_owned();
+    let detail = |n: &str| store().plugin_details.get().get(n).cloned().unwrap_or_default();
+    view().child(sec_label("Information")).child(
+        card()
+            .py(px(8.0))
+            .child(info_row("Capabilities", move || {
+                let d = detail(&n_cap);
+                format!(
+                    "{} app{}, {} skill{}",
+                    d.mcp.len(),
+                    if d.mcp.len() == 1 { "" } else { "s" },
+                    d.skills.len(),
+                    if d.skills.len() == 1 { "" } else { "s" },
+                )
+            }))
+            .child(info_row("Developer", move || {
+                let d = detail(&n_dev);
+                if !d.author.is_empty() {
+                    d.author
+                } else {
+                    developer_of(&d.homepage)
+                }
+            }))
+            .child(info_row("Category", move || Store::plugin_title(&detail(&n_cat).category)))
+            .child(info_row("Website", move || host(&detail(&n_web).homepage)))
+            .child(info_row("Availability", move || {
+                let a = detail(&n_av).availability;
+                if a.is_empty() { "Public".into() } else { a }
+            })),
+    )
 }
 
 /// `new URL(homepage).host` — else "—".
@@ -2081,31 +2558,277 @@ fn host(url: &str) -> String {
         .unwrap_or_else(|| "—".to_owned())
 }
 
-/// `host.split(".")[0]` — the Developer fallback (App.tsx:3999).
-fn host_label(url: &str) -> String {
-    host(url)
-        .split('.')
-        .next()
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|| "—".to_owned())
+/// The Developer fallback: a GitHub homepage's owner ("vercel" →
+/// "Vercel"), else the host's first label.
+fn developer_of(url: &str) -> String {
+    let h = host(url);
+    if h == "github.com" {
+        if let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next()) {
+            if !owner.is_empty() {
+                return Store::plugin_title(owner);
+            }
+        }
+    }
+    h.split('.').next().map(|s| s.to_owned()).unwrap_or_else(|| "—".to_owned())
 }
 
-fn info_row(
-    label: &'static str,
-    value: impl Fn() -> String + 'static,
-    sep: bool,
-) -> impl IntoElement {
+// ═══ SETUP page — a plugin's setup values ═══
+//
+// Grok Bot's plugin setup form (measured): the detail bar titled with the
+// plugin, a 14/20 secondary intro, fields 14pt apart — 13/18 medium label
+// (+ " (optional)" tertiary), a 32-tall 8-radius 4% input (10pt inset,
+// 13pt), a 12/16 tertiary hint — then the 26-tall primary button at the
+// right ("Add <Plugin>" / "Save Values"). Secrets never come back: a
+// stored one shows dots as its placeholder.
+
+fn setup_page() -> impl IntoElement {
+    let top = store().plugin_nav.get_untracked().last().cloned();
+    let (name, mode) = top.map(|n| (n.name, n.id)).unwrap_or_default();
+    let install = mode == "install";
+    let title = store().plugin_display(&name);
+    let n_body = name.clone();
+    let n_btn = name.clone();
+    let title2 = title.clone();
     view()
-        .flex_row()
-        .justify_between()
-        .py_3()
-        .border_t(if sep { px(0.5) } else { px(0.0) })
-        .border_t_color(tc(0.07))
-        .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
-        .child(text(value).text_size(px(13.0)).text_color(theme::DIM))
+        .flex_1()
+        .child(back_bar(None, &title))
+        .child(
+            scroll().flex_1().child(
+                pane()
+                    .gap(px(16.0))
+                    .child(
+                        text(if install {
+                            format!("{title2} needs a few values before it can be added")
+                        } else {
+                            format!(
+                                "Saving replaces {title2}'s setup values and applies them to its connectors. Stored secrets show as dots; leave one blank to keep it."
+                            )
+                        })
+                        .text_size(px(14.0))
+                        .line_height(px(20.0))
+                        .text_color(ink2()),
+                    )
+                    .child(dynamic(move || {
+                        let d = store().plugin_details.get().get(&n_body).cloned().unwrap_or_default();
+                        let mut col = view().gap(px(14.0));
+                        if d.fields.iter().any(|f| f.shared == "google") {
+                            col = col.child(
+                                text("The Google Client ID and Secret are shared by every Google plugin — Gmail, Google Calendar, Drive, Docs, Sheets and Slides.")
+                                    .text_size(px(12.0))
+                                    .line_height(px(16.0))
+                                    .text_color(ink3()),
+                            );
+                        }
+                        for f in d.fields.clone() {
+                            col = col.child(setup_field(f));
+                        }
+                        for m in d.mcp.iter().filter(|m| !m.callback_url.is_empty()) {
+                            col = col.child(callback_row(m.callback_url.clone()));
+                        }
+                        col.into_element()
+                    }))
+                    .child(when(
+                        || !store().setup_err.get().is_empty(),
+                        || {
+                            text(|| store().setup_err.get())
+                                .text_size(px(12.0))
+                                .line_height(px(16.0))
+                                .text_color(danger_ink())
+                        },
+                    ))
+                    .child(
+                        view().flex_row().justify_end().child(sm_btn(
+                            Btn::Primary,
+                            move || {
+                                if !store().plugin_busy.get().is_empty() {
+                                    if install { "Adding…".into() } else { "Saving…".into() }
+                                } else if install {
+                                    format!("Add {title}")
+                                } else {
+                                    "Save Values".into()
+                                }
+                            },
+                            move || store().submit_setup(&n_btn, install),
+                        )),
+                    ),
+            ),
+        )
 }
 
-// ═══ MCP server detail page (App.tsx:4020) ═══
+fn setup_field(f: crate::store::PluginField) -> impl IntoElement {
+    let key = f.key.clone();
+    let mut label = view().flex_row().child(
+        text(f.label.clone())
+            .text_size(px(13.0))
+            .line_height(px(18.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT),
+    );
+    if !f.required {
+        label = label.child(
+            text(" (optional)")
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(ink3()),
+        );
+    }
+    let control = if !f.options.is_empty() {
+        select_box(f.clone()).into_element()
+    } else {
+        let (k1, k2, k3) = (key.clone(), key.clone(), key.clone());
+        let stored = f.value.clone();
+        let secret = f.secret;
+        let placeholder = if secret && f.set { "••••••••".to_owned() } else { f.placeholder.clone() };
+        view()
+            .h(px(32.0))
+            .rounded(px(8.0))
+            .bg(tc(0.04))
+            .px(px(10.0))
+            .justify_center()
+            .child(
+                input()
+                    .value(move || store().setup_vals.get().get(&k1).cloned().unwrap_or_else(|| stored.clone()))
+                    .placeholder(placeholder)
+                    .placeholder_color(|| color(tc(0.4)))
+                    .text_size(px(13.0))
+                    // secrets: the typed text hides under dots.
+                    .text_color(move || if secret { AdaptiveColor::TRANSPARENT } else { theme::TEXT })
+                    .h(px(32.0))
+                    .on_change(move |t: &str| {
+                        let (k, t) = (k2.clone(), t.to_owned());
+                        store().setup_vals.update(|m| {
+                            m.insert(k, t);
+                        });
+                    }),
+            )
+            .when(secret, move |v| {
+                v.child(
+                    text(move || {
+                        let n = store().setup_vals.get().get(&k3).map(|s| s.chars().count()).unwrap_or(0);
+                        "•".repeat(n)
+                    })
+                    .absolute()
+                    .left(px(10.0))
+                    .text_size(px(13.0))
+                    .line_height(px(18.0))
+                    .text_color(theme::TEXT)
+                    .pointer_events(PointerEvents::None),
+                )
+            })
+            .into_element()
+    };
+    let mut col = view().gap(px(4.0)).child(label).child(control);
+    if !f.hint.is_empty() {
+        col = col.child(
+            text(f.hint.clone())
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3()),
+        );
+    }
+    col
+}
+
+/// A select (catalog `options`): the chosen label or "Select <label>",
+/// opening a menu of the options.
+fn select_box(f: crate::store::PluginField) -> impl IntoElement {
+    let node = element_ref();
+    let (k1, k2) = (f.key.clone(), f.key.clone());
+    let opts = f.options.clone();
+    let opts2 = f.options.clone();
+    let label = f.label.clone();
+    let stored = f.value.clone();
+    view()
+        .element_ref(&node)
+        .h(px(32.0))
+        .rounded(px(8.0))
+        .bg(tc(0.04))
+        .px(px(10.0))
+        .flex_row()
+        .items_center()
+        .on_press(move || {
+            let (k, opts) = (k2.clone(), opts2.clone());
+            spawn(async move {
+                let m = node.measure().await;
+                let (x, y) = m.map(|m| (m.page.x.0, m.page.y.0 + m.frame.size.height.0 + 4.0)).unwrap_or((0.0, 0.0));
+                let cur = store().setup_vals.get_untracked().get(&k).cloned().unwrap_or_default();
+                let items: Vec<crate::store::CtxItem> = opts
+                    .iter()
+                    .map(|(l, v)| {
+                        let mut it = crate::store::CtxItem::row(l, "", "setup-opt", format!("{k}\u{1f}{v}"));
+                        it.checked = &cur == v;
+                        it
+                    })
+                    .collect();
+                crate::ctx::open_at(x, y, items);
+            });
+        })
+        .child(
+            text(move || {
+                let cur = store().setup_vals.get().get(&k1).cloned().unwrap_or_else(|| stored.clone());
+                opts.iter()
+                    .find(|(_, v)| *v == cur)
+                    .map(|(l, _)| l.clone())
+                    .unwrap_or_else(|| format!("Select {label}"))
+            })
+            .flex_1()
+            .text_size(px(13.0))
+            .line_height(px(18.0))
+            .text_color(theme::TEXT),
+        )
+        .child(icon_ink("gb-chevron-down", 10.0, ink3))
+}
+
+/// The fixed OAuth callback to register in the provider's developer
+/// portal — read-only, with Copy.
+fn callback_row(url: String) -> impl IntoElement {
+    let u2 = url.clone();
+    let copied = signal(false);
+    view()
+        .gap(px(4.0))
+        .child(
+            text("Callback URL")
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::TEXT),
+        )
+        .child(
+            view()
+                .h(px(32.0))
+                .rounded(px(8.0))
+                .bg(tc(0.04))
+                .pl(px(10.0))
+                .pr(px(4.0))
+                .flex_row()
+                .items_center()
+                .child(
+                    text(url)
+                        .flex_1()
+                        .number_of_lines(1)
+                        .text_size(px(13.0))
+                        .line_height(px(18.0))
+                        .text_color(theme::TEXT)
+                        .selectable(true),
+                )
+                .child(sm_btn(
+                    Btn::Ghost,
+                    move || if copied.get() { "Copied".into() } else { "Copy".into() },
+                    move || {
+                        store().copy_text(&u2);
+                        copied.set(true);
+                    },
+                )),
+        )
+        .child(
+            text("Register this exact URL as the redirect / callback URL of your OAuth app.")
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3()),
+        )
+}
+
+// ═══ MCP server detail page ═══
 
 fn mcp_page() -> impl IntoElement {
     let id = store()
@@ -2121,218 +2844,196 @@ fn mcp_page() -> impl IntoElement {
         .find(|x| x.id == id)
         .cloned();
     let Some(s) = s else {
-        return view().child(back_bar(None, "")).into_element();
+        return view().flex_1().child(back_bar(None, "")).into_element();
     };
     let title = if s.name.is_empty() {
         s.id.clone()
     } else {
         s.name.clone()
     };
-    let needs = Store::needs_auth(&s.err);
-    let transport = if s.url.is_empty() { "command" } else { "remote" }.to_owned();
-    let url_or_cmd = if s.url.is_empty() {
-        format!("{} {}", s.command, s.args.join(" ")).trim().to_owned()
-    } else {
+    let initial = title
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_default();
+    let remote = !s.url.is_empty();
+    let url_or_cmd = if remote {
         s.url.clone()
+    } else {
+        format!("{} {}", s.command, s.args.join(" ")).trim().to_owned()
     };
-    let url_label = if s.url.is_empty() { "Command" } else { "URL" };
+    let url_label = if remote { "URL" } else { "Command" };
     let sid = s.id.clone();
-    let sid2 = s.id.clone();
-    let sid3 = s.id.clone();
-    let serr = s.err.clone();
-    let status = s.status.clone();
-    let err_txt = format!("Failed to load connector. Details: {}", s.err);
+    let sid_acc = s.id.clone();
+    let sid_tools = s.id.clone();
+    let sid_count = s.id.clone();
     view()
+        .flex_1()
         .child(back_bar(None, &title))
         .child(
             scroll().flex_1().child(
-                view()
-                    .px(px(21.0))
-                    .pb(px(28.0))
+                pane()
                     .child(
                         view()
                             .flex_row()
                             .items_center()
-                            .gap(px(14.0))
-                            .pb_4()
-                            .child(plug_tile(&title, 56.0))
-                            .child(
-                                text(title.clone())
-                                    .flex_1()
-                                    .text_size(px(16.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::TEXT),
-                            )
+                            .h(px(56.0))
+                            // `sand-tool-icon--mono`: the letter on a 10% wash.
                             .child(
                                 view()
-                                    .h(px(32.0))
-                                    .rounded(px(999.0))
-                                    .bg(tc(0.07))
-                                    .px(px(14.0))
+                                    .size(px(56.0))
+                                    .rounded(px(16.0))
+                                    .bg(tc(0.10))
+                                    .border(px(0.5))
+                                    .border_color(tc(0.08))
                                     .items_center()
                                     .justify_center()
-                                    .on_press(move || {
-                                        let id = sid.clone();
-                                        spawn(async move {
-                                            let _ = crate::client::post(
-                                                "/mcp/server/delete",
-                                                serde_json::json!({"id": id}),
-                                            )
-                                            .await;
-                                            store().fetch_mcp();
-                                            store().pop_nav();
-                                        });
-                                    })
                                     .child(
-                                        text("Uninstall")
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme::TEXT),
+                                        text(initial)
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(ink2()),
                                     ),
-                            ),
-                    )
-                    .child(
-                        text("Accounts")
-                            .text_size(px(12.0))
-                            .text_color(theme::DIM)
-                            .pl(px(2.0))
-                            .pb_2(),
-                    )
-                    .child(
-                        view()
-                            .rounded(px(12.0))
-                            .bg(tc(0.04))
-                            .px(px(14.0))
-                            .child(
-                                view()
-                                    .flex_row()
-                                    .items_center()
-                                    .py_3()
-                                    .child(
-                                        text("default")
-                                            .text_size(px(13.0))
-                                            .text_color(theme::TEXT),
-                                    )
-                                    .child(view().flex_1())
-                                    .child(match status.as_str() {
-                                        "connected" => text("Connected")
-                                            .text_size(px(12.0))
-                                            .text_color(hx("#32bb78"))
-                                            .into_element(),
-                                        "error" => view()
-                                            .flex_row()
-                                            .items_center()
-                                            .child(
-                                                text(if needs { "Needs auth" } else { "Error" })
-                                                    .text_size(px(12.0))
-                                                    .text_color(if needs {
-                                                        hx("#ffb224")
-                                                    } else {
-                                                        hx("#ff5f57")
-                                                    })
-                                                    .pr_3(),
-                                            )
-                                            .child(
-                                                view()
-                                                    .h(px(26.0))
-                                                    .rounded(px(999.0))
-                                                    .bg(tc(0.07))
-                                                    .px_3()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .on_press(move || {
-                                                        store().auth_or_retry(
-                                                            &sid2,
-                                                            &transport,
-                                                            &serr,
-                                                            "",
-                                                        )
-                                                    })
-                                                    .child(
-                                                        text("Retry")
-                                                            .text_size(px(12.0))
-                                                            .text_color(theme::TEXT),
-                                                    ),
-                                            )
-                                            .into_element(),
-                                        _ => text(if s.enabled { "Idle" } else { "Off" })
-                                            .text_size(px(12.0))
-                                            .text_color(theme::DIM)
-                                            .into_element(),
-                                    }),
                             )
-                            .when(
-                                status == "error" && !needs && !s.err.is_empty(),
-                                |v| {
-                                    v.child(
-                                        text(err_txt)
-                                            .number_of_lines(3)
-                                            .text_size(px(11.0))
-                                            .text_color(theme::DIM)
-                                            .pb(px(10.0)),
+                            .child(
+                                text(title.clone())
+                                    .number_of_lines(1)
+                                    .flex_1()
+                                    .ml(px(12.0))
+                                    .text_size(px(17.0))
+                                    .line_height(px(24.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::TEXT),
+                            )
+                            .child(pill_btn(None, || "Uninstall".into(), move || {
+                                let id = sid.clone();
+                                spawn(async move {
+                                    let _ = crate::client::post(
+                                        "/mcp/server/delete",
+                                        serde_json::json!({"id": id}),
                                     )
-                                },
-                            ),
-                    )
-                    .child(mcp_tools_section(sid3.clone()))
-                    .child(
-                        text("Details")
-                            .text_size(px(12.0))
-                            .text_color(theme::DIM)
-                            .pl(px(2.0))
-                            .pt_4()
-                            .pb_2(),
+                                    .await;
+                                    store().fetch_mcp();
+                                    store().pop_nav();
+                                });
+                            })),
                     )
                     .child(
                         view()
-                            .rounded(px(12.0))
-                            .bg(tc(0.04))
-                            .px(px(14.0))
-                            .child(info_row("Source", || "Added manually".into(), false))
-                            .child(info_row(
-                                "Transport",
-                                move || {
-                                    if s.url.is_empty() {
-                                        "Command".to_owned()
-                                    } else {
-                                        "Remote".to_owned()
+                            .pt(px(24.0))
+                            .gap(px(16.0))
+                            .child(view().child(sec_label("Accounts")).child(dynamic(move || {
+                                let row = store()
+                                    .mcp_servers
+                                    .get()
+                                    .iter()
+                                    .find(|x| x.id == sid_acc)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                server_account(row).into_element()
+                            })))
+                            .child(when(
+                                {
+                                    let id = sid_tools.clone();
+                                    move || {
+                                        store().mcp_servers.get().iter().any(|x| x.id == id && x.status == "connected")
                                     }
                                 },
-                                true,
+                                move || view().child(tools_section(sid_tools.clone())),
                             ))
                             .child(
-                                view()
-                                    .flex_row()
-                                    .justify_between()
-                                    .gap(px(20.0))
-                                    .py_3()
-                                    .border_t(px(0.5))
-                                    .border_t_color(tc(0.07))
-                                    .child(
-                                        text(url_label)
-                                            .text_size(px(13.0))
-                                            .text_color(theme::TEXT),
-                                    )
-                                    .child(
-                                        text(url_or_cmd)
-                                            .number_of_lines(2)
-                                            .flex_1()
-                                            .text_size(px(13.0))
-                                            .text_color(theme::DIM),
-                                    ),
-                            )
-                            .child(info_row(
-                                "Tools",
-                                move || format!("{}", s.tools),
-                                true,
-                            )),
+                                view().child(sec_label("Details")).child(
+                                    card()
+                                        .py(px(8.0))
+                                        .child(info_row("Source", || "Added manually".into()))
+                                        .child(info_row("Transport", move || {
+                                            if remote { "Remote" } else { "Command" }.to_owned()
+                                        }))
+                                        .child(info_row(url_label, move || url_or_cmd.clone()))
+                                        .child(info_row("Tools", move || {
+                                            // the listed tools when known, else
+                                            // the server's last discovered count.
+                                            let st = store();
+                                            let n = st.mcp_tools.get().get(&sid_count).map(|t| t.len());
+                                            let n = n.filter(|n| *n > 0).unwrap_or_else(|| {
+                                                st.mcp_servers
+                                                    .get()
+                                                    .iter()
+                                                    .find(|x| x.id == sid_count)
+                                                    .map(|x| x.tools.max(0) as usize)
+                                                    .unwrap_or(0)
+                                            });
+                                            // nothing discovered yet (never probed / off).
+                                            if n == 0 { "—".to_owned() } else { n.to_string() }
+                                        })),
+                                ),
+                            ),
                     ),
             ),
         )
         .into_element()
 }
 
-// ═══ SKILL page (App.tsx:4096) ═══
+/// A standalone server's one "default" account row: its live status and
+/// the action that fixes it (Authenticate / Reconnect / Connect).
+fn server_account(s: McpServer) -> impl IntoElement {
+    let needs = Store::needs_auth(&s.err);
+    let remote = !s.url.is_empty();
+    let (status, ink): (&str, AdaptiveColor) = match s.status.as_str() {
+        "connected" => ("Connected", ok_ink()),
+        "error" if needs && remote => ("Needs auth", warn_ink()),
+        "error" => ("Error", danger_ink()),
+        "off" => ("Disconnected", ink3()),
+        _ => ("Starting", ink3()),
+    };
+    let id = s.id.clone();
+    let transport = if remote { "remote" } else { "command" }.to_owned();
+    let err = s.err.clone();
+    let action: Option<(&'static str, Box<dyn Fn()>)> = match s.status.as_str() {
+        "error" => {
+            let verb = if needs && remote { "Authenticate" } else { "Reconnect" };
+            Some((verb, Box::new(move || store().auth_or_retry(&id, &transport, &err, ""))))
+        }
+        "off" => Some(("Connect", Box::new(move || store().set_server_enabled(&id, true)))),
+        _ => None,
+    };
+    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
+    if let Some((verb, f)) = action {
+        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), move || f()));
+    }
+    let show_err = s.status == "error" && !(needs && remote) && !s.err.is_empty();
+    card().py(px(8.0)).child(
+        view()
+            .px(px(14.0))
+            .py(px(10.0))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .min_h(px(18.0))
+                    .child(
+                        text("default")
+                            .flex_1()
+                            .text_size(px(13.0))
+                            .line_height(px(18.0))
+                            .text_color(theme::TEXT),
+                    )
+                    .child(right),
+            )
+            .when(show_err, |v| {
+                v.child(
+                    text(format!("Failed to load connector. Details: {}", s.err))
+                        .number_of_lines(3)
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
+                        .text_color(ink3())
+                        .pt(px(4.0)),
+                )
+            }),
+    )
+}
+
+// ═══ SKILL page — a private skill (plugin skills don't open a page) ═══
 
 fn skill_page() -> impl IntoElement {
     let nav = store()
@@ -2341,345 +3042,227 @@ fn skill_page() -> impl IntoElement {
         .last()
         .cloned()
         .unwrap_or_else(PluginNav::market);
-    let title = if nav.id.is_empty() {
-        "New Skill".to_owned()
-    } else {
-        nav.id.clone()
-    };
+    let title = store()
+        .private_skills
+        .get_untracked()
+        .iter()
+        .find(|s| s.id == nav.id)
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "New Skill".to_owned());
     view()
+        .flex_1()
         .child(back_bar(None, &title))
-        .child(if !nav.name.is_empty() {
-            plugin_skill_view(&nav).into_element()
-        } else {
-            private_skill_editor().into_element()
-        })
+        .child(private_skill_editor())
 }
 
-/// The plugin skill read-only viewer (App.tsx:4108).
-fn plugin_skill_view(nav: &PluginNav) -> impl IntoElement {
-    let key = format!("{}/{}", nav.name, nav.id);
-    let key2 = key.clone();
-    let key3 = key.clone();
-    scroll()
-        .flex_1()
+/// The saved copy of the skill being edited (None = a new skill).
+fn saved_skill() -> Option<crate::store::PrivateSkill> {
+    let id = store().ps_id.get();
+    if id.is_empty() {
+        return None;
+    }
+    store().private_skills.get().iter().find(|s| s.id == id).cloned()
+}
+
+/// Save is live once the draft differs from what's saved (a new skill:
+/// once it has a name and instructions).
+fn skill_dirty() -> bool {
+    let st = store();
+    let (n, d, b) = (st.ps_name.get(), st.ps_desc.get(), st.ps_body.get());
+    if n.trim().is_empty() || b.trim().is_empty() {
+        return false;
+    }
+    match saved_skill() {
+        Some(s) => s.name != n || s.description != d || s.body != b,
+        None => true,
+    }
+}
+
+/// A labeled filled field (`Name` / `Description` / `Instructions`):
+/// 12pt label with 8/8/6 padding over a 4% wash, radius 14, 12/16 inset.
+fn skill_field(label: &'static str, field: impl IntoElement, h: f32) -> impl IntoElement {
+    view()
+        .child(
+            text(label)
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3())
+                .pt(px(8.0))
+                .pb(px(6.0))
+                .px(px(8.0)),
+        )
         .child(
             view()
-                .px(px(21.0))
-                .pb(px(28.0))
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(14.0))
-                        .pb(px(14.0))
-                        .child(
-                            view()
-                                .size(px(48.0))
-                                .rounded(px(12.0))
-                                .bg(tc(0.07))
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    text("📦")
-                                        .text_size(px(18.0))
-                                        .text_color(theme::DIM),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .child(
-                                    text(nav.id.clone())
-                                        .text_size(px(15.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme::TEXT),
-                                )
-                                .child(
-                                    text(format!("Plugin skill · {}", nav.name))
-                                        .text_size(px(12.0))
-                                        .text_color(theme::DIM)
-                                        .pt(px(2.0)),
-                                ),
-                        ),
-                )
-                .child(
-                    text(move || {
-                        store()
-                            .skill_bodies
-                            .get()
-                            .get(&key)
-                            .map(|b| b.description.clone())
-                            .unwrap_or_default()
-                    })
-                    .text_size(px(13.0))
-                    .text_color(tc(0.8))
-                    .pb(px(14.0)),
-                )
-                .child(
-                    text("Name")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .py(px(10.0))
-                        .child(
-                            text(nav.id.clone())
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT),
-                        ),
-                )
-                .child(
-                    text("Description")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pt_3()
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .py(px(10.0))
-                        .child(
-                            text(move || {
-                                store()
-                                    .skill_bodies
-                                    .get()
-                                    .get(&key2)
-                                    .map(|b| {
-                                        if b.description.is_empty() {
-                                            "—".to_owned()
-                                        } else {
-                                            b.description.clone()
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "—".to_owned())
-                            })
-                            .text_size(px(13.0))
-                            .text_color(theme::TEXT),
-                        ),
-                )
-                .child(
-                    text("Instructions")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pt_3()
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .py(px(10.0))
-                        .min_h(px(140.0))
-                        .child(
-                            text(move || {
-                                store()
-                                    .skill_bodies
-                                    .get()
-                                    .get(&key3)
-                                    .map(|b| b.body.clone())
-                                    .unwrap_or_else(|| "Loading…".to_owned())
-                            })
-                            .text_size(px(12.0))
-                            .text_color(theme::TEXT),
-                        ),
-                ),
+                .h(px(h))
+                .rounded(px(14.0))
+                .bg(tc(0.04))
+                .px(px(16.0))
+                .child(field),
         )
 }
 
-/// The private skill editor — name/description/instructions + Save +
-/// Delete Skill (App.tsx:4139).
+/// The private skill editor (Grok Bot's `sand-plugins-skill-detail`):
+/// header tile + name + "Private skill" + Delete Skill, the description,
+/// the three fields, and a footer bar with Save.
 fn private_skill_editor() -> impl IntoElement {
-    view().flex_1().child(
-        scroll().flex_1().child(
-            view()
-                .px(px(21.0))
-                .pb(px(28.0))
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(14.0))
-                        .pb(px(14.0))
-                        .child(
-                            view()
-                                .size(px(48.0))
-                                .rounded(px(12.0))
-                                .bg(tc(0.07))
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    text("📦")
-                                        .text_size(px(18.0))
-                                        .text_color(theme::DIM),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .flex_1()
-                                .child(
-                                    text(move || {
-                                        let n = store().ps_name.get();
-                                        if n.is_empty() {
-                                            "New Skill".to_owned()
-                                        } else {
-                                            n
-                                        }
-                                    })
-                                    .text_size(px(15.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::TEXT),
-                                )
-                                .child(
-                                    text("Private skill")
-                                        .text_size(px(12.0))
-                                        .text_color(theme::DIM)
-                                        .pt(px(2.0)),
-                                ),
-                        )
-                        .child(when(
-                            || !store().ps_id.get().is_empty(),
-                            || {
+    view()
+        .flex_1()
+        .child(
+            scroll().flex_1().child(
+                pane()
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .h(px(56.0))
+                            .child(
                                 view()
-                                    .h(px(34.0))
-                                    .rounded(px(999.0))
-                                    .border_1()
-                                    .border_color(hx("#ff5f5740"))
-                                    .px_4()
+                                    .size(px(56.0))
+                                    .rounded(px(6.0))
+                                    .bg(tc(0.03))
+                                    .border(px(0.5))
+                                    .border_color(tc(0.08))
                                     .items_center()
                                     .justify_center()
-                                    .on_press(|| store().delete_private_skill())
+                                    .child(icon_ink("gb-file-list", 18.0, || tc(0.92))),
+                            )
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .ml(px(12.0))
+                                    .gap(px(2.0))
                                     .child(
-                                        text("Delete Skill")
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(hx("#ff5f57")),
+                                        text(move || {
+                                            saved_skill()
+                                                .map(|s| s.name)
+                                                .unwrap_or_else(|| "New Skill".to_owned())
+                                        })
+                                        .number_of_lines(1)
+                                        .text_size(px(17.0))
+                                        .line_height(px(24.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme::TEXT),
                                     )
-                            },
-                        )),
-                )
-                .child(
-                    text("Name")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .child(
-                            input()
-                                .value(move || store().ps_name.get())
-                                .placeholder("skill-name")
-                                .placeholder_color(|| color(tc(0.3)))
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT)
-                                .py(px(10.0))
-                                .on_change(|t: &str| store().ps_name.set(t.to_owned())),
-                        ),
-                )
-                .child(
-                    text("Description")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pt_3()
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .child(
-                            input()
-                                .value(move || store().ps_desc.get())
-                                .placeholder("When to use this skill")
-                                .placeholder_color(|| color(tc(0.3)))
-                                .text_size(px(13.0))
-                                .text_color(theme::TEXT)
-                                .py(px(10.0))
-                                .on_change(|t: &str| store().ps_desc.set(t.to_owned())),
-                        ),
-                )
-                .child(
-                    text("Instructions")
-                        .text_size(px(12.0))
-                        .text_color(theme::DIM)
-                        .pl(px(2.0))
-                        .pt_3()
-                        .pb(px(6.0)),
-                )
-                .child(
-                    view()
-                        .rounded(px(10.0))
-                        .bg(tc(0.04))
-                        .px_3()
-                        .min_h(px(160.0))
-                        .child(
-                            input()
-                                .value(move || store().ps_body.get())
-                                .placeholder("What the agent should do, in markdown")
-                                .placeholder_color(|| color(tc(0.3)))
-                                .multiline(true)
-                                .text_size(px(12.0))
-                                .text_color(theme::TEXT)
-                                .h(px(160.0))
-                                .py(px(10.0))
-                                .on_change(|t: &str| store().ps_body.set(t.to_owned())),
-                        ),
-                )
-                .child(
-                    view()
-                        .flex_row()
-                        .justify_end()
-                        .pt(px(14.0))
-                        .child(
-                            view()
-                                .h(px(34.0))
-                                .rounded(px(999.0))
-                                .px(px(20.0))
-                                .items_center()
-                                .justify_center()
-                                .bg(move || {
-                                    if !store().ps_name.get().trim().is_empty()
-                                        && !store().ps_body.get().trim().is_empty()
-                                    {
-                                        tc(0.96)
-                                    } else {
-                                        tc(0.12)
-                                    }
-                                })
-                                .on_press(|| store().save_private_skill())
-                                .child(
-                                    text("Save")
-                                        .text_size(px(13.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(move || {
-                                            if !store().ps_name.get().trim().is_empty()
-                                                && !store().ps_body.get().trim().is_empty()
-                                            {
-                                                hx("#1f1f1f")
+                                    .child(
+                                        text("Private skill")
+                                            .text_size(px(13.0))
+                                            .line_height(px(16.0))
+                                            .text_color(ink2()),
+                                    ),
+                            )
+                            .child(when(
+                                || !store().ps_id.get().is_empty(),
+                                || {
+                                    view().ml(px(12.0)).child(sm_btn(
+                                        Btn::Danger,
+                                        || {
+                                            if store().acct_confirm.get() == format!("skill:{}", store().ps_id.get()) {
+                                                "Confirm Delete".to_owned()
                                             } else {
-                                                theme::DIM
+                                                "Delete Skill".to_owned()
                                             }
-                                        }),
-                                ),
+                                        },
+                                        || {
+                                            let key = format!("skill:{}", store().ps_id.get_untracked());
+                                            if store().acct_confirm.get_untracked() == key {
+                                                store().acct_confirm.set(String::new());
+                                                store().delete_private_skill()
+                                            } else {
+                                                store().acct_confirm.set(key)
+                                            }
+                                        },
+                                    ))
+                                },
+                            )),
+                    )
+                    // the saved description under the header.
+                    .child(when(
+                        || saved_skill().map(|s| !s.description.is_empty()).unwrap_or(false),
+                        || {
+                            text(|| saved_skill().map(|s| s.description).unwrap_or_default())
+                                .text_size(px(14.0))
+                                .line_height(px(20.0))
+                                .text_color(ink2())
+                                .pt(px(12.0))
+                        },
+                    ))
+                    .child(
+                        view()
+                            .pt(px(24.0))
+                            .gap(px(16.0))
+                            .child(skill_field(
+                                "Name",
+                                input()
+                                    .value(move || store().ps_name.get())
+                                    .placeholder("skill-name")
+                                    .placeholder_color(|| color(tc(0.3)))
+                                    .text_size(px(14.0))
+                                    .text_color(theme::TEXT)
+                                    .h(px(46.0))
+                                    .on_change(|t: &str| store().ps_name.set(t.to_owned())),
+                                46.0,
+                            ))
+                            .child(skill_field(
+                                "Description",
+                                input()
+                                    .value(move || store().ps_desc.get())
+                                    .placeholder("When to use this skill")
+                                    .placeholder_color(|| color(tc(0.3)))
+                                    .text_size(px(14.0))
+                                    .text_color(theme::TEXT)
+                                    .h(px(46.0))
+                                    .on_change(|t: &str| store().ps_desc.set(t.to_owned())),
+                                46.0,
+                            ))
+                            .child(skill_field(
+                                "Instructions",
+                                input()
+                                    .value(move || store().ps_body.get())
+                                    .placeholder("What the agent should do, in markdown")
+                                    .placeholder_color(|| color(tc(0.3)))
+                                    .multiline(true)
+                                    .text_size(px(14.0))
+                                    .line_height(px(20.0))
+                                    .text_color(theme::TEXT)
+                                    .h(px(296.0))
+                                    .mt(px(12.0))
+                                    .on_change(|t: &str| store().ps_body.set(t.to_owned())),
+                                320.0,
+                            )),
+                    ),
+            ),
+        )
+        // footer: a hairline bar with Save right-aligned.
+        .child(
+            view()
+                .flex_row()
+                .justify_end()
+                .border_t(px(0.5))
+                .border_t_color(tc(0.12))
+                .pt(px(12.0))
+                .pb(px(12.0))
+                .pl(px(16.0))
+                .pr(px(12.0))
+                .child(
+                    view()
+                        .h(px(32.0))
+                        .rounded(px(999.0))
+                        .px(px(12.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(move || if skill_dirty() { primary_bg() } else { tc(0.15) })
+                        .on_press(|| {
+                            if skill_dirty() {
+                                store().save_private_skill()
+                            }
+                        })
+                        .child(
+                            text("Save")
+                                .text_size(px(14.0))
+                                .line_height(px(20.0))
+                                .text_color(move || if skill_dirty() { primary_ink() } else { tc(0.3) }),
                         ),
                 ),
-        ),
-    )
+        )
 }

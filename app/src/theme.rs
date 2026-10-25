@@ -78,6 +78,11 @@ pub const ACCENT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 1.0), hsla(0.60, 0
 pub const ACCENT_TINT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 0.15), hsla(0.60, 0.99, 0.63, 0.15));
 pub const PURPLE: AdaptiveColor = tone(hsla(0.75, 0.85, 0.55, 1.0), hsla(0.75, 0.85, 0.68, 1.0));
 
+/// The generation placeholder's dot grid (`dotgrid.rs`): a resting dot is
+/// a faint speck of the ink; a filled one is Rox's blue (#3b82f6).
+pub const DOT_IDLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.16), hsla(0.0, 0.0, 0.96, 0.16));
+pub const DOT_FILL: AdaptiveColor = tone(hsla(0.603, 0.91, 0.60, 1.0), hsla(0.603, 0.91, 0.60, 1.0));
+
 // The page color the avatar/status discs knock out to.
 pub const PAGE: AdaptiveColor = MAIN;
 

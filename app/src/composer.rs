@@ -141,34 +141,44 @@ pub(crate) fn composer() -> impl IntoElement {
                 .max_w(px(992.0))
                 .px(px(20.0))
                 .pb(px(4.0))
-                .child(dynamic(move || {
-                    let st = store();
-                    if st.agent().is_none() {
-                        return view().into_element();
-                    }
-                    let bot = st.active_bot();
-                    let seed = st
-                        .agent()
-                        .and_then(|a| a.bot)
-                        .or_else(|| bot.as_ref().map(|b| b.id.clone()))
-                        .unwrap_or_else(|| "status".to_owned());
-                    // A plain chat has no bot: Grok's own mark, white on
-                    // dark and black on light.
-                    let (shape, color) = bot.map(|b| (b.shape, b.color)).unwrap_or_else(|| {
-                        ("blob".into(), "#FFFFFF".into())
+                .child({
+                    // Rebuilt only when a run starts/ends or its bot changes:
+                    // a rebuild per status tick recreated the mark (its
+                    // animation restarting) and the label's canvas (blank
+                    // until measured again). State and label are read live
+                    // inside.
+                    let key = computed(|| {
+                        let st = store();
+                        let run = st.agent()?;
+                        let bot = st.active_bot();
+                        let seed = run
+                            .bot
+                            .or_else(|| bot.as_ref().map(|b| b.id.clone()))
+                            .unwrap_or_else(|| "status".to_owned());
+                        // A plain chat has no bot: Grok's own mark, white on
+                        // dark and black on light.
+                        let (shape, color) = bot.map(|b| (b.shape, b.color)).unwrap_or_else(|| {
+                            ("blob".into(), "#FFFFFF".into())
+                        });
+                        Some((seed, shape, color))
                     });
-                    statusfx::status_fx(
-                        shape,
-                        color,
-                        std::rc::Rc::new(|| {
-                            store().agent().map(|a| a.state).unwrap_or_default()
-                        }),
-                        20.0,
-                        Some(seed),
-                        move || store().agent().map(|a| a.label).unwrap_or_default(),
-                    )
-                    .into_element()
-                })),
+                    dynamic(move || {
+                        let Some((seed, shape, color)) = key.get() else {
+                            return view().into_element();
+                        };
+                        statusfx::status_fx(
+                            shape,
+                            color,
+                            std::rc::Rc::new(|| {
+                                store().agent().map(|a| a.state).unwrap_or_default()
+                            }),
+                            20.0,
+                            Some(seed),
+                            move || store().agent().map(|a| a.label).unwrap_or_default(),
+                        )
+                        .into_element()
+                    })
+                }),
         )
         // the dock shares the transcript's column (App.tsx:2188).
         .child(
@@ -624,7 +634,9 @@ fn at_row(it: AtItem) -> impl IntoElement {
         .px(px(10.0))
         .py(px(6.0))
         .on_press(move || at_pick(&it2))
-        .child(
+        .child(if it.kind == "app" {
+            crate::appdetails::app_icon(&it.name, 20.0).into_element()
+        } else {
             view()
                 .size(px(20.0))
                 .rounded(px(5.0))
@@ -644,8 +656,8 @@ fn at_row(it: AtItem) -> impl IntoElement {
                         } else {
                             tc(0.54)
                         }),
-                ),
-        )
+                ).into_element()
+        })
         .child(
             text(if it.title.is_empty() {
                 it.name.clone()

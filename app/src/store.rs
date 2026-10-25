@@ -75,15 +75,9 @@ pub struct McpServer {
     pub err: String,
 }
 
-/// `mcpForm` — the connect tab's "Connect app" draft.
-#[derive(Clone, PartialEq, Default)]
-pub struct McpForm {
-    pub name: String,
-    pub command: String,
-    pub args: String,
-    pub env: String,
-    pub scope: String,
-}
+
+/// The market's pseudo-category for "Recommended for you" → View all.
+pub const RECOMMENDED: &str = "Recommended for you";
 
 /// A row of `GET /plugins/catalog` — `{name,description,category,homepage,
 /// domains,keywords,installed,meta}` (App.tsx:1362).
@@ -99,6 +93,32 @@ pub struct PluginRow {
     /// `meta.mcp` — the connector ids the plugin ships (the connected-page
     /// dedupe key; not counted twice against standalone servers).
     pub meta_mcp: Vec<String>,
+    /// Grok Bot catalog fields: the shown name, the logo URL (served by
+    /// the app server; empty = letter tile), Grok's category labels, the
+    /// publisher, whether its setup has fields (Add opens Setup first).
+    pub display_name: String,
+    pub icon: String,
+    pub cats: Vec<String>,
+    pub publisher: String,
+    pub setup: bool,
+}
+
+/// One setup field of a plugin (`/plugins/detail`'s `fields`) — Grok
+/// Bot's plugin variables: label, placeholder, required/secret, hint,
+/// select options; `set` = a value is stored (secrets never come back).
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginField {
+    pub key: String,
+    pub label: String,
+    pub placeholder: String,
+    pub required: bool,
+    pub secret: bool,
+    pub hint: String,
+    pub options: Vec<(String, String)>,
+    pub set: bool,
+    pub value: String,
+    /// "google" — one credential shared by every Google plugin.
+    pub shared: String,
 }
 
 /// One `pluginNav` frame — `{page,name?,id?}`; empty string = absent
@@ -126,6 +146,30 @@ pub struct PluginMcp {
     pub status: String,
     pub tools: i64,
     pub err: String,
+    /// `accounts` — every `mcp_servers` row under the connector's name
+    /// (first = the default account).
+    pub accounts: Vec<PluginAccount>,
+    /// Setup values still missing before it can sign in (labels).
+    pub needs: Vec<String>,
+    /// The fixed OAuth redirect to register with the provider (connectors
+    /// on the user's own OAuth app), else empty.
+    pub callback_url: String,
+    /// Why it can't connect at all (config not published, vendor-hosted).
+    pub unavailable: String,
+}
+
+/// One account of a plugin connector — `{id,label,status,tools,err,authed}`.
+#[derive(Clone, PartialEq, Default)]
+pub struct PluginAccount {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub tools: i64,
+    pub err: String,
+    /// Stored OAuth tokens exist (Disconnect signs out).
+    pub authed: bool,
+    /// The server's status note: what's missing, or how it signs in.
+    pub note: String,
 }
 
 /// A plugin's skill/command row (`{name,description}`).
@@ -149,6 +193,12 @@ pub struct PluginDetail {
     pub mcp: Vec<PluginMcp>,
     pub skills: Vec<PluginSkill>,
     pub commands: Vec<PluginSkill>,
+    pub display_name: String,
+    pub icon: String,
+    pub availability: String,
+    /// Source repository (View Source), else the homepage.
+    pub source: String,
+    pub fields: Vec<PluginField>,
 }
 
 /// A row of `GET /skills` — the user's own skill (App.tsx:1336).
@@ -414,6 +464,41 @@ pub struct Turn {
     pub art: Option<Art>,
     pub building: bool,
     pub status: String,
+    /// A revise of this card is building (Try Again, `revise_app`): its
+    /// body shows the generation placeholder until the new version lands.
+    pub revising: bool,
+    /// Drive files the reply made or changed — chips under the message.
+    pub links: Vec<DriveLink>,
+}
+
+/// One of a turn's `links`: a connected app's file the AI made or changed
+/// (`provider` "gdrive"), opened by its `link`.
+#[derive(Clone, PartialEq, Default)]
+pub struct DriveLink {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub link: String,
+    pub action: String,
+    /// Its Library kind ("document", …) and type's name ("Google Doc").
+    pub kind: String,
+    pub file_type: String,
+}
+
+impl DriveLink {
+    fn of(v: &serde_json::Value) -> Self {
+        Self {
+            provider: s(v, "provider"),
+            id: s(v, "id"),
+            name: s(v, "name"),
+            mime: s(v, "mime"),
+            link: s(v, "link"),
+            action: s(v, "action"),
+            kind: s(v, "kind"),
+            file_type: s(v, "type"),
+        }
+    }
 }
 
 /// A model of `GET /models` for the picker — `modelpicker.tsx`'s
@@ -426,21 +511,302 @@ pub struct ModelDef {
     pub fast: bool,
     pub efforts: Vec<(String, String)>,
     pub default_effort: String,
+    /// Reaches an image model (opencodex: image output, or the ChatGPT
+    /// images relay every OpenAI-family model gets).
+    pub image: bool,
+    /// The route's display name ("OpenAI", "Anthropic", ...) and whether
+    /// it is a subscription login (listed ungrouped) or an API connection
+    /// (grouped under `group`).
+    pub group: String,
+    pub subscription: bool,
 }
 
-/// An app pinned to a thread (`GET /thread/apps` — `routes/chat.mjs:410`).
+/// One Library artifact of a thread (`GET /thread/apps` — the server's
+/// `artifacts.mjs` record). `app` is its id: `R<n>` for a mini app or an
+/// image card, `file:<path>` for a file a reply made.
 #[derive(Clone, PartialEq, Default)]
 pub struct RoxApp {
     pub app: String,
+    /// "app" (a mini app), "image" (an image card: `file` is its png — or
+    /// an image file, with `attach`), "document", "presentation",
+    /// "spreadsheet", "pdf", "media" or "file" (anything else); every file
+    /// kind carries its viewer record in `attach`.
+    pub kind: String,
     pub title: String,
     pub file: String,
+    /// The display file name (an edit never renames the file on disk).
+    pub filename: String,
+    pub description: String,
+    /// A user-set icon's URL; empty = the kind's default tile.
+    pub icon: String,
+    pub meta: ArtMeta,
+    /// An image's pixel size, a mini app's window size.
+    pub w: f64,
+    pub h: f64,
+    pub attach: Option<Attach>,
+    /// The message that made it (its index in the chat): Show in Chat.
+    pub i: i64,
+    /// The chat's and the turn's permanent ids — Copy Link's pair.
+    pub thread_uid: String,
+    pub turn_id: String,
     /// `mtime` in epoch ms — the Library groups on it (Today / week / Older).
     pub mtime: f64,
     /// The current version pointer; 0 hides the `v<n>` chip.
     pub v: i64,
     /// `published` — the app is in Mini Apps (the menu's Promote/Remove).
     pub published: bool,
+    /// Archived: out of the Library's lists, under its Archived chip (the
+    /// chat card and its groups keep it).
+    pub archived: bool,
     pub versions: Vec<AppVersion>,
+    /// Where it lives; only "mac" has a local file.
+    pub storage: ArtStorage,
+    /// Who keeps its versions: "rox" (the `v<n>` tree), "provider" (the
+    /// connected app's own history) or "none".
+    pub versioning: String,
+}
+
+/// A Library record's `storage`: `place` is the server's `where` — "mac"
+/// (a file Rox wrote here, `uri` file://), "connector" (a connected app's
+/// file: `provider` "gdrive", opened by `link`), or the not-yet-made
+/// "agent" / "cloud". Open, download and thumbnails branch on it.
+#[derive(Clone, PartialEq, Default)]
+pub struct ArtStorage {
+    pub place: String,
+    pub uri: String,
+    pub provider: String,
+    pub link: String,
+}
+
+impl ArtStorage {
+    fn of(v: Option<&serde_json::Value>) -> Self {
+        let Some(v) = v.filter(|v| v.is_object()) else {
+            return Self { place: "mac".to_owned(), ..Self::default() };
+        };
+        Self { place: s(v, "where"), uri: s(v, "uri"), provider: s(v, "provider"), link: s(v, "link") }
+    }
+
+    /// Kept by a connected app (Google Drive) rather than on this Mac.
+    pub fn connector(&self) -> bool {
+        self.place == "connector"
+    }
+
+    /// "Google Drive" for a connector's provider, else the place's name.
+    pub fn place_name(&self) -> &'static str {
+        match (self.place.as_str(), self.provider.as_str()) {
+            ("connector", "gdrive") => "Google Drive",
+            ("connector", _) => "A connected app",
+            ("agent", _) => "The agent's computer",
+            ("cloud", _) => "Rox Cloud",
+            _ => "This Mac",
+        }
+    }
+}
+
+impl RoxApp {
+    /// One `artifacts.mjs` record (`/thread/apps`' rows, a group's
+    /// artifact members).
+    fn from_json(a: &serde_json::Value) -> Self {
+        let meta = ArtMeta::of(a.get("meta"));
+        let origin = a.get("origin").cloned().unwrap_or_default();
+        RoxApp {
+            app: s(a, "name"),
+            kind: s(a, "kind"),
+            title: s(a, "title"),
+            file: s(a, "file"),
+            filename: s(a, "filename"),
+            description: s(a, "description"),
+            icon: s(a, "icon"),
+            // an app's window size rides `meta`
+            w: Some(f64of(a, "w")).filter(|w| *w > 0.0).unwrap_or(meta.w),
+            h: Some(f64of(a, "h")).filter(|h| *h > 0.0).unwrap_or(meta.h),
+            meta,
+            attach: a.get("attach").filter(|x| x.is_object()).map(Attach::of),
+            i: a.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
+            thread_uid: s(&origin, "uid"),
+            turn_id: s(&origin, "turn"),
+            mtime: f64of(a, "mtime"),
+            v: a.get("v").and_then(|x| x.as_i64()).unwrap_or(0),
+            published: b(a, "published"),
+            archived: b(a, "archived"),
+            versions: list(a, "versions").iter().map(AppVersion::from_json).collect(),
+            storage: ArtStorage::of(a.get("storage")),
+            versioning: s(a, "versioning"),
+        }
+    }
+}
+
+/// A Library record's `meta`: what the server can tell cheaply — the
+/// file's size and extension, a PDF's / Word file's pages, a deck's slides,
+/// a workbook's sheet names, media length, what drew an image.
+#[derive(Clone, PartialEq, Default)]
+pub struct ArtMeta {
+    pub size: f64,
+    pub ext: String,
+    pub pages: i64,
+    pub slides: i64,
+    pub sheets: Vec<String>,
+    pub duration: f64,
+    pub w: f64,
+    pub h: f64,
+    pub made_with: String,
+    /// A connector's file: the app ("Google Drive"), the file's type
+    /// ("Google Doc"), its mime and what the AI last did to it ("created",
+    /// "edited", "renamed").
+    pub provider: String,
+    pub file_type: String,
+    pub mime: String,
+    pub action: String,
+}
+
+impl ArtMeta {
+    fn of(v: Option<&serde_json::Value>) -> Self {
+        let Some(v) = v.filter(|v| v.is_object()) else { return Self::default() };
+        Self {
+            size: f64of(v, "size"),
+            ext: s(v, "ext"),
+            pages: i64of(v, "pages"),
+            slides: i64of(v, "slides"),
+            sheets: list(v, "sheets").iter().filter_map(|x| x.as_str().map(str::to_owned)).collect(),
+            duration: f64of(v, "duration"),
+            w: f64of(v, "w"),
+            h: f64of(v, "h"),
+            made_with: s(v, "made_with"),
+            provider: s(v, "provider"),
+            file_type: s(v, "type"),
+            mime: s(v, "mime"),
+            action: s(v, "action"),
+        }
+    }
+}
+
+/// Edit Details' source of truth: `/app/info` for a mini app,
+/// `/artifact/info` for an image or a file.
+fn details_url(id: &str, kind: &str) -> String {
+    if kind == "app" {
+        format!("/app/info?name={id}")
+    } else {
+        format!("/artifact/info?id={}", client::urlenc(id))
+    }
+}
+
+/// The Library's kind chips after All, in order.
+pub const LIB_KINDS: [(&str, &str); 8] = [
+    ("app", "Apps"),
+    ("image", "Images"),
+    ("document", "Docs"),
+    ("presentation", "Slides"),
+    ("spreadsheet", "Sheets"),
+    ("pdf", "PDFs"),
+    ("media", "Media"),
+    ("file", "Other"),
+];
+
+/// A Library record's chip; an unknown kind is Other.
+pub fn lib_kind_of(a: &RoxApp) -> &str {
+    if LIB_KINDS.iter().any(|(k, _)| *k == a.kind) { &a.kind } else { "file" }
+}
+
+/// One `GET /apps/meta` row: what every mini-app tile and title reads
+/// (the generated icon, the edited title / description / window size).
+#[derive(Clone, PartialEq, Default)]
+pub struct MiniMeta {
+    pub name: String,
+    pub title: String,
+    pub file: String,
+    pub description: String,
+    /// The icon's URL on the server; empty = the default tile.
+    pub icon: String,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// `GET /app/info` — the App Details modal's read-only facts; an image's
+/// or file's `GET /artifact/info` reads into the same shape (`kind` set,
+/// `name` its Library id).
+#[derive(Clone, PartialEq, Default)]
+pub struct AppInfo {
+    pub name: String,
+    /// The Library kind; "app" for `/app/info`.
+    pub kind: String,
+    pub title: String,
+    pub file: String,
+    /// The display file name and its fixed extension.
+    pub filename: String,
+    pub ext: String,
+    pub meta: ArtMeta,
+    /// A thumbnail stands in when the icon is removed (images, and files
+    /// with a picture).
+    pub thumb: bool,
+    /// The message that made it (-1 when unknown).
+    pub i: i64,
+    pub icon: String,
+    pub v: i64,
+    pub versions: i64,
+    pub created_at: f64,
+    pub updated_at: f64,
+    pub prompt: String,
+    pub path: String,
+    pub bytes: f64,
+    pub published: bool,
+    pub thread_id: String,
+    pub thread_title: String,
+    pub bot_name: String,
+    /// An icon is being drawn (`/app/icon/gen` answers before it lands).
+    pub generating: bool,
+    pub icon_error: String,
+    pub history: Vec<AppVersion>,
+    pub storage: ArtStorage,
+    pub versioning: String,
+}
+
+impl AppInfo {
+    fn from_json(v: &serde_json::Value) -> Self {
+        let int = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0) as i64;
+        let kind = Some(s(v, "kind")).filter(|k| !k.is_empty()).unwrap_or_else(|| "app".to_owned());
+        let filename = Some(s(v, "filename")).filter(|f| !f.is_empty()).unwrap_or_else(|| s(v, "file"));
+        let meta = ArtMeta::of(v.get("meta"));
+        let ext = if kind == "app" {
+            "tsx".to_owned()
+        } else if !meta.ext.is_empty() {
+            meta.ext.clone()
+        } else {
+            crate::files::ext_of(&filename, "")
+        };
+        let attach = v.get("attach").filter(|x| x.is_object()).map(Attach::of);
+        let thumb = match &attach {
+            Some(a) => a.kind == "image" || !a.thumb.is_empty() || !a.poster.is_empty(),
+            None => kind == "image",
+        };
+        Self {
+            name: s(v, "name"),
+            title: s(v, "title"),
+            file: s(v, "file"),
+            filename,
+            ext,
+            meta,
+            thumb,
+            i: v.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
+            kind,
+            icon: s(v, "icon"),
+            v: int("v"),
+            versions: int("versions"),
+            created_at: f64of(v, "created_at"),
+            updated_at: f64of(v, "updated_at"),
+            prompt: s(v, "prompt"),
+            path: s(v, "path"),
+            bytes: f64of(v, "bytes"),
+            published: self::b(v, "published"),
+            thread_id: s(v, "thread_id"),
+            thread_title: s(v, "thread_title"),
+            bot_name: s(v, "bot_name"),
+            generating: self::b(v, "generating"),
+            icon_error: s(v, "icon_error"),
+            history: list(v, "history").iter().map(AppVersion::from_json).collect(),
+            storage: ArtStorage::of(v.get("storage")),
+            versioning: s(v, "versioning"),
+        }
+    }
 }
 
 /// A key/value pair of `GET /state/:app` for the detail pane.
@@ -448,7 +814,7 @@ pub struct RoxApp {
 pub struct Kv(pub String, pub String);
 
 /// `DetailMeta` — the detail pane's app card (`/catalog` row or a bare
-/// `{name,title}` when unpublished): kinds/tags/published/pinned.
+/// `{name,title}` when unpublished): kinds/tags/published.
 #[derive(Clone, PartialEq, Default)]
 pub struct AppMeta {
     pub name: String,
@@ -456,7 +822,6 @@ pub struct AppMeta {
     pub kinds: Vec<String>,
     pub tags: Vec<String>,
     pub published: bool,
-    pub pinned: bool,
 }
 
 /// `AppVersion` — one node of a library row's version tree
@@ -467,6 +832,27 @@ pub struct AppVersion {
     pub label: String,
     pub parent: Option<i64>,
     pub created_at: f64,
+}
+
+impl AppVersion {
+    pub(crate) fn from_json(vr: &serde_json::Value) -> Self {
+        Self {
+            v: vr.get("v").and_then(|x| x.as_i64()).unwrap_or(0),
+            label: s(vr, "label"),
+            parent: vr.get("parent").and_then(|x| x.as_i64()),
+            created_at: f64of(vr, "created_at"),
+        }
+    }
+}
+
+/// The version picker, open under a `v<n>` chip at (`x`, `y`).
+#[derive(Clone, PartialEq)]
+pub struct VersPop {
+    pub app: String,
+    pub x: f32,
+    pub y: f32,
+    pub cur: i64,
+    pub versions: Vec<AppVersion>,
 }
 
 /// A context-menu item (the custom card, not a native menu) — the TSX's
@@ -552,6 +938,9 @@ pub struct RailPop {
     pub bot: RoxBot,
     pub cy: f32,
     pub x: f32,
+    /// A mini app's card instead (its bare name; `bot` carries the title
+    /// and description): the app's icon replaces the bot's mark.
+    pub app: String,
 }
 
 /// `agentRuns[thread]` — the run live in a thread (App.tsx:113):
@@ -593,38 +982,79 @@ pub struct PillAnchor {
     pub current: String,
 }
 
-/// An app pinned to the sidebar's Mini Apps group (a card's ⋯ → Pin to
-/// Sidebar): its module key, title, the size its card laid it out at
-/// (the window opens at it) and the card it came from, to jump back to.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub struct PinnedApp {
-    pub app: String,
-    pub title: String,
-    pub w: f32,
-    pub h: f32,
-    pub thread: String,
-    pub i: i64,
+/// A sidebar group (`GET /groups`): the user's named, colored, foldable
+/// list of bots, chats and artifacts, in their order. An item may sit in
+/// several groups.
+#[derive(Clone, PartialEq, Default)]
+pub struct RoxGroup {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub collapsed: bool,
+    pub items: Vec<GroupItem>,
 }
 
-impl PinnedApp {
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "app": self.app, "title": self.title, "w": self.w, "h": self.h,
-            "thread": self.thread, "i": self.i,
-        })
-    }
+/// One member of a group: `kind` "bot" | "chat" | "artifact", `id` the
+/// bot's id, the chat's thread id or the artifact's (`R<n>` |
+/// `file:<path>`). An artifact carries its origin chat and its Library
+/// record — it opens from whatever chat is open.
+#[derive(Clone, PartialEq, Default)]
+pub struct GroupItem {
+    pub kind: String,
+    pub id: String,
+    pub thread: String,
+    pub artifact: Option<RoxApp>,
+}
 
-    fn from_json(v: &serde_json::Value) -> Option<Self> {
-        let app = s(v, "app");
-        (!app.is_empty()).then(|| Self {
-            app,
-            title: s(v, "title"),
-            w: f64of(v, "w") as f32,
-            h: f64of(v, "h") as f32,
-            thread: s(v, "thread"),
-            i: v.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
-        })
+impl RoxGroup {
+    fn from_json(v: &serde_json::Value) -> Self {
+        Self {
+            id: s(v, "id"),
+            name: s(v, "name"),
+            color: s(v, "color"),
+            collapsed: b(v, "collapsed"),
+            items: list(v, "items")
+                .iter()
+                .map(|it| GroupItem {
+                    kind: s(it, "kind"),
+                    id: s(it, "ref"),
+                    thread: s(it, "thread"),
+                    artifact: it.get("artifact").filter(|a| a.is_object()).map(RoxApp::from_json),
+                })
+                .collect(),
+        }
     }
+}
+
+/// A group member as the sidebar draws it, resolved against the live
+/// bot and chat lists (a bot's or chat's own row look).
+#[derive(Clone, PartialEq)]
+pub enum GroupRow {
+    Bot(RoxBot),
+    Chat(ThreadMeta),
+    Artifact(RoxApp),
+}
+
+impl GroupRow {
+    /// The row's `each` key — unique within a group.
+    pub fn key(&self) -> String {
+        match self {
+            GroupRow::Bot(b) => format!("bot:{}", b.id),
+            GroupRow::Chat(t) => format!("chat:{}", t.id),
+            GroupRow::Artifact(a) => format!("artifact:{}", a.app),
+        }
+    }
+}
+
+/// What the name prompt does on OK: make a group (with the item the menu
+/// was opened on — kind, id, origin chat — as its first member) or rename
+/// group `id`.
+#[derive(Clone, PartialEq)]
+pub enum GroupPrompt {
+    New(Option<(String, String, String)>),
+    Rename(String),
+    /// One of the fixed sections ("__un" Unassigned, "__chats" Chats).
+    RenameSection(String),
 }
 
 /// One row of the command palette (`PaletteItem`, palette.tsx:10).
@@ -640,7 +1070,7 @@ pub struct PaletteItem {
     pub bot: Option<RoxBot>,
     /// A chat's row: its letter circle on this name's hue (the sidebar's).
     pub letter_of: String,
-    /// A pinned mini app's row: its `</>` tile on this name's hue.
+    /// A grouped mini app's row: its `</>` tile on this name's hue.
     pub app_of: String,
 }
 
@@ -650,7 +1080,7 @@ pub enum PaletteAct {
     BotModal,
     NewChat,
     Theme(&'static str),
-    /// A sidebar-pinned mini app: open it in its window.
+    /// A mini app in a sidebar group: open it in its window.
     App(String),
     /// Open a chat — an agent's session or a plain chat.
     Thread(String),
@@ -671,12 +1101,15 @@ pub struct BotIntegration {
     pub kind: String,
 }
 
-/// The composer reply target.
-#[derive(Clone, PartialEq)]
+/// The composer reply target. `files` are what the replied-to message
+/// carries — a card's `module://R<n>[@v<k>]`, a file's path — sent along as
+/// attachments so the model sees them (App.tsx:580).
+#[derive(Clone, PartialEq, Default)]
 pub struct ReplyTo {
     pub i: i64,
     pub name: String,
     pub text: String,
+    pub files: Vec<String>,
 }
 
 /// Where a chat was scrolled when it was left (`ScrollMark`s in
@@ -707,7 +1140,7 @@ impl Draft {
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "text": self.text,
-            "reply": self.reply.as_ref().map(|r| serde_json::json!({"i": r.i, "name": r.name, "text": r.text})),
+            "reply": self.reply.as_ref().map(|r| serde_json::json!({"i": r.i, "name": r.name, "text": r.text, "files": r.files})),
             "attachments": self.attachments.iter().map(Attach::to_json).collect::<Vec<_>>(),
         })
     }
@@ -719,6 +1152,7 @@ impl Draft {
                 i: r.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
                 name: s(r, "name"),
                 text: s(r, "text"),
+                files: list(r, "files").iter().filter_map(|f| f.as_str().map(str::to_owned)).collect(),
             }),
             attachments: list(v, "attachments").iter().map(Attach::of).collect(),
         }
@@ -748,6 +1182,15 @@ pub struct AtItem {
     pub v: i64,
     pub uri: String,
     pub scope: String,
+}
+
+/// "Nm", "Nh", "Nh Nm" — how long a run status has shown.
+fn elapsed_label(mins: u64) -> String {
+    match (mins / 60, mins % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    }
 }
 
 /// `PHASE_STATE` (App.tsx:35) — a generation phase → a Grok agent state.
@@ -936,8 +1379,12 @@ impl Turn {
             files: files.iter().map(Attach::of).collect(),
             // A turn names a module in `name` ("R15") and describes the
             // artifact in `art`; `v` pins a version (`R15@v3`). The shell's
-            // rule: `tt.name` set → app card, else message.
-            art: (!s(v, "name").is_empty()).then(|| {
+            // rule: `tt.name` set → app card, else message — and a building
+            // artifact (no name until it lands) is a card already, so its
+            // placeholder shows instead of an empty bubble.
+            art: (!s(v, "name").is_empty()
+                || v.get("building").and_then(|x| x.as_bool()).unwrap_or(false))
+            .then(|| {
                 let a = v.get("art").cloned().unwrap_or(serde_json::Value::Null);
                 let a = &a;
                 let name = s(v, "name");
@@ -959,6 +1406,8 @@ impl Turn {
             }),
             building: v.get("building").and_then(|x| x.as_bool()).unwrap_or(false),
             status: s(v, "status"),
+            revising: v.get("revising").and_then(|x| x.as_bool()).unwrap_or(false),
+            links: list(v, "links").iter().map(DriveLink::of).filter(|l| !l.id.is_empty()).collect(),
         }
     }
 }
@@ -974,10 +1423,11 @@ pub struct Store {
     /// Sidebar data.
     pub threads: Signal<Vec<ThreadMeta>>,
     pub bots: Signal<Vec<RoxBot>>,
-    /// The bot catalog's named sections (`/threads`' top-level `sections`).
-    pub sections: Signal<Vec<String>>,
+    /// The sidebar's groups (`GET /groups`), in the user's order.
+    pub groups: Signal<Vec<RoxGroup>>,
     /// `collapsedSecs` — `__hidden`, `__hiddenChats`, `__archived` start
-    /// collapsed; named sections start open (absent ⇒ false).
+    /// collapsed; the rest start open (absent ⇒ false). A group's key is
+    /// its id, its value the server's `collapsed`.
     pub collapsed: Signal<BTreeMap<String, bool>>,
 
     /// The open thread and its content.
@@ -1050,6 +1500,9 @@ pub struct Store {
     pub detail_meta: Signal<Option<AppMeta>>,
     pub detail_app: Signal<String>,
     pub thread_apps: Signal<Vec<RoxApp>>,
+    /// The Library's kind chip ("all", "app", "image", "document", …),
+    /// kept for the session.
+    pub lib_filter: Signal<String>,
     pub tab: Signal<String>,
 
     /// Overlays.
@@ -1071,8 +1524,6 @@ pub struct Store {
     pub card_status: Signal<std::collections::BTreeMap<String, (String, bool)>>,
     /// The Library row a card's ⋯ → Details highlights (an app name).
     pub library_focus: Signal<String>,
-    /// The sidebar's Mini Apps group, in pin order (`/state/rox-pinned-apps`).
-    pub pinned_apps: Signal<Vec<PinnedApp>>,
     /// ⌘= / ⌘- / ⌘0 — the window's zoom (1 = 100%), as Grok Bot's page
     /// zoom: everything scales (`zoom.rs`); kept in `/state/rox-zoom`.
     pub ui_zoom: Signal<f32>,
@@ -1105,10 +1556,17 @@ pub struct Store {
     pub light_diag: Signal<(f64, f64)>,
     /// (the model popover's `open` lives in `models.rs` via `live::keep` —
     /// `models_open` is gone with the old card.)
-    /// `sectionPrompt` — the bot id awaiting a new section name, or None.
-    pub section_prompt: Signal<Option<String>>,
-    /// `sectionName` — the prompt's draft.
-    pub section_name: Signal<String>,
+    /// The group name prompt (New Group…, Rename), or None.
+    pub group_prompt: Signal<Option<GroupPrompt>>,
+    /// The prompt's draft.
+    pub group_name: Signal<String>,
+    /// Color › Custom…: the group whose color is being picked, and the
+    /// picker's `#rrggbb` draft.
+    pub color_edit: Signal<Option<String>>,
+    pub color_draft: Signal<String>,
+    /// The fixed sections' names (`/prefs` unassigned_name, chats_name).
+    pub unassigned_name: Signal<String>,
+    pub chats_name: Signal<String>,
     /// `railPop` — the bot hover card's target, or None.
     pub rail_pop: Signal<Option<RailPop>>,
     /// `popSeq` — the measure-response generation: a stale measure (the
@@ -1182,16 +1640,25 @@ pub struct Store {
     pub draft_crop: Signal<Crop>,
     /// `mcpServers` — the connect tab's server rows.
     pub mcp_servers: Signal<Vec<McpServer>>,
-    /// `mcpFormOpen`/`mcpForm`/`mcpErr`/`mcpBusy` — the "Connect app" form.
-    pub mcp_form_open: Signal<bool>,
-    pub mcp_form: Signal<McpForm>,
-    pub mcp_err: Signal<String>,
-    pub mcp_busy: Signal<bool>,
     /// `versOpen` — the library row's expanded version tree (app name).
-    pub vers_open: Signal<String>,
+    pub vers_pop: Signal<Option<VersPop>>,
     /// `appRename`/`appRenameText` — the rename prompt (App.tsx:1637).
     pub app_rename: Signal<Option<AppRename>>,
     pub app_rename_text: Signal<String>,
+    /// `/apps/meta` by bare app name (`R17`).
+    pub app_meta: Signal<std::collections::HashMap<String, MiniMeta>>,
+    /// The App Details modal: open while `Some`; the `ad_*` drafts are
+    /// its fields, `ad_busy` names the running job ("gen" | "pick" |
+    /// "save"), `ad_err` its last failure.
+    pub app_details: Signal<Option<AppInfo>>,
+    pub ad_title: Signal<String>,
+    pub ad_file: Signal<String>,
+    pub ad_desc: Signal<String>,
+    pub ad_w: Signal<String>,
+    pub ad_h: Signal<String>,
+    pub ad_prompt: Signal<String>,
+    pub ad_busy: Signal<String>,
+    pub ad_err: Signal<String>,
     /// `avatarGenPrompt`/`avatarGenBusy` — the Generate tab of the avatar
     /// editor (App.tsx:211).
     pub avatar_gen_prompt: Signal<String>,
@@ -1216,6 +1683,15 @@ pub struct Store {
     pub tools_open: Signal<BTreeMap<String, bool>>,
     /// `pluginBusy` — install/uninstall in flight (plugin name).
     pub plugin_busy: Signal<String>,
+    /// Grok Bot's category labels in its order (`/plugins/catalog`), and
+    /// the catalog's revision (an unchanged poll skips the rebuild).
+    pub plugin_cat_order: Signal<Vec<String>>,
+    /// How many rows a category / search list shows (Show more adds 60).
+    pub plugin_limit: Signal<usize>,
+    pub plugins_rev: Signal<String>,
+    /// The Setup page's draft values (field key → text) and its error.
+    pub setup_vals: Signal<BTreeMap<String, String>>,
+    pub setup_err: Signal<String>,
     /// `pluginCat`/`pluginQuery` — the market's category pill + search.
     pub plugin_cat: Signal<String>,
     pub plugin_query: Signal<String>,
@@ -1239,6 +1715,18 @@ pub struct Store {
     pub ps_name: Signal<String>,
     pub ps_desc: Signal<String>,
     pub ps_body: Signal<String>,
+    /// The plugin page's account editing: `acctEdit` (row id being
+    /// renamed) + its draft, `acctAdd` (connector whose "Add Another
+    /// Account" form is open) + its draft, `acctConfirm` (row id awaiting
+    /// a second press on Remove/Disconnect), `acctErr` (last error).
+    pub acct_edit: Signal<String>,
+    pub acct_edit_val: Signal<String>,
+    pub acct_add: Signal<String>,
+    pub acct_add_val: Signal<String>,
+    pub acct_confirm: Signal<String>,
+    pub acct_err: Signal<String>,
+    /// Share / copy-link feedback on the plugin page ("Copied").
+    pub plugin_copied: Signal<bool>,
     /// `accountOpen` — the account popover (rail plate / sidebar footer).
     pub account_open: Signal<bool>,
 
@@ -1262,12 +1750,12 @@ pub struct Store {
     /// The dedupe cache: raw JSON of the last /turns payload, so identical
     /// polls don't dirty the list.
     pub turns_json: std::cell::RefCell<String>,
-    /// The `/threads` payload's three sections, kept as raw JSON the same
-    /// way — an unchanged poll must not re-render the sidebar (App.tsx's
-    /// `threadsJ`/`botsJ` compare, App.tsx:384).
+    /// The `/threads` payload's lists and `/groups`, kept as raw JSON the
+    /// same way — an unchanged poll must not re-render the sidebar
+    /// (App.tsx's `threadsJ`/`botsJ` compare, App.tsx:384).
     threads_list_json: std::cell::RefCell<String>,
     bots_json: std::cell::RefCell<String>,
-    sections_json: std::cell::RefCell<String>,
+    groups_json: std::cell::RefCell<String>,
 
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
     /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
@@ -1280,6 +1768,10 @@ pub struct Store {
     /// height, so a recycled row frames at it at once instead of the
     /// declared height and then growing.
     pub mini_heights: std::cell::RefCell<std::collections::HashMap<String, f32>>,
+    /// When each generation placeholder first showed (`dotgrid.rs`), by
+    /// key: its simulated progress counts from there, so a re-rendered
+    /// row picks up where it was.
+    pub art_started: std::cell::RefCell<std::collections::HashMap<String, std::time::Instant>>,
     /// The Pele helper (`pele/serve.mjs`): its base URL once started, and
     /// the child (it exits when its stdin, held here, closes).
     pub pele: std::cell::RefCell<Option<(String, std::process::Child)>>,
@@ -1299,7 +1791,7 @@ impl Store {
         Store {
             threads: signal(Vec::new()),
             bots: signal(Vec::new()),
-            sections: signal(Vec::new()),
+            groups: signal(Vec::new()),
             collapsed: signal(BTreeMap::from([
                 ("__hidden".to_owned(), true),
                 ("__hiddenChats".to_owned(), true),
@@ -1341,10 +1833,15 @@ impl Store {
             detail_app: signal(String::new()),
             detail_meta: signal(None),
             thread_apps: signal(Vec::new()),
+            lib_filter: signal("all".to_owned()),
             tab: signal("chat".to_owned()),
             ctx: signal(None),
-            section_prompt: signal(None),
-            section_name: signal(String::new()),
+            group_prompt: signal(None),
+            group_name: signal(String::new()),
+            color_edit: signal(None),
+            color_draft: signal(String::new()),
+            unassigned_name: signal("Unassigned".to_owned()),
+            chats_name: signal("Chats".to_owned()),
             rail_pop: signal(None),
             pop_seq: std::cell::Cell::new(0),
             chat_list: std::cell::RefCell::new(None),
@@ -1376,13 +1873,19 @@ impl Store {
             avatar_draft: signal(None),
             draft_crop: signal(Crop { s: 1.0, x: 0.0, y: 0.0 }),
             mcp_servers: signal(Vec::new()),
-            mcp_form_open: signal(false),
-            mcp_form: signal(McpForm::default()),
-            mcp_err: signal(String::new()),
-            mcp_busy: signal(false),
-            vers_open: signal(String::new()),
+            vers_pop: signal(None),
             app_rename: signal(None),
             app_rename_text: signal(String::new()),
+            app_meta: signal(std::collections::HashMap::new()),
+            app_details: signal(None),
+            ad_title: signal(String::new()),
+            ad_file: signal(String::new()),
+            ad_desc: signal(String::new()),
+            ad_w: signal(String::new()),
+            ad_h: signal(String::new()),
+            ad_prompt: signal(String::new()),
+            ad_busy: signal(String::new()),
+            ad_err: signal(String::new()),
             avatar_gen_prompt: signal(String::new()),
             plugins_open: signal(false),
             plugin_nav: signal(vec![PluginNav::market()]),
@@ -1394,6 +1897,11 @@ impl Store {
             tools_open: signal(BTreeMap::new()),
             plugin_busy: signal(String::new()),
             plugin_cat: signal("All".to_owned()),
+            plugin_cat_order: signal(Vec::new()),
+            plugin_limit: signal(60),
+            plugins_rev: signal(String::new()),
+            setup_vals: signal(BTreeMap::new()),
+            setup_err: signal(String::new()),
             plugin_query: signal(String::new()),
             drop_sel: signal(0),
             drop_hidden: signal(false),
@@ -1410,6 +1918,13 @@ impl Store {
             ps_name: signal(String::new()),
             ps_desc: signal(String::new()),
             ps_body: signal(String::new()),
+            acct_edit: signal(String::new()),
+            acct_edit_val: signal(String::new()),
+            acct_add: signal(String::new()),
+            acct_add_val: signal(String::new()),
+            acct_confirm: signal(String::new()),
+            acct_err: signal(String::new()),
+            plugin_copied: signal(false),
             account_open: signal(false),
             avatar_gen_busy: signal(false),
             palette: signal(false),
@@ -1419,7 +1934,6 @@ impl Store {
             ctx_owner: signal(None),
             card_status: signal(std::collections::BTreeMap::new()),
             library_focus: signal(String::new()),
-            pinned_apps: signal(Vec::new()),
             ui_zoom: signal(1.0),
             pill_guard: std::cell::Cell::new(false),
             viewing: signal(None),
@@ -1445,11 +1959,12 @@ impl Store {
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
             bots_json: std::cell::RefCell::new(String::new()),
-            sections_json: std::cell::RefCell::new(String::new()),
+            groups_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
+            art_started: std::cell::RefCell::new(std::collections::HashMap::new()),
             pele: std::cell::RefCell::new(None),
             diagrams: std::cell::RefCell::new(std::collections::HashMap::new()),
             owner: Owner::current(),
@@ -1458,24 +1973,20 @@ impl Store {
 
     // -- boot --------------------------------------------------------------
 
-    /// The initial loads: threads, bots, models, prefs, then the active
-    /// thread's turns and pinned apps (`set_threads` picks the server's
-    /// `active`).
+    /// The initial loads: threads, bots, models, prefs, groups, then the
+    /// active thread's turns (`set_threads` picks the server's `active`).
     pub fn boot(&'static self) {
         self.track_drafts();
+        // The installed plugins' logos sit in the sidebar footer.
+        self.fetch_plugins();
+        self.fetch_app_meta();
         spawn(async move {
             if let Some(v) = client::get("/state/rox-main-bot").await {
                 let id = v.get("state").map(|st| s(st, "id")).unwrap_or_default();
                 self.main_bot.set(id);
             }
         });
-        spawn(async move {
-            if let Some(v) = client::get("/state/rox-pinned-apps").await {
-                let apps = v.get("state").map(|st| list(st, "apps")).unwrap_or_default();
-                self.pinned_apps
-                    .set(apps.iter().filter_map(PinnedApp::from_json).collect());
-            }
-        });
+        self.fetch_groups();
         spawn(async move {
             if let Some(v) = client::get("/state/rox-reactions").await {
                 if let Some(m) = v.get("state").and_then(|s| s.as_object()) {
@@ -1538,6 +2049,11 @@ impl Store {
                 if let Some(t) = v.get("theme").and_then(|x| x.as_str()) {
                     self.theme_pref.set(t.to_owned());
                 }
+                for (k, sig) in [("unassigned_name", self.unassigned_name), ("chats_name", self.chats_name)] {
+                    if let Some(n) = v.get(k).and_then(|x| x.as_str()).filter(|n| !n.trim().is_empty()) {
+                        sig.set(n.to_owned());
+                    }
+                }
             }
         });
     }
@@ -1598,23 +2114,18 @@ impl Store {
     }
 
     fn set_threads(&'static self, v: serde_json::Value) {
-        // `threadsJ`/`botsJ`/`sections` compares (App.tsx:384): a poll
-        // that changed nothing must not re-render — and must not reseed
-        // drafts riding on `bots`/`threads`.
+        // `threadsJ`/`botsJ` compares (App.tsx:384): a poll that changed
+        // nothing must not re-render — and must not reseed drafts riding
+        // on `bots`/`threads`.
         let list_j = v.get("list").map(|x| x.to_string()).unwrap_or_default();
         let bots_j = v.get("bots").map(|x| x.to_string()).unwrap_or_default();
-        let secs_j = v.get("sections").map(|x| x.to_string()).unwrap_or_default();
         let threads_changed = list_j != *self.threads_list_json.borrow();
         let bots_changed = bots_j != *self.bots_json.borrow();
-        let secs_changed = secs_j != *self.sections_json.borrow();
         if threads_changed {
             *self.threads_list_json.borrow_mut() = list_j;
         }
         if bots_changed {
             *self.bots_json.borrow_mut() = bots_j;
-        }
-        if secs_changed {
-            *self.sections_json.borrow_mut() = secs_j;
         }
         let rows: Vec<ThreadMeta> = list(&v, "list")
             .iter()
@@ -1708,14 +2219,6 @@ impl Store {
                 .collect(),
             );
         }
-        if secs_changed {
-            self.sections.set(
-                list(&v, "sections")
-                    .iter()
-                    .filter_map(|x| x.as_str().map(str::to_owned))
-                    .collect(),
-            );
-        }
         // The server names its active thread; open that one on first load.
         let active = s(&v, "active");
         if !active.is_empty() && self.active_id.get_untracked().is_empty() {
@@ -1774,39 +2277,52 @@ impl Store {
             .collect()
     }
 
-    /// `botGroups()` — `sections()`' named groups of unpinned, unhidden
-    /// bots, plus "Unassigned" for the rest.
-    pub fn bot_groups(&'static self) -> Vec<(String, String, Vec<RoxBot>)> {
-        let bots = self.bots.get();
-        let vis: Vec<&RoxBot> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
-        let sections = self.sections.get();
-        let known: std::collections::BTreeSet<&str> =
-            sections.iter().map(String::as_str).collect();
-        let mut groups: Vec<(String, String, Vec<RoxBot>)> = self
-            .sections
+    /// Unassigned — visible, unpinned bots no group holds.
+    pub fn ungrouped_bots(&'static self) -> Vec<RoxBot> {
+        let grouped: std::collections::HashSet<String> = self.groups.with(|gs| {
+            gs.iter()
+                .flat_map(|g| g.items.iter())
+                .filter(|it| it.kind == "bot")
+                .map(|it| it.id.clone())
+                .collect()
+        });
+        self.bots
             .get()
+            .into_iter()
+            .filter(|b| !b.hidden && !b.pinned && !grouped.contains(&b.id))
+            .collect()
+    }
+
+    /// Group `gid`'s members as the sidebar draws them: bots and chats
+    /// from the live lists (hidden bots, hidden or archived chats and
+    /// ones that are gone left out), artifacts as the server resolved them.
+    pub fn group_rows(&'static self, gid: &str) -> Vec<GroupRow> {
+        let Some(g) = self.groups.with(|gs| gs.iter().find(|g| g.id == gid).cloned()) else {
+            return Vec::new();
+        };
+        let bots = self.bots.get();
+        let threads = self.threads.get();
+        g.items
             .iter()
-            .map(|n| {
-                (
-                    n.clone(),
-                    n.clone(),
-                    vis.iter()
-                        .filter(|b| b.section == *n)
-                        .map(|b| (*b).clone())
-                        .collect::<Vec<_>>(),
-                )
+            .filter_map(|it| match it.kind.as_str() {
+                "bot" => bots.iter().find(|b| b.id == it.id && !b.hidden).cloned().map(GroupRow::Bot),
+                "chat" => threads
+                    .iter()
+                    .find(|t| t.id == it.id && !t.hidden && !t.archived)
+                    .cloned()
+                    .map(GroupRow::Chat),
+                _ => it.artifact.clone().map(GroupRow::Artifact),
             })
-            .filter(|g| !g.2.is_empty())
-            .collect();
-        let un: Vec<RoxBot> = vis
-            .iter()
-            .filter(|b| b.section.is_empty() || !known.contains(b.section.as_str()))
-            .map(|b| (*b).clone())
-            .collect();
-        if !un.is_empty() {
-            groups.push(("__un".to_owned(), "Unassigned".to_owned(), un));
-        }
-        groups
+            .collect()
+    }
+
+    /// Whether group `gid` holds item `kind`/`id`.
+    pub fn in_group(&'static self, gid: &str, kind: &str, id: &str) -> bool {
+        self.groups.with_untracked(|gs| {
+            gs.iter()
+                .find(|g| g.id == gid)
+                .is_some_and(|g| g.items.iter().any(|it| it.kind == kind && it.id == id))
+        })
     }
 
     /// `chats()` — visible chats: not bot-owned, not hidden, not archived.
@@ -1850,12 +2366,16 @@ impl Store {
         bot: Option<String>,
         v: Option<(String, String)>,
     ) {
+        // Unchanged → no write: every write re-runs whatever reads the runs.
+        let next = v.map(|(state, label)| AgentRun { state, label, bot });
+        if self.agent_runs.with_untracked(|m| m.get(&thread) == next.as_ref()) {
+            return;
+        }
         self.agent_runs.update(|m| {
-            if let Some((state, label)) = v {
-                m.insert(thread, AgentRun { state, label, bot });
-            } else {
-                m.remove(&thread);
-            }
+            match next {
+                Some(run) => m.insert(thread, run),
+                None => m.remove(&thread),
+            };
         });
     }
 
@@ -1914,6 +2434,9 @@ impl Store {
                         .map(|e| (s(e, "value"), s(e, "label")))
                         .collect(),
                     default_effort: s(m, "defaultEffort"),
+                    image: self::b(m, "image"),
+                    group: s(m, "group"),
+                    subscription: m.get("subscription").and_then(|x| x.as_bool()).unwrap_or(true),
                 })
                 .collect(),
         );
@@ -1983,9 +2506,9 @@ impl Store {
     }
 
     /// The ⌘1…9 slots (`sidebarBots`, App.tsx:764) — pinned bots first,
-    /// then the named groups sorted alphabetically with each group's
-    /// bots ranked by latest interaction (`count` is the only activity
-    /// signal `/threads` carries), then Unassigned, then the plain
+    /// then the groups in the sidebar's order with each group's bots
+    /// ranked by latest interaction (`count` is the only activity signal
+    /// `/threads` carries), then the bots without a group, then the plain
     /// chats. Hidden bots never take a slot.
     pub fn shortcut_threads(&'static self) -> Vec<String> {
         let bots = self.bots.get_untracked();
@@ -2009,24 +2532,21 @@ impl Store {
             push(&b.thread_id);
         }
         let vis: Vec<&RoxBot> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
-        let sections = self.sections.get_untracked();
-        let known: std::collections::BTreeSet<&str> =
-            sections.iter().map(String::as_str).collect();
-        let mut names: Vec<&String> = sections.iter().collect();
-        names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-        for n in names {
-            let mut items: Vec<&RoxBot> =
-                vis.iter().filter(|b| b.section == *n).copied().collect();
+        let groups = self.groups.get_untracked();
+        let grouped = |id: &str| groups.iter().any(|g| g.items.iter().any(|it| it.kind == "bot" && it.id == id));
+        for g in &groups {
+            let mut items: Vec<&RoxBot> = g
+                .items
+                .iter()
+                .filter(|it| it.kind == "bot")
+                .filter_map(|it| vis.iter().find(|b| b.id == it.id).copied())
+                .collect();
             items.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
             for b in items {
                 push(&b.thread_id);
             }
         }
-        let mut un: Vec<&RoxBot> = vis
-            .iter()
-            .filter(|b| b.section.is_empty() || !known.contains(b.section.as_str()))
-            .copied()
-            .collect();
+        let mut un: Vec<&RoxBot> = vis.iter().filter(|b| !grouped(&b.id)).copied().collect();
         un.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
         for b in un {
             push(&b.thread_id);
@@ -2060,7 +2580,7 @@ impl Store {
     }
 
     /// The palette's rows, sessions first (Grok Bot's order): the agents,
-    /// then the plain chats, then the mini apps pinned to the sidebar,
+    /// then the plain chats, then the mini apps in the sidebar's groups,
     /// then the actions.
     pub fn palette_items(&'static self) -> Vec<PaletteItem> {
         let row = |title: String, subtitle: String, act: PaletteAct| PaletteItem {
@@ -2087,11 +2607,14 @@ impl Store {
                 ..row(name, format!("Chat · {} messages", t.count), PaletteAct::Thread(t.id.clone()))
             });
         }
-        for p in self.pinned_apps.get() {
-            items.push(PaletteItem {
-                app_of: app_name(&p.app).to_owned(),
-                ..row(p.title.clone(), "Mini app".into(), PaletteAct::App(p.app.clone()))
-            });
+        let mut apps = std::collections::HashSet::new();
+        for a in self.groups.get().into_iter().flat_map(|g| g.items).filter_map(|it| it.artifact) {
+            if a.kind == "app" && apps.insert(a.app.clone()) {
+                items.push(PaletteItem {
+                    app_of: a.app.clone(),
+                    ..row(a.title.clone(), "Mini app".into(), PaletteAct::App(a.app.clone()))
+                });
+            }
         }
         let pref = self.theme_pref.get();
         let action = |title: &str, subtitle: &str, icon: &str, checked: bool, act: PaletteAct| PaletteItem {
@@ -2134,11 +2657,7 @@ impl Store {
             PaletteAct::BotModal => self.bot_modal.set(true),
             PaletteAct::NewChat => self.new_thread(),
             PaletteAct::Theme(t) => self.set_theme(t),
-            PaletteAct::App(app) => {
-                if let Some(p) = self.pinned(&app) {
-                    self.popout_sized(&p.app, p.w, p.h, false);
-                }
-            }
+            PaletteAct::App(app) => self.popout(&app),
             PaletteAct::Thread(id) => self.go_to(&id, None),
         }
     }
@@ -2155,12 +2674,12 @@ impl Store {
         self.bot_modal.set(false);
         self.account_open.set(false);
         self.rail_pop.set(None);
-        self.section_prompt.set(None);
-        self.section_name.set(String::new());
+        self.group_prompt.set(None);
+        self.group_name.set(String::new());
         self.avatar_editing.set(false);
         self.avatar_hover.set(false);
         self.app_rename.set(None);
-        self.vers_open.set(String::new());
+        self.vers_pop.set(None);
         self.reply_to.set(None);
         self.attachments.set(Vec::new());
         self.draft.set(String::new());
@@ -2237,6 +2756,9 @@ impl Store {
     }
 
     pub fn refresh_thread_apps(&'static self) {
+        self.fetch_app_meta();
+        // a group's artifact rows carry the same records (titles, icons)
+        self.fetch_groups();
         let id = self.active_id.get_untracked();
         if id.is_empty() {
             return;
@@ -2247,28 +2769,7 @@ impl Store {
                 if self.active_id.get_untracked() != id {
                     return;
                 }
-                self.thread_apps.set(
-                    list(&v, "apps")
-                        .iter()
-                        .map(|a| RoxApp {
-                            app: s(a, "name"),
-                            title: s(a, "title"),
-                            file: s(a, "file"),
-                            mtime: f64of(a, "mtime"),
-                            v: a.get("v").and_then(|x| x.as_i64()).unwrap_or(0),
-                            published: self::b(a, "published"),
-                            versions: list(a, "versions")
-                                .iter()
-                                .map(|vr| AppVersion {
-                                    v: vr.get("v").and_then(|x| x.as_i64()).unwrap_or(0),
-                                    label: s(vr, "label"),
-                                    parent: vr.get("parent").and_then(|x| x.as_i64()),
-                                    created_at: f64of(vr, "created_at"),
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                );
+                self.thread_apps.set(list(&v, "apps").iter().map(RoxApp::from_json).collect());
             }
         });
     }
@@ -2298,7 +2799,6 @@ impl Store {
                             .filter_map(|t| t.as_str().map(str::to_owned))
                             .collect(),
                         published: true,
-                        pinned: self::b(&it, "pinned"),
                     },
                     None => AppMeta {
                         name: app.clone(),
@@ -2316,7 +2816,6 @@ impl Store {
                     if let Some(obj) = v.get("state").and_then(|o| o.as_object()) {
                         rows = obj
                             .iter()
-                            .filter(|(k, _)| k.as_str() != "widget")
                             .take(10)
                             .map(|(k, x)| {
                                 let v = if x.is_object() || x.is_array() {
@@ -2349,7 +2848,17 @@ impl Store {
             ("This week".to_owned(), Vec::new()),
             ("Older".to_owned(), Vec::new()),
         ];
-        for a in self.thread_apps.get().iter() {
+        let filter = self.lib_kind();
+        // the Archived chip lists the archived only; every other chip
+        // leaves them out
+        let shown = |a: &&RoxApp| {
+            if filter == "archived" {
+                a.archived
+            } else {
+                !a.archived && (filter == "all" || lib_kind_of(a) == filter)
+            }
+        };
+        for a in self.thread_apps.get().iter().filter(shown) {
             let i = if now - a.mtime < day {
                 0
             } else if now - a.mtime < 7.0 * day {
@@ -2360,6 +2869,37 @@ impl Store {
             g[i].1.push(a.clone());
         }
         g.into_iter().filter(|(_, items)| !items.is_empty()).collect()
+    }
+
+    /// The Library's chips: All, then each kind the thread has, with its
+    /// count — (kind, label, count).
+    pub fn lib_chips(&'static self) -> Vec<(&'static str, &'static str, usize)> {
+        let apps = self.thread_apps.get();
+        let live: Vec<&RoxApp> = apps.iter().filter(|a| !a.archived).collect();
+        let mut out = vec![("all", "All", live.len())];
+        for (kind, label) in LIB_KINDS {
+            let n = live.iter().filter(|a| lib_kind_of(a) == kind).count();
+            if n > 0 {
+                out.push((kind, label, n));
+            }
+        }
+        let n = apps.len() - live.len();
+        if n > 0 {
+            out.push(("archived", "Archived", n));
+        }
+        out
+    }
+
+    /// The chip in effect: the picked one while its kind is still in the
+    /// list, else All.
+    pub fn lib_kind(&'static self) -> String {
+        let f = self.lib_filter.get();
+        let held = |a: &RoxApp| if f == "archived" { a.archived } else { !a.archived && lib_kind_of(a) == f };
+        if f != "all" && self.thread_apps.with(|v| v.iter().any(held)) {
+            f
+        } else {
+            "all".to_owned()
+        }
     }
 
     /// `ago(ms)` — m/h/d shorthand for the library rows (App.tsx:1259).
@@ -2383,43 +2923,351 @@ impl Store {
 
     /// A version-tree row: `POST /app/version` moves the pointer, then
     /// apps + threads refresh (App.tsx:2692).
+    /// Moves `app`'s current pointer to `v` (an open window of it
+    /// reopens on `v`, server side); App Details follows.
     pub fn set_version(&'static self, app: String, v: i64) {
         spawn(async move {
             let _ = client::post("/app/version", serde_json::json!({"name": app, "v": v})).await;
             self.refresh_thread_apps();
             self.refresh_threads();
+            if let Some(i) = self.app_details.get_untracked().filter(|i| i.name == app_name(&app)) {
+                if let Some(v) = client::get(&details_url(&i.name, &i.kind)).await {
+                    self.app_details.set(Some(AppInfo::from_json(&v)));
+                }
+            }
         });
     }
 
-    /// `saveAppRename` — title/file via `POST /app/meta`, a branch label
-    /// via `POST /app/version/label` (App.tsx:1654).
+    /// `GET /apps/meta` → `app_meta`.
+    pub fn fetch_app_meta(&'static self) {
+        spawn(async move {
+            let Some(v) = client::get("/apps/meta").await else { return };
+            let map: std::collections::HashMap<String, MiniMeta> = list(&v, "apps")
+                .iter()
+                .map(|a| {
+                    let m = MiniMeta {
+                        name: s(a, "name"),
+                        title: s(a, "title"),
+                        file: s(a, "file"),
+                        description: s(a, "description"),
+                        icon: s(a, "icon"),
+                        w: f64of(a, "w") as f32,
+                        h: f64of(a, "h") as f32,
+                    };
+                    (m.name.clone(), m)
+                })
+                .collect();
+            if map != self.app_meta.get_untracked() {
+                self.app_meta.set(map);
+            }
+        });
+    }
+
+    /// The meta of module key `app` (`R17` or `R17@v2`).
+    pub fn meta_of(&self, app: &str) -> Option<MiniMeta> {
+        self.app_meta.get().get(app_name(app)).cloned()
+    }
+
+    /// The icon generator runs after the agent's turn: look again while
+    /// it lands.
+    pub fn watch_app_icons(&'static self) {
+        spawn(async move {
+            for secs in [6, 15, 30] {
+                timer(std::time::Duration::from_secs(secs)).await;
+                self.fetch_app_meta();
+            }
+        });
+    }
+
+    /// Opens App Details for `app`: `GET /app/info`, then the drafts.
+    pub fn open_app_details(&'static self, app: &str) {
+        let name = app_name(app).to_owned();
+        self.ad_err.set(String::new());
+        self.ad_busy.set(String::new());
+        spawn(async move {
+            let Some(v) = client::get(&format!("/app/info?name={name}")).await else {
+                return;
+            };
+            self.seed_app_details(&v);
+        });
+    }
+
+    /// Edit Details for any Library item: a mini app's App Details, else
+    /// `GET /artifact/info` for an image or a file.
+    pub fn open_details(&'static self, id: &str) {
+        let kind = self
+            .thread_apps
+            .with_untracked(|v| v.iter().find(|a| a.app == id).map(|a| a.kind.clone()))
+            .unwrap_or_default();
+        self.open_details_of(id, &kind)
+    }
+
+    /// [`open_details`] for an item of a known kind (a group's artifact,
+    /// from any chat); "" = guess from the id.
+    pub fn open_details_of(&'static self, id: &str, kind: &str) {
+        if kind == "app" || (kind.is_empty() && !id.starts_with("file:") && !id.starts_with("gdrive:")) {
+            return self.open_app_details(id);
+        }
+        let kind = kind.to_owned();
+        let id = id.to_owned();
+        self.ad_err.set(String::new());
+        self.ad_busy.set(String::new());
+        spawn_detached(async move {
+            let Some(v) = client::get(&details_url(&id, &kind)).await else {
+                return;
+            };
+            self.seed_app_details(&v);
+        });
+    }
+
+    fn seed_app_details(&'static self, v: &serde_json::Value) {
+        let num = |k: &str| {
+            let n = f64of(v, k);
+            if n > 0.0 { format!("{}", n.round() as i64) } else { String::new() }
+        };
+        let info = AppInfo::from_json(v);
+        // The name field edits the stem; the extension stays.
+        let suffix = format!(".{}", info.ext);
+        let file = &info.filename;
+        let stem = if !info.ext.is_empty() && file.to_lowercase().ends_with(&suffix.to_lowercase()) {
+            &file[..file.len() - suffix.len()]
+        } else {
+            file.as_str()
+        };
+        self.ad_title.set(s(v, "title"));
+        self.ad_file.set(stem.to_owned());
+        self.ad_desc.set(s(v, "description"));
+        self.ad_w.set(num("w"));
+        self.ad_h.set(num("h"));
+        self.ad_prompt.set(s(v, "icon_prompt"));
+        if info.generating {
+            self.ad_busy.set("gen".into());
+            self.poll_app_icon(info.name.clone());
+        }
+        self.app_details.set(Some(info));
+    }
+
+    /// After the server answers an edit: the modal's facts, every tile.
+    fn app_details_landed(&'static self, v: Option<serde_json::Value>, what: &str) {
+        self.ad_busy.set(String::new());
+        match v {
+            Some(v) if self::b(&v, "ok") => {
+                if let Some(cur) = self.app_details.get_untracked() {
+                    if cur.name == s(&v, "name") {
+                        self.app_details.set(Some(AppInfo::from_json(&v)));
+                    }
+                }
+                self.refresh_thread_apps();
+                // the chat's cards show the edited titles and file names
+                self.refresh_turns();
+            }
+            _ => self.ad_err.set(format!("Couldn't {what}")),
+        }
+    }
+
+    /// The chat's model, as App Details' Generate sees it: its label and
+    /// whether it reaches an image model.
+    pub fn icon_model(&'static self) -> (String, String, bool) {
+        let id = self.choice().0;
+        let m = self.models.get().into_iter().find(|m| m.id == id);
+        let label = m.as_ref().map(|m| m.label.clone()).unwrap_or_else(|| pretty_model(&id));
+        (id, label, m.is_some_and(|m| m.image))
+    }
+
+    /// Generate: `POST /app/icon/gen` with the prompt (empty = the server
+    /// derives one from the title and description) and the chat's model;
+    /// the server answers at once and the icon lands later.
+    pub fn gen_app_icon(&'static self) {
+        let Some(info) = self.app_details.get_untracked() else { return };
+        let (model, label, can) = untracked(|| self.icon_model());
+        if !can || !self.ad_busy.get_untracked().is_empty() {
+            return;
+        }
+        self.ad_err.set(String::new());
+        self.ad_busy.set("gen".into());
+        let prompt = self.ad_prompt.get_untracked().trim().to_owned();
+        spawn(async move {
+            let v = client::post(
+                "/app/icon/gen",
+                serde_json::json!({"name": info.name, "prompt": prompt, "model": model}),
+            )
+            .await;
+            match v {
+                Some(v) if self::b(&v, "ok") => self.poll_app_icon(info.name),
+                _ => {
+                    self.ad_busy.set(String::new());
+                    self.ad_err.set(format!("{label} couldn't start an icon"));
+                }
+            }
+        });
+    }
+
+    /// Re-reads `/app/info` until the icon lands (or fails).
+    fn poll_app_icon(&'static self, name: String) {
+        spawn(async move {
+            loop {
+                timer(std::time::Duration::from_millis(2500)).await;
+                if self.app_details.get_untracked().is_none_or(|i| i.name != name) {
+                    return;
+                }
+                let Some(v) = client::get(&format!("/app/info?name={name}")).await else { continue };
+                if self::b(&v, "generating") {
+                    continue;
+                }
+                self.ad_busy.set(String::new());
+                let err = s(&v, "icon_error");
+                if !err.is_empty() {
+                    self.ad_err.set(err);
+                }
+                self.app_details.set(Some(AppInfo::from_json(&v)));
+                self.refresh_thread_apps();
+                return;
+            }
+        });
+    }
+
+    /// Upload / Paste: the avatar picker hands back a temp image, which
+    /// `/app/meta {icon}` adopts.
+    pub fn pick_app_icon(&'static self, kind: &'static str) {
+        let Some(info) = self.app_details.get_untracked() else { return };
+        if !self.ad_busy.get_untracked().is_empty() {
+            return;
+        }
+        self.ad_err.set(String::new());
+        self.ad_busy.set("pick".into());
+        spawn(async move {
+            let picked = client::post(&format!("/avatar/image/{kind}"), serde_json::json!({})).await;
+            let uri = picked.as_ref().map(|v| s(v, "uri")).unwrap_or_default();
+            if uri.is_empty() {
+                self.ad_busy.set(String::new());
+                if !picked.as_ref().is_some_and(|v| self::b(v, "cancelled")) {
+                    self.ad_err.set(if kind == "paste" {
+                        "No image on the clipboard".into()
+                    } else {
+                        "Couldn't open that image".into()
+                    });
+                }
+                return;
+            }
+            let v = if info.kind == "app" {
+                client::post("/app/meta", serde_json::json!({"name": info.name, "icon": uri})).await
+            } else {
+                client::post("/artifact/meta", serde_json::json!({"id": info.name, "icon": uri})).await
+            };
+            self.app_details_landed(v, "use that image");
+        });
+    }
+
+    /// Remove the icon (back to the default tile — an image's or file's
+    /// thumbnail, where it has one).
+    pub fn clear_app_icon(&'static self) {
+        let Some(info) = self.app_details.get_untracked() else { return };
+        spawn(async move {
+            let v = if info.kind == "app" {
+                client::post("/app/meta", serde_json::json!({"name": info.name, "icon": ""})).await
+            } else {
+                client::post("/artifact/meta", serde_json::json!({"id": info.name, "icon": ""})).await
+            };
+            self.app_details_landed(v, "remove the icon");
+        });
+    }
+
+    /// Edit Details' "Made in": back to the message that made it.
+    pub fn show_details_origin(&'static self) {
+        let Some(i) = self.app_details.get_untracked() else { return };
+        self.app_details.set(None);
+        if self.thread_apps.with_untracked(|v| v.iter().any(|a| a.app == i.name)) {
+            self.show_library_item(&i.name);
+        } else if !i.thread_id.is_empty() {
+            self.go_to(&i.thread_id, (i.i >= 0).then_some(i.i));
+        }
+    }
+
+    /// Save: title, file, description and window size in one
+    /// `POST /app/meta`; pinned copies of the title follow.
+    pub fn save_app_details(&'static self) {
+        let Some(info) = self.app_details.get_untracked() else { return };
+        let title = self.ad_title.get_untracked().trim().to_owned();
+        let file = self.ad_file.get_untracked().trim().to_owned();
+        // A connector's file: a new title renames it where it lives
+        // (`POST /artifact/rename-remote` — Drive's update_drive_file).
+        if info.storage.connector() {
+            if title.is_empty() || title == info.title {
+                self.app_details.set(None);
+                return;
+            }
+            let body = serde_json::json!({ "id": info.name, "name": title });
+            let place = info.storage.place_name();
+            self.ad_busy.set("save".into());
+            spawn_detached(async move {
+                let v = client::post("/artifact/rename-remote", body).await;
+                let ok = v.as_ref().is_some_and(|v| self::b(v, "ok"));
+                self.app_details_landed(v, &format!("rename it in {place}"));
+                if ok {
+                    self.app_details.set(None);
+                }
+            });
+            return;
+        }
+        // An image or a file: `POST /artifact/meta` (an empty field resets
+        // it to the original).
+        if info.kind != "app" {
+            let body = serde_json::json!({
+                "id": info.name,
+                "title": title,
+                "filename": file,
+                "description": self.ad_desc.get_untracked().trim(),
+            });
+            self.ad_busy.set("save".into());
+            spawn_detached(async move {
+                let v = client::post("/artifact/meta", body).await;
+                let ok = v.as_ref().is_some_and(|v| self::b(v, "ok"));
+                self.app_details_landed(v, "save the details");
+                if ok {
+                    self.app_details.set(None);
+                }
+            });
+            return;
+        }
+        let dim = |sig: Signal<String>| sig.get_untracked().trim().parse::<f64>().unwrap_or(0.0);
+        let (w, h) = (dim(self.ad_w), dim(self.ad_h));
+        let mut body = serde_json::json!({
+            "name": info.name,
+            "description": self.ad_desc.get_untracked().trim(),
+            "w": w,
+            "h": h,
+        });
+        if !title.is_empty() {
+            body["title"] = title.clone().into();
+        }
+        if !file.is_empty() {
+            body["file"] = file.into();
+        }
+        self.ad_busy.set("save".into());
+        spawn_detached(async move {
+            let v = client::post("/app/meta", body).await;
+            let ok = v.as_ref().is_some_and(|v| self::b(v, "ok"));
+            self.app_details_landed(v, "save the details");
+            if ok {
+                self.app_details.set(None);
+            }
+        });
+    }
+
+    /// `saveAppRename` — a branch label via `POST /app/version/label`
+    /// (title and file moved to App Details).
     pub fn save_app_rename(&'static self) {
         let Some(r) = self.app_rename.get() else { return };
         let v = self.app_rename_text.get_untracked().trim().to_owned();
         self.app_rename.set(None);
-        if r.field == "label" {
-            spawn(async move {
-                let _ = client::post(
-                    "/app/version/label",
-                    serde_json::json!({"name": r.name, "v": r.v, "label": v}),
-                )
-                .await;
-                self.refresh_thread_apps();
-            });
-        } else {
-            if v.is_empty() {
-                return;
-            }
-            let body = if r.field == "title" {
-                serde_json::json!({"name": r.name, "title": v})
-            } else {
-                serde_json::json!({"name": r.name, "file": v})
-            };
-            spawn(async move {
-                let _ = client::post("/app/meta", body).await;
-                self.refresh_thread_apps();
-            });
-        }
+        spawn(async move {
+            let _ = client::post(
+                "/app/version/label",
+                serde_json::json!({"name": r.name, "v": r.v, "label": v}),
+            )
+            .await;
+            self.refresh_thread_apps();
+        });
     }
 
     /// The app-menu verbs — `/publish`, `/unpublish`, `/app/delete`
@@ -2436,7 +3284,8 @@ impl Store {
             }
             "app-delete" | "app-delete-everywhere" => {
                 let everywhere = verb == "app-delete-everywhere";
-                spawn(async move {
+                // detached: the menu that asked closes right away
+                spawn_detached(async move {
                     let _ = client::post(
                         "/app/delete",
                         serde_json::json!({"name": name, "everywhere": everywhere}),
@@ -2444,37 +3293,10 @@ impl Store {
                     .await;
                     self.refresh_thread_apps();
                     self.refresh_threads();
+                    // its cards left the chat, its rows every group
+                    self.refresh_turns();
+                    self.fetch_groups();
                 });
-            }
-            "app-rename-title" => {
-                let text = self
-                    .thread_apps
-                    .get_untracked()
-                    .iter()
-                    .find(|a| a.app == name)
-                    .map(|a| a.title.clone())
-                    .unwrap_or_default();
-                self.app_rename_text.set(text);
-                self.app_rename.set(Some(AppRename {
-                    name,
-                    field: "title".into(),
-                    v: None,
-                }));
-            }
-            "app-rename-file" => {
-                let text = self
-                    .thread_apps
-                    .get_untracked()
-                    .iter()
-                    .find(|a| a.app == name)
-                    .map(|a| a.file.clone())
-                    .unwrap_or_default();
-                self.app_rename_text.set(text);
-                self.app_rename.set(Some(AppRename {
-                    name,
-                    field: "file".into(),
-                    v: None,
-                }));
             }
             _ => {}
         }
@@ -2509,83 +3331,7 @@ impl Store {
         });
     }
 
-    pub fn mcp_verb(&'static self, verb: &str, id: String) {
-        let (route, body) = match verb {
-            "mcp-enable" => ("/mcp/server/state", serde_json::json!({"id": id, "enabled": true})),
-            "mcp-disable" => ("/mcp/server/state", serde_json::json!({"id": id, "enabled": false})),
-            "mcp-reconnect" => ("/mcp/servers", serde_json::json!({"id": id})),
-            "mcp-delete" => ("/mcp/server/delete", serde_json::json!({"id": id})),
-            _ => return,
-        };
-        spawn(async move {
-            let _ = client::post(route, body).await;
-            self.fetch_mcp();
-        });
-    }
 
-    /// `addMcpServer` — `POST /mcp/servers` with the parsed form
-    /// (App.tsx:1611).
-    pub fn add_mcp_server(&'static self) {
-        if self.mcp_busy.get_untracked() {
-            return;
-        }
-        self.mcp_err.set(String::new());
-        let f = self.mcp_form.get_untracked();
-        if f.name.trim().is_empty() || f.command.trim().is_empty() {
-            self.mcp_err.set("name and command are required".into());
-            return;
-        }
-        self.mcp_busy.set(true);
-        let env: serde_json::Map<String, serde_json::Value> = f
-            .env
-            .split(';')
-            .filter_map(|p| {
-                let (k, v) = p.trim().split_once('=')?;
-                let k = k.trim();
-                if k.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
-                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    Some((k.to_owned(), serde_json::Value::from(v.to_owned())))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let bot = if f.scope == "bot" {
-            self.active_bot_untracked().map(|b| b.id)
-        } else {
-            None
-        };
-        spawn(async move {
-            let r = client::post(
-                "/mcp/servers",
-                serde_json::json!({
-                    "name": f.name.trim(), "command": f.command.trim(),
-                    "args": f.args.trim(), "env": env, "bot": bot,
-                }),
-            )
-            .await;
-            match r {
-                None => self.mcp_err.set("server unreachable".into()),
-                Some(d) if d.get("ok") == Some(&serde_json::Value::from(false)) => {
-                    self.mcp_err.set(s(&d, "error"))
-                }
-                Some(d) if s(&d, "status") == "error" => {
-                    self.mcp_err.set(if s(&d, "err").is_empty() {
-                        "server failed to start".into()
-                    } else {
-                        s(&d, "err")
-                    })
-                }
-                Some(_) => {
-                    self.mcp_form.set(McpForm::default());
-                    self.mcp_form_open.set(false);
-                }
-            }
-            self.fetch_mcp();
-            self.mcp_busy.set(false);
-        });
-    }
 
     // ————— Plugins marketplace (App.tsx:1291–1640) —————
 
@@ -2627,16 +3373,10 @@ impl Store {
                     self.fetch_plugin_detail(&name);
                     spawn(async move {
                         timer(std::time::Duration::from_millis(60)).await;
-                        if let Some(d) = self.plugin_details.get_untracked().get(&name) {
-                            for m in &d.mcp {
-                                if !m.id.is_empty() {
-                                    self.fetch_mcp_tools(&m.id);
-                                }
-                            }
-                        }
+                        self.fetch_connector_tools(&name);
                     });
                 }
-                if top.page == "mcp" && !top.id.is_empty() {
+                if top.page == "mcp" && !top.id.is_empty() && self.mcp_enabled(&top.id) {
                     self.fetch_mcp_tools(&top.id);
                 }
             }
@@ -2651,22 +3391,21 @@ impl Store {
             id: id.to_owned(),
         };
         self.plugin_nav.update(|n| n.push(p.clone()));
+        self.reset_acct_ui();
         match page {
             "plugin" if !name.is_empty() => {
                 self.fetch_plugin_detail(name);
                 let name = name.to_owned();
                 spawn(async move {
                     timer(std::time::Duration::from_millis(60)).await;
-                    if let Some(d) = self.plugin_details.get_untracked().get(&name) {
-                        for m in &d.mcp {
-                            if !m.id.is_empty() {
-                                self.fetch_mcp_tools(&m.id);
-                            }
-                        }
-                    }
+                    self.fetch_connector_tools(&name);
                 });
             }
-            "mcp" if !id.is_empty() => self.fetch_mcp_tools(id),
+            "mcp" if !id.is_empty() => {
+                if self.mcp_enabled(id) {
+                    self.fetch_mcp_tools(id)
+                }
+            }
             "skill" if !name.is_empty() && !id.is_empty() => {
                 self.fetch_skill_body(name, id);
             }
@@ -2694,8 +3433,148 @@ impl Store {
         }
     }
 
+    /// The tools of a plugin's connected connectors (the plugin page's
+    /// Tools section; a connector that isn't connected has none to list).
+    fn fetch_connector_tools(&'static self, plugin: &str) {
+        if let Some(d) = self.plugin_details.get_untracked().get(plugin) {
+            for m in &d.mcp {
+                if !m.id.is_empty() && m.status == "connected" {
+                    self.fetch_mcp_tools(&m.id);
+                }
+            }
+        }
+    }
+
+    /// A disabled server isn't probed for its tools (`/mcp/tools` would
+    /// spawn it while its status reads Disconnected).
+    fn mcp_enabled(&self, id: &str) -> bool {
+        self.mcp_servers
+            .get_untracked()
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.enabled)
+            .unwrap_or(true)
+    }
+
+    fn reset_acct_ui(&'static self) {
+        self.acct_edit.set(String::new());
+        self.acct_add.set(String::new());
+        self.acct_confirm.set(String::new());
+        self.acct_err.set(String::new());
+        self.plugin_copied.set(false);
+    }
+
+    /// `POST /plugins/connect` — register `server` (one of `plugin`'s
+    /// declared MCP servers) as an account and start its auth: no label =
+    /// the default account, a label adds another. Remote servers open the
+    /// OAuth tab; the 3s poll then walks the status to Connected.
+    pub fn connect_account(&'static self, plugin: &str, server: &str, label: &str) {
+        let (plugin, server, label) = (plugin.to_owned(), server.to_owned(), label.trim().to_owned());
+        if label.eq_ignore_ascii_case("grok") || label.eq_ignore_ascii_case("default") {
+            self.acct_err.set(format!("{label} is a reserved account label"));
+            return;
+        }
+        self.acct_err.set(String::new());
+        self.plugin_busy.set(format!("connect:{server}"));
+        spawn(async move {
+            let r = client::post(
+                "/plugins/connect",
+                serde_json::json!({"plugin": plugin, "server": server, "label": label}),
+            )
+            .await;
+            // a 400 comes back as None (the label clash / missing manifest).
+            let err = match &r {
+                None => "Couldn't add the account. Try another label.".to_owned(),
+                Some(v) => v.get("error").and_then(|e| e.as_str()).unwrap_or_default().to_owned(),
+            };
+            if err.is_empty() {
+                self.acct_add.set(String::new());
+                self.acct_add_val.set(String::new());
+            } else {
+                self.acct_err.set(err);
+            }
+            self.plugin_busy.set(String::new());
+            self.fetch_mcp();
+            self.fetch_plugin_detail(&plugin);
+        });
+    }
+
+    /// `POST /mcp/auth` for an existing account row (Authenticate).
+    pub fn auth_account(&'static self, id: &str, plugin: &str) {
+        let (id, plugin) = (id.to_owned(), plugin.to_owned());
+        self.plugin_busy.set(format!("auth:{id}"));
+        spawn(async move {
+            let _ = client::post("/mcp/auth", serde_json::json!({"id": id})).await;
+            self.plugin_busy.set(String::new());
+            self.fetch_plugin_detail(&plugin);
+        });
+    }
+
+    /// Rename (`label`) an account row — `POST /mcp/account`.
+    pub fn rename_account(&'static self, id: &str, label: &str, plugin: &str) {
+        let (id, label, plugin) = (id.to_owned(), label.trim().to_owned(), plugin.to_owned());
+        if label.eq_ignore_ascii_case("grok") {
+            self.acct_err.set("Grok is a reserved account label".into());
+            return;
+        }
+        self.acct_edit.set(String::new());
+        self.acct_err.set(String::new());
+        spawn(async move {
+            let _ = client::post("/mcp/account", serde_json::json!({"id": id, "label": label})).await;
+            self.fetch_plugin_detail(&plugin);
+        });
+    }
+
+    /// Disconnect — drop the account's stored OAuth tokens.
+    pub fn disconnect_account(&'static self, id: &str, plugin: &str) {
+        let (id, plugin) = (id.to_owned(), plugin.to_owned());
+        self.acct_confirm.set(String::new());
+        spawn(async move {
+            let _ = client::post("/mcp/account", serde_json::json!({"id": id, "disconnect": true})).await;
+            self.fetch_mcp();
+            self.fetch_plugin_detail(&plugin);
+        });
+    }
+
+    /// Remove an added account — its `mcp_servers` row goes.
+    pub fn remove_account(&'static self, id: &str, plugin: &str) {
+        let (id, plugin) = (id.to_owned(), plugin.to_owned());
+        self.acct_confirm.set(String::new());
+        self.acct_edit.set(String::new());
+        spawn(async move {
+            let _ = client::post("/mcp/server/delete", serde_json::json!({"id": id})).await;
+            self.fetch_mcp();
+            self.fetch_plugin_detail(&plugin);
+        });
+    }
+
+    /// `POST /mcp/server/state` — a standalone server's Connect (enable).
+    pub fn set_server_enabled(&'static self, id: &str, enabled: bool) {
+        let id = id.to_owned();
+        spawn(async move {
+            let _ = client::post("/mcp/server/state", serde_json::json!({"id": id, "enabled": enabled}))
+                .await;
+            self.fetch_mcp();
+            if enabled {
+                self.fetch_mcp_tools(&id);
+            }
+        });
+    }
+
+    /// Share / "Copy link to this plugin" — `rox://plugin/<name>` (opens
+    /// this page through `open_link`), with a 1.5s "Copied".
+    pub fn copy_plugin_link(&'static self, name: &str) {
+        self.copy_text(&format!("rox://plugin/{name}"));
+        self.plugin_copied.set(true);
+        spawn(async move {
+            timer(std::time::Duration::from_millis(1500)).await;
+            self.plugin_copied.set(false);
+        });
+    }
+
     /// `popNav`.
     pub fn pop_nav(&'static self) {
+        self.reset_acct_ui();
         self.plugin_nav.update(|n| {
             n.pop();
         });
@@ -2716,8 +3595,21 @@ impl Store {
     /// `fetchPlugins` — catalog rows; dedupe like the TSX (`JSON.stringify`
     /// compare) so the 3s poll doesn't churn the grid.
     pub fn fetch_plugins(&'static self) {
+        let rev = self.plugins_rev.get_untracked();
+        let url = if rev.is_empty() {
+            "/plugins/catalog".to_owned()
+        } else {
+            format!("/plugins/catalog?rev={}", client::urlenc(&rev))
+        };
         spawn(async move {
-            let Some(v) = client::get("/plugins/catalog").await else { return };
+            let Some(v) = client::get(&url).await else { return };
+            if self::b(&v, "unchanged") {
+                return;
+            }
+            let order: Vec<String> = list(&v, "categories").iter().map(|c| s(c, "label")).collect();
+            if order != self.plugin_cat_order.get_untracked() {
+                self.plugin_cat_order.set(order);
+            }
             let rows: Vec<PluginRow> = list(&v, "plugins")
                 .iter()
                 .map(|r| PluginRow {
@@ -2743,8 +3635,17 @@ impl Store {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    display_name: s(r, "displayName"),
+                    icon: {
+                        let i = s(r, "icon");
+                        if i.is_empty() { i } else { format!("{}{}", client::GEN, i) }
+                    },
+                    cats: list(r, "cats").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect(),
+                    publisher: s(r, "publisher"),
+                    setup: self::b(r, "setup"),
                 })
                 .collect();
+            self.plugins_rev.set(s(&v, "rev"));
             if rows != self.plugins.get_untracked() {
                 // fetch each installed plugin's detail once for the
                 // connected-chip dedupe.
@@ -2794,6 +3695,21 @@ impl Store {
                         status: s(m, "status"),
                         tools: m.get("tools").and_then(|x| x.as_i64()).unwrap_or(0),
                         err: s(m, "err"),
+                        accounts: list(m, "accounts")
+                            .iter()
+                            .map(|a| PluginAccount {
+                                id: s(a, "id"),
+                                label: s(a, "label"),
+                                status: s(a, "status"),
+                                tools: a.get("tools").and_then(|x| x.as_i64()).unwrap_or(0),
+                                err: s(a, "err"),
+                                authed: self::b(a, "authed"),
+                                note: s(a, "note"),
+                            })
+                            .collect(),
+                        needs: list(m, "needs").iter().filter_map(|x| x.as_str().map(str::to_owned)).collect(),
+                        callback_url: s(m, "callbackUrl"),
+                        unavailable: s(m, "unavailable"),
                     })
                     .collect(),
                 skills: list(&v, "skills")
@@ -2804,10 +3720,36 @@ impl Store {
                     .iter()
                     .map(|x| PluginSkill { name: s(x, "name"), description: s(x, "description") })
                     .collect(),
+                display_name: s(&v, "displayName"),
+                icon: {
+                    let i = s(&v, "icon");
+                    if i.is_empty() { i } else { format!("{}{}", client::GEN, i) }
+                },
+                availability: s(&v, "availability"),
+                source: s(&v, "source"),
+                fields: list(&v, "fields")
+                    .iter()
+                    .map(|f| PluginField {
+                        key: s(f, "key"),
+                        label: s(f, "label"),
+                        placeholder: s(f, "placeholder"),
+                        required: self::b(f, "required"),
+                        secret: self::b(f, "secret"),
+                        hint: s(f, "hint"),
+                        options: list(f, "options").iter().map(|o| (s(o, "label"), s(o, "value"))).collect(),
+                        set: self::b(f, "set"),
+                        value: s(f, "value"),
+                        shared: s(f, "shared"),
+                    })
+                    .collect(),
             };
-            self.plugin_details.update(|m| {
-                m.insert(name, d);
-            });
+            // only a real change commits — the 3s poll would otherwise
+            // rebuild the page (and drop a focused account field) each tick.
+            if self.plugin_details.get_untracked().get(&name) != Some(&d) {
+                self.plugin_details.update(|m| {
+                    m.insert(name, d);
+                });
+            }
         });
     }
 
@@ -2925,9 +3867,15 @@ impl Store {
         }
     }
 
-    /// `installPlugin` (App.tsx:1407).
+    /// `installPlugin` (App.tsx:1407). A plugin with setup fields opens
+    /// its Setup page first (Grok Bot's "needs a few values" form).
     pub fn install_plugin(&'static self, name: &str) {
         if !self.plugin_busy.get_untracked().is_empty() {
+            return;
+        }
+        let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
+        if needs_setup {
+            self.open_setup(name, "install");
             return;
         }
         let name = name.to_owned();
@@ -2939,6 +3887,97 @@ impl Store {
             self.fetch_plugin_detail(&name);
             self.plugin_busy.set(String::new());
         });
+    }
+
+    /// Push the Setup page (`mode` = "install" | "edit") with a fresh
+    /// draft: stored plain values prefilled, secrets blank.
+    pub fn open_setup(&'static self, name: &str, mode: &str) {
+        self.setup_vals.set(BTreeMap::new());
+        self.setup_err.set(String::new());
+        self.push_nav("setup", name, mode);
+        let name = name.to_owned();
+        let url = format!("/plugins/detail?name={}", client::urlenc(&name));
+        spawn(async move {
+            // the detail may not be loaded yet (Add from the market row).
+            if let Some(v) = client::get(&url).await {
+                let mut vals = BTreeMap::new();
+                for f in list(&v, "fields") {
+                    let val = s(&f, "value");
+                    if !val.is_empty() {
+                        vals.insert(s(&f, "key"), val);
+                    }
+                }
+                self.setup_vals.set(vals);
+            }
+            self.fetch_plugin_detail(&name);
+        });
+    }
+
+    /// Submit the Setup page: save the values (`/plugins/settings`), then
+    /// install when adding. Required values are checked first.
+    pub fn submit_setup(&'static self, name: &str, install: bool) {
+        let d = self.plugin_details.get_untracked().get(name).cloned().unwrap_or_default();
+        let vals = self.setup_vals.get_untracked();
+        let missing: Vec<String> = d
+            .fields
+            .iter()
+            .filter(|f| f.required && !f.set && vals.get(&f.key).map(|v| v.trim().is_empty()).unwrap_or(true))
+            // a pre-registered-client field may wait (the account row says so)
+            .filter(|f| !(f.key == "CLIENT_ID" || f.key.starts_with("GOOGLE_")))
+            .map(|f| format!("{} is required", f.label))
+            .collect();
+        if let Some(m) = missing.first() {
+            self.setup_err.set(m.clone());
+            return;
+        }
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        self.setup_err.set(String::new());
+        spawn(async move {
+            let values: serde_json::Map<String, serde_json::Value> =
+                vals.into_iter().map(|(k, v)| (k, serde_json::json!(v))).collect();
+            let r = if install {
+                client::post("/plugins/install", serde_json::json!({"name": name, "values": values})).await
+            } else {
+                client::post("/plugins/settings", serde_json::json!({"plugin": name, "values": values})).await
+            };
+            self.plugin_busy.set(String::new());
+            match r {
+                Some(v) if self::b(&v, "ok") => {
+                    self.fetch_plugins();
+                    self.fetch_mcp();
+                    self.fetch_plugin_detail(&name);
+                    self.pop_nav();
+                }
+                _ => self.setup_err.set(if install {
+                    "Couldn't add the plugin. Check the values and try again.".into()
+                } else {
+                    "Couldn't save the values.".into()
+                }),
+            }
+        });
+    }
+
+    /// The plugin row's shown name (Grok Bot's displayName), else the
+    /// title-cased key.
+    pub fn plugin_display(&self, name: &str) -> String {
+        self.plugins
+            .get_untracked()
+            .iter()
+            .find(|p| p.name == name && !p.display_name.is_empty())
+            .map(|p| p.display_name.clone())
+            .unwrap_or_else(|| Self::plugin_title(name))
+    }
+
+    /// The plugin's logo URL (empty = none): by catalog key, else the
+    /// installed plugin that registered this connector id.
+    pub fn plugin_icon(&self, name: &str) -> String {
+        let rows = self.plugins.get_untracked();
+        rows.iter()
+            .find(|p| p.name == name)
+            .or_else(|| rows.iter().find(|p| p.installed && p.meta_mcp.iter().any(|m| m == name)))
+            .map(|p| p.icon.clone())
+            .unwrap_or_default()
     }
 
     /// `uninstallPlugin` (App.tsx:1419).
@@ -2971,7 +4010,13 @@ impl Store {
             if !id.is_empty() {
                 j["id"] = serde_json::json!(id);
             }
-            let _ = client::post("/skills", j).await;
+            // a new skill keeps editing the row it just created.
+            if let Some(v) = client::post("/skills", j).await {
+                let new_id = s(&v, "id");
+                if !new_id.is_empty() {
+                    self.ps_id.set(new_id);
+                }
+            }
             self.fetch_skills();
         });
     }
@@ -2990,33 +4035,39 @@ impl Store {
     }
 
     /// `pluginCats` — `["All", ...unique categories]` (App.tsx:1450).
+    /// "All" + Grok Bot's categories (its order) that have plugins.
     pub fn plugin_cats(&self) -> Vec<String> {
+        let rows = self.plugins.get();
         let mut cats: Vec<String> = vec!["All".into()];
-        for p in self.plugins.get().iter() {
-            let c = p.category.clone();
-            let c = c
-                .chars()
-                .next()
-                .map(|f| f.to_uppercase().collect::<String>() + &c[1..])
-                .unwrap_or(c);
-            if !c.is_empty() && !cats.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+        for c in self.plugin_cat_order.get() {
+            if rows.iter().any(|p| p.cats.contains(&c)) {
                 cats.push(c);
             }
         }
         cats
     }
 
+    /// The plugins filed under a category (Grok's labels).
+    pub fn plugins_in(&self, cat: &str) -> Vec<PluginRow> {
+        self.plugins.get().into_iter().filter(|p| p.cats.iter().any(|c| c == cat)).collect()
+    }
+
+    /// "Recommended for you": the most popular plugins not added yet.
+    pub fn plugin_recommended(&self) -> Vec<PluginRow> {
+        self.plugins.get().into_iter().filter(|p| !p.installed).collect()
+    }
+
     /// `pluginList` — category + query filters (App.tsx:1451).
     pub fn plugin_list(&self) -> Vec<PluginRow> {
         let q = self.plugin_query.get().trim().to_lowercase();
         let cat = self.plugin_cat.get();
-        let mut list = self.plugins.get();
-        if cat != "All" {
-            list.retain(|p| p.category.eq_ignore_ascii_case(&cat));
+        let mut list = if cat == RECOMMENDED { self.plugin_recommended() } else { self.plugins.get() };
+        if cat != "All" && cat != RECOMMENDED {
+            list.retain(|p| p.cats.iter().any(|c| c == &cat));
         }
         if !q.is_empty() {
             list.retain(|p| {
-                format!("{} {} {}", p.name, p.description, p.keywords.join(" "))
+                format!("{} {} {} {} {}", p.display_name, p.name, p.publisher, p.description, p.keywords.join(" "))
                     .to_lowercase()
                     .contains(&q)
             });
@@ -3058,7 +4109,13 @@ impl Store {
             .flat_map(|p| {
                 details
                     .get(&p.name)
-                    .map(|d| d.meta_mcp.clone())
+                    .map(|d| {
+                        let mut ids = d.meta_mcp.clone();
+                        for m in &d.mcp {
+                            ids.extend(m.accounts.iter().map(|a| a.id.clone()));
+                        }
+                        ids
+                    })
                     .unwrap_or_default()
             })
             .collect();
@@ -3220,10 +4277,14 @@ impl Store {
 
     // -- chat --------------------------------------------------------------
 
-    /// `mockStatus(arg)` — the `/status:` slash command (App.tsx:143):
-    /// `/status:demo` cycles every state, `/status:<name>` sets one,
+    /// `mockStatus(arg)` — the `/status` slash command (App.tsx:143):
+    /// `/status` or `/status:demo` cycles every state, `/status:<name>` sets one,
     /// `/status:off|idle|clear` stops. Local only — never hits `/chat`.
     pub fn mock_status(&'static self, arg: &str) {
+        // Any new `/status…` stops a running demo (`clearInterval(mockTimer)`).
+        static DEMO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let run = DEMO.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let live = move || DEMO.load(std::sync::atomic::Ordering::Relaxed) == run;
         let thread = self.active_id.get_untracked();
         let bot = self.active_bot_untracked().map(|b| b.id);
         self.settled.set(None);
@@ -3249,6 +4310,9 @@ impl Store {
             spawn(async move {
                 for name in names.iter().skip(1) {
                     timer(std::time::Duration::from_millis(1700)).await;
+                    if !live() {
+                        return;
+                    }
                     let label = crate::statusfx::status_label(name);
                     self.agent_set(
                         thread.clone(),
@@ -3257,7 +4321,9 @@ impl Store {
                     );
                 }
                 timer(std::time::Duration::from_millis(1700)).await;
-                self.agent_set(thread, bot, None);
+                if live() {
+                    self.agent_set(thread, bot, None);
+                }
             });
             return;
         }
@@ -3279,20 +4345,25 @@ impl Store {
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
         let text = self.draft.get_untracked().trim().to_owned();
-        // `/status:` is a local command — the TSX never posts it.
-        if let Some(arg) = text.strip_prefix("/status:") {
+        // `/status` (the demo) and `/status:<state>` are local commands —
+        // the TSX never posts them (App.tsx:574).
+        if text == "/status" || text.starts_with("/status:") {
+            let arg = text.strip_prefix("/status:").map(str::trim).unwrap_or("demo").to_owned();
             self.draft.set(String::new());
-            self.mock_status(arg.trim());
+            self.mock_status(&arg);
             return;
         }
         let reply_to = self.reply_to.get_untracked();
-        // The attachments go over verbatim — the server forwards them to
-        // the model (picked files carry `uri`, reply files `path`).
-        let files: Vec<serde_json::Value> = self
-            .attachments
-            .get_untracked()
-            .iter()
-            .map(|a| {
+        // The replied-to message's files lead (a card's module:// uri, a
+        // file path), then the attachments verbatim — the server forwards
+        // them to the model (picked files carry `uri`, reply files `path`).
+        let reply_files = reply_to.iter().flat_map(|r| r.files.iter()).map(|p| {
+            let uri = if p.contains("://") { p.clone() } else { format!("file://{p}") };
+            let name = uri.trim_end_matches('/').rsplit('/').next().unwrap_or(&uri).to_owned();
+            serde_json::json!({ "uri": uri, "name": name, "kind": "file" })
+        });
+        let files: Vec<serde_json::Value> = reply_files
+            .chain(self.attachments.get_untracked().iter().map(|a| {
                 serde_json::json!({
                     "uri": a.url, "path": a.path, "name": a.name, "mime": a.mime,
                     "kind": a.kind, "ext": a.ext, "size": a.size,
@@ -3300,7 +4371,7 @@ impl Store {
                     "width": a.width, "height": a.height,
                     "duration": a.duration, "animated": a.animated,
                 })
-            })
+            }))
             .collect();
         if (text.is_empty() && files.is_empty()) || self.sending.get_untracked() {
             return;
@@ -3416,19 +4487,74 @@ impl Store {
     /// `{id, seq, phase, detail, done}`. `thread`/`bot` are the run's
     /// `agentRuns` key and credit.
     async fn watch_run(&'static self, job: String, thread: String, bot: Option<String>) {
-        for _ in 0..600 {
+        // Grok Bot's status line: a status shows for at least HOLD before
+        // the next replaces it, and gains "· Nm" once it has shown for a
+        // minute. The server's recent `events` are queued,
+        // so a step shorter than the poll (a fast tool) still shows.
+        const HOLD: std::time::Duration = std::time::Duration::from_millis(800);
+        let started = std::time::Instant::now();
+        let mut shown: Option<(String, String)> = None;
+        let mut queue: std::collections::VecDeque<(String, String)> = Default::default();
+        let mut last_seq = 0i64;
+        let mut shown_at = std::time::Instant::now();
+        let mut tick = 0u32;
+        while started.elapsed() < std::time::Duration::from_secs(30 * 60) {
             let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
-            let status = if detail.is_empty() { phase.clone() } else { detail };
-            // `agentSet(thread, bot, {state, label})` every tick.
-            self.agent_set(
-                thread.clone(),
-                bot.clone(),
-                Some((phase_state(&phase).to_owned(), status.clone())),
-            );
+            let status = if detail.is_empty() { phase.clone() } else { detail.clone() };
+            let shape = |phase: &str, detail: String| {
+                let state = phase_state(phase).to_owned();
+                // The server's phrase verbatim, as Grok Bot shows it
+                // ("Searching for bbtree", "Typing...").
+                let label = if detail.is_empty() { crate::statusfx::status_label(&state) } else { detail };
+                (state, label)
+            };
+            // New steps since the last poll (an older server: just the latest).
+            let mut fresh: Vec<(String, String)> = Vec::new();
+            match v.get("events").and_then(|e| e.as_array()) {
+                Some(evs) => {
+                    for e in evs {
+                        let seq = e.get("seq").and_then(|x| x.as_i64()).unwrap_or(0);
+                        if seq > last_seq {
+                            last_seq = seq;
+                            let ph = s(e, "phase");
+                            if ph != "done" {
+                                fresh.push(shape(&ph, s(e, "detail")));
+                            }
+                        }
+                    }
+                }
+                None if phase != "done" => fresh.push(shape(&phase, detail)),
+                None => {}
+            }
+            for next in fresh {
+                let tail = queue.back().or(shown.as_ref());
+                if tail != Some(&next) {
+                    queue.push_back(next);
+                }
+            }
+            // A backlog keeps only the newest few, so the line never lags far.
+            while queue.len() > 3 {
+                queue.pop_front();
+            }
+            if shown.is_none() || shown_at.elapsed() >= HOLD {
+                if let Some(next) = queue.pop_front() {
+                    shown = Some(next);
+                    shown_at = std::time::Instant::now();
+                }
+            }
+            if let Some((state, label)) = shown.clone() {
+                let mins = shown_at.elapsed().as_secs() / 60;
+                let label = if mins >= 1 { format!("{label} · {}", elapsed_label(mins)) } else { label };
+                self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
+            }
+            // The reply streams into the transcript; the chat list less often.
             self.refresh_turns();
-            self.refresh_threads();
+            if tick % 4 == 0 {
+                self.refresh_threads();
+            }
+            tick += 1;
             if v.get("done").and_then(|x| x.as_bool()).unwrap_or(false)
                 || status == "done"
                 || status == "error"
@@ -3440,6 +4566,11 @@ impl Store {
                 // Grok: `settle(bot, /^(failed|generator error)/.test(detail)
                 //   ? "failed" : "finished")`.
                 let ok = !(status.starts_with("failed") || status.starts_with("generator error"));
+                // A new app's icon is drawn after the turn ends.
+                self.watch_app_icons();
+                // the files, images and Drive links the reply made join
+                // the open chat's Library
+                self.refresh_thread_apps();
                 self.agent_set(thread, bot.clone(), None);
                 self.emph_bot.set(String::new());
                 self.settled.set(Some(Settle {
@@ -3455,7 +4586,7 @@ impl Store {
                 });
                 break;
             }
-            timer(std::time::Duration::from_millis(700)).await;
+            timer(std::time::Duration::from_millis(250)).await;
         }
     }
 
@@ -3827,15 +4958,6 @@ impl Store {
         self.copy_text(&text);
     }
 
-    /// `moveToSection` — group a bot under a named section (creating it)
-    /// and clear its pin (App.tsx:822).
-    pub fn move_to_section(&'static self, id: &str, name: &str) {
-        if !name.is_empty() && !self.sections.get_untracked().iter().any(|s| s == name) {
-            self.sections.update(|v| v.push(name.to_owned()));
-        }
-        self.update_bot(id, serde_json::json!({"section": name, "pinned": false}));
-    }
-
     /// `deleteBot` — `POST /bot/delete`, then refresh threads + turns.
     pub fn delete_bot(&'static self, id: String) {
         spawn(async move {
@@ -4078,20 +5200,17 @@ impl Store {
         client::post_bg("/popout".to_owned(), popout_body(app));
     }
 
-    /// `popout()` / `pin()` (shell.tsx:760) at a size: the window opens at
-    /// `w × h` — the size a card laid the app out at — instead of the
-    /// server's default and then shrinking to fit. `desktop` makes it a
-    /// desktop widget; the card's status line notes the result.
-    pub fn popout_sized(&'static self, app: &str, w: f32, h: f32, desktop: bool) {
+    /// `popout()` (shell.tsx:760) at a size: the window opens at `w × h` —
+    /// the size a card laid the app out at — instead of the server's
+    /// default and then shrinking to fit; the card's status line notes the
+    /// result.
+    pub fn popout_sized(&'static self, app: &str, w: f32, h: f32) {
         let mut body = popout_body(app);
         if w > 0.0 {
             body["w"] = serde_json::json!(w.round());
         }
         if h > 0.0 {
             body["h"] = serde_json::json!(h.ceil());
-        }
-        if desktop {
-            body["mode"] = serde_json::json!("desktop");
         }
         let app = app.to_owned();
         Owner::detached().run(|| {
@@ -4101,7 +5220,6 @@ impl Store {
                 let note = match (ok, d.as_ref().is_some_and(|d| b(d, "already"))) {
                     (false, _) => "popout failed",
                     (true, true) => "window already open",
-                    (true, false) if desktop => "★ on the desktop",
                     (true, false) => "↗ window opened",
                 };
                 self.card_note(&app, note);
@@ -4283,66 +5401,301 @@ impl Store {
         !id.is_empty() && self.main_bot.with(|m| m == id)
     }
 
-    /// Whether `app` is pinned to the sidebar (tracked).
-    pub fn app_pinned(&'static self, app: &str) -> bool {
-        let name = app_name(app);
-        self.pinned_apps.with(|v| v.iter().any(|p| app_name(&p.app) == name))
+    /// `GET /groups` — the sidebar's groups; a group's fold state is the
+    /// server's (seeded into `collapsed` under its id).
+    pub fn fetch_groups(&'static self) {
+        spawn(async move {
+            let Some(v) = client::get("/groups").await else { return };
+            let j = v.get("groups").map(|x| x.to_string()).unwrap_or_default();
+            if j == *self.groups_json.borrow() {
+                return;
+            }
+            *self.groups_json.borrow_mut() = j;
+            let groups: Vec<RoxGroup> = list(&v, "groups").iter().map(RoxGroup::from_json).collect();
+            let folds: Vec<(String, bool)> = groups.iter().map(|g| (g.id.clone(), g.collapsed)).collect();
+            if folds.iter().any(|(k, c)| self.collapsed.with_untracked(|m| m.get(k).copied().unwrap_or(false)) != *c) {
+                self.collapsed.update(|m| m.extend(folds));
+            }
+            self.groups.set(groups);
+        });
     }
 
-    /// A card's ⋯ → Pin to Sidebar / Unpin from Sidebar.
-    pub fn toggle_pin_app(&'static self, i: i64, app: &str) {
-        if untracked(|| self.app_pinned(app)) {
-            return self.unpin_app(app);
+    /// A `POST /group/*` call, then the groups again.
+    fn group_post(&'static self, path: &'static str, body: serde_json::Value) {
+        // Detached: these run from menu and prompt handlers that close
+        // their own layer, and a task under that owner dies before the
+        // post is sent (client::post_bg).
+        Owner::detached().run(|| {
+            spawn(async move {
+                let _ = client::post(path, body).await;
+                // refused or not, the server's answer replaces any optimistic edit
+                self.groups_json.borrow_mut().clear();
+                self.fetch_groups();
+            });
+        });
+    }
+
+    /// Add to Group › (a row's check mark): puts item `kind`/`id` in group
+    /// `gid` (an artifact with its origin chat `thread`), or takes it out
+    /// — of that group only.
+    pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
+        let mut body = serde_json::json!({
+            "id": gid, "kind": kind, "ref": id, "op": if add { "add" } else { "remove" },
+        });
+        if !thread.is_empty() {
+            body["thread"] = thread.into();
         }
-        let title = self
-            .turns
-            .with_untracked(|t| {
-                t.iter().find(|t| t.i == i).map(|t| match &t.art {
-                    Some(a) if !a.title.is_empty() => a.title.clone(),
-                    _ => t.name.clone(),
-                })
-            })
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| self.mini_source_title(app).get_untracked());
-        let (w, h) = self.card_size(i, app);
-        let pin = PinnedApp {
-            app: app.to_owned(),
-            title: if title.is_empty() { app_name(app).to_owned() } else { title },
-            w,
-            h,
-            thread: self.active_id.get_untracked(),
-            i,
+        if !add {
+            let (gid, kind, id) = (gid.to_owned(), kind.to_owned(), id.to_owned());
+            self.groups.update(|gs| {
+                for g in gs.iter_mut().filter(|g| g.id == gid) {
+                    g.items.retain(|it| !(it.kind == kind && it.id == id));
+                }
+            });
+        }
+        self.group_post("/group/item", body);
+    }
+
+    /// A drag dropped on group `gid`, or Move to Group ›: puts item
+    /// `kind`/`id` at `index` of the group's items counted without it (the
+    /// end without one) — moving it if the group holds it already — and,
+    /// for a move, takes it out of group `from`. The groups change here
+    /// first; the server's answer replaces them.
+    pub fn group_place(
+        &'static self,
+        gid: &str,
+        kind: &str,
+        id: &str,
+        thread: &str,
+        index: Option<usize>,
+        from: Option<&str>,
+    ) {
+        let from = from.filter(|f| *f != gid).map(str::to_owned);
+        self.groups.update(|gs| {
+            let same = |it: &GroupItem| it.kind == kind && it.id == id;
+            // an artifact keeps the record a group already has for it
+            let item = gs
+                .iter()
+                .flat_map(|g| g.items.iter())
+                .find(|it| same(it))
+                .cloned()
+                .unwrap_or_else(|| GroupItem {
+                    kind: kind.to_owned(),
+                    id: id.to_owned(),
+                    thread: thread.to_owned(),
+                    artifact: None,
+                });
+            if let Some(g) = gs.iter_mut().find(|g| g.id == gid) {
+                g.items.retain(|it| !same(it));
+                let at = index.unwrap_or(g.items.len()).min(g.items.len());
+                g.items.insert(at, item);
+            }
+            if let Some(from) = &from {
+                for g in gs.iter_mut().filter(|g| g.id == *from) {
+                    g.items.retain(|it| !same(it));
+                }
+            }
+        });
+        let mut add = serde_json::json!({ "id": gid, "kind": kind, "ref": id, "op": "add" });
+        if !thread.is_empty() {
+            add["thread"] = thread.into();
+        }
+        if let Some(i) = index {
+            add["index"] = i.into();
+        }
+        let remove = from.map(|f| serde_json::json!({ "id": f, "kind": kind, "ref": id, "op": "remove" }));
+        spawn_detached(async move {
+            // in turn, so the one fetch after them sees both
+            let _ = client::post("/group/item", add).await;
+            if let Some(remove) = remove {
+                let _ = client::post("/group/item", remove).await;
+            }
+            self.groups_json.borrow_mut().clear();
+            self.fetch_groups();
+        });
+    }
+
+    /// New Group… — `POST /group/new`, with the item the menu was opened
+    /// on as its first member.
+    pub fn new_group(&'static self, name: &str, item: Option<(String, String, String)>) {
+        let mut body = serde_json::json!({ "name": name });
+        if let Some((kind, id, thread)) = item {
+            body["item"] = serde_json::json!({ "kind": kind, "ref": id, "thread": thread });
+        }
+        self.group_post("/group/new", body);
+    }
+
+    /// Rename / Color / Collapse — an optimistic patch of group `gid`,
+    /// then `POST /group/update`.
+    pub fn update_group(&'static self, gid: &str, patch: serde_json::Value) {
+        self.groups.update(|gs| {
+            for g in gs.iter_mut().filter(|g| g.id == gid) {
+                if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
+                    g.name = v.to_owned();
+                }
+                if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
+                    g.color = v.to_owned();
+                }
+                if let Some(v) = patch.get("collapsed").and_then(|x| x.as_bool()) {
+                    g.collapsed = v;
+                }
+            }
+        });
+        let mut body = patch;
+        body["id"] = gid.into();
+        self.group_post("/group/update", body);
+    }
+
+    /// Renames a fixed section ("__un" / "__chats"), kept in `/prefs`.
+    pub fn rename_section(&'static self, key: &str, name: &str) {
+        let (sig, field) = match key {
+            "__un" => (self.unassigned_name, "unassigned_name"),
+            "__chats" => (self.chats_name, "chats_name"),
+            _ => return,
         };
-        self.pinned_apps.update(|v| v.push(pin));
-        self.save_pinned_apps();
+        sig.set(name.to_owned());
+        client::post_bg("/prefs".to_owned(), serde_json::json!({ field: name }));
     }
 
-    /// Takes `app` out of the sidebar's Mini Apps group.
-    pub fn unpin_app(&'static self, app: &str) {
-        let name = app_name(app).to_owned();
-        self.pinned_apps.update(|v| v.retain(|p| app_name(&p.app) != name));
-        self.save_pinned_apps();
+    /// Delete Group — the group goes, its items stay.
+    pub fn delete_group(&'static self, gid: &str) {
+        let gid = gid.to_owned();
+        self.groups.update(|gs| gs.retain(|g| g.id != gid));
+        self.group_post("/group/delete", serde_json::json!({ "id": gid }));
     }
 
-    fn save_pinned_apps(&'static self) {
-        let apps: Vec<_> = self.pinned_apps.get_untracked().iter().map(PinnedApp::to_json).collect();
-        client::post_bg(
-            "/state/rox-pinned-apps".to_owned(),
-            serde_json::json!({ "apps": apps }),
-        );
+    /// `toggleSec(k)` — fold or unfold a section; a group's fold is kept
+    /// on the server.
+    pub fn toggle_section(&'static self, key: &str) {
+        let now = !self.collapsed.with_untracked(|m| m.get(key).copied().unwrap_or(false));
+        self.collapsed.update(|m| {
+            m.insert(key.to_owned(), now);
+        });
+        if self.groups.with_untracked(|gs| gs.iter().any(|g| g.id == key)) {
+            self.update_group(key, serde_json::json!({ "collapsed": now }));
+        }
     }
 
-    /// The pinned app, by module key.
-    pub fn pinned(&'static self, app: &str) -> Option<PinnedApp> {
-        let name = app_name(app);
-        self.pinned_apps
-            .with_untracked(|v| v.iter().find(|p| app_name(&p.app) == name).cloned())
+    /// Opens a Library item with its kind's handler: an app pops out, an
+    /// image card opens in the lightbox, a file in the viewer — a file kept
+    /// elsewhere (Google Drive) opens by its link in the browser.
+    pub fn open_library_item(&'static self, a: &RoxApp) {
+        if a.storage.place != "mac" {
+            if !a.storage.link.is_empty() {
+                self.open_link(&a.storage.link);
+            }
+            return;
+        }
+        if a.kind == "app" {
+            return self.popout(&a.app);
+        }
+        if let Some(f) = &a.attach {
+            return self.open_file(f);
+        }
+        match a.kind.as_str() {
+            "image" => self.open_lightbox(
+                vec![LightItem {
+                    kind: "image".to_owned(),
+                    uri: format!("{}/asset/generated/assets/{}", client::GEN, a.file),
+                    name: a.title.clone(),
+                    path: String::new(),
+                    poster: String::new(),
+                    w: a.w,
+                    h: a.h,
+                    code: String::new(),
+                }],
+                0,
+            ),
+            _ => self.popout(&a.app),
+        }
     }
 
-    /// A pinned app's card in its chat.
-    pub fn show_pinned(&'static self, app: &str) {
-        if let Some(p) = self.pinned(app) {
-            self.go_to(&p.thread, Some(p.i));
+    /// A Library item's message in the open chat.
+    pub fn show_library_item(&'static self, app: &str) {
+        let i = self.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == app).map(|a| a.i));
+        if let Some(i) = i.filter(|i| *i >= 0) {
+            self.go_to(&self.active_id.get_untracked(), Some(i));
+        }
+    }
+
+    /// A Library item's link — `rox://chat/<thread uid>?m=<turn id>`, as
+    /// the card's Copy Link; a connector's file has its own (the Drive
+    /// link).
+    pub fn library_link(&'static self, a: &RoxApp) -> String {
+        if a.storage.connector() {
+            return a.storage.link.clone();
+        }
+        if a.thread_uid.is_empty() || a.turn_id.is_empty() {
+            return self.turn_link(a.i);
+        }
+        format!("rox://chat/{}?m={}", a.thread_uid, a.turn_id)
+    }
+
+    /// Download: the save panel for an image card's png or a file, under
+    /// its display name — only a file on this Mac has one.
+    pub fn save_library_item(&'static self, a: &RoxApp) {
+        if a.storage.place != "mac" {
+            return;
+        }
+        let mut body = match &a.attach {
+            Some(f) => serde_json::json!({ "path": f.path }),
+            None if a.kind == "image" => serde_json::json!({ "asset": a.file }),
+            None => return,
+        };
+        if !a.filename.is_empty() {
+            body["name"] = a.filename.clone().into();
+        }
+        client::post_bg("/file/save".to_owned(), body);
+    }
+
+    /// Archive / Unarchive: `POST /artifact/hide` — an archived item
+    /// leaves the Library's lists for its Archived chip; the file stays on
+    /// disk, its card in the chat and its rows in groups.
+    pub fn archive_library_item(&'static self, id: &str, archived: bool) {
+        let id = app_name(id).to_owned();
+        self.thread_apps.update(|v| {
+            for a in v.iter_mut().filter(|a| a.app == id) {
+                a.archived = archived;
+            }
+        });
+        spawn_detached(async move {
+            let _ = client::post("/artifact/hide", serde_json::json!({ "id": id, "hidden": archived })).await;
+            self.refresh_thread_apps();
+        });
+    }
+
+    /// Whether the open chat's artifact `id` is archived.
+    pub fn is_archived(&'static self, id: &str) -> bool {
+        let id = app_name(id);
+        self.thread_apps.with_untracked(|v| v.iter().any(|a| a.app == id && a.archived))
+    }
+
+    /// Delete a file a reply made (`file:<path>`): `POST /artifact/delete`
+    /// — its cards leave every chat, the file the disk, and it leaves every
+    /// group. (Mini apps and image cards go by `app-delete`.)
+    pub fn delete_library_file(&'static self, id: &str) {
+        let id = id.to_owned();
+        self.thread_apps.update(|v| v.retain(|a| a.app != id));
+        spawn_detached(async move {
+            let _ = client::post("/artifact/delete", serde_json::json!({ "id": id })).await;
+            self.refresh_thread_apps();
+            self.refresh_turns();
+        });
+    }
+
+    /// The Versions picker of a Library row, opened at (`x`, `y`).
+    pub fn library_versions(&'static self, id: &str, x: f32, y: f32) {
+        if let Some(a) = self.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == id).cloned()) {
+            self.vers_pop.set(Some(VersPop { app: a.app, x, y, cur: a.v, versions: a.versions }));
+        }
+    }
+
+    /// A group's artifact in its own chat, at the message that made it.
+    pub fn show_group_item(&'static self, a: &RoxApp) {
+        if a.turn_id.is_empty() {
+            self.go_to(&a.thread_uid, (a.i >= 0).then_some(a.i));
+        } else {
+            self.go_to_key(&a.thread_uid, Some(a.turn_id.clone()));
         }
     }
 
@@ -4451,10 +5804,24 @@ impl Store {
     /// [`go_to`] by a turn key: its `id` (a link's UUID) or its index.
     pub fn go_to_key(&'static self, thread: &str, key: Option<String>) {
         // A link names the chat by its uid; the store by its id.
-        let thread = self
-            .threads
-            .with_untracked(|t| t.iter().find(|t| t.uid == thread).map(|t| t.id.clone()))
-            .unwrap_or_else(|| thread.to_owned());
+        let known = self.threads.with_untracked(|t| {
+            t.iter().find(|t| t.uid == thread || t.id == thread).map(|t| t.id.clone())
+        });
+        let Some(thread) = known else {
+            // A chat this window hasn't listed yet (made elsewhere a moment
+            // ago): list the chats again, then go — an unknown uid taken as
+            // the id would leave the transcript on the old chat for good.
+            let (thread, key) = (thread.to_owned(), key.clone());
+            spawn_detached(async move {
+                if let Some(v) = client::get("/threads").await {
+                    self.set_threads(v);
+                }
+                if self.threads.with_untracked(|t| t.iter().any(|t| t.uid == thread || t.id == thread)) {
+                    self.go_to_key(&thread, key);
+                }
+            });
+            return;
+        };
         let thread = thread.as_str();
         self.nav_epoch.set(self.nav_epoch.get().wrapping_add(1));
         self.tab.set("chat".to_owned());
@@ -4548,6 +5915,14 @@ impl Store {
             *self.early_link.borrow_mut() = Some(url.to_owned());
             return;
         }
+        if let Some(name) = url.strip_prefix("rox://plugin/") {
+            let name = name.trim_end_matches('/').to_owned();
+            self.open_plugins();
+            if !name.is_empty() {
+                self.push_nav("plugin", &name, "");
+            }
+            return;
+        }
         match parse_chat_link(url) {
             Some((thread, key)) => self.go_to_key(&thread, key),
             None if url.starts_with('#') => {}
@@ -4590,4 +5965,12 @@ pub(crate) fn pretty_model(id: &str) -> String {
         return s;
     }
     parts.iter().map(|p| title(p)).collect::<Vec<_>>().join(" ")
+}
+
+/// `spawn`, but owned by no layer: for work started from a menu or a modal
+/// that closes right after (a task under that owner dies before it runs).
+fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
+    Owner::detached().run(|| {
+        spawn(f);
+    });
 }

@@ -15,6 +15,9 @@ use crate::theme;
 /// artifact, the turn's label/version/caption and its index.
 #[derive(Clone, Default)]
 pub(crate) struct CardShell {
+    /// The turn's id: the server flags it `revising` while a revise of
+    /// this card builds.
+    pub id: String,
     pub art: Art,
     pub label: String,
     pub v: i64,
@@ -29,7 +32,7 @@ pub(crate) struct CardShell {
 /// `w×h` and scaled to fit (shell.tsx:911): `min(1, 560/w, 560/h,
 /// (column-24)/w)`, so a narrow window never pushes it under the pane.
 pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
-    let CardShell { art, label, v, caption, i, bar } = shell;
+    let CardShell { id, art, label, v, caption, i, bar } = shell;
     let dw = if art.w > 0.0 { art.w as f32 } else { 480.0 };
     let dh = if art.h > 0.0 { art.h as f32 } else { (dw * 0.75).round() };
     // the measured column width; 0 until the first layout.
@@ -77,8 +80,19 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                 .items_center()
                 .gap_2()
                 .min_h(px(22.0))
+                .when(label != "image", |row| row.child(crate::appdetails::app_icon(&art.app, 20.0)))
                 .child(
-                    text(title)
+                    // App Details' edits win over the turn's copy.
+                    text({
+                        let app = art.app.clone();
+                        move || {
+                            store()
+                                .meta_of(&app)
+                                .map(|m| m.title)
+                                .filter(|t| !t.is_empty() && t.as_str() != crate::store::app_name(&app))
+                                .unwrap_or_else(|| title.clone())
+                        }
+                    })
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::TEXT)
@@ -97,14 +111,25 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                     )
                 }),
         )
-        .when(!art.desc.is_empty(), |c| {
-            c.child(
-                text(art.desc.clone())
+        .child({
+            let (app, desc) = (art.app.clone(), art.desc.clone());
+            let desc_of = move || {
+                store()
+                    .meta_of(&app)
+                    .map(|m| m.description)
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| desc.clone())
+            };
+            let shown = desc_of.clone();
+            when(move || !shown().is_empty(), move || {
+                let desc_of = desc_of.clone();
+                text(move || desc_of())
                     .text_size(px(12.0))
                     .text_color(theme::DIM)
                     .mt(px(2.0))
-                    .number_of_lines(2),
-            )
+                    .number_of_lines(2)
+                    .into_element()
+            })
         })
         .when(!caption.is_empty(), |c| {
             let caption = caption.clone();
@@ -129,7 +154,38 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                     0.0,
                     Some(std::rc::Rc::new(move || (dw, h_of()))),
                     Some(on_natural),
-                )),
+                ))
+                // A generated image opens in the lightbox (a press inside
+                // the mini app never reaches Rox).
+                .when(art.kind == "image" && !art.file.is_empty(), |v| {
+                    let (file, title, w, h) = (art.file.clone(), art.title.clone(), art.w, art.h);
+                    v.child(
+                        view()
+                            .absolute()
+                            .inset(px(0.0))
+                            .label("Open image")
+                            .on_press(move || {
+                                store().open_lightbox(
+                                    vec![crate::store::LightItem {
+                                        kind: "image".to_owned(),
+                                        uri: format!("{}/asset/generated/assets/{file}", crate::client::GEN),
+                                        name: if title.is_empty() { file.clone() } else { title.clone() },
+                                        path: String::new(),
+                                        poster: String::new(),
+                                        // Its size frames it exactly (0 left
+                                        // the stage-wide frame showing).
+                                        w,
+                                        h,
+                                        code: String::new(),
+                                    }],
+                                    0,
+                                )
+                            }),
+                    )
+                })
+                // A revise in progress covers the old version with the
+                // generation placeholder, at the body's size.
+                .child(crate::dotgrid::revise_overlay(art.app.clone(), id)),
         )
         .child({
             let err_app = art.app.clone();

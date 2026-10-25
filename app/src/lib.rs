@@ -10,12 +10,14 @@
 //! and bumps `remount`, which the dynamic reads. [`live::init`] anchors the
 //! app's store under the root owner so the whole model survives remounts.
 
+mod appdetails;
 mod avatar;
 mod botmodal;
 mod chat;
 mod client;
 mod composer;
 mod ctx;
+mod dotgrid;
 mod files;
 mod hot;
 mod icons;
@@ -32,6 +34,7 @@ mod sidebar;
 mod statusfx;
 mod store;
 mod theme;
+mod versions;
 mod widgets;
 pub mod zoom;
 
@@ -79,14 +82,17 @@ pub fn App() -> impl IntoElement {
     let note = signal(String::new());
     live::install(remount, note);
     live::init();
-    // `rox://chat/<thread>[?m=<turn>]` opened from another app (the dev
-    // bundle declares the scheme): the root never remounts, so this
+    // `rox://chat/<thread>[?m=<turn>]` / `rox://plugin/<name>` (the
+    // plugin page's Share link) opened from another app (the dev bundle
+    // declares the scheme): the root never remounts, so this
     // handler lives as long as the app. Other URLs are ignored here —
     // `open_link` would hand them to the system, which for `rox://` sends
     // them straight back.
     on_open_url(|url| {
         let thread = url.strip_prefix("rox://chat/").map(|r| r.split('?').next().unwrap_or(""));
-        if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty()) {
+        if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
+            || url.starts_with("rox://plugin/")
+        {
             live::store().open_link(url);
         } else {
             log::warn!("rox: ignoring opened URL {url}");

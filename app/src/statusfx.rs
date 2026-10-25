@@ -93,7 +93,7 @@ pub(crate) fn shimmer(label: impl Fn() -> String + 'static) -> impl IntoElement 
 }
 
 /// `shimmer` with Grok's `size`/`color`/`hi` (11+MUTED+TEXT for the
-/// status row, 12+FAINT+TEXT for `ArtPlaceholder`).
+/// status row).
 pub(crate) fn shimmer_at(
     label: impl Fn() -> String + 'static,
     size: f32,
@@ -257,8 +257,11 @@ pub(crate) fn status_fx(
     let bot = seed.clone().unwrap_or_default();
     // `flexDirection: "row"` (App.tsx:2168): the mark, then its label, on
     // the column's left edge — a column centered the mark alone.
+    // Full width: the label's canvas flex-grows into it (a hugging row
+    // left it at its 60pt minimum, squeezing longer statuses).
     view()
         .flex_row()
+        .w_full()
         .gap(px(7.0))
         .items_center()
         .on_hover_in(move || crate::live::store().emph_bot.set(bot.clone()))
