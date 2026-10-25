@@ -100,6 +100,8 @@ export default async function handle(req, res) {
             instructions: b.instructions || "",
             memories: b.memories || [],
             integrations: integrationsOf(b),
+            // Bot Details' "Last updated": its last edit, else when it was made
+            updated_at: b.updated_at || 0,
             preview: String(last?.text || last?.caption || "").replace(/[#*`>_]/g, "").replace(/\s+/g, " ").trim().slice(0, 160),
           };
         }),

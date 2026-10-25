@@ -2,7 +2,7 @@
 // and integrations, all filled on demand. The bot rows live in store.bots
 // (persisted by state.mjs); this module holds the operations on them, the
 // system-prompt section and the agent tools that act on the thread's bot.
-import { entryOf } from "./plugins.mjs";
+import { entryOf, iconFile } from "./plugins.mjs";
 import { db, persist, store, uuidv7 } from "./state.mjs";
 
 export const botOfThread = (thread) =>
@@ -15,7 +15,13 @@ export function setBotProfile(bot, { label, description, instructions } = {}) {
   if (label !== undefined) bot.label = clip(label, 40);
   if (description !== undefined) bot.description = clip(description, 600);
   if (instructions !== undefined) bot.instructions = clip(instructions, 6000);
+  if (description !== undefined || instructions !== undefined) touch(bot);
 }
+
+// Bot Details' "Last updated": its profile, memories or integrations changed.
+export const touch = (bot) => {
+  bot.updated_at = Date.now();
+};
 
 // ————— memories: [{ id, text, at }] —————
 export function memoryAdd(bot, text) {
@@ -26,7 +32,20 @@ export function memoryAdd(bot, text) {
   if (dup) return dup;
   const m = { id: uuidv7(), text: t, at: Date.now() };
   bot.memories.push(m);
+  touch(bot);
   if (bot.memories.length > 200) bot.memories.splice(0, bot.memories.length - 200);
+  persist();
+  return m;
+}
+/** A memory's new text (Bot Details' edit). */
+export function memoryUpdate(bot, memoryId, text) {
+  const t = clip(text, 1000);
+  if (!t) throw new Error("memory needs text");
+  const m = (bot.memories ??= []).find((x) => x.id === memoryId);
+  if (!m) throw new Error(`bot has no memory ${memoryId}`);
+  m.text = t;
+  m.at = Date.now();
+  touch(bot);
   persist();
   return m;
 }
@@ -34,6 +53,7 @@ export function memoryRemove(bot, memoryId) {
   const before = (bot.memories ??= []).length;
   bot.memories = bot.memories.filter((m) => m.id !== memoryId);
   if (bot.memories.length === before) throw new Error(`no memory ${memoryId}`);
+  touch(bot);
   persist();
 }
 
@@ -45,16 +65,17 @@ const KINDS = ["mcp", "plugin", "skill"];
 function lookup(kind, id) {
   if (kind === "mcp") {
     const r = db.prepare("SELECT id,name FROM mcp_servers WHERE id=? OR name=?").get(id, id);
-    return r && { id: r.id, name: r.name || r.id, kind };
+    const cat = r && entryOf(r.name || r.id);
+    return r && { id: r.id, name: r.name || r.id, kind, description: cat?.description || "", icon: cat && iconFile(cat.key) ? `/plugins/icon/${encodeURIComponent(cat.key)}` : "" };
   }
   if (kind === "plugin") {
     const inst = db.prepare("SELECT name FROM installed_plugins WHERE name=?").get(id);
     const cat = entryOf(id);
-    return (inst || cat) && { id, name: cat?.displayName || cat?.name || id, kind };
+    return (inst || cat) && { id, name: cat?.displayName || cat?.name || id, kind, description: cat?.description || "", icon: iconFile(id) ? `/plugins/icon/${encodeURIComponent(id)}` : "" };
   }
   if (kind === "skill") {
-    const r = db.prepare("SELECT id,name FROM skills WHERE id=? OR name=?").get(id, id);
-    return r && { id: r.id, name: r.name || r.id, kind };
+    const r = db.prepare("SELECT id,name,description FROM skills WHERE id=? OR name=?").get(id, id);
+    return r && { id: r.id, name: r.name || r.id, kind, description: r.description || "", icon: "" };
   }
   return null;
 }
@@ -95,7 +116,7 @@ export const integrationsOf = (bot) => {
     .filter((x) => !(x.kind === "mcp" && plugins.has(pluginOfServer(x.id))))
     .map((x) => {
       const hit = lookup(x.kind, x.id);
-      return hit ? { id: hit.id, name: hit.name, kind: x.kind } : { id: x.id, name: x.id, kind: x.kind, missing: true };
+      return hit ? { id: hit.id, name: hit.name, kind: x.kind, description: hit.description, icon: hit.icon } : { id: x.id, name: x.id, kind: x.kind, missing: true };
     });
 };
 
@@ -104,6 +125,7 @@ export function integrationAdd(bot, spec, via = "user") {
   bot.integrations ??= [];
   if (!bot.integrations.some((x) => x.kind === hit.kind && x.id === hit.id)) {
     bot.integrations.push({ id: hit.id, kind: hit.kind, at: Date.now(), via });
+    touch(bot);
     persist();
   }
   return hit;
@@ -121,6 +143,7 @@ export function integrationRemove(bot, spec) {
     (x) => !(x.id === id && (!kind || x.kind === kind)) && !(kind === "plugin" && x.kind === "mcp" && pluginOfServer(x.id) === id),
   );
   if (bot.integrations.length === before) throw new Error(`bot has no integration ${spec?.id ?? spec}`);
+  touch(bot);
   persist();
 }
 

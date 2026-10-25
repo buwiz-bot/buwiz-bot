@@ -1,5 +1,6 @@
 // routes/files.mjs — extracted from app-server.mjs
-import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serverFile, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, GEN_DIR, WIDGETS_DIR, outFile } from "../config.mjs";
@@ -141,10 +142,13 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
       res.setHeader("content-type", "application/json");
       try {
         const { path, data } = JSON.parse(body || "{}");
-        const p = outFile(path || "");
+        // an old version saved again becomes the file's next version
+        const rel = versionOf(path || "")?.rel || path || "";
+        const p = outFile(rel);
         if (!p || !existsSync(dirname(p))) return res.end(JSON.stringify({ ok: false, error: "bad path" }));
-        writeFileSync(p, Buffer.from(String(data || ""), "base64"));
-        res.end(JSON.stringify({ ok: true }));
+        const bytes = Buffer.from(String(data || ""), "base64");
+        const v = keepVersion(rel, p, bytes);
+        res.end(JSON.stringify({ ok: true, v }));
       } catch (e) {
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e).slice(0, 200) }));
       }
@@ -153,6 +157,31 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
   }
   // {path} is a reply file, {asset} a generated image (by bare file name);
   // `name` is the panel's default (the Library's display name).
+  // POST /file/open {path} — the file in its own app (Preview, Pages,
+  // Keynote, …), which prints and edits it.
+  if (req.method === "POST" && req.url === "/file/open") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      let p = null;
+      try { p = viewerFile(JSON.parse(body || "{}").path || ""); } catch {}
+      if (!p || !existsSync(p)) return res.end(JSON.stringify({ ok: false }));
+      spawn("open", [p], { detached: true, stdio: "ignore" }).unref();
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return true;
+  }
+  // GET /file/versions?path=<rel> — a reply file's saved versions:
+  // {v: the current one, versions: [{v, at, bytes, path}]} (path opens it
+  // in the viewer); [] for a file never saved from Rox.
+  if (req.method === "GET" && req.url.startsWith("/file/versions?")) {
+    const rel = versionOf(new URL(req.url, "http://x").searchParams.get("path") || "")?.rel
+      || new URL(req.url, "http://x").searchParams.get("path") || "";
+    res.setHeader("content-type", "application/json");
+    const versions = versionsOfFile(rel);
+    return res.end(JSON.stringify({ v: versions.at(-1)?.v || 0, versions }));
+  }
   if (req.method === "POST" && req.url === "/file/save") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -216,4 +245,48 @@ function viewerFile(path) {
   const v = headOf(m[1]);
   const head = [v && verFile(m[1], v), join(GEN_DIR, `${m[1]}.tsx`), join(WIDGETS_DIR, `${m[1]}.tsx`)].filter(Boolean);
   return head.find((p) => existsSync(p)) || null;
+}
+
+// ————— a reply file's versions —————
+// Every Save from Rox (the Office editors' /file/write) keeps the file's
+// content as files/.versions/<rel>/v<n>.<ext>: the first save keeps what
+// was there as v1, each save adds the next. The file itself is always the
+// newest; a version file opens in the viewer like any file.
+const VERSIONS = ".versions";
+const extOfPath = (rel) => (/\.([a-z0-9]+)$/i.exec(rel)?.[1] || "bin").toLowerCase();
+
+/** The original file and number of a version's path, else null. */
+function versionOf(path) {
+  const m = new RegExp(`^${VERSIONS}/(.+)/v(\\d+)\\.[a-z0-9]+$`, "i").exec(String(path));
+  return m ? { rel: m[1], v: Number(m[2]) } : null;
+}
+
+export function versionsOfFile(rel) {
+  const dir = outFile(`${VERSIONS}/${rel}`);
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir)
+    .map((f) => /^v(\d+)\./.exec(f) && { v: Number(/^v(\d+)\./.exec(f)[1]), f })
+    .filter(Boolean)
+    .sort((a, b) => a.v - b.v)
+    .map(({ v, f }) => {
+      const st = statSync(join(dir, f));
+      return { v, at: Math.round(st.mtimeMs), bytes: st.size, path: `${VERSIONS}/${rel}/${f}` };
+    });
+}
+
+/** Writes `bytes` to the file at `p` as its next version; its number. */
+function keepVersion(rel, p, bytes) {
+  const dir = outFile(`${VERSIONS}/${rel}`);
+  const ext = extOfPath(rel);
+  let vs = versionsOfFile(rel);
+  if (dir) mkdirSync(dir, { recursive: true });
+  // the content before the first save is v1
+  if (dir && !vs.length && existsSync(p)) {
+    copyFileSync(p, join(dir, `v1.${ext}`));
+    vs = versionsOfFile(rel);
+  }
+  writeFileSync(p, bytes);
+  const v = (vs.at(-1)?.v || 0) + 1;
+  if (dir) writeFileSync(join(dir, `v${v}.${ext}`), bytes);
+  return v;
 }

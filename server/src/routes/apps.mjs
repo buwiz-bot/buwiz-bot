@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, readFileSync, readdirSync,
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import { GEN_DIR, MODEL, NSH, PORT, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W, POP_H, WINDOWS_DIR, CHUNK_DIR, OUT_DIR } from "../config.mjs";
+import { DATA_DIR, GEN_DIR, MODEL, NSH, PORT, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W, POP_H, WINDOWS_DIR, CHUNK_DIR, OUT_DIR } from "../config.mjs";
 import { uuidv7, openWindows, db, metaGet, metaSet, slugFile, store, activeThread, getLinearKey, writeIndex, writeShelf, widgetRow } from "../state.mjs";
 import { emitChunk, walkFiles, headOf, verFile, versionsOf, setHead } from "../pipeline.mjs";
 import { desktopBounds, raiseWidget } from "../windows.mjs";
@@ -323,6 +323,38 @@ export default async function handle(req, res) {
       }
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: true }));
+    });
+    return true;
+  }
+  // The user's keyboard shortcuts: DATA_DIR/keymap.json, a map of command
+  // id → its keystrokes (["mod+h"]; [] unbinds it). Only the user's
+  // changes live there — the app ships the defaults — and the file can be
+  // edited by hand: a GET always reads it fresh.
+  if (req.url === "/keymap") {
+    const file = join(DATA_DIR, "keymap.json");
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET") {
+      let map = {};
+      try { map = JSON.parse(readFileSync(file, "utf8")); } catch {}
+      return res.end(JSON.stringify({ keymap: map && typeof map === "object" && !Array.isArray(map) ? map : {} }));
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const map = JSON.parse(body || "{}").keymap;
+        if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error("keymap must be an object");
+        const clean = {};
+        for (const [id, keys] of Object.entries(map)) {
+          if (!/^[a-z0-9_.-]+$/i.test(id) || !Array.isArray(keys)) throw new Error(`bad entry ${id}`);
+          clean[id] = keys.map((k) => String(k).trim().toLowerCase()).filter(Boolean).slice(0, 4);
+        }
+        writeFileSync(file, JSON.stringify(clean, null, 2) + "\n");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
     });
     return true;
   }

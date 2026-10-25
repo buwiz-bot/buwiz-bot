@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { GEN_DIR, PROVIDER, MODEL, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
 import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
-import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, setBotProfile } from "../botctx.mjs";
+import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, memoryUpdate, setBotProfile } from "../botctx.mjs";
 import { anthropic } from "../model.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
 
@@ -90,7 +90,8 @@ export default async function handle(req, res) {
     });
     return true;
   }
-  // A bot's memories: {id, op:"add", text} | {id, op:"remove", memoryId}.
+  // A bot's memories: {id, op:"add", text} | {id, op:"update", memoryId,
+  // text} | {id, op:"remove", memoryId}.
   if (req.method === "POST" && req.url === "/bot/memory") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -101,6 +102,7 @@ export default async function handle(req, res) {
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
         if (op === "add") memoryAdd(bot, text);
+        else if (op === "update") memoryUpdate(bot, String(memoryId || ""), text);
         else if (op === "remove") memoryRemove(bot, String(memoryId || ""));
         else throw new Error(`unknown op ${op}`);
         res.end(JSON.stringify({ ok: true, memories: bot.memories }));
