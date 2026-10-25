@@ -2,7 +2,7 @@
 // and integrations, all filled on demand. The bot rows live in store.bots
 // (persisted by state.mjs); this module holds the operations on them, the
 // system-prompt section and the agent tools that act on the thread's bot.
-import { PLUGIN_CATALOG } from "./config.mjs";
+import { entryOf } from "./plugins.mjs";
 import { db, persist, store, uuidv7 } from "./state.mjs";
 
 export const botOfThread = (thread) =>
@@ -49,7 +49,7 @@ function lookup(kind, id) {
   }
   if (kind === "plugin") {
     const inst = db.prepare("SELECT name FROM installed_plugins WHERE name=?").get(id);
-    const cat = (PLUGIN_CATALOG?.plugins || []).find((p) => p.name === id);
+    const cat = entryOf(id);
     return (inst || cat) && { id, name: cat?.displayName || cat?.name || id, kind };
   }
   if (kind === "skill") {
@@ -75,13 +75,29 @@ export function resolveIntegration(spec) {
   throw new Error(`no integration matches ${kind ? `${kind}:` : ""}${id}`);
 }
 
+// The installed plugin that registered an mcp_servers row, if any.
+function pluginOfServer(serverId) {
+  for (const p of db.prepare("SELECT name, meta FROM installed_plugins").all()) {
+    try {
+      if ((JSON.parse(p.meta || "{}").mcp || []).includes(serverId)) return p.name;
+    } catch {}
+  }
+  return null;
+}
+
 // The resolved list GET /threads and the tools return: names come live from
 // the mcp_servers rows / plugin catalog / skills; a removed one keeps its id.
-export const integrationsOf = (bot) =>
-  (bot.integrations || []).map((x) => {
-    const hit = lookup(x.kind, x.id);
-    return hit ? { id: hit.id, name: hit.name, kind: x.kind } : { id: x.id, name: x.id, kind: x.kind, missing: true };
-  });
+// A server a listed plugin owns is that plugin — one row per app.
+export const integrationsOf = (bot) => {
+  const xs = bot.integrations || [];
+  const plugins = new Set(xs.filter((x) => x.kind === "plugin").map((x) => x.id));
+  return xs
+    .filter((x) => !(x.kind === "mcp" && plugins.has(pluginOfServer(x.id))))
+    .map((x) => {
+      const hit = lookup(x.kind, x.id);
+      return hit ? { id: hit.id, name: hit.name, kind: x.kind } : { id: x.id, name: x.id, kind: x.kind, missing: true };
+    });
+};
 
 export function integrationAdd(bot, spec, via = "user") {
   const hit = resolveIntegration(spec);
@@ -100,13 +116,16 @@ export function integrationRemove(bot, spec) {
     [kind, id] = m ? [m[1], m[2]] : [undefined, String(spec || "")];
   }
   const before = (bot.integrations ??= []).length;
-  bot.integrations = bot.integrations.filter((x) => !(x.id === id && (!kind || x.kind === kind)));
+  // Removing a plugin removes the servers it owns, which it stood in for.
+  bot.integrations = bot.integrations.filter(
+    (x) => !(x.id === id && (!kind || x.kind === kind)) && !(kind === "plugin" && x.kind === "mcp" && pluginOfServer(x.id) === id),
+  );
   if (bot.integrations.length === before) throw new Error(`bot has no integration ${spec?.id ?? spec}`);
   persist();
 }
 
 // A tool call from the thread's bot: an mcp_<server>_<tool> call records the
-// server (and the plugin that registered it, when one did).
+// plugin that registered the server, else the server itself.
 export function recordToolUse(thread, serverId) {
   const bot = botOfThread(thread);
   if (!bot) return;
@@ -117,12 +136,9 @@ export function recordToolUse(thread, serverId) {
     bot.integrations.push({ id, kind, at: Date.now(), via: "use" });
     changed = true;
   };
-  add("mcp", serverId);
-  for (const p of db.prepare("SELECT name, meta FROM installed_plugins").all()) {
-    try {
-      if ((JSON.parse(p.meta || "{}").mcp || []).includes(serverId)) add("plugin", p.name);
-    } catch {}
-  }
+  const plugin = pluginOfServer(serverId);
+  if (plugin) add("plugin", plugin);
+  else add("mcp", serverId);
   if (changed) persist();
 }
 

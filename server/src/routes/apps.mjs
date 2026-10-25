@@ -2,11 +2,47 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import { GEN_DIR, MODEL, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W, POP_H, WINDOWS_DIR, CHUNK_DIR, OUT_DIR } from "../config.mjs";
-import { uuidv7, openWindows, deskSlots, db, metaGet, metaSet, slugFile, store, activeThread, getLinearKey, writeIndex, writeShelf, widgetRow } from "../state.mjs";
+import { GEN_DIR, MODEL, NSH, PORT, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W, POP_H, WINDOWS_DIR, CHUNK_DIR, OUT_DIR } from "../config.mjs";
+import { uuidv7, openWindows, db, metaGet, metaSet, slugFile, store, activeThread, getLinearKey, writeIndex, writeShelf, widgetRow } from "../state.mjs";
 import { emitChunk, walkFiles, headOf, verFile, versionsOf, setHead } from "../pipeline.mjs";
-import { desktopBounds, allocDeskSlot, raiseWidget, renderShot } from "../windows.mjs";
+import { desktopBounds, raiseWidget } from "../windows.mjs";
+import { imageCapable, imageModels } from "../avatars.mjs";
+import { appInfo, appsMeta, artHints, genAppIcon, iconPath, iconUrl, originOf, updateAppMeta } from "../appmeta.mjs";
+import { forgetArtifact } from "../artifacts.mjs";
+
+
+// opencodex's providers and how each authenticates (its config file):
+// a ChatGPT / OAuth login is a subscription, a key an API connection.
+let connCache = { at: 0, conns: { providers: {}, def: "openai" } };
+function opencodexConnections() {
+  if (Date.now() - connCache.at < 30_000) return connCache.conns;
+  try {
+    const c = JSON.parse(readFileSync(join(homedir(), ".opencodex", "config.json"), "utf8"));
+    const providers = {};
+    for (const [id, p] of Object.entries(c.providers || {}))
+      providers[id] = { auth: p.authMode || "", label: p.label || p.name || "" };
+    connCache = { at: Date.now(), conns: { providers, def: c.defaultProvider || "openai" } };
+  } catch {
+    connCache.at = Date.now();
+  }
+  return connCache.conns;
+}
+const CONN_LABELS = {
+  "anthropic-apikey": "Anthropic", anthropic: "Anthropic", openai: "OpenAI", xai: "xAI",
+  openrouter: "OpenRouter", google: "Google", gemini: "Google", deepseek: "DeepSeek",
+  moonshot: "Moonshot", groq: "Groq", together: "Together", fireworks: "Fireworks",
+};
+function connectionOf(id, owner, conns) {
+  const slash = id.indexOf("/");
+  const conn = slash > 0 ? id.slice(0, slash) : String(owner || conns.def).toLowerCase();
+  const p = conns.providers[conn] || {};
+  const auth = p.auth || (/apikey|key/.test(conn) ? "key" : "forward");
+  const label =
+    p.label || CONN_LABELS[conn] || conn.replace(/-?apikey$/i, "").replace(/^\w/, (c) => c.toUpperCase());
+  return { connection: conn, group: label, subscription: auth !== "key" };
+}
 
 export default async function handle(req, res) {
   if (req.method === "GET" && req.url.startsWith("/module")) {
@@ -36,49 +72,72 @@ export default async function handle(req, res) {
         : JSON.stringify({ source: "", published: !!widgetRow(name) }),
     );
   }
-  // POST /app/meta {name, title?, file?} — the Library's renames: a display
-  // title and/or a kebab-case display filename. The real module file
-  // (R<n>.tsx) never moves — `file` is a label, not a rename on disk.
+  // POST /app/meta {name, title?, file?, description?, w?, h?, icon?} — the
+  // Library's renames and the details modal's edits. `file` is a display
+  // label: the version files batch-rename to the new slug. icon "" removes
+  // the icon; a file:// uri or absolute path is adopted as icon.png.
+  // Replies with the /app/info object.
   if (req.method === "POST" && req.url === "/app/meta") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
+      res.setHeader("content-type", "application/json");
       try {
-        const { name, title, file } = JSON.parse(body || "{}");
-        if (!/^R\d+$/.test(String(name || "")))
-          throw new Error(`no such module ${name}`);
-        const cur =
-          db.prepare("SELECT title,file FROM apps WHERE name=?").get(name) ||
-          {};
-        const t =
-          title === undefined
-            ? (cur.title ?? null)
-            : String(title).trim().slice(0, 60) || null;
-        const f =
-          file === undefined ? (cur.file ?? null) : slugFile(file) || null;
-        db.prepare(
-          "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
-        ).run(name, t, f);
-        // A rename moves the whole batch: every <old>.v<n>.tsx in the
-        // artifact's dir becomes <new-slug>.v<n>.tsx, and the index re-points
-        // at the new paths. (Chunk ids stay flat R<n>v<k>.js — name-stable.)
-        const oldSlug = (cur.file || slugFile(cur.title) || `${name}.tsx`).replace(/\.tsx$/i, "");
-        const newSlug = (f || slugFile(t) || `${name}.tsx`).replace(/\.tsx$/i, "");
-        if (newSlug !== oldSlug) {
-          const dir = join(GEN_DIR, name);
-          try {
-            for (const x of readdirSync(dir)) {
-              const m = x.match(/\.v(\d+)\.tsx$/);
-              if (m)
-                renameSync(join(dir, x), join(dir, `${newSlug}.v${m[1]}.tsx`));
-            }
-          } catch {}
-          writeIndex();
-        }
-        res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify({ ok: true, title: t || "", file: f || `${name}.tsx` }),
-        );
+        const j = JSON.parse(body || "{}");
+        const name = String(j.name || "");
+        updateAppMeta(name, j);
+        res.end(JSON.stringify(appInfo(name, originOf(req))));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // GET /app/info?name=R<n> — everything the details modal shows.
+  if (req.method === "GET" && req.url.split("?")[0] === "/app/info") {
+    res.setHeader("content-type", "application/json");
+    const name = new URL(req.url, "http://x").searchParams.get("name") || "";
+    try {
+      return res.end(JSON.stringify(appInfo(name, originOf(req))));
+    } catch (e) {
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    }
+  }
+  // GET /apps/meta — details for every live (non-tombstoned) artifact.
+  if (req.method === "GET" && req.url.split("?")[0] === "/apps/meta") {
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ apps: appsMeta(originOf(req)) }));
+  }
+  // GET /app/icon?name=R<n>[&t=…] — the app's icon.png (404 when none).
+  if (req.method === "GET" && req.url.split("?")[0] === "/app/icon") {
+    const name = new URL(req.url, "http://x").searchParams.get("name") || "";
+    const p = /^R\d+$/.test(name) ? iconPath(name) : "";
+    if (!p || !existsSync(p)) {
+      res.statusCode = 404;
+      return res.end("no icon");
+    }
+    res.setHeader("content-type", "image/png");
+    res.setHeader("cache-control", "no-cache");
+    return res.end(readFileSync(p));
+  }
+  // POST /app/icon/gen {name, prompt?, model} — start drawing the app's
+  // icon with an image model the bot's `model` reaches (prompt defaults to
+  // its title + description + first build prompt). Answers at once; the
+  // client polls /app/info (`generating`, `icon_error`).
+  if (req.method === "POST" && req.url === "/app/icon/gen") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { name, prompt, model } = JSON.parse(body || "{}");
+        const n = String(name || "");
+        if (!(await imageCapable(model)))
+          throw new Error(`${model || "This model"} can't generate images`);
+        genAppIcon(n, prompt, model).catch(() => {});
+        res.end(JSON.stringify(appInfo(n, originOf(req))));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
@@ -97,6 +156,16 @@ export default async function handle(req, res) {
         const { name, v } = JSON.parse(body || "{}");
         if (!setHead(String(name || ""), Number(v)))
           throw new Error(`no such version`);
+        // An open pop-out of the app shows the old head: reopen it on v.
+        const open = openWindows.get(String(name));
+        if (open && open.exitCode === null && !open.killed && open.shownV !== Number(v)) {
+          open.kill();
+          openWindows.delete(String(name));
+          fetch(`http://127.0.0.1:${PORT}/popout`, {
+            method: "POST",
+            body: JSON.stringify({ name, w: open.hintW, h: open.hintH }),
+          }).catch(() => {});
+        }
         res.end(JSON.stringify({ ok: true, v: Number(v) }));
       } catch (e) {
         res.statusCode = 400;
@@ -145,8 +214,10 @@ export default async function handle(req, res) {
       db.prepare("SELECT name FROM widgets").all().map((r) => r.name),
     );
     const metas = new Map(
-      db.prepare("SELECT name,title,file FROM apps").all().map((r) => [r.name, r]),
+      db.prepare("SELECT name,title,file,description FROM apps").all().map((r) => [r.name, r]),
     );
+    const hints = artHints();
+    const origin = originOf(req);
     const items = [];
     for (const f of readdirSync(GEN_DIR)) {
       const m = f.match(/^R\d+/);
@@ -160,6 +231,8 @@ export default async function handle(req, res) {
         name: m[0],
         title,
         file: meta.file || f,
+        description: meta.description ?? hints.get(m[0])?.desc ?? "",
+        icon: iconUrl(m[0], origin),
         v: headOf(m[0]),
         published: pubs.has(m[0]),
         uri: `module://${m[0]}`,
@@ -192,7 +265,9 @@ export default async function handle(req, res) {
     res.setHeader("content-type", "application/json");
     fetch(`${OPENCODEX}/v1/models`)
       .then((r) => r.json())
-      .then((j) => {
+      .then(async (j) => {
+        const draws = await imageModels();
+        const conns = opencodexConnections();
         const ids = new Set(j.data.map((m) => m.id));
         const models = j.data
           .filter((m) => !m.id.endsWith("--fast"))
@@ -202,6 +277,11 @@ export default async function handle(req, res) {
             fast: ids.has(m.id + "--fast"),
             efforts: (m.reasoning_efforts || []).map((e) => ({ value: e.value, label: String(e.label || e.value).replace(/ Effort$/i, "") })),
             defaultEffort: m.reasoning_effort || "",
+            // reaches an image model (App Details' Generate)
+            image: !!draws.get(m.id),
+            // the route: opencodex's provider (the id's prefix, else its
+            // default), a subscription login or an API connection
+            ...connectionOf(m.id, m.owned_by, conns),
           }));
         res.end(JSON.stringify({ ok: true, default: MODEL, models }));
       })
@@ -217,16 +297,30 @@ export default async function handle(req, res) {
         model: metaGet("model") || "",
         effort: metaGet("effort") || "",
         fast: metaGet("fast") === "1",
+        // the sidebar's two fixed sections, renamable (blank = default)
+        unassigned_name: metaGet("unassigned_name") || "Unassigned",
+        chats_name: metaGet("chats_name") || "Chats",
       }));
     }
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      const { theme, model, effort, fast } = JSON.parse(body || "{}");
+      const { theme, model, effort, fast, unassigned_name, chats_name } = JSON.parse(body || "{}");
       if (["system", "dark", "light"].includes(theme)) metaSet("theme", theme);
       if (model !== undefined) metaSet("model", String(model));
       if (effort !== undefined) metaSet("effort", String(effort));
       if (fast !== undefined) metaSet("fast", fast ? "1" : "0");
+      // a section keeps a name: a blank one is refused
+      for (const [k, v] of [["unassigned_name", unassigned_name], ["chats_name", chats_name]]) {
+        if (v === undefined) continue;
+        const n = String(v).replace(/\s+/g, " ").trim().slice(0, 60);
+        if (!n) {
+          res.statusCode = 400;
+          res.setHeader("content-type", "application/json");
+          return res.end(JSON.stringify({ ok: false, error: "a section needs a name" }));
+        }
+        metaSet(k, n);
+      }
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: true }));
     });
@@ -327,6 +421,8 @@ export default async function handle(req, res) {
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
         db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
+        // …and out of every group, the archive and its edited details
+        forgetArtifact(name);
         // Scrub the transcript too: every ai turn naming the artifact goes,
         // and the user prompt directly above it (the "name:" delete rule),
         // across all threads — a delete must never leave a "module missing"
@@ -491,49 +587,12 @@ export default async function handle(req, res) {
     };
   };
 
-  // GET /pins — which modules the user nominated to lead the widget feed.
-  if (req.method === "GET" && req.url === "/pins") {
-    res.setHeader("content-type", "application/json");
-    return res.end(
-      JSON.stringify({
-        pins: db.prepare("SELECT k FROM meta WHERE k LIKE 'pin:%'").all()
-          .map((r) => r.k.slice(4)),
-      }),
-    );
-  }
-
-  // POST /pin {name, pinned} — nominate a widget for the desktop extension.
-  if (req.method === "POST" && req.url === "/pin") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      res.setHeader("content-type", "application/json");
-      try {
-        const { name, pinned: p } = JSON.parse(body || "{}");
-        if (!name) return res.end(JSON.stringify({ ok: false }));
-        if (p)
-          db.prepare("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)").run(
-            `pin:${name}`, "1",
-          );
-        else db.prepare("DELETE FROM meta WHERE k=?").run(`pin:${name}`);
-        return res.end(JSON.stringify({ ok: true, pinned: !!p }));
-      } catch (e) {
-        return res.end(JSON.stringify({ ok: false, error: String(e) }));
-      }
-    });
-    return true;
-  }
-
   // GET /catalog — the Mini Apps tab's data: every published widget as a
   // metadata card. kinds: "db" (persists via /state), "api" (talks to a
   // /data source), "mem" (in-memory only — fresh state per surface).
-  // tags are user-set via /widget-meta; pinned via /pin.
+  // tags are user-set via /widget-meta.
   if (req.method === "GET" && req.url === "/catalog") {
     res.setHeader("content-type", "application/json");
-    const pins = new Set(
-      db.prepare("SELECT k FROM meta WHERE k LIKE 'pin:%'").all()
-        .map((r) => r.k.slice(4)),
-    );
     const tagRows = db.prepare("SELECT k,v FROM meta WHERE k LIKE 'tags:%'").all();
     const tags = Object.fromEntries(
       tagRows.map((r) => [r.k.slice(5), r.v.split(",").map((t) => t.trim()).filter(Boolean)]),
@@ -569,7 +628,6 @@ export default async function handle(req, res) {
           title: title || w.name,
           publishedAt: w.published_at,
           kinds,
-          pinned: pins.has(w.name),
           archived: arch.has(w.name),
           tags: tags[w.name] || [],
         };
@@ -619,19 +677,16 @@ export default async function handle(req, res) {
     return true;
   }
 
-  // POST /popout {name, mode?} — freeze a mount wrapper and spawn
+  // POST /popout {name, v?, w?, h?} — freeze a mount wrapper and spawn
   // `nsh run` on it: the widget gets its own real macOS window.
-  // mode "desktop" → pinned at the desktop-icon level (the real mini-app,
-  // live + interactive, sitting on the desktop where system widgets do).
   if (req.method === "POST" && req.url === "/popout") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      let name = "", mode = "float", popV = null, hintW = 0, hintH = 0;
+      let name = "", popV = null, hintW = 0, hintH = 0;
       try {
         const j = JSON.parse(body || "{}");
         name = j.name || "";
-        mode = j.mode === "desktop" ? "desktop" : "float";
         popV = j.v ? Number(j.v) : null;
         // The size the caller already laid the app out at (a chat card:
         // its declared width, its measured height), so the window opens
@@ -641,14 +696,21 @@ export default async function handle(req, res) {
       } catch {}
       res.setHeader("content-type", "application/json");
       if (!/^R\d+$/.test(name)) return res.end(JSON.stringify({ ok: false }));
-      const key = `${mode}:${name}${popV ? `@v${popV}` : ""}`;
+      const key = `${name}${popV ? `@v${popV}` : ""}`;
+      // The version the window shows: the pinned one, else the head.
+      const shownV = popV || headOf(name) || 0;
       // Already open: raise the live window instead of rewriting the
       // wrapper under it — a rewrite hot-reloads the dev session and the
-      // module remounts, wiping its in-memory state.
+      // module remounts, wiping its in-memory state. A window still on an
+      // older head is replaced.
       const prev = openWindows.get(key);
       if (prev && prev.exitCode === null && !prev.killed) {
-        raiseWidget(`widget · ${name}`);
-        return res.end(JSON.stringify({ ok: true, already: true }));
+        if (prev.shownV === shownV) {
+          raiseWidget(`widget · ${name}`);
+          return res.end(JSON.stringify({ ok: true, already: true }));
+        }
+        prev.kill();
+        openWindows.delete(key);
       }
       // v pins the pop-out to that version's file (a card pops out what it
       // shows); no v = the current head mirror.
@@ -671,14 +733,8 @@ export default async function handle(req, res) {
         : file === widgetFile
           ? `../widgets/${name}`
           : `../generated/${name}`;
-      const bounds = desktopBounds();
       // The window hugs content height up to three quarters of the screen.
-      const capH = Math.max(560, Math.floor(bounds.h * 0.75));
-      const desk = mode === "desktop" ? bounds : null;
-      const slot = desk ? allocDeskSlot(`${name}`) : 0;
-      const deskBlock = desk
-        ? `const DESK = { w: ${desk.w}, h: ${desk.h}, slot: ${slot} };`
-        : `const DESK = null as null | { w: number; h: number; slot: number };`;
+      const capH = Math.max(560, Math.floor(desktopBounds().h * 0.75));
       // The module's declared size, read here so the window opens at it
       // (--size) instead of flashing the host's default frame first.
       const src = readFileSync(file, "utf8");
@@ -698,14 +754,19 @@ export default async function handle(req, res) {
           ? Math.min(capH, Math.max(120, Math.round(hintH)))
           : Number(POP_H);
       const popName = popV ? `${name}@${popV}` : name;
+      const appTitle =
+        db.prepare("SELECT title FROM apps WHERE name=?").get(name)?.title || name;
+      const verLabel = shownV
+        ? db.prepare("SELECT label FROM versions WHERE name=? AND v=?").get(name, shownV)?.label || ""
+        : "";
+      const badge = shownV ? `v${shownV}${verLabel ? ` · ${verLabel}` : ""}` : "";
       mkdirSync(WINDOWS_DIR, { recursive: true });
       writeFileSync(
         join(WINDOWS_DIR, `pop-${name}${popV ? `-${popV}` : ""}.tsx`),
-        `import { mount, View } from "nsh";
+        `import { mount, Text, View } from "nsh";
 import { isAvailable, Window } from "nsh/desktop";
 import { colorScheme } from "nsh/device";
 import R, * as mod from "${rel}";
-${deskBlock}
 // Sizing contract: \`export const popoutSize = { w, h }\` fixes both axes
 // (canvas apps, games); \`export const popoutWidth\` sets the width and
 // the height hugs the content; neither → ${POP_W}pt wide, hugged height.
@@ -718,26 +779,14 @@ const STRIP = 26;
 if (isAvailable) {
   Window.setTitle("widget · " + ${JSON.stringify(popName)});
   Window.setTitleBar("hidden", 32); // natural height: the lights land at AppKit's own (9,9) spot
-  if (DESK) {
-    // a desktop widget: behind every window, on the desktop surface —
-    // slotted down the right edge like the system's own widgets.
-    Window.setLevel("desktopIcon");
-    Window.setFrame({
-      x: DESK.w - 24 - wantW,
-      y: DESK.h - 60 - ${wantH} - STRIP - DESK.slot * 500,
-      width: wantW,
-      height: ${wantH} + STRIP,
-    });
-  } else {
-    // A regular window level: aerospace keeps it out of the tile grid (a
-    // free-standing window), but it stacks normally — it can sit behind
-    // other windows and comes forward when focused, not pinned on top.
-    Window.setLevel("normal");
-    Window.setFrame({ width: wantW, height: ${wantH} + STRIP });
-    // A spawned host process has no activation context — without this the
-    // window orders in behind the front app, never key (grayed lights).
-    Window.orderFront();
-  }
+  // A regular window level: aerospace keeps it out of the tile grid (a
+  // free-standing window), but it stacks normally — it can sit behind
+  // other windows and comes forward when focused, not pinned on top.
+  Window.setLevel("normal");
+  Window.setFrame({ width: wantW, height: ${wantH} + STRIP });
+  // A spawned host process has no activation context — without this the
+  // window orders in behind the front app, never key (grayed lights).
+  Window.orderFront();
 }
 // The window hugs the widget's real height — with manners. A resize is
 // applied only once the measured height has been stable for ~150ms, so a
@@ -781,6 +830,26 @@ mount(() => (
         <R />
       </View>
     </View>
+    {/* The version badge, top right in the title strip: which version
+        of the app this window runs. */}
+    {${JSON.stringify(badge)} ? (
+      <View
+        style={{
+          position: "absolute", top: 6, right: 8, height: 17, paddingHorizontal: 7,
+          borderRadius: 8.5, justifyContent: "center",
+          backgroundColor: colorScheme() === "dark" ? "rgba(245,245,245,0.10)" : "rgba(28,28,28,0.07)",
+        }}
+      >
+        <Text
+          style={{
+            fontSize: 11, fontWeight: "600",
+            color: colorScheme() === "dark" ? "rgba(245,245,245,0.75)" : "rgba(28,28,28,0.65)",
+          }}
+        >
+          {${JSON.stringify(badge)}}
+        </Text>
+      </View>
+    ) : null}
     {/* The drag holdout: invisible, and above the strip — presses on the
         top 26pt move the window instead of reaching the app, so canvas
         and pressable apps stay movable. */}
@@ -819,7 +888,7 @@ mount(() => (
           "--bundle",
           bundleFile,
           "--name",
-          `mini app · ${name}`,
+          shownV ? `${appTitle} · v${shownV}` : appTitle,
           "--app-id",
           `${BUNDLE_ID}.widget`,
           "--window-size",
@@ -832,15 +901,14 @@ mount(() => (
         },
       );
       child.unref();
-      child.on("exit", () => {
-        openWindows.delete(key);
-        if (desk) deskSlots.delete(name);
-      });
+      // A replaced window exits after its successor took the key.
+      child.on("exit", () => openWindows.get(key) === child && openWindows.delete(key));
+      child.shownV = shownV;
+      child.hintW = hintW;
+      child.hintH = hintH;
       openWindows.set(key, child);
-      console.log(`  /popout ${name} (${mode}) → pid ${child.pid}`);
+      console.log(`  /popout ${name} → pid ${child.pid}`);
       // AeroSpace tiles every new window; float ours once its title lands.
-      // Desktop-mode windows sit at the desktop-icon level — leave them
-      // out of the WM entirely, but still grab the id for snapshots.
       let tries = 0;
       const floatPoll = setInterval(() => {
         if (++tries > 40 || child.exitCode !== null)
@@ -856,54 +924,21 @@ mount(() => (
             .find((l) => l.includes(`widget · ${name}`));
           if (!line) return;
           const wid = line.trim().split(/\s+/)[0];
-          // Bring the window to the user's space: floating ones get
-          // float + move-to-focused-workspace + focus; desktop-mode ones
-          // still move to the focused workspace so they land on the
-          // desktop the user is actually looking at.
+          // Bring the window to the user's space: float it, move it to the
+          // focused workspace, focus it.
           const ws = execFileSync(
             "aerospace", ["list-workspaces", "--focused"], { encoding: "utf8" },
           ).trim();
-          if (!desk)
-            execFileSync("aerospace", ["layout", "floating", "--window-id", wid]);
+          execFileSync("aerospace", ["layout", "floating", "--window-id", wid]);
           execFileSync("aerospace", [
             "move-node-to-workspace", "--window-id", wid, "--focus-follows-window", ws,
           ]);
-          if (!desk)
-            execFileSync("aerospace", ["focus", "--window-id", wid]);
+          execFileSync("aerospace", ["focus", "--window-id", wid]);
           clearInterval(floatPoll);
           console.log(`  /popout ${name} → window ${wid}`);
         } catch {}
       }, 600);
       res.end(JSON.stringify({ ok: true, pid: child.pid }));
-    });
-    return true;
-  }
-  // GET /widget-shot?name=R35&w=340&h=340 — the mini-app rendered to PNG:
-  // what the WidgetKit extension shows for its configured app (WidgetKit
-  // can't run TSX; this is the real UI, as a picture, refreshed with the
-  // timeline). 404 when the module doesn't exist or rendering fails.
-  if (req.method === "GET" && req.url.startsWith("/widget-shot")) {
-    const u = new URL(req.url, "http://x");
-    const name = u.searchParams.get("name") || "";
-    const w = Math.min(
-      800,
-      Math.max(80, Math.round(Number(u.searchParams.get("w")) || 340)),
-    );
-    const h = Math.min(
-      800,
-      Math.max(80, Math.round(Number(u.searchParams.get("h")) || 340)),
-    );
-    if (!/^R\d+$/.test(name)) {
-      res.statusCode = 400;
-      return res.end("bad name");
-    }
-    renderShot(name, w, h).then((png) => {
-      if (!png) {
-        res.statusCode = 404;
-        return res.end("no shot");
-      }
-      res.setHeader("content-type", "image/png");
-      res.end(png);
     });
     return true;
   }

@@ -17,6 +17,7 @@
 //   model.mjs    provider routing/prompts     pipeline.mjs  nsh runs/versions
 //   tools.mjs    tool schema + executors      agent.mjs    tool loop/generate
 //   windows.mjs  popouts/slots/screenshots    avatars.mjs   avatar generation
+//   groups.mjs   the sidebar's user-made groups
 //   routes/      the ~80 HTTP endpoints, grouped by prefix
 
 import { createServer } from "node:http";
@@ -50,8 +51,11 @@ import chatRoute from "./routes/chat.mjs";
 import botsRoute from "./routes/bots.mjs";
 import filesRoute from "./routes/files.mjs";
 import appsRoute from "./routes/apps.mjs";
+import artifactsRoute from "./routes/artifacts.mjs";
 import marketRoute from "./routes/market.mjs";
 import dataRoute from "./routes/data.mjs";
+import groupsRoute from "./routes/groups.mjs";
+import { migrateGroups } from "./groups.mjs";
 
 const routes = [
   miscRoute,
@@ -59,6 +63,8 @@ const routes = [
   botsRoute,
   filesRoute,
   appsRoute,
+  artifactsRoute,
+  groupsRoute,
   marketRoute,
   dataRoute,
 ];
@@ -83,6 +89,7 @@ const server = createServer(async (req, res) => {
 });
 
 persist(); // seed the DB on first boot / after a JSON→SQLite migration
+if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
 writeShelf(); // sync widgets/index.tsx with the DB
 // BetterOffice MCP child (office_* tools) — connected in the background; a
 // failed spawn just leaves the surface out of toolList().

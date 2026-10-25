@@ -62,6 +62,42 @@ export function fileMeta(path, name = basename(path)) {
   return meta;
 }
 
+// The Library's cheap document facts — a PDF's pages, a deck's slides, a
+// workbook's sheet names, a Word file's page count when it recorded one —
+// read once per file version (cached by mtime).
+const docCache = new Map(); // path → { mtime, meta }
+export async function docMeta(path) {
+  let mtime;
+  try { mtime = statSync(path).mtimeMs; } catch { return {}; }
+  const hit = docCache.get(path);
+  if (hit?.mtime === mtime) return hit.meta;
+  const ext = extOf(path);
+  const meta = {};
+  try {
+    if (ext === "pdf") {
+      const n = (readFileSync(path).toString("latin1").match(/\/Type\s*\/Page(?![a-zA-Z])/g) || []).length;
+      if (n) meta.pages = n;
+    } else if (["docx", "pptx", "xlsx", "xlsm"].includes(ext)) {
+      const { default: JSZip } = await import("jszip");
+      const z = await JSZip.loadAsync(readFileSync(path));
+      if (ext === "pptx") {
+        const n = Object.keys(z.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).length;
+        if (n) meta.slides = n;
+      } else if (ext === "docx") {
+        const n = Number((await z.file("docProps/app.xml")?.async("string"))?.match(/<Pages>(\d+)<\/Pages>/)?.[1]);
+        if (n) meta.pages = n;
+      } else {
+        const wb = (await z.file("xl/workbook.xml")?.async("string")) || "";
+        const dec = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+        const names = [...wb.matchAll(/<sheet\b[^>]*?\bname="([^"]*)"/g)].map((m) => dec(m[1]));
+        if (names.length) meta.sheets = names;
+      }
+    }
+  } catch {}
+  docCache.set(path, { mtime, meta });
+  return meta;
+}
+
 export function imageSize(path) {
   // sips can't read SVG: take its width/height, or the viewBox
   if (/\.svg$/i.test(path)) {

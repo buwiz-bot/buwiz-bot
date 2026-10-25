@@ -1,221 +1,415 @@
-// routes/market.mjs — extracted from app-server.mjs
-import { existsSync, mkdirSync, rmSync, readFileSync, readdirSync } from "node:fs";
+// routes/market.mjs — the plugin catalog (Grok Bot's snapshot), installs,
+// plugin pages, connector accounts, private skills and MCP servers.
+import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { APP_ROOT, PLUGIN_CATALOG, PLUGINS_DIR, git } from "../config.mjs";
+import { APP_ROOT, PLUGINS_DIR, git } from "../config.mjs";
 import { db } from "../state.mjs";
 import { mcpUpsertServer } from "../tools.mjs";
-import { beginAuth as mcpBeginAuth, ensureClient as mcpEnsure, invalidate as mcpInvalidate, statusOf as mcpStatus } from "../mcp.mjs";
+import {
+  beginAuth as mcpBeginAuth, ensureClient as mcpEnsure, fixedRedirectUrl, handleOAuthCallback,
+  invalidate as mcpInvalidate, statusOf as mcpStatus,
+} from "../mcp.mjs";
+import {
+  CATEGORIES, SHOW_OAUTH_APP_PLUGINS, hiddenInfo, iconFile, catalogEntries, catalogFetchedAt, catalogSkills, entryOf, fetchPlugin, fieldsOf, installedMeta,
+  installedRow, legacyOf, materialize, pluginInventory, pluginRoot, removePluginFiles, saveSettings, serverConfigs,
+  pluginUsesGoogle, serverIdFor, settingsOf, skillDescription, skillFile,
+} from "../plugins.mjs";
 
-export default async function handle(req, res) {
-  // ————— Plugin marketplace (agent-plugins.org catalog) —————
-  // GET /plugins/catalog → marketplace entries + installed flags.
-  if (req.method === "GET" && req.url === "/plugins/catalog") {
-    res.setHeader("content-type", "application/json");
-    const installed = new Map(
-      db.prepare("SELECT name, meta FROM installed_plugins").all().map((r) => [r.name, r.meta]),
-    );
-    res.end(
-      JSON.stringify({
-        marketplace: PLUGIN_CATALOG.name || "marketplace",
-        plugins: (PLUGIN_CATALOG.plugins || []).map((p) => ({
-          name: p.name,
-          description: p.description || "",
-          category: p.category || "other",
-          homepage: p.homepage || null,
-          domains: p.domains || [],
-          keywords: p.keywords || [],
-          installed: installed.has(p.name),
-          meta: installed.has(p.name) ? JSON.parse(installed.get(p.name) || "{}") : null,
-        })),
-      }),
-    );
-    return true;
-  }
-  // POST /plugins/install {name} — clone the plugin repo into
-  // plugins/<name>, register its .mcp.json servers, inventory the pieces
-  // (skills/commands/agents/hooks/lsp) so later steps can wire them up.
-  if (req.method === "POST" && req.url === "/plugins/install") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
-      res.setHeader("content-type", "application/json");
-      try {
-        const { name } = JSON.parse(body || "{}");
-        const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === name);
-        if (!p) throw new Error(`unknown plugin ${name}`);
-        const dir = join(PLUGINS_DIR, p.name);
-        let root;
-        if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
-          // Vendored inside the marketplace catalog itself (external_plugins/<name>).
-          root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
-          if (!existsSync(root)) throw new Error(`vendored source missing for ${name}`);
-        } else {
-          if (!existsSync(join(dir, ".git"))) {
-            rmSync(dir, { recursive: true, force: true });
-            mkdirSync(dirname(dir), { recursive: true });
-            const url = String(p.source?.url || "").replace(/\.git$/, "");
-            await git(["clone", "--depth", "1", url, dir]);
-            if (p.source?.sha) {
-              try {
-                await git(["-C", dir, "fetch", "--depth", "1", "origin", p.source.sha]);
-                await git(["-C", dir, "checkout", "-q", p.source.sha]);
-              } catch {}
-            }
-          }
-          root = p.source?.path ? join(dir, p.source.path) : dir;
-        }
-        // Plugin repos declare MCP servers under different manifest names:
-        // .mcp.json (claude/mcp convention), gemini-extension.json, or mcp.json.
-        const added = [];
-        for (const manifest of [".mcp.json", "gemini-extension.json", "mcp.json"]) {
-          const mcpFile = join(root, manifest);
-          if (!existsSync(mcpFile)) continue;
-          let mcp;
-          try { mcp = JSON.parse(readFileSync(mcpFile, "utf8")); } catch { continue; }
-          const servers = mcp.mcpServers || mcp.mcp || {};
-          for (const [srvName, cfg] of Object.entries(servers)) {
-            if (!cfg || typeof cfg !== "object" || (!cfg.command && !cfg.url)) continue;
-            const r = await mcpUpsertServer({
-              name: srvName,
-              url: cfg.url || (cfg.type === "http" ? cfg.url : undefined),
-              command: cfg.command,
-              args: cfg.args,
-              env: cfg.env,
-            });
-            added.push(r.id);
-          }
-          if (Object.keys(servers).length) break;
-        }
-        // Inventory the pieces the plugin ships.
-        const kinds = [];
-        for (const k of ["skills", "commands", "agents"])
-          if (existsSync(join(root, k))) kinds.push(k);
-        for (const f of ["hooks/hooks.json", ".lsp.json", "settings.json"])
-          if (existsSync(join(root, f))) kinds.push(f);
-        db.prepare(
-          "INSERT OR REPLACE INTO installed_plugins(name, meta, created_at) VALUES(?,?,COALESCE((SELECT created_at FROM installed_plugins WHERE name=?),?))",
-        ).run(
-          p.name,
-          JSON.stringify({ mcp: added, kinds, path: p.source?.path || "" }),
-          p.name,
-          Date.now(),
-        );
-        res.end(JSON.stringify({ ok: true, name: p.name, mcp: added, kinds }));
-      } catch (e) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ ok: false, error: String(e?.message || e).slice(0, 300) }));
-      }
-    });
-    return true;
-  }
-  // POST /plugins/uninstall {name} — remove the record + cloned files; its
-  // .mcp.json servers were registered under their own ids and stay (they are
-  // ordinary entries in mcp_servers — the Connect tab manages them).
-  if (req.method === "POST" && req.url === "/plugins/uninstall") {
+const readBody = (req) =>
+  new Promise((ok) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      res.setHeader("content-type", "application/json");
-      try {
-        const { name } = JSON.parse(body || "{}");
-        const n = String(name || "");
-        db.prepare("DELETE FROM installed_plugins WHERE name=?").run(n);
-        if (/^[\w.-]+$/.test(n)) rmSync(join(PLUGINS_DIR, n), { recursive: true, force: true });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      try { ok(JSON.parse(body || "{}")); } catch { ok({}); }
+    });
+  });
+const sendJson = (res, obj, status = 200) => {
+  res.statusCode = status;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(obj));
+};
+const fail = (res, e) => sendJson(res, { ok: false, error: String(e?.message || e).slice(0, 300) }, 400);
+const catLabel = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.label]));
+const parse = (s, d) => { try { return JSON.parse(s) ?? d; } catch { return d; } };
+
+// Legacy xAI-marketplace install (plugins Grok Bot doesn't list): clone the
+// repo at its pinned sha into plugins/<name>.
+async function installLegacy(p) {
+  const dir = join(PLUGINS_DIR, p.name);
+  let root;
+  if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
+    root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
+    if (!existsSync(root)) throw new Error(`vendored source missing for ${p.name}`);
+  } else {
+    if (!existsSync(join(dir, ".git"))) {
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dirname(dir), { recursive: true });
+      await git(["clone", "--depth", "1", String(p.source?.url || "").replace(/\.git$/, ""), dir]);
+      if (p.source?.sha) {
+        try {
+          await git(["-C", dir, "fetch", "--depth", "1", "origin", p.source.sha]);
+          await git(["-C", dir, "checkout", "-q", p.source.sha]);
+        } catch {}
       }
-    });
-    return true;
-  }
-  // Where a plugin's content lives: its clone for url sources, the vendored
-  // catalog dir for local sources. Null when a url plugin isn't installed.
-  function pluginRoot(p) {
-    if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
-      const root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
-      return existsSync(root) ? root : null;
     }
-    const dir = join(PLUGINS_DIR, p.name);
-    if (!existsSync(dir)) return null;
-    return p.source?.path ? join(dir, p.source.path) : dir;
+    root = p.source?.path ? join(dir, p.source.path) : dir;
   }
-  // What a plugin ships: skills/commands/agents (name + description from
-  // SKILL.md-style frontmatter), hook/lsp/settings presence, declared MCP
-  // server names. Powers the detail page.
-  function pluginInventory(root) {
-    const listDir = (sub, { md = false } = {}) => {
-      const base = join(root, sub);
-      if (!existsSync(base)) return [];
-      try {
-        return readdirSync(base).map((n) => {
-          const entry = { name: n.replace(/\.md$/, ""), description: "" };
-          const file = md ? join(base, n) : join(base, n, "SKILL.md");
-          try {
-            const head = readFileSync(file, "utf8").slice(0, 3000);
-            entry.description =
-              head.match(/^description:\s*>?-?\s*\n?((?:\s+.+\n?)+)/m)?.[1]?.replace(/\s+/g, " ").trim() ||
-              head.match(/^description:\s*(.+)$/m)?.[1]?.trim() ||
-              "";
-          } catch {}
-          return entry;
-        });
-      } catch { return []; }
-    };
-    const manifest = [".mcp.json", "gemini-extension.json", "mcp.json"]
-      .map((m) => { try { return JSON.parse(readFileSync(join(root, m), "utf8")); } catch { return null; } })
-      .find((m) => m && Object.keys(m.mcpServers || m.mcp || {}).length);
-    let meta = {};
-    try { meta = JSON.parse(readFileSync(join(root, ".grok-plugin/plugin.json"), "utf8")); } catch {}
-    try { if (!meta.name) meta = JSON.parse(readFileSync(join(root, "plugin.json"), "utf8")); } catch {}
-    return {
-      skills: listDir("skills"),
-      commands: listDir("commands", { md: true }),
-      agents: listDir("agents", { md: true }),
-      hooks: existsSync(join(root, "hooks/hooks.json")),
-      lsp: existsSync(join(root, ".lsp.json")),
-      mcp: Object.entries(manifest?.mcpServers || manifest?.mcp || {}).map(([n, c]) => ({
-        name: n, transport: c?.url || c?.type === "http" ? "remote" : "command",
+  return root;
+}
+
+// Register (or refresh) one connector row from the plugin's config and
+// setup values. Reuses the plugin's row, else any row of that name.
+async function upsertConnector(key, server, { id, probe = false } = {}) {
+  const m = materialize(key, server);
+  if (!m) throw new Error(`${key} declares no server ${server}`);
+  if (!m.url && !m.command) throw new Error(`${server} has no url or command`);
+  const rowId = id || serverIdFor(key, server);
+  const exists = db.prepare("SELECT id, name FROM mcp_servers WHERE id=?").get(rowId);
+  const r = await mcpUpsertServer({
+    id: exists && exists.name !== server ? undefined : rowId,
+    name: server, url: m.url, command: m.command, args: m.args, env: m.env,
+    headers: m.headers, oauth_client: m.oauth_client, transport: m.transport, probe,
+  });
+  return { ...r, created: !exists, missing: m.missing };
+}
+
+// Account status note: what's missing, or how a connected account signs in.
+function accountNote(key, server, row, st) {
+  const m = materialize(key, server);
+  if (!m) return "";
+  if (m.missing.length) return `Add ${m.missing.join(", ")} in Setup to connect`;
+  const authed = !!parse(row.auth, {}).tokens;
+  const hasHeader = Object.keys(parse(row.headers, {})).some((k) => k.toLowerCase() === "authorization");
+  if (st.status === "connected" && !authed && hasHeader && m.own) return "Connected · read-only (app token)";
+  if (st.status === "connected" && !authed && hasHeader) return "Connected · token";
+  return "";
+}
+
+export default async function handle(req, res) {
+  // ————— Plugin marketplace (Grok Bot's catalog) —————
+  // GET /plugins/catalog[?rev=<rev>] → catalog rows + installed flags; a
+  // matching rev answers {unchanged:true} so the open modal's poll is cheap.
+  if (req.method === "GET" && req.url?.startsWith("/plugins/catalog")) {
+    const installed = new Map(db.prepare("SELECT name, meta FROM installed_plugins").all().map((r) => [r.name, r.meta]));
+    const rev = `${catalogFetchedAt()}|${[...installed.keys()].sort().join(",")}|${installed.size ? [...installed.values()].join("").length : 0}`;
+    const q = new URL(req.url, "http://x").searchParams;
+    if (q.get("rev") === rev) return sendJson(res, { rev, unchanged: true }), true;
+    sendJson(res, {
+      marketplace: "grok-bot",
+      rev,
+      categories: CATEGORIES,
+      plugins: catalogEntries().filter((e) => SHOW_OAUTH_APP_PLUGINS || installed.has(e.key) || !hiddenInfo(e.key)).map((e) => ({
+        name: e.key,
+        displayName: e.displayName || e.name,
+        description: e.description || "",
+        category: e.cats?.length ? catLabel[e.cats[0]] : e.category || "other",
+        cats: (e.cats || []).map((c) => catLabel[c]),
+        homepage: e.websiteUrl || null,
+        iconUrl: e.iconUrl || null,
+        icon: iconFile(e.key) ? `/plugins/icon/${encodeURIComponent(e.key)}` : null,
+        publisher: e.publisher?.displayName || e.publisher?.name || "",
+        keywords: [
+          ...(e.keywords || []), e.name, e.pluginName,
+          ...(e.connectors || []).map((c) => c.name), ...(e.skills || []).map((s) => s.name),
+        ].filter(Boolean),
+        domains: [],
+        private: !!e.marketplace,
+        setup: fieldsOf(e.key).length > 0,
+        unavailable: e.install?.unavailable || null,
+        installed: installed.has(e.key),
+        meta: installed.has(e.key) ? parse(installed.get(e.key), {}) : null,
       })),
-      manifest: { author: meta.author?.name || null, version: meta.version || null, license: meta.license || null },
-    };
-  }
-  // GET /plugins/detail?name=<name> — catalog entry + content inventory +
-  // live status of its registered MCP servers.
-  if (req.method === "GET" && req.url?.startsWith("/plugins/detail")) {
-    const name = new URL(req.url, "http://x").searchParams.get("name");
-    const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === name);
-    res.setHeader("content-type", "application/json");
-    if (!p) { res.statusCode = 404; res.end('{"error":"unknown plugin"}'); return; }
-    const inst = db.prepare("SELECT meta FROM installed_plugins WHERE name=?").get(name);
-    const root = pluginRoot(p);
-    const inv = root ? pluginInventory(root) : { skills: [], commands: [], agents: [], hooks: false, lsp: false, mcp: [], manifest: {} };
-    const mcp = inv.mcp.map((s) => {
-      const row = db.prepare("SELECT * FROM mcp_servers WHERE name=?").get(s.name);
-      const st = row ? mcpStatus(row.id) : { status: "off", tools: 0 };
-      return { ...s, id: row?.id || null, status: row ? (row.enabled ? st.status : "off") : "not-added", tools: st.tools, err: st.err || null };
     });
-    res.end(JSON.stringify({
-      name: p.name, description: p.description, category: p.category || "other",
-      homepage: p.homepage || null, source: p.source?.type === "local" ? "marketplace" : (p.source?.url || null),
-      installed: !!inst, meta: inst ? JSON.parse(inst.meta || "{}") : null,
-      ...inv, mcp,
-    }));
     return true;
   }
-  // GET /plugins/skill?plugin=<name>&skill=<skill> — the SKILL.md body.
+
+  // POST /plugins/install {name, values?} — fetch the plugin's directory
+  // from its repository, store setup values, register its connectors as
+  // mcp_servers rows (connectors still missing values wait for Setup).
+  if (req.method === "POST" && req.url === "/plugins/install") {
+    const b = await readBody(req);
+    try {
+      const e = entryOf(b.name);
+      if (!e) throw new Error(`unknown plugin ${b.name}`);
+      if (b.values) saveSettings(e.key, { ...settingsOf(e.key), ...b.values });
+      const vals = settingsOf(e.key);
+      const missing = (e.fields || []).filter((f) => f.isRequired && !vals[f.key]).map((f) => f.label);
+      if (missing.length) throw new Error(`${e.displayName} needs ${missing.join(", ")} before it can be added`);
+      const prev = installedMeta(e.key);
+      let meta;
+      if (e.legacy) {
+        const p = legacyOf(e.key);
+        await installLegacy(p);
+        meta = { path: p.source?.path || "" };
+      } else {
+        const got = await fetchPlugin(e);
+        meta = { root: got.root, skills: got.skills, repo: e.install?.repo || null, sha: e.install?.sha || null, catalogId: e.id };
+      }
+      // Record first so pluginRoot / materialize see the new files.
+      db.prepare(
+        "INSERT OR REPLACE INTO installed_plugins(name, meta, created_at) VALUES(?,?,COALESCE((SELECT created_at FROM installed_plugins WHERE name=?),?))",
+      ).run(e.key, JSON.stringify({ ...meta, mcp: prev?.mcp || [], created: prev?.created || [] }), e.key, Date.now());
+      const mcp = [], created = [...(prev?.created || [])], waiting = [];
+      for (const server of Object.keys(serverConfigs(e.key))) {
+        const m = materialize(e.key, server);
+        if (!m || (!m.url && !m.command)) continue;
+        if (m.missing.length) { waiting.push(server); continue; }
+        const r = await upsertConnector(e.key, server);
+        mcp.push(r.id);
+        if (r.created) created.push(r.id);
+      }
+      const root = pluginRoot(e.key);
+      const kinds = [];
+      for (const k of ["skills", "commands", "agents"]) if (root && existsSync(join(root, k))) kinds.push(k);
+      for (const f of ["hooks/hooks.json", ".lsp.json", "settings.json"]) if (root && existsSync(join(root, f))) kinds.push(f);
+      const full = { ...meta, mcp: [...new Set([...(prev?.mcp || []), ...mcp])], created: [...new Set(created)], kinds };
+      db.prepare("UPDATE installed_plugins SET meta=? WHERE name=?").run(JSON.stringify(full), e.key);
+      sendJson(res, { ok: true, name: e.key, mcp: full.mcp, kinds, waiting });
+    } catch (err) {
+      fail(res, err);
+    }
+    return true;
+  }
+
+  // POST /plugins/uninstall {name} — drop the record, its files, and the
+  // connector rows its install created (rows that predate it stay).
+  if (req.method === "POST" && req.url === "/plugins/uninstall") {
+    const b = await readBody(req);
+    try {
+      const n = String(b.name || "");
+      const meta = installedMeta(n);
+      for (const id of meta?.created || []) {
+        mcpInvalidate(id);
+        db.prepare("DELETE FROM mcp_servers WHERE id=?").run(id);
+      }
+      db.prepare("DELETE FROM installed_plugins WHERE name=?").run(n);
+      db.prepare("DELETE FROM plugin_settings WHERE plugin=?").run(n);
+      removePluginFiles(n);
+      sendJson(res, { ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+    return true;
+  }
+
+  // POST /plugins/settings {plugin, values, clear?} — save setup values
+  // (blank secret = keep the stored one, blank plain value = clear; clear
+  // lists keys to drop) and re-apply them to the plugin's connector rows.
+  if (req.method === "POST" && req.url === "/plugins/settings") {
+    const b = await readBody(req);
+    try {
+      const e = entryOf(b.plugin);
+      if (!e) throw new Error(`unknown plugin ${b.plugin}`);
+      const cur = settingsOf(e.key);
+      const next = { ...cur };
+      for (const f of fieldsOf(e.key)) {
+        if (!(f.key in (b.values || {}))) continue;
+        const v = String(b.values[f.key] ?? "").trim();
+        if (v) next[f.key] = v;
+        else if (!f.secret) delete next[f.key];
+      }
+      for (const k of b.clear || []) delete next[k];
+      saveSettings(e.key, next);
+      // The shared Google client re-applies to every installed Google plugin.
+      const keys = pluginUsesGoogle(e.key)
+        ? [e.key, ...db.prepare("SELECT name FROM installed_plugins").all().map((r) => r.name).filter((k) => k !== e.key && pluginUsesGoogle(k))]
+        : [e.key];
+      for (const key of keys) await reapply(key);
+      sendJson(res, { ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+    return true;
+  }
+  async function reapply(key) {
+    const e = entryOf(key);
+    {
+      const meta = installedMeta(e.key);
+      if (meta) {
+        for (const server of Object.keys(serverConfigs(e.key))) {
+          const rows = db.prepare("SELECT id FROM mcp_servers WHERE name=?").all(server).filter((r) => (meta.mcp || []).includes(r.id));
+          if (rows.length) {
+            for (const r of rows) await upsertConnector(e.key, server, { id: r.id });
+          } else if (!materialize(e.key, server).missing.length) {
+            const r = await upsertConnector(e.key, server);
+            meta.mcp = [...new Set([...(meta.mcp || []), r.id])];
+            if (r.created) meta.created = [...new Set([...(meta.created || []), r.id])];
+          }
+        }
+        db.prepare("UPDATE installed_plugins SET meta=? WHERE name=?").run(JSON.stringify(meta), e.key);
+      }
+    }
+  }
+
+  // GET /plugins/detail?name=<key> — catalog entry + (installed) content
+  // inventory + live status of its connectors + setup fields.
+  if (req.method === "GET" && req.url?.startsWith("/plugins/detail")) {
+    const key = new URL(req.url, "http://x").searchParams.get("name");
+    const e = entryOf(key);
+    if (!e) return sendJson(res, { error: "unknown plugin" }, 404), true;
+    const meta = installedMeta(e.key);
+    const root = meta ? pluginRoot(e.key) : null;
+    const inv = root
+      ? pluginInventory(e.key, root)
+      : { skills: catalogSkills(e), commands: [], agents: [], hooks: false, lsp: false, servers: serverConfigs(e.key), manifest: {} };
+    const servers = inv.servers || {};
+    const names = [...new Set([...(e.connectors || []).map((c) => c.name), ...Object.keys(servers)])];
+    const vals = settingsOf(e.key);
+    // Each connector's accounts are the rows sharing its name (first =
+    // "default"). An idle enabled row is probed in the background so its
+    // status settles (after OAuth lands, done() drops the client to idle).
+    const mcp = names.map((name) => {
+      const cfg = servers[name];
+      const rows = db.prepare("SELECT * FROM mcp_servers WHERE name=? ORDER BY created_at").all(name);
+      const m = cfg ? materialize(e.key, name, cfg) : null;
+      const accounts = rows.map((r, i) => {
+        const st = mcpStatus(r.id);
+        if (r.enabled && st.status === "idle" && !(m?.missing.length)) mcpEnsure(r).catch(() => {});
+        return {
+          id: r.id, label: r.account || (i ? r.id : "default"),
+          // Missing setup values: it can't sign in yet, whatever it lists.
+          status: !r.enabled ? "off" : m?.missing.length && st.status !== "connected" ? "needs-auth" : st.status, tools: st.tools, err: st.err || null, authed: !!parse(r.auth, {}).tokens,
+          note: meta && cfg ? accountNote(e.key, name, r, st) : "",
+        };
+      });
+      const row = rows[0];
+      const st = row ? mcpStatus(row.id) : { status: "off", tools: 0 };
+      return {
+        name,
+        transport: cfg ? (cfg.url ? "remote" : "command") : "unknown",
+        id: row?.id || null,
+        status: row ? (!row.enabled ? "off" : m?.missing.length && st.status !== "connected" ? "needs-auth" : st.status) : "not-added",
+        tools: st.tools, err: st.err || null, accounts,
+        unavailable: cfg ? null : "Its configuration isn't published in the plugin's repository",
+        needs: m?.missing || [],
+        callbackUrl: m?.own ? fixedRedirectUrl(row?.id || serverIdFor(e.key, name)) : null,
+      };
+    });
+    const fields = fieldsOf(e.key).map((f) => ({ ...f, set: !!vals[f.key], value: f.secret ? "" : vals[f.key] || "" }));
+    sendJson(res, {
+      name: e.key, displayName: e.displayName || e.name, description: e.description || "",
+      category: e.cats?.length ? catLabel[e.cats[0]] : e.category || "other",
+      homepage: e.websiteUrl || null, source: e.repositoryUrl || e.install?.repo || null, iconUrl: e.iconUrl || null,
+      icon: iconFile(e.key) ? `/plugins/icon/${encodeURIComponent(e.key)}` : null,
+      needsOAuthApp: hiddenInfo(e.key),
+      publisher: e.publisher?.displayName || e.publisher?.name || "",
+      availability: e.marketplace ? `Private marketplace (${e.marketplace.displayName || e.marketplace.name})` : "Public",
+      unavailable: e.install?.unavailable || null,
+      installed: !!meta, meta,
+      skills: inv.skills, commands: inv.commands, agents: inv.agents, hooks: inv.hooks, lsp: inv.lsp,
+      manifest: { ...inv.manifest, author: inv.manifest?.author || e.publisher?.displayName || null },
+      mcp, fields,
+    });
+    return true;
+  }
+
+  // POST /plugins/connect {plugin, server, label?, open?} — register one of
+  // a plugin's connectors as an account and start its auth: no label = the
+  // default account (reuses the existing row), a label adds another (a new
+  // row under the same name, id <server>-<label>). Remote servers kick the
+  // browser OAuth flow unless an app token in Setup already signs them in;
+  // open:false returns the authorize URL instead of opening a tab.
+  if (req.method === "POST" && req.url === "/plugins/connect") {
+    const b = await readBody(req);
+    try {
+      const { plugin, server, label } = b;
+      const e = entryOf(plugin);
+      if (!e || !installedRow(e.key)) throw new Error(`plugin ${plugin} is not installed`);
+      const m = materialize(e.key, server);
+      if (!m || (!m.url && !m.command)) throw new Error(`${plugin} declares no server ${server}`);
+      if (m.missing.length) throw new Error(`Add ${m.missing.join(", ")} in Setup first`);
+      const lab = String(label || "").trim().slice(0, 40);
+      if (/^(grok|default)$/i.test(lab)) throw new Error(`${lab} is a reserved account label`);
+      const rows = db.prepare("SELECT * FROM mcp_servers WHERE name=? ORDER BY created_at").all(server);
+      if (lab && rows.some((r) => (r.account || "").toLowerCase() === lab.toLowerCase()))
+        throw new Error(`an account labeled ${lab} already exists`);
+      let id = lab ? null : rows[0]?.id;
+      if (lab) {
+        const base = `${server}-${lab}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "srv";
+        id = base;
+        for (let i = 2; db.prepare("SELECT id FROM mcp_servers WHERE id=?").get(id); i++) id = `${base}-${i}`;
+      }
+      const r = await upsertConnector(e.key, server, { id: id || undefined });
+      if (lab) db.prepare("UPDATE mcp_servers SET account=? WHERE id=?").run(lab, r.id);
+      db.prepare("UPDATE mcp_servers SET enabled=1 WHERE id=?").run(r.id);
+      const meta = installedMeta(e.key);
+      meta.mcp = [...new Set([...(meta.mcp || []), r.id])];
+      if (r.created) meta.created = [...new Set([...(meta.created || []), r.id])];
+      db.prepare("UPDATE installed_plugins SET meta=? WHERE name=?").run(JSON.stringify(meta), e.key);
+      const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(r.id);
+      const hasHeader = Object.keys(m.headers).some((k) => k.toLowerCase() === "authorization");
+      // Probe first: stored tokens or setup-provided credential headers
+      // (an API key, an app token) may already sign the account in. Only
+      // a remote server that still refuses — and isn't on a static
+      // Authorization header alone — goes to the browser sign-in.
+      mcpInvalidate(row.id);
+      const rec = await mcpEnsure(row);
+      const live = rec.client && !rec.needsAuth;
+      let auth = { ok: true, status: live ? "connected" : rec.needsAuth ? "needs-auth" : "error", err: rec.err || null, token: hasHeader };
+      if (row.url && !live && (m.oauth_client || !hasHeader)) auth = await mcpBeginAuth(row, { open: b.open !== false });
+      sendJson(res, { ...auth, ok: true, id: row.id });
+    } catch (err) {
+      fail(res, err);
+    }
+    return true;
+  }
+
+  // GET /plugins/icon/<key> — the plugin's logo file.
+  if (req.method === "GET" && req.url?.startsWith("/plugins/icon/")) {
+    const key = decodeURIComponent(req.url.slice("/plugins/icon/".length).split("?")[0]);
+    const f = iconFile(key);
+    if (!f) return (res.statusCode = 404), res.end(), true;
+    const ext = f.split(".").pop().toLowerCase();
+    res.setHeader("content-type", { svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", ico: "image/x-icon" }[ext] || "application/octet-stream");
+    res.setHeader("cache-control", "max-age=86400");
+    res.end(readFileSync(f));
+    return true;
+  }
+
+  // GET /oauth/callback/<id> — the fixed redirect for pre-registered OAuth
+  // clients (e.g. http://127.0.0.1:8787/oauth/callback/x).
+  if (req.method === "GET" && req.url?.startsWith("/oauth/callback/")) {
+    handleOAuthCallback(req, res);
+    return true;
+  }
+
+  // POST /mcp/account {id, label?, disconnect?} — rename an account
+  // (label) or sign it out (disconnect drops the stored OAuth tokens).
+  if (req.method === "POST" && req.url === "/mcp/account") {
+    const b = await readBody(req);
+    try {
+      const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(b.id || ""));
+      if (!row) throw new Error("no such server");
+      if (b.label !== undefined) {
+        const lab = String(b.label || "").trim().slice(0, 40);
+        if (/^grok$/i.test(lab)) throw new Error("Grok is a reserved account label");
+        db.prepare("UPDATE mcp_servers SET account=? WHERE id=?").run(lab || null, row.id);
+      }
+      if (b.disconnect) {
+        db.prepare("UPDATE mcp_servers SET auth=NULL WHERE id=?").run(row.id);
+        mcpInvalidate(row.id);
+      }
+      sendJson(res, { ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+    return true;
+  }
+
+  // GET /plugins/skill?plugin=<key>&skill=<skill> — the SKILL.md body.
   if (req.method === "GET" && req.url?.startsWith("/plugins/skill")) {
     const q = new URL(req.url, "http://x").searchParams;
-    const p = (PLUGIN_CATALOG.plugins || []).find((x) => x.name === q.get("plugin"));
-    res.setHeader("content-type", "application/json");
-    const root = p && pluginRoot(p);
-    const file = root && join(root, "skills", String(q.get("skill") || ""), "SKILL.md");
-    if (!file || !existsSync(file)) { res.statusCode = 404; res.end('{"error":"no such skill"}'); return; }
+    const e = entryOf(q.get("plugin"));
+    const skill = String(q.get("skill") || "");
+    const file = e && installedRow(e.key) ? skillFile(e.key, skill) : null;
+    if (!file || !existsSync(file)) {
+      // Not installed: the catalog's description (and its source link).
+      const c = e?.skills?.find((s) => s.name === skill);
+      if (!c) return sendJson(res, { error: "no such skill" }, 404), true;
+      return sendJson(res, { name: skill, description: c.description || "", body: "", source: c.sourceUrl || null }), true;
+    }
     const body = readFileSync(file, "utf8");
-    res.end(JSON.stringify({
-      name: q.get("skill"), body,
-      description: body.match(/^description:\s*>?-?\s*\n?((?:\s+.+\n?)+)/m)?.[1]?.replace(/\s+/g, " ").trim() || body.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "",
-    }));
+    sendJson(res, { name: skill, body, description: skillDescription(body) });
     return true;
   }
   // ————— Private skills —————

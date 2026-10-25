@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execFile, execFileSync } from "node:child_process";
 import { randomFillSync } from "node:crypto";
 import { CHUNK_DIR, GEN_DIR, WIDGETS_DIR } from "./config.mjs";
+import { driveType } from "./drive.mjs";
 
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
 // context; every Claude call made for it goes to opencodex's Anthropic
@@ -55,8 +56,14 @@ export const allocJobId = () => nextJobId++;
 export function setJob(job, phase, detail = "") {
   if (!job) return;
   Object.assign(job, { phase, detail, seq: job.seq + 1 });
+  // A short history, so a poller sees a status that lasted less than its
+  // interval (a fast tool step) instead of only the latest.
+  (job.events ||= []).push({ seq: job.seq, phase, detail });
+  if (job.events.length > 30) job.events.shift();
   // a building card mirrors the job's phase — the placeholder's status line
   if (job.turn?.building) job.turn.status = detail || phase;
+  // a job that ends mid-revise lets the revised card show again
+  if (phase === "done") clearRevising(job);
   // a job that ends with a card still mid-build drops the placeholder
   if (phase === "done" && job.turn?.building) {
     const turns = store.list.find((t) => t.id === job.thread)?.turns;
@@ -64,6 +71,26 @@ export function setJob(job, phase, detail = "") {
     if (i >= 0) turns.splice(i, 1);
     job.turn = null;
   }
+}
+
+// A revise (revise_app, a reply-to-iterate) flags the card it revises
+// `revising` while the new version builds: Rox covers that card's body with
+// the generation placeholder. One card per job; never persisted.
+export function cardTurn(thread, name, v) {
+  const cards = (thread?.turns || []).filter((t) => t.role === "ai" && t.name === name && !t.building);
+  return (v != null && cards.findLast((t) => t.v === v)) || cards.at(-1) || null;
+}
+export function markRevising(job, turn) {
+  if (!job || job.revising === turn) return;
+  clearRevising(job);
+  if (!turn) return;
+  turn.revising = true;
+  job.revising = turn;
+}
+export function clearRevising(job) {
+  if (!job?.revising) return;
+  delete job.revising.revising;
+  job.revising = null;
 }
 
 export function jobJson(job) {
@@ -74,6 +101,7 @@ export function jobJson(job) {
     detail: job.detail,
     done: job.done,
     result: job.result,
+    events: job.events || [],
   });
 }
 
@@ -83,13 +111,7 @@ export function jobJson(job) {
 //   kv              — per-widget persisted state, written by the widgets
 //                     themselves through GET/POST /state
 
-export const openWindows = new Map(); // "mode:name" → child process
-export const deskSlots = new Map(); // name → desktop column slot index
-export const shotCache = new Map(); // name → { t: number, png: Buffer }
-export const shotInflight = new Map(); // name → Promise<Buffer | null>
-let deskBounds = null;
-export const deskBoundsGet = () => deskBounds;
-export const deskBoundsSet = (v) => (deskBounds = v);
+export const openWindows = new Map(); // "name[@vK]" → child process
 
 export const db = new DatabaseSync(join(GEN_DIR, "app.db"));
 db.exec(`
@@ -129,12 +151,36 @@ db.exec(`
 try { db.exec("ALTER TABLE turns ADD COLUMN meta TEXT"); } catch {}
 // A branch may carry an optional name (e.g. "slow-ball") — versions.label.
 try { db.exec("ALTER TABLE versions ADD COLUMN label TEXT"); } catch {}
+// Mini app details: description, generated/adopted icon, size, edit time.
+for (const col of ["description TEXT", "icon TEXT", "icon_prompt TEXT", "w REAL", "h REAL", "updated_at INTEGER"])
+  try { db.exec(`ALTER TABLE apps ADD COLUMN ${col}`); } catch {}
+// The user's edits to a Library image or file (apps keep theirs in `apps`):
+// id is R<n> or file:<path>; `file` is a display name — never a rename on
+// disk. library_hidden takes an artifact out of the Library only (its file
+// stays on disk, its card in the chat).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS artifact_meta(
+    id TEXT PRIMARY KEY, title TEXT, file TEXT, description TEXT, icon TEXT, updated_at INTEGER);
+  CREATE TABLE IF NOT EXISTS library_hidden(id TEXT PRIMARY KEY, at INTEGER);
+`);
 // Remote (streamable-HTTP) MCP servers carry url instead of command.
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
 // Per-tool off switches on a connected server (JSON array of tool names).
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN disabled_tools TEXT"); } catch {}
 // OAuth client state for remote servers (JSON: client_info, tokens, verifier).
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN auth TEXT"); } catch {}
+// A plugin connector's extra accounts are rows sharing its name; `account`
+// is the user's label for one (NULL on the first row = "default").
+try { db.exec("ALTER TABLE mcp_servers ADD COLUMN account TEXT"); } catch {}
+// Catalog plugin connectors: static request headers ({name: value}, from
+// the plugin's MCP config after ${KEY} substitution), a pre-registered OAuth
+// client ({client_id, client_secret?, scope?} — servers without dynamic
+// client registration) and the transport ("sse" for legacy SSE servers).
+for (const col of ["headers TEXT", "oauth_client TEXT", "transport TEXT"])
+  try { db.exec(`ALTER TABLE mcp_servers ADD COLUMN ${col}`); } catch {}
+// Per-plugin setup values (the catalog's `fields`), keyed by catalog key;
+// substituted into ${KEY} references in the plugin's MCP config.
+try { db.exec("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)"); } catch {}
 // Private skills — instructions the user (or the agent for them) authored.
 // Enabled bodies are injected into the agent system prompt.
 try {
@@ -338,8 +384,8 @@ export function persist() {
           t.id, j, u.role, u.text ?? null, u.name ?? null, u.label ?? null,
           u.caption ?? null, u.reaction ?? null, u.retries ?? 0,
           u.widget ? 1 : 0,
-          u.reply || u.attachments?.length || u.files?.length || u.art
-            ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files, art: u.art })
+          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length
+            ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links })
             : null,
           u.v ?? null,
           (u.id ||= uuidv7()),
@@ -459,11 +505,26 @@ export function turnsJson(thread = activeThread()) {
   const appTitles = new Map(
     db.prepare("SELECT name,title FROM apps").all().map((r) => [r.name, r.title]),
   );
+  // An image's or file's edited title / display name (Edit Details).
+  const edits = new Map(
+    db.prepare("SELECT id,title,file FROM artifact_meta").all().map((r) => [r.id, r]),
+  );
   const art = (t) => {
+    // An image card made before cards carried their file: read it from the
+    // module once (`asset:/generated/assets/<file>`).
+    if (t.label === "image" && t.name && !t.art?.kind) {
+      try {
+        const file = readFileSync(join(GEN_DIR, `${t.name}.tsx`), "utf8").match(/asset:\/generated\/assets\/([\w.-]+)/)?.[1];
+        if (file) t.art = { ...(t.art || {}), kind: "image", file };
+      } catch {}
+    }
     const a = t.art || {};
-    const title = (t.name && appTitles.get(t.name)) || a.title || null;
+    // A later version of a card without its own title (an image edit) shows
+    // the card's.
+    const title = (t.name && (edits.get(t.name)?.title || appTitles.get(t.name))) || a.title
+      || (t.name && thread.turns.find((x) => x.name === t.name && x.art?.title)?.art.title) || null;
     if (!title && !a.desc && !a.w && !a.h) return undefined;
-    return { title, desc: a.desc || "", w: a.w || 0, h: a.h || 0 };
+    return { title, desc: a.desc || "", w: a.w || 0, h: a.h || 0, ...(a.kind ? { kind: a.kind, file: a.file || "" } : {}) };
   };
   return thread.turns.map((t, i) => ({
     i,
@@ -478,11 +539,18 @@ export function turnsJson(thread = activeThread()) {
     widget: !!t.widget,
     reply: t.reply || null,
     attachments: t.attachments || [],
-    files: t.files || [],
+    // a file card shows its edited display name
+    files: (t.files || []).map((f) => {
+      const name = f?.path && edits.get(`file:${f.path}`)?.file;
+      return name ? { ...f, name } : f;
+    }),
+    // Drive files the reply made or changed (drive.mjs), as chips
+    links: (t.links || []).map(({ account, ...l }) => ({ ...l, ...driveType(l.mime, l.name) })),
     v: t.v ?? null,
     art: art(t),
     building: t.building || undefined,
     status: t.status || undefined,
+    revising: t.revising || undefined,
   }));
 }
 

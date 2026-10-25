@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "google-workspace": {
+      "command": "uvx",
+      "args": ["workspace-mcp", "--single-user", "--tool-tier", "extended", "--tools", "gmail", "calendar", "drive", "docs", "sheets", "slides"],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_CLIENT_SECRET}",
+        "USER_GOOGLE_EMAIL": "${GOOGLE_ACCOUNT_EMAIL}",
+        "WORKSPACE_MCP_PORT": "8791",
+        "WORKSPACE_ATTACHMENT_DIR": "${ROX_FILES_DIR}/drive",
+        "ALLOWED_FILE_DIRS": "${ROX_FILES_DIR}"
+      }
+    }
+  }
+}

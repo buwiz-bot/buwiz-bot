@@ -6,25 +6,51 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import {
-  ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PORT, PROVIDER,
+  ASSETS_DIR, ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PORT, PROVIDER,
   STAGE_DIR, WIDGETS_DIR, outFile,
 } from "./config.mjs";
 import {
-  activeThread, db, jobs, modelCtx, nextSeq, seq, setJob, store, writeIndex,
-  writeShelf, uuidv7,
+  activeThread, cardTurn, db, jobs, markRevising, modelCtx, nextSeq, seq, setJob,
+  store, writeIndex, writeShelf, uuidv7,
 } from "./state.mjs";
 import {
   anthropic, askModel, chatReply, classifyIntent, labelOf,
 } from "./model.mjs";
 import {
-  checkCandidate, errorCard, fixImports, headOf, mockModule, writeVersion,
+  checkCandidate, errorCard, fixImports, headOf, mockModule, verFile, writeVersion,
 } from "./pipeline.mjs";
 import { fileMeta, fileRecord, mockDocx, mockFiles, mockImages, renderFile } from "./files.mjs";
 import { officeMarkdown } from "./office.mjs";
 import {
-  TOOLS, agentSystem, execTool, mcpToolDefs, toolActivity, toolList,
+  TOOLS, PHRASES, agentSystem, execTool, imageFileOf, mcpToolDefs, officeArt, phraseFor, toolActivity, toolList,
   agentStream, serverSearch, setAgentStream, setServerSearch,
 } from "./tools.mjs";
+
+// The streamed start of a generate_app input → its placeholder's title,
+// description and size (layout before code in the tool's schema).
+function appPlaceholderFrom(turn, json) {
+  const str = (k) => json.match(new RegExp(`"${k}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`))?.[1];
+  const num = (k) => Number(json.match(new RegExp(`"${k}"\\s*:\\s*(\\d+)`))?.[1]) || 0;
+  const unesc = (v) => v?.replace(/\\(.)/g, "$1");
+  const title = unesc(str("title"));
+  if (title) turn.art.title = title.slice(0, 60);
+  const desc = unesc(str("desc"));
+  if (desc) turn.art.desc = desc.slice(0, 140);
+  const w = num("width"), h = num("height");
+  if (w >= 60 && h >= 60) { turn.art.w = Math.min(w, 2048); turn.art.h = Math.min(h, 2048); }
+}
+
+// A placeholder no generate_app / office_create call adopted (the call
+// failed to parse, the round errored) leaves the chat.
+function dropPendingApp(job, thread) {
+  for (const k of ["pendingApp", "pendingOffice"]) {
+    const t = job[k];
+    if (!t) continue;
+    job[k] = null;
+    const i = thread.turns.indexOf(t);
+    if (i >= 0) thread.turns.splice(i, 1);
+  }
+}
 
 export async function agentTurn(job, prompt, thread) {
   const messages = [
@@ -39,37 +65,96 @@ export async function agentTurn(job, prompt, thread) {
     { role: "user", content: await userContent(prompt, job.extra, job.ctx) },
   ];
   let reply = "";
+  // As in Grok Bot, the reply is held back behind "Typing..." and lands
+  // whole; a note the model writes before calling tools ("Checking X
+  // for …") lands at once as its own message.
+  const label = labelOf(modelCtx.getStore());
   for (let i = 0; i < 8; i++) {
-    const thinkingDetail = i === 0 ? `${labelOf(modelCtx.getStore())} is thinking` : "continuing…";
-    setJob(job, "thinking", thinkingDetail);
-    let msg;
+    // First round: thinking; after tool results: working (Grok Bot's
+    // fallback between steps). A thinking block flips it back.
+    const think = () => setJob(job, "thinking", phraseFor(job, "thinking"));
+    if (i === 0) think();
+    else setJob(job, "working", phraseFor(job, `working${i}`, PHRASES.working));
+    let msg, params;
     const t0 = Date.now();
-    let events = 0;
+    let events = 0, tPrep = 0, tFirst = 0;
     try {
-      const params = {
+      params = {
         model: MODEL,
         max_tokens: MAX_TOKENS,
         system: agentSystem(thread),
         tools: await toolList(thread),
+        // The last round must answer: a turn that is still calling tools
+        // when the rounds run out would otherwise end with no reply.
+        ...(i === 7 ? { tool_choice: { type: "none" } } : {}),
         messages,
       };
+      tPrep = Date.now() - t0;
       if (agentStream) {
         const stream = anthropic.messages.stream(params);
+        // A revise_app being written covers the card it revises as soon as
+        // its name is known: the attached one at once, then the `name` read
+        // off the streamed input.
+        let revise = null;
+        // A generate_app being written gets its placeholder card at once
+        // (toolGenerateApp adopts it), sized as soon as its layout streams.
+        let app = null;
+        // An office_create being written gets its file's placeholder too,
+        // shaped by the extension of its streamed `path`.
+        let office = null;
         stream.on("streamEvent", (event) => {
           events++;
+          if (!tFirst) tFirst = Date.now() - t0;
+          if (event.type === "content_block_delta" && app?.index === event.index && event.delta?.type === "input_json_delta") {
+            app.json += event.delta.partial_json || "";
+            if (app.json.length < 4000) appPlaceholderFrom(app.turn, app.json);
+            return;
+          }
+          if (event.type === "content_block_delta" && office?.index === event.index && event.delta?.type === "input_json_delta") {
+            office.json += event.delta.partial_json || "";
+            const m = office.json.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+            if (m) {
+              office.turn.art = officeArt(m[1].split("/").pop());
+              office = null;
+            }
+            return;
+          }
+          if (event.type === "content_block_delta" && revise?.index === event.index && event.delta?.type === "input_json_delta") {
+            revise.json += event.delta.partial_json || "";
+            const m = revise.json.match(/"name"\s*:\s*"(R\d+)"/);
+            if (m) {
+              markRevising(job, cardTurn(thread, m[1], null));
+              revise = null;
+            }
+            return;
+          }
           if (event.type !== "content_block_start") return;
           const block = event.content_block;
+          if (block.type === "tool_use" && block.name === "generate_app" && !job.pendingApp) {
+            job.pendingApp = { id: uuidv7(), role: "ai", building: true, label, art: { title: null, desc: "", w: 0, h: 0 } };
+            thread.turns.push(job.pendingApp);
+            app = { index: event.index, json: "", turn: job.pendingApp };
+          }
+          if (block.type === "tool_use" && block.name === "office_create" && !job.pendingOffice) {
+            job.pendingOffice = { id: uuidv7(), role: "ai", building: true, label: "office", art: officeArt("") };
+            thread.turns.push(job.pendingOffice);
+            office = { index: event.index, json: "", turn: job.pendingOffice };
+          }
+          if (block.type === "tool_use" && block.name === "revise_app") {
+            if (job.revise) markRevising(job, cardTurn(thread, job.revise.name, job.revise.base_v));
+            revise = { index: event.index, json: "" };
+          }
           if (block.type === "tool_use") setJob(job, ...toolActivity(block.name, block.input));
-          else if (block.type === "server_tool_use") setJob(job, "searching", "Searching the web");
-          else if (block.type === "text") setJob(job, "streaming", "Replying");
-          else if (block.type === "thinking" || block.type === "redacted_thinking")
-            setJob(job, "thinking", thinkingDetail);
+          else if (block.type === "server_tool_use") setJob(job, "searching", "Digging around");
+          else if (block.type === "text") setJob(job, "streaming", "Typing...");
+          else if (block.type === "thinking" || block.type === "redacted_thinking") think();
         });
         msg = await stream.finalMessage();
       } else {
         msg = await anthropic.messages.create(params);
       }
     } catch (e) {
+      dropPendingApp(job, thread);
       const m = String(e?.message || "");
       if (serverSearch && /web_search|server_tool|tool_use/i.test(m)) {
         console.error(`  server web_search rejected (${m.slice(0, 120)}) — using client search`);
@@ -85,12 +170,19 @@ export async function agentTurn(job, prompt, thread) {
     }
     messages.push({ role: "assistant", content: msg.content });
     console.log(
-      `  · call ${i}: ${Date.now() - t0}ms stop=${msg.stop_reason} blocks=${msg.content.map((b) => b.type).join(",")}`,
+      `  · call ${i}: ${Date.now() - t0}ms stop=${msg.stop_reason} blocks=${msg.content.map((b) => b.type).join(",")}` +
+        ` (prep ${tPrep}ms, first event ${tFirst}ms${agentStream ? "" : ", not streamed"})` +
+        ` · ${params.model} system ${Math.round(params.system.length / 1000)}k, ${params.tools.length} tools ${Math.round(JSON.stringify(params.tools).length / 1000)}k`,
     );
     // pause_turn = a server-side tool (web_search) is still mid-run — keep
     // polling with the same messages; tool_use = a client tool needs us.
     if (msg.stop_reason === "pause_turn") continue;
     const uses = msg.content.filter((b) => b.type === "tool_use");
+    const said = msg.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    if (uses.length && said) {
+      thread.turns.push({ id: uuidv7(), role: "ai", text: said, label });
+      writeIndex();
+    }
     if (msg.stop_reason !== "tool_use" || !uses.length) {
       reply = msg.content
         .filter((b) => b.type === "text")
@@ -102,13 +194,13 @@ export async function agentTurn(job, prompt, thread) {
     const results = [];
     for (const u of uses) {
       setJob(job, ...toolActivity(u.name, u.input));
-      results.push({
-        type: "tool_result",
-        tool_use_id: u.id,
-        ...(await execTool(job, thread, u)),
-      });
+      const r = await execTool(job, thread, u);
+      // A failed tool call, so a run that "couldn't" do something says why.
+      if (r?.is_error) console.log(`  ✗ ${u.name}: ${String(r.content || "").replace(/\s+/g, " ").slice(0, 200)}`);
+      results.push({ type: "tool_result", tool_use_id: u.id, ...r });
     }
     messages.push({ role: "user", content: results });
+    dropPendingApp(job, thread);
     if (msg.stop_reason === "max_tokens") break;
   }
   return reply;
@@ -158,11 +250,20 @@ export async function userContent(prompt, extra, ctx = []) {
   for (const a of files) {
     // module://R<n>[@v<k>] resolves to the artifact's TSX (that exact
     // version when pinned) — reply-attaching a mini app hands the model its
-    // full source so it can iterate on it.
+    // full source so it can iterate on it. An image card hands over the
+    // image itself: its source is only a frame around it.
     const mm = a.uri.match(/^module:\/\/(R\d+)(?:@v(\d+))?$/);
+    const img = mm && imageFileOf(mm[1], Number(mm[2]) || null);
+    if (img) {
+      try {
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(join(ASSETS_DIR, img)).toString("base64") } });
+        blocks.push({ type: "text", text: `(the image above is image card ${mm[1]}${mm[2] ? ` v${mm[2]}` : ""}. To change it, call generate_image with edit_of: "${mm[1]}" and a prompt that says only what to change.)` });
+      } catch {}
+      continue;
+    }
     const path = mm
       ? mm[2]
-        ? join(GEN_DIR, mm[1], `v${mm[2]}.tsx`)
+        ? verFile(mm[1], Number(mm[2]))
         : [GEN_DIR, WIDGETS_DIR]
             .map((d) => join(d, `${mm[1]}.tsx`))
             .find(existsSync)
@@ -294,8 +395,21 @@ export async function generate(job, prompt) {
     // compiler; the final text answer lands last.
     if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
     thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
-    const text = await agentTurn(job, prompt, thread);
-    if (text) thread.turns.push({ id: uuidv7(), role: "ai", text, label: labelOf(modelCtx.getStore()) });
+    // Drive files the tools made or changed (drive.mjs) ride the reply's
+    // turn — their own turn when there is no reply, even after a crash.
+    const links = () => (job.linkTurn?.links.length ? { links: job.linkTurn.links } : {});
+    let text;
+    try {
+      text = await agentTurn(job, prompt, thread);
+    } catch (e) {
+      if (job.linkTurn?.links.length) {
+        thread.turns.push({ id: uuidv7(), role: "ai", text: "", label: labelOf(modelCtx.getStore()), ...links() });
+        writeIndex();
+      }
+      throw e;
+    }
+    if (text || job.linkTurn?.links.length)
+      thread.turns.push({ id: uuidv7(), role: "ai", text: text || "", label: labelOf(modelCtx.getStore()), ...links() });
     writeIndex();
     console.log(`✓ turn via ${labelOf(modelCtx.getStore())} (${prompt.slice(0, 60)}) — ${job.cards || 0} card(s)`);
     setJob(job, "done", job.cards ? `${job.cards} card(s)` : "replied");
@@ -318,7 +432,7 @@ export async function generate(job, prompt) {
         ? await classifyIntent(prompt)
         : "chat";
     if (intent === "chat") {
-      setJob(job, "thinking", `${labelOf(modelCtx.getStore())} is replying`);
+      setJob(job, "thinking", phraseFor(job, "thinking"));
       if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
       const text = await chatReply(prompt, thread, job);
       thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
@@ -350,14 +464,18 @@ export async function generate(job, prompt) {
       if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
       thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
     }
+    // The fresh card lands with its version (below); until then a
+    // reply-to-iterate covers the card it revises (Rox's Try Again covers
+    // the pressed card itself).
     aiTurn = {
       id: uuidv7(),
       role: "ai",
       name,
       label: labelOf(modelCtx.getStore()),
       retries: (prior?.retries || 0) + 1,
+      ...(prior?.art ? { art: prior.art } : {}),
     };
-    thread.turns.push(aiTurn);
+    if (!job.retry) markRevising(job, cardTurn(thread, name, baseV));
   } else {
     name = `R${nextSeq()}`;
     if (thread.turns.length === 0) thread.title = prompt.slice(0, 42);
@@ -380,7 +498,7 @@ export async function generate(job, prompt) {
     lastCode = fixImports(code);
     // check in staging — nothing lands in generated/ until it compiles
     writeFileSync(join(STAGE_DIR, `${name}.tsx`), lastCode);
-    setJob(job, "checking", `nsh build + typecheck ${name}.tsx`);
+    setJob(job, "checking", "Checking the code");
     err = await checkCandidate(name);
     return err === null;
   };
@@ -391,9 +509,9 @@ export async function generate(job, prompt) {
         setJob(
           job,
           "retrying",
-          `compile error — feeding it back to the model (attempt ${attempt + 1})`,
+          "Fixing the code",
         );
-      else setJob(job, "thinking", `${labelOf(modelCtx.getStore())} is working on it`);
+      else setJob(job, "coding", "Writing some code");
       try {
         const r = await askModel(job, prompt, err, lastCode, name);
         lastCaption = r.caption || "";
@@ -411,13 +529,13 @@ export async function generate(job, prompt) {
 
   if (!ok) {
     used = useLlm ? "mock-fallback" : "mock";
-    setJob(job, "fallback", "model path failed — building a canned module");
+    setJob(job, "fallback", "Trying another way");
     ok = await tryCode(mockModule(prompt)).catch(() => false);
   }
   aiTurn.label = used;
   aiTurn.caption = ok && used === MODEL ? lastCaption : "";
   if (!ok) console.error(`✗ ${name}: generation failed\n${err}`);
-  setJob(job, "publishing", `hot-patching ${name}.tsx into the app`);
+  setJob(job, "publishing", "Putting it in place");
   // Write the module FIRST, then pause so the dev server's watcher registers
   // it before index.tsx starts importing it — otherwise the rebuild races the
   // new file and the device shows [UNRESOLVED_IMPORT]. A published module is
@@ -427,6 +545,7 @@ export async function generate(job, prompt) {
   // <name>.tsx (and a published widget copy) mirror the new head.
   const v = writeVersion(name, ok ? lastCode : errorCard(err || "unknown"), baseV, prompt);
   aiTurn.v = v;
+  if (!thread.turns.includes(aiTurn)) thread.turns.push(aiTurn);
   await new Promise((r) => setTimeout(r, 500));
   writeIndex(); // one live write → one clean hot patch on the device
   const line = `${name}.tsx via ${used}`;

@@ -2,7 +2,7 @@
 // through opencodex per-thread), OpenAI-compatible, and the canned replies.
 import Anthropic from "@anthropic-ai/sdk";
 import { BASE_URL, MAX_TOKENS, MOCK, MODEL, OPENCODEX, PROVIDER } from "./config.mjs";
-import { activeThread, jobs, metaGet, modelCtx, persist, setJob, store, db } from "./state.mjs";
+import { activeThread, getLinearKey, jobs, metaGet, modelCtx, persist, setJob, store, db } from "./state.mjs";
 
 const anthropicDirect =
   PROVIDER === "anthropic"
@@ -12,16 +12,13 @@ const anthropicDirect =
       })
     : null;
 let opencodex = null;
+const withEffort = (p, c) => (c?.effort ? { ...p, output_config: { effort: c.effort }, reasoning_effort: c.effort } : p);
 const routed = (params) => {
   const c = modelCtx.getStore();
-  if (!c?.model) return [anthropicDirect, params];
+  // The default model still takes the bot's chosen effort.
+  if (!c?.model) return [anthropicDirect, withEffort(params, c)];
   opencodex ??= new Anthropic({ baseURL: OPENCODEX, apiKey: "opencodex" });
-  const p = { ...params, model: c.model + (c.fast ? "--fast" : "") };
-  if (c.effort) {
-    p.output_config = { effort: c.effort };
-    p.reasoning_effort = c.effort;
-  }
-  return [opencodex, p];
+  return [opencodex, withEffort({ ...params, model: c.model + (c.fast ? "--fast" : "") }, c)];
 };
 export const anthropic = anthropicDirect && {
   messages: {
@@ -32,11 +29,14 @@ export const anthropic = anthropicDirect && {
 export const choiceFor = (threadId) => {
   const b = store.bots.find((x) => x.threadId === threadId);
   const m = metaGet("model");
+  // A bot on the Default model keeps its own effort / fast choice.
   const base = b?.model
     ? { model: b.model, effort: b.effort || "", fast: !!b.fast }
     : m
-      ? { model: m, effort: metaGet("effort") || "", fast: metaGet("fast") === "1" }
-      : null;
+      ? { model: m, effort: b?.effort || metaGet("effort") || "", fast: b ? !!b.fast : metaGet("fast") === "1" }
+      : b?.effort || b?.fast
+        ? { model: "", effort: b.effort || "", fast: !!b.fast }
+        : null;
   // Status labels credit the bot, not the engine: "Grok is thinking" in a
   // bot's thread, "claude-haiku-5-5 is thinking" in a plain session.
   return b?.name ? { ...(base || {}), name: b.name } : base;
@@ -88,7 +88,6 @@ ${sourcesBlock()}
 - CLIPBOARD: import { Clipboard } from "nsh/clipboard"; Clipboard.setString(text) copies natively — use it for copy-to-clipboard affordances (a small ⧉ button on values, ids, results).
 - POP-OUT SIZE (optional): the same module may be opened in its own floating window — resizable, normal z-order. Its WIDTH there is what you declare: export const popoutWidth = 520; (plain number, 240–720). Canvas apps/games may fix BOTH axes: export const popoutSize = { w: 320, h: 560 }; — the window is exactly that, no measuring. Without either: 360pt wide, height hugs content. Pop-out rules: (a) the top ~26pt of the window is an invisible drag strip — keep essential controls out of it (traffic lights sit in its left ~80pt); (b) lists that can grow tall MUST wrap in a bounded Scroll (max-h-96 or a fixed height) — an unbounded list measures its full content height and the window swallows the screen; (c) keep a min-h on the root so a transient empty/loading render never collapses the window.
 - THEME (Sand design system — match it exactly): pop-out windows follow the system light/dark appearance — put dark: variants on every bg/text/border color; a hardcoded light card glows on a dark desktop. Surfaces: bg-white dark:bg-[#161616] (pane) · bg-[#f5f5f5] dark:bg-[#1f1f1f] (elevated card) · bg-black/5 dark:bg-white/5 (inset/track). Text: text-[#1c1c1c] dark:text-[#f5f5f5] (primary) · /60 alpha for secondary, /40 for tertiary (e.g. text-[#1c1c1c99] dark:text-[#f5f5f599]). Hairline borders: border-black/10 dark:border-white/10. Accent: #1680f3 light / #1884fc dark. Radius: 6 small, 10 medium, 14 card, 18 bubble/pill-ish. Spacing on a 4pt grid (p-2=8, p-3=12). Type: 12–14px body, 600 weight for emphasis — SF look, no exotic fonts. Canvas code may read colorScheme() from "nsh/device" inside draw() — reading it there redraws on theme change.
-- DESKTOP WIDGET: the same module can live in a macOS Notification Center widget, rendered natively from YOUR persisted state — not a screenshot. To control how it looks there, include a "widget" object inside the state you POST to /state (computed live, alongside your real fields). Shape: { kind, ...fields }. Kinds: "clock" {running:boolean, startedAt:ISO|null, todayMin:number, label?} (the widget shows a LIVE ticking timer) · "stat" {value:string, unit?, label?, sub?} (big number) · "progress" {fraction:0-1, value?, sub?} (ring) · "weather" {temp:number, unit?, condition?, high?, low?, days?:[{label,icon?,high?,low?}]} · "list" {rows:[{title,detail?,url?}]} · "note" {headline, body?}. e.g. a pomodoro POSTs {sessions, minutesFocused, widget:{kind:"progress",fraction:elapsed()/1500,value:"25:00",sub:"focus"}}. If you don't emit one, a template is inferred from your state's shape (status/running→clock, numbers→stat). You may also pin the template with export const widgetKind = "stat";.
 - No props, no imports beyond nsh modules, no fetch other than /state and /data: render standalone inside a ~340pt-wide chat card (it may also run in its own window).
 - Make it a small, polished, interactive widget for the user's request: cards, charts as View bars, forms, lists, counters, steppers, games with real loops. Compact code, but take the lines a working game needs (~150 is fine).`;
 
@@ -138,7 +137,7 @@ export async function askModel(job, prompt, prevError, prevCode, name) {
         messages,
       });
       stream.on("text", (_delta, snapshot) =>
-        setJob(job, "writing", `streaming module · ${snapshot.length} chars`),
+        setJob(job, "coding", "Writing some code"),
       );
       const msg = await stream.finalMessage();
       const text = msg.content
