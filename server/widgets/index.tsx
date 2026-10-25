@@ -17,7 +17,6 @@ type Item = {
   title: string;
   publishedAt: string;
   kinds: string[];
-  pinned: boolean;
   archived: boolean;
   tags: string[];
 };
@@ -231,10 +230,6 @@ export function WidgetShelf() {
         label: "Open window",
         onSelect: () => post("/popout", { name: i.name }),
       },
-      {
-        label: "Pin to desktop",
-        onSelect: () => post("/popout", { name: i.name, mode: "desktop" }),
-      },
       { type: "separator" },
       { label: "Rename…", onSelect: () => renaming.set(i.name) },
       { label: "Add tag…", onSelect: () => tagging.set(i.name) },
@@ -245,11 +240,6 @@ export function WidgetShelf() {
         onSelect: () => {
           post("/retry", { name: i.name });
         },
-      },
-      {
-        label: i.pinned ? "Unpin" : "Nominate (★)",
-        onSelect: () =>
-          post("/pin", { name: i.name, pinned: !i.pinned }).then(load),
       },
       {
         label: i.archived ? "Unarchive" : "Archive",

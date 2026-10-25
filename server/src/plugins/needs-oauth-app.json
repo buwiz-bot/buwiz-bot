@@ -1,0 +1,357 @@
+{
+ "probedAt": "2026-10-25T10:21:31.933Z",
+ "plugins": [
+  {
+   "name": "adapter",
+   "connector": "adapter",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.adapter.com",
+   "reason": "api.adapter.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with api.adapter.com using callback URL http://127.0.0.1:8787/oauth/callback/adapter; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "adaption",
+   "connector": "adaption",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); no OAuth metadata found to register one",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/adaption; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "allo",
+   "connector": "allo",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); no OAuth metadata found to register one",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/allo; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "alpaca-broker",
+   "connector": "alpaca-broker",
+   "kind": "oauth-app",
+   "authorization_server": "https://authx.alpaca.markets/v1",
+   "reason": "authx.alpaca.markets has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with authx.alpaca.markets using callback URL http://127.0.0.1:8787/oauth/callback/alpaca-broker; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "alpaca-broker",
+   "connector": "alpaca-broker-sandbox",
+   "kind": "oauth-app",
+   "authorization_server": "https://authx.sandbox.alpaca.markets/v1",
+   "reason": "authx.sandbox.alpaca.markets has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with authx.sandbox.alpaca.markets using callback URL http://127.0.0.1:8787/oauth/callback/alpaca-broker-sandbox; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "alpaca-trading",
+   "connector": "alpaca-trading",
+   "kind": "oauth-app",
+   "authorization_server": "https://authx.alpaca.markets/v1",
+   "reason": "authx.alpaca.markets has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with authx.alpaca.markets using callback URL http://127.0.0.1:8787/oauth/callback/alpaca-trading; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "alpaca-trading",
+   "connector": "alpaca-trading-paper",
+   "kind": "oauth-app",
+   "authorization_server": "https://authx.alpaca.markets/v1",
+   "reason": "authx.alpaca.markets has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with authx.alpaca.markets using callback URL http://127.0.0.1:8787/oauth/callback/alpaca-trading-paper; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "atscale",
+   "connector": "atscale",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); its URL is per-account",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/atscale; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "bitrise",
+   "connector": "bitrise",
+   "kind": "oauth-app",
+   "authorization_server": "https://oauth.bitrise.io",
+   "reason": "oauth.bitrise.io has no dynamic client registration",
+   "how_to_enable": "Register an OAuth app with oauth.bitrise.io using callback URL http://127.0.0.1:8787/oauth/callback/bitrise; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "box",
+   "connector": "box",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.box.com",
+   "reason": "api.box.com has no dynamic client registration",
+   "how_to_enable": "Register an OAuth app with api.box.com using callback URL http://127.0.0.1:8787/oauth/callback/box; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "databricks-genie-one",
+   "connector": "databricks-genie-one",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); its URL is per-account",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/databricks-genie-one; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "dnb-dplus-mcp",
+   "connector": "dnb-dplus-mcp",
+   "kind": "oauth-app",
+   "authorization_server": "https://plus.dnb.com/v2/mcp",
+   "reason": "plus.dnb.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with plus.dnb.com using callback URL http://127.0.0.1:8787/oauth/callback/dnb-dplus-mcp; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "dnb-risk-analytics",
+   "connector": "dnb-risk-analytics",
+   "kind": "oauth-app",
+   "authorization_server": "https://agents.riskanalytics.dnb.com",
+   "reason": "agents.riskanalytics.dnb.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with agents.riskanalytics.dnb.com using callback URL http://127.0.0.1:8787/oauth/callback/dnb-risk-analytics; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "docusign",
+   "connector": "docusign",
+   "kind": "oauth-app",
+   "authorization_server": "https://account.docusign.com",
+   "reason": "account.docusign.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with account.docusign.com using callback URL http://127.0.0.1:8787/oauth/callback/docusign; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "elevenlabs",
+   "connector": "elevenlabs",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.us.elevenlabs.io",
+   "reason": "api.us.elevenlabs.io has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with api.us.elevenlabs.io using callback URL http://127.0.0.1:8787/oauth/callback/elevenlabs; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "finance",
+   "connector": "finance",
+   "kind": "hosted",
+   "authorization_server": "connectors-gateway.grok.com",
+   "reason": "Hosted by Grok's connector gateway — it needs a Grok account session",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "gmail",
+   "connector": "gmail",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-calendar",
+   "connector": "google-calendar",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-cloud-bigquery",
+   "connector": "google-cloud-bigquery",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-docs",
+   "connector": "google-docs",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-drive",
+   "connector": "google-drive",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-sheets",
+   "connector": "google-sheets",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "google-slides",
+   "connector": "google-slides",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.google.com",
+   "reason": "accounts.google.com has no dynamic client registration",
+   "how_to_enable": "Create a Google Cloud OAuth client of type Desktop app (APIs & Services → Credentials) and enable the product's API; enter its Client ID and Client Secret once in any Google plugin's Setup — Gmail, Calendar, Drive, Docs, Sheets and Slides share it. Desktop clients accept the loopback redirect http://127.0.0.1:8787/oauth/callback/<connector> without registering it."
+  },
+  {
+   "name": "hubspot",
+   "connector": "hubspot",
+   "kind": "oauth-app",
+   "authorization_server": "https://mcp.hubspot.com",
+   "reason": "mcp.hubspot.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with mcp.hubspot.com using callback URL http://127.0.0.1:8787/oauth/callback/hubspot; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "link",
+   "connector": "link",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "mongodb-atlas",
+   "connector": "mongodb-atlas",
+   "kind": "oauth-app",
+   "authorization_server": "https://authorize.mongodb.com",
+   "reason": "authorize.mongodb.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with authorize.mongodb.com using callback URL http://127.0.0.1:8787/oauth/callback/mongodb-atlas; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "onedrive",
+   "connector": "onedrive",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "onesignal",
+   "connector": "onesignal",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); no OAuth metadata found to register one",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/onesignal; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "outlook",
+   "connector": "outlook",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "outlook-calendar",
+   "connector": "outlook-calendar",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "pascal",
+   "connector": "pascal-hosted",
+   "kind": "oauth-app",
+   "authorization_server": "https://editor.pascal.app/api/auth",
+   "reason": "editor.pascal.app has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with editor.pascal.app using callback URL http://127.0.0.1:8787/oauth/callback/pascal-hosted; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "power-bi",
+   "connector": "power-bi",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "render",
+   "connector": "render",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.render.com",
+   "reason": "api.render.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with api.render.com using callback URL http://127.0.0.1:8787/oauth/callback/render; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "salesforce",
+   "connector": "salesforce",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); its URL is per-account",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/salesforce; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "salesforce-headless-360",
+   "connector": "salesforce-headless-360",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); its URL is per-account",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/salesforce-headless-360; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "sharepoint",
+   "connector": "sharepoint",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "shop",
+   "connector": "shop",
+   "kind": "oauth-app",
+   "authorization_server": "https://accounts.shop.app",
+   "reason": "accounts.shop.app has no dynamic client registration",
+   "how_to_enable": "Register an OAuth app with accounts.shop.app using callback URL http://127.0.0.1:8787/oauth/callback/shop; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "shopify",
+   "connector": "shopify",
+   "kind": "oauth-app",
+   "authorization_server": "https://setup.shopify.com/auth",
+   "reason": "setup.shopify.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with setup.shopify.com using callback URL http://127.0.0.1:8787/oauth/callback/shopify; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "slack",
+   "connector": "slack",
+   "kind": "oauth-app",
+   "authorization_server": "https://mcp.slack.com",
+   "reason": "mcp.slack.com has no dynamic client registration",
+   "how_to_enable": "Register an OAuth app with mcp.slack.com using callback URL http://127.0.0.1:8787/oauth/callback/slack; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "teams",
+   "connector": "teams",
+   "kind": "hosted",
+   "authorization_server": "api.cursor.com",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "how_to_enable": "Not possible without that vendor's account gateway."
+  },
+  {
+   "name": "transcend-agent-governance",
+   "connector": "transcend-agent-governance",
+   "kind": "oauth-app",
+   "authorization_server": null,
+   "reason": "mcp.json declares a pre-registered OAuth client (auth.CLIENT_ID); its URL is per-account",
+   "how_to_enable": "Register an OAuth app with the provider using callback URL http://127.0.0.1:8787/oauth/callback/transcend-agent-governan; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  },
+  {
+   "name": "x",
+   "connector": "x",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.x.com",
+   "reason": "api.x.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Create an X developer app (OAuth 2.0, type Native App or Web App) with callback URL http://127.0.0.1:8787/oauth/callback/x; enter its Client ID (and Client Secret for Web App), or an app-only Bearer Token, in the X plugin's Setup."
+  },
+  {
+   "name": "x-ads",
+   "connector": "x-ads",
+   "kind": "oauth-app",
+   "authorization_server": "https://api.x.com",
+   "reason": "api.x.com has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Create an X developer app (OAuth 2.0, type Native App or Web App) with callback URL http://127.0.0.1:8787/oauth/callback/x; enter its Client ID (and Client Secret for Web App), or an app-only Bearer Token, in the X plugin's Setup."
+  },
+  {
+   "name": "zoom",
+   "connector": "zoom",
+   "kind": "oauth-app",
+   "authorization_server": "https://zoom.us",
+   "reason": "zoom.us has no dynamic client registration; mcp.json pins the vendor's own client id",
+   "how_to_enable": "Register an OAuth app with zoom.us using callback URL http://127.0.0.1:8787/oauth/callback/zoom; enter its Client ID (and Client Secret if it's a confidential client) in the plugin's Setup."
+  }
+ ]
+}

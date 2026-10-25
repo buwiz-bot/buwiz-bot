@@ -2,7 +2,7 @@
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serverFile, AVATAR_DIR, ATTACH_DIR, outFile } from "../config.mjs";
+import { serverFile, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, outFile } from "../config.mjs";
 import { sendRanged } from "../state.mjs";
 import { osa } from "../avatars.mjs";
 import { highlight, renderFile } from "../files.mjs";
@@ -150,15 +150,18 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     });
     return true;
   }
+  // {path} is a reply file, {asset} a generated image (by bare file name);
+  // `name` is the panel's default (the Library's display name).
   if (req.method === "POST" && req.url === "/file/save") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      const { path } = JSON.parse(body || "{}");
-      const p = outFile(path || "");
+      const { path, asset, name: as } = JSON.parse(body || "{}");
+      const bare = String(asset || "").split("/").pop();
+      const p = asset ? (bare ? join(ASSETS_DIR, bare) : null) : outFile(path || "");
       res.setHeader("content-type", "application/json");
       if (!p || !existsSync(p)) return res.end(JSON.stringify({ ok: false }));
-      const name = p.split("/").pop().replace(/"/g, "");
+      const name = String(as || p.split("/").pop()).split("/").pop().replace(/["\\]/g, "");
       osa(`POSIX path of (choose file name with prompt "Download" default name "${name}")`)
         .then((dest) => {
           copyFileSync(p, dest);
@@ -180,6 +183,21 @@ window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1
     }
     const ext = (path.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
     const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mov: "video/quicktime", mp4: "video/mp4" }[ext] || "application/octet-stream";
+    res.setHeader("cache-control", "max-age=86400");
+    return sendRanged(req, res, path, type);
+  }
+  // A mini app's `asset:/generated/assets/<file>` (generated images): Rox
+  // gives its mini apps http://127.0.0.1:8787/asset/ as their asset base.
+  // Only that folder, by bare file name.
+  if (req.method === "GET" && req.url.startsWith("/asset/generated/assets/")) {
+    const name = decodeURIComponent(req.url.slice("/asset/generated/assets/".length).split("?")[0]).split("/").pop();
+    const path = join(ASSETS_DIR, name);
+    if (!name || !existsSync(path)) {
+      res.statusCode = 404;
+      return res.end();
+    }
+    const ext = (name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
+    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4" }[ext] || "application/octet-stream";
     res.setHeader("cache-control", "max-age=86400");
     return sendRanged(req, res, path, type);
   }

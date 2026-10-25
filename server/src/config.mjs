@@ -67,6 +67,12 @@ const PLUGIN_CATALOG = (() => {
   try { return JSON.parse(readFileSync(join(APP_ROOT, "server/plugins/marketplace.json"), "utf8")); }
   catch { return { plugins: [] }; }
 })();
+// Grok Bot's plugin catalog snapshot (tools/sync-grokbot-catalog.mjs):
+// {source, fetchedAt, plugins:[entry + key + install hints]}.
+const GROKBOT_CATALOG = (() => {
+  try { return JSON.parse(readFileSync(serverFile("plugins/grokbot-catalog.json"), "utf8")); }
+  catch { return { plugins: [] }; }
+})();
 const PLUGINS_DIR = join(DATA_DIR, "plugins");
 const git = (args) =>
   new Promise((ok, fail) =>
@@ -105,5 +111,5 @@ export {
   APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PROVIDER, BASE_URL, MODEL,
   MAX_TOKENS, MOCK, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W,
   POP_H, WINDOWS_DIR, CHUNK_DIR, AVATAR_DIR, ATTACH_DIR, OUT_DIR, ASSETS_DIR,
-  PLUGIN_CATALOG, PLUGINS_DIR, git, outFile,
+  PLUGIN_CATALOG, GROKBOT_CATALOG, PLUGINS_DIR, git, outFile,
 };

@@ -1,21 +1,25 @@
 // tools.mjs — the agent's tool surface: schemas, executors (generate_app,
 // images, fetch/shell/search, react, office, artifacts, launch/close,
 // version ops), MCP and skill admin.
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { ASSETS_DIR, GEN_DIR, OUT_DIR, STAGE_DIR, git, outFile } from "./config.mjs";
-import { uuidv7, db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread } from "./state.mjs";
+import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, STAGE_DIR, git, outFile } from "./config.mjs";
+import { uuidv7, db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread, cardTurn, markRevising, clearRevising } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
 import { checkCandidate, errorCard, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
 import { fileMeta, fileRecord } from "./files.mjs";
+import { appInfo, genAppIcon, iconPath, setAppCols, updateAppMeta } from "./appmeta.mjs";
 import { callOfficeTool, officeCreateBytes, officeMcpTools } from "./office.mjs";
+import { pluginSkillsInject } from "./plugins.mjs";
+import { editImage, generateImage } from "./avatars.mjs";
 import { BOT_TOOLS, botOfThread, botSection, isBotTool, recordToolUse, toolBot } from "./botctx.mjs";
 import {
   anthropicTools as mcpAnthropicTools, callTool as mcpCallTool,
   ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName,
   setAuthHooks as mcpSetAuthHooks, statusOf as mcpStatus,
 } from "./mcp.mjs";
+import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
 
 export const CLIENT_SEARCH = {
   name: "web_search",
@@ -28,19 +32,22 @@ export const CLIENT_SEARCH = {
   },
 };
 
+// generate_image's aspect presets, in pixels (multiples of 16).
+// The sizes gpt-image makes — the placeholder is drawn at the one picked.
+const IMAGE_ASPECTS = {
+  "1:1": [1024, 1024],
+  "3:2": [1536, 1024],
+  "2:3": [1024, 1536],
+};
+
 export const TOOLS = [
   {
     name: "generate_app",
     description:
-      "Build an interactive native-UI mini-app from a complete Native Shell TSX module and mount it as a card in the conversation. Use it whenever the user wants an interface — apps, games, trackers, dashboards, forms, data views. The server typechecks it and returns the compiler error if it fails; fix the code and call again.",
+      "Build an interactive native-UI mini-app from a complete Native Shell TSX module and mount it as a card in the conversation. Use it whenever the user wants an interface — apps, games, trackers, dashboards, forms, data views. The server typechecks it and returns the compiler error if it fails; fix the code and call again. Always pass description and icon_prompt on create — the app gets a generated icon from icon_prompt in the background.",
     input_schema: {
       type: "object",
       properties: {
-        code: {
-          type: "string",
-          description:
-            "The complete TSX module: one default export function returning JSX, no mount(), all names imported from nsh modules. Where the module needs its own name (the /state endpoint) write the literal string \"__NAME__\" — the server substitutes it on write.",
-        },
         caption: {
           type: "string",
           description: "optional one-line markdown caption rendered above the card",
@@ -69,6 +76,23 @@ export const TOOLS = [
           description:
             'optional kebab-case display filename, no extension (e.g. "tiny-trajectory" → tiny-trajectory.tsx)',
         },
+        description: {
+          type: "string",
+          description:
+            "one sentence saying what the app does, kept in the app's details (e.g. \"Track daily water intake against a goal\")",
+        },
+        icon_prompt: {
+          type: "string",
+          description:
+            "the app icon's subject/metaphor — a single symbol, not the UI (e.g. \"a glass of water with a rising level gauge\")",
+        },
+        // Last: the card's title and size stream first, so its placeholder
+        // is drawn while the code is still being written.
+        code: {
+          type: "string",
+          description:
+            "The complete TSX module: one default export function returning JSX, no mount(), all names imported from nsh modules. Where the module needs its own name (the /state endpoint) write the literal string \"__NAME__\" — the server substitutes it on write.",
+        },
       },
       required: ["code"],
     },
@@ -76,15 +100,22 @@ export const TOOLS = [
   {
     name: "generate_image",
     description:
-      "Generate a real image from a text prompt and mount it as a card. Use for draw/image/picture/wallpaper/icon requests — describe subject, style, lighting richly. Never use it for UI mockups; interfaces are generate_app.",
+      "Generate a real image from a text prompt (gpt-image) and mount it as a card — or edit an existing image card (edit_of). Use for draw/image/picture/wallpaper/icon requests — describe subject, style, lighting richly. Never use it for UI mockups; interfaces are generate_app. Always choose the shape up front with aspect (\"1:1\" square, \"3:2\" landscape — scenes, wallpapers, banners; \"2:3\" portrait — people, posters, phone wallpapers): the placeholder the user watches is drawn at that exact size.",
     input_schema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "rich description of the image to generate" },
         caption: { type: "string", description: "optional one-line markdown caption" },
         title: { type: "string", description: 'short product name shown as the card\'s title (e.g. "Sunset Over The Marina")' },
-        width: { type: "number", description: "image width in pixels (default 768, up to 2048) — declare the real size you want" },
-        height: { type: "number", description: "image height in pixels (default 768, up to 2048)" },
+        aspect: {
+          type: "string",
+          enum: Object.keys(IMAGE_ASPECTS),
+          description: "the image's shape (default 1:1): 1:1 → 1024×1024, 3:2 → 1536×1024, 2:3 → 1024×1536",
+        },
+        edit_of: {
+          type: "string",
+          description: 'an existing image card to change (its name, "R<n>") — the edit keeps the rest of the picture and becomes that card\'s next version. Use it whenever the user asks to change, fix or adjust an image they replied to or named; the prompt then says only what to change. Its shape is kept unless aspect is given.',
+        },
       },
       required: ["prompt"],
     },
@@ -152,7 +183,7 @@ export const TOOLS = [
   {
     name: "revise_app",
     description:
-      "Revise an existing mini-app artifact in place: writes the code as a NEW version on top of base_v (default: the current version) and makes it what Library launches. ALWAYS use this — never generate_app — when the user asks to change, fix, or iterate an app that already exists (its current source is in the conversation wherever the artifact was replied to or @-mentioned). base_v names the version to branch from.",
+      "Revise an existing mini-app artifact in place: writes the code as a NEW version on top of base_v (default: the current version) and makes it what Library launches. ALWAYS use this — never generate_app — when the user asks to change, fix, or iterate an app that already exists (its current source is in the conversation wherever the artifact was replied to or @-mentioned). base_v names the version to branch from. Pass description when what the app does changed, and icon_prompt only when its icon should be redrawn.",
     input_schema: {
       type: "object",
       properties: {
@@ -165,6 +196,8 @@ export const TOOLS = [
         desc: { type: "string", description: "optional one-line description of what changed, shown under the title" },
         layout: { type: "object", description: "optional revised intended render size in points", properties: { width: { type: "number" }, height: { type: "number" } } },
         slug: { type: "string", description: "optional kebab-case display filename" },
+        description: { type: "string", description: "optional updated one-sentence description of what the app does" },
+        icon_prompt: { type: "string", description: "optional — redraw the app icon with this subject/metaphor (a single symbol, not the UI)" },
       },
       required: ["name", "code"],
     },
@@ -233,6 +266,34 @@ export const TOOLS = [
     input_schema: {
       type: "object",
       properties: { name: { type: "string" }, v: { type: "number" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "app_icon",
+    description: "Regenerate the icon of an existing mini-app artifact from a description of its subject/metaphor (a single bold symbol, not the UI). Waits for the image.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "the artifact id, e.g. R6" },
+        prompt: { type: "string", description: "the icon's subject/metaphor, e.g. \"a paper plane over a calendar grid\"" },
+      },
+      required: ["name", "prompt"],
+    },
+  },
+  {
+    name: "app_details_update",
+    description: "Edit a mini-app's details without changing its code: title, one-sentence description, display filename, and its preferred window size in points (0 clears).",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "the artifact id, e.g. R6" },
+        title: { type: "string" },
+        description: { type: "string", description: "one sentence, ≤280 chars; empty clears" },
+        file: { type: "string", description: "kebab-case display filename" },
+        width: { type: "number", description: "preferred width in points (120–2400, 0 clears)" },
+        height: { type: "number", description: "preferred height in points (120–2400, 0 clears)" },
+      },
       required: ["name"],
     },
   },
@@ -357,19 +418,20 @@ const baseSystem = () => `You are the assistant inside a generative-UI chat app:
 
 Reply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).
 
-When a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. "Tiny Trajectory"), desc (one line about what it does), layout (the width/height in points you designed it for) and slug (kebab-case, e.g. tiny-trajectory) — title and desc head the card in chat, layout sizes its placeholder exactly, and title/slug name the app in the user's Library.
+When a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. "Tiny Trajectory"), desc (one line about what it does), description (one sentence for the app's details), icon_prompt (the icon's subject/metaphor — one symbol, not the UI), layout (the width/height in points you designed it for) and slug (kebab-case, e.g. tiny-trajectory) — title and desc head the card in chat, layout sizes its placeholder exactly, and title/slug name the app in the user's Library.
 
 Artifacts are versioned: every app you mount keeps its versions under one name (R<n>), and each card in the conversation pins the version it rendered. When the user asks to change, fix, restyle, or extend an app that already exists — especially when they replied to its card or @-mentioned it, so its source is attached — call revise_app with that name; never rebuild it as a new artifact. To iterate an older version on purpose, pass base_v — that starts a branch the user can see in the Library's version history. launch_app pops an app into its own window, close_app closes it, promote_app/demote_app publish/unpublish to Mini Apps, set_version reverts the current pointer, view_code reads any version's source.
 
 Compose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.
 
-Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. When the user wants a capability you don't have, install it yourself with mcp_install (a stdio MCP server command — npx/uvx/node/…); it connects immediately and its mcp_* tools are callable from your next step. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
+Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. Apps with many tools aren't listed until loaded: app_tools_load names them — load the one a request needs, then call its tools. When the user wants a capability you don't have, install it yourself with mcp_install (a stdio MCP server command — npx/uvx/node/…); it connects immediately and its mcp_* tools are callable from your next step. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
+Word, Excel or PowerPoint files in Google Drive (.docx/.xlsx/.pptx — not Google Docs, whose own docs tools edit them): get_drive_file_download_url saves the file under drive/ in the office workspace and returns its absolute path; office_open that path, find and stage the change, office_accept it, then office_export it to a new name in the same folder; finally update_drive_file with the file's id and file_path = the exported file's absolute path (the download's folder + the exported name). That replaces the Drive file's content in place — same id, link and sharing — so tell the user it is saved, not only that a copy exists.
 
 Private skills: the user teaches you procedures — when they explain a workflow to keep, skill_create saves it (kebab-case name, one-line description, full instructions). skill_update, skill_delete, skill_enable, skill_disable and skill_list manage them. Enabled skill instructions are appended below — follow them whenever the request matches the skill's description.
 
 Local shell: shell_run executes commands on the user's machine — their login PATH applies, so installed CLIs work. Use it when a request needs local state or a local tool instead of guessing; keep commands short and non-interactive.
-${privateSkillsInject()}
+${privateSkillsInject()}${pluginSkillsInject()}
 
 When you DO write a widget module, this contract applies:
 ${contractFor("__NAME__")}`;
@@ -406,6 +468,28 @@ export function artOf(input) {
   return art.title || art.desc || art.w || art.h ? art : null;
 }
 
+// The generated image an image card's current version shows (its
+// `asset:/generated/assets/<file>`), or null for any other card.
+export function imageFileOf(name, v = null) {
+  try {
+    const path = v ? verFile(name, v) : join(GEN_DIR, `${name}.tsx`);
+    return readFileSync(path, "utf8").match(/asset:\/generated\/assets\/(img-[\w.-]+)/)?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+// The gpt-image shape closest to the image at `path`.
+function aspectOfFile(path) {
+  try {
+    const out = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], { encoding: "utf8" });
+    const w = Number(out.match(/pixelWidth: (\d+)/)?.[1]);
+    const h = Number(out.match(/pixelHeight: (\d+)/)?.[1]);
+    if (w && h) return w > h * 1.15 ? "3:2" : h > w * 1.15 ? "2:3" : "1:1";
+  } catch {}
+  return "1:1";
+}
+
 export function imageModule(file, prompt, w, h) {
   const ar = w && h ? `, aspectRatio: ${(w / h).toFixed(4)}` : "";
   return `import { signal, Text, View } from "nsh";
@@ -421,9 +505,6 @@ export default function R() {
       <If when={failed()}>
         <Text class="text-sm text-zinc-500">image failed to load</Text>
       </If>
-      <Text class="text-xs text-zinc-500" numberOfLines={2}>{${JSON.stringify(
-        prompt.slice(0, 140),
-      )}}</Text>
     </View>
   );
 }
@@ -448,10 +529,10 @@ export async function toolGenerateApp(job, thread, input) {
   if (revName && !existsSync(join(GEN_DIR, `${revName}.tsx`)))
     return { content: `no such artifact ${revName}`, is_error: true };
   const name = revName || `R${nextSeq()}`;
-  setJob(job, "checking", `nsh build + typecheck ${name}.tsx`);
+  setJob(job, "checking", "Checking the code");
   code = code.split("__NAME__").join(name);
   // Models that self-name their state key (const S = "tipcalc") save under a
-  // key the /state/<module> lookups (widget feed, pop-outs) can never find —
+  // key the /state/<module> lookups (pop-outs, other surfaces) can never find —
   // pin the state const to the real name.
   if (code.includes("/state/"))
     code = code.replace(
@@ -462,19 +543,29 @@ export async function toolGenerateApp(job, thread, input) {
   writeFileSync(join(STAGE_DIR, `${name}.tsx`), code);
   // The card exists before the check: it renders as an exact-size
   // placeholder whose status line mirrors the job's phase. A failed call
-  // removes it again — the model's retry makes a fresh one.
-  const turn = {
-    id: uuidv7(),
+  // removes it again — the model's retry makes a fresh one. A revise
+  // instead covers the card it revises (`revising`); its new card lands
+  // once the code passes (a rejected one stays covered while the model
+  // fixes it; the job's end uncovers it).
+  // The placeholder drawn while the code streamed becomes this card.
+  const pre = job?.pendingApp && thread.turns.includes(job.pendingApp) ? job.pendingApp : null;
+  if (job) job.pendingApp = null;
+  const turn = Object.assign(pre || { id: uuidv7() }, {
     role: "ai",
     name,
     building: true,
     status: "checking types…",
     label: labelOf(modelCtx.getStore()),
     caption: String(input.caption || ""),
-    art: artOf(input),
-  };
-  thread.turns.push(turn);
-  if (job) job.turn = turn;
+    art: artOf(input) || pre?.art || null,
+  });
+  if (revName) {
+    if (pre) thread.turns.splice(thread.turns.indexOf(pre), 1);
+    markRevising(job, cardTurn(thread, revName, Number(input.base_v) || null));
+  } else {
+    if (!pre) thread.turns.push(turn);
+    if (job) job.turn = turn;
+  }
   const dropTurn = () => {
     const i = thread.turns.indexOf(turn);
     if (i >= 0) thread.turns.splice(i, 1);
@@ -508,9 +599,10 @@ export async function toolGenerateApp(job, thread, input) {
     .get(name) || {};
   const title = String(input.title || "").trim().slice(0, 60) || prior.title || null;
   const file = slugFile(input.slug) || prior.file || null;
-  db.prepare(
-    "INSERT OR REPLACE INTO apps(name,title,file) VALUES(?,?,?)",
-  ).run(name, title, file);
+  // generate_app's desc is also "what the app does"; revise_app's says what
+  // changed, so only an explicit description replaces it there.
+  const description = String(input.description || (revName ? "" : input.desc) || "").trim().slice(0, 280);
+  setAppCols(name, { title, file, ...(description ? { description } : {}) });
   const v = writeVersion(
     name, code, parent, job?.prompt || input.caption || "",
     input.branch_name,
@@ -520,9 +612,19 @@ export async function toolGenerateApp(job, thread, input) {
   delete turn.building;
   delete turn.status;
   if (job?.turn === turn) job.turn = null;
+  if (revName) {
+    thread.turns.push(turn);
+    clearRevising(job);
+  }
   job.cards = (job.cards || 0) + 1;
   writeIndex();
   console.log(`✓ ${name}@v${v}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
+  // The icon draws in the background — never blocks or fails the result.
+  const iconPrompt = String(input.icon_prompt || "").trim();
+  if (!existsSync(iconPath(name)) || (revName && iconPrompt))
+    genAppIcon(name, iconPrompt, modelCtx.getStore()?.model || MODEL).catch((e) =>
+      console.error(`  icon ${name}: ${String(e?.message || e).slice(0, 200)}`),
+    );
   const branchNote = branched
     ? ` — this is a new branch off v${parent}${input.branch_name ? ` named "${String(input.branch_name).trim().slice(0, 40)}"` : ""}; mention the fork to the user (they can rename it in Library history)`
     : "";
@@ -534,11 +636,23 @@ export async function toolGenerateApp(job, thread, input) {
 export async function toolGenerateImage(job, thread, input) {
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "prompt is required", is_error: true };
-  setJob(job, "generating", `image: ${prompt.slice(0, 60)}`);
-  const w = clampDim(input.width, 128, 2048) || 768;
-  const h = clampDim(input.height, 128, 2048) || 768;
-  const art = artOf(input) || { title: null, desc: "", w: 0, h: 0 };
-  if (!art.w) { art.w = w; art.h = h; }
+  setJob(job, "generating", "Sketching something up");
+  // An edit starts from that card's current image and keeps its shape.
+  const editOf = /^R\d+$/.test(String(input.edit_of || "")) ? String(input.edit_of) : null;
+  const src = editOf ? imageFileOf(editOf) : null;
+  if (editOf && !src) return { content: `${editOf} is not an image card`, is_error: true };
+  // The size is settled before the placeholder lands, so it is drawn at the
+  // final image's exact shape.
+  const aspect = IMAGE_ASPECTS[input.aspect] ? input.aspect : src ? aspectOfFile(join(ASSETS_DIR, src)) : "1:1";
+  const [w, h] = IMAGE_ASPECTS[aspect];
+  const art = artOf(input) || { title: null, desc: "" };
+  // An edit keeps the card's title unless a new one is given.
+  if (editOf && !art.title)
+    art.title = [...thread.turns].reverse().find((t) => t.name === editOf && t.art?.title)?.art.title || null;
+  art.w = w;
+  art.h = h;
+  // An image card: Rox opens its file in the lightbox.
+  art.kind = "image";
   const turn = {
     id: uuidv7(),
     role: "ai",
@@ -555,36 +669,29 @@ export async function toolGenerateImage(job, thread, input) {
     if (i >= 0) thread.turns.splice(i, 1);
     if (job?.turn === turn) job.turn = null;
   };
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    prompt,
-  )}?width=${w}&height=${h}&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
-  let buf;
+  // gpt-image on the ChatGPT login (opencodex's relay), else Gemini.
+  const file = `img-${Date.now()}.png`;
+  art.file = file;
+  let backend;
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(90000) });
-    if (!r.ok) {
-      dropTurn();
-      return { content: `image service returned ${r.status}`, is_error: true };
-    }
-    buf = Buffer.from(await r.arrayBuffer());
+    backend = src
+      ? await editImage(join(ASSETS_DIR, src), prompt, join(ASSETS_DIR, file), { size: `${w}x${h}` })
+      : await generateImage(prompt, join(ASSETS_DIR, file), { size: `${w}x${h}`, aspect });
   } catch (e) {
     dropTurn();
-    throw e;
+    return { content: `image generation failed: ${String(e?.message || e).slice(0, 300)}`, is_error: true };
   }
-  if (buf.length < 2000) {
-    dropTurn();
-    return { content: "image service returned no image", is_error: true };
-  }
-  const file = `img-${Date.now()}.png`;
-  writeFileSync(join(ASSETS_DIR, file), buf);
-  const name = `R${nextSeq()}`;
-  const v = writeVersion(name, imageModule(file, prompt, w, h), null, prompt);
+  const name = editOf || `R${nextSeq()}`;
+  const v = writeVersion(name, imageModule(file, prompt, w, h), editOf ? headOf(editOf) : null, prompt);
   turn.name = name;
   turn.v = v;
+  // what drew it — Edit Details' "Made with"
+  art.via = backend;
   delete turn.building;
   delete turn.status;
   if (job?.turn === turn) job.turn = null;
   job.cards = (job.cards || 0) + 1;
-  console.log(`✓ ${name}.tsx image (${prompt.slice(0, 50)})`);
+  console.log(`✓ ${name}.tsx image via ${backend} (${prompt.slice(0, 50)})`);
   return {
     content: `image generated and mounted as ${name} (asset:/generated/assets/${file}) — to embed it inside a widget, use <Image src="asset:/generated/assets/${file}" …>.`,
   };
@@ -695,23 +802,70 @@ export function cardOfficeFile(thread, rel) {
   thread.turns.push({ id: uuidv7(), role: "ai", label: "office", files: [fileRecord(p, rel)] });
 }
 
+// The building placeholder of an office file, shaped like its output: a
+// page (8.5:11) for a document, 16:9 for a deck, 4:3 for a sheet.
+export function officeArt(name) {
+  const [kind, w, h] = /\.pptx?$/i.test(name)
+    ? ["presentation", 560, 315]
+    : /\.(xlsx|xlsm|xls|csv)$/i.test(name)
+      ? ["spreadsheet", 480, 360]
+      : [/\.pdf$/i.test(name) ? "pdf" : "document", 425, 550];
+  return { title: name || null, desc: "", w, h, kind };
+}
+
 export async function toolOffice(job, thread, block) {
   const input = block.input || {};
   if (block.name === "office_create") {
     const name = String(input.path || "").split("/").pop() || "";
     const format = /\.xlsx$/i.test(name) ? "xlsx" : /\.pptx$/i.test(name) ? "pptx" : /\.docx$/i.test(name) ? "docx" : null;
-    if (!format) return { content: "path must end in .docx, .xlsx, or .pptx", is_error: true };
+    // The placeholder drawn while the payload streamed (agent.mjs) becomes
+    // the file's turn, as generate_app adopts its own; without one a fresh
+    // placeholder shows while the file is written.
+    const pre = job?.pendingOffice && thread.turns.includes(job.pendingOffice) ? job.pendingOffice : null;
+    if (job) job.pendingOffice = null;
+    const dropPre = () => {
+      const i = pre ? thread.turns.indexOf(pre) : -1;
+      if (i >= 0) thread.turns.splice(i, 1);
+    };
+    if (!format) {
+      dropPre();
+      return { content: "path must end in .docx, .xlsx, or .pptx", is_error: true };
+    }
     const payload = input[format];
-    if (!payload) return { content: `a .${format} path requires a ${format} payload`, is_error: true };
+    if (!payload) {
+      dropPre();
+      return { content: `a .${format} path requires a ${format} payload`, is_error: true };
+    }
+    const turn = Object.assign(pre || { id: uuidv7() }, {
+      role: "ai",
+      building: true,
+      status: "Putting the file together",
+      label: "office",
+      art: officeArt(name),
+    });
+    if (!pre) thread.turns.push(turn);
+    if (job) job.turn = turn;
+    const dropTurn = () => {
+      const i = thread.turns.indexOf(turn);
+      if (i >= 0) thread.turns.splice(i, 1);
+      if (job?.turn === turn) job.turn = null;
+    };
     const rel = `o${Date.now().toString(36)}`;
     mkdirSync(join(OUT_DIR, rel), { recursive: true });
     try {
       writeFileSync(join(OUT_DIR, rel, name), await officeCreateBytes(format, { [format]: payload }));
     } catch (e) {
+      dropTurn();
       return { content: `office_create failed: ${String(e?.message || e).slice(0, 400)}`, is_error: true };
     }
     const key = `${rel}/${name}`;
-    cardOfficeFile(thread, key);
+    // the placeholder turn becomes the file card
+    turn.files = [fileRecord(join(OUT_DIR, key), key)];
+    delete turn.art;
+    delete turn.building;
+    delete turn.status;
+    if (job?.turn === turn) job.turn = null;
+    writeIndex();
     console.log(`✓ office ${format} → ${key}`);
     return { content: `created ${key} — the file card is in the reply. To revise it, open this path with office_open and export the result.` };
   }
@@ -752,7 +906,7 @@ export async function toolArtifact(block, input) {
   if (block.name === "close_app") {
     let n = 0;
     for (const [k, child] of openWindows)
-      if (k.split(":")[1]?.startsWith(`${name}@`) || k.split(":")[1] === name)
+      if (k === name || k.startsWith(`${name}@`))
         try { child.kill(); n++; } catch {}
     return { content: n ? `closed ${n} window(s).` : `no open window for ${name}.` };
   }
@@ -799,12 +953,29 @@ export async function execTool(job, thread, block) {
     if (block.name === "generate_image")
       return await toolGenerateImage(job, thread, block.input || {});
     if (block.name === "react") return toolReact(thread, block.input || {});
+    if (block.name === "app_tools_load") return await toolAppToolsLoad(thread, block.input || {});
     if (block.name === "fetch_url") return await toolFetchUrl(block.input || {});
     if (block.name === "shell_run") return await toolShell(block.input || {});
     if (block.name === "query_source")
       return await toolQuerySource(block.input || {});
     if (block.name === "web_search")
       return await toolWebSearch(block.input || {});
+    if (block.name === "app_icon") {
+      const { name, prompt } = block.input || {};
+      setJob(job, "generating", "Sketching something up");
+      const backend = await genAppIcon(String(name || ""), prompt, modelCtx.getStore()?.model || MODEL);
+      return { content: `${name} has a new icon (drawn by ${backend}).` };
+    }
+    if (block.name === "app_details_update") {
+      const { name, width, height, ...rest } = block.input || {};
+      updateAppMeta(String(name || ""), {
+        ...rest,
+        ...(width !== undefined ? { w: width } : {}),
+        ...(height !== undefined ? { h: height } : {}),
+      });
+      const i = appInfo(String(name));
+      return { content: `${name} details: title "${i.title}", file ${i.file}, description "${i.description}", size ${i.w}×${i.h}` };
+    }
     if (/^(launch_app|close_app|promote_app|demote_app|set_version|view_code)$/.test(block.name))
       return await toolArtifact(block, block.input || {});
     if (block.name.startsWith("office_"))
@@ -820,10 +991,14 @@ export async function execTool(job, thread, block) {
         .prepare("SELECT * FROM mcp_servers WHERE id=?")
         .get(mm[0]);
       if (!row) return { content: `mcp server ${mm[0]} is not configured`, is_error: true };
-      setJob(job, "tool", `${row.name || mm[0]}: ${mm[1]}`);
+      setJob(job, ...toolActivity(block.name));
       // the thread's bot actually used this server → it joins its integrations
       try { recordToolUse(thread, row.id); } catch {}
-      return await mcpCallTool(row, mm[1], block.input || {});
+      markAppUsed(thread, row.id);
+      const r = await mcpCallTool(row, mm[1], block.input || {});
+      // a Drive file the AI made or changed joins the reply (drive.mjs)
+      if (row.id === DRIVE_SERVER) try { noteDriveCall(job, thread, mm[1], block.input || {}, r); } catch {}
+      return r;
     }
     return { content: `unknown tool ${block.name}`, is_error: true };
   } catch (e) {
@@ -844,65 +1019,159 @@ export const setServerSearch = (v) => {
 export const setAgentStream = (v) => {
   agentStream = v;
 };
+// Run status, phrased the way Grok Bot does: a phase (→ the avatar's
+// animation in Rox) plus a short phrase; Rox adds the "…". One phrase is
+// drawn per phase and kept while that phase lasts (phraseFor).
+export const PHRASES = {
+  thinking: ["Thinking it through", "Mulling it over", "Putting it together"],
+  working: ["Getting it done", "Making progress", "Working on it", "Handling it", "Chipping away"],
+};
+export function phraseFor(job, key, pool = PHRASES[key] || PHRASES.working) {
+  if (job._phraseKey !== key) {
+    job._phraseKey = key;
+    job._phrase = pool[Math.floor(Math.random() * pool.length)];
+  }
+  return job._phrase;
+}
+
 export const TOOL_ACTIVITY = {
-  web_search: ["searching", "Searching the web"],
-  fetch_url: ["browsing", "Reading the web"],
-  generate_app: ["writing", "Drafting the file"],
-  generate_image: ["generating", "Generating a photo"],
-  query_source: ["connecting", "Connecting to a third party app"],
-  mcp_install: ["connecting", "Installing an app connection"],
-  skill_create: ["thinking", "Saving a skill"],
-  shell_run: ["working", "Running a command"],
-  mcp_uninstall: ["working", "Removing an app connection"],
-  mcp_enable: ["connecting", "Enabling an app connection"],
-  mcp_disable: ["working", "Disabling an app connection"],
-  mcp_list: ["working", "Listing app connections"],
-  memory_add: ["thinking", "Saving a memory"],
-  memory_remove: ["working", "Forgetting a memory"],
-  bot_profile_update: ["thinking", "Updating its profile"],
+  web_search: ["searching", "Digging around"],
+  fetch_url: ["browsing", "Doing some reading"],
+  query_source: ["connecting", "Working in a connected app"],
+  generate_app: ["coding", "Writing some code"],
+  revise_app: ["coding", "Writing some code"],
+  view_code: ["reading", "Reading the file"],
+  generate_image: ["generating", "Sketching something up"],
+  app_icon: ["generating", "Sketching something up"],
+  app_details_update: ["writing", "Jotting it down"],
+  mcp_install: ["connecting", "Setting up a connected app"],
+  mcp_uninstall: ["connecting", "Working in a connected app"],
+  mcp_enable: ["connecting", "Working in a connected app"],
+  mcp_disable: ["connecting", "Working in a connected app"],
+  mcp_list: ["connecting", "Working in a connected app"],
+  shell_run: ["running-commands", "Running a few commands"],
+  office_create: ["writing", "Putting the file together"],
+  office_export: ["writing", "Putting the file together"],
+  skill_create: ["writing", "Jotting it down"],
+  skill_update: ["writing", "Jotting it down"],
+  memory_add: ["writing", "Jotting it down"],
+  memory_remove: ["writing", "Jotting it down"],
+  bot_profile_update: ["writing", "Jotting it down"],
 };
 
+// A connected app's display name for "Working in <app>".
+function appName(serverId) {
+  const row = db.prepare("SELECT name FROM mcp_servers WHERE id=?").get(String(serverId));
+  return row?.name || serverId;
+}
+const titleCase = (s) => s.trim().replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
 export function toolActivity(name, input = {}) {
-  if (name === "query_source" && typeof input?.source === "string" && input.source.trim()) {
-    const source = input.source
-      .trim()
-      .replace(/[-_]+/g, " ")
-      .replace(/\b\w/g, (letter) => letter.toUpperCase());
-    return ["connecting", `Connecting to ${source}`];
+  // What a search/read is about, as Grok Bot shows it ("Searching for
+  // bbtree"). The block's input is empty while it streams, then complete
+  // when the tool runs.
+  const clip = (t) => (t.length > 40 ? `${t.slice(0, 39)}…` : t);
+  if (name === "web_search" && typeof input?.query === "string" && input.query.trim())
+    return ["searching", `Searching for ${clip(input.query.trim())}`];
+  if (name === "fetch_url" && typeof input?.url === "string") {
+    try { return ["browsing", `Reading ${new URL(input.url).hostname.replace(/^www\./, "")}`]; } catch {}
   }
-  return TOOL_ACTIVITY[name] || ["working", "Working"];
+  if (name === "query_source" && typeof input?.source === "string" && input.source.trim())
+    return ["connecting", `Working in ${titleCase(input.source)}`];
+  if (name === "app_tools_load" && input?.app) return ["connecting", `Working in ${titleCase(appName(input.app))}`];
+  const mcp = parseMcpName(name);
+  if (mcp) return ["connecting", `Working in ${titleCase(appName(mcp[0]))}`];
+  if (name.startsWith("office_")) return ["reading", "Reading the file"];
+  return TOOL_ACTIVITY[name] || ["working", PHRASES.working[0]];
+}
+
+// Apps with more tools than this load on demand (Vercel's ~240 tools, ~90
+// KB): app_tools_load adds one for the thread. A few dozen tools cost about
+// half a second per call (measured), less than the extra round a load takes.
+const DEFER_OVER = 80;
+const LOADED_TTL = 15 * 60 * 1000;
+const loadedApps = new Map(); // thread id -> Map(server id -> last used)
+function loadedFor(thread) {
+  const m = loadedApps.get(thread?.id) || new Map();
+  for (const [id, at] of m) if (Date.now() - at > LOADED_TTL) m.delete(id);
+  return m;
+}
+export function markAppUsed(thread, serverId) {
+  const m = loadedFor(thread);
+  if (!m.has(serverId)) return;
+  m.set(serverId, Date.now());
 }
 
 // A thread's bot scopes which connected MCP servers the agent sees:
-// global servers (bot IS NULL) plus servers bound to this bot.
-export async function mcpToolDefs(thread) {
+// global servers (bot IS NULL) plus servers bound to this bot. → the
+// callable defs plus the large apps left to load on demand.
+async function mcpSurface(thread) {
   const bot = store.bots.find((b) => b.threadId === thread?.id);
   const rows = db
     .prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)")
     .all(bot?.id || "");
+  const loaded = loadedFor(thread);
   const defs = [];
+  const deferred = [];
   for (const row of rows) {
     const rec = await mcpEnsure(row);
+    if (rec.needsAuth || rec.unavailable) continue; // signed out or blocked: its calls would only fail
     const off = new Set(JSON.parse(row.disabled_tools || "[]"));
-    defs.push(...mcpAnthropicTools(row.id, rec.tools.filter((t) => !off.has(t.name))));
+    const tools = rec.tools.filter((t) => !off.has(t.name));
+    if (tools.length > DEFER_OVER && !loaded.has(row.id)) {
+      deferred.push({ id: row.id, name: row.name || row.id, count: tools.length, sample: tools.slice(0, 6).map((t) => t.name) });
+      continue;
+    }
+    defs.push(...mcpAnthropicTools(row.id, tools));
   }
-  return defs;
+  return { defs, deferred };
+}
+export const mcpToolDefs = async (thread) => (await mcpSurface(thread)).defs;
+
+const appToolsLoad = (deferred) => ({
+  name: "app_tools_load",
+  description:
+    "Load a connected app's tools so you can call them (they become callable on your next step and stay loaded for this chat). " +
+    "Load one only when the request needs that app. Apps: " +
+    deferred.map((d) => `${d.id} (${d.name}, ${d.count} tools, e.g. ${d.sample.join(", ")})`).join("; "),
+  input_schema: {
+    type: "object",
+    properties: { app: { type: "string", enum: deferred.map((d) => d.id), description: "The app id" } },
+    required: ["app"],
+  },
+});
+
+// app_tools_load → marks the app loaded for the thread; its mcp_* tools
+// join the tool list from the next model call on.
+async function toolAppToolsLoad(thread, input) {
+  const id = String(input?.app || "");
+  const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(id);
+  if (!row) return { content: `no connected app ${id}`, is_error: true };
+  const rec = await mcpEnsure(row);
+  if (!rec.client) return { content: `${id} is not connected (${rec.err || "failed to start"})`, is_error: true };
+  const m = loadedFor(thread);
+  m.set(id, Date.now());
+  loadedApps.set(thread?.id, m);
+  const off = new Set(JSON.parse(row.disabled_tools || "[]"));
+  const names = rec.tools.filter((t) => !off.has(t.name)).map((t) => mcpAnthropicTools(id, [t])[0].name);
+  return { content: `Loaded ${names.length} ${row.name || id} tools; call them from your next step:\n${names.join("\n")}` };
 }
 
 export async function toolList(thread) {
   // The bundled BetterOffice MCP server contributes its office_* surface once
   // connected (office_create stays ours — its version mounts the file card).
   const office = officeMcpTools();
-  const mcp = await mcpToolDefs(thread);
+  const { defs: mcp, deferred } = await mcpSurface(thread);
   const own = botOfThread(thread) ? BOT_TOOLS : [];
+  const load = deferred.length ? [appToolsLoad(deferred)] : [];
   return serverSearch
-    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...own, ...office, ...mcp]
-    : [...TOOLS, ...own, ...office, ...mcp, CLIENT_SEARCH];
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...own, ...office, ...load, ...mcp]
+    : [...TOOLS, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
 }
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields
 // keep their stored values so a partial call edits an existing row.
-export async function mcpUpsertServer({ id, name, command, args, env, bot, url } = {}) {
+export async function mcpUpsertServer({ id, name, command, args, env, bot, url, headers, oauth_client, transport, probe = true } = {}) {
   const cur = id
     ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
     : null;
@@ -941,11 +1210,20 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url }
     bot === undefined ? cur?.bot ?? null
     : bot && store.bots.some((b) => b.id === bot) ? bot
     : null;
+  // headers / oauth_client / transport: undefined keeps the stored value.
+  const keep = (v, col) => (v === undefined ? cur?.[col] ?? null : v == null ? null : typeof v === "string" ? v : JSON.stringify(v));
+  // REPLACE rewrites the whole row — carry the OAuth state, account label
+  // and per-tool switches over so an edit doesn't sign the account out.
   db.prepare(
-    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at,url) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?),?)",
-  ).run(sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now(), finalUrl || null);
+    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at,url,headers,oauth_client,transport,auth,account,disabled_tools) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?),?,?,?,?,?,?,?)",
+  ).run(
+    sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now(), finalUrl || null,
+    keep(headers, "headers"), keep(oauth_client, "oauth_client"), keep(transport, "transport"),
+    cur?.auth ?? null, cur?.account ?? null, cur?.disabled_tools ?? null,
+  );
   mcpInvalidate(sid); // config changed → drop any cached client
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
+  if (!probe) return { id: sid, status: "idle", tools: 0, toolNames: [], err: null };
   const rec = await mcpEnsure(row); // probe now so the reply carries real status
   const st = mcpStatus(sid);
   return {

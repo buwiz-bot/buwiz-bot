@@ -1,13 +1,14 @@
 // routes/chat.mjs — extracted from app-server.mjs
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, MODEL, MOCK, WIDGETS_DIR } from "../config.mjs";
 import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex } from "../state.mjs";
 import { choiceFor } from "../model.mjs";
 import { integrationsOf } from "../botctx.mjs";
-import { headOf, versionsOf } from "../pipeline.mjs";
 import { artifactBlocks, generate } from "../agent.mjs";
+import { libraryOf } from "../artifacts.mjs";
+import { originOf } from "../appmeta.mjs";
 
 export default async function handle(req, res) {
   if (req.method === "POST" && req.url === "/chat") {
@@ -384,49 +385,14 @@ export default async function handle(req, res) {
     return res.end(JSON.stringify({ ok: true }));
   }
   // ————— publish / widgets shelf / persisted state —————
-  // The right pane's Details / Library: the viewed thread's generated apps
-  // (newest first) with their caption, Mini Apps state and file age — the
-  // app names its thread; the server's own active thread is wherever the
-  // last generation ran, which leaked one bot's apps into another's pane.
+  // The right pane's Details / Library: the viewed thread's artifacts
+  // (newest first, one record each — artifacts.mjs) — the app names its
+  // thread; the server's own active thread is wherever the last generation
+  // ran, which leaked one bot's apps into another's pane.
   if (req.method === "GET" && req.url.split("?")[0] === "/thread/apps") {
     const id = new URL(req.url, "http://localhost").searchParams.get("thread");
     const t = (id && store.list.find((x) => x.id === id)) || activeThread();
-    const published = new Set(db.prepare("SELECT name FROM widgets").all().map((w) => w.name));
-    const metas = new Map(
-      db.prepare("SELECT name,title,file FROM apps").all().map((r) => [r.name, r]),
-    );
-    const tomb = new Set(
-      db.prepare("SELECT name FROM tombstones").all().map((r) => r.name),
-    );
-    const seen = new Set();
-    const apps = [];
-    for (let i = t.turns.length - 1; i >= 0; i--) {
-      const u = t.turns[i];
-      if (u.role !== "ai" || !u.name || seen.has(u.name) || tomb.has(u.name))
-        continue;
-      seen.add(u.name);
-      // A name with no file anywhere was deleted before tombstones
-      // existed — same zombie, same filter.
-      const gone =
-        !existsSync(join(GEN_DIR, `${u.name}.tsx`)) &&
-        !existsSync(join(WIDGETS_DIR, `${u.name}.tsx`));
-      if (gone) continue;
-      let prompt = "";
-      for (let j = i - 1; j >= 0; j--) if (t.turns[j].role === "user") { prompt = t.turns[j].text || ""; break; }
-      const file = join(GEN_DIR, `${u.name}.tsx`);
-      const caption = u.caption && !/error|implicit|rejected/i.test(u.caption) ? u.caption : "";
-      const meta = metas.get(u.name) || {};
-      apps.push({
-        name: u.name,
-        title: meta.title || u.label || caption || prompt.slice(0, 60) || u.name,
-        file: meta.file || `${u.name}.tsx`,
-        subtitle: prompt.replace(/\s+/g, " ").slice(0, 120),
-        published: published.has(u.name),
-        mtime: existsSync(file) ? statSync(file).mtimeMs : 0,
-        v: headOf(u.name),
-        versions: versionsOf(u.name),
-      });
-    }
+    const apps = await libraryOf(t, originOf(req));
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ apps }));
   }
