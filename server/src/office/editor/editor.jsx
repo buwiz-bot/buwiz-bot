@@ -3,7 +3,7 @@
 // betteroffice demo wraps) against a generated-file path, saving edits
 // back over POST /file/write. Everything after mount is the engine's UI.
 import { createRoot } from "react-dom/client";
-import { createElement as h, useCallback, useEffect, useMemo, useState } from "react";
+import { createElement as h, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DocxEditor, configureDefaultFonts } from "@betteroffice/docx-react";
 import { PptxEditor } from "@betteroffice/pptx-react";
 import { XlsxEditor } from "@betteroffice/xlsx-react";
@@ -47,7 +47,26 @@ function saveBytes(bytes) {
   });
 }
 
+// Rox's Save (its ⌘S, its ⌘K menu): the editor's own save — the same
+// export its toolbar's Save runs, whose bytes land in onSave and so in
+// /file/write (which keeps each save as a new version). An editor with no
+// save() on its ref gets the Cmd+S its own keymap answers.
+let editorRef = null;
+window.roxSave = async () => {
+  const ed = editorRef?.current;
+  if (ed?.save) {
+    await ed.flushPendingInput?.();
+    const out = await ed.save();
+    return !!out;
+  }
+  const target = document.activeElement || document.body;
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "s", code: "KeyS", metaKey: true, bubbles: true, cancelable: true }));
+  return true;
+};
+
 function App() {
+  const ref = useRef(null);
+  editorRef = ref;
   const [bytes, setBytes] = useState(null);
   const [fonts, setFonts] = useState(null);
   const [err, setErr] = useState(null);
@@ -64,7 +83,7 @@ function App() {
   // className is NOT passed to the editors: it would replace their scoped
   // .oox-root class that styles.css is compiled under, leaving all chrome
   // unstyled (the overflow rail then measures ~15kpx and loops into #185).
-  const common = useMemo(() => ({ fileName: name, documentName: name, onSave }), [onSave]);
+  const common = useMemo(() => ({ ref, fileName: name, documentName: name, onSave }), [onSave]);
   const fileU8 = useMemo(() => (bytes ? new Uint8Array(bytes) : null), [bytes]);
   if (err) return h("div", { id: "err" }, `Couldn't open — ${err}`);
   if (!bytes || (kind === "pptx" && !fonts)) return h("div", { id: "load" }, "Opening…");

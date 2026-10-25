@@ -32,6 +32,7 @@ import { docMeta, extOf, viewerKind } from "./files.mjs";
 import { imageFileOf } from "./tools.mjs";
 import { callTool } from "./mcp.mjs";
 import { DRIVE_SERVER, driveType, driveWrite } from "./drive.mjs";
+import { versionsOfFile } from "./routes/files.mjs";
 
 // Library kinds by extension; audio/video are media, anything else a file.
 const KIND_BY_EXT = {
@@ -111,7 +112,9 @@ async function fileRecord(t, i, u, f, p, ctx) {
     versioning: "rox",
     published: false,
     mtime: mtimeOf(p),
-    v: 0,
+    // a file saved from Rox keeps versions (routes/files.mjs); the viewer
+    // lists them, the Library shows the current number
+    v: versionsOfFile(f.path).at(-1)?.v || 0,
     versions: [],
   };
 }
