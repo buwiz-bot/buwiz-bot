@@ -5,11 +5,12 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ASSETS_DIR, GEN_DIR, OUT_DIR, STAGE_DIR, git, outFile } from "./config.mjs";
-import { db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread } from "./state.mjs";
+import { uuidv7, db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
 import { checkCandidate, errorCard, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
 import { fileMeta, fileRecord } from "./files.mjs";
 import { callOfficeTool, officeCreateBytes, officeMcpTools } from "./office.mjs";
+import { BOT_TOOLS, botOfThread, botSection, isBotTool, recordToolUse, toolBot } from "./botctx.mjs";
 import {
   anthropicTools as mcpAnthropicTools, callTool as mcpCallTool,
   ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName,
@@ -349,7 +350,10 @@ export const TOOLS = [
   },
 ];
 
-export const agentSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
+// A bot's thread appends its own context (who it is, instructions,
+// memories); a plain chat gets the base prompt unchanged.
+export const agentSystem = (thread) => baseSystem() + botSection(thread);
+const baseSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
 
 Reply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).
 
@@ -460,6 +464,7 @@ export async function toolGenerateApp(job, thread, input) {
   // placeholder whose status line mirrors the job's phase. A failed call
   // removes it again — the model's retry makes a fresh one.
   const turn = {
+    id: uuidv7(),
     role: "ai",
     name,
     building: true,
@@ -535,6 +540,7 @@ export async function toolGenerateImage(job, thread, input) {
   const art = artOf(input) || { title: null, desc: "", w: 0, h: 0 };
   if (!art.w) { art.w = w; art.h = h; }
   const turn = {
+    id: uuidv7(),
     role: "ai",
     building: true,
     status: "generating image…",
@@ -686,7 +692,7 @@ export function toolReact(thread, input) {
 export function cardOfficeFile(thread, rel) {
   const p = outFile(rel);
   if (!p || !existsSync(p)) return;
-  thread.turns.push({ role: "ai", label: "office", files: [fileRecord(p, rel)] });
+  thread.turns.push({ id: uuidv7(), role: "ai", label: "office", files: [fileRecord(p, rel)] });
 }
 
 export async function toolOffice(job, thread, block) {
@@ -807,6 +813,7 @@ export async function execTool(job, thread, block) {
       return await toolMcpAdmin(thread, block.name, block.input || {});
     if (/^skill_(create|update|delete|enable|disable|list)$/.test(block.name))
       return toolSkillAdmin(block.name, block.input || {});
+    if (isBotTool(block.name)) return toolBot(thread, block.name, block.input || {});
     const mm = parseMcpName(block.name);
     if (mm) {
       const row = db
@@ -814,6 +821,8 @@ export async function execTool(job, thread, block) {
         .get(mm[0]);
       if (!row) return { content: `mcp server ${mm[0]} is not configured`, is_error: true };
       setJob(job, "tool", `${row.name || mm[0]}: ${mm[1]}`);
+      // the thread's bot actually used this server → it joins its integrations
+      try { recordToolUse(thread, row.id); } catch {}
       return await mcpCallTool(row, mm[1], block.input || {});
     }
     return { content: `unknown tool ${block.name}`, is_error: true };
@@ -848,6 +857,9 @@ export const TOOL_ACTIVITY = {
   mcp_enable: ["connecting", "Enabling an app connection"],
   mcp_disable: ["working", "Disabling an app connection"],
   mcp_list: ["working", "Listing app connections"],
+  memory_add: ["thinking", "Saving a memory"],
+  memory_remove: ["working", "Forgetting a memory"],
+  bot_profile_update: ["thinking", "Updating its profile"],
 };
 
 export function toolActivity(name, input = {}) {
@@ -882,9 +894,10 @@ export async function toolList(thread) {
   // connected (office_create stays ours — its version mounts the file card).
   const office = officeMcpTools();
   const mcp = await mcpToolDefs(thread);
+  const own = botOfThread(thread) ? BOT_TOOLS : [];
   return serverSearch
-    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...office, ...mcp]
-    : [...TOOLS, ...office, ...mcp, CLIENT_SEARCH];
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...own, ...office, ...mcp]
+    : [...TOOLS, ...own, ...office, ...mcp, CLIENT_SEARCH];
 }
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields

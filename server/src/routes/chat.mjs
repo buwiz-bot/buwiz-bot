@@ -3,8 +3,9 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, MODEL, MOCK, WIDGETS_DIR } from "../config.mjs";
-import { nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex } from "../state.mjs";
+import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex } from "../state.mjs";
 import { choiceFor } from "../model.mjs";
+import { integrationsOf } from "../botctx.mjs";
 import { headOf, versionsOf } from "../pipeline.mjs";
 import { artifactBlocks, generate } from "../agent.mjs";
 
@@ -57,11 +58,13 @@ export default async function handle(req, res) {
     return res.end(
       JSON.stringify({
         active: activeThread().id,
+        activeUid: activeThread().uid,
         model: MOCK ? "mock" : MODEL,
         list: store.list.map((t) => {
           const bot = store.bots.find((b) => b.threadId === t.id);
           return {
             id: t.id,
+            uid: (t.uid ||= uuidv7()),
             title: t.title,
             count: t.turns.length,
             hidden: !!t.hidden,
@@ -91,6 +94,11 @@ export default async function handle(req, res) {
             model: b.model || "",
             effort: b.effort || "",
             fast: !!b.fast,
+            label: b.label || "",
+            description: b.description || "",
+            instructions: b.instructions || "",
+            memories: b.memories || [],
+            integrations: integrationsOf(b),
             preview: String(last?.text || last?.caption || "").replace(/[#*`>_]/g, "").replace(/\s+/g, " ").trim().slice(0, 160),
           };
         }),
@@ -99,7 +107,7 @@ export default async function handle(req, res) {
   }
   if (req.method === "POST" && req.url === "/thread/new") {
     const id = `t${nextThreadSeq()}`;
-    store.list.unshift({ id, title: "new chat", turns: [] });
+    store.list.unshift({ id, uid: uuidv7(), title: "new chat", turns: [] });
     store.active = id;
     writeIndex();
     res.setHeader("content-type", "application/json");
@@ -108,7 +116,7 @@ export default async function handle(req, res) {
   if (req.method === "GET" && req.url === "/turns") {
     res.setHeader("content-type", "application/json");
     return res.end(
-      JSON.stringify({ active: activeThread().id, turns: turnsJson() }),
+      JSON.stringify({ active: activeThread().id, activeUid: activeThread().uid, turns: turnsJson() }),
     );
   }
   // Chat-row context menu state: hide/show and archive/unarchive are plain
@@ -161,7 +169,7 @@ export default async function handle(req, res) {
         store.list = store.list.filter((t) => t.id !== id);
         // never leave the app threadless — /threads dereferences one
         if (!store.list.length)
-          store.list.push({ id: `t${nextThreadSeq()}`, title: "new chat", turns: [] });
+          store.list.push({ id: `t${nextThreadSeq()}`, uid: uuidv7(), title: "new chat", turns: [] });
         if (store.active === id) store.active = store.list[0].id;
         writeIndex();
         res.setHeader("content-type", "application/json");
@@ -178,13 +186,14 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id } = JSON.parse(body || "{}");
-        const thread = store.list.find((t) => t.id === id);
-        if (!thread) throw new Error(`unknown thread ${id}`);
-        store.active = id;
+        // id may be the "t<n>" id or the thread's permanent uid
+        const { id, uid } = JSON.parse(body || "{}");
+        const thread = findThread(id) || findThread(uid);
+        if (!thread) throw new Error(`unknown thread ${id ?? uid}`);
+        store.active = thread.id;
         writeIndex();
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ ok: true, turns: turnsJson(thread) }));
+        res.end(JSON.stringify({ ok: true, id: thread.id, uid: thread.uid, turns: turnsJson(thread) }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
