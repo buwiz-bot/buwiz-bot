@@ -330,12 +330,12 @@ export async function generate(job, prompt) {
       job.result = "reply";
       return;
     }
-    const paths = mockFiles(dir);
     // the office samples are the real BetterOffice demo docs (server/office/
     // seeds/ — betteroffice-demo.docx, showcase.xlsx, presentation.pptx), so
     // the cards exercise the editor on real-world content; when a seed is
     // absent we still emit the generated fallback file
     const SEEDS = join(dirname(fileURLToPath(import.meta.url)), "office", "seeds");
+    const OFFICE = { docx: "betteroffice-demo.docx", xlsx: "showcase.xlsx", pptx: "presentation.pptx" };
     // The pptx fallback depends on the optional BetterOffice engine — absent,
     // /mock still works and the card simply isn't produced.
     const fallback = {
@@ -343,24 +343,72 @@ export async function generate(job, prompt) {
       xlsx: () => mockXlsx(dir),
       pptx: () => mockPptx(dir).catch((e) => (console.error(`  mock pptx: ${String(e?.message || e).slice(0, 120)}`), null)),
     };
-    for (const [ext, file] of [["docx", "betteroffice-demo.docx"], ["xlsx", "showcase.xlsx"], ["pptx", "presentation.pptx"]]) {
-      const s = join(SEEDS, file);
+    const emitOffice = async (ext, paths) => {
+      const s = join(SEEDS, OFFICE[ext]);
       if (existsSync(s)) {
-        const p = join(dir, file);
+        const p = join(dir, OFFICE[ext]);
         copyFileSync(s, p);
         paths.push(p);
       } else {
         const p = await fallback[ext]();
         if (p) paths.push(p);
       }
-    }
+    };
     // a screen recording as the video sample, twice (gallery of two)
-    const movs = readdirSync(ATTACH_DIR).filter((f) => f.endsWith(".mov"));
-    if (movs.length) {
-      copyFileSync(join(ATTACH_DIR, movs[0]), join(dir, "demo.mov"));
-      copyFileSync(join(ATTACH_DIR, movs[0]), join(dir, "replay.mov"));
-      paths.push(join(dir, "demo.mov"), join(dir, "replay.mov"));
+    const emitMovs = (paths) => {
+      const movs = readdirSync(ATTACH_DIR).filter((f) => f.endsWith(".mov"));
+      if (movs.length) {
+        copyFileSync(join(ATTACH_DIR, movs[0]), join(dir, "demo.mov"));
+        copyFileSync(join(ATTACH_DIR, movs[0]), join(dir, "replay.mov"));
+        paths.push(join(dir, "demo.mov"), join(dir, "replay.mov"));
+      }
+    };
+    const reply = (text, files) => {
+      if (thread.turns.length === 0) thread.title = "Mock files";
+      thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
+      thread.turns.push({ id: uuidv7(), role: "ai", text, label: "mock", files });
+      writeIndex();
+      setJob(job, "done", "replied");
+      job.done = true;
+      job.result = "reply";
+    };
+    // "/mock <ext>" — one kind only. docx/xlsx/pptx come from the office
+    // seeds (or their generated fallbacks), mov from the recordings, the
+    // rest filter mockFiles down to the extension. Aliases: markdown, text,
+    // image(s), audio, video, doc, xls, ppt, rust, vcard, sheet, deck.
+    const word = (prompt.trim().match(/^\/mock\s+([a-z0-9]+)\s*$/i) || [])[1]?.toLowerCase();
+    if (word && word !== "files" && word !== "media") {
+      const ALIAS = {
+        markdown: "md", text: "txt", rust: "rs", vcard: "vcf", doc: "docx",
+        xls: "xlsx", ppt: "pptx", sheet: "xlsx", deck: "pptx", video: "mov",
+        image: "png", images: "png",
+      };
+      const exts = word === "audio" ? ["m4a", "wav", "aiff"] : [ALIAS[word] || word];
+      const KNOWN = new Set([
+        "pdf", "md", "html", "txt", "json", "csv", "rs", "tsx", "png", "svg",
+        "gif", "webp", "vcf", "mov", "m4a", "wav", "aiff", "docx", "xlsx", "pptx",
+      ]);
+      const paths = [];
+      let text;
+      if (exts.some((e) => !KNOWN.has(e))) {
+        text = `No mock for \`${word}\` — try one of: ${[...KNOWN].sort().join(", ")} (or \`files\`, \`media\`, \`images n\`, \`audio\`).`;
+      } else {
+        for (const e of exts) {
+          if (OFFICE[e]) await emitOffice(e, paths);
+          else if (e === "mov") emitMovs(paths);
+        }
+        paths.push(...mockFiles(dir, new Set(exts.filter((e) => !OFFICE[e] && e !== "mov"))));
+        text = paths.length
+          ? `Mock ${word}: ${paths.map((p) => p.split("/").pop()).join(", ")}.`
+          : `Couldn't produce a ${word} mock here — the tools that kind needs aren't on this machine.`;
+      }
+      if (thread.turns.length === 0) thread.title = `Mock ${word}`;
+      reply(text, paths.map((p) => fileRecord(p, `${rel}/${p.split("/").pop()}`)));
+      return;
     }
+    const paths = mockFiles(dir);
+    for (const ext of Object.keys(OFFICE)) await emitOffice(ext, paths);
+    emitMovs(paths);
     const files = paths.map((p) => fileRecord(p, `${rel}/${p.split("/").pop()}`));
     // an image whose file is gone: the gallery shows "Image unavailable"
     const firstImg = files.findIndex((f) => f.kind === "image");
