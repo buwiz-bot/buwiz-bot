@@ -11,43 +11,119 @@ use crate::store::{Attach, Turn};
 use crate::theme;
 use crate::widgets::app_card;
 
-/// The scrollable conversation. Opens on the latest turn (the TSX's
-/// `openThread` scrollToEnd + `revealed`), `follow_end` pins the bottom
-/// while a reply streams in.
-pub(crate) fn transcript() -> impl IntoElement {
+/// Where a freshly mounted transcript opens.
+#[derive(Clone, Copy)]
+enum Opening {
+    /// A link's turn (row, turn i), centered.
+    Jump(usize, i64),
+    /// Where the chat was left: the row at the viewport's top and how far
+    /// into it.
+    Mark(usize, f32),
+    /// The latest turn.
+    End,
+}
+
+/// The scrollable conversation of chat `mine`. The last few chats' are
+/// kept alive (`Store::alive`) and only shown or hidden: switching back
+/// shows the list exactly where it was — nothing re-laid out, no jump to
+/// the end and back — and fades it in (160ms, native). A chat that fell
+/// out of that cache mounts again at the spot it was left (`ScrollMark`),
+/// a link's turn, or the end. `follow_end` pins the bottom while a reply
+/// streams in.
+pub(crate) fn transcript(mine: String) -> impl IntoElement {
     let st = store();
     let list = element_ref();
-    // Poll turns while the thread is open.
-    set_interval(std::time::Duration::from_millis(1500), move || st.refresh_turns());
-    // Mount hidden, snap to the end, reveal (App.tsx:289-300): the first
-    // snap lands pre-frame via `initialScrollIndex`; these converge to the
-    // true end as unmeasured rows measure — the command's pin retargets.
-    let revealed = signal(true);
+    let active = {
+        let mine = mine.clone();
+        computed(move || store().turns_of.get() == mine)
+    };
+    // Poll turns while this chat is the one shown.
+    set_interval(std::time::Duration::from_millis(1500), move || {
+        if active.get_untracked() {
+            st.refresh_turns();
+        }
+    });
+    // This chat's own turns: they follow `turns` only while it is shown —
+    // hidden, it keeps its rows (another chat's turns never reach its
+    // list: that shrank it, clamped its scroll and flashed old rows).
+    let rows = signal(if active.get_untracked() { st.turns.get_untracked() } else { Vec::new() });
+    effect(move || {
+        if active.get() {
+            let t = store().turns.get();
+            untracked(|| rows.set(t));
+        }
+    });
+    // The first viewable row and the last scroll position: what the spot
+    // the chat is left at is saved from, once scrolling settles.
+    let first_row = std::rc::Rc::new(std::cell::Cell::new(None::<usize>));
+    let last_scroll = std::rc::Rc::new(std::cell::Cell::new((0.0f32, false)));
+    // Where it opens: it mounts when its chat becomes the shown one.
+    let opening = opening_for(&mine);
+    let shown = signal(false);
+    // The fade runs natively (a motion's opacity on the display link).
+    let fade = motion();
+    fade.value(MotionChannel::Opacity).set(0.0);
+    // Turn count and end state when the chat was hidden: what came in
+    // meanwhile is offered by the "New messages" pill.
+    let left = std::rc::Rc::new(std::cell::Cell::new(None::<(i64, bool)>));
+    let first = std::rc::Rc::new(std::cell::Cell::new(true));
     {
         let list = list.clone();
-        let revealed = revealed.clone();
+        let last_scroll = last_scroll.clone();
         effect(move || {
-            store().active_id.get();
-            revealed.set(false);
-            let list = list.clone();
-            let revealed = revealed.clone();
-            spawn(async move {
-                timer(std::time::Duration::from_millis(150)).await;
-                list.scroll_to_end(false);
-                timer(std::time::Duration::from_millis(400)).await;
-                list.scroll_to_end(false);
-                revealed.set(true);
+            let on = active.get();
+            untracked(|| {
+                let st = store();
+                if !on {
+                    if !first.get() && shown.get_untracked() {
+                        let last = rows.with(|t| t.last().map_or(-1, |t| t.i));
+                        left.set(Some((last, last_scroll.get().1)));
+                    }
+                    fade.value(MotionChannel::Opacity).set(0.0);
+                    return;
+                }
+                st.chat_list.replace(Some(list.clone()));
+                if first.replace(false) {
+                    open_at(opening, list.clone(), shown, fade);
+                    return;
+                }
+                // Shown again: where it was, unless a link names a turn.
+                if let Some((pos, i)) = st.take_jump() {
+                    list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
+                    st.flash(i);
+                    st.new_below.set(None);
+                } else if let Some((last, at_end)) = left.take() {
+                    let fresh = rows.with(|t| t.iter().find(|t| t.i > last).map(|t| t.i));
+                    if at_end && fresh.is_some() {
+                        list.scroll_to_end(false);
+                        st.new_below.set(None);
+                    } else {
+                        st.new_below.set(fresh);
+                    }
+                }
+                let _ = fade.value(MotionChannel::Opacity).timing(1.0, 160.0, Easing::EaseOut);
             });
         });
     }
-    store().chat_list.replace(Some(list.clone()));
-    view().flex_1().child(
+    view()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .right(px(0.0))
+        .bottom(px(0.0))
+        .bind_motion(&fade)
+        // Hidden chats take no input.
+        .pointer_events(move || if active.get() { PointerEvents::Auto } else { PointerEvents::None })
+        .child(new_messages_pill(list.clone()))
+        .child({
+        let cell_chat = mine.clone();
         virtual_list(
-            move || store().turns.get().len(),
+            move || rows.with(|t| t.len()),
             // `TurnCell` — every row lives in the shared centered column
             // `maxWidth 992 + paddingHorizontal 16`, the same edges the
             // composer's card meets (shell.tsx:617, App.tsx:2188).
             move |at| {
+                let chat = cell_chat.clone();
                 view()
                     .items_center()
                     .child(
@@ -64,31 +140,60 @@ pub(crate) fn transcript() -> impl IntoElement {
                                 // any other turn (a streamed chunk, a
                                 // reaction, a poll) no longer rebuilds this
                                 // row — its markdown, its live mini app.
+                                // Its own reaction neither: the badge
+                                // redraws in place (`reaction_badge`); a
+                                // rebuilt row was measured anew and the
+                                // rows under it shifted.
                                 let row = computed(move || {
-                                    store().turns.with(|t| t.get(at.index()).cloned())
+                                    rows.with(|t| t.get(at.index()).cloned()).map(
+                                        |mut t| {
+                                            t.reaction.clear();
+                                            t
+                                        },
+                                    )
                                 });
                                 dynamic(move || {
                                     let Some(t) = row.get() else {
                                         return view().into_element();
                                     };
-                                    turn_row(t).into_element()
+                                    turn_row(t, &chat).into_element()
                                 })
                             }),
                     )
             },
         )
         .keys(move || {
-            store().turns.get().iter().map(|t| t.i.to_string()).collect::<Vec<_>>()
+            rows.with(|t| t.iter().map(|t| t.i.to_string()).collect::<Vec<_>>())
+        })
+        .when(!matches!(opening, Opening::End), |l| {
+            l.initial_scroll_index(match opening {
+                Opening::Jump(pos, _) | Opening::Mark(pos, _) => pos,
+                Opening::End => 0,
+            })
         })
         .follow_end(px(40.0))
         .element_ref(&list)
         // `chatScrolling` (shell.tsx:88) — true from the first scroll
         // event until ~160ms after the last; hover handlers read it to
         // skip their signal writes (every write is a commit).
+        .on_viewable_items_change({
+            let first_row = first_row.clone();
+            move |v: &ViewableItems| first_row.set(v.viewable.map(|(first, _)| first))
+        })
         .on_scroll({
             let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
-            move |_: &ScrollEvent| {
+            let mine = mine.clone();
+            let list = list.clone();
+            let first_row = first_row.clone();
+            let last_scroll = last_scroll.clone();
+            move |e: &ScrollEvent| {
                 let st = store();
+                let y = e.offset.y.0;
+                let at_end = y + e.size.height.0 >= e.content_size.height.0 - 48.0;
+                last_scroll.set((y, at_end));
+                if at_end && st.new_below.get_untracked().is_some() {
+                    st.new_below.set(None);
+                }
                 // An anchored pill would float off its bar once the
                 // content moves — dismiss it (App.tsx:2126).
                 st.close_pill(-1);
@@ -98,10 +203,38 @@ pub(crate) fn transcript() -> impl IntoElement {
                 let e = epoch.get().wrapping_add(1);
                 epoch.set(e);
                 let epoch = epoch.clone();
+                let (mine, list, first_row, last_scroll) =
+                    (mine.clone(), list.clone(), first_row.clone(), last_scroll.clone());
                 spawn(async move {
                     timer(std::time::Duration::from_millis(160)).await;
-                    if epoch.get() == e {
-                        store().chat_scrolling.set(false);
+                    if epoch.get() != e {
+                        return;
+                    }
+                    let st = store();
+                    st.chat_scrolling.set(false);
+                    // Settled: save where this chat is — the first viewable
+                    // row and how far into it, or the end — for when it is
+                    // opened again.
+                    if !shown.get_untracked() {
+                        return;
+                    }
+                    let (y, at_end) = last_scroll.get();
+                    let last = st.turns.with_untracked(|t| t.last().map_or(-1, |t| t.i));
+                    let row = first_row.get();
+                    let into = match row {
+                        Some(r) => list.item_offset(r).await.map(|at| y - at),
+                        None => None,
+                    };
+                    let i = row.and_then(|r| st.turns.with_untracked(|t| t.get(r).map(|t| t.i)));
+                    if let (Some(i), Some(into)) = (i, into) {
+                        st.scroll_marks
+                            .borrow_mut()
+                            .insert(mine, crate::store::ScrollMark { i, into, at_end, last });
+                    } else if at_end {
+                        st.scroll_marks.borrow_mut().insert(
+                            mine,
+                            crate::store::ScrollMark { i: last, into: 0.0, at_end, last },
+                        );
                     }
                 });
             }
@@ -113,33 +246,122 @@ pub(crate) fn transcript() -> impl IntoElement {
         // above the floating composer.
         .content_padding_top(px(crate::pane::TOP + 16.0))
         .content_padding_bottom(move || px(crate::composer::dock_h().get() + 24.0))
-        .row_gap(px(20.0)),
+        .row_gap(px(20.0))
+        })
+}
+
+/// A transcript's first showing: placed while invisible — a link's turn,
+/// where the chat was left (`ScrollMark`), or the end — then faded in,
+/// and settled once more as rows near the target finish measuring.
+fn opening_for(mine: &str) -> Opening {
+    let st = store();
+    untracked(|| {
+        if let Some((pos, i)) = st.take_jump() {
+            st.new_below.set(None);
+            return Opening::Jump(pos, i);
+        }
+        let mark = st.scroll_marks.borrow().get(mine).copied();
+        let turns = st.turns.get_untracked();
+        let Some(m) = mark.filter(|m| !m.at_end) else {
+            st.new_below.set(None);
+            return Opening::End;
+        };
+        let Some(pos) = turns.iter().position(|t| t.i == m.i) else {
+            st.new_below.set(None);
+            return Opening::End;
+        };
+        st.new_below.set(turns.iter().find(|t| t.i > m.last).map(|t| t.i));
+        Opening::Mark(pos, m.into)
+    })
+}
+
+/// Places a newly mounted transcript at `opening` (see [`opening_for`]).
+fn open_at(opening: Opening, list: ElementRef, shown: Signal<bool>, fade: Motion) {
+    let st = store();
+    if let Opening::Jump(_, i) = opening {
+        st.flash(i);
+    }
+    // A navigation after this (a link landing just now) owns the position
+    // from then on: the remaining snaps stand down.
+    let epoch = st.nav_epoch.get();
+    spawn(async move {
+        for (wait, reveal) in [(16, false), (64, true), (300, false)] {
+            timer(std::time::Duration::from_millis(wait)).await;
+            if store().nav_epoch.get() != epoch {
+                shown.set(true);
+                fade.value(MotionChannel::Opacity).set(1.0);
+                break;
+            }
+            match opening {
+                Opening::Jump(pos, _) => list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false),
+                Opening::Mark(pos, into) => list.scroll_to_index(pos as u32, percentage(0.0), px(-into), false),
+                Opening::End => list.scroll_to_end(false),
+            }
+            if reveal {
+                shown.set(true);
+                let _ = fade.value(MotionChannel::Opacity).timing(1.0, 160.0, Easing::EaseOut);
+            }
+        }
+    });
+}
+
+/// "↓ New messages": turns that arrived while the chat was away, below
+/// where it reopened; pressing scrolls to the first of them.
+fn new_messages_pill(list: ElementRef) -> impl IntoElement {
+    when(
+        || store().new_below.get().is_some(),
+        move || {
+            let list = list.clone();
+            view()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(move || px(crate::composer::dock_h().get() + 12.0))
+                .z_index(20)
+                .items_center()
+                .pointer_events(PointerEvents::BoxNone)
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(999.0))
+                        .bg(theme::PILL_BG)
+                        .border(px(0.5))
+                        .border_color(theme::BORDER_S)
+                        .child(text("↓ New messages").text_size(px(12.0)).text_color(theme::TEXT))
+                        .on_press(move || {
+                            let st = store();
+                            let Some(i) = st.new_below.get_untracked() else { return };
+                            let pos = st.turns.with_untracked(|t| t.iter().position(|t| t.i == i));
+                            if let Some(pos) = pos {
+                                list.scroll_to_index(pos as u32, percentage(0.0), px(0.0), true);
+                            }
+                            st.new_below.set(None);
+                        }),
+                )
+                .into_element()
+        },
     )
 }
 
-/// The empty state when no thread is open or no turns exist.
+/// The empty state when no thread is open or no turns exist: Grok
+/// Shell's heading alone — no suggested prompts.
 pub(crate) fn empty_state() -> impl IntoElement {
-    view()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .child(
-            text("Rox")
-                .text_size(px(28.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::GHOST),
-        )
-        .child(
-            text("Ask anything.")
-                .text_size(px(13.0))
-                .text_color(theme::GHOST)
-                .pt_1(),
-        )
+    view().flex_1().items_center().justify_center().child(
+        text("What's on the agenda today?")
+            .text_size(px(22.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme::TEXT),
+    )
 }
 
-fn turn_row(t: Turn) -> impl IntoElement {
+/// One turn of chat `chat` (its bot colors the user's bubbles).
+fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     if t.role == "user" {
-        user_row(t).into_element()
+        user_row(t, chat.to_owned()).into_element()
     } else {
         agent_row(t).into_element()
     }
@@ -149,11 +371,12 @@ fn turn_row(t: Turn) -> impl IntoElement {
 // User bubble
 // ---------------------------------------------------------------------------
 
-fn user_row(t: Turn) -> impl IntoElement {
+fn user_row(t: Turn, chat: String) -> impl IntoElement {
+    // The bubble takes this chat's bot's color, not the selected chat's
+    // (a hidden transcript keeps its own).
     let body = t.text.clone();
     let reply = t.reply.clone();
     let atts = t.attachments.clone();
-    let reaction = t.reaction.clone();
     let i = t.i;
     // shell.tsx:425 — the row's `hover` gates the action bar; during a
     // scroll `chatScrolling` skips the writes (every write is a commit).
@@ -211,28 +434,30 @@ fn user_row(t: Turn) -> impl IntoElement {
             view().flex_row().w_full().justify_end().child(
                 view()
                     .max_w(px(560.0))
+                    // Never narrower than tall: a one-letter message is a
+                    // 36pt circle, as in Grok Bot (its text left-aligned
+                    // there too — centering it let wide text overflow).
+                    .min_w(px(BUBBLE_MIN))
                     // `flexShrink: 1` — wrap inside a narrow column
                     // instead of running under the pane.
                     .flex_shrink(1.0)
-                    .bg(move || theme::bubble_fill())
+                    .bg(move || theme::bubble_fill_for(&chat))
                     .rounded(px(18.0))
                     .px_3()
                     .py(px(7.0))
-                    .when(!reaction.is_empty(), |v| {
-                        v.child(tapback(i, reaction.clone(), false))
-                    })
+                    .child(highlight_ring(i, 18.0))
+                    .child(reaction_badge(i, "msg".to_owned(), false))
                     .child(fill_quote(reply))
                     .child(markdown(move || body.clone(), || false, || true)),
             ),
         )
         // `bar(true, false)` (shell.tsx:472) — right-aligned, no react on
-        // your own bubbles: reply + ⋯ only.
-        .child(
+        // your own bubbles: reply + ⋯ only. Its buttons exist only while
+        // shown; the slot keeps the row's height (`bar_slot`).
+        .child(bar_slot(true, move || bar_opacity() > 0.5 || store().ctx_open_for(i, "msg"), move || {
             view()
                 .flex_row()
-                .justify_end()
                 .gap(px(2.0))
-                .opacity(bar_opacity)
                 .child(act("↩", "reply", move || {
                     let st = store();
                     let tr = st.turns.get_untracked();
@@ -244,15 +469,31 @@ fn user_row(t: Turn) -> impl IntoElement {
                         }));
                     }
                 }))
-                .child(more_act(i)),
-        )
+                .child(turn_more(i))
+                .into_element()
+        }))
 }
 
 /// `badge` (shell.tsx:375) — the iMessage tapback: a 36pt knockout disc
 /// painted in the page color centered on the bubble's outer top corner,
 /// holding a 30pt chip with the emoji. `right` picks the corner (user →
-/// left, agent → right); pressing it clears the reaction.
-pub(crate) fn tapback(i: i64, reaction: String, right: bool) -> impl IntoElement {
+/// left, agent → right). Slot `slot`'s reaction (`"msg"` or an
+/// artifact's), redrawn in place when it changes.
+pub(crate) fn reaction_badge(i: i64, slot: String, right: bool) -> impl IntoElement {
+    dynamic(move || {
+        let r = store().reaction_of(i, &slot);
+        if r.is_empty() {
+            // Absolute as the badge is: a column's `gap` skips both, so a
+            // reaction coming or going moves nothing.
+            view().absolute().into_element()
+        } else {
+            tapback_in(i, slot.clone(), r, right).into_element()
+        }
+    })
+}
+
+/// The badge for `reaction` on `slot`; pressing it clears that slot's.
+fn tapback_in(i: i64, slot: String, reaction: String, right: bool) -> impl IntoElement {
     view()
         .absolute()
         .top(px(-27.0))
@@ -284,7 +525,7 @@ pub(crate) fn tapback(i: i64, reaction: String, right: bool) -> impl IntoElement
                     theme::hsla(0.0, 0.0, 0.208, 1.0),
                 ))
                 .child(text(reaction).text_size(px(14.0)))
-                .on_press(move || store().react(i, String::new())),
+                .on_press(move || store().react_slot(i, &slot, String::new())),
         )
 }
 
@@ -306,11 +547,7 @@ fn fill_quote(reply: Option<crate::store::Reply>) -> impl IntoElement {
             .mb(px(2.0))
             .on_press(move || {
                 let st = store();
-                let pos = st.turns.get_untracked().iter().position(|t| t.i == i);
-                let list = st.chat_list.borrow().clone();
-                if let (Some(pos), Some(list)) = (pos, list) {
-                    list.scroll_to_index(pos as u32, percentage(0.0), px(0.0), true);
-                }
+                st.go_to(&st.active_id.get_untracked(), Some(i));
             })
             .child(
                 // `💬︎` (shell.tsx:455) — the VS15 text glyph CoreText
@@ -419,7 +656,6 @@ fn agent_row(t: Turn) -> impl IntoElement {
     let body = t.text.clone();
     let streaming = t.building;
     let i = t.i;
-    let reaction = t.reaction.clone();
     let has_card = t.art.is_some();
     // shell.tsx:254 `hov` — gates the action bar's opacity; the writes are
     // skipped while `chatScrolling` (every write is a commit).
@@ -432,46 +668,55 @@ fn agent_row(t: Turn) -> impl IntoElement {
             0.0
         }
     };
-    // `msgBar` — the emoji pill anchors to its measured rect
-    // (shell.tsx:315's `ref`).
-    let bar_ref = element_ref();
     // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503): under a
     // message bubble here; a card mounts it in its own row instead
     // (`CardShell`'s bar, shell.tsx:1103).
     let bar = move || -> AnyElement {
-            // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
+        // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
         // the bubble before the artifacts, shown only while the row is
-        // hovered (or its pill is open).
-        view()
-            .flex_row()
-            .gap(px(2.0))
-            .element_ref(&bar_ref)
-            .opacity(move || {
-                if store()
+        // hovered (or its pill is open). The slot (the pill's anchor)
+        // stays; the buttons exist only while shown.
+        let shown = move || {
+            bar_opacity() > 0.5
+                || store()
                     .pill
                     .get()
                     .as_ref()
-                    .map_or(false, |a| a.i == i && a.slot == "msg")
-                {
-                    1.0
-                } else {
-                    bar_opacity()
-                }
-            })
-            .child(react_act(i, false, bar_ref, "msg".to_owned()))
-            .child(act("↩", "reply", move || {
-                let st = store();
-                let tr = st.turns.get_untracked();
-                if let Some(tt) = tr.iter().find(|x| x.i == i) {
-                    st.reply_to.set(Some(crate::store::ReplyTo {
-                        i: tt.i,
-                        name: tt.name.clone(),
-                        text: tt.text.chars().take(120).collect(),
-                    }));
-                }
-            }))
-            .child(more_act(i))
-            .into_element()
+                    .is_some_and(|a| a.i == i && a.slot == "msg")
+                || store().ctx_open_for(i, "msg")
+        };
+        bar_slot(false, shown, move || {
+            view()
+                .flex_row()
+                .gap(px(2.0))
+                .child(react_act(i, "msg".to_owned()))
+                .child(act("↩", "reply", move || {
+                    let st = store();
+                    let tr = st.turns.get_untracked();
+                    if let Some(tt) = tr.iter().find(|x| x.i == i) {
+                        // `onReply(i, text || caption || name)`; a card's is
+                        // `app · <title> v<n>` (shell.tsx:1140).
+                        let label = match &tt.art {
+                            Some(a) => format!(
+                                "app · {}{}",
+                                if a.title.is_empty() { &tt.name } else { &a.title },
+                                if tt.v > 0 { format!(" v{}", tt.v) } else { String::new() }
+                            ),
+                            None if !tt.text.is_empty() => tt.text.chars().take(120).collect(),
+                            None if !tt.caption.is_empty() => tt.caption.chars().take(120).collect(),
+                            None => tt.name.clone(),
+                        };
+                        st.reply_to.set(Some(crate::store::ReplyTo {
+                            i: tt.i,
+                            name: tt.name.clone(),
+                            text: label,
+                        }));
+                    }
+                }))
+                .child(turn_more(i))
+                .into_element()
+        })
+        .into_element()
     };
     view()
         // shell.tsx:481 — the agent column's `gap: 4` spaces the bubble,
@@ -501,15 +746,20 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     // `flexShrink: 1` — wrap inside a narrow column
                     // instead of running under the pane.
                     .flex_shrink(1.0)
-                    .bg(theme::AGENT_BUBBLE)
+                    .min_w(px(BUBBLE_MIN))
+                    // Grok Bot's `.sand-message`: a faint top-down gradient
+                    // under a 0.5pt ring (drawn inset there: the padding
+                    // gives back its half points), 12×7 like the user's.
+                    .bg_linear_to_b()
+                    .gradient_from(theme::AGENT_BUBBLE_TOP)
+                    .gradient_to(theme::AGENT_BUBBLE_BOTTOM)
                     .rounded(px(18.0))
-                    .border_1()
-                    .border_color(theme::AGENT_BORDER)
-                    .px_4()
-                    .py(px(10.0))
-                    .when(!reaction.is_empty(), |v| {
-                        v.child(tapback(i, reaction.clone(), true))
-                    })
+                    .border(px(0.5))
+                    .border_color(theme::AGENT_RIM)
+                    .px(px(11.5))
+                    .py(px(6.5))
+                    .child(highlight_ring(i, 18.0))
+                    .child(reaction_badge(i, "msg".to_owned(), true))
                     .child(markdown(move || body.clone(), move || streaming, || false)),
             ),
         ))
@@ -527,7 +777,6 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 label: t.label.clone(),
                 v: t.v,
                 caption,
-                reaction,
                 i,
                 bar: Some(std::rc::Rc::new(bar)),
             };
@@ -547,6 +796,48 @@ fn agent_row(t: Turn) -> impl IntoElement {
 
 }
 
+/// Grok Bot's highlighted message (a jump's target): a 3px ring in the
+/// text color just outside the bubble (`box-shadow: 0 0 0 3px`), which
+/// fades out (`Store::flash`). Mounted only on that turn.
+pub(crate) fn highlight_ring(i: i64, radius: f32) -> impl IntoElement {
+    when(
+        move || store().highlight.get() == Some(i),
+        move || {
+            view()
+                .absolute()
+                .top(px(-3.0))
+                .bottom(px(-3.0))
+                .left(px(-3.0))
+                .right(px(-3.0))
+                .rounded(px(radius + 3.0))
+                .border(px(3.0))
+                .border_color(theme::TEXT)
+                .opacity(move || if store().highlight_on.get() { 1.0f32 } else { 0.0 })
+                .transition_opacity()
+                .duration(400.0)
+                .into_element()
+        },
+    )
+}
+
+/// A one-line bubble's height (7 + 22 + 7): no bubble is narrower.
+const BUBBLE_MIN: f32 = 36.0;
+
+/// A message's hover-bar slot: always there at the bar's height (rows
+/// keep their size), its buttons built only while `shown` — a hidden bar
+/// was 7 native views per message, mounted for every row on screen.
+fn bar_slot(
+    right: bool,
+    shown: impl Fn() -> bool + 'static,
+    build: impl Fn() -> AnyElement + 'static,
+) -> View {
+    view()
+        .flex_row()
+        .when(right, |v| v.justify_end())
+        .h(px(24.0))
+        .child(when(shown, build))
+}
+
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
 /// rounded plate. No icon drawing: Grok's glyphs are text.
 fn act(
@@ -554,10 +845,25 @@ fn act(
     label: &'static str,
     on: impl Fn() + 'static,
 ) -> impl IntoElement {
+    act_at(glyph, label, move |_, _| on())
+}
+
+/// [`act`] told where it is: `on(x, y)` gets the button's top-left corner
+/// in page coordinates, from the pointer's last move over it — the
+/// platform's own hit test. `measure()` read stale positions inside the
+/// transcript's recycled cells: menus opened over the wrong row, or not
+/// at all.
+fn act_at(
+    glyph: &'static str,
+    label: &'static str,
+    on: impl Fn(f32, f32) + 'static,
+) -> impl IntoElement {
     let hovered = signal(false);
+    let origin = std::rc::Rc::new(std::cell::Cell::new((0.0f32, 0.0f32)));
+    let at = origin.clone();
     view()
         .label(label)
-        .size(px(24.0))
+        .size(px(ACT))
         .rounded(px(6.0))
         .items_center()
         .justify_center()
@@ -565,81 +871,77 @@ fn act(
         .child(text(glyph).text_size(px(15.0)).text_color(theme::DIM))
         .on_hover_in(move || hovered.set(true))
         .on_hover_out(move || hovered.set(false))
-        .on_press(move || on())
+        .on_hover_move(move |e: &HoverEvent| {
+            at.set((
+                e.page_position.x.0 - e.position.x.0,
+                e.page_position.y.0 - e.position.y.0,
+            ));
+        })
+        .on_press(move || {
+            let (x, y) = origin.get();
+            on(x, y)
+        })
 }
 
-/// `openPicker` (shell.tsx:281) — the ☺ button measures `bar` and opens
-/// the shared emoji pill under (or over) it. `right` anchors the pill's
-/// right edge to the bar's (artifact bars sit on the right); `slot` is
-/// the owning bar's name — `"msg"` or `"art:<path>"` — and reopening the
-/// same slot toggles it closed.
-fn react_act(i: i64, right: bool, bar: ElementRef, slot: String) -> impl IntoElement {
-    act("☺", "react", move || {
-        let bar = bar.clone();
-        let slot = slot.clone();
-        spawn(async move {
-            let st = store();
-            if st
-                .pill
-                .get_untracked()
-                .as_ref()
-                .map_or(false, |a| a.i == i && a.slot == slot)
-            {
-                st.close_pill(i);
-                return;
-            }
-            let Some(m) = bar.measure().await else {
-                return;
-            };
-            let current = st
-                .turns
-                .get_untracked()
-                .iter()
-                .find(|t| t.i == i)
-                .map(|t| t.reaction.clone())
-                .unwrap_or_default();
-            let win = window();
-            let flip =
-                m.page.y.0 + m.frame.size.height.0 + 205.0 > win.height.0 - 80.0;
-            st.open_pill(crate::store::PillAnchor {
-                x: m.page.x.0,
-                y: m.page.y.0,
-                w: m.frame.size.width.0,
-                h: m.frame.size.height.0,
-                flip,
-                right,
-                i,
-                slot,
-                current,
-            });
+/// An [`act`]'s side; a bar is three of them 2pt apart.
+const ACT: f32 = 24.0;
+
+/// `openPicker` (shell.tsx:281) — the ☺ button opens the shared emoji
+/// pill under (or over) its bar, which starts at the ☺ (bars are
+/// left-aligned). `slot` is the owning bar's name — `"msg"` or
+/// `"art:<path>"` — and reopening the same slot toggles it closed.
+fn react_act(i: i64, slot: String) -> impl IntoElement {
+    act_at("☺", "react", move |x, y| {
+        let st = store();
+        if st
+            .pill
+            .get_untracked()
+            .as_ref()
+            .is_some_and(|a| a.i == i && a.slot == slot)
+        {
+            st.close_pill(i);
+            return;
+        }
+        let current = untracked(|| st.reaction_of(i, &slot));
+        let flip = y + ACT + 205.0 > window().height.0 - 80.0;
+        st.open_pill(crate::store::PillAnchor {
+            x,
+            y,
+            w: ACT * 3.0 + 4.0,
+            h: ACT,
+            flip,
+            right: false,
+            i,
+            slot: slot.clone(),
+            current,
         });
     })
 }
 
-/// `more()` (shell.tsx:301) — the ⋯ button opening the turn's menu
-/// (Copy / Delete) anchored under itself.
-fn more_act(i: i64) -> impl IntoElement {
-    let node_ref = element_ref();
-    act("⋯", "more", move || {
-        let node_ref = node_ref.clone();
-        spawn(async move {
-            if let Some(m) = node_ref.measure().await {
-                let card = store()
-                    .turns
-                    .get_untracked()
-                    .iter()
-                    .find(|t| t.i == i)
-                    .and_then(|t| t.art.as_ref().map(|a| a.app.clone()));
-                crate::ctx::open_at(
-                    m.page.x.0,
-                    m.page.y.0 + m.frame.size.height.0,
-                    match card {
-                        Some(app) => crate::ctx::card_items(i, &app),
-                        None => crate::ctx::msg_items(i),
-                    },
-                );
-            }
-        });
+/// `more()` (shell.tsx:301) — the ⋯ button opening `items()` under
+/// itself; bar `(i, slot)` stays up while the menu is open.
+fn more_act(i: i64, slot: String, items: impl Fn() -> Vec<crate::store::CtxItem> + 'static) -> impl IntoElement {
+    act_at("⋯", "more", move |x, y| {
+        let st = store();
+        st.close_pill(-1);
+        st.ctx_owner.set(Some((i, slot.clone())));
+        crate::ctx::open_near(x, y, y + ACT, items());
+    })
+}
+
+/// The ⋯ of a message or card bar: Copy / Delete, or a card's actions.
+fn turn_more(i: i64) -> impl IntoElement {
+    more_act(i, "msg".to_owned(), move || {
+        let card = store()
+            .turns
+            .get_untracked()
+            .iter()
+            .find(|t| t.i == i)
+            .and_then(|t| t.art.as_ref().map(|a| a.app.clone()));
+        match card {
+            Some(app) => crate::ctx::card_items(i, &app),
+            None => crate::ctx::msg_items(i),
+        }
     })
 }
 
@@ -701,7 +1003,6 @@ fn files_section(t: &Turn) -> impl IntoElement {
         .filter(|f| f.kind != "image" && f.kind != "video")
         .cloned()
         .collect();
-    let reaction = t.reaction.clone();
     view()
         .gap_2()
         .w_full()
@@ -712,7 +1013,6 @@ fn files_section(t: &Turn) -> impl IntoElement {
                 i,
                 None,
                 &msg,
-                &reaction,
             ))
         })
         .children(rest.iter().map(|f| {
@@ -721,7 +1021,7 @@ fn files_section(t: &Turn) -> impl IntoElement {
             } else {
                 crate::files::file_card(f).into_element()
             };
-            artifact(card, i, Some(f.clone()), &msg, &reaction).into_element()
+            artifact(card, i, Some(f.clone()), &msg).into_element()
         }))
         .into_element()
 }
@@ -734,12 +1034,9 @@ fn artifact(
     i: i64,
     f: Option<Attach>,
     msg: &str,
-    reaction: &str,
 ) -> impl IntoElement {
     let hov = signal(false);
     let items = crate::ctx::artifact_items(i, f.as_ref(), msg);
-    let node_ref = element_ref();
-    let art_bar = element_ref();
     // `"art:" + (f?.path || "gallery")` (shell.tsx:339) — each artifact's
     // bar owns its own pill slot.
     let slot = format!("art:{}", f.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| "gallery".to_owned()));
@@ -759,40 +1056,35 @@ fn artifact(
         })
         .on_hover_out(move || hov.set(false))
         .child(node)
-        .when(!reaction.is_empty(), |v| {
-            v.child(tapback(i, reaction.to_owned(), true))
-        })
+        // This artifact's own reaction (`slot`), not the message's: a
+        // reply's files each take theirs.
+        .child(reaction_badge(i, slot.clone(), true))
+        // The bar's slot is the pill's anchor; its buttons exist only while
+        // shown (hovered, or its pill open).
         .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_end()
-                .gap(px(2.0))
-                .element_ref(&art_bar)
-                .opacity(move || {
-                    if store()
+            // On the left: the artifact's tapback sits at its top-right,
+            // and a bar under that corner ran into the next one's.
+            bar_slot(
+                false,
+                move || {
+                    store()
                         .pill
                         .get()
                         .as_ref()
-                        .map_or(false, |a| a.i == i && a.slot == slot2)
-                    {
-                        1.0
-                    } else if hov.get() && !store().chat_scrolling.get() {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                })
-                .child(react_act(i, true, art_bar, slot))
-                .child(
+                        .is_some_and(|a| a.i == i && a.slot == slot2)
+                        || store().ctx_open_for(i, &slot2)
+                        || (hov.get() && !store().chat_scrolling.get())
+                },
+                move || {
+                    let slot = slot.clone();
+                    let reply_label = reply_label.clone();
+                    let items = items.clone();
                     view()
-                        .label("Reply")
-                        .size(px(26.0))
-                        .rounded(px(6.0))
+                        .flex_row()
                         .items_center()
-                        .justify_center()
-                        .child(text("↩").text_size(px(13.0)).text_color(theme::MUTED))
-                        .on_press(move || {
+                        .gap(px(2.0))
+                        .child(react_act(i, slot.clone()))
+                        .child(act("↩", "reply", move || {
                             let st = store();
                             let name = st
                                 .active_bot_untracked()
@@ -803,30 +1095,11 @@ fn artifact(
                                 name,
                                 text: reply_label.clone(),
                             }));
-                        }),
-                )
-                .child(
-                    view()
-                        .label("More")
-                        .element_ref(&node_ref)
-                        .size(px(26.0))
-                        .rounded(px(6.0))
-                        .items_center()
-                        .justify_center()
-                        .child(text("⋯").text_size(px(13.0)).text_color(theme::MUTED))
-                        .on_press(move || {
-                            let items = items.clone();
-                            spawn(async move {
-                                if let Some(m) = node_ref.measure().await {
-                                    crate::ctx::open_at(
-                                        m.page.x.0,
-                                        m.page.y.0 + m.frame.size.height.0,
-                                        items,
-                                    );
-                                }
-                            });
-                        }),
-                ),
+                        }))
+                        .child(more_act(i, slot, move || items.clone()))
+                        .into_element()
+                },
+            ),
         )
 }
 
@@ -849,8 +1122,9 @@ const EMOJI_GRID: &[&str] = &[
 
 /// `EmojiPill` (shell.tsx:124) — the quick-react row; the emoji-plus
 /// toggle expands the full grid. Picking the current emoji clears it.
-pub(crate) fn emoji_pill(i: i64, current: String) -> impl IntoElement {
+pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElement {
     let grid = signal(false);
+    let slot_grid = slot.clone();
     let current_grid = current.clone();
     // `dot` — a 30pt circle: current → `#f5f5f52b`, hover → `#f5f5f514` +
     // a 1.25 scale pop (120ms).
@@ -860,6 +1134,7 @@ pub(crate) fn emoji_pill(i: i64, current: String) -> impl IntoElement {
         let e2 = e.to_owned();
         let cur = current.clone();
         let cur2 = current.clone();
+        let slot = slot.clone();
         view()
             .size(px(30.0))
             .rounded(px(15.0))
@@ -879,7 +1154,7 @@ pub(crate) fn emoji_pill(i: i64, current: String) -> impl IntoElement {
             .on_hover_out(move || h3.set(false))
             .on_press(move || {
                 let st = store();
-                st.react(i, if cur2 == e { String::new() } else { e.to_owned() });
+                st.react_slot(i, &slot, if cur2 == e { String::new() } else { e.to_owned() });
                 st.close_pill(i);
             })
             .child(text(e).text_size(px(17.0)))
@@ -945,6 +1220,7 @@ pub(crate) fn emoji_pill(i: i64, current: String) -> impl IntoElement {
                                         let e2 = e.to_owned();
                                         let cur = current_grid.clone();
                                         let cur2 = current_grid.clone();
+                                        let slot_grid = slot_grid.clone();
                                         view()
                                             .size(px(30.0))
                                             .rounded(px(15.0))
@@ -963,7 +1239,7 @@ pub(crate) fn emoji_pill(i: i64, current: String) -> impl IntoElement {
                                             .on_hover_out(move || h2.set(false))
                                             .on_press(move || {
                                                 let st = store();
-                                                st.react(i, if cur2 == *e { String::new() } else { e.to_string() });
+                                                st.react_slot(i, &slot_grid, if cur2 == *e { String::new() } else { e.to_string() });
                                                 st.close_pill(i);
                                             })
                                             .child(text(*e).text_size(px(17.0)))
@@ -1018,8 +1294,10 @@ pub(crate) fn pill_layer() -> impl IntoElement {
                             store().pill_guard.set(true);
                         }
                     })
-                    .child(emoji_pill(a.i, a.current.clone())),
+                    .child(emoji_pill(a.i, a.slot.clone(), a.current.clone())),
             )
             .into_element()
     })
 }
+
+

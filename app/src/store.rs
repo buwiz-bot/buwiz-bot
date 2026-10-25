@@ -17,6 +17,8 @@ use crate::client;
 #[derive(Clone, PartialEq, Default)]
 pub struct ThreadMeta {
     pub id: String,
+    /// Its permanent UUID v7 (`uid`): what links name it by.
+    pub uid: String,
     pub name: String,
     /// Turn count (`count` on the `/threads` row) — the row's subtitle.
     pub count: i64,
@@ -210,6 +212,16 @@ pub struct RoxBot {
     pub model: String,
     pub effort: String,
     pub fast: bool,
+    /// Its tagline (Grok Bot's "Add a label"): under its name in the
+    /// pane and on its tile.
+    pub label: String,
+    /// Its own context, which fills on demand: what it is, how it
+    /// behaves (seeded at creation, rewritten by the bot when asked),
+    /// what it remembers, and the integrations it has used or was given.
+    pub description: String,
+    pub instructions: String,
+    pub memories: Vec<BotMemory>,
+    pub integrations: Vec<BotIntegration>,
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -385,6 +397,9 @@ pub struct Art {
 #[derive(Clone, PartialEq, Default)]
 pub struct Turn {
     pub i: i64,
+    /// Its permanent UUID v7 (`id`): `i` shifts when earlier turns are
+    /// deleted, this never does — links name a turn by it.
+    pub id: String,
     pub role: String,
     pub text: String,
     pub name: String,
@@ -561,19 +576,6 @@ pub struct Settle {
     pub state: String,
 }
 
-/// A published mini app — one `GET /catalog` row for the work shelf
-/// (`widgets/index.tsx`'s `Item`).
-#[derive(Clone, PartialEq, Default)]
-pub struct ShelfItem {
-    pub name: String,
-    pub title: String,
-    pub published_at: String,
-    pub kinds: Vec<String>,
-    pub pinned: bool,
-    pub archived: bool,
-    pub tags: Vec<String>,
-}
-
 /// `PillAnchor` (shell.tsx:575) — the one emoji pill's measured bar rect
 /// in page coords, whether it flips above / right-anchors, and the turn
 /// it reacts to. `slot` names the owning bar — `"msg"` or
@@ -591,12 +593,38 @@ pub struct PillAnchor {
     pub current: String,
 }
 
-/// One `/widgets` row the ⌘K palette lists (`miniApps`, App.tsx:769).
-#[derive(Clone, PartialEq)]
-pub struct PaletteApp {
-    pub name: String,
+/// An app pinned to the sidebar's Mini Apps group (a card's ⋯ → Pin to
+/// Sidebar): its module key, title, the size its card laid it out at
+/// (the window opens at it) and the card it came from, to jump back to.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct PinnedApp {
+    pub app: String,
     pub title: String,
-    pub prompt: String,
+    pub w: f32,
+    pub h: f32,
+    pub thread: String,
+    pub i: i64,
+}
+
+impl PinnedApp {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "app": self.app, "title": self.title, "w": self.w, "h": self.h,
+            "thread": self.thread, "i": self.i,
+        })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let app = s(v, "app");
+        (!app.is_empty()).then(|| Self {
+            app,
+            title: s(v, "title"),
+            w: f64of(v, "w") as f32,
+            h: f64of(v, "h") as f32,
+            thread: s(v, "thread"),
+            i: v.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
+        })
+    }
 }
 
 /// One row of the command palette (`PaletteItem`, palette.tsx:10).
@@ -604,22 +632,43 @@ pub struct PaletteApp {
 pub struct PaletteItem {
     pub title: String,
     pub subtitle: String,
-    /// An icon name, or — when no icon matches — a glyph drawn as text
-    /// (palette.tsx:105): an agent row's letter.
+    /// An icon name (an action's).
     pub icon: String,
     pub checked: bool,
     pub act: PaletteAct,
+    /// An agent's row: drawn with its avatar.
+    pub bot: Option<RoxBot>,
+    /// A chat's row: its letter circle on this name's hue (the sidebar's).
+    pub letter_of: String,
+    /// A pinned mini app's row: its `</>` tile on this name's hue.
+    pub app_of: String,
 }
 
 /// What a palette row runs (`run`, palette.tsx:16).
 #[derive(Clone, PartialEq)]
 pub enum PaletteAct {
     BotModal,
+    NewChat,
     Theme(&'static str),
-    /// `POST /popout` for a published mini app.
+    /// A sidebar-pinned mini app: open it in its window.
     App(String),
-    /// Open an agent's chat thread.
-    Bot(String),
+    /// Open a chat — an agent's session or a plain chat.
+    Thread(String),
+}
+
+/// One thing a bot remembers (`memories` on a `/threads` bot).
+#[derive(Clone, PartialEq, Default)]
+pub struct BotMemory {
+    pub id: String,
+    pub text: String,
+}
+
+/// An integration a bot has used or was given (`integrations`).
+#[derive(Clone, PartialEq, Default)]
+pub struct BotIntegration {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
 }
 
 /// The composer reply target.
@@ -628,6 +677,52 @@ pub struct ReplyTo {
     pub i: i64,
     pub name: String,
     pub text: String,
+}
+
+/// Where a chat was scrolled when it was left (`ScrollMark`s in
+/// `scroll_marks`): the turn at the viewport's top and how far into it,
+/// or the end; `last` is the newest turn then, so newer ones are news.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub struct ScrollMark {
+    pub i: i64,
+    pub into: f32,
+    pub at_end: bool,
+    pub last: i64,
+}
+
+/// One chat's unsent composer work (Grok Bot's per-agent `drafts`):
+/// its text, the message it replies to and its attachments.
+#[derive(Clone, PartialEq, Default)]
+pub struct Draft {
+    pub text: String,
+    pub reply: Option<ReplyTo>,
+    pub attachments: Vec<Attach>,
+}
+
+impl Draft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.reply.is_none() && self.attachments.is_empty()
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "text": self.text,
+            "reply": self.reply.as_ref().map(|r| serde_json::json!({"i": r.i, "name": r.name, "text": r.text})),
+            "attachments": self.attachments.iter().map(Attach::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Draft {
+        Draft {
+            text: s(v, "text"),
+            reply: v.get("reply").filter(|r| r.is_object()).map(|r| ReplyTo {
+                i: r.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
+                name: s(r, "name"),
+                text: s(r, "text"),
+            }),
+            attachments: list(v, "attachments").iter().map(Attach::of).collect(),
+        }
+    }
 }
 
 /// `open` (modelpicker.tsx:57) — the model popover's mode and the pill's
@@ -702,6 +797,54 @@ fn active_bot_of(id: &str, threads: &[ThreadMeta], bots: &[RoxBot]) -> Option<Ro
     )
 }
 
+/// How many chats keep their transcript mounted (switching among them
+/// is instant and keeps the scroll position exactly).
+const ALIVE: usize = 3;
+
+/// The window zoom's range, in percent (one step is 1%).
+const ZOOM_MIN: i32 = 50;
+const ZOOM_MAX: i32 = 300;
+
+/// Whether turn `t` is the one `key` names: its permanent `id`, or (old
+/// links) its index.
+fn turn_is(t: &Turn, key: &str) -> bool {
+    (!t.id.is_empty() && t.id == key) || t.i.to_string() == key
+}
+
+/// `rox://chat/<thread uid|id>[?m=<turn id|index>]` → (thread, turn key).
+fn parse_chat_link(url: &str) -> Option<(String, Option<String>)> {
+    let rest = url.strip_prefix("rox://chat/")?;
+    let (thread, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let thread = thread.trim_end_matches('/');
+    if thread.is_empty() {
+        return None;
+    }
+    let key = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("m="))
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned);
+    Some((thread.to_owned(), key))
+}
+
+/// The app a module key names: `R12@v2` → `R12`.
+pub fn app_name(app: &str) -> &str {
+    app.split('@').next().unwrap_or(app)
+}
+
+/// `/popout`'s body for module key `app`: `name` bare, a pinned version
+/// as the number `v`.
+fn popout_body(app: &str) -> serde_json::Value {
+    let mut body = serde_json::json!({ "name": app });
+    if let Some((n, v)) = app.split_once('@') {
+        body["name"] = serde_json::json!(n);
+        if let Ok(v) = v.trim_start_matches('v').parse::<i64>() {
+            body["v"] = serde_json::json!(v);
+        }
+    }
+    body
+}
+
 fn s(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned()
 }
@@ -719,6 +862,17 @@ fn list(v: &serde_json::Value, k: &str) -> Vec<serde_json::Value> {
 }
 
 impl Attach {
+    /// What [`Attach::of`] reads back (a saved draft's attachments).
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": self.kind, "path": self.path, "name": self.name, "mime": self.mime,
+            "url": self.url, "thumb": self.thumb, "ext": self.ext, "size": self.size,
+            "feed": self.feed, "variant": self.variant, "duration": self.duration,
+            "peaks": self.peaks, "width": self.width, "height": self.height,
+            "poster": self.poster, "animated": self.animated,
+        })
+    }
+
     fn of(v: &serde_json::Value) -> Attach {
         Attach {
             kind: s(v, "kind"),
@@ -759,6 +913,7 @@ impl Turn {
         }));
         Turn {
             i: i64of(v, "i"),
+            id: s(v, "id"),
             role: s(v, "role"),
             text: s(v, "text"),
             name: s(v, "name"),
@@ -835,6 +990,14 @@ pub struct Store {
     pub draft: Signal<String>,
     pub attachments: Signal<Vec<Attach>>,
     pub reply_to: Signal<Option<ReplyTo>>,
+    /// Every other chat's draft, by thread id (`track_drafts`): the open
+    /// chat's lives in `draft` / `reply_to` / `attachments` themselves.
+    /// Kept in `/state/rox-drafts`.
+    pub drafts: std::cell::RefCell<std::collections::BTreeMap<String, Draft>>,
+    /// Reactions on a reply's files and media, by `thread:turn:slot`
+    /// (`slot` = `art:<path>` / `art:gallery`): the server keeps one per
+    /// turn, so these live in its state store (`/state/rox-reactions`).
+    pub art_reactions: Signal<std::collections::BTreeMap<String, String>>,
     /// `open` (modelpicker.tsx:57) — the model popover's mode and the
     /// pill's page rect it anchors to.
     pub models_pop: Signal<Option<ModelsOpen>>,
@@ -888,23 +1051,6 @@ pub struct Store {
     pub detail_app: Signal<String>,
     pub thread_apps: Signal<Vec<RoxApp>>,
     pub tab: Signal<String>,
-    /// The work shelf's `/catalog` rows (`WidgetShelf`'s `list`).
-    pub shelf_list: Signal<Vec<ShelfItem>>,
-    /// `q` — the shelf's filter text.
-    pub shelf_q: Signal<String>,
-    /// `kind` — `all|db|api|keys|mem|arch`.
-    pub shelf_kind: Signal<String>,
-    /// `tag` — a `#tag` filter, or empty.
-    pub shelf_tag: Signal<String>,
-    /// `sent` — the card whose "＋ chat" reuse just landed (flashes ✓).
-    pub shelf_sent: Signal<String>,
-    /// `renaming` — the card being title-edited (its `name`, "" = none).
-    pub shelf_renaming: Signal<String>,
-    /// `tagging` — the card being tag-edited.
-    pub shelf_tagging: Signal<String>,
-    /// The rename/tag inputs' drafts.
-    pub shelf_rename_text: Signal<String>,
-    pub shelf_tag_text: Signal<String>,
 
     /// Overlays.
     pub ctx: Signal<Option<CtxMenu>>,
@@ -913,12 +1059,23 @@ pub struct Store {
     /// (palette.tsx:22-23).
     pub palette_q: Signal<String>,
     pub palette_sel: Signal<i64>,
-    /// `miniApps` — the `/widgets` rows fetched while the palette is
-    /// open (App.tsx:769).
-    pub palette_apps: Signal<Vec<PaletteApp>>,
     /// `pillAnchor` (shell.tsx:582) — the open emoji pill's anchor, or
     /// None. One app-level overlay renders it.
     pub pill: Signal<Option<PillAnchor>>,
+    /// The hover bar (turn, slot) whose ⋯ opened the `ctx` menu: that bar
+    /// stays up until the menu closes (the scrim takes the hover).
+    pub ctx_owner: Signal<Option<(i64, String)>>,
+    /// `work` / `extra` (shell.tsx:1106) — each card's status line, by
+    /// module key: a retry's phase, or a short note ("↗ window opened");
+    /// the flag marks a note.
+    pub card_status: Signal<std::collections::BTreeMap<String, (String, bool)>>,
+    /// The Library row a card's ⋯ → Details highlights (an app name).
+    pub library_focus: Signal<String>,
+    /// The sidebar's Mini Apps group, in pin order (`/state/rox-pinned-apps`).
+    pub pinned_apps: Signal<Vec<PinnedApp>>,
+    /// ⌘= / ⌘- / ⌘0 — the window's zoom (1 = 100%), as Grok Bot's page
+    /// zoom: everything scales (`zoom.rs`); kept in `/state/rox-zoom`.
+    pub ui_zoom: Signal<f32>,
     /// `pillGuard` (shell.tsx:570) — the pill's touch marks it before the
     /// root's bubble-phase handler runs, so a press inside the pill isn't
     /// read as a click-away. The root consumes and clears it per touch.
@@ -960,8 +1117,42 @@ pub struct Store {
     /// The transcript's `virtual_list` handle — the reply-quote jump
     /// scrolls it (`onJump`, shell.tsx:454).
     pub chat_list: std::cell::RefCell<Option<ElementRef>>,
+    /// A jump to turn `i` of a thread waiting for that thread's
+    /// transcript to mount: it then opens on the turn (`take_jump`).
+    pub jump: std::cell::RefCell<Option<(String, String)>>,
+    /// A link opened before the chats were loaded (Rox launched by it):
+    /// it waits for them (`boot`), else the startup selection replaced
+    /// its chat and its turn was never found.
+    pub early_link: std::cell::RefCell<Option<String>>,
+    /// Whether `boot` has loaded the chats.
+    pub booted: std::cell::Cell<bool>,
+    /// Bumped by every navigation (`go_to_key`): a transcript's opening
+    /// snaps stop once it moves, so they never undo a jump.
+    pub nav_epoch: std::cell::Cell<u64>,
+    /// The chat `turns` belong to: on a switch the old transcript stays up
+    /// until the new chat's turns land, then a fresh one mounts (keyed by
+    /// this) already at its place and fades in.
+    pub turns_of: Signal<String>,
+    /// The chats whose transcripts stay mounted, most recent first (at
+    /// most `ALIVE`): switching among them only shows and hides.
+    pub alive: Signal<Vec<String>>,
+    /// Each chat's last scroll position, kept while Rox runs.
+    pub scroll_marks: std::cell::RefCell<std::collections::HashMap<String, ScrollMark>>,
+    /// The first turn that arrived while the open chat was away, until
+    /// it is seen (the "New messages" pill).
+    pub new_below: Signal<Option<i64>>,
+    /// The turn a jump landed on, ringed for a moment (`flash`), and
+    /// whether its ring still shows (it fades before it unmounts).
+    pub highlight: Signal<Option<i64>>,
+    pub highlight_on: Signal<bool>,
     /// `botModal` — the "Create New Bot" sheet is open.
     pub bot_modal: Signal<bool>,
+    /// The primary Bot (Grok Bot's "Main Bot", its star badge): your
+    /// main contact. Kept in `/state/rox-main-bot`.
+    pub main_bot: Signal<String>,
+    /// The "Choose a primary Bot" dialog: open with the bot picked so far.
+    pub main_pick: Signal<Option<String>>,
+    pub main_pick_q: Signal<String>,
     /// `botName`/`botShape`/`botColor` — the picker's draft.
     pub bot_name: Signal<String>,
     pub bot_shape: Signal<String>,
@@ -1121,6 +1312,8 @@ impl Store {
             draft: signal(String::new()),
             attachments: signal(Vec::new()),
             reply_to: signal(None),
+            drafts: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            art_reactions: signal(std::collections::BTreeMap::new()),
             models_pop: signal(None),
             composer_dock_h: signal(96.0),
             composer_right_w: signal(150.0),
@@ -1149,22 +1342,26 @@ impl Store {
             detail_meta: signal(None),
             thread_apps: signal(Vec::new()),
             tab: signal("chat".to_owned()),
-            shelf_list: signal(Vec::new()),
-            shelf_q: signal(String::new()),
-            shelf_kind: signal("all".to_owned()),
-            shelf_tag: signal(String::new()),
-            shelf_sent: signal(String::new()),
-            shelf_renaming: signal(String::new()),
-            shelf_tagging: signal(String::new()),
-            shelf_rename_text: signal(String::new()),
-            shelf_tag_text: signal(String::new()),
             ctx: signal(None),
             section_prompt: signal(None),
             section_name: signal(String::new()),
             rail_pop: signal(None),
             pop_seq: std::cell::Cell::new(0),
             chat_list: std::cell::RefCell::new(None),
+            jump: std::cell::RefCell::new(None),
+            early_link: std::cell::RefCell::new(None),
+            booted: std::cell::Cell::new(false),
+            nav_epoch: std::cell::Cell::new(0),
+            turns_of: signal(String::new()),
+            alive: signal(Vec::new()),
+            scroll_marks: std::cell::RefCell::new(std::collections::HashMap::new()),
+            new_below: signal(None),
+            highlight: signal(None),
+            highlight_on: signal(false),
             bot_modal: signal(false),
+            main_bot: signal(String::new()),
+            main_pick: signal(None),
+            main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
             bot_shape: signal("blob".to_owned()),
             bot_color: signal("#1084FE".to_owned()),
@@ -1218,8 +1415,12 @@ impl Store {
             palette: signal(false),
             palette_q: signal(String::new()),
             palette_sel: signal(0),
-            palette_apps: signal(Vec::new()),
             pill: signal(None),
+            ctx_owner: signal(None),
+            card_status: signal(std::collections::BTreeMap::new()),
+            library_focus: signal(String::new()),
+            pinned_apps: signal(Vec::new()),
+            ui_zoom: signal(1.0),
             pill_guard: std::cell::Cell::new(false),
             viewing: signal(None),
             rendered: signal(None),
@@ -1261,9 +1462,61 @@ impl Store {
     /// thread's turns and pinned apps (`set_threads` picks the server's
     /// `active`).
     pub fn boot(&'static self) {
+        self.track_drafts();
         spawn(async move {
+            if let Some(v) = client::get("/state/rox-main-bot").await {
+                let id = v.get("state").map(|st| s(st, "id")).unwrap_or_default();
+                self.main_bot.set(id);
+            }
+        });
+        spawn(async move {
+            if let Some(v) = client::get("/state/rox-pinned-apps").await {
+                let apps = v.get("state").map(|st| list(st, "apps")).unwrap_or_default();
+                self.pinned_apps
+                    .set(apps.iter().filter_map(PinnedApp::from_json).collect());
+            }
+        });
+        spawn(async move {
+            if let Some(v) = client::get("/state/rox-reactions").await {
+                if let Some(m) = v.get("state").and_then(|s| s.as_object()) {
+                    self.art_reactions.set(
+                        m.iter()
+                            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                            .collect(),
+                    );
+                }
+            }
+        });
+        spawn(async move {
+            // The zoom first: a transcript laid out before it lands is laid
+            // out again at another size, and a link's turn drifts off.
+            if let Some(v) = client::get("/state/rox-zoom").await {
+                let z = v.get("state").map(|st| f64of(st, "zoom")).unwrap_or(0.0) as f32;
+                if z > 0.0 {
+                    self.ui_zoom.set(z.clamp(ZOOM_MIN as f32 / 100.0, ZOOM_MAX as f32 / 100.0));
+                }
+            }
+            // Drafts before the chats: opening the active one restores its.
+            if let Some(v) = client::get("/state/rox-drafts").await {
+                if let Some(m) = v.get("state").and_then(|st| st.get("drafts")).and_then(|d| d.as_object()) {
+                    *self.drafts.borrow_mut() = m
+                        .iter()
+                        .map(|(k, d)| (k.clone(), Draft::from_json(d)))
+                        .filter(|(_, d)| !d.is_empty())
+                        .collect();
+                }
+            }
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
+            }
+            // Launched on a link (`open rox://…`, or `rox rox://…`): Rox
+            // opens there once the chats are known.
+            self.booted.set(true);
+            let early = self.early_link.borrow_mut().take();
+            if let Some(url) =
+                early.or_else(|| std::env::args().skip(1).find(|a| a.starts_with("rox://")))
+            {
+                self.open_link(&url);
             }
             self.refresh_turns();
             self.refresh_thread_apps();
@@ -1287,7 +1540,6 @@ impl Store {
                 }
             }
         });
-        self.watch_shelf();
     }
 
     /// Runs `f` under the store's owner: signals made there live as long
@@ -1368,6 +1620,7 @@ impl Store {
             .iter()
             .map(|t| ThreadMeta {
                 id: s(t, "id"),
+                uid: s(t, "uid"),
                 name: s(t, "title"),
                 count: i64of(t, "count"),
                 created: f64of(t, "created"),
@@ -1440,6 +1693,17 @@ impl Store {
                     model: s(b, "model"),
                     effort: s(b, "effort"),
                     fast: self::b(b, "fast"),
+                    label: s(b, "label"),
+                    description: s(b, "description"),
+                    instructions: s(b, "instructions"),
+                    memories: list(b, "memories")
+                        .iter()
+                        .map(|m| BotMemory { id: s(m, "id"), text: s(m, "text") })
+                        .collect(),
+                    integrations: list(b, "integrations")
+                        .iter()
+                        .map(|i| BotIntegration { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind") })
+                        .collect(),
                 })
                 .collect(),
             );
@@ -1664,13 +1928,13 @@ impl Store {
         if self.active_id.get_untracked() == id {
             return;
         }
-        // `selectThread` (App.tsx:613) — the row press is also the way
-        // back out of the work shelf to the chat.
+        // `selectThread` (App.tsx:613).
         self.tab.set("chat".to_owned());
         // `if (!agent()) emphBot.set("")` — the status row unmounts when
         // switching away from the run's thread.
         self.emph_bot.set(String::new());
-        self.turns.set(Vec::new());
+        // The old chat stays on screen until this one's turns land
+        // (`turns_of`); the next fetch always replaces them.
         *self.turns_json.borrow_mut() = String::new();
         let sel = id.clone();
         spawn(async move {
@@ -1703,7 +1967,14 @@ impl Store {
     /// or its name, changes; typed text (including the empty draft)
     /// survives between real changes.
     fn seed_bot_edit_name(&'static self) {
-        let key = self.active_bot_untracked().map(|b| (b.id, b.name));
+        // An agent's name, or a plain chat's title (the pane's name field
+        // renames whichever is open).
+        let key = self.active_bot_untracked().map(|b| (b.id, b.name)).or_else(|| {
+            let id = self.active_id.get_untracked();
+            self.threads.with_untracked(|t| {
+                t.iter().find(|t| t.id == id).map(|t| (t.id.clone(), t.name.clone()))
+            })
+        });
         if *self.bot_edit_src.borrow() != key {
             self.bot_edit_name
                 .set(key.as_ref().map(|(_, n)| n.clone()).unwrap_or_default());
@@ -1770,8 +2041,7 @@ impl Store {
         out
     }
 
-    /// `mod+k` — open the palette; the `/widgets` fetch rides the same
-    /// "while open" effect as the TSX (App.tsx:770).
+    /// `mod+k` — open the palette (or close it).
     pub fn toggle_palette(&'static self) {
         if self.palette.get_untracked() {
             self.close_palette();
@@ -1780,22 +2050,6 @@ impl Store {
         self.palette.set(true);
         self.palette_q.set(String::new());
         self.palette_sel.set(0);
-        spawn(async move {
-            let Some(v) = client::get("/widgets").await else { return };
-            self.palette_apps.set(
-                v.as_array()
-                    .map(|l| {
-                        l.iter()
-                            .map(|w| PaletteApp {
-                                name: s(w, "name"),
-                                title: s(w, "title"),
-                                prompt: s(w, "prompt"),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            );
-        });
     }
 
     /// `close` (palette.tsx:29) — hide and reset the query + selection.
@@ -1805,88 +2059,51 @@ impl Store {
         self.palette_sel.set(0);
     }
 
-    /// `paletteItems` (App.tsx:778): the commands, then the agents —
-    /// the palette doubles as the bot search, hidden bots excluded —
-    /// then the published mini apps.
+    /// The palette's rows, sessions first (Grok Bot's order): the agents,
+    /// then the plain chats, then the mini apps pinned to the sidebar,
+    /// then the actions.
     pub fn palette_items(&'static self) -> Vec<PaletteItem> {
+        let row = |title: String, subtitle: String, act: PaletteAct| PaletteItem {
+            title,
+            subtitle,
+            icon: String::new(),
+            checked: false,
+            act,
+            bot: None,
+            letter_of: String::new(),
+            app_of: String::new(),
+        };
+        let mut items = Vec::new();
+        for b in self.bots.get().into_iter().filter(|b| !b.hidden && !b.thread_id.is_empty()) {
+            items.push(PaletteItem {
+                bot: Some(b.clone()),
+                ..row(b.name.clone(), "Agent".into(), PaletteAct::Thread(b.thread_id.clone()))
+            });
+        }
+        for t in self.chats() {
+            let name = if t.name.is_empty() { "New chat".to_owned() } else { t.name.clone() };
+            items.push(PaletteItem {
+                letter_of: name.clone(),
+                ..row(name, format!("Chat · {} messages", t.count), PaletteAct::Thread(t.id.clone()))
+            });
+        }
+        for p in self.pinned_apps.get() {
+            items.push(PaletteItem {
+                app_of: app_name(&p.app).to_owned(),
+                ..row(p.title.clone(), "Mini app".into(), PaletteAct::App(p.app.clone()))
+            });
+        }
         let pref = self.theme_pref.get();
-        let mut items = vec![
-            PaletteItem {
-                title: "New Bot".into(),
-                subtitle: String::new(),
-                icon: "newChat".into(),
-                checked: false,
-                act: PaletteAct::BotModal,
-            },
-            PaletteItem {
-                title: "Theme: System".into(),
-                subtitle: "Settings · Appearance".into(),
-                icon: "systemTheme".into(),
-                checked: pref == "system",
-                act: PaletteAct::Theme("system"),
-            },
-            PaletteItem {
-                title: "Theme: Light".into(),
-                subtitle: "Settings · Appearance".into(),
-                icon: "sun".into(),
-                checked: pref == "light",
-                act: PaletteAct::Theme("light"),
-            },
-            PaletteItem {
-                title: "Theme: Dark".into(),
-                subtitle: "Settings · Appearance".into(),
-                icon: "moon".into(),
-                checked: pref == "dark",
-                act: PaletteAct::Theme("dark"),
-            },
-        ];
-        for b in self
-            .bots
-            .get()
-            .iter()
-            .filter(|b| !b.hidden && !b.thread_id.is_empty())
-        {
-            items.push(PaletteItem {
-                title: b.name.clone(),
-                subtitle: "Agent".into(),
-                icon: b
-                    .name
-                    .chars()
-                    .next()
-                    .map(|c| c.to_uppercase().collect())
-                    .unwrap_or_else(|| "gpts".into()),
-                checked: false,
-                act: PaletteAct::Bot(b.thread_id.clone()),
-            });
-        }
-        for w in self.palette_apps.get() {
-            // titles saved from a failed first compile read as errors:
-            // use the prompt (App.tsx:786).
-            let title = if w.title.is_empty()
-                || w
-                    .title
-                    .to_lowercase()
-                    .split(|c: char| c.is_alphanumeric())
-                    .any(|p| ["error", "implicit", "annotat", "module"].contains(&p))
-            {
-                if w.prompt.is_empty() { w.name.clone() } else { w.prompt.clone() }
-            } else {
-                w.title.clone()
-            };
-            let title: String = title
-                .chars()
-                .filter(|c| !['*', '_', '`', '#'].contains(c))
-                .collect::<String>()
-                .trim()
-                .to_owned();
-            items.push(PaletteItem {
-                title,
-                subtitle: "Mini app".into(),
-                icon: "gpts".into(),
-                checked: false,
-                act: PaletteAct::App(w.name.clone()),
-            });
-        }
+        let action = |title: &str, subtitle: &str, icon: &str, checked: bool, act: PaletteAct| PaletteItem {
+            icon: icon.to_owned(),
+            checked,
+            ..row(title.to_owned(), subtitle.to_owned(), act)
+        };
+        items.push(action("New Chat", "", "newChat", false, PaletteAct::NewChat));
+        items.push(action("New Bot", "", "newChat", false, PaletteAct::BotModal));
+        items.push(action("Theme: System", "Settings · Appearance", "systemTheme", pref == "system", PaletteAct::Theme("system")));
+        items.push(action("Theme: Light", "Settings · Appearance", "sun", pref == "light", PaletteAct::Theme("light")));
+        items.push(action("Theme: Dark", "Settings · Appearance", "moon", pref == "dark", PaletteAct::Theme("dark")));
         items
     }
 
@@ -1915,11 +2132,14 @@ impl Store {
         self.close_palette();
         match it.act {
             PaletteAct::BotModal => self.bot_modal.set(true),
+            PaletteAct::NewChat => self.new_thread(),
             PaletteAct::Theme(t) => self.set_theme(t),
-            PaletteAct::App(name) => {
-                client::post_bg("/popout".to_owned(), serde_json::json!({ "name": name }))
+            PaletteAct::App(app) => {
+                if let Some(p) = self.pinned(&app) {
+                    self.popout_sized(&p.app, p.w, p.h, false);
+                }
             }
-            PaletteAct::Bot(tid) => self.open_thread(tid),
+            PaletteAct::Thread(id) => self.go_to(&id, None),
         }
     }
 
@@ -1950,8 +2170,6 @@ impl Store {
         self.emph_bot.set(String::new());
         self.settled.set(None);
         self.chat_scrolling.set(false);
-        self.shelf_renaming.set(String::new());
-        self.shelf_tagging.set(String::new());
         self.light_close();
         self.viewing.set(None);
         crate::models::close();
@@ -1960,6 +2178,8 @@ impl Store {
             self.close_plugins();
         }
         self.turns.set(Vec::new());
+        self.turns_of.set(String::new());
+        self.alive.set(Vec::new());
         *self.turns_json.borrow_mut() = String::new();
         spawn(async move {
             if let Some(v) = client::get("/threads").await {
@@ -1979,9 +2199,15 @@ impl Store {
         }
         spawn(async move {
             let Some(v) = client::get("/turns").await else { return };
-            // The server may still be on the previous thread for a beat;
-            // keep the stale response out of the list.
+            // The server's active thread is shared (Grok Shell, another
+            // window, a run on another chat can move it): a response for
+            // another thread stays out of the list, and Rox selects its own
+            // again so the next poll lands — else it was stuck on the old
+            // chat for good (a new chat that never opened).
             if s(&v, "active") != id {
+                if self.active_id.get_untracked() == id {
+                    client::post("/thread/select", serde_json::json!({ "id": id })).await;
+                }
                 return;
             }
             let raw = v.to_string();
@@ -1989,7 +2215,20 @@ impl Store {
                 return;
             }
             *self.turns_json.borrow_mut() = raw;
-            self.turns.set(list(&v, "turns").iter().map(Turn::of).collect());
+            let turns: Vec<Turn> = list(&v, "turns").iter().map(Turn::of).collect();
+            batch(|| {
+                self.turns.set(turns);
+                if self.turns_of.get_untracked() != id {
+                    self.turns_of.set(id.clone());
+                    // Most recent first; the oldest beyond `ALIVE` unmounts
+                    // (its spot is kept as a `ScrollMark`).
+                    self.alive.update(|a| {
+                        a.retain(|x| *x != id);
+                        a.insert(0, id.clone());
+                        a.truncate(ALIVE);
+                    });
+                }
+            });
             if let Some(b) = v.get("revealed").and_then(|x| x.as_bool()) {
                 self.revealed.set(b);
             }
@@ -3148,7 +3387,10 @@ impl Store {
     /// `pickAttachments` — `POST /attach/pick` runs the host's file
     /// picker; the answer's `files` join the staged attachments
     /// (App.tsx:493).
+    /// The files belong to the chat the picker was opened from: switched
+    /// away meanwhile, they join that chat's draft, not the open one's.
     pub fn pick_attachments(&'static self) {
+        let thread = self.active_id.get_untracked();
         spawn(async move {
             if let Some(v) = client::post("/attach/pick", serde_json::json!({})).await {
                 let files: Vec<Attach> = v
@@ -3156,8 +3398,14 @@ impl Store {
                     .and_then(|x| x.as_array())
                     .map(|l| l.iter().map(Attach::of).collect())
                     .unwrap_or_default();
-                if !files.is_empty() {
+                if files.is_empty() {
+                    return;
+                }
+                if self.active_id.get_untracked() == thread {
                     self.attachments.update(|a| a.extend(files));
+                } else {
+                    self.drafts.borrow_mut().entry(thread).or_default().attachments.extend(files);
+                    self.save_drafts();
                 }
             }
         });
@@ -3256,6 +3504,20 @@ impl Store {
                 self.set_threads(v);
             }
         });
+    }
+
+    /// The open plain chat's title, from the pane's name field.
+    pub fn rename_chat(&'static self, name: String) {
+        let id = self.active_id.get_untracked();
+        if id.is_empty() {
+            return;
+        }
+        self.threads.update(|t| {
+            if let Some(t) = t.iter_mut().find(|t| t.id == id) {
+                t.name = name.clone();
+            }
+        });
+        self.rename_thread(id, name);
     }
 
     pub fn rename_thread(&'static self, id: String, name: String) {
@@ -3592,6 +3854,54 @@ impl Store {
     /// is detached — `react` runs from the emoji pill's press, which
     /// closes (disposes) the pill right after, and a task spawned under
     /// the pill's owner would be cancelled before the post even sent.
+    fn art_key(&self, i: i64, slot: &str) -> String {
+        format!("{}:{i}:{slot}", self.active_id.get_untracked())
+    }
+
+    /// Whether bar `(i, slot)`'s ⋯ menu is the open one (tracked).
+    pub fn ctx_open_for(&'static self, i: i64, slot: &str) -> bool {
+        self.ctx.with(|c| c.is_some())
+            && self
+                .ctx_owner
+                .with(|o| o.as_ref().is_some_and(|(oi, os)| *oi == i && os == slot))
+    }
+
+    /// The reaction on turn `i`'s `slot`: `msg` is the turn's own (the
+    /// server's), any other a file's or the media's. Tracked.
+    pub fn reaction_of(&'static self, i: i64, slot: &str) -> String {
+        if slot == "msg" {
+            return self
+                .turns
+                .with(|t| t.iter().find(|t| t.i == i).map(|t| t.reaction.clone()))
+                .unwrap_or_default();
+        }
+        let key = self.art_key(i, slot);
+        self.art_reactions.with(|m| m.get(&key).cloned()).unwrap_or_default()
+    }
+
+    /// `react` for one slot: the message's goes to the server's turn, a
+    /// file's or the media's to Rox's reactions in the state store.
+    pub fn react_slot(&'static self, i: i64, slot: &str, emoji: String) {
+        if slot == "msg" {
+            return self.react(i, emoji);
+        }
+        let key = self.art_key(i, slot);
+        self.art_reactions.update(|m| {
+            if emoji.is_empty() {
+                m.remove(&key);
+            } else {
+                m.insert(key, emoji);
+            }
+        });
+        let state: serde_json::Map<String, serde_json::Value> = self
+            .art_reactions
+            .get_untracked()
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect();
+        client::post_bg("/state/rox-reactions".to_owned(), serde_json::Value::Object(state));
+    }
+
     pub fn react(&'static self, i: i64, emoji: String) {
         let mut turns = self.turns.get_untracked();
         if let Some(t) = turns.iter_mut().find(|t| t.i == i) {
@@ -3690,8 +4000,16 @@ impl Store {
         }
         let sig = self.owner.run(|| signal(String::new()));
         self.minis.borrow_mut().insert(app.to_owned(), sig);
-        let name = app.to_owned();
-        spawn(async move {
+        self.fetch_mini(app.to_owned(), sig);
+        sig
+    }
+
+    /// Loads `name`'s module into `sig`. Detached: the cached signal
+    /// outlives whichever card asked first. Under that card's owner, a
+    /// rebuild before the fetch landed cancelled it and left every card
+    /// on "Loading…" for good.
+    fn fetch_mini(&'static self, name: String, sig: Signal<String>) {
+        Owner::detached().run(|| spawn(async move {
             let Some(v) = client::get(&format!("/module?name={name}")).await else {
                 self.mini_err(&name).set("server unreachable".to_owned());
                 return;
@@ -3714,8 +4032,16 @@ impl Store {
                     self.mini_err(&name).set(first.to_owned());
                 }
             }
-        });
-        sig
+        }));
+    }
+
+    /// Refetches `app`'s module into its cached signal: a live card
+    /// reloads in place (a new `source` restarts its engine).
+    pub fn reload_mini(&'static self, app: &str) {
+        let Some(sig) = self.minis.borrow().get(app).copied() else {
+            return;
+        };
+        self.fetch_mini(app.to_owned(), sig);
     }
 
     /// The display title of widget `app` (set when `mini_source` loads).
@@ -3749,165 +4075,484 @@ impl Store {
     /// `app` carries the version as `name@v<k>` (Grok's `Art.app` key);
     /// the route wants them split — `name` bare, `v` a number.
     pub fn popout(&'static self, app: &str) {
-        let mut body = serde_json::json!({"name": app});
-        if let Some((n, v)) = app.split_once('@') {
-            body["name"] = serde_json::json!(n);
-            if let Ok(v) = v.trim_start_matches('v').parse::<i64>() {
-                body["v"] = serde_json::json!(v);
-            }
-        }
-        client::post_bg("/popout".to_owned(), body);
+        client::post_bg("/popout".to_owned(), popout_body(app));
     }
 
-    /// `POST /popout {name, mode:"desktop"}` — the card's Pin-to-desktop.
-    pub fn popout_desktop(&'static self, app: &str) {
-        let mut body = serde_json::json!({"name": app, "mode": "desktop"});
-        if let Some((n, v)) = app.split_once('@') {
-            body["name"] = serde_json::json!(n);
-            if let Ok(v) = v.trim_start_matches('v').parse::<i64>() {
-                body["v"] = serde_json::json!(v);
-            }
+    /// `popout()` / `pin()` (shell.tsx:760) at a size: the window opens at
+    /// `w × h` — the size a card laid the app out at — instead of the
+    /// server's default and then shrinking to fit. `desktop` makes it a
+    /// desktop widget; the card's status line notes the result.
+    pub fn popout_sized(&'static self, app: &str, w: f32, h: f32, desktop: bool) {
+        let mut body = popout_body(app);
+        if w > 0.0 {
+            body["w"] = serde_json::json!(w.round());
         }
-        client::post_bg("/popout".to_owned(), body);
+        if h > 0.0 {
+            body["h"] = serde_json::json!(h.ceil());
+        }
+        if desktop {
+            body["mode"] = serde_json::json!("desktop");
+        }
+        let app = app.to_owned();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let d = client::post("/popout", body).await;
+                let ok = d.as_ref().is_some_and(|d| b(d, "ok"));
+                let note = match (ok, d.as_ref().is_some_and(|d| b(d, "already"))) {
+                    (false, _) => "popout failed",
+                    (true, true) => "window already open",
+                    (true, false) if desktop => "★ on the desktop",
+                    (true, false) => "↗ window opened",
+                };
+                self.card_note(&app, note);
+            })
+        });
     }
 
-    // -- work shelf --------------------------------------------------------
+    /// The size card `i` (module `app`) lays its app out at: the declared
+    /// width, the measured content height (the declared one until then).
+    pub fn card_size(&'static self, i: i64, app: &str) -> (f32, f32) {
+        let art = self
+            .turns
+            .with_untracked(|t| t.iter().find(|t| t.i == i).and_then(|t| t.art.clone()));
+        let (aw, ah) = art.map_or((0.0, 0.0), |a| (a.w as f32, a.h as f32));
+        let w = if aw > 0.0 { aw } else { 480.0 };
+        let h = self
+            .mini_heights
+            .borrow()
+            .get(app)
+            .copied()
+            .unwrap_or(if ah > 0.0 { ah } else { (w * 0.75).round() });
+        (w, h)
+    }
 
-    /// `GET /catalog` → `shelf_list` (`WidgetShelf`'s `load`).
-    pub fn load_shelf(&'static self) {
-        spawn(async move {
-            let Some(v) = client::get("/catalog").await else { return };
-            let rows: Vec<ShelfItem> = list(&v, "list")
-                .iter()
-                .map(|i| ShelfItem {
-                    name: s(i, "name"),
-                    title: s(i, "title"),
-                    published_at: s(i, "publishedAt"),
-                    kinds: list(i, "kinds")
-                        .iter()
-                        .filter_map(|k| k.as_str().map(|x| x.to_owned()))
-                        .collect(),
-                    pinned: b(i, "pinned"),
-                    archived: b(i, "archived"),
-                    tags: list(i, "tags")
-                        .iter()
-                        .filter_map(|t| t.as_str().map(|x| x.to_owned()))
-                        .collect(),
+    /// A note on `app`'s card status line for 2s.
+    fn card_note(&'static self, app: &str, text: &str) {
+        let (app, text) = (app.to_owned(), text.to_owned());
+        self.card_status.update(|m| {
+            m.insert(app.clone(), (text.clone(), true));
+        });
+        Owner::detached().run(|| {
+            spawn(async move {
+                timer(std::time::Duration::from_millis(2000)).await;
+                self.card_status.update(|m| {
+                    if m.get(&app).is_some_and(|(t, note)| *note && *t == text) {
+                        m.remove(&app);
+                    }
+                });
+            })
+        });
+    }
+
+    /// `app`'s card status line shows `work` in progress (None clears it).
+    fn card_work(&'static self, app: &str, work: Option<&str>) {
+        self.card_status.update(|m| match work {
+            Some(t) => {
+                m.insert(app.to_owned(), (t.to_owned(), false));
+            }
+            None => {
+                m.remove(app);
+            }
+        });
+    }
+
+    /// `retry()` (shell.tsx:868) — a card's Try Again: the app is made
+    /// again from the same request (`POST /retry`), the job followed on
+    /// the card's status line (`GET /status`); when it lands the card
+    /// reloads the new module in place.
+    pub fn retry_card(&'static self, app: &str) {
+        let busy = self
+            .card_status
+            .with_untracked(|m| m.get(app).is_some_and(|(_, note)| !note));
+        if busy {
+            return;
+        }
+        self.card_work(app, Some("queued"));
+        let app = app.to_owned();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let name = app_name(&app).to_owned();
+                let id = client::post("/retry", serde_json::json!({"name": name}))
+                    .await
+                    .and_then(|d| d.get("id").and_then(|x| x.as_i64()));
+                let Some(id) = id else {
+                    self.card_work(&app, None);
+                    self.card_note(&app, "retry failed");
+                    return;
+                };
+                let mut fails = 0;
+                loop {
+                    timer(std::time::Duration::from_millis(450)).await;
+                    let Some(st) = client::get(&format!("/status?id={id}")).await else {
+                        fails += 1;
+                        if fails > 15 {
+                            break;
+                        }
+                        continue;
+                    };
+                    fails = 0;
+                    let detail = s(&st, "detail");
+                    let phase = s(&st, "phase");
+                    self.card_work(&app, Some(if detail.is_empty() { &phase } else { &detail }));
+                    if b(&st, "done") {
+                        break;
+                    }
+                }
+                self.card_work(&app, None);
+                self.mini_heights.borrow_mut().remove(&app);
+                self.reload_mini(&app);
+                self.refresh_turns();
+            })
+        });
+    }
+
+    /// A card's ⋯ → Details: the pane's Library with the app's row
+    /// highlighted (agents and plain chats alike).
+    pub fn show_in_library(&'static self, app: &str) {
+        self.detail_tab.set("library".to_owned());
+        self.library_focus.set(app_name(app).to_owned());
+        self.refresh_thread_apps();
+        self.right_open.set(true);
+    }
+
+    /// ⌘= (`dir` 1) / ⌘- (`dir` -1) move the window's zoom by 1% —
+    /// finer than Chrome's steps; holding the key repeats; ⌘0 (`dir` 0)
+    /// resets it.
+    pub fn zoom_step(&'static self, dir: i32) {
+        let pct = (self.ui_zoom.get_untracked() * 100.0).round() as i32;
+        let next_pct = if dir == 0 { 100 } else { (pct + dir.signum()).clamp(ZOOM_MIN, ZOOM_MAX) };
+        if next_pct == pct {
+            return;
+        }
+        let next = next_pct as f32 / 100.0;
+        self.ui_zoom.set(next);
+        client::post_bg(
+            "/state/rox-zoom".to_owned(),
+            serde_json::json!({ "zoom": next_pct as f64 / 100.0 }),
+        );
+    }
+
+    /// Forgets memory `memory_id` of bot `id` (`POST /bot/memory`).
+    pub fn forget_memory(&'static self, id: &str, memory_id: &str) {
+        let (id, memory_id) = (id.to_owned(), memory_id.to_owned());
+        self.bots.update(|bots| {
+            if let Some(b) = bots.iter_mut().find(|b| b.id == id) {
+                b.memories.retain(|m| m.id != memory_id);
+            }
+        });
+        client::post_bg(
+            "/bot/memory".to_owned(),
+            serde_json::json!({ "id": id, "op": "remove", "memoryId": memory_id }),
+        );
+    }
+
+    /// Adds integration `integration` to bot `id`, or removes it
+    /// (`POST /bot/integration`); the list comes back from the server.
+    pub fn bot_integration(&'static self, id: &str, integration: &str, add: bool) {
+        let (id, integration) = (id.to_owned(), integration.to_owned());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let op = if add { "add" } else { "remove" };
+                let r = client::post(
+                    "/bot/integration",
+                    serde_json::json!({ "id": id, "op": op, "integration": integration }),
+                )
+                .await;
+                let Some(r) = r else { return };
+                let list: Vec<BotIntegration> = self::list(&r, "integrations")
+                    .iter()
+                    .map(|i| BotIntegration { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind") })
+                    .collect();
+                self.bots.update(|bots| {
+                    if let Some(b) = bots.iter_mut().find(|b| b.id == id) {
+                        b.integrations = list;
+                    }
+                });
+            })
+        });
+    }
+
+    /// Makes bot `id` the primary Bot (one at a time).
+    pub fn set_main_bot(&'static self, id: &str) {
+        self.main_bot.set(id.to_owned());
+        client::post_bg("/state/rox-main-bot".to_owned(), serde_json::json!({ "id": id }));
+    }
+
+    /// Whether bot `id` is the primary Bot (tracked).
+    pub fn is_main_bot(&'static self, id: &str) -> bool {
+        !id.is_empty() && self.main_bot.with(|m| m == id)
+    }
+
+    /// Whether `app` is pinned to the sidebar (tracked).
+    pub fn app_pinned(&'static self, app: &str) -> bool {
+        let name = app_name(app);
+        self.pinned_apps.with(|v| v.iter().any(|p| app_name(&p.app) == name))
+    }
+
+    /// A card's ⋯ → Pin to Sidebar / Unpin from Sidebar.
+    pub fn toggle_pin_app(&'static self, i: i64, app: &str) {
+        if untracked(|| self.app_pinned(app)) {
+            return self.unpin_app(app);
+        }
+        let title = self
+            .turns
+            .with_untracked(|t| {
+                t.iter().find(|t| t.i == i).map(|t| match &t.art {
+                    Some(a) if !a.title.is_empty() => a.title.clone(),
+                    _ => t.name.clone(),
                 })
-                .collect();
-            self.shelf_list.set(rows);
-        });
+            })
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| self.mini_source_title(app).get_untracked());
+        let (w, h) = self.card_size(i, app);
+        let pin = PinnedApp {
+            app: app.to_owned(),
+            title: if title.is_empty() { app_name(app).to_owned() } else { title },
+            w,
+            h,
+            thread: self.active_id.get_untracked(),
+            i,
+        };
+        self.pinned_apps.update(|v| v.push(pin));
+        self.save_pinned_apps();
     }
 
-    /// The 3s catalog poll, on while the work tab is up (`WidgetShelf`'s
-    /// `setInterval(load, 3000)`).
-    pub fn watch_shelf(&'static self) {
-        spawn(async move {
-            loop {
-                if self.tab.get_untracked() == "work" {
-                    self.load_shelf();
+    /// Takes `app` out of the sidebar's Mini Apps group.
+    pub fn unpin_app(&'static self, app: &str) {
+        let name = app_name(app).to_owned();
+        self.pinned_apps.update(|v| v.retain(|p| app_name(&p.app) != name));
+        self.save_pinned_apps();
+    }
+
+    fn save_pinned_apps(&'static self) {
+        let apps: Vec<_> = self.pinned_apps.get_untracked().iter().map(PinnedApp::to_json).collect();
+        client::post_bg(
+            "/state/rox-pinned-apps".to_owned(),
+            serde_json::json!({ "apps": apps }),
+        );
+    }
+
+    /// The pinned app, by module key.
+    pub fn pinned(&'static self, app: &str) -> Option<PinnedApp> {
+        let name = app_name(app);
+        self.pinned_apps
+            .with_untracked(|v| v.iter().find(|p| app_name(&p.app) == name).cloned())
+    }
+
+    /// A pinned app's card in its chat.
+    pub fn show_pinned(&'static self, app: &str) {
+        if let Some(p) = self.pinned(app) {
+            self.go_to(&p.thread, Some(p.i));
+        }
+    }
+
+    /// Keeps each chat's composer its own (Grok Bot's per-agent drafts):
+    /// on a switch, the chat left keeps what the composer held and the
+    /// chat opened gets its own back; the open chat's draft is saved as
+    /// it changes (debounced).
+    fn track_drafts(&'static self) {
+        self.owner.run(|| {
+            let prev = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+            effect(move || {
+                let id = self.active_id.get();
+                let from = prev.replace(id.clone());
+                if from == id {
+                    return;
                 }
-                timer(std::time::Duration::from_millis(3000)).await;
-            }
+                untracked(|| {
+                    let current = self.composer_draft();
+                    if from.is_empty() {
+                        // Typed before any chat was open (a new chat): it
+                        // is this chat's draft.
+                        if !current.is_empty() {
+                            return;
+                        }
+                    } else {
+                        self.keep_draft(&from, current);
+                    }
+                    let next = self.drafts.borrow().get(&id).cloned().unwrap_or_default();
+                    self.draft.set(next.text);
+                    self.reply_to.set(next.reply);
+                    self.attachments.set(next.attachments);
+                });
+            });
+            let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
+            effect(move || {
+                // Subscribe to all three (read without cloning).
+                self.draft.with(|_| ());
+                self.reply_to.with(|_| ());
+                self.attachments.with(|_| ());
+                let id = self.active_id.get_untracked();
+                if id.is_empty() {
+                    return;
+                }
+                untracked(|| self.keep_draft(&id, self.composer_draft()));
+                let e = epoch.get().wrapping_add(1);
+                epoch.set(e);
+                let epoch = epoch.clone();
+                Owner::detached().run(|| {
+                    spawn(async move {
+                        timer(std::time::Duration::from_millis(700)).await;
+                        if epoch.get() == e {
+                            self.save_drafts();
+                        }
+                    })
+                });
+            });
         });
     }
 
-    /// `POST /widget-meta` — rename (`title`), tag (`tags`), archive
-    /// (`archived`); the catalog reloads after the write.
-    pub fn widget_meta(&'static self, app: &str, patch: serde_json::Value) {
-        let mut body = patch;
-        body["name"] = serde_json::Value::String(app.to_owned());
-        spawn(async move {
-            if client::post("/widget-meta", body).await.is_some() {
-                self.load_shelf();
-            }
-        });
+    /// What the composer holds now.
+    fn composer_draft(&'static self) -> Draft {
+        Draft {
+            text: self.draft.get_untracked(),
+            reply: self.reply_to.get_untracked(),
+            attachments: self.attachments.get_untracked(),
+        }
     }
 
-    /// `POST /pin {name,pinned}` — Nominate (★) / Unpin on the shelf card.
-    pub fn pin_widget(&'static self, app: &str, pinned: bool) {
-        let app = app.to_owned();
-        spawn(async move {
-            if client::post("/pin", serde_json::json!({"name": app, "pinned": pinned}))
-                .await
-                .is_some()
-            {
-                self.load_shelf();
-            }
-        });
+    fn keep_draft(&'static self, thread: &str, draft: Draft) {
+        let mut drafts = self.drafts.borrow_mut();
+        if draft.is_empty() {
+            drafts.remove(thread);
+        } else {
+            drafts.insert(thread.to_owned(), draft);
+        }
     }
 
-    /// `POST /unpublish` — "Delete from Mini Apps".
-    pub fn unpublish(&'static self, app: &str) {
-        let app = app.to_owned();
-        spawn(async move {
-            if client::post("/unpublish", serde_json::json!({"name": app}))
-                .await
-                .is_some()
-            {
-                self.load_shelf();
-            }
-        });
+    /// `/state/rox-drafts`, without the drafts of chats that are gone.
+    fn save_drafts(&'static self) {
+        let live: std::collections::BTreeSet<String> =
+            self.threads.get_untracked().iter().map(|t| t.id.clone()).collect();
+        if !live.is_empty() {
+            self.drafts.borrow_mut().retain(|k, _| live.contains(k));
+        }
+        let drafts: serde_json::Map<String, serde_json::Value> = self
+            .drafts
+            .borrow()
+            .iter()
+            .map(|(k, d)| (k.clone(), d.to_json()))
+            .collect();
+        client::post_bg(
+            "/state/rox-drafts".to_owned(),
+            serde_json::json!({ "drafts": drafts }),
+        );
     }
 
-    /// `POST /retry {name}` — Regenerate: re-prompt the model against the
-    /// same request and patch the published file.
-    pub fn retry_widget(&'static self, app: &str) {
-        client::post_bg("/retry".to_owned(), serde_json::json!({"name": app}));
+    /// Opens chat `thread` (an agent's session or a plain chat) on turn
+    /// `i`, if given: in the open chat the transcript jumps there; any
+    /// other chat opens already on the turn — its transcript mounts at it
+    /// (`take_jump`), centered among its neighbours — instead of opening
+    /// at the end and scrolling back. The turn is banded for a moment.
+    pub fn go_to(&'static self, thread: &str, i: Option<i64>) {
+        self.go_to_key(thread, i.map(|i| i.to_string()));
     }
 
-    /// `POST /reuse` — "＋ chat": drops the app into a turn; the card's
-    /// label flashes `＋ chat ✓` for 1.5s.
-    pub fn reuse_widget(&'static self, app: &str) {
-        let app = app.to_owned();
-        spawn(async move {
-            if client::post("/reuse", serde_json::json!({"name": app}))
-                .await
-                .is_some()
-            {
-                self.shelf_sent.set(app.to_owned());
-                timer(std::time::Duration::from_millis(1500)).await;
-                if self.shelf_sent.get_untracked() == app {
-                    self.shelf_sent.set(String::new());
+    /// [`go_to`] by a turn key: its `id` (a link's UUID) or its index.
+    pub fn go_to_key(&'static self, thread: &str, key: Option<String>) {
+        // A link names the chat by its uid; the store by its id.
+        let thread = self
+            .threads
+            .with_untracked(|t| t.iter().find(|t| t.uid == thread).map(|t| t.id.clone()))
+            .unwrap_or_else(|| thread.to_owned());
+        let thread = thread.as_str();
+        self.nav_epoch.set(self.nav_epoch.get().wrapping_add(1));
+        self.tab.set("chat".to_owned());
+        let open = self.turns_of.get_untracked() == thread
+            && self.active_id.get_untracked() == thread
+            && !self.turns.with_untracked(|t| t.is_empty());
+        if open {
+            if let Some(key) = key {
+                let hit = self.turns.with_untracked(|t| {
+                    t.iter().position(|t| turn_is(t, &key)).map(|p| (p, t[p].i))
+                });
+                let list = self.chat_list.borrow().clone();
+                if let (Some((pos, i)), Some(list)) = (hit, list) {
+                    list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
+                    self.flash(i);
+                    // Once more as the rows around it finish measuring,
+                    // unless something else navigated meanwhile.
+                    let epoch = self.nav_epoch.get();
+                    Owner::detached().run(|| {
+                        spawn(async move {
+                            timer(std::time::Duration::from_millis(250)).await;
+                            if self.nav_epoch.get() == epoch {
+                                list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
+                            }
+                        })
+                    });
                 }
             }
-        });
+            return;
+        }
+        *self.jump.borrow_mut() = key.map(|k| (thread.to_owned(), k));
+        self.open_thread(thread.to_owned());
     }
 
-    /// The shelf's visible rows — `shown()`: text/tag match plus the
-    /// kind filter (archived rows hide unless `arch` is selected).
-    pub fn shelf_shown(&'static self) -> Vec<ShelfItem> {
-        let q = self.shelf_q.get().to_lowercase();
-        let kind = self.shelf_kind.get();
-        let tag = self.shelf_tag.get();
-        self.shelf_list
-            .get()
-            .into_iter()
-            .filter(|i| {
-                let hay =
-                    format!("{} {} {}", i.title, i.name, i.tags.join(" ")).to_lowercase();
-                let m = (tag.is_empty() || i.tags.contains(&tag))
-                    && (q.is_empty() || hay.contains(&q));
-                if kind == "arch" {
-                    i.archived && m
-                } else {
-                    !i.archived && (kind == "all" || i.kinds.contains(&kind)) && m
+    /// The pending jump if it is for the open chat and its turn is
+    /// loaded: (row, turn i). Taken once, by the transcript as it mounts.
+    pub fn take_jump(&'static self) -> Option<(usize, i64)> {
+        let (thread, key) = self.jump.borrow().clone()?;
+        if self.turns_of.get_untracked() != thread {
+            return None;
+        }
+        let (pos, i) = self.turns.with_untracked(|t| {
+            t.iter().position(|t| turn_is(t, &key)).map(|p| (p, t[p].i))
+        })?;
+        self.jump.borrow_mut().take();
+        Some((pos, i))
+    }
+
+    /// Rings turn `i` (Grok Bot's `data-highlighted` row): 1.3s, then a
+    /// 0.4s fade.
+    pub fn flash(&'static self, i: i64) {
+        self.highlight.set(Some(i));
+        self.highlight_on.set(true);
+        Owner::detached().run(|| {
+            spawn(async move {
+                timer(std::time::Duration::from_millis(1300)).await;
+                if self.highlight.get_untracked() != Some(i) {
+                    return;
+                }
+                self.highlight_on.set(false);
+                timer(std::time::Duration::from_millis(450)).await;
+                if self.highlight.get_untracked() == Some(i) {
+                    self.highlight.set(None);
                 }
             })
-            .collect()
+        });
     }
 
-    /// `allTags` — every tag across the catalog, deduped.
-    pub fn shelf_tags(&'static self) -> Vec<String> {
-        let mut t: Vec<String> = self
-            .shelf_list
-            .get()
-            .iter()
-            .flat_map(|i| i.tags.clone())
-            .collect();
-        t.sort();
-        t.dedup();
-        t
+    /// A link to turn `i` of the open chat, by permanent ids:
+    /// `rox://chat/<thread uid>?m=<turn id>` (the old `t<n>` / index when
+    /// a server has none yet).
+    pub fn turn_link(&'static self, i: i64) -> String {
+        let id = self.active_id.get_untracked();
+        let thread = self
+            .threads
+            .with_untracked(|t| t.iter().find(|t| t.id == id).map(|t| t.uid.clone()))
+            .filter(|u| !u.is_empty())
+            .unwrap_or(id);
+        let turn = self
+            .turns
+            .with_untracked(|t| t.iter().find(|t| t.i == i).map(|t| t.id.clone()))
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| i.to_string());
+        format!("rox://chat/{thread}?m={turn}")
+    }
+
+    /// A pressed link: `rox://chat/<thread>[?m=<i>]` goes to that chat
+    /// (and turn); any other URL opens outside Rox.
+    pub fn open_link(&'static self, url: &str) {
+        if !self.booted.get() && url.starts_with("rox://") {
+            *self.early_link.borrow_mut() = Some(url.to_owned());
+            return;
+        }
+        match parse_chat_link(url) {
+            Some((thread, key)) => self.go_to_key(&thread, key),
+            None if url.starts_with('#') => {}
+            None => drop(open_url(url.to_owned())),
+        }
     }
 
     fn mini_title(&'static self, app: &str) -> Signal<String> {

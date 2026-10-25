@@ -410,15 +410,17 @@ fn search_row() -> impl IntoElement {
                 })
                 .on_hover_in(|| store().hover_tpl.set(true))
                 .on_hover_out(|| store().hover_tpl.set(false))
-                .child(
+                // The app's default mark: black on light, white on dark.
+                .child(dynamic(|| {
                     crate::avatar::bot_blob(crate::avatar::BotBlobProps {
                         shape: "blob".into(),
-                        color: "#f5f5f5".into(),
+                        color: "#FFFFFF".into(),
                         size: 20.0,
                         paused: true,
                         ..Default::default()
-                    }),
-                )
+                    })
+                    .into_element()
+                }))
                 .child(
                     text("Bot templates")
                         .text_size(px(13.5))
@@ -572,9 +574,11 @@ fn cat_pill(c: String) -> impl IntoElement {
             text(c3)
                 .text_size(px(12.0))
                 .font_weight(FontWeight::MEDIUM)
+                // The selected pill is filled with the ink, so its text is
+                // the page: white on light, near-black on dark.
                 .text_color(move || {
                     if store().plugin_cat.get() == c4 {
-                        hx("#121212")
+                        theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.071, 1.0))
                     } else {
                         theme::TEXT
                     }

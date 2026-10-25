@@ -21,10 +21,17 @@ const CTX_ROW: f32 = 30.0;
 const CTX_SEP: f32 = 9.0;
 const CTX_PAD: f32 = 5.0;
 
-/// Run an item's verb — `onSelect` in the TSX menus.
+/// Run an item's verb — `onSelect` in the TSX menus. Detached from the
+/// menu: closing it disposes the row's owner, which cancelled any task a
+/// verb spawned there (Delete never reached the server).
 fn act(it: &CtxItem) {
+    let it = it.clone();
+    store().ctx.set(None);
+    Owner::detached().run(move || run(&it));
+}
+
+fn run(it: &CtxItem) {
     let st = store();
-    st.ctx.set(None);
     let (verb, arg) = (it.act.as_str(), it.arg.as_str());
     match verb {
         "new" => st.new_thread(),
@@ -35,6 +42,15 @@ fn act(it: &CtxItem) {
         "chat-archive" => st.update_thread(arg, None, Some(it.flag)),
         "chat-del" => st.delete_thread(arg.to_owned()),
         "bot-pin" => st.update_bot(arg, serde_json::json!({"pinned": it.flag})),
+        "main-set" => st.set_main_bot(arg),
+        "bot-int-add" => {
+            let (bot, integration) = arg.split_once('|').unwrap_or(("", arg));
+            st.bot_integration(bot, integration, true);
+        }
+        "main-replace" => {
+            st.main_pick_q.set(String::new());
+            st.main_pick.set(Some(arg.to_owned()));
+        }
         "bot-hide" => st.update_bot(arg, serde_json::json!({"hidden": it.flag})),
         "bot-del" => st.delete_bot(arg.to_owned()),
         "bot-move" => {
@@ -57,18 +73,26 @@ fn act(it: &CtxItem) {
         // file turns (`⋯` on an artifact): copy arbitrary text or open a
         // reply file by `turn_i|path`.
         "copy" => st.copy_text(arg),
-        "card-details" => {
-            st.load_detail(arg.to_owned());
-            st.right_open.set(true);
+        "card-details" => st.show_in_library(arg),
+        // A card's verbs carry `<turn i>|<module key>`.
+        "card-pin" | "card-popout" | "card-desktop" => {
+            let (i_s, app) = arg.split_once('|').unwrap_or(("", arg));
+            let i: i64 = i_s.parse().unwrap_or(-1);
+            if verb == "card-pin" {
+                st.toggle_pin_app(i, app);
+            } else {
+                let (w, h) = st.card_size(i, app);
+                st.popout_sized(app, w, h, verb == "card-desktop");
+            }
         }
-        "card-pin" => {
-            let thread = st.active_id.get_untracked();
-            crate::client::post_bg(
-                "/thread/apps".to_owned(),
-                serde_json::json!({"thread": thread, "app": arg}),
-            );
-            st.refresh_thread_apps();
+        "card-retry" => st.retry_card(arg),
+        "pinned-open" => {
+            if let Some(p) = st.pinned(arg) {
+                st.popout_sized(&p.app, p.w, p.h, false);
+            }
         }
+        "pinned-show" => st.show_pinned(arg),
+        "pinned-unpin" => st.unpin_app(arg),
         // `more()`'s Delete (shell.tsx:307): `post("/turn/delete", {key})`.
         "turn-del" => {
             crate::client::post_bg(
@@ -92,21 +116,18 @@ fn act(it: &CtxItem) {
                 }
             }
         }
-        "shelf-popout" => st.popout(arg),
-        "shelf-pin-desktop" => st.popout_desktop(arg),
-        "shelf-rename" => {
-            st.shelf_rename_text.set(String::new());
-            st.shelf_renaming.set(arg.to_owned());
-        }
-        "shelf-tag" => {
-            st.shelf_tag_text.set(String::new());
-            st.shelf_tagging.set(arg.to_owned());
-        }
-        "shelf-regen" => st.retry_widget(arg),
         "plugin-cat" => st.plugin_cat.set(arg.to_owned()),
-        "shelf-pin" => st.pin_widget(arg, it.flag),
-        "shelf-archive" => st.widget_meta(arg, serde_json::json!({"archived": it.flag})),
-        "shelf-delete" => st.unpublish(arg),
+        // The Library's Pin to Sidebar (`app_items`): the app's card is
+        // the open chat's turn that shows it, if any.
+        "lib-pin" => {
+            let i = st.turns.with_untracked(|t| {
+                t.iter()
+                    .rev()
+                    .find(|t| t.art.as_ref().is_some_and(|a| crate::store::app_name(&a.app) == arg))
+                    .map_or(-1, |t| t.i)
+            });
+            st.toggle_pin_app(i, arg);
+        }
         _ => {}
     }
 }
@@ -170,16 +191,34 @@ pub(crate) fn artifact_items(
 /// not in a row inside the card: details, pin to the chat, open in a
 /// window, desktop widget, try again, delete.
 pub(crate) fn card_items(i: i64, app: &str) -> Vec<CtxItem> {
+    let at = format!("{i}|{app}");
+    let pinned = untracked(|| store().app_pinned(app));
     vec![
         CtxItem::row("Details", "panel", "card-details", app.to_owned()),
-        CtxItem::row("Pin to Chat", "pin", "card-pin", app.to_owned()),
+        CtxItem::row(
+            if pinned { "Unpin from Sidebar" } else { "Pin to Sidebar" },
+            "pin",
+            "card-pin",
+            at.clone(),
+        ),
         CtxItem::separator(),
-        CtxItem::row("Open in Window", "popout", "shelf-popout", app.to_owned()),
-        CtxItem::row("Add to Desktop Widget", "pin", "shelf-pin-desktop", app.to_owned()),
+        CtxItem::row("Open in Window", "popout", "card-popout", at.clone()),
+        CtxItem::row("Add to Desktop Widget", "pin", "card-desktop", at),
         CtxItem::separator(),
-        CtxItem::row("Try Again", "retry", "shelf-regen", app.to_owned()),
+        CtxItem::row("Try Again", "retry", "card-retry", app.to_owned()),
+        CtxItem::row("Copy Link", "chainLink", "copy", store().turn_link(i)),
         CtxItem::separator(),
         CtxItem::danger("Delete", "trash", "turn-del", format!("idx:{i}")),
+    ]
+}
+
+/// A sidebar Mini Apps row's menu.
+pub(crate) fn pinned_items(app: &str) -> Vec<CtxItem> {
+    vec![
+        CtxItem::row("Open in Window", "popout", "pinned-open", app.to_owned()),
+        CtxItem::row("Show in Chat", "quoteBubble", "pinned-show", app.to_owned()),
+        CtxItem::separator(),
+        CtxItem::row("Unpin from Sidebar", "pin", "pinned-unpin", app.to_owned()),
     ]
 }
 
@@ -195,6 +234,7 @@ pub(crate) fn msg_items(i: i64) -> Vec<CtxItem> {
         .unwrap_or_default();
     vec![
         CtxItem::row("Copy", "copy", "copy", text),
+        CtxItem::row("Copy Link", "chainLink", "copy", store().turn_link(i)),
         CtxItem::separator(),
         CtxItem::danger("Delete", "trash", "turn-del", format!("idx:{i}")),
     ]
@@ -242,6 +282,14 @@ pub(crate) fn bot_items(b: &crate::store::RoxBot) -> Vec<CtxItem> {
         )
         .to(!b.hidden),
         CtxItem::separator(),
+        // The primary Bot (Grok Bot's star): set it here, or from the
+        // current one, pick another.
+        if untracked(|| st.is_main_bot(&b.id)) {
+            CtxItem::row("Replace with different Bot", "refresh", "main-replace", b.id.clone())
+        } else {
+            CtxItem::row("Set as Main Bot", "pin", "main-set", b.id.clone())
+        },
+        CtxItem::separator(),
         CtxItem::danger("Delete", "trash", "bot-del", b.id.clone()),
     ]
 }
@@ -262,10 +310,11 @@ pub(crate) fn app_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
         CtxItem::row("Rename Title…", "edit", "app-rename-title", a.app.clone()),
         CtxItem::row("Rename File Name…", "edit", "app-rename-file", a.app.clone()),
         CtxItem::separator(),
+        // Apps live on the sidebar now (the Mini Apps page is gone).
         CtxItem::row(
-            if published { "Remove from Mini Apps" } else { "Promote to Mini Apps" },
-            "gpts",
-            if published { "unpublish" } else { "publish" },
+            if untracked(|| store().app_pinned(&a.app)) { "Unpin from Sidebar" } else { "Pin to Sidebar" },
+            "pin",
+            "lib-pin",
             a.app.clone(),
         ),
         CtxItem::separator(),
@@ -280,40 +329,6 @@ pub(crate) fn app_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
         ));
     }
     items
-}
-
-/// The shelf card's menu (`openMenu` in widgets/index.tsx:227): popout,
-/// desktop pin, rename/tag editors, regenerate, nominate, archive, delete.
-pub(crate) fn shelf_items(i: &crate::store::ShelfItem) -> Vec<CtxItem> {
-    vec![
-        CtxItem::row("Open window", "popout", "shelf-popout", i.name.clone()),
-        CtxItem::row("Pin to desktop", "pin", "shelf-pin-desktop", i.name.clone()),
-        CtxItem::separator(),
-        CtxItem::row("Rename…", "edit", "shelf-rename", i.name.clone()),
-        CtxItem::row("Add tag…", "tag", "shelf-tag", i.name.clone()),
-        CtxItem::row("Regenerate", "refresh", "shelf-regen", i.name.clone()),
-        CtxItem::row(
-            if i.pinned { "Unpin" } else { "Nominate (★)" },
-            "pin",
-            "shelf-pin",
-            i.name.clone(),
-        )
-        .to(!i.pinned),
-        CtxItem::row(
-            if i.archived { "Unarchive" } else { "Archive" },
-            "archive",
-            "shelf-archive",
-            i.name.clone(),
-        )
-        .to(!i.archived),
-        CtxItem::separator(),
-        CtxItem::danger(
-            "Delete from Mini Apps",
-            "trash",
-            "shelf-delete",
-            i.name.clone(),
-        ),
-    ]
 }
 
 /// `mcpMenu` — a connected server's menu (App.tsx:1602): enable,
@@ -340,15 +355,27 @@ pub(crate) fn open(e: &ContextMenuEvent, items: Vec<CtxItem>) {
 /// The same open at explicit page coords — the add-menu's measured
 /// button position (App.tsx's `addMenu`).
 pub(crate) fn open_at(x: f32, y: f32, items: Vec<CtxItem>) {
+    open_near(x, y, y, items)
+}
+
+/// Opens the menu under `bottom`, or over `top` when it would run past
+/// the window's bottom edge (as a native menu flips): a button's menu
+/// passes its top and bottom, a point menu the point twice.
+pub(crate) fn open_near(x: f32, top: f32, bottom: f32, items: Vec<CtxItem>) {
     let h = CTX_PAD * 2.0
         + items
             .iter()
             .map(|i| if i.sep { CTX_SEP } else { CTX_ROW })
             .sum::<f32>();
-    // `winW()/windowSize` — conservative clamps; the scrim covers the rest.
-    let x = (x - 4.0).max(4.0);
-    let y = (y - 4.0).max(4.0).min(1400.0 - h);
-    store().ctx.set(Some(CtxMenu { x, y, items }));
+    let win = window();
+    let (win_w, win_h) = (win.width.0, win.height.0);
+    let x = (x - 4.0).min(win_w - CTX_W - 4.0).max(4.0);
+    let y = if bottom - 4.0 + h <= win_h - 4.0 || top + 4.0 - h < 4.0 {
+        (bottom - 4.0).min(win_h - h - 4.0)
+    } else {
+        top + 4.0 - h
+    };
+    store().ctx.set(Some(CtxMenu { x, y: y.max(4.0), items }));
 }
 
 /// A row's top offset inside the card (`ctxRowTop`): rows before it

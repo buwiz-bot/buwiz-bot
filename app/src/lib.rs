@@ -28,12 +28,12 @@ mod models;
 mod palette;
 mod pane;
 mod plugins;
-mod shelf;
 mod sidebar;
 mod statusfx;
 mod store;
 mod theme;
 mod widgets;
+pub mod zoom;
 
 
 use nsh_core::ui::prelude::*;
@@ -46,6 +46,20 @@ const fn tone(light: Hsla, dark: Hsla) -> AdaptiveColor {
 }
 const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
+}
+
+/// The app's display name: `APP_NAME` from the environment, else "Rox"
+/// (the window title, the top pill, the empty state, the composer's
+/// "Message …" outside an agent's chat).
+pub fn app_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        std::env::var("APP_NAME")
+            .ok()
+            .map(|n| n.trim().to_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Rox".to_owned())
+    })
 }
 
 const BG: AdaptiveColor = tone(hsla(0.17, 0.10, 0.95, 1.0), hsla(0.60, 0.11, 0.07, 1.0));
@@ -65,6 +79,19 @@ pub fn App() -> impl IntoElement {
     let note = signal(String::new());
     live::install(remount, note);
     live::init();
+    // `rox://chat/<thread>[?m=<turn>]` opened from another app (the dev
+    // bundle declares the scheme): the root never remounts, so this
+    // handler lives as long as the app. Other URLs are ignored here —
+    // `open_link` would hand them to the system, which for `rox://` sends
+    // them straight back.
+    on_open_url(|url| {
+        let thread = url.strip_prefix("rox://chat/").map(|r| r.split('?').next().unwrap_or(""));
+        if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty()) {
+            live::store().open_link(url);
+        } else {
+            log::warn!("rox: ignoring opened URL {url}");
+        }
+    });
 
     view()
         .flex_1()
@@ -77,4 +104,7 @@ pub fn App() -> impl IntoElement {
                 move |_, _| hot::hot_area(remount, note),
             )),
         )
+        // ⌘= / ⌘- / ⌘0: the window's zoom (outside the hot area, so a
+        // remount never drops it).
+        .child(zoom::zoom_host())
 }

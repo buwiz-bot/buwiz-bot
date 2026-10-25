@@ -1,11 +1,13 @@
 //! The ⌘K palette (`palette.tsx`): a centered card with a search field
-//! listing the shell's commands, the agents (bot search) and the
-//! published mini apps; arrows/enter drive `palette_sel`, Escape or the
-//! scrim dismisses.
+//! listing the sessions first — the agents (with their avatars), then
+//! the plain chats — then the mini apps pinned to the sidebar, then the
+//! actions (`Store::palette_items`); arrows/enter drive `palette_sel`,
+//! Escape or the scrim dismisses.
 
 use nsh_core::ui::prelude::*;
 
 use crate::icons::icon_sized;
+use crate::plugins::hue;
 use crate::live::store;
 use crate::store::PaletteItem;
 use crate::theme;
@@ -25,7 +27,7 @@ fn palette_card() -> impl IntoElement {
     let card = view()
         .w(px(486.0))
         .max_h(px(395.0))
-        .bg(theme::CARD2)
+        .bg(theme::POPOVER)
         .rounded(px(14.0))
         .border(px(0.5))
         .border_color(theme::BORDER_F)
@@ -120,32 +122,71 @@ fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoE
                     }
                 })
                 .child(
-                    // The 20×20 tile — an icon, or the agent's letter
-                    // (palette.tsx:105).
-                    view()
-                        .size(px(20.0))
-                        .rounded(px(5.0))
-                        .items_center()
-                        .justify_center()
-                        .bg(theme::SUBTLE)
-                        .child(dynamic(move || {
-                            let icon_name = it.get().icon;
-                            if icon_name.chars().count() == 1 {
-                                text(icon_name)
-                                    .text_size(px(11.0))
-                                    .text_color(theme::MUTED)
-                                    .into_element()
-                            } else {
-                                let name: &'static str = match icon_name.as_str() {
-                                    "newChat" => "newChat",
-                                    "systemTheme" => "systemTheme",
-                                    "sun" => "sun",
-                                    "moon" => "moon",
-                                    _ => "gpts",
-                                };
-                                icon_sized(name, 13.0).into_element()
-                            }
-                        })),
+                    // The 24pt tile: an agent's avatar, a chat's letter
+                    // circle, a mini app's `</>` tile, or an action's icon.
+                    view().size(px(24.0)).items_center().justify_center().child(dynamic(move || {
+                        let item = it.get();
+                        if let Some(b) = item.bot {
+                            return crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
+                                size: 24.0,
+                                box_: Some(22.0),
+                                paused: true,
+                                ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
+                            })
+                            .into_element();
+                        }
+                        if !item.letter_of.is_empty() {
+                            let letter: String = item
+                                .letter_of
+                                .chars()
+                                .next()
+                                .map(|c| c.to_uppercase().collect())
+                                .unwrap_or_default();
+                            return view()
+                                .size(px(22.0))
+                                .rounded(px(11.0))
+                                .items_center()
+                                .justify_center()
+                                .bg(hue(&item.letter_of))
+                                .child(
+                                    text(letter)
+                                        .text_size(px(11.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+                                )
+                                .into_element();
+                        }
+                        if !item.app_of.is_empty() {
+                            return view()
+                                .size(px(22.0))
+                                .rounded(px(6.0))
+                                .items_center()
+                                .justify_center()
+                                .bg(hue(&item.app_of))
+                                .child(
+                                    text("</>")
+                                        .text_size(px(9.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+                                )
+                                .into_element();
+                        }
+                        let name: &'static str = match item.icon.as_str() {
+                            "newChat" => "newChat",
+                            "systemTheme" => "systemTheme",
+                            "sun" => "sun",
+                            "moon" => "moon",
+                            _ => "gpts",
+                        };
+                        view()
+                            .size(px(22.0))
+                            .rounded(px(6.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(theme::SUBTLE)
+                            .child(icon_sized(name, 13.0))
+                            .into_element()
+                    })),
                 )
                 .child(
                     view()

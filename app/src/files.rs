@@ -1139,6 +1139,36 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .size_full(),
                 )
                 .into_element(),
+            // The same Pele diagram as inline, at 4× and fitted to the
+            // window on the bubble's surface; the web page only when Pele
+            // cannot draw it.
+            "diagram" if matches!(
+                crate::mermaid::diagram_at(&cur.code, dark(), 4).get(),
+                Some(Ok(_)) | None
+            ) => match crate::mermaid::diagram_at(&cur.code, dark(), 4).get() {
+                Some(Ok(g)) => {
+                    let pad = 24.0f32;
+                    let k = ((sw as f32 - 2.0 * pad) / g.w)
+                        .min((sh as f32 - 2.0 * pad) / g.h)
+                        .clamp(0.1, 3.0);
+                    view()
+                        .scale(zoom as f32)
+                        .p(px(pad))
+                        .rounded(px(12.0))
+                        .bg(theme::AGENT_BUBBLE)
+                        .border(px(0.5))
+                        .border_color(media_card_border)
+                        .child(
+                            image(g.uri.clone())
+                                .w(px(g.w * k))
+                                .h(px(g.h * k))
+                                .resize_mode(ResizeMode::Contain)
+                                .fade_duration(0.0),
+                        )
+                        .into_element()
+                }
+                _ => view().into_element(),
+            },
             "diagram" => {
                 let (dw, dh) = st.light_diag.get();
                 let w = if dw > 0.0 { dw.min(sw) } else { sw.max(1.0) };
@@ -1341,11 +1371,12 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                 let is_diag = cur.kind == "diagram";
                 let zoom_by: std::rc::Rc<dyn Fn(f64)> = std::rc::Rc::new(move |k: f64| {
                     let st = store();
+                    // The Pele diagram zooms as an image; the web fallback
+                    // (if that is what shows) zooms itself.
                     if is_diag {
                         web.post_message(if k > 1.0 { "in" } else { "out" });
-                    } else {
-                        st.light_zoom.set((st.light_zoom.get_untracked() * k).clamp(0.25, 4.0));
                     }
+                    st.light_zoom.set((st.light_zoom.get_untracked() * k).clamp(0.25, 4.0));
                 });
                 let (z1, z2) = (zoom_by.clone(), zoom_by);
                 v.child(
@@ -1370,9 +1401,8 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .child(round_pill("⤢", move || {
                             if is_diag {
                                 web.post_message("fit");
-                            } else {
-                                store().light_zoom.set(1.0);
                             }
+                            store().light_zoom.set(1.0);
                         })),
                 )
             })

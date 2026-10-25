@@ -3,7 +3,7 @@
 // instead of one WKWebView + mermaid.js per diagram.
 //
 //   node serve.mjs            → prints `PORT <n>` on its first stdout line
-//   POST /render {code, theme: "dark"|"light"}
+//   POST /render {code, theme: "dark"|"light", scale?: 1–4 (default 2)}
 //        → {uri: "data:image/png;base64,…", width, height} | {error}
 //
 // Pele themes through CSS variables (`var(--pele-fg,#1f1f1f)`), which a
@@ -59,13 +59,13 @@ function resolve(svg, palette) {
 
 const cache = new Map();
 
-function draw(code, theme) {
-  const key = theme + "\0" + code;
+function draw(code, theme, scale) {
+  const key = theme + "\0" + scale + "\0" + code;
   let hit = cache.get(key);
   if (!hit) {
     const out = render(code);
     const svg = resolve(out.svg, PALETTES[theme] ?? PALETTES.dark);
-    const png = new Resvg(svg, { fitTo: { mode: "zoom", value: SCALE }, font: FONTS })
+    const png = new Resvg(svg, { fitTo: { mode: "zoom", value: scale }, font: FONTS })
       .render()
       .asPng();
     hit = {
@@ -88,8 +88,9 @@ const server = createServer((req, res) => {
   req.on("end", () => {
     let reply;
     try {
-      const { code, theme } = JSON.parse(body);
-      reply = draw(String(code ?? ""), theme === "light" ? "light" : "dark");
+      const { code, theme, scale } = JSON.parse(body);
+      const s = Math.min(4, Math.max(1, Number(scale) || SCALE));
+      reply = draw(String(code ?? ""), theme === "light" ? "light" : "dark", s);
     } catch (e) {
       reply = { error: String(e?.message ?? e) };
     }

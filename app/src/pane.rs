@@ -40,7 +40,10 @@ pub(crate) fn pane() -> impl IntoElement {
         .child(
             view().flex_1().child(
                 dynamic(move || {
-                    if st.active_bot().is_some() {
+                    // A plain chat gets the same profile as an agent (the
+                    // app's default avatar, its own title): Details,
+                    // Library, Computer and Connect apply to both.
+                    if st.active_bot().is_some() || !st.active_id.get().is_empty() {
                         bot_profile().into_element()
                     } else if st.detail_meta.get().is_some() {
                         app_detail().into_element()
@@ -158,7 +161,11 @@ fn bot_profile() -> impl IntoElement {
                         .size(px(64.0))
                         .items_center()
                         .justify_center()
+                        // Only an agent's avatar is editable.
                         .on_hover_in(move || {
+                            if store().active_bot_untracked().is_none() {
+                                return;
+                            }
                             edit_k.timing(1.0, 220.0);
                             edit.to(1.0);
                             store().avatar_hover.set(true);
@@ -168,14 +175,25 @@ fn bot_profile() -> impl IntoElement {
                             edit3.to(0.0);
                             store().avatar_hover.set(false);
                         })
-                        .on_press(|| store().open_avatar_editor())
+                        .on_press(|| {
+                            if store().active_bot_untracked().is_some() {
+                                store().open_avatar_editor()
+                            }
+                        })
                         .label("Edit Bot avatar")
                         .child(
                             dynamic(move || {
-                                let Some(b) = st.active_bot() else {
-                                    return view().into_element();
+                                let mut p = match st.active_bot() {
+                                    Some(b) => BotAvatarProps::bot(&b, 80.0),
+                                    // A plain chat: the app's default mark.
+                                    None => BotAvatarProps {
+                                        shape: "blob".to_owned(),
+                                        color: "#FFFFFF".to_owned(),
+                                        size: 80.0,
+                                        seed: Some("app".to_owned()),
+                                        ..Default::default()
+                                    },
                                 };
-                                let mut p = BotAvatarProps::bot(&b, 80.0);
                                 p.box_ = Some(64.0);
                                 p.gaze = Some(gaze2.clone());
                                 p.edit = Some(edit2.clone());
@@ -220,10 +238,17 @@ fn bot_profile() -> impl IntoElement {
                                 .on_change(|v: &str| store().bot_edit_name.set(v.to_owned()))
                                 .on_submit(|_: &str| {
                                     let st = store();
-                                    let Some(b) = st.active_bot_untracked() else { return };
                                     let n = st.bot_edit_name.get_untracked().trim().to_owned();
-                                    if !n.is_empty() && n != b.name {
-                                        st.update_bot(&b.id, serde_json::json!({"name": n}));
+                                    if n.is_empty() {
+                                        return;
+                                    }
+                                    match st.active_bot_untracked() {
+                                        Some(b) if n != b.name => {
+                                            st.update_bot(&b.id, serde_json::json!({"name": n}))
+                                        }
+                                        Some(_) => {}
+                                        // A plain chat's field names the chat.
+                                        None => st.rename_chat(n),
                                     }
                                 })
                                 .placeholder("Bot name")
@@ -237,12 +262,16 @@ fn bot_profile() -> impl IntoElement {
                                 .px_2(),
                         ),
                 )
-                .child(
-                    text("Add a label")
+                // The agent's label (Grok Bot's "Add a label"): Enter saves
+                // it; a plain chat reads "Chat".
+                .child(dynamic(|| match store().active_bot() {
+                    Some(b) => label_field(b.id, b.label).into_element(),
+                    None => text("Chat")
                         .text_size(px(11.0))
                         .text_color(theme::MUTED)
-                        .pt(px(4.0)),
-                )
+                        .pt(px(4.0))
+                        .into_element(),
+                }))
                 .child(model_pill().pt(px(10.0)).into_element())
                 // The "Edit Avatar" tooltip — 8pt under the avatar, over
                 // the name (App.tsx:2587).
@@ -255,9 +284,19 @@ fn bot_profile() -> impl IntoElement {
                             .py(px(4.0))
                             .px(px(6.0))
                             .rounded(px(6.0))
-                            .bg(theme::CARD2)
+                            // Opaque, as Grok Bot's: `CARD2` is a 6% wash on
+                            // light and the name read through it.
+                            .bg(theme::POPOVER)
                             .border_1()
                             .border_color(theme::BORDER_F)
+                            .shadow([BoxShadow {
+                                offset_x: px(0.0),
+                                offset_y: px(2.0),
+                                blur: px(8.0),
+                                spread: px(-1.0),
+                                color: hsla(0.0, 0.0, 0.0, 0.12).into(),
+                                inset: false,
+                            }])
                             .child(text("Edit Avatar").text_size(px(12.0)).text_color(theme::TEXT))
                             .into_element()
                     },
@@ -275,6 +314,32 @@ fn bot_profile() -> impl IntoElement {
                         .child(dynamic(|| detail_body().into_element())),
                 ),
         )
+}
+
+/// The agent's label under its name: an inline field, saved with Enter
+/// (`/bot/update {label}`); empty, it shows "Add a label".
+fn label_field(id: String, label: String) -> impl IntoElement {
+    let draft = signal(label);
+    input()
+        .value(move || draft.get())
+        .on_change(move |v: &str| draft.set(v.to_owned()))
+        .on_submit(move |_: &str| {
+            let st = store();
+            let v = draft.get_untracked().trim().to_owned();
+            st.bots.update(|bots| {
+                if let Some(b) = bots.iter_mut().find(|b| b.id == id) {
+                    b.label = v.clone();
+                }
+            });
+            st.update_bot(&id, serde_json::json!({ "label": v }));
+        })
+        .placeholder("Add a label")
+        .placeholder_color(|| color(theme::MUTED))
+        .text_size(px(11.0))
+        .text_center()
+        .text_color(theme::MUTED)
+        .mt(px(4.0))
+        .w(px(200.0))
 }
 
 /// `ModelPill(choice)` — the shared pill (`models::model_pill`,
@@ -361,6 +426,13 @@ fn pane_card() -> View {
 /// Details — the Routines card (App.tsx:2627).
 fn details_tab() -> impl IntoElement {
     view()
+        // An agent's own context: what it is, what it remembers, what it
+        // has used — each fills on demand (asking it in chat, or using a
+        // plugin), so empty sections say how.
+        .child(dynamic(|| match store().active_bot() {
+            Some(b) => bot_context(b).into_element(),
+            None => view().into_element(),
+        }))
         .child(pane_label("Routines".into()))
         .child(
             pane_card()
@@ -368,12 +440,188 @@ fn details_tab() -> impl IntoElement {
                 .px(px(13.0))
                 .child(
                     text(move || {
-                        let name = store().active_bot().map(|b| b.name).unwrap_or_default();
+                        let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
                         format!("No routines yet. Ask {name} in chat to run something on a schedule.")
                     })
                     .text_size(px(13.0))
                     .text_color(theme::DIM),
                 ),
+        )
+}
+
+/// The bot's context in Details: its description, its instructions
+/// (folded: the bot keeps them, you change them by asking it), its
+/// memories and its integrations.
+fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
+    let name = b.name.clone();
+    let id = b.id.clone();
+    let id_int = b.id.clone();
+    let show_instr = signal(false);
+    let instructions = b.instructions.clone();
+    let has_instr = !instructions.trim().is_empty();
+    view()
+        .when(!b.description.trim().is_empty(), |v| {
+            // In a full-width box so the text wraps at the pane's edge.
+            v.child(
+                view().w_full().px_3().pb(px(14.0)).child(
+                    text(b.description.clone())
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
+                        .text_color(theme::DIM),
+                ),
+            )
+        })
+        .when(has_instr, |v| {
+            v.child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .px_3()
+                    .pb(px(10.0))
+                    .on_press(move || show_instr.update(|o| *o = !*o))
+                    .child(text("Instructions").text_size(px(13.0)).text_color(theme::DIM))
+                    .child(
+                        text(move || if show_instr.get() { "⌄" } else { "›" })
+                            .text_size(px(13.0))
+                            .text_color(theme::DIM),
+                    ),
+            )
+            .child(when(
+                move || show_instr.get(),
+                move || {
+                    pane_card()
+                        .py(px(12.0))
+                        .px(px(13.0))
+                        .mb(px(14.0))
+                        .child(
+                            text(instructions.clone())
+                                .text_size(px(12.0))
+                                .line_height(px(18.0))
+                                .text_color(theme::DIM),
+                        )
+                        .into_element()
+                },
+            ))
+        })
+        .child(pane_label("Memories".into()))
+        .child(
+            pane_card()
+                .mb(px(14.0))
+                .when(b.memories.is_empty(), |c| {
+                    c.py(px(12.0)).px(px(13.0)).child(
+                        text(format!("Nothing yet. Tell {name} “remember …” in chat."))
+                            .text_size(px(13.0))
+                            .text_color(theme::DIM),
+                    )
+                })
+                .children(b.memories.iter().map(|m| {
+                    let (id, mid) = (id.clone(), m.id.clone());
+                    removable_row(m.text.clone(), String::new(), move || {
+                        store().forget_memory(&id, &mid)
+                    })
+                    .into_element()
+                })),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pr_3()
+                .child(pane_label("Integrations".into()))
+                .child(
+                    text("+ Add")
+                        .text_size(px(12.0))
+                        .text_color(theme::DIM)
+                        .pb(px(10.0))
+                        .on_press(move || {
+                            let st = store();
+                            st.fetch_mcp();
+                            let have: Vec<String> = st
+                                .active_bot_untracked()
+                                .map(|b| b.integrations.iter().map(|i| i.id.clone()).collect())
+                                .unwrap_or_default();
+                            let items: Vec<crate::store::CtxItem> = st
+                                .mcp_servers
+                                .get_untracked()
+                                .iter()
+                                .filter(|m| !have.contains(&m.id))
+                                .map(|m| {
+                                    crate::store::CtxItem::row(
+                                        &m.name,
+                                        "plugins",
+                                        "bot-int-add",
+                                        format!("{}|{}", id_int, m.id),
+                                    )
+                                })
+                                .collect();
+                            let items = if items.is_empty() {
+                                vec![crate::store::CtxItem::row("Every connected app is added", "check", "", String::new())]
+                            } else {
+                                items
+                            };
+                            crate::ctx::open_at(window().width.0 - 260.0, 300.0, items);
+                        }),
+                ),
+        )
+        .child(
+            pane_card()
+                .mb(px(14.0))
+                .when(b.integrations.is_empty(), |c| {
+                    c.py(px(12.0)).px(px(13.0)).child(
+                        text(format!("None yet. Apps {name} uses show up here, or add one."))
+                            .text_size(px(13.0))
+                            .text_color(theme::DIM),
+                    )
+                })
+                .children(b.integrations.iter().map(|i| {
+                    let (id, iid) = (b.id.clone(), i.id.clone());
+                    removable_row(i.name.clone(), i.kind.clone(), move || {
+                        store().bot_integration(&id, &iid, false)
+                    })
+                    .into_element()
+                })),
+        )
+}
+
+/// A card row with a × that shows on hover (a memory, an integration).
+fn removable_row(title: String, sub: String, on_remove: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .py(px(8.0))
+        .px(px(11.0))
+        .rounded(px(8.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    text(title)
+                        .text_size(px(13.0))
+                        .line_height(px(18.0))
+                        .text_color(theme::TEXT),
+                )
+                .when(!sub.is_empty(), |v| {
+                    v.child(text(sub).text_size(px(11.0)).text_color(theme::MUTED))
+                }),
+        )
+        .child(
+            view()
+                .size(px(20.0))
+                .rounded(px(5.0))
+                .items_center()
+                .justify_center()
+                .opacity(move || if hov.get() { 1.0f32 } else { 0.0 })
+                .label("Remove")
+                .child(text("×").text_size(px(14.0)).text_color(theme::DIM))
+                .on_press(on_remove),
         )
 }
 
@@ -436,6 +684,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
     let n_chip = a0.app.clone();
     let a_ctx = a.clone();
     let a_tree = a.clone();
+    let focus = a0.app.clone();
     view()
         .child(
             view()
@@ -445,6 +694,14 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 .py(px(6.0))
                 .px_2()
                 .rounded(px(8.0))
+                // A card's ⋯ → Details lands here (`library_focus`).
+                .bg(move || {
+                    if store().library_focus.get() == focus {
+                        theme::ACTIVE
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }
+                })
                 .on_press(move || store().popout(&name))
                 .on_context_menu(move |e: &ContextMenuEvent| {
                     crate::ctx::open(e, crate::ctx::app_items(&a_ctx.get()))
@@ -659,7 +916,7 @@ fn computer_tab() -> impl IntoElement {
         )
         .child(
             text(move || {
-                let name = store().active_bot().map(|b| b.name).unwrap_or_default();
+                let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
                 format!("{name}'s screen")
             })
             .text_size(px(12.0))
@@ -681,7 +938,7 @@ fn connect_tab() -> impl IntoElement {
                 .child(when(
                     || store().mcp_servers.get().is_empty(),
                     || {
-                        let name = store().active_bot().map(|b| b.name).unwrap_or_default();
+                        let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
                         text(format!("No apps connected yet. Add an MCP server below — its tools become available to {name}."))
                             .text_size(px(13.0))
                             .text_color(theme::DIM)
@@ -889,7 +1146,7 @@ fn mcp_form_card() -> View {
                                         text(if sc == "all" {
                                             "All bots".to_owned()
                                         } else {
-                                            let n = store().active_bot().map(|b| b.name).unwrap_or_default();
+                                            let n = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
                                             format!("{n} only")
                                         })
                                         .text_size(px(11.0))
@@ -1779,7 +2036,8 @@ pub(crate) fn rename_overlay() -> impl IntoElement {
                 view()
                     .w(px(320.0))
                     .rounded(px(16.0))
-                    .bg(theme::CARD2)
+                    // A dialog over the scrim: opaque in both themes.
+                    .bg(theme::POPOVER)
                     .border_1()
                     .border_color(theme::BORDER_F)
                     .p(px(16.0))

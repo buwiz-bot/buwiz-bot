@@ -49,14 +49,6 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // `ROX_WORK=1`: open the Mini Apps work tab at boot.
-    if std::env::var("ROX_WORK").is_ok() {
-        spawn(async move {
-            timer(std::time::Duration::from_millis(800)).await;
-            store().tab.set("work".to_owned());
-        });
-    }
-
     // `ROX_PLUGINS=1`: open the Connect Apps modal at boot.
     if std::env::var("ROX_PLUGINS").is_ok() {
         spawn(async move {
@@ -184,6 +176,11 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // details, theme, the New-Bot sheet, the work tab, dictation demo,
     // ⌘R reload (the web app's reload) and mod+1…9 chat switching.
     on_key("mod+k", |_| store().toggle_palette());
+    // Grok Bot's page zoom: ⌘= / ⌘+ larger, ⌘- smaller, ⌘0 back to 100%.
+    on_key("mod+plus", |_| store().zoom_step(1));
+    on_key("mod+shift+plus", |_| store().zoom_step(1));
+    on_key("mod+minus", |_| store().zoom_step(-1));
+    on_key("mod+0", |_| store().zoom_step(0));
     on_key("mod+r", |_| store().reset_fresh());
     on_key("mod+b", |_| store().side_shown.update(|v| *v = !*v));
     on_key("mod+shift+h", |_| {
@@ -198,11 +195,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         st.set_theme(st.next_theme());
     });
     on_key("mod+n", |_| store().bot_modal.set(true));
-    on_key("mod+shift+m", |_| {
-        let st = store();
-        st.tab
-            .set(if st.tab.get_untracked() == "work" { "chat" } else { "work" }.to_owned());
-    });
+    // ⌘⇧N — a new plain chat (the compose menu's "New chat").
+    on_key("mod+shift+n", |_| store().new_thread());
     on_key("mod+d", |_| store().dictate_stub());
     // ⌘⇧R toggles the ra-jit stats pill (a dev HUD, not in the TSX).
     let live_bar_show = crate::live::keep("rox.livebar.show", || true);
@@ -212,8 +206,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         if st.palette.get_untracked() {
             st.close_palette();
         }
-        st.shelf_renaming.set(String::new());
-        st.shelf_tagging.set(String::new());
+        st.bot_modal.set(false);
+        st.main_pick.set(None);
         st.avatar_editing.set(false);
         // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
         st.light_close();
@@ -506,16 +500,18 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
             view()
                 .flex_1()
                 .h_full()
-                .child(dynamic(move || {
-                    let st = store();
-                    if st.tab.get() == "work" {
-                        crate::shelf::work_tab().into_element()
-                    } else if no_turns.get() {
-                        chat::empty_state().into_element()
-                    } else {
-                        chat::transcript().into_element()
-                    }
-                }))
+                // The recent chats' transcripts, kept alive and shown or
+                // hidden (`Store::alive`): switching back is instant, where
+                // it was left. An empty chat shows the agenda on top.
+                .child(each(
+                    || store().alive.get(),
+                    |id| id.clone(),
+                    |id, _| chat::transcript(id.get_untracked()).into_element(),
+                ))
+                .child(when(
+                    move || no_turns.get(),
+                    || chat::empty_state().into_element(),
+                ))
                 .child(top_bar())
                 .child(composer::composer()),
         )
@@ -534,6 +530,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(pane::rename_overlay())
         .child(pane::editor_overlay())
         .child(botmodal::layer())
+        .child(botmodal::main_picker_layer())
         .child(palette::layer())
         .child(models::layer())
         .child(composer::plus_layer())
@@ -719,17 +716,26 @@ fn top_bar() -> impl IntoElement {
                             store()
                                 .active_bot()
                                 .map(|b| b.name)
-                                .unwrap_or_else(|| "Rox".to_owned())
+                                .unwrap_or_else(|| crate::app_name().to_owned())
                         })
                         .child(dynamic(move || {
-                            let Some(b) = store().active_bot() else {
-                                return view().into_element();
+                            let props = match store().active_bot() {
+                                Some(b) => crate::avatar::BotAvatarProps::bot(&b, 24.0),
+                                // A plain chat: the app's own mark — the round
+                                // blob, white on dark, black on light.
+                                None => crate::avatar::BotAvatarProps {
+                                    shape: "blob".to_owned(),
+                                    color: "#FFFFFF".to_owned(),
+                                    size: 24.0,
+                                    seed: Some("app".to_owned()),
+                                    ..Default::default()
+                                },
                             };
                             crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
                                 size: 24.0,
                                 box_: Some(22.0),
                                 paused: true,
-                                ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
+                                ..props
                             })
                             .into_element()
                         }))
@@ -738,7 +744,7 @@ fn top_bar() -> impl IntoElement {
                                 store()
                                     .active_bot()
                                     .map(|b| b.name)
-                                    .unwrap_or_else(|| "Rox".to_owned())
+                                    .unwrap_or_else(|| crate::app_name().to_owned())
                             })
                             .text_size(px(14.0))
                             .font_weight(FontWeight::MEDIUM)

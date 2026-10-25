@@ -140,7 +140,7 @@ fn main() -> impl std::process::Termination {
     jank_log::init();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
-        title: "Rox".to_owned(),
+        title: rox::app_name().to_owned(),
         app_id: "dev.goldcoders.rox".to_owned(),
         size: (1100, 760),
         // `ROX_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
@@ -149,6 +149,7 @@ fn main() -> impl std::process::Termination {
         ..Default::default()
     };
     rox::mini::register_mini_app(&options.components);
+    rox::zoom::register_zoom(&options.components);
     platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 

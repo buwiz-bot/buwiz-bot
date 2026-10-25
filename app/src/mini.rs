@@ -98,6 +98,8 @@ mod imp {
     const MEASURE_EVERY: f64 = 0.4;
 
     pub struct FitIvars {
+        /// Consecutive ticks spent collapsed (see `collapsed`).
+        collapsed_ticks: Cell<u32>,
         design: Cell<(f64, f64)>,
         natural: Cell<f64>,
         alive: Cell<bool>,
@@ -142,6 +144,13 @@ mod imp {
                     return;
                 }
                 self.sync_appearance();
+                self.fit();
+                if collapsed(self) {
+                    self.ivars().collapsed_ticks.set(self.ivars().collapsed_ticks.get() + 1);
+                    self.schedule();
+                    return;
+                }
+                self.ivars().collapsed_ticks.set(0);
                 if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app)) {
                     if (h - self.ivars().natural.get()).abs() >= 1.0 {
                         self.ivars().natural.set(h);
@@ -224,9 +233,31 @@ mod imp {
         }
     }
 
+    /// Whether a view above `view` has an empty frame: a branch nsh has
+    /// collapsed out of layout. Nothing clips there, so the app would draw
+    /// at that branch's origin — over whatever the cell shows now (a
+    /// reused list cell keeps its old card's views at 0×0) — and a cell
+    /// not laid out yet is collapsed for a moment too.
+    fn collapsed(view: &NSView) -> bool {
+        // SAFETY: reading the superview chain on the main thread.
+        let mut cur = unsafe { view.superview() };
+        while let Some(p) = cur {
+            if p.window().is_some_and(|w| w.contentView().as_deref() == Some(&*p)) {
+                return false;
+            }
+            let f = p.frame().size;
+            if f.width < 1.0 || f.height < 1.0 {
+                return true;
+            }
+            cur = unsafe { p.superview() };
+        }
+        false
+    }
+
     impl FitView {
         fn new(mtm: MainThreadMarker, ctx: ComponentContext) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(FitIvars {
+                collapsed_ticks: Cell::new(0),
                 design: Cell::new((0.0, 0.0)),
                 natural: Cell::new(0.0),
                 alive: Cell::new(true),
@@ -254,6 +285,11 @@ mod imp {
         }
 
         fn schedule(&self) {
+            // A collapsed card checks again soon at first (a new cell is
+            // laid out within a few frames), then at the usual pace (a
+            // leftover from a reused cell stays collapsed).
+            let n = self.ivars().collapsed_ticks.get();
+            let delay = if n > 0 && n < 40 { 0.05 } else { MEASURE_EVERY };
             // SAFETY: `roxMeasure:` is this class's method taking one
             // object argument (nil here).
             let () = unsafe {
@@ -261,7 +297,7 @@ mod imp {
                     self,
                     performSelector: sel!(roxMeasure:),
                     withObject: None::<&AnyObject>,
-                    afterDelay: MEASURE_EVERY
+                    afterDelay: delay
                 ]
             };
         }
@@ -269,10 +305,10 @@ mod imp {
         /// Design size, or the frame's own size (no scaling) without one.
         fn fit(&self) {
             let frame = self.frame().size;
-            // A list cell parked off screen gets an empty frame: a scale
-            // can't be set on it, and the app would draw unscaled where
-            // the cell is parked (over the transcript's top). Hide it.
-            let empty = frame.width < 1.0 || frame.height < 1.0;
+            // An empty frame (no scale can be set on it) or a collapsed
+            // branch above: the app would draw where it should not — over
+            // the transcript's top. Hide it.
+            let empty = frame.width < 1.0 || frame.height < 1.0 || collapsed(self);
             if let Some(app) = self.subviews().firstObject() {
                 app.setHidden(empty);
             }
