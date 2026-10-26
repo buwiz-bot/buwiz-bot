@@ -35,6 +35,9 @@ const LIST_PAD: f32 = 6.0;
 fn palette_card() -> impl IntoElement {
     let h = window().height.0;
     let list = element_ref();
+    // Read once per change, not by every row and handler: the rows are a
+    // virtualized list, so only those near the viewport are built.
+    let results = computed(|| store().palette_results());
     // The list's scroll offset, to keep the arrow-key selection in view.
     let scroll_y = signal(0.0f32);
     let list_for_keys = list.clone();
@@ -80,7 +83,7 @@ fn palette_card() -> impl IntoElement {
                                 "ArrowDown" => 1,
                                 _ => return,
                             };
-                            let n = st.palette_results().len() as i64;
+                            let n = results.with_untracked(|r| r.len()) as i64;
                             if n == 0 {
                                 return;
                             }
@@ -97,7 +100,7 @@ fn palette_card() -> impl IntoElement {
                                 None
                             };
                             if let Some(to) = to {
-                                list_for_keys.scroll_to(Point { x: px(0.0), y: px(to.max(0.0)) }, false);
+                                list_for_keys.scroll_to_offset(px(to.max(0.0)), false);
                             }
                         })
                         .auto_focus(true)
@@ -112,30 +115,44 @@ fn palette_card() -> impl IntoElement {
                 ),
         )
         .child(
-            scroll()
-                .max_h(px(CARD_H - SEARCH_H))
-                .element_ref(&list)
-                .on_scroll(move |e: &ScrollEvent| scroll_y.set(e.offset.y.0))
-                .child(
-                    view()
-                        .p(px(LIST_PAD))
-                        .child(each(
-                            || store().palette_results(),
-                            |i| (i.title.clone(), i.subtitle.clone(), i.icon.clone()),
-                            |it, ix| palette_row(it, ix),
-                        ))
-                        .child(when(
-                            || store().palette_results().is_empty(),
-                            || {
-                                text("No results")
-                                    .text_size(px(13.0))
-                                    .text_color(theme::GHOST)
-                                    .p(px(12.0))
-                                    .into_element()
-                            },
-                        )),
-                ),
-        );
+            virtual_list(
+                move || results.with(|r| r.len()),
+                move |at| {
+                    let blank = || PaletteItem {
+                        title: String::new(),
+                        subtitle: String::new(),
+                        icon: String::new(),
+                        checked: false,
+                        act: crate::store::PaletteAct::NewChat,
+                        bot: None,
+                        letter_of: String::new(),
+                        app_of: String::new(),
+                    };
+                    let row = computed(move || results.with(|r| r.get(at.index()).cloned()));
+                    palette_row(move || row.get().unwrap_or_else(blank), move || at.index())
+                },
+            )
+            .estimated_item_size(px(ROW_H))
+            .content_padding(px(LIST_PAD))
+            // A list has no intrinsic height: as tall as its rows, capped
+            // by the card.
+            .h(move || {
+                let n = results.with(|r| r.len()) as f32;
+                px((n * ROW_H + 2.0 * LIST_PAD).min(CARD_H - SEARCH_H))
+            })
+            .element_ref(&list)
+            .on_scroll(move |e: &ScrollEvent| scroll_y.set(e.offset.y.0)),
+        )
+        .child(when(
+            move || results.with(|r| r.is_empty()),
+            || {
+                text("No results")
+                    .text_size(px(13.0))
+                    .text_color(theme::GHOST)
+                    .p(px(18.0))
+                    .into_element()
+            },
+        ));
     view()
         .size_full()
         .absolute()
@@ -152,8 +169,11 @@ fn palette_card() -> impl IntoElement {
         .child(card.mt(px(((h - CARD_H) / 2.0).max(40.0))))
 }
 
-fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoElement {
-    let sel = move || store().palette_sel.get() as usize == ix.get();
+fn palette_row(
+    it: impl Fn() -> PaletteItem + Copy + 'static,
+    ix: impl Fn() -> usize + Copy + 'static,
+) -> impl IntoElement {
+    let sel = move || store().palette_sel.get() as usize == ix();
     view()
         .child(
             view()
@@ -174,7 +194,7 @@ fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoE
                     // The 24pt tile: an agent's avatar, a chat's letter
                     // circle, a mini app's `</>` tile, or an action's icon.
                     view().size(px(24.0)).items_center().justify_center().child(dynamic(move || {
-                        let item = it.get();
+                        let item = it();
                         if let Some(b) = item.bot {
                             return crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
                                 size: 24.0,
@@ -230,16 +250,16 @@ fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoE
                         .flex_1()
                         .min_w(px(0.0))
                         .child(
-                            text(move || it.get().title)
+                            text(move || it().title)
                                 .text_size(px(13.0))
                                 .line_height(px(18.0))
                                 .text_color(theme::TEXT)
                                 .number_of_lines(1),
                         )
                         .child(when(
-                            move || !it.get().subtitle.is_empty(),
+                            move || !it().subtitle.is_empty(),
                             move || {
-                                text(move || it.get().subtitle)
+                                text(move || it().subtitle)
                                     .text_size(px(12.0))
                                     .line_height(px(16.0))
                                     .text_color(theme::MUTED)
@@ -249,23 +269,23 @@ fn palette_row(it: ReadSignal<PaletteItem>, ix: ReadSignal<usize>) -> impl IntoE
                         )),
                 )
                 .child(when(
-                    move || it.get().checked,
+                    move || it().checked,
                     || icon_sized("check", 13.0).into_element(),
                 ))
                 .child(when(
                     move || {
-                        !store().palette_q.get().trim().is_empty() && ix.get() < 9
+                        !store().palette_q.get().trim().is_empty() && ix() < 9
                     },
                     move || {
-                        text(move || format!("⌘{}", ix.get() + 1))
+                        text(move || format!("⌘{}", ix() + 1))
                             .text_size(px(11.0))
                             .text_color(theme::GHOST)
                             .into_element()
                     },
                 )),
         )
-        .on_hover_in(move || store().palette_sel.set(ix.get() as i64))
-        .on_press(move || store().palette_run_at(ix.get()))
+        .on_hover_in(move || store().palette_sel.set(ix() as i64))
+        .on_press(move || store().palette_run_at(ix()))
         .into_element()
 }
 
