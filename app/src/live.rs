@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::store::Store;
 

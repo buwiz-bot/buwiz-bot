@@ -4,7 +4,7 @@
 //! `live::keep`. A patch that changes a type the program can see is
 //! answered `Restart` by the daemon, not applied.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::botmodal;
@@ -196,7 +196,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // Hidden title bar on the desktop, keeping the traffic lights over
     // the sidebar's drag strip.
     #[cfg(target_os = "macos")]
-    nsh_core::ui::desktop::set_title_bar(
+    nsh_core::element::desktop::set_title_bar(
         nsh_core::desktop::TitleBarStyle::Hidden,
         Some(px(44.0)),
     );

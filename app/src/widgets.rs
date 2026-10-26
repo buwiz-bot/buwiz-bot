@@ -4,7 +4,7 @@
 //! title, version, open-state, and the actions that pin it to the thread
 //! or open its detail in the right pane.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::icons::icon;
 use crate::live::store;

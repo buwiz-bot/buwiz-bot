@@ -6,7 +6,7 @@
 //! choice, everything else answers the one call. Answered, it collapses to
 //! the sentence its kind leaves behind.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::transport::{self, Sent};

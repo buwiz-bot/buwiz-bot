@@ -7,7 +7,7 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub const fn tone(light: Hsla, dark: Hsla) -> AdaptiveColor {
     AdaptiveColor { light, dark }

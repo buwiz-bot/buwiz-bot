@@ -305,7 +305,7 @@ impl Vault {
 /// Runs `f` on a thread of its own and waits for it in a task: the
 /// Keychain and the Touch ID sheet block, and the UI thread must not.
 pub(crate) async fn off_main<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    use nsh_core::ui::prelude::timer;
+    use nsh_core::prelude::timer;
     use std::sync::mpsc::{TryRecvError, channel};
     let (tx, rx) = channel();
     std::thread::spawn(move || {

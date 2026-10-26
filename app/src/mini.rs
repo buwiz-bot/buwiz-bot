@@ -14,7 +14,7 @@
 //! the compiled JS; a changed source reloads the app.
 
 use nsh_core::JsonValue;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 
@@ -70,11 +70,104 @@ pub(crate) fn mini_app(
         .when(h <= 0.0, |v| v.flex_1())
 }
 
+/// `source` with its imports moved to where nsh 0.3 serves them (it keeps
+/// no aliases): `nsh/ios` and `nsh/android` are `nsh/mobile`,
+/// `nsh/ui/mobile` is `nsh/base`, the other submodules (`nsh/canvas`,
+/// `nsh/image`, `nsh/keymap`, `nsh/clipboard`, …) are `nsh`, and a name
+/// `nsh/base` exports (`Input`, `Button`, …) comes from there. The widgets
+/// the server generated before, and its prompts, still use the old homes.
+pub(crate) fn current_homes(source: &str) -> String {
+    thread_local! {
+        static BASE: Vec<String> = {
+            let d = nsh_core::element::description::SetDescription::from(nsh_base::registry());
+            d.exports
+                .into_iter()
+                .map(|e| e.name)
+                .chain(d.reexported_values)
+                .chain(d.native_values)
+                .collect()
+        };
+    }
+    let mut out = String::with_capacity(source.len() + 64);
+    let mut rest = source;
+    while let Some(at) = rest.find("import") {
+        let starts = at == 0 || rest[..at].ends_with(['\n', ';', ' ', '\t']);
+        let Some(stmt) = starts.then(|| import_at(&rest[at..])).flatten() else {
+            out.push_str(&rest[..at + 6]);
+            rest = &rest[at + 6..];
+            continue;
+        };
+        out.push_str(&rest[..at]);
+        out.push_str(&BASE.with(|base| rehome(&stmt, base)));
+        rest = &rest[at + stmt.len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// An `import … from "nsh…";` statement at the start of `s`.
+struct Import {
+    /// Its length in `s`, the `;` included.
+    len: usize,
+    /// What is imported: `{ a, b as c }`, `* as x` or a default name.
+    clause: String,
+    spec: String,
+}
+
+fn import_at(s: &str) -> Option<Import> {
+    let from = s.find(" from ")?;
+    let clause = s[6..from].trim();
+    // an `import` keyword of another statement, or a side-effect import
+    if clause.is_empty() || clause.contains(';') || clause.starts_with('(') {
+        return None;
+    }
+    let tail = s[from + 6..].trim_start();
+    let quote = tail.chars().next().filter(|q| *q == '"' || *q == '\'')?;
+    let close = tail[1..].find(quote)? + 1;
+    let spec = &tail[1..close];
+    if spec != "nsh" && !spec.starts_with("nsh/") {
+        return None;
+    }
+    let mut len = s.len() - tail.len() + close + 1;
+    if s[len..].starts_with(';') {
+        len += 1;
+    }
+    Some(Import { len, clause: clause.to_owned(), spec: spec.to_owned() })
+}
+
+/// The statement(s) importing `stmt`'s names from their current homes.
+fn rehome(stmt: &Import, base: &[String]) -> String {
+    let module = match stmt.spec.as_str() {
+        s @ ("nsh/base" | "nsh/mobile" | "nsh/desktop") => s,
+        "nsh/ios" | "nsh/android" => "nsh/mobile",
+        "nsh/ui/mobile" => "nsh/base",
+        _ => "nsh",
+    };
+    let names = match stmt.clause.strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
+        Some(names) if module == "nsh" => names,
+        _ => return format!("import {} from \"{module}\";", stmt.clause),
+    };
+    let (mut core, mut moved) = (Vec::new(), Vec::new());
+    for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let own = name.trim_start_matches("type ").split(" as ").next().unwrap_or(name).trim();
+        if base.iter().any(|b| b == own) { moved.push(name) } else { core.push(name) }
+    }
+    let mut out = String::new();
+    if !core.is_empty() {
+        out.push_str(&format!("import {{ {} }} from \"nsh\";", core.join(", ")));
+    }
+    if !moved.is_empty() {
+        out.push_str(&format!("import {{ {} }} from \"nsh/base\";", moved.join(", ")));
+    }
+    out
+}
+
 /// TSX → the module the runtime runs: the source plus the wrapper
 /// `pipeline.mjs` writes into every emitted chunk.
 pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String> {
+    let source = current_homes(source);
     let wrapped = format!("{source}\nimport {{ mount }} from \"nsh\";\nmount(R);\n");
-    let sets: Vec<nsh_core::ui::description::SetDescription> = vec![
+    let sets: Vec<nsh_core::element::description::SetDescription> = vec![
         nsh_base::registry().into(),
         crate::registry().into(),
     ];
@@ -817,5 +910,18 @@ export default function R() {
         assert!(js.contains("mount(R)"), "wrapper mounted:\n{js}");
         assert!(js.contains("export default"), "default export kept:\n{js}");
         assert!(js.contains("from \"nsh\""), "nsh imports kept:\n{js}");
+    }
+
+    #[test]
+    fn old_homes_move_where_nsh_serves_them() {
+        let src = "import { View, Input, signal } from \"nsh\";\nimport { Canvas } from \"nsh/canvas\";\nimport { Image as Pic } from 'nsh/image';\nimport * as Ios from \"nsh/ios\";\nimport { x } from \"./local\";\nconst s = \"nsh/canvas\";\n";
+        let out = super::current_homes(src);
+        assert!(out.contains("import { View, signal } from \"nsh\";"), "{out}");
+        assert!(out.contains("import { Input } from \"nsh/base\";"), "{out}");
+        assert!(out.contains("import { Canvas } from \"nsh\";"), "{out}");
+        assert!(out.contains("import { Image as Pic } from \"nsh\";"), "{out}");
+        assert!(out.contains("import * as Ios from \"nsh/mobile\";"), "{out}");
+        assert!(out.contains("import { x } from \"./local\";"), "{out}");
+        assert!(out.contains("const s = \"nsh/canvas\";"), "a string is no import:\n{out}");
     }
 }

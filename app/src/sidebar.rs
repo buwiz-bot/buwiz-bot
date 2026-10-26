@@ -3,7 +3,7 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::avatar::bot_avatar;
 use crate::icons::{icon, icon_sized};
@@ -59,7 +59,7 @@ pub(crate) fn hidden_toggle_layer() -> impl IntoElement {
             // `titleBar().height` can report a bogus toolbar measurement —
             // clamp to the 44pt bar we request (App.tsx:2456).
             #[cfg(target_os = "macos")]
-            let bar = nsh_core::ui::desktop::title_bar();
+            let bar = nsh_core::element::desktop::title_bar();
             #[cfg(not(target_os = "macos"))]
             let bar = Edges::<Points>::default();
             let h = if bar.top.0 > 0.0 { bar.top.0.min(44.0) } else { 44.0 };

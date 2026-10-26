@@ -8,7 +8,8 @@
 //! can be added, rewritten and forgotten, and integrations and skills
 //! added and removed.
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::store::{BotIntegration, RoxBot};

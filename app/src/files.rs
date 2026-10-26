@@ -5,7 +5,7 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::store::{Attach, Sheet, Store};

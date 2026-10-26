@@ -7,8 +7,9 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
-use nsh_core::ui::View;
+use nsh_base::input;
+use nsh_core::prelude::*;
+use nsh_core::element::View;
 
 use crate::avatar::{bot_avatar, sleeping_blob, BlobEdit, BlobGaze, BotAvatarProps};
 use crate::live::store;

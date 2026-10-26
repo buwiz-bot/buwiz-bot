@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::mark::{self, PaintOpts, UhSize, V2};
 use crate::mark::{gaze_advance, gaze_set, GazeState};

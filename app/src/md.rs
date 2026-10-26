@@ -6,7 +6,7 @@ use nsh_base::{
     MarkdownExtension, MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts,
     text_view::document::CustomNode, text_view,
 };
-use nsh_core::ui::{StyleRefinement, prelude::*};
+use nsh_core::{element::StyleRefinement, prelude::*};
 
 use crate::theme;
 

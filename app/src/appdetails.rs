@@ -9,7 +9,8 @@
 //! its picture, name, subtitle, facts and versions, and renames in Rox
 //! only.
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::icons::icon;
 use crate::live::store;

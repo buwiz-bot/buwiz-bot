@@ -12,7 +12,7 @@
 //! resize keeps the bounds' scale, but not the root's frame inside).
 
 use nsh_core::JsonValue;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 

@@ -47,7 +47,7 @@ mod widgets;
 pub mod zoom;
 
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// As in `hot.rs`: colors built of plain `Hsla` literals — `to_hsla` /
 /// `clamp`/`max` in const eval are not in ra-jit's evaluator yet, and a

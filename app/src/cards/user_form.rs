@@ -48,7 +48,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use super::transport::{self, UserFormReply};

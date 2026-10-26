@@ -5,7 +5,7 @@
 use std::cell::Cell;
 
 use nsh_core::canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::mark;
 use crate::theme;

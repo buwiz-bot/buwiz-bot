@@ -8,7 +8,7 @@ use std::f64::consts::PI;
 use std::str::FromStr;
 
 use nsh_core::canvas::{svg_path, CanvasTextAlign, CanvasTextBaseline, FillRule, Path};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use nsh_core::Hsla;
 
 use super::rest_data::{REST, REST_EN, REST_LAYERS, REST_N};

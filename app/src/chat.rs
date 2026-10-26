@@ -2,7 +2,7 @@
 //! open thread's turns — user bubbles on the right, agent markdown on the
 //! left, reply quotes, reactions, and generated-app cards.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::live::store;
@@ -278,7 +278,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                         let (first, last) = (first_row.get().unwrap_or(0), last_row.get().unwrap_or(0));
                         let mut pick = None;
                         for r in (first..=last).rev() {
-                            if list.item_offset(r).await.is_some_and(|top| top + 24.0 <= cutoff) {
+                            if list.item_offset(r).await.is_some_and(|top| top.0 + 24.0 <= cutoff) {
                                 pick = Some(r);
                                 break;
                             }
@@ -291,7 +291,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                     let last = st.turns.with_untracked(|t| t.last().map_or(-1, |t| t.i));
                     let row = first_row.get();
                     let into = match row {
-                        Some(r) => list.item_offset(r).await.map(|at| y - at),
+                        Some(r) => list.item_offset(r).await.map(|at| y - at.0),
                         None => None,
                     };
                     let i = row.and_then(|r| st.turns.with_untracked(|t| t.get(r).map(|t| t.i)));
