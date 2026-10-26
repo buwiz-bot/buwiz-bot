@@ -232,33 +232,70 @@ fn keyboard_page() -> impl IntoElement {
             }
             text(n).text_size(px(12.0)).text_color(theme::ACCENT).px_4().pb_2().into_element()
         }))
-        .child(scroll().flex_1().child(dynamic(|| {
-            // the rows read the keymap, the recorder and the highlight
-            let _ = store().keymap.get();
-            let _ = store().key_record.get();
-            let sel = store().settings_sel.get();
-            let groups = visible(&query().get());
-            let mut col = view().px_4().pb_4().gap_1();
-            if groups.is_empty() {
-                col = col.child(text("No shortcuts match").text_size(px(13.0)).text_color(theme::MUTED).pt_3());
-            }
-            let mut n = 0usize;
-            for (s, rows) in groups {
-                col = col.child(
-                    text(s.title())
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::MUTED)
-                        .pt_3()
-                        .pb_1(),
-                );
-                for c in rows {
-                    col = col.child(row(c, sel == n as i64));
-                    n += 1;
-                }
-            }
-            col.into_element()
-        })))
+        .child({
+            // One line per place heading or shortcut, virtualized: only the
+            // lines near the viewport are built, and each rebuilds alone
+            // when the keymap or the recorder changes.
+            let lines = computed(|| lines(&query().get()));
+            virtual_list(
+                move || lines.with(|l| l.len()),
+                move |at| {
+                    dynamic(move || match lines.with(|l| l.get(at.index()).cloned()) {
+                        Some(Line::Head(title)) => text(title)
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::MUTED)
+                            .pt_3()
+                            .pb_1()
+                            .into_element(),
+                        Some(Line::Cmd(c, n)) => {
+                            let _ = store().keymap.get();
+                            let _ = store().key_record.get();
+                            row(c, n).into_element()
+                        }
+                        None => view().into_element(),
+                    })
+                },
+            )
+            .estimated_item_size(px(38.0))
+            .row_gap(px(4.0))
+            .content_padding_x(px(16.0))
+            .content_padding_bottom(px(16.0))
+            .empty(text("No shortcuts match").text_size(px(13.0)).text_color(theme::MUTED).px_4().pt_3())
+            .flex_1()
+        })
+}
+
+/// A line of the keyboard list: a place's heading, or a shortcut with its
+/// position among the shortcuts (the arrow keys' highlight).
+#[derive(Clone)]
+enum Line {
+    Head(&'static str),
+    Cmd(&'static keys::Command, usize),
+}
+
+impl PartialEq for Line {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Line::Head(a), Line::Head(b)) => a == b,
+            (Line::Cmd(a, i), Line::Cmd(b, j)) => std::ptr::eq(*a, *b) && i == j,
+            _ => false,
+        }
+    }
+}
+
+/// `visible(q)` as lines, in list order.
+fn lines(q: &str) -> Vec<Line> {
+    let mut out = Vec::new();
+    let mut n = 0;
+    for (s, rows) in visible(q) {
+        out.push(Line::Head(s.title()));
+        for c in rows {
+            out.push(Line::Cmd(c, n));
+            n += 1;
+        }
+    }
+    out
 }
 
 // ——————————————— the search: groups, keys, words ———————————————
@@ -542,7 +579,7 @@ fn search_box() -> impl IntoElement {
         }))
 }
 
-fn row(c: &'static keys::Command, highlighted: bool) -> impl IntoElement {
+fn row(c: &'static keys::Command, n: usize) -> impl IntoElement {
     let keys_now = keys::keys_of(c);
     let changed = keys_now != c.keys.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
     let recording = store().key_record.get_untracked();
@@ -563,7 +600,10 @@ fn row(c: &'static keys::Command, highlighted: bool) -> impl IntoElement {
         .rounded(px(7.0))
         .bg(theme::SUBTLE)
         .border_1()
-        .border_color(if highlighted { theme::ACCENT } else { AdaptiveColor::TRANSPARENT })
+        // The arrow keys' highlight, bound: a step redraws two borders, not
+        // the list. Unselected, all but transparent: a bound border that
+        // starts transparent never took the accent.
+        .border_color(move || if store().settings_sel.get() == n as i64 { theme::ACCENT } else { theme::tc("#00000001") })
         .child(
             view()
                 .flex_1()
