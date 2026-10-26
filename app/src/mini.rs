@@ -55,6 +55,7 @@ pub(crate) fn mini_app(
             "app",
             move || JsonValue::String(store().mini_source_title(&name2).get()),
         )
+        .prop("dev_type", || JsonValue::String(store().mini_dev_type.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
         .when(h <= 0.0, |v| v.flex_1())
@@ -68,7 +69,101 @@ pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String>
         nsh_base::registry().into(),
         crate::registry().into(),
     ];
-    nsh_bundler::compile_module(&format!("{name}.tsx"), &wrapped, &sets)
+    // a server's app name (`mcp:<server>/<app>|<props>`) is no file name
+    let file: String = name
+        .chars()
+        .take_while(|&c| c != '|')
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    nsh_bundler::compile_module(&format!("{file}.tsx"), &wrapped, &sets)
+}
+
+/// The mini app an MCP server ships, full screen over the window
+/// (`store.mini_full`): a title bar and the app filling the rest. A server
+/// opens it from a tool result (`rox/open`) or a `rox://app/…` link.
+pub(crate) fn full_layer() -> impl IntoElement {
+    use crate::theme::tc;
+    dynamic(|| {
+        let st = store();
+        let Some((key, title, _)) = st.mini_full.get() else {
+            return view().into_element();
+        };
+        let k2 = key.clone();
+        let k3 = key.clone();
+        view()
+            .absolute()
+            .size_full()
+            .bg(tc("#161616"))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(52.0))
+                    .pl(px(84.0))
+                    .pr(px(12.0))
+                    .border_b(px(0.5))
+                    .border_b_color(tc("#f5f5f51a"))
+                    .child(
+                        view()
+                            .pointer_events(PointerEvents::None)
+                            .absolute()
+                            .left(px(84.0))
+                            .right(px(84.0))
+                            .top(px(0.0))
+                            .bottom(px(0.0))
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                text(move || {
+                                    let t = store().mini_source_title(&k2).get();
+                                    if t.is_empty() { title.clone() } else { t }
+                                })
+                                .number_of_lines(1)
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tc("#f5f5f5")),
+                            ),
+                    )
+                    .child(view().flex_1())
+                    .child(
+                        view()
+                            .label("Close")
+                            .size(px(32.0))
+                            .rounded(px(16.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(tc("#f5f5f50f"))
+                            .child(text("✕").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+                            .on_press(|| store().mini_full.set(None)),
+                    ),
+            )
+            .child(
+                view()
+                    .flex_1()
+                    .child(when(
+                        move || !store().mini_err(&k3).get().is_empty(),
+                        {
+                            let k = key.clone();
+                            move || {
+                                let k = k.clone();
+                                view()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text(move || format!("Couldn't open this app: {}", store().mini_err(&k).get()))
+                                            .text_size(px(13.0))
+                                            .text_color(tc("#f5f5f5a8")),
+                                    )
+                                    .into_element()
+                            }
+                        },
+                    ))
+                    .child(mini_app(&key, 0.0, None, None)),
+            )
+            .into_element()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +489,32 @@ mod imp {
         }
     }
 
+    /// The text fields under `view`, in view order.
+    fn text_fields(view: &NSView, out: &mut Vec<Retained<NSView>>) {
+        for sub in view.subviews().iter() {
+            if sub.class().name().to_str().is_ok_and(|n| n.contains("TextField")) {
+                out.push(sub.clone());
+            }
+            text_fields(&sub, out);
+        }
+    }
+
+    /// Focuses text field `n` under `root` and inserts `text` into it.
+    fn dev_type(root: &NSView, n: usize, text: &str) {
+        let mut fields = Vec::new();
+        text_fields(root, &mut fields);
+        let (Some(field), Some(window)) = (fields.get(n), root.window()) else {
+            log::warn!("dev type: no text field {n} ({} found)", fields.len());
+            return;
+        };
+        window.makeFirstResponder(Some(field));
+        let Some(editor) = window.firstResponder() else { return };
+        let s = nsh_platform_macos::objc2_foundation::NSString::from_str(text);
+        // SAFETY: the first responder of a focused field is its field editor (an NSTextView).
+        let () = unsafe { msg_send![&*editor, insertText: &*s] };
+        log::info!("dev type: {} fields, typed {text:?} into {n}", fields.len());
+    }
+
     impl NativeComponent for MiniApp {
         fn view(&self) -> Retained<NSView> {
             Retained::into_super(self.fit.clone())
@@ -405,6 +526,19 @@ mod imp {
                     Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
                 });
                 self.set_design(size);
+                return;
+            }
+            if name == "dev_type" {
+                // dev hook (`rox-agent-menu`: `type <n> <text>`): the app's
+                // n-th text field takes the focus and `text` is inserted the
+                // way typing ends up (`insertText:` on the field editor)
+                if let Some((n, text)) = value
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| v.split_once('|'))
+                    .and_then(|(_, rest)| rest.split_once(' '))
+                {
+                    dev_type(&self.fit, n.parse().unwrap_or(0), text);
+                }
                 return;
             }
             if name != "source" {

@@ -32,6 +32,8 @@ pub(crate) enum Scope {
     /// The file viewer showing a spreadsheet.
     ViewerTable,
     Viewer,
+    /// A server's mini app full screen.
+    MiniApp,
     Lightbox,
     /// The plugins modal's search drop is open.
     PluginsSearch,
@@ -43,12 +45,13 @@ pub(crate) enum Scope {
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 11] = [
+pub(crate) const ORDER: [Scope; 12] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
     Scope::ViewerTable,
     Scope::Viewer,
+    Scope::MiniApp,
     Scope::Lightbox,
     Scope::PluginsSearch,
     Scope::Plugins,
@@ -65,6 +68,7 @@ impl Scope {
             Scope::Palette => "$palette",
             Scope::ViewerTable => "$spreadsheet",
             Scope::Viewer => "$viewer",
+            Scope::MiniApp => "$mini-app",
             Scope::Lightbox => "$lightbox",
             Scope::PluginsSearch => "$plugins-search",
             Scope::Plugins => "$plugins",
@@ -84,6 +88,7 @@ impl Scope {
             Scope::Palette => st.palette.get(),
             Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table"),
             Scope::Viewer => viewing().is_some(),
+            Scope::MiniApp => st.mini_full.get().is_some(),
             Scope::Lightbox => !st.light_items.get().is_empty(),
             Scope::PluginsSearch => st.plugins_open.get() && st.drop_open(),
             Scope::Plugins => st.plugins_open.get(),
@@ -91,6 +96,7 @@ impl Scope {
             Scope::Chat => {
                 !st.palette.get()
                     && viewing().is_none()
+                    && st.mini_full.get().is_none()
                     && st.light_items.get().is_empty()
                     && !st.plugins_open.get()
                     && !st.settings_open.get()
@@ -261,6 +267,8 @@ pub(crate) static COMMANDS: &[Command] = &[
     always(cmd("settings.enter", "Pick the suggestion / change the shortcut", Scope::Settings, &["enter"], |_| crate::settings::enter())),
     // ——— File viewer ———
     cmd("viewer.actions", "File actions", Scope::Viewer, &["mod+k"], |_| crate::files::viewer_actions()),
+    // ⌘W, not Escape: Escape leaves the app's own fields mid-filing
+    cmd("mini.close", "Close the mini app", Scope::MiniApp, &["mod+w"], |_| store().mini_full.set(None)),
     cmd("viewer.print", "Print", Scope::Viewer, &["mod+p"], |_| crate::files::viewer_print()),
     cmd("viewer.save", "Save as a new version (Office)", Scope::Viewer, &["mod+s"], |_| crate::files::viewer_save()),
     cmd("viewer.download", "Download", Scope::Viewer, &["mod+shift+s"], |_| {

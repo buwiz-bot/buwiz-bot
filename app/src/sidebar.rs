@@ -202,35 +202,35 @@ fn rail() -> impl IntoElement {
                             ))
                     // A group collapsed in the full sidebar is left out here
                     // (Grok Bot's rail), as are empty ones and collapsed
-                    // Unassigned / Chats.
-                    .child(each(
-                        || {
-                            store()
-                                .groups
-                                .get()
-                                .into_iter()
-                                .filter(|g| !collapsed(&g.id) && !store().group_rows(&g.id).is_empty())
-                                .map(|g| g.id)
-                                .collect::<Vec<_>>()
-                        },
-                        |gid| gid.clone(),
-                        |gid, i| {
-                            let gid = gid.get_untracked();
-                            let gid2 = gid.clone();
-                            view()
-                                .items_center()
-                                .gap_1()
-                                .child(when(
-                                    move || i.get() > 0 || !store().pinned_bots().is_empty(),
-                                    rail_rule,
-                                ))
-                                .child(each(
-                                    move || store().group_rows(&gid),
-                                    GroupRow::key,
-                                    move |m, _| rail_member(gid2.clone(), m),
-                                ))
-                        },
-                    ))
+                    // Unassigned / Chats. Rebuilt whole when the groups or
+                    // their members change (a few rows): keyed `each`s
+                    // nested here dropped a whole open group when its
+                    // members' records changed ("a kept row is gone") —
+                    // after any reply that reloads the groups.
+                    .child(dynamic(|| {
+                        let st = store();
+                        let pinned = !st.pinned_bots().is_empty();
+                        let open: Vec<(String, Vec<GroupRow>)> = st
+                            .groups
+                            .get()
+                            .into_iter()
+                            .filter(|g| !collapsed(&g.id))
+                            .map(|g| (g.id.clone(), st.group_rows(&g.id)))
+                            .filter(|(_, rows)| !rows.is_empty())
+                            .collect();
+                        view()
+                            .items_center()
+                            .gap_1()
+                            .children(open.into_iter().enumerate().map(|(i, (gid, rows))| {
+                                view()
+                                    .items_center()
+                                    .gap_1()
+                                    .when(i > 0 || pinned, |v| v.child(rail_rule()))
+                                    .children(rows.into_iter().map(|m| rail_member(gid.clone(), m)))
+                                    .into_element()
+                            }))
+                            .into_element()
+                    }))
                     .child(when(
                         || !store().ungrouped_bots().is_empty() && !collapsed("__un"),
                         || {
@@ -554,33 +554,12 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
 }
 
 /// A group member in the rail, by kind: a bot's plate, a chat's letter
-/// tile, an artifact's tile.
-fn rail_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
-    match m.get_untracked() {
-        GroupRow::Bot(_) => each(
-            move || match m.get() {
-                GroupRow::Bot(b) => vec![b],
-                _ => Vec::new(),
-            },
-            |b| b.id.clone(),
-            |b, _| rail_btn(b),
-        ),
-        GroupRow::Chat(_) => each(
-            move || match m.get() {
-                GroupRow::Chat(t) => vec![t],
-                _ => Vec::new(),
-            },
-            |t| t.id.clone(),
-            |t, _| rail_chat(t),
-        ),
-        GroupRow::Artifact(_) => each(
-            move || match m.get() {
-                GroupRow::Artifact(a) => vec![a],
-                _ => Vec::new(),
-            },
-            |a| a.app.clone(),
-            move |a, _| rail_art(gid.clone(), a),
-        ),
+/// tile, an artifact's tile (its group section rebuilds on any change).
+fn rail_member(gid: String, m: GroupRow) -> AnyElement {
+    match m {
+        GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
+        GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
+        GroupRow::Artifact(a) => rail_art(gid, signal(a).read_only()).into_element(),
     }
 }
 
