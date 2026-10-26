@@ -1521,13 +1521,123 @@ fn round_pill(glyph: &'static str, on: impl Fn() + 'static) -> impl IntoElement 
 
 // ——————————————————— the fullscreen viewer (`FileViewer`) ———————————————————
 
+/// A page the viewer shows in a web view: a URL (an Office editor's
+/// when `.1`) or a local HTML document.
+#[derive(Clone, PartialEq)]
+enum WebPage {
+    Url(String, bool),
+    Html(String),
+}
+
+/// What the open file shows as a web page, if it does.
+fn web_page() -> Option<WebPage> {
+    let st = store();
+    let f = st.viewing.get()?;
+    let r = st.rendered.get();
+    if r.as_ref().is_some_and(|r| !r.error.is_empty()) {
+        return None;
+    }
+    let office = r.as_ref().map(|r| r.office.clone()).unwrap_or_default();
+    if !office.is_empty() {
+        return Some(WebPage::Url(format!("{}{office}", crate::client::GEN), true));
+    }
+    match f.kind.as_str() {
+        "pdf" => Some(WebPage::Url(Store::file_raw_url(&f.path), false)),
+        "html" if st.html_mode.get() != "source" => Some(if f.path.starts_with('/') {
+            // a file on this Mac (`rox://view`): its text, read here;
+            // WebKit shows nothing for a string under a `file://` base, so
+            // it gets the server's (a print preview inlines its images)
+            WebPage::Html(r.and_then(|r| r.text).unwrap_or_default())
+        } else {
+            WebPage::Url(Store::file_raw_url(&f.path), false)
+        }),
+        _ => None,
+    }
+}
+
+/// The viewer's web views, made once and kept over its body (a new
+/// WKWebView per open cost a 30–50 ms frame): the page binds to the open
+/// file, and an unused one takes no room (Print takes the largest visible
+/// web view) and drops its page. Over the body, not under it: under, the
+/// header's presses went to a local page.
+fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
+    let url = move || page.with(|p| matches!(p, Some(WebPage::Url(..))));
+    let office = move || page.with(|p| matches!(p, Some(WebPage::Url(_, true))));
+    let html = move || page.with(|p| matches!(p, Some(WebPage::Html(_))));
+    let sized = |shown: fn(Memo<Option<WebPage>>) -> bool| {
+        move || -> Length { if shown(page) { Length::Auto } else { px(0.0).into() } }
+    };
+    let white = || {
+        AdaptiveColor::from(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        })
+    };
+    let office_page = element_ref();
+    OFFICE_PAGE.with(|p| p.set(Some(office_page.clone())));
+    let place = |v: WebView| v.absolute().top(px(52.0)).left(px(0.0)).right(px(0.0)).bottom(px(0.0));
+    view()
+        .absolute()
+        .size_full()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(
+            place(web_view(move || {
+                page.with(|p| match p {
+                    Some(WebPage::Url(u, _)) => u.clone(),
+                    _ => "about:blank".to_owned(),
+                })
+            }))
+            .element_ref(&office_page)
+            .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
+            .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
+            .opacity(move || if url() { 1.0f32 } else { 0.0 })
+            // shows through the (transparent) WKWebView until the page
+            // paints: light is the Office editor page's own `#f5f5f5` body.
+            .bg(move || {
+                if office() {
+                    theme::tone(
+                        Hsla::from_str("#f5f5f5").unwrap_or_default(),
+                        Hsla::from_str("#161616").unwrap_or_default(),
+                    )
+                } else {
+                    white()
+                }
+            }),
+        )
+        .child(
+            place(web_view_html(
+                move || {
+                    page.with(|p| match p {
+                        Some(WebPage::Html(h)) => h.clone(),
+                        _ => String::new(),
+                    })
+                },
+                Some(crate::client::GEN),
+            ))
+            .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
+            .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
+            .opacity(move || if html() { 1.0f32 } else { 0.0 })
+            .bg(white()),
+        )
+}
+
 /// The viewer overlay — mount in the root stack (`viewing` set).
 pub(crate) fn layer() -> impl IntoElement {
-    dynamic(|| {
+    let page = computed(web_page);
+    view()
+        .absolute()
+        .size_full()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(dynamic(move || {
         let st = store();
         let Some(f) = st.viewing.get() else {
             return view().into_element();
         };
+        // a web page shows in `kept_pages`, over the body: the body is
+        // left empty
+        let on_web = page.with(Option::is_some);
         let r = st.rendered.get();
         let f2 = f.clone();
         let name = f.name.clone();
@@ -1543,21 +1653,10 @@ pub(crate) fn layer() -> impl IntoElement {
         let sheet_i = st.sheet_idx.get();
         let html_mode = st.html_mode.get();
         // body per kind
-        let body: AnyElement = if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
+        let body: AnyElement = if on_web {
+            view().flex_1().pointer_events(PointerEvents::None).into_element()
+        } else if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
             unavailable(&f, "Couldn't load preview", &r.unwrap().error).into_element()
-        } else if !office.is_empty() {
-            let page = element_ref();
-            OFFICE_PAGE.with(|p| p.set(Some(page)));
-            web_view(format!("{}{office}", crate::client::GEN))
-                .element_ref(&page)
-                .flex_1()
-                // shows through the (transparent) WKWebView until the editor
-                // paints: light is the editor page's own `#f5f5f5` body.
-                .bg(theme::tone(
-                    Hsla::from_str("#f5f5f5").unwrap_or_default(),
-                    Hsla::from_str("#161616").unwrap_or_default(),
-                ))
-                .into_element()
         } else {
             match f.kind.as_str() {
                 "image" => image(Store::file_raw_url(&f.path))
@@ -1574,48 +1673,11 @@ pub(crate) fn layer() -> impl IntoElement {
                     .m(px(24.0))
                     .into_element(),
                 "audio" => audio_player_view(&f).into_element(),
-                "pdf" => web_view(Store::file_raw_url(&f.path))
-                    .flex_1()
-                    .bg(AdaptiveColor::from(Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 1.0,
-                        a: 1.0,
-                    }))
-                    .into_element(),
-                "html" => {
-                    if html_mode == "source" {
-                        match r.as_ref().map(|r| r.lines.clone()) {
-                            Some(lines) if !lines.is_empty() => code_view(lines).into_element(),
-                            _ => view().into_element(),
-                        }
-                    } else if f.path.starts_with('/') {
-                        // a file on this Mac (`rox://view`): its text, read
-                        // here; WebKit shows nothing for a string under a
-                        // `file://` base, so it gets the server's (a print
-                        // preview inlines its images)
-                        let html = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_default();
-                        web_view_html(html, Some(crate::client::GEN))
-                            .flex_1()
-                            .bg(AdaptiveColor::from(Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 1.0,
-                                a: 1.0,
-                            }))
-                            .into_element()
-                    } else {
-                        web_view(Store::file_raw_url(&f.path))
-                            .flex_1()
-                            .bg(AdaptiveColor::from(Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 1.0,
-                                a: 1.0,
-                            }))
-                            .into_element()
-                    }
-                }
+                // (the preview is a web page: `kept_pages`)
+                "html" => match r.as_ref().map(|r| r.lines.clone()) {
+                    Some(lines) if !lines.is_empty() => code_view(lines).into_element(),
+                    _ => view().into_element(),
+                },
                 "markdown" | "docx" => match r.as_ref().and_then(|r| r.text.clone()) {
                     Some(t) => scroll()
                         .flex_1()
@@ -1665,10 +1727,10 @@ pub(crate) fn layer() -> impl IntoElement {
         view()
             .absolute()
             .size_full()
-            .bg(tc("#161616"))
             .child(
                 // header: drag strip, centered title, tabs/toggles, buttons
                 view()
+                    .bg(tc("#161616"))
                     .flex_row()
                     .items_center()
                     .gap_2()
@@ -1831,7 +1893,10 @@ pub(crate) fn layer() -> impl IntoElement {
             .child(
                 view()
                     .flex_1()
-                    .bg(if code_bg {
+                    .when(on_web, |v| v.pointer_events(PointerEvents::BoxNone))
+                    .bg(if on_web {
+                        AdaptiveColor::TRANSPARENT
+                    } else if code_bg {
                         // `#212121` is outside `tc`'s light table (it would
                         // stay dark in light mode): white on light.
                         theme::tone(
@@ -1839,12 +1904,13 @@ pub(crate) fn layer() -> impl IntoElement {
                             Hsla::from_str("#212121").unwrap_or_default(),
                         )
                     } else {
-                        AdaptiveColor::TRANSPARENT
+                        tc("#161616")
                     })
                     .child(body),
             )
             .into_element()
-    })
+    }))
+        .child(kept_pages(page))
 }
 
 /// `Unavailable`.
