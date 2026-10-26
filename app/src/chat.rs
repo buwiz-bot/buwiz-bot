@@ -23,6 +23,11 @@ enum Opening {
     End,
 }
 
+/// Whether the transcript a live mini app sits in is the shown chat:
+/// `app_card` mounts its app only then.
+#[derive(Clone, Copy)]
+pub(crate) struct ChatShown(pub(crate) Memo<bool>);
+
 /// The scrollable conversation of chat `mine`. The last few chats' are
 /// kept alive (`Store::alive`) and only shown or hidden: switching back
 /// shows the list exactly where it was — nothing re-laid out, no jump to
@@ -47,6 +52,9 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     // hidden, it keeps its rows (another chat's turns never reach its
     // list: that shrank it, clamped its scroll and flashed old rows).
     let rows = signal(if active.get_untracked() { st.turns.get_untracked() } else { Vec::new() });
+    // The rows the list reports in view (`None` before its first report):
+    // a row's live mini app holds while out of it.
+    let seen = signal(None::<(usize, usize)>);
     effect(move || {
         if active.get() {
             let t = store().turns.get();
@@ -166,6 +174,15 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                                     let Some(t) = row.get() else {
                                         return view().into_element();
                                     };
+                                    // (provided here: the cells are the
+                                    // list's, not under this component)
+                                    provide_context(ChatShown(active));
+                                    // out of the viewport, or under a
+                                    // full-screen app
+                                    provide_context(crate::mini::OutOfSight(std::rc::Rc::new(move || {
+                                        let off = seen.with(|r| r.is_some_and(|(a, b)| !(a..=b).contains(&at.index())));
+                                        off || !store().mini_full.with(Vec::is_empty)
+                                    })));
                                     turn_row(t, &chat).into_element()
                                 })
                             }),
@@ -192,6 +209,9 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
             move |v: &ViewableItems| {
                 first_row.set(v.viewable.map(|(first, _)| first));
                 last_row.set(v.viewable.map(|(_, last)| last));
+                if v.viewable.is_some() && seen.get_untracked() != v.viewable {
+                    seen.set(v.viewable);
+                }
             }
         })
         .on_scroll({

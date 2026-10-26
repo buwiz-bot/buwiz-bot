@@ -149,12 +149,26 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                 .h(move || px(ih()))
                 .rounded(px(10.0))
                 .overflow_hidden()
-                .child(crate::mini::mini_app(
-                    &art.app,
-                    0.0,
-                    Some(std::rc::Rc::new(move || (dw, h_of()))),
-                    Some(on_natural),
-                ))
+                // Only while its chat is the shown one: a chat left keeps
+                // its rows (`Store::alive`), and its apps' engines, timers
+                // and game loops went on in the dark. The box keeps its
+                // size; coming back loads the app again.
+                .child({
+                    let app = art.app.clone();
+                    let shown = use_context::<crate::chat::ChatShown>();
+                    when(
+                        move || shown.as_ref().is_none_or(|s| s.0.get()),
+                        move || {
+                            crate::mini::mini_app(
+                                &app,
+                                0.0,
+                                Some(std::rc::Rc::new(move || (dw, h_of()))),
+                                Some(on_natural.clone()),
+                            )
+                            .into_element()
+                        },
+                    )
+                })
                 // A generated image opens in the lightbox (a press inside
                 // the mini app never reaches Rox).
                 .when(art.kind == "image" && !art.file.is_empty(), |v| {

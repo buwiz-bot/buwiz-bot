@@ -18,6 +18,13 @@ use nsh_core::ui::prelude::*;
 
 use crate::live::store;
 
+/// Whether the live mini apps placed under it can't be seen now: a
+/// chat row out of the viewport or under a full-screen app, a full-screen
+/// app under another. Provided by what places apps; [`mini_app`] holds
+/// its app (frames and timers) while it reads true.
+#[derive(Clone)]
+pub(crate) struct OutOfSight(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
+
 /// A turn card's live widget: `app` is the module name (`R<n>`); `h` the
 /// card body's height, or `<= 0` to fill its parent. The `source` prop
 /// updates as the store compiles. `design` is the size the app lays out
@@ -32,7 +39,9 @@ pub(crate) fn mini_app(
 ) -> impl IntoElement {
     let name = app.to_owned();
     let name2 = app.to_owned();
+    let hidden = use_context::<OutOfSight>();
     native("rox/mini-app")
+        .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
         .prop("design", move || match &design {
             Some(d) => {
                 let (w, h) = d();
@@ -134,6 +143,10 @@ fn open_title(n: u64) -> String {
 fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
     use crate::theme::tc;
     let crate::store::MiniOpen { key, token, n, .. } = open;
+    // under another app of the stack, it holds
+    provide_context(OutOfSight(std::rc::Rc::new(move || {
+        store().mini_full.with(|v| v.last().map(|o| o.n)) != Some(n)
+    })));
     let k2 = key.clone();
     let k3 = key.clone();
     view()
@@ -300,8 +313,12 @@ mod imp {
             runtime::{AnyObject, NSObjectProtocol},
             sel,
         },
-        objc2_app_kit::{NSAppearanceCustomization, NSAutoresizingMaskOptions, NSView},
-        objc2_foundation::{NSPoint, NSRect, NSSize},
+        objc2_app_kit::{
+            NSAppearanceCustomization, NSAutoresizingMaskOptions, NSView,
+            NSScreen, NSWindow, NSWindowDidChangeOcclusionStateNotification,
+            NSWindowDidMoveNotification, NSWindowOcclusionState,
+        },
+        objc2_foundation::{NSNotificationCenter, NSPoint, NSRect, NSSize},
     };
 
     /// How often a live mini app's natural height is checked (frame reads
@@ -315,6 +332,14 @@ mod imp {
         natural: Cell<f64>,
         alive: Cell<bool>,
         ctx: RefCell<Option<ComponentContext>>,
+        /// The element's `paused` prop: the app is out of sight in Rox.
+        held: Cell<bool>,
+        /// Its window can't be seen (minimized, covered, on another
+        /// space or workspace).
+        unseen: Cell<bool>,
+        /// The window whose occlusion it watches.
+        watching: Cell<usize>,
+        app: RefCell<Option<Rc<AppView>>>,
     }
 
     define_class!(
@@ -347,6 +372,13 @@ mod imp {
                 // SAFETY: NSView's own `viewDidMoveToWindow`.
                 let () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
                 self.sync_appearance();
+                self.watch_window();
+                self.check_window();
+            }
+
+            #[unsafe(method(roxWindowOcclusion:))]
+            fn window_changed(&self, _note: Option<&AnyObject>) {
+                self.check_window();
             }
 
             #[unsafe(method(roxMeasure:))]
@@ -374,6 +406,27 @@ mod imp {
             }
         }
     );
+
+    /// A window all but off every screen — where a tiling manager
+    /// (AeroSpace) parks the windows of the workspaces not shown, a
+    /// sliver left on screen, so AppKit still calls it visible.
+    fn parked(window: &NSWindow, mtm: MainThreadMarker) -> bool {
+        let f = window.frame();
+        let area = f.size.width * f.size.height;
+        if area <= 0.0 {
+            return true;
+        }
+        let shown: f64 = NSScreen::screens(mtm)
+            .iter()
+            .map(|s| {
+                let r = s.frame();
+                let w = (f.origin.x + f.size.width).min(r.origin.x + r.size.width) - f.origin.x.max(r.origin.x);
+                let h = (f.origin.y + f.size.height).min(r.origin.y + r.size.height) - f.origin.y.max(r.origin.y);
+                w.max(0.0) * h.max(0.0)
+            })
+            .sum();
+        shown < area * 0.02
+    }
 
     /// The app's natural content height — what Grok gets by laying the
     /// app out with unbounded height. The app's root element(s) are the
@@ -473,11 +526,59 @@ mod imp {
                 natural: Cell::new(0.0),
                 alive: Cell::new(true),
                 ctx: RefCell::new(Some(ctx)),
+                held: Cell::new(false),
+                unseen: Cell::new(false),
+                watching: Cell::new(0),
+                app: RefCell::new(None),
             });
             // SAFETY: NSView's designated `init` on a fresh allocation.
             let this: Retained<Self> = unsafe { msg_send![super(this), init] };
             this.schedule();
             this
+        }
+
+        /// Holds the app while Rox has it out of sight or its window
+        /// can't be seen: its frames and timers stop (a game loop costs
+        /// nothing behind other windows).
+        fn hold(&self) {
+            let held = self.ivars().held.get() || self.ivars().unseen.get();
+            if let Some(app) = self.ivars().app.borrow().as_ref() {
+                app.set_paused(held);
+            }
+        }
+
+        /// Whether its window can be seen, then holds or runs the app.
+        fn check_window(&self) {
+            let unseen = self.window().is_none_or(|w| {
+                w.isMiniaturized()
+                    || !w.occlusionState().contains(NSWindowOcclusionState::Visible)
+                    || parked(&w, self.mtm())
+            });
+            self.ivars().unseen.set(unseen);
+            self.hold();
+        }
+
+        /// Hears its window's occlusion changes (once per window; the
+        /// center holds observers weakly).
+        fn watch_window(&self) {
+            let Some(window) = self.window() else { return };
+            let key = Retained::as_ptr(&window) as usize;
+            if self.ivars().watching.replace(key) == key {
+                return;
+            }
+            // SAFETY: selector-based observers; `roxWindowOcclusion:`
+            // takes the notification.
+            unsafe {
+                let center = NSNotificationCenter::defaultCenter();
+                for name in [NSWindowDidChangeOcclusionStateNotification, NSWindowDidMoveNotification] {
+                    center.addObserver_selector_name_object(
+                        self,
+                        sel!(roxWindowOcclusion:),
+                        Some(name),
+                        Some(&window),
+                    );
+                }
+            }
         }
 
         /// Generated widgets keep the system's appearance whatever the
@@ -571,6 +672,7 @@ mod imp {
                     | NSAutoresizingMaskOptions::ViewHeightSizable,
             );
             fit.addSubview(&app);
+            *fit.ivars().app.borrow_mut() = Some(view.clone());
             MiniApp { fit, view, last: String::new() }
         }
 
@@ -602,6 +704,10 @@ mod imp {
             // Ends the measuring loop; the pending perform releases the view.
             self.fit.ivars().alive.set(false);
             self.fit.ivars().ctx.borrow_mut().take();
+            self.fit.ivars().app.borrow_mut().take();
+            // SAFETY: removes this view's observations, added by
+            // `watch_window`.
+            unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.fit) };
         }
     }
 
@@ -655,6 +761,11 @@ mod imp {
                 {
                     dev_type(&self.fit, n.parse().unwrap_or(0), text);
                 }
+                return;
+            }
+            if name == "paused" {
+                self.fit.ivars().held.set(value.and_then(|v| v.as_bool()).unwrap_or(false));
+                self.fit.hold();
                 return;
             }
             if name != "source" {
