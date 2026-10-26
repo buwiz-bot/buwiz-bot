@@ -13,12 +13,17 @@ ra-jit-live = { path = "../ra-jit/crates/ra-jit-live" }
 env_logger = "0.11"
 log = "0.4"
 serde_json = "1"
+# Settings › Logins' `site_logins` metadata table (the system SQLite; no
+# secret column — secrets are in the Keychain).
+rusqlite = "0.32"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
 # The same AppKit crate nsh uses, with the print classes (the file viewer's
 # Print); features merge into nsh's copy.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSFont"] }
+# Saved site logins' secrets: Keychain generic passwords (`vault/keychain.rs`).
+security-framework = "3.7"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 nsh-platform-ios = { path = "../nsh/crates/nsh-platform-ios", default-features = false }

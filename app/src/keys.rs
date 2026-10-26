@@ -673,6 +673,31 @@ pub(crate) fn bindings() -> impl IntoElement {
     })
 }
 
+/// A letter answers the newest open choice card (A its first option), the
+/// way Grok Bot's keycaps work: only while no text field has the caret
+/// (`NotEditing`), no modifier is held (the plain key), and the chat is
+/// the open scope with no menu or popup over it. Bound only while such a
+/// card is there, and only its options' letters, so the rest still type.
+pub(crate) fn choice_keys() -> impl IntoElement {
+    let options = computed(|| {
+        let free = Scope::Chat.open() && !Scope::Menu.open() && !Scope::ComposerPopup.open();
+        free.then(crate::cards::choice::keyed)
+            .flatten()
+            .map(|(_, spec)| spec.fields.first().map_or(0, |f| f.options.len()).min(26))
+            .unwrap_or(0)
+    });
+    dynamic(move || {
+        for index in 0..options.get() {
+            let Some(letter) = crate::cards::choice::choice_letter(index) else { continue };
+            let options = KeyOptions { when: When::NotEditing, repeat: false };
+            on_key_with(&letter.to_ascii_lowercase().to_string(), options, move |_| {
+                crate::cards::choice::answer_keyed(index)
+            });
+        }
+        view().into_element()
+    })
+}
+
 /// What the menu bar does with its items' keys: per menu action, whether
 /// its item keeps its own key (its command still answers to just that
 /// key and no other command claims it); and the keys the menu keeps.

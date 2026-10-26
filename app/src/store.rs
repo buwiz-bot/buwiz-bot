@@ -471,6 +471,10 @@ pub struct Turn {
     pub revising: bool,
     /// Drive files the reply made or changed — chips under the message.
     pub links: Vec<DriveLink>,
+    /// Interactive cards (approvals, choices, forms, plugin needs) under
+    /// the reply, in document order: the optional `cards` array of raw wire
+    /// objects (`cards::Card::from_wire`), or the dev hook's local turn.
+    pub cards: Vec<crate::cards::TurnCard>,
 }
 
 /// One of a turn's `links`: a connected app's file the AI made or changed
@@ -1302,6 +1306,9 @@ fn elapsed_label(mins: u64) -> String {
     }
 }
 
+/// Where the dev hook's local turns number from: above any server turn.
+pub(crate) const LOCAL_TURN_BASE: i64 = 1_000_000_000;
+
 /// `PHASE_STATE` (App.tsx:35) — a generation phase → a Grok agent state.
 fn phase_state(phase: &str) -> &'static str {
     match phase {
@@ -1517,6 +1524,7 @@ impl Turn {
             status: s(v, "status"),
             revising: v.get("revising").and_then(|x| x.as_bool()).unwrap_or(false),
             links: list(v, "links").iter().map(DriveLink::of).filter(|l| !l.id.is_empty()).collect(),
+            cards: v.get("cards").map(crate::cards::parse_list).unwrap_or_default(),
         }
     }
 }
@@ -1601,6 +1609,18 @@ pub struct Store {
     /// `agentRuns` — the live run per thread; a thread's status row and
     /// its bot's mark read their own entry (App.tsx:113).
     pub agent_runs: Signal<BTreeMap<String, AgentRun>>,
+    /// Each interactive card's state by its key (`cards::CardState`): no
+    /// entry is still open. Kept while Rox runs; a form's typed values are
+    /// never here.
+    pub card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
+    /// A choice card's picks by card key (field id → option).
+    pub card_picks: Signal<std::collections::HashMap<String, BTreeMap<String, String>>>,
+    /// Plugin-needs cards whose "Remember for <bot>" is on.
+    pub card_remember: Signal<std::collections::BTreeSet<String>>,
+    /// The dev hook's card turns (`card <path>`): (chat, the server turn
+    /// they follow, the turn). Never sent or saved; merged into every
+    /// `/turns` fetch of their chat.
+    pub local_turns: std::cell::RefCell<Vec<(String, i64, Turn)>>,
     /// `emphBot` — the bot id hovered through the status row; "" when off.
     /// Emphasizes both the status mark and the matching sidebar mark.
     pub emph_bot: Signal<String>,
@@ -2020,6 +2040,10 @@ impl Store {
             at_open: signal(false),
             sending: signal(false),
             agent_runs: signal(BTreeMap::new()),
+            card_states: signal(std::collections::HashMap::new()),
+            card_picks: signal(std::collections::HashMap::new()),
+            card_remember: signal(std::collections::BTreeSet::new()),
+            local_turns: std::cell::RefCell::new(Vec::new()),
             emph_bot: signal(String::new()),
             settled: signal(None),
             models: signal(Vec::new()),
@@ -3007,7 +3031,8 @@ impl Store {
                 return;
             }
             *self.turns_json.borrow_mut() = raw;
-            let turns: Vec<Turn> = list(&v, "turns").iter().map(Turn::of).collect();
+            let mut turns: Vec<Turn> = list(&v, "turns").iter().map(Turn::of).collect();
+            self.merge_local_turns(&id, &mut turns);
             batch(|| {
                 self.turns.set(turns);
                 if self.turns_of.get_untracked() != id {
@@ -4704,6 +4729,11 @@ impl Store {
         if (text.is_empty() && files.is_empty()) || self.sending.get_untracked() {
             return;
         }
+        // A new message moves the chat on: its unanswered cards are
+        // superseded, as nativechat's steer closes them.
+        if self.turns_of.get_untracked() == self.active_id.get_untracked() {
+            crate::cards::supersede_open(&self.turns.get_untracked());
+        }
         self.draft.set(String::new());
         self.attachments.set(Vec::new());
         self.reply_to.set(None);
@@ -4759,6 +4789,106 @@ impl Store {
             // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
             self.emph_bot.set(String::new());
             self.refresh_turns();
+        });
+    }
+
+    /// Sends `text` as the next message, as the composer would, leaving the
+    /// composer's own draft, files and reply as they were (a choice card's
+    /// answer, a plugin-needs card's Send again).
+    pub fn send_text(&'static self, text: String) {
+        let kept = (
+            self.draft.get_untracked(),
+            self.attachments.get_untracked(),
+            self.reply_to.get_untracked(),
+        );
+        batch(|| {
+            self.draft.set(text);
+            self.attachments.set(Vec::new());
+            self.reply_to.set(None);
+        });
+        self.send();
+        batch(|| {
+            self.draft.set(kept.0);
+            self.attachments.set(kept.1);
+            self.reply_to.set(kept.2);
+        });
+    }
+
+    /// The dev hook's cards as a local reply at the end of the open chat.
+    pub fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            crate::toast::show("Open a chat first");
+            return;
+        }
+        let n = self.local_turns.borrow().len() as i64;
+        let after = self
+            .turns
+            .with_untracked(|t| t.iter().rev().find(|t| t.i < LOCAL_TURN_BASE).map(|t| t.i))
+            .unwrap_or(-1);
+        let turn = Turn {
+            i: LOCAL_TURN_BASE + n,
+            id: format!("local-cards-{n}"),
+            role: "ai".to_owned(),
+            cards,
+            ..Turn::default()
+        };
+        self.local_turns.borrow_mut().push((chat.clone(), after, turn));
+        if self.turns_of.get_untracked() == chat {
+            self.turns.update(|t| {
+                t.retain(|t| t.i < LOCAL_TURN_BASE);
+                self.merge_local_turns(&chat, t);
+            });
+        }
+    }
+
+    /// Forgets the dev hook's turns.
+    pub fn drop_local_turns(&'static self) {
+        self.local_turns.borrow_mut().clear();
+        self.turns.update(|t| t.retain(|t| t.i < LOCAL_TURN_BASE));
+    }
+
+    /// `chat`'s local turns, each after the server turn it followed.
+    fn merge_local_turns(&self, chat: &str, turns: &mut Vec<Turn>) {
+        for (c, after, turn) in self.local_turns.borrow().iter() {
+            if c != chat {
+                continue;
+            }
+            let at = turns
+                .iter()
+                .position(|t| t.i > *after && t.i < LOCAL_TURN_BASE)
+                .unwrap_or(turns.len());
+            turns.insert(at, turn.clone());
+        }
+    }
+
+    /// The composer's status while the open chat waits on a card: "Waiting
+    /// for approval" / "Waiting for you" (`phase_state("waiting")`), never
+    /// over a run that is going; cleared once nothing waits.
+    pub fn watch_cards(&'static self) {
+        effect(move || {
+            let chat = self.active_id.get();
+            if chat.is_empty() || self.turns_of.get() != chat {
+                return;
+            }
+            let label = self.turns.with(|t| crate::cards::waiting_label(t));
+            let run = self.agent_runs.with(|m| m.get(&chat).cloned());
+            let ours = |r: &AgentRun| {
+                r.state == phase_state("waiting")
+                    && matches!(r.label.as_str(), "Waiting for approval" | "Waiting for you")
+            };
+            untracked(|| match (label, run) {
+                (Some(label), None) => self.agent_set(
+                    chat,
+                    self.active_bot_untracked().map(|b| b.id),
+                    Some((phase_state("waiting").to_owned(), label.to_owned())),
+                ),
+                (Some(label), Some(r)) if ours(&r) && r.label != label => {
+                    self.agent_set(chat, r.bot, Some((r.state, label.to_owned())))
+                }
+                (None, Some(r)) if ours(&r) => self.agent_set(chat, r.bot, None),
+                _ => {}
+            });
         });
     }
 
