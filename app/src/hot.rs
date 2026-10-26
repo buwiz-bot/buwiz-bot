@@ -29,6 +29,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     let st = store();
     st.boot();
     st.watch_plugins();
+    // "Waiting for approval" / "Waiting for you" while a card waits.
+    st.watch_cards();
 
     // `ROX_STATUS=<state|demo>`: debug-mount the run-status surface —
     // the composer status row and bot marks play the state without a
@@ -323,7 +325,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // click: a line `<x> <y> <menu> <arg…>` written to
     // $TMPDIR/rox-agent-menu opens that right-click menu at (x, y) —
     // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>;
-    // `refresh` reloads the Library and groups.
+    // `refresh` reloads the Library and groups; `card <path>` adds a wire
+    // JSON file's interactive cards to the open chat, `cards-clear` drops
+    // them (and every card's state).
     if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
         spawn(async move {
             let path = std::env::temp_dir().join("rox-agent-menu");
@@ -639,6 +643,22 @@ fn top_bar() -> impl IntoElement {
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
 fn agent_menu(line: &str) {
+    // `card <path>`: a wire file's cards (a CUSTOM frame, a `form` call, an
+    // array of them) as a local reply in the open chat; `cards-clear` drops
+    // those replies and every card's state
+    if let Some(path) = line.strip_prefix("card ").filter(|p| p.trim_start().starts_with(['/', '~', '.'])) {
+        let path = path.trim();
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            None => path.to_owned(),
+        };
+        crate::cards::inject(&path);
+        return;
+    }
+    if line == "cards-clear" {
+        crate::cards::clear_local();
+        return;
+    }
     // `refresh`: the open chat's Library and the groups again
     if line == "refresh" {
         store().groups_json.borrow_mut().clear();

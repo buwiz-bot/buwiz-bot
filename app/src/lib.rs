@@ -14,6 +14,7 @@ mod appdetails;
 mod avatar;
 mod botdetails;
 mod botmodal;
+mod cards;
 mod chat;
 mod client;
 mod composer;
@@ -40,6 +41,7 @@ mod statusfx;
 mod store;
 mod theme;
 mod toast;
+mod vault;
 mod versions;
 mod widgets;
 pub mod zoom;
@@ -127,4 +129,6 @@ pub fn App() -> impl IntoElement {
         // printing) and its bindings
         .child(keys::host())
         .child(keys::bindings())
+        // A..Z on the newest open choice card
+        .child(keys::choice_keys())
 }

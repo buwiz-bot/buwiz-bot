@@ -373,6 +373,14 @@ pub(crate) fn focus() {
     }
 }
 
+/// The caret out of the message field: a press on a choice card, so its
+/// letter keys answer the card (`keys::choice_keys`).
+pub(crate) fn blur() {
+    if let Some(field) = FIELD.with(std::cell::Cell::get) {
+        field.blur();
+    }
+}
+
 /// `Input` — 14/20, capped at 6 lines; short drafts keep one row
 /// between + and the controls, tall ones go full width above the
 /// controls band (App.tsx:2275).

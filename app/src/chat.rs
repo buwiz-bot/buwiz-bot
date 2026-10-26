@@ -858,7 +858,11 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 .otherwise(move || app_card(shell.clone()).into_element()),
             )
         })
-        .when(!has_card, |v| v.child(bar()))
+        // Interactive cards (approvals, choices, forms, plugin needs) in
+        // document order, under the words they follow.
+        .when(!t.cards.is_empty(), |v| v.child(crate::cards::section(&t)))
+        // The dev hook's local turn has nothing on the server to react to.
+        .when(!has_card && i < crate::store::LOCAL_TURN_BASE, |v| v.child(bar()))
         .when(!t.files.is_empty(), |v| v.child(files_section(&t)))
         .when(!t.links.is_empty(), |v| v.child(links_section(&t)))
 
