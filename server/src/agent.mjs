@@ -433,6 +433,38 @@ export async function generate(job, prompt) {
     job.result = "reply";
     return;
   }
+  // "/upload" ("/uploadx"): the message's attachments come straight back as
+  // file cards — a real upload through every viewer, no model call.
+  if (!job.retry && /^\/uploadx?\b/i.test(prompt.trim())) {
+    const rel = `m${Date.now().toString(36)}`;
+    const dir = join(OUT_DIR, rel);
+    mkdirSync(dir, { recursive: true });
+    const names = new Set();
+    const files = (job.extra?.attachments || [])
+      .filter((a) => (a.uri || "").startsWith("file://"))
+      .flatMap((a) => {
+        const src = decodeURIComponent(a.uri.slice(7));
+        if (!existsSync(src)) return [];
+        const name = basename(a.name || src).replace(/[/\\]/g, "_");
+        // two uploads of one name can't collide in the folder
+        const unique = names.has(name) ? `${names.size}-${name}` : name;
+        names.add(unique);
+        const p = join(dir, unique);
+        copyFileSync(src, p);
+        return [fileRecord(p, `${rel}/${unique}`)];
+      });
+    const text = files.length
+      ? `Echoed back ${files.length === 1 ? "your file" : `${files.length} files`} — nothing went to the model: ${files.map((f) => f.name).join(", ")}.`
+      : "Attach a file and /upload echoes it back as a viewable card — nothing goes to the model.";
+    if (thread.turns.length === 0) thread.title = "Upload echo";
+    thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...(job.extra || {}) });
+    thread.turns.push({ id: uuidv7(), role: "ai", text, label: "upload", files });
+    writeIndex();
+    setJob(job, "done", "replied");
+    job.done = true;
+    job.result = "reply";
+    return;
+  }
   // A module://R<n>[@v<k>] attachment = "iterate on this artifact": the run
   // produces a new version of it (reply-to-revise), not a new artifact.
   const attachRev = (job.extra?.attachments || [])
