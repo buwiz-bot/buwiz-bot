@@ -115,6 +115,12 @@ fn run(it: &CtxItem) {
                 _ => st.save_library_item(&a),
             }
         }
+        // A server's mini app: `<module name>␟<title>`.
+        "app-open" => {
+            if let Some((key, title)) = arg.split_once('\u{1f}') {
+                st.open_mini_full(key, title);
+            }
+        }
         "app-details" => st.open_app_details(arg),
         "app-rename-label" => {
             st.app_action(verb, arg.to_owned())
@@ -173,6 +179,7 @@ fn run(it: &CtxItem) {
             }
         }
         "lib-show" => st.show_library_item(arg),
+        "mcp-detach" => st.detach_mcp(arg),
         "lib-details" => st.open_details(arg),
         // `<module key>␟<file name>`: a mini app's source in the viewer
         "app-code" => {
@@ -225,9 +232,16 @@ pub(crate) const GROUP_COLORS: [(&str, &str); 8] = [
 ];
 
 /// "Add to Group ›" for item `kind`/`id` (an artifact with its origin
-/// chat `thread`): every group, checked where the item already is (a
-/// press adds or takes it out of that one), then New Group….
+/// chat `thread`, an app with its title there): every group, checked
+/// where the item already is (a press adds or takes it out of that one),
+/// then New Group….
 pub(crate) fn group_menu(kind: &str, id: &str, thread: &str) -> CtxItem {
+    CtxItem::parent("Add to Group", "folderPlus", group_picks(kind, id, thread))
+}
+
+/// [`group_menu`]'s rows — a full-screen mini app's Pin menu shows them
+/// on their own.
+pub(crate) fn group_picks(kind: &str, id: &str, thread: &str) -> Vec<CtxItem> {
     let st = store();
     let mut seen: Vec<String> = Vec::new();
     let mut sub: Vec<CtxItem> = st
@@ -252,7 +266,7 @@ pub(crate) fn group_menu(kind: &str, id: &str, thread: &str) -> CtxItem {
         sub.push(CtxItem::separator());
     }
     sub.push(CtxItem::row("New Group…", "folderPlus", "group-new", [kind, id, thread].join("\u{1f}")));
-    CtxItem::parent("Add to Group", "folderPlus", sub)
+    sub
 }
 
 /// "Move to Group ›" for item `kind`/`id` of group `from`: the other
@@ -378,6 +392,23 @@ pub(crate) fn group_art_items(gid: &str, a: &crate::store::RoxApp) -> Vec<CtxIte
             [gid, "artifact", a.app.as_str(), ""].join("\u{1f}"),
         )
         .to(false),
+    );
+    items
+}
+
+/// A group's mini app (`key` its module name): open it, its groups, take
+/// it out.
+pub(crate) fn group_app_items(gid: &str, key: &str, title: &str) -> Vec<CtxItem> {
+    let mut items = vec![
+        CtxItem::row("Open", "popout", "app-open", [key, title].join("\u{1f}")),
+        CtxItem::separator(),
+        group_menu("app", key, title),
+    ];
+    if let Some(m) = move_menu(gid, "app", key, title) {
+        items.push(m);
+    }
+    items.push(
+        CtxItem::row("Remove from Group", "folder", "group-item", [gid, "app", key, title].join("\u{1f}")).to(false),
     );
     items
 }
@@ -557,6 +588,9 @@ pub(crate) fn add_items() -> Vec<CtxItem> {
 /// Remove from Library and an app's deletion. `at` is the menu's
 /// page position — the Versions picker opens there.
 pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem> {
+    if a.kind == "mcp-app" {
+        return mcp_items(a);
+    }
     let app = a.kind == "app";
     let id = a.app.clone();
     // A connector's file (Google Drive) opens there, copies its Drive link
@@ -613,6 +647,28 @@ pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem
             ));
         }
     }
+    items
+}
+
+/// An attached server app's Library row: open it, the chats it's
+/// attached in, its details, its token; pin its app to a group; detach it
+/// from this chat.
+fn mcp_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
+    let id = a.app.clone();
+    let mut items = vec![
+        CtxItem::row("Open", "popout", "lib-open", id.clone()),
+        CtxItem::row("Show in Chat", "quoteBubble", "lib-show", id.clone()),
+        CtxItem::row("Edit Details…", "edit", "lib-details", id.clone()),
+    ];
+    if !a.token.is_empty() {
+        items.push(CtxItem::row("Copy Token", "copy", "copy", a.token.clone()));
+    }
+    if let Some(key) = crate::store::mini_link(&a.open) {
+        items.push(CtxItem::separator());
+        items.push(group_menu("app", &key, &a.title));
+    }
+    items.push(CtxItem::separator());
+    items.push(CtxItem::danger("Detach from Chat", "trash", "mcp-detach", id));
     items
 }
 

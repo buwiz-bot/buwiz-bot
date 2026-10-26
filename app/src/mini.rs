@@ -78,92 +78,208 @@ pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String>
     nsh_bundler::compile_module(&format!("{file}.tsx"), &wrapped, &sets)
 }
 
-/// The mini app an MCP server ships, full screen over the window
-/// (`store.mini_full`): a title bar and the app filling the rest. A server
-/// opens it from a tool result (`rox/open`) or a `rox://app/…` link.
+thread_local! {
+    /// The full-screen apps ✕ / ⌘W / ⌘[ took off, latest last: ⌘] puts
+    /// them back, until another app opens.
+    static FORWARD: std::cell::RefCell<Vec<crate::store::MiniOpen>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `open` was taken off the stack: ⌘] can put it back.
+pub(crate) fn left(open: crate::store::MiniOpen) {
+    FORWARD.with_borrow_mut(|f| f.push(open));
+}
+
+/// An app opened anew: nothing to go forward to.
+pub(crate) fn forget_forward() {
+    FORWARD.with_borrow_mut(Vec::clear);
+}
+
+/// ⌘[ / ⌘] over the full-screen apps, as the desktop's Back and Forward:
+/// back takes the top app off (Tax Profile back to the Forms under it, the
+/// last one back to the chat), forward reopens what back left. False when
+/// there's nothing to step through here (the chat's history then).
+pub(crate) fn step(d: i64) -> bool {
+    let st = store();
+    if d < 0 {
+        if st.mini_full.with_untracked(Vec::is_empty) {
+            return false;
+        }
+        st.close_mini();
+        return true;
+    }
+    let Some(next) = FORWARD.with_borrow_mut(Vec::pop) else { return false };
+    // reopening clears what's ahead; keep the rest for the next ⌘]
+    let rest = FORWARD.with_borrow_mut(std::mem::take);
+    st.open_mini_token(&next.key, &next.title, &next.token);
+    FORWARD.with_borrow_mut(|f| *f = rest);
+    true
+}
+
+/// The mini apps an MCP server ships, full screen over the window
+/// (`store.mini_full`), each over the one it was opened from: a title bar
+/// and the app filling the rest. A server opens one from a tool result
+/// (`rox/open`) or a `rox://app/…` link. The apps under the top one stay
+/// mounted, so ✕ comes back to them as they were.
 pub(crate) fn full_layer() -> impl IntoElement {
+    each(|| store().mini_full.get(), |o| o.n, |o, _| full_app(o.get_untracked()))
+}
+
+/// Stack entry `n`'s title (tracked): its opener's, or its token's
+/// once resolved; "" for the app's own.
+fn open_title(n: u64) -> String {
+    store().mini_full.with(|v| v.iter().find(|o| o.n == n).map(|o| o.title.clone()).unwrap_or_default())
+}
+
+/// One full-screen app.
+fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
     use crate::theme::tc;
-    dynamic(|| {
-        let st = store();
-        let Some((key, title, _)) = st.mini_full.get() else {
-            return view().into_element();
-        };
-        let k2 = key.clone();
-        let k3 = key.clone();
-        view()
-            .absolute()
-            .size_full()
-            .bg(tc("#161616"))
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .h(px(52.0))
-                    .pl(px(84.0))
-                    .pr(px(12.0))
-                    .border_b(px(0.5))
-                    .border_b_color(tc("#f5f5f51a"))
-                    .child(
-                        view()
-                            .pointer_events(PointerEvents::None)
-                            .absolute()
-                            .left(px(84.0))
-                            .right(px(84.0))
-                            .top(px(0.0))
-                            .bottom(px(0.0))
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                text(move || {
-                                    let t = store().mini_source_title(&k2).get();
-                                    if t.is_empty() { title.clone() } else { t }
-                                })
-                                .number_of_lines(1)
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(tc("#f5f5f5")),
-                            ),
-                    )
-                    .child(view().flex_1())
-                    .child(
-                        view()
-                            .label("Close")
-                            .size(px(32.0))
-                            .rounded(px(16.0))
-                            .items_center()
-                            .justify_center()
-                            .bg(tc("#f5f5f50f"))
-                            .child(text("✕").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
-                            .on_press(|| store().mini_full.set(None)),
-                    ),
-            )
-            .child(
-                view()
-                    .flex_1()
-                    .child(when(
-                        move || !store().mini_err(&k3).get().is_empty(),
-                        {
-                            let k = key.clone();
-                            move || {
-                                let k = k.clone();
-                                view()
-                                    .flex_1()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        text(move || format!("Couldn't open this app: {}", store().mini_err(&k).get()))
-                                            .text_size(px(13.0))
-                                            .text_color(tc("#f5f5f5a8")),
-                                    )
-                                    .into_element()
-                            }
-                        },
-                    ))
-                    .child(mini_app(&key, 0.0, None, None)),
-            )
-            .into_element()
-    })
+    let crate::store::MiniOpen { key, token, n, .. } = open;
+    let k2 = key.clone();
+    let k3 = key.clone();
+    view()
+        .absolute()
+        .size_full()
+        .bg(tc("#161616"))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(52.0))
+                .pl(px(84.0))
+                .pr(px(12.0))
+                .border_b(px(0.5))
+                .border_b_color(tc("#f5f5f51a"))
+                .child(
+                    view()
+                        .pointer_events(PointerEvents::None)
+                        .absolute()
+                        .left(px(84.0))
+                        .right(px(84.0))
+                        .top(px(0.0))
+                        .bottom(px(0.0))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            // the opener's title (a resolved return's), its token's
+                            // once resolved, else the app's
+                            text(move || {
+                                let t = open_title(n);
+                                if !t.is_empty() { t } else { store().mini_source_title(&k2).get() }
+                            })
+                            .number_of_lines(1)
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tc("#f5f5f5")),
+                        ),
+                )
+                .child(view().flex_1())
+                .child(pin_button(&key, n))
+                .when(crate::slash::attachable(&token), |v| v.child(attach_button(&key, n, &token)))
+                .child(
+                    view()
+                        .label("Close")
+                        .size(px(32.0))
+                        .rounded(px(16.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(tc("#f5f5f50f"))
+                        .child(text("✕").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+                        .on_press(|| store().close_mini()),
+                ),
+        )
+        .child(
+            view()
+                .flex_1()
+                .child(when(
+                    move || !store().mini_err(&k3).get().is_empty(),
+                    {
+                        let k = key.clone();
+                        move || {
+                            let k = k.clone();
+                            view()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    text(move || format!("Couldn't open this app: {}", store().mini_err(&k).get()))
+                                        .text_size(px(13.0))
+                                        .text_color(tc("#f5f5f5a8")),
+                                )
+                                .into_element()
+                        }
+                    },
+                ))
+                .child(mini_app(&key, 0.0, None, None)),
+        )
+}
+
+/// The full-screen app's Attach (beside Pin, for an app opened from a
+/// token its server lets attach): the palette over the chats and bots;
+/// the one picked gets the token's card, and the server's tools there
+/// default to it.
+fn attach_button(key: &str, n: u64, token: &str) -> impl IntoElement {
+    use crate::theme::tc;
+    let (key, token) = (key.to_owned(), token.to_owned());
+    view()
+        .label("Attach to chat or bot…")
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
+        .bg(tc("#f5f5f50f"))
+        .child(crate::icons::icon_ink("chainLink", 14.0, || tc("#f5f5f5a8")))
+        .child(text("Attach").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || {
+            let title = untracked(|| open_title(n));
+            let title = if title.is_empty() { store().mini_source_title(&key).get_untracked() } else { title };
+            crate::slash::attach_picker(&token, &title);
+        })
+}
+
+/// The full-screen app's Pin: its groups to put it in or take it out of,
+/// or a new one (a group per client, say). A pin keeps the app's module
+/// name — its `rox://app/` link — and its title; the sidebar opens it
+/// from there.
+fn pin_button(key: &str, n: u64) -> impl IntoElement {
+    use crate::theme::tc;
+    let node = element_ref();
+    let key = key.to_owned();
+    let k2 = key.clone();
+    let pinned = move || {
+        store().groups.with(|gs| gs.iter().any(|g| g.items.iter().any(|it| it.kind == "app" && it.id == k2)))
+    };
+    view()
+        .element_ref(&node)
+        .label("Pin to group")
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
+        .bg(tc("#f5f5f50f"))
+        .child(dynamic(move || {
+            crate::icons::icon_ink(if pinned() { "pinFilled" } else { "pin" }, 14.0, || tc("#f5f5f5a8"))
+        }))
+        .child(text("Pin").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || {
+            // the title the app shows now (it may have set its own)
+            let title = untracked(|| open_title(n));
+            let shown = store().mini_source_title(&key).get_untracked();
+            let title = if title.is_empty() { shown } else { title };
+            let items = crate::ctx::group_picks("app", &key, &title);
+            Owner::detached().run(|| {
+                spawn(async move {
+                    if let Some(m) = node.measure().await {
+                        let (x, y, h) = (m.page.x.0, m.page.y.0, m.frame.size.height.0);
+                        crate::ctx::open_near(x, y, y + h, items);
+                    }
+                })
+            });
+        })
 }
 
 // ---------------------------------------------------------------------------

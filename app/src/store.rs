@@ -566,6 +566,50 @@ pub struct RoxApp {
     /// Who keeps its versions: "rox" (the `v<n>` tree), "provider" (the
     /// connected app's own history) or "none".
     pub versioning: String,
+    /// An `mcp-app` item (a server's token attached here): the token, the
+    /// `rox://app/` link it opens, its picture and what the server tells
+    /// of it.
+    pub token: String,
+    pub open: String,
+    pub image: String,
+    pub details: McpDetails,
+}
+
+/// An attached token's `details` (its resolve's): a name and subtitle,
+/// a picture (empty: a tile drawn from the name), its versions (each a
+/// link) and facts.
+#[derive(Clone, PartialEq, Default)]
+pub struct McpDetails {
+    pub name: String,
+    pub subtitle: String,
+    pub image: String,
+    /// (label, detail, link)
+    pub versions: Vec<(String, String, String)>,
+    pub facts: Vec<(String, String)>,
+}
+
+impl McpDetails {
+    pub(crate) fn of(v: Option<&serde_json::Value>) -> Self {
+        let Some(v) = v.filter(|v| v.is_object()) else { return Self::default() };
+        Self {
+            name: s(v, "name"),
+            subtitle: s(v, "subtitle"),
+            image: s(v, "image"),
+            versions: list(v, "versions").iter().map(|x| (s(x, "label"), s(x, "detail"), s(x, "open"))).collect(),
+            facts: list(v, "facts")
+                .iter()
+                .filter_map(|f| {
+                    let f = f.as_array()?;
+                    let text = |x: Option<&serde_json::Value>| match x {
+                        Some(serde_json::Value::String(t)) => t.clone(),
+                        Some(x) if !x.is_null() => x.to_string(),
+                        _ => String::new(),
+                    };
+                    Some((text(f.first()), text(f.get(1))))
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A Library record's `storage`: `place` is the server's `where` — "mac"
@@ -611,8 +655,10 @@ impl RoxApp {
     fn from_json(a: &serde_json::Value) -> Self {
         let meta = ArtMeta::of(a.get("meta"));
         let origin = a.get("origin").cloned().unwrap_or_default();
+        let details = McpDetails::of(a.get("details"));
         RoxApp {
-            app: s(a, "name"),
+            // an attachment (`mcp-app`) may go by its `id`
+            app: Some(s(a, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s(a, "id")),
             kind: s(a, "kind"),
             title: s(a, "title"),
             file: s(a, "file"),
@@ -624,7 +670,8 @@ impl RoxApp {
             h: Some(f64of(a, "h")).filter(|h| *h > 0.0).unwrap_or(meta.h),
             meta,
             attach: a.get("attach").filter(|x| x.is_object()).map(Attach::of),
-            i: a.get("i").and_then(|x| x.as_i64()).unwrap_or(-1),
+            // an attachment's card is its `origin`'s message
+            i: a.get("i").or_else(|| origin.get("i")).and_then(|x| x.as_i64()).unwrap_or(-1),
             thread_uid: s(&origin, "uid"),
             turn_id: s(&origin, "turn"),
             mtime: f64of(a, "mtime"),
@@ -634,6 +681,11 @@ impl RoxApp {
             versions: list(a, "versions").iter().map(AppVersion::from_json).collect(),
             storage: ArtStorage::of(a.get("storage")),
             versioning: s(a, "versioning"),
+            token: s(a, "token"),
+            open: s(a, "open"),
+            // an attachment's picture rides `icon` (its `details.image`)
+            image: [s(a, "image"), s(a, "icon"), details.image.clone()].into_iter().find(|i| !i.is_empty()).unwrap_or_default(),
+            details,
         }
     }
 }
@@ -704,9 +756,16 @@ pub const LIB_KINDS: [(&str, &str); 8] = [
     ("file", "Other"),
 ];
 
-/// A Library record's chip; an unknown kind is Other.
+/// A Library record's chip; an unknown kind is Other, an attached
+/// server app (`mcp-app`) an app.
 pub fn lib_kind_of(a: &RoxApp) -> &str {
-    if LIB_KINDS.iter().any(|(k, _)| *k == a.kind) { &a.kind } else { "file" }
+    if a.kind == "mcp-app" {
+        "app"
+    } else if LIB_KINDS.iter().any(|(k, _)| *k == a.kind) {
+        &a.kind
+    } else {
+        "file"
+    }
 }
 
 /// One `GET /apps/meta` row: what every mini-app tile and title reads
@@ -760,9 +819,30 @@ pub struct AppInfo {
     pub history: Vec<AppVersion>,
     pub storage: ArtStorage,
     pub versioning: String,
+    /// An `mcp-app` item's token, link, picture and details (read from
+    /// its Library record, not `/app/info`).
+    pub token: String,
+    pub open: String,
+    pub image: String,
+    pub details: McpDetails,
 }
 
 impl AppInfo {
+    /// An attached server app's details, from its Library record.
+    fn of_mcp(a: &RoxApp) -> Self {
+        Self {
+            name: a.app.clone(),
+            kind: a.kind.clone(),
+            title: a.title.clone(),
+            i: a.i,
+            token: a.token.clone(),
+            open: a.open.clone(),
+            image: a.image.clone(),
+            details: a.details.clone(),
+            ..Default::default()
+        }
+    }
+
     fn from_json(v: &serde_json::Value) -> Self {
         let int = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0) as i64;
         let kind = Some(s(v, "kind")).filter(|k| !k.is_empty()).unwrap_or_else(|| "app".to_owned());
@@ -807,6 +887,7 @@ impl AppInfo {
             history: list(v, "history").iter().map(AppVersion::from_json).collect(),
             storage: ArtStorage::of(v.get("storage")),
             versioning: s(v, "versioning"),
+            ..Default::default()
         }
     }
 }
@@ -996,16 +1077,19 @@ pub struct RoxGroup {
     pub items: Vec<GroupItem>,
 }
 
-/// One member of a group: `kind` "bot" | "chat" | "artifact", `id` the
-/// bot's id, the chat's thread id or the artifact's (`R<n>` |
-/// `file:<path>`). An artifact carries its origin chat and its Library
-/// record — it opens from whatever chat is open.
+/// One member of a group: `kind` "bot" | "chat" | "artifact" | "app",
+/// `id` the bot's id, the chat's thread id, the artifact's (`R<n>` |
+/// `file:<path>`) or a server's mini app's module name
+/// (`mcp:<server>/<app>[|<props>]`, a pinned `rox://app/` link). An
+/// artifact carries its origin chat and its Library record — it opens
+/// from whatever chat is open; an app its title.
 #[derive(Clone, PartialEq, Default)]
 pub struct GroupItem {
     pub kind: String,
     pub id: String,
     pub thread: String,
     pub artifact: Option<RoxApp>,
+    pub title: String,
 }
 
 impl RoxGroup {
@@ -1022,6 +1106,7 @@ impl RoxGroup {
                     id: s(it, "ref"),
                     thread: s(it, "thread"),
                     artifact: it.get("artifact").filter(|a| a.is_object()).map(RoxApp::from_json),
+                    title: s(it, "title"),
                 })
                 .collect(),
         }
@@ -1035,6 +1120,8 @@ pub enum GroupRow {
     Bot(RoxBot),
     Chat(ThreadMeta),
     Artifact(RoxApp),
+    /// A server's mini app: its module name and title.
+    App(String, String),
 }
 
 impl GroupRow {
@@ -1044,6 +1131,7 @@ impl GroupRow {
             GroupRow::Bot(b) => format!("bot:{}", b.id),
             GroupRow::Chat(t) => format!("chat:{}", t.id),
             GroupRow::Artifact(a) => format!("artifact:{}", a.app),
+            GroupRow::App(key, _) => format!("app:{key}"),
         }
     }
 }
@@ -1089,6 +1177,13 @@ pub enum PaletteAct {
     App(String),
     /// Open a chat — an agent's session or a plain chat.
     Thread(String),
+    /// A `rox://` link: a chat at a message (Show in Chat's places).
+    Link(String),
+    /// Attach a token to a chat (a bot's main chat): (token, thread, its
+    /// name).
+    Attach(String, String, String),
+    /// Enable a server's routine template in a chat (a bot's main chat).
+    EnableRoutine { server: String, id: String, thread: String, place: String, email: String },
 }
 
 /// One thing a bot remembers (`memories` on a `/threads` bot).
@@ -1484,6 +1579,22 @@ pub struct Store {
     /// `atSeq` — stale `/artifacts` answers are dropped by generation.
     pub at_seq: Signal<u64>,
     pub at_open: Signal<bool>,
+    /// The commands, `@` scopes and apps MCP servers announce
+    /// (`GET /mcp/manifest`, slash.rs).
+    pub mcp_manifest: Signal<Vec<crate::slash::Manifest>>,
+    /// The composer popup's own rows (commands, servers, scopes, values,
+    /// a resolve's choices; the artifacts ride `at_items`), its header and
+    /// the selected row.
+    pub pop_rows: Signal<Vec<crate::slash::PopRow>>,
+    pub pop_head: Signal<String>,
+    pub pop_sel: Signal<usize>,
+    /// When `GET /mcp/manifest` was last asked; whether it has answered.
+    pub mcp_asked: std::cell::Cell<Option<std::time::Instant>>,
+    pub mcp_loaded: std::cell::Cell<bool>,
+    /// Stale `@` value completions are dropped by generation.
+    pub complete_seq: std::cell::Cell<u64>,
+    /// A picked `@` token's label (its chip shows it).
+    pub token_labels: std::cell::RefCell<std::collections::HashMap<String, String>>,
 
     /// Sending / jobs.
     pub sending: Signal<bool>,
@@ -1532,6 +1643,11 @@ pub struct Store {
     /// (palette.tsx:22-23).
     pub palette_q: Signal<String>,
     pub palette_sel: Signal<i64>,
+    /// The palette as a picker: its own rows in place of the sessions and
+    /// actions (the places an item is attached, the chats and bots to
+    /// attach one to), and the search field's prompt.
+    pub palette_pick: Signal<Option<Vec<PaletteItem>>>,
+    pub palette_hint: Signal<String>,
     /// `pillAnchor` (shell.tsx:582) — the open emoji pill's anchor, or
     /// None. One app-level overlay renders it.
     pub pill: Signal<Option<PillAnchor>>,
@@ -1553,9 +1669,12 @@ pub struct Store {
     pub pill_guard: std::cell::Cell<bool>,
     /// `viewing` (fileviewer.tsx) — the file the fullscreen viewer shows.
     pub viewing: Signal<Option<Attach>>,
-    /// The mini app an MCP server ships, open full screen: its module name
-    /// (`mcp:<server>/<app>[|<props>]`), title and the open's number.
-    pub mini_full: Signal<Option<(String, String, u64)>>,
+    /// The mini apps an MCP server ships, open full screen, bottom first:
+    /// an app opened over another stacks on it, ✕ / ⌘W takes the top one
+    /// off.
+    pub mini_full: Signal<Vec<MiniOpen>>,
+    /// The last open's number (each open mounts a new app).
+    pub mini_seq: std::cell::Cell<u64>,
     /// Dev hook: `<count>|<field> <text>` to type into the open mini app.
     pub mini_dev_type: Signal<String>,
     /// `rendered` — `GET /file/render`'s answer for `viewing`.
@@ -1618,9 +1737,18 @@ pub struct Store {
     pub settings_sel: Signal<i64>,
     pub settings_sug: Signal<i64>,
     pub settings_note: Signal<String>,
+    /// Settings › Routines: the server's routines (`GET /routines`).
+    pub routines: Signal<Vec<crate::settings::Routine>>,
+    /// The templates connected servers suggest (`GET /routines/templates`);
+    /// the one whose Enable is asking for the Google address (server, id),
+    /// and what's typed there.
+    pub routine_templates: Signal<Vec<crate::settings::RoutineTemplate>>,
+    pub routine_ask_email: Signal<Option<(String, String)>>,
+    pub routine_email: Signal<String>,
     /// The last menu action asked for, numbered (`rox/keys` sends it).
     pub keys_send: Signal<(u64, String)>,
-    /// The last print job, numbered: (n, "text" | "image", payload, title).
+    /// The last print job, numbered: (n, "text" | "html" | "image", payload,
+    /// title).
     pub keys_print: Signal<(u64, String, String, String)>,
     /// The viewer's mini app code: (app, its versions, the current one).
     pub viewer_versions: Signal<(String, Vec<i64>, i64)>,
@@ -1881,6 +2009,14 @@ impl Store {
             at_items: signal(Vec::new()),
             at_start: signal(-1),
             at_seq: signal(0),
+            mcp_manifest: signal(Vec::new()),
+            pop_rows: signal(Vec::new()),
+            pop_head: signal(String::new()),
+            pop_sel: signal(0),
+            mcp_asked: std::cell::Cell::new(None),
+            mcp_loaded: std::cell::Cell::new(false),
+            complete_seq: std::cell::Cell::new(0),
+            token_labels: std::cell::RefCell::new(std::collections::HashMap::new()),
             at_open: signal(false),
             sending: signal(false),
             agent_runs: signal(BTreeMap::new()),
@@ -1925,6 +2061,10 @@ impl Store {
             settings_sel: signal(-1),
             settings_sug: signal(0),
             settings_note: signal(String::new()),
+            routines: signal(Vec::new()),
+            routine_templates: signal(Vec::new()),
+            routine_ask_email: signal(None),
+            routine_email: signal(String::new()),
             keys_send: signal((0, String::new())),
             keys_print: signal((0, String::new(), String::new(), String::new())),
             viewer_versions: signal((String::new(), Vec::new(), 0)),
@@ -2021,6 +2161,8 @@ impl Store {
             palette: signal(false),
             palette_q: signal(String::new()),
             palette_sel: signal(0),
+            palette_pick: signal(None),
+            palette_hint: signal(String::new()),
             pill: signal(None),
             ctx_owner: signal(None),
             card_status: signal(std::collections::BTreeMap::new()),
@@ -2028,7 +2170,8 @@ impl Store {
             ui_zoom: signal(1.0),
             pill_guard: std::cell::Cell::new(false),
             viewing: signal(None),
-            mini_full: signal(None),
+            mini_full: signal(Vec::new()),
+            mini_seq: std::cell::Cell::new(0),
             mini_dev_type: signal(String::new()),
             rendered: signal(None),
             sheet_idx: signal(0usize),
@@ -2070,6 +2213,7 @@ impl Store {
     /// active thread's turns (`set_threads` picks the server's `active`).
     pub fn boot(&'static self) {
         self.track_drafts();
+        crate::slash::boot();
         // The installed plugins' logos sit in the sidebar footer.
         self.fetch_plugins();
         self.fetch_app_meta();
@@ -2408,6 +2552,7 @@ impl Store {
                     .find(|t| t.id == it.id && !t.hidden && !t.archived)
                     .cloned()
                     .map(GroupRow::Chat),
+                "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
                 _ => it.artifact.clone().map(GroupRow::Artifact),
             })
             .collect()
@@ -2664,9 +2809,23 @@ impl Store {
             self.close_palette();
             return;
         }
+        self.palette_pick.set(None);
+        self.palette_hint.set(String::new());
         self.palette.set(true);
         self.palette_q.set(String::new());
         self.palette_sel.set(0);
+    }
+
+    /// The palette as a picker over `items`, `hint` in its search field.
+    pub fn open_palette_pick(&'static self, hint: String, items: Vec<PaletteItem>) {
+        batch(|| {
+            self.palette.set(false);
+            self.palette_pick.set(Some(items));
+            self.palette_hint.set(hint);
+            self.palette_q.set(String::new());
+            self.palette_sel.set(0);
+            self.palette.set(true);
+        });
     }
 
     /// `close` (palette.tsx:29) — hide and reset the query + selection.
@@ -2674,12 +2833,17 @@ impl Store {
         self.palette.set(false);
         self.palette_q.set(String::new());
         self.palette_sel.set(0);
+        self.palette_pick.set(None);
+        self.palette_hint.set(String::new());
     }
 
     /// The palette's rows, sessions first (Grok Bot's order): the agents,
     /// then the plain chats, then the mini apps in the sidebar's groups,
     /// then the actions.
     pub fn palette_items(&'static self) -> Vec<PaletteItem> {
+        if let Some(items) = self.palette_pick.get() {
+            return items;
+        }
         let row = |title: String, subtitle: String, act: PaletteAct| PaletteItem {
             title,
             subtitle,
@@ -2763,6 +2927,9 @@ impl Store {
             PaletteAct::Theme(t) => self.set_theme(t),
             PaletteAct::App(app) => self.popout(&app),
             PaletteAct::Thread(id) => self.go_to(&id, None),
+            PaletteAct::Link(url) => self.open_link(&url),
+            PaletteAct::Attach(tok, thread, place) => crate::slash::attach(vec![tok], thread, place, None),
+            PaletteAct::EnableRoutine { server, id, thread, place, email } => crate::settings::enable_template(server, id, thread, place, email),
         }
     }
 
@@ -2790,6 +2957,8 @@ impl Store {
         self.at_items.set(Vec::new());
         self.at_open.set(false);
         self.at_start.set(-1);
+        self.pop_rows.set(Vec::new());
+        self.pop_head.set(String::new());
         self.emph_bot.set(String::new());
         self.settled.set(None);
         self.chat_scrolling.set(false);
@@ -3109,6 +3278,9 @@ impl Store {
     /// [`open_details`] for an item of a known kind (a group's artifact,
     /// from any chat); "" = guess from the id.
     pub fn open_details_of(&'static self, id: &str, kind: &str) {
+        if kind == "mcp-app" {
+            return self.open_mcp_details(id);
+        }
         if kind == "app" || (kind.is_empty() && !id.starts_with("file:") && !id.starts_with("gdrive:")) {
             return self.open_app_details(id);
         }
@@ -3122,6 +3294,34 @@ impl Store {
             };
             self.seed_app_details(&v);
         });
+    }
+
+    /// App Details for an attached server app: what its Library record
+    /// (the open chat's, else a group's) tells — else
+    /// `GET /artifact/info?id=attach:<id>`, the same record.
+    fn open_mcp_details(&'static self, id: &str) {
+        let a = self.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == id).cloned()).or_else(|| {
+            self.groups.with_untracked(|gs| {
+                gs.iter().flat_map(|g| g.items.iter()).filter_map(|it| it.artifact.as_ref()).find(|a| a.app == id).cloned()
+            })
+        });
+        self.ad_err.set(String::new());
+        self.ad_busy.set(String::new());
+        let show = move |a: RoxApp| {
+            self.ad_title.set(a.title.clone());
+            self.app_details.set(Some(AppInfo::of_mcp(&a)));
+        };
+        match a {
+            Some(a) => show(a),
+            None => {
+                let id = id.to_owned();
+                spawn_detached(async move {
+                    if let Some(v) = client::get(&details_url(&id, "mcp-app")).await {
+                        show(RoxApp::from_json(&v));
+                    }
+                });
+            }
+        }
     }
 
     fn seed_app_details(&'static self, v: &serde_json::Value) {
@@ -3280,6 +3480,9 @@ impl Store {
     pub fn show_details_origin(&'static self) {
         let Some(i) = self.app_details.get_untracked() else { return };
         self.app_details.set(None);
+        if i.kind == "mcp-app" {
+            return crate::slash::show_in_chats(i.token, None);
+        }
         if self.thread_apps.with_untracked(|v| v.iter().any(|a| a.app == i.name)) {
             self.show_library_item(&i.name);
         } else if !i.thread_id.is_empty() {
@@ -3293,6 +3496,30 @@ impl Store {
         let Some(info) = self.app_details.get_untracked() else { return };
         let title = self.ad_title.get_untracked().trim().to_owned();
         let file = self.ad_file.get_untracked().trim().to_owned();
+        // An attached server app: Rename is a display name in Rox, shared
+        // by every chat and pin of its token (`POST /mcp/attachment/rename`;
+        // empty goes back to the server's).
+        if info.kind == "mcp-app" {
+            if title == info.title {
+                self.app_details.set(None);
+                return;
+            }
+            let body = serde_json::json!({ "token": info.token, "title": title });
+            self.ad_busy.set("save".into());
+            spawn_detached(async move {
+                let v = client::post_any("/mcp/attachment/rename", body).await;
+                self.ad_busy.set(String::new());
+                if v.as_ref().is_some_and(|v| self::b(v, "ok")) {
+                    self.app_details.set(None);
+                    self.refresh_thread_apps();
+                    self.refresh_turns();
+                } else {
+                    let error = v.as_ref().map(|v| s(v, "error")).unwrap_or_default();
+                    self.ad_err.set(if error.is_empty() { "Couldn't rename it".to_owned() } else { error });
+                }
+            });
+            return;
+        }
         // A connector's file: a new title renames it where it lives
         // (`POST /artifact/rename-remote` — Drive's update_drive_file).
         if info.storage.connector() {
@@ -4449,12 +4676,9 @@ impl Store {
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
         let text = self.draft.get_untracked().trim().to_owned();
-        // `/status` (the demo) and `/status:<state>` are local commands —
-        // the TSX never posts them (App.tsx:574).
-        if text == "/status" || text.starts_with("/status:") {
-            let arg = text.strip_prefix("/status:").map(str::trim).unwrap_or("demo").to_owned();
-            self.draft.set(String::new());
-            self.mock_status(&arg);
+        // Commands (`/status`, a server's) and a message of `@` tokens
+        // alone run here — they never reach the model (slash.rs).
+        if crate::slash::dispatch(&text) {
             return;
         }
         let reply_to = self.reply_to.get_untracked();
@@ -4705,12 +4929,22 @@ impl Store {
 
     /// `POST /thread/new` — a fresh chat.
     pub fn new_thread(&'static self) {
+        self.new_thread_with(String::new());
+    }
+
+    /// A fresh chat whose composer holds `draft`, unsent
+    /// (`rox://chat/new?draft=`).
+    pub fn new_thread_with(&'static self, draft: String) {
         spawn(async move {
             if let Some(v) = client::post("/thread/new", serde_json::json!({})).await {
                 if let Some(v) = client::get("/threads").await {
                     self.set_threads(v);
                 }
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    // the switch to it loads its draft (`track_drafts`)
+                    if !draft.is_empty() {
+                        self.keep_draft(id, Draft { text: draft, ..Default::default() });
+                    }
                     self.open_thread(id.to_owned());
                 }
             }
@@ -4903,6 +5137,11 @@ impl Store {
 
     /// `raw(f)` — the server's bytes of a reply file.
     pub fn file_raw_url(path: &str) -> String {
+        // a file on this Mac outside the server's (`rox://view`'s)
+        if path.starts_with('/') {
+            let enc = path.split('/').map(|p| crate::client::urlenc(p)).collect::<Vec<_>>().join("/");
+            return format!("file://{enc}");
+        }
         let enc = path
             .split('/')
             .map(|p| crate::client::urlenc(p))
@@ -4993,13 +5232,30 @@ impl Store {
         self.viewing.set(Some(f.clone()));
         self.rendered.set(None);
         // a reply file's saved versions (a mini app's come with View Code)
-        if !f.path.starts_with("app:") {
+        let local = f.path.starts_with('/');
+        if !f.path.starts_with("app:") && !local {
             crate::files::load_file_versions(&f.path);
         }
         self.sheet_idx.set(0);
         self.html_mode.set("preview".to_owned());
         self.sel_a.set(None);
         self.sel_b.set(None);
+        // A file on this Mac outside the server's files (`rox://view`'s, a
+        // mini app's print preview): read here, its text the source view
+        // and what prints.
+        if local {
+            if f.kind != "pdf" {
+                self.rendered.set(Some(match std::fs::read_to_string(&f.path) {
+                    Ok(t) => Rendered {
+                        lines: t.lines().map(|l| vec![(l.to_owned(), String::new(), String::new())]).collect(),
+                        text: (f.kind != "text").then_some(t),
+                        ..Default::default()
+                    },
+                    Err(e) => Rendered { error: e.to_string(), ..Default::default() },
+                }));
+            }
+            return;
+        }
         let path = f.path.clone();
         spawn(async move {
             let url = format!(
@@ -5656,14 +5912,14 @@ impl Store {
     }
 
     /// Add to Group › (a row's check mark): puts item `kind`/`id` in group
-    /// `gid` (an artifact with its origin chat `thread`), or takes it out
-    /// — of that group only.
+    /// `gid` (an artifact with its origin chat `thread`, an app with its
+    /// title there), or takes it out — of that group only.
     pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
         let mut body = serde_json::json!({
             "id": gid, "kind": kind, "ref": id, "op": if add { "add" } else { "remove" },
         });
         if !thread.is_empty() {
-            body["thread"] = thread.into();
+            body[if kind == "app" { "title" } else { "thread" }] = thread.into();
         }
         if !add {
             let (gid, kind, id) = (gid.to_owned(), kind.to_owned(), id.to_owned());
@@ -5704,6 +5960,7 @@ impl Store {
                     id: id.to_owned(),
                     thread: thread.to_owned(),
                     artifact: None,
+                    title: if kind == "app" { thread.to_owned() } else { String::new() },
                 });
             if let Some(g) = gs.iter_mut().find(|g| g.id == gid) {
                 g.items.retain(|it| !same(it));
@@ -5718,7 +5975,7 @@ impl Store {
         });
         let mut add = serde_json::json!({ "id": gid, "kind": kind, "ref": id, "op": "add" });
         if !thread.is_empty() {
-            add["thread"] = thread.into();
+            add[if kind == "app" { "title" } else { "thread" }] = thread.into();
         }
         if let Some(i) = index {
             add["index"] = i.into();
@@ -5736,11 +5993,12 @@ impl Store {
     }
 
     /// New Group… — `POST /group/new`, with the item the menu was opened
-    /// on as its first member.
+    /// on as its first member (an app's third field is its title).
     pub fn new_group(&'static self, name: &str, item: Option<(String, String, String)>) {
         let mut body = serde_json::json!({ "name": name });
         if let Some((kind, id, thread)) = item {
-            body["item"] = serde_json::json!({ "kind": kind, "ref": id, "thread": thread });
+            let field = if kind == "app" { "title" } else { "thread" };
+            body["item"] = serde_json::json!({ "kind": kind, "ref": id, field: thread });
         }
         self.group_post("/group/new", body);
     }
@@ -5800,6 +6058,15 @@ impl Store {
     /// image card opens in the lightbox, a file in the viewer — a file kept
     /// elsewhere (Google Drive) opens by its link in the browser.
     pub fn open_library_item(&'static self, a: &RoxApp) {
+        // a server's app attached here: its link, full screen
+        if a.kind == "mcp-app" {
+            match mini_link(&a.open) {
+                Some(key) => self.open_mini_token(&key, &a.title, &a.token),
+                None if !a.open.is_empty() => self.open_link(&a.open),
+                None => {}
+            }
+            return;
+        }
         if a.storage.place != "mac" {
             if !a.storage.link.is_empty() {
                 self.open_link(&a.storage.link);
@@ -5832,6 +6099,10 @@ impl Store {
 
     /// A Library item's message in the open chat.
     pub fn show_library_item(&'static self, app: &str) {
+        let a = self.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == app).cloned());
+        if let Some(a) = a.filter(|a| a.kind == "mcp-app") {
+            return self.show_group_item(&a);
+        }
         let i = self.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == app).map(|a| a.i));
         if let Some(i) = i.filter(|i| *i >= 0) {
             self.go_to(&self.active_id.get_untracked(), Some(i));
@@ -5884,6 +6155,22 @@ impl Store {
         });
     }
 
+    /// Detach from Chat: `POST /mcp/detach` — the attached server app
+    /// leaves this chat's Library, and its tools here lose its scope. Its
+    /// Library id is `attach:<attachment id>`.
+    pub fn detach_mcp(&'static self, id: &str) {
+        let id = id.to_owned();
+        self.thread_apps.update(|v| v.retain(|a| a.app != id));
+        let aid = id.strip_prefix("attach:").unwrap_or(&id).to_owned();
+        spawn_detached(async move {
+            let v = client::post_any("/mcp/detach", serde_json::json!({ "id": aid })).await;
+            if !v.as_ref().is_some_and(|v| self::b(v, "ok")) {
+                crate::toast::show("Couldn't detach it".to_owned());
+            }
+            self.refresh_thread_apps();
+        });
+    }
+
     /// Whether the open chat's artifact `id` is archived.
     pub fn is_archived(&'static self, id: &str) -> bool {
         let id = app_name(id);
@@ -5912,6 +6199,11 @@ impl Store {
 
     /// A group's artifact in its own chat, at the message that made it.
     pub fn show_group_item(&'static self, a: &RoxApp) {
+        // an attached server app: each chat it's attached in has its card
+        if a.kind == "mcp-app" && !a.token.is_empty() {
+            let here = (!a.thread_uid.is_empty()).then(|| (a.thread_uid.clone(), a.turn_id.clone()));
+            return crate::slash::show_in_chats(a.token.clone(), here);
+        }
         if a.turn_id.is_empty() {
             self.go_to(&a.thread_uid, (a.i >= 0).then_some(a.i));
         } else {
@@ -6138,7 +6430,55 @@ impl Store {
             return;
         }
         if let Some(key) = mini_link(url) {
-            self.open_mini_full(&key, "");
+            self.open_mini_token(&key, "", &link_token(url));
+            return;
+        }
+        // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
+        // print preview), in the viewer over the full-screen app
+        if let Some(q) = url.strip_prefix("rox://view").filter(|q| q.is_empty() || q.starts_with(['?', '/'])) {
+            let arg = |k: &str| {
+                q.trim_start_matches(['/', '?'])
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
+                    .map(client::urldec)
+                    .unwrap_or_default()
+            };
+            let path = arg("path");
+            if path.is_empty() {
+                return;
+            }
+            let file = path.rsplit('/').next().unwrap_or_default().to_owned();
+            let ext = crate::files::ext_of(&file, "");
+            let kind = match ext.as_str() {
+                "html" | "htm" => "html",
+                "pdf" => "pdf",
+                "md" | "markdown" => "markdown",
+                "json" => "json",
+                "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
+                "txt" | "csv" | "log" | "xml" => "text",
+                _ => "file",
+            };
+            let title = arg("title");
+            self.open_file(&Attach {
+                kind: kind.to_owned(),
+                name: if title.is_empty() { file } else { title },
+                path,
+                ext,
+                ..Default::default()
+            });
+            return;
+        }
+        // `rox://chat/new?draft=<text>`: a new chat, its composer holding
+        // the text (a mini app handing work to the assistant)
+        if let Some(q) = url.strip_prefix("rox://chat/new").filter(|q| q.is_empty() || q.starts_with('?') || q == &"/") {
+            let draft = q
+                .trim_start_matches(['/', '?'])
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("draft="))
+                .map(client::urldec)
+                .unwrap_or_default();
+            self.mini_full.set(Vec::new());
+            Owner::detached().run(|| self.new_thread_with(draft));
             return;
         }
         if let Some(name) = url.strip_prefix("rox://plugin/") {
@@ -6160,19 +6500,93 @@ impl Store {
         self.mini_source_title(app)
     }
 
-    /// Shows a server's mini app full screen. The module is fetched fresh,
-    /// so a server's newer build is what opens, and every open mounts a new
-    /// app (its number changes): an app reloaded in place drops its inputs'
-    /// text changes.
+    /// Shows a server's mini app full screen, over the one open (✕ comes
+    /// back to it). The module is fetched fresh, so a server's newer build
+    /// is what opens, and every open mounts a new app (its number
+    /// changes): the app on top opened again reloads in its place, and
+    /// drops its inputs' text changes.
     pub fn open_mini_full(&'static self, key: &str, title: &str) {
+        self.open_mini_token(key, title, "");
+    }
+
+    /// [`open_mini_full`] for what a token resolved to: the token rides
+    /// along, so the app can be attached to a chat.
+    pub fn open_mini_token(&'static self, key: &str, title: &str, token: &str) {
+        // a new open drops what ⌘] would have reopened, as a browser's does
+        crate::mini::forget_forward();
         self.minis.borrow_mut().remove(key);
         self.mini_err(key).set(String::new());
         if !title.is_empty() {
             self.mini_source_title(key).set(title.to_owned());
         }
-        let n = self.mini_full.get_untracked().map_or(0, |(_, _, n)| n) + 1;
-        self.mini_full.set(Some((key.to_owned(), title.to_owned(), n)));
+        let n = self.mini_seq.get() + 1;
+        self.mini_seq.set(n);
+        let open = MiniOpen { key: key.to_owned(), title: title.to_owned(), n, token: token.to_owned() };
+        self.mini_full.update(|v| {
+            if v.last().is_some_and(|top| top.key == open.key) {
+                v.pop();
+            }
+            v.push(open);
+        });
+        // opened from a link with no title: its token's resolved title
+        // names it (the title bar, Pin and Attach), not the app's own name
+        if title.is_empty()
+            && let Some((server, scope, value)) = crate::slash::token(token)
+        {
+            spawn_detached(async move {
+                let body = serde_json::json!({ "server": server, "name": scope, "args": value, "complete": false });
+                let Some(v) = client::post("/mcp/resolve", body).await else { return };
+                let t = v.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_owned();
+                if v.get("ok").and_then(|x| x.as_bool()) == Some(true) && !t.is_empty() {
+                    crate::live::store().mini_full.update(|v| {
+                        if let Some(o) = v.iter_mut().find(|o| o.n == n) {
+                            o.title = t;
+                        }
+                    });
+                }
+            });
+        }
     }
+
+    /// ✕ on the full-screen app: back to the one under it.
+    pub fn close_mini(&'static self) {
+        let mut top = None;
+        self.mini_full.update(|v| top = v.pop());
+        // ⌘] opens it again (`mini::step`)
+        if let Some(top) = top {
+            crate::mini::left(top);
+        }
+    }
+
+    /// ⌘W over the full-screen apps: the file viewer over them closes
+    /// first, then the top app.
+    pub fn mini_close_top(&'static self) {
+        if self.viewing.get_untracked().is_some() {
+            self.viewing.set(None);
+        } else {
+            self.close_mini();
+        }
+    }
+}
+
+/// One full-screen mini app: its module name (`mcp:<server>/<app>[|<props>]`),
+/// title, the open's number and the token it was resolved from ("" when
+/// a link opened it).
+#[derive(Clone, PartialEq, Default)]
+pub struct MiniOpen {
+    pub key: String,
+    pub title: String,
+    pub n: u64,
+    pub token: String,
+}
+
+/// The token a `rox://app/` link names (`&token=`), "" when none: the app
+/// it opens can be attached from the title bar then.
+pub(crate) fn link_token(url: &str) -> String {
+    url.split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
+        .map(client::urldec)
+        .unwrap_or_default()
 }
 
 /// `rox://app/<server>/<app>[?props=<JSON>]` → the mini app's module name

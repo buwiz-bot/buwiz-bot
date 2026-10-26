@@ -560,7 +560,45 @@ fn rail_member(gid: String, m: GroupRow) -> AnyElement {
         GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
         GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
         GroupRow::Artifact(a) => rail_art(gid, signal(a).read_only()).into_element(),
+        GroupRow::App(key, title) => rail_app(gid, key, title).into_element(),
     }
+}
+
+/// A pinned mini app's tile: its title's initial on the title's hue,
+/// rounded square as an app's (a chat's is round).
+fn app_tile(title: &str, size: f32) -> impl IntoElement {
+    view()
+        .size(px(size))
+        .rounded(px((size * 0.225).round()))
+        .bg(hue(title))
+        .items_center()
+        .justify_center()
+        .child(
+            text(title.chars().find(|c| c.is_alphanumeric()).unwrap_or('?').to_uppercase().collect::<String>())
+                .text_size(px((size * 0.4).round()))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(white()),
+        )
+}
+
+/// A group's mini app in the rail: its tile; a press opens it full screen.
+fn rail_app(gid: String, key: String, title: String) -> impl IntoElement {
+    let hovered = signal(false);
+    let (key2, title2) = (key.clone(), title.clone());
+    view()
+        .size(px(54.0))
+        .rounded(px(10.0))
+        .items_center()
+        .justify_center()
+        .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
+        .label(title.clone())
+        .child(app_tile(&title, 36.0))
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || store().open_mini_full(&key, &title))
+        .on_context_menu(move |e: &ContextMenuEvent| {
+            crate::ctx::open(e, crate::ctx::group_app_items(&gid, &key2, &title2))
+        })
 }
 
 /// A group's artifact in the rail: its tile on the rail's plate; a mini
@@ -1822,7 +1860,49 @@ fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
             |a| a.app.clone(),
             move |a, _| group_art_row(gid.clone(), a),
         ),
+        GroupRow::App(key, title) => group_app_row(gid, key, title).into_element(),
     }
+}
+
+/// A group's mini app (a pinned `rox://app/` link): its tile, its title
+/// and its server; a press opens it full screen.
+fn group_app_row(gid: String, key: String, title: String) -> impl IntoElement {
+    let hovered = signal(false);
+    let gid2 = gid.clone();
+    let row_key = format!("app:{key}");
+    let server = key.trim_start_matches("mcp:").split('/').next().unwrap_or("").to_owned();
+    let (key2, key3, title2, title3) = (key.clone(), key.clone(), title.clone(), title.clone());
+    let row = view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_hover_in(move || hovered.set(true))
+        .on_hover_out(move || hovered.set(false))
+        .on_press(move || store().open_mini_full(&key, &title))
+        .on_context_menu(move |e: &ContextMenuEvent| {
+            crate::ctx::open(e, crate::ctx::group_app_items(&gid, &key2, &title2))
+        })
+        .child(app_tile(&title3, 36.0))
+        .child(
+            view()
+                .flex_1()
+                .child(text(title3.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+                .child(
+                    text(format!("Mini app · {server}"))
+                        .text_size(px(12.0))
+                        .text_color(theme::MUTED)
+                        .number_of_lines(1),
+                ),
+        );
+    let src = Src::group(&gid2);
+    // its title rides where an artifact's origin chat would
+    draggable(row, src, row_key, move || {
+        Dragged::new("app", key3.clone(), title3.clone(), title3.clone(), Face::Chat(title3.clone()))
+    })
 }
 
 /// A group's artifact row: its kind's tile (an app's icon, an image's
