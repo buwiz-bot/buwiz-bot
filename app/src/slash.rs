@@ -15,7 +15,7 @@
 //! the composer, or the full-screen app's Attach. The server posts the
 //! token's card there and scopes its tools to it.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::client;
 use crate::live::store;

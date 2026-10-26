@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::store::{Attach, PluginNav};

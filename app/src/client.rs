@@ -3,7 +3,7 @@
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
 //! `/state/:app`, `/artifacts`, `/mcp/servers`, `/skills`.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The generation server the TSX app binds to.
 pub const GEN: &str = "http://127.0.0.1:8787";

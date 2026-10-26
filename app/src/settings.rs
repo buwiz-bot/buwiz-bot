@@ -11,7 +11,8 @@
 //! /routines/templates`): Enable picks a chat or bot in ⌘K and makes one
 //! there (`POST /routine/from-template`).
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::keys::{self, COMMANDS, Scope};
 use crate::live::store;

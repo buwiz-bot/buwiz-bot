@@ -16,7 +16,8 @@ const DROP_MAX: f32 = 330.0;
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::icons::icon;
 use crate::live::store;

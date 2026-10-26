@@ -125,13 +125,13 @@ mod jank_log {
 }
 
 /// The root the runners mount: the same component every platform shows.
-pub fn app_root() -> nsh_core::ui::Root {
-    nsh_core::ui::Root::of::<rox::App>().app_id("dev.goldcoders.rox")
+pub fn app_root() -> nsh_core::element::Root {
+    nsh_core::element::Root::of::<rox::App>().app_id("dev.goldcoders.rox")
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn ui_sets() -> Vec<nsh_core::ui::Registry> {
+fn ui_sets() -> Vec<nsh_core::element::Registry> {
     vec![nsh_base::registry(), rox::registry()]
 }
 

@@ -8,7 +8,7 @@
 use std::f32::consts::TAU;
 
 use nsh_core::canvas::{CanvasTextAlign, CanvasTextBaseline};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::theme;

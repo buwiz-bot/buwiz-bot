@@ -24,7 +24,7 @@ pub(crate) mod user_form;
 
 use std::rc::Rc;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::Value;
 
 use crate::live::store;

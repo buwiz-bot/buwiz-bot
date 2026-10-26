@@ -10,7 +10,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::icons::icon;
 use crate::{live::store, store::CtxItem, store::CtxMenu, theme};

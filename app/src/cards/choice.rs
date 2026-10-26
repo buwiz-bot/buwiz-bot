@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::{Btn, Card, CardState};

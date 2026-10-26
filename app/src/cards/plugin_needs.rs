@@ -5,7 +5,7 @@
 //! bot's pin), and the message goes again. Install and Add account open
 //! Connect Apps on the plugin (`rox://plugin/<name>`).
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::transport::{self, Sent};

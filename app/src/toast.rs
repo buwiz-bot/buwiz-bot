@@ -10,7 +10,7 @@ use nsh_base::{
     Anchor, ToastManager, ToastMotion, ToastOptions, ToastStackState, ToastTransitionStatus, toast,
     toast_stack,
 };
-use nsh_core::{time::now, ui::prelude::*};
+use nsh_core::{prelude::*, time::now};
 
 use crate::theme::tc;
 

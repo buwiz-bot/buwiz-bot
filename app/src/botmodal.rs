@@ -5,7 +5,8 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::avatar::bot_avatar;
 use crate::icons::icon;

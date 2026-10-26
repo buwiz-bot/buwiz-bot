@@ -13,7 +13,7 @@
 
 use std::borrow::Borrow;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::{Btn, CardState, btn, error_line, note, set_state, shell, state_of, title};

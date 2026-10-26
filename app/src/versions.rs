@@ -2,7 +2,7 @@
 //! opens — every version newest first, with its label, age and the
 //! version it branched from; picking one makes it current.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::icons::{icon_ink, icon_sized};
 use crate::live::store;

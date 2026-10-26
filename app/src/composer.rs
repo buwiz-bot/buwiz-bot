@@ -6,7 +6,8 @@
 //! moves them into a 40pt band under the input. The agent status row
 //! floats above the card. The `+` opens the attach menu at the button.
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::icons::{self, icon};
 use crate::live::store;

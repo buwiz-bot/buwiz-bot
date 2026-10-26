@@ -6,7 +6,8 @@
 //! its own rows instead: the chats an item is attached in, the chats and
 //! bots to attach one to.
 
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 use crate::icons::{icon_ink, icon_sized};
 use crate::plugins::hue;

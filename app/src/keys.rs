@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nsh_core::keymap::{Keystroke, When};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 

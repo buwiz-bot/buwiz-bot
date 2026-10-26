@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::{KIND_CODE, KIND_PASSKEY, Secret, SiteLogin, Unlock, off_main, vault};
 use crate::theme;

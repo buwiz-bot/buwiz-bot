@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::client;
 
@@ -2344,7 +2344,7 @@ impl Store {
         self.frame_want.set(true);
         if !self.frame_started.replace(true) {
             let clock = self.frame_clock;
-            let (owner, _) = nsh_core::ui::create_root(|| {
+            let (owner, _) = nsh_core::element::create_root(|| {
                 spawn(async move {
                     let st = crate::live::store();
                     // Real elapsed time on top of where the last run

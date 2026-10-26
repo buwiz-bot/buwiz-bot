@@ -1,7 +1,7 @@
 [submodule "nsh"]
 	path = nsh
-	url = https://github.com/hexuria/native-shell.git
-	branch = main
+	url = https://github.com/hexuria/nsh.git
+	branch = rox
 [submodule "ra-jit"]
 	path = ra-jit
 	url = https://github.com/hexuria/ra-jit.git

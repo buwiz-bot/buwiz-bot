@@ -4,7 +4,7 @@
 //! as answered here, says "Not connected to an agent server yet", and logs
 //! the body it would have sent — every flow clicks through offline.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use crate::client::{self, urlenc};

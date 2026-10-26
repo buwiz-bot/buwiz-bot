@@ -5,7 +5,7 @@
 use std::str::FromStr;
 
 use nsh_core::canvas::{svg_path, FillRule, LineCap, LineJoin, Path};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::theme;
 
