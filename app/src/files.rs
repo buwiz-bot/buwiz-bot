@@ -553,10 +553,16 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
 pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
     let url = l.link.clone();
     let hov = signal(false);
+    // a server's mini app (`rox/open`): opens full screen, not in Drive
+    let app = (l.provider == "mcp-app").then(|| (l.id.clone(), l.name.clone()));
     let name = if l.name.is_empty() { format!("Untitled {}", l.file_type) } else { l.name.clone() };
     let kind = if l.file_type.is_empty() { "File" } else { l.file_type.as_str() };
+    let place = match &app {
+        Some((key, _)) => key.trim_start_matches("mcp:").split('/').next().unwrap_or("").to_owned(),
+        None => "Google Drive".to_owned(),
+    };
     view()
-        .label(format!("Open {name} in Google Drive"))
+        .label(format!("Open {name} in {place}"))
         .child(
             card_box()
                 .flex_row()
@@ -571,7 +577,7 @@ pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
                 .child(crate::appdetails::connector_tile(&l.kind, &l.name, 36.0))
                 .child(
                     view().flex_1().min_w(px(0.0)).child(file_name(&name)).child(
-                        text(format!("{kind} · Google Drive"))
+                        text(format!("{kind} · {place}"))
                             .number_of_lines(1)
                             .text_size(px(13.0))
                             .line_height(px(18.0))
@@ -580,7 +586,10 @@ pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
                 )
                 .child(crate::icons::icon_ink("arrowUpRight", 14.0, || tc("#f5f5f5a8"))),
         )
-        .on_press(move || store().open_link(&url))
+        .on_press(move || match &app {
+            Some((key, title)) => store().open_mini_full(key, title),
+            None => store().open_link(&url),
+        })
 }
 
 // ——————————————————— audio (`useAudio` + AudioCard) ———————————————————

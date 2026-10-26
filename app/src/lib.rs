@@ -96,6 +96,7 @@ pub fn App() -> impl IntoElement {
         let thread = url.strip_prefix("rox://chat/").map(|r| r.split('?').next().unwrap_or(""));
         if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
             || url.starts_with("rox://plugin/")
+            || url.starts_with("rox://app/")
         {
             live::store().open_link(url);
         } else {

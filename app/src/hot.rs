@@ -322,7 +322,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // Local automation (`GPUI_AGENT=1`, the dev bundle) has no secondary
     // click: a line `<x> <y> <menu> <arg…>` written to
     // $TMPDIR/rox-agent-menu opens that right-click menu at (x, y) —
-    // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>.
+    // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>;
+    // `refresh` reloads the Library and groups.
     if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
         spawn(async move {
             let path = std::env::temp_dir().join("rox-agent-menu");
@@ -399,6 +400,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(models::layer())
         .child(composer::plus_layer())
         .child(files::layer())
+        .child(crate::mini::full_layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
         // above every modal: Settings, then the menus and their prompts
@@ -634,6 +636,18 @@ fn top_bar() -> impl IntoElement {
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
 fn agent_menu(line: &str) {
+    // `refresh`: the open chat's Library and the groups again
+    if line == "refresh" {
+        store().groups_json.borrow_mut().clear();
+        store().refresh_thread_apps();
+        return;
+    }
+    // `type <n> <text>`: into the open mini app's n-th text field
+    if let Some(rest) = line.strip_prefix("type ") {
+        let n = store().mini_dev_type.get_untracked().split('|').next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0) + 1;
+        store().mini_dev_type.set(format!("{n}|{rest}"));
+        return;
+    }
     let f: Vec<&str> = line.split_whitespace().collect();
     let (Some(x), Some(y)) = (f.first().and_then(|v| v.parse::<f32>().ok()), f.get(1).and_then(|v| v.parse::<f32>().ok())) else {
         return;

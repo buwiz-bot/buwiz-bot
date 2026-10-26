@@ -1212,7 +1212,6 @@ fn key_hint(in_sub: bool, idx: i64) -> impl IntoElement {
 /// ⌘1…⌘9: runs the nth row of the card the keys act in — a row with a
 /// flyout opens it and moves the keys into it.
 pub(crate) fn menu_pick(n: usize) {
-    let st = store();
     let items = keyed_items();
     let Some(i) = nth_row(&items, n) else { return };
     open_or_run(i, &items);

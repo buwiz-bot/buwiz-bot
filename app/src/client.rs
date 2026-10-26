@@ -73,3 +73,27 @@ pub fn urlenc(s: &str) -> String {
     }
     out
 }
+
+/// `decodeURIComponent` (and `+` as a space, as a query value may carry).
+pub fn urldec(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+        match b[i] {
+            b'%' if i + 2 < b.len() => match (hex(b[i + 1]), hex(b[i + 2])) {
+                (Some(h), Some(l)) => {
+                    out.push(h << 4 | l);
+                    i += 3;
+                    continue;
+                }
+                _ => out.push(b'%'),
+            },
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}

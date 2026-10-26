@@ -1553,6 +1553,11 @@ pub struct Store {
     pub pill_guard: std::cell::Cell<bool>,
     /// `viewing` (fileviewer.tsx) — the file the fullscreen viewer shows.
     pub viewing: Signal<Option<Attach>>,
+    /// The mini app an MCP server ships, open full screen: its module name
+    /// (`mcp:<server>/<app>[|<props>]`), title and the open's number.
+    pub mini_full: Signal<Option<(String, String, u64)>>,
+    /// Dev hook: `<count>|<field> <text>` to type into the open mini app.
+    pub mini_dev_type: Signal<String>,
     /// `rendered` — `GET /file/render`'s answer for `viewing`.
     pub rendered: Signal<Option<Rendered>>,
     /// `sheet` — the workbook tab open.
@@ -1816,7 +1821,7 @@ pub struct Store {
     /// (App.tsx's `threadsJ`/`botsJ` compare, App.tsx:384).
     threads_list_json: std::cell::RefCell<String>,
     bots_json: std::cell::RefCell<String>,
-    groups_json: std::cell::RefCell<String>,
+    pub(crate) groups_json: std::cell::RefCell<String>,
 
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
     /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
@@ -2023,6 +2028,8 @@ impl Store {
             ui_zoom: signal(1.0),
             pill_guard: std::cell::Cell::new(false),
             viewing: signal(None),
+            mini_full: signal(None),
+            mini_dev_type: signal(String::new()),
             rendered: signal(None),
             sheet_idx: signal(0usize),
             html_mode: signal("preview".to_owned()),
@@ -4595,6 +4602,7 @@ impl Store {
         let mut last_seq = 0i64;
         let mut shown_at = std::time::Instant::now();
         let mut tick = 0u32;
+        let mut opened: Option<String> = None;
         while started.elapsed() < std::time::Duration::from_secs(30 * 60) {
             let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
             let phase = s(&v, "phase");
@@ -4645,6 +4653,14 @@ impl Store {
                 let mins = shown_at.elapsed().as_secs() / 60;
                 let label = if mins >= 1 { format!("{label} · {}", elapsed_label(mins)) } else { label };
                 self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
+            }
+            // a server asked to show one of its mini apps (once per job)
+            if let Some(open) = v.get("open").filter(|o| o.is_object()) {
+                let key = s(open, "key");
+                if !key.is_empty() && opened.as_deref() != Some(key.as_str()) {
+                    opened = Some(key.clone());
+                    self.open_mini_full(&key, &s(open, "title"));
+                }
             }
             // The reply streams into the transcript; the chat list less often.
             self.refresh_turns();
@@ -5313,7 +5329,7 @@ impl Store {
     /// on "Loading…" for good.
     fn fetch_mini(&'static self, name: String, sig: Signal<String>) {
         Owner::detached().run(|| spawn(async move {
-            let Some(v) = client::get(&format!("/module?name={name}")).await else {
+            let Some(v) = client::get(&format!("/module?name={}", client::urlenc(&name))).await else {
                 self.mini_err(&name).set("server unreachable".to_owned());
                 return;
             };
@@ -6121,6 +6137,10 @@ impl Store {
             *self.early_link.borrow_mut() = Some(url.to_owned());
             return;
         }
+        if let Some(key) = mini_link(url) {
+            self.open_mini_full(&key, "");
+            return;
+        }
         if let Some(name) = url.strip_prefix("rox://plugin/") {
             let name = name.trim_end_matches('/').to_owned();
             self.open_plugins();
@@ -6139,6 +6159,40 @@ impl Store {
     fn mini_title(&'static self, app: &str) -> Signal<String> {
         self.mini_source_title(app)
     }
+
+    /// Shows a server's mini app full screen. The module is fetched fresh,
+    /// so a server's newer build is what opens, and every open mounts a new
+    /// app (its number changes): an app reloaded in place drops its inputs'
+    /// text changes.
+    pub fn open_mini_full(&'static self, key: &str, title: &str) {
+        self.minis.borrow_mut().remove(key);
+        self.mini_err(key).set(String::new());
+        if !title.is_empty() {
+            self.mini_source_title(key).set(title.to_owned());
+        }
+        let n = self.mini_full.get_untracked().map_or(0, |(_, _, n)| n) + 1;
+        self.mini_full.set(Some((key.to_owned(), title.to_owned(), n)));
+    }
+}
+
+/// `rox://app/<server>/<app>[?props=<JSON>]` → the mini app's module name
+/// (`mcp:<server>/<app>[|<props>]`).
+pub(crate) fn mini_link(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("rox://app/")?;
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (server, app) = path.trim_end_matches('/').split_once('/')?;
+    if server.is_empty() || app.is_empty() {
+        return None;
+    }
+    let props = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("props="))
+        .map(client::urldec)
+        .filter(|p| p.trim_start().starts_with('{') && p.trim() != "{}");
+    Some(match props {
+        Some(p) => format!("mcp:{server}/{app}|{p}"),
+        None => format!("mcp:{server}/{app}"),
+    })
 }
 
 /// `prettyModel` (modelpicker.tsx:38): "gpt-6.1-sol" → "GPT-6.1 Sol",
