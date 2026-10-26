@@ -162,7 +162,11 @@ def rebuild(push):
         print(f"check it (cargo check / Rox build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
         return
     old = git("rev-parse", "origin/rox")
-    tag = "rox-" + datetime.date.today().isoformat()
+    tag = base = "rox-" + datetime.date.today().isoformat()
+    n = 1
+    while git("tag", "-l", tag) or git("ls-remote", "--tags", "origin", tag):
+        n += 1
+        tag = f"{base}-{n}"
     if git("tag", "--points-at", old):
         print(f"old rox tip already tagged: {git('tag', '--points-at', old)}")
     else:
