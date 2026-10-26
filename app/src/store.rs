@@ -1805,9 +1805,15 @@ pub struct Store {
     /// until the new chat's turns land, then a fresh one mounts (keyed by
     /// this) already at its place and fades in.
     pub turns_of: Signal<String>,
-    /// The chats whose transcripts stay mounted, most recent first (at
-    /// most `ALIVE`): switching among them only shows and hides.
+    /// The chats whose transcripts stay mounted (the ⌘1–9 chats and the
+    /// `ALIVE` most recent others), in the order they came: switching among
+    /// them only shows and hides. Kept in that order, not by recency:
+    /// moving a mounted transcript in the list re-inserts its whole view
+    /// tree (20–45 ms a switch).
     pub alive: Signal<Vec<String>>,
+    /// The chats opened, most recent first: what `alive` keeps beyond the
+    /// ⌘1–9 chats.
+    pub recent_chats: std::cell::RefCell<Vec<String>>,
     /// Each chat's last scroll position, kept while Rox runs.
     pub scroll_marks: std::cell::RefCell<std::collections::HashMap<String, ScrollMark>>,
     /// The first turn that arrived while the open chat was away, until
@@ -2106,6 +2112,7 @@ impl Store {
             nav_epoch: std::cell::Cell::new(0),
             turns_of: signal(String::new()),
             alive: signal(Vec::new()),
+            recent_chats: std::cell::RefCell::new(Vec::new()),
             scroll_marks: std::cell::RefCell::new(std::collections::HashMap::new()),
             new_below: signal(None),
             highlight: signal(None),
@@ -2996,6 +3003,7 @@ impl Store {
         self.turns.set(Vec::new());
         self.turns_of.set(String::new());
         self.alive.set(Vec::new());
+        self.recent_chats.borrow_mut().clear();
         *self.turns_json.borrow_mut() = String::new();
         spawn(async move {
             if let Some(v) = client::get("/threads").await {
@@ -3037,13 +3045,31 @@ impl Store {
                 self.turns.set(turns);
                 if self.turns_of.get_untracked() != id {
                     self.turns_of.set(id.clone());
-                    // Most recent first; the oldest beyond `ALIVE` unmounts
-                    // (its spot is kept as a `ScrollMark`).
-                    self.alive.update(|a| {
-                        a.retain(|x| *x != id);
-                        a.insert(0, id.clone());
-                        a.truncate(ALIVE);
-                    });
+                    // The ⌘1–9 chats stay, and the `ALIVE` most recent
+                    // others; the rest unmounts (its spot is kept as a
+                    // `ScrollMark`). Cycling through ⌘1–9 rebuilt a chat on
+                    // every press (200–1250 views, frames up to 50 ms).
+                    let keys = self.shortcut_threads();
+                    let keep: Vec<String> = {
+                        let mut recent = self.recent_chats.borrow_mut();
+                        recent.retain(|x| *x != id);
+                        recent.insert(0, id.clone());
+                        recent.truncate(ALIVE + 9);
+                        recent
+                            .iter()
+                            .filter(|x| !keys.contains(x))
+                            .take(ALIVE)
+                            .cloned()
+                            .collect()
+                    };
+                    let mut next = self.alive.get_untracked();
+                    next.retain(|x| keys.contains(x) || keep.contains(x));
+                    if !next.contains(&id) {
+                        next.push(id.clone());
+                    }
+                    if next != self.alive.get_untracked() {
+                        self.alive.set(next);
+                    }
                 }
             });
             if let Some(b) = v.get("revealed").and_then(|x| x.as_bool()) {

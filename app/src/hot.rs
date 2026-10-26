@@ -679,7 +679,7 @@ fn agent_menu(line: &str) {
     // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)
     if let Some(id) = line.strip_prefix("cmd ") {
         if let Some(c) = crate::keys::COMMANDS.iter().find(|c| c.id == id.trim()) {
-            (c.run)(0);
+            (c.run)(c.arg);
         }
         return;
     }
