@@ -549,7 +549,8 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
 
 /// A Drive file the reply made or changed — `FileCard`'s 230×64 box: its
 /// type tile with the Google badge, name, "Google Doc · Google Drive";
-/// a press opens it in the browser.
+/// a press opens it in the browser. A server's mini app (`mcp-app`) has
+/// its name's tile and opens full screen.
 pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
     let url = l.link.clone();
     let hov = signal(false);
@@ -574,7 +575,12 @@ pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
                 .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
                 .on_hover_in(move || hov.set(true))
                 .on_hover_out(move || hov.set(false))
-                .child(crate::appdetails::connector_tile(&l.kind, &l.name, 36.0))
+                // a server's app draws its name's tile, not a Drive file's
+                .child(if app.is_some() {
+                    crate::appdetails::named_tile("", &name, 36.0).into_element()
+                } else {
+                    crate::appdetails::connector_tile(&l.kind, &l.name, 36.0).into_element()
+                })
                 .child(
                     view().flex_1().min_w(px(0.0)).child(file_name(&name)).child(
                         text(format!("{kind} · {place}"))
@@ -587,7 +593,7 @@ pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
                 .child(crate::icons::icon_ink("arrowUpRight", 14.0, || tc("#f5f5f5a8"))),
         )
         .on_press(move || match &app {
-            Some((key, title)) => store().open_mini_full(key, title),
+            Some((key, title)) => store().open_mini_token(key, title, &crate::store::link_token(&url)),
             None => store().open_link(&url),
         })
 }
@@ -1583,6 +1589,21 @@ pub(crate) fn layer() -> impl IntoElement {
                             Some(lines) if !lines.is_empty() => code_view(lines).into_element(),
                             _ => view().into_element(),
                         }
+                    } else if f.path.starts_with('/') {
+                        // a file on this Mac (`rox://view`): its text, read
+                        // here; WebKit shows nothing for a string under a
+                        // `file://` base, so it gets the server's (a print
+                        // preview inlines its images)
+                        let html = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_default();
+                        web_view_html(html, Some(crate::client::GEN))
+                            .flex_1()
+                            .bg(AdaptiveColor::from(Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 1.0,
+                                a: 1.0,
+                            }))
+                            .into_element()
                     } else {
                         web_view(Store::file_raw_url(&f.path))
                             .flex_1()
@@ -2495,6 +2516,18 @@ pub(crate) fn viewer_print() {
     let Some(f) = st.viewing.get_untracked() else { return };
     match printable(&f) {
         Some("image") => crate::keys::print("image", Store::file_raw_url(&f.path), &f.name),
+        // an html file prints laid out, as the preview shows it
+        Some(_) if f.kind == "html" && st.html_mode.get_untracked() != "source" => {
+            let r = st.rendered.get_untracked();
+            let html = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_else(|| {
+                r.as_ref()
+                    .map(|r| r.lines.iter().map(|l| l.iter().map(|(t, _, _)| t.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default()
+            });
+            if !html.is_empty() {
+                crate::keys::print("html", html, &f.name);
+            }
+        }
         Some(_) => {
             let r = st.rendered.get_untracked();
             let text = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_else(|| {

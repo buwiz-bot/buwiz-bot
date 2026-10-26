@@ -5,6 +5,9 @@
 //! description and an app's window size, over the facts the server keeps
 //! (`/app/info`, `/artifact/info`). A file kept by a connected app (Google
 //! Drive) shows its title — a rename goes to Drive — and where it lives.
+//! A server's app attached to a chat (`mcp-app`, a tax profile say) shows
+//! its picture, name, subtitle, facts and versions, and renames in Rox
+//! only.
 
 use nsh_core::ui::prelude::*;
 
@@ -60,6 +63,10 @@ pub(crate) fn app_icon(app: &str, size: f32) -> impl IntoElement {
 /// its own thumbnail); a connector's file its type tile with the app's
 /// badge.
 pub(crate) fn artifact_tile(a: &RoxApp, size: f32) -> impl IntoElement {
+    if a.kind == "mcp-app" {
+        let name = if a.details.name.is_empty() { a.title.clone() } else { a.details.name.clone() };
+        return named_tile(&a.image, &name, size).into_element();
+    }
     if a.storage.connector() {
         return connector_tile(&a.kind, &a.filename, size).into_element();
     }
@@ -86,6 +93,40 @@ pub(crate) fn artifact_tile(a: &RoxApp, size: f32) -> impl IntoElement {
         Some(f) => crate::files::file_icon(f, size).into_element(),
         None => app_icon(&a.app, size).into_element(),
     }
+}
+
+/// An attached server app's tile: its picture, else its name's initial on
+/// a gradient of the name's hue (as an app's default icon).
+pub(crate) fn named_tile(image_url: &str, name: &str, size: f32) -> impl IntoElement {
+    let radius = (size * 0.225).round();
+    if !image_url.is_empty() {
+        return view()
+            .size(px(size))
+            .rounded(px(radius))
+            .overflow_hidden()
+            .child(image(image_url.to_owned()).size(px(size)).resize_mode(ResizeMode::Cover))
+            .into_element();
+    }
+    let base = crate::plugins::hue(name);
+    let top = Hsla { l: (base.l + 0.10).min(0.92), ..base };
+    let bottom = Hsla { l: (base.l - 0.06).max(0.08), ..base };
+    let initial: String =
+        name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".to_owned());
+    view()
+        .size(px(size))
+        .rounded(px(radius))
+        .items_center()
+        .justify_center()
+        .bg_linear_to_b()
+        .gradient_from(AdaptiveColor::from(top))
+        .gradient_to(AdaptiveColor::from(bottom))
+        .child(
+            text(initial)
+                .text_size(px((size * 0.44).round()))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hsla(0.0, 0.0, 1.0, 1.0)),
+        )
+        .into_element()
 }
 
 /// A connected app's file (Google Drive): its kind's type tile — nothing
@@ -118,7 +159,7 @@ pub(crate) fn connector_tile(kind: &str, name: &str, size: f32) -> impl IntoElem
 /// The kind's name in the modal's header and facts.
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "app" => "App",
+        "app" | "mcp-app" => "App",
         "image" => "Image",
         "document" => "Document",
         "presentation" => "Presentation",
@@ -174,9 +215,12 @@ fn sheet() -> impl IntoElement {
                             .px_4()
                             .pb_4()
                             .gap(px(14.0))
-                            .child(identity())
-                            .child(fields())
-                            .child(facts()),
+                            .when(current().kind == "mcp-app", |v| {
+                                v.child(mcp_identity()).child(mcp_fields()).child(mcp_facts())
+                            })
+                            .when(current().kind != "mcp-app", |v| {
+                                v.child(identity()).child(fields()).child(facts())
+                            }),
                     ),
                 )
                 .child(footer()),
@@ -592,7 +636,7 @@ fn facts() -> impl IntoElement {
                     ),
             );
         }
-        list = list.child(made_in_fact(made_in));
+        list = list.child(made_in_fact("Made in", made_in));
         for (k, v) in rows {
             list = list.child(fact(k, v, 1));
         }
@@ -616,14 +660,161 @@ fn facts() -> impl IntoElement {
     })
 }
 
-/// "Made in": the bot and chat, with Show in Chat back to the message.
-fn made_in_fact(v: String) -> impl IntoElement {
+// ——————————————— an attached server app (`mcp-app`) ———————————————
+
+/// Its picture (or the name's tile), name and subtitle — the TIN and
+/// branch of a tax profile.
+fn mcp_identity() -> impl IntoElement {
+    let cur = current();
+    let name = if cur.details.name.is_empty() { cur.title.clone() } else { cur.details.name.clone() };
+    let subtitle = if cur.details.subtitle.is_empty() { cur.token.clone() } else { cur.details.subtitle.clone() };
+    view()
+        .gap(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(14.0))
+                .child(named_tile(&cur.image, &name, 84.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(2.0))
+                        .child(
+                            text(move || {
+                                let t = store().ad_title.get();
+                                if t.trim().is_empty() { name.clone() } else { t }
+                            })
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
+                        )
+                        .child(
+                            text(subtitle)
+                                .text_size(px(12.0))
+                                .line_height(px(16.0))
+                                .text_color(theme::MUTED)
+                                .number_of_lines(2),
+                        ),
+                ),
+        )
+        .child(when(
+            || !store().ad_err.get().is_empty(),
+            || {
+                text(|| store().ad_err.get())
+                    .text_size(px(12.0))
+                    .text_color(theme::DOWN)
+                    .into_element()
+            },
+        ))
+}
+
+/// Rename: the name Rox shows for it, in every chat and pin; empty goes
+/// back to the server's.
+fn mcp_fields() -> impl IntoElement {
+    view()
+        .gap(px(6.0))
+        .child(row(
+            "Name",
+            field_box(
+                input()
+                    .value(|| store().ad_title.get())
+                    .on_change(|v: &str| store().ad_title.set(v.to_owned()))
+                    .on_submit(|_: &str| store().save_app_details())
+                    .on_key_press(escape_closes)
+                    .auto_focus(true)
+                    .placeholder(current().details.name)
+                    .placeholder_color(|| color(theme::GHOST))
+                    .text_size(px(13.0))
+                    .text_color(theme::TEXT)
+                    .h(px(30.0)),
+            ),
+        ))
+        .child(
+            text("Renames it in Rox only; the app keeps its own name.")
+                .pl(px(94.0))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED),
+        )
+}
+
+/// The server's facts, where it's attached (Show in Chat), and its
+/// versions — a tax profile's years — each opening its link.
+fn mcp_facts() -> impl IntoElement {
+    let cur = current();
+    let mut list = view()
+        .rounded(px(10.0))
+        .bg(theme::SUBTLE)
+        .px(px(12.0))
+        .py(px(8.0))
+        .gap(px(5.0))
+        .child(made_in_fact("Attached", "Its chats and bots".to_owned()));
+    for (k, v) in cur.details.facts.iter().cloned() {
+        list = list.child(fact_owned(k, v));
+    }
+    if !cur.token.is_empty() {
+        list = list.child(fact("Token", cur.token.clone(), 2));
+    }
+    let mut out = view()
+        .gap(px(6.0))
+        .child(text("Details").text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::MUTED))
+        .child(list);
+    if !cur.details.versions.is_empty() {
+        let mut versions = view().rounded(px(10.0)).bg(theme::SUBTLE).py(px(4.0));
+        for (label, detail, link) in cur.details.versions.iter().cloned() {
+            versions = versions.child(version_row(label, detail, link));
+        }
+        out = out
+            .child(
+                text("Versions")
+                    .mt(px(8.0))
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::MUTED),
+            )
+            .child(versions);
+    }
+    out
+}
+
+/// One of its versions (a tax year): label, detail, and a press opens it.
+fn version_row(label: String, detail: String, link: String) -> impl IntoElement {
     let hov = signal(false);
     view()
         .flex_row()
         .items_center()
         .gap(px(10.0))
-        .child(text("Made in").w(px(72.0)).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::MUTED))
+        .px(px(12.0))
+        .py(px(6.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .label(format!("Open {label}"))
+        .child(text(label).w(px(72.0)).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+        .child(text(detail).flex_1().min_w(px(0.0)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
+        .child(crate::icons::icon_ink("arrowUpRight", 12.0, || theme::MUTED))
+        .on_hover_in(move || hov.set(true))
+        .on_hover_out(move || hov.set(false))
+        .on_press(move || {
+            let st = store();
+            st.app_details.set(None);
+            match crate::store::mini_link(&link) {
+                Some(key) => st.open_mini_full(&key, ""),
+                None if !link.is_empty() => st.open_link(&link),
+                None => {}
+            }
+        })
+}
+
+/// "Made in": the bot and chat, with Show in Chat back to the message (an
+/// attached app's: the chats it's attached in).
+fn made_in_fact(k: &'static str, v: String) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .child(text(k).w(px(72.0)).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::MUTED))
         .child(
             text(v)
                 .flex_1()
@@ -663,6 +854,23 @@ fn link_fact(k: &'static str, v: String, url: String) -> impl IntoElement {
                 .on_hover_out(move || hov.set(false))
                 .on_press(move || store().open_link(&url))
                 .label("Open version history"),
+        )
+}
+
+/// A server's fact: its own label.
+fn fact_owned(k: String, v: String) -> impl IntoElement {
+    view()
+        .flex_row()
+        .gap(px(10.0))
+        .child(text(k).w(px(72.0)).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::MUTED).number_of_lines(1))
+        .child(
+            text(v)
+                .flex_1()
+                .min_w(px(0.0))
+                .text_size(px(12.0))
+                .line_height(px(17.0))
+                .text_color(theme::TEXT)
+                .number_of_lines(2),
         )
 }
 

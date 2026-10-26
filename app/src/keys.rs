@@ -39,13 +39,15 @@ pub(crate) enum Scope {
     PluginsSearch,
     Plugins,
     Settings,
+    /// The composer's `/` and `@` popup is open over the chat.
+    ComposerPopup,
     /// The chat with no modal over it.
     Chat,
     Global,
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 12] = [
+pub(crate) const ORDER: [Scope; 13] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
@@ -56,6 +58,7 @@ pub(crate) const ORDER: [Scope; 12] = [
     Scope::PluginsSearch,
     Scope::Plugins,
     Scope::Settings,
+    Scope::ComposerPopup,
     Scope::Chat,
     Scope::Global,
 ];
@@ -73,6 +76,7 @@ impl Scope {
             Scope::PluginsSearch => "$plugins-search",
             Scope::Plugins => "$plugins",
             Scope::Settings => "$settings",
+            Scope::ComposerPopup => "$composer-popup",
             Scope::Chat => "$chat",
             Scope::Global => "$global",
         }
@@ -88,15 +92,16 @@ impl Scope {
             Scope::Palette => st.palette.get(),
             Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table"),
             Scope::Viewer => viewing().is_some(),
-            Scope::MiniApp => st.mini_full.get().is_some(),
+            Scope::MiniApp => !st.mini_full.with(Vec::is_empty),
             Scope::Lightbox => !st.light_items.get().is_empty(),
             Scope::PluginsSearch => st.plugins_open.get() && st.drop_open(),
             Scope::Plugins => st.plugins_open.get(),
             Scope::Settings => st.settings_open.get(),
+            Scope::ComposerPopup => Scope::Chat.open() && !crate::slash::rows().is_empty(),
             Scope::Chat => {
                 !st.palette.get()
                     && viewing().is_none()
-                    && st.mini_full.get().is_none()
+                    && st.mini_full.with(Vec::is_empty)
                     && st.light_items.get().is_empty()
                     && !st.plugins_open.get()
                     && !st.settings_open.get()
@@ -229,6 +234,20 @@ pub(crate) static COMMANDS: &[Command] = &[
     cmd("chat.msg_menu", "Message menu", Scope::Chat, &["mod+u"], |_| msg_menu()),
     cmd("chat.reply", "Reply to the message", Scope::Chat, &["mod+y"], |_| reply()),
     always(cmd("composer.clear", "Clear the message field (text, files, reply)", Scope::Global, &["mod+shift+backspace"], |_| clear_composer())),
+    // ——— The composer's / and @ popup ———
+    always(repeating(cmd("popup.up", "Previous suggestion", Scope::ComposerPopup, &["up"], |_| crate::slash::step(-1)))),
+    always(repeating(cmd("popup.down", "Next suggestion", Scope::ComposerPopup, &["down"], |_| crate::slash::step(1)))),
+    always(cmd("popup.pick", "Pick the suggestion", Scope::ComposerPopup, &["enter", "tab"], |_| crate::slash::enter())),
+    always(cmd("popup.close", "Close the suggestions", Scope::ComposerPopup, &["escape"], |_| crate::slash::close())),
+    always(with_arg(cmd("popup.pick_1", "Pick suggestion 1", Scope::ComposerPopup, &["mod+1"], popup_pick), 1)),
+    always(with_arg(cmd("popup.pick_2", "Pick suggestion 2", Scope::ComposerPopup, &["mod+2"], popup_pick), 2)),
+    always(with_arg(cmd("popup.pick_3", "Pick suggestion 3", Scope::ComposerPopup, &["mod+3"], popup_pick), 3)),
+    always(with_arg(cmd("popup.pick_4", "Pick suggestion 4", Scope::ComposerPopup, &["mod+4"], popup_pick), 4)),
+    always(with_arg(cmd("popup.pick_5", "Pick suggestion 5", Scope::ComposerPopup, &["mod+5"], popup_pick), 5)),
+    always(with_arg(cmd("popup.pick_6", "Pick suggestion 6", Scope::ComposerPopup, &["mod+6"], popup_pick), 6)),
+    always(with_arg(cmd("popup.pick_7", "Pick suggestion 7", Scope::ComposerPopup, &["mod+7"], popup_pick), 7)),
+    always(with_arg(cmd("popup.pick_8", "Pick suggestion 8", Scope::ComposerPopup, &["mod+8"], popup_pick), 8)),
+    always(with_arg(cmd("popup.pick_9", "Pick suggestion 9", Scope::ComposerPopup, &["mod+9"], popup_pick), 9)),
     // ——— Menus (right-click, ⋯, the viewer's ⌘K) ———
     with_arg(cmd("menu.pick_1", "Pick menu item 1", Scope::Menu, &["mod+1"], menu_pick), 1),
     with_arg(cmd("menu.pick_2", "Pick menu item 2", Scope::Menu, &["mod+2"], menu_pick), 2),
@@ -267,8 +286,9 @@ pub(crate) static COMMANDS: &[Command] = &[
     always(cmd("settings.enter", "Pick the suggestion / change the shortcut", Scope::Settings, &["enter"], |_| crate::settings::enter())),
     // ——— File viewer ———
     cmd("viewer.actions", "File actions", Scope::Viewer, &["mod+k"], |_| crate::files::viewer_actions()),
-    // ⌘W, not Escape: Escape leaves the app's own fields mid-filing
-    cmd("mini.close", "Close the mini app", Scope::MiniApp, &["mod+w"], |_| store().mini_full.set(None)),
+    // ⌘W, not Escape: Escape leaves the app's own fields mid-filing. The
+    // viewer over the apps closes first, then the top app.
+    cmd("mini.close", "Close the mini app", Scope::MiniApp, &["mod+w"], |_| store().mini_close_top()),
     cmd("viewer.print", "Print", Scope::Viewer, &["mod+p"], |_| crate::files::viewer_print()),
     cmd("viewer.save", "Save as a new version (Office)", Scope::Viewer, &["mod+s"], |_| crate::files::viewer_save()),
     cmd("viewer.download", "Download", Scope::Viewer, &["mod+shift+s"], |_| {
@@ -303,6 +323,10 @@ pub(crate) static COMMANDS: &[Command] = &[
 
 fn menu_pick(n: u8) {
     crate::ctx::menu_pick(n as usize);
+}
+
+fn popup_pick(n: u8) {
+    crate::slash::pick_shown(n as usize);
 }
 
 fn open_slot(k: u8) {
@@ -513,8 +537,8 @@ fn printer() -> Signal<(u64, String, String, String)> {
     store().keys_print
 }
 
-/// Opens the system print panel for `payload` — text (monospaced) or an
-/// image at a URL — titled `title`.
+/// Opens the system print panel for `payload` — text (monospaced), HTML
+/// or an image at a URL — titled `title`.
 pub(crate) fn print(kind: &str, payload: String, title: &str) {
     printer().update(|p| {
         p.0 += 1;
@@ -828,13 +852,23 @@ mod imp {
         }
     }
 
-    /// The print panel for text (monospaced, wrapped to the page) or an
-    /// image (at a URL, fit to the page's width).
+    /// The print panel for text (monospaced, wrapped to the page), HTML
+    /// (laid out) or an image (at a URL, fit to the page's width).
     fn print_now(kind: &str, payload: &str, title: &str) {
         use objc2_app_kit::{NSFont, NSImage, NSImageView, NSPrintInfo, NSPrintOperation, NSTextView};
         use nsh_platform_macos::objc2::AllocAnyThread;
         use nsh_platform_macos::objc2_foundation::NSURL;
         let Some(mtm) = MainThreadMarker::new() else { return };
+        // HTML prints from the web view showing it, with its CSS (a BIR
+        // return's boxes, @page sizes); AppKit's HTML reader keeps text only
+        if kind == "html" && print_web_view(mtm, title, None) {
+            return;
+        }
+        // dev hook (`printpdf <path>`): the viewer's page into that PDF
+        if let Some(path) = kind.strip_prefix("pdf:") {
+            print_web_view(mtm, title, Some(path));
+            return;
+        }
         let info = NSPrintInfo::sharedPrintInfo();
         let paper = info.paperSize();
         let width = (paper.width - info.leftMargin() - info.rightMargin()).max(100.0);
@@ -847,6 +881,36 @@ mod imp {
             let iv = NSImageView::imageViewWithImage(&image, mtm);
             iv.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h)));
             Retained::into_super(Retained::into_super(iv))
+        } else if kind == "html" {
+            // laid out by AppKit's HTML reader (its tables and styles),
+            // wrapped to the page
+            use nsh_platform_macos::objc2::{msg_send, rc::Allocated, runtime::AnyClass};
+            use nsh_platform_macos::objc2_foundation::NSData;
+            let tv = NSTextView::initWithFrame(
+                NSTextView::alloc(mtm),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 100.0)),
+            );
+            let data = NSData::with_bytes(payload.as_bytes());
+            let Some(cls) = AnyClass::get(c"NSAttributedString") else { return };
+            // SAFETY: `alloc` then NSAttributedString's AppKit
+            // `initWithHTML:documentAttributes:` (no attributes asked for);
+            // `textStorage` is an NSMutableAttributedString.
+            unsafe {
+                let obj: Allocated<AnyObject> = msg_send![cls, alloc];
+                let html: Option<Retained<AnyObject>> = msg_send![
+                    obj,
+                    initWithHTML: &*data,
+                    documentAttributes: std::ptr::null_mut::<*mut AnyObject>()
+                ];
+                let Some(html) = html else { return };
+                let storage: Option<Retained<AnyObject>> = msg_send![&*tv, textStorage];
+                if let Some(storage) = storage {
+                    let () = msg_send![&*storage, setAttributedString: &*html];
+                }
+            }
+            tv.setVerticallyResizable(true);
+            tv.sizeToFit();
+            Retained::into_super(Retained::into_super(tv))
         } else {
             let tv = NSTextView::initWithFrame(
                 NSTextView::alloc(mtm),
@@ -863,6 +927,83 @@ mod imp {
         let op = NSPrintOperation::printOperationWithView(&view);
         op.setJobTitle(Some(&NSString::from_str(title)));
         op.runOperation();
+    }
+
+    /// The viewer's page printed by its own WKWebView (the largest one
+    /// showing in the key window), sheet on that window. False when none
+    /// shows.
+    fn print_web_view(mtm: MainThreadMarker, title: &str, save_to: Option<&str>) -> bool {
+        use nsh_platform_macos::objc2::{Message, msg_send, runtime::{AnyClass, AnyObject}};
+        use nsh_platform_macos::objc2_foundation::NSCopying;
+        use objc2_app_kit::{NSApplication, NSPrintInfo, NSPrintingPaginationMode};
+        // by kind, not name: KVO renames the class (`NSKVONotifying_WKWebView`)
+        fn find(view: &NSView, web: &AnyClass, best: &mut Option<(f64, Retained<NSView>)>) {
+            if view.isHiddenOrHasHiddenAncestor() {
+                return;
+            }
+            // SAFETY: NSObject's `isKindOfClass:`.
+            let is_web: bool = unsafe { msg_send![view, isKindOfClass: web] };
+            if is_web {
+                let b = view.visibleRect();
+                let area = b.size.width * b.size.height;
+                if area > best.as_ref().map_or(0.0, |(a, _)| *a) {
+                    *best = Some((area, view.retain()));
+                }
+                return;
+            }
+            for sub in view.subviews().iter() {
+                find(&sub, web, best);
+            }
+        }
+        let Some(web_class) = AnyClass::get(c"WKWebView") else { return false };
+        let app = NSApplication::sharedApplication(mtm);
+        // the key window; when Rox isn't frontmost, its first visible one
+        let window = app.keyWindow().or_else(|| app.mainWindow()).or_else(|| {
+            app.windows().iter().find(|w| w.isVisible())
+        });
+        let Some(window) = window else { return false };
+        let Some(content) = window.contentView() else { return false };
+        let mut best = None;
+        find(&content, web_class, &mut best);
+        let Some((_, web)) = best else { return false };
+        // a copy: the shared info stays as the app's other prints left it
+        let info: Retained<NSPrintInfo> = NSPrintInfo::sharedPrintInfo().copy();
+        info.setHorizontalPagination(NSPrintingPaginationMode::Fit);
+        info.setVerticallyCentered(false);
+        for set in [NSPrintInfo::setTopMargin, NSPrintInfo::setBottomMargin, NSPrintInfo::setLeftMargin, NSPrintInfo::setRightMargin] {
+            set(&info, 18.0);
+        }
+        // SAFETY: WKWebView's `printOperationWithPrintInfo:` (macOS 11+)
+        // returns an NSPrintOperation; its view needs the web view's size or
+        // WebKit prints a blank page, and a print run modal for the window
+        // (not `runOperation`) is the one WebKit lays out for.
+        unsafe {
+            // dev hook (`printpdf <path>`): straight to a PDF, no panel
+            if let Some(path) = save_to {
+                use nsh_platform_macos::objc2_foundation::NSURL;
+                let () = msg_send![&*info, setJobDisposition: &*NSString::from_str("NSPrintSaveJob")];
+                let dict: Retained<AnyObject> = msg_send![&*info, dictionary];
+                let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+                let () = msg_send![&*dict, setObject: &*url, forKey: &*NSString::from_str("NSPrintJobSavingURL")];
+            }
+            let op: Option<Retained<AnyObject>> = msg_send![&*web, printOperationWithPrintInfo: &*info];
+            let Some(op) = op else { return false };
+            let pv: Option<Retained<NSView>> = msg_send![&*op, view];
+            if let Some(pv) = pv {
+                pv.setFrame(web.bounds());
+            }
+            let () = msg_send![&*op, setJobTitle: &*NSString::from_str(title)];
+            let () = msg_send![&*op, setShowsPrintPanel: save_to.is_none()];
+            let () = msg_send![&*op, setShowsProgressPanel: save_to.is_none()];
+            let () = msg_send![
+                &*op,
+                runOperationModalForWindow: &*window,
+                delegate: std::ptr::null::<AnyObject>(),
+                didRunSelector: std::ptr::null::<std::ffi::c_void>(),
+                contextInfo: std::ptr::null_mut::<std::ffi::c_void>()
+            ];
+        }
+        true
     }
 
     impl Drop for KeysHost {

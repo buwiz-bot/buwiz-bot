@@ -222,6 +222,7 @@ fn dock_card() -> View {
         .overflow_hidden()
         .child(reply_chip())
         .child(attachment_strip())
+        .child(token_strip())
         .child(input_area())
 }
 
@@ -342,11 +343,11 @@ fn attach_tile(a: ReadSignal<crate::store::Attach>) -> impl IntoElement {
         ))
 }
 
-/// The input area: the @-picker, the capped input wrapper, and the
-/// absolute controls (App.tsx:2247).
+/// The input area: the `/` and `@` popup, a command's error, the capped
+/// input wrapper, and the absolute controls (App.tsx:2247).
 fn input_area() -> impl IntoElement {
     view()
-        .child(at_picker())
+        .child(pop_picker())
         // the wrapper carries the cap: the input's box otherwise grows
         // to all its text (App.tsx:2274).
         .child(
@@ -527,30 +528,40 @@ fn right_controls() -> impl IntoElement {
         }))
 }
 
-/// `draftChanged` — the draft's signal + the @-mention scan: typing
-/// `@<query>` opens the artifact/file picker (App.tsx:463).
-fn draft_changed(t: &str) {
+/// `draftChanged` — the draft's signal, then the popup: `/name` lists
+/// commands; `@<query>` the servers with `@` scopes and the
+/// artifacts/files (App.tsx:463), `@server:…` that server's scopes and
+/// values (slash.rs).
+pub(crate) fn draft_changed(t: &str) {
     let st = store();
     st.draft.set(t.to_owned());
-    let i = if at_start().get_untracked() >= 0 {
-        at_start().get_untracked() as usize
-    } else {
-        t.rfind('@').unwrap_or(usize::MAX)
-    };
-    if i == usize::MAX {
+    if crate::slash::slash_menu(t) {
         at_items().set(Vec::new());
         at_start().set(-1);
         return;
     }
+    // the @ the query began at, while it's still there
+    let i = match at_start().get_untracked() {
+        s if s >= 0 && (s as usize) < t.len() && t.as_bytes()[s as usize] == b'@' => s as usize,
+        _ => t.rfind('@').unwrap_or(usize::MAX),
+    };
+    if i == usize::MAX {
+        crate::slash::close();
+        return;
+    }
     let tail = &t[i + 1..];
-    if tail.chars().any(|c| c.is_whitespace()) || tail.len() > 40 {
-        at_items().set(Vec::new());
-        at_start().set(-1);
+    if tail.chars().any(|c| c.is_whitespace()) || tail.len() > 80 {
+        crate::slash::close();
         return;
     }
     at_start().set(i as i64);
     let n = at_seq().get_untracked() + 1;
     at_seq().set(n);
+    if crate::slash::token_menu(tail) {
+        at_items().set(Vec::new());
+        return;
+    }
+    crate::slash::server_menu(tail);
     let thread = st.active_id.get_untracked();
     let q = tail.to_owned();
     spawn(async move {
@@ -586,7 +597,7 @@ fn draft_changed(t: &str) {
 
 /// `atPick` — the @ tail becomes the item's title and its uri stages as
 /// an attachment the server resolves (App.tsx:476).
-fn at_pick(it: &AtItem) {
+pub(crate) fn at_pick(it: &AtItem) {
     let st = store();
     let t = st.draft.get_untracked();
     let i = at_start().get_untracked().max(0) as usize;
@@ -596,8 +607,7 @@ fn at_pick(it: &AtItem) {
         it.title.clone()
     };
     st.draft.set(format!("{}{} ", &t[..i.min(t.len())], name));
-    at_items().set(Vec::new());
-    at_start().set(-1);
+    crate::slash::close();
     st.attachments.update(|a| {
         a.push(crate::store::Attach {
             kind: "file".to_owned(),
@@ -608,14 +618,18 @@ fn at_pick(it: &AtItem) {
     });
 }
 
-/// The @-mention dropdown — this thread's apps first, then global
-/// (App.tsx:2250).
-fn at_picker() -> impl IntoElement {
+/// The `/` and `@` popup — commands, servers, scopes, values or a
+/// resolve's choices, then this thread's artifacts first, then global
+/// (App.tsx:2250); five rows show, the rest scroll in with the selection.
+fn pop_picker() -> impl IntoElement {
     dynamic(|| {
-        let items = at_items().get();
-        if items.is_empty() {
+        let rows = crate::slash::rows();
+        if rows.is_empty() {
             return view().into_element();
         }
+        let head = store().pop_head.get();
+        let sel = store().pop_sel.get().min(rows.len() - 1);
+        let start = crate::slash::first_shown(sel);
         view()
             .mb(px(6.0))
             .rounded(px(10.0))
@@ -623,68 +637,162 @@ fn at_picker() -> impl IntoElement {
             .border(px(0.5))
             .border_color(theme::BORDER_F)
             .py(px(4.0))
-            .max_h(px(220.0))
             .overflow_hidden()
-            .children(items.into_iter().map(at_row))
+            .when(!head.is_empty(), |v| {
+                v.child(
+                    text(head)
+                        .number_of_lines(1)
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(tc(0.54)),
+                )
+            })
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(crate::slash::VISIBLE)
+                    .map(|(i, r)| pop_row(r, i == sel, i - start + 1)),
+            )
             .into_element()
     })
 }
 
-fn at_row(it: AtItem) -> impl IntoElement {
-    let meta = if it.kind == "app" {
-        format!(
-            "{}{}{}",
-            it.name,
-            if it.v > 0 { format!(" · v{}", it.v) } else { String::new() },
-            if it.scope == "thread" { " · this chat" } else { "" },
-        )
-    } else {
-        it.file.clone()
+/// A popup row; `n` its number among the rows shown (⌘n picks it).
+fn pop_row(r: crate::slash::PopRow, selected: bool, n: usize) -> impl IntoElement {
+    use crate::slash::Pick;
+    let tile = match &r.pick {
+        Pick::Artifact(it) if it.kind == "app" => crate::appdetails::app_icon(&it.name, 20.0).into_element(),
+        p => view()
+            .size(px(20.0))
+            .rounded(px(5.0))
+            .items_center()
+            .justify_center()
+            .bg(tc(0.10))
+            .child(
+                text(match p {
+                    Pick::Artifact(_) => "doc",
+                    Pick::Builtin(_) | Pick::Command(..) => "/",
+                    Pick::App(..) => "</>",
+                    Pick::Choice(..) | Pick::Value(..) => "›",
+                    _ => "@",
+                })
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(tc(0.54)),
+            )
+            .into_element(),
     };
-    let it2 = it.clone();
+    let r2 = r.clone();
     view()
         .flex_row()
         .items_center()
         .gap_2()
         .px(px(10.0))
         .py(px(6.0))
-        .on_press(move || at_pick(&it2))
-        .child(if it.kind == "app" {
-            crate::appdetails::app_icon(&it.name, 20.0).into_element()
-        } else {
-            view()
-                .size(px(20.0))
-                .rounded(px(5.0))
-                .items_center()
-                .justify_center()
-                .bg(if it.kind == "app" {
-                    AdaptiveColor::from(crate::plugins::hue(&it.name))
-                } else {
-                    tc(0.10)
-                })
-                .child(
-                    text(if it.kind == "app" { "</>" } else { "doc" })
-                        .text_size(px(10.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if it.kind == "app" {
-                            theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 1.0, 1.0))
-                        } else {
-                            tc(0.54)
-                        }),
-                ).into_element()
+        .bg(if selected { tc(0.06) } else { AdaptiveColor::TRANSPARENT })
+        .on_press(move || crate::slash::pick(&r2))
+        .child(tile)
+        .child(text(r.label).number_of_lines(1).text_size(px(13.0)).text_color(theme::TEXT))
+        .when(!r.hint.is_empty(), |v| {
+            v.child(text(r.hint).number_of_lines(1).text_size(px(12.0)).text_color(tc(0.40)))
         })
         .child(
-            text(if it.title.is_empty() {
-                it.name.clone()
-            } else {
-                it.title.clone()
-            })
-            .number_of_lines(1)
-            .flex_1()
-            .text_size(px(13.0))
-            .text_color(theme::TEXT),
+            text(r.detail)
+                .number_of_lines(1)
+                .flex_1()
+                .text_size(px(11.0))
+                .text_color(tc(0.40)),
         )
-        .child(text(meta).text_size(px(11.0)).text_color(tc(0.40)))
+        .child(pick_key(n))
+}
+
+/// The key that picks the popup's `n`th shown row (⌘1…).
+fn pick_key(n: usize) -> impl IntoElement {
+    let id = format!("popup.pick_{n}");
+    let key = crate::keys::COMMANDS
+        .iter()
+        .find(|c| c.id == id)
+        .and_then(|c| crate::keys::keys_of(c).into_iter().next());
+    match key {
+        Some(k) => text(key_label(&k)).text_size(px(11.0)).text_color(theme::FAINT).into_element(),
+        None => view().into_element(),
+    }
+}
+
+/// The draft's `@server:scope:value` tokens as chips — the token's label
+/// when it was picked from a list — each with a ✕ that takes it out.
+fn token_strip() -> impl IntoElement {
+    // rebuilt when the tokens change, not on every keystroke
+    let tokens = computed(|| {
+        let st = store();
+        st.mcp_manifest.with(|_| ());
+        st.draft.with(|d| {
+            d.split_whitespace()
+                .filter(|w| crate::slash::token(w).is_some())
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+        })
+    });
+    dynamic(move || {
+        let tokens = tokens.get();
+        if tokens.is_empty() {
+            return view().into_element();
+        }
+        scroll()
+            .horizontal()
+            .child(
+                view()
+                    .flex_row()
+                    .pt(px(8.0))
+                    .px_3()
+                    .gap(px(6.0))
+                    .children(tokens.into_iter().map(token_chip)),
+            )
+            .into_element()
+    })
+}
+
+fn token_chip(tok: String) -> impl IntoElement {
+    let (server, scope, value) = crate::slash::token(&tok).unwrap_or_default();
+    let label = crate::slash::token_label(&tok);
+    let shown = if label.is_empty() { value } else { label };
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .h(px(22.0))
+        .pl(px(8.0))
+        .pr(px(4.0))
+        .rounded(px(11.0))
+        .bg(theme::ACCENT_TINT)
+        .label(tok.clone())
+        .child(
+            text(format!("@{server} · {scope}{}", if shown.is_empty() { String::new() } else { format!(" · {shown}") }))
+                .number_of_lines(1)
+                .text_size(px(12.0))
+                .text_color(theme::ACCENT),
+        )
+        .child(
+            view()
+                .size(px(16.0))
+                .items_center()
+                .justify_center()
+                .label("Remove")
+                .on_press(move || {
+                    let st = store();
+                    let words: Vec<String> = st
+                        .draft
+                        .get_untracked()
+                        .split(' ')
+                        .filter(|w| *w != tok)
+                        .map(str::to_owned)
+                        .collect();
+                    st.draft.set(words.join(" "));
+                })
+                .child(text("✕").text_size(px(10.0)).text_color(theme::ACCENT)),
+        )
 }
 
 /// `plusMenu` — the small card just above the + button

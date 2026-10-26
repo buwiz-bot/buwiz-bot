@@ -2,7 +2,9 @@
 //! listing the sessions first — the agents (with their avatars), then
 //! the plain chats — then the mini apps pinned to the sidebar, then the
 //! actions (`Store::palette_items`); arrows/enter drive `palette_sel`,
-//! Escape or the scrim dismisses.
+//! Escape or the scrim dismisses. As a picker (`palette_pick`) it lists
+//! its own rows instead: the chats an item is attached in, the chats and
+//! bots to attach one to.
 
 use nsh_core::ui::prelude::*;
 
@@ -99,7 +101,10 @@ fn palette_card() -> impl IntoElement {
                             }
                         })
                         .auto_focus(true)
-                        .placeholder("Search")
+                        .placeholder(|| {
+                            let hint = store().palette_hint.get();
+                            if hint.is_empty() { "Search".to_owned() } else { hint }
+                        })
                         .placeholder_color(|| color(theme::GHOST))
                         .text_size(px(14.0))
                         .text_color(theme::TEXT)

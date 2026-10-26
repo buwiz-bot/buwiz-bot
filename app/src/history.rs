@@ -93,6 +93,10 @@ pub(crate) fn track() {
 
 /// One step back (-1) or forward (1).
 pub(crate) fn step(d: i64) {
+    // over a full-screen app, Back / Forward step through the apps first
+    if crate::mini::step(d) {
+        return;
+    }
     let target = PLACES.with(|places| {
         let places = places.borrow();
         let at = AT.with(Cell::get) as i64 + d;

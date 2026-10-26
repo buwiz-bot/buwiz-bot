@@ -680,6 +680,10 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
 /// "Sheet · 3 sheets", "Document · 12 KB"; a connector's file its type
 /// and where it lives — "Google Doc · Google Drive".
 pub(crate) fn subtitle(a: &RoxApp) -> String {
+    // an attached server app: what the server says of it (a TIN, a branch)
+    if a.kind == "mcp-app" {
+        return if a.details.subtitle.is_empty() { "Attached app".to_owned() } else { a.details.subtitle.clone() };
+    }
     let m = &a.meta;
     if a.storage.connector() {
         let kind = if m.file_type.is_empty() { "File" } else { m.file_type.as_str() };

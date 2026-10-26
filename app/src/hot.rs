@@ -396,11 +396,13 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(pane::editor_overlay())
         .child(botmodal::layer())
         .child(botmodal::main_picker_layer())
-        .child(palette::layer())
         .child(models::layer())
         .child(composer::plus_layer())
-        .child(files::layer())
+        // the full-screen apps; the viewer (a print preview an app opened)
+        // and ⌘K show over them
         .child(crate::mini::full_layer())
+        .child(files::layer())
+        .child(palette::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
         // above every modal: Settings, then the menus and their prompts
@@ -410,6 +412,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(ctx::color_layer())
+        .child(crate::toast::layer())
         .child(stats_bar(remount, note, live_bar_show))
 }
 
@@ -646,6 +649,18 @@ fn agent_menu(line: &str) {
     if let Some(rest) = line.strip_prefix("type ") {
         let n = store().mini_dev_type.get_untracked().split('|').next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0) + 1;
         store().mini_dev_type.set(format!("{n}|{rest}"));
+        return;
+    }
+    // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
+    if let Some(path) = line.strip_prefix("printpdf ") {
+        crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");
+        return;
+    }
+    // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)
+    if let Some(id) = line.strip_prefix("cmd ") {
+        if let Some(c) = crate::keys::COMMANDS.iter().find(|c| c.id == id.trim()) {
+            (c.run)(0);
+        }
         return;
     }
     let f: Vec<&str> = line.split_whitespace().collect();

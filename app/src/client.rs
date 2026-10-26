@@ -39,6 +39,16 @@ pub async fn post(path: &str, body: serde_json::Value) -> Option<serde_json::Val
     serde_json::from_str(&res.text()).ok()
 }
 
+/// [`post`], but an error status's JSON body comes back too (an endpoint
+/// that answers 400 `{ok:false, error}`).
+pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+    let mut r = req("POST", path);
+    r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+    r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
+    let res = fetch(r).await.ok()?;
+    serde_json::from_str(&res.text()).ok()
+}
+
 /// DELETE `path`.
 pub async fn del(path: &str) -> Option<serde_json::Value> {
     let res = fetch(req("DELETE", path)).await.ok()?;
