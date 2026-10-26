@@ -6611,6 +6611,7 @@ impl Store {
                 "md" | "markdown" => "markdown",
                 "json" => "json",
                 "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
+                "mp4" | "mov" | "m4v" => "video",
                 "txt" | "csv" | "log" | "xml" => "text",
                 _ => "file",
             };

@@ -100,3 +100,10 @@ branch = "pr/macos-cursor-on-change"
 kind = "fix"
 pr = 0
 status = "local"
+
+[[topic]]
+branch = "pr/macos-shot-video"
+kind = "fix"
+pr = 0
+status = "local"
+note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"
