@@ -90,17 +90,13 @@ of the desktop port.
 
 ## Driving the UI programmatically (gpui-agent)
 
-The app embeds a gpui-agent host. Launch with the control plane on:
-
-`GPUI_AGENT_ALLOW_RELEASE=1` is required: the dev profile builds
-dependencies without debug assertions (see Build profile), which
-gpui-agent's guard reads as a release build.
-
 ```sh
 GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=dev-secret ./target/debug/rox
-# then: gpui-agent --addr 127.0.0.1:17421 hello | snapshot | click <id> |
-# type <id> <text> | screenshot --out x.png | keybinding cmd+r | invoke …
+gpui-agent --addr 127.0.0.1:17421 --token dev-secret snapshot   # click, type, screenshot, invoke …
 ```
+
+`GPUI_AGENT_ALLOW_RELEASE=1`: the dev profile builds dependencies without
+debug assertions, which gpui-agent's guard reads as a release build.
 
 ## Dev app & links
 
