@@ -411,15 +411,37 @@ export async function callTool(row, toolName, input) {
 // them like its own and lets them call the server back (`callToolJson`).
 export const APP_MIME = "text/x-nsh-tsx";
 
-// The server's mini-app resources, listed once per connection.
-export async function listApps(row) {
+// The server's resources, listed once per connection.
+async function listResources(row) {
   const rec = await ensureClient(row);
   if (!rec.client?.getServerCapabilities()?.resources) return [];
-  rec.apps ||= rec.client
+  rec.resources ||= rec.client
     .listResources()
-    .then(({ resources }) => (resources || []).filter((r) => r.mimeType === APP_MIME))
+    .then(({ resources }) => resources || [])
     .catch(() => []);
-  return rec.apps;
+  return rec.resources;
+}
+
+// The server's mini-app resources.
+export async function listApps(row) {
+  return (await listResources(row)).filter((r) => r.mimeType === APP_MIME);
+}
+
+// The commands and `@` scopes a server announces: its `rox://manifest`
+// resource (JSON, every field optional), read once per connection; {} when
+// it ships none or it doesn't parse.
+export const MANIFEST_URI = "rox://manifest";
+export async function readManifest(row) {
+  const rec = await ensureClient(row);
+  if (!(await listResources(row)).some((r) => r.uri === MANIFEST_URI)) return {};
+  rec.manifest ||= rec.client
+    .readResource({ uri: MANIFEST_URI })
+    .then(({ contents }) => {
+      const m = JSON.parse(contents?.find((c) => typeof c.text === "string")?.text || "{}");
+      return m && typeof m === "object" && !Array.isArray(m) ? m : {};
+    })
+    .catch(() => ({}));
+  return rec.manifest;
 }
 
 // One mini app's module text, or "" when the server has no such app.

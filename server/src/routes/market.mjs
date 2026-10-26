@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APP_ROOT, PLUGINS_DIR, git } from "../config.mjs";
 import { db } from "../state.mjs";
-import { mcpAppCall, mcpAppList, mcpUpsertServer } from "../tools.mjs";
+import { mcpAppCall, mcpAppList, mcpManifest, mcpResolve, mcpUpsertServer } from "../tools.mjs";
+import { attach, detach, listAttachments, renameToken } from "../attachments.mjs";
 import {
   beginAuth as mcpBeginAuth, ensureClient as mcpEnsure, fixedRedirectUrl, handleOAuthCallback,
   invalidate as mcpInvalidate, statusOf as mcpStatus,
@@ -576,9 +577,11 @@ export default async function handle(req, res) {
     });
     return true;
   }
-  // POST /mcp/open {url} — a mini app opening another: nsh has no open-URL
-  // API, so the server hands a `rox://app/…` link to the system, which
-  // routes it back to Rox (lib.rs on_open_url). Nothing else is opened.
+  // POST /mcp/open {url} — a mini app opening another, a new chat with a
+  // draft, or a file in Rox's viewer: nsh has no open-URL API, so the
+  // server hands a `rox://app/…`, `rox://chat/new?draft=…` or
+  // `rox://view?path=<absolute path>` link to the system, which routes it
+  // back to Rox (lib.rs on_open_url). Nothing else is opened.
   if (req.method === "POST" && req.url === "/mcp/open") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -586,9 +589,11 @@ export default async function handle(req, res) {
       res.setHeader("content-type", "application/json");
       let url = "";
       try { url = String(JSON.parse(body || "{}").url || ""); } catch {}
-      if (!/^rox:\/\/app\/[a-z0-9-]+\/[A-Za-z0-9._-]+(\?[^\s]*)?$/.test(url)) {
+      let view = null;
+      try { view = /^rox:\/\/view\?[^\s]*$/.test(url) ? new URL(url).searchParams.get("path") : null; } catch {}
+      if (!/^rox:\/\/app\/[a-z0-9-]+\/[A-Za-z0-9._-]+(\?[^\s]*)?$/.test(url) && !/^rox:\/\/chat\/new\?draft=[^\s]*$/.test(url) && !view?.startsWith("/")) {
         res.statusCode = 400;
-        return res.end(JSON.stringify({ ok: false, error: "only rox://app/<server>/<app> links" }));
+        return res.end(JSON.stringify({ ok: false, error: "only rox://app/<server>/<app>, rox://chat/new?draft= and rox://view?path=<absolute path> links" }));
       }
       execFile("open", [url], (e) => res.end(JSON.stringify(e ? { ok: false, error: String(e.message) } : { ok: true })));
     });
@@ -600,6 +605,62 @@ export default async function handle(req, res) {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ apps }));
     });
+    return true;
+  }
+  // GET /mcp/manifest — {servers:[{id, title, apps, commands, scopes}]}:
+  // the slash commands and `@` scopes servers announce, with their apps.
+  if (req.method === "GET" && req.url === "/mcp/manifest") {
+    mcpManifest().then((servers) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ servers }));
+    });
+    return true;
+  }
+  // POST /mcp/resolve {server, name, args, complete, thread?} — a command
+  // or `@` token resolved locally (never through the model): the
+  // resolver's result ({choices} | {ok, open, title, token, details?} |
+  // {ok:false, error}). `thread` passes that chat's attachments along.
+  if (req.method === "POST" && req.url === "/mcp/resolve") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        res.end(JSON.stringify(await mcpResolve(JSON.parse(body || "{}"))));
+      } catch (e) {
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // POST /mcp/attach {server, token, thread | bot} — {ok, attachment,
+  // existing}: the token resolved, stored and its card posted in the chat
+  // (attachments.mjs); the same token again returns the one it has.
+  // POST /mcp/detach {id}; POST /mcp/attachment/rename {token, title}.
+  if (req.method === "POST" && /^\/mcp\/(attach|detach|attachment\/rename)$/.test(req.url)) {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const j = JSON.parse(body || "{}");
+        if (req.url === "/mcp/attach") return res.end(JSON.stringify({ ok: true, ...(await attach(j)) }));
+        if (req.url === "/mcp/detach") detach(j.id);
+        else renameToken(j.token, j.title);
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // GET /mcp/attachments?thread=|bot=|token= — {attachments:[{…,
+  // threadTitle, botName}]}, oldest first.
+  if (req.method === "GET" && req.url.split("?")[0] === "/mcp/attachments") {
+    const q = new URL(req.url, "http://x").searchParams;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ attachments: listAttachments({ thread: q.get("thread"), bot: q.get("bot"), token: q.get("token") }) }));
     return true;
   }
   // GET /mcp/tools?id=<id> — discovered tools with per-tool enabled flags.

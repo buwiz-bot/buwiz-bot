@@ -14,6 +14,7 @@
 import { db, metaGet, metaSet, store } from "./state.mjs";
 import { artifactRecords } from "./artifacts.mjs";
 import { originOf } from "./appmeta.mjs";
+import { renamedKeys } from "./attachments.mjs";
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS groups(
@@ -128,6 +129,8 @@ export async function listGroups(origin = originOf()) {
   );
   let a = 0;
   const gone = [];
+  // a pin of an attached token shows the token's display name
+  const renamed = renamedKeys();
   const out = groups.map((g, k) => ({
     id: g.id,
     name: g.name,
@@ -140,7 +143,7 @@ export async function listGroups(origin = originOf()) {
         if (!b) return gone.push([g.id, it]), [];
         return [{ kind: "bot", ref: it.ref, title: b.name, hidden: !!b.hidden }];
       }
-      if (it.kind === "app") return [{ kind: "app", ref: it.ref, title: it.title || it.ref.replace(/^mcp:|\|.*$/g, "") }];
+      if (it.kind === "app") return [{ kind: "app", ref: it.ref, title: renamed.get(it.ref) || it.title || it.ref.replace(/^mcp:|\|.*$/g, "") }];
       if (it.kind === "chat") {
         const t = store.list.find((x) => x.id === it.ref);
         if (!t) return gone.push([g.id, it]), [];

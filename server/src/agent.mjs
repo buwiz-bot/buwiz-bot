@@ -25,6 +25,7 @@ import {
   TOOLS, PHRASES, agentSystem, execTool, imageFileOf, mcpToolDefs, officeArt, phraseFor, toolActivity, toolList,
   agentStream, serverSearch, setAgentStream, setServerSearch,
 } from "./tools.mjs";
+import { scopeSection } from "./attachments.mjs";
 
 // The streamed start of a generate_app input → its placeholder's title,
 // description and size (layout before code in the tool's schema).
@@ -64,6 +65,8 @@ export async function agentTurn(job, prompt, thread) {
     ),
     { role: "user", content: await userContent(prompt, job.extra, job.ctx) },
   ];
+  // the chat's attachments and the hints of the `@` scopes in play
+  const scope = await scopeSection(thread, prompt).catch(() => "");
   let reply = "";
   // As in Grok Bot, the reply is held back behind "Typing..." and lands
   // whole; a note the model writes before calling tools ("Checking X
@@ -82,7 +85,7 @@ export async function agentTurn(job, prompt, thread) {
       params = {
         model: MODEL,
         max_tokens: MAX_TOKENS,
-        system: agentSystem(thread),
+        system: agentSystem(thread) + scope,
         tools: await toolList(thread),
         // The last round must answer: a turn that is still calling tools
         // when the rounds run out would otherwise end with no reply.
@@ -204,6 +207,27 @@ export async function agentTurn(job, prompt, thread) {
     if (msg.stop_reason === "max_tokens") break;
   }
   return reply;
+}
+
+// A turn nobody typed (a routine's, routines.mjs): the chat shows `shown`
+// as its message, the model reads `prompt`. It runs in `thread` whichever
+// chat is active, and never makes it the active one.
+export async function backgroundTurn(job, thread, shown, prompt) {
+  thread.turns.push({ id: uuidv7(), role: "user", text: shown });
+  writeIndex();
+  const label = labelOf(modelCtx.getStore());
+  let text;
+  try {
+    text = !MOCK && PROVIDER === "anthropic" ? await agentTurn(job, prompt, thread) : await chatReply(prompt, thread, job);
+  } finally {
+    // Drive files and app cards the tools made ride the reply, even after a crash
+    const links = job.linkTurn?.links.length ? { links: job.linkTurn.links } : {};
+    if (text || links.links) thread.turns.push({ id: uuidv7(), role: "ai", text: text || "", label, ...links });
+    writeIndex();
+    setJob(job, "done", "replied");
+    job.done = true;
+    job.result = "reply";
+  }
 }
 
 // A reply on an artifact: the file itself becomes context — images as image

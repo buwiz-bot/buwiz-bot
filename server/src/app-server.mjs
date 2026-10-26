@@ -18,6 +18,7 @@
 //   tools.mjs    tool schema + executors      agent.mjs    tool loop/generate
 //   windows.mjs  popouts/slots/screenshots    avatars.mjs   avatar generation
 //   groups.mjs   the sidebar's user-made groups
+//   attachments.mjs  `@` tokens attached to chats   routines.mjs  timed agent work
 //   routes/      the ~80 HTTP endpoints, grouped by prefix
 
 import { createServer } from "node:http";
@@ -55,7 +56,9 @@ import artifactsRoute from "./routes/artifacts.mjs";
 import marketRoute from "./routes/market.mjs";
 import dataRoute from "./routes/data.mjs";
 import groupsRoute from "./routes/groups.mjs";
+import routinesRoute from "./routes/routines.mjs";
 import { migrateGroups } from "./groups.mjs";
+import { startRoutines } from "./routines.mjs";
 
 const routes = [
   miscRoute,
@@ -65,6 +68,7 @@ const routes = [
   appsRoute,
   artifactsRoute,
   groupsRoute,
+  routinesRoute,
   marketRoute,
   dataRoute,
 ];
@@ -193,4 +197,6 @@ server.listen(PORT, "127.0.0.1", () => {
       ? "mode: MOCK (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY for real generation)"
       : `mode: ${MODEL} via ${PROVIDER === "anthropic" ? "anthropic" : BASE_URL}`,
   );
+  // routines tick from here on (overdue ones at once)
+  startRoutines();
 });
