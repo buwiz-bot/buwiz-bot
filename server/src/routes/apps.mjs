@@ -11,6 +11,7 @@ import { desktopBounds, raiseWidget } from "../windows.mjs";
 import { imageCapable, imageModels } from "../avatars.mjs";
 import { appInfo, appsMeta, artHints, genAppIcon, iconPath, iconUrl, originOf, updateAppMeta } from "../appmeta.mjs";
 import { forgetArtifact } from "../artifacts.mjs";
+import { mcpAppModule } from "../tools.mjs";
 
 
 // opencodex's providers and how each authenticates (its config file):
@@ -48,6 +49,11 @@ export default async function handle(req, res) {
   if (req.method === "GET" && req.url.startsWith("/module")) {
     // name is "R<n>" (current) or "R<n>@v<k>" (a pinned version).
     const raw = new URL(req.url, "http://x").searchParams.get("name") || "";
+    // a mini app an MCP server ships: `mcp:<server>/<app>[|<props>]`
+    if (raw.startsWith("mcp:")) {
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify(await mcpAppModule(raw)));
+    }
     const mm = raw.match(/^(R\d+)(?:@v(\d+))?$/);
     const name = mm?.[1] || "";
     const ver = mm?.[2] ? Number(mm[2]) : null;

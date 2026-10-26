@@ -102,6 +102,8 @@ export function jobJson(job) {
     done: job.done,
     result: job.result,
     events: job.events || [],
+    // a mini app a server asked to show ({key, title}, tools.mjs)
+    open: job.openApp || null,
   });
 }
 

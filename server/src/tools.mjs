@@ -15,8 +15,8 @@ import { pluginSkillsInject } from "./plugins.mjs";
 import { editImage, generateImage } from "./avatars.mjs";
 import { BOT_TOOLS, botOfThread, botSection, isBotTool, recordToolUse, toolBot } from "./botctx.mjs";
 import {
-  anthropicTools as mcpAnthropicTools, callTool as mcpCallTool,
-  ensureClient as mcpEnsure, invalidate as mcpInvalidate, parseMcpName,
+  anthropicTools as mcpAnthropicTools, appKey, appOfUri, callTool as mcpCallTool, callToolJson as mcpCallJson,
+  ensureClient as mcpEnsure, listApps as mcpListApps, parseAppKey, readApp as mcpReadApp, invalidate as mcpInvalidate, parseMcpName,
   setAuthHooks as mcpSetAuthHooks, statusOf as mcpStatus,
 } from "./mcp.mjs";
 import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
@@ -511,6 +511,53 @@ export default function R() {
 `;
 }
 
+// `GET /module?name=mcp:<server>/<app>[|<props>]`: the shipped module with
+// its props ahead of it as `globalThis.roxProps` (plus `server`, the id
+// the app passes back to `/mcp/call`).
+export async function mcpAppModule(raw) {
+  const k = parseAppKey(raw);
+  const row = k && db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(k.server);
+  if (!row) return { source: "", error: "no such server" };
+  const res = (await mcpListApps(row)).find((r) => appOfUri(r.uri) === k.app);
+  if (!res) return { source: "", error: `${k.server} ships no app ${k.app}` };
+  const text = await mcpReadApp(row, res.uri);
+  const props = { ...k.props, server: row.id };
+  return { source: text && `globalThis.roxProps = ${JSON.stringify(props)};\n${text}`, title: res.title || res.name || k.app };
+}
+
+// `POST /mcp/call {server, tool, args}` — a mini app calling its server.
+export async function mcpAppCall({ server, tool, args }) {
+  const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(server || ""));
+  if (!row) return { ok: false, error: "no such server" };
+  return mcpCallJson(row, String(tool || ""), args || {});
+}
+
+// `GET /mcp/apps` — every enabled server's mini apps.
+export async function mcpAppList() {
+  const rows = db.prepare("SELECT * FROM mcp_servers WHERE enabled=1").all();
+  const lists = await Promise.all(rows.map(async (row) =>
+    (await mcpListApps(row).catch(() => [])).map((r) => ({
+      server: row.id, app: appOfUri(r.uri), uri: r.uri, title: r.title || r.name || "", description: r.description || "",
+    }))));
+  return lists.flat();
+}
+
+// A server's `rox/open` ({uri, props?}): the reply carries a card for that
+// mini app and the client opens it full screen when the job reports it.
+async function noteAppOpen(job, row, open) {
+  const app = appOfUri(open.uri);
+  if (!job || !app) return;
+  const res = (await mcpListApps(row)).find((r) => r.uri === open.uri);
+  const props = open.props && typeof open.props === "object" ? open.props : {};
+  const key = appKey(row.id, app, props);
+  const title = open.title || res?.title || res?.name || app;
+  job.openApp = { key, title };
+  job.linkTurn ||= { links: [] };
+  const links = job.linkTurn.links.filter((l) => l.id !== key);
+  links.push({ provider: "mcp-app", id: key, name: title, link: `rox://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}`, action: "open", kind: "app", file_type: res?.description || "Mini app" });
+  job.linkTurn.links = links;
+}
+
 export async function toolGenerateApp(job, thread, input) {
   let code = String(input.code || "").trim();
   if (!code.includes("export default") && /function\s+R\s*\(/.test(code))
@@ -995,9 +1042,13 @@ export async function execTool(job, thread, block) {
       // the thread's bot actually used this server → it joins its integrations
       try { recordToolUse(thread, row.id); } catch {}
       markAppUsed(thread, row.id);
-      const r = await mcpCallTool(row, mm[1], block.input || {});
+      const { meta, ...r } = await mcpCallTool(row, mm[1], block.input || {});
       // a Drive file the AI made or changed joins the reply (drive.mjs)
       if (row.id === DRIVE_SERVER) try { noteDriveCall(job, thread, mm[1], block.input || {}, r); } catch {}
+      // a server asking to show one of its mini apps: it opens full screen
+      // and its card joins the reply
+      const open = meta?.["rox/open"];
+      if (open?.uri && !r.is_error) try { await noteAppOpen(job, row, open); } catch {}
       return r;
     }
     return { content: `unknown tool ${block.name}`, is_error: true };

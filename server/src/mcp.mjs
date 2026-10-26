@@ -400,5 +400,66 @@ export async function callTool(row, toolName, input) {
   // enrolled every call fails, so drop the server's tools until Reconnect.
   if (row.url && result.isError && /Developer Preview Program/i.test(parts.join("\n").slice(0, 2000)))
     rec.unavailable = `Google only serves this to projects in the Google Workspace Developer Preview Program — enroll at https://developers.google.com/workspace/preview, then Reconnect.`;
-  return { content: parts.join("\n") || "(empty)", is_error: !!result.isError };
+  // `meta` is the result's `_meta` (a server's `rox/open` request); the
+  // caller strips it before the result goes back to the model.
+  return { content: parts.join("\n") || "(empty)", is_error: !!result.isError, meta: result._meta };
 }
+
+// ── Mini apps a server ships ─────────────────────────────────────────────
+// A server can ship Native Shell mini apps as resources of this type (the
+// TSX module text, `export default function R()`); Rox compiles and runs
+// them like its own and lets them call the server back (`callToolJson`).
+export const APP_MIME = "text/x-nsh-tsx";
+
+// The server's mini-app resources, listed once per connection.
+export async function listApps(row) {
+  const rec = await ensureClient(row);
+  if (!rec.client?.getServerCapabilities()?.resources) return [];
+  rec.apps ||= rec.client
+    .listResources()
+    .then(({ resources }) => (resources || []).filter((r) => r.mimeType === APP_MIME))
+    .catch(() => []);
+  return rec.apps;
+}
+
+// One mini app's module text, or "" when the server has no such app.
+export async function readApp(row, uri) {
+  const rec = await ensureClient(row);
+  if (!rec.client) return "";
+  const { contents } = await rec.client.readResource({ uri });
+  return contents?.find((c) => typeof c.text === "string")?.text || "";
+}
+
+// A mini app's tool call: the result as data — structuredContent, else the
+// text parsed as JSON, else the text.
+export async function callToolJson(row, toolName, input) {
+  const rec = await ensureClient(row);
+  if (!rec.client) return { ok: false, error: `${row.id} is not connected (${rec.err || "failed to start"})` };
+  const result = await rec.client.callTool({ name: toolName, arguments: input || {} }, undefined, { timeout: 120_000 });
+  const text = (result.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  if (result.isError) return { ok: false, error: text || "tool failed" };
+  // MCP wants structuredContent to be an object, so a bare value comes
+  // wrapped as {result: …}
+  const sc = result.structuredContent;
+  if (sc && typeof sc === "object" && !Array.isArray(sc) && Object.keys(sc).length === 1 && "result" in sc)
+    return { ok: true, result: sc.result };
+  if (sc !== undefined) return { ok: true, result: sc };
+  try {
+    return { ok: true, result: JSON.parse(text) };
+  } catch {
+    return { ok: true, result: text };
+  }
+}
+
+// `mcp:<server>/<app>[|<props JSON>]` — a shipped mini app's module name.
+export const appKey = (server, app, props) =>
+  `mcp:${server}/${app}${props && Object.keys(props).length ? `|${JSON.stringify(props)}` : ""}`;
+export function parseAppKey(key) {
+  const m = String(key || "").match(/^mcp:([a-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\|(.*))?$/s);
+  if (!m) return null;
+  let props = {};
+  try { props = m[3] ? JSON.parse(m[3]) : {}; } catch {}
+  return { server: m[1], app: m[2], props };
+}
+// `nsh://<anything>/<app>` → `<app>`.
+export const appOfUri = (uri) => String(uri || "").split("/").pop();

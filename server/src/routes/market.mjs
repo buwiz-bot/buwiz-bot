@@ -1,10 +1,11 @@
 // routes/market.mjs — the plugin catalog (Grok Bot's snapshot), installs,
 // plugin pages, connector accounts, private skills and MCP servers.
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APP_ROOT, PLUGINS_DIR, git } from "../config.mjs";
 import { db } from "../state.mjs";
-import { mcpUpsertServer } from "../tools.mjs";
+import { mcpAppCall, mcpAppList, mcpUpsertServer } from "../tools.mjs";
 import {
   beginAuth as mcpBeginAuth, ensureClient as mcpEnsure, fixedRedirectUrl, handleOAuthCallback,
   invalidate as mcpInvalidate, statusOf as mcpStatus,
@@ -557,6 +558,47 @@ export default async function handle(req, res) {
           res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
         }
       })();
+    });
+    return true;
+  }
+  // POST /mcp/call {server, tool, args} — a shipped mini app calling its
+  // server: {ok, result} (the tool's data) or {ok:false, error}.
+  if (req.method === "POST" && req.url === "/mcp/call") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        res.end(JSON.stringify(await mcpAppCall(JSON.parse(body || "{}"))));
+      } catch (e) {
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // POST /mcp/open {url} — a mini app opening another: nsh has no open-URL
+  // API, so the server hands a `rox://app/…` link to the system, which
+  // routes it back to Rox (lib.rs on_open_url). Nothing else is opened.
+  if (req.method === "POST" && req.url === "/mcp/open") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      let url = "";
+      try { url = String(JSON.parse(body || "{}").url || ""); } catch {}
+      if (!/^rox:\/\/app\/[a-z0-9-]+\/[A-Za-z0-9._-]+(\?[^\s]*)?$/.test(url)) {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ ok: false, error: "only rox://app/<server>/<app> links" }));
+      }
+      execFile("open", [url], (e) => res.end(JSON.stringify(e ? { ok: false, error: String(e.message) } : { ok: true })));
+    });
+    return true;
+  }
+  // GET /mcp/apps — the mini apps every enabled server ships.
+  if (req.method === "GET" && req.url === "/mcp/apps") {
+    mcpAppList().then((apps) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ apps }));
     });
     return true;
   }
