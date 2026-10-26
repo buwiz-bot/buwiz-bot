@@ -33,6 +33,7 @@ import { imageFileOf } from "./tools.mjs";
 import { callTool } from "./mcp.mjs";
 import { DRIVE_SERVER, driveType, driveWrite } from "./drive.mjs";
 import { versionsOfFile } from "./routes/files.mjs";
+import { attachmentsOf, listAttachments } from "./attachments.mjs";
 
 // Library kinds by extension; audio/video are media, anything else a file.
 const KIND_BY_EXT = {
@@ -170,6 +171,45 @@ function linkRecord(t, i, u, l, ctx) {
   };
 }
 
+// The record of attachment `a` of thread t (attachments.mjs): an `@` token
+// attached there, kept by its server — `open` opens it, `details` is what
+// its resolver said (App Details: name, subtitle, facts, tax-year
+// `versions`), `token` what Rename and Show in Chat go by. i is its card's
+// message (-1 when that was deleted).
+function attachmentRecord(t, a) {
+  const id = `attach:${a.id}`;
+  const i = t.turns.findIndex((u) => u.id === a.turn);
+  const d = a.details || {};
+  return {
+    id,
+    name: id,
+    kind: "mcp-app",
+    title: a.title,
+    filename: "",
+    file: "",
+    description: d.subtitle || "",
+    icon: d.image || "",
+    image: d.image || null,
+    token: a.token,
+    open: a.open,
+    key: a.key,
+    server: a.server,
+    scope: a.scope,
+    details: a.details,
+    attachment: a.id,
+    meta: { provider: a.server, type: a.scope },
+    i,
+    origin: { thread: t.id, uid: t.uid || "", i, turn: a.turn || "" },
+    storage: { where: "connector", provider: a.server, link: a.open, uri: a.open },
+    versioning: "provider",
+    published: false,
+    mtime: a.created_at || 0,
+    created_at: a.created_at || 0,
+    v: 0,
+    versions: [],
+  };
+}
+
 const promptBefore = (t, i) => {
   for (let j = i - 1; j >= 0; j--) if (t.turns[j].role === "user") return t.turns[j].text || "";
   return "";
@@ -244,8 +284,11 @@ export async function libraryOf(t, origin = originOf()) {
   const seen = new Set();
   const out = [];
   const links = driveLinks(t);
+  // attachments sit at their card's message; one whose card is gone, last
+  const atts = attachmentsOf(t.id).map((a) => attachmentRecord(t, a));
   for (let i = t.turns.length - 1; i >= 0; i--) {
     const u = t.turns[i];
+    for (const rec of atts) if (rec.i === i) out.push(archived(rec, hidden));
     if (u.role !== "ai" || u.building) continue;
     for (const l of u.links || []) {
       const id = `gdrive:${l?.id}`;
@@ -271,6 +314,7 @@ export async function libraryOf(t, origin = originOf()) {
     if (gone) continue;
     out.push(archived(cardRecord(t, i, u, ctx), hidden));
   }
+  for (const rec of atts) if (rec.i < 0) out.push(archived(rec, hidden));
   return out;
 }
 
@@ -366,6 +410,26 @@ export async function artifactRecords(refs, origin = originOf()) {
 /** GET /artifact/info?id= — an image's or file's record plus what Edit
  *  Details shows (where it was made, when, its path and size). */
 export async function artifactInfo(id, origin = originOf()) {
+  // an attachment: its record, where it is attached and when
+  if (String(id || "").startsWith("attach:")) {
+    const a = listAttachments().find((x) => x.id === String(id).slice(7));
+    const t = a && store.list.find((x) => x.id === a.thread);
+    if (!t) throw new Error(`no such artifact ${id}`);
+    return {
+      ok: true,
+      ...attachmentRecord(t, a),
+      versions: 0,
+      history: [],
+      thread_id: t.id,
+      thread_title: t.title || "",
+      bot_name: a.botName,
+      created_at: a.created_at || null,
+      updated_at: null,
+      prompt: "",
+      path: "",
+      bytes: 0,
+    };
+  }
   const at = locate(String(id || ""));
   if (!at) throw new Error(`no such artifact ${id}`);
   const { t, i, u, f, l } = at;
@@ -461,7 +525,7 @@ export async function updateArtifactMeta(id, { title, filename, file, descriptio
 /** POST /artifact/hide — out of (or back into) the Library. */
 export function hideArtifact(id, hidden = true) {
   id = String(id || "");
-  if (!/^R\d+$/.test(id) && !id.startsWith("file:") && !isDrive(id)) throw new Error(`bad artifact id ${id}`);
+  if (!/^R\d+$/.test(id) && !id.startsWith("file:") && !isDrive(id) && !id.startsWith("attach:")) throw new Error(`bad artifact id ${id}`);
   if (hidden) db.prepare("INSERT OR REPLACE INTO library_hidden(id,at) VALUES(?,?)").run(id, Date.now());
   else db.prepare("DELETE FROM library_hidden WHERE id=?").run(id);
 }

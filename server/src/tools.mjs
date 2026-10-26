@@ -16,10 +16,11 @@ import { editImage, generateImage } from "./avatars.mjs";
 import { BOT_TOOLS, botOfThread, botSection, isBotTool, recordToolUse, toolBot } from "./botctx.mjs";
 import {
   anthropicTools as mcpAnthropicTools, appKey, appOfUri, callTool as mcpCallTool, callToolJson as mcpCallJson,
-  ensureClient as mcpEnsure, listApps as mcpListApps, parseAppKey, readApp as mcpReadApp, invalidate as mcpInvalidate, parseMcpName,
+  ensureClient as mcpEnsure, listApps as mcpListApps, parseAppKey, readApp as mcpReadApp, readManifest as mcpReadManifest, invalidate as mcpInvalidate, parseMcpName,
   setAuthHooks as mcpSetAuthHooks, statusOf as mcpStatus,
 } from "./mcp.mjs";
 import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
+import { ROUTINE_TOOLS, isRoutineTool, noteGoogleEmail, toolRoutine } from "./routines.mjs";
 
 export const CLIENT_SEARCH = {
   name: "web_search",
@@ -430,6 +431,8 @@ Word, Excel or PowerPoint files in Google Drive (.docx/.xlsx/.pptx — not Googl
 
 Private skills: the user teaches you procedures — when they explain a workflow to keep, skill_create saves it (kebab-case name, one-line description, full instructions). skill_update, skill_delete, skill_enable, skill_disable and skill_list manage them. Enabled skill instructions are appended below — follow them whenever the request matches the skill's description.
 
+Routines: when the user wants something done on a schedule ("every minute", "daily", "keep checking"), routine_create sets it up in this chat — with a check whenever a tool can tell what's new, so you only wake for new items. routine_list, routine_update and routine_delete manage them.
+
 Local shell: shell_run executes commands on the user's machine — their login PATH applies, so installed CLIs work. Use it when a request needs local state or a local tool instead of guessing; keep commands short and non-interactive.
 ${privateSkillsInject()}${pluginSkillsInject()}
 
@@ -542,6 +545,28 @@ export async function mcpAppList() {
   return lists.flat();
 }
 
+// `GET /mcp/manifest` — what every enabled server offers the composer: its
+// mini apps plus the slash commands and `@` scopes its `rox://manifest`
+// announces. A server with neither is left out.
+export async function mcpManifest() {
+  const rows = db.prepare("SELECT * FROM mcp_servers WHERE enabled=1").all();
+  const named = (xs) => (Array.isArray(xs) ? xs.filter((x) => x && typeof x.name === "string" && x.name) : []);
+  const servers = await Promise.all(rows.map(async (row) => {
+    const [apps, m] = await Promise.all([mcpListApps(row).catch(() => []), mcpReadManifest(row).catch(() => ({}))]);
+    return {
+      id: row.id,
+      title: String(m.title || row.name || row.id),
+      apps: apps.map((r) => ({ id: appOfUri(r.uri), title: r.title || r.name || "", description: r.description || "" })),
+      commands: named(m.commands),
+      scopes: named(m.scopes),
+    };
+  }));
+  return servers.filter((s) => s.apps.length || s.commands.length || s.scopes.length);
+}
+
+// `POST /mcp/resolve` lives with the attachments that scope it.
+export { mcpResolve } from "./attachments.mjs";
+
 // A server's `rox/open` ({uri, props?}): the reply carries a card for that
 // mini app and the client opens it full screen when the job reports it.
 async function noteAppOpen(job, row, open) {
@@ -554,7 +579,10 @@ async function noteAppOpen(job, row, open) {
   job.openApp = { key, title };
   job.linkTurn ||= { links: [] };
   const links = job.linkTurn.links.filter((l) => l.id !== key);
-  links.push({ provider: "mcp-app", id: key, name: title, link: `rox://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}`, action: "open", kind: "app", file_type: res?.description || "Mini app" });
+  // `token` names what the app shows (an attachable value), carried on the link
+  const token = typeof open.token === "string" ? open.token : "";
+  const link = `rox://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  links.push({ provider: "mcp-app", id: key, name: title, link, action: "open", kind: "app", file_type: res?.description || "Mini app", ...(token ? { token } : {}) });
   job.linkTurn.links = links;
 }
 
@@ -1032,6 +1060,7 @@ export async function execTool(job, thread, block) {
     if (/^skill_(create|update|delete|enable|disable|list)$/.test(block.name))
       return toolSkillAdmin(block.name, block.input || {});
     if (isBotTool(block.name)) return toolBot(thread, block.name, block.input || {});
+    if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {});
     const mm = parseMcpName(block.name);
     if (mm) {
       const row = db
@@ -1045,6 +1074,8 @@ export async function execTool(job, thread, block) {
       const { meta, ...r } = await mcpCallTool(row, mm[1], block.input || {});
       // a Drive file the AI made or changed joins the reply (drive.mjs)
       if (row.id === DRIVE_SERVER) try { noteDriveCall(job, thread, mm[1], block.input || {}, r); } catch {}
+      // the Google address a call named: routine templates fall back on it
+      if (!r.is_error) noteGoogleEmail(block.input);
       // a server asking to show one of its mini apps: it opens full screen
       // and its card joins the reply
       const open = meta?.["rox/open"];
@@ -1216,8 +1247,8 @@ export async function toolList(thread) {
   const own = botOfThread(thread) ? BOT_TOOLS : [];
   const load = deferred.length ? [appToolsLoad(deferred)] : [];
   return serverSearch
-    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...own, ...office, ...load, ...mcp]
-    : [...TOOLS, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp]
+    : [...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
 }
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields

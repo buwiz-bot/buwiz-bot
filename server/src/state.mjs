@@ -165,6 +165,15 @@ db.exec(`
     id TEXT PRIMARY KEY, title TEXT, file TEXT, description TEXT, icon TEXT, updated_at INTEGER);
   CREATE TABLE IF NOT EXISTS library_hidden(id TEXT PRIMARY KEY, at INTEGER);
 `);
+// `@` tokens attached to a chat or bot (attachments.mjs) and the display
+// names the user gave tokens.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS attachments(
+    id TEXT PRIMARY KEY, server TEXT NOT NULL, token TEXT NOT NULL, scope TEXT,
+    title TEXT, open TEXT, key TEXT, details TEXT, thread TEXT NOT NULL, bot TEXT,
+    turn TEXT, created_at INTEGER);
+  CREATE TABLE IF NOT EXISTS attachment_names(token TEXT PRIMARY KEY, title TEXT, updated_at INTEGER);
+`);
 // Remote (streamable-HTTP) MCP servers carry url instead of command.
 try { db.exec("ALTER TABLE mcp_servers ADD COLUMN url TEXT"); } catch {}
 // Per-tool off switches on a connected server (JSON array of tool names).
@@ -511,6 +520,9 @@ export function turnsJson(thread = activeThread()) {
   const edits = new Map(
     db.prepare("SELECT id,title,file FROM artifact_meta").all().map((r) => [r.id, r]),
   );
+  const renamed = new Map(
+    db.prepare("SELECT token,title FROM attachment_names").all().map((r) => [r.token, r.title]),
+  );
   const art = (t) => {
     // An image card made before cards carried their file: read it from the
     // module once (`asset:/generated/assets/<file>`).
@@ -546,8 +558,14 @@ export function turnsJson(thread = activeThread()) {
       const name = f?.path && edits.get(`file:${f.path}`)?.file;
       return name ? { ...f, name } : f;
     }),
-    // Drive files the reply made or changed (drive.mjs), as chips
-    links: (t.links || []).map(({ account, ...l }) => ({ ...l, ...driveType(l.mime, l.name) })),
+    // Drive files the reply made or changed (drive.mjs), as chips; a
+    // server's mini app (`mcp-app`: a `rox/open` or an attachment's card)
+    // keeps its own type, and an attachment's shows its token's display name
+    links: (t.links || []).map(({ account, ...l }) => ({
+      ...l,
+      ...(l.token && renamed.get(l.token) ? { name: renamed.get(l.token) } : {}),
+      ...(l.provider === "mcp-app" ? { kind: "app", type: l.file_type || "Mini app" } : driveType(l.mime, l.name)),
+    })),
     v: t.v ?? null,
     art: art(t),
     building: t.building || undefined,
