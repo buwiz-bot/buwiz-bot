@@ -13,14 +13,40 @@ use crate::theme;
 
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
 pub(crate) fn sidebar() -> impl IntoElement {
-    when(
-        move || store().side_shown.get(),
-        || {
-            when(move || store().side_mode.get() == "full", full_sidebar)
-                .otherwise(rail)
-                .into_element()
-        },
-    )
+    let shows = |full: bool| {
+        move || {
+            let st = store();
+            st.side_shown.get() && (st.side_mode.get() == "full") == full
+        }
+    };
+    view()
+        .flex_row()
+        .h_full()
+        .child(kept(shows(true), 240.0, || full_sidebar().into_element()))
+        .child(kept(shows(false), 88.0, || rail().into_element()))
+}
+
+/// A form of the sidebar `w` wide, made the first time it shows and kept:
+/// hidden, it takes no width, draws nothing and takes no input. Made anew
+/// on every ⌘B / ⌘⇧H it mounted ~300 views, a 15–20 ms frame. Not
+/// clipped while it shows: the rail's tooltips reach over the chat.
+fn kept(
+    shown: impl Fn() -> bool + Copy + 'static,
+    w: f32,
+    make: impl Fn() -> AnyElement + 'static,
+) -> impl IntoElement {
+    let seen = signal(false);
+    effect(move || {
+        if shown() && !seen.get_untracked() {
+            seen.set(true);
+        }
+    });
+    view()
+        .h_full()
+        .w(move || px(if shown() { w } else { 0.0 }))
+        .opacity(move || if shown() { 1.0f32 } else { 0.0 })
+        .pointer_events(move || if shown() { PointerEvents::Auto } else { PointerEvents::None })
+        .child(when(move || seen.get(), make))
 }
 
 /// `sideEff === "hidden"` (App.tsx:2454): the toggle floats right of the

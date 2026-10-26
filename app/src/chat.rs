@@ -11,6 +11,9 @@ use crate::store::{Attach, Turn};
 use crate::theme;
 use crate::widgets::app_card;
 
+/// A turn's height before it is measured (points).
+const ROW_ESTIMATE: f32 = 150.0;
+
 /// Where a freshly mounted transcript opens.
 #[derive(Clone, Copy)]
 enum Opening {
@@ -199,6 +202,10 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
             })
         })
         .follow_end(px(40.0))
+        // Rows not measured yet are placed at this height: nsh's 50pt
+        // default had a fresh chat's viewport hold ~20 of them, all bound
+        // (and their views made) at once, then most dropped once measured.
+        .estimated_item_size(px(ROW_ESTIMATE))
         .element_ref(&list)
         // `chatScrolling` (shell.tsx:88) — true from the first scroll
         // event until ~160ms after the last; hover handlers read it to
