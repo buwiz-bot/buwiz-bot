@@ -1,0 +1,9 @@
+{
+  "name": "rox-pele",
+  "private": true,
+  "type": "module",
+  "description": "Rox's Mermaid renderer: Pele (vendored pele.js) + resvg for text-capable rasters.",
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  }
+}

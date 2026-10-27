@@ -1,0 +1,213 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Keeps hexuria/nsh `rox` = longbridge/nsh `main` + the topics in nsh-patches.toml.
+
+  scripts/nsh-fork status            fork main vs upstream; each topic's PR, rebase need, presence in rox
+  scripts/nsh-fork sync              fast-forward the fork's main to upstream main (never anything else)
+  scripts/nsh-fork rebuild [--push]  rox-new = upstream main + active topics, in a scratch worktree;
+                                     --push tags the old rox tip (rox-YYYY-MM-DD) and moves rox to it
+  scripts/nsh-fork rebase TOPIC [--push]
+                                     TOPIC onto upstream main (--push: force-with-lease to the fork)
+
+Conflict resolutions are recorded (git rerere): resolve once in the worktree it names,
+`git cherry-pick --continue` / `git rebase --continue`, then run the command again.
+Process and rules: NSH-FORK.md.
+"""
+
+import datetime
+import json
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+NSH = ROOT / "nsh"
+UPSTREAM = "https://github.com/longbridge/nsh.git"
+UPSTREAM_REPO = "longbridge/nsh"
+FORK_OWNER = "hexuria"
+WORKTREE = Path("/tmp/rox-nsh-fork")
+ACTIVE = {"local", "open", "rox-only"}
+
+
+def git(*args, cwd=NSH, check=True, quiet=False):
+    r = subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True)
+    if check and r.returncode != 0:
+        if not quiet:
+            sys.stderr.write(r.stderr)
+        raise SystemExit(f"git {' '.join(args)} failed")
+    return r.stdout.strip()
+
+
+def topics():
+    return tomllib.loads((ROOT / "nsh-patches.toml").read_text())["topic"]
+
+
+def fetch():
+    if git("remote", "get-url", "upstream", check=False) == "":
+        git("remote", "add", "upstream", UPSTREAM)
+    git("config", "rerere.enabled", "true")
+    git("config", "rerere.autoupdate", "true")
+    git("fetch", "-q", "upstream")
+    git("fetch", "-q", "origin")
+
+
+def ref(branch):
+    """The topic's tip: the fork's, else a local branch."""
+    for r in (f"origin/{branch}", branch):
+        if git("rev-parse", "-q", "--verify", r, check=False):
+            return r
+    return None
+
+
+def count(rng):
+    return int(git("rev-list", "--count", rng))
+
+
+def pr_state(n):
+    if not n:
+        return "-"
+    r = subprocess.run(
+        ["gh", "pr", "view", str(n), "--repo", UPSTREAM_REPO, "--json", "state,mergeable,reviewDecision"],
+        text=True, capture_output=True,
+    )
+    if r.returncode != 0:
+        return "?"
+    d = json.loads(r.stdout)
+    extra = [x for x in (d.get("reviewDecision"), "CONFLICTING" if d.get("mergeable") == "CONFLICTING" else "") if x]
+    return "#%d %s%s" % (n, d["state"], (" " + " ".join(extra)) if extra else "")
+
+
+def status():
+    fetch()
+    ahead, behind = count("upstream/main..origin/main"), count("origin/main..upstream/main")
+    print(f"fork main: {'= upstream' if not (ahead or behind) else f'ahead {ahead}, behind {behind}'}")
+    print(f"rox: {count('upstream/main..origin/rox')} commits over upstream main, "
+          f"{count('origin/rox..upstream/main')} upstream commits not in it\n")
+    # rebuilds cherry-pick with -x: a topic commit whose conflict was
+    # resolved differs by patch, not by its trailer
+    picked = set(re.findall(r"cherry picked from commit ([0-9a-f]{40})",
+                            git("log", "--format=%B", "upstream/main..origin/rox")))
+    for t in topics():
+        r = ref(t["branch"])
+        if r is None:
+            print(f"  {t['branch']:36} MISSING BRANCH")
+            continue
+        n_ahead, n_behind = count(f"upstream/main..{r}"), count(f"{r}..upstream/main")
+        missing = sum(
+            1 for l in git("cherry", "origin/rox", r).splitlines()
+            if l.startswith("+") and l[2:] not in picked
+        )
+        pr = pr_state(t.get("pr", 0))
+        flags = []
+        if t["status"] in ACTIVE and missing:
+            flags.append(f"{missing} commit(s) not in rox")
+        if n_behind:
+            flags.append(f"rebase: {n_behind} behind")
+        if "MERGED" in pr and t["status"] != "merged":
+            flags.append("upstream merged it: set status = merged")
+        print(f"  {t['branch']:36} {t['status']:8} {pr:24} +{n_ahead} {'; '.join(flags)}")
+
+
+def sync():
+    fetch()
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", "origin/main", "upstream/main"], cwd=NSH)
+    if ancestor.returncode != 0:
+        raise SystemExit("fork main has commits upstream lacks: move them to a topic branch, never onto main")
+    print(git("push", "origin", "upstream/main:refs/heads/main") or "fork main = upstream main")
+    if git("rev-parse", "--abbrev-ref", "HEAD") != "main":
+        git("branch", "-f", "main", "upstream/main")
+
+
+def worktree(at):
+    if WORKTREE.exists():
+        state = git("status", "--porcelain", cwd=WORKTREE, check=False)
+        if any(l[:2] in ("UU", "AA", "DU", "UD", "AU", "UA") for l in state.splitlines()):
+            raise SystemExit(f"unresolved conflict in {WORKTREE}: resolve, --continue, then run this again")
+        git("worktree", "remove", "--force", str(WORKTREE))
+    git("worktree", "add", "-q", "--detach", str(WORKTREE), at)
+
+
+def rebuild(push):
+    fetch()
+    worktree("upstream/main")
+    git("checkout", "-q", "-B", "rox-new", cwd=WORKTREE)
+    for t in topics():
+        if t["status"] not in ACTIVE:
+            print(f"- {t['branch']} ({t['status']})")
+            continue
+        r = ref(t["branch"])
+        if r is None:
+            raise SystemExit(f"{t['branch']}: no such branch")
+        base = git("merge-base", r, "upstream/main")
+        for c in git("rev-list", "--reverse", f"{base}..{r}").splitlines():
+            if subprocess.run(["git", "cherry-pick", "-x", c], cwd=WORKTREE, capture_output=True).returncode == 0:
+                continue
+            if git("diff", "--name-only", "--diff-filter=U", cwd=WORKTREE):
+                raise SystemExit(f"conflict applying {t['branch']} in {WORKTREE}: resolve it, "
+                                 "`git cherry-pick --continue`, finish by hand or run rebuild again")
+            git("-c", "core.editor=true", "cherry-pick", "--continue", cwd=WORKTREE)
+        print(f"+ {t['branch']}")
+    # Topics merged together can leave a line rustfmt splits (two topics'
+    # names in one export list): one rox-only commit formats them.
+    subprocess.run(["cargo", "+nightly", "fmt", "--all"], cwd=WORKTREE, capture_output=True)
+    if git("status", "--porcelain", cwd=WORKTREE):
+        git("commit", "-qam", "rox: Format the lines the merged topics share", cwd=WORKTREE)
+    fmt = subprocess.run(["cargo", "+nightly", "fmt", "--all", "--", "--check"], cwd=WORKTREE, capture_output=True)
+    print(f"rox-new: {count('upstream/main..rox-new')} commits; rustfmt {'clean' if fmt.returncode == 0 else 'NOT clean'}")
+    if not push:
+        print(f"check it (cargo check / Rox build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
+        return
+    old = git("rev-parse", "origin/rox")
+    tag = base = "rox-" + datetime.date.today().isoformat()
+    n = 1
+    while git("tag", "-l", tag) or git("ls-remote", "--tags", "origin", tag):
+        n += 1
+        tag = f"{base}-{n}"
+    if git("tag", "--points-at", old):
+        print(f"old rox tip already tagged: {git('tag', '--points-at', old)}")
+    else:
+        git("tag", tag, old)
+        git("push", "origin", tag)
+    git("push", f"--force-with-lease=rox:{old}", "origin", "rox-new:rox")
+    print(f"rox moved; {old[:8]} kept as a tag. Point Rox's submodule at it (NSH-FORK.md, 'Updating Rox').")
+
+
+def rebase(topic, push):
+    fetch()
+    r = ref(topic)
+    if r is None:
+        raise SystemExit(f"{topic}: no such branch")
+    worktree(r)
+    git("checkout", "-q", "-B", topic, r, cwd=WORKTREE)
+    if subprocess.run(["git", "rebase", "upstream/main"], cwd=WORKTREE, capture_output=True).returncode != 0:
+        raise SystemExit(f"conflict rebasing {topic} in {WORKTREE}: resolve, `git rebase --continue`, push by hand")
+    print(f"{topic}: {count(f'upstream/main..{topic}')} commits on upstream main")
+    if push:
+        git("push", f"--force-with-lease={topic}", "origin", f"{topic}:{topic}", cwd=WORKTREE)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    cmd, rest = argv[0], argv[1:]
+    push = "--push" in rest
+    args = [a for a in rest if a != "--push"]
+    if cmd == "status":
+        status()
+    elif cmd == "sync":
+        sync()
+    elif cmd == "rebuild":
+        rebuild(push)
+    elif cmd == "rebase" and args:
+        rebase(args[0], push)
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

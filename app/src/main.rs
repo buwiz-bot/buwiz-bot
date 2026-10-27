@@ -9,28 +9,148 @@
 #[cfg(target_os = "macos")]
 use nsh_platform_macos as platform;
 
+/// The process logger: `env_logger` as before, plus every `nsh::jank`
+/// line (a frame over budget, a slow engine wake-up, and what each did —
+/// logged while the performance monitor runs, ⌘⇧F) appended to
+/// `~/Library/Logs/Rox/jank.log` (`ROX_JANK_LOG` overrides). The monitor's
+/// Clear (⌘⇧K) logs `nsh_engine::perf::RESET_MARK`, which empties the file:
+/// what is in it is what happened since the last clear.
+#[cfg(target_os = "macos")]
+mod jank_log {
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    const TARGET: &str = "nsh::jank";
+
+    struct Tee {
+        inner: env_logger::Logger,
+        path: std::path::PathBuf,
+        file: Mutex<Option<std::fs::File>>,
+    }
+
+    pub(crate) fn init() {
+        let inner = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("error,nsh::jank=warn"),
+        )
+        .build();
+        let path = std::env::var_os("ROX_JANK_LOG")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var_os("HOME").unwrap_or_default();
+                std::path::Path::new(&home).join("Library/Logs/Rox/jank.log")
+            });
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let max = inner.filter().max(log::LevelFilter::Warn);
+        let tee = Tee { inner, path, file: Mutex::new(None) };
+        if log::set_boxed_logger(Box::new(tee)).is_ok() {
+            log::set_max_level(max);
+        }
+    }
+
+    impl Tee {
+        fn append(&self, line: &str, truncate: bool) {
+            let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+            if truncate || file.is_none() {
+                *file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(!truncate)
+                    .truncate(truncate)
+                    .open(&self.path)
+                    .ok();
+            }
+            if let Some(f) = file.as_mut() {
+                let _ = writeln!(f, "{} {line}", stamp());
+            }
+        }
+    }
+
+    impl log::Log for Tee {
+        fn enabled(&self, meta: &log::Metadata<'_>) -> bool {
+            meta.target() == TARGET || self.inner.enabled(meta)
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() == TARGET {
+                let line = record.args().to_string();
+                let cleared = line == nsh_engine::perf::RESET_MARK;
+                self.append(&line, cleared);
+            }
+            if self.inner.matches(record) {
+                self.inner.log(record);
+            }
+        }
+
+        fn flush(&self) {
+            self.inner.flush();
+        }
+    }
+
+    /// Local wall-clock time, `HH:MM:SS.mmm` (the log is read next to
+    /// what you were just doing).
+    fn stamp() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs() as i64;
+        // SAFETY: `localtime_r` writes the struct it is given.
+        let tm = unsafe {
+            let mut tm: libc_tm = std::mem::zeroed();
+            localtime_r(&secs, &mut tm);
+            tm
+        };
+        format!("{:02}:{:02}:{:02}.{:03}", tm.tm_hour, tm.tm_min, tm.tm_sec, now.subsec_millis())
+    }
+
+    #[repr(C)]
+    struct libc_tm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+        tm_gmtoff: i64,
+        tm_zone: *const i8,
+    }
+
+    unsafe extern "C" {
+        fn localtime_r(time: *const i64, out: *mut libc_tm) -> *mut libc_tm;
+    }
+}
+
 /// The root the runners mount: the same component every platform shows.
-pub fn app_root() -> nsh_core::ui::Root {
-    nsh_core::ui::Root::of::<rox::App>().app_id("dev.goldcoders.rox")
+pub fn app_root() -> nsh_core::element::Root {
+    nsh_core::element::Root::of::<rox::App>().app_id("dev.goldcoders.rox")
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn ui_sets() -> Vec<nsh_core::ui::Registry> {
+fn ui_sets() -> Vec<nsh_core::element::Registry> {
     vec![nsh_base::registry(), rox::registry()]
 }
 
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
-    env_logger::init();
+    jank_log::init();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
-        title: "Rox".to_owned(),
+        title: rox::app_name().to_owned(),
         app_id: "dev.goldcoders.rox".to_owned(),
         size: (1100, 760),
+        // `ROX_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
+        // costs, CPU/GPU/memory) at the window's top right.
+        fps: std::env::var("ROX_FPS").is_ok_and(|v| v != "0"),
         ..Default::default()
     };
     rox::mini::register_mini_app(&options.components);
+    rox::zoom::register_zoom(&options.components);
+    rox::keys::register_keys(&options.components);
     platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 

@@ -7,7 +7,7 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub const fn tone(light: Hsla, dark: Hsla) -> AdaptiveColor {
     AdaptiveColor { light, dark }
@@ -22,6 +22,9 @@ pub const PANE: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.
 pub const MAIN: AdaptiveColor = tone(hsla(0.0, 0.0, 0.99, 1.0), hsla(0.0, 0.0, 0.086, 1.0));
 pub const BUBBLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.12, 1.0));
 pub const CARD: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.122, 1.0));
+/// A floating card over content (the ⌘K palette): opaque in both themes
+/// — `CARD2` is a 6% wash on light, and the chat showed through it.
+pub const POPOVER: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.141, 1.0));
 pub const CARD2: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0, 0.141, 1.0));
 /// The avatar editor's floating card — `tc("#1f1f1f")` (App.tsx:3180):
 /// solid #fff on light, #1f1f1f on dark (CARD2's 6% light side reads as
@@ -48,8 +51,16 @@ pub const PILL_BG: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.94), hsla(0.0, 0.0
 /// `agentFill` (shell.tsx:11): the agent bubble — `#1f1f1f` on dark, 6%
 /// black on light (Grok's "light grey, not white").
 pub const AGENT_BUBBLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.122, 1.0));
-/// Its hairline — `tc("#f5f5f50f")` (shell.tsx:489).
-pub const AGENT_BORDER: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0, 0.96, 0.06));
+/// The agent bubble's fill as Grok Bot draws it on dark (read off its
+/// page over CDP): `--sand-fill-bubble-agent` #f5f5f50a under a
+/// `linear-gradient(#ffffff08, transparent)` sheen, as one translucent
+/// top-down gradient; light stays the flat 6% wash.
+pub const AGENT_BUBBLE_TOP: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.96, 0.07));
+pub const AGENT_BUBBLE_BOTTOM: AdaptiveColor = tone(hsla(0.0, 0.0, 0.0, 0.06), hsla(0.0, 0.0, 0.96, 0.04));
+/// Grok Bot's 0.5pt inset ring (`--sand-border-quaternary-translucent`,
+/// #f5f5f50a on dark), at 2.5%: drawn as a border on the gradient's
+/// edge it read brighter than Grok's inset shadow at 4%.
+pub const AGENT_RIM: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0, 0.96, 0.025));
 
 // Inside a filled user bubble the ink is the dark ramp in both modes —
 // `OnFill` makes `tc` pass dark values through (theme.ts:34). The quote
@@ -66,6 +77,11 @@ pub const DOWN_TINT: AdaptiveColor = tone(hsla(0.02, 0.85, 0.50, 0.14), hsla(0.0
 pub const ACCENT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 1.0), hsla(0.60, 0.99, 0.63, 1.0));
 pub const ACCENT_TINT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 0.15), hsla(0.60, 0.99, 0.63, 0.15));
 pub const PURPLE: AdaptiveColor = tone(hsla(0.75, 0.85, 0.55, 1.0), hsla(0.75, 0.85, 0.68, 1.0));
+
+/// The generation placeholder's dot grid (`dotgrid.rs`): a resting dot is
+/// a faint speck of the ink; a filled one is Rox's blue (#3b82f6).
+pub const DOT_IDLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.16), hsla(0.0, 0.0, 0.96, 0.16));
+pub const DOT_FILL: AdaptiveColor = tone(hsla(0.603, 0.91, 0.60, 1.0), hsla(0.603, 0.91, 0.60, 1.0));
 
 // The page color the avatar/status discs knock out to.
 pub const PAGE: AdaptiveColor = MAIN;
@@ -146,12 +162,14 @@ pub(crate) fn bubble_fill_of(color: &str) -> AdaptiveColor {
     }
 }
 
-/// `bubbleFill` — the active bot's bubble fill. Tracked: a `.bg` binding
-/// re-runs it when `active_bot` changes (App.tsx:245's `bubbleColor`).
-pub(crate) fn bubble_fill() -> AdaptiveColor {
-    let color = crate::live::store()
-        .active_bot()
-        .map(|b| b.color)
+/// The bubble fill of chat `chat`'s bot (a plain chat: the default).
+/// Tracked: a bot's color change repaints.
+pub(crate) fn bubble_fill_for(chat: &str) -> AdaptiveColor {
+    let st = crate::live::store();
+    let bot = st.threads.with(|t| t.iter().find(|t| t.id == chat).and_then(|t| t.bot.clone()));
+    let color = bot
+        .and_then(|tb| st.bots.with(|b| b.iter().find(|b| b.id == tb.id).map(|b| b.color.clone())))
         .unwrap_or_default();
     bubble_fill_of(&color)
 }
+
