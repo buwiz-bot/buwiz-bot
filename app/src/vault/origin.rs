@@ -1,10 +1,20 @@
-//! The site a saved login belongs to: the registrable origin (eTLD+1) of a
-//! domain, a live host or a URL. Ported from nativechat
+//! The site a saved login belongs to. Ported from nativechat
 //! `src/site_login/origin.rs`, without the `url` crate.
 //!
-//! The suffix lists are hand lists, so they cannot be complete; what matters
-//! is that two people's sites under a shared suffix (`alice.github.io`,
-//! `bob.github.io`) never compare equal, or one is offered the other's login.
+//! Invariant: a login is offered only on the exact site it was saved for.
+//! The site ([`site_origin`]) is the host, lowercased; on a loopback or IP
+//! host, the port too. Two different hosts never compare equal
+//! (`alice.pythonanywhere.com` and `mallory.pythonanywhere.com`,
+//! `login.bank.com` and `evil.bank.com`), and neither do two ports of one
+//! loopback or IP host (`localhost:3000` and `localhost:8080`): a suffix
+//! list cannot know every shared host, and a port on this Mac can be
+//! anyone's server.
+//!
+//! Rows saved before this rule hold a registrable domain (eTLD+1 from the
+//! hand lists below, ports dropped): `google.com` for a login typed on
+//! `accounts.google.com`. Such a row ([`SiteMatch::Legacy`]) is still
+//! offered on its domain's hosts, with both sites shown, and is bound to
+//! the exact site of its first use (`Vault::pin_site`).
 
 use std::net::IpAddr;
 
@@ -51,7 +61,8 @@ const PRIVATE_SUFFIXES: &[&str] = &[
     "appspot.com",
 ];
 
-/// Host / eTLD+1 from a domain, live host, or URL. None when empty.
+/// Host / eTLD+1 from a domain, live host, or URL: what rows were saved
+/// under before exact sites, so only for matching those. None when empty.
 pub(crate) fn registrable_origin(raw: &str) -> Option<String> {
     let host = host_of(raw)?;
     if host.parse::<IpAddr>().is_ok() {
@@ -94,6 +105,9 @@ fn host_of(raw: &str) -> Option<String> {
     let s = s.rsplit('@').next().unwrap_or(s);
     let host = if let Some(rest) = s.strip_prefix('[') {
         rest.split(']').next().unwrap_or(rest)
+    } else if s.parse::<std::net::Ipv6Addr>().is_ok() {
+        // a bare IPv6 address: its colons are no port
+        s
     } else {
         s.split(':').next().unwrap_or(s)
     };
@@ -101,11 +115,72 @@ fn host_of(raw: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-/// eTLD+1 equality, so `facebook.com` matches `https://www.facebook.com/login`.
+/// The site of a domain, live host or URL: its host, lowercased and
+/// without a trailing dot; `host:port` on a loopback or IP host that names
+/// a port (`[::1]:8443` for IPv6). None when empty.
+pub(crate) fn site_origin(raw: &str) -> Option<String> {
+    let host = host_of(raw)?.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let ip = host.parse::<IpAddr>().ok();
+    let loopback = host == "localhost" || host.ends_with(".localhost");
+    if ip.is_none() && !loopback {
+        return Some(host);
+    }
+    Some(match port_of(raw) {
+        Some(port) if matches!(ip, Some(IpAddr::V6(_))) => format!("[{host}]:{port}"),
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+/// The port `raw` names after its host, if any.
+fn port_of(raw: &str) -> Option<String> {
+    let mut s = raw.trim();
+    if let Some(i) = s.find("://") {
+        s = &s[i + 3..];
+    }
+    let s = s.split(['/', '?', '#']).next().unwrap_or(s);
+    let s = s.rsplit('@').next().unwrap_or(s);
+    let rest = match s.strip_prefix('[') {
+        Some(r) => r.split_once(']').map(|(_, r)| r)?,
+        // a bare IPv6 address has more than one colon and no port
+        None if s.matches(':').count() > 1 => return None,
+        None => &s[s.find(':').unwrap_or(s.len())..],
+    };
+    let port = rest.strip_prefix(':')?;
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then(|| port.to_owned())
+}
+
+/// Same site: exact host, and port on loopback and IP hosts.
 pub(crate) fn origins_match(left: &str, right: &str) -> bool {
-    match (registrable_origin(left), registrable_origin(right)) {
+    match (site_origin(left), site_origin(right)) {
         (Some(a), Some(b)) => a == b,
         _ => left.trim().eq_ignore_ascii_case(right.trim()),
+    }
+}
+
+/// How a saved row's site stands to the site a form asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SiteMatch {
+    /// The same site.
+    Exact,
+    /// A row saved before exact sites (`exact` false) whose registrable
+    /// domain is the form's: offered with both sites shown.
+    Legacy,
+    No,
+}
+
+/// How a row saved for `saved` (`exact`: under the exact-site rule)
+/// matches a form for `requested`.
+pub(crate) fn site_match(saved: &str, exact: bool, requested: &str) -> SiteMatch {
+    if origins_match(saved, requested) {
+        return SiteMatch::Exact;
+    }
+    match (registrable_origin(saved), registrable_origin(requested)) {
+        (Some(a), Some(b)) if !exact && a == b => SiteMatch::Legacy,
+        _ => SiteMatch::No,
     }
 }
 
@@ -124,16 +199,68 @@ mod tests {
     }
 
     #[test]
-    fn distinct_sites_under_a_shared_suffix_do_not_match() {
+    fn a_site_is_the_exact_host_and_the_port_on_loopback_and_ip_hosts() {
+        assert_eq!(site_origin("https://Accounts.Google.com./signin").as_deref(), Some("accounts.google.com"));
+        assert_eq!(site_origin("https://user@www.example.com:8080/x?y").as_deref(), Some("www.example.com"));
+        assert_eq!(site_origin("http://localhost:3000/login").as_deref(), Some("localhost:3000"));
+        assert_eq!(site_origin("app.localhost:5173").as_deref(), Some("app.localhost:5173"));
+        assert_eq!(site_origin("127.0.0.1:8443").as_deref(), Some("127.0.0.1:8443"));
+        assert_eq!(site_origin("https://10.0.0.7:9443/").as_deref(), Some("10.0.0.7:9443"));
+        assert_eq!(site_origin("http://[::1]:8080/x").as_deref(), Some("[::1]:8080"));
+        assert_eq!(site_origin("::1").as_deref(), Some("::1"));
+        assert_eq!(site_origin("localhost").as_deref(), Some("localhost"));
+        assert_eq!(site_origin("").as_deref(), None);
+    }
+
+    #[test]
+    fn colliding_hosts_and_ports_are_distinct_sites() {
         for (a, b) in [
-            ("bank.com.cn", "evil.com.cn"),
+            ("alice.pythonanywhere.com", "mallory.pythonanywhere.com"),
+            ("alice.hf.space", "mallory.hf.space"),
+            ("https://alice.hf.space/login", "https://mallory.hf.space/login"),
+            ("alice.amazonaws.com", "mallory.amazonaws.com"),
+            ("localhost:3000", "localhost:8080"),
+            ("http://localhost:3000", "localhost"),
+            ("127.0.0.1:8443", "127.0.0.1:9000"),
+            ("[::1]:8443", "[::1]:9000"),
+            ("login.bank.com", "evil.bank.com"),
             ("alice.github.io", "bob.github.io"),
+            ("bank.com.cn", "evil.com.cn"),
             ("x.vercel.app", "y.vercel.app"),
             ("example.s3.amazonaws.com", "other.s3.amazonaws.com"),
+            ("accounts.google.com", "google.com"),
         ] {
             assert!(!origins_match(a, b), "{a} must not match {b}");
+            assert_eq!(site_match(a, true, b), SiteMatch::No, "{a} saved exactly must not be offered on {b}");
         }
-        assert!(origins_match("alice.github.io", "www.alice.github.io"));
-        assert!(origins_match("google.co.uk", "accounts.google.co.uk"));
+    }
+
+    #[test]
+    fn the_same_site_still_matches() {
+        for (a, b) in [
+            ("alice.github.io", "https://alice.github.io/login"),
+            ("login.bank.com", "https://LOGIN.bank.com./signin?x=1"),
+            ("alice.pythonanywhere.com", "alice.pythonanywhere.com"),
+            ("localhost:3000", "http://localhost:3000/login"),
+            ("127.0.0.1:8443", "https://127.0.0.1:8443/"),
+            ("google.com", "https://ada@google.com/"),
+        ] {
+            assert!(origins_match(a, b), "{a} must match {b}");
+            assert_eq!(site_match(a, true, b), SiteMatch::Exact);
+            assert_eq!(site_match(a, false, b), SiteMatch::Exact);
+        }
+    }
+
+    #[test]
+    fn a_row_saved_before_exact_sites_is_offered_on_its_domain_as_legacy() {
+        // what the old rule stored for `accounts.google.com` and `localhost:3000`
+        assert_eq!(site_match("google.com", false, "accounts.google.com"), SiteMatch::Legacy);
+        assert_eq!(site_match("localhost", false, "http://localhost:3000"), SiteMatch::Legacy);
+        assert_eq!(site_match("127.0.0.1", false, "127.0.0.1:9000"), SiteMatch::Legacy);
+        // never across domains, and never once the row is exact
+        assert_eq!(site_match("google.com", false, "google.co.uk"), SiteMatch::No);
+        assert_eq!(site_match("alice.github.io", false, "bob.github.io"), SiteMatch::No);
+        assert_eq!(site_match("google.com", true, "accounts.google.com"), SiteMatch::No);
+        assert_eq!(site_match("localhost:3000", true, "localhost:8080"), SiteMatch::No);
     }
 }
