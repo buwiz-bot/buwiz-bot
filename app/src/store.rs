@@ -6608,8 +6608,9 @@ impl Store {
             return;
         }
         // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
-        // print preview), in the viewer over the full-screen app. Only from
-        // Rox's own folder (`links::view_dir`), however the path is spelled.
+        // print preview), in the viewer over the full-screen app. Only a
+        // preview in the account's temporary folder (`links::viewable`),
+        // however the path is spelled.
         if let Some(q) = url.strip_prefix("rox://view").filter(|q| q.is_empty() || q.starts_with(['?', '/'])) {
             let arg = |k: &str| {
                 q.trim_start_matches(['/', '?'])
@@ -6622,9 +6623,9 @@ impl Store {
             if path.is_empty() {
                 return;
             }
-            let Some(path) = crate::links::contained(&path, &crate::links::view_dir()) else {
-                log::warn!("rox: rox://view outside {} refused", crate::links::view_dir().display());
-                return crate::toast::show("Rox shows only files from its own preview folder");
+            let Some(path) = crate::links::viewable(&path, &crate::links::view_root()) else {
+                log::warn!("rox: rox://view of a file that is no preview in {} refused", crate::links::view_root().display());
+                return crate::toast::show("Rox shows only previews from its temporary folder");
             };
             let path = path.to_string_lossy().into_owned();
             let file = path.rsplit('/').next().unwrap_or_default().to_owned();

@@ -94,7 +94,7 @@ pub fn App() -> impl IntoElement {
     // `rox://chat/<thread>[?m=<turn>]` / `rox://chat/new?draft=<text>` /
     // `rox://plugin/<name>` (the plugin page's Share link) /
     // `rox://app/<server>/<app>` / `rox://view?path=<file>` (a mini app's
-    // print preview, from `links::view_dir` only) opened from another app
+    // print preview, `links::viewable` only) opened from another app
     // or a mini app (the dev bundle declares the scheme): the root never
     // remounts, so this handler lives as long as the app. `open_os_link`
     // makes nothing until the person acts in Rox (a new chat asks first).
