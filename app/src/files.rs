@@ -1124,13 +1124,12 @@ pub(crate) fn svg_view(uri: &str, fit: &str) -> View {
     }
 }
 
+/// The page of `svg_view`: only the server's own files (`Store::file_raw_url`),
+/// so a link in a reply cannot make the viewer fetch from another host.
 fn svg_page(uri: &str, fit: &str) -> Option<String> {
     if !uri
-        .get(..7)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
-        && !uri
-            .get(..8)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+        .strip_prefix(crate::client::GEN)
+        .is_some_and(|rest| rest.starts_with("/file/raw/"))
     {
         return None;
     }
@@ -2706,38 +2705,42 @@ fn version_chip(f: Attach) -> impl IntoElement {
             .into_element()
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::{Store, svg_page};
 
+    fn raw(path: &str) -> String {
+        format!("{}/file/raw/{path}", crate::client::GEN)
+    }
+
     #[test]
     fn escapes_uri_in_html_attributes() {
-        let page = svg_page(
-            "https://x/a\"><script>alert(1)</script><img b=\".svg",
-            "contain",
-        )
-        .expect("https URI is accepted");
+        let page = svg_page(&raw("a\"><script>alert(1)</script><img b=\".svg"), "contain")
+            .expect("a server file is accepted");
         assert!(!page.contains("<script"));
         assert!(!page.contains("\"><script"));
         assert!(page.contains("&quot;&gt;&lt;script&gt;"));
-        let expected = svg_page("https://x/a.svg", "contain").expect("https URI is accepted");
+        let expected = svg_page(&raw("a.svg"), "contain").expect("a server file is accepted");
         assert_eq!(page.matches('"').count(), expected.matches('"').count());
     }
 
     #[test]
     fn escapes_single_quotes_and_ampersands() {
-        let page = svg_page("https://x/a'b&c.svg", "contain").expect("https URI is accepted");
+        let page = svg_page(&raw("a'b&c.svg"), "contain").expect("a server file is accepted");
         assert!(page.contains("a&#39;b&amp;c.svg"));
     }
 
     #[test]
-    fn rejects_non_http_schemes_and_leading_whitespace() {
+    fn rejects_everything_but_the_servers_files() {
         for uri in [
             "javascript:alert(1)//.svg",
             "data:image/svg+xml,<svg/onload=alert(1)>.svg",
             "file:///etc/x.svg",
-            " https://x/a.svg",
+            "https://x/a.svg",
+            "http://127.0.0.1:8787/other/a.svg",
+            "http://127.0.0.1:87870/file/raw/a.svg",
+            "http://127.0.0.1:8787@evil.example/file/raw/a.svg",
+            " http://127.0.0.1:8787/file/raw/a.svg",
             "",
         ] {
             assert!(svg_page(uri, "contain").is_none(), "accepted {uri:?}");
@@ -2745,18 +2748,18 @@ mod tests {
     }
 
     #[test]
-    fn accepts_http_and_https_schemes() {
+    fn accepts_the_servers_raw_files() {
         assert!(svg_page(&Store::file_raw_url("a b/c.svg"), "contain").is_some());
-        assert!(svg_page("HTTPS://X/A.SVG", "contain").is_some());
+        assert!(svg_page(&raw("dir/x.svg"), "cover").is_some());
     }
 
     #[test]
     fn whitelists_object_fit() {
-        let page = svg_page("https://x/a.svg", "cover;}</style><script>").expect("https URI");
+        let page = svg_page(&raw("a.svg"), "cover;}</style><script>").expect("a server file");
         assert!(page.contains("object-fit:contain"));
         assert!(!page.contains("<script"));
 
-        let page = svg_page("https://x/a.svg", "cover").expect("https URI");
+        let page = svg_page(&raw("a.svg"), "cover").expect("a server file");
         assert!(page.contains("object-fit:cover"));
     }
 }
