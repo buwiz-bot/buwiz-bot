@@ -56,7 +56,7 @@ use super::transport::{self, UserFormReply};
 use super::{CardState, agent_id, answerable, close_x, error_line, note, save_login, set_state, shell, state_of, title};
 use crate::live::store;
 use crate::theme;
-use crate::vault::{self, PendingSave, Secret, SiteLogin, Unlock, off_main, registrable_origin, vault};
+use crate::vault::{self, PendingSave, Secret, SiteLogin, SiteMatch, Unlock, off_main, site_match, site_origin, vault};
 
 pub(crate) const RUN_AWAITING_APPROVAL: &str = "run-awaiting-approval";
 /// The `reason` of a park that waits on a form, not on a yes.
@@ -759,13 +759,30 @@ fn name_field_in(spec: &UserFormSpec) -> Option<String> {
     email.or(named).or(first)
 }
 
-/// The site a card's logins are filed under: the registrable origin of its
-/// `domain`, else of its `liveHost`.
+/// The site a card's logins are filed under: the exact site
+/// (`vault::site_origin`) of its `domain`, else of its `liveHost`.
 pub(crate) fn login_origin(spec: &UserFormSpec) -> Option<String> {
     spec.domain
         .as_deref()
-        .and_then(registrable_origin)
-        .or_else(|| spec.live_host.as_deref().and_then(registrable_origin))
+        .and_then(site_origin)
+        .or_else(|| spec.live_host.as_deref().and_then(site_origin))
+}
+
+/// The page the card says it is on (`liveHost`), when its site is not
+/// the one its logins are filed under (an agent's `domain` naming another).
+fn other_page(spec: &UserFormSpec) -> Option<String> {
+    let page = spec.live_host.as_deref().and_then(site_origin)?;
+    (login_origin(spec).as_ref() != Some(&page)).then_some(page)
+}
+
+/// The Touch ID reason for using `row` on a form for `site`: both sites
+/// when they differ, so the sheet shows a mismatch too.
+fn use_reason(row: &SiteLogin, site: &str) -> String {
+    if site_match(&row.origin, true, site) == SiteMatch::Exact {
+        format!("use the saved login for {} as {}", row.origin, row.username)
+    } else {
+        format!("use the login saved for {} as {} on {site}", row.origin, row.username)
+    }
 }
 
 /// A typed login worth offering to save: a site, a name, and a password.
@@ -971,6 +988,10 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                     if r == FormResolution::Submitted
                         && let Some(id) = &login_id
                     {
+                        // a legacy row is this site's from its first use
+                        if let Some(site) = login_origin(&spec) {
+                            vault().pin_site(id, &site);
+                        }
                         vault().mark_used(id);
                     }
                 }
@@ -1027,13 +1048,13 @@ fn retry(spec: &UserFormSpec, key: &str) {
 
 /// Touch ID, then the pick: its name into the name field, its secret held
 /// for the submit — never into a field, never on screen.
-fn use_saved(key: String, row: SiteLogin, target: CardTarget) {
+fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
     let loc = local(&key);
     if matches!(loc.pick.get_untracked(), Pick::Confirming { .. }) {
         return;
     }
     loc.pick.set(Pick::Confirming { username: row.username.clone() });
-    let reason = format!("use the saved login for {} as {}", row.origin, row.username);
+    let reason = use_reason(&row, &site);
     let reads = target.secret_field().is_some();
     let r = row.clone();
     Owner::detached().run(|| {
@@ -1211,8 +1232,8 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     if let Some(i) = spec.instruction.as_ref().filter(|i| !i.is_empty()) {
         v = v.child(note(i.clone()));
     }
-    if let Some(t) = target.clone().filter(|_| !rows.is_empty()) {
-        v = v.child(saved_strip(key.clone(), rows, t));
+    if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty()), login_origin(&spec)) {
+        v = v.child(saved_strip(key.clone(), rows, t, site, other_page(&spec)));
     }
     for f in &spec.fields {
         v = v.child(field_view(key.clone(), f.clone(), target.clone()));
@@ -1248,7 +1269,15 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
 }
 
 /// The saved logins for the card's site: Use (Touch ID), or Type it by hand.
-fn saved_strip(key: String, rows: Vec<SiteLogin>, target: CardTarget) -> impl IntoElement {
+/// The site the card asks for shows above them, and each row's own site
+/// under its name, marked when it is not the same site.
+fn saved_strip(
+    key: String,
+    rows: Vec<SiteLogin>,
+    target: CardTarget,
+    site: String,
+    page: Option<String>,
+) -> impl IntoElement {
     let loc = local(&key);
     dynamic(move || {
         let pick = loc.pick.get();
@@ -1279,8 +1308,22 @@ fn saved_strip(key: String, rows: Vec<SiteLogin>, target: CardTarget) -> impl In
             _ => "From your saved logins. Touch ID fills it in; the password is never shown.",
         };
         v = v.child(text(hint).text_size(px(12.0)).text_color(theme::MUTED));
+        let asks = match &page {
+            Some(page) => format!("This form asks for {site} (its page is on {page})"),
+            None => format!("This form asks for {site}"),
+        };
+        v = v.child(
+            text(asks)
+                .number_of_lines(2)
+                .text_size(px(12.0))
+                .text_color(if page.is_some() { theme::DOWN } else { theme::MUTED }),
+        );
         for row in &rows {
-            let (k, r, t) = (key.clone(), row.clone(), target.clone());
+            let (k, r, t, s) = (key.clone(), row.clone(), target.clone(), site.clone());
+            let saved_for = match site_match(&row.origin, true, &site) {
+                SiteMatch::Exact => (format!("Saved for {}", row.origin), theme::MUTED),
+                _ => (format!("Saved for {}, not {site}: check before you use it", row.origin), theme::DOWN),
+            };
             v = v.child(
                 view()
                     .flex_row()
@@ -1301,9 +1344,11 @@ fn saved_strip(key: String, rows: Vec<SiteLogin>, target: CardTarget) -> impl In
                                     .text_size(px(13.0))
                                     .text_color(theme::TEXT),
                             )
-                            .child(text(row.origin.clone()).number_of_lines(1).text_size(px(11.0)).text_color(theme::MUTED)),
+                            .child(text(saved_for.0).number_of_lines(2).text_size(px(11.0)).text_color(saved_for.1)),
                     )
-                    .child(button("Use", Kind::Secondary, || true, move || use_saved(k.clone(), r.clone(), t.clone()))),
+                    .child(button("Use", Kind::Secondary, || true, move || {
+                        use_saved(k.clone(), r.clone(), t.clone(), s.clone())
+                    })),
             );
         }
         let k = key.clone();
@@ -1601,7 +1646,7 @@ mod tests {
         assert_eq!(settled.entry_id, "e_0199bb4e-0000-7000-8000-000000000002");
         assert_eq!(settled.call_id, "mock-form-1");
         assert_eq!(settled.resolution, Some(FormResolution::Submitted));
-        assert_eq!(login_origin(&settled).as_deref(), Some("google.com"));
+        assert_eq!(login_origin(&settled).as_deref(), Some("accounts.google.com"));
 
         // the park of the same call, without its entry id, folds onto it
         let mut park = UserFormSpec::from_wire(&live).expect("park");
@@ -1667,7 +1712,7 @@ mod tests {
         assert!(spec.required_filled(&values, &["password"]), "a held secret counts as filled");
         values.0.insert("password".into(), "hunter2".into());
         let save = save_candidate(&spec, &values).expect("candidate");
-        assert_eq!((save.origin.as_str(), save.username.as_str()), ("example.com", "ada@example.com"));
+        assert_eq!((save.origin.as_str(), save.username.as_str()), ("accounts.example.com", "ada@example.com"));
         assert!(!format!("{save:?}").contains("hunter2"));
         assert_eq!(Field::checkbox_wire(true), "true");
         let body = transport::submit_body("e_1", "cw_1", values.into_map(), Some("sl_1"), None);
@@ -1707,5 +1752,29 @@ mod tests {
         assert_eq!(call.call_id, "c1");
         assert!(!call.has_entry_id());
         assert_eq!(call.card_key(), "c1");
+    }
+
+    #[test]
+    fn the_approval_names_the_site_asked_for_beside_the_saved_one() {
+        let spec = |domain: Option<&str>, live: Option<&str>| UserFormSpec {
+            domain: domain.map(str::to_owned),
+            live_host: live.map(str::to_owned),
+            ..Default::default()
+        };
+        // an agent's `domain` naming another site than the page it is on
+        let odd = spec(Some("alice.pythonanywhere.com"), Some("https://mallory.pythonanywhere.com/login"));
+        assert_eq!(login_origin(&odd).as_deref(), Some("alice.pythonanywhere.com"));
+        assert_eq!(other_page(&odd).as_deref(), Some("mallory.pythonanywhere.com"));
+        let same = spec(Some("https://localhost:3000"), Some("localhost:3000"));
+        assert_eq!(login_origin(&same).as_deref(), Some("localhost:3000"));
+        assert_eq!(other_page(&same), None);
+        assert_eq!(other_page(&spec(None, Some("accounts.google.com"))), None);
+
+        let row = SiteLogin { origin: "google.com".into(), username: "ada".into(), ..Default::default() };
+        assert_eq!(use_reason(&row, "google.com"), "use the saved login for google.com as ada");
+        assert_eq!(
+            use_reason(&row, "accounts.google.com"),
+            "use the login saved for google.com as ada on accounts.google.com"
+        );
     }
 }

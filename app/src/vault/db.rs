@@ -18,6 +18,9 @@ pub(crate) struct SiteLogin {
     /// Unix ms.
     pub created_at: i64,
     pub updated_at: i64,
+    /// `origin` is an exact site (`origin::site_origin`). False on rows
+    /// saved before that rule, whose origin is a registrable domain.
+    pub exact: bool,
 }
 
 const SCHEMA: &str = "
@@ -30,14 +33,15 @@ CREATE TABLE IF NOT EXISTS site_logins (
     notes TEXT NOT NULL DEFAULT '',
     last_used_at_ms INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    exact INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS site_logins_origin_username
     ON site_logins (origin, username);
 ";
 
 const SELECT: &str =
-    "SELECT id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at FROM site_logins";
+    "SELECT id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at, exact FROM site_logins";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<SiteLogin> {
     Ok(SiteLogin {
@@ -50,12 +54,21 @@ fn row(r: &Row<'_>) -> rusqlite::Result<SiteLogin> {
         last_used_at_ms: r.get(6)?,
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
+        exact: r.get(9)?,
     })
 }
 
-/// Makes the table if it is missing.
+/// Makes the table if it is missing, and adds `exact` to a table made
+/// before it (its rows stay legacy: `exact` 0).
 pub(crate) fn migrate(c: &Connection) -> rusqlite::Result<()> {
-    c.execute_batch(SCHEMA)
+    c.execute_batch(SCHEMA)?;
+    let has_exact = c
+        .prepare("SELECT 1 FROM pragma_table_info('site_logins') WHERE name = 'exact'")?
+        .exists([])?;
+    if !has_exact {
+        c.execute_batch("ALTER TABLE site_logins ADD COLUMN exact INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
 }
 
 pub(crate) fn list(c: &Connection) -> rusqlite::Result<Vec<SiteLogin>> {
@@ -73,18 +86,24 @@ pub(crate) fn find(c: &Connection, origin: &str, username: &str) -> rusqlite::Re
 /// username (which keeps its id, so its Keychain item stays put).
 pub(crate) fn upsert(c: &Connection, r: &SiteLogin) -> rusqlite::Result<()> {
     c.execute(
-        "INSERT INTO site_logins (id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO site_logins (id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at, exact)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(origin, username) DO UPDATE SET
             label = excluded.label, kind = excluded.kind, notes = excluded.notes,
-            updated_at = excluded.updated_at",
-        params![r.id, r.origin, r.username, r.label, r.kind, r.notes, r.last_used_at_ms, r.created_at, r.updated_at],
+            updated_at = excluded.updated_at, exact = excluded.exact",
+        params![r.id, r.origin, r.username, r.label, r.kind, r.notes, r.last_used_at_ms, r.created_at, r.updated_at, r.exact],
     )?;
     Ok(())
 }
 
 pub(crate) fn delete(c: &Connection, id: &str) -> rusqlite::Result<()> {
     c.execute("DELETE FROM site_logins WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// Binds a legacy row to the exact site `origin`.
+pub(crate) fn pin_site(c: &Connection, id: &str, origin: &str) -> rusqlite::Result<()> {
+    c.execute("UPDATE site_logins SET origin = ?1, exact = 1 WHERE id = ?2 AND exact = 0", params![origin, id])?;
     Ok(())
 }
 
