@@ -4,7 +4,7 @@
 //! `live::keep`. A patch that changes a type the program can see is
 //! answered `Restart` by the daemon, not applied.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::botmodal;
@@ -23,16 +23,14 @@ use crate::theme;
 
 /// The app: sidebar · transcript · composer · detail pane, plus the
 /// overlay layers (palette, model picker, ctx menu, file viewer). The
-/// `remount`/`note`/`seconds` signals come from the root ([`App`]) so
-/// the stats pill keeps counting across remounts.
-pub(crate) fn hot_area(
-    remount: Signal<u64>,
-    note: Signal<String>,
-    seconds: Signal<u64>,
-) -> impl IntoElement {
+/// `remount`/`note` signals come from the root ([`App`]) so the live
+/// pill keeps counting across remounts.
+pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoElement {
     let st = store();
     st.boot();
     st.watch_plugins();
+    // "Waiting for approval" / "Waiting for you" while a card waits.
+    st.watch_cards();
 
     // `ROX_STATUS=<state|demo>`: debug-mount the run-status surface —
     // the composer status row and bot marks play the state without a
@@ -50,14 +48,6 @@ pub(crate) fn hot_area(
         spawn(async move {
             timer(std::time::Duration::from_millis(800)).await;
             store().right_open.set(true);
-        });
-    }
-
-    // `ROX_WORK=1`: open the Mini Apps work tab at boot.
-    if std::env::var("ROX_WORK").is_ok() {
-        spawn(async move {
-            timer(std::time::Duration::from_millis(800)).await;
-            store().tab.set("work".to_owned());
         });
     }
 
@@ -184,164 +174,14 @@ pub(crate) fn hot_area(
         });
     }
 
-    // The shell's keymap (App.tsx:795): palette, sidebar show / mode,
-    // details, theme, the New-Bot sheet, the work tab, dictation demo,
-    // ⌘R reload (the web app's reload) and mod+1…9 chat switching.
-    on_key("mod+k", |_| store().toggle_palette());
-    on_key("mod+r", |_| store().reset_fresh());
-    on_key("mod+b", |_| store().side_shown.update(|v| *v = !*v));
-    on_key("mod+shift+h", |_| {
-        let st = store();
-        st.side_shown.set(true);
-        st.side_mode
-            .set(if st.side_mode.get_untracked() == "full" { "rail" } else { "full" }.to_owned());
-    });
-    on_key("mod+shift+b", |_| store().right_open.update(|v| *v = !*v));
-    on_key("mod+t", |_| {
-        let st = store();
-        st.set_theme(st.next_theme());
-    });
-    on_key("mod+n", |_| store().bot_modal.set(true));
-    on_key("mod+shift+m", |_| {
-        let st = store();
-        st.tab
-            .set(if st.tab.get_untracked() == "work" { "chat" } else { "work" }.to_owned());
-    });
-    on_key("mod+d", |_| store().dictate_stub());
-    // ⌘⇧R toggles the ra-jit stats pill (a dev HUD, not in the TSX).
+    // The keyboard: every shortcut is a command in `keys` (mounted at the
+    // root, remappable in Settings › Keyboard). Back / forward (⌘[ / ⌘])
+    // walk the places `history` records.
+    crate::history::track();
+    crate::keys::track_sel();
+    // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`)
     let live_bar_show = crate::live::keep("rox.livebar.show", || true);
-    on_key("mod+shift+r", move |_| live_bar_show.update(|v| *v = !*v));
-    on_key("escape", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            st.close_palette();
-        }
-        st.shelf_renaming.set(String::new());
-        st.shelf_tagging.set(String::new());
-        st.avatar_editing.set(false);
-        // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
-        st.light_close();
-        st.viewing.set(None);
-        crate::models::close();
-        crate::composer::plus_menu().set(None);
-        // the plugins modal pops a page, or closes at the market page.
-        if st.plugins_open.get_untracked() {
-            if st.plugin_nav.get_untracked().len() > 1 {
-                st.pop_nav();
-            } else {
-                st.close_plugins();
-            }
-        }
-    });
-    // lightbox prev/next + table navigation / TSV copy — the viewer's
-    // keydown listener (fileviewer.tsx:783).
-    on_key("left", |_| {
-        let st = store();
-        if !st.light_items.get_untracked().is_empty() {
-            st.light_step(-1);
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, -1, false);
-        }
-    });
-    on_key("right", |_| {
-        let st = store();
-        if !st.light_items.get_untracked().is_empty() {
-            st.light_step(1);
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, 1, false);
-        }
-    });
-    on_key("up", |_| {
-        let st = store();
-        // palette.tsx:33 — the palette's arrow nav first.
-        if st.palette.get_untracked() {
-            let n = st.palette_results().len();
-            if n > 0 {
-                st.palette_sel.update(|i| *i = (*i + n as i64 - 1) % n as i64);
-            }
-        // the search combo's arrow nav (App.tsx:1416) rides the same
-        // keys while the drop is open.
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            let n = st.plugin_list().len();
-            if n > 0 {
-                st.drop_sel.update(|i| *i = (*i + n - 1) % n);
-            }
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(-1, 0, false);
-        }
-    });
-    on_key("down", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            let n = st.palette_results().len();
-            if n > 0 {
-                st.palette_sel.update(|i| *i = (*i + 1) % n as i64);
-            }
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            let n = st.plugin_list().len();
-            if n > 0 {
-                st.drop_sel.update(|i| *i = (*i + 1) % n);
-            }
-        } else if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(1, 0, false);
-        }
-    });
-    on_key("enter", |_| {
-        let st = store();
-        if st.palette.get_untracked() {
-            st.palette_run_at(st.palette_sel.get_untracked() as usize);
-        } else if st.plugins_open.get_untracked() && st.drop_open() {
-            st.drop_choose();
-        }
-    });
-    on_key("shift+left", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, -1, true);
-        }
-    });
-    on_key("shift+right", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(0, 1, true);
-        }
-    });
-    on_key("shift+up", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(-1, 0, true);
-        }
-    });
-    on_key("shift+down", |_| {
-        let st = store();
-        if st.viewing.get_untracked().map(|v| v.kind == "table").unwrap_or(false) {
-            st.sel_move(1, 0, true);
-        }
-    });
-    on_key("mod+c", |_| {
-        let st = store();
-        if st.sel_b.get_untracked().is_some() {
-            st.copy_sel();
-        }
-    });
-    // `mod+1…9` (App.tsx:797) — the visible sidebar order: pinned,
-    // groups A→Z by latest interaction, Unassigned, then chats. While
-    // the palette has a query they run that result instead
-    // (palette.tsx:48).
-    for k in 1..=9u8 {
-        on_key(&format!("mod+{k}"), move |_| {
-            let st = store();
-            if st.palette.get_untracked() {
-                if !st.palette_q.get_untracked().trim().is_empty() {
-                    st.palette_run_at((k - 1) as usize);
-                }
-                return;
-            }
-            if let Some(id) = st.shortcut_threads().get((k - 1) as usize) {
-                st.open_thread(id.clone());
-            }
-        });
-    }
+    store().livebar.set(Some(live_bar_show));
 
     // Appearance follows `themePref` (theme.ts): System resolves to the
     // OS scheme inside the engine.
@@ -356,7 +196,7 @@ pub(crate) fn hot_area(
     // Hidden title bar on the desktop, keeping the traffic lights over
     // the sidebar's drag strip.
     #[cfg(target_os = "macos")]
-    nsh_core::ui::desktop::set_title_bar(
+    nsh_core::element::desktop::set_title_bar(
         nsh_core::desktop::TitleBarStyle::Hidden,
         Some(px(44.0)),
     );
@@ -371,7 +211,7 @@ pub(crate) fn hot_area(
                 .flex_1()
                 .h_full()
                 .bg(theme::MAIN)
-                .child(crate::mini::mini_app(&app, 0.0));
+                .child(crate::mini::mini_app(&app, 0.0, None, None));
         }
     }
     if let Ok(app) = std::env::var("ROX_CARD") {
@@ -381,10 +221,12 @@ pub(crate) fn hot_area(
                 .h_full()
                 .bg(theme::MAIN)
                 .p_4()
-                .child(crate::widgets::app_card(crate::store::Art {
-                    app,
-                    title: "debug card".to_owned(),
-                    desc: String::new(),
+                .child(crate::widgets::app_card(crate::widgets::CardShell {
+                    art: crate::store::Art {
+                        app,
+                        title: "debug card".to_owned(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }));
         }
@@ -442,7 +284,7 @@ pub(crate) fn hot_area(
         });
     }
 
-    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot`: open an overlay at boot
+    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot|palette|appdetails:<R n>`: open an overlay at boot
     // — verifies each layer mounts and paints without synthetic input.
     if let Ok(ov) = std::env::var("ROX_OVERLAY") {
         spawn(async move {
@@ -460,11 +302,11 @@ pub(crate) fn hot_area(
                         crate::store::CtxItem::danger("Delete", "trash", "copy", "z".into()),
                     ],
                 ),
-                "prompt" => st
-                    .section_prompt
-                    .set(Some(st.active_bot().map(|b| b.id).unwrap_or_default())),
+                "prompt" => st.group_prompt.set(Some(crate::store::GroupPrompt::New(None))),
                 "plus" => crate::composer::plus_menu().set(Some((140.0, 620.0))),
                 "bot" => st.bot_modal.set(true),
+                "palette" => st.palette.set(true),
+                o if o.starts_with("appdetails:") => st.open_app_details(&o["appdetails:".len()..]),
                 "lightbox" => st.open_lightbox(
                     vec![crate::store::LightItem {
                         kind: "image".into(),
@@ -479,6 +321,29 @@ pub(crate) fn hot_area(
         });
     }
 
+    // Local automation (`GPUI_AGENT=1`, the dev bundle) has no secondary
+    // click: a line `<x> <y> <menu> <arg…>` written to
+    // $TMPDIR/rox-agent-menu opens that right-click menu at (x, y) —
+    // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>;
+    // `refresh` reloads the Library and groups; `card <path>` adds a wire
+    // JSON file's interactive cards to the open chat, `cards-clear` drops
+    // them (and every card's state).
+    if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
+        spawn(async move {
+            let path = std::env::temp_dir().join("rox-agent-menu");
+            loop {
+                timer(std::time::Duration::from_millis(300)).await;
+                let Ok(line) = std::fs::read_to_string(&path) else { continue };
+                let _ = std::fs::remove_file(&path);
+                agent_menu(line.trim());
+            }
+        });
+    }
+
+    // Only empty ↔ non-empty swaps the transcript for the empty state: a
+    // dynamic reading `turns` itself rebuilt the whole list (and snapped it
+    // to the end) on every reaction, poll and streamed chunk.
+    let no_turns = computed(|| store().turns.with(|t| t.is_empty()));
     view()
         .flex_1()
         .h_full()
@@ -504,19 +369,22 @@ pub(crate) fn hot_area(
             view()
                 .flex_1()
                 .h_full()
-                .child(dynamic(|| {
-                    let st = store();
-                    if st.tab.get() == "work" {
-                        crate::shelf::work_tab().into_element()
-                    } else if st.turns.get().is_empty() {
-                        chat::empty_state().into_element()
-                    } else {
-                        chat::transcript().into_element()
-                    }
-                }))
+                // The recent chats' transcripts, kept alive and shown or
+                // hidden (`Store::alive`): switching back is instant, where
+                // it was left. An empty chat shows the agenda on top.
+                .child(each(
+                    || store().alive.get(),
+                    |id| id.clone(),
+                    |id, _| chat::transcript(id.get_untracked()).into_element(),
+                ))
+                .child(when(
+                    move || no_turns.get(),
+                    || chat::empty_state().into_element(),
+                ))
                 .child(top_bar())
                 .child(composer::composer()),
         )
+        .child(sidebar::hidden_toggle_layer())
         .child(
             when(move || store().right_open.get(), || {
                 pane::pane().into_element()
@@ -524,37 +392,48 @@ pub(crate) fn hot_area(
         )
         // The emoji pill (zIndex 49) rides under the ctx menu (51).
         .child(chat::pill_layer())
-        .child(ctx::layer())
-        .child(ctx::prompt_layer())
         .child(sidebar::rail_pop_layer())
         .child(sidebar::account_pop_layer())
         .child(pane::rename_overlay())
+        .child(crate::appdetails::layer())
+        .child(crate::versions::layer())
         .child(pane::editor_overlay())
         .child(botmodal::layer())
-        .child(palette::layer())
+        .child(botmodal::main_picker_layer())
         .child(models::layer())
         .child(composer::plus_layer())
+        // the full-screen apps; the viewer (a print preview an app opened)
+        // and ⌘K show over them
+        .child(crate::mini::full_layer())
         .child(files::layer())
+        .child(palette::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())
-        .child(stats_bar(remount, note, seconds, live_bar_show))
+        // above every modal: Settings, then the menus and their prompts
+        // (a menu opened from the viewer or a modal shows over it)
+        .child(crate::botdetails::layer())
+        .child(crate::settings::layer())
+        .child(ctx::layer())
+        .child(ctx::prompt_layer())
+        .child(ctx::color_layer())
+        .child(crate::toast::layer())
+        .child(stats_bar(remount, note, live_bar_show))
 }
 
-/// The ra-jit stats pill — an FPS-style floating HUD (was the bottom bar):
-/// the last patch's report (`applied: N functions in …µs`), the remount
-/// count and the uptime. ⌘⇧R toggles it and it drags anywhere; both its
-/// visibility and its spot survive remounts through `keep`.
-fn stats_bar(
-    remount: Signal<u64>,
-    note: Signal<String>,
-    seconds: Signal<u64>,
-    show: Signal<bool>,
-) -> impl IntoElement {
+/// The ra-jit live pill: a status dot (green live · amber the edit needs
+/// a restart · red a patch was declined · grey no ra-jit daemon) and ↻
+/// with the remount count; hovering shows the last report. ⌘⇧R toggles
+/// it and it drags anywhere; both survive remounts through `keep`.
+fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> impl IntoElement {
     let pos = crate::live::keep("rox.livebar.pos", || {
-        (12.0f32, (window().height.0 - 46.0).max(0.0))
+        (12.0f32, (window().height.0 - 40.0).max(0.0))
     });
     let dx = animated_value(0.0);
     let dy = animated_value(0.0);
+    let hovered = signal(false);
+    // `<state>:<message>` (live.rs `install`).
+    let state = move || note.get().split_once(':').map(|(s, _)| s.to_owned()).unwrap_or_default();
+    let message = move || note.get().split_once(':').map(|(_, m)| m.to_owned()).unwrap_or_default();
     dynamic(move || {
         if !show.get() {
             return view().into_element();
@@ -570,51 +449,63 @@ fn stats_bar(
             .on_pan_end(move |e: &PanEvent| {
                 let win = window();
                 pos.update(|p| {
-                    p.0 = (p.0 + e.translation.x.0).clamp(4.0, (win.width.0 - 230.0).max(4.0));
-                    p.1 = (p.1 + e.translation.y.0).clamp(4.0, (win.height.0 - 30.0).max(4.0));
+                    p.0 = (p.0 + e.translation.x.0).clamp(4.0, (win.width.0 - 60.0).max(4.0));
+                    p.1 = (p.1 + e.translation.y.0).clamp(4.0, (win.height.0 - 26.0).max(4.0));
                 });
                 dx.set(0.0);
                 dy.set(0.0);
             })
+            .on_hover_in(move || hovered.set(true))
+            .on_hover_out(move || hovered.set(false))
+            .label(move || message())
             .flex_row()
             .items_center()
-            .gap(px(10.0))
-            .px(px(9.0))
+            .gap(px(6.0))
+            .px(px(8.0))
             .py(px(4.0))
-            .rounded(px(8.0))
+            .rounded(px(10.0))
             .bg(theme::PILL_BG)
             .border(px(0.5))
             .border_color(theme::BORDER_F)
             .child(
-                text(move || note.get())
+                view().size(px(7.0)).rounded(px(3.5)).bg(move || match state().as_str() {
+                    "live" | "applied" => theme::UP,
+                    "restart" => theme::tone(
+                        theme::hsla(0.09, 0.95, 0.45, 1.0),
+                        theme::hsla(0.09, 0.95, 0.58, 1.0),
+                    ),
+                    "declined" => theme::DOWN,
+                    _ => theme::GHOST,
+                }),
+            )
+            .child(crate::icons::icon_ink("retry", 11.0, || theme::MUTED))
+            .child(
+                text(move || remount.get().to_string())
                     .text_size(px(11.0))
                     .font_family("monospace")
-                    .text_color(theme::TEXT),
+                    .text_color(theme::MUTED),
             )
-            .child(
-                text(move || format!("remounts {}", remount.get()))
-                    .text_size(px(11.0))
-                    .font_family("monospace")
-                    .text_color(theme::UP),
-            )
-            .child(
-                text(move || {
-                    let s = seconds.get();
-                    if s >= 3600 {
-                        format!("up {}h{}m", s / 3600, s % 3600 / 60)
-                    } else if s >= 60 {
-                        format!("up {}m{}s", s / 60, s % 60)
-                    } else {
-                        format!("up {}s", s)
-                    }
-                })
-                .text_size(px(11.0))
-                .font_family("monospace")
-                .text_color(theme::MUTED),
-            )
+            .child(when(
+                move || hovered.get(),
+                move || {
+                    text(move || message())
+                        .text_size(px(11.0))
+                        .font_family("monospace")
+                        .text_color(theme::TEXT)
+                        .number_of_lines(1)
+                        .max_w(px(420.0))
+                        .into_element()
+                },
+            ))
             .into_element()
     })
 }
+
+/// The header pill's fills: `tc("#242424")` / `tc("#2c2c2c")` on dark,
+/// `#ffffff` / `#f7f7f7` on light; the border `#ffffff14` / `#0000001a`.
+const PILL: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.141, 1.0));
+const PILL_HOVER: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 0.969, 1.0), theme::hsla(0.0, 0.0, 0.173, 1.0));
+const PILL_BORDER: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 0.0, 0.102), theme::hsla(0.0, 0.0, 1.0, 0.078));
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
 /// `BotAvatar(24/22 paused)` + the bot's name + a hover chevron — pressing
@@ -626,7 +517,8 @@ fn top_bar() -> impl IntoElement {
         .top(px(0.0))
         .left(px(0.0))
         .right(px(0.0))
-        .h(px(52.0))
+        // `TOP` — the controls' strip, level with the traffic lights.
+        .h(px(60.0))
         .window_drag(true)
         // The chat scrolls under a fading gradient (App.tsx:2382):
         // `rgba(22,22,22,0.96) → 0.7 @55% → 0`; `tg` swaps the stops to
@@ -654,7 +546,10 @@ fn top_bar() -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .window_drag(true)
-                .child(
+                // Rebuilt on a theme flip: the shadow is a fixed style and
+                // differs per theme (`#00000066` dark, `#0000001f` light).
+                .child(dynamic(move || {
+                    let shadow_a = if dark() { 0.4 } else { 0.12 };
                     view()
                         .flex_row()
                         .items_center()
@@ -675,15 +570,25 @@ fn top_bar() -> impl IntoElement {
                             }
                         })
                         .rounded(px(19.0))
+                        // Grok: a solid elevated card (not a tint), hairline
+                        // border + soft shadow (App.tsx:2411).
                         .bg(move || {
                             if pill_hover.get() {
-                                theme::HOVER
+                                PILL_HOVER
                             } else {
-                                theme::CARD2
+                                PILL
                             }
                         })
                         .border(px(0.5))
-                        .border_color(theme::BORDER_F)
+                        .border_color(PILL_BORDER)
+                        .shadow([BoxShadow {
+                            offset_x: px(0.0),
+                            offset_y: px(2.0),
+                            blur: px(8.0),
+                            spread: px(0.0),
+                            color: theme::hsla(0.0, 0.0, 0.0, shadow_a).into(),
+                            inset: false,
+                        }])
                         .on_hover_in(move || pill_hover.set(true))
                         .on_hover_out(move || pill_hover.set(false))
                         .on_press(|| store().right_open.update(|v| *v = !*v))
@@ -691,17 +596,26 @@ fn top_bar() -> impl IntoElement {
                             store()
                                 .active_bot()
                                 .map(|b| b.name)
-                                .unwrap_or_else(|| "Rox".to_owned())
+                                .unwrap_or_else(|| crate::app_name().to_owned())
                         })
                         .child(dynamic(move || {
-                            let Some(b) = store().active_bot() else {
-                                return view().into_element();
+                            let props = match store().active_bot() {
+                                Some(b) => crate::avatar::BotAvatarProps::bot(&b, 24.0),
+                                // A plain chat: the app's own mark — the round
+                                // blob, white on dark, black on light.
+                                None => crate::avatar::BotAvatarProps {
+                                    shape: "blob".to_owned(),
+                                    color: "#FFFFFF".to_owned(),
+                                    size: 24.0,
+                                    seed: Some("app".to_owned()),
+                                    ..Default::default()
+                                },
                             };
                             crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
                                 size: 24.0,
                                 box_: Some(22.0),
                                 paused: true,
-                                ..crate::avatar::BotAvatarProps::bot(&b, 24.0)
+                                ..props
                             })
                             .into_element()
                         }))
@@ -710,7 +624,7 @@ fn top_bar() -> impl IntoElement {
                                 store()
                                     .active_bot()
                                     .map(|b| b.name)
-                                    .unwrap_or_else(|| "Rox".to_owned())
+                                    .unwrap_or_else(|| crate::app_name().to_owned())
                             })
                             .text_size(px(14.0))
                             .font_weight(FontWeight::MEDIUM)
@@ -720,7 +634,76 @@ fn top_bar() -> impl IntoElement {
                         .child(when(
                             move || pill_hover.get() && !store().right_open.get(),
                             || icon("chev-right").into_element(),
-                        )),
-                ),
+                        ))
+                        .into_element()
+                })),
         )
+}
+
+/// Opens the right-click menu a `rox-agent-menu` line names (see the
+/// watcher in `hot_area`).
+fn agent_menu(line: &str) {
+    // `card <path>`: a wire file's cards (a CUSTOM frame, a `form` call, an
+    // array of them) as a local reply in the open chat; `cards-clear` drops
+    // those replies and every card's state
+    if let Some(path) = line.strip_prefix("card ").filter(|p| p.trim_start().starts_with(['/', '~', '.'])) {
+        let path = path.trim();
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            None => path.to_owned(),
+        };
+        crate::cards::inject(&path);
+        return;
+    }
+    if line == "cards-clear" {
+        crate::cards::clear_local();
+        return;
+    }
+    // `refresh`: the open chat's Library and the groups again
+    if line == "refresh" {
+        store().groups_json.borrow_mut().clear();
+        store().refresh_thread_apps();
+        return;
+    }
+    // `type <n> <text>`: into the open mini app's n-th text field
+    if let Some(rest) = line.strip_prefix("type ") {
+        let n = store().mini_dev_type.get_untracked().split('|').next().and_then(|c| c.parse::<u64>().ok()).unwrap_or(0) + 1;
+        store().mini_dev_type.set(format!("{n}|{rest}"));
+        return;
+    }
+    // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
+    if let Some(path) = line.strip_prefix("printpdf ") {
+        crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");
+        return;
+    }
+    // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)
+    if let Some(id) = line.strip_prefix("cmd ") {
+        if let Some(c) = crate::keys::COMMANDS.iter().find(|c| c.id == id.trim()) {
+            (c.run)(c.arg);
+        }
+        return;
+    }
+    let f: Vec<&str> = line.split_whitespace().collect();
+    let (Some(x), Some(y)) = (f.first().and_then(|v| v.parse::<f32>().ok()), f.get(1).and_then(|v| v.parse::<f32>().ok())) else {
+        return;
+    };
+    let st = store();
+    let items = match f.get(2..).unwrap_or_default() {
+        ["section", key] => crate::ctx::section_header_items(key),
+        ["group", gid] => match st.groups.with_untracked(|gs| gs.iter().find(|g| g.id == *gid).cloned()) {
+            Some(g) => crate::ctx::group_header_items(&g),
+            None => return,
+        },
+        ["lib", id] => match st.thread_apps.with_untracked(|v| v.iter().find(|a| a.app == *id).cloned()) {
+            Some(a) => crate::ctx::app_items(&a, (x, y)),
+            None => return,
+        },
+        ["card", i, app] => crate::ctx::card_items(i.parse().unwrap_or(-1), app),
+        ["bot", id] => match st.bots.with_untracked(|v| v.iter().find(|b| b.id == *id).cloned()) {
+            Some(b) => crate::ctx::bot_items(&b),
+            None => return,
+        },
+        _ => return,
+    };
+    crate::ctx::open_at(x, y, items);
 }

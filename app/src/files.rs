@@ -5,7 +5,7 @@
 
 use std::str::FromStr;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::store::{Attach, Sheet, Store};
@@ -109,12 +109,57 @@ fn mermaid_url(code: &str, mode: &str) -> String {
     format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::GEN)
 }
 
-/// `MermaidBlock` (md.tsx:119): a ```mermaid fence drawn by mermaid.js
-/// in a web view sized to the diagram — the page posts its measured
-/// `{w,h}`; the sizes cache (the TSX's `mermaidSizes` map) lets a remount
-/// lay out at the final height at once. A press layer over it opens the
-/// diagram in the lightbox (the web view swallows presses itself).
+/// `MermaidBlock` (md.tsx:119): a ```mermaid fence as a native SVG image
+/// rendered by Pele (`mermaid::diagram`) at its natural size, scaled down
+/// to the column. Only when Pele cannot draw it (no Node, a diagram it
+/// does not parse) does it fall back to mermaid.js in a web view. A press
+/// opens the diagram in the lightbox.
 pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
+    let code = code.to_owned();
+    let code_p = code.clone();
+    view()
+        .max_w(percentage(1.0))
+        .child(dynamic(move || {
+            let d = crate::mermaid::diagram(&code, dark());
+            match d.get() {
+                // Rendering (well under a millisecond once the helper is
+                // up): hold the line's height.
+                None => view().h(px(24.0)).into_element(),
+                Some(Ok(g)) => image(g.uri.clone())
+                    .w(px(g.w))
+                    .max_w(percentage(1.0))
+                    .aspect_ratio(g.w / g.h)
+                    .into_element(),
+                Some(Err(_)) => mermaid_web(&code).into_element(),
+            }
+        }))
+        .child(
+            view()
+                .absolute()
+                .inset(px(0.0))
+                .label("Open diagram")
+                .on_press(move || {
+                    store().open_lightbox(
+                        vec![crate::store::LightItem {
+                            kind: "diagram".to_owned(),
+                            uri: String::new(),
+                            name: "Diagram".to_owned(),
+                            path: String::new(),
+                            poster: String::new(),
+                            w: 0.0,
+                            h: 0.0,
+                            code: code_p.clone(),
+                        }],
+                        0,
+                    );
+                }),
+        )
+}
+
+/// The fallback: mermaid.js in a web view sized to the diagram — the
+/// page posts its measured `{w,h}`; the sizes cache (the TSX's
+/// `mermaidSizes` map) lets a remount lay out at the final height at once.
+fn mermaid_web(code: &str) -> impl IntoElement {
     let sizes = crate::live::keep("mermaid-sizes", std::collections::HashMap::<String, (f64, f64)>::new);
     let code = code.to_owned();
     let size = signal(
@@ -146,27 +191,6 @@ pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
                             size.set((w, h));
                         }
                     }
-                }),
-        )
-        .child(
-            view()
-                .absolute()
-                .inset(px(0.0))
-                .label("Open diagram")
-                .on_press(move || {
-                    store().open_lightbox(
-                        vec![crate::store::LightItem {
-                            kind: "diagram".to_owned(),
-                            uri: String::new(),
-                            name: "Diagram".to_owned(),
-                            path: String::new(),
-                            poster: String::new(),
-                            w: 0.0,
-                            h: 0.0,
-                            code: code_v.clone(),
-                        }],
-                        0,
-                    );
                 }),
         )
 }
@@ -295,6 +319,40 @@ pub(crate) fn file_tile(a: &Attach, size: f32) -> impl IntoElement {
         })
 }
 
+/// A small square icon for a file in a list (the Library): an image's or
+/// video's own picture, else the extension glyph on its accent.
+pub(crate) fn file_icon(a: &Attach, size: f32) -> impl IntoElement {
+    let pic = if !a.thumb.is_empty() {
+        media_url(&a.thumb)
+    } else if a.kind == "image" || (a.kind == "video" && !a.poster.is_empty()) {
+        let src = if a.kind == "video" { &a.poster } else if a.feed.is_empty() { &a.path } else { &a.feed };
+        Store::file_raw_url(src)
+    } else {
+        String::new()
+    };
+    let (glyph, color) = ext_icon(&ext_of(&a.name, &a.ext));
+    let tile = view()
+        .size(px(size))
+        .rounded(px(size * 0.25))
+        .overflow_hidden()
+        .items_center()
+        .justify_center();
+    if !pic.is_empty() {
+        return tile
+            .bg(theme::CARD2)
+            .child(image(pic).resize_mode(ResizeMode::Cover).fade_duration(0.0).size(px(size)))
+            .into_element();
+    }
+    tile.bg(color.opacity(0.16))
+        .child(
+            text(glyph)
+                .text_size(px(if glyph.chars().count() > 2 { size * 0.3 } else { size * 0.5 }))
+                .font_weight(FontWeight::BOLD)
+                .text_color(color),
+        )
+        .into_element()
+}
+
 // ——————————————————— DocGlyph (`Xg` + `XF`) ———————————————————
 
 /// Grok's 44pt document illustration: a 32×40 page (40×34 for slides),
@@ -406,11 +464,16 @@ fn doc_glyph(variant: &str) -> impl IntoElement {
 /// `FileName` — the stem truncates, the extension always shows.
 fn file_name(name: &str) -> impl IntoElement {
     let (stem, ext) = stem_ext(name);
+    // the stem shrinks (ellipsis) so a long name stops short of the
+    // card's trailing button instead of running under it
     view()
         .flex_row()
+        .min_w(px(0.0))
         .child(
             text(stem)
                 .number_of_lines(1)
+                .flex_shrink(1.0)
+                .min_w(px(0.0))
                 .text_size(px(14.0))
                 .line_height(px(20.0))
                 .font_weight(FontWeight::MEDIUM)
@@ -482,6 +545,57 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
                 .child(save_btn(f)),
         )
         .on_press(move || store().open_file(&f2))
+}
+
+/// A Drive file the reply made or changed — `FileCard`'s 230×64 box: its
+/// type tile with the Google badge, name, "Google Doc · Google Drive";
+/// a press opens it in the browser. A server's mini app (`mcp-app`) has
+/// its name's tile and opens full screen.
+pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
+    let url = l.link.clone();
+    let hov = signal(false);
+    // a server's mini app (`rox/open`): opens full screen, not in Drive
+    let app = (l.provider == "mcp-app").then(|| (l.id.clone(), l.name.clone()));
+    let name = if l.name.is_empty() { format!("Untitled {}", l.file_type) } else { l.name.clone() };
+    let kind = if l.file_type.is_empty() { "File" } else { l.file_type.as_str() };
+    let place = match &app {
+        Some((key, _)) => key.trim_start_matches("mcp:").split('/').next().unwrap_or("").to_owned(),
+        None => "Google Drive".to_owned(),
+    };
+    view()
+        .label(format!("Open {name} in {place}"))
+        .child(
+            card_box()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(64.0))
+                .pl(px(12.0))
+                .pr(px(12.0))
+                .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
+                .on_hover_in(move || hov.set(true))
+                .on_hover_out(move || hov.set(false))
+                // a server's app draws its name's tile, not a Drive file's
+                .child(if app.is_some() {
+                    crate::appdetails::named_tile("", &name, 36.0).into_element()
+                } else {
+                    crate::appdetails::connector_tile(&l.kind, &l.name, 36.0).into_element()
+                })
+                .child(
+                    view().flex_1().min_w(px(0.0)).child(file_name(&name)).child(
+                        text(format!("{kind} · {place}"))
+                            .number_of_lines(1)
+                            .text_size(px(13.0))
+                            .line_height(px(18.0))
+                            .text_color(tc("#f5f5f5ad")),
+                    ),
+                )
+                .child(crate::icons::icon_ink("arrowUpRight", 14.0, || tc("#f5f5f5a8"))),
+        )
+        .on_press(move || match &app {
+            Some((key, title)) => store().open_mini_token(key, title, &crate::store::link_token(&url)),
+            None => store().open_link(&url),
+        })
 }
 
 // ——————————————————— audio (`useAudio` + AudioCard) ———————————————————
@@ -1115,6 +1229,36 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .size_full(),
                 )
                 .into_element(),
+            // The same Pele diagram as inline, at 4× and fitted to the
+            // window on the bubble's surface; the web page only when Pele
+            // cannot draw it.
+            "diagram" if matches!(
+                crate::mermaid::diagram_at(&cur.code, dark(), 4).get(),
+                Some(Ok(_)) | None
+            ) => match crate::mermaid::diagram_at(&cur.code, dark(), 4).get() {
+                Some(Ok(g)) => {
+                    let pad = 24.0f32;
+                    let k = ((sw as f32 - 2.0 * pad) / g.w)
+                        .min((sh as f32 - 2.0 * pad) / g.h)
+                        .clamp(0.1, 3.0);
+                    view()
+                        .scale(zoom as f32)
+                        .p(px(pad))
+                        .rounded(px(12.0))
+                        .bg(theme::AGENT_BUBBLE)
+                        .border(px(0.5))
+                        .border_color(media_card_border)
+                        .child(
+                            image(g.uri.clone())
+                                .w(px(g.w * k))
+                                .h(px(g.h * k))
+                                .resize_mode(ResizeMode::Contain)
+                                .fade_duration(0.0),
+                        )
+                        .into_element()
+                }
+                _ => view().into_element(),
+            },
             "diagram" => {
                 let (dw, dh) = st.light_diag.get();
                 let w = if dw > 0.0 { dw.min(sw) } else { sw.max(1.0) };
@@ -1317,11 +1461,12 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                 let is_diag = cur.kind == "diagram";
                 let zoom_by: std::rc::Rc<dyn Fn(f64)> = std::rc::Rc::new(move |k: f64| {
                     let st = store();
+                    // The Pele diagram zooms as an image; the web fallback
+                    // (if that is what shows) zooms itself.
                     if is_diag {
                         web.post_message(if k > 1.0 { "in" } else { "out" });
-                    } else {
-                        st.light_zoom.set((st.light_zoom.get_untracked() * k).clamp(0.25, 4.0));
                     }
+                    st.light_zoom.set((st.light_zoom.get_untracked() * k).clamp(0.25, 4.0));
                 });
                 let (z1, z2) = (zoom_by.clone(), zoom_by);
                 v.child(
@@ -1346,9 +1491,8 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .child(round_pill("⤢", move || {
                             if is_diag {
                                 web.post_message("fit");
-                            } else {
-                                store().light_zoom.set(1.0);
                             }
+                            store().light_zoom.set(1.0);
                         })),
                 )
             })
@@ -1377,13 +1521,123 @@ fn round_pill(glyph: &'static str, on: impl Fn() + 'static) -> impl IntoElement 
 
 // ——————————————————— the fullscreen viewer (`FileViewer`) ———————————————————
 
+/// A page the viewer shows in a web view: a URL (an Office editor's
+/// when `.1`) or a local HTML document.
+#[derive(Clone, PartialEq)]
+enum WebPage {
+    Url(String, bool),
+    Html(String),
+}
+
+/// What the open file shows as a web page, if it does.
+fn web_page() -> Option<WebPage> {
+    let st = store();
+    let f = st.viewing.get()?;
+    let r = st.rendered.get();
+    if r.as_ref().is_some_and(|r| !r.error.is_empty()) {
+        return None;
+    }
+    let office = r.as_ref().map(|r| r.office.clone()).unwrap_or_default();
+    if !office.is_empty() {
+        return Some(WebPage::Url(format!("{}{office}", crate::client::GEN), true));
+    }
+    match f.kind.as_str() {
+        "pdf" => Some(WebPage::Url(Store::file_raw_url(&f.path), false)),
+        "html" if st.html_mode.get() != "source" => Some(if f.path.starts_with('/') {
+            // a file on this Mac (`rox://view`): its text, read here;
+            // WebKit shows nothing for a string under a `file://` base, so
+            // it gets the server's (a print preview inlines its images)
+            WebPage::Html(r.and_then(|r| r.text).unwrap_or_default())
+        } else {
+            WebPage::Url(Store::file_raw_url(&f.path), false)
+        }),
+        _ => None,
+    }
+}
+
+/// The viewer's web views, made once and kept over its body (a new
+/// WKWebView per open cost a 30–50 ms frame): the page binds to the open
+/// file, and an unused one takes no room (Print takes the largest visible
+/// web view) and drops its page. Over the body, not under it: under, the
+/// header's presses went to a local page.
+fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
+    let url = move || page.with(|p| matches!(p, Some(WebPage::Url(..))));
+    let office = move || page.with(|p| matches!(p, Some(WebPage::Url(_, true))));
+    let html = move || page.with(|p| matches!(p, Some(WebPage::Html(_))));
+    let sized = |shown: fn(Memo<Option<WebPage>>) -> bool| {
+        move || -> Length { if shown(page) { Length::Auto } else { px(0.0).into() } }
+    };
+    let white = || {
+        AdaptiveColor::from(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        })
+    };
+    let office_page = element_ref();
+    OFFICE_PAGE.with(|p| p.set(Some(office_page.clone())));
+    let place = |v: WebView| v.absolute().top(px(52.0)).left(px(0.0)).right(px(0.0)).bottom(px(0.0));
+    view()
+        .absolute()
+        .size_full()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(
+            place(web_view(move || {
+                page.with(|p| match p {
+                    Some(WebPage::Url(u, _)) => u.clone(),
+                    _ => "about:blank".to_owned(),
+                })
+            }))
+            .element_ref(&office_page)
+            .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
+            .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
+            .opacity(move || if url() { 1.0f32 } else { 0.0 })
+            // shows through the (transparent) WKWebView until the page
+            // paints: light is the Office editor page's own `#f5f5f5` body.
+            .bg(move || {
+                if office() {
+                    theme::tone(
+                        Hsla::from_str("#f5f5f5").unwrap_or_default(),
+                        Hsla::from_str("#161616").unwrap_or_default(),
+                    )
+                } else {
+                    white()
+                }
+            }),
+        )
+        .child(
+            place(web_view_html(
+                move || {
+                    page.with(|p| match p {
+                        Some(WebPage::Html(h)) => h.clone(),
+                        _ => String::new(),
+                    })
+                },
+                Some(crate::client::GEN),
+            ))
+            .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
+            .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
+            .opacity(move || if html() { 1.0f32 } else { 0.0 })
+            .bg(white()),
+        )
+}
+
 /// The viewer overlay — mount in the root stack (`viewing` set).
 pub(crate) fn layer() -> impl IntoElement {
-    dynamic(|| {
+    let page = computed(web_page);
+    view()
+        .absolute()
+        .size_full()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(dynamic(move || {
         let st = store();
         let Some(f) = st.viewing.get() else {
             return view().into_element();
         };
+        // a web page shows in `kept_pages`, over the body: the body is
+        // left empty
+        let on_web = page.with(Option::is_some);
         let r = st.rendered.get();
         let f2 = f.clone();
         let name = f.name.clone();
@@ -1399,13 +1653,10 @@ pub(crate) fn layer() -> impl IntoElement {
         let sheet_i = st.sheet_idx.get();
         let html_mode = st.html_mode.get();
         // body per kind
-        let body: AnyElement = if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
+        let body: AnyElement = if on_web {
+            view().flex_1().pointer_events(PointerEvents::None).into_element()
+        } else if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
             unavailable(&f, "Couldn't load preview", &r.unwrap().error).into_element()
-        } else if !office.is_empty() {
-            web_view(format!("{}{office}", crate::client::GEN))
-                .flex_1()
-                .bg(AdaptiveColor::from(Hsla::from_str("#161616").unwrap_or_default()))
-                .into_element()
         } else {
             match f.kind.as_str() {
                 "image" => image(Store::file_raw_url(&f.path))
@@ -1422,33 +1673,11 @@ pub(crate) fn layer() -> impl IntoElement {
                     .m(px(24.0))
                     .into_element(),
                 "audio" => audio_player_view(&f).into_element(),
-                "pdf" => web_view(Store::file_raw_url(&f.path))
-                    .flex_1()
-                    .bg(AdaptiveColor::from(Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 1.0,
-                        a: 1.0,
-                    }))
-                    .into_element(),
-                "html" => {
-                    if html_mode == "source" {
-                        match r.as_ref().map(|r| r.lines.clone()) {
-                            Some(lines) if !lines.is_empty() => code_view(lines).into_element(),
-                            _ => view().into_element(),
-                        }
-                    } else {
-                        web_view(Store::file_raw_url(&f.path))
-                            .flex_1()
-                            .bg(AdaptiveColor::from(Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 1.0,
-                                a: 1.0,
-                            }))
-                            .into_element()
-                    }
-                }
+                // (the preview is a web page: `kept_pages`)
+                "html" => match r.as_ref().map(|r| r.lines.clone()) {
+                    Some(lines) if !lines.is_empty() => code_view(lines).into_element(),
+                    _ => view().into_element(),
+                },
                 "markdown" | "docx" => match r.as_ref().and_then(|r| r.text.clone()) {
                     Some(t) => scroll()
                         .flex_1()
@@ -1498,10 +1727,10 @@ pub(crate) fn layer() -> impl IntoElement {
         view()
             .absolute()
             .size_full()
-            .bg(tc("#161616"))
             .child(
                 // header: drag strip, centered title, tabs/toggles, buttons
                 view()
+                    .bg(tc("#161616"))
                     .flex_row()
                     .items_center()
                     .gap_2()
@@ -1616,6 +1845,20 @@ pub(crate) fn layer() -> impl IntoElement {
                                 .collect::<Vec<_>>(),
                         ))
                     })
+                    // a mini app's code: the version shown, a menu of the others
+                    .child(version_chip(f.clone()))
+                    // ⌘K: the file's actions
+                    .child(
+                        view()
+                            .label("File actions")
+                            .size(px(32.0))
+                            .rounded(px(16.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(tc("#f5f5f50f"))
+                            .child(text("⋯").text_size(px(15.0)).text_color(tc("#f5f5f5a8")))
+                            .on_press(viewer_actions),
+                    )
                     .child(
                         view()
                             .label("Download")
@@ -1650,15 +1893,24 @@ pub(crate) fn layer() -> impl IntoElement {
             .child(
                 view()
                     .flex_1()
-                    .bg(if code_bg {
-                        tc("#212121")
-                    } else {
+                    .when(on_web, |v| v.pointer_events(PointerEvents::BoxNone))
+                    .bg(if on_web {
                         AdaptiveColor::TRANSPARENT
+                    } else if code_bg {
+                        // `#212121` is outside `tc`'s light table (it would
+                        // stay dark in light mode): white on light.
+                        theme::tone(
+                            theme::hsla(0.0, 0.0, 1.0, 1.0),
+                            Hsla::from_str("#212121").unwrap_or_default(),
+                        )
+                    } else {
+                        tc("#161616")
                     })
                     .child(body),
             )
             .into_element()
-    })
+    }))
+        .child(kept_pages(page))
 }
 
 /// `Unavailable`.
@@ -2168,4 +2420,256 @@ fn audio_player_view(f: &Attach) -> impl IntoElement {
                         .on_press(move || a.muted.update(|m| *m = !*m)),
                 ),
         )
+}
+
+// ——————————————— the viewer's versions and actions (⌘K) ———————————————
+
+thread_local! {
+    /// The viewer's Office editor page, while one shows (its Save).
+    static OFFICE_PAGE: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
+}
+
+/// The open file's versions: (its key — a mini app's name, a file's own
+/// path —, versions oldest first, the current one). Filled by
+/// `Store::view_code` and, for a file, `load_file_versions`.
+pub(crate) fn viewer_versions() -> Signal<(String, Vec<i64>, i64)> {
+    store().viewer_versions
+}
+
+/// A saved file's version path (`.versions/<path>/v<n>.<ext>`): the file's
+/// own path and the number.
+fn file_version(path: &str) -> Option<(String, i64)> {
+    let rest = path.strip_prefix(".versions/")?;
+    let (rel, last) = rest.rsplit_once('/')?;
+    let n = last.strip_prefix('v')?.split('.').next()?.parse().ok()?;
+    Some((rel.to_owned(), n))
+}
+
+/// What the viewer shows, versioned: its key and the version shown (the
+/// current one when the path names none).
+fn shown_version(f: &Attach) -> Option<(String, i64)> {
+    let (key, v) = if let Some(key) = f.path.strip_prefix("app:") {
+        match key.split_once("@v") {
+            Some((n, v)) => (n.to_owned(), v.parse().ok()),
+            None => (key.to_owned(), None),
+        }
+    } else if let Some((rel, n)) = file_version(&f.path) {
+        (rel, Some(n))
+    } else {
+        (f.path.clone(), None)
+    };
+    let (shown, _, head) = viewer_versions().get_untracked();
+    let v = v.unwrap_or(if shown == key { head } else { 0 });
+    Some((key, v))
+}
+
+/// The file (or mini app code) at version `v` of `key`, for the viewer.
+fn open_version(f: &Attach, key: &str, v: i64, head: i64) {
+    let st = store();
+    if f.path.starts_with("app:") {
+        let k = if v == head { key.to_owned() } else { format!("{key}@v{v}") };
+        st.view_code(&k, &f.name);
+        return;
+    }
+    let path = if v == head {
+        key.to_owned()
+    } else {
+        let ext = key.rsplit_once('.').map(|(_, e)| e).unwrap_or("bin");
+        format!(".versions/{key}/v{v}.{ext}")
+    };
+    st.open_file(&Attach { path, ..f.clone() });
+}
+
+/// Fetches the versions of the reply file at `path` (`GET /file/versions`).
+pub(crate) fn load_file_versions(path: &str) {
+    let key = file_version(path).map(|(rel, _)| rel).unwrap_or_else(|| path.to_owned());
+    spawn(async move {
+        let url = format!("/file/versions?path={}", crate::client::urlenc(&key));
+        let Some(v) = crate::client::get(&url).await else { return };
+        let vs: Vec<i64> = v
+            .get("versions")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.get("v")?.as_i64()).collect())
+            .unwrap_or_default();
+        let head = v.get("v").and_then(|x| x.as_i64()).unwrap_or(0);
+        viewer_versions().set((key, vs, head));
+    });
+}
+
+/// The version menu's rows for the viewer's file.
+fn version_items(f: &Attach) -> Vec<crate::store::CtxItem> {
+    let Some((key, shown)) = shown_version(f) else { return Vec::new() };
+    let (k, vs, head) = viewer_versions().get_untracked();
+    if k != key {
+        return Vec::new();
+    }
+    vs.iter()
+        .rev()
+        .map(|v| {
+            let label = if *v == head { format!("v{v} · current") } else { format!("v{v}") };
+            crate::store::CtxItem::row(&label, "history", "viewer-version", v.to_string()).on(*v == shown)
+        })
+        .collect()
+}
+
+/// A version picked from the viewer's menu.
+pub(crate) fn viewer_open_version(v: i64) {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let Some((key, _)) = shown_version(&f) else { return };
+    let (k, _, head) = viewer_versions().get_untracked();
+    if k == key {
+        open_version(&f, &key, v, head);
+    }
+}
+
+/// ⌘⇧[ / ⌘⇧]: the viewer's file one version older (-1) or newer.
+pub(crate) fn viewer_version_step(d: i64) {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let Some((key, shown)) = shown_version(&f) else { return };
+    let (k, vs, head) = viewer_versions().get_untracked();
+    if k != key || vs.is_empty() {
+        return;
+    }
+    let at = vs.iter().position(|v| *v == shown).unwrap_or(vs.len() - 1) as i64;
+    let next = vs[(at + d).clamp(0, vs.len() as i64 - 1) as usize];
+    if next != shown {
+        open_version(&f, &key, next, head);
+    }
+}
+
+/// Whether the viewer shows an Office document in its editor.
+fn office_open() -> bool {
+    store().rendered.get_untracked().is_some_and(|r| !r.office.is_empty())
+}
+
+/// ⌘S in the viewer: an Office document saves through its editor — the
+/// file gets the edits, and the save becomes its next version — then the
+/// version list catches up.
+pub(crate) fn viewer_save() {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    if !office_open() {
+        return;
+    }
+    if let Some(page) = OFFICE_PAGE.with(std::cell::Cell::get) {
+        page.inject_java_script("window.roxSave && window.roxSave(); true;");
+    }
+    let path = f.path.clone();
+    spawn(async move {
+        timer(std::time::Duration::from_millis(1500)).await;
+        load_file_versions(&path);
+        store().refresh_thread_apps();
+    });
+}
+
+/// What Print can do with the open file: text (code, markdown, JSON,
+/// HTML source) or an image.
+fn printable(f: &Attach) -> Option<&'static str> {
+    match f.kind.as_str() {
+        "image" => Some("image"),
+        "text" | "markdown" | "json" | "html" | "docx" => Some("text"),
+        _ => None,
+    }
+}
+
+/// ⌘P in the viewer: the system print panel for the file's text or
+/// image; a file Rox can't lay out (PDF, slides, sheets) opens in its own
+/// app, which prints it.
+pub(crate) fn viewer_print() {
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    match printable(&f) {
+        Some("image") => crate::keys::print("image", Store::file_raw_url(&f.path), &f.name),
+        // an html file prints laid out, as the preview shows it
+        Some(_) if f.kind == "html" && st.html_mode.get_untracked() != "source" => {
+            let r = st.rendered.get_untracked();
+            let html = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_else(|| {
+                r.as_ref()
+                    .map(|r| r.lines.iter().map(|l| l.iter().map(|(t, _, _)| t.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default()
+            });
+            if !html.is_empty() {
+                crate::keys::print("html", html, &f.name);
+            }
+        }
+        Some(_) => {
+            let r = st.rendered.get_untracked();
+            let text = r.as_ref().and_then(|r| r.text.clone()).unwrap_or_else(|| {
+                r.as_ref()
+                    .map(|r| {
+                        r.lines
+                            .iter()
+                            .map(|l| l.iter().map(|(t, _, _)| t.as_str()).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default()
+            });
+            if !text.is_empty() {
+                crate::keys::print("text", text, &f.name);
+            }
+        }
+        _ => st.open_externally(&f.path),
+    }
+}
+
+/// ⌘K in the viewer: the file's actions — its versions (a mini app's
+/// code), Print, Download, open in its own app, copy its name, close.
+pub(crate) fn viewer_actions() {
+    use crate::store::CtxItem;
+    let st = store();
+    let Some(f) = st.viewing.get_untracked() else { return };
+    let mut items = Vec::new();
+    let versions = version_items(&f);
+    if versions.len() > 1 {
+        items.push(CtxItem::parent("Versions", "history", versions));
+        items.push(CtxItem::separator());
+    }
+    if office_open() {
+        items.push(CtxItem::row("Save as New Version", "download", "viewer-save", String::new()));
+    }
+    if printable(&f).is_some() {
+        items.push(CtxItem::row("Print…", "document", "viewer-print", String::new()));
+    }
+    items.push(CtxItem::row("Download", "download", "viewer-download", String::new()));
+    if !f.path.starts_with("app:") {
+        items.push(CtxItem::row("Open in Its App", "popout", "viewer-open", String::new()));
+    }
+    items.push(CtxItem::row("Copy File Name", "copy", "copy", f.name.clone()));
+    items.push(CtxItem::separator());
+    items.push(CtxItem::row("Close", "close", "viewer-close", String::new()));
+    let win = window();
+    crate::ctx::open_at(win.width.0 - 240.0, 56.0, items);
+}
+
+/// The viewer header's version chip for a mini app's code ("v2 ▾"; its
+/// menu lists every version) — nothing for other files or a single
+/// version.
+fn version_chip(f: Attach) -> impl IntoElement {
+    dynamic(move || {
+        let (app, vs, _) = viewer_versions().get();
+        let Some((name, shown)) = shown_version(&f) else { return view().into_element() };
+        if app != name || vs.len() < 2 {
+            return view().into_element();
+        }
+        let f2 = f.clone();
+        view()
+            .label("Versions")
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .h(px(28.0))
+            .px_3()
+            .rounded(px(14.0))
+            .bg(tc("#f5f5f50f"))
+            .child(text(format!("v{shown}")).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+            .child(text("▾").text_size(px(10.0)).text_color(tc("#f5f5f58f")))
+            .on_press(move || {
+                let win = window();
+                crate::ctx::open_at(win.width.0 - 300.0, 52.0, version_items(&f2));
+            })
+            .into_element()
+    })
 }
