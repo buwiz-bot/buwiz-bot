@@ -1148,11 +1148,11 @@ fn ctx_row_leaf(it: CtxItem, idx: usize, cancel: Rc<dyn Fn()>) -> impl IntoEleme
             v.child(text("✓").text_size(px(12.0)).text_color(theme::ACCENT))
         })
         .child(key_hint(true, idx))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             cancel();
             hovered.set(true)
         })
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || act(&it))
         .into_element()
 }
@@ -1204,11 +1204,11 @@ fn ctx_row(
         .when(has_sub, |v| {
             v.child(text("›").text_size(px(13.0)).text_color(theme::MUTED))
         })
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.set(true);
             sub_set(if has_sub { idx } else { -1 })
         })
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || {
             if has_sub {
                 sub_set2(idx)

@@ -457,8 +457,8 @@ fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> 
                 dx.set(0.0);
                 dy.set(0.0);
             })
-            .on_hover_in(move || hovered.set(true))
-            .on_hover_out(move || hovered.set(false))
+            .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
             .label(move || message())
             .flex_row()
             .items_center()
@@ -591,8 +591,8 @@ fn top_bar() -> impl IntoElement {
                             color: theme::hsla(0.0, 0.0, 0.0, shadow_a).into(),
                             inset: false,
                         }])
-                        .on_hover_in(move || pill_hover.set(true))
-                        .on_hover_out(move || pill_hover.set(false))
+                        .on_mouse_enter(move |_: &MouseEvent| pill_hover.set(true))
+                        .on_mouse_leave(move |_: &MouseEvent| pill_hover.set(false))
                         .on_press(|| store().right_open.update(|v| *v = !*v))
                         .label(move || {
                             store()

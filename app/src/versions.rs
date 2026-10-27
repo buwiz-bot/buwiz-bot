@@ -38,9 +38,9 @@ pub(crate) fn version_chip(
                 .text_color(theme::TEXT),
         )
         .child(icon_sized("chevronDown", 10.0))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_hover_move(move |e: &HoverEvent| {
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
+        .on_mouse_move(move |e: &MouseEvent| {
             origin.set((
                 e.page_position.x.0 - e.position.x.0,
                 e.page_position.y.0 - e.position.y.0,
@@ -227,8 +227,8 @@ fn row(app: &str, vr: AppVersion, cur: i64) -> AnyElement {
                     .into_element()
             },
         ))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || {
             let st = store();
             st.vers_pop.set(None);

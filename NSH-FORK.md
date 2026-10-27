@@ -66,7 +66,11 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    what breaks on the topic itself.
 3. `scripts/nsh-fork rebuild`: builds `rox-new` in `/tmp/rox-nsh-fork`. A
    conflict stops it there; resolve it once (git `rerere` replays the
-   resolution in later rebuilds) and run it again.
+   resolution in later rebuilds) and run it again. A topic stacked on
+   another (the gpui-agent stack) brings its base's commits in once.
+   Merges are skipped: a topic that merges upstream `main` in carries its
+   port in ordinary commits after the merge, and resolves the merge as
+   the rebuild's picks do.
 4. Check `rox-new`: point the submodule at it, build Rox, launch it, then
    `scripts/nsh-fork rebuild --push`.
 5. Update Rox. Done when Rox is committed on the new `rox` commit and runs.

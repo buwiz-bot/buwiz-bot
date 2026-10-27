@@ -74,8 +74,8 @@ fn header() -> impl IntoElement {
                 .justify_center()
                 .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
                 .child(icon("close"))
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .on_press(|| store().bot_modal.set(false))
                 .label("Close dialog"),
         )
@@ -193,8 +193,8 @@ fn shapes() -> impl IntoElement {
                         paused: true,
                         ..Default::default()
                     }))
-                    .on_hover_in(move || store().bot_hover.set(key2.clone()))
-                    .on_hover_out(move || {
+                    .on_mouse_enter(move |_: &MouseEvent| store().bot_hover.set(key2.clone()))
+                    .on_mouse_leave(move |_: &MouseEvent| {
                         let st = store();
                         if st.bot_hover.get_untracked().starts_with("s:") {
                             st.bot_hover.set(String::new());
@@ -279,8 +279,8 @@ fn footer() -> impl IntoElement {
                     }
                 })
                 .child(text("Cancel").text_size(px(14.0)).text_color(theme::TEXT))
-                .on_hover_in(move || hov_cancel.set(true))
-                .on_hover_out(move || hov_cancel.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov_cancel.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov_cancel.set(false))
                 .on_press(|| store().bot_modal.set(false)),
         )
         .child(

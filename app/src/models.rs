@@ -271,7 +271,7 @@ pub(crate) fn model_pill() -> impl IntoElement {
             move || show_tip.get() && mp_open().get().is_none(),
             || pill_tip().into_element(),
         ))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.set(true);
             spawn(async move {
                 timer(std::time::Duration::from_millis(450)).await;
@@ -280,7 +280,7 @@ pub(crate) fn model_pill() -> impl IntoElement {
                 }
             });
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             hovered.set(false);
             show_tip.set(false);
         })
@@ -497,8 +497,8 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                                             AdaptiveColor::TRANSPARENT
                                         }
                                     })
-                                    .on_hover_in(move || h2.set("fast".into()))
-                                    .on_hover_out(move || h3.set(String::new()))
+                                    .on_mouse_enter(move |_: &MouseEvent| h2.set("fast".into()))
+                                    .on_mouse_leave(move |_: &MouseEvent| h3.set(String::new()))
                                     .on_press(|| store().toggle_fast())
                                     .child(
                                         text("ϟ")
@@ -536,8 +536,8 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                                     AdaptiveColor::TRANSPARENT
                                 }
                             })
-                            .on_hover_in(move || h2.set("model".into()))
-                            .on_hover_out(move || h3.set(String::new()))
+                            .on_mouse_enter(move |_: &MouseEvent| h2.set("model".into()))
+                            .on_mouse_leave(move |_: &MouseEvent| h3.set(String::new()))
                             .on_press(|| {
                                 mp_open().update(|o| {
                                     if let Some(o) = o {
@@ -602,8 +602,8 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                                 AdaptiveColor::TRANSPARENT
                             }
                         })
-                        .on_hover_in(move || h2.set("reset".into()))
-                        .on_hover_out(move || h3.set(String::new()))
+                        .on_mouse_enter(move |_: &MouseEvent| h2.set("reset".into()))
+                        .on_mouse_leave(move |_: &MouseEvent| h3.set(String::new()))
                         .on_press(|| {
                             let (m, _, _) = choice();
                             let def = model_of(&m)
@@ -1004,8 +1004,8 @@ fn model_row(m: crate::store::ModelDef) -> AnyElement {
                 .text_color(move || if picked3() { hx(EFFORT_TINT) } else { tc(0.96) }),
         )
         .child(when(picked4, || crate::icons::icon_ink("check", 13.0, || hx(EFFORT_TINT)).into_element()))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || {
             store().set_choice(&id4, &def, false);
             mp_open().update(|o| {

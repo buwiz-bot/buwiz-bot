@@ -250,8 +250,8 @@ fn nav_row(title: &'static str, sub: String, page: &'static str) -> impl IntoEle
         .px(px(16.0))
         .py(px(12.0))
         .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .child(
             view()
                 .flex_1()

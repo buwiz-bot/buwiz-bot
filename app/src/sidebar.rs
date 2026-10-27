@@ -110,8 +110,8 @@ fn sidebar_toggle(w: f32, h: f32, radius: f32, plate: Plate) -> impl IntoElement
                 })
                 .child(icon("panel")),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(|| store().side_shown.update(|v| *v = !*v))
         .on_context_menu(|_: &ContextMenuEvent| {
             let st = store();
@@ -373,7 +373,7 @@ fn rail_circle(name: &'static str, label: &'static str, on: impl Fn() + 'static)
                     .into_element()
             },
         ))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.set(true);
             let e = epoch.get().wrapping_add(1);
             epoch.set(e);
@@ -385,7 +385,7 @@ fn rail_circle(name: &'static str, label: &'static str, on: impl Fn() + 'static)
                 }
             });
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             epoch2.set(epoch2.get().wrapping_add(1));
             hovered.set(false);
             tip.set(false);
@@ -418,8 +418,8 @@ fn rail_plate(
                 .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
                 .child(icon_sized(name, icon_size)),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || on())
 }
 
@@ -532,7 +532,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                     },
                 )),
         )
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.set(true);
             let st = store();
             let seq = st.pop_seq.get() + 1;
@@ -552,11 +552,11 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 }
             });
         })
-        .on_hover_move(move |e: &HoverEvent| {
+        .on_mouse_move(move |e: &MouseEvent| {
             // `railGaze(b.id+":rail").follow(e, 27, 27, 18)` — plate center.
             gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 27.0, 27.0, 18.0);
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             hovered.set(false);
             let st = store();
             st.pop_seq.set(st.pop_seq.get() + 1);
@@ -619,8 +619,8 @@ fn rail_app(gid: String, key: String, title: String) -> impl IntoElement {
         .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
         .label(title.clone())
         .child(app_tile(&title, 36.0))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().open_mini_full(&key, &title))
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::group_app_items(&gid, &key2, &title2))
@@ -642,7 +642,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
         .justify_center()
         .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
         .child(dynamic(move || crate::appdetails::artifact_tile(&a.get(), 36.0).into_element()))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.set(true);
             let a = a.get_untracked();
             if a.kind != "app" {
@@ -674,7 +674,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
                 }
             });
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             hovered.set(false);
             let st = store();
             st.pop_seq.set(st.pop_seq.get() + 1);
@@ -731,8 +731,8 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
                     .text_color(white()),
                 ),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().open_thread(id.clone()))
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::chat_items(&t.get()))
@@ -822,10 +822,13 @@ fn full_sidebar() -> impl IntoElement {
                             // (pressed, it stops hovering); its moves pick
                             // the drop target, in this view's coordinates.
                             .on_layout(move |b: &Bounds<Points>| dd3.width.set(b.size.width.0))
-                            .on_hover_move(move |e: &HoverEvent| {
-                                dd4.down.set((e.position.x.0, e.position.y.0))
+                            .on_mouse_move(move |e: &MouseEvent| {
+                                let at = (e.position.x.0, e.position.y.0);
+                                if e.pressed_button.is_none() {
+                                    dd4.down.set(at);
+                                }
+                                dd5.follow(at);
                             })
-                            .on_mouse_move(move |p: &Point<Points>| dd5.follow((p.x.0, p.y.0)))
                             // Grok Bot's: the first tile 10pt below the
                             // list's top (4 here + the tile row's 6).
                             .pt(px(4.0))
@@ -996,8 +999,8 @@ fn rail_account() -> impl IntoElement {
         .items_center()
         .justify_center()
         .bg(move || if hovered.get() { rail_hover() } else { AdaptiveColor::TRANSPARENT })
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(|| store().account_open.update(|v| *v = !*v))
         .child(account_circle())
 }
@@ -1171,8 +1174,8 @@ fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
                 )
                 .into_element()
         }))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(|| store().open_plugins())
         .label(LABEL)
 }
@@ -1204,8 +1207,8 @@ pub(crate) fn account_pop_layer() -> impl IntoElement {
                 })
                 .child(view().w(px(16.0)).items_center().child(icon(icon_name)))
                 .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
-                .on_hover_in(move || hovered.set(true))
-                .on_hover_out(move || hovered.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
                 .on_press(move || on())
         }
         let divider = || {
@@ -1733,8 +1736,8 @@ fn sec_header(
             .text_color(theme::MUTED)
             .opacity(move || if hovered.get() { 1.0f32 } else { 0.0f32 }),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().toggle_section(&key2))
 }
 
@@ -1845,8 +1848,8 @@ fn group_header(g: ReadSignal<RoxGroup>) -> impl IntoElement {
                 .text_color(theme::MUTED)
                 .opacity(move || if hovered.get() { 1.0f32 } else { 0.0f32 }),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().toggle_section(&gid3))
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::group_header_items(&g.get()))
@@ -1906,8 +1909,8 @@ fn group_app_row(gid: String, key: String, title: String) -> impl IntoElement {
         .py(px(7.0))
         .rounded(px(8.0))
         .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().open_mini_full(&key, &title))
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::group_app_items(&gid, &key2, &title2))
@@ -1946,8 +1949,8 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
         .py(px(7.0))
         .rounded(px(8.0))
         .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || store().open_library_item(&a.get_untracked()))
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::group_art_items(&gid, &a.get()))
@@ -2055,8 +2058,8 @@ fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
                         ),
                 ),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || st.open_thread(id.clone()))
         .on_context_menu(move |e: &ContextMenuEvent| {
             let t = t.get();
@@ -2172,14 +2175,14 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                         ),
                 ),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_move(move |e: &HoverEvent| {
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_move(move |e: &MouseEvent| {
             // `railGaze(...).follow(e, 26, 27, 18)` — the 36px cell's center
             // in row coordinates: here 12px pad + 18px half-cell = 30, and
             // the row half-height is (7 + 36 + 7) / 2 = 25.
             gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 30.0, 25.0, 18.0);
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             hovered.set(false);
             gaze3.rest();
         })
@@ -2330,7 +2333,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                     .into_element()
             },
         ))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             let st = store();
             let seq = st.pop_seq.get() + 1;
             st.pop_seq.set(seq);
@@ -2349,12 +2352,12 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 }
             });
         })
-        .on_hover_move(move |e: &HoverEvent| {
+        .on_mouse_move(move |e: &MouseEvent| {
             // `railGaze(b.id+":pin").follow(e, 47.5, 36, 30)` — the tile's
             // center (95/2=47.5) and mark row's center (~36px from top).
             gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 47.5, 36.0, 30.0);
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             let st = store();
             st.pop_seq.set(st.pop_seq.get() + 1);
             st.rail_pop.set(None);

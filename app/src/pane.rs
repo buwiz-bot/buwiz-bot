@@ -84,7 +84,7 @@ fn top_bar() -> impl IntoElement {
         .child(pane_circle_btn("close", || "close", || {
             store().right_open.set(false);
         }))
-        .on_hover_out(|| st.pane_btn_hover.set(String::new()))
+        .on_mouse_leave(|_: &MouseEvent| st.pane_btn_hover.set(String::new()))
 }
 
 /// `circleBtn()` — a 36pt border circle hovering to `#262626`.
@@ -110,8 +110,8 @@ fn pane_circle_btn(
             }
         })
         .child(dynamic(move || icon_view(name()).into_element()))
-        .on_hover_in(move || store().pane_btn_hover.set(key.to_owned()))
-        .on_hover_out(|| store().pane_btn_hover.set(String::new()))
+        .on_mouse_enter(move |_: &MouseEvent| store().pane_btn_hover.set(key.to_owned()))
+        .on_mouse_leave(|_: &MouseEvent| store().pane_btn_hover.set(String::new()))
         .on_press(on_press)
         .label(match key {
             "theme" => "Theme",
@@ -150,10 +150,10 @@ fn bot_profile() -> impl IntoElement {
             view()
                 .items_center()
                 .pt_2()
-                .on_hover_move(move |e: &HoverEvent| {
+                .on_mouse_move(move |e: &MouseEvent| {
                     gaze.follow(e.position.x.0 as f64, e.position.y.0 as f64, 160.0, 40.0, 32.0)
                 })
-                .on_hover_out(move || gaze3.rest())
+                .on_mouse_leave(move |_: &MouseEvent| gaze3.rest())
                 .child(
                     // The 64pt avatar: hover darkens (editK) and shows the
                     // pencil + the "Edit Avatar" tooltip (App.tsx:2519).
@@ -162,7 +162,7 @@ fn bot_profile() -> impl IntoElement {
                         .items_center()
                         .justify_center()
                         // Only an agent's avatar is editable.
-                        .on_hover_in(move || {
+                        .on_mouse_enter(move |_: &MouseEvent| {
                             if store().active_bot_untracked().is_none() {
                                 return;
                             }
@@ -170,7 +170,7 @@ fn bot_profile() -> impl IntoElement {
                             edit.to(1.0);
                             store().avatar_hover.set(true);
                         })
-                        .on_hover_out(move || {
+                        .on_mouse_leave(move |_: &MouseEvent| {
                             edit_k2.timing(0.0, 380.0);
                             edit3.to(0.0);
                             store().avatar_hover.set(false);
@@ -471,8 +471,8 @@ fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
                 .py(px(8.0))
                 .rounded(px(8.0))
                 .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .child(text("Context and integrations").text_size(px(13.0)).text_color(theme::TEXT).flex_1())
                 .child(text("›").text_size(px(15.0)).text_color(theme::MUTED))
                 .on_press(move || crate::botdetails::open(&id, false)),
@@ -588,8 +588,8 @@ fn lib_chip(kind: &'static str, label: &'static str, n: usize, on: bool) -> impl
                 .text_color(if on { theme::TEXT } else { theme::DIM }),
         )
         .child(text(n.to_string()).text_size(px(12.0)).text_color(theme::MUTED))
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || store().lib_filter.set(kind.to_owned()))
         .label(format!("Show {label}"))
 }

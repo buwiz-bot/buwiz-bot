@@ -351,8 +351,8 @@ fn small_btn(label: &'static str, danger: bool, on: impl Fn() + 'static) -> impl
         .py_1()
         .rounded(px(6.0))
         .bg(theme::HOVER)
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || on())
         .label(label)
 }

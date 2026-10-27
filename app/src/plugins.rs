@@ -207,8 +207,8 @@ fn modal() -> impl IntoElement {
                                 AdaptiveColor::TRANSPARENT
                             }
                         })
-                        .on_hover_in(|| store().hover_x.set(true))
-                        .on_hover_out(|| store().hover_x.set(false))
+                        .on_mouse_enter(|_: &MouseEvent| store().hover_x.set(true))
+                        .on_mouse_leave(|_: &MouseEvent| store().hover_x.set(false))
                         .on_press(|| store().close_plugins())
                         .child(dynamic(|| {
                             if store().plugin_page() == "market" {
@@ -258,8 +258,8 @@ fn back_bar(chev_title: Option<&'static str>, center: &str) -> impl IntoElement 
                 AdaptiveColor::TRANSPARENT
             }
         })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(|| store().pop_nav());
     let back = match chev_title {
         Some(t) => back
@@ -500,8 +500,8 @@ fn search_row() -> impl IntoElement {
                         AdaptiveColor::TRANSPARENT
                     }
                 })
-                .on_hover_in(|| store().hover_tpl.set(true))
-                .on_hover_out(|| store().hover_tpl.set(false))
+                .on_mouse_enter(|_: &MouseEvent| store().hover_tpl.set(true))
+                .on_mouse_leave(|_: &MouseEvent| store().hover_tpl.set(false))
                 // The app's default mark: black on light, white on dark.
                 .child(dynamic(|| {
                     crate::avatar::bot_blob(crate::avatar::BotBlobProps {
@@ -538,8 +538,8 @@ fn conn_chip() -> impl IntoElement {
                 AdaptiveColor::TRANSPARENT
             }
         })
-        .on_hover_in(|| store().hover_chip.set(true))
-        .on_hover_out(|| store().hover_chip.set(false))
+        .on_mouse_enter(|_: &MouseEvent| store().hover_chip.set(true))
+        .on_mouse_leave(|_: &MouseEvent| store().hover_chip.set(false))
         .on_press(|| store().push_nav("connected", "", ""))
         .child(
             view()
@@ -741,8 +741,8 @@ fn full_list() -> impl IntoElement {
                         .rounded(px(15.0))
                         .justify_center()
                         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
-                        .on_hover_in(move || hov.set(true))
-                        .on_hover_out(move || hov.set(false))
+                        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                         .on_press(|| store().plugin_limit.update(|n| *n += 60))
                         .child(
                             text(|| {
@@ -842,8 +842,8 @@ fn plugin_row(p: PluginRow) -> impl IntoElement {
                 AdaptiveColor::TRANSPARENT
             }
         })
-        .on_hover_in(move || store().hover_plugin.set(n_hin.clone()))
-        .on_hover_out(move || {
+        .on_mouse_enter(move |_: &MouseEvent| store().hover_plugin.set(n_hin.clone()))
+        .on_mouse_leave(move |_: &MouseEvent| {
             if store().hover_plugin.get_untracked() == n_hout {
                 store().hover_plugin.set(String::new())
             }
@@ -895,8 +895,8 @@ fn plugin_row(p: PluginRow) -> impl IntoElement {
                         tc(0.06)
                     }
                 })
-                .on_hover_in(move || store().hover_add.set(n_ain.clone()))
-                .on_hover_out(move || {
+                .on_mouse_enter(move |_: &MouseEvent| store().hover_add.set(n_ain.clone()))
+                .on_mouse_leave(move |_: &MouseEvent| {
                     if store().hover_add.get_untracked() == n_aout {
                         store().hover_add.set(String::new())
                     }
@@ -965,7 +965,7 @@ fn drop_layer() -> impl IntoElement {
                                     AdaptiveColor::TRANSPARENT
                                 }
                             })
-                            .on_hover_in(move || store().drop_sel.set(i.get()))
+                            .on_mouse_enter(move |_: &MouseEvent| store().drop_sel.set(i.get()))
                             .on_press(move || {
                                 let n = name.clone();
                                 store().push_nav("plugin", &n, "")
@@ -1245,8 +1245,8 @@ fn conn_tile(item: ConnItem) -> impl IntoElement {
                         AdaptiveColor::TRANSPARENT
                     }
                 })
-                .on_hover_in(move || store().hover_inst.set(key_in.clone()))
-                .on_hover_out(move || {
+                .on_mouse_enter(move |_: &MouseEvent| store().hover_inst.set(key_in.clone()))
+                .on_mouse_leave(move |_: &MouseEvent| {
                     if store().hover_inst.get_untracked() == key_out {
                         store().hover_inst.set(String::new())
                     }
@@ -1356,8 +1356,8 @@ fn conn_tile(item: ConnItem) -> impl IntoElement {
                         AdaptiveColor::TRANSPARENT
                     }
                 })
-                .on_hover_in(move || store().hover_inst.set(key_in.clone()))
-                .on_hover_out(move || {
+                .on_mouse_enter(move |_: &MouseEvent| store().hover_inst.set(key_in.clone()))
+                .on_mouse_leave(move |_: &MouseEvent| {
                     if store().hover_inst.get_untracked() == key_out {
                         store().hover_inst.set(String::new())
                     }
@@ -1519,8 +1519,8 @@ fn sm_btn(
         .items_center()
         .justify_center()
         .bg(move || if hov.get() { bg_hov } else { bg })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || on())
         .child(
             text(label)
@@ -1547,8 +1547,8 @@ fn pill_btn(
         .justify_center()
         .gap(px(4.0))
         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || on())
         .when(glyph.is_some(), |v| {
             v.child(
@@ -1715,8 +1715,12 @@ fn plugin_page() -> impl IntoElement {
                                                             AdaptiveColor::TRANSPARENT
                                                         }
                                                     })
-                                                    .on_hover_in(move || hov.set(true))
-                                                    .on_hover_out(move || hov.set(false))
+                                                    .on_mouse_enter(move |_: &MouseEvent| {
+                                                        hov.set(true)
+                                                    })
+                                                    .on_mouse_leave(move |_: &MouseEvent| {
+                                                        hov.set(false)
+                                                    })
                                                     .on_press(move || store().copy_plugin_link(&n_copy))
                                                     .child(icon_ink("gb-link", 12.0, || theme::DIM))
                                             }),
@@ -1857,8 +1861,8 @@ fn install_btn(name: String) -> impl IntoElement {
             .items_center()
             .justify_center()
             .bg(move || if hov.get() { pair("#363636", "#e0e0e0") } else { primary_bg() })
-            .on_hover_in(move || hov.set(true))
-            .on_hover_out(move || hov.set(false))
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
             .on_press(move || store().install_plugin(&n_in))
             .child(
                 text(move || {
@@ -2205,8 +2209,8 @@ fn add_account(plugin: &str, server: &str) -> AnyElement {
             .px(px(14.0))
             .py(px(10.0))
             .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
-            .on_hover_in(move || hov.set(true))
-            .on_hover_out(move || hov.set(false))
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
             .on_press(move || {
                 store().acct_add_val.set(String::new());
                 store().acct_err.set(String::new());
@@ -2490,8 +2494,8 @@ fn skills_section(plugin: String) -> impl IntoElement {
                                     .px(px(14.0))
                                     .py(px(10.0))
                                     .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
-                                    .on_hover_in(move || hov.set(true))
-                                    .on_hover_out(move || hov.set(false))
+                                    .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                                    .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                                     .on_press(|| store().skills_expanded.update(|v| *v = !*v))
                                     .child(
                                         text(move || {

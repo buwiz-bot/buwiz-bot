@@ -264,8 +264,8 @@ pub(crate) fn status_fx(
         .w_full()
         .gap(px(7.0))
         .items_center()
-        .on_hover_in(move || crate::live::store().emph_bot.set(bot.clone()))
-        .on_hover_out(|| crate::live::store().emph_bot.set(String::new()))
+        .on_mouse_enter(move |_: &MouseEvent| crate::live::store().emph_bot.set(bot.clone()))
+        .on_mouse_leave(|_: &MouseEvent| crate::live::store().emph_bot.set(String::new()))
         .child(
             view()
                 .size(px(size))

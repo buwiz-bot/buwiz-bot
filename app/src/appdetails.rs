@@ -87,7 +87,7 @@ pub(crate) fn artifact_tile(a: &RoxApp, size: f32) -> impl IntoElement {
             .rounded(px((size * 0.225).round()))
             .overflow_hidden()
             .bg(theme::CARD2)
-            .child(image(pic).size(px(size)).resize_mode(ResizeMode::Cover))
+            .child(image(pic).size(px(size)).object_fit(ResizeMode::Cover))
             .into_element();
     }
     match &a.attach {
@@ -105,7 +105,7 @@ pub(crate) fn named_tile(image_url: &str, name: &str, size: f32) -> impl IntoEle
             .size(px(size))
             .rounded(px(radius))
             .overflow_hidden()
-            .child(image(image_url.to_owned()).size(px(size)).resize_mode(ResizeMode::Cover))
+            .child(image(image_url.to_owned()).size(px(size)).object_fit(ResizeMode::Cover))
             .into_element();
     }
     let base = crate::plugins::hue(name);
@@ -252,8 +252,8 @@ fn header() -> impl IntoElement {
                 .justify_center()
                 .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
                 .child(icon("close"))
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .on_press(close)
                 .label("Close dialog"),
         )
@@ -794,8 +794,8 @@ fn version_row(label: String, detail: String, link: String) -> impl IntoElement 
         .child(text(label).w(px(72.0)).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
         .child(text(detail).flex_1().min_w(px(0.0)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
         .child(crate::icons::icon_ink("arrowUpRight", 12.0, || theme::MUTED))
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || {
             let st = store();
             st.app_details.set(None);
@@ -831,8 +831,8 @@ fn made_in_fact(k: &'static str, v: String) -> impl IntoElement {
                 .line_height(px(17.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(move || if hov.get() { theme::TEXT } else { theme::DIM })
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .on_press(|| store().show_details_origin())
                 .label("Show in Chat"),
         )
@@ -851,8 +851,8 @@ fn link_fact(k: &'static str, v: String, url: String) -> impl IntoElement {
                 .line_height(px(17.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(move || if hov.get() { theme::TEXT } else { theme::DIM })
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .on_press(move || store().open_link(&url))
                 .label("Open version history"),
         )
@@ -963,8 +963,8 @@ fn pill(label: &'static str, glyph: &'static str, on: impl Fn() + 'static) -> im
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::TEXT),
         )
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(on)
 }
 
@@ -990,8 +990,8 @@ fn generate_pill() -> impl IntoElement {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(move || if can() { theme::POPOVER } else { theme::DIM }),
         )
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(|| store().gen_app_icon())
         .label("Generate icon")
 }
