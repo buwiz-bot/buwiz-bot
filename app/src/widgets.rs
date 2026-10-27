@@ -300,7 +300,7 @@ fn card_action(
                 .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
                 .child(icon(name)),
         )
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_press(move || on())
 }

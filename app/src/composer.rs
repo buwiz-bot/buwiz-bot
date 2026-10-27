@@ -306,8 +306,8 @@ fn attach_tile(a: ReadSignal<crate::store::Attach>) -> impl IntoElement {
     view()
         .size(px(64.0))
         .label(if label.is_empty() { key.clone() } else { label })
-        .on_hover_in(move || attach_hover().set(key_in.clone()))
-        .on_hover_out(move || {
+        .on_mouse_enter(move |_: &MouseEvent| attach_hover().set(key_in.clone()))
+        .on_mouse_leave(move |_: &MouseEvent| {
             if attach_hover().get_untracked() == key_out {
                 attach_hover().set(String::new())
             }
@@ -480,8 +480,8 @@ fn right_controls() -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .label("Dictate")
-                .on_hover_in(|| attach_hover().set("__dictate".into()))
-                .on_hover_out(|| attach_hover().set(String::new()))
+                .on_mouse_enter(|_: &MouseEvent| attach_hover().set("__dictate".into()))
+                .on_mouse_leave(|_: &MouseEvent| attach_hover().set(String::new()))
                 .on_press(|| store().dictate_stub())
                 .child(icon("mic"))
                 .child(when(
@@ -512,8 +512,8 @@ fn right_controls() -> impl IntoElement {
                     .items_center()
                     .justify_center()
                     .label("Start voice chat")
-                    .on_hover_in(|| attach_hover().set("__voice".into()))
-                    .on_hover_out(|| attach_hover().set(String::new()))
+                    .on_mouse_enter(|_: &MouseEvent| attach_hover().set("__voice".into()))
+                    .on_mouse_leave(|_: &MouseEvent| attach_hover().set(String::new()))
                     .child(
                         view()
                             .flex_row()
@@ -875,8 +875,8 @@ fn plus_row(id: &str, label: &str, enabled: bool, run: impl Fn() + 'static) -> i
             }
         })
         .opacity(if enabled { 1.0 } else { 0.5 })
-        .on_hover_in(move || plus_hover().set(id2.clone()))
-        .on_hover_out(move || {
+        .on_mouse_enter(move |_: &MouseEvent| plus_hover().set(id2.clone()))
+        .on_mouse_leave(move |_: &MouseEvent| {
             if plus_hover().get_untracked() == id3 {
                 plus_hover().set(String::new())
             }

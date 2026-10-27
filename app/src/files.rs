@@ -294,7 +294,7 @@ pub(crate) fn file_tile(a: &Attach, size: f32) -> impl IntoElement {
                 .into_element()
         } else {
             image(pic)
-                .resize_mode(ResizeMode::Cover)
+                .object_fit(ResizeMode::Cover)
                 .fade_duration(0.0)
                 .absolute()
                 .w(px(size))
@@ -340,7 +340,7 @@ pub(crate) fn file_icon(a: &Attach, size: f32) -> impl IntoElement {
     if !pic.is_empty() {
         return tile
             .bg(theme::CARD2)
-            .child(image(pic).resize_mode(ResizeMode::Cover).fade_duration(0.0).size(px(size)))
+            .child(image(pic).object_fit(ResizeMode::Cover).fade_duration(0.0).size(px(size)))
             .into_element();
     }
     tile.bg(color.opacity(0.16))
@@ -530,8 +530,8 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
                 .pl(px(10.0))
                 .pr(px(12.0))
                 .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 .child(doc_glyph(&f.variant))
                 .child(
                     view().flex_1().child(file_name(&f.name)).child(
@@ -573,8 +573,8 @@ pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
                 .pl(px(12.0))
                 .pr(px(12.0))
                 .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
-                .on_hover_in(move || hov.set(true))
-                .on_hover_out(move || hov.set(false))
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                 // a server's app draws its name's tile, not a Drive file's
                 .child(if app.is_some() {
                     crate::appdetails::named_tile("", &name, 36.0).into_element()
@@ -841,8 +841,8 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
                                 })
                                 .collect::<Vec<_>>(),
                         )
-                        .on_mouse_move(move |p: &nsh_core::Point<nsh_core::Points>| {
-                            a5.seek_at(p.x.0, W);
+                        .on_mouse_move(move |e: &nsh_core::MouseEvent| {
+                            a5.seek_at(e.position.x.0, W);
                         })
                         .on_press_down(move || a5b.scrub_on(W))
                         .on_press_up(move || a5c.scrub_off()),
@@ -931,7 +931,7 @@ fn media_tile(f: Attach, w: f32, h: f32, more: usize, on_open: impl Fn() + 'stat
         .when(!pic.is_empty() && !svg, |v| {
             v.child(
                 image(pic.clone())
-                    .resize_mode(ResizeMode::Cover)
+                    .object_fit(ResizeMode::Cover)
                     .fade_duration(0.0)
                     .on_error(move |_: &str| failed.set(true))
                     .absolute()
@@ -1241,7 +1241,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                 .border_color(media_card_border)
                 .child(
                     image(cur.uri.clone())
-                        .resize_mode(ResizeMode::Contain)
+                        .object_fit(ResizeMode::Contain)
                         .fade_duration(0.0)
                         .size_full(),
                 )
@@ -1257,7 +1257,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                     video(cur.uri.clone())
                         .controls(true)
                         .paused(false)
-                        .resize_mode(ResizeMode::Contain)
+                        .object_fit(ResizeMode::Contain)
                         .size_full(),
                 )
                 .into_element(),
@@ -1284,7 +1284,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                             image(g.uri.clone())
                                 .w(px(g.w * k))
                                 .h(px(g.h * k))
-                                .resize_mode(ResizeMode::Contain)
+                                .object_fit(ResizeMode::Contain)
                                 .fade_duration(0.0),
                         )
                         .into_element()
@@ -1417,7 +1417,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                                         } else {
                                             it.uri.clone()
                                         })
-                                        .resize_mode(ResizeMode::Cover)
+                                        .object_fit(ResizeMode::Cover)
                                         .fade_duration(0.0)
                                         .w(px(40.0))
                                         .h(px(40.0))
@@ -1692,7 +1692,7 @@ pub(crate) fn layer() -> impl IntoElement {
         } else {
             match f.kind.as_str() {
                 "image" => image(Store::file_raw_url(&f.path))
-                    .resize_mode(ResizeMode::Contain)
+                    .object_fit(ResizeMode::Contain)
                     .fade_duration(0.0)
                     .flex_1()
                     .m(px(24.0))
@@ -1700,7 +1700,7 @@ pub(crate) fn layer() -> impl IntoElement {
                 "video" => video(Store::file_raw_url(&f.path))
                     .controls(true)
                     .paused(false)
-                    .resize_mode(ResizeMode::Contain)
+                    .object_fit(ResizeMode::Contain)
                     .flex_1()
                     .m(px(24.0))
                     .into_element(),
@@ -2381,8 +2381,8 @@ fn audio_player_view(f: &Attach) -> impl IntoElement {
                         .h(px(16.0))
                         .justify_center()
                         .on_layout(move |b: &Bounds<Points>| track_w.set(b.size.width.0))
-                        .on_mouse_move(move |p: &nsh_core::Point<nsh_core::Points>| {
-                            a3.seek_at(p.x.0, track_w.get_untracked());
+                        .on_mouse_move(move |e: &nsh_core::MouseEvent| {
+                            a3.seek_at(e.position.x.0, track_w.get_untracked());
                         })
                         .on_press_down(move || a3b.scrub_on(track_w.get_untracked()))
                         .on_press_up(move || a3c.scrub_off())

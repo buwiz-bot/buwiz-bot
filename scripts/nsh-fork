@@ -135,6 +135,9 @@ def rebuild(push):
     fetch()
     worktree("upstream/main")
     git("checkout", "-q", "-B", "rox-new", cwd=WORKTREE)
+    # A stacked topic holds its base topic's commits: each goes in once.
+    # Merges are skipped; a topic's merges must be clean (no resolutions).
+    picked = set()
     for t in topics():
         if t["status"] not in ACTIVE:
             print(f"- {t['branch']} ({t['status']})")
@@ -143,7 +146,10 @@ def rebuild(push):
         if r is None:
             raise SystemExit(f"{t['branch']}: no such branch")
         base = git("merge-base", r, "upstream/main")
-        for c in git("rev-list", "--reverse", f"{base}..{r}").splitlines():
+        for c in git("rev-list", "--reverse", "--no-merges", f"{base}..{r}").splitlines():
+            if c in picked:
+                continue
+            picked.add(c)
             if subprocess.run(["git", "cherry-pick", "-x", c], cwd=WORKTREE, capture_output=True).returncode == 0:
                 continue
             if git("diff", "--name-only", "--diff-filter=U", cwd=WORKTREE):

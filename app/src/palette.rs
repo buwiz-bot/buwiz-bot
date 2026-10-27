@@ -285,7 +285,7 @@ fn palette_row(
                     },
                 )),
         )
-        .on_hover_in(move || store().palette_sel.set(ix() as i64))
+        .on_mouse_enter(move |_: &MouseEvent| store().palette_sel.set(ix() as i64))
         .on_press(move || store().palette_run_at(ix()))
         .into_element()
 }

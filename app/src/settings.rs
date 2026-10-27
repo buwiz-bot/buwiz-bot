@@ -642,8 +642,8 @@ fn chip(id: &'static str, slot: usize, label: String, live: bool, removable: boo
         .border_1()
         .border_color(if live { theme::ACCENT } else { theme::BORDER_S })
         .bg(if live { theme::ACCENT_TINT } else { theme::CARD })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .child(
             text(label)
                 .text_size(px(12.0))
@@ -1019,8 +1019,8 @@ fn template_row(t: RoutineTemplate) -> impl IntoElement {
                             .py_1()
                             .rounded(px(6.0))
                             .bg(theme::HOVER)
-                            .on_hover_in(move || hov.set(true))
-                            .on_hover_out(move || hov.set(false))
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                             .on_press(move || pick_chat(&t1))
                             .label("Enable routine"),
                     )
@@ -1153,8 +1153,8 @@ fn routine_row(r: Routine) -> impl IntoElement {
                     .px_2()
                     .py_1()
                     .rounded(px(6.0))
-                    .on_hover_in(move || run_hov.set(true))
-                    .on_hover_out(move || run_hov.set(false))
+                    .on_mouse_enter(move |_: &MouseEvent| run_hov.set(true))
+                    .on_mouse_leave(move |_: &MouseEvent| run_hov.set(false))
                     .on_press(move || run_routine(id4.clone()))
                     .label("Run routine now"),
             )
@@ -1165,8 +1165,8 @@ fn routine_row(r: Routine) -> impl IntoElement {
                     .px_2()
                     .py_1()
                     .rounded(px(6.0))
-                    .on_hover_in(move || hov.set(true))
-                    .on_hover_out(move || hov.set(false))
+                    .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                    .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
                     .on_press(move || delete_routine(id3.clone()))
                     .label("Delete routine"),
             ),

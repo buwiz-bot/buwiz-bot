@@ -363,8 +363,8 @@ fn option_row(
         .border(px(0.5))
         .border_color(move || if on || hov.get() { theme::ACCENT } else { theme::BORDER_S })
         .bg(if on { theme::TEXT } else { theme::SUBTLE })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || press())
         .when_some(letter, |r, l| r.child(super::keycap(l, live)))
         .child(

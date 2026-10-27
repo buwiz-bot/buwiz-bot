@@ -1530,8 +1530,8 @@ fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static,
             (Kind::Ghost, false) => AdaptiveColor::TRANSPARENT,
         })
         .opacity(move || if e1() { 1.0f32 } else { 0.4 })
-        .on_hover_in(move || hov.set(e2()))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(e2()))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || {
             if e3() {
                 on()
@@ -1545,8 +1545,8 @@ fn link_btn(label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
     text(label)
         .text_size(px(12.0))
         .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT })
-        .on_hover_in(move || hov.set(true))
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(move || on())
         .label(label)
 }

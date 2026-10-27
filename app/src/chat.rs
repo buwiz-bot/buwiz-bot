@@ -469,14 +469,14 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
     view()
         .items_end()
         .gap_1()
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             if !store().chat_scrolling.get_untracked() {
                 hov2.set(true);
             }
         })
         // `hover_out` always clears — skipping it during a scroll leaves
         // `hov` stuck true and the bar lit at rest once scrolling ends.
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         // attached images/files sit above the bubble (shell.tsx:427):
         // right-aligned wrap row, `FileTile` 72 for files, 120 for media
         .when(!atts.is_empty(), |v| {
@@ -816,12 +816,12 @@ fn agent_row(t: Turn) -> impl IntoElement {
         // its bar, and the artifacts uniformly; the 20pt turn separation
         // is the list's `row_gap`, not per-row padding.
         .gap_1()
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             if !store().chat_scrolling.get_untracked() {
                 hov2.set(true);
             }
         })
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         // shell.tsx:479 — a turn naming a module (`tt.name`) is an app
         // card and nothing else: no sender line, no message bubble (the
         // module name and an empty bubble were leaking through).
@@ -984,9 +984,9 @@ fn act_at(
         .justify_center()
         .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
         .child(text(glyph).text_size(px(15.0)).text_color(theme::DIM))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
-        .on_hover_move(move |e: &HoverEvent| {
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
+        .on_mouse_move(move |e: &MouseEvent| {
             at.set((
                 e.page_position.x.0 - e.position.x.0,
                 e.page_position.y.0 - e.position.y.0,
@@ -1176,12 +1176,12 @@ fn artifact(
         .self_start()
         .gap_1()
         .max_w(percentage(1.0))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             if !store().chat_scrolling.get_untracked() {
                 hov.set(true);
             }
         })
-        .on_hover_out(move || hov.set(false))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .child(node)
         // This artifact's own reaction (`slot`), not the message's: a
         // reply's files each take theirs.
@@ -1279,8 +1279,8 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
                 }
             })
             .scale(move || if h2.get() { 1.25_f32 } else { 1.0 })
-            .on_hover_in(move || h.set(true))
-            .on_hover_out(move || h3.set(false))
+            .on_mouse_enter(move |_: &MouseEvent| h.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| h3.set(false))
             .on_press(move || {
                 let st = store();
                 st.react_slot(i, &slot, if cur2 == e { String::new() } else { e.to_owned() });
@@ -1322,8 +1322,8 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
                             }
                         })
                         .scale(move || if ph1.get() { 1.25_f32 } else { 1.0 })
-                        .on_hover_in(move || ph2.set(true))
-                        .on_hover_out(move || plus_hov.set(false))
+                        .on_mouse_enter(move |_: &MouseEvent| ph2.set(true))
+                        .on_mouse_leave(move |_: &MouseEvent| plus_hov.set(false))
                         .on_press(move || grid_open.update(|v| *v = !*v))
                         .child(crate::icons::icon_ink("emojiPlus", 20.0, || {
                             theme::tc("#f5f5f5a8")
@@ -1364,8 +1364,8 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
                                                     AdaptiveColor::TRANSPARENT
                                                 }
                                             })
-                                            .on_hover_in(move || h.set(true))
-                                            .on_hover_out(move || h2.set(false))
+                                            .on_mouse_enter(move |_: &MouseEvent| h.set(true))
+                                            .on_mouse_leave(move |_: &MouseEvent| h2.set(false))
                                             .on_press(move || {
                                                 let st = store();
                                                 st.react_slot(i, &slot_grid, if cur2 == *e { String::new() } else { e.to_string() });
