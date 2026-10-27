@@ -1,8 +1,9 @@
 # Rox
 
 A native macOS chat client — the Grok Shell desktop app ported from TSX to
-Rust. The UI is NSH (`nsh/`, AppKit backend); live patching is ra-jit
-(`ra-jit/`); the backend is the unchanged Grok app server.
+Rust. The UI is NSH (`nsh/`, AppKit backend); live patching is ra-jit, from
+[blaze](https://github.com/indexable-inc/blaze) (`blaze/`); the backend is the
+unchanged Grok app server.
 
 - Bundle id: `dev.goldcoders.rox`
 - App crate: `app/` (`rox`)
@@ -11,13 +12,15 @@ Rust. The UI is NSH (`nsh/`, AppKit backend); live patching is ra-jit
 
 - macOS on Apple Silicon; Rust via `app/rust-toolchain.toml` (channel
   `1.99.0`, component `rust-src` — installed automatically by rustup).
-- **ra-jit** on `PATH`: `cargo-ra-jit`, `ra-jit`, `ra-jit-rustc`,
-  `ra-jit-rustc-first`. The live splice needs the fixes in
-  [indexable-inc/ra-jit#237](https://github.com/indexable-inc/ra-jit/pull/237);
-  until that lands, install from the patched branch:
+- **ra-jit** ([blaze](https://github.com/indexable-inc/blaze)) on `PATH`:
+  `cargo-ra-jit`, `ra-jit`, `ra-jit-rustc`, `ra-jit-rustc-first`. Install it
+  from the `blaze/` submodule, which is on the fork's `rox` branch (blaze
+  `main` plus Rox's patches). Blaze builds with its own pinned nightly,
+  whatever `app/rust-toolchain.toml` says:
 
   ```sh
-  cargo install --path crates/ra-jit --force   # in a checkout of the PR head
+  rustup toolchain install nightly-2026-10-25 --component rust-src
+  cd blaze && cargo +nightly-2026-10-25 install --locked --path crates/ra-jit --force
   ```
 
 - `cargo-watch` (`cargo install cargo-watch`).
@@ -200,5 +203,5 @@ app/src/store.rs the model, as anchored signals
 app/src/mini.rs the mini-app host (scaled AppView per card)
 app/src/mermaid.rs + app/pele/ native Mermaid via the Pele helper
 nsh/           the UI engine (submodule; crates/nsh-platform-macos is the AppKit backend)
-ra-jit/        the live-patching toolchain (submodule)
+blaze/         ra-jit, the live-patching toolchain (submodule)
 ```

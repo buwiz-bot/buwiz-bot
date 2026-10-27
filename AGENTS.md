@@ -1,8 +1,8 @@
 # Rox
 
 A native chat app in Rust on Native Shell (nsh). `app/` is the app,
-`nsh/` the nsh fork it builds on (a submodule), `connectors/` and `ra-jit/`
-its helpers. `README.md` explains the build and the live loop.
+`nsh/` the nsh fork it builds on (a submodule), `connectors/` and `blaze/`
+(ra-jit, a submodule) its helpers. `README.md` explains the build and the live loop.
 
 ## Changing nsh
 
