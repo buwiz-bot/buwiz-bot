@@ -369,6 +369,7 @@ fn escape() {
         || st.vers_pop.get_untracked().is_some()
         || st.app_details.get_untracked().is_some()
         || st.main_pick.get_untracked().is_some()
+        || st.link_ask.get_untracked().is_some()
         || !st.light_items.get_untracked().is_empty()
         || st.viewing.get_untracked().is_some()
         || st.plugins_open.get_untracked()
@@ -381,6 +382,7 @@ fn escape() {
     st.vers_pop.set(None);
     st.app_details.set(None);
     st.main_pick.set(None);
+    st.link_ask.set(None);
     st.avatar_editing.set(false);
     // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
     st.light_close();
