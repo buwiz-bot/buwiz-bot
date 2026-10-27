@@ -1113,15 +1113,47 @@ pub(crate) fn media_gallery(files: Vec<Attach>) -> impl IntoElement {
 /// `SvgView` — an `<img>` in a transparent WebView (SMIL/CSS animate).
 /// Returns `View` so callers can size/position it.
 pub(crate) fn svg_view(uri: &str, fit: &str) -> View {
-    let html = format!(
+    match svg_page(uri, fit) {
+        Some(html) => view().child(
+            web_view_html(html, None)
+                .scrollable(false)
+                .size_full()
+                .bg(AdaptiveColor::TRANSPARENT),
+        ),
+        None => view(),
+    }
+}
+
+/// The page of `svg_view`: only the server's own files (`Store::file_raw_url`),
+/// so a link in a reply cannot make the viewer fetch from another host.
+fn svg_page(uri: &str, fit: &str) -> Option<String> {
+    if !uri
+        .strip_prefix(crate::client::GEN)
+        .is_some_and(|rest| rest.starts_with("/file/raw/"))
+    {
+        return None;
+    }
+
+    let fit = if fit == "cover" { "cover" } else { "contain" };
+    let uri = html_attr_escape(uri);
+    Some(format!(
         "<html><body style=\"margin:0;background:transparent;overflow:hidden\"><img src=\"{uri}\" style=\"width:100vw;height:100vh;object-fit:{fit};display:block\"></body></html>"
-    );
-    view().child(
-        web_view_html(html, Some(crate::client::GEN))
-            .scrollable(false)
-            .size_full()
-            .bg(AdaptiveColor::TRANSPARENT),
-    )
+    ))
+}
+
+fn html_attr_escape(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 // ——————————————————— Lightbox (`sand-media-viewer`) ———————————————————
@@ -2672,4 +2704,62 @@ fn version_chip(f: Attach) -> impl IntoElement {
             })
             .into_element()
     })
+}
+#[cfg(test)]
+mod tests {
+    use super::{Store, svg_page};
+
+    fn raw(path: &str) -> String {
+        format!("{}/file/raw/{path}", crate::client::GEN)
+    }
+
+    #[test]
+    fn escapes_uri_in_html_attributes() {
+        let page = svg_page(&raw("a\"><script>alert(1)</script><img b=\".svg"), "contain")
+            .expect("a server file is accepted");
+        assert!(!page.contains("<script"));
+        assert!(!page.contains("\"><script"));
+        assert!(page.contains("&quot;&gt;&lt;script&gt;"));
+        let expected = svg_page(&raw("a.svg"), "contain").expect("a server file is accepted");
+        assert_eq!(page.matches('"').count(), expected.matches('"').count());
+    }
+
+    #[test]
+    fn escapes_single_quotes_and_ampersands() {
+        let page = svg_page(&raw("a'b&c.svg"), "contain").expect("a server file is accepted");
+        assert!(page.contains("a&#39;b&amp;c.svg"));
+    }
+
+    #[test]
+    fn rejects_everything_but_the_servers_files() {
+        for uri in [
+            "javascript:alert(1)//.svg",
+            "data:image/svg+xml,<svg/onload=alert(1)>.svg",
+            "file:///etc/x.svg",
+            "https://x/a.svg",
+            "http://127.0.0.1:8787/other/a.svg",
+            "http://127.0.0.1:87870/file/raw/a.svg",
+            "http://127.0.0.1:8787@evil.example/file/raw/a.svg",
+            " http://127.0.0.1:8787/file/raw/a.svg",
+            "",
+        ] {
+            assert!(svg_page(uri, "contain").is_none(), "accepted {uri:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_servers_raw_files() {
+        assert!(svg_page(&Store::file_raw_url("a b/c.svg"), "contain").is_some());
+        assert!(svg_page(&raw("dir/x.svg"), "cover").is_some());
+    }
+
+    #[test]
+    fn whitelists_object_fit() {
+        let page = svg_page(&raw("a.svg"), "cover;}</style><script>").expect("a server file");
+        assert!(page.contains("object-fit:contain"));
+        assert!(!page.contains("<script"));
+
+        let page = svg_page(&raw("a.svg"), "cover").expect("a server file");
+        assert!(page.contains("object-fit:cover"));
+    }
 }

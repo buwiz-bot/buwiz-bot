@@ -25,6 +25,7 @@ mod history;
 mod hot;
 mod icons;
 pub mod keys;
+mod links;
 pub mod live;
 mod mark;
 mod md;
@@ -93,11 +94,13 @@ pub fn App() -> impl IntoElement {
     // `rox://chat/<thread>[?m=<turn>]` / `rox://chat/new?draft=<text>` /
     // `rox://plugin/<name>` (the plugin page's Share link) /
     // `rox://app/<server>/<app>` / `rox://view?path=<file>` (a mini app's
-    // print preview) opened from another app or a mini app
-    // (the dev bundle declares the scheme): the root never remounts, so this
-    // handler lives as long as the app. Other URLs are ignored here —
-    // `open_link` would hand them to the system, which for `rox://` sends
-    // them straight back.
+    // print preview, `links::viewable` only) opened from another app
+    // or a mini app (the dev bundle declares the scheme): the root never
+    // remounts, so this handler lives as long as the app. `open_os_link`
+    // makes nothing until the person acts in Rox (a new chat asks first).
+    // Other URLs are ignored here — the router would hand them to the
+    // system, which for `rox://` sends them straight back.
+    links::make_view_dir();
     on_open_url(|url| {
         let thread = url.strip_prefix("rox://chat/").map(|r| r.split('?').next().unwrap_or(""));
         if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
@@ -105,7 +108,7 @@ pub fn App() -> impl IntoElement {
             || url.starts_with("rox://app/")
             || url.starts_with("rox://view")
         {
-            live::store().open_link(url);
+            live::store().open_os_link(url);
         } else {
             log::warn!("rox: ignoring opened URL {url}");
         }

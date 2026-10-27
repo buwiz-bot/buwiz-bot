@@ -68,7 +68,7 @@ Configuration shipped in this repository (Cargo features, default policies, scri
 
 ## Existing controls and their limits
 
-- **[observed]** Saved-login secrets are macOS Keychain generic passwords under service `dev.goldcoders.rox.site-login` (`vault/mod.rs:9-10, 39`). Metadata is in Rox's own `logins.db`, which has no password column (`vault/db.rs:1-2`). Every secret read needs device-owner authentication, and anything but `Verified` refuses (`vault/mod.rs:253-257`, `vault/touch_id.rs:36-46`). Login origins are matched by registrable domain from a hand-kept suffix list (`vault/origin.rs`). The log of an unsent card body redacts `values` (`cards/transport.rs:96-103`).
+- **[observed]** Saved-login secrets are macOS Keychain generic passwords under service `dev.goldcoders.rox.site-login` (`vault/mod.rs:9-10, 39`). Metadata is in Rox's own `logins.db`, which has no password column (`vault/db.rs:1-2`). Every secret read needs device-owner authentication, and anything but `Verified` refuses (`vault/mod.rs:253-257`, `vault/touch_id.rs:36-46`). Login origins are matched by exact host, plus the port on loopback and IP hosts (`vault/origin.rs`). The log of an unsent card body redacts `values` (`cards/transport.rs:96-103`).
 - **[observed]** gpui-agent is off unless `GPUI_AGENT` is set, serves a release build only with `GPUI_AGENT_ALLOW_RELEASE`, binds loopback by default, and requires a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN` is set (gpui-agent 0.1.0 `security.rs:33-46`). Requests are authorized by HMAC-SHA256 over a 32-byte per-connection nonce (`hmac_auth.rs:8-10`, `dispatch.rs:28-60`; `gpui_agent.rs:6-12`).
 - **[observed]** The Pele helper is started by `mermaid.rs:90-116`, binds `127.0.0.1` on a random port, and answers only `POST /render` (`pele/serve.mjs:81-101`).
 - **[observed]** The jank log (`~/Library/Logs/Rox/jank.log`, or `ROX_JANK_LOG`) is written only while the performance monitor runs (⌘⇧F, `keys.rs:220`; `main.rs:12-70`) and records frame timings. At `RUST_LOG=info`, a connector account identifier is logged (`cards/plugin_needs.rs:241`).
@@ -107,11 +107,11 @@ Rules:
 | ID | Finding | Component | Likelihood / impact | Priority |
 |---|---|---|---|---|
 | RX-001 | Generated mini-app widgets run with broad default capabilities — fixed: non-`mcp:` modules deny all; `mcp:` apps reach only the app-server origin over HTTP and its NSH-authorized WebSocket | C3 | L3 (needs the model to follow injected instructions; unverified) / A4 | Medium |
-| RX-002 | `svg_view` interpolates the attachment URL into HTML unescaped, under the backend's origin | C4 | L3 (outside control of the attachment URL unverified) / A4 | Medium |
+| RX-002 | `svg_view` interpolates the attachment URL into HTML unescaped, under the backend's origin | C4 | L3 (outside control of the attachment URL unverified) / A4 | Fixed in 7925692 (escaped, server files only, no base URL) |
 | RX-003 | `ra_jit_live::edit` connects to the daemon socket without a peer check | C7 | L2 (shared machine, other-user-writable socket root) / A3 | Low |
 | RX-004 | See the private advisory | C9 | See the private advisory | See the private advisory |
-| RX-005 | See the private advisory | C10 | See the private advisory | See the private advisory |
-| RX-006 | See the private advisory | C8 | See the private advisory | See the private advisory |
+| RX-005 | The dev launcher and README published a fixed gpui-agent token; any local user could drive the dev bundle's Rox ([GHSA-pwr9-c68j-6jr4](https://github.com/hexuria/rox/security/advisories/GHSA-pwr9-c68j-6jr4)) | C10 | L2 (another local user) / A4 | Fixed in 5e7b0a2 (a new random token per launch, in a 0600 file) |
+| RX-006 | `open_link` let links from content read any local file (`rox://view`) and open any scheme the deny-list allowed ([GHSA-xpgx-g4x9-7f5g](https://github.com/hexuria/rox/security/advisories/GHSA-xpgx-g4x9-7f5g)) | C8 | L3 (untrusted content, one click) / A4 | Fixed in 1e7f231, 369882d (previews only; other schemes and OS-created chats ask) |
 | RX-007 | Embedded mini apps can invoke ungated `nsh/desktop` window/menu commands and read `os.homedir()`; fix in NSH with an `Access` gate or desktop-module filter for untrusted runtimes (`known_gap_desktop_window_and_homedir_are_ungated`) | C3 | L3 (model-generated code; precondition unverified) / A2 | Low |
 
 ## Open questions and validation limits
