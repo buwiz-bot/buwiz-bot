@@ -9,7 +9,7 @@ nsh-core = { path = "../nsh/crates/nsh-core" }
 nsh-base = { path = "../nsh/crates/nsh-base" }
 nsh-engine = { path = "../nsh/crates/nsh-engine" }
 nsh-bundler = { path = "../nsh/crates/nsh-bundler", default-features = false }
-ra-jit-live = { path = "../ra-jit/crates/ra-jit-live" }
+ra-jit-live = { path = "../blaze/crates/ra-jit-live" }
 env_logger = "0.11"
 log = "0.4"
 serde_json = "1"
