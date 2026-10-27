@@ -116,19 +116,19 @@ note = "web views already show in cacheDisplay shots on macOS 26; only video was
 branch = "devin/gpui-agent-adapter"
 kind = "feature"
 pr = 0
-status = "parked"
+status = "local"
 note = "hexuria/nsh#2: Linux GTK + Android attach"
 
 [[topic]]
 branch = "devin/gpui-agent-windows"
 kind = "feature"
 pr = 0
-status = "parked"
+status = "local"
 note = "hexuria/nsh#3, stacked on #2: Windows attach"
 
 [[topic]]
 branch = "wip/gpui-agent-web"
 kind = "feature"
 pr = 0
-status = "parked"
+status = "local"
 note = "hexuria/nsh#4, stacked on #3's base #2: nsh run --target web attach"
