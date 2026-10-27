@@ -94,9 +94,16 @@ of the desktop port.
 ## Driving the UI programmatically (gpui-agent)
 
 ```sh
-GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=dev-secret ./target/debug/rox
-gpui-agent --addr 127.0.0.1:17421 --token dev-secret snapshot   # click, type, screenshot, invoke …
+open -a ~/Applications/Rox.app        # the dev bundle (app/bundle-dev.sh) turns automation on
+scripts/rox-agent snapshot            # click, type, screenshot, invoke …
 ```
+
+The dev launcher makes a new random token at every launch and keeps it in
+`$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token`, readable only by you;
+`scripts/rox-agent` passes it to `gpui-agent` through the environment, never
+on a command line. To run a bare build with automation, do the same:
+`GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=<random>
+GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/rox`.
 
 `GPUI_AGENT_ALLOW_RELEASE=1`: the dev profile builds dependencies without
 debug assertions, which gpui-agent's guard reads as a release build.

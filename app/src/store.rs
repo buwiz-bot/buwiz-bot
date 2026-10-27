@@ -1794,8 +1794,9 @@ pub struct Store {
     pub jump: std::cell::RefCell<Option<(String, String)>>,
     /// A link opened before the chats were loaded (Rox launched by it):
     /// it waits for them (`boot`), else the startup selection replaced
-    /// its chat and its turn was never found.
-    pub early_link: std::cell::RefCell<Option<String>>,
+    /// its chat and its turn was never found. True when it came from
+    /// another app ([`open_os_link`]).
+    pub early_link: std::cell::RefCell<Option<(String, bool)>>,
     /// Whether `boot` has loaded the chats.
     pub booted: std::cell::Cell<bool>,
     /// Bumped by every navigation (`go_to_key`): a transcript's opening
@@ -1830,6 +1831,9 @@ pub struct Store {
     pub main_bot: Signal<String>,
     /// The "Choose a primary Bot" dialog: open with the bot picked so far.
     pub main_pick: Signal<Option<String>>,
+    /// A link waiting on Open or Cancel in Rox's sheet
+    /// (`botmodal::link_ask_layer`).
+    pub link_ask: Signal<Option<crate::links::LinkAsk>>,
     pub main_pick_q: Signal<String>,
     /// `botName`/`botShape`/`botColor` — the picker's draft.
     pub bot_name: Signal<String>,
@@ -2120,6 +2124,7 @@ impl Store {
             bot_modal: signal(false),
             main_bot: signal(String::new()),
             main_pick: signal(None),
+            link_ask: signal(None),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
             bot_shape: signal("blob".to_owned()),
@@ -2292,10 +2297,10 @@ impl Store {
             // opens there once the chats are known.
             self.booted.set(true);
             let early = self.early_link.borrow_mut().take();
-            if let Some(url) =
-                early.or_else(|| std::env::args().skip(1).find(|a| a.starts_with("rox://")))
+            if let Some((url, os)) = early
+                .or_else(|| std::env::args().skip(1).find(|a| a.starts_with("rox://")).map(|u| (u, true)))
             {
-                self.open_link(&url);
+                self.route_link(&url, os);
             }
             self.refresh_turns();
             self.refresh_thread_apps();
@@ -6578,11 +6583,24 @@ impl Store {
         format!("rox://chat/{thread}?m={turn}")
     }
 
-    /// A pressed link: `rox://chat/<thread>[?m=<i>]` goes to that chat
-    /// (and turn); any other URL opens outside Rox.
+    /// A link pressed in Rox: `rox://chat/<thread>[?m=<i>]` goes to that
+    /// chat (and turn); an outside URL opens outside Rox as
+    /// [`crate::links::outside`] decides.
     pub fn open_link(&'static self, url: &str) {
+        self.route_link(url, false);
+    }
+
+    /// A `rox://` link another app or a web page opened (`lib.rs`, a launch
+    /// argument): routed like [`open_link`], except that what would make
+    /// something (a new chat) waits on the person in Rox.
+    pub fn open_os_link(&'static self, url: &str) {
+        self.route_link(url, true);
+    }
+
+    fn route_link(&'static self, url: &str, os: bool) {
+        use crate::links::{LinkAsk, Outside};
         if !self.booted.get() && url.starts_with("rox://") {
-            *self.early_link.borrow_mut() = Some(url.to_owned());
+            *self.early_link.borrow_mut() = Some((url.to_owned(), os));
             return;
         }
         if let Some(key) = mini_link(url) {
@@ -6590,7 +6608,9 @@ impl Store {
             return;
         }
         // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
-        // print preview), in the viewer over the full-screen app
+        // print preview), in the viewer over the full-screen app. Only a
+        // preview in the account's temporary folder (`links::viewable`),
+        // however the path is spelled.
         if let Some(q) = url.strip_prefix("rox://view").filter(|q| q.is_empty() || q.starts_with(['?', '/'])) {
             let arg = |k: &str| {
                 q.trim_start_matches(['/', '?'])
@@ -6603,6 +6623,11 @@ impl Store {
             if path.is_empty() {
                 return;
             }
+            let Some(path) = crate::links::viewable(&path, &crate::links::view_root()) else {
+                log::warn!("rox: rox://view of a file that is no preview in {} refused", crate::links::view_root().display());
+                return crate::toast::show("Rox shows only previews from its temporary folder");
+            };
+            let path = path.to_string_lossy().into_owned();
             let file = path.rsplit('/').next().unwrap_or_default().to_owned();
             let ext = crate::files::ext_of(&file, "");
             let kind = match ext.as_str() {
@@ -6626,7 +6651,9 @@ impl Store {
             return;
         }
         // `rox://chat/new?draft=<text>`: a new chat, its composer holding
-        // the text (a mini app handing work to the assistant)
+        // the text (a mini app handing work to the assistant). From another
+        // app (a mini app's link comes through the system too), the chat is
+        // made only after Start chat in Rox's sheet.
         if let Some(q) = url.strip_prefix("rox://chat/new").filter(|q| q.is_empty() || q.starts_with('?') || q == &"/") {
             let draft = q
                 .trim_start_matches(['/', '?'])
@@ -6634,6 +6661,9 @@ impl Store {
                 .find_map(|kv| kv.strip_prefix("draft="))
                 .map(client::urldec)
                 .unwrap_or_default();
+            if os {
+                return self.link_ask.set(Some(LinkAsk::NewChat(draft)));
+            }
             self.mini_full.set(Vec::new());
             Owner::detached().run(|| self.new_thread_with(draft));
             return;
@@ -6649,7 +6679,28 @@ impl Store {
         match parse_chat_link(url) {
             Some((thread, key)) => self.go_to_key(&thread, key),
             None if url.starts_with('#') => {}
-            None => drop(open_url(url.to_owned())),
+            None => match crate::links::outside(url) {
+                Outside::Open => drop(open_url(url.to_owned())),
+                Outside::Ask => self.link_ask.set(Some(LinkAsk::Open(url.to_owned()))),
+                Outside::Refuse => log::warn!("rox: not opening {url}"),
+            },
+        }
+    }
+
+    /// Open (`yes`) or Cancel in the link sheet: the waiting link goes
+    /// ahead, or is dropped.
+    pub fn answer_link_ask(&'static self, yes: bool) {
+        let Some(ask) = self.link_ask.get_untracked() else { return };
+        self.link_ask.set(None);
+        if !yes {
+            return;
+        }
+        match ask {
+            crate::links::LinkAsk::Open(url) => drop(open_url(url)),
+            crate::links::LinkAsk::NewChat(draft) => {
+                self.mini_full.set(Vec::new());
+                Owner::detached().run(|| self.new_thread_with(draft));
+            }
         }
     }
 

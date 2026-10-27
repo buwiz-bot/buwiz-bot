@@ -56,7 +56,13 @@ cat > "$APP/Contents/MacOS/rox" <<SH
 # copy inside the bundle (rox-bin, refreshed by whoever relaunches) is
 # preferred: started by LaunchServices, loading the binary straight off the
 # external volume waits on a files-and-folders permission.
-export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=dev-secret ROX_FPS=0
+# A new automation token every launch, readable only by this user (the
+# per-user temp dir is 0700); \`scripts/rox-agent\` hands it to gpui-agent.
+TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token"
+( umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > "\$TOKEN_FILE" )
+export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 ROX_FPS=0
+GPUI_AGENT_TOKEN="\$(cat "\$TOKEN_FILE")"
+export GPUI_AGENT_TOKEN
 BIN="\$(dirname "\$0")/rox-bin"
 [ -x "\$BIN" ] || BIN="$BIN"
 exec "\$BIN" "\$@"

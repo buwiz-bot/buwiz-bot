@@ -11,8 +11,9 @@
 //! - Every read of a secret asks the device owner first ([`Vault::unlock`],
 //!   [`touch_id`]); there is no other way to get one out.
 //!
-//! A login is offered on a user-form card for that card's own site
-//! (`cards/user_form.rs`), saved from the offer card after a typed
+//! A login is offered on a user-form card for that card's own site: the
+//! exact host, and the port on loopback and IP hosts ([`origin`],
+//! `cards/user_form.rs`), saved from the offer card after a typed
 //! submit (`cards/save_login.rs`), and listed on Settings › Logins
 //! ([`settings_page`]).
 
@@ -31,7 +32,7 @@ use rusqlite::Connection;
 
 pub(crate) use db::SiteLogin;
 use keychain::SecretStore;
-pub(crate) use origin::{origins_match, registrable_origin};
+pub(crate) use origin::{SiteMatch, site_match, site_origin};
 pub(crate) use page::settings_page;
 use touch_id::{AuthOutcome, OwnerGate};
 
@@ -191,16 +192,20 @@ impl Vault {
         self.db(db::list).unwrap_or_default()
     }
 
-    /// The rows of `kind` for the site `origin` names (any host on it).
+    /// The rows of `kind` for the site `origin` names: saved for that exact
+    /// site, or legacy rows of its domain ([`SiteMatch::Legacy`]).
     pub(crate) fn rows_for(&self, origin: &str, kind: &str) -> Vec<SiteLogin> {
-        self.list().into_iter().filter(|r| r.kind == kind && origins_match(&r.origin, origin)).collect()
+        self.list()
+            .into_iter()
+            .filter(|r| r.kind == kind && site_match(&r.origin, r.exact, origin) != SiteMatch::No)
+            .collect()
     }
 
     /// Saves a login: the secret to the Keychain (none for an empty one),
     /// the metadata to the table. A second save of the same site and
     /// username updates that row, under its id.
     pub(crate) fn save(&self, origin: &str, username: &str, kind: &str, secret: &Secret) -> Result<SiteLogin, String> {
-        let origin = registrable_origin(origin).unwrap_or_else(|| origin.trim().to_owned());
+        let origin = site_origin(origin).unwrap_or_else(|| origin.trim().to_owned());
         let username = username.trim();
         if origin.is_empty() || username.is_empty() {
             return Err("a login needs a site and a username".into());
@@ -221,6 +226,7 @@ impl Vault {
             updated_at: now,
             origin,
             username: username.to_owned(),
+            exact: true,
         };
         if !secret.is_empty() {
             let account = if kind == KIND_CODE { code_account(&row.id) } else { row.id.clone() };
@@ -271,6 +277,15 @@ impl Vault {
             AuthOutcome::Verified => Ok(()),
             AuthOutcome::Cancelled => Err(Unlock::Cancelled),
             AuthOutcome::Unavailable(why) | AuthOutcome::Failed(why) => Err(Unlock::Refused(why)),
+        }
+    }
+
+    /// Binds a legacy row to the exact site its owner just used it on, so
+    /// it is offered there only from now on. A row already exact, or one
+    /// whose site and name another row holds, stays as it is.
+    pub(crate) fn pin_site(&self, id: &str, origin: &str) {
+        if let Some(site) = site_origin(origin) {
+            let _ = self.db(|c| db::pin_site(c, id, &site));
         }
     }
 
@@ -343,20 +358,71 @@ mod tests {
     fn a_save_keeps_the_password_out_of_the_table_and_unlock_needs_the_owner() {
         let v = memory_vault(AuthOutcome::Verified);
         let row = v.save("https://accounts.google.com/signin", "ada@example.com", KIND_PASSWORD, &Secret::new("s3cret-pass")).expect("save");
-        assert_eq!(row.origin, "google.com");
-        assert_eq!(row.label, "ada@example.com on google.com");
+        assert_eq!(row.origin, "accounts.google.com");
+        assert!(row.exact);
+        assert_eq!(row.label, "ada@example.com on accounts.google.com");
         assert!(!format!("{row:?}").contains("s3cret-pass"));
         assert!(v.has_secret(&row));
         assert_eq!(v.unlock(&row, "test"), Unlock::Secret(Secret::new("s3cret-pass")));
-        assert_eq!(v.rows_for("mail.google.com", KIND_PASSWORD).len(), 1);
-        assert!(v.rows_for("google.com", KIND_CODE).is_empty());
+        assert_eq!(v.rows_for("https://accounts.google.com/x", KIND_PASSWORD).len(), 1);
+        assert!(v.rows_for("mail.google.com", KIND_PASSWORD).is_empty());
+        assert!(v.rows_for("accounts.google.com", KIND_CODE).is_empty());
         // the second save of the same login keeps its id
-        let again = v.save("google.com", "ada@example.com", KIND_PASSWORD, &Secret::new("n3w")).expect("save");
+        let again = v.save("accounts.google.com", "ada@example.com", KIND_PASSWORD, &Secret::new("n3w")).expect("save");
         assert_eq!(again.id, row.id);
         assert_eq!(v.list().len(), 1);
         v.delete(&row.id).expect("delete");
         assert!(v.list().is_empty());
         assert!(!v.has_secret(&row));
+    }
+
+    #[test]
+    fn exact_rows_are_offered_on_their_own_site_only() {
+        let v = memory_vault(AuthOutcome::Verified);
+        for (site, user) in [
+            ("alice.pythonanywhere.com", "alice"),
+            ("alice.hf.space", "alice"),
+            ("localhost:3000", "ada"),
+            ("127.0.0.1:8443", "ada"),
+        ] {
+            v.save(site, user, KIND_PASSWORD, &Secret::new("pw")).expect("save");
+        }
+        for other in ["mallory.pythonanywhere.com", "mallory.hf.space", "http://localhost:8080", "127.0.0.1:9000", "localhost"] {
+            assert!(v.rows_for(other, KIND_PASSWORD).is_empty(), "nothing for {other}");
+        }
+        assert_eq!(v.rows_for("http://localhost:3000/login", KIND_PASSWORD).len(), 1);
+        assert_eq!(v.rows_for("https://alice.hf.space/", KIND_PASSWORD).len(), 1);
+    }
+
+    #[test]
+    fn a_table_from_before_exact_sites_keeps_its_rows_as_legacy_and_pins_them_on_use() {
+        let c = Connection::open_in_memory().expect("sqlite");
+        // the table as earlier builds made it, with a row they saved
+        c.execute_batch(
+            "CREATE TABLE site_logins (
+                id TEXT PRIMARY KEY NOT NULL, origin TEXT NOT NULL, username TEXT NOT NULL,
+                label TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'password', notes TEXT NOT NULL DEFAULT '',
+                last_used_at_ms INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE UNIQUE INDEX site_logins_origin_username ON site_logins (origin, username);
+             INSERT INTO site_logins (id, origin, username, label, created_at, updated_at)
+                VALUES ('sl_old', 'localhost', 'ada', 'ada on localhost', 1, 1);",
+        )
+        .expect("old table");
+        db::migrate(&c).expect("migrate");
+        db::migrate(&c).expect("a second migrate is a no-op");
+        let v = Vault::with(Some(c), None, Box::new(MemorySecrets::default()), Box::new(Answer(AuthOutcome::Verified)));
+        let old = v.list().pop().expect("the old row");
+        assert!(!old.exact);
+        assert_eq!(site_match(&old.origin, old.exact, "localhost:3000"), SiteMatch::Legacy);
+        assert_eq!(v.rows_for("http://localhost:3000", KIND_PASSWORD).len(), 1);
+        v.pin_site("sl_old", "http://localhost:3000/login");
+        let pinned = v.list().pop().expect("the row");
+        assert_eq!((pinned.id.as_str(), pinned.origin.as_str(), pinned.exact), ("sl_old", "localhost:3000", true));
+        assert!(v.rows_for("localhost:8080", KIND_PASSWORD).is_empty());
+        assert_eq!(v.rows_for("localhost:3000", KIND_PASSWORD).len(), 1);
+        // an exact row is never moved again
+        v.pin_site("sl_old", "localhost:8080");
+        assert_eq!(v.list().pop().map(|r| r.origin), Some("localhost:3000".to_owned()));
     }
 
     #[test]
