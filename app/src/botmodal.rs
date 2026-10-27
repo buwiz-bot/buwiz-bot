@@ -10,6 +10,7 @@ use nsh_core::prelude::*;
 
 use crate::avatar::bot_avatar;
 use crate::icons::icon;
+use crate::links::LinkAsk;
 use crate::live::store;
 use crate::theme;
 
@@ -436,6 +437,87 @@ pub(crate) fn main_picker_layer() -> impl IntoElement {
                                 }
                                 st.main_pick.set(None);
                             })),
+                    ),
+            )
+            .into_element()
+    })
+}
+
+/// A link waiting on the person (`Store::link_ask`), in the same dialog
+/// as the primary-Bot picker: an outside URL of another app's scheme
+/// (Open), or a new chat another app asked for (Start chat). It names
+/// what it would do; Cancel, Escape or a press outside drops it.
+pub(crate) fn link_ask_layer() -> impl IntoElement {
+    dynamic(|| {
+        let Some(ask) = store().link_ask.get() else {
+            return view().into_element();
+        };
+        let (head, what, body, yes) = match ask {
+            LinkAsk::Open(url) => (
+                "Open this link in another app?",
+                "A link in Rox wants to open outside it:",
+                url,
+                "Open",
+            ),
+            LinkAsk::NewChat(draft) => (
+                "Start a new chat?",
+                "Another app asked Rox to start a chat with this draft. Nothing is sent until you send it.",
+                if draft.trim().is_empty() { "(no draft)".to_owned() } else { draft },
+                "Start chat",
+            ),
+        };
+        let close = || store().answer_link_ask(false);
+        view()
+            .size_full()
+            .absolute()
+            .items_center()
+            .justify_center()
+            .bg(theme::tone(theme::hsla(0.0, 0.0, 0.0, 0.25), theme::hsla(0.0, 0.0, 0.0, 0.5)))
+            .on_press(close)
+            .child(
+                view()
+                    .w(px(420.0))
+                    .rounded(px(16.0))
+                    .bg(theme::POPOVER)
+                    .border_1()
+                    .border_color(theme::BORDER_F)
+                    .overflow_hidden()
+                    .label(head)
+                    // A press inside the card stays in it.
+                    .on_press(|| {})
+                    .child(
+                        text(head)
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::TEXT)
+                            .px_4()
+                            .pt_3()
+                            .pb_1(),
+                    )
+                    .child(text(what).text_size(px(12.0)).text_color(theme::MUTED).px_4().pb_2())
+                    .child(
+                        view().px_4().pb_3().child(
+                            text(body)
+                                .number_of_lines(6)
+                                .text_size(px(13.0))
+                                .text_color(theme::TEXT)
+                                .px(px(10.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .bg(theme::SUBTLE),
+                        ),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .px_4()
+                            .py_3()
+                            .border_t_1()
+                            .border_t_color(theme::BORDER_S)
+                            .child(dialog_button("Cancel", false, close))
+                            .child(dialog_button(yes, true, || store().answer_link_ask(true))),
                     ),
             )
             .into_element()

@@ -416,6 +416,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(ctx::layer())
         .child(ctx::prompt_layer())
         .child(ctx::color_layer())
+        // a link waiting on Open / Start chat, over whatever pressed it
+        .child(botmodal::link_ask_layer())
         .child(crate::toast::layer())
         .child(stats_bar(remount, note, live_bar_show))
 }
