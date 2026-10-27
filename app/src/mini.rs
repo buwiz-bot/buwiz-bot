@@ -9,9 +9,10 @@
 //!
 //! The element `native("rox/mini-app")` mounts a registered native
 //! component whose NSView *is* an `AppView`: each mini app gets its own
-//! engine + QuickJS under [`widget_bundle`]'s deny-all policy inside the
-//! Rust tree — the pure-Rust root is untouched. The `source` prop feeds the
-//! compiled JS; a changed source reloads the app.
+//! engine + QuickJS inside the Rust tree — the pure-Rust root is untouched.
+//! `mini_bundle` selects a deny-all policy for generated widgets and an
+//! app-server-only policy for `mcp:` modules. The `source` prop carries the
+//! module key and compiled JS; a changed pair reloads the app.
 
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
@@ -56,10 +57,12 @@ pub(crate) fn mini_app(
                 }
             }
         })
-        .prop(
-            "source",
-            move || JsonValue::String(store().mini_source(&name).get()),
-        )
+        .prop("source", move || {
+            serde_json::json!({
+                "module": name.clone(),
+                "js": store().mini_source(&name).get(),
+            })
+        })
         .prop(
             "app",
             move || JsonValue::String(store().mini_source_title(&name2).get()),
@@ -388,21 +391,60 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
         })
 }
 
-/// What a generated widget may reach: nothing beyond rendering. Widgets are
-/// model output (possibly prompt-injected), so no network (not even the
-/// local app server), web views, clipboard, picker, status bar, open_url,
-/// host functions, files or processes; the sandbox stays hardened.
+/// Denies capability-gated access for generated widgets: network, web views,
+/// clipboard, picker, status bar, open URLs, host functions, files, processes
+/// and sockets. NSH does not yet gate `nsh/desktop` window/menu commands or
+/// `os.homedir()`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn widget_policy() -> nsh_engine::Policy {
     nsh_engine::Policy {
-        harden: true,
         declared: Some(nsh_core::access::Capabilities::default()),
-        granted: Some(nsh_core::access::Capabilities::default()),
+        ..nsh_engine::Policy::default()
     }
 }
 
-/// A compiled widget as a bundle under [`widget_policy`].
-pub(crate) fn widget_bundle(js: String) -> nsh_engine::Bundle {
-    nsh_engine::Bundle::source(js).with_policy(widget_policy())
+/// MCP apps call the server for their data; allow its HTTP origin on any path.
+/// NSH applies the same grant to WebSockets on that origin. This is derived
+/// from `client::GEN`, with no other capabilities.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
+    let (host, port) = mcp_app_server_host_port()?;
+    let mut grant = nsh_core::access::HttpGrant::default();
+    grant.host = nsh_core::access::HostPattern::new(&host)?;
+    grant.schemes = vec!["http".into()];
+    grant.port = Some(port);
+
+    let mut declared = nsh_core::access::Capabilities::default();
+    declared.network.http.push(grant);
+    Ok(nsh_engine::Policy {
+        declared: Some(declared),
+        ..nsh_engine::Policy::default()
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn mcp_app_server_host_port() -> Result<(String, u16), String> {
+    let origin = nsh_core::access::parse_url(crate::client::GEN)
+        .ok_or_else(|| "invalid app server origin".to_owned())?;
+    if origin.scheme != "http" {
+        return Err("app server origin must use http".to_owned());
+    }
+    let port = origin
+        .port
+        .ok_or_else(|| "app server origin must specify a port".to_owned())?;
+    Ok((origin.host, port))
+}
+
+/// The module key, not the server-supplied title, selects the bundle policy.
+/// Any origin-configuration error for an MCP app falls back to deny-all.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn mini_bundle(module: &str, js: String) -> nsh_engine::Bundle {
+    let policy = if module.starts_with("mcp:") {
+        mcp_app_policy().unwrap_or_else(|_| widget_policy())
+    } else {
+        widget_policy()
+    };
+    nsh_engine::Bundle::source(js).with_policy(policy)
 }
 
 // ---------------------------------------------------------------------------
@@ -748,7 +790,7 @@ mod imp {
     pub struct MiniApp {
         fit: Retained<FitView>,
         view: Rc<AppView>,
-        last: String,
+        last: Option<(String, String)>,
     }
 
     impl MiniApp {
@@ -783,7 +825,11 @@ mod imp {
             );
             fit.addSubview(&app);
             *fit.ivars().app.borrow_mut() = Some(view.clone());
-            MiniApp { fit, view, last: String::new() }
+            MiniApp {
+                fit,
+                view,
+                last: None,
+            }
         }
 
         /// Lays the app out at `w×h` and scales it into the frame; `None`
@@ -881,13 +927,30 @@ mod imp {
             if name != "source" {
                 return;
             }
-            let src = value.and_then(|v| v.as_str()).unwrap_or_default().to_owned();
-            if src.is_empty() || src == self.last {
+            let Some(source) = value.and_then(|v| v.as_object()) else {
+                return;
+            };
+            let module = source
+                .get("module")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let js = source
+                .get("js")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            if js.is_empty()
+                || self
+                    .last
+                    .as_ref()
+                    .is_some_and(|(last_module, last_js)| last_module == &module && last_js == &js)
+            {
                 return;
             }
-            self.last = src.clone();
+            self.last = Some((module.clone(), js.clone()));
             self.view
-                .load(nsh_platform_macos::App::Js(super::widget_bundle(src)));
+                .load(nsh_platform_macos::App::Js(super::mini_bundle(&module, js)));
         }
     }
 }
@@ -913,7 +976,7 @@ mod tests {
 
     use nsh_core::{
         ApproxTextEngine, Command, EventKind, EventPayload, MountBatch, MountItem, PayloadValue,
-        ROOT_ID,
+        ROOT_ID, desktop::DesktopCommand,
     };
     use nsh_engine::{
         App, Bundle, Engine, EngineConfig, FetchEvent, FetchTask, HttpHead, HttpRequest, MountSink,
@@ -1026,7 +1089,9 @@ export default function R() {
                     MountItem::Command { command, .. }
                         if matches!(
                             command,
-                            Command::ReadClipboard { .. } | Command::SetClipboard(_)
+                            Command::ReadClipboard { .. }
+                                | Command::SetClipboard(_)
+                                | Command::Desktop(_)
                         ) =>
                     {
                         if let Command::ReadClipboard { id, .. } = command {
@@ -1073,7 +1138,7 @@ export default function R() {
 
     #[test]
     fn widget_policy_grants_nothing() {
-        let access = super::widget_bundle(String::new()).policy.access();
+        let access = super::mini_bundle("R1", String::new()).policy.access();
         assert!(!access.allows_http("GET", "http://127.0.0.1:8787/threads"));
         assert!(!access.allows_http("POST", "https://attacker.example/"));
         assert!(!access.allows_media("https://attacker.example/x.png"));
@@ -1088,18 +1153,61 @@ export default function R() {
         assert!(!access.allows_process("sh"));
         assert!(!access.allows_socket("127.0.0.1", 8787));
         assert!(super::widget_policy().harden);
+
+        for module in ["file:/x", ""] {
+            let policy = super::mini_bundle(module, String::new()).policy;
+            assert_eq!(
+                policy.declared,
+                Some(nsh_core::access::Capabilities::default())
+            );
+            assert!(policy.harden);
+        }
+    }
+
+    #[test]
+    fn mcp_apps_reach_only_the_app_server() {
+        let policy = super::mini_bundle("mcp:bir/forms", String::new()).policy;
+        let access = policy.access();
+        assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/call"));
+        assert!(access.allows_media("http://127.0.0.1:8787/file/raw/x"));
+        assert!(!access.allows_http("GET", "https://attacker.example/"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8788/"));
+        assert!(!access.allows_http("GET", "http://localhost:8787/"));
+        assert!(!access.allows_http("GET", "https://127.0.0.1:8787/"));
+        // NSH checks WebSockets as HTTP GETs to the same origin.
+        assert!(access.allows_websocket("ws://127.0.0.1:8787/"));
+        assert!(!access.allows_websocket("ws://127.0.0.1:8788/"));
+        assert!(!access.allows_websocket("wss://attacker.example/"));
+        assert!(!access.allows_socket("127.0.0.1", 8787));
+        assert!(!access.allows_webviews());
+        assert!(!access.allows_clipboard());
+        assert!(!access.allows_picker());
+        assert!(!access.allows_status_bar());
+        assert!(!access.allows_open_url("https://attacker.example/"));
+        assert!(!access.allows_host("anything"));
+        assert!(!access.allows_process("sh"));
+        assert!(policy.harden);
     }
 
     #[test]
     fn a_widget_cannot_fetch_the_app_server_or_read_the_clipboard() {
         let js = super::compile_widget("R998", WIDGET_EXFIL).expect("compile widget");
 
-        let (engine, rx, seen) = start_widget(super::widget_bundle(js.clone()));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R998", js.clone()));
         let commands = run_until_text(&engine, &rx, "refused false []");
         assert!(
             seen.lock().unwrap().is_empty(),
             "network requests: {seen:?}"
         );
+        assert!(
+            commands.is_empty(),
+            "clipboard commands reached the platform: {commands:?}"
+        );
+        drop(engine);
+
+        let (engine, rx, seen) = start_widget(super::mini_bundle("mcp:bir/forms", js.clone()));
+        let commands = run_until_text(&engine, &rx, "fetched false []");
+        assert_eq!(*seen.lock().unwrap(), ["http://127.0.0.1:8787/threads"]);
         assert!(
             commands.is_empty(),
             "clipboard commands reached the platform: {commands:?}"
@@ -1114,6 +1222,39 @@ export default function R() {
                 .iter()
                 .any(|command| matches!(command, Command::ReadClipboard { .. })),
             "default policy did not send a clipboard read command: {commands:?}"
+        );
+    }
+
+    // Pins NSH's current behavior; invert this when NSH gates these APIs.
+    #[test]
+    fn known_gap_desktop_window_and_homedir_are_ungated() {
+        let js = super::compile_widget(
+            "R997",
+            r#"
+import { Text } from "nsh";
+import { Window } from "nsh/desktop";
+import os from "os";
+
+export default function R() {
+  Window.setTitle("spoofed");
+  const home = os.homedir();
+  return <Text>{typeof home}</Text>;
+}
+"#,
+        )
+        .expect("compile widget");
+        let (engine, rx, _) = start_widget(super::mini_bundle("R997", js));
+        let commands = run_until_text(&engine, &rx, "string");
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Desktop(command)
+                    if matches!(
+                        command.as_ref(),
+                        DesktopCommand::SetTitle(title) if title == "spoofed"
+                    )
+            )),
+            "desktop title command did not reach the batch: {commands:?}"
         );
     }
 }
