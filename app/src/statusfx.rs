@@ -5,7 +5,7 @@
 use std::cell::Cell;
 
 use nsh_core::canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::mark;
 use crate::theme;
@@ -93,7 +93,7 @@ pub(crate) fn shimmer(label: impl Fn() -> String + 'static) -> impl IntoElement 
 }
 
 /// `shimmer` with Grok's `size`/`color`/`hi` (11+MUTED+TEXT for the
-/// status row, 12+FAINT+TEXT for `ArtPlaceholder`).
+/// status row).
 pub(crate) fn shimmer_at(
     label: impl Fn() -> String + 'static,
     size: f32,
@@ -103,10 +103,9 @@ pub(crate) fn shimmer_at(
     let font = format!("{size}px -apple-system, system-ui, sans-serif");
     // The store's shared ~30fps clock — one commit per frame, not one per
     // shimmer (statusfx's `startFx` is the same shared-clock idea).
-    let clock = crate::live::store().frame_clock();
     let bounds = signal(Bounds::<Points>::default());
     canvas(move || {
-        let t = clock.get();
+        let t = crate::live::store().tick();
         let text = label();
         let size = bounds.get().size;
         let w = (measure_text(&font, &text).0 as f64)
@@ -179,13 +178,13 @@ pub(crate) fn fx_overlay_fn(
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
     let ink = ink;
-    // `startFx` — the store's shared ~30fps overlay clock.
-    let clock = crate::live::store().frame_clock();
+    // `startFx` — the store's shared ~30fps overlay clock, read only
+    // while an effect plays.
     canvas(move || {
-        let t = clock.get();
         let fx = morph_kind(&state());
         let mut p = Painter::new();
         if fx != "none" {
+            let t = crate::live::store().tick();
             p = mark::draw_fx(
                 p,
                 fx,
@@ -256,7 +255,13 @@ pub(crate) fn status_fx(
     let emph: std::rc::Rc<dyn Fn() -> bool> =
         std::rc::Rc::new(|| !crate::live::store().emph_bot.get().is_empty());
     let bot = seed.clone().unwrap_or_default();
+    // `flexDirection: "row"` (App.tsx:2168): the mark, then its label, on
+    // the column's left edge — a column centered the mark alone.
+    // Full width: the label's canvas flex-grows into it (a hugging row
+    // left it at its 60pt minimum, squeezing longer statuses).
     view()
+        .flex_row()
+        .w_full()
         .gap(px(7.0))
         .items_center()
         .on_hover_in(move || crate::live::store().emph_bot.set(bot.clone()))

@@ -14,17 +14,48 @@
 //! the compiled JS; a changed source reloads the app.
 
 use nsh_core::JsonValue;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::live::store;
 
+/// Whether the live mini apps placed under it can't be seen now: a
+/// chat row out of the viewport or under a full-screen app, a full-screen
+/// app under another. Provided by what places apps; [`mini_app`] holds
+/// its app (frames and timers) while it reads true.
+#[derive(Clone)]
+pub(crate) struct OutOfSight(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
+
 /// A turn card's live widget: `app` is the module name (`R<n>`); `h` the
 /// card body's height, or `<= 0` to fill its parent. The `source` prop
-/// updates as the store compiles.
-pub(crate) fn mini_app(app: &str, h: f32) -> impl IntoElement {
+/// updates as the store compiles. `design` is the size the app lays out
+/// at (its declared `w×h`): the element's box shows it scaled uniformly
+/// to fit, as the TSX card scales an oversize app (shell.tsx:911).
+/// `on_natural` hears the app's natural content height as it changes.
+pub(crate) fn mini_app(
+    app: &str,
+    h: f32,
+    design: Option<std::rc::Rc<dyn Fn() -> (f32, f32)>>,
+    on_natural: Option<std::rc::Rc<dyn Fn(f32)>>,
+) -> impl IntoElement {
     let name = app.to_owned();
     let name2 = app.to_owned();
+    let hidden = use_context::<OutOfSight>();
     native("rox/mini-app")
+        .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .prop("design", move || match &design {
+            Some(d) => {
+                let (w, h) = d();
+                serde_json::json!([w, h])
+            }
+            None => JsonValue::Null,
+        })
+        .on_native_event(move |e: &NativeEvent| {
+            if &*e.name == "natural" {
+                if let (Some(f), Some(h)) = (&on_natural, e.data.as_f64()) {
+                    f(h as f32);
+                }
+            }
+        })
         .prop(
             "source",
             move || JsonValue::String(store().mini_source(&name).get()),
@@ -33,20 +64,328 @@ pub(crate) fn mini_app(app: &str, h: f32) -> impl IntoElement {
             "app",
             move || JsonValue::String(store().mini_source_title(&name2).get()),
         )
+        .prop("dev_type", || JsonValue::String(store().mini_dev_type.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
         .when(h <= 0.0, |v| v.flex_1())
 }
 
+/// `source` with its imports moved to where nsh 0.3 serves them (it keeps
+/// no aliases): `nsh/ios` and `nsh/android` are `nsh/mobile`,
+/// `nsh/ui/mobile` is `nsh/base`, the other submodules (`nsh/canvas`,
+/// `nsh/image`, `nsh/keymap`, `nsh/clipboard`, …) are `nsh`, and a name
+/// `nsh/base` exports (`Input`, `Button`, …) comes from there. The widgets
+/// the server generated before, and its prompts, still use the old homes.
+pub(crate) fn current_homes(source: &str) -> String {
+    thread_local! {
+        static BASE: Vec<String> = {
+            let d = nsh_core::element::description::SetDescription::from(nsh_base::registry());
+            d.exports
+                .into_iter()
+                .map(|e| e.name)
+                .chain(d.reexported_values)
+                .chain(d.native_values)
+                .collect()
+        };
+    }
+    let mut out = String::with_capacity(source.len() + 64);
+    let mut rest = source;
+    while let Some(at) = rest.find("import") {
+        let starts = at == 0 || rest[..at].ends_with(['\n', ';', ' ', '\t']);
+        let Some(stmt) = starts.then(|| import_at(&rest[at..])).flatten() else {
+            out.push_str(&rest[..at + 6]);
+            rest = &rest[at + 6..];
+            continue;
+        };
+        out.push_str(&rest[..at]);
+        out.push_str(&BASE.with(|base| rehome(&stmt, base)));
+        rest = &rest[at + stmt.len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// An `import … from "nsh…";` statement at the start of `s`.
+struct Import {
+    /// Its length in `s`, the `;` included.
+    len: usize,
+    /// What is imported: `{ a, b as c }`, `* as x` or a default name.
+    clause: String,
+    spec: String,
+}
+
+fn import_at(s: &str) -> Option<Import> {
+    let from = s.find(" from ")?;
+    let clause = s[6..from].trim();
+    // an `import` keyword of another statement, or a side-effect import
+    if clause.is_empty() || clause.contains(';') || clause.starts_with('(') {
+        return None;
+    }
+    let tail = s[from + 6..].trim_start();
+    let quote = tail.chars().next().filter(|q| *q == '"' || *q == '\'')?;
+    let close = tail[1..].find(quote)? + 1;
+    let spec = &tail[1..close];
+    if spec != "nsh" && !spec.starts_with("nsh/") {
+        return None;
+    }
+    let mut len = s.len() - tail.len() + close + 1;
+    if s[len..].starts_with(';') {
+        len += 1;
+    }
+    Some(Import { len, clause: clause.to_owned(), spec: spec.to_owned() })
+}
+
+/// The statement(s) importing `stmt`'s names from their current homes.
+fn rehome(stmt: &Import, base: &[String]) -> String {
+    let module = match stmt.spec.as_str() {
+        s @ ("nsh/base" | "nsh/mobile" | "nsh/desktop") => s,
+        "nsh/ios" | "nsh/android" => "nsh/mobile",
+        "nsh/ui/mobile" => "nsh/base",
+        _ => "nsh",
+    };
+    let names = match stmt.clause.strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
+        Some(names) if module == "nsh" => names,
+        _ => return format!("import {} from \"{module}\";", stmt.clause),
+    };
+    let (mut core, mut moved) = (Vec::new(), Vec::new());
+    for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let own = name.trim_start_matches("type ").split(" as ").next().unwrap_or(name).trim();
+        if base.iter().any(|b| b == own) { moved.push(name) } else { core.push(name) }
+    }
+    let mut out = String::new();
+    if !core.is_empty() {
+        out.push_str(&format!("import {{ {} }} from \"nsh\";", core.join(", ")));
+    }
+    if !moved.is_empty() {
+        out.push_str(&format!("import {{ {} }} from \"nsh/base\";", moved.join(", ")));
+    }
+    out
+}
+
 /// TSX → the module the runtime runs: the source plus the wrapper
 /// `pipeline.mjs` writes into every emitted chunk.
 pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String> {
+    let source = current_homes(source);
     let wrapped = format!("{source}\nimport {{ mount }} from \"nsh\";\nmount(R);\n");
-    let sets: Vec<nsh_core::ui::description::SetDescription> = vec![
+    let sets: Vec<nsh_core::element::description::SetDescription> = vec![
         nsh_base::registry().into(),
         crate::registry().into(),
     ];
-    nsh_bundler::compile_module(&format!("{name}.tsx"), &wrapped, &sets)
+    // a server's app name (`mcp:<server>/<app>|<props>`) is no file name
+    let file: String = name
+        .chars()
+        .take_while(|&c| c != '|')
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    nsh_bundler::compile_module(&format!("{file}.tsx"), &wrapped, &sets)
+}
+
+thread_local! {
+    /// The full-screen apps ✕ / ⌘W / ⌘[ took off, latest last: ⌘] puts
+    /// them back, until another app opens.
+    static FORWARD: std::cell::RefCell<Vec<crate::store::MiniOpen>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `open` was taken off the stack: ⌘] can put it back.
+pub(crate) fn left(open: crate::store::MiniOpen) {
+    FORWARD.with_borrow_mut(|f| f.push(open));
+}
+
+/// An app opened anew: nothing to go forward to.
+pub(crate) fn forget_forward() {
+    FORWARD.with_borrow_mut(Vec::clear);
+}
+
+/// ⌘[ / ⌘] over the full-screen apps, as the desktop's Back and Forward:
+/// back takes the top app off (Tax Profile back to the Forms under it, the
+/// last one back to the chat), forward reopens what back left. False when
+/// there's nothing to step through here (the chat's history then).
+pub(crate) fn step(d: i64) -> bool {
+    let st = store();
+    if d < 0 {
+        if st.mini_full.with_untracked(Vec::is_empty) {
+            return false;
+        }
+        st.close_mini();
+        return true;
+    }
+    let Some(next) = FORWARD.with_borrow_mut(Vec::pop) else { return false };
+    // reopening clears what's ahead; keep the rest for the next ⌘]
+    let rest = FORWARD.with_borrow_mut(std::mem::take);
+    st.open_mini_token(&next.key, &next.title, &next.token);
+    FORWARD.with_borrow_mut(|f| *f = rest);
+    true
+}
+
+/// The mini apps an MCP server ships, full screen over the window
+/// (`store.mini_full`), each over the one it was opened from: a title bar
+/// and the app filling the rest. A server opens one from a tool result
+/// (`rox/open`) or a `rox://app/…` link. The apps under the top one stay
+/// mounted, so ✕ comes back to them as they were.
+pub(crate) fn full_layer() -> impl IntoElement {
+    each(|| store().mini_full.get(), |o| o.n, |o, _| full_app(o.get_untracked()))
+}
+
+/// Stack entry `n`'s title (tracked): its opener's, or its token's
+/// once resolved; "" for the app's own.
+fn open_title(n: u64) -> String {
+    store().mini_full.with(|v| v.iter().find(|o| o.n == n).map(|o| o.title.clone()).unwrap_or_default())
+}
+
+/// One full-screen app.
+fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
+    use crate::theme::tc;
+    let crate::store::MiniOpen { key, token, n, .. } = open;
+    // under another app of the stack, it holds
+    provide_context(OutOfSight(std::rc::Rc::new(move || {
+        store().mini_full.with(|v| v.last().map(|o| o.n)) != Some(n)
+    })));
+    let k2 = key.clone();
+    let k3 = key.clone();
+    view()
+        .absolute()
+        .size_full()
+        .bg(tc("#161616"))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(52.0))
+                .pl(px(84.0))
+                .pr(px(12.0))
+                .border_b(px(0.5))
+                .border_b_color(tc("#f5f5f51a"))
+                .child(
+                    view()
+                        .pointer_events(PointerEvents::None)
+                        .absolute()
+                        .left(px(84.0))
+                        .right(px(84.0))
+                        .top(px(0.0))
+                        .bottom(px(0.0))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            // the opener's title (a resolved return's), its token's
+                            // once resolved, else the app's
+                            text(move || {
+                                let t = open_title(n);
+                                if !t.is_empty() { t } else { store().mini_source_title(&k2).get() }
+                            })
+                            .number_of_lines(1)
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tc("#f5f5f5")),
+                        ),
+                )
+                .child(view().flex_1())
+                .child(pin_button(&key, n))
+                .when(crate::slash::attachable(&token), |v| v.child(attach_button(&key, n, &token)))
+                .child(
+                    view()
+                        .label("Close")
+                        .size(px(32.0))
+                        .rounded(px(16.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(tc("#f5f5f50f"))
+                        .child(text("✕").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+                        .on_press(|| store().close_mini()),
+                ),
+        )
+        .child(
+            view()
+                .flex_1()
+                .child(when(
+                    move || !store().mini_err(&k3).get().is_empty(),
+                    {
+                        let k = key.clone();
+                        move || {
+                            let k = k.clone();
+                            view()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    text(move || format!("Couldn't open this app: {}", store().mini_err(&k).get()))
+                                        .text_size(px(13.0))
+                                        .text_color(tc("#f5f5f5a8")),
+                                )
+                                .into_element()
+                        }
+                    },
+                ))
+                .child(mini_app(&key, 0.0, None, None)),
+        )
+}
+
+/// The full-screen app's Attach (beside Pin, for an app opened from a
+/// token its server lets attach): the palette over the chats and bots;
+/// the one picked gets the token's card, and the server's tools there
+/// default to it.
+fn attach_button(key: &str, n: u64, token: &str) -> impl IntoElement {
+    use crate::theme::tc;
+    let (key, token) = (key.to_owned(), token.to_owned());
+    view()
+        .label("Attach to chat or bot…")
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
+        .bg(tc("#f5f5f50f"))
+        .child(crate::icons::icon_ink("chainLink", 14.0, || tc("#f5f5f5a8")))
+        .child(text("Attach").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || {
+            let title = untracked(|| open_title(n));
+            let title = if title.is_empty() { store().mini_source_title(&key).get_untracked() } else { title };
+            crate::slash::attach_picker(&token, &title);
+        })
+}
+
+/// The full-screen app's Pin: its groups to put it in or take it out of,
+/// or a new one (a group per client, say). A pin keeps the app's module
+/// name — its `rox://app/` link — and its title; the sidebar opens it
+/// from there.
+fn pin_button(key: &str, n: u64) -> impl IntoElement {
+    use crate::theme::tc;
+    let node = element_ref();
+    let key = key.to_owned();
+    let k2 = key.clone();
+    let pinned = move || {
+        store().groups.with(|gs| gs.iter().any(|g| g.items.iter().any(|it| it.kind == "app" && it.id == k2)))
+    };
+    view()
+        .element_ref(&node)
+        .label("Pin to group")
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
+        .bg(tc("#f5f5f50f"))
+        .child(dynamic(move || {
+            crate::icons::icon_ink(if pinned() { "pinFilled" } else { "pin" }, 14.0, || tc("#f5f5f5a8"))
+        }))
+        .child(text("Pin").text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || {
+            // the title the app shows now (it may have set its own)
+            let title = untracked(|| open_title(n));
+            let shown = store().mini_source_title(&key).get_untracked();
+            let title = if title.is_empty() { shown } else { title };
+            let items = crate::ctx::group_picks("app", &key, &title);
+            Owner::detached().run(|| {
+                spawn(async move {
+                    if let Some(m) = node.measure().await {
+                        let (x, y, h) = (m.page.x.0, m.page.y.0, m.frame.size.height.0);
+                        crate::ctx::open_near(x, y, y + h, items);
+                    }
+                })
+            });
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -55,18 +394,342 @@ pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String>
 
 #[cfg(target_os = "macos")]
 mod imp {
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use nsh_core::JsonValue;
     use nsh_platform_macos::{
         AppOptions, AppView, Bundle, ComponentContext, NativeComponent,
-        objc2::{MainThreadMarker, rc::Retained},
-        objc2_app_kit::NSView,
+        objc2::{
+            DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+            rc::Retained,
+            runtime::{AnyObject, NSObjectProtocol},
+            sel,
+        },
+        objc2_app_kit::{
+            NSAppearanceCustomization, NSAutoresizingMaskOptions, NSView,
+            NSScreen, NSWindow, NSWindowDidChangeOcclusionStateNotification,
+            NSWindowDidMoveNotification, NSWindowOcclusionState,
+        },
+        objc2_foundation::{NSNotificationCenter, NSPoint, NSRect, NSSize},
     };
 
+    /// How often a live mini app's natural height is checked (frame reads
+    /// only; an event goes out only when it changed).
+    const MEASURE_EVERY: f64 = 0.4;
+
+    pub struct FitIvars {
+        /// Consecutive ticks spent collapsed (see `collapsed`).
+        collapsed_ticks: Cell<u32>,
+        design: Cell<(f64, f64)>,
+        natural: Cell<f64>,
+        alive: Cell<bool>,
+        ctx: RefCell<Option<ComponentContext>>,
+        /// The element's `paused` prop: the app is out of sight in Rox.
+        held: Cell<bool>,
+        /// Its window can't be seen (minimized, covered, on another
+        /// space or workspace).
+        unseen: Cell<bool>,
+        /// The window whose occlusion it watches.
+        watching: Cell<usize>,
+        app: RefCell<Option<Rc<AppView>>>,
+    }
+
+    define_class!(
+        /// The element's view: holds the mini app at its design size and
+        /// keeps its bounds at that size whatever frame layout gives it,
+        /// so AppKit scales the app — drawing and hit-testing alike.
+        #[unsafe(super(NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = FitIvars]
+        #[name = "RoxMiniFitView"]
+        struct FitView;
+
+        unsafe impl NSObjectProtocol for FitView {}
+
+        impl FitView {
+            #[unsafe(method(isFlipped))]
+            fn is_flipped(&self) -> bool {
+                true
+            }
+
+            #[unsafe(method(setFrameSize:))]
+            fn set_frame_size(&self, size: NSSize) {
+                // SAFETY: NSView's own `setFrameSize:` with its argument.
+                let () = unsafe { msg_send![super(self), setFrameSize: size] };
+                self.fit();
+            }
+
+            #[unsafe(method(viewDidMoveToWindow))]
+            fn did_move_to_window(&self) {
+                // SAFETY: NSView's own `viewDidMoveToWindow`.
+                let () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                self.sync_appearance();
+                self.watch_window();
+                self.check_window();
+            }
+
+            #[unsafe(method(roxWindowOcclusion:))]
+            fn window_changed(&self, _note: Option<&AnyObject>) {
+                self.check_window();
+            }
+
+            #[unsafe(method(roxMeasure:))]
+            fn measure(&self, _arg: Option<&AnyObject>) {
+                if !self.ivars().alive.get() {
+                    return;
+                }
+                self.sync_appearance();
+                self.fit();
+                if collapsed(self) {
+                    self.ivars().collapsed_ticks.set(self.ivars().collapsed_ticks.get() + 1);
+                    self.schedule();
+                    return;
+                }
+                self.ivars().collapsed_ticks.set(0);
+                if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app)) {
+                    if (h - self.ivars().natural.get()).abs() >= 1.0 {
+                        self.ivars().natural.set(h);
+                        if let Some(ctx) = self.ivars().ctx.borrow().as_ref() {
+                            ctx.emit("natural", serde_json::json!(h.ceil()));
+                        }
+                    }
+                }
+                self.schedule();
+            }
+        }
+    );
+
+    /// A window all but off every screen — where a tiling manager
+    /// (AeroSpace) parks the windows of the workspaces not shown, a
+    /// sliver left on screen, so AppKit still calls it visible.
+    fn parked(window: &NSWindow, mtm: MainThreadMarker) -> bool {
+        let f = window.frame();
+        let area = f.size.width * f.size.height;
+        if area <= 0.0 {
+            return true;
+        }
+        let shown: f64 = NSScreen::screens(mtm)
+            .iter()
+            .map(|s| {
+                let r = s.frame();
+                let w = (f.origin.x + f.size.width).min(r.origin.x + r.size.width) - f.origin.x.max(r.origin.x);
+                let h = (f.origin.y + f.size.height).min(r.origin.y + r.size.height) - f.origin.y.max(r.origin.y);
+                w.max(0.0) * h.max(0.0)
+            })
+            .sum();
+        shown < area * 0.02
+    }
+
+    /// The app's natural content height — what Grok gets by laying the
+    /// app out with unbounded height. The app's root element(s) are the
+    /// surface root's children; a root sized to its content measures as
+    /// itself. A root that fills its frame (a fixed height) can have its
+    /// content spill out of it: then the content's own bottom edge counts,
+    /// plus the root's top inset as the matching bottom padding. Once the
+    /// card grows to it, the root fills exactly that — a fixed point, so
+    /// the card never steps up or down by itself.
+    fn natural(container: &NSView) -> Option<f64> {
+        let root = container.subviews().firstObject()?;
+        let apps = root.subviews();
+        if apps.count() == 0 {
+            return None;
+        }
+        let mut bottom = 0.0f64;
+        let mut budget = 4000usize;
+        for app in apps.iter() {
+            let f = app.frame();
+            let edge = f.origin.y + f.size.height;
+            bottom = bottom.max(edge);
+            let (mut content, mut top) = (0.0f64, f64::MAX);
+            extent(&app, f.origin.y, &mut content, &mut top, &mut budget);
+            if content > edge + 0.5 {
+                let pad = (top - f.origin.y).clamp(0.0, 48.0);
+                bottom = bottom.max(content + pad);
+            }
+        }
+        Some(bottom)
+    }
+
+    /// The vertical extent of `view`'s visible descendants, in its
+    /// parent's coordinates (`y0` is the view's top there; nsh's views are
+    /// flipped). A view that clips (a scroll view, `overflow: hidden`)
+    /// counts as its own box: a long scrolling list must not grow the card.
+    fn extent(view: &NSView, y0: f64, bottom: &mut f64, top: &mut f64, budget: &mut usize) {
+        for sub in view.subviews().iter() {
+            if *budget == 0 {
+                return;
+            }
+            *budget -= 1;
+            let f = sub.frame();
+            if sub.isHidden() || f.size.height <= 0.0 || f.size.width <= 0.0 {
+                continue;
+            }
+            let y = y0 + f.origin.y;
+            *bottom = bottom.max(y + f.size.height);
+            *top = top.min(y);
+            if !clips(&sub) {
+                extent(&sub, y, bottom, top, budget);
+            }
+        }
+    }
+
+    fn clips(view: &NSView) -> bool {
+        // SAFETY: NSView's `clipsToBounds` (macOS 14+) and CALayer's
+        // `masksToBounds`, both BOOL getters.
+        unsafe {
+            let own: bool = msg_send![view, clipsToBounds];
+            if own {
+                return true;
+            }
+            let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
+            layer.is_some_and(|l| {
+                let masks: bool = msg_send![&*l, masksToBounds];
+                masks
+            })
+        }
+    }
+
+    /// Whether a view above `view` has an empty frame: a branch nsh has
+    /// collapsed out of layout. Nothing clips there, so the app would draw
+    /// at that branch's origin — over whatever the cell shows now (a
+    /// reused list cell keeps its old card's views at 0×0) — and a cell
+    /// not laid out yet is collapsed for a moment too.
+    fn collapsed(view: &NSView) -> bool {
+        // SAFETY: reading the superview chain on the main thread.
+        let mut cur = unsafe { view.superview() };
+        while let Some(p) = cur {
+            if p.window().is_some_and(|w| w.contentView().as_deref() == Some(&*p)) {
+                return false;
+            }
+            let f = p.frame().size;
+            if f.width < 1.0 || f.height < 1.0 {
+                return true;
+            }
+            cur = unsafe { p.superview() };
+        }
+        false
+    }
+
+    impl FitView {
+        fn new(mtm: MainThreadMarker, ctx: ComponentContext) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(FitIvars {
+                collapsed_ticks: Cell::new(0),
+                design: Cell::new((0.0, 0.0)),
+                natural: Cell::new(0.0),
+                alive: Cell::new(true),
+                ctx: RefCell::new(Some(ctx)),
+                held: Cell::new(false),
+                unseen: Cell::new(false),
+                watching: Cell::new(0),
+                app: RefCell::new(None),
+            });
+            // SAFETY: NSView's designated `init` on a fresh allocation.
+            let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+            this.schedule();
+            this
+        }
+
+        /// Holds the app while Rox has it out of sight or its window
+        /// can't be seen: its frames and timers stop (a game loop costs
+        /// nothing behind other windows).
+        fn hold(&self) {
+            let held = self.ivars().held.get() || self.ivars().unseen.get();
+            if let Some(app) = self.ivars().app.borrow().as_ref() {
+                app.set_paused(held);
+            }
+        }
+
+        /// Whether its window can be seen, then holds or runs the app.
+        fn check_window(&self) {
+            let unseen = self.window().is_none_or(|w| {
+                w.isMiniaturized()
+                    || !w.occlusionState().contains(NSWindowOcclusionState::Visible)
+                    || parked(&w, self.mtm())
+            });
+            self.ivars().unseen.set(unseen);
+            self.hold();
+        }
+
+        /// Hears its window's occlusion changes (once per window; the
+        /// center holds observers weakly).
+        fn watch_window(&self) {
+            let Some(window) = self.window() else { return };
+            let key = Retained::as_ptr(&window) as usize;
+            if self.ivars().watching.replace(key) == key {
+                return;
+            }
+            // SAFETY: selector-based observers; `roxWindowOcclusion:`
+            // takes the notification.
+            unsafe {
+                let center = NSNotificationCenter::defaultCenter();
+                for name in [NSWindowDidChangeOcclusionStateNotification, NSWindowDidMoveNotification] {
+                    center.addObserver_selector_name_object(
+                        self,
+                        sel!(roxWindowOcclusion:),
+                        Some(name),
+                        Some(&window),
+                    );
+                }
+            }
+        }
+
+        /// Generated widgets keep the system's appearance whatever the
+        /// app's theme toggle says — Grok themes its own chrome through
+        /// `tc()` and never recolors the widgets it hosts. The theme sits on
+        /// the surface root; the window still carries the system's.
+        fn sync_appearance(&self) {
+            let Some(window) = self.window() else {
+                return;
+            };
+            let system = window.effectiveAppearance();
+            let current = self.appearance().map(|a| a.name());
+            if current.as_deref() != Some(&*system.name()) {
+                self.setAppearance(Some(&system));
+            }
+        }
+
+        fn schedule(&self) {
+            // A collapsed card checks again soon at first (a new cell is
+            // laid out within a few frames), then at the usual pace (a
+            // leftover from a reused cell stays collapsed).
+            let n = self.ivars().collapsed_ticks.get();
+            let delay = if n > 0 && n < 40 { 0.05 } else { MEASURE_EVERY };
+            // SAFETY: `roxMeasure:` is this class's method taking one
+            // object argument (nil here).
+            let () = unsafe {
+                msg_send![
+                    self,
+                    performSelector: sel!(roxMeasure:),
+                    withObject: None::<&AnyObject>,
+                    afterDelay: delay
+                ]
+            };
+        }
+
+        /// Design size, or the frame's own size (no scaling) without one.
+        fn fit(&self) {
+            let frame = self.frame().size;
+            // An empty frame (no scale can be set on it) or a collapsed
+            // branch above: the app would draw where it should not — over
+            // the transcript's top. Hide it.
+            let empty = frame.width < 1.0 || frame.height < 1.0 || collapsed(self);
+            if let Some(app) = self.subviews().firstObject() {
+                app.setHidden(empty);
+            }
+            if empty {
+                return;
+            }
+            let (w, h) = self.ivars().design.get();
+            let size = if w > 0.0 && h > 0.0 { NSSize::new(w, h) } else { frame };
+            self.setBoundsSize(size);
+        }
+    }
+
     /// One mini app: its own AppView (engine + QuickJS) hosted in the
-    /// element's container.
+    /// element's fit view.
     pub struct MiniApp {
+        fit: Retained<FitView>,
         view: Rc<AppView>,
         last: String,
     }
@@ -80,21 +743,124 @@ mod imp {
                     title: "Rox mini app".to_owned(),
                     app_id: "dev.goldcoders.rox.mini".to_owned(),
                     size: (340, 200),
+                    // `asset:/generated/assets/…` (generated images) are the
+                    // server's files, served under /asset/.
+                    asset_base: Some(nsh_platform_macos::AssetBase::Http(format!(
+                        "{}/asset/",
+                        crate::client::GEN
+                    ))),
                     ..Default::default()
                 },
             );
             // The size the layout takes when the style leaves one open.
             ctx.set_size(340.0, 200.0);
-            MiniApp { view, last: String::new() }
+            let fit = FitView::new(mtm, ctx);
+            // Nothing of the app draws outside the card's box.
+            // SAFETY: NSView's `clipsToBounds` (macOS 14+), a BOOL setter.
+            let () = unsafe { msg_send![&*fit, setClipsToBounds: true] };
+            let app = view.view();
+            app.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(340.0, 200.0)));
+            app.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            fit.addSubview(&app);
+            *fit.ivars().app.borrow_mut() = Some(view.clone());
+            MiniApp { fit, view, last: String::new() }
         }
+
+        /// Lays the app out at `w×h` and scales it into the frame; `None`
+        /// fills the frame unscaled.
+        fn set_design(&self, design: Option<(f64, f64)>) {
+            let app = self.view.view();
+            match design {
+                Some((w, h)) if w > 0.0 && h > 0.0 => {
+                    app.setAutoresizingMask(NSAutoresizingMaskOptions::ViewNotSizable);
+                    app.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h)));
+                    self.fit.ivars().design.set((w, h));
+                }
+                _ => {
+                    self.fit.ivars().design.set((0.0, 0.0));
+                    app.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), self.fit.frame().size));
+                    app.setAutoresizingMask(
+                        NSAutoresizingMaskOptions::ViewWidthSizable
+                            | NSAutoresizingMaskOptions::ViewHeightSizable,
+                    );
+                }
+            }
+            self.fit.fit();
+        }
+    }
+
+    impl Drop for MiniApp {
+        fn drop(&mut self) {
+            // Ends the measuring loop; the pending perform releases the view.
+            self.fit.ivars().alive.set(false);
+            self.fit.ivars().ctx.borrow_mut().take();
+            self.fit.ivars().app.borrow_mut().take();
+            // SAFETY: removes this view's observations, added by
+            // `watch_window`.
+            unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.fit) };
+        }
+    }
+
+    /// The text fields under `view`, in view order.
+    fn text_fields(view: &NSView, out: &mut Vec<Retained<NSView>>) {
+        for sub in view.subviews().iter() {
+            if sub.class().name().to_str().is_ok_and(|n| n.contains("TextField")) {
+                out.push(sub.clone());
+            }
+            text_fields(&sub, out);
+        }
+    }
+
+    /// Focuses text field `n` under `root` and inserts `text` into it.
+    fn dev_type(root: &NSView, n: usize, text: &str) {
+        let mut fields = Vec::new();
+        text_fields(root, &mut fields);
+        let (Some(field), Some(window)) = (fields.get(n), root.window()) else {
+            log::warn!("dev type: no text field {n} ({} found)", fields.len());
+            return;
+        };
+        window.makeFirstResponder(Some(field));
+        let Some(editor) = window.firstResponder() else { return };
+        let s = nsh_platform_macos::objc2_foundation::NSString::from_str(text);
+        // SAFETY: the first responder of a focused field is its field editor (an NSTextView).
+        let () = unsafe { msg_send![&*editor, insertText: &*s] };
+        log::info!("dev type: {} fields, typed {text:?} into {n}", fields.len());
     }
 
     impl NativeComponent for MiniApp {
         fn view(&self) -> Retained<NSView> {
-            self.view.view()
+            Retained::into_super(self.fit.clone())
         }
 
         fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+            if name == "design" {
+                let size = value.and_then(|v| v.as_array()).and_then(|a| {
+                    Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                });
+                self.set_design(size);
+                return;
+            }
+            if name == "dev_type" {
+                // dev hook (`rox-agent-menu`: `type <n> <text>`): the app's
+                // n-th text field takes the focus and `text` is inserted the
+                // way typing ends up (`insertText:` on the field editor)
+                if let Some((n, text)) = value
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| v.split_once('|'))
+                    .and_then(|(_, rest)| rest.split_once(' '))
+                {
+                    dev_type(&self.fit, n.parse().unwrap_or(0), text);
+                }
+                return;
+            }
+            if name == "paused" {
+                self.fit.ivars().held.set(value.and_then(|v| v.as_bool()).unwrap_or(false));
+                self.fit.hold();
+                return;
+            }
             if name != "source" {
                 return;
             }
@@ -144,5 +910,18 @@ export default function R() {
         assert!(js.contains("mount(R)"), "wrapper mounted:\n{js}");
         assert!(js.contains("export default"), "default export kept:\n{js}");
         assert!(js.contains("from \"nsh\""), "nsh imports kept:\n{js}");
+    }
+
+    #[test]
+    fn old_homes_move_where_nsh_serves_them() {
+        let src = "import { View, Input, signal } from \"nsh\";\nimport { Canvas } from \"nsh/canvas\";\nimport { Image as Pic } from 'nsh/image';\nimport * as Ios from \"nsh/ios\";\nimport { x } from \"./local\";\nconst s = \"nsh/canvas\";\n";
+        let out = super::current_homes(src);
+        assert!(out.contains("import { View, signal } from \"nsh\";"), "{out}");
+        assert!(out.contains("import { Input } from \"nsh/base\";"), "{out}");
+        assert!(out.contains("import { Canvas } from \"nsh\";"), "{out}");
+        assert!(out.contains("import { Image as Pic } from \"nsh\";"), "{out}");
+        assert!(out.contains("import * as Ios from \"nsh/mobile\";"), "{out}");
+        assert!(out.contains("import { x } from \"./local\";"), "{out}");
+        assert!(out.contains("const s = \"nsh/canvas\";"), "a string is no import:\n{out}");
     }
 }
