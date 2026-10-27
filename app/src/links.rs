@@ -6,8 +6,12 @@
 //! library items, plugin pages) and from other apps and web pages (`open
 //! rox://…`, `lib.rs`). Both are untrusted, so:
 //!
-//! - `rox://view?path=` shows only files inside [`view_dir`], after the
-//!   path is resolved (`..`, symlinks).
+//! - `rox://view?path=` shows only previews: a page, PDF, Markdown or
+//!   image inside a folder of the account's own temporary folder
+//!   ([`viewable`]), after the path is resolved (`..`, symlinks). Mini apps
+//!   write their print previews there (the BIR host:
+//!   `$TMPDIR/bir-agent-export-<uuid>/index.html`); Rox's own go in
+//!   [`view_dir`].
 //! - An outside URL opens unasked only for `http`, `https`, `mailto` and
 //!   `tel`; any other scheme waits on Open in Rox's own sheet
 //!   ([`LinkAsk`]), since it starts another app.
@@ -16,11 +20,29 @@
 
 use std::path::{Path, PathBuf};
 
-/// The folder `rox://view` shows files from: `rox-view` in the user's own
-/// temporary folder (`$TMPDIR`, private to the account on macOS). Whatever
-/// hands Rox a file to show (a mini app's print preview) writes it here.
+/// The folder whose previews `rox://view` shows: the account's own
+/// temporary folder (`$TMPDIR`, private to the account on macOS).
+pub(crate) fn view_root() -> PathBuf {
+    std::env::temp_dir()
+}
+
+/// Rox's own preview folder, inside [`view_root`].
 pub(crate) fn view_dir() -> PathBuf {
-    std::env::temp_dir().join("rox-view")
+    view_root().join("rox-view")
+}
+
+/// The kinds of file `rox://view` shows: previews, not text a temporary
+/// folder may hold (settings, logs, tokens).
+const PREVIEWS: &[&str] = &["html", "htm", "pdf", "md", "markdown", "png", "jpg", "jpeg", "gif", "webp", "svg"];
+
+/// `path` resolved when it is a preview `rox://view` may show: a file of a
+/// [`PREVIEWS`] kind inside a folder of `root` (files loose in `root` itself
+/// are other programs' state, like the gpui-agent token).
+pub(crate) fn viewable(path: &str, root: &Path) -> Option<PathBuf> {
+    let real = contained(path, root)?;
+    let depth = real.strip_prefix(root.canonicalize().ok()?).ok()?.components().count();
+    let ext = real.extension()?.to_str()?.to_ascii_lowercase();
+    (depth >= 2 && PREVIEWS.contains(&ext.as_str())).then_some(real)
 }
 
 /// Makes [`view_dir`], readable by this account only.
@@ -153,6 +175,29 @@ mod tests {
             assert!(contained(&base.join("view/ok.html").to_string_lossy(), &root).is_some());
             assert!(contained(&root.join("ok.html").to_string_lossy(), &root).is_some());
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_previews_in_a_folder_of_the_root_are_viewable() {
+        let base = tree("viewable");
+        let root = base.join("view");
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        std::fs::create_dir_all(root.join("bir-agent-export-1")).expect("export");
+        std::fs::write(root.join("bir-agent-export-1/index.html"), "<p>sheet</p>").expect("sheet");
+        std::fs::write(root.join("sub/notes.txt"), "text").expect("txt");
+        std::fs::write(root.join("sub/conf.json"), "{}").expect("json");
+        std::fs::write(root.join("token"), "secret").expect("token");
+        assert!(viewable(&s(root.join("bir-agent-export-1/index.html")), &root).is_some());
+        assert!(viewable(&s(root.join("sub/deep.pdf")), &root).is_some());
+        // loose in the root (another program's state), or not a preview
+        assert_eq!(viewable(&s(root.join("ok.html")), &root), None);
+        assert_eq!(viewable(&s(root.join("token")), &root), None);
+        assert_eq!(viewable(&s(root.join("sub/notes.txt")), &root), None);
+        assert_eq!(viewable(&s(root.join("sub/conf.json")), &root), None);
+        // and everything `contained` refuses
+        assert_eq!(viewable(&s(root.join("../secret.txt")), &root), None);
+        assert_eq!(viewable("/etc/hosts", &root), None);
         let _ = std::fs::remove_dir_all(&base);
     }
 
