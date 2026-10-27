@@ -1,65 +1,113 @@
 # Rox security model
 
+This model describes `main`. Each control is labelled **[observed]** with a file:line reference or **[assumed]** when it depends on code outside this repository. Component and finding IDs are stable, so findings from future scans can be compared.
+
 ## Scope and evidence
 
-This model covers the whole Rox repository, with no directory exclusions. Rox is a native macOS chat client connected to a separately running Grok app server. iOS is a compile-maintained simulator target, not a supported product target ([README](README.md)). The checkout includes the NSH UI/runtime and ra-jit compiler/live-patching submodules; their security boundaries are included, without claiming an exhaustive audit of every dependency or platform path.
+Rox is a native macOS chat client connected to a separately running Grok app server. iOS is a compile-maintained simulator target, not a supported product target ([README](README.md)). The model covers every tracked path on `main`:
 
-The model is grounded in Rox's [README](README.md), [GOAL.md](GOAL.md), [app configuration](app/Cargo.toml), [NSH configuration](app/nsh.json), and app/src/{main,lib,client,store,mini,files,plugins,live}.rs; NSH's AppKit host, networking, QuickJS sandbox and URL-opening implementation; and the [ra-jit security policy](ra-jit/SECURITY.md). The latter describes its own trust boundary and is incorporated below, not treated as a policy for the whole product.
+- `app/`: the application crate, its scripts and configuration.
+- `nsh/` (UI/runtime submodule) and `ra-jit/` (compiler/live-patching submodule): their security boundaries, without claiming an exhaustive audit of every dependency or platform path.
+- `.devin/` (agent instructions for the live loop) and the root documents.
 
-Deployment infrastructure is not part of this model. The separately referenced backend, `hexuria/grok-shell`, is outside this repository's assessment boundary. Backend binding, authorization, credential storage and deployment controls are therefore unknown, not presumed safe.
+`app/target/` is build output and is not modelled.
+
+Evidence: [README](README.md), [GOAL.md](GOAL.md), [app/Cargo.toml](app/Cargo.toml), [app/nsh.json](app/nsh.json), the app sources named below, NSH's AppKit host, networking, QuickJS sandbox, capability and URL-opening code, and the [ra-jit security policy](ra-jit/SECURITY.md). The latter describes ra-jit only and is not a policy for the whole product.
+
+The backend is a local `grok-shell` checkout that the README tells developers to run (`node server/app-server.mjs`, [README](README.md) "Prerequisites"). No backend source or deployment infrastructure is in this repository. Backend binding, authorization, credential storage and deployment controls are therefore unknown, not presumed safe.
 
 ## Owner-confirmed policy
 
-- Trust the OS and the user's account. Generated content, remote services, and other local users are untrusted. Already-malicious code executing as the same account is outside the selected attacker model; a path that lets untrusted content acquire that account's privileges remains in scope.
+- Trust the OS and the user's account. Generated content, remote services, and other local users are untrusted. Already-malicious code executing as the same account is outside the attacker model; a path that lets untrusted content acquire that account's privileges remains in scope.
 - Protect all assets. Credentials, private chats/files, host integrity, and preventing unauthorized code execution are critical assets.
-- Cover the whole Rox repository. The separate backend and infrastructure are outside this assessment, not accepted as secure.
+- The backend and infrastructure are outside this assessment, not accepted as secure.
 - Record CWE, CVE, owning-team, and compliance-scope tags when supported by evidence. No team assignments or compliance obligations have been specified; do not invent them.
 - No other risk acceptance or vulnerable-surface exclusion has been specified.
 
 ## Components and trust boundaries
 
-These short names are stable identifiers used on findings. More specific rows take precedence over a containing directory.
+A more specific row takes precedence over a containing directory. `app/src/store.rs` is split by function; the line ranges are those on `main` and should be updated when it moves.
 
-| Component | Code covered | Responsibility and boundary |
-|---|---|---|
-| Native client | app/src/main.rs, lib.rs, store.rs and remaining UI modules except rows below; app configuration | User actions, private conversation state, preferences, model selection and chat mutations. Backend/model data crosses into native presentation and persistent reactive state. |
-| Backend interface | app/src/client.rs | HTTP requests to the separately running `http://127.0.0.1:8787` Grok app server. Covers chat, status, preferences, threads, artifacts and generated-module transport. Loopback is a network boundary, not an authentication credential. |
-| Mini-app runtime | app/src/mini.rs, widgets.rs, shelf.rs; nsh/crates/{nsh-js,nsh-engine,nsh-core,nsh-bundler,nsh-package,nsh-base} | Fetches `/module?name=`, compiles server-provided TSX and runs JS as a separate AppView/QuickJS runtime. Untrusted generated code crosses into native modules, network, storage and host capabilities. Framework signing support does not establish that Rox's `Bundle::source` path verifies signatures. |
-| Content handling | app/src/files.rs, md.rs, avatar.rs; NSH image, media, WebView and open-URL implementations | Private attachments, generated media, Markdown, external links, and backend-rendered documents. File URIs can map to backend `/files/` routes; documents are requested through `/file/render`. Remote or generated bytes cross parser, renderer and external-navigation boundaries. |
-| Connector management | app/src/plugins.rs, relevant MCP/plugin/skill methods and types in app/src/store.rs | Manages MCP commands, args, environment values, auth actions and plugin installation through backend API calls. User-approved connectors differ from model-directed or unauthorized connector configuration. Actual process spawning and provider OAuth are outside this repository. |
-| Platform and automation | nsh/crates/nsh-platform-* and platform runners, except content handling files above; particularly nsh-platform-macos/src/gpui_agent.rs | AppKit/iOS hosting, networking and opt-in gpui-agent input/snapshot control. Automation clients cross into UI control and access to displayed private data. Other NSH backends are dependency code, not claims of Rox product support. |
-| Live build toolchain | app/src/live.rs, app/dev.sh, app/ios*.sh, app/rust-toolchain.toml; ra-jit/; root build/submodule configuration | Trusted native builds, compiler daemon, local/remote code caches and live binary patches. Native patch material is executable code with the host user's privileges, not a sandboxed widget. |
+| ID | Component | Code covered | Responsibility and boundary |
+|---|---|---|---|
+| C1 | Native client | `app/src/{main,lib,hot,chat,composer,ctx,sidebar,pane,palette,botmodal,models,theme,icons,statusfx,mark}.rs`, `app/src/mark/`; `store.rs` outside the ranges below (threads, bots, turns, palette, sending, selection, reactions); `app/nsh.json`, `app/Cargo.toml` | User actions, private conversation state, preferences, model selection and chat mutations. Backend/model data crosses into native presentation and reactive state. `hot.rs` is the patchable UI root. |
+| C2 | Backend interface | `app/src/client.rs` | HTTP to `http://127.0.0.1:8787`. Route families used: `/chat`, `/turns`, `/thread(s)`, `/status`, `/prefs`, `/models`, `/catalog`, `/bot`, `/state`, `/app`, `/module`, `/widgets`, `/widget-meta`, `/pin`, `/unpublish`, `/reuse`, `/attach`, `/avatar`, `/mcp`, `/plugins`, `/skills`. `client::req` passes any path starting with `http` through unchanged instead of prefixing the backend ([client.rs](app/src/client.rs) lines 11-18). Loopback is a network boundary, not an authentication credential. |
+| C3 | Mini-app runtime | `app/src/{mini,widgets,shelf}.rs`; `store.rs` `refresh_thread_apps` (1953) and `mini_source`..`mini_title` (3640-3872); `nsh/crates/{nsh-js,nsh-engine,nsh-core,nsh-bundler,nsh-package,nsh-base}` | Fetches `/module?name=`, compiles server-provided TSX and runs it in its own AppView/QuickJS runtime. Untrusted generated code crosses into native modules, network, WebView, clipboard and open-URL capabilities. |
+| C4 | Content handling | `app/src/{files,md,avatar}.rs`; `store.rs` attachment parsing (722-749), drag/drop and avatar editing (2789-2939), `pick_attachments` (3104), `file_raw_url`..`copy_text` (3346-3474); NSH image, media, WebView and open-URL code | Private attachments, generated media, Markdown, external links and backend-rendered documents. Remote or generated bytes and URLs cross parser, renderer and external-navigation boundaries. |
+| C5 | Connector management | `app/src/plugins.rs`; `store.rs` `fetch_mcp`..`conn_items` (2198-2788) | MCP server commands, args and `env` maps (`add_mcp_server`, 2242-2276, POSTs `env` to `/mcp/servers`), plugin install/uninstall, private skills and auth retries. Authorization runs as a browser OAuth flow handled by the backend (`auth_or_retry`, 2628); its callback is outside this repository. |
+| C6 | Platform and automation | `nsh/crates/nsh-platform-*` and the platform runners, except C4's files; `nsh-platform-macos/src/gpui_agent.rs` (enabled by `app/Cargo.toml` feature `gpui-agent`) | AppKit/iOS hosting, networking and the opt-in gpui-agent listener for input and snapshots. Automation clients reach UI control and displayed private data. Other NSH backends are dependency code, not supported Rox targets. |
+| C7 | Live build toolchain | `app/src/live.rs`, `app/{dev,ios,ios-dev}.sh`, `app/rust-toolchain.toml`, `ra-jit/`, `.gitmodules`, `.devin/` | Native builds, the compiler daemon, local/remote code caches and live binary patches. Patch material is executable code with the user's privileges, not a sandboxed widget. |
 
-Flow: user → native client → loopback backend → models/connectors (external). Backend replies → conversation/media display or TSX compiler → mini-app VM → mediated native capabilities. Opt-in automation → native UI. Developer edits/build inputs/cache → ra-jit daemon → executable/live process patches.
+Flow: user → C1 → C2 → backend → models/connectors (external). Backend replies → C1/C4 display, or C3 compiler → mini-app VM → native capabilities. Opt-in automation → C6 → native UI. Developer edits, build inputs and caches → C7 daemon → executable and live process patches.
 
 ## Entry points and reachable attackers
 
-- Chat responses, generated widget source, attachment metadata/bytes, module names, URLs and backend JSON: potentially influenced by a malicious model, generated content, connector, or compromised remote service.
-- Mini-app JS/native-module calls: generated code is explicitly untrusted even when delivered by the configured backend. Each mini app has a separate VM, but that alone is not proof of filesystem, network, cookie or cross-widget data isolation.
-- Local backend port 8787: the client initiates HTTP traffic; this does not prove the external server binds only to loopback. Other local users and browser-origin requests may matter when a reachable path is verified. No claims are made about external server defenses not inspected here.
-- MCP/plugin configuration and auth actions: user input and backend-provided catalog data can influence privileged backend actions. The client serializes MCP environment fields as JSON, so credential-bearing form data is sensitive.
-- Opt-in gpui-agent listener: NSH delegates configuration to `gpui_agent::security::from_env()` before spawning the server. Its token/bind enforcement must be established from the dependency implementation, not inferred from the opt-in flag. A deliberately authorized automation caller has UI control by design.
-- Native build workspaces, proc macros/build scripts, patch files, local caches and remote shared stores: executable-code supply chain. Other-user or remote-writer control matters; arbitrary preexisting same-user compromise alone is outside the selected attacker model.
+- Chat responses, generated widget source, attachment metadata/bytes, module names, URLs and backend JSON: influenced by a malicious model, generated content, connector, or compromised remote service.
+- Mini-app JS and native-module calls: generated code is untrusted even when delivered by the configured backend.
+- Local backend port 8787: the client initiates HTTP traffic; this does not prove the backend binds only to loopback. Other local users and browser-origin requests matter where a reachable path is verified.
+- MCP and plugin configuration: user input and backend catalog data reach privileged backend actions. MCP `env` values and plugin setup values can carry credentials.
+- gpui-agent listener: configuration comes from `gpui_agent::security::from_env()` before the server starts ([observed] `nsh/crates/nsh-platform-macos/src/gpui_agent.rs`). A deliberately authorized automation caller has UI control by design.
+- Build workspaces, proc macros, build scripts, patch files, local caches and remote stores: executable-code supply chain. Other-user or remote-writer control matters; same-user compromise alone is outside the attacker model.
+
+Configuration shipped in this repository (Cargo features, default policies, scripts) counts as reachable, not as an opt-in to discount.
 
 ## Assets
 
-Critical, by explicit owner confirmation: provider/connector credentials and environment secrets; private prompts, chat histories, files, avatars and generated artifacts; host account integrity and prevention of unauthorized native execution. Also protect mini-app state, thread/model preferences, connector configuration, app/build availability and trusted executable/cache integrity. Exact data retention, credential locations and regulatory classifications remain unknown.
+| Class | Assets |
+|---|---|
+| A4 critical (owner-confirmed) | Provider/connector credentials, MCP `env` and plugin secrets; private prompts, chat histories, files, avatars and generated artifacts; host account integrity and freedom from unauthorized native code execution |
+| A3 private state | Mini-app state, thread/model preferences, connector configuration, source text under live edit, trusted executable/cache integrity |
+| A2 limited | File paths, metadata, local process and build availability |
+| A1 negligible | Public or cosmetic data |
+
+Data retention and credential storage locations on the backend are unknown.
 
 ## Existing controls and their limits
 
-- Typed Rust UI and JSON parsing are present; URI encoding is provided by `client::urlenc`, though consistent use is not assumed. The inspected HTTP helper adds no explicit authentication header; this is an observation about the client, not a finding about the external server.
-- Mini apps receive separate AppViews/QuickJS runtimes and default embedded VM limits. NSH implements heap/stack/time budgeting in Rust. Rox's source-loading path uses `Bundle::source` without a policy override: the default policy grants broad network, WebView, clipboard, picker and open-URL capabilities. Undeclared filesystem/process/host-function access remains off. Separate VMs and execution limits do not establish least-privilege access to private data.
-- NSH's external URL checker rejects javascript, vbscript, data, blob, file, about and asset schemes, whitespace/control characters and oversized URLs. This is not a claim that every navigation path invokes it.
-- macOS HTTP uses NSURLSession, system proxy/cookie behavior and transport policies. Shared networking means cross-surface identity/data isolation must not be assumed from separate VMs.
-- gpui-agent is opt-in and calls the dependency's security configuration before starting its server. Runtime authentication has not been validated for this model.
-- The ra-jit security policy states: daemon/builds run with the user's privileges; Unix daemon socket directories require owner/0700 and sockets 0600 with other-user peers refused; equivalent Windows checks are not implemented. This is not a guarantee that every client checks peers: `ra_jit_live::edit` uses a plain Unix socket connection. Local cache checksums are corruption detection, not authenticity. Remote object hashes do not authenticate a bucket writer; signed manifests are accepted only with `RA_JIT_REMOTE_TRUST` configured. This configuration is not confirmed for Rox. ra-jit explicitly is neither a sandbox nor a Rust borrow/move checker. These limits must not be mistaken for blanket acceptance of remote injection or cross-user compromise.
+- **[observed]** Typed Rust UI and JSON parsing; `client::urlenc` encodes URI components (`app/src/client.rs`). Consistent use is not assumed. The HTTP helper adds no authentication header; this describes the client, not the backend.
+- **[observed]** Mini apps get their own AppView/QuickJS runtime with heap, stack and time limits enforced in Rust (`nsh/crates/nsh-js/src/sandbox.rs`). Rox loads them with `Bundle::source` and no policy (`app/src/mini.rs:106`). `Policy::default()` has `declared: None`, which `Policy::access` turns into `Capabilities::all()` (`nsh/crates/nsh-engine/src/lib.rs:218-248`): network and WebView to any host, clipboard, picker and every open-URL scheme. Undeclared filesystem, process and host-function access stays off (`nsh/crates/nsh-core/src/access.rs:451-466`).
+- **[observed]** `check_url` is a deny-list: it refuses `javascript`, `vbscript`, `data`, `blob`, `file`, `about` and `asset`, whitespace/control characters, oversized URLs and host-less web addresses, and accepts every other scheme (`nsh/crates/nsh-core/src/open_url.rs:20-54`). An open-URL grant with no schemes allows every scheme (`nsh/crates/nsh-core/src/access.rs:376-387`), and that is what `Capabilities::all()` grants. Whether every navigation path calls `check_url` is not established.
+- **[assumed]** macOS HTTP uses NSURLSession with system proxy, cookie and transport policies. Separate VMs share that networking, so cross-surface data isolation is not assumed.
+- **[assumed]** gpui-agent authentication and bind address come from the dependency's `security::from_env()`; Rox does not enforce them itself. Not validated at runtime for this model.
+- **[observed]** The ra-jit policy says ra-jit "is a prototype and has not had a security review" (`ra-jit/SECURITY.md:3`). Builds and the daemon run with the user's privileges. On Unix the socket directory must be owned by the user with mode 0700, the socket is 0600, and other-user peers are refused (`ra-jit/crates/ra-jit/src/socket.rs`). The policy notes that this refusal "is not covered by a test" (`ra-jit/SECURITY.md:26-27`). Local cache checksums detect damage, not tampering. Remote pack hashes do not authenticate the bucket writer; signed manifests are enforced only with `RA_JIT_REMOTE_TRUST`, which is not configured in this repository. ra-jit is neither a sandbox nor a borrow/move checker.
+- **[observed]** `ra-jit-live` does not apply those checks itself. `edit()` connects with a plain `UnixStream::connect` and no peer check (`ra-jit/crates/ra-jit-live/src/lib.rs:190-215`). The patch reader creates its directory 0700 but reads `patch` without checking an existing directory's owner or mode (`ra-jit/crates/ra-jit-live/src/macos.rs:103, 367-377`). The privacy of the `RA_JIT_HOME` / `XDG_RUNTIME_DIR` root is the only control.
 
 ## Finding prioritization
 
-Start from the scanner's severity and its verified preconditions; do not reassess exploitability from scratch. Unchanged findings retain that severity with an explicit likelihood/impact rationale. Move priority only for the owner-confirmed facts above or another owner-authored security policy, not architecture assumptions. Same-user-only compromise may justify lowering only when no untrusted-content, remote-service or other-user entry path exists. Critical assets may justify a rare increase only for an already confirmed, readily exploitable path; hard-to-exploit or unverified findings are never raised. Expected execution of deliberately trusted build inputs is distinct from unauthorized execution. No technology-specific team or regulatory scope is assigned without evidence. Dismissed/resolved findings and deduplicated findings are not reopened by ordinary reranking.
+Inputs: the **scanner severity** is the severity a security scan reports on a finding. The **verified preconditions** are those the scan confirmed in source; anything it marks unconfirmed is unverified.
+
+Likelihood, by the least-privileged attacker that can trigger it:
+
+| Level | Attacker and interaction |
+|---|---|
+| L4 | Remote party, no user action |
+| L3 | Untrusted content or a remote service, with ordinary use (opening a chat, an attachment, a link) |
+| L2 | Another local user, or a precondition not met by shipped configuration |
+| L1 | Same user only, or an already-compromised account (outside the attacker model) |
+
+Impact is the highest asset class (A1–A4) reached.
+
+Rules:
+
+1. Start from the scanner severity. Unchanged findings keep it, with a reason naming their likelihood and impact levels.
+2. Lower a finding only when the owner policy places it there: L1 findings, or findings reaching only assets the owner excluded.
+3. Raise a finding only when it is L3 or L4 with every precondition verified and it reaches A4. A finding with any unverified precondition is never raised, whatever it reaches. Owner-confirmed asset classes are the facts that permit the rare increase, so the two rules do not conflict.
+4. No team or compliance scope is assigned without evidence. Dismissed, resolved and duplicate findings are not reopened by reranking.
+
+## Known findings
+
+| ID | Finding | Component | Likelihood / impact | Priority |
+|---|---|---|---|---|
+| RX-001 | Generated mini-app widgets run with `Capabilities::all()` (network, WebView, clipboard, any open-URL scheme) | C3 | L3 (needs the model to follow injected instructions; unverified) / A4 | Medium |
+| RX-002 | `svg_view` interpolates the attachment URL into HTML unescaped, under the backend's origin | C4 | L3 (outside control of the attachment URL unverified) / A4 | Medium |
+| RX-003 | `ra_jit_live::edit` connects to the daemon socket without a peer check | C7 | L2 (shared machine, other-user-writable socket root) / A3 | Low |
 
 ## Open questions and validation limits
 
-Unknown: credential/retention policy in the external backend; production binding/auth and deployment controls; per-widget storage identity; who can write code caches and which remote signing keys are configured; intended owners and compliance frameworks. This model is based on static repository inspection, not macOS/iOS runtime or exploit validation. Successful prompt injection that causes malicious widget generation, and outside-party control of attachment URLs, remain unverified attack prerequisites. Keep these as uncertainties, not accepted risks.
+- Backend: credential retention, binding, authentication and deployment controls.
+- Per-widget storage identity, and which navigation paths call `check_url`.
+- Windows: `ra-jit/SECURITY.md` says the directory and peer checks are not implemented, but `socket.rs` (lines 226-240, 298-299) and `socket/windows.rs` implement owner/ACL and peer checks. Which one is current?
+- Who can write the code caches, and which remote signing keys are intended.
+- Owners and compliance frameworks.
 
-Update this model when trust boundaries, data handling, runtime capabilities, backend integration, or owner risk decisions change. Keep the component names stable so findings from future scans remain comparable.
+This model comes from static inspection, not macOS/iOS runtime or exploit validation. Unverified preconditions stay uncertainties, not accepted risks. Update this model when trust boundaries, data handling, runtime capabilities, backend integration or owner risk decisions change. Keep component and finding IDs stable.
