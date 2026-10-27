@@ -64,7 +64,7 @@ Data retention and credential storage locations on the backend are unknown.
 
 ## Existing controls and their limits
 
-- **[observed]** Typed Rust UI and JSON parsing; `client::urlenc` encodes URI components (`app/src/client.rs`). Consistent use is not assumed. The HTTP helper adds no authentication header; this describes the client, not the backend.
+- **[observed]** Typed Rust UI and JSON parsing; `client::urlenc` encodes URI components (`app/src/client.rs`). Consistent use is not assumed.
 - **[observed]** Mini apps get their own AppView/QuickJS runtime with heap, stack and time limits enforced in Rust (`nsh/crates/nsh-js/src/sandbox.rs`). Rox loads them with `Bundle::source` and no policy (`app/src/mini.rs:106`). `Policy::default()` has `declared: None`, which `Policy::access` turns into `Capabilities::all()` (`nsh/crates/nsh-engine/src/lib.rs:218-248`): network and WebView to any host, clipboard, picker and every open-URL scheme. Undeclared filesystem, process and host-function access stays off (`nsh/crates/nsh-core/src/access.rs:451-466`).
 - **[observed]** `check_url` is a deny-list: it refuses `javascript`, `vbscript`, `data`, `blob`, `file`, `about` and `asset`, whitespace/control characters, oversized URLs and host-less web addresses, and accepts every other scheme (`nsh/crates/nsh-core/src/open_url.rs:20-54`). An open-URL grant with no schemes allows every scheme (`nsh/crates/nsh-core/src/access.rs:376-387`), and that is what `Capabilities::all()` grants. Whether every navigation path calls `check_url` is not established.
 - **[assumed]** macOS HTTP uses NSURLSession with system proxy, cookie and transport policies. Separate VMs share that networking, so cross-surface data isolation is not assumed.
