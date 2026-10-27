@@ -1,0 +1,109 @@
+# The nsh changes Rox carries: one entry per topic branch on hexuria/nsh.
+# `rox` = `main` + every topic whose status is local, open or rox-only, in
+# this order. How to use it: NSH-FORK.md. `scripts/nsh-fork status` checks it.
+#
+# status: local    on the fork only, no upstream PR yet
+#         open     PR open on longbridge/nsh
+#         merged   upstream has it: dropped at the next rebuild
+#         rox-only upstream declined it (say why in `note`); carried for good
+#         parked   kept as a branch, left out of `rox` (say why in `note`)
+
+[[topic]]
+branch = "pr/macos-press-stops-momentum"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/gpui-agent"
+kind = "feature"
+pr = 449
+status = "open"
+note = "#449 is CONFLICTING and predates the 0.3 port; redo it from this branch (see the gpui-agent audit in NSH-FORK.md)"
+
+[[topic]]
+branch = "pr/macos-embedded-scroll"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/perf-jank-log"
+kind = "feature"
+pr = 0
+status = "local"
+note = "Rox's /perf skill reads the jank log"
+
+[[topic]]
+branch = "pr/core-pace-component-lists"
+kind = "fix"
+pr = 0
+status = "parked"
+note = "upstream binds components' own lists at once on purpose; on 0.3 this breaks 4 list tests (a row bound twice, cells not reused). Rework before carrying."
+
+[[topic]]
+branch = "pr/core-item-offset"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/core-open-url"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-shown-scale"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-text-input-arrows"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-link-cursor"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/keymap-claim-menu-keys"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/core-handler-aliases"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-pause-embedded"
+kind = "feature"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-detach-subtree"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-cursor-on-change"
+kind = "fix"
+pr = 0
+status = "local"
+
+[[topic]]
+branch = "pr/macos-shot-video"
+kind = "fix"
+pr = 0
+status = "local"
+note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"

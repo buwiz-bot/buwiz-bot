@@ -274,6 +274,16 @@ pub(crate) struct Tables {
     pub bang_shape: String,
 }
 
+thread_local! {
+    static TABLES: std::rc::Rc<Tables> = std::rc::Rc::new(tables());
+}
+
+/// [`tables`], built once and shared by every mark (each avatar mount
+/// rebuilt them).
+pub(crate) fn shared_tables() -> std::rc::Rc<Tables> {
+    TABLES.with(std::rc::Rc::clone)
+}
+
 pub(crate) fn tables() -> Tables {
     // `Cb`/`Sr`/`Rb`/`eh`/`$b`/`oh` verbatim.
     let norm = |e: V3| -> V3 {

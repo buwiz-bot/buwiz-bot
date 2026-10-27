@@ -6,7 +6,7 @@ use nsh_base::{
     MarkdownExtension, MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts,
     text_view::document::CustomNode, text_view,
 };
-use nsh_core::ui::{StyleRefinement, prelude::*};
+use nsh_core::{element::StyleRefinement, prelude::*};
 
 use crate::theme;
 
@@ -75,6 +75,9 @@ pub(crate) fn markdown(
             streaming: streaming.get(),
             ..MarkdownOptions::default()
         })
+        // `rox://chat/…` links open that chat (and turn) in Rox; the rest
+        // open outside it.
+        .on_link_press(|e: &nsh_base::TextViewLinkPressEvent| store_open_link(&e.url))
         .selectable(true)
         .code_block_scrollbar(false)
         .code_block_actions(vec![
@@ -82,8 +85,10 @@ pub(crate) fn markdown(
         ])
         .streaming_caret(when(streaming, caret))
         .gap_3()
-        .text_size(px(15.0))
-        .line_height(px(21.0))
+        // Grok Bot's `.sand-message-prose`: 14px / 22px at weight 420.
+        .text_size(px(14.0))
+        .line_height(px(22.0))
+        .font_weight(FontWeight(420))
         .text_color(move || {
             if on_fill() {
                 theme::ON_FILL
@@ -91,4 +96,8 @@ pub(crate) fn markdown(
                 theme::TEXT
             }
         })
+}
+
+fn store_open_link(url: &str) {
+    crate::live::store().open_link(url);
 }
