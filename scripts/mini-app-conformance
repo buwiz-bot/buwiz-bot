@@ -1,0 +1,33 @@
+#!/bin/sh
+# The Mini App Protocol v1 conformance run (drafts/rox-mini-app-protocol-v1.md,
+# section 17), both sides: the broker's suite against the fixture plugin
+# (grok-shell, `npm run conformance`) and Rox's host tests, named by spec ID.
+# Prints each side's checklist and exits non-zero if either fails.
+#
+#   scripts/mini-app-conformance [grok-shell checkout]
+#
+# The grok-shell checkout defaults to ../grok-shell beside this repo, on a
+# branch with server/v1 (mini-app-v1 or later). CARGO_TARGET_DIR is honoured;
+# set it to keep the build out of app/target while Rox is running from there.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+GS="${1:-$ROOT/../grok-shell}"
+fail=0
+
+echo "== broker (grok-shell: $GS)"
+if [ -f "$GS/server/v1/plugins.mjs" ]; then
+  (cd "$GS" && npm run -s conformance) || fail=1
+else
+  echo "no server/v1 in $GS: check out grok-shell mini-app-v1"; fail=1
+fi
+
+echo "== Rox host"
+out="$(cd "$ROOT/app" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p rox --lib -- --format terse 2>&1)" || fail=1
+ids="$(cd "$ROOT/app" && cargo test -q -p rox --lib -- --list 2>/dev/null \
+  | sed -n 's/^\(.*\): test$/\1/p' \
+  | grep -oiE '(^|::)(man|app|brg|rsv|inv|agt|lcy|con)_[0-9]{2}[a-z0-9_]*' | sed 's/^:://' | sort -u)"
+echo "$out" | grep -E '^test result|FAILED|panicked'
+echo "Rox tests by spec 17 ID:"
+echo "$ids" | awk -F_ 'NF { id = toupper($1) "-" $2; $1 = ""; $2 = ""; sub(/^ +/, ""); print "  " id "  " $0 }'
+[ "$fail" = 0 ] && echo "conformance: pass" || echo "conformance: FAIL"
+exit "$fail"
