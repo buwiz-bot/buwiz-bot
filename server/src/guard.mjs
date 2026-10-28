@@ -28,9 +28,12 @@ const isJson = (type) =>
 /** Why `req` is refused — {status, error} — or null when it may proceed. */
 export function refusal(req, allowed) {
   const origin = req.headers.origin;
+
   if (origin !== undefined && !allowed.has(origin))
     return { status: 403, error: `requests from origin ${String(origin).slice(0, 100)} are refused: this server answers Rox and its apps, not web pages` };
+
   if (BODY_METHODS.has(req.method) && hasBody(req) && !isJson(req.headers["content-type"]))
     return { status: 415, error: "send the request body as Content-Type: application/json" };
+
   return null;
 }
