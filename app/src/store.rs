@@ -5746,6 +5746,9 @@ impl Store {
     /// rebuild before the fetch landed cancelled it and left every card
     /// on "Loading…" for good.
     fn fetch_mini(&'static self, name: String, sig: Signal<String>) {
+        if crate::mini_v1::is_v1(&name) {
+            return self.fetch_mini_v1(name, sig);
+        }
         Owner::detached().run(|| spawn(async move {
             let Some(v) = client::get(&format!("/module?name={}", client::urlenc(&name))).await else {
                 self.mini_err(&name).set("server unreachable".to_owned());
@@ -5770,6 +5773,33 @@ impl Store {
                     log::warn!("mini {name}: compile failed: {e}");
                     self.mini_err(&name).set(crate::mini::compile_error(&e));
                 }
+            }
+        }));
+    }
+
+    /// [`fetch_mini`] for a v1 plugin's app: the broker's source, checked
+    /// and compiled with the bridge off the main thread
+    /// (`mini_v1::load::prepare`); the component opens its session.
+    fn fetch_mini_v1(&'static self, name: String, sig: Signal<String>) {
+        Owner::detached().run(|| spawn(async move {
+            let key = name.clone();
+            let prepared = crate::vault::off_main(move || {
+                crate::mini_v1::load::prepare(&crate::mini_v1::host_api::HttpBroker::configured(), &key)
+            })
+            .await;
+            match prepared {
+                Some(Ok(p)) => {
+                    self.mini_title(&name).set(p.title.clone());
+                    let js = p.js.clone();
+                    crate::mini_v1::keep_prepared(&name, p);
+                    self.mini_err(&name).set(String::new());
+                    sig.set(js);
+                }
+                Some(Err(e)) => {
+                    log::warn!("mini {name}: {e}");
+                    self.mini_err(&name).set(e.message);
+                }
+                None => self.mini_err(&name).set("Could not open this app.".to_owned()),
             }
         }));
     }

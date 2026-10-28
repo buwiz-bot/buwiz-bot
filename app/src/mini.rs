@@ -13,6 +13,12 @@
 //! `mini_bundle` selects a deny-all policy for generated widgets and an
 //! app-server-only policy for `mcp:` modules. The `source` prop carries the
 //! module key and compiled JS; a changed pair reloads the app.
+//!
+//! A v1 plugin's app (`v1:<plugin id>/<app id>`, `crate::mini_v1`) gets an
+//! `AppView` of its own per open instead: its own `nsh/host` channel with
+//! the bridge's handlers, its own engine storage, the spec's budgets, and
+//! the policy its permissions compile to. It loads once its session is
+//! open.
 
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
@@ -556,6 +562,13 @@ mod imp {
         /// The window whose occlusion it watches.
         watching: Cell<usize>,
         app: RefCell<Option<Rc<AppView>>>,
+        /// The element's `placement` prop (`full` or `inline`), for a v1
+        /// app's `rox.viewport`.
+        placement: RefCell<String>,
+        /// The size last sent as a v1 app's `rox.viewport`.
+        viewport: Cell<(f64, f64)>,
+        /// Hears the size a v1 app lays out at when it changes.
+        on_viewport: RefCell<Option<Box<dyn Fn(serde_json::Value)>>>,
     }
 
     define_class!(
@@ -610,6 +623,7 @@ mod imp {
                     return;
                 }
                 self.ivars().collapsed_ticks.set(0);
+                self.tell_viewport();
                 if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app)) {
                     if (h - self.ivars().natural.get()).abs() >= 1.0 {
                         self.ivars().natural.set(h);
@@ -746,6 +760,9 @@ mod imp {
                 unseen: Cell::new(false),
                 watching: Cell::new(0),
                 app: RefCell::new(None),
+                placement: RefCell::new("full".to_owned()),
+                viewport: Cell::new((0.0, 0.0)),
+                on_viewport: RefCell::new(None),
             });
             // SAFETY: NSView's designated `init` on a fresh allocation.
             let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -830,6 +847,24 @@ mod imp {
             };
         }
 
+        /// The size the app lays out at, and its placement, as a v1 app's
+        /// `rox.viewport` says it.
+        fn viewport(&self) -> serde_json::Value {
+            let (w, h) = self.ivars().design.get();
+            let (w, h) = if w > 0.0 && h > 0.0 { (w, h) } else { (self.frame().size.width, self.frame().size.height) };
+            serde_json::json!({ "width": w.round(), "height": h.round(), "placement": *self.ivars().placement.borrow() })
+        }
+
+        /// Sends the viewport to a v1 app when its size changed.
+        fn tell_viewport(&self) {
+            let Some(f) = &*self.ivars().on_viewport.borrow() else { return };
+            let v = self.viewport();
+            let size = (v["width"].as_f64().unwrap_or(0.0), v["height"].as_f64().unwrap_or(0.0));
+            if size != self.ivars().viewport.replace(size) {
+                f(v);
+            }
+        }
+
         /// Design size, or the frame's own size (no scaling) without one.
         fn fit(&self) {
             let frame = self.frame().size;
@@ -855,6 +890,8 @@ mod imp {
         fit: Retained<FitView>,
         view: Rc<AppView>,
         last: Option<(String, String)>,
+        /// A v1 app's open: its session and bridge.
+        v1: Option<crate::mini_v1::native::V1Open>,
     }
 
     impl MiniApp {
@@ -893,7 +930,59 @@ mod imp {
                 fit,
                 view,
                 last: None,
+                v1: None,
             }
+        }
+
+        /// Runs `view` in place of the app it hosted, which stops.
+        fn replace_view(&mut self, view: Rc<AppView>) {
+            self.view.stop();
+            self.view.view().removeFromSuperview();
+            self.fit.addSubview(&view.view());
+            *self.fit.ivars().app.borrow_mut() = Some(view.clone());
+            self.view = view;
+            let (w, h) = self.fit.ivars().design.get();
+            self.set_design((w > 0.0 && h > 0.0).then_some((w, h)));
+            self.fit.hold();
+        }
+
+        /// Opens v1 app `module` (prepared by the store as `js`): a view of
+        /// its own, then its session, bridge and load
+        /// (`mini_v1::native::start`).
+        fn load_v1(&mut self, module: &str, js: &str) {
+            let Some(prepared) = crate::mini_v1::prepared(module).filter(|p| p.js == js) else {
+                return log::warn!("mini v1: {module} was not prepared");
+            };
+            // the previous open's session ends first
+            self.v1.take();
+            let mtm = MainThreadMarker::new().expect("a component loads on the main thread");
+            let root = crate::mini_v1::plugins_dir();
+            let view = AppView::new(
+                mtm,
+                AppOptions {
+                    title: prepared.title.clone(),
+                    app_id: "dev.goldcoders.rox.mini.v1".to_owned(),
+                    size: (340, 200),
+                    // the spec's budgets (14.2): load 10 s, a JS call 2 s,
+                    // heap 256 MB, stack 4 MB
+                    limits: nsh_engine::Limits {
+                        memory_bytes: 256 << 20,
+                        stack_bytes: 4 << 20,
+                        load_budget: std::time::Duration::from_secs(10),
+                        call_budget: std::time::Duration::from_secs(2),
+                        ..Default::default()
+                    },
+                    storage: Some(crate::mini_v1::storage::engine_storage(&root, &prepared.plugin.id, &prepared.key.app)),
+                    ..Default::default()
+                },
+            );
+            self.replace_view(view);
+            let channel = self.view.host();
+            *self.fit.ivars().on_viewport.borrow_mut() = Some(Box::new(move |v| {
+                let _ = channel.send("rox.viewport", v);
+            }));
+            let viewport = self.fit.viewport();
+            self.v1 = Some(crate::mini_v1::native::start(prepared, &self.view, module.to_owned(), viewport));
         }
 
         /// Lays the app out at `w×h` and scales it into the frame; `None`
@@ -925,6 +1014,9 @@ mod imp {
             self.fit.ivars().alive.set(false);
             self.fit.ivars().ctx.borrow_mut().take();
             self.fit.ivars().app.borrow_mut().take();
+            self.fit.ivars().on_viewport.borrow_mut().take();
+            // a v1 app's session closes with its component
+            self.v1.take();
             // SAFETY: removes this view's observations, added by
             // `watch_window`.
             unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.fit) };
@@ -983,6 +1075,11 @@ mod imp {
                 }
                 return;
             }
+            if name == "placement" {
+                let p = value.and_then(|v| v.as_str()).filter(|p| *p == "inline").unwrap_or("full");
+                *self.fit.ivars().placement.borrow_mut() = p.to_owned();
+                return;
+            }
             if name == "paused" {
                 self.fit.ivars().held.set(value.and_then(|v| v.as_bool()).unwrap_or(false));
                 self.fit.hold();
@@ -1013,6 +1110,9 @@ mod imp {
                 return;
             }
             self.last = Some((module.clone(), js.clone()));
+            if crate::mini_v1::is_v1(&module) {
+                return self.load_v1(&module, &js);
+            }
             self.view
                 .load(nsh_platform_macos::App::Js(super::mini_bundle(&module, js)));
         }
@@ -1218,7 +1318,8 @@ export default function R() {
         assert!(!access.allows_socket("127.0.0.1", 8787));
         assert!(super::widget_policy().harden);
 
-        for module in ["file:/x", ""] {
+        // a v1 app never runs on this policy: it gets its own (mini_v1)
+        for module in ["file:/x", "", "v1:dev.goldcoders.fixture/board"] {
             let policy = super::mini_bundle(module, String::new()).policy;
             assert_eq!(
                 policy.declared,
