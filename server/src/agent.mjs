@@ -96,7 +96,7 @@ export async function agentTurn(job, prompt, thread) {
         model: MODEL,
         max_tokens: MAX_TOKENS,
         system: agentSystem(thread) + scope,
-        tools: await toolList(thread),
+        tools: await toolList(thread, job),
         messages,
       };
 
