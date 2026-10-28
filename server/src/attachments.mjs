@@ -12,6 +12,7 @@
 // with the hints of the scopes in play (scopeSection).
 import { db, findThread, store, uuidv7, writeIndex } from "./state.mjs";
 import { appKey, callToolJson, readManifest } from "./mcp.mjs";
+import { parseToken, tokensIn } from "./grammar.mjs";
 
 const parseJson = (s, d) => {
   try { return JSON.parse(s); } catch { return d; }
@@ -19,13 +20,6 @@ const parseJson = (s, d) => {
 const botOf = (threadId) => store.bots.find((b) => b.threadId === threadId) || null;
 const serverRow = (id) => db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(id || ""));
 const scopesOf = (m) => (Array.isArray(m?.scopes) ? m.scopes.filter((x) => x && typeof x.name === "string") : []);
-
-// `@<server>:<scope>:<value>` → its parts, or null.
-const TOKEN = /@([a-z0-9-]+):([A-Za-z0-9_-]+):(\S*)/g;
-export function parseToken(token) {
-  const m = new RegExp(TOKEN.source).exec(String(token || "").trim());
-  return m ? { server: m[1], scope: m[2], value: m[3] } : null;
-}
 
 // `rox://app/<server>/<app>?props=<JSON>` → the mini app's key, or "".
 function keyOfOpen(open) {
@@ -197,7 +191,7 @@ export async function scopeSection(thread, prompt = "") {
   const used = new Map(); // server → Set(scope)
   const note = (server, scope) => (used.get(server) || used.set(server, new Set()).get(server)).add(scope);
   for (const a of atts) note(a.server, a.scope);
-  for (const m of String(prompt || "").matchAll(TOKEN)) note(m[1], m[2]);
+  for (const t of tokensIn(prompt)) note(t.server, t.scope);
   if (!used.size) return "";
   const lines = [], hints = [];
   for (const [server, scopes] of used) {

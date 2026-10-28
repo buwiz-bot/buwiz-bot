@@ -20,6 +20,7 @@ import {
   setAuthHooks as mcpSetAuthHooks, statusOf as mcpStatus,
 } from "./mcp.mjs";
 import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
+import { isServerId } from "./grammar.mjs";
 import { ROUTINE_TOOLS, isRoutineTool, noteGoogleEmail, toolRoutine } from "./routines.mjs";
 
 export const CLIENT_SEARCH = {
@@ -1262,6 +1263,8 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
   const finalCommand = String(command ?? cur?.command ?? "").trim();
   if (!finalName) throw new Error("server needs a name");
   if (!finalCommand && !finalUrl) throw new Error("server needs a command or url");
+  // a new row's id is what `@<server>:…` tokens and rox://app links name
+  if (id && !cur && !isServerId(String(id))) throw new Error(`server id ${String(id).slice(0, 40)} must be [a-z0-9-]+`);
   const sid =
     (id && String(id)) ||
     (() => {
