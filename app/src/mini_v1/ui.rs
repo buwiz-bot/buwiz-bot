@@ -73,6 +73,8 @@ pub struct V1 {
     pub page: Signal<String>,
     /// Asks waiting behind the one the sheet shows.
     queue: RefCell<VecDeque<LinkAsk>>,
+    /// Which plugin generations were prewarmed (14.6).
+    prewarm: RefCell<super::cache::Prewarm>,
     /// The opens running, with the fingerprint each loaded.
     running: RefCell<Vec<(u64, String, String)>>,
 }
@@ -99,6 +101,7 @@ impl V1 {
             form: signal(String::new()),
             page: signal(String::new()),
             queue: RefCell::new(VecDeque::new()),
+            prewarm: RefCell::new(Default::default()),
             running: RefCell::new(Vec::new()),
         }
     }
@@ -238,6 +241,7 @@ impl Store {
                 };
                 let entries: Vec<PluginEntry> = list.iter().filter_map(PluginEntry::from_json).collect();
                 *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = entries.clone();
+                self.v1_prewarm(&list);
                 let running: Vec<(String, String)> =
                     self.v1.running.borrow().iter().map(|(_, k, f)| (k.clone(), f.clone())).collect();
                 let stale = lifecycle::stale(&running, &entries);
@@ -260,6 +264,69 @@ impl Store {
                     self.v1.records.set(Records::load(&data_dir()));
                 }
             })
+        });
+    }
+
+    /// Prewarm (14.6): for each running plugin at a generation not warmed
+    /// yet, compile its inline apps (answer cards) into the cache, one at a
+    /// time on a background thread; and evict entries of fingerprints the
+    /// manifest no longer has.
+    fn v1_prewarm(&'static self, list: &[Value]) {
+        if !super::cache::enabled() {
+            return;
+        }
+        let mut due = Vec::new();
+        for p in list {
+            let Some(entry) = PluginEntry::from_json(p) else { continue };
+            let current: Vec<(String, String)> = entry
+                .apps
+                .iter()
+                .filter_map(|a| Some((a.get("id")?.as_str()?.to_owned(), a.get("fingerprint")?.as_str()?.to_owned())))
+                .collect();
+            let root = super::plugins_dir();
+            super::cache::evict(&root, &entry.id, &current);
+            let running = p.get("state").and_then(Value::as_str) == Some("running");
+            if running && self.v1.prewarm.borrow_mut().due(&entry.id, entry.generation.unwrap_or(0)) {
+                due.push(entry);
+            }
+        }
+        if due.is_empty() {
+            return;
+        }
+        std::thread::Builder::new()
+            .name("rox-mini-prewarm".to_owned())
+            .spawn(move || {
+                // after start-up's own work, one app at a time
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let (b, root) = (broker(), super::plugins_dir());
+                for p in due {
+                    for (app, _) in super::cache::warm_apps(&p.apps) {
+                        let t0 = std::time::Instant::now();
+                        match super::load::warm(&b, &p, &app, &root) {
+                            Ok(true) => log::info!("mini v1 timing: {}/{app} prewarmed in {} ms", p.id, t0.elapsed().as_millis()),
+                            Ok(false) => {}
+                            Err(e) => log::info!("mini v1: prewarm of {}/{app}: {e}", p.id),
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
+
+    /// Opens the session of an answer card about to mount (14.6), in the
+    /// background, while its module is prepared; the open takes it.
+    pub fn v1_preopen(&'static self, plugin: &str, app: &str) {
+        let Some(entry) = self.v1.entry(plugin) else { return };
+        let Some(perms) = entry.app(app).map(|a| a.get("permissions").cloned()) else { return };
+        let (plugin, app, generation) = (plugin.to_owned(), app.to_owned(), entry.generation);
+        std::thread::spawn(move || {
+            let b = broker();
+            if let Err(e) = super::session::preopen(&b, &plugin, &app, perms.as_ref(), generation) {
+                log::info!("mini v1: pre-open of {plugin}/{app}: {e}");
+            }
+            // anything unused for a minute is closed
+            std::thread::sleep(super::session::PREOPEN_TTL + std::time::Duration::from_secs(1));
+            super::session::sweep_preopened(Arc::new(b));
         });
     }
 
@@ -1355,6 +1422,16 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         })
         .collect();
     let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
+    // a fresh answer's cards that mount at once: their sessions open now,
+    // alongside their modules (14.6)
+    if !cards::aged(untracked(|| user_after())) {
+        for ((_, c), slot) in cards.iter().zip(&slots) {
+            let first_party = store().v1.entry(&c.plugin).is_some_and(|p| p.first_party);
+            if *slot != cards::Slot::Link && c.placement == Placement::Inline && first_party {
+                store().v1_preopen(&c.plugin, &c.app);
+            }
+        }
+    }
     view()
         .gap_2()
         .w_full()

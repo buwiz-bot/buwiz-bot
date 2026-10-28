@@ -611,6 +611,9 @@ mod imp {
         /// Rox's theme (`theme` prop): the app follows it
         /// (`mini_appearance`).
         theme: RefCell<String>,
+        /// A v1 open waiting for its first frame: its module and when its
+        /// load began (the timing log, 14.6).
+        first_frame: RefCell<Option<(String, std::time::Instant)>>,
         /// The size last sent as a v1 app's `rox.viewport`.
         viewport: Cell<(f64, f64)>,
         /// Hears the size a v1 app lays out at when it changes.
@@ -670,6 +673,13 @@ mod imp {
                 }
                 self.ivars().collapsed_ticks.set(0);
                 self.tell_viewport();
+                // a v1 app's first frame: its views have a size
+                if self.ivars().first_frame.borrow().is_some()
+                    && self.subviews().firstObject().and_then(|app| natural(&app)).is_some_and(|h| h > 0.0)
+                    && let Some((module, at)) = self.ivars().first_frame.borrow_mut().take()
+                {
+                    log::info!("mini v1 timing: {module} view to first frame {} ms (session, engine start, module, layout)", at.elapsed().as_millis());
+                }
                 if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app)) {
                     if (h - self.ivars().natural.get()).abs() >= 1.0 {
                         self.ivars().natural.set(h);
@@ -808,6 +818,7 @@ mod imp {
                 app: RefCell::new(None),
                 placement: RefCell::new("full".to_owned()),
                 theme: RefCell::new(String::new()),
+                first_frame: RefCell::new(None),
                 viewport: Cell::new((0.0, 0.0)),
                 on_viewport: RefCell::new(None),
             });
@@ -889,7 +900,14 @@ mod imp {
             // laid out within a few frames), then at the usual pace (a
             // leftover from a reused cell stays collapsed).
             let n = self.ivars().collapsed_ticks.get();
-            let delay = if n > 0 && n < 40 { 0.05 } else { MEASURE_EVERY };
+            let delay = if self.ivars().first_frame.borrow().is_some() {
+                // a v1 open's first frame is timed to the frame
+                0.008
+            } else if n > 0 && n < 40 {
+                0.05
+            } else {
+                MEASURE_EVERY
+            };
             // SAFETY: `roxMeasure:` is this class's method taking one
             // object argument (nil here).
             let () = unsafe {
@@ -1037,6 +1055,8 @@ mod imp {
                 },
             );
             self.replace_view(view);
+            *self.fit.ivars().first_frame.borrow_mut() = Some((module.to_owned(), std::time::Instant::now()));
+            self.fit.schedule();
             // a running app's error shows the spec's message (6.7) over it,
             // with Reload and Close
             let (key, title) = (module.to_owned(), prepared.title.clone());

@@ -174,6 +174,72 @@ impl Session {
     }
 }
 
+/// How long a pre-opened session waits for its card (spec 14.6).
+pub const PREOPEN_TTL: Duration = Duration::from_secs(60);
+
+/// Sessions opened ahead of their card (a tool result's inline card that
+/// is about to mount): `(plugin, app, perms digest, opened at, session)`.
+/// Each is used by one open at most (4.4); unused ones are closed after
+/// [`PREOPEN_TTL`].
+static POOL: Mutex<Vec<(String, String, String, std::time::Instant, Arc<Session>)>> = Mutex::new(Vec::new());
+
+/// Opens a session for `app` of `plugin` ahead of its open and keeps it
+/// for [`take_preopened`]. Nothing when one is waiting already.
+pub fn preopen(
+    broker: &dyn host_api::Broker,
+    plugin: &str,
+    app: &str,
+    permissions: Option<&Value>,
+    generation: Option<u64>,
+) -> Result<(), RoxError> {
+    let digest = keys::perms_sha256(permissions).map_err(|e| RoxError::new("invalid_args", e))?;
+    let waiting = POOL.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(p, a, d, _, s)| {
+        p == plugin && a == app && *d == digest && s.check_live().is_ok()
+    });
+    if waiting {
+        return Ok(());
+    }
+    let s = Session::open(broker, plugin, app, permissions, generation)?;
+    POOL.lock().unwrap_or_else(|e| e.into_inner()).push((plugin.to_owned(), app.to_owned(), digest, std::time::Instant::now(), s));
+    Ok(())
+}
+
+/// A session pre-opened for `app` of `plugin` with these permissions, if
+/// one is waiting, fresh and live (it leaves the pool: one open each).
+pub fn take_preopened(plugin: &str, app: &str, permissions: Option<&Value>) -> Option<Arc<Session>> {
+    take_preopened_at(plugin, app, permissions, std::time::Instant::now())
+}
+
+fn take_preopened_at(plugin: &str, app: &str, permissions: Option<&Value>, now: std::time::Instant) -> Option<Arc<Session>> {
+    let digest = keys::perms_sha256(permissions).ok()?;
+    let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let at = pool.iter().position(|(p, a, d, t, s)| {
+        p == plugin && a == app && *d == digest && now.duration_since(*t) < PREOPEN_TTL && s.check_live().is_ok()
+    })?;
+    Some(pool.remove(at).4)
+}
+
+/// Closes and drops pre-opened sessions no open took within
+/// [`PREOPEN_TTL`] (or that ended): how many.
+pub fn sweep_preopened(broker: Arc<dyn host_api::Broker>) -> usize {
+    sweep_preopened_at(broker, std::time::Instant::now())
+}
+
+fn sweep_preopened_at(broker: Arc<dyn host_api::Broker>, now: std::time::Instant) -> usize {
+    let stale: Vec<Arc<Session>> = {
+        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let (stale, keep): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut *pool).into_iter().partition(|(_, _, _, t, s)| now.duration_since(*t) >= PREOPEN_TTL || s.check_live().is_err());
+        *pool = keep;
+        stale.into_iter().map(|e| e.4).collect()
+    };
+    let n = stale.len();
+    for s in stale {
+        s.close(broker.clone());
+    }
+    n
+}
+
 /// Checks `sessions/open`'s answer against what was asked (`ask`, at
 /// `now`): the plugin's signature over JCS(cert), every field, the
 /// lifetime and the permissions the broker holds. The certificate's
@@ -420,6 +486,49 @@ pub(crate) mod tests {
         assert_ne!(env["nonce"], env2["nonce"]);
         // floats are not signed
         assert_eq!(s.sign_call("fx_echo", &json!({"x": 0.5})).unwrap_err().code, "invalid_args");
+    }
+
+    /// Counts `sessions/open` and `sessions/close` and signs like
+    /// [`CertBroker`].
+    struct Counting {
+        inner: CertBroker,
+        opened: std::sync::atomic::AtomicUsize,
+        closed: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Broker for Counting {
+        fn request(&self, m: &str, route: &str, body: Option<Value>, t: Duration) -> Result<Value, RoxError> {
+            if route == "/v1/host/sessions/close" {
+                self.closed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(json!({"ok": true}));
+            }
+            self.opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.request(m, route, body, t)
+        }
+    }
+
+    #[test]
+    fn perf_04_a_preopened_session_is_used_once_or_dropped_after_a_minute() {
+        let b = Arc::new(Counting { inner: CertBroker::honest(), opened: 0.into(), closed: 0.into() });
+        let (p, perms) = ("dev.goldcoders.poolfx", Some(json!({"tools": ["fx_echo"]})));
+        preopen(&*b, p, "card", perms.as_ref(), None).unwrap();
+        preopen(&*b, p, "card", perms.as_ref(), None).unwrap();
+        assert_eq!(b.opened.load(std::sync::atomic::Ordering::SeqCst), 1, "one waiting session per app");
+        // other permissions or another app: not this session
+        assert!(take_preopened(p, "card", Some(&json!({"tools": []}))).is_none());
+        assert!(take_preopened(p, "board", perms.as_ref()).is_none());
+        let s = take_preopened(p, "card", perms.as_ref()).expect("reused");
+        s.check_live().unwrap();
+        assert!(take_preopened(p, "card", perms.as_ref()).is_none(), "one open each (4.4)");
+        // unused for a minute: closed and dropped
+        preopen(&*b, p, "card", perms.as_ref(), None).unwrap();
+        let later = std::time::Instant::now() + PREOPEN_TTL + Duration::from_secs(1);
+        assert!(take_preopened_at(p, "card", perms.as_ref(), later).is_none());
+        let broker: Arc<dyn host_api::Broker> = b.clone();
+        assert_eq!(sweep_preopened_at(broker, later), 1);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(b.closed.load(std::sync::atomic::Ordering::SeqCst), 1, "the broker hears it closed");
+        assert!(take_preopened(p, "card", perms.as_ref()).is_none());
     }
 
     #[test]

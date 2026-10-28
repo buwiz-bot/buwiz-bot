@@ -5924,7 +5924,10 @@ impl Store {
         Owner::detached().run(|| spawn(async move {
             let key = name.clone();
             let prepared = crate::vault::off_main(move || {
-                crate::mini_v1::load::prepare(&crate::mini_v1::host_api::HttpBroker::configured(), &key)
+                // the compiled-module cache (spec 14.6) unless turned off
+                let root = crate::mini_v1::plugins_dir();
+                let cache = crate::mini_v1::cache::enabled().then_some(root.as_path());
+                crate::mini_v1::load::prepare_in(&crate::mini_v1::host_api::HttpBroker::configured(), &key, cache)
             })
             .await;
             match prepared {

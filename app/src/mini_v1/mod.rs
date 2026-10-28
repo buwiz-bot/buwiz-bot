@@ -24,6 +24,7 @@
 //! `mcp:` and generated `R<n>` keys are untouched.
 
 pub mod bridge;
+pub mod cache;
 pub mod cards;
 pub mod connect;
 pub mod consent;
