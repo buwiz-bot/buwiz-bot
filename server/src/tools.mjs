@@ -22,6 +22,8 @@ import {
 import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
 import { isServerId } from "./grammar.mjs";
 import { ROUTINE_TOOLS, isRoutineTool, noteGoogleEmail, toolRoutine } from "./routines.mjs";
+import { v1AgentCall, v1ToolPlugin, v1Tools } from "./v1/agent.mjs";
+import { plugins as v1Plugins } from "./v1/broker.mjs";
 
 export const CLIENT_SEARCH = {
   name: "web_search",
@@ -1066,6 +1068,11 @@ export async function execTool(job, thread, block) {
       return toolSkillAdmin(block.name, block.input || {});
     if (isBotTool(block.name)) return toolBot(thread, block.name, block.input || {});
     if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {});
+    // a v1 plugin's tool, under its own name (v1/agent.mjs)
+    if (v1ToolPlugin(v1Plugins, block.name)) {
+      setJob(job, "connecting", "Working in a connected app");
+      return await v1AgentCall(v1Plugins, job, block.name, block.input || {});
+    }
     const mm = parseMcpName(block.name);
     if (mm) {
       const row = db
@@ -1212,6 +1219,18 @@ async function mcpSurface(thread) {
     }
     defs.push(...mcpAnthropicTools(row.id, tools));
   }
+  // v1 plugins: their own tool names, approved plugins only; a plugin over
+  // DEFER_OVER tools waits for app_tools_load like a v0 server
+  const taken = new Set([...TOOLS, ...ROUTINE_TOOLS, ...BOT_TOOLS, ...defs].map((t) => t.name));
+  const byPlugin = Map.groupBy(v1Tools(v1Plugins, taken), (t) => t.plugin);
+  for (const [plugin, tools] of byPlugin) {
+    const short = v1Plugins.rowOf(plugin)?.short;
+    if (tools.length > DEFER_OVER && !loaded.has(`v1:${short}`)) {
+      deferred.push({ id: short, name: v1Plugins.manifestOf(v1Plugins.rowOf(plugin)).title, count: tools.length, sample: tools.slice(0, 6).map((t) => t.name) });
+      continue;
+    }
+    defs.push(...tools.map(({ plugin: _p, ...t }) => t));
+  }
   return { defs, deferred };
 }
 export const mcpToolDefs = async (thread) => (await mcpSurface(thread)).defs;
@@ -1234,6 +1253,14 @@ const appToolsLoad = (deferred) => ({
 async function toolAppToolsLoad(thread, input) {
   const id = String(input?.app || "");
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(id);
+  const v1 = !row && v1Plugins.rows().find((r) => r.short === id && r.enabled);
+  if (v1) {
+    const m = loadedFor(thread);
+    m.set(`v1:${id}`, Date.now());
+    loadedApps.set(thread?.id, m);
+    const names = v1Tools(v1Plugins).filter((t) => t.plugin === v1.id).map((t) => t.name);
+    return { content: `Loaded ${names.length} ${id} tools; call them from your next step:\n${names.join("\n")}` };
+  }
   if (!row) return { content: `no connected app ${id}`, is_error: true };
   const rec = await mcpEnsure(row);
   if (!rec.client) return { content: `${id} is not connected (${rec.err || "failed to start"})`, is_error: true };
