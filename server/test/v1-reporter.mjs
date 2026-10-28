@@ -7,7 +7,7 @@
 // and SDK (the mini app developer kit, sdk/mini-app).
 const ID = /^([A-Z]{3}-\d{2})\b/;
 const SPEC = new Set(["MAN", "APP", "BRG", "RSV", "INV", "AGT", "LCY", "CON"]);
-const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)", SDK: "mini app developer kit (sdk/mini-app)", AUD: "app-only tools (10.1 audience)", ATT: "chat attachments to the model (10.3)" };
+const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)", SDK: "mini app developer kit (sdk/mini-app)", AUD: "app-only tools (10.1 audience)", ATT: "chat attachments to the model (10.3)", PKG: "the packaged (bundled) server" };
 
 export default async function* checklist(source) {
   const ids = new Map(); // id → {ok, names}

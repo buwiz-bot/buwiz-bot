@@ -13,7 +13,7 @@ import { isV1 } from "../grammar.mjs";
 import { fromB64u, verify } from "./ed.mjs";
 import { refuse } from "./errors.mjs";
 import { JcsError, canonicalize, isInt, isObject, isString, signedBytes } from "./jcs.mjs";
-import { fingerprintOf } from "./sign-manifest.mjs";
+import { fingerprintOf } from "./signing.mjs";
 import { permsDigest, validateProps } from "./manifest.mjs";
 import { resultData } from "./plugins.mjs";
 

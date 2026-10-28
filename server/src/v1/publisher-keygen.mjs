@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isV1 } from "../grammar.mjs";
 import { generate } from "./ed.mjs";
-import { PUBLISHER_SERVICE } from "./sign-manifest.mjs";
+import { PUBLISHER_SERVICE } from "./signing.mjs";
 
 function exists(keyId) {
   try {
