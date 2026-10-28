@@ -3507,7 +3507,11 @@ fn v1_install_page() -> impl IntoElement {
             let Some(r) = store().v1.review.get() else {
                 return pane()
                     .gap(px(10.0))
-                    .child(text("The command that starts the plugin (stdio), with its arguments.").text_size(px(13.0)).text_color(ink3()))
+                    .child(
+                        text("The command that starts the plugin (stdio), with its arguments; VAR=value words before it are its environment.")
+                            .text_size(px(13.0))
+                            .text_color(ink3()),
+                    )
                     .child(
                         view().h(px(32.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(10.0)).justify_center().child(
                             input()
@@ -3538,6 +3542,8 @@ fn v1_install_page() -> impl IntoElement {
                 page = page.child(
                     text(if r.downgrade {
                         format!("This is an older version than the {from} installed.")
+                    } else if *from == r.version {
+                        format!("Version {from} is installed already.")
                     } else {
                         format!("Updates {from} to {}.", r.version)
                     })

@@ -350,8 +350,14 @@ impl OpenContext {
         self.gated(reply, move |me| {
             // signed when it goes out: a queued call is not stale
             let (envelope, sig) = me.session.sign_call(&tool, &args)?;
-            let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout)?;
-            tool_result(result, max)
+            let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
+            // which signed call went where, never its arguments or result
+            let p = &me.prepared;
+            match &result {
+                Ok(_) => log::info!("mini v1: {}/{} signed call {tool}: ok", p.plugin.id, p.key.app),
+                Err(e) => log::info!("mini v1: {}/{} signed call {tool}: {}", p.plugin.id, p.key.app, e.code),
+            }
+            tool_result(result?, max)
         });
     }
 

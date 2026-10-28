@@ -423,6 +423,26 @@ impl Store {
         }
     }
 
+    /// A pin (or a library item) of v1 app `key` was opened (12.3, 9.7: no
+    /// consent): its declared placement, an inline app mounted at once in
+    /// the open chat (Q9).
+    pub fn open_v1_pin(&'static self, key: &str, title: &str) {
+        let Ok(k) = V1Key::parse(key) else { return };
+        let app = self.v1.entry(&k.plugin).and_then(|p| p.app(&k.app).cloned());
+        let placement = app.as_ref().map(cards::declared).unwrap_or(Placement::Full);
+        let title = match app.as_ref().and_then(|a| a.get("title")).and_then(Value::as_str) {
+            Some(t) if title.is_empty() => t.to_owned(),
+            _ => title.to_owned(),
+        };
+        let placement = if placement == Placement::Inline && self.active_id.get_untracked().is_empty() {
+            Placement::Full
+        } else {
+            placement
+        };
+        let card = OpenCard { plugin: k.plugin, app: k.app, title, placement, ticket: k.ticket, props: k.props };
+        self.open_v1_placed(card, Opener::Pin);
+    }
+
     /// An open of `key` started running with `fingerprint` (its number
     /// `n`): kept for 12.2's banner, and `app_changed` logged when the app
     /// changed since it last opened.
@@ -653,12 +673,17 @@ impl Store {
                             .collect();
                         crate::slash::show_rows(rows);
                     }
-                    tokens::Answer::Token { ticket, .. } => {
-                        // a scope's ticket: what the scope's resolve opens
-                        if kind == "command" {
-                            crate::toast::show("Resolved");
-                        } else if ticket != value {
-                            self.v1_resolve(plugin, "scope", name, ticket);
+                    tokens::Answer::Token { ticket, title } => {
+                        // a token sent alone: its scope gives a ticket, not
+                        // an open; the plugin's command of the same name
+                        // opens it (BIR: /taxprofile), else its title shows
+                        let command = self.v1.entry(&plugin).is_some_and(|p| {
+                            p.commands.iter().any(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))
+                        });
+                        if kind == "scope" && command {
+                            self.v1_resolve(plugin, "command", name, ticket);
+                        } else {
+                            crate::toast::show(if title.is_empty() { "Resolved".to_owned() } else { title });
                         }
                     }
                     tokens::Answer::Error(m) => crate::toast::show(m),
@@ -781,7 +806,9 @@ impl Store {
         let titles = self.v1.titles.get();
         // again once the plugins are listed: their titles can be asked then
         self.v1.entries.with(|_| ());
-        let (out, missing) = tokens::plain(text, &|t| titles.get(t).cloned());
+        let (out, missing) = tokens::plain(text, &|t| {
+            titles.get(t).cloned().or_else(|| titles.iter().find(|(k, _)| k.starts_with(t)).map(|(_, v)| v.clone()))
+        });
         for token in missing {
             self.v1_title(&token);
         }
@@ -878,10 +905,10 @@ impl Store {
     /// review shows next (nothing is installed yet).
     pub fn v1_inspect(&'static self) {
         let line = self.v1.form.get_untracked();
-        let mut words = line.split_whitespace().map(str::to_owned);
-        let Some(command) = words.next() else { return crate::toast::show("Enter the plugin's command") };
-        let args: Vec<String> = words.collect();
-        self.v1_job("Checking the plugin…", move || connect::inspect(&broker(), &command, &args), move |r| {
+        let Some((env, command, args)) = connect::command_line(&line) else {
+            return crate::toast::show("Enter the plugin's command");
+        };
+        self.v1_job("Checking the plugin…", move || connect::inspect(&broker(), &command, &args, env), move |r| {
             store().v1.review.set(Some(r));
         });
     }
@@ -1123,6 +1150,22 @@ fn small_button(label: &'static str, primary: bool, on: impl Fn() + 'static) -> 
         .on_press(on)
 }
 
+/// A card's Open or Show; a shown inline card's Show reads Hide.
+fn toggle_button(label: &'static str, id: String, on: impl Fn() + 'static) -> impl IntoElement {
+    let id2 = id.clone();
+    let shown = move || store().v1.shown.with(|s| s.contains(&id2));
+    view()
+        .h(px(28.0))
+        .px_3()
+        .rounded(px(14.0))
+        .items_center()
+        .justify_center()
+        .bg(theme::TEXT)
+        .label(label)
+        .child(text(move || if label == "Show" && shown() { "Hide".to_owned() } else { label.to_owned() }).text_size(px(13.0)).text_color(theme::POPOVER))
+        .on_press(on)
+}
+
 /// A tool result's card (9.6): its title, the plugin, and Open (full) or
 /// Show (inline). Nothing opens or mounts before the press (INV-08). A
 /// shown inline card mounts below it.
@@ -1131,7 +1174,7 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
         return view().into_element();
     };
     let plugin_title = store().v1.entry(&card.plugin).map(|p| p.title).unwrap_or_else(|| card.plugin.clone());
-    let (c1, c2, id1, id2) = (card.clone(), card.clone(), card_id.clone(), card_id.clone());
+    let (c1, c2, id1, id2, id3) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone());
     let shown = move || store().v1.shown.with(|s| s.contains(&id1));
     view()
         .gap_2()
@@ -1157,7 +1200,7 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
                                 .text_color(tc("#f5f5f5ad")),
                         ),
                 )
-                .child(small_button(card.button(), true, move || match c1.placement {
+                .child(toggle_button(card.button(), id3, move || match c1.placement {
                     Placement::Full => store().open_v1(c1.key(), &c1.title, Opener::ToolResult),
                     Placement::Inline => store().v1.shown.update(|s| {
                         if !s.remove(&id2) {
@@ -1168,6 +1211,79 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
         )
         .child(when(shown, move || inline_card(c2.clone()).into_element()))
         .into_element()
+}
+
+/// The full-screen v1 app's Pin: in Rox's records, `{plugin, app,
+/// ticket?, placement}` and its title (the sidebar lists them).
+pub fn pin_button(key: &str, n: u64) -> impl IntoElement {
+    let (k1, k2) = (key.to_owned(), key.to_owned());
+    let pinned = move || {
+        let Ok(k) = V1Key::parse(&k1) else { return false };
+        store().v1.records.with(|r| r.pins.iter().any(|p| p.plugin == k.plugin && p.app == k.app && p.ticket == k.ticket))
+    };
+    let p2 = pinned.clone();
+    view()
+        .label("Pin")
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
+        .bg(tc("#f5f5f50f"))
+        .child(dynamic(move || crate::icons::icon_ink(if pinned() { "pinFilled" } else { "pin" }, 14.0, || tc("#f5f5f5a8"))))
+        .child(text(move || if p2() { "Pinned".to_owned() } else { "Pin".to_owned() }).text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || {
+            let st = store();
+            let title = st.mini_full.with_untracked(|v| v.iter().find(|o| o.n == n).map(|o| o.title.clone())).unwrap_or_default();
+            let title = if title.is_empty() { st.mini_source_title(&k2).get_untracked() } else { title };
+            let Ok(k) = V1Key::parse(&k2) else { return };
+            let on = st.v1.records.with_untracked(|r| r.pins.iter().any(|p| p.plugin == k.plugin && p.app == k.app && p.ticket == k.ticket));
+            st.v1_pinned(&k2, &title, !on);
+        })
+}
+
+/// The pinned v1 apps in the sidebar (12.3): a press opens each as its app
+/// declares (inline in the open chat, or full screen); ✕ unpins.
+pub fn pins_section() -> impl IntoElement {
+    dynamic(|| {
+        let pins = store().v1.records.with(|r| r.pins.clone());
+        if pins.is_empty() {
+            return view().into_element();
+        }
+        view()
+            .px_3()
+            .pb_2()
+            .gap(px(2.0))
+            .child(text("Pinned apps").text_size(px(12.0)).text_color(theme::DIM).px_2().py_1())
+            .children(pins.into_iter().map(|p| {
+                let key = V1Key { plugin: p.plugin.clone(), app: p.app.clone(), ticket: p.ticket.clone(), props: Default::default() }.to_key();
+                let (k1, k2, title) = (key.clone(), key, p.title.clone());
+                let label = if p.needs_update { format!("{} · needs update", p.title) } else { p.title.clone() };
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py(px(6.0))
+                    .rounded(px(8.0))
+                    .label(label.clone())
+                    .on_press(move || store().open_mini_full(&k1, &title))
+                    .child(crate::appdetails::named_tile("", &p.title, 24.0))
+                    .child(text(label).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(theme::TEXT))
+                    .child(
+                        view()
+                            .size(px(18.0))
+                            .items_center()
+                            .justify_center()
+                            .label("Unpin")
+                            .on_press(move || store().v1_pinned(&k2, "", false))
+                            .child(text("✕").text_size(px(10.0)).text_color(theme::MUTED)),
+                    )
+                    .into_element()
+            }))
+            .into_element()
+    })
 }
 
 /// An inline app (6.5): a title bar with Open (full screen) over the app

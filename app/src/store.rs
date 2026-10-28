@@ -6167,7 +6167,8 @@ impl Store {
     pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
         // a v1 app's pin is Rox's too: {plugin, app, ticket?, placement}
         if kind == "app" && crate::mini_v1::is_v1(id) {
-            self.v1_pinned(id, thread, add);
+            // the app server's groups take v0 apps only: Rox keeps it
+            return self.v1_pinned(id, thread, add);
         }
         let mut body = serde_json::json!({
             "id": gid, "kind": kind, "ref": id, "op": if add { "add" } else { "remove" },
@@ -6846,6 +6847,11 @@ impl Store {
     /// changes): the app on top opened again reloads in its place, and
     /// drops its inputs' text changes.
     pub fn open_mini_full(&'static self, key: &str, title: &str) {
+        // a v1 app's pin opens as the app declares: inline in the chat,
+        // mounted at once (Q9), or full screen
+        if crate::mini_v1::is_v1(key) {
+            return self.open_v1_pin(key, title);
+        }
         self.open_mini_token(key, title, "");
     }
 
