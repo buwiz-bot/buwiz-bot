@@ -12,40 +12,12 @@
 // keys). The seed is never printed; the signed manifest goes to --out or
 // stdout.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { sign } from "./ed.mjs";
-import { isObject, parseIJson, signedBytes } from "./jcs.mjs";
+import { isObject, parseIJson } from "./jcs.mjs";
+import { PUBLISHER_SERVICE, signManifest } from "./signing.mjs";
 
-export const PUBLISHER_SERVICE = "dev.goldcoders.publisher";
-
-/** `sha256:<hex>` of an app source's bytes. */
-export const fingerprintOf = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-
-/** A signed copy of manifest `m`: `sources` maps app id → source bytes
- *  whose fingerprints are filled in first; the key id is the manifest's
- *  publisher.key_id. */
-export function signManifest(m, seed, sources = {}) {
-  const out = structuredClone(m);
-
-  delete out.signature;
-
-  for (const [id, bytes] of Object.entries(sources)) {
-    const app = (out.apps || []).find((a) => a.id === id);
-
-    if (!app) throw new Error(`the manifest has no app ${id}`);
-    app.fingerprint = fingerprintOf(bytes);
-  }
-
-  const keyId = out.publisher?.key_id;
-
-  if (!keyId) throw new Error("the manifest has no publisher.key_id");
-
-  out.signature = { alg: "ed25519", key_id: keyId, value: sign(seed, signedBytes(out)) };
-
-  return out;
-}
+export { PUBLISHER_SERVICE, fingerprintOf, signManifest } from "./signing.mjs";
 
 // A key file must be the owner's alone, as ssh insists for private keys.
 function readKeyFile(path) {
