@@ -2,6 +2,7 @@
 // v1/publisher-keygen.mjs — make a publisher signing key (spec 4.1, 4.2).
 //
 //   node server/v1/publisher-keygen.mjs gc-2026-01 [--publisher dev.goldcoders]
+//   node server/v1/publisher-keygen.mjs gc-2026-01 --public   # the key the Keychain holds
 //
 // Generates an ed25519 key, stores the seed in the macOS login Keychain
 // (service dev.goldcoders.publisher, account = key id) through
@@ -11,7 +12,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isV1 } from "../grammar.mjs";
-import { generate } from "./ed.mjs";
+import { generate, pubOf } from "./ed.mjs";
 import { PUBLISHER_SERVICE } from "./signing.mjs";
 
 function exists(keyId) {
@@ -31,12 +32,15 @@ function cli(argv) {
 
   if (!isV1("keyId", keyId)) throw new Error("usage: publisher-keygen.mjs <key_id> [--publisher <publisher id>]");
 
-  if (exists(keyId)) throw new Error(`the Keychain already holds ${PUBLISHER_SERVICE} / ${keyId}`);
+  if (argv.includes("--public")) return printEntry(keyId, publisher, pubOf(readSeed(keyId)));
+
+  if (exists(keyId)) throw new Error(`the Keychain already holds ${PUBLISHER_SERVICE} / ${keyId}; --public prints its trust.json entry`);
 
   const { seed, pub } = generate();
 
   const r = spawnSync("/usr/bin/security", ["-i"], {
-    input: `add-generic-password -s ${PUBLISHER_SERVICE} -a ${keyId} -w ${seed}\nquit\n`,
+    // the session ends at the end of stdin (`security -i` has no quit command)
+    input: `add-generic-password -s ${PUBLISHER_SERVICE} -a ${keyId} -w ${seed}\n`,
     stdio: ["pipe", "ignore", "pipe"],
   });
 
@@ -44,6 +48,14 @@ function cli(argv) {
 
   if (!exists(keyId)) throw new Error("the Keychain did not keep the key");
 
+  printEntry(keyId, publisher, pub);
+}
+
+// the seed stays in this process: only its public key is printed
+const readSeed = (keyId) =>
+  execFileSync("/usr/bin/security", ["find-generic-password", "-s", PUBLISHER_SERVICE, "-a", keyId, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+function printEntry(keyId, publisher, pub) {
   console.log(`public key ${keyId}: ${pub}`);
   console.log("trust.json publishers entry:");
   console.log(JSON.stringify({ [keyId]: { publisher, alg: "ed25519", public_key: pub } }, null, 2));
