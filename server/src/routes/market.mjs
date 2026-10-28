@@ -333,7 +333,7 @@ export default async function handle(req, res) {
       }
       const r = await upsertConnector(e.key, server, { id: id || undefined });
       if (lab) db.prepare("UPDATE mcp_servers SET account=? WHERE id=?").run(lab, r.id);
-      db.prepare("UPDATE mcp_servers SET enabled=1 WHERE id=?").run(r.id);
+      db.prepare("UPDATE mcp_servers SET enabled=1, agent_pending=NULL WHERE id=?").run(r.id);
       const meta = installedMeta(e.key);
       meta.mcp = [...new Set([...(meta.mcp || []), r.id])];
       if (r.created) meta.created = [...new Set([...(meta.created || []), r.id])];
@@ -507,7 +507,8 @@ export default async function handle(req, res) {
     return true;
   }
   // POST /mcp/servers {id?, name, command, args?, env?, bot?} — add or edit;
-  // the server is probed immediately so the reply carries its real status.
+  // an enabled server is probed immediately so the reply carries its real
+  // status (a switched-off one answers "off" and is not spawned).
   if (req.method === "POST" && req.url === "/mcp/servers") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -524,6 +525,8 @@ export default async function handle(req, res) {
     return true;
   }
   // POST /mcp/server/state {id, enabled} — toggle without deleting config.
+  // The user's enable is also what lets a server the agent added
+  // (agent_pending) run: it starts connecting at once.
   if (req.method === "POST" && req.url === "/mcp/server/state") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -531,9 +534,12 @@ export default async function handle(req, res) {
       res.setHeader("content-type", "application/json");
       try {
         const { id, enabled } = JSON.parse(body || "{}");
-        const r = db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, String(id || ""));
+        const r = enabled
+          ? db.prepare("UPDATE mcp_servers SET enabled=1, agent_pending=NULL WHERE id=?").run(String(id || ""))
+          : db.prepare("UPDATE mcp_servers SET enabled=0 WHERE id=?").run(String(id || ""));
         if (!r.changes) throw new Error("no such server");
         if (!enabled) mcpInvalidate(String(id));
+        else mcpEnsure(db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))).catch(() => {});
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.statusCode = 400;
@@ -669,6 +675,8 @@ export default async function handle(req, res) {
     const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id || ""));
     res.setHeader("content-type", "application/json");
     if (!row) { res.statusCode = 404; res.end('{"error":"no such server"}'); return; }
+    // a switched-off server is not spawned just to list its tools
+    if (!row.enabled) { res.end(JSON.stringify({ tools: [], status: "off" })); return true; }
     const off = new Set(JSON.parse(row.disabled_tools || "[]"));
     mcpEnsure(row).then((rec) => {
       res.end(JSON.stringify({
