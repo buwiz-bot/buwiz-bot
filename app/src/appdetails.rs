@@ -77,7 +77,7 @@ pub(crate) fn artifact_tile(a: &RoxApp, size: f32) -> impl IntoElement {
     let pic = if !a.icon.is_empty() {
         a.icon.clone()
     } else if a.attach.is_none() && a.kind == "image" {
-        format!("{}/asset/generated/assets/{}", crate::client::GEN, a.file)
+        format!("{}/asset/generated/assets/{}", crate::client::backend(), a.file)
     } else {
         String::new()
     };

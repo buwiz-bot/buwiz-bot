@@ -560,6 +560,6 @@ fn logo(it: &BotIntegration, size: f32) -> AnyElement {
         .bg(white())
         .border(px(0.5))
         .border_color(theme::BORDER_S)
-        .child(image(format!("{}{}", crate::client::GEN, it.icon)).w(px(size * 0.76)).h(px(size * 0.76)))
+        .child(image(format!("{}{}", crate::client::backend(), it.icon)).w(px(size * 0.76)).h(px(size * 0.76)))
         .into_element()
 }

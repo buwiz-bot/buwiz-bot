@@ -456,7 +456,7 @@ const MCP_APP_POSTS: [&str; 3] = ["/mcp/call", "/mcp/open", "/attach/pick"];
 const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 
 /// MCP apps call the server for their data; allow only the routes they use
-/// on its HTTP origin (`client::GEN`), and no other capabilities. Server
+/// on its HTTP origin (`client::backend()`), and no other capabilities. Server
 /// settings, `/data/*`, `/state/*` and the chats stay out of reach. NSH
 /// checks a WebSocket as a GET of the same URL, so only the read prefixes
 /// would pass one; the server has no WebSocket routes.
@@ -488,7 +488,7 @@ pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
 
 #[cfg(any(target_os = "macos", test))]
 fn mcp_app_server_host_port() -> Result<(String, u16), String> {
-    let origin = nsh_core::access::parse_url(crate::client::GEN)
+    let origin = nsh_core::access::parse_url(crate::client::backend())
         .ok_or_else(|| "invalid app server origin".to_owned())?;
     if origin.scheme != "http" {
         return Err("app server origin must use http".to_owned());
@@ -870,7 +870,7 @@ mod imp {
                     // server's files, served under /asset/.
                     asset_base: Some(nsh_platform_macos::AssetBase::Http(format!(
                         "{}/asset/",
-                        crate::client::GEN
+                        crate::client::backend()
                     ))),
                     ..Default::default()
                 },

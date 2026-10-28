@@ -73,7 +73,7 @@ pub(crate) fn media_url(uri: &str) -> String {
                 if !name.contains('/') {
                     return format!(
                         "{}/files/{bucket}/{}",
-                        crate::client::GEN,
+                        crate::client::backend(),
                         name.replace(' ', "%20")
                     );
                 }
@@ -106,7 +106,7 @@ fn mermaid_url(code: &str, mode: &str) -> String {
         }
     }
     let theme = if dark() { "dark" } else { "light" };
-    format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::GEN)
+    format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::backend())
 }
 
 /// `MermaidBlock` (md.tsx:119): a ```mermaid fence as a native SVG image
@@ -1128,7 +1128,7 @@ pub(crate) fn svg_view(uri: &str, fit: &str) -> View {
 /// so a link in a reply cannot make the viewer fetch from another host.
 fn svg_page(uri: &str, fit: &str) -> Option<String> {
     if !uri
-        .strip_prefix(crate::client::GEN)
+        .strip_prefix(crate::client::backend())
         .is_some_and(|rest| rest.starts_with("/file/raw/"))
     {
         return None;
@@ -1571,7 +1571,7 @@ fn web_page() -> Option<WebPage> {
     }
     let office = r.as_ref().map(|r| r.office.clone()).unwrap_or_default();
     if !office.is_empty() {
-        return Some(WebPage::Url(format!("{}{office}", crate::client::GEN), true));
+        return Some(WebPage::Url(format!("{}{office}", crate::client::backend()), true));
     }
     match f.kind.as_str() {
         "pdf" => Some(WebPage::Url(Store::file_raw_url(&f.path), false)),
@@ -1646,7 +1646,7 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
                         _ => String::new(),
                     })
                 },
-                Some(crate::client::GEN),
+                Some(crate::client::backend()),
             ))
             .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
             .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
@@ -2710,7 +2710,7 @@ mod tests {
     use super::{Store, svg_page};
 
     fn raw(path: &str) -> String {
-        format!("{}/file/raw/{path}", crate::client::GEN)
+        format!("{}/file/raw/{path}", crate::client::backend())
     }
 
     #[test]
