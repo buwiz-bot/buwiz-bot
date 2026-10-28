@@ -56,7 +56,8 @@ function securityStdin(line) {
     p.stderr.on("data", (d) => (err += d));
     p.on("error", reject);
     p.on("close", (code) => (code === 0 && !err.trim() ? resolve() : reject(new Error(`security: ${err.trim().slice(0, 200) || `exit ${code}`}`))));
-    p.stdin.end(`${line}\nquit\n`);
+    // the session ends at the end of stdin (`security -i` has no quit command)
+    p.stdin.end(`${line}\n`);
   });
 }
 
