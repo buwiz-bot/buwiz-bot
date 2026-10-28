@@ -759,7 +759,7 @@ impl RoutineTemplate {
 }
 
 /// `GET /routines` into the page.
-fn load_routines() {
+pub(crate) fn load_routines() {
     Owner::detached().run(|| {
         spawn(async move {
             if let Some(v) = crate::client::get("/routines").await {
