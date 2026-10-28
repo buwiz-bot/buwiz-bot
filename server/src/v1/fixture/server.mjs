@@ -186,8 +186,13 @@ const TOOLS = [
   },
   { name: "fx_fail", description: "Fail on purpose.", inputSchema: { type: "object" }, run: () => fail("tool_error", "fx_fail: it failed on purpose") },
   {
-    name: "fx_big", description: "Answer with bytes characters of text.", inputSchema: { type: "object", properties: { bytes: { type: "integer" } } },
-    run: (args) => ({ content: [{ type: "text", text: "x".repeat(Math.max(0, Number(args.bytes) || 0)) }] }),
+    name: "fx_big", description: "Answer with bytes characters of text (as: \"resource\" embeds them as an HTML document).",
+    inputSchema: { type: "object", properties: { bytes: { type: "integer" }, as: { type: "string" } } },
+    run: (args) => {
+      const text = "x".repeat(Math.max(0, Number(args.bytes) || 0));
+
+      return { content: [args.as === "resource" ? { type: "resource", resource: { uri: "fixture://doc.html", mimeType: "text/html", text } } : { type: "text", text }] };
+    },
   },
   {
     name: "fx_resolve", description: "Resolve the fixture's command and scopes.", inputSchema: { type: "object" },

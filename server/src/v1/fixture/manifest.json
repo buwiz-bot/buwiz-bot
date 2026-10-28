@@ -36,7 +36,8 @@
         "attach": ["item"],
         "pick_file": { "extensions": [".xlsx", ".csv"], "max_bytes": 26214400, "multiple": false },
         "storage": { "quota_bytes": 1048576 },
-        "copy": true
+        "copy": true,
+        "preview": { "max_bytes": 3145728 }
       }
     },
     {

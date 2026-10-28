@@ -48,6 +48,7 @@ export const LIMITS = Object.freeze({
   pickMaxBytes: 50 * 1024 * 1024,
   storageQuota: 10 * 1024 * 1024,
   storageDefault: 1024 * 1024,
+  previewMaxBytes: 8 * 1024 * 1024,
   propsBytes: 8 * 1024,
   propsDepth: 8,
   propsArray: 100,
@@ -292,7 +293,7 @@ function routines(m) {
 
 function permissions(p, m, at) {
   obj(p, at);
-  onlyKeys(p, ["tools", "open", "attach", "pick_file", "storage", "copy"], at);
+  onlyKeys(p, ["tools", "open", "attach", "pick_file", "storage", "copy", "preview"], at);
 
   for (const [i, t] of list(p.tools, `${at}.tools`, LIMITS.permTools).entries()) {
     if (isV1("reservedTool", t)) throw invalid(`${at}.tools[${i}]`, `${t} is reserved for Rox`);
@@ -343,6 +344,13 @@ function permissions(p, m, at) {
   }
 
   if (p.copy !== undefined && kindOf(p.copy) !== "boolean") throw invalid(`${at}.copy`, "must be a boolean");
+
+  if (p.preview !== undefined) {
+    obj(p.preview, `${at}.preview`);
+    onlyKeys(p.preview, ["max_bytes"], `${at}.preview`);
+
+    if (p.preview.max_bytes !== undefined) int(p.preview.max_bytes, `${at}.preview.max_bytes`, 1, LIMITS.previewMaxBytes);
+  }
 }
 
 function apps(m) {
@@ -599,6 +607,8 @@ function permissionLines(m, p) {
 
   if (p.copy) lines.push("Copy to clipboard");
 
+  if (p.preview) lines.push("Show print previews (static pages, no scripts)");
+
   return lines;
 }
 
@@ -669,6 +679,10 @@ export function addedPermissions(prev, next) {
       at(`storage ${mb(now.storage.quota_bytes ?? LIMITS.storageDefault)}`);
 
     if (now.copy && !was.copy) at("copy to clipboard");
+
+    if (now.preview && !was.preview) at("show print previews");
+    else if (now.preview && (now.preview.max_bytes ?? LIMITS.previewMaxBytes) > (was.preview.max_bytes ?? LIMITS.previewMaxBytes))
+      at(`print previews up to ${mb(now.preview.max_bytes ?? LIMITS.previewMaxBytes)}`);
   }
 
   for (const r of next.routines || []) {

@@ -25,6 +25,7 @@ app is shared between manifests: `if (rox.copy) …`.
 | `rox.pickFile({extensions?, multiple?})` | `pick_file` | `[{name, size, type, read()}]`, never a path; `[]` on cancel | `permission_denied`, `quota_exceeded`, `closed` (from `read()` after close) | 7.7 |
 | `rox.storage.get/set/remove/keys` | `storage` | Strings; private to this app | `quota_exceeded`, `invalid_args` | 11 |
 | `rox.copy(text)` | `copy` | Copies to the clipboard | | 5.6 |
+| `rox.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `rox.call`'s | 7.10 |
 
 Every rejection is a `RoxError {code, retryable, message, details?}`
 ([spec] 14.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
@@ -46,6 +47,40 @@ export default function Status() {
 
   return <Text>{line()}</Text>;
 }
+```
+
+## Print preview: `rox.preview`
+
+`rox.preview({tool, args?, title?})` asks Rox to call `tool` (one of the
+app's own `permissions.tools`; another name rejects `not_declared`) with
+`args`, as the app, and show the document it returns full screen over the
+app: a title bar with `title` (else the result's `structuredContent.title`,
+else the app's title), **Print** (the macOS print panel, which also saves a
+PDF) and **Close**. The document never passes through the app, so it may
+be larger than a `rox.call` result: up to `permissions.preview.max_bytes`
+(8 MiB at most). The call is signed and checked like `rox.call`; its
+envelope carries `"purpose": "preview"`, which the broker accepts only from
+an app with `preview`.
+
+The tool returns the page as an MCP embedded resource:
+
+```json
+{
+  "content": [{ "type": "resource",
+                "resource": { "uri": "my://print/1601C.html", "mimeType": "text/html", "text": "<!DOCTYPE html>…" } }],
+  "structuredContent": { "title": "Form 1601C — Dela Cruz Jane" }
+}
+```
+
+Make the page **static**: Rox renders it with JavaScript off, no base URL
+and a policy that loads nothing (no network, no files; inline `<style>` and
+`data:` images, fonts and objects, such as an embedded PDF, only), and it does not follow links or navigate.
+A result without a `text/html` resource rejects `tool_error`; `isError`
+rejects `tool_error` with its first text; a larger page `result_too_large`.
+Rox on other platforms rejects `not_supported`.
+
+```tsx
+if (rox.preview) await rox.preview({ tool: "acme_print_page", args: { ticket: rox.props.ticket } });
 ```
 
 ## What your tool receives
@@ -101,7 +136,8 @@ Rox renders your app in Rox's own light or dark setting, not the OS's, and switc
 | Item | Limit |
 |---|---|
 | `rox.call` args | 256 KiB serialized |
-| `rox.call` result | 1 MiB (structured plus text) |
+| `rox.call` result | 1 MiB (structured plus text and embedded resources) |
+| `rox.preview` document | `permissions.preview.max_bytes`, at most 8 MiB |
 | Calls in flight per open | 8 (the ninth waits) |
 | New calls per second per open | 20 (more: `rate_limited`) |
 | Bridge call timeout | 30 s (host), 120 s (broker to plugin) |

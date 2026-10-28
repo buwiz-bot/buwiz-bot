@@ -14,7 +14,7 @@ import { fromB64u, verify } from "./ed.mjs";
 import { refuse } from "./errors.mjs";
 import { JcsError, canonicalize, isInt, isObject, isString, signedBytes } from "./jcs.mjs";
 import { fingerprintOf } from "./signing.mjs";
-import { permsDigest, validateProps } from "./manifest.mjs";
+import { LIMITS, permsDigest, validateProps } from "./manifest.mjs";
 import { resultData } from "./plugins.mjs";
 
 export const SKEW_MS = 60_000;
@@ -25,6 +25,8 @@ export const MAX_INFLIGHT = 8;
 export const MAX_PER_SECOND = 20;
 export const ARGS_MAX = 256 * 1024;
 export const RESULT_MAX = 1024 * 1024;
+// a rox.preview call's result (the document); permissions.preview.max_bytes may lower it
+export const PREVIEW_MAX = LIMITS.previewMaxBytes;
 export const SOURCE_MAX = 512 * 1024;
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -36,9 +38,11 @@ const cap = (s, n) => {
 
 const firstText = (r) => (r?.content || []).find((c) => c.type === "text")?.text || "";
 
-/** A tool result's size as 7.3 counts it: structured plus text, in bytes. */
+/** A tool result's size as 7.3 counts it: structured plus text (and an
+ *  embedded resource's text or blob), in bytes. */
 export function resultBytes(r) {
-  const text = (r?.content || []).filter((c) => c.type === "text").reduce((n, c) => n + Buffer.byteLength(c.text || ""), 0);
+  const piece = (c) => (c.type === "text" ? Buffer.byteLength(c.text || "") : c.type === "resource" ? Buffer.byteLength(String(c.resource?.text ?? c.resource?.blob ?? "")) : 0);
+  const text = (r?.content || []).reduce((n, c) => n + piece(c || {}), 0);
 
   return text + (r?.structuredContent === undefined ? 0 : Buffer.byteLength(JSON.stringify(r.structuredContent)));
 }
@@ -225,7 +229,7 @@ export function createSessions(plugins) {
     // 9
     if (!row.enabled || rt.state !== "running") refuse("plugin_unavailable", `${s.plugin} is not running`);
 
-    return { s, rt };
+    return { s, rt, perms };
   }
 
   function rate(s) {
@@ -265,8 +269,16 @@ export function createSessions(plugins) {
       refuse("invalid_args", e instanceof JcsError ? e.message : "the envelope cannot be canonicalized");
     }
 
-    const { s, rt } = check(envelope, sig);
+    const { s, rt, perms } = check(envelope, sig);
     const args = envelope.args ?? {};
+    // rox.preview: Rox calls the app's own tool for a document; only an app
+    // with permissions.preview gets the larger result limit
+    const preview = envelope.purpose !== undefined;
+
+    if (preview && envelope.purpose !== "preview") refuse("invalid_args", "purpose must be \"preview\" when present");
+
+    if (preview && !isObject(perms.preview)) refuse("permission_denied", "this app has no preview permission");
+    const max = preview ? Math.min(perms.preview.max_bytes ?? PREVIEW_MAX, PREVIEW_MAX) : RESULT_MAX;
 
     if (!isObject(args)) refuse("invalid_args", "args must be a JSON object");
 
@@ -287,7 +299,7 @@ export function createSessions(plugins) {
 
     if (r.isError) refuse("tool_error", cap(firstText(r) || `${envelope.tool} failed`, 500));
 
-    if (resultBytes(r) > RESULT_MAX) refuse("result_too_large", `${envelope.tool}'s result is over 1 MiB`);
+    if (resultBytes(r) > max) refuse("result_too_large", `${envelope.tool}'s result is over ${preview ? `${Math.round((max / 1048576) * 10) / 10} MiB` : "1 MiB"}`);
 
     return { ok: true, result: stripMeta(r) };
   }
