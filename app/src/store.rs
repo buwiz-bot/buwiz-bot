@@ -48,13 +48,15 @@ pub fn checked_at(ms: f64) -> String {
 pub struct RoutineOf {
     pub plugin: String,
     pub id: String,
+    /// The instance whose thread it is ("" from a broker before instances).
+    pub instance: String,
     pub name: String,
     pub thread: String,
 }
 
 impl RoutineOf {
     fn of(v: &serde_json::Value) -> Option<Self> {
-        let r = Self { plugin: s(v, "plugin"), id: s(v, "id"), name: s(v, "name"), thread: s(v, "thread") };
+        let r = Self { plugin: s(v, "plugin"), id: s(v, "id"), instance: s(v, "instance"), name: s(v, "name"), thread: s(v, "thread") };
         (!r.plugin.is_empty() && !r.id.is_empty()).then_some(r)
     }
 }
@@ -98,6 +100,46 @@ impl RoutineNotice {
             return format!("{} failed: {e}", self.name);
         }
         format!("{} ran · {} new item{}", self.name, self.items, if self.items == 1 { "" } else { "s" })
+    }
+}
+
+/// A `notice` turn that asks the user to switch on a routine instance the
+/// agent made (`routine_consent`, 5.9): its question (the turn's text),
+/// and whether it was answered.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct ConsentNotice {
+    pub plugin: String,
+    pub routine: String,
+    pub instance: String,
+    pub name: String,
+    pub text: String,
+    /// `pending`, `enabled` or `declined`.
+    pub state: String,
+}
+
+impl ConsentNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "routine_consent" || s(v, "instance").is_empty() {
+            return None;
+        }
+        Some(Self {
+            plugin: s(v, "plugin"),
+            routine: s(v, "routine"),
+            instance: s(v, "instance"),
+            name: s(v, "name"),
+            text,
+            state: Some(s(v, "state")).filter(|x| !x.is_empty()).unwrap_or_else(|| "pending".to_owned()),
+        })
+    }
+
+    /// Its state as the card shows it, the user's tap (`local`) over the
+    /// one the chat last loaded: None while it still asks.
+    pub fn answered(&self, local: Option<&str>) -> Option<&'static str> {
+        match local.unwrap_or(&self.state) {
+            "enabled" => Some("Enabled"),
+            "declined" => Some("Not enabled"),
+            _ => None,
+        }
     }
 }
 
@@ -551,6 +593,8 @@ pub struct Turn {
     pub suggest: Vec<(String, String)>,
     /// A `notice` turn: a routine's run, drawn as a centered line.
     pub notice: Option<RoutineNotice>,
+    /// A `notice` turn asking to switch on a routine (a card with Enable).
+    pub consent: Option<ConsentNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -1646,6 +1690,7 @@ impl Turn {
                 })
                 .collect(),
             notice: (s(v, "role") == "notice").then(|| v.get("notice").and_then(RoutineNotice::of)).flatten(),
+            consent: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ConsentNotice::of(n, s(v, "text")))).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -1889,6 +1934,13 @@ pub struct Store {
     /// Run now in flight or just done, by routine (`routines::v1_key`,
     /// `v0_key`).
     pub routine_runs: Signal<Vec<(String, crate::routines::RunState)>>,
+    /// A webhook instance's URL, just made: (instance, URL), shown once.
+    pub routine_hook: Signal<Option<(String, String)>>,
+    /// The instance whose params are being edited, and the JSON typed.
+    pub routine_edit: Signal<Option<(String, String)>>,
+    /// Consent cards answered here, before the chat reloads: (instance,
+    /// "enabled" | "declined").
+    pub routine_consented: Signal<Vec<(String, String)>>,
     /// The templates connected servers suggest (`GET /routines/templates`);
     /// the one whose Enable is asking for the Google address (server, id),
     /// and what's typed there.
@@ -2232,6 +2284,9 @@ impl Store {
             settings_note: signal(String::new()),
             routines: signal(Vec::new()),
             routine_runs: signal(Vec::new()),
+            routine_hook: signal(None),
+            routine_edit: signal(None),
+            routine_consented: signal(Vec::new()),
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
@@ -7282,10 +7337,26 @@ mod tests {
         assert_eq!(Turn::of(&serde_json::json!({"role": "user", "text": "hi"})).instruction_from, "");
         let row = serde_json::json!({"plugin": "dev.example.bir", "id": "payments", "name": "BIR payments", "thread": "t5"});
         assert_eq!(RoutineOf::of(&row), Some(RoutineOf {
-            plugin: "dev.example.bir".into(), id: "payments".into(), name: "BIR payments".into(), thread: "t5".into(),
+            plugin: "dev.example.bir".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t5".into(),
         }));
         assert_eq!(RoutineOf::of(&serde_json::Value::Null), None);
         assert_eq!(RoutineOf::of(&serde_json::json!({"name": "x"})), None);
+    }
+
+    #[test]
+    fn a_consent_notice_is_a_card_until_answered() {
+        use super::Turn;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Enable Payments (Taxpayer B) here? It may change BIR data without asking: bir_record_payment.",
+            "notice": {"kind": "routine_consent", "plugin": "dev.example.bir", "routine": "payments", "instance": "ri_abc123", "name": "Payments", "state": "pending"}}));
+        assert!(t.notice.is_none(), "no run line");
+        let c = t.consent.expect("a consent card");
+        assert_eq!((c.instance.as_str(), c.routine.as_str(), c.state.as_str()), ("ri_abc123", "payments", "pending"));
+        assert!(c.text.starts_with("Enable Payments (Taxpayer B) here?"));
+        assert_eq!(c.answered(None), None, "it still asks");
+        assert_eq!(c.answered(Some("enabled")), Some("Enabled"), "the tap shows before the chat reloads");
+        let done = super::ConsentNotice { state: "declined".into(), ..c };
+        assert_eq!(done.answered(None), Some("Not enabled"));
+        assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "routine_consent"}})).consent.is_none(), "no instance, no card");
     }
 
     #[test]

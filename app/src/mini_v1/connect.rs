@@ -70,6 +70,81 @@ pub struct Routine {
     pub last_items: Option<u64>,
     /// A run is in progress (Run now, or its schedule).
     pub running: bool,
+    /// Its instances (5.9): each runs in one chat with its own params,
+    /// trigger and thread. Empty from a broker before instances.
+    pub instances: Vec<Instance>,
+    /// Its `params` schema (`Null` when it takes none), and the plugin's
+    /// own tools it may change data with.
+    pub params_schema: Value,
+    pub writes: Vec<String>,
+}
+
+/// One instance of a routine (5.9, "Routine instances").
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Instance {
+    pub instance: String,
+    /// Its label, else its params in one line ("" none).
+    pub summary: String,
+    pub params: Value,
+    /// `schedule` or `webhook`.
+    pub trigger: String,
+    pub every_s: f64,
+    pub enabled: bool,
+    /// Waiting for the user's Enable on its consent card.
+    pub pending: bool,
+    pub thread: String,
+    pub home: String,
+    pub available: bool,
+    pub reason: String,
+    pub last_run: f64,
+    pub last_error: String,
+    pub last_items: Option<u64>,
+    pub running: bool,
+    /// Its webhook has a URL (shown once, when it is made).
+    pub hook: bool,
+}
+
+impl Instance {
+    fn of(v: &Value) -> Instance {
+        let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+        Instance {
+            instance: s(v, "instance"),
+            summary: s(v, "summary"),
+            params: v.get("params").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+            trigger: Some(s(v, "trigger")).filter(|t| !t.is_empty()).unwrap_or_else(|| "schedule".to_owned()),
+            every_s: v.get("every_s").and_then(Value::as_f64).unwrap_or(0.0),
+            enabled: b("enabled"),
+            pending: b("pending"),
+            thread: s(v, "thread"),
+            home: s(v, "home"),
+            available: b("available"),
+            reason: s(v, "reason"),
+            last_run: v.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
+            last_error: s(v, "last_error"),
+            last_items: v.get("last_items").and_then(Value::as_u64),
+            running: b("running"),
+            hook: b("hook"),
+        }
+    }
+
+    /// The routine as this instance runs it, for its lines
+    /// ([`Routine::last_check`], [`Routine::schedule`]).
+    pub fn as_routine(&self, r: &Routine) -> Routine {
+        Routine {
+            enabled: self.enabled,
+            available: self.available,
+            reason: self.reason.clone(),
+            thread: self.thread.clone(),
+            home: self.home.clone(),
+            every_s: if self.every_s > 0.0 { self.every_s } else { r.every_s },
+            last_run: self.last_run,
+            last_error: self.last_error.clone(),
+            last_items: self.last_items,
+            running: self.running,
+            instances: Vec::new(),
+            ..r.clone()
+        }
+    }
 }
 
 impl Routine {
@@ -87,6 +162,32 @@ impl Routine {
     /// "Checks every 5 min".
     pub fn schedule(&self) -> String {
         format!("Checks {}", crate::routines::interval(self.every_s))
+    }
+
+    /// Its instances, or for a broker before instances the routine itself
+    /// as one (`instance` "", when it was ever enabled).
+    pub fn instances_or_self(&self) -> Vec<Instance> {
+        if !self.instances.is_empty() || self.thread.is_empty() {
+            return self.instances.clone();
+        }
+        vec![Instance {
+            instance: String::new(),
+            summary: String::new(),
+            params: json!({}),
+            trigger: "schedule".to_owned(),
+            every_s: self.every_s,
+            enabled: self.enabled,
+            pending: false,
+            thread: self.thread.clone(),
+            home: self.home.clone(),
+            available: self.available,
+            reason: self.reason.clone(),
+            last_run: self.last_run,
+            last_error: self.last_error.clone(),
+            last_items: self.last_items,
+            running: self.running,
+            hook: false,
+        }]
     }
 
     /// How its last check went, and whether that is a failure: "last
@@ -174,6 +275,9 @@ impl Listed {
                     last_run: r.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
                     last_error: s(r, "last_error"),
                     running: r.get("running").and_then(Value::as_bool).unwrap_or(false),
+                    instances: list(r, "instances").iter().map(Instance::of).collect(),
+                    params_schema: r.get("params").cloned().filter(Value::is_object).unwrap_or(Value::Null),
+                    writes: list(r, "writes").iter().filter_map(|w| w.as_str().map(str::to_owned)).collect(),
                     reads: list(r, "reads_status")
                         .iter()
                         .map(|x| {

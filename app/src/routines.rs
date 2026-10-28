@@ -247,6 +247,16 @@ pub(crate) fn run_v0(id: String) {
     });
 }
 
+/// The params editor's text as params: a JSON object, else why not.
+/// The broker checks it against the routine's schema.
+pub(crate) fn parse_params(text: &str) -> Result<serde_json::Value, String> {
+    match serde_json::from_str::<serde_json::Value>(text.trim()) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => Err("Params are a JSON object: {\"name\": value}".to_owned()),
+        Err(e) => Err(format!("Not JSON: {e}")),
+    }
+}
+
 /// On / off (`POST /routine/update {id, enabled}`), shown at once.
 pub(crate) fn set_routine_enabled(id: String, enabled: bool) {
     store().routines.update(|l| {
@@ -472,6 +482,13 @@ mod tests {
         assert_eq!(v1_outcome(&r), ("Run failed: fx_query: offline".to_owned(), true));
         assert_eq!(refused("BIR payments is paused; resume it first"), ("Couldn't run: BIR payments is paused; resume it first".to_owned(), true));
         assert_eq!(refused(""), ("Couldn't run it".to_owned(), true));
+    }
+
+    #[test]
+    fn params_are_a_json_object() {
+        assert_eq!(parse_params(r#" {"taxpayers": ["tp_1"]} "#), Ok(serde_json::json!({"taxpayers": ["tp_1"]})));
+        assert!(parse_params("[1]").unwrap_err().starts_with("Params are a JSON object"));
+        assert!(parse_params("{taxpayers").unwrap_err().starts_with("Not JSON"));
     }
 
     #[test]
