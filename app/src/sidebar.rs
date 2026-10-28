@@ -1901,7 +1901,11 @@ fn group_app_row(gid: String, key: String, title: String) -> impl IntoElement {
     let hovered = signal(false);
     let gid2 = gid.clone();
     let row_key = format!("app:{key}");
-    let server = key.trim_start_matches("mcp:").split('/').next().unwrap_or("").to_owned();
+    // a v1 app names its plugin as its cards do, never the raw `v1:` key
+    let server = match crate::mini_v1::V1Key::parse(&key) {
+        Ok(k) => store().v1.entry(&k.plugin).map(|p| p.title).unwrap_or(k.plugin),
+        Err(_) => key.trim_start_matches("mcp:").split('/').next().unwrap_or("").to_owned(),
+    };
     let (key2, key3, title2, title3) = (key.clone(), key.clone(), title.clone(), title.clone());
     let row = view()
         .flex_row()
