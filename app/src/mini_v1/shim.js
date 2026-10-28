@@ -73,6 +73,13 @@ const __roxBridge = (() => {
     app: freeze(params.app || {}),
     viewport: () => viewport(),
     ticket: Object.freeze({ title: (ticket) => ask("rox.ticket.title", { ticket }) }),
+    // an inline card's content height in points: the host sizes the card
+    // to it within the manifest's inline range (full screen: ignored)
+    fit: (height) => {
+      const h = Number(height);
+      if (!(h > 0) || !Number.isFinite(h)) throw new RoxError("invalid_args", "rox.fit takes a height in points");
+      __roxHost.post("rox.fit", { height: Math.ceil(h) });
+    },
   };
   if (has("rox.call")) rox.call = (tool, args) => ask("rox.call", { tool, args: args === undefined ? {} : args });
   if (has("rox.open")) rox.open = (target) => ask("rox.open", target).then(done);

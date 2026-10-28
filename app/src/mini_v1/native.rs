@@ -120,6 +120,15 @@ impl HostUi for MacUi {
         Ok(())
     }
 
+    fn fit(&self, height: f32) {
+        let key = self.key.clone();
+        super::to_store(move |st| {
+            st.v1.fit.update(|f| {
+                f.insert(key, height);
+            })
+        });
+    }
+
     fn session_ended(&self, _: &V1Key, why: Ended) {
         // a restart is a new generation (13.7): "Reconnecting" until the
         // plugin runs again, then the open reopens on it

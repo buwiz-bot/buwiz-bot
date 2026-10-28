@@ -6,7 +6,9 @@
 //! or **Show** (inline); nothing opens or mounts until it is pressed
 //! (INV-08, 9.7). An inline app is sized from its manifest's `inline`,
 //! clamped to 240–960 × 96–800 and to the chat column, under a title bar
-//! with Open (full screen). A user's own command, token or pin mounts an
+//! with Open (full screen). Its height is the first frame's: the app's
+//! `rox.fit` moves it to its content's within `inline.min_height` ..
+//! `inline.max_height` ([`fit_height`]). A user's own command, token or pin mounts an
 //! inline app at once (Q9); a tool result or link waits for Show.
 
 use serde_json::{Map, Value};
@@ -16,6 +18,9 @@ use super::{V1Key, perms};
 /// Inline width and height ranges (5.5, Appendix A).
 pub const WIDTH: (f32, f32) = (240.0, 960.0);
 pub const HEIGHT: (f32, f32) = (96.0, 800.0);
+/// The heights `rox.fit` moves an inline card within when the manifest
+/// gives no `inline.min_height` / `max_height` (6.5).
+pub const FIT: (f32, f32) = (120.0, 640.0);
 
 /// How an open is placed (6.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +262,24 @@ pub fn inline_size(app: &Value, column: f32) -> (f32, f32) {
     (if column > 0.0 { w.min(column) } else { w }, h)
 }
 
+/// The heights an inline app's `rox.fit` may set: its manifest's
+/// `inline.min_height` and `max_height` ([`FIT`] when absent), each in the
+/// spec's range; a maximum under the minimum is the minimum.
+pub fn fit_range(app: &Value) -> (f32, f32) {
+    let inline = app.get("inline");
+    let dim = |k: &str, default: f32| {
+        inline.and_then(|i| i.get(k)).and_then(Value::as_f64).map_or(default, |v| v as f32).clamp(HEIGHT.0, HEIGHT.1)
+    };
+    let lo = dim("min_height", FIT.0);
+    (lo, dim("max_height", FIT.1).max(lo))
+}
+
+/// The card height `rox.fit(height)` sets: `height` in [`fit_range`].
+pub fn fit_height(app: &Value, height: f32) -> f32 {
+    let (lo, hi) = fit_range(app);
+    height.clamp(lo, hi)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -352,5 +375,24 @@ mod tests {
         assert_eq!(declared(&app(1.0, 1.0)), Placement::Inline);
         assert_eq!(declared(&json!({"placement": ["full", "inline"]})), Placement::Full);
         assert_eq!(declared(&json!({})), Placement::Full);
+    }
+
+    #[test]
+    fn fit_moves_an_inline_card_within_its_declared_heights() {
+        let app = |i: Value| json!({"placement": ["inline"], "inline": i});
+        // defaults 120 .. 640
+        let plain = app(json!({"width": 560, "height": 230}));
+        assert_eq!(fit_range(&plain), (120.0, 640.0));
+        assert_eq!(fit_height(&plain, 284.0), 284.0);
+        assert_eq!(fit_height(&plain, 40.0), 120.0);
+        assert_eq!(fit_height(&plain, 2000.0), 640.0);
+        // the manifest's, within the spec's 96 .. 800
+        let own = app(json!({"width": 560, "height": 230, "min_height": 150, "max_height": 400}));
+        assert_eq!(fit_height(&own, 100.0), 150.0);
+        assert_eq!(fit_height(&own, 500.0), 400.0);
+        assert_eq!(fit_range(&app(json!({"min_height": 10, "max_height": 5000}))), (96.0, 800.0));
+        // a maximum under the minimum is the minimum
+        assert_eq!(fit_range(&app(json!({"min_height": 300, "max_height": 200}))), (300.0, 300.0));
+        assert_eq!(fit_range(&Value::Null), FIT);
     }
 }

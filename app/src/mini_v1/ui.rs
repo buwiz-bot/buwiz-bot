@@ -61,6 +61,9 @@ pub struct V1 {
     pub hidden: Signal<HashSet<String>>,
     /// Cards refreshed: they read live instead of their snapshot (9.8).
     pub live: Signal<HashSet<String>>,
+    /// Per inline open (module key): the card height its `rox.fit` set
+    /// (clamped); the declared height until then.
+    pub fit: Signal<HashMap<String, f32>>,
     /// Rox's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
@@ -94,6 +97,7 @@ impl V1 {
             shown: signal(HashSet::new()),
             hidden: signal(HashSet::new()),
             live: signal(HashSet::new()),
+            fit: signal(HashMap::new()),
             records: signal(Records::default()),
             review: signal(None),
             busy: signal(String::new()),
@@ -1669,13 +1673,15 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
 
 /// An inline app (6.5): a title bar with Refresh and Open (full screen,
 /// the maximize icon) over the app at its declared size, clamped to the
-/// range and the column.
+/// range and the column. Its height then follows the app's `rox.fit`.
 pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
     let key = if live { card.live_key().to_key() } else { card.key().to_key() };
     let as_of = card.as_of().filter(|_| !live);
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
-    let (w, h) = cards::inline_size(&app, COLUMN);
+    let (w, declared) = cards::inline_size(&app, COLUMN);
+    let key_h = key.clone();
+    let h = move || store().v1.fit.with(|f| f.get(&key_h).copied()).unwrap_or(declared);
     let c = card.clone();
     let key_r = key.clone();
     view()
@@ -1712,7 +1718,10 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
         )
         .child(
             view()
-                .h(px(h))
+                .h({
+                    let h = h.clone();
+                    move || px(h())
+                })
                 .child(banners(&key))
                 .child(crate::mini::mini_app_inline(&key, w, h))
                 .child(error_overlay(&key)),

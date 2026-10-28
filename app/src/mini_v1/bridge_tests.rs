@@ -146,6 +146,7 @@ struct TestUi {
     files: Mutex<Vec<PathBuf>>,
     ended: Mutex<Vec<Ended>>,
     previews: Mutex<Vec<Preview>>,
+    fits: Mutex<Vec<f32>>,
 }
 
 impl HostUi for TestUi {
@@ -186,6 +187,9 @@ impl HostUi for TestUi {
     fn session_ended(&self, _: &V1Key, why: Ended) {
         self.ended.lock().unwrap().push(why);
     }
+    fn fit(&self, height: f32) {
+        self.fits.lock().unwrap().push(height);
+    }
 }
 
 struct Sink(mpsc::Sender<MountBatch>, Arc<Mutex<Vec<(AppErrorKind, String)>>>);
@@ -221,6 +225,10 @@ impl Open {
     }
 
     fn start_source(plugin_id: &str, perms: Value, source: &str, limits: Limits, ui_setup: impl FnOnce(&TestUi)) -> Open {
+        Open::start_placed("full", plugin_id, perms, source, limits, ui_setup)
+    }
+
+    fn start_placed(placement: &str, plugin_id: &str, perms: Value, source: &str, limits: Limits, ui_setup: impl FnOnce(&TestUi)) -> Open {
         let source = source.to_owned();
         let prepared = Arc::new(Prepared {
             key: V1Key { plugin: plugin_id.to_owned(), app: "board".to_owned(), ticket: None, props: Default::default() },
@@ -238,7 +246,7 @@ impl Open {
         let root = crate::mini_v1::storage::scratch_root("bridge");
         let ctx = OpenContext::new(prepared.clone(), session, broker.clone(), ui.clone(), &root, limits);
         let channel = HostChannel::new();
-        install(&channel, &ctx, json!({"width": 800, "height": 600, "placement": "full"}));
+        install(&channel, &ctx, json!({"width": 800, "height": 600, "placement": placement}));
         let bundle = Bundle::source(prepared.js.clone()).with_policy(prepared.permissions.policy());
         let mut config = EngineConfig::new(App::Js(bundle));
         config.host = channel.clone();
@@ -291,7 +299,7 @@ fn app_07_ungranted_methods_are_absent() {
     assert_eq!(o.wait("open"), "open,attach,pickFile,storage,copy function function true true undefined board 1");
     // and at the host level: the channel handles only the granted names
     let p = &o.ctx.prepared;
-    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.call"]);
+    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
     assert!(!p.permissions.policy().access().allows_host("rox.open"));
 }
 
@@ -634,6 +642,59 @@ export default function T() {
     assert_eq!(o.wait("size"), "size 800x600 full yes");
     o.channel.send("rox.viewport", json!({"width": 480, "height": 320, "placement": "inline"})).unwrap();
     assert_eq!(o.wait("size 480"), "size 480x320 inline yes");
+}
+
+#[test]
+fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
+    // the fixture board declares no inline range: 120 .. 640
+    let script = r#"
+        rox.fit(284.2);
+        rox.fit(285);
+        rox.fit(20);
+        rox.fit(5000);
+        let bad = "";
+        try { rox.fit("tall"); } catch (e) { bad = e.code; }
+        try { rox.fit(-1); } catch (e) { bad += " " + e.code; }
+        return "fit " + typeof rox.fit + " " + bad;
+    "#;
+    let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
+    assert_eq!(o.wait("fit"), "fit function invalid_args invalid_args");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while o.ui.fits.lock().unwrap().len() < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // 285 is within 2 points of 285 (284.2 rounds up): no change
+    assert_eq!(*o.ui.fits.lock().unwrap(), [285.0, 120.0, 640.0]);
+    let mut full = Open::start(json!({}), r#"rox.fit(300); return "fit " + typeof rox.fit;"#);
+    assert_eq!(full.wait("fit"), "fit function");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(full.ui.fits.lock().unwrap().is_empty(), "a full-screen open's fit is ignored");
+}
+
+#[test]
+fn fit_is_paced_and_the_last_height_still_lands() {
+    let t0 = Instant::now();
+    let mut f = Fitter::default();
+    assert_eq!(f.ask(200.0, t0), Some(200.0));
+    assert_eq!(f.ask(201.5, t0), None, "under 2 points");
+    assert_eq!(f.next(), None);
+    for i in 1..FIT_PER_SECOND {
+        assert_eq!(f.ask(200.0 + 10.0 * i as f32, t0), Some(200.0 + 10.0 * i as f32));
+    }
+    // the ninth in a second waits; a later one replaces it
+    assert_eq!(f.ask(400.0, t0 + Duration::from_millis(100)), None);
+    assert_eq!(f.ask(420.0, t0 + Duration::from_millis(200)), None);
+    assert_eq!(f.next(), Some(t0 + Duration::from_secs(1)));
+    assert_eq!(f.retry(t0 + Duration::from_secs(1)), Some(420.0));
+    assert_eq!(f.next(), None);
+    // a wish back to the height set drops the waiting one
+    let mut g = Fitter::default();
+    for i in 0..FIT_PER_SECOND {
+        g.ask(100.0 + 10.0 * i as f32, t0);
+    }
+    assert_eq!(g.ask(300.0, t0), None);
+    assert_eq!(g.ask(170.0, t0), None);
+    assert_eq!(g.next(), None);
 }
 
 #[test]

@@ -64,6 +64,8 @@ pub const PICK: &str = "rox.pickFile";
 pub const COPY: &str = "rox.copy";
 pub const PREVIEW: &str = "rox.preview";
 pub const TICKET_TITLE: &str = "rox.ticket.title";
+/// An inline app's content height (a post; 6.5, 7.11).
+pub const FIT: &str = "rox.fit";
 pub const STORAGE: [&str; 4] = ["rox.storage.get", "rox.storage.set", "rox.storage.remove", "rox.storage.keys"];
 
 impl Permissions {
@@ -87,9 +89,10 @@ impl Permissions {
         Ok(p)
     }
 
-    /// The bridge methods granted (6.4), `rox.ticket.title` always.
+    /// The bridge methods granted (6.4), `rox.ticket.title` and `rox.fit`
+    /// always.
     pub fn methods(&self) -> Vec<&'static str> {
-        let mut m = vec![TICKET_TITLE];
+        let mut m = vec![TICKET_TITLE, FIT];
         if !self.tools.is_empty() {
             m.push(CALL);
         }
@@ -316,10 +319,11 @@ mod tests {
     #[test]
     fn app_07_policy_grants_host_for_granted_methods_only() {
         let p = Permissions::parse(Some(&json!({"tools": ["fx_echo"]}))).unwrap();
-        assert_eq!(p.methods(), ["rox.ticket.title", "rox.call"]);
+        assert_eq!(p.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
         let access = p.policy().access();
         assert!(access.allows_host("rox.call"));
         assert!(access.allows_host("rox.ticket.title"));
+        assert!(access.allows_host("rox.fit"));
         for absent in ["rox.open", "rox.attach", "rox.pickFile", "rox.copy", "rox.preview", "rox.storage.get", "anything"] {
             assert!(!access.allows_host(absent), "{absent}");
         }
@@ -336,7 +340,7 @@ mod tests {
         assert!(!access.allows_process("sh"));
         assert!(p.policy().harden);
         let all = Permissions::parse(Some(&fixture_board())).unwrap();
-        assert_eq!(all.methods().len(), 11);
+        assert_eq!(all.methods().len(), 12);
         assert!(all.policy().access().allows_host("rox.preview"));
         // a preview is the host's own web view, not one the app gets
         assert!(!all.policy().access().allows_webviews());
