@@ -478,6 +478,8 @@ pub struct Turn {
     /// The v1 attachments that went to the model with this user message
     /// (`v1Attachments`, spec 10.3): (canonical token, title).
     pub v1_attachments: Vec<(String, String)>,
+    /// An answer's next steps (9.8, `suggest`): (label, prompt).
+    pub suggest: Vec<(String, String)>,
 }
 
 /// What a reply quotes of turn `t` (`onReply(i, text || caption || name)`):
@@ -1558,6 +1560,12 @@ impl Turn {
             revising: v.get("revising").and_then(|x| x.as_bool()).unwrap_or(false),
             links: list(v, "links").iter().map(DriveLink::of).filter(|l| !l.id.is_empty()).collect(),
             cards: v.get("cards").map(crate::cards::parse_list).unwrap_or_default(),
+            suggest: list(v, "suggest")
+                .iter()
+                .map(|x| (s(x, "label"), s(x, "prompt")))
+                .filter(|(l, p)| !l.is_empty() && !p.is_empty())
+                .take(3)
+                .collect(),
             v1_attachments: list(v, "v1Attachments")
                 .iter()
                 .filter_map(|a| {
@@ -4937,6 +4945,30 @@ impl Store {
             });
         }
         card
+    }
+
+    /// The dev hook's reply in the wire shape (`/turns`' turn: its links,
+    /// answer cards and next steps) as a local reply in the open chat.
+    pub fn add_local_wire_turn(&'static self, v: &serde_json::Value) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            return crate::toast::show("Open a chat first");
+        }
+        let n = self.local_turns.borrow().len() as i64;
+        let after = self
+            .turns
+            .with_untracked(|t| t.iter().rev().find(|t| t.i < LOCAL_TURN_BASE).map(|t| t.i))
+            .unwrap_or(-1);
+        let mut turn = Turn::of(v);
+        turn.i = LOCAL_TURN_BASE + n;
+        turn.id = format!("local-turn-{n}");
+        self.local_turns.borrow_mut().push((chat.clone(), after, turn));
+        if self.turns_of.get_untracked() == chat {
+            self.turns.update(|t| {
+                t.retain(|t| t.i < LOCAL_TURN_BASE);
+                self.merge_local_turns(&chat, t);
+            });
+        }
     }
 
     /// The dev hook's cards as a local reply at the end of the open chat.

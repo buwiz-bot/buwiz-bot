@@ -850,6 +850,8 @@ fn agent_row(t: Turn) -> impl IntoElement {
         .when(!has_card && i < crate::store::LOCAL_TURN_BASE, |v| v.child(bar()))
         .when(!t.files.is_empty(), |v| v.child(files_section(&t)))
         .when(!t.links.is_empty(), |v| v.child(links_section(&t)))
+        // the answer's next steps (9.8): a tap sends one as your message
+        .when(!t.suggest.is_empty(), |v| v.child(crate::mini_v1::ui::suggest_chips(t.suggest.clone())))
 
 }
 
@@ -1106,14 +1108,19 @@ fn links_section(t: &Turn) -> impl IntoElement {
         .gap_2()
         .w_full()
         .max_w(px(560.0))
-        .children(t.links.iter().map(|l| {
-            // a v1 tool result's open (9.6): a card with Open or Show
-            if l.provider == "rox-app" {
-                crate::mini_v1::ui::open_card(l, format!("{}:{}", t.id, l.id))
-            } else {
-                crate::files::link_card(l).into_element()
-            }
-        }))
+        // a v1 answer's cards (9.6, 9.8): one main, two small, links after;
+        // they age into chips after five of your messages
+        .child({
+            let cards: Vec<_> = t.links.iter().filter(|l| l.provider == "rox-app").cloned().collect();
+            let i = t.i;
+            // the person's messages shown after this one (local replies sit
+            // among the server's turns, so the order counts, not `i`)
+            let user_after = move || {
+                store().turns.with(|ts| ts.iter().skip_while(|x| x.i != i).filter(|x| x.role == "user").count())
+            };
+            crate::mini_v1::ui::answer_cards(&t.id, cards, user_after)
+        })
+        .children(t.links.iter().filter(|l| l.provider != "rox-app").map(|l| crate::files::link_card(l).into_element()))
 }
 
 /// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —

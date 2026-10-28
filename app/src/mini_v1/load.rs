@@ -498,6 +498,8 @@ pub struct PluginEntry {
     pub protocol: String,
     pub generation: Option<u64>,
     pub enabled: bool,
+    /// An approved plugin of the first-party publisher (9.8).
+    pub first_party: bool,
     /// Its manifest's `scopes`, `apps` and `commands`.
     pub scopes: Vec<Value>,
     pub apps: Vec<Value>,
@@ -516,6 +518,7 @@ impl PluginEntry {
             protocol: s("protocol"),
             generation: v.get("generation").and_then(Value::as_u64),
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            first_party: v.get("first_party").and_then(Value::as_bool).unwrap_or(false),
             scopes: list("scopes"),
             apps: list("apps"),
             commands: list("commands"),

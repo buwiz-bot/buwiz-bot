@@ -657,6 +657,15 @@ fn agent_menu(line: &str) {
         crate::cards::inject(&path);
         return;
     }
+    // `turn <path>`: a reply as `/turns` sends it (its answer cards, next
+    // steps), added locally to the open chat
+    if let Some(path) = line.strip_prefix("turn ").map(str::trim).filter(|p| p.starts_with('/')) {
+        match std::fs::read_to_string(path).map(|s| serde_json::from_str::<serde_json::Value>(&s)) {
+            Ok(Ok(v)) => store().add_local_wire_turn(&v),
+            _ => crate::toast::show(format!("Can't read the turn in {path}")),
+        }
+        return;
+    }
     if line == "cards-clear" {
         crate::cards::clear_local();
         return;
