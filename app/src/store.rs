@@ -6872,3 +6872,44 @@ fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
         spawn(f);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{link_token, mini_link};
+    use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
+
+    #[test]
+    fn app_links_name_the_module_with_their_props() {
+        assert_eq!(mini_link("rox://app/bir/forms").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("rox://app/bir/forms/").as_deref(), Some("mcp:bir/forms"));
+        let props = "%7B%22form%22%3A%221601C%22%2C%22tin%22%3A%22123%2F00000%22%7D";
+        let url = format!("rox://app/bir/forms?props={props}&token=%40bir%3Ataxprofile%3A123");
+        let key = Some(r#"mcp:bir/forms|{"form":"1601C","tin":"123/00000"}"#);
+        assert_eq!(mini_link(&url).as_deref(), key);
+        assert_eq!(mini_link(&format!("rox://app/bir/forms?props={props}")).as_deref(), key);
+        // props that are no object, or an empty one, are left off
+        assert_eq!(mini_link("rox://app/bir/forms?props=%7B%7D").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("rox://app/bir/forms?props=5").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("rox://app/bir/forms?props=").as_deref(), Some("mcp:bir/forms"));
+        for url in ["rox://app/", "rox://app/bir", "rox://app/bir/", "rox://app//forms", "rox://chat/new", "https://x/app/bir/forms"] {
+            assert_eq!(mini_link(url), None, "{url:?}");
+        }
+    }
+
+    #[test]
+    fn app_links_carry_their_token() {
+        assert_eq!(link_token("rox://app/bir/forms?props=%7B%7D&token=%40bir%3Ataxprofile%3A123"), "@bir:taxprofile:123");
+        assert_eq!(link_token("rox://app/bir/forms?token=%40bir%3Ataxprofile%3A123%2F00001"), "@bir:taxprofile:123/00001");
+        assert_eq!(link_token("rox://app/bir/forms?props=%7B%7D"), "");
+        assert_eq!(link_token("rox://app/bir/forms"), "");
+    }
+
+    #[test]
+    fn an_app_link_routes_to_its_module_and_asks_unless_rox_opened_it() {
+        let key = mini_link("rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D").expect("an app link");
+        assert_eq!(app_key_parts(&key), Some(("bir", "forms")));
+        // `route_link`: a link card in Rox opens it; the system's (`os`) asks
+        assert!(app_opens_unasked(AppOpener::Rox));
+        assert!(!app_opens_unasked(AppOpener::Outside));
+    }
+}
