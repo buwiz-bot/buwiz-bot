@@ -328,6 +328,29 @@ pub fn canonical_tokens(text: &str) -> Vec<(usize, usize, String, String, String
         .collect()
 }
 
+/// `text` for a title (a chat's name): each canonical token as
+/// `title_of(token)`, else `@short:scope`; never its ticket. The tokens
+/// whose titles are not known yet come back too.
+pub fn plain(text: &str, title_of: &dyn Fn(&str) -> Option<String>) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(text.len());
+    let mut missing = Vec::new();
+    let mut at = 0;
+    for (start, end, short, scope, _) in canonical_tokens(text) {
+        out.push_str(&text[at..start]);
+        at = end;
+        let token = &text[start..end];
+        match title_of(token).filter(|t| !t.is_empty()) {
+            Some(title) => out.push_str(&title),
+            None => {
+                missing.push(token.to_owned());
+                out.push_str(&format!("@{short}:{scope}"));
+            }
+        }
+    }
+    out.push_str(&text[at..]);
+    (out, missing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +469,17 @@ mod tests {
         // a ticket already canonical, and another server's token, are not asked about
         assert_eq!(asked.len(), 3);
         assert!(asked.iter().all(|a| a.0 == "dev.goldcoders.bir"));
+    }
+
+    #[test]
+    fn chat_titles_show_ticket_titles_and_never_the_ticket() {
+        let name = format!("Check deadlines for @bir:taxprofile:{T1} and @bir:branchcode:{T2}");
+        let known = |t: &str| t.ends_with(T1).then(|| "Dela Cruz Jane".to_owned());
+        let (title, missing) = plain(&name, &known);
+        assert_eq!(title, "Check deadlines for Dela Cruz Jane and @bir:branchcode");
+        assert_eq!(missing, [format!("@bir:branchcode:{T2}")]);
+        assert!(!title.contains("tkt_"));
+        assert_eq!(plain("no tokens @bir:taxprofile:123", &known).0, "no tokens @bir:taxprofile:123");
     }
 
     #[test]
