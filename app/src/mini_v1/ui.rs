@@ -1589,7 +1589,17 @@ pub fn pin_button(key: &str, n: u64) -> impl IntoElement {
 /// declares (inline in the open chat, or full screen); ✕ unpins.
 pub fn pins_section() -> impl IntoElement {
     dynamic(|| {
-        let pins = store().v1.records.with(|r| r.pins.clone());
+        // a pin a sidebar group already shows (a migrated v0 pin) is left out
+        let grouped: Vec<V1Key> = store().groups.with(|gs| {
+            gs.iter().flat_map(|g| &g.items).filter(|it| it.kind == "app").filter_map(|it| V1Key::parse(&it.id).ok()).collect()
+        });
+        let pins: Vec<_> = store()
+            .v1
+            .records
+            .with(|r| r.pins.clone())
+            .into_iter()
+            .filter(|p| !grouped.iter().any(|k| k.plugin == p.plugin && k.app == p.app && k.ticket == p.ticket))
+            .collect();
         if pins.is_empty() {
             return view().into_element();
         }
