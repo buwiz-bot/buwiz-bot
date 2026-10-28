@@ -98,6 +98,8 @@ const POSTS = {
   "/v1/host/routines/approve": (b) => routines.approve(b),
   "/v1/host/routines/enable": (b) => routines.enable(b),
   "/v1/host/routines/disable": (b) => routines.disable(b),
+  // one run now, out of schedule (Run now)
+  "/v1/host/routines/run": (b) => routines.run(b),
 };
 
 const ACTIONS = {

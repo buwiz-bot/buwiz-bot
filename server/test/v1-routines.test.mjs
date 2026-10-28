@@ -26,6 +26,10 @@
 //   RTN-14 in a routine's turn a call to its own plugin names the routine
 //          (rox/caller.routine), and a tool of it that changes data runs
 //          only when the routine lists it in `writes`
+//   RTN-15 Run now (POST /v1/host/routines/run) ticks once out of schedule
+//          and counts like a run; paused, running or unavailable is refused
+//   RTN-16 the agent lists and runs the plugin routines of its chats only;
+//          it has no way to enable, approve or change one
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { v1AgentCall, v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
@@ -329,6 +333,79 @@ test("RTN-12 a failure leaves one notice per failure streak", async () => {
   await routines.tick(FX, "bir-mail");
   assert.equal(notices().length, n + 3, "a new streak notices again");
   failTurn = false;
+});
+
+test("RTN-15 Run now ticks once out of schedule and counts like a run; paused, running or unavailable is refused", async () => {
+  const before = listed("bir-mail");
+  const n = turns.length;
+
+  // just ran: not due, and a backoff would wait longer still
+  db.prepare("UPDATE v1_routines SET errors=5 WHERE plugin=? AND routine=?").run(FX, "bir-mail");
+  await routines.runDue();
+  assert.equal(turns.length, n, "the schedule doesn't run it");
+  step(1);
+  writeMail(b, [{ id: "m5", subject: "Run now mail", body: "x" }]);
+  const r = await routines.run({ plugin: FX, routine: "bir-mail", wait: true });
+
+  assert.deepEqual(r.run, { ran: true, items: 1, prompts: 1 });
+  assert.equal(turns.length, n + 1, "one turn for the one new item");
+  assert.equal(r.routine.last_run, now, "it counts as the last run");
+  assert.ok(r.routine.last_run > before.last_run);
+  assert.equal(r.routine.last_items, 1);
+  assert.equal(r.routine.running, false);
+  assert.equal(notices().at(-1).text, "BIR mail ran · 1 new item", "the chat gets its notice");
+  // nothing new: it ran, nothing posted
+  assert.deepEqual((await routines.run({ plugin: FX, routine: "bir-mail", wait: true })).run, { ran: true, items: 1, prompts: 0 });
+  // reread forgets what it saw
+  assert.deepEqual((await routines.run({ plugin: FX, routine: "bir-mail", wait: true, reread: true })).run, { ran: true, items: 1, prompts: 1 });
+  // without wait it answers at once, running; a second one is refused
+  const started = routines.run({ plugin: FX, routine: "bir-mail" });
+  const first = await started;
+
+  assert.equal(first.routine.running, true);
+  assert.equal(await codeOf(routines.run({ plugin: FX, routine: "bir-mail" })), "rate_limited");
+  // (this runner's own view: listed() reads the last runner made)
+  const running = () => routines.ofChats(["chat-1"]).find((m) => m.id === "bir-mail").running;
+
+  for (let i = 0; i < 400 && running(); i++) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(running(), false, "it finished");
+  // paused
+  assert.equal(await codeOf(routines.run({ plugin: FX, routine: "empty" })), "disabled");
+  // unavailable: refused, and the refusal is no run
+  plugins.setTool(FX, "fx_query", true);
+  const last = listed("bir-mail").last_run;
+
+  step(5);
+  assert.equal(await codeOf(routines.run({ plugin: FX, routine: "bir-mail" })), "plugin_unavailable");
+  assert.equal(listed("bir-mail").last_run, last);
+  plugins.setTool(FX, "fx_query", false);
+  assert.equal(await codeOf(routines.run({ plugin: FX, routine: "nope" })), "not_found");
+});
+
+test("RTN-16 the agent lists and runs the plugin routines of its chats only, and cannot enable one", async () => {
+  const mine = routines.ofChats(["chat-1"]);
+
+  assert.deepEqual(mine.map((x) => [x.id, x.enabled]).sort(), [["bad-reads", false], ["bir-mail", true], ["empty", false]]);
+  const x = mine.find((m) => m.id === "bir-mail");
+
+  assert.equal(x.plugin, FX);
+  assert.equal(x.name, "BIR mail");
+  assert.equal(x.every_s, 300);
+  assert.equal(x.home, home().id, "its thread");
+  assert.deepEqual(routines.ofChats(["chat-2"]), [], "another chat's bot sees none");
+  writeMail(b, [{ id: "m6", subject: "Agent run", body: "x" }]);
+  const ran = await routines.agentRun(`${FX}/bir-mail`, ["chat-1"]);
+
+  assert.equal(ran.is_error, undefined, ran.content);
+  assert.match(ran.content, /^BIR mail ran: 1 item found, 1 new \(each ran in its thread t\d+\)$/);
+  assert.equal((await routines.agentRun(`${FX}/bir-mail`, ["chat-2"])).is_error, true, "not its chat");
+  const paused = await routines.agentRun(`${FX}/empty`, ["chat-1"]);
+
+  assert.equal(paused.is_error, true);
+  assert.match(paused.content, /Empty is paused; resume it first/);
+  assert.equal(listed("empty").enabled, false, "running it did not enable it");
+  // the agent's side has run and list, nothing that enables or approves
+  for (const k of ["agentEnable", "agentApprove", "agentUpdate"]) assert.equal(routines[k], undefined);
 });
 
 test("RTN-08 bad requests are refused; a deleted chat stops the routine; uninstall forgets it", async () => {

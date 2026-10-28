@@ -14,7 +14,7 @@
 // recomputed from the table on start and on every change; three failures
 // in a row back off.
 import { createHash } from "node:crypto";
-import { allocJobId, db, findThread, metaGet, metaSet, modelCtx, store, uuidv7 } from "./state.mjs";
+import { allocJobId, db, findThread, metaGet, metaSet, modelCtx, store, threadBot, uuidv7 } from "./state.mjs";
 import { callToolJson, ensureClient, mcpName, readManifest, statusOf } from "./mcp.mjs";
 
 db.exec(`
@@ -63,6 +63,7 @@ export function routineJson(r) {
     last_error: r.last_error || null,
     errors: r.errors || 0,
     next_run: nextRun(r),
+    running: running.has(r.id),
     created_at: r.created_at,
     template: r.template || null,
   };
@@ -278,10 +279,12 @@ export function deleteRoutine(id) {
   db.prepare("DELETE FROM routines WHERE id=?").run(r.id);
 }
 
-/** POST /routine/run {id} — tick now (Run now); resolves when it's done. */
+/** POST /routine/run {id} — tick now (Run now), out of schedule; resolves
+ *  when it's done. One already running is refused. */
 export async function runRoutine(id) {
   const r = rowOf(id);
   if (!r) throw new Error(`no routine ${id}`);
+  if (running.has(r.id)) throw new Error(`${r.name} is already running`);
   await tick(r.id);
   return routineJson(rowOf(r.id));
 }
@@ -451,6 +454,16 @@ export async function routineFromTemplate({ server, id, thread, user_google_emai
 }
 
 // ————— agent tools —————
+// the v1 plugin routines (v1/routines.mjs), imported late: v1/broker.mjs
+// pulls in the agent
+const v1 = async () => (await import("./v1/broker.mjs")).routines;
+// `fn` once `job` is done (polled; ten minutes at most)
+function afterJob(job, fn) {
+  const until = Date.now() + 600_000;
+  const poll = () => (job.done || Date.now() > until ? fn() : setTimeout(poll, 500));
+  poll();
+}
+
 export const ROUTINE_TOOLS = [
   {
     name: "routine_create",
@@ -468,7 +481,7 @@ export const ROUTINE_TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "short name the user sees in Settings › Routines" },
+        name: { type: "string", description: "short name the user sees in the chat's Details › Routines" },
         every_s: { type: "number", description: "seconds between ticks, 60 at least (60 = every minute, 3600 hourly, 86400 daily)" },
         prompt: { type: "string", description: "what to do when it wakes — you read it, plus the new items as JSON" },
         check: {
@@ -492,12 +505,21 @@ export const ROUTINE_TOOLS = [
   },
   {
     name: "routine_list",
-    description: "List the user's routines: id, name, chat, interval, on/off, check, last run and last error.",
+    description:
+      "List the user's routines: id, name, chat, interval, on/off, check, last run and last error. " +
+      "Also lists the plugin routines (Connect Apps plugins) enabled in this chat, id <plugin>/<routine>, with their own thread; those the user turns on, pauses and removes in the routine's panel, you can only run them.",
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "routine_run",
+    description:
+      "Run a routine once now, out of its schedule (\"run my BIR routine\"). id from routine_list: a routine's id, or <plugin>/<routine> for a plugin routine of this chat. " +
+      "A plugin routine's run checks for new items and runs each in the routine's own thread; you get what it found. A paused or unavailable routine is refused with the reason.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
     name: "routine_update",
-    description: "Change a routine (routine_list gives ids): turn it on or off, change how often it runs, its prompt or its name. Pass only what changes.",
+    description: "Change a routine (routine_list gives ids): turn it on or off, change how often it runs, its prompt or its name. Pass only what changes. Not for plugin routines (<plugin>/<routine>): the user manages those in the routine's panel.",
     input_schema: {
       type: "object",
       properties: {
@@ -512,7 +534,7 @@ export const ROUTINE_TOOLS = [
   },
   {
     name: "routine_delete",
-    description: "Delete a routine for good (routine_list gives ids). To pause one, routine_update enabled:false instead.",
+    description: "Delete a routine for good (routine_list gives ids). To pause one, routine_update enabled:false instead. Not for plugin routines (<plugin>/<routine>): the user removes those in the routine's panel.",
     input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
 ];
@@ -524,14 +546,55 @@ const line = (r, thread) =>
   `${r.check ? ` · check ${r.check.server}/${r.check.tool} (${r.seen_count} seen)` : " · no check"}` +
   `${r.last_run ? ` · last run ${new Date(r.last_run).toISOString()}` : ""}${r.last_error ? ` · error: ${r.last_error}` : ""}`;
 
-export async function toolRoutine(thread, name, input = {}) {
+// a plugin routine's line: `<plugin>/<routine> — name · plugin · …`
+const v1Line = (x) =>
+  `${x.plugin}/${x.id} — ${x.name} · plugin ${x.title} · every ${every(x.every_s)} · ${x.enabled ? "on" : "paused"}` +
+  `${x.running ? " · running now" : ""}${x.available || !x.enabled ? "" : ` · can't run: ${x.reason}`}` +
+  `${x.last_run ? ` · last run ${new Date(x.last_run).toISOString()}${x.last_error ? ` failed: ${x.last_error}` : x.last_items != null ? ` (${x.last_items} new)` : ""}` : " · not run yet"}` +
+  `${x.home ? ` · thread ${x.home}` : ""}`;
+const isV1Ref = (id) => String(id ?? "").includes("/");
+const V1_HANDS_OFF = "is a plugin routine: the user pauses or removes it in the routine's panel (Details › Routines), not you. You can run it (routine_run).";
+// The chats whose plugin routines the agent sees: this one, the bot's own
+// chat, and in a routine's thread the chat it reports to.
+const chatsOf = (thread) => [thread?.id, thread?.routine?.thread, threadBot(thread?.id)?.threadId].filter(Boolean);
+// A routine's run, waited on for a minute at most.
+const within60 = (p) => {
+  let t;
+  return Promise.race([p.then(() => true), new Promise((r) => (t = setTimeout(() => r(false), 60_000)))]).finally(() => clearTimeout(t));
+};
+
+/** The routine tools. `job` is the turn calling them: a routine's own turn
+ *  gets none (toolList), and is refused here too. */
+export async function toolRoutine(thread, name, input = {}, job = null) {
+  if (job?.routine) return { content: `${name} isn't available in a routine's run`, is_error: true };
+  if (name === "routine_run") {
+    if (isV1Ref(input.id)) return (await v1()).agentRun(String(input.id), chatsOf(thread));
+    const r = rowOf(input.id);
+    if (!r) return { content: `no routine ${input.id}`, is_error: true };
+    if (running.has(r.id)) return { content: `${r.name} is already running`, is_error: true };
+    // one that posts in this chat runs once this reply is done, so its turn
+    // doesn't land in the middle of it
+    if (r.thread === thread?.id && job) {
+      afterJob(job, () => runRoutine(r.id).catch(() => {}));
+      return { content: `${r.name} runs as soon as this reply is done; its turn posts in this chat` };
+    }
+    const done = runRoutine(r.id);
+    done.catch(() => {});
+    if (!(await within60(done))) return { content: `${r.name} is running; its turn posts in its chat` };
+    const after = routineJson(rowOf(r.id));
+    return after.last_error ? { content: `${r.name} ran and failed: ${after.last_error}`, is_error: true } : { content: `${r.name} ran` };
+  }
+  if ((name === "routine_update" || name === "routine_delete") && isV1Ref(input.id))
+    return { content: `${input.id} ${V1_HANDS_OFF}`, is_error: true };
   if (name === "routine_create") {
     const r = await createRoutine({ ...input, thread: thread?.id });
     return { content: `created ${line(r, thread)}; first tick ${r.next_run && r.next_run <= Date.now() ? "now" : `at ${new Date(r.next_run).toISOString()}`}` };
   }
   if (name === "routine_list") {
-    const rs = listRoutines();
-    return { content: rs.length ? rs.map((r) => line(r, thread)).join("\n") : "no routines yet" };
+    const rs = listRoutines().map((r) => line(r, thread));
+    const v1s = (await v1()).ofChats(chatsOf(thread)).map(v1Line);
+    const out = [...rs, ...(v1s.length ? ["Plugin routines of this chat:", ...v1s] : [])];
+    return { content: out.length ? out.join("\n") : "no routines yet" };
   }
   if (name === "routine_update") {
     const { id, ...patch } = input;

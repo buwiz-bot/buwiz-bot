@@ -140,6 +140,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
       last_error: row?.last_error ?? null,
       last_items: row?.last_items ?? null,
       next_run: row?.enabled ? (row.last_run || 0) + intervalMs(r, row) : null,
+      running: running.has(`${pluginId}/${r.id}`),
     };
   }
 
@@ -188,6 +189,99 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
     db.prepare("UPDATE v1_routines SET enabled=0 WHERE plugin=? AND routine=?").run(body.plugin, r.id);
 
     return { ok: true, routine: { id: r.id, ...info(body.plugin, r) } };
+  }
+
+  /** POST /v1/host/routines/run {plugin, routine, reread?, wait?}: one run
+   *  now, out of schedule (interval and backoff aside). It counts like a
+   *  scheduled one (last_run, seen, notices). Refused when the routine is
+   *  paused (`disabled`), already running (`rate_limited`) or unavailable
+   *  (`plugin_unavailable`, with the reason). `reread` forgets the seen ids
+   *  first, so every item the search finds runs again. The answer comes
+   *  at once with `running: true`, or with `wait` once the run is done,
+   *  its result in `run` ({ran, items, prompts} | {ran:false, reason|error}). */
+  async function run(body) {
+    const r = mustRoutine(body);
+    const row = rowOf(body.plugin, r.id);
+    const name = approvedText(r.name, 80);
+
+    if (!row?.enabled) refuse("disabled", `${name} is paused; resume it first`);
+
+    if (running.has(`${body.plugin}/${r.id}`)) refuse("rate_limited", `${name} is already running`);
+
+    if (!threadExists(row.thread)) refuse("not_found", `${name}'s chat was deleted`);
+    const why = unavailable(body.plugin, r, row);
+
+    if (why) refuse("plugin_unavailable", `${name} can't run: ${why}`);
+
+    if (body.reread === true) db.prepare("UPDATE v1_routines SET seen='[]' WHERE plugin=? AND routine=?").run(body.plugin, r.id);
+    const done = tick(body.plugin, r.id);
+
+    if (body.wait === true) {
+      const res = await done;
+
+      return { ok: true, run: res, routine: { id: r.id, ...info(body.plugin, r) } };
+    }
+
+    done.catch(() => {});
+
+    return { ok: true, routine: { id: r.id, ...info(body.plugin, r) } };
+  }
+
+  // ── the agent's routine tools (routines.mjs) ─────────────────────────
+  // The agent sees and runs the routines of the chats it answers in; it
+  // never enables, approves or changes one (the user's consent, 5.9).
+
+  /** The routines enabled (now or before) in one of `chats`. */
+  function ofChats(chats) {
+    const want = new Set(chats);
+
+    return db
+      .prepare("SELECT plugin, routine, thread FROM v1_routines WHERE thread IS NOT NULL")
+      .all()
+      .filter((row) => want.has(row.thread))
+      .flatMap((row) => {
+        const r = routineOf(row.plugin, row.routine);
+        const own = plugins.rowOf(row.plugin);
+
+        return r ? [{ plugin: row.plugin, title: own ? plugins.manifestOf(own).title || row.plugin : row.plugin, id: r.id, name: approvedText(r.name, 80), every_s: r.every_s, ...info(row.plugin, r) }] : [];
+      });
+  }
+
+  /** `<plugin>/<routine>` among `chats`' routines, or null. */
+  function agentFind(ref, chats) {
+    const at = String(ref ?? "").indexOf("/");
+
+    if (at < 1) return null;
+    const plugin = ref.slice(0, at), id = ref.slice(at + 1);
+
+    return ofChats(chats).find((x) => x.plugin === plugin && x.id === id) || null;
+  }
+
+  /** routine_run for a v1 routine: waits up to `waitMs` for the result. */
+  async function agentRun(ref, chats, waitMs = 60_000) {
+    const x = agentFind(ref, chats);
+
+    if (!x) return { content: `no plugin routine ${String(ref).slice(0, 120)} in this chat (routine_list names them)`, is_error: true };
+    let started, timer;
+
+    try {
+      started = run({ plugin: x.plugin, routine: x.id, wait: true });
+      const res = await Promise.race([started, new Promise((r) => (timer = clock.setTimeout(() => r(null), waitMs)))]);
+
+      if (!res) return { content: `${x.name} is running; what it finds lands in its thread (${x.home || "its own"}) and this chat gets a notice` };
+      const out = res.run;
+
+      if (out.error) return { content: `${x.name} ran and failed: ${out.error}`, is_error: true };
+
+      if (!out.ran) return { content: `${x.name} didn't run: ${out.reason}`, is_error: true };
+
+      return { content: `${x.name} ran: ${out.items} item${out.items === 1 ? "" : "s"} found, ${out.prompts} new${out.prompts ? ` (each ran in its thread ${res.routine.home})` : ""}` };
+    } catch (e) {
+      return { content: String(e?.message || e), is_error: true };
+    } finally {
+      clock.clearTimeout(timer);
+      started?.catch(() => {});
+    }
   }
 
   // ── one run ──────────────────────────────────────────────────────────
@@ -367,7 +461,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
   });
 
   return {
-    approve, enable, disable, tick, runDue, info,
+    approve, enable, disable, run, tick, runDue, info, ofChats, agentFind, agentRun,
     /** Polls for due routines every `pollMs` (server start); the enabled
      *  routines' threads are made first. */
     start: () => {
