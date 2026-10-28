@@ -1,0 +1,52 @@
+{
+  "protocol": "1.0.0",
+  "id": "dev.goldcoders.fixture",
+  "short": "fx",
+  "version": "1.0.0",
+  "title": "Fixture",
+  "description": "The conformance fixture: every Mini App Protocol v1 feature, nothing else.",
+  "publisher": { "id": "dev.goldcoders", "key_id": "gc-2026-01", "name": "Goldcoders" },
+  "commands": [
+    { "name": "board", "args": "[card|foreign|bad-props]", "description": "Open the fixture board", "resolve": "fx_resolve" }
+  ],
+  "scopes": [
+    { "name": "item", "description": "Item by name", "resolve": "fx_resolve", "attach": true, "hint": "## Items\nAn attached item scopes fx_search to that item." },
+    { "name": "note", "description": "Note text", "resolve": "fx_resolve" }
+  ],
+  "routines": [
+    {
+      "id": "fx-digest", "name": "Fixture digest",
+      "description": "Searches the fixture for new items and summarises them.",
+      "every_s": 300,
+      "query": { "tool": "fx_search", "field": "query" },
+      "prompt": "Summarise the new fixture items in one line each.",
+      "reads": [ { "plugin": "dev.goldcoders.fixture", "tools": ["fx_search"] } ]
+    }
+  ],
+  "apps": [
+    {
+      "id": "board", "title": "Fixture Board", "description": "Calls every fixture tool.",
+      "entry": "rox-app://board", "mime": "text/x-nsh-tsx", "sdk": "1",
+      "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "props": { "type": "object", "properties": { "ticket": { "type": "string", "maxLength": 30 }, "page": { "type": "integer", "minimum": 1, "maximum": 99 } } },
+      "placement": ["full"],
+      "permissions": {
+        "tools": ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_search", "fx_open"],
+        "open": { "apps": ["card"], "external": ["https://example.com"] },
+        "attach": ["item"],
+        "pick_file": { "extensions": [".xlsx", ".csv"], "max_bytes": 26214400, "multiple": false },
+        "storage": { "quota_bytes": 1048576 },
+        "copy": true
+      }
+    },
+    {
+      "id": "card", "title": "Fixture Card", "description": "A card that also fits inline.",
+      "entry": "rox-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
+      "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "props": { "type": "object", "properties": { "ticket": { "type": "string" }, "label": { "type": "string", "maxLength": 60 } }, "required": ["ticket"] },
+      "placement": ["full", "inline"],
+      "inline": { "width": 480, "height": 320, "min_width": 320, "resizable": true },
+      "permissions": { "tools": ["fx_echo"] }
+    }
+  ]
+}

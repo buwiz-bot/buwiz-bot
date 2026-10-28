@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "about": "Rox Mini App Protocol v1 trust store (spec 4.1). publishers: key_id -> {publisher, alg, public_key (base64url, 32 bytes)}. approved_plugins: the plugins v1 installs. The Goldcoders key is added by the owner with server/v1/publisher-keygen.mjs.",
+  "publishers": {},
+  "approved_plugins": [
+    { "id": "dev.goldcoders.bir", "publisher_key_id": "gc-2026-01" },
+    { "id": "dev.goldcoders.google-workspace", "publisher_key_id": "gc-2026-01" },
+    { "id": "dev.goldcoders.fixture", "publisher_key_id": "gc-2026-01" }
+  ]
+}
