@@ -6607,8 +6607,22 @@ impl Store {
             return;
         }
         if let Some(key) = mini_link(url) {
+            let token = link_token(url);
+            let pass = link_pass(url);
+            if os && !pass.is_empty() {
+                // a link the app server opened for a mini app carries a
+                // one-time pass: redeemed, it opens like one from Rox
+                spawn(async move {
+                    let ok = client::post("/mcp/open/pass", serde_json::json!({ "pass": pass }))
+                        .await
+                        .is_some_and(|v| v.get("ok").and_then(|b| b.as_bool()) == Some(true));
+                    let from = if ok { AppOpener::Rox } else { AppOpener::Outside };
+                    self.open_mini_from(from, &key, "", &token);
+                });
+                return;
+            }
             let from = if os { AppOpener::Outside } else { AppOpener::Rox };
-            self.open_mini_from(from, &key, "", &link_token(url));
+            self.open_mini_from(from, &key, "", &token);
             return;
         }
         // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
@@ -6813,6 +6827,15 @@ pub(crate) fn link_token(url: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The one-time pass the app server adds to a `rox://app/` link it opens
+/// for a mini app (`&rox_pass=`), "" when none.
+pub(crate) fn link_pass(url: &str) -> String {
+    url.split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("rox_pass=")))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// `rox://app/<server>/<app>[?props=<JSON>]` → the mini app's module name
 /// (`mcp:<server>/<app>[|<props>]`).
 pub(crate) fn mini_link(url: &str) -> Option<String> {
@@ -6875,7 +6898,7 @@ fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_token, mini_link};
+    use super::{link_pass, link_token, mini_link};
     use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
 
     #[test]
@@ -6902,6 +6925,18 @@ mod tests {
         assert_eq!(link_token("rox://app/bir/forms?token=%40bir%3Ataxprofile%3A123%2F00001"), "@bir:taxprofile:123/00001");
         assert_eq!(link_token("rox://app/bir/forms?props=%7B%7D"), "");
         assert_eq!(link_token("rox://app/bir/forms"), "");
+    }
+
+    #[test]
+    fn app_links_carry_the_servers_one_time_pass() {
+        let url = "rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D&rox_pass=AbC-d_e";
+        assert_eq!(link_pass(url), "AbC-d_e");
+        assert_eq!(link_pass("rox://app/bir/forms?rox_pass=x1"), "x1");
+        assert_eq!(link_pass("rox://app/bir/forms?props=%7B%7D"), "");
+        assert_eq!(link_pass("rox://app/bir/forms"), "");
+        // the pass changes neither the module nor the token
+        assert_eq!(mini_link(url), mini_link("rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D"));
+        assert_eq!(link_token(url), "");
     }
 
     #[test]
