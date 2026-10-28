@@ -35,6 +35,13 @@ pub struct ThreadMeta {
     pub routine: Option<RoutineOf>,
 }
 
+/// A routine's check time `ms` as local time: "3:42 PM", or with the date
+/// when not today ("Oct 2, 3:42 PM").
+pub fn checked_at(ms: f64) -> String {
+    let at = crate::mini_v1::cards::as_of_label(ms as i64);
+    at.strip_prefix("as of ").map(str::to_owned).unwrap_or(at)
+}
+
 /// The `routine` field of a `/threads` row: whose thread it is and the
 /// chat the routine reports to (the way back).
 #[derive(Clone, PartialEq, Default, Debug)]
@@ -2751,10 +2758,7 @@ impl Store {
         let routine = self.v1.listed.with(|l| {
             l.iter().find(|p| p.id == r.plugin).and_then(|p| p.routines.iter().find(|x| x.id == r.id).cloned())
         })?;
-        Some(routine.quiet_line(|ms| {
-            let at = crate::mini_v1::cards::as_of_label(ms as i64);
-            at.strip_prefix("as of ").map(str::to_owned).unwrap_or(at)
-        }))
+        Some(routine.quiet_line(checked_at))
     }
 
     /// The routine thread of v1 routine `plugin`/`id`, once it is made.

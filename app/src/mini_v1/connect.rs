@@ -75,7 +75,22 @@ impl Routine {
     /// "Checks every 5 min · last checked 3:42 PM · nothing new", why it
     /// can't run, or its last error. `checked` is a run's local time.
     pub fn quiet_line(&self, checked: impl Fn(f64) -> String) -> (String, bool) {
-        let every = format!("Checks {}", crate::settings::interval(self.every_s));
+        let (last, failed) = self.last_check(checked);
+        if !self.enabled || !self.available {
+            return (last, failed);
+        }
+        (format!("{} · {last}", self.schedule()), failed)
+    }
+
+    /// "Checks every 5 min".
+    pub fn schedule(&self) -> String {
+        format!("Checks {}", crate::settings::interval(self.every_s))
+    }
+
+    /// How its last check went, and whether that is a failure: "last
+    /// checked 3:42 PM · nothing new", "last check failed: …", "waiting for
+    /// its first check" — or "Turned off" / "Can't check: …".
+    pub fn last_check(&self, checked: impl Fn(f64) -> String) -> (String, bool) {
         if !self.enabled {
             return ("Turned off".to_owned(), false);
         }
@@ -83,10 +98,10 @@ impl Routine {
             return (format!("Can't check: {}", self.reason), true);
         }
         if !self.last_error.is_empty() {
-            return (format!("{every} · last check failed: {}", self.last_error), true);
+            return (format!("last check failed: {}", self.last_error), true);
         }
         if self.last_run <= 0.0 {
-            return (format!("{every} · waiting for its first check"), false);
+            return ("waiting for its first check".to_owned(), false);
         }
         let found = match self.last_items {
             Some(0) => " · nothing new".to_owned(),
@@ -94,7 +109,7 @@ impl Routine {
             Some(n) => format!(" · {n} new items"),
             None => String::new(),
         };
-        (format!("{every} · last checked {}{found}", checked(self.last_run)), false)
+        (format!("last checked {}{found}", checked(self.last_run)), false)
     }
 }
 
