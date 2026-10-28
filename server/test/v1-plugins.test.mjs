@@ -373,3 +373,16 @@ test("LCY-08 a restart provisions and verifies again; a changed manifest fails m
   writeFileSync(b.manifestFile, "[]");
   assert.equal((await plugins.enable(FX)).code, "manifest_invalid");
 });
+
+test("LCY-07 a plugin that crashes mid-call fails the call plugin_restarted and comes back", async () => {
+  const { b, plugins } = setup("crash");
+
+  await installFixture(plugins, b, ["--misbehave=crash-after:2"]);
+  const rt = plugins.runtime(FX);
+
+  await plugins.callTool(FX, "fx_echo", {});
+  await plugins.callTool(FX, "fx_echo", {});
+  assert.equal(await codeOf(plugins.callTool(FX, "fx_echo", {})), "plugin_restarted");
+  await until(() => rt.state === "running" && rt.generation === 2, 5000, "the restart");
+  assert.equal(rt.nextDelay, 1000);
+});
