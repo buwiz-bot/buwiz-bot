@@ -417,14 +417,69 @@ fn new_messages_pill(list: ElementRef) -> impl IntoElement {
 }
 
 /// The empty state when no thread is open or no turns exist: Grok
-/// Shell's heading alone — no suggested prompts.
+/// Shell's heading alone — no suggested prompts. A routine's thread
+/// before it found anything: its name, and that new items land here (its
+/// quiet line sits over the composer).
 pub(crate) fn empty_state() -> impl IntoElement {
-    view().flex_1().items_center().justify_center().child(
-        text("What's on the agenda today?")
-            .text_size(px(22.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme::TEXT),
-    )
+    dynamic(|| match store().active_routine() {
+        Some(r) => view()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(text(r.name).text_size(px(22.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT))
+            .child(
+                text("Nothing new yet. What it finds shows up here.")
+                    .text_size(px(14.0))
+                    .text_color(theme::MUTED),
+            )
+            .into_element(),
+        None => view()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .child(
+                text("What's on the agenda today?")
+                    .text_size(px(22.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::TEXT),
+            )
+            .into_element(),
+    })
+}
+
+/// A routine thread's quiet line, centered over the composer: "Checks
+/// every 5 min · last checked 3:42 PM · nothing new", or its error. A run
+/// with nothing new adds no turn; this is where it shows. The plugins'
+/// list (where it reads from) is pulled again on opening the thread and
+/// every minute while it is open.
+pub(crate) fn routine_status_line() -> impl IntoElement {
+    effect(|| {
+        if store().active_routine().is_some() {
+            untracked(|| store().v1_refresh(false));
+        }
+    });
+    set_interval(std::time::Duration::from_secs(60), || {
+        if untracked(|| store().active_routine().is_some()) {
+            store().v1_refresh(false);
+        }
+    });
+    dynamic(|| match store().active_routine_status() {
+        Some((line, failed)) => view()
+            .flex_row()
+            .w_full()
+            .justify_center()
+            .pb(px(6.0))
+            .child(
+                text(line)
+                    .text_size(px(12.0))
+                    .text_color(if failed { theme::DOWN } else { theme::MUTED })
+                    .number_of_lines(2)
+                    .max_w(px(560.0)),
+            )
+            .into_element(),
+        None => view().into_element(),
+    })
 }
 
 /// One turn of chat `chat` (its bot colors the user's bubbles).

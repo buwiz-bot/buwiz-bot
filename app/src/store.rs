@@ -2743,7 +2743,21 @@ impl Store {
         self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.routine.clone()))
     }
 
-    /// The routine thread of v1 routine `plugin`/`id`, once it has run.
+    /// The open routine thread's quiet line (tracked): when it checked and
+    /// what it found, or why it can't — and whether that is a failure.
+    /// `None` outside a routine's thread, or before the plugins are listed.
+    pub fn active_routine_status(&'static self) -> Option<(String, bool)> {
+        let r = self.active_routine()?;
+        let routine = self.v1.listed.with(|l| {
+            l.iter().find(|p| p.id == r.plugin).and_then(|p| p.routines.iter().find(|x| x.id == r.id).cloned())
+        })?;
+        Some(routine.quiet_line(|ms| {
+            let at = crate::mini_v1::cards::as_of_label(ms as i64);
+            at.strip_prefix("as of ").map(str::to_owned).unwrap_or(at)
+        }))
+    }
+
+    /// The routine thread of v1 routine `plugin`/`id`, once it is made.
     pub fn routine_thread(&'static self, plugin: &str, id: &str) -> Option<String> {
         self.threads.with_untracked(|t| {
             t.iter()
