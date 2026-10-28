@@ -1232,7 +1232,7 @@ export async function execTool(job, thread, block) {
 
     if (isBotTool(block.name)) return toolBot(thread, block.name, block.input || {});
 
-    if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {});
+    if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {}, job);
 
     // a v1 plugin's tool, under its own name (v1/agent.mjs)
     if (v1ToolPlugin(v1Plugins, block.name, job?.v1Surface)) {
@@ -1500,10 +1500,12 @@ export async function toolList(thread, job) {
   const office = officeMcpTools();
   const own = botOfThread(thread) ? BOT_TOOLS : [];
   const load = deferred.length ? [appToolsLoad(deferred)] : [];
+  // a routine's own turn doesn't make, change or run routines
+  const routineTools = job?.routine ? [] : ROUTINE_TOOLS;
 
   return serverSearch
-    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp]
-    : [...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
+    ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...routineTools, ...own, ...office, ...load, ...mcp]
+    : [...TOOLS, ...routineTools, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
 }
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields

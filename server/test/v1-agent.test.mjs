@@ -56,6 +56,32 @@ test("AGT-08 a routine's turn sees only its surface: its plugin's tools, no buil
   assert.ok(surface.every((n) => n.startsWith("fx_")), surface.join(", "));
 });
 
+test("AGT-09 the agent runs and lists routines; a plugin routine it cannot change; a routine's own turn has no routine tools", async () => {
+  const all = await names();
+
+  for (const t of ["routine_create", "routine_list", "routine_run", "routine_update", "routine_delete"]) assert.ok(all.includes(t), t);
+  const inRoutine = (await toolList(null, { routine: "r1" })).map((t) => t.name);
+
+  assert.ok(!inRoutine.some((n) => n.startsWith("routine_")), "a v0 routine's turn gets none");
+  assert.ok(inRoutine.includes("fx_echo"), "the rest stays");
+  for (const name of ["routine_update", "routine_delete"]) {
+    const r = await execTool({ id: 9 }, null, { name, input: { id: `${FX}/fx-digest`, enabled: true } });
+
+    assert.equal(r.is_error, true);
+    assert.match(r.content, /the user pauses or removes it in the routine's panel/);
+  }
+  const listed = await execTool({ id: 9 }, null, { name: "routine_list", input: {} });
+
+  assert.equal(listed.is_error, undefined, listed.content);
+  const notMine = await execTool({ id: 9 }, null, { name: "routine_run", input: { id: `${FX}/fx-digest` } });
+
+  assert.equal(notMine.is_error, true);
+  assert.match(notMine.content, /no plugin routine/);
+  const refused = await execTool({ id: 9, routine: "r1" }, null, { name: "routine_list", input: {} });
+
+  assert.equal(refused.is_error, true, "refused in a routine's turn too");
+});
+
 test("RSV-06 reserved rox.* names are absent from the agent tool list", async () => {
   assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "rox.provision"), "the plugin lists them");
   assert.ok(!(await names()).some((n) => n.startsWith("rox.")));

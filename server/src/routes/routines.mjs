@@ -1,4 +1,4 @@
-// routes/routines.mjs — Settings › Routines (routines.mjs): the list, the
+// routes/routines.mjs — the routines Rox shows in a chat's Details pane (routines.mjs): the list, the
 // on/off switch and interval, Delete, Run now, and the templates connected
 // servers suggest.
 import { deleteRoutine, listRoutines, listTemplates, routineFromTemplate, runRoutine, updateRoutine } from "../routines.mjs";

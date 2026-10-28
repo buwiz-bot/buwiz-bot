@@ -202,6 +202,12 @@ test("RTN-09 POST /v1/host/routines/approve stores the approval; the plugin list
   const unknown = await host("POST", "/v1/host/routines/approve", { plugin: FX, routine: "nope" });
 
   assert.deepEqual([unknown.status, unknown.json.code], [404, "not_found"]);
+  // Run now: a paused routine is refused with the reason
+  const paused = await host("POST", "/v1/host/routines/run", { plugin: FX, routine: "fx-digest" });
+
+  assert.deepEqual([paused.status, paused.json.code], [400, "disabled"]);
+  assert.match(paused.json.message, /paused; resume it first/);
+  assert.equal((await digest()).running, false);
 });
 
 test("uninstall over HTTP leaves nothing behind", async () => {
