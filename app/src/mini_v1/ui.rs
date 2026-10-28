@@ -1366,6 +1366,19 @@ fn small_button(label: &'static str, primary: bool, on: impl Fn() + 'static) -> 
         .on_press(on)
 }
 
+/// A title-bar icon button, `label` its accessible name.
+fn icon_button(icon: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .size(px(28.0))
+        .rounded(px(14.0))
+        .items_center()
+        .justify_center()
+        .bg(theme::SUBTLE)
+        .label(label)
+        .child(crate::icons::icon_ink(icon, 15.0, || tc("#f5f5f5ad")))
+        .on_press(on)
+}
+
 /// A card's button: "Open <title>" for a full app (a plugin's sign-in
 /// card reads "Open Buwiz Sign-in"), Show for an inline one (9.6).
 pub fn button_label(card: &OpenCard) -> String {
@@ -1694,8 +1707,9 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
         }))
 }
 
-/// An inline app (6.5): a title bar with Open (full screen) over the app
-/// at its declared size, clamped to the range and the column.
+/// An inline app (6.5): a title bar with Refresh and Open (full screen,
+/// the maximize icon) over the app at its declared size, clamped to the
+/// range and the column.
 pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
     let key = if live { card.live_key().to_key() } else { card.key().to_key() };
@@ -1703,6 +1717,7 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
     let (w, h) = cards::inline_size(&app, COLUMN);
     let c = card.clone();
+    let key_r = key.clone();
     view()
         .w(px(w))
         .rounded(px(12.0))
@@ -1718,18 +1733,19 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                 .px(px(10.0))
                 .bg(tc("#1f1f1f"))
                 .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
-                .when(as_of.is_some(), |v| {
-                    let (id, ms) = (id.clone(), as_of.unwrap_or_default());
-                    v.child(text(cards::as_of_label(ms)).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
-                        .child(small_button("Refresh", false, move || {
-                            let id = id.clone();
-                            store().v1.live.update(|l| {
-                                l.insert(id);
-                            })
-                        }))
-                })
-                .when(live, |v| v.child(text("live").text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
-                .child(small_button("Open", false, move || store().open_v1(c.key(), &c.title, Opener::User))),
+                .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
+                // a snapshot goes live; a live card reads again
+                .child(icon_button("refresh", "Refresh", move || {
+                    if as_of.is_some() {
+                        let id = id.clone();
+                        store().v1.live.update(|l| {
+                            l.insert(id);
+                        })
+                    } else {
+                        store().v1_reload(&key_r)
+                    }
+                }))
+                .child(icon_button("maximize", "Open full screen", move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
         .child(
             view()
