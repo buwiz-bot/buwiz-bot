@@ -175,7 +175,8 @@ pub(crate) fn submit(key: &str, spec: &FormSpec) {
 /// Answered first, then sent: the send supersedes open cards, and this one
 /// is no longer open.
 fn send_answer(key: &str, spec: &FormSpec, picks: &BTreeMap<String, String>) {
-    if store().sending.get_untracked() {
+    let st = store();
+    if !crate::store::may_send(&st.sending.get_untracked(), &st.active_id.get_untracked()) {
         crate::toast::show("Wait for the reply to finish sending");
         return;
     }

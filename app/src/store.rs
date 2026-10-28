@@ -1652,8 +1652,9 @@ pub struct Store {
     /// A picked `@` token's label (its chip shows it).
     pub token_labels: std::cell::RefCell<std::collections::HashMap<String, String>>,
 
-    /// Sending / jobs.
-    pub sending: Signal<bool>,
+    /// Sending / jobs: the chats whose message is on its way or being
+    /// answered. Chats run in parallel: only the busy chat waits.
+    pub sending: Signal<std::collections::BTreeSet<String>>,
     /// `agentRuns` — the live run per thread; a thread's status row and
     /// its bot's mark read their own entry (App.tsx:113).
     pub agent_runs: Signal<BTreeMap<String, AgentRun>>,
@@ -2101,7 +2102,7 @@ impl Store {
             complete_seq: std::cell::Cell::new(0),
             token_labels: std::cell::RefCell::new(std::collections::HashMap::new()),
             at_open: signal(false),
-            sending: signal(false),
+            sending: signal(std::collections::BTreeSet::new()),
             agent_runs: signal(BTreeMap::new()),
             card_states: signal(std::collections::HashMap::new()),
             card_picks: signal(std::collections::HashMap::new()),
@@ -3086,13 +3087,13 @@ impl Store {
             return;
         }
         spawn(async move {
-            let Some(v) = client::get("/turns").await else { return };
-            // The server's active thread is shared (Grok Shell, another
-            // window, a run on another chat can move it): a response for
-            // another thread stays out of the list, and Rox selects its own
-            // again so the next poll lands — else it was stuck on the old
-            // chat for good (a new chat that never opened).
-            if s(&v, "active") != id {
+            let Some(v) = client::get(&format!("/turns?thread={}", client::urlenc(&id))).await else { return };
+            // A server that reads `?thread=` answers with that chat's turns;
+            // an older one with its shared active thread (Grok Shell,
+            // another window, a run on another chat can move it): a
+            // response for another thread stays out of the list, and Rox
+            // selects its own again so the next poll lands.
+            if s(&v, "thread") != id && s(&v, "active") != id {
                 if self.active_id.get_untracked() == id {
                     client::post("/thread/select", serde_json::json!({ "id": id })).await;
                 }
@@ -4823,9 +4824,17 @@ impl Store {
                 })
             }))
             .collect();
-        if (text.is_empty() && files.is_empty()) || self.sending.get_untracked() {
+        if (text.is_empty() && files.is_empty())
+            || !may_send(&self.sending.get_untracked(), &self.active_id.get_untracked())
+        {
+            log::debug!(
+                "send: held in {} (busy: {:?})",
+                self.active_id.get_untracked(),
+                self.sending.get_untracked()
+            );
             return;
         }
+        log::debug!("send: to {} (busy: {:?})", self.active_id.get_untracked(), self.sending.get_untracked());
         let v1_attachments = self.v1_model_attachments();
         // what this message goes to the model with, for its bubble
         self.v1_note_sent(&text, &v1_attachments);
@@ -4837,7 +4846,12 @@ impl Store {
         self.draft.set(String::new());
         self.attachments.set(Vec::new());
         self.reply_to.set(None);
-        self.sending.set(true);
+        {
+            let thread = self.active_id.get_untracked();
+            self.sending.update(|s| {
+                s.insert(thread);
+            });
+        }
         // `agentSet(thread, bot, {state:"working",label:statusLabel("working")})`
         // — the run is credited to the open thread's bot so its marks can
         // play the state.
@@ -4850,6 +4864,7 @@ impl Store {
         );
         // under the store's owner: the press that sent it (the Send
         // button) is replaced as the draft clears, and its owner with it
+        let busy = thread.clone();
         self.in_store(|| spawn(async move {
             // /chat reads {prompt, reply:{i,text,files}, attachments} and
             // runs on the server's active thread — select first so the
@@ -4860,6 +4875,9 @@ impl Store {
             )
             .await;
             let body = serde_json::json!({
+                // the chat it was sent from: several run at once (the
+                // server's active one is wherever the last select went)
+                "thread": thread,
                 "prompt": text,
                 // the quote keeps canonical tokens: the model gets the link
                 "reply": reply_to.map(|r| serde_json::json!({"i": r.i, "text": r.text})),
@@ -4891,7 +4909,9 @@ impl Store {
                     self.agent_set(thread, bot, None);
                 }
             }
-            self.sending.set(false);
+            self.sending.update(|s| {
+                s.remove(&busy);
+            });
             // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
             self.emph_bot.set(String::new());
             self.refresh_turns();
@@ -7065,6 +7085,12 @@ pub(crate) fn pretty_model(id: &str) -> String {
     parts.iter().map(|p| title(p)).collect::<Vec<_>>().join(" ")
 }
 
+/// Whether chat `thread` may send now: unless it is busy itself (a message
+/// on its way or being answered). Other chats' runs don't block it.
+pub(crate) fn may_send(busy: &std::collections::BTreeSet<String>, thread: &str) -> bool {
+    !busy.contains(thread)
+}
+
 /// `spawn`, but owned by no layer: for work started from a menu or a modal
 /// that closes right after (a task under that owner dies before it runs).
 fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
@@ -7077,6 +7103,18 @@ fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
 mod tests {
     use super::{link_pass, link_token, mini_link};
     use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
+
+    #[test]
+    fn chats_send_in_parallel_and_only_a_busy_chat_waits() {
+        let mut busy = std::collections::BTreeSet::new();
+        assert!(super::may_send(&busy, "t1"));
+        busy.insert("t1".to_owned());
+        assert!(!super::may_send(&busy, "t1"), "its own run is going");
+        assert!(super::may_send(&busy, "t2"), "another chat's run does not block");
+        busy.insert("t2".to_owned());
+        busy.remove("t1");
+        assert!(super::may_send(&busy, "t1") && !super::may_send(&busy, "t2"));
+    }
 
     #[test]
     fn a_reply_quotes_a_title_and_never_an_empty_text() {
