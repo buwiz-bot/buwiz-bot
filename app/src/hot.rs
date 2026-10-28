@@ -402,9 +402,10 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(botmodal::main_picker_layer())
         .child(models::layer())
         .child(composer::plus_layer())
-        // the full-screen apps; the viewer (a print preview an app opened)
-        // and ⌘K show over them
+        // the full-screen apps; a v1 app's print preview, the viewer (a
+        // print preview an app opened) and ⌘K show over them
         .child(crate::mini::full_layer())
+        .child(crate::mini_v1::ui::preview_layer())
         .child(files::layer())
         .child(palette::layer())
         .child(files::lightbox_layer())

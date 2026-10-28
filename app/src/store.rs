@@ -6996,10 +6996,12 @@ impl Store {
         }
     }
 
-    /// ⌘W over the full-screen apps: the file viewer over them closes
-    /// first, then the top app.
+    /// ⌘W over the full-screen apps: a v1 app's print preview closes
+    /// first, then the file viewer over them, then the top app.
     pub fn mini_close_top(&'static self) {
-        if self.viewing.get_untracked().is_some() {
+        if self.v1.preview.with_untracked(Option::is_some) {
+            self.v1_close_preview();
+        } else if self.viewing.get_untracked().is_some() {
             self.viewing.set(None);
         } else {
             self.close_mini();
