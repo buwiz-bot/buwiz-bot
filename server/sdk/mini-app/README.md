@@ -89,3 +89,8 @@ page), then follow these ten steps. Paths are from the repo root.
 | `lib/rox-plugin.mjs` | `startPlugin`, `ticketStore`, `ok`, `fail`: the reserved tools of spec 7.8, done once |
 | `bin/rox-plugin-test.mjs` | The test runner |
 | `docs/` | [overview](docs/overview.md), [manifest](docs/manifest.md), [bridge](docs/bridge.md), [security](docs/security.md), [testing](docs/testing.md) |
+
+11. **Make cards fast** ([docs/performance.md](docs/performance.md)): render
+    answer cards from their snapshot props, keep module top levels empty and
+    sources small, declare the inline size, and read Rox's `mini v1 timing:`
+    log to see where an open's time goes.
