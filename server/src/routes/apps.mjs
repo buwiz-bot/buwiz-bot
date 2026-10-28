@@ -169,6 +169,7 @@ export default async function handle(req, res) {
           openWindows.delete(String(name));
           fetch(`http://127.0.0.1:${PORT}/popout`, {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, w: open.hintW, h: open.hintH }),
           }).catch(() => {});
         }
