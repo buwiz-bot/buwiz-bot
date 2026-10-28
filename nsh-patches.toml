@@ -115,6 +115,13 @@ pr = 0
 status = "local"
 note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Rox's mini apps)"
 
+[[topic]]
+branch = "pr/appview-error-hook"
+kind = "feature"
+pr = 0
+status = "local"
+note = "AppView::set_error_handler: Rox shows a v1 mini app's load, uncaught and budget errors (Mini App Protocol 6.7)"
+
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
 # verified, carried in `rox`; kept in the fork, not upstreamed. The macOS-only
