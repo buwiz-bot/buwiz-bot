@@ -1235,7 +1235,7 @@ export async function execTool(job, thread, block) {
     if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {});
 
     // a v1 plugin's tool, under its own name (v1/agent.mjs)
-    if (v1ToolPlugin(v1Plugins, block.name)) {
+    if (v1ToolPlugin(v1Plugins, block.name, job?.v1Surface)) {
       setJob(job, "connecting", "Working in a connected app");
 
       return await v1AgentCall(v1Plugins, job, block.name, block.input || {});
@@ -1396,8 +1396,9 @@ export function markAppUsed(thread, serverId) {
 
 // A thread's bot scopes which connected MCP servers the agent sees:
 // global servers (bot IS NULL) plus servers bound to this bot. → the
-// callable defs plus the large apps left to load on demand.
-async function mcpSurface(thread) {
+// callable defs plus the large apps left to load on demand. A v1 routine's
+// job narrows the v1 tools to its plugin and its `reads` (job.v1Surface).
+async function mcpSurface(thread, job) {
   const bot = store.bots.find((b) => b.threadId === thread?.id);
 
   const rows = db
@@ -1426,7 +1427,7 @@ async function mcpSurface(thread) {
   // v1 plugins: their own tool names, approved plugins only; a plugin over
   // DEFER_OVER tools waits for app_tools_load like a v0 server
   const taken = new Set([...TOOLS, ...ROUTINE_TOOLS, ...BOT_TOOLS, ...defs].map((t) => t.name));
-  const byPlugin = Map.groupBy(v1Tools(v1Plugins, taken), (t) => t.plugin);
+  const byPlugin = Map.groupBy(v1Tools(v1Plugins, taken, job?.v1Surface), (t) => t.plugin);
 
   for (const [plugin, tools] of byPlugin) {
     const short = v1Plugins.rowOf(plugin)?.short;
@@ -1486,11 +1487,11 @@ async function toolAppToolsLoad(thread, input) {
   return { content: `Loaded ${names.length} ${row.name || id} tools; call them from your next step:\n${names.join("\n")}` };
 }
 
-export async function toolList(thread) {
+export async function toolList(thread, job) {
   // The bundled BetterOffice MCP server contributes its office_* surface once
   // connected (office_create stays ours — its version mounts the file card).
   const office = officeMcpTools();
-  const { defs: mcp, deferred } = await mcpSurface(thread);
+  const { defs: mcp, deferred } = await mcpSurface(thread, job);
   const own = botOfThread(thread) ? BOT_TOOLS : [];
   const load = deferred.length ? [appToolsLoad(deferred)] : [];
 

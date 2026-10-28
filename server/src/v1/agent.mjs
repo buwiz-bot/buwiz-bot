@@ -39,9 +39,14 @@ function contributing(plugins) {
   return plugins.rows().filter((row) => row.enabled && plugins.runtime(row.id).state === "running" && isApproved(trust, row.id, row.publisher_key_id));
 }
 
+// A routine's turn (5.9) sees its own plugin's tools and only the `reads`
+// tools it names; `surface` is {plugin, reads} then, null otherwise.
+const inSurface = (surface, plugin, name) => !surface || plugin === surface.plugin || (surface.reads || []).some((x) => x.plugin === plugin && x.tools.includes(name));
+
 /** The model's v1 tools: [{name, description, input_schema, plugin}];
- *  `taken` holds names the agent already has. */
-export function v1Tools(plugins, taken = new Set()) {
+ *  `taken` holds names the agent already has, `surface` narrows them to a
+ *  routine's turn. */
+export function v1Tools(plugins, taken = new Set(), surface = null) {
   const out = [];
 
   for (const row of contributing(plugins)) {
@@ -49,6 +54,8 @@ export function v1Tools(plugins, taken = new Set()) {
 
     for (const t of plugins.runtime(row.id).tools) {
       if (isV1("reservedTool", t.name) || off.has(t.name) || taken.has(t.name) || BUILTIN.test(t.name) || !t.name.startsWith(`${row.short}_`)) continue;
+
+      if (!inSurface(surface, row.id, t.name)) continue;
       out.push({ name: t.name, description: approvedText(`[${row.short}] ${t.description || t.name}`, 1024), input_schema: t.inputSchema || { type: "object", properties: {} }, plugin: row.id });
     }
   }
@@ -57,7 +64,7 @@ export function v1Tools(plugins, taken = new Set()) {
 }
 
 /** The plugin id serving v1 tool `name` on the model's surface, or null. */
-export const v1ToolPlugin = (plugins, name) => v1Tools(plugins).find((t) => t.name === name)?.plugin || null;
+export const v1ToolPlugin = (plugins, name, surface = null) => v1Tools(plugins, new Set(), surface).find((t) => t.name === name)?.plugin || null;
 
 const fold = (r) =>
   (r.content || []).map((c) => (c.type === "text" ? c.text : c.type === "image" ? `[image: ${c.mimeType || "image/png"}]` : JSON.stringify(c))).join("\n") || "(empty)";
@@ -87,7 +94,7 @@ function noteCard(job, plugins, row, open) {
 
 /** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}. */
 export async function v1AgentCall(plugins, job, name, input) {
-  const plugin = v1ToolPlugin(plugins, name);
+  const plugin = v1ToolPlugin(plugins, name, job?.v1Surface);
   const row = plugin && plugins.rowOf(plugin);
 
   if (!row) return { content: `${name} is not available: its plugin is off, failed, or the tool is switched off`, is_error: true };
