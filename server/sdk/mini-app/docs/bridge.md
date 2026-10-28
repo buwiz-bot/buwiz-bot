@@ -93,6 +93,10 @@ own ([spec] 7.8, 7.9).
 | `rox.uninstall` | `{}` | `{ok: true}` after deleting tickets and subjects |
 | any other `rox.*` | | MCP error `-32601` |
 
+## Theme
+
+Rox renders your app in Rox's own light or dark setting, not the OS's, and switches it live when the user changes it (spec 6.5). Give every color a `dark:` variant: `bg-white dark:bg-[#161616]`, `text-[#1c1c1c] dark:text-[#f5f5f5]`, `border-black/10 dark:border-white/10`. A color without one stays light in a dark Rox. The template shows the pattern.
+
 ## Limits
 
 | Item | Limit |
