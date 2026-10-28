@@ -1,7 +1,8 @@
 //! The macOS side of a v1 open: the [`HostUi`] the bridge asks (the file
-//! dialog, the pasteboard, the browser, the full-screen stack), and the
-//! open's start, from the session (on a thread of its own: it waits on the
-//! broker and the plugin) to the app's load on the main thread.
+//! dialog, the pasteboard, the browser, the full-screen stack, the print
+//! preview), and the open's start, from the session (on a thread of its
+//! own: it waits on the broker and the plugin) to the app's load on the
+//! main thread.
 //!
 //! Consent and the chat an attachment goes to are part B's: until it sets
 //! them ([`set_consent`], [`set_chat`]), consent is declined and there is
@@ -112,6 +113,11 @@ impl HostUi for MacUi {
     fn copy(&self, text: &str) {
         let text = text.to_owned();
         on_main(move || write_pasteboard(&text));
+    }
+
+    fn preview(&self, doc: bridge::Preview) -> Result<(), RoxError> {
+        super::to_store(move |st| st.v1_preview(doc));
+        Ok(())
     }
 
     fn session_ended(&self, _: &V1Key, why: Ended) {

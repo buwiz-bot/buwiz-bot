@@ -99,6 +99,7 @@ const __roxBridge = (() => {
     });
   }
   if (has("rox.copy")) rox.copy = (text) => ask("rox.copy", { text: String(text) }).then(done);
+  if (has("rox.preview")) rox.preview = (options) => ask("rox.preview", options === undefined ? {} : options).then(done);
   return { rox: Object.freeze(rox), RoxError };
 })();
 for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "localStorage", "sessionStorage"]) {
