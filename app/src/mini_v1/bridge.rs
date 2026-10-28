@@ -64,6 +64,12 @@ pub trait HostUi: Send + Sync {
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
     fn session_ended(&self, key: &V1Key, why: Ended);
+    /// Sets the inline open's card to `height` (`rox.fit`, already
+    /// clamped and paced: [`Fitter`]). Hosts without inline cards ignore
+    /// it.
+    fn fit(&self, height: f32) {
+        let _ = height;
+    }
 }
 
 /// A question for the person (spec 9.7).
@@ -141,6 +147,56 @@ struct Gate {
     recent: VecDeque<Instant>,
 }
 
+/// `rox.fit`'s pacing (6.5, 7.11): a height within [`FIT_STEP`] of the
+/// one set changes nothing, and at most [`FIT_PER_SECOND`] go out a
+/// second; past that the latest waits for the next free slot, so the card
+/// still ends at the app's last height.
+pub const FIT_STEP: f32 = 2.0;
+pub const FIT_PER_SECOND: usize = 8;
+
+/// One inline open's `rox.fit` heights: the one set, when the recent ones
+/// went out, and the one waiting past the limit.
+#[derive(Debug, Default)]
+pub struct Fitter {
+    set: Option<f32>,
+    recent: VecDeque<Instant>,
+    waiting: Option<f32>,
+}
+
+impl Fitter {
+    /// Height `h` (clamped) asked at `now`: `Some` to set it now; `None`
+    /// when it changes nothing, or waits ([`Fitter::next`] says when).
+    pub fn ask(&mut self, h: f32, now: Instant) -> Option<f32> {
+        while self.recent.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) {
+            self.recent.pop_front();
+        }
+        if self.set.is_some_and(|s| (s - h).abs() < FIT_STEP) {
+            self.waiting = None;
+            return None;
+        }
+        if self.recent.len() >= FIT_PER_SECOND {
+            self.waiting = Some(h);
+            return None;
+        }
+        self.recent.push_back(now);
+        self.set = Some(h);
+        self.waiting = None;
+        Some(h)
+    }
+
+    /// When the waiting height may go out, if one waits.
+    pub fn next(&self) -> Option<Instant> {
+        self.waiting?;
+        self.recent.front().map(|t| *t + Duration::from_secs(1))
+    }
+
+    /// The waiting height, asked again at `now`.
+    pub fn retry(&mut self, now: Instant) -> Option<f32> {
+        let h = self.waiting.take()?;
+        self.ask(h, now)
+    }
+}
+
 /// One open's bridge state, shared by its handlers.
 pub struct OpenContext {
     pub prepared: Arc<Prepared>,
@@ -206,8 +262,10 @@ pub fn params(prepared: &Prepared, viewport: Value) -> Map<String, Value> {
 /// Wires `channel` for the open `ctx`: its parameters, a handler for each
 /// granted method and nothing else, and the session's end.
 pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
+    let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     channel.set_params(params(&ctx.prepared, viewport));
-    for method in ctx.prepared.permissions.methods() {
+    install_fit(channel, ctx, inline);
+    for method in ctx.prepared.permissions.methods().into_iter().filter(|m| *m != perms::FIT) {
         let c = ctx.clone();
         channel.handle(method, move |mut call: HostCall| {
             let data = call.take_data();
@@ -222,6 +280,46 @@ pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
             let _ = ch.send("rox.session", json!({"state": "reconnecting"}));
         }
         ui.session_ended(&key, why);
+    });
+}
+
+/// `rox.fit({height})`, a post: an `inline` open's card takes the height,
+/// clamped to its manifest's `inline` range and paced by a [`Fitter`]; a
+/// full-screen open's is ignored. It needs no permission: it sizes only
+/// the app's own frame.
+fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+    let app = ctx.prepared.plugin.app(&ctx.prepared.key.app).cloned().unwrap_or(Value::Null);
+    let (ui, fitter) = (ctx.ui.clone(), Arc::new(Mutex::new(Fitter::default())));
+    channel.handle(perms::FIT, move |mut call: HostCall| {
+        let data = call.take_data();
+        if let Some(reply) = call.into_reply() {
+            reply.resolve(Value::Null);
+        }
+        let Some(h) = data.get("height").and_then(Value::as_f64).filter(|h| h.is_finite() && *h > 0.0) else { return };
+        if !inline {
+            return;
+        }
+        let h = super::cards::fit_height(&app, h.ceil() as f32);
+        let mut f = fitter.lock().unwrap_or_else(|e| e.into_inner());
+        let waited = f.next().is_some();
+        if let Some(h) = f.ask(h, Instant::now()) {
+            return ui.fit(h);
+        }
+        // the first to wait sets a timer for the slot; later ones only
+        // replace the height it sends
+        let Some(mut at) = f.next().filter(|_| !waited) else { return };
+        let (ui, fitter) = (ui.clone(), fitter.clone());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                let mut f = fitter.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(h) = f.retry(Instant::now()) {
+                    ui.fit(h);
+                }
+                let Some(next) = f.next() else { return };
+                at = next;
+            }
+        });
     });
 }
 

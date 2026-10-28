@@ -82,8 +82,9 @@ pub(crate) fn mini_app(
 }
 
 /// A v1 app inline in a chat (spec 6.5): `w×h`, its viewport saying
-/// `inline`.
-pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
+/// `inline`. `h` is read live (the app's `rox.fit` moves it): the view
+/// resizes in place, and the app lays out at the new size.
+pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static) -> impl IntoElement {
     let name = app.to_owned();
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
@@ -99,7 +100,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
         })
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
         .w(px(w))
-        .h(px(h))
+        .h(move || px(h()))
 }
 
 /// The appearance every mini app (generated `R<n>` widgets, v0 `mcp:` and

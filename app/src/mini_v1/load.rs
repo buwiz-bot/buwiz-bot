@@ -835,7 +835,7 @@ mod tests {
         let ok = prepare(&Serves { listed: card(CARD), served: CARD.to_owned() }, KEY).unwrap();
         assert_eq!(ok.title, "Fixture Card");
         assert_eq!(ok.fingerprint, fingerprint(CARD));
-        assert_eq!(ok.permissions.methods(), ["rox.ticket.title", "rox.call"]);
+        assert_eq!(ok.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
         assert!(ok.js.starts_with(SHIM) && ok.js.ends_with("__roxMount(Card);\n"));
         assert_eq!(ok.app_info()["sdk"], "1");
         let changed = CARD.replacen("Card", "Cart", 1);
