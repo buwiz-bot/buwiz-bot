@@ -77,55 +77,72 @@ const routes = [
   marketRoute,
   dataRoute,
 ];
+
 // No wildcard CORS: an origin is answered only when it is allowed (the
 // server's own pages, plus GROK_ALLOWED_ORIGINS, comma-separated), and any
 // other Origin is refused before a route runs (guard.mjs).
 const ALLOWED = allowedOrigins(PORT, process.env.GROK_ALLOWED_ORIGINS);
+
 const server = createServer(async (req, res) => {
   const no = refusal(req, ALLOWED);
+
   if (no) {
     res.statusCode = no.status;
     res.setHeader("content-type", "application/json");
+
     return res.end(JSON.stringify({ ok: false, error: no.error }));
   }
+
   if (req.headers.origin) {
     res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
     res.setHeader("Access-Control-Allow-Headers", "content-type");
     res.setHeader("Vary", "Origin");
   }
+
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
+
     return res.end();
   }
+
   for (const h of routes) {
     try {
       if (await h(req, res) || res.writableEnded || res.headersSent) return;
     } catch (e) {
       console.error(`route error ${req.method} ${req.url}:`, e);
+
       if (!res.headersSent) {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: String(e?.message || e) }));
       }
+
       return;
     }
   }
+
   res.statusCode = 404;
   res.end("not found");
 });
 
 // Rox's host token for /v1/host/* (v1/routes.mjs), fresh each start
 initHostToken();
+
 persist(); // seed the DB on first boot / after a JSON→SQLite migration
+
 if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
+
 writeShelf(); // sync widgets/index.tsx with the DB
+
 // BetterOffice MCP child (office_* tools) — connected in the background; a
 // failed spawn just leaves the surface out of toolList().
 ensureOfficeMcp(OUT_DIR).catch(() => {});
+
 // The editor bundle is gitignored (dist/) — build it once when the engines
 // are installed and dist/editor.js is missing; until then renderFile hands
 // out the read-only /office/ viewer URL instead.
 {
   const editorJs = join(dirname(fileURLToPath(import.meta.url)), "office", "editor", "dist", "editor.js");
+
   if (!existsSync(editorJs) && officeCaps().docx) {
     execFile("npx", ["esbuild", "editor.jsx", "--bundle", "--format=esm", "--splitting", "--outdir=dist",
       "--loader:.wasm=file", "--loader:.ttf=file", "--loader:.otf=file", "--external:*.png", "--minify"],
@@ -135,8 +152,10 @@ ensureOfficeMcp(OUT_DIR).catch(() => {});
         const ed = join(dirname(fileURLToPath(import.meta.url)), "office", "editor");
         execFile("node", [join(ed, "patch-dist.mjs")], () => {});
         const g = join(ed, "dist", "generated");
+
         for (const pkg of ["docx", "xlsx", "pptx"]) {
           const src = officePkgRoot(pkg);
+
           if (src) execFile("cp", ["-R", join(src, "dist", "generated") + "/", g + "/"], () => {});
         }
       }
@@ -153,11 +172,14 @@ writeIndex();
 // bare name — the head mirror — which is what they'd show anyway.)
 for (const f of readdirSync(GEN_DIR)) {
   const m = f.match(/^(R\d+)\.tsx$/);
+
   if (!m || headOf(m[1])) continue;
+
   try {
     const dir = join(GEN_DIR, m[1]);
     mkdirSync(dir, { recursive: true });
     const v1 = join(dir, `${verSlug(m[1])}.v1.tsx`);
+
     if (!verFile(m[1], 1)) copyFileSync(join(GEN_DIR, f), v1);
     db.prepare(
       "INSERT OR IGNORE INTO versions(name,v,parent,prompt,created_at) VALUES(?,1,NULL,NULL,?)",
@@ -165,12 +187,15 @@ for (const f of readdirSync(GEN_DIR)) {
     db.prepare("INSERT OR IGNORE INTO heads(name,v) VALUES(?,1)").run(m[1]);
   } catch {}
 }
+
 // Pre-slug version files (v<n>.tsx) rename to <slug>.v<n>.tsx.
 for (const d of readdirSync(GEN_DIR)) {
   if (!/^R\d+$/.test(d)) continue;
+
   try {
     for (const x of readdirSync(join(GEN_DIR, d))) {
       const m = x.match(/^v(\d+)\.tsx$/);
+
       if (m)
         renameSync(
           join(GEN_DIR, d, x),
@@ -179,6 +204,7 @@ for (const d of readdirSync(GEN_DIR)) {
     }
   } catch {}
 }
+
 writeIndex();
 
 // Backfill runtime chunks for modules that predate them (the packaged app
@@ -188,21 +214,28 @@ writeIndex();
 (async () => {
   for (const dir of [GEN_DIR, WIDGETS_DIR]) {
     if (!existsSync(dir)) continue;
+
     for (const f of readdirSync(dir)) {
       const m = f.match(/^(R\d+)\.tsx$/);
+
       if (!m) continue;
       const key = dir === WIDGETS_DIR ? `${m[1]}w` : m[1];
+
       if (!existsSync(join(CHUNK_DIR, `${key}.js`)))
         await emitChunk(key, join(dir, f));
     }
   }
+
   for (const d of readdirSync(GEN_DIR)) {
     if (!/^R\d+$/.test(d)) continue;
+
     try {
       for (const vf of readdirSync(join(GEN_DIR, d))) {
         const vm = vf.match(/\.v(\d+)\.tsx$/);
+
         if (!vm) continue;
         const key = `${d}v${vm[1]}`;
+
         if (!existsSync(join(CHUNK_DIR, `${key}.js`)))
           await emitChunk(key, join(GEN_DIR, d, vf));
       }

@@ -2,13 +2,13 @@
 // images, fetch/shell/search, react, office, artifacts, launch/close,
 // version ops), MCP and skill admin.
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, STAGE_DIR, git, outFile } from "./config.mjs";
-import { uuidv7, db, modelCtx, openWindows, nextSeq, seq, setJob, store, slugFile, widgetRow, writeIndex, writeShelf, turnsJson, activeThread, cardTurn, markRevising, clearRevising } from "./state.mjs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, STAGE_DIR, outFile } from "./config.mjs";
+import { uuidv7, db, modelCtx, openWindows, nextSeq, setJob, store, slugFile, writeIndex, cardTurn, markRevising, clearRevising } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
-import { checkCandidate, errorCard, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
-import { fileMeta, fileRecord } from "./files.mjs";
+import { checkCandidate, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
+import { fileRecord } from "./files.mjs";
 import { appInfo, genAppIcon, iconPath, setAppCols, updateAppMeta } from "./appmeta.mjs";
 import { callOfficeTool, officeCreateBytes, officeMcpTools } from "./office.mjs";
 import { pluginSkillsInject } from "./plugins.mjs";
@@ -23,6 +23,7 @@ import { DRIVE_SERVER, noteDriveCall } from "./drive.mjs";
 import { isServerId } from "./grammar.mjs";
 import { ROUTINE_TOOLS, isRoutineTool, noteGoogleEmail, toolRoutine } from "./routines.mjs";
 import { v1AgentCall, v1ToolPlugin, v1Tools } from "./v1/agent.mjs";
+import { isString, kindOf } from "./v1/jcs.mjs";
 import { plugins as v1Plugins } from "./v1/broker.mjs";
 
 export const CLIENT_SEARCH = {
@@ -418,6 +419,7 @@ export const TOOLS = [
 // A bot's thread appends its own context (who it is, instructions,
 // memories); a plain chat gets the base prompt unchanged.
 export const agentSystem = (thread) => baseSystem() + botSection(thread);
+
 const baseSystem = () => `You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.
 
 Reply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).
@@ -447,8 +449,10 @@ ${contractFor("__NAME__")}`;
 export function privateSkillsInject() {
   try {
     const rows = db.prepare("SELECT name, description, body FROM skills WHERE enabled=1 ORDER BY created_at").all();
+
     if (!rows.length) return "";
     const parts = rows.map((r) => `### ${r.name}\n${r.description}\n${String(r.body || "").slice(0, 8000)}`);
+
     return `\nPrivate skills (active — follow when applicable):\n${parts.join("\n\n")}`.slice(0, 30000);
   } catch { return ""; }
 }
@@ -461,16 +465,20 @@ export function privateSkillsInject() {
 
 export const clampDim = (n, lo, hi) => {
   const v = Math.round(Number(n));
+
   return v >= lo && v <= hi ? v : 0;
 };
+
 export function artOf(input) {
   const lay = input.layout || {};
+
   const art = {
     title: String(input.title || "").trim().slice(0, 60) || null,
     desc: String(input.desc || "").trim().slice(0, 140) || "",
     w: clampDim(lay.width ?? input.width, 60, 2048),
     h: clampDim(lay.height ?? input.height, 60, 2048),
   };
+
   return art.title || art.desc || art.w || art.h ? art : null;
 }
 
@@ -479,6 +487,7 @@ export function artOf(input) {
 export function imageFileOf(name, v = null) {
   try {
     const path = v ? verFile(name, v) : join(GEN_DIR, `${name}.tsx`);
+
     return readFileSync(path, "utf8").match(/asset:\/generated\/assets\/(img-[\w.-]+)/)?.[1] || null;
   } catch {
     return null;
@@ -491,13 +500,16 @@ function aspectOfFile(path) {
     const out = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], { encoding: "utf8" });
     const w = Number(out.match(/pixelWidth: (\d+)/)?.[1]);
     const h = Number(out.match(/pixelHeight: (\d+)/)?.[1]);
+
     if (w && h) return w > h * 1.15 ? "3:2" : h > w * 1.15 ? "2:3" : "1:1";
   } catch {}
+
   return "1:1";
 }
 
 export function imageModule(file, prompt, w, h) {
   const ar = w && h ? `, aspectRatio: ${(w / h).toFixed(4)}` : "";
+
   return `import { signal, Text, View } from "nsh";
 import { Image } from "nsh/image";
 
@@ -523,32 +535,40 @@ export default function R() {
 export async function mcpAppModule(raw) {
   const k = parseAppKey(raw);
   const row = k && db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(k.server);
+
   if (!row) return { source: "", error: "no such server" };
   const res = (await mcpListApps(row)).find((r) => appOfUri(r.uri) === k.app);
+
   if (!res) return { source: "", error: `${k.server} ships no app ${k.app}` };
   const text = await mcpReadApp(row, res.uri);
   const props = { ...k.props, server: row.id };
+
   return { source: text && `globalThis.roxProps = ${JSON.stringify(props)};\n${text}`, title: res.title || res.name || k.app };
 }
 
 // `POST /mcp/call {server, tool, args}` — a mini app calling its server.
 export async function mcpAppCall({ server, tool, args }) {
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(server || ""));
+
   if (!row) return { ok: false, error: "no such server" };
   const name = String(tool || "");
+
   // the per-tool switch binds apps as it binds the agent (mcpSurface)
   if (new Set(JSON.parse(row.disabled_tools || "[]")).has(name))
     return { ok: false, error: `${name} is switched off for ${row.name || row.id}; turn it on in Plugins to let apps call it` };
+
   return mcpCallJson(row, name, args || {});
 }
 
 // `GET /mcp/apps` — every enabled server's mini apps.
 export async function mcpAppList() {
   const rows = db.prepare("SELECT * FROM mcp_servers WHERE enabled=1").all();
+
   const lists = await Promise.all(rows.map(async (row) =>
     (await mcpListApps(row).catch(() => [])).map((r) => ({
       server: row.id, app: appOfUri(r.uri), uri: r.uri, title: r.title || r.name || "", description: r.description || "",
     }))));
+
   return lists.flat();
 }
 
@@ -557,9 +577,11 @@ export async function mcpAppList() {
 // announces. A server with neither is left out.
 export async function mcpManifest() {
   const rows = db.prepare("SELECT * FROM mcp_servers WHERE enabled=1").all();
-  const named = (xs) => (Array.isArray(xs) ? xs.filter((x) => x && typeof x.name === "string" && x.name) : []);
+  const named = (xs) => (Array.isArray(xs) ? xs.filter((x) => x && isString(x.name) && x.name) : []);
+
   const servers = await Promise.all(rows.map(async (row) => {
     const [apps, m] = await Promise.all([mcpListApps(row).catch(() => []), mcpReadManifest(row).catch(() => ({}))]);
+
     return {
       id: row.id,
       title: String(m.title || row.name || row.id),
@@ -568,6 +590,7 @@ export async function mcpManifest() {
       scopes: named(m.scopes),
     };
   }));
+
   return servers.filter((s) => s.apps.length || s.commands.length || s.scopes.length);
 }
 
@@ -578,41 +601,50 @@ export { mcpResolve } from "./attachments.mjs";
 // mini app and the client opens it full screen when the job reports it.
 async function noteAppOpen(job, row, open) {
   const app = appOfUri(open.uri);
+
   if (!job || !app) return;
   const res = (await mcpListApps(row)).find((r) => r.uri === open.uri);
-  const props = open.props && typeof open.props === "object" ? open.props : {};
+  const props = open.props && ["object", "array", "other"].includes(kindOf(open.props)) ? open.props : {};
   const key = appKey(row.id, app, props);
   const title = open.title || res?.title || res?.name || app;
   job.openApp = { key, title };
   job.linkTurn ||= { links: [] };
   const links = job.linkTurn.links.filter((l) => l.id !== key);
   // `token` names what the app shows (an attachable value), carried on the link
-  const token = typeof open.token === "string" ? open.token : "";
+  const token = isString(open.token) ? open.token : "";
   const link = `rox://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
-  links.push({ provider: "mcp-app", id: key, name: title, link, action: "open", kind: "app", file_type: res?.description || "Mini app", ...(token ? { token } : {}) });
+  const card = { provider: "mcp-app", id: key, name: title, link, action: "open", kind: "app", file_type: res?.description || "Mini app" };
+
+  if (token) card.token = token;
+  links.push(card);
   job.linkTurn.links = links;
 }
 
 export async function toolGenerateApp(job, thread, input) {
   let code = String(input.code || "").trim();
+
   if (!code.includes("export default") && /function\s+R\s*\(/.test(code))
     code += "\nexport default R;\n";
+
   if (!code.includes("export default") || !code.includes("<"))
     return {
       content:
         "not a module: it needs `export default` on a component returning JSX.",
       is_error: true,
     };
+
   // input.name (set by revise_app) revises an existing artifact: the code is
   // a new version parented to base_v (or current), never an overwrite.
   const revName = /^R\d+$/.test(String(input.name || ""))
     ? String(input.name)
     : null;
+
   if (revName && !existsSync(join(GEN_DIR, `${revName}.tsx`)))
     return { content: `no such artifact ${revName}`, is_error: true };
   const name = revName || `R${nextSeq()}`;
   setJob(job, "checking", "Checking the code");
   code = code.split("__NAME__").join(name);
+
   // Models that self-name their state key (const S = "tipcalc") save under a
   // key the /state/<module> lookups (pop-outs, other surfaces) can never find —
   // pin the state const to the real name.
@@ -631,7 +663,9 @@ export async function toolGenerateApp(job, thread, input) {
   // fixes it; the job's end uncovers it).
   // The placeholder drawn while the code streamed becomes this card.
   const pre = job?.pendingApp && thread.turns.includes(job.pendingApp) ? job.pendingApp : null;
+
   if (job) job.pendingApp = null;
+
   const turn = Object.assign(pre || { id: uuidv7() }, {
     role: "ai",
     name,
@@ -641,22 +675,30 @@ export async function toolGenerateApp(job, thread, input) {
     caption: String(input.caption || ""),
     art: artOf(input) || pre?.art || null,
   });
+
   if (revName) {
     if (pre) thread.turns.splice(thread.turns.indexOf(pre), 1);
     markRevising(job, cardTurn(thread, revName, Number(input.base_v) || null));
   } else {
     if (!pre) thread.turns.push(turn);
+
     if (job) job.turn = turn;
   }
+
   const dropTurn = () => {
     const i = thread.turns.indexOf(turn);
+
     if (i >= 0) thread.turns.splice(i, 1);
+
     if (job?.turn === turn) job.turn = null;
   };
+
   try {
     const err = await checkCandidate(name);
+
     if (err) {
       dropTurn();
+
       return {
         content: `nsh check rejected ${name}:\n${err.slice(0, 3000)}\nFix the module and call generate_app again with the corrected code.`,
         is_error: true,
@@ -666,50 +708,66 @@ export async function toolGenerateApp(job, thread, input) {
     dropTurn();
     throw e;
   }
+
   // Revising off a specific version (base_v) branches; default parent is the
   // current pointer. Nothing earlier is touched — cards keep their version.
   const headBefore = revName ? headOf(name) : null;
+
   const parent = revName
     ? db.prepare("SELECT v FROM versions WHERE name=? AND v=?").get(name, Number(input.base_v) || 0)
         ? Number(input.base_v)
         : headBefore
     : null;
+
   const branched = revName && parent != null && parent !== headBefore;
+
   // The apps row lands FIRST so writeVersion names the file <slug>.v<n>.tsx.
   const prior = db
     .prepare("SELECT title,file FROM apps WHERE name=?")
     .get(name) || {};
+
   const title = String(input.title || "").trim().slice(0, 60) || prior.title || null;
   const file = slugFile(input.slug) || prior.file || null;
   // generate_app's desc is also "what the app does"; revise_app's says what
   // changed, so only an explicit description replaces it there.
   const description = String(input.description || (revName ? "" : input.desc) || "").trim().slice(0, 280);
-  setAppCols(name, { title, file, ...(description ? { description } : {}) });
+  const cols = { title, file };
+
+  if (description) cols.description = description;
+  setAppCols(name, cols);
+
   const v = writeVersion(
     name, code, parent, job?.prompt || input.caption || "",
     input.branch_name,
   );
+
   // the placeholder turn becomes the real card — pinned to this version
   turn.v = v;
   delete turn.building;
   delete turn.status;
+
   if (job?.turn === turn) job.turn = null;
+
   if (revName) {
     thread.turns.push(turn);
     clearRevising(job);
   }
+
   job.cards = (job.cards || 0) + 1;
   writeIndex();
   console.log(`✓ ${name}@v${v}.tsx via ${labelOf(modelCtx.getStore())} (tool)`);
   // The icon draws in the background — never blocks or fails the result.
   const iconPrompt = String(input.icon_prompt || "").trim();
+
   if (!existsSync(iconPath(name)) || (revName && iconPrompt))
     genAppIcon(name, iconPrompt, modelCtx.getStore()?.model || MODEL).catch((e) =>
       console.error(`  icon ${name}: ${String(e?.message || e).slice(0, 200)}`),
     );
+
   const branchNote = branched
     ? ` — this is a new branch off v${parent}${input.branch_name ? ` named "${String(input.branch_name).trim().slice(0, 40)}"` : ""}; mention the fork to the user (they can rename it in Library history)`
     : "";
+
   return {
     content: `mounted as ${name} v${v}${branchNote} — the card is live in the conversation. Library now launches v${v}; earlier versions stay on the tree.`,
   };
@@ -717,17 +775,20 @@ export async function toolGenerateApp(job, thread, input) {
 
 export async function toolGenerateImage(job, thread, input) {
   const prompt = String(input.prompt || "").trim();
+
   if (!prompt) return { content: "prompt is required", is_error: true };
   setJob(job, "generating", "Sketching something up");
   // An edit starts from that card's current image and keeps its shape.
   const editOf = /^R\d+$/.test(String(input.edit_of || "")) ? String(input.edit_of) : null;
   const src = editOf ? imageFileOf(editOf) : null;
+
   if (editOf && !src) return { content: `${editOf} is not an image card`, is_error: true };
   // The size is settled before the placeholder lands, so it is drawn at the
   // final image's exact shape.
   const aspect = IMAGE_ASPECTS[input.aspect] ? input.aspect : src ? aspectOfFile(join(ASSETS_DIR, src)) : "1:1";
   const [w, h] = IMAGE_ASPECTS[aspect];
   const art = artOf(input) || { title: null, desc: "" };
+
   // An edit keeps the card's title unless a new one is given.
   if (editOf && !art.title)
     art.title = [...thread.turns].reverse().find((t) => t.name === editOf && t.art?.title)?.art.title || null;
@@ -735,6 +796,7 @@ export async function toolGenerateImage(job, thread, input) {
   art.h = h;
   // An image card: Rox opens its file in the lightbox.
   art.kind = "image";
+
   const turn = {
     id: uuidv7(),
     role: "ai",
@@ -744,25 +806,34 @@ export async function toolGenerateImage(job, thread, input) {
     caption: String(input.caption || ""),
     art,
   };
+
   thread.turns.push(turn);
+
   if (job) job.turn = turn;
+
   const dropTurn = () => {
     const i = thread.turns.indexOf(turn);
+
     if (i >= 0) thread.turns.splice(i, 1);
+
     if (job?.turn === turn) job.turn = null;
   };
+
   // gpt-image on the ChatGPT login (opencodex's relay), else Gemini.
   const file = `img-${Date.now()}.png`;
   art.file = file;
   let backend;
+
   try {
     backend = src
       ? await editImage(join(ASSETS_DIR, src), prompt, join(ASSETS_DIR, file), { size: `${w}x${h}` })
       : await generateImage(prompt, join(ASSETS_DIR, file), { size: `${w}x${h}`, aspect });
   } catch (e) {
     dropTurn();
+
     return { content: `image generation failed: ${String(e?.message || e).slice(0, 300)}`, is_error: true };
   }
+
   const name = editOf || `R${nextSeq()}`;
   const v = writeVersion(name, imageModule(file, prompt, w, h), editOf ? headOf(editOf) : null, prompt);
   turn.name = name;
@@ -771,9 +842,11 @@ export async function toolGenerateImage(job, thread, input) {
   art.via = backend;
   delete turn.building;
   delete turn.status;
+
   if (job?.turn === turn) job.turn = null;
   job.cards = (job.cards || 0) + 1;
   console.log(`✓ ${name}.tsx image via ${backend} (${prompt.slice(0, 50)})`);
+
   return {
     content: `image generated and mounted as ${name} (asset:/generated/assets/${file}) — to embed it inside a widget, use <Image src="asset:/generated/assets/${file}" …>.`,
   };
@@ -781,13 +854,16 @@ export async function toolGenerateImage(job, thread, input) {
 
 export async function toolFetchUrl(input) {
   const url = String(input.url || "");
+
   const r = await fetch(url, {
     signal: AbortSignal.timeout(20000),
     redirect: "follow",
     headers: { "user-agent": "Mozilla/5.0 (grok-shell)" },
   });
+
   if (!r.ok) return { content: `fetch failed: ${r.status}`, is_error: true };
   const html = await r.text();
+
   const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -797,6 +873,7 @@ export async function toolFetchUrl(input) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 6000);
+
   return { content: text || "(empty page)" };
 }
 
@@ -804,18 +881,24 @@ export async function toolFetchUrl(input) {
 // PATH: homebrew, cargo, nodenv, …). Non-interactive by contract; capped.
 export function toolShell(input) {
   const command = String(input.command || "").trim();
+
   if (!command) return { content: "shell_run needs a command", is_error: true };
   const timeout = Math.min(Math.max(Number(input.timeout_ms) || 30000, 1000), 180000);
   const cwd = input.cwd ? String(input.cwd) : process.env.HOME || "/";
+
   return new Promise((resolve) => {
     execFile("/bin/zsh", ["-lc", command], { cwd, timeout, maxBuffer: 8 << 20, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
       let out = "";
+
       if (stdout) out += stdout.trimEnd();
+
       if (stderr) out += (out ? "\n" : "") + stderr.trimEnd();
+
       if (err) {
         const code = err.killed ? "timeout" : (err.code ?? "?");
         out += `${out ? "\n" : ""}(exit ${code})`;
       }
+
       resolve({ content: (out || "(no output)").slice(0, 50000), is_error: !!err });
     });
   });
@@ -823,13 +906,16 @@ export function toolShell(input) {
 
 export async function toolQuerySource(input) {
   const src = String(input.source || "");
+
   const url =
     src === "linear"
       ? "http://127.0.0.1:8787/data/linear/issues"
       : `http://127.0.0.1:8787/data/${src}`;
+
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(25000) });
     const j = await r.json();
+
     return { content: JSON.stringify(j).slice(0, 12000) };
   } catch (e) {
     return { content: `source error: ${String(e?.message || e)}`, is_error: true };
@@ -840,12 +926,15 @@ export async function toolWebSearch(input) {
   // Client-side fallback (DuckDuckGo html) — only used if the model rejects
   // the Anthropic server-side web_search tool.
   const q = encodeURIComponent(String(input.query || ""));
+
   const r = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
     signal: AbortSignal.timeout(20000),
     headers: { "user-agent": "Mozilla/5.0 (grok-shell)" },
   });
+
   if (!r.ok) return { content: `search failed: ${r.status}`, is_error: true };
   const html = await r.text();
+
   const results = [
     ...html.matchAll(
       /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
@@ -855,8 +944,10 @@ export async function toolWebSearch(input) {
     .map((m) => {
       const href = m[1].replace(/.*uddg=/, "").split("&")[0];
       const title = m[2].replace(/<[^>]+>/g, "").trim();
+
       return `${title}\n${decodeURIComponent(href)}`;
     });
+
   return { content: results.join("\n\n") || "(no results)" };
 }
 
@@ -865,14 +956,18 @@ export async function toolWebSearch(input) {
 export function toolReact(thread, input) {
   const emoji = Array.from(String(input.emoji || "")).slice(0, 16).join("");
   let i = Number.isInteger(input.index) ? Number(input.index) : -1;
+
   if (i < 0 || i >= thread.turns.length) {
     for (i = thread.turns.length - 1; i >= 0; i--)
       if (thread.turns[i].role === "user") break;
   }
+
   const turn = thread.turns[i];
+
   if (!turn) return { content: "no message to react to", is_error: true };
   turn.reaction = emoji || undefined;
   writeIndex();
+
   return { content: emoji ? `reacted ${emoji} to turn ${i}` : `cleared reaction on turn ${i}` };
 }
 
@@ -880,6 +975,7 @@ export function toolReact(thread, input) {
 // widget card, it lands the moment it exists instead of waiting for the reply.
 export function cardOfficeFile(thread, rel) {
   const p = outFile(rel);
+
   if (!p || !existsSync(p)) return;
   thread.turns.push({ id: uuidv7(), role: "ai", label: "office", files: [fileRecord(p, rel)] });
 }
@@ -892,11 +988,13 @@ export function officeArt(name) {
     : /\.(xlsx|xlsm|xls|csv)$/i.test(name)
       ? ["spreadsheet", 480, 360]
       : [/\.pdf$/i.test(name) ? "pdf" : "document", 425, 550];
+
   return { title: name || null, desc: "", w, h, kind };
 }
 
 export async function toolOffice(job, thread, block) {
   const input = block.input || {};
+
   if (block.name === "office_create") {
     const name = String(input.path || "").split("/").pop() || "";
     const format = /\.xlsx$/i.test(name) ? "xlsx" : /\.pptx$/i.test(name) ? "pptx" : /\.docx$/i.test(name) ? "docx" : null;
@@ -904,20 +1002,29 @@ export async function toolOffice(job, thread, block) {
     // the file's turn, as generate_app adopts its own; without one a fresh
     // placeholder shows while the file is written.
     const pre = job?.pendingOffice && thread.turns.includes(job.pendingOffice) ? job.pendingOffice : null;
+
     if (job) job.pendingOffice = null;
+
     const dropPre = () => {
       const i = pre ? thread.turns.indexOf(pre) : -1;
+
       if (i >= 0) thread.turns.splice(i, 1);
     };
+
     if (!format) {
       dropPre();
+
       return { content: "path must end in .docx, .xlsx, or .pptx", is_error: true };
     }
+
     const payload = input[format];
+
     if (!payload) {
       dropPre();
+
       return { content: `a .${format} path requires a ${format} payload`, is_error: true };
     }
+
     const turn = Object.assign(pre || { id: uuidv7() }, {
       role: "ai",
       building: true,
@@ -925,42 +1032,58 @@ export async function toolOffice(job, thread, block) {
       label: "office",
       art: officeArt(name),
     });
+
     if (!pre) thread.turns.push(turn);
+
     if (job) job.turn = turn;
+
     const dropTurn = () => {
       const i = thread.turns.indexOf(turn);
+
       if (i >= 0) thread.turns.splice(i, 1);
+
       if (job?.turn === turn) job.turn = null;
     };
+
     const rel = `o${Date.now().toString(36)}`;
     mkdirSync(join(OUT_DIR, rel), { recursive: true });
+
     try {
       writeFileSync(join(OUT_DIR, rel, name), await officeCreateBytes(format, { [format]: payload }));
     } catch (e) {
       dropTurn();
+
       return { content: `office_create failed: ${String(e?.message || e).slice(0, 400)}`, is_error: true };
     }
+
     const key = `${rel}/${name}`;
     // the placeholder turn becomes the file card
     turn.files = [fileRecord(join(OUT_DIR, key), key)];
     delete turn.art;
     delete turn.building;
     delete turn.status;
+
     if (job?.turn === turn) job.turn = null;
     writeIndex();
     console.log(`✓ office ${format} → ${key}`);
+
     return { content: `created ${key} — the file card is in the reply. To revise it, open this path with office_open and export the result.` };
   }
+
   const r = await callOfficeTool(OUT_DIR, block.name, input);
+
   if (r.is_error) return r;
+
   // office_export's JSON result carries the workspace-relative path of the
   // file it wrote — card it so the new file shows up in the reply.
   if (block.name === "office_export" || block.name === "office_create") {
     try {
       const rel = JSON.parse(r.content).path;
-      if (typeof rel === "string" && rel) cardOfficeFile(thread, rel);
+
+      if (isString(rel) && rel) cardOfficeFile(thread, rel);
     } catch {}
   }
+
   return r;
 }
 
@@ -969,56 +1092,77 @@ export async function toolOffice(job, thread, block) {
 // view_code/set_version which are pure reads/writes of the version store.
 export async function toolArtifact(block, input) {
   const name = String(input.name || "");
+
   if (!/^R\d+$/.test(name))
     return { content: `bad artifact name ${name}`, is_error: true };
+
   const self = async (path, b) => {
     const r = await fetch(`http://127.0.0.1:8787${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(b),
     });
+
     return r.json().catch(() => ({}));
   };
+
   if (block.name === "launch_app") {
-    const r = await self("/popout", { name, ...(input.v ? { v: Number(input.v) } : {}) });
+    const pop = { name };
+
+    if (input.v) pop.v = Number(input.v);
+    const r = await self("/popout", pop);
+
     return r?.ok
       ? { content: `${name}${input.v ? ` v${input.v}` : ""} opened in its own window.` }
       : { content: `launch failed: ${r?.error || "no such module"}`, is_error: true };
   }
+
   if (block.name === "close_app") {
     let n = 0;
+
     for (const [k, child] of openWindows)
       if (k === name || k.startsWith(`${name}@`))
         try { child.kill(); n++; } catch {}
+
     return { content: n ? `closed ${n} window(s).` : `no open window for ${name}.` };
   }
+
   if (block.name === "promote_app") {
     const r = await self("/publish", { name });
+
     return r?.ok
       ? { content: `${name} is now in Mini Apps.` }
       : { content: `promote failed: ${r?.error || "?"}`, is_error: true };
   }
+
   if (block.name === "demote_app") {
     const r = await self("/unpublish", { name });
+
     return r?.ok
       ? { content: `${name} removed from Mini Apps.` }
       : { content: `demote failed: ${r?.error || "?"}`, is_error: true };
   }
+
   if (block.name === "set_version") {
     const v = Number(input.v);
+
     return setHead(name, v)
       ? { content: `${name} now points at v${v} — Library launches it; later versions stay on the tree.` }
       : { content: `no version ${v} on ${name}`, is_error: true };
   }
+
   if (block.name === "view_code") {
     const v = input.v ? Number(input.v) : headOf(name);
     const file = v ? verFile(name, v) : join(GEN_DIR, `${name}.tsx`);
+
     if (!existsSync(file))
       return { content: `no source for ${name}${v ? `@v${v}` : ""}`, is_error: true };
+
     return {
       content: `<code name="${name}@v${v ?? ""}">\n${readFileSync(file, "utf8").slice(0, 60000)}\n</code>`,
     };
   }
+
   return { content: `unknown artifact tool ${block.name}`, is_error: true };
 }
 
@@ -1026,75 +1170,109 @@ export async function execTool(job, thread, block) {
   try {
     if (block.name === "generate_app")
       return await toolGenerateApp(job, thread, block.input || {});
+
     if (block.name === "revise_app") {
-      const input = { ...(block.input || {}) };
+      const input = { ...block.input };
+
       if (!/^R\d+$/.test(String(input.name || "")))
         return { content: "revise_app needs the artifact name (R<n>)", is_error: true };
+
       return await toolGenerateApp(job, thread, input);
     }
+
     if (block.name === "generate_image")
       return await toolGenerateImage(job, thread, block.input || {});
+
     if (block.name === "react") return toolReact(thread, block.input || {});
+
     if (block.name === "app_tools_load") return await toolAppToolsLoad(thread, block.input || {});
+
     if (block.name === "fetch_url") return await toolFetchUrl(block.input || {});
+
     if (block.name === "shell_run") return await toolShell(block.input || {});
+
     if (block.name === "query_source")
       return await toolQuerySource(block.input || {});
+
     if (block.name === "web_search")
       return await toolWebSearch(block.input || {});
+
     if (block.name === "app_icon") {
       const { name, prompt } = block.input || {};
       setJob(job, "generating", "Sketching something up");
       const backend = await genAppIcon(String(name || ""), prompt, modelCtx.getStore()?.model || MODEL);
+
       return { content: `${name} has a new icon (drawn by ${backend}).` };
     }
+
     if (block.name === "app_details_update") {
       const { name, width, height, ...rest } = block.input || {};
-      updateAppMeta(String(name || ""), {
-        ...rest,
-        ...(width !== undefined ? { w: width } : {}),
-        ...(height !== undefined ? { h: height } : {}),
-      });
+      const meta = { ...rest };
+
+      if (width !== undefined) meta.w = width;
+
+      if (height !== undefined) meta.h = height;
+      updateAppMeta(String(name || ""), meta);
       const i = appInfo(String(name));
+
       return { content: `${name} details: title "${i.title}", file ${i.file}, description "${i.description}", size ${i.w}×${i.h}` };
     }
+
     if (/^(launch_app|close_app|promote_app|demote_app|set_version|view_code)$/.test(block.name))
       return await toolArtifact(block, block.input || {});
+
     if (block.name.startsWith("office_"))
       return await toolOffice(job, thread, block);
+
     if (/^mcp_(install|uninstall|enable|disable|list)$/.test(block.name))
       return await toolMcpAdmin(thread, block.name, block.input || {});
+
     if (/^skill_(create|update|delete|enable|disable|list)$/.test(block.name))
       return toolSkillAdmin(block.name, block.input || {});
+
     if (isBotTool(block.name)) return toolBot(thread, block.name, block.input || {});
+
     if (isRoutineTool(block.name)) return await toolRoutine(thread, block.name, block.input || {});
+
     // a v1 plugin's tool, under its own name (v1/agent.mjs)
     if (v1ToolPlugin(v1Plugins, block.name)) {
       setJob(job, "connecting", "Working in a connected app");
+
       return await v1AgentCall(v1Plugins, job, block.name, block.input || {});
     }
+
     const mm = parseMcpName(block.name);
+
     if (mm) {
       const row = db
         .prepare("SELECT * FROM mcp_servers WHERE id=?")
         .get(mm[0]);
+
       if (!row) return { content: `mcp server ${mm[0]} is not configured`, is_error: true };
+
       if (!row.enabled) return { content: `mcp server ${mm[0]} is switched off; the user enables it in Plugins`, is_error: true };
       setJob(job, ...toolActivity(block.name));
+
       // the thread's bot actually used this server → it joins its integrations
       try { recordToolUse(thread, row.id); } catch {}
+
       markAppUsed(thread, row.id);
       const { meta, ...r } = await mcpCallTool(row, mm[1], block.input || {});
+
       // a Drive file the AI made or changed joins the reply (drive.mjs)
       if (row.id === DRIVE_SERVER) try { noteDriveCall(job, thread, mm[1], block.input || {}, r); } catch {}
+
       // the Google address a call named: routine templates fall back on it
       if (!r.is_error) noteGoogleEmail(block.input);
       // a server asking to show one of its mini apps: it opens full screen
       // and its card joins the reply
       const open = meta?.["rox/open"];
+
       if (open?.uri && !r.is_error) try { await noteAppOpen(job, row, open); } catch {}
+
       return r;
     }
+
     return { content: `unknown tool ${block.name}`, is_error: true };
   } catch (e) {
     return {
@@ -1108,12 +1286,15 @@ export async function execTool(job, thread, block) {
 // the API/model rejects it we drop it and use the client-side version.
 export let serverSearch = true;
 export let agentStream = true;
+
 export const setServerSearch = (v) => {
   serverSearch = v;
 };
+
 export const setAgentStream = (v) => {
   agentStream = v;
 };
+
 // Run status, phrased the way Grok Bot does: a phase (→ the avatar's
 // animation in Rox) plus a short phrase; Rox adds the "…". One phrase is
 // drawn per phase and kept while that phase lasts (phraseFor).
@@ -1121,11 +1302,13 @@ export const PHRASES = {
   thinking: ["Thinking it through", "Mulling it over", "Putting it together"],
   working: ["Getting it done", "Making progress", "Working on it", "Handling it", "Chipping away"],
 };
+
 export function phraseFor(job, key, pool = PHRASES[key] || PHRASES.working) {
   if (job._phraseKey !== key) {
     job._phraseKey = key;
     job._phrase = pool[Math.floor(Math.random() * pool.length)];
   }
+
   return job._phrase;
 }
 
@@ -1157,8 +1340,10 @@ export const TOOL_ACTIVITY = {
 // A connected app's display name for "Working in <app>".
 function appName(serverId) {
   const row = db.prepare("SELECT name FROM mcp_servers WHERE id=?").get(String(serverId));
+
   return row?.name || serverId;
 }
+
 const titleCase = (s) => s.trim().replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 export function toolActivity(name, input = {}) {
@@ -1166,17 +1351,24 @@ export function toolActivity(name, input = {}) {
   // bbtree"). The block's input is empty while it streams, then complete
   // when the tool runs.
   const clip = (t) => (t.length > 40 ? `${t.slice(0, 39)}…` : t);
-  if (name === "web_search" && typeof input?.query === "string" && input.query.trim())
+
+  if (name === "web_search" && isString(input?.query) && input.query.trim())
     return ["searching", `Searching for ${clip(input.query.trim())}`];
-  if (name === "fetch_url" && typeof input?.url === "string") {
+
+  if (name === "fetch_url" && isString(input?.url)) {
     try { return ["browsing", `Reading ${new URL(input.url).hostname.replace(/^www\./, "")}`]; } catch {}
   }
-  if (name === "query_source" && typeof input?.source === "string" && input.source.trim())
+
+  if (name === "query_source" && isString(input?.source) && input.source.trim())
     return ["connecting", `Working in ${titleCase(input.source)}`];
+
   if (name === "app_tools_load" && input?.app) return ["connecting", `Working in ${titleCase(appName(input.app))}`];
   const mcp = parseMcpName(name);
+
   if (mcp) return ["connecting", `Working in ${titleCase(appName(mcp[0]))}`];
+
   if (name.startsWith("office_")) return ["reading", "Reading the file"];
+
   return TOOL_ACTIVITY[name] || ["working", PHRASES.working[0]];
 }
 
@@ -1186,13 +1378,18 @@ export function toolActivity(name, input = {}) {
 const DEFER_OVER = 80;
 const LOADED_TTL = 15 * 60 * 1000;
 const loadedApps = new Map(); // thread id -> Map(server id -> last used)
+
 function loadedFor(thread) {
   const m = loadedApps.get(thread?.id) || new Map();
+
   for (const [id, at] of m) if (Date.now() - at > LOADED_TTL) m.delete(id);
+
   return m;
 }
+
 export function markAppUsed(thread, serverId) {
   const m = loadedFor(thread);
+
   if (!m.has(serverId)) return;
   m.set(serverId, Date.now());
 }
@@ -1202,37 +1399,49 @@ export function markAppUsed(thread, serverId) {
 // callable defs plus the large apps left to load on demand.
 async function mcpSurface(thread) {
   const bot = store.bots.find((b) => b.threadId === thread?.id);
+
   const rows = db
     .prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)")
     .all(bot?.id || "");
+
   const loaded = loadedFor(thread);
   const defs = [];
   const deferred = [];
+
   for (const row of rows) {
     const rec = await mcpEnsure(row);
+
     if (rec.needsAuth || rec.unavailable) continue; // signed out or blocked: its calls would only fail
     const off = new Set(JSON.parse(row.disabled_tools || "[]"));
     const tools = rec.tools.filter((t) => !off.has(t.name));
+
     if (tools.length > DEFER_OVER && !loaded.has(row.id)) {
       deferred.push({ id: row.id, name: row.name || row.id, count: tools.length, sample: tools.slice(0, 6).map((t) => t.name) });
       continue;
     }
+
     defs.push(...mcpAnthropicTools(row.id, tools));
   }
+
   // v1 plugins: their own tool names, approved plugins only; a plugin over
   // DEFER_OVER tools waits for app_tools_load like a v0 server
   const taken = new Set([...TOOLS, ...ROUTINE_TOOLS, ...BOT_TOOLS, ...defs].map((t) => t.name));
   const byPlugin = Map.groupBy(v1Tools(v1Plugins, taken), (t) => t.plugin);
+
   for (const [plugin, tools] of byPlugin) {
     const short = v1Plugins.rowOf(plugin)?.short;
+
     if (tools.length > DEFER_OVER && !loaded.has(`v1:${short}`)) {
       deferred.push({ id: short, name: v1Plugins.manifestOf(v1Plugins.rowOf(plugin)).title, count: tools.length, sample: tools.slice(0, 6).map((t) => t.name) });
       continue;
     }
+
     defs.push(...tools.map(({ plugin: _p, ...t }) => t));
   }
+
   return { defs, deferred };
 }
+
 export const mcpToolDefs = async (thread) => (await mcpSurface(thread)).defs;
 
 const appToolsLoad = (deferred) => ({
@@ -1254,21 +1463,26 @@ async function toolAppToolsLoad(thread, input) {
   const id = String(input?.app || "");
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(id);
   const v1 = !row && v1Plugins.rows().find((r) => r.short === id && r.enabled);
+
   if (v1) {
     const m = loadedFor(thread);
     m.set(`v1:${id}`, Date.now());
     loadedApps.set(thread?.id, m);
     const names = v1Tools(v1Plugins).filter((t) => t.plugin === v1.id).map((t) => t.name);
+
     return { content: `Loaded ${names.length} ${id} tools; call them from your next step:\n${names.join("\n")}` };
   }
+
   if (!row) return { content: `no connected app ${id}`, is_error: true };
   const rec = await mcpEnsure(row);
+
   if (!rec.client) return { content: `${id} is not connected (${rec.err || "failed to start"})`, is_error: true };
   const m = loadedFor(thread);
   m.set(id, Date.now());
   loadedApps.set(thread?.id, m);
   const off = new Set(JSON.parse(row.disabled_tools || "[]"));
   const names = rec.tools.filter((t) => !off.has(t.name)).map((t) => mcpAnthropicTools(id, [t])[0].name);
+
   return { content: `Loaded ${names.length} ${row.name || id} tools; call them from your next step:\n${names.join("\n")}` };
 }
 
@@ -1279,6 +1493,7 @@ export async function toolList(thread) {
   const { defs: mcp, deferred } = await mcpSurface(thread);
   const own = botOfThread(thread) ? BOT_TOOLS : [];
   const load = deferred.length ? [appToolsLoad(deferred)] : [];
+
   return serverSearch
     ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }, ...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp]
     : [...TOOLS, ...ROUTINE_TOOLS, ...own, ...office, ...load, ...mcp, CLIENT_SEARCH];
@@ -1292,31 +1507,40 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
   const cur = id
     ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
     : null;
+
   const finalName = String(name ?? cur?.name ?? "").trim();
   const finalUrl = String(url ?? cur?.url ?? "").trim();
   const finalCommand = String(command ?? cur?.command ?? "").trim();
+
   if (!finalName) throw new Error("server needs a name");
+
   if (!finalCommand && !finalUrl) throw new Error("server needs a command or url");
+
   // a new row's id is what `@<server>:…` tokens and rox://app links name
   if (id && !cur && !isServerId(String(id))) throw new Error(`server id ${String(id).slice(0, 40)} must be [a-z0-9-]+`);
+
   const sid =
     (id && String(id)) ||
     (() => {
       const base = finalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "srv";
       let s = base, i = 2;
+
       while (db.prepare("SELECT id FROM mcp_servers WHERE id=?").get(s)) s = `${base}-${i++}`;
+
       return s;
     })();
+
   const argList =
     args === undefined
       ? JSON.parse(cur?.args || "[]")
       : Array.isArray(args)
         ? args.map(String)
         : String(args || "").trim().split(/\s+/).filter(Boolean);
+
   const envObj =
     env === undefined
       ? JSON.parse(cur?.env || "{}")
-      : env && typeof env === "object"
+      : env && ["object", "array", "other"].includes(kindOf(env))
         ? env
         : Object.fromEntries(
             String(env || "")
@@ -1325,12 +1549,14 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
               .filter(Boolean)
               .map((m) => [m[1], m[2]]),
           );
+
   const botId =
     bot === undefined ? cur?.bot ?? null
     : bot && store.bots.some((b) => b.id === bot) ? bot
     : null;
+
   // headers / oauth_client / transport: undefined keeps the stored value.
-  const keep = (v, col) => (v === undefined ? cur?.[col] ?? null : v == null ? null : typeof v === "string" ? v : JSON.stringify(v));
+  const keep = (v, col) => (v === undefined ? cur?.[col] ?? null : v == null ? null : isString(v) ? v : JSON.stringify(v));
   // REPLACE rewrites the whole row — carry the OAuth state, account label
   // and per-tool switches over so an edit doesn't sign the account out.
   db.prepare(
@@ -1342,10 +1568,13 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
   );
   mcpInvalidate(sid); // config changed → drop any cached client
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
+
   if (!row.enabled) return { id: sid, status: "off", tools: 0, toolNames: [], err: null };
+
   if (!probe) return { id: sid, status: "idle", tools: 0, toolNames: [], err: null };
   const rec = await mcpEnsure(row); // probe now so the reply carries real status
   const st = mcpStatus(sid);
+
   return {
     id: sid,
     status: rec.client ? "connected" : "error",
@@ -1361,6 +1590,7 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
 mcpSetAuthHooks({
   loadAuth: (id) => {
     const row = db.prepare("SELECT auth FROM mcp_servers WHERE id=?").get(String(id));
+
     try { return JSON.parse(row?.auth || "{}"); } catch { return {}; }
   },
   saveAuth: (id, obj) =>
@@ -1373,8 +1603,10 @@ export function mcpServerRow({ id, name } = {}) {
   if (id)
     return db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id));
   const n = String(name || "").trim();
+
   if (!n) return null;
   const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+
   return (
     db.prepare("SELECT * FROM mcp_servers WHERE name=?").get(n) ||
     db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(slug)
@@ -1386,18 +1618,24 @@ export function mcpServerRow({ id, name } = {}) {
 export async function toolMcpAdmin(thread, tool, input) {
   if (tool === "mcp_list") {
     const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at").all();
+
     if (!rows.length) return { content: "no MCP servers configured" };
+
     const line = (r) => {
       const s = mcpStatus(r.id);
       const envKeys = Object.keys(JSON.parse(r.env || "{}"));
+
       return `${r.id} — ${r.name} · ${r.enabled ? s.status + ` (${s.tools} tools)` : r.agent_pending ? "off, waiting for the user to enable it in Plugins" : "disabled"} · scope: ${r.bot ? `bot ${r.bot}` : "all bots"}${envKeys.length ? ` · env: ${envKeys.join(",")}` : ""}${s.err ? ` · err: ${s.err}` : ""}`;
     };
+
     return { content: rows.map(line).join("\n") };
   }
+
   // A server the agent adds runs a command of its choosing, so it is stored
   // switched off and never spawned until the user enables it in Plugins.
   if (tool === "mcp_install") {
     const bot = store.bots.find((b) => b.threadId === thread?.id);
+
     const r = await mcpUpsertServer({
       name: input.name,
       command: input.command,
@@ -1406,21 +1644,29 @@ export async function toolMcpAdmin(thread, tool, input) {
       bot: input.scope === "bot" && bot ? bot.id : null,
       byAgent: true,
     });
+
     return { content: `added "${input.name}" as server ${r.id}, switched off: it has not been started. The user must review and enable it in Plugins before its tools exist; tell them so. You cannot enable it yourself.` };
   }
+
   const row = mcpServerRow(input);
+
   if (!row)
     return { content: `no MCP server matches ${input.id || input.name || "?"} — mcp_list shows the ids`, is_error: true };
+
   if (tool === "mcp_uninstall") {
     mcpInvalidate(row.id);
     db.prepare("DELETE FROM mcp_servers WHERE id=?").run(row.id);
+
     return { content: `removed MCP server ${row.id} (${row.name}) — its tools are gone` };
   }
+
   const enabled = tool === "mcp_enable";
+
   if (enabled && row.agent_pending)
     return { content: `${row.id} (${row.name}) waits for the user to enable it in Plugins; only they can switch on a server you added`, is_error: true };
   db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
   mcpInvalidate(row.id);
+
   return { content: `${row.id} (${row.name}) ${enabled ? "enabled — its tools return next step" : "disabled — its tools are withheld"}` };
 }
 
@@ -1428,32 +1674,44 @@ export async function toolMcpAdmin(thread, tool, input) {
 // skill_list — private skills the model follows via the system prompt.
 export const skillSlug = (s) =>
   String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "skill";
+
 export function skillRow(input) {
   if (input?.id) {
     const r = db.prepare("SELECT * FROM skills WHERE id=?").get(String(input.id));
+
     if (r) return r;
   }
+
   if (input?.name)
     return db.prepare("SELECT * FROM skills WHERE name=? OR id=?").get(String(input.name), skillSlug(input.name));
+
   return null;
 }
+
 export function toolSkillAdmin(tool, input) {
   if (tool === "skill_list") {
     const rows = db.prepare("SELECT * FROM skills ORDER BY created_at").all();
+
     if (!rows.length) return { content: "no private skills yet" };
+
     return { content: rows.map((r) => `${r.id} — ${r.name}${r.enabled ? "" : " (disabled)"} · ${r.description}`).join("\n") };
   }
+
   if (tool === "skill_create") {
     const name = skillSlug(input.name);
     const cur = db.prepare("SELECT id FROM skills WHERE id=?").get(name);
     db.prepare(
       "INSERT OR REPLACE INTO skills(id,name,description,body,enabled,created_at) VALUES(?,?,?,?,COALESCE((SELECT enabled FROM skills WHERE id=?),1),COALESCE((SELECT created_at FROM skills WHERE id=?),?))",
     ).run(name, String(input.name || name).slice(0, 80), String(input.description || "").slice(0, 400), String(input.instructions || input.body || ""), name, name, Date.now());
+
     return { content: `${cur ? "updated" : "created"} private skill "${name}" — its instructions apply to every bot's next step` };
   }
+
   const row = skillRow(input);
+
   if (!row)
     return { content: `no private skill matches ${input.id || input.name || "?"} — skill_list shows the ids`, is_error: true };
+
   if (tool === "skill_update") {
     db.prepare("UPDATE skills SET name=?, description=?, body=? WHERE id=?").run(
       input.name !== undefined ? String(input.name).slice(0, 80) : row.name,
@@ -1461,13 +1719,18 @@ export function toolSkillAdmin(tool, input) {
       input.instructions !== undefined || input.body !== undefined ? String(input.instructions ?? input.body) : row.body,
       row.id,
     );
+
     return { content: `skill "${row.id}" updated — applies from the next step` };
   }
+
   if (tool === "skill_delete") {
     db.prepare("DELETE FROM skills WHERE id=?").run(row.id);
+
     return { content: `deleted private skill "${row.id}"` };
   }
+
   const enabled = tool === "skill_enable";
   db.prepare("UPDATE skills SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
+
   return { content: `skill "${row.id}" ${enabled ? "enabled — instructions apply" : "disabled — instructions withheld"}` };
 }
