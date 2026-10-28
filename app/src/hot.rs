@@ -676,7 +676,8 @@ fn routine_pill(name: String) -> impl IntoElement {
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(|| store().right_open.update(|v| *v = !*v))
-        .child(text("Routine · ").text_size(px(14.0)).text_color(theme::MUTED))
+        .gap(px(4.0))
+        .child(text("Routine ·").text_size(px(14.0)).text_color(theme::MUTED))
         .child(
             text(name)
                 .text_size(px(14.0))
