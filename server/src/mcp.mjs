@@ -446,7 +446,7 @@ export async function readManifest(row) {
         if (m[kind] === undefined) continue;
         const list = Array.isArray(m[kind]) ? m[kind] : [];
         m[kind] = list.filter((x) => {
-          if (x && typeof x === "object" && isName(x.name)) return true;
+          if (x && typeof x === "object" && typeof x.name === "string" && isName(x.name)) return true;
           console.warn(`  mcp ${row.id}: manifest ${kind} entry ${JSON.stringify(x?.name ?? x).slice(0, 80)} dropped: names are [A-Za-z0-9_-]+`);
           return false;
         });

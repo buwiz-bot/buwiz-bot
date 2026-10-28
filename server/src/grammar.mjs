@@ -12,12 +12,14 @@ const SERVER = "[a-z0-9-]+";
 const NAME = "[A-Za-z0-9_-]+";
 const TOKEN = `@(${SERVER}):(${NAME}):(\\S+)`;
 
-export const isServerId = (s) => typeof s === "string" && new RegExp(`^${SERVER}$`).test(s);
-export const isName = (s) => typeof s === "string" && new RegExp(`^${NAME}$`).test(s);
+// Checks on the text form; callers parse their input to strings first.
+export const isServerId = (s) => new RegExp(`^${SERVER}$`).test(String(s ?? ""));
+export const isName = (s) => new RegExp(`^${NAME}$`).test(String(s ?? ""));
 
 /** A whole string as one token: {server, scope, value}, or null. */
 export function parseToken(s) {
   const m = new RegExp(`^${TOKEN}$`).exec(String(s ?? "").trim());
+
   return m ? { server: m[1], scope: m[2], value: m[3] } : null;
 }
 
