@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test --test-concurrency=1 \"test/*.test.mjs\"",
     "build:office-editor": "esbuild server/office/editor/editor.jsx --bundle --format=esm --splitting --outdir=server/office/editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node server/office/editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" server/office/editor/dist/generated/ 2>/dev/null; done",
+    "plugin-test": "node --disable-warning=ExperimentalWarning sdk/mini-app/bin/rox-plugin-test.mjs",
     "conformance": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./test/v1-reporter.mjs --test-reporter-destination=stdout \"test/v1-*.test.mjs\""
   },
   "keywords": [],
