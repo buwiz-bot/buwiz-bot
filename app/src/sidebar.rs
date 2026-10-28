@@ -884,6 +884,8 @@ fn full_sidebar() -> impl IntoElement {
                                 ))
                         },
                     ))
+                    // v1 plugins' pinned apps (spec 12.3), kept by Rox
+                    .child(crate::mini_v1::ui::pins_section())
                     // `chats` — the plain list; bot threads live behind
                     // their persona rows.
                     .child(

@@ -165,6 +165,8 @@ pub fn listed(b: &dyn Broker) -> Result<Vec<Listed>, RoxError> {
 pub struct Review {
     pub command: String,
     pub args: Vec<String>,
+    /// The environment the plugin is spawned with (`VAR=value` words).
+    pub env: Option<Value>,
     pub id: String,
     pub title: String,
     pub publisher: String,
@@ -193,6 +195,7 @@ impl Review {
         Review {
             command: command.to_owned(),
             args: args.to_vec(),
+            env: None,
             id: s(&m, "id"),
             title: s(&r, "title"),
             publisher: s(&r, "publisher"),
@@ -219,11 +222,29 @@ impl Review {
     }
 }
 
-/// `POST /v1/host/plugins/inspect` for `command args`: the review (nothing
-/// is installed).
-pub fn inspect(b: &dyn Broker, command: &str, args: &[String]) -> Result<Review, RoxError> {
-    let v = host_api::inspect(b, command, args, None)?;
-    Ok(Review::of(&v, command, args))
+/// A plugin's command line as typed: leading `VAR=value` words are its
+/// environment, then the command and its arguments (no quoting).
+pub fn command_line(line: &str) -> Option<(Option<Value>, String, Vec<String>)> {
+    let mut env = serde_json::Map::new();
+    let mut words = line.split_whitespace().peekable();
+    while let Some(w) = words.peek() {
+        let Some((k, v)) = w.split_once('=') else { break };
+        let name_ok = !k.is_empty() && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if !name_ok || k.starts_with(|c: char| c.is_ascii_digit()) {
+            break;
+        }
+        env.insert(k.to_owned(), json!(v));
+        words.next();
+    }
+    let command = words.next()?.to_owned();
+    Some(((!env.is_empty()).then(|| Value::Object(env)), command, words.map(str::to_owned).collect()))
+}
+
+/// `POST /v1/host/plugins/inspect` for `command args` with `env`: the
+/// review (nothing is installed).
+pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value>) -> Result<Review, RoxError> {
+    let v = host_api::inspect(b, command, args, env.clone())?;
+    Ok(Review { env, ..Review::of(&v, command, args) })
 }
 
 /// How an install or update ended.
@@ -241,6 +262,9 @@ pub enum Installed {
 /// permissions or of its older version, and nothing else is approved.
 pub fn install(b: &dyn Broker, review: &Review) -> Result<Installed, RoxError> {
     let mut body = json!({"command": review.command, "args": review.args, "manifest_sha256": review.manifest_sha256});
+    if let Some(env) = &review.env {
+        body["env"] = env.clone();
+    }
     if review.from_version.is_some() && !review.added.is_empty() {
         body["approve_permissions"] = json!(true);
     }
@@ -396,7 +420,7 @@ mod tests {
     #[test]
     fn lcy_01_install_shows_every_review_line_and_cancel_changes_nothing() {
         let b = Lifecycle::default();
-        let r = inspect(&b, "node", &["fixture.mjs".to_owned()]).unwrap();
+        let r = inspect(&b, "node", &["fixture.mjs".to_owned()], None).unwrap();
         // every line of 13.1 step 3 the broker gave is in the review
         let want = inspect_answer(Value::Null)["review"]["lines"].clone();
         assert_eq!(json!(r.lines), want);
@@ -410,7 +434,7 @@ mod tests {
         assert_eq!(b.routes(), ["POST /v1/host/plugins/inspect"]);
         assert!(b.installed.lock().unwrap().is_none());
         // Install installs exactly what was reviewed
-        let r = inspect(&b, "node", &["fixture.mjs".to_owned()]).unwrap();
+        let r = inspect(&b, "node", &["fixture.mjs".to_owned()], None).unwrap();
         assert_eq!(install(&b, &r).unwrap(), Installed::Done);
         let sent = b.routes.lock().unwrap().last().unwrap().1.clone();
         assert_eq!(sent["manifest_sha256"], "ab".repeat(32));
@@ -499,6 +523,22 @@ mod tests {
         assert!(uninstall(&Refuses, id, &records_dir, &plugins_dir, &|_| {}).is_err());
         assert_eq!(Records::load(&records_dir).attachments.len(), 1);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_command_line_takes_its_environment_first() {
+        let (env, cmd, args) = command_line("HOME=/tmp/h BIR_X=1 /bin/bir mcp --flag").unwrap();
+        assert_eq!(env, Some(json!({"HOME": "/tmp/h", "BIR_X": "1"})));
+        assert_eq!((cmd.as_str(), args), ("/bin/bir", vec!["mcp".to_owned(), "--flag".to_owned()]));
+        let (env, cmd, args) = command_line("node a=b").unwrap();
+        assert_eq!((env, cmd.as_str(), args), (None, "node", vec!["a=b".to_owned()]));
+        assert!(command_line("  ").is_none());
+        // the environment goes with the install of what was reviewed
+        let b = Lifecycle::default();
+        let r = inspect(&b, "node", &[], Some(json!({"HOME": "/tmp/h"}))).unwrap();
+        assert_eq!(b.routes.lock().unwrap()[0].1["env"], json!({"HOME": "/tmp/h"}));
+        install(&b, &r).unwrap();
+        assert_eq!(b.routes.lock().unwrap()[1].1["env"], json!({"HOME": "/tmp/h"}));
     }
 
     #[test]

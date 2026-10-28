@@ -329,21 +329,29 @@ pub fn canonical_tokens(text: &str) -> Vec<(usize, usize, String, String, String
 }
 
 /// `text` for a title (a chat's name): each canonical token as
-/// `title_of(token)`, else `@short:scope`; never its ticket. The tokens
+/// `title_of(token)`, else `@short:scope`; never its ticket, not even a
+/// cut one (a title the server shortened ends `…tkt_BK…`: `title_of` is
+/// asked with the cut token then, to match by prefix). The full tokens
 /// whose titles are not known yet come back too.
 pub fn plain(text: &str, title_of: &dyn Fn(&str) -> Option<String>) -> (String, Vec<String>) {
     let mut out = String::with_capacity(text.len());
     let mut missing = Vec::new();
     let mut at = 0;
-    for (start, end, short, scope, _) in canonical_tokens(text) {
-        out.push_str(&text[at..start]);
-        at = end;
-        let token = &text[start..end];
+    for t in typed_tokens(text) {
+        let full = perms::ticket_ok(t.value);
+        if !full && !t.value.starts_with("tkt_") {
+            continue;
+        }
+        out.push_str(&text[at..t.start]);
+        at = t.end;
+        let token = text[t.start..t.end].trim_end_matches(['…', '.']);
         match title_of(token).filter(|t| !t.is_empty()) {
             Some(title) => out.push_str(&title),
             None => {
-                missing.push(token.to_owned());
-                out.push_str(&format!("@{short}:{scope}"));
+                if full {
+                    missing.push(token.to_owned());
+                }
+                out.push_str(&format!("@{}:{}", t.short, t.scope));
             }
         }
     }
@@ -480,6 +488,12 @@ mod tests {
         assert_eq!(missing, [format!("@bir:branchcode:{T2}")]);
         assert!(!title.contains("tkt_"));
         assert_eq!(plain("no tokens @bir:taxprofile:123", &known).0, "no tokens @bir:taxprofile:123");
+        // a title the server cut inside the ticket: matched by its prefix,
+        // else the scope, never the cut ticket
+        let by_prefix = |t: &str| format!("@bir:taxprofile:{T1}").starts_with(t).then(|| "Dela Cruz Jane".to_owned());
+        assert_eq!(plain("Check deadlines for @bir:taxprofile:tkt_0123…", &by_prefix).0, "Check deadlines for Dela Cruz Jane");
+        let (cut, missing) = plain("Check @bir:taxprofile:tkt_99", &known);
+        assert_eq!((cut.as_str(), missing.len()), ("Check @bir:taxprofile", 0));
     }
 
     #[test]
