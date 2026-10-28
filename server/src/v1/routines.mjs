@@ -14,7 +14,10 @@
 //
 // The turns run in the routine's own thread (`threads`, routine-threads.mjs),
 // not in the chat it was enabled in: that chat gets one notice per run that
-// ran items, and one when it fails after working (not on every retry).
+// ran items, and one when it fails after working (not on every retry). The
+// thread exists as soon as the routine is enabled (and, for one enabled
+// before, from the server's start or its next tick), so it can be opened
+// before anything new came; a run with nothing new adds no turn to it.
 //
 // The runner sits beside v0's timer (routines.mjs), which is unchanged.
 // It never runs what may not run: a routine of a plugin off the approved
@@ -39,6 +42,8 @@ const SCHEMA = `
     approved_reads TEXT, seen TEXT NOT NULL DEFAULT '[]', last_run INTEGER, last_error TEXT,
     errors INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(plugin, routine));
 `;
+// how many new items the last run that went through ran (0: nothing new)
+const LAST_ITEMS = "ALTER TABLE v1_routines ADD COLUMN last_items INTEGER";
 
 const parse = (s, d) => {
   try {
@@ -53,6 +58,9 @@ const firstText = (r) => (r.content || []).find((c) => c.type === "text")?.text 
 
 export function createRoutines({ db, plugins, runTurn, threads, threadExists = () => true, clock = plugins.clock || systemClock, pollMs = POLL_MS }) {
   db.exec(SCHEMA);
+  try {
+    db.exec(LAST_ITEMS);
+  } catch {}
   const running = new Set();
   let timer = null;
 
@@ -111,25 +119,37 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
     return row.errors >= 3 ? Math.min(base * 2 ** Math.min(row.errors - 2, 6), Math.max(base, 86_400_000)) : base;
   }
 
-  /** The user's side of a routine, for GET /v1/host/plugins. */
+  /** The user's side of a routine, for GET /v1/host/plugins: `thread` is
+   *  the chat it reports to, `home` its own thread. */
   function info(pluginId, r) {
     const row = rowOf(pluginId, r.id);
     const reason = plugins.rowOf(pluginId) ? unavailable(pluginId, r, row) : `${pluginId} is not installed`;
+    const home = threads.find(pluginId, r.id);
 
     return {
       enabled: !!row?.enabled,
       thread: row?.thread || null,
+      home: home?.id ?? null,
+      home_uid: home?.uid ?? null,
       approved: approved(r, row),
       available: !reason,
       reason: reason || null,
       seen_count: parse(row?.seen, []).length,
       last_run: row?.last_run ?? null,
       last_error: row?.last_error ?? null,
+      last_items: row?.last_items ?? null,
       next_run: row?.enabled ? (row.last_run || 0) + intervalMs(r, row) : null,
     };
   }
 
   plugins.useRoutineInfo(info);
+
+  // the routine's own thread, made when it is enabled in a chat that exists
+  function homeOf(pluginId, r, row) {
+    if (!row?.enabled || !row.thread || !threadExists(row.thread)) return null;
+
+    return threads.ensure({ plugin: pluginId, routine: r.id, name: approvedText(r.name, 80), chat: row.thread });
+  }
 
   function upsert(pluginId, id) {
     db.prepare("INSERT OR IGNORE INTO v1_routines(plugin, routine) VALUES(?, ?)").run(pluginId, id);
@@ -155,6 +175,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
     if (!thread || !threadExists(thread)) refuse("invalid_args", "thread must name an existing chat");
     upsert(body.plugin, r.id);
     db.prepare("UPDATE v1_routines SET enabled=1, thread=?, errors=0 WHERE plugin=? AND routine=?").run(thread, body.plugin, r.id);
+    homeOf(body.plugin, r, rowOf(body.plugin, r.id));
 
     return { ok: true, routine: { id: r.id, ...info(body.plugin, r) } };
   }
@@ -259,6 +280,8 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
         return { ran: false, reason: "its chat was deleted" };
       }
 
+      // made here too for a routine enabled before threads were made early
+      const home = homeOf(pluginId, r, row);
       const why = unavailable(pluginId, r, row);
 
       if (why) {
@@ -267,7 +290,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
         return { ran: false, reason: why };
       }
 
-      run = { id: `run_${started}`, name: approvedText(r.name, 80), items: 0 };
+      run = { id: `run_${started}`, name: approvedText(r.name, 80), items: 0, home };
       const res = await runItems(pluginId, r, row, started, run);
 
       if (run.items) notify(pluginId, r, row, run);
@@ -314,7 +337,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
       db.prepare("UPDATE v1_routines SET seen=? WHERE plugin=? AND routine=?").run(JSON.stringify(seen.slice(-SEEN_MAX)), pluginId, r.id);
     }
 
-    db.prepare("UPDATE v1_routines SET last_run=?, last_error=NULL, errors=0 WHERE plugin=? AND routine=?").run(started, pluginId, r.id);
+    db.prepare("UPDATE v1_routines SET last_run=?, last_error=NULL, errors=0, last_items=? WHERE plugin=? AND routine=?").run(started, run.items, pluginId, r.id);
 
     return { ran: true, items: items.length, prompts: run.items };
   }
@@ -343,8 +366,20 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
 
   return {
     approve, enable, disable, tick, runDue, info,
-    /** Polls for due routines every `pollMs` (server start). */
-    start: () => timer || poll(),
+    /** Polls for due routines every `pollMs` (server start); the enabled
+     *  routines' threads are made first. */
+    start: () => {
+      if (timer) return;
+
+      for (const row of db.prepare("SELECT * FROM v1_routines WHERE enabled=1").all()) {
+        const r = routineOf(row.plugin, row.routine);
+
+        try {
+          if (r) homeOf(row.plugin, r, row);
+        } catch {}
+      }
+      poll();
+    },
     stop: () => {
       if (timer) clock.clearTimeout(timer);
       timer = null;

@@ -1,6 +1,6 @@
 // v1/routine-threads.mjs — where a v1 routine's runs land (spec 5.9,
-// "Where a routine's runs go"). Each routine has its own thread, made on
-// its first run and reused by every run after, titled by the routine's
+// "Where a routine's runs go"). Each routine has its own thread, made when
+// it is enabled (routines.mjs) and reused by every run, titled by the routine's
 // name and marked `routine: {plugin, id, name, thread}` — `thread` is the
 // chat the routine reports to (`v1_routines.thread`), whose bot answers in
 // the routine's thread too. It is never a sidebar row.
@@ -20,7 +20,7 @@ export function createRoutineThreads({ store, nextId, uid, save }) {
   const byKey = (key) => store.list.find((t) => t.id === key || t.uid === key);
   const find = (plugin, routine) => store.list.find((t) => t.routine?.plugin === plugin && t.routine.id === routine) || null;
 
-  /** The routine's thread, made on its first run. */
+  /** The routine's thread, made the first time it is asked for. */
   function ensure({ plugin, routine, name, chat }) {
     const mark = { plugin, id: routine, name, thread: chat };
     let t = find(plugin, routine);

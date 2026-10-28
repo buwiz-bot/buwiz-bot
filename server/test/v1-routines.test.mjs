@@ -20,6 +20,9 @@
 //   RTN-11 each run with new items leaves one notice in the chat it reports
 //          to, pointing at the run; a run with nothing new leaves none
 //   RTN-12 a failure leaves one notice per failure streak
+//   RTN-13 the routine's thread exists once it is enabled, before any run
+//          (one enabled earlier gets it at the server's start or its next
+//          tick); a run with nothing new adds no turn to it
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
@@ -88,6 +91,10 @@ test("RTN-01 an enabled routine the user has not approved does not run", async (
   assert.equal(r.approved, false);
   assert.equal(r.available, false);
   assert.match(r.reason, /not approved/);
+  assert.equal(home().title, "BIR mail", "its thread exists before any run");
+  assert.deepEqual(home().turns, []);
+  assert.equal(r.home, home().id);
+  assert.equal(r.home_uid, home().uid);
   assert.deepEqual(r.reads_status.map((s) => s.allowed), [true], "the reads themselves are allowed");
   await routines.runDue();
   assert.equal(turns.length, 0);
@@ -120,6 +127,7 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.deepEqual(t.surface, { plugin: FX, reads: READS });
   assert.equal(listed("bir-mail").seen_count, 1);
   assert.equal(listed("bir-mail").last_error, null);
+  assert.equal(listed("bir-mail").last_items, 1);
 });
 
 test("RTN-03 a seen item does not run again; a new one runs once; nothing runs before it is due", async () => {
@@ -166,6 +174,8 @@ test("RTN-05 an empty search text is nothing to do; a switched-off tool or a sto
 
   assert.deepEqual(await routines.tick(FX, "empty"), { ran: true, items: 0, prompts: 0 });
   assert.equal(searches().length, n, "no search for an empty text");
+  assert.deepEqual(store.list.find((t) => t.routine?.id === "empty").turns, [], "nothing new adds no turn");
+  assert.equal(listed("empty").last_items, 0);
   routines.disable({ plugin: FX, routine: "empty" });
   plugins.setTool(GWS, "gws_search_mail", true);
   assert.match((await routines.tick(FX, "bir-mail")).reason, /gws_search_mail is switched off/);
@@ -178,6 +188,34 @@ test("RTN-05 an empty search text is nothing to do; a switched-off tool or a sto
   assert.equal((await routines.tick(FX, "bir-mail")).ran, false);
   assert.equal((await plugins.enable(GWS)).state, "running");
   assert.equal((await routines.tick(FX, "bir-mail")).ran, true);
+});
+
+test("RTN-13 an enabled routine's thread is made at the server's start or its next tick, empty", async () => {
+  const empty = () => store.list.find((t) => t.routine?.id === "empty");
+  const notes = notices().length;
+
+  // enabled before threads were made early: no thread yet
+  store.list.splice(store.list.indexOf(empty()), 1);
+  db.prepare("UPDATE v1_routines SET enabled=1 WHERE plugin=? AND routine=?").run(FX, "empty");
+  const again = createRoutines({ db, plugins, clock, runTurn, threads, threadExists: (id) => chats.has(id), pollMs: 3_600_000 });
+
+  again.start();
+  again.stop();
+  assert.deepEqual(empty().routine, { plugin: FX, id: "empty", name: "Empty", thread: "chat-1" });
+  assert.equal(empty().title, "Empty");
+  assert.deepEqual(empty().turns, []);
+  store.list.splice(store.list.indexOf(empty()), 1);
+  assert.deepEqual(await routines.tick(FX, "empty"), { ran: true, items: 0, prompts: 0 });
+  assert.deepEqual(empty().turns, [], "made by the tick, and nothing new adds no turn");
+  assert.equal(listed("empty").home, empty().id);
+  const id = empty().id;
+
+  await routines.tick(FX, "empty");
+  routines.enable({ plugin: FX, routine: "empty", thread: "chat-1" });
+  assert.equal(store.list.filter((t) => t.routine?.id === "empty").length, 1, "made once");
+  assert.equal(empty().id, id);
+  assert.equal(notices().length, notes, "the chat it reports to got no notice");
+  routines.disable({ plugin: FX, routine: "empty" });
 });
 
 test("RTN-06 the turn's v1 tools are the routine plugin's own plus only the listed reads tools", () => {
@@ -214,7 +252,7 @@ test("RTN-07 an update that changes what a routine reads needs a new approval", 
 test("RTN-10 a run's turns go to the routine's own thread, made on its first run and reused after", () => {
   const h = home();
 
-  assert.equal(store.list.filter((t) => t.routine).length, 1, "one thread for the routine");
+  assert.equal(store.list.filter((t) => t.routine?.id === "bir-mail").length, 1, "one thread for the routine");
   assert.equal(h.title, "BIR mail");
   assert.deepEqual(h.routine, { plugin: FX, id: "bir-mail", name: "BIR mail", thread: "chat-1" });
   assert.deepEqual(turns.map((t) => t.thread), [h.id, h.id], "the second run reused it");
