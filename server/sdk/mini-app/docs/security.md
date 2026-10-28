@@ -55,7 +55,10 @@ plugin owns the rest: P1 to P10 of [spec] 15.2. Tick each before release.
   ```
 
 - [ ] **P6 No side effects for `origin: resolve` or `origin: routine`.**
-  Resolve tools and routine queries read; they never write.
+  Resolve tools and routine queries read; they never write. In a routine's
+  turn (`origin: agent` with `caller.routine`), allow a tool that changes data
+  only when that routine lists it in `writes`, and only on what the routine
+  was given (the email it read), not on the model's word alone.
 
   ```js
   if (["resolve", "routine"].includes(caller?.origin)) return fail("permission_denied", "Read-only here.");

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { V1, isV1, v1Canonical, v1TypedTokens } from "../server/grammar.mjs";
 import { b64u, fromB64u, generate, pubOf, sign, verify } from "../server/v1/ed.mjs";
 import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../server/v1/jcs.mjs";
-import { reviewOf, LIMITS, checkTools, compareSemver, validateProps, verifyManifest } from "../server/v1/manifest.mjs";
+import { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } from "../server/v1/manifest.mjs";
 import { signManifest } from "../server/v1/sign-manifest.mjs";
 import { loadTrust } from "../server/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
@@ -214,6 +214,7 @@ const LIMIT_CASES = [
   ["routine description", LIMITS.routineDescription, (m, n) => (m.routines[0].description = at(n))],
   ["routine prompt", LIMITS.routinePrompt, (m, n) => (m.routines[0].prompt = at(n))],
   ["routine reads entries", LIMITS.reads, (m, n) => (m.routines[0].reads = many(n, () => ({ plugin: FX, tools: ["fx_search"] })))],
+  ["routine writes", LIMITS.writes, (m, n) => (m.routines[0].writes = many(n, (i) => `fx_w${i}`))],
   ["routine reads tools", LIMITS.readsTools, (m, n) => (m.routines[0].reads = [{ plugin: FX, tools: many(Math.min(n, 4), (i) => `fx_a${i}`) }, { plugin: FX, tools: many(n - 4, (i) => `fx_b${i}`) }])],
   ["apps", LIMITS.apps, (m, n) => (m.apps = many(n, (i) => app(`a${i}`)))],
   ["app title", LIMITS.title, (m, n) => (m.apps[0].title = at(n))],
@@ -327,6 +328,40 @@ test("MAN-11 a command named like a built-in (/status) is refused", () => {
 test("MAN-12 routines[].needs is refused as an unknown key", () => {
   refused((m) => (m.routines[0].needs = "gmail"), "manifest_invalid", /needs/);
   refused((m) => (m.routines[0].reads[0].scope = "all"), "manifest_invalid");
+});
+
+test("MAN-13 routines[].writes names the plugin's own tools that change data, once each", () => {
+  ok((m) => (m.routines[0].writes = ["fx_echo"]));
+  refused((m) => (m.routines[0].writes = ["gws_send_mail"]), "manifest_invalid", /writes\[0\].*start with fx_/);
+  refused((m) => (m.routines[0].writes = ["rox.provision"]), "manifest_invalid", /reserved/);
+  refused((m) => (m.routines[0].writes = ["fx_echo", "fx_echo"]), "manifest_invalid", /listed twice/);
+  refused((m) => (m.routines[0].writes = "fx_echo"), "manifest_invalid", /array/);
+  // against the running plugin: a write it does not have, or a read-only tool
+  const m = check(signed((x) => (x.routines[0].writes = ["fx_echo"]))).manifest;
+  const tools = ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_resolve", "fx_open"].map((name) => ({ name }));
+  const search = { name: "fx_search", annotations: { readOnlyHint: true } };
+
+  assert.doesNotThrow(() => checkTools(m, [...tools, search]));
+  assert.throws(() => checkTools(m, [...tools.slice(1), search]), { code: "manifest_invalid", message: /writes\[0\]|fx_echo/ });
+  const ro = check(signed((x) => (x.routines[0].writes = ["fx_search"]))).manifest;
+
+  assert.throws(() => checkTools(ro, [...tools, search]), { code: "manifest_invalid", message: /fx_search is read-only/ });
+});
+
+test("LCY-09 a routine's writes are on the install review, and an update that adds one needs consent", () => {
+  const base = { title: "BIR", version: "2.6.0", publisher: { name: "Goldcoders" }, apps: [] };
+  const r = { id: "bir-payments", name: "BIR payments (MyEG and banks)", reads: [{ plugin: "dev.goldcoders.google-workspace", tools: ["gws_search_mail"] }] };
+  const next = { ...base, routines: [{ ...r, writes: ["bir_record_payment"] }] };
+  const review = reviewOf(next, () => "Google Workspace");
+
+  assert.deepEqual(review.routines, [
+    "Routine 'BIR payments (MyEG and banks)' reads via Google Workspace: gws_search_mail",
+    "Routine 'BIR payments (MyEG and banks)' may change BIR data without asking: bir_record_payment",
+  ]);
+  assert.ok(review.lines.includes(review.routines[1]));
+  assert.deepEqual(addedPermissions({ ...base, routines: [r] }, next), ["Routine 'BIR payments (MyEG and banks)' may change BIR data without asking: bir_record_payment"]);
+  assert.deepEqual(addedPermissions(next, { ...base, routines: [r] }), [], "dropping a write needs no consent");
+  assert.deepEqual(addedPermissions(next, next), []);
 });
 
 test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a manifest that verifies", () => {

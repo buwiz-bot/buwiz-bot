@@ -82,7 +82,7 @@ export function ticketStore() {
  *   manifestFile  path of the signed manifest (read on every request)
  *   apps          {appId: path of the .tsx source}
  *   tools         [{name, description, inputSchema, annotations?, run(args, caller, extra)}]
- *                 `caller` is _meta["rox/caller"] (8.4): {origin, plugin, app?, open_id?, ts}
+ *                 `caller` is _meta["rox/caller"] (8.4): {origin, plugin, app?, open_id?, routine?, ts}
  *   ticketTitle   (subject) => the title rox.ticket.resolve shows
  *   instructions  MCP server instructions (approved text, 10.2), optional
  *   name, version the MCP server identity

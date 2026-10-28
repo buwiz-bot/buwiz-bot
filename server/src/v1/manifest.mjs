@@ -59,6 +59,7 @@ export const LIMITS = Object.freeze({
   everyS: [60, 86400],
   reads: 4,
   readsTools: 8,
+  writes: 8,
 });
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
@@ -260,9 +261,9 @@ function routines(m) {
     const at = `routines[${i}]`;
 
     obj(r, at);
-    // a routine carries an access grant (`reads`): unknown keys, v0's
-    // `needs` among them, are refused (2.2, 5.9)
-    onlyKeys(r, ["id", "name", "description", "every_s", "query", "prompt", "reads"], at);
+    // a routine carries access grants (`reads`, `writes`): unknown keys,
+    // v0's `needs` among them, are refused (2.2, 5.9)
+    onlyKeys(r, ["id", "name", "description", "every_s", "query", "prompt", "reads", "writes"], at);
     name(r.id, "routineId", `${at}.id`);
     text(r.name, `${at}.name`, { min: 1, max: LIMITS.routineName });
     text(r.description, `${at}.description`, { max: LIMITS.routineDescription });
@@ -286,6 +287,16 @@ function routines(m) {
     }
 
     if (tools > LIMITS.readsTools) throw invalid(`${at}.reads`, `names ${tools} tools; at most ${LIMITS.readsTools}`);
+    // `writes`: the plugin's own tools that change data, which the
+    // routine's turn may call without asking (5.9)
+    const writes = list(r.writes, `${at}.writes`, LIMITS.writes);
+
+    for (const [k, t] of writes.entries()) {
+      if (isV1("reservedTool", t)) throw invalid(`${at}.writes[${k}]`, `${t} is reserved for Rox`);
+      ownTool(t, m.short, `${at}.writes[${k}]`);
+
+      if (writes.indexOf(t) !== k) throw invalid(`${at}.writes[${k}]`, `${t} is listed twice`);
+    }
   }
 
   unique(rs, "id", "routines");
@@ -513,6 +524,18 @@ export function checkTools(m, tools) {
   ];
 
   for (const [t, where] of named) if (!names.has(t)) throw invalid(where, `names ${t}, which the plugin's tools/list does not have`);
+
+  // 5.9: a routine's `writes` are tools that change data; a read-only
+  // tool is on its turn anyway and is not a write
+  for (const [i, r] of (m.routines || []).entries()) {
+    for (const [k, name] of (r.writes || []).entries()) {
+      const t = tools.find((x) => x.name === name);
+
+      if (!t) throw invalid(`routines[${i}].writes[${k}]`, `names ${name}, which the plugin's tools/list does not have`);
+
+      if (t.annotations?.readOnlyHint === true) throw invalid(`routines[${i}].writes[${k}]`, `${name} is read-only (readOnlyHint): writes lists only tools that change data`);
+    }
+  }
 }
 
 // ── props (6.6) ──────────────────────────────────────────────────────────
@@ -628,7 +651,10 @@ export function reviewOf(m, titleOf = (id) => id) {
     lines: permissionLines(m, a.permissions),
   }));
 
-  const routines = (m.routines || []).flatMap((r) => (r.reads || []).map((x) => `Routine '${r.name}' reads via ${titleOf(x.plugin)}: ${x.tools.join(", ")}`));
+  const routines = (m.routines || []).flatMap((r) => [
+    ...(r.reads || []).map((x) => `Routine '${r.name}' reads via ${titleOf(x.plugin)}: ${x.tools.join(", ")}`),
+    ...(r.writes?.length ? [`Routine '${r.name}' may change ${m.title} data without asking: ${r.writes.join(", ")}`] : []),
+  ]);
   const head = [`${m.title} ${m.version} by ${m.publisher.name}`, ...(m.description ? [m.description] : [])];
 
   const appLines = apps.flatMap((a) => [
@@ -698,6 +724,8 @@ export function addedPermissions(prev, next) {
 
       for (const t of added(had, x.tools)) out.push(`Routine '${r.name}' reads ${x.plugin}: ${t}`);
     }
+
+    for (const t of added(was?.writes, r.writes)) out.push(`Routine '${r.name}' may change ${next.title} data without asking: ${t}`);
   }
 
   return out;
