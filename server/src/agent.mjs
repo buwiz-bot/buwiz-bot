@@ -73,7 +73,7 @@ export async function agentTurn(job, prompt, thread) {
   ];
 
   // the chat's attachments and the hints of the `@` scopes in play
-  const scope = (await scopeSection(thread, prompt).catch(() => "")) + v1PromptSection(v1Plugins, prompt);
+  const scope = (await scopeSection(thread, prompt).catch(() => "")) + v1PromptSection(v1Plugins, prompt, job.extra?.v1Attachments);
   let reply = "";
   // As in Grok Bot, the reply is held back behind "Typing..." and lands
   // whole; a note the model writes before calling tools ("Checking X

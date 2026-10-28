@@ -9,7 +9,7 @@
 // never reaches the model; a `rox/open` in it becomes a card on the job
 // that Rox renders with an Open (or Show) button, and nothing opens by
 // itself (9.7).
-import { V1, isV1 } from "../grammar.mjs";
+import { V1, isV1, v1Canonical } from "../grammar.mjs";
 import { isObject } from "./jcs.mjs";
 import { isApproved } from "./trust.mjs";
 import { checkOpen } from "./sessions.mjs";
@@ -121,9 +121,32 @@ export async function v1AgentCall(plugins, job, name, input) {
   return { content: fold(r), is_error: !!r.isError };
 }
 
+// 10.3: the chat's attachments Rox sends with a message ({token, plugin,
+// scope, title}; only healthy ones), as lines for the model: a canonical
+// token of a contributing plugin whose scope may attach, never a raw id
+function attachedLines(rows, plugins, attachments, used) {
+  const lines = [];
+
+  for (const a of (Array.isArray(attachments) ? attachments : []).slice(0, 16)) {
+    const t = v1Canonical(a?.token);
+    const row = t && rows.find((x) => x.short === t.short && x.id === a.plugin);
+    const m = row && plugins.manifestOf(row);
+    const s = m && (m.scopes || []).find((x) => x.name === t.scope && x.attach);
+
+    if (!s) continue;
+    used.add(`${t.short}:${t.scope}`);
+    const noun = String(s.description || s.name).trim().split(/\s+/)[0].replace(/[^\p{L}\p{N}]+$/u, "").toLowerCase() || "item";
+
+    lines.push(`Attached: ${a.token} (${approvedText(String(a.title || ""), 60)}): ${m.title} tools default to this ${noun} here`);
+  }
+
+  return lines;
+}
+
 /** The system-prompt text v1 plugins add for a user message: approved
- *  server instructions, and the scopes whose tokens are in the message. */
-export function v1PromptSection(plugins, prompt = "") {
+ *  server instructions, the chat's attachments (10.3), and the scopes in
+ *  play, from the message's tokens and the attachments. */
+export function v1PromptSection(plugins, prompt = "", attachments = []) {
   const parts = [];
   const rows = contributing(plugins);
 
@@ -134,6 +157,9 @@ export function v1PromptSection(plugins, prompt = "") {
   }
 
   const used = new Set();
+  const attached = attachedLines(rows, plugins, attachments, used);
+
+  if (attached.length) parts.push(`## Attached to this chat\n${attached.join("\n")}`);
 
   for (const m of String(prompt).matchAll(new RegExp(V1.typedToken, "g"))) used.add(`${m[1]}:${m[2]}`);
 
