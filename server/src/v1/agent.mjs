@@ -43,6 +43,14 @@ function contributing(plugins) {
 // tools it names; `surface` is {plugin, reads} then, null otherwise.
 const inSurface = (surface, plugin, name) => !surface || plugin === surface.plugin || (surface.reads || []).some((x) => x.plugin === plugin && x.tools.includes(name));
 
+// 10.1: a tool marked `_meta["rox/audience"]` without "agent" serves apps
+// only (through the bridge); the model never sees or calls it
+const forAgent = (t) => {
+  const audience = t._meta?.["rox/audience"];
+
+  return !Array.isArray(audience) || audience.includes("agent");
+};
+
 /** The model's v1 tools: [{name, description, input_schema, plugin}];
  *  `taken` holds names the agent already has, `surface` narrows them to a
  *  routine's turn. */
@@ -55,7 +63,7 @@ export function v1Tools(plugins, taken = new Set(), surface = null) {
     for (const t of plugins.runtime(row.id).tools) {
       if (isV1("reservedTool", t.name) || off.has(t.name) || taken.has(t.name) || BUILTIN.test(t.name) || !t.name.startsWith(`${row.short}_`)) continue;
 
-      if (!inSurface(surface, row.id, t.name)) continue;
+      if (!inSurface(surface, row.id, t.name) || !forAgent(t)) continue;
       out.push({ name: t.name, description: approvedText(`[${row.short}] ${t.description || t.name}`, 1024), input_schema: t.inputSchema || { type: "object", properties: {} }, plugin: row.id });
     }
   }

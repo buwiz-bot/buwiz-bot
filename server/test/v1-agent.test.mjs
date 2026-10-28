@@ -57,6 +57,14 @@ test("RSV-06 reserved rox.* names are absent from the agent tool list", async ()
   assert.equal(r.is_error, true);
 });
 
+test("AUD-01 a tool whose rox/audience leaves out the agent is off the model's surface and refuses agent calls", async () => {
+  assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "fx_app_only"), "the plugin lists it");
+  assert.ok(!(await names()).includes("fx_app_only"));
+  const r = await execTool({ id: 3 }, null, { name: "fx_app_only", input: {} });
+
+  assert.equal(r.is_error, true);
+});
+
 test("AGT-02 a tool the user disabled is absent from the model's list", async () => {
   plugins.setTool(FX, "fx_big", true);
   assert.ok(!(await names()).includes("fx_big"));

@@ -217,6 +217,7 @@ const TOOLS = [
     run: (args) => ok({ query: isString(args.q) ? args.q : "from:fixture" }),
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
+  { name: "fx_app_only", description: "A tool for apps only (10.1 audience).", inputSchema: { type: "object" }, meta: { "rox/audience": ["app"] }, run: () => ok({ app: true }) },
   { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
@@ -231,7 +232,7 @@ const server = new Server({ name: "rox-fixture", version: "1.0.0" }, { capabilit
 server.setRequestHandler(ListToolsRequestSchema, () => ({
   tools: [
     ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Rox.", inputSchema: { type: "object" } })),
-    ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations })),
+    ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));
 
