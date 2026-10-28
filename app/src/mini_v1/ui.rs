@@ -61,8 +61,6 @@ pub struct V1 {
     pub hidden: Signal<HashSet<String>>,
     /// Cards refreshed: they read live instead of their snapshot (9.8).
     pub live: Signal<HashSet<String>>,
-    /// Aged cards the person expanded again (9.8).
-    pub expanded: Signal<HashSet<String>>,
     /// Rox's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
@@ -94,7 +92,6 @@ impl V1 {
             shown: signal(HashSet::new()),
             hidden: signal(HashSet::new()),
             live: signal(HashSet::new()),
-            expanded: signal(HashSet::new()),
             records: signal(Records::default()),
             review: signal(None),
             busy: signal(String::new()),
@@ -1380,10 +1377,13 @@ fn icon_button(icon: &'static str, label: &'static str, on: impl Fn() + 'static)
 }
 
 /// A card's button: "Open <title>" for a full app (a plugin's sign-in
-/// card reads "Open Buwiz Sign-in"), Show for an inline one (9.6).
+/// card reads "Open Buwiz Sign-in"), only Open when the title is long (the
+/// row shows it: "BIR Form 2551Q · Q3 2026 · …"), Show for an inline one
+/// (9.6).
 pub fn button_label(card: &OpenCard) -> String {
     match card.placement {
-        Placement::Full => format!("Open {}", card.title.chars().take(40).collect::<String>()),
+        Placement::Full if card.title.chars().count() > 20 => "Open".to_owned(),
+        Placement::Full => format!("Open {}", card.title),
         Placement::Inline => card.button().to_owned(),
     }
 }
@@ -1422,10 +1422,10 @@ fn toggle_button(label: String, id: String, auto: bool, on: impl Fn() + 'static)
 }
 
 /// An answer's cards (9.6, 9.8), from the reply's `rox-app` links: one
-/// main card and up to two small ones, the rest as one-line links. A
+/// main card and up to two small ones, the rest collapsed. A
 /// first-party plugin's inline card mounts at once; any other waits for
 /// Show (9.7). Once `user_after()` of the person's messages came since,
-/// the cards collapse to one-line chips; a tap expands one again.
+/// the cards collapse to their rows, each with Show.
 pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after: impl Fn() -> usize + Clone + 'static) -> AnyElement {
     let cards: Vec<(String, OpenCard)> = links
         .iter()
@@ -1450,81 +1450,27 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         .w_full()
         .children(cards.into_iter().zip(slots).map(move |((id, card), slot)| {
             let aged = user_after.clone();
-            let id2 = id.clone();
             match slot {
-                cards::Slot::Link => link_row(card).into_element(),
-                _ => when(
-                    move || cards::aged(aged()) && !store().v1.expanded.with(|e| e.contains(&id2)),
-                    {
-                        let (card, id) = (card.clone(), id.clone());
-                        move || aged_chip(card.clone(), id.clone()).into_element()
-                    },
-                )
-                .otherwise(move || open_card(card.clone(), id.clone()))
-                .into_element(),
+                cards::Slot::Link => card_row(card, id, true),
+                _ => dynamic(move || card_row(card.clone(), id.clone(), cards::aged(aged()))).into_element(),
             }
         }))
         .into_element()
 }
 
-/// A card past an answer's one main and two small ones: a one-line link
-/// (its title and Open).
-fn link_row(card: OpenCard) -> impl IntoElement {
-    let c = card.clone();
-    view()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(tc("#f5f5f50a"))
-        .label(format!("Open {}", card.title))
-        .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
-        .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
-        .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT))
-}
-
-/// An aged card (9.8): one line, its title and Open; a tap on the title
-/// expands the card again.
-fn aged_chip(card: OpenCard, id: String) -> impl IntoElement {
-    let c = card.clone();
-    view()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(tc("#f5f5f50a"))
-        .child(
-            text(card.title.clone())
-                .flex_1()
-                .number_of_lines(1)
-                .text_size(px(13.0))
-                .text_color(tc("#f5f5f5"))
-                .label(format!("Expand {}", card.title))
-                .on_press(move || {
-                    let id = id.clone();
-                    store().v1.expanded.update(|e| {
-                        e.insert(id);
-                    })
-                }),
-        )
-        .child(
-            view()
-                .label(format!("Open {}", card.title))
-                .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
-                .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT)),
-        )
-}
-
 /// A tool result's card (9.6): its title, the plugin, and Open (full) or
 /// Show (inline). An inline card mounts below it when shown.
 pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
+    card_row(card, card_id, false)
+}
+
+/// A card's row and, when shown, the card. A `collapsed` one (aged, or
+/// past an answer's one main and two small ones) waits for Show.
+fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
     let entry = store().v1.entry(&card.plugin);
     let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
-    let auto = card.placement == Placement::Inline
+    let auto = !collapsed
+        && card.placement == Placement::Inline
         && consent::ask(consent::inline_card(entry.as_ref().is_some_and(|p| p.first_party))) == consent::Ask::Nothing;
     let (c1, c2, id1, id2, id3, id4) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
     let shown = move || card_shown(&id1, auto);
@@ -1734,17 +1680,20 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                 .bg(tc("#1f1f1f"))
                 .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
                 .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
-                // a snapshot goes live; a live card reads again
-                .child(icon_button("refresh", "Refresh", move || {
-                    if as_of.is_some() {
-                        let id = id.clone();
-                        store().v1.live.update(|l| {
-                            l.insert(id);
-                        })
-                    } else {
-                        store().v1_reload(&key_r)
-                    }
-                }))
+                // a snapshot goes live; a live card reads again. An action
+                // card (no `as_of`: its tool changed something) has none.
+                .when(as_of.is_some() || live, |v| {
+                    v.child(icon_button("refresh", "Refresh", move || {
+                        if as_of.is_some() {
+                            let id = id.clone();
+                            store().v1.live.update(|l| {
+                                l.insert(id);
+                            })
+                        } else {
+                            store().v1_reload(&key_r)
+                        }
+                    }))
+                })
                 .child(icon_button("maximize", "Open full screen", move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
         .child(
@@ -1936,6 +1885,8 @@ mod tests {
         let link = json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "register", "title": "Buwiz Sign-in", "placement": "full"}});
         let card = OpenCard::from_link(&link).unwrap();
         assert_eq!(button_label(&card), "Open Buwiz Sign-in");
+        let long = OpenCard { title: "BIR Form 2551Q · Q3 2026 · Galang Alejandro Pascua".into(), ..card.clone() };
+        assert_eq!(button_label(&long), "Open");
         let inline = OpenCard { placement: Placement::Inline, ..card };
         assert_eq!(button_label(&inline), "Show");
     }
