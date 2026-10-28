@@ -511,7 +511,9 @@ const PILL_BORDER: AdaptiveColor = theme::tone(theme::hsla(0.0, 0.0, 0.0, 0.102)
 
 /// The floating top bar (App.tsx:2375): the centered header pill —
 /// `BotAvatar(24/22 paused)` + the bot's name + a hover chevron — pressing
-/// it toggles the detail pane. Grok has no right-side control here.
+/// it toggles the detail pane. Grok has no right-side control here. In a
+/// routine's thread the pill leads back ("‹") to the chat the routine
+/// reports to, and a "Routine · <name>" pill sits beside it.
 fn top_bar() -> impl IntoElement {
     let pill_hover = signal(false);
     view()
@@ -545,6 +547,8 @@ fn top_bar() -> impl IntoElement {
             view()
                 .absolute()
                 .size_full()
+                // a row: a routine's thread puts its pill beside this one
+                .flex_row()
                 .items_center()
                 .justify_center()
                 .window_drag(true)
@@ -593,13 +597,21 @@ fn top_bar() -> impl IntoElement {
                         }])
                         .on_mouse_enter(move |_: &MouseEvent| pill_hover.set(true))
                         .on_mouse_leave(move |_: &MouseEvent| pill_hover.set(false))
-                        .on_press(|| store().right_open.update(|v| *v = !*v))
+                        .on_press(|| match store().active_routine() {
+                            Some(r) => store().go_to(&r.thread, None),
+                            None => store().right_open.update(|v| *v = !*v),
+                        })
                         .label(move || {
-                            store()
+                            let name = store()
                                 .active_bot()
                                 .map(|b| b.name)
-                                .unwrap_or_else(|| crate::app_name().to_owned())
+                                .unwrap_or_else(|| crate::app_name().to_owned());
+                            if store().active_routine().is_some() { format!("Back to {name}") } else { name }
                         })
+                        .child(when(
+                            move || store().active_routine().is_some(),
+                            || text("‹").text_size(px(17.0)).text_color(theme::MUTED).into_element(),
+                        ))
                         .child(dynamic(move || {
                             let props = match store().active_bot() {
                                 Some(b) => crate::avatar::BotAvatarProps::bot(&b, 24.0),
@@ -634,11 +646,43 @@ fn top_bar() -> impl IntoElement {
                             .number_of_lines(1),
                         )
                         .child(when(
-                            move || pill_hover.get() && !store().right_open.get(),
+                            move || pill_hover.get() && !store().right_open.get() && store().active_routine().is_none(),
                             || icon("chev-right").into_element(),
                         ))
                         .into_element()
+                }))
+                .child(dynamic(|| match store().active_routine() {
+                    Some(r) => routine_pill(r.name).into_element(),
+                    None => view().into_element(),
                 })),
+        )
+}
+
+/// "Routine · <name>" beside the header pill in a routine's thread;
+/// pressing it toggles the detail pane, as the header pill does elsewhere.
+fn routine_pill(name: String) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .h(px(38.0))
+        .ml(px(8.0))
+        .px(px(14.0))
+        .rounded(px(19.0))
+        .bg(move || if hov.get() { PILL_HOVER } else { PILL })
+        .border(px(0.5))
+        .border_color(PILL_BORDER)
+        .label(format!("Routine · {name}"))
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(|| store().right_open.update(|v| *v = !*v))
+        .child(text("Routine · ").text_size(px(14.0)).text_color(theme::MUTED))
+        .child(
+            text(name)
+                .text_size(px(14.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::TEXT)
+                .number_of_lines(1),
         )
 }
 
