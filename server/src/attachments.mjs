@@ -10,14 +10,14 @@
 // and pin of it. While a chat has attachments, every resolve made for it
 // carries `context: {attached}`, and the agent's system prompt lists them
 // with the hints of the scopes in play (scopeSection).
-import { db, findThread, store, uuidv7, writeIndex } from "./state.mjs";
+import { db, findThread, store, threadBot, uuidv7, writeIndex } from "./state.mjs";
 import { appKey, callToolJson, readManifest } from "./mcp.mjs";
 import { parseToken, tokensIn } from "./grammar.mjs";
 
 const parseJson = (s, d) => {
   try { return JSON.parse(s); } catch { return d; }
 };
-const botOf = (threadId) => store.bots.find((b) => b.threadId === threadId) || null;
+const botOf = (threadId) => threadBot(threadId) || null;
 const serverRow = (id) => db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(id || ""));
 const scopesOf = (m) => (Array.isArray(m?.scopes) ? m.scopes.filter((x) => x && typeof x.name === "string") : []);
 

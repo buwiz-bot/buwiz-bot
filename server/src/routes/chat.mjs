@@ -3,7 +3,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_DIR, MODEL, MOCK, WIDGETS_DIR } from "../config.mjs";
-import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex } from "../state.mjs";
+import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex, threadBot } from "../state.mjs";
 import { choiceFor } from "../model.mjs";
 import { integrationsOf } from "../botctx.mjs";
 import { artifactBlocks, generate } from "../agent.mjs";
@@ -80,7 +80,8 @@ export default async function handle(req, res) {
         activeUid: activeThread().uid,
         model: MOCK ? "mock" : MODEL,
         list: store.list.map((t) => {
-          const bot = store.bots.find((b) => b.threadId === t.id);
+          // a routine's thread answers as the bot of the chat it reports to
+          const bot = threadBot(t.id);
           return {
             id: t.id,
             uid: (t.uid ||= uuidv7()),
@@ -92,6 +93,8 @@ export default async function handle(req, res) {
             bot: bot
               ? { id: bot.id, name: bot.name, shape: bot.shape, color: bot.color }
               : null,
+            // a v1 routine's own thread — not a sidebar row (v1/routine-threads.mjs)
+            ...(t.routine ? { routine: t.routine } : {}),
           };
         }),
         sections: store.sections || [],

@@ -5,7 +5,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, STAGE_DIR, outFile } from "./config.mjs";
-import { uuidv7, db, modelCtx, openWindows, nextSeq, setJob, store, slugFile, writeIndex, cardTurn, markRevising, clearRevising } from "./state.mjs";
+import { uuidv7, db, modelCtx, openWindows, nextSeq, setJob, store, slugFile, writeIndex, cardTurn, markRevising, clearRevising, threadBot } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
 import { checkCandidate, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
 import { fileRecord } from "./files.mjs";
@@ -1399,7 +1399,7 @@ export function markAppUsed(thread, serverId) {
 // callable defs plus the large apps left to load on demand. A v1 routine's
 // job narrows the v1 tools to its plugin and its `reads` (job.v1Surface).
 async function mcpSurface(thread, job) {
-  const bot = store.bots.find((b) => b.threadId === thread?.id);
+  const bot = threadBot(thread?.id);
 
   const rows = db
     .prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)")
@@ -1635,7 +1635,7 @@ export async function toolMcpAdmin(thread, tool, input) {
   // A server the agent adds runs a command of its choosing, so it is stored
   // switched off and never spawned until the user enables it in Plugins.
   if (tool === "mcp_install") {
-    const bot = store.bots.find((b) => b.threadId === thread?.id);
+    const bot = threadBot(thread?.id);
 
     const r = await mcpUpsertServer({
       name: input.name,
