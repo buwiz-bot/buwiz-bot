@@ -7,6 +7,7 @@ import { APP_ROOT, PLUGINS_DIR, git } from "../config.mjs";
 import { db } from "../state.mjs";
 import { mcpAppCall, mcpAppList, mcpManifest, mcpResolve, mcpUpsertServer } from "../tools.mjs";
 import { attach, detach, listAttachments, renameToken } from "../attachments.mjs";
+import { redeem, withPass } from "../open-pass.mjs";
 import {
   beginAuth as mcpBeginAuth, ensureClient as mcpEnsure, fixedRedirectUrl, handleOAuthCallback,
   invalidate as mcpInvalidate, statusOf as mcpStatus,
@@ -601,7 +602,23 @@ export default async function handle(req, res) {
         res.statusCode = 400;
         return res.end(JSON.stringify({ ok: false, error: "only rox://app/<server>/<app>, rox://chat/new?draft= and rox://view?path=<absolute path> links" }));
       }
-      execFile("open", [url], (e) => res.end(JSON.stringify(e ? { ok: false, error: String(e.message) } : { ok: true })));
+      // an app link gets a one-time pass, so Rox opens it without asking
+      // (open-pass.mjs); other links keep Rox's own rules
+      const target = url.startsWith("rox://app/") ? withPass(url) : url;
+      execFile("open", [target], (e) => res.end(JSON.stringify(e ? { ok: false, error: String(e.message) } : { ok: true })));
+    });
+    return true;
+  }
+  // POST /mcp/open/pass {pass} — Rox redeems a link's one-time pass: {ok}
+  // is true once for a pass this server issued in the last few seconds.
+  if (req.method === "POST" && req.url === "/mcp/open/pass") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      let pass = "";
+      try { pass = String(JSON.parse(body || "{}").pass || ""); } catch {}
+      res.end(JSON.stringify({ ok: redeem(pass) }));
     });
     return true;
   }
