@@ -255,16 +255,25 @@ fn command_server(name: &str) -> Option<String> {
     })
 }
 
-/// `@server:scope:value` → its parts, whatever the servers announce.
-fn token_parts(w: &str) -> Option<(&str, &str, &str)> {
-    let mut it = w.strip_prefix('@')?.splitn(3, ':');
-    let (server, scope, value) = (it.next()?, it.next()?, it.next()?);
-    (!server.is_empty() && !scope.is_empty()).then_some((server, scope, value))
+/// `@server:scope:value` → its parts, whatever the servers announce, in
+/// the grammar the app server parses tokens with (`attachments.mjs`,
+/// `@([a-z0-9-]+):([A-Za-z0-9_-]+):(\S*)`): the server an id of `a-z`,
+/// `0-9` and `-`; the scope ASCII letters, digits, `_` and `-`; the value
+/// the rest of the word, `:` and `/` included (TINs, branch codes). An
+/// empty value is a token too, as the server reads it: sent alone, its
+/// resolver answers with choices.
+pub(crate) fn parse_token(w: &str) -> Option<(&str, &str, &str)> {
+    let (server, rest) = w.strip_prefix('@')?.split_once(':')?;
+    let (scope, value) = rest.split_once(':')?;
+    let server_ok = !server.is_empty()
+        && server.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let scope_ok = !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    (server_ok && scope_ok && !value.contains(char::is_whitespace)).then_some((server, scope, value))
 }
 
 /// `@server:scope:value` with a scope its server announces.
 pub(crate) fn token(w: &str) -> Option<(String, String, String)> {
-    let (server, scope, value) = token_parts(w)?;
+    let (server, scope, value) = parse_token(w)?;
     store()
         .mcp_manifest
         .with_untracked(|ms| ms.iter().any(|m| m.id == server && m.scopes.iter().any(|s| s.name == scope)))
@@ -273,7 +282,7 @@ pub(crate) fn token(w: &str) -> Option<(String, String, String)> {
 
 /// Whether `tok`'s scope says its tokens can be attached.
 pub(crate) fn attachable(tok: &str) -> bool {
-    let Some((server, scope, _)) = token_parts(tok) else { return false };
+    let Some((server, scope, _)) = parse_token(tok) else { return false };
     store().mcp_manifest.with_untracked(|ms| {
         ms.iter().any(|m| m.id == server && m.scopes.iter().any(|s| s.name == scope && s.attach))
     })
@@ -288,7 +297,7 @@ pub(crate) fn attach(tokens: Vec<String>, thread: String, place: String, sent: O
         spawn(async move {
             let mut done = Vec::new();
             for tok in tokens {
-                let server = token_parts(&tok).map(|(s, _, _)| s.to_owned()).unwrap_or_default();
+                let server = parse_token(&tok).map(|(s, _, _)| s.to_owned()).unwrap_or_default();
                 let body = serde_json::json!({ "server": server, "token": tok, "thread": thread });
                 match client::post_any("/mcp/attach", body).await {
                     Some(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => {
@@ -817,5 +826,44 @@ pub(crate) fn enter() {
     let sel = store().pop_sel.get_untracked().min(rows.len().saturating_sub(1));
     if let Some(r) = rows.get(sel) {
         pick(r);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_token;
+
+    #[test]
+    fn tokens_parse_in_the_app_servers_grammar() {
+        assert_eq!(parse_token("@bir:taxprofile:123456789"), Some(("bir", "taxprofile", "123456789")));
+        assert_eq!(parse_token("@my-srv2:Tax_Profile-1:x"), Some(("my-srv2", "Tax_Profile-1", "x")));
+        // the value keeps `:` and `/` (a branch code, a path)
+        assert_eq!(parse_token("@bir:taxprofile:123/00001"), Some(("bir", "taxprofile", "123/00001")));
+        assert_eq!(parse_token("@bir:form:1601C:2026:3"), Some(("bir", "form", "1601C:2026:3")));
+        // empty value: the server's `\S*` reads it too (its resolver offers choices)
+        assert_eq!(parse_token("@bir:taxprofile:"), Some(("bir", "taxprofile", "")));
+    }
+
+    #[test]
+    fn tokens_outside_the_grammar_are_no_tokens() {
+        for w in [
+            "bir:taxprofile:1", // no `@`
+            "@bir", // no scope
+            "@bir:taxprofile", // no second `:`
+            "@:taxprofile:1", // empty server
+            "@bir::1", // empty scope
+            "@BIR:taxprofile:1", // upper-case server
+            "@b_r:taxprofile:1", // `_` in a server
+            "@b.r:taxprofile:1", // `.` in a server
+            "@bir:tax.profile:1", // `.` in a scope
+            "@bir:tax/p:1", // `/` in a scope
+            "@bir:taxé:1", // non-ASCII scope
+            "@bir:taxprofile:1 2", // whitespace in the value
+            "@bir:taxprofile:1\t",
+            "",
+            "@",
+        ] {
+            assert_eq!(parse_token(w), None, "{w:?}");
+        }
     }
 }
