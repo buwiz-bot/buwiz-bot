@@ -716,7 +716,7 @@ impl Routine {
 }
 
 /// "every minute", "every 5 min", "every 2 h"
-fn interval(every_s: f64) -> String {
+pub(crate) fn interval(every_s: f64) -> String {
     let s = every_s.max(0.0).round() as i64;
     match s {
         0..=60 => "every minute".to_owned(),

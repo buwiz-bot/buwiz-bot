@@ -456,15 +456,16 @@ struct ChatRoutine {
     by: String,
     status: String,
     failed: bool,
-    /// A v1 plugin's routine: (plugin, routine id).
-    plugin: Option<(String, String)>,
+    /// A v1 plugin's routine: (plugin, routine id, its thread or "").
+    plugin: Option<(String, String, String)>,
 }
 
 /// The enabled routines, v1 plugins' and the server's own, that post in
-/// the open chat. Both lists reload when the Details tab is built.
+/// the open chat (in a routine's thread: the chat it reports to). Both
+/// lists reload when the Details tab is built.
 fn chat_routines() -> Vec<ChatRoutine> {
     let st = store();
-    let chat = st.active_id.get();
+    let chat = st.active_routine().map(|r| r.thread).unwrap_or_else(|| st.active_id.get());
     let status = |last_run: f64, last_error: &str| match (last_error.is_empty(), last_run > 0.0) {
         (false, _) => (format!("Last run failed: {last_error}"), true),
         (true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
@@ -475,7 +476,7 @@ fn chat_routines() -> Vec<ChatRoutine> {
         for r in p.routines.iter().filter(|r| r.enabled && r.thread == chat) {
             let (status, failed) =
                 if r.available { status(r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
-            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some((p.id.clone(), r.id.clone())) });
+            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some((p.id.clone(), r.id.clone(), r.home.clone())) });
         }
     }
     for r in st.routines.get().into_iter().filter(|r| r.enabled && r.thread == chat) {
@@ -487,7 +488,8 @@ fn chat_routines() -> Vec<ChatRoutine> {
 }
 
 /// One routine in the Details card; a v1 plugin's opens its own thread
-/// once it has run, its plugin page before.
+/// (made once it is enabled), its plugin page only when the broker names
+/// none (an older broker, before its first run).
 fn routine_row(r: ChatRoutine) -> AnyElement {
     let row = view()
         .gap(px(2.0))
@@ -504,8 +506,8 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
                 .number_of_lines(2),
         );
     match r.plugin {
-        Some((id, routine)) => row
-            .on_press(move || match store().routine_thread(&id, &routine) {
+        Some((id, routine, home)) => row
+            .on_press(move || match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&id, &routine)) {
                 Some(thread) => store().go_to(&thread, None),
                 None => {
                     store().open_plugins();
