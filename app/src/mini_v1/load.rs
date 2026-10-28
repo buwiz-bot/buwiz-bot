@@ -335,6 +335,11 @@ fn names(clause: &[Tok]) -> Option<Vec<(String, String, bool)>> {
 /// offending specifier (or `nsh`'s name) when it imports outside it.
 pub fn check_source_imports(source: &str) -> Result<(), String> {
     let toks = tokens(source);
+    // the shim's bindings share the app's module scope: the app may not
+    // name them (its `nsh` host binding above all)
+    if let Some(t) = toks.iter().find(|t| t.kind == Kind::Ident && t.text.starts_with("__rox")) {
+        return Err(t.text.clone());
+    }
     for imp in imports(source, &toks)? {
         check_import(&imp, false)?;
     }
@@ -574,6 +579,9 @@ pub fn prepare_with(broker: &dyn host_api::Broker, key: V1Key, plugin: PluginEnt
         RoxError::new("not_found", format!("{} has no app {}.", plugin.title, key.app))
     })?;
     let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
+    if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
+        return Err(RoxError::new("not_supported", format!("{title} needs a newer Rox.")));
+    }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
         .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
@@ -585,7 +593,10 @@ pub fn prepare_with(broker: &dyn host_api::Broker, key: V1Key, plugin: PluginEnt
     })?;
     let declared = app.get("fingerprint").and_then(Value::as_str).unwrap_or_default();
     let actual = fingerprint(&source);
-    if source.len() > MAX_SOURCE || actual != declared || served != declared {
+    if source.len() > MAX_SOURCE {
+        return Err(RoxError::new("invalid_args", say::compile(&title, "its code is over 512 KiB", None)));
+    }
+    if actual != declared || served != declared {
         log::warn!("mini v1: {}/{}: fingerprint {actual} is not the manifest's {declared}", plugin.id, key.app);
         return Err(RoxError::new("fingerprint_mismatch", say::FINGERPRINT));
     }
@@ -601,6 +612,7 @@ pub fn props_value(props: &Map<String, Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mini_v1::host_api::Broker as _;
 
     #[test]
     fn app_03_imports_outside_the_table_are_unsupported() {
@@ -630,6 +642,8 @@ mod tests {
             ("export { host } from \"nsh\";", "host from nsh"),
             ("export * from \"nsh/device\";", "nsh/device"),
             ("const m = await import(\"nsh\");", "import()"),
+            ("__roxHost.call(\"rox.open\", {});", "__roxHost"),
+            ("const h = __roxBridge;", "__roxBridge"),
             ("const t = `${import(\"nsh\")}`;", "import()"),
             ("import { x } from \"nsh:rt\";", "nsh:rt"),
             ("import { fetchy } from \"rox\";", "fetchy from rox"),
@@ -680,6 +694,82 @@ mod tests {
         let long = runtime_message("Forms", K::Uncaught, &"e".repeat(300)).unwrap();
         assert_eq!(long.len(), "Forms stopped: .".len() + 200);
         assert_eq!(say::unavailable("Fixture"), "Fixture is not running. Retry");
+    }
+
+    /// A broker listing one plugin whose `card` app is `listed` and
+    /// serving `served` as its source.
+    struct Serves {
+        listed: Value,
+        served: String,
+    }
+
+    impl host_api::Broker for Serves {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+            match route {
+                "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
+                    "id": "dev.goldcoders.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
+                    "protocol": "1.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
+                }]})),
+                "/v1/host/apps/source" => {
+                    Ok(serde_json::json!({"source": self.served, "fingerprint": self.listed["fingerprint"]}))
+                }
+                _ => Err(RoxError::new("not_found", route)),
+            }
+        }
+    }
+
+    const CARD: &str = "import { Text } from \"nsh/base\";\nimport { rox } from \"rox\";\nexport default function Card() { return <Text>{String(rox.props.ticket)}</Text>; }\n";
+
+    fn card(source: &str) -> Value {
+        serde_json::json!({
+            "id": "card", "title": "Fixture Card", "entry": "rox-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
+            "fingerprint": fingerprint(source), "placement": ["full", "inline"],
+            "props": { "type": "object", "properties": { "ticket": { "type": "string" } }, "required": ["ticket"] },
+            "permissions": { "tools": ["fx_echo"] }
+        })
+    }
+
+    const KEY: &str = "v1:dev.goldcoders.fixture/card?props=%7B%22ticket%22%3A%22tkt_x%22%7D";
+
+    #[test]
+    fn app_01_a_one_byte_change_refuses_the_app() {
+        let ok = prepare(&Serves { listed: card(CARD), served: CARD.to_owned() }, KEY).unwrap();
+        assert_eq!(ok.title, "Fixture Card");
+        assert_eq!(ok.fingerprint, fingerprint(CARD));
+        assert_eq!(ok.permissions.methods(), ["rox.ticket.title", "rox.call"]);
+        assert!(ok.js.starts_with(SHIM) && ok.js.ends_with("__roxMount(Card);\n"));
+        assert_eq!(ok.app_info()["sdk"], "1");
+        let changed = CARD.replacen("Card", "Cart", 1);
+        let e = prepare(&Serves { listed: card(CARD), served: changed }, KEY).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("fingerprint_mismatch", say::FINGERPRINT));
+        // the broker's own refusal shows the same words
+        struct Refuses;
+        impl host_api::Broker for Refuses {
+            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+                match route {
+                    "/v1/host/plugins" => Serves { listed: card(CARD), served: String::new() }.request("GET", route, None, Default::default()),
+                    _ => Err(RoxError::new("fingerprint_mismatch", "sha256 differs")),
+                }
+            }
+        }
+        assert_eq!(prepare(&Refuses, KEY).unwrap_err().message, say::FINGERPRINT);
+        let mut newer = card(CARD);
+        newer["sdk"] = "2".into();
+        assert_eq!(prepare(&Serves { listed: newer, served: CARD.to_owned() }, KEY).unwrap_err().code, "not_supported");
+    }
+
+    #[test]
+    fn app_05_an_invalid_prop_set_does_not_open_the_app() {
+        let b = Serves { listed: card(CARD), served: CARD.to_owned() };
+        for key in [
+            "v1:dev.goldcoders.fixture/card",
+            "v1:dev.goldcoders.fixture/card?props=%7B%22ticket%22%3A1%7D",
+            "v1:dev.goldcoders.fixture/card?props=%7B%22bad-key%22%3A%22x%22%2C%22ticket%22%3A%22t%22%7D",
+        ] {
+            assert_eq!(prepare(&b, key).unwrap_err().code, "invalid_args", "{key}");
+        }
+        assert_eq!(prepare(&b, "v1:dev.goldcoders.fixture/nope").unwrap_err().code, "not_found");
+        assert_eq!(prepare(&b, "v1:dev.goldcoders.other/card").unwrap_err().code, "not_found");
     }
 
     #[test]

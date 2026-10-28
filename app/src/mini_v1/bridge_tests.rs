@@ -70,6 +70,13 @@ export default function T() {{
     )
 }
 
+/// `probeHost(name, data)` for a test app: the shim's own host binding,
+/// which an app's source may not name (the source check refuses it), to
+/// show the engine's policy refuses what the bridge did not grant.
+fn probe(js: String) -> String {
+    js.replacen("const __roxBridge", "const probeHost = (n, d) => __roxHost.call(n, d);\nconst __roxBridge", 1)
+}
+
 /// What the fake broker saw and how it answers.
 #[derive(Default)]
 struct FakeBroker {
@@ -206,7 +213,7 @@ impl Open {
             fingerprint: load::fingerprint(&source),
             permissions: Permissions::parse(Some(&perms)).unwrap(),
             permissions_json: Some(perms.clone()),
-            js: load::build("board", "Fixture Board", &source).expect("the test app compiles"),
+            js: probe(load::build("board", "Fixture Board", &source).expect("the test app compiles")),
         });
         let session = Session::open(&CertBroker::honest(), plugin_id, "board", Some(&perms), Some(1)).unwrap();
         let broker = Arc::new(FakeBroker::default());
@@ -274,14 +281,14 @@ fn app_07_ungranted_methods_are_absent() {
 
 #[test]
 fn app_07_a_call_of_an_ungranted_host_name_fails_in_the_engine() {
-    // the shim's own host binding is the app's module scope too: the
-    // policy, not the shim, keeps it to the granted names
+    // past the shim, at the channel itself: the policy keeps it to the
+    // granted names
     let mut o = Open::start(
         json!({"tools": ["fx_echo"]}),
         r#"
         const tries = [];
         for (const name of ["rox.open", "rox.copy", "rox.storage.get", "rox.provision"]) {
-          try { await __roxHost.call(name, {}); tries.push("ran"); } catch (e) { tries.push("refused"); }
+          try { await probeHost(name, {}); tries.push("ran"); } catch (e) { tries.push("refused"); }
         }
         return "host " + tries.join(",");
         "#,
