@@ -150,21 +150,55 @@ pub fn is_v1(key: &str) -> bool {
     key.starts_with("v1:")
 }
 
-thread_local! {
-    /// The apps the store prepared, by module key, for the component that
-    /// opens them (main thread).
-    static PREPARED: std::cell::RefCell<std::collections::HashMap<String, std::sync::Arc<load::Prepared>>> =
-        Default::default();
-}
+/// The apps the store prepared, by module key: the last few of each, so
+/// the component finds the one whose module it was handed. Shared: the
+/// store runs on the engine thread, the component on the main thread.
+static PREPARED: std::sync::Mutex<Vec<(String, std::sync::Arc<load::Prepared>)>> = std::sync::Mutex::new(Vec::new());
+
+/// How many prepared modules are kept per key.
+const KEEP_PER_KEY: usize = 4;
 
 /// Keeps `prepared` for the opens of module `key`.
 pub fn keep_prepared(key: &str, prepared: load::Prepared) {
-    PREPARED.with_borrow_mut(|m| m.insert(key.to_owned(), std::sync::Arc::new(prepared)));
+    let mut m = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    m.push((key.to_owned(), std::sync::Arc::new(prepared)));
+    let mine: Vec<usize> = m.iter().enumerate().filter(|(_, (k, _))| k == key).map(|(i, _)| i).collect();
+    if mine.len() > KEEP_PER_KEY {
+        m.remove(mine[0]);
+    }
 }
 
-/// The app prepared for module `key`.
+/// The app prepared for module `key` whose compiled module is `js` (any
+/// thread).
+pub fn prepared_js(key: &str, js: &str) -> Option<std::sync::Arc<load::Prepared>> {
+    let m = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    m.iter().rev().find(|(k, p)| k == key && p.js == js).map(|(_, p)| p.clone())
+}
+
+/// The app last prepared for module `key`.
 pub fn prepared(key: &str) -> Option<std::sync::Arc<load::Prepared>> {
-    PREPARED.with_borrow(|m| m.get(key).cloned())
+    let m = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    m.iter().rev().find(|(k, _)| k == key).map(|(_, p)| p.clone())
+}
+
+type StoreJob = Box<dyn FnOnce(&'static crate::store::Store) + Send>;
+
+/// Work for the store from other threads (the main thread's components,
+/// the bridge, the broker's events): the store and its signals live on
+/// the engine thread, which runs these ([`run_store_jobs`]).
+static STORE_JOBS: std::sync::Mutex<Vec<StoreJob>> = std::sync::Mutex::new(Vec::new());
+
+/// Runs `f` with the store on the engine thread, soon.
+pub fn to_store(f: impl FnOnce(&'static crate::store::Store) + Send + 'static) {
+    STORE_JOBS.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(f));
+}
+
+/// Runs the queued [`to_store`] work (the engine thread, on a timer).
+pub fn run_store_jobs(store: &'static crate::store::Store) {
+    let jobs = std::mem::take(&mut *STORE_JOBS.lock().unwrap_or_else(|e| e.into_inner()));
+    for job in jobs {
+        job(store);
+    }
 }
 
 /// Rox's data directory for plugins: `<ROX_DATA_DIR or ~/Library/Application Support/Rox>/plugins`.
@@ -191,6 +225,39 @@ mod tests {
         assert!(V1Key::parse("v1:dev.goldcoders.fixture/Card").is_err());
         assert!(V1Key::parse("v1:dev.goldcoders.fixture/card?ticket=123").is_err());
         assert!(V1Key::parse("v1:dev.goldcoders.fixture/card?props=%5B%5D").is_err());
+    }
+
+    fn prep(js: &str) -> load::Prepared {
+        load::Prepared {
+            key: V1Key::parse("v1:dev.goldcoders.prepfx/card").unwrap(),
+            plugin: Default::default(),
+            title: "Card".into(),
+            fingerprint: String::new(),
+            permissions_json: None,
+            permissions: Default::default(),
+            js: js.into(),
+        }
+    }
+
+    #[test]
+    fn a_prepared_app_is_found_by_its_module_from_another_thread_and_after_a_newer_fetch() {
+        // the store prepares on the engine thread; the component asks on
+        // the main thread, maybe after another fetch of the same key
+        let key = "v1:dev.goldcoders.prepfx/card";
+        std::thread::spawn(move || {
+            keep_prepared(key, prep("js // open 1"));
+            keep_prepared(key, prep("js // open 2"));
+        })
+        .join()
+        .unwrap();
+        assert_eq!(prepared_js(key, "js // open 1").map(|p| p.js.clone()).as_deref(), Some("js // open 1"));
+        assert_eq!(prepared_js(key, "js // open 2").map(|p| p.js.clone()).as_deref(), Some("js // open 2"));
+        assert_eq!(prepared(key).map(|p| p.js.clone()).as_deref(), Some("js // open 2"));
+        for n in 3..10 {
+            keep_prepared(key, prep(&format!("js // open {n}")));
+        }
+        assert!(prepared_js(key, "js // open 1").is_none(), "only the last few are kept");
+        assert!(prepared_js(key, "js // open 9").is_some());
     }
 
     #[test]

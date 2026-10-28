@@ -972,8 +972,13 @@ mod imp {
         /// its own, then its session, bridge and load
         /// (`mini_v1::native::start`).
         fn load_v1(&mut self, module: &str, js: &str) {
-            let Some(prepared) = crate::mini_v1::prepared(module).filter(|p| p.js == js) else {
-                return log::warn!("mini v1: {module} was not prepared");
+            let Some(prepared) = crate::mini_v1::prepared_js(module, js) else {
+                log::warn!("mini v1: {module} was not prepared");
+                // never a blank app: say so, with the store's Retry
+                let key = module.to_owned();
+                return crate::mini_v1::to_store(move |st| {
+                    st.mini_err(&key).set("Could not open this app: it was not ready. Close it and open it again.".to_owned())
+                });
             };
             // the previous open's session ends first
             self.v1.take();
@@ -1004,7 +1009,8 @@ mod imp {
             let (key, title) = (module.to_owned(), prepared.title.clone());
             self.view.set_error_handler(move |text| {
                 if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
-                    crate::live::store().v1_error(&key, message);
+                    let key = key.clone();
+                    crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
                 }
             });
             let channel = self.view.host();
