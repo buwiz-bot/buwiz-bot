@@ -1345,26 +1345,43 @@ export default function R() {
         );
     }
 
-    // Pins NSH's current behavior; invert this when NSH gates these APIs.
-    #[test]
-    fn known_gap_desktop_window_and_homedir_are_ungated() {
-        let js = super::compile_widget(
-            "R997",
-            r#"
+    const WIDGET_WINDOW: &str = r#"
 import { Text } from "nsh";
 import { Window } from "nsh/desktop";
 import os from "os";
 
 export default function R() {
   Window.setTitle("spoofed");
-  const home = os.homedir();
-  return <Text>{typeof home}</Text>;
+  Window.minimize();
+  let home: string;
+  try {
+    home = typeof os.homedir();
+  } catch (e) {
+    home = (e as Error).name;
+  }
+  return <Text>{`home ${home}`}</Text>;
 }
-"#,
-        )
-        .expect("compile widget");
-        let (engine, rx, _) = start_widget(super::mini_bundle("R997", js));
-        let commands = run_until_text(&engine, &rx, "string");
+"#;
+
+    #[test]
+    fn a_widget_cannot_control_the_window_or_read_the_home_directory() {
+        let js = super::compile_widget("R997", WIDGET_WINDOW).expect("compile widget");
+
+        // Widgets and MCP apps declare no `window` or `homeDir`: the window
+        // commands never reach the platform and `os.homedir()` throws.
+        for module in ["R997", "mcp:bir/forms"] {
+            let (engine, rx, _) = start_widget(super::mini_bundle(module, js.clone()));
+            let commands = run_until_text(&engine, &rx, "home TypeError");
+            assert!(
+                commands.is_empty(),
+                "{module}: desktop commands reached the platform: {commands:?}"
+            );
+            drop(engine);
+        }
+
+        // An app without a declared policy keeps both.
+        let (engine, rx, _) = start_widget(Bundle::source(js));
+        let commands = run_until_text(&engine, &rx, "home string");
         assert!(
             commands.iter().any(|command| matches!(
                 command,
@@ -1374,7 +1391,7 @@ export default function R() {
                         DesktopCommand::SetTitle(title) if title == "spoofed"
                     )
             )),
-            "desktop title command did not reach the batch: {commands:?}"
+            "default policy did not send the title: {commands:?}"
         );
     }
 }
