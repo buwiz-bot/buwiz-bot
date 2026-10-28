@@ -73,6 +73,30 @@ test("AGT-02 a tool the user disabled is absent from the model's list", async ()
   assert.ok((await names()).includes("fx_big"));
 });
 
+test("ATT-01 the chat's attachments reach the model as canonical tokens of approved plugins, with their scope's hint", async () => {
+  const tkt = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+  const atts = [
+    { token: `@fx:item:${tkt}`, plugin: FX, scope: "item", title: "Acme" },
+    { token: "@fx:item:123-456-789", plugin: FX, scope: "item", title: "raw id" },
+    { token: `@fx:note:${tkt}`, plugin: FX, scope: "note", title: "not attachable" },
+    { token: `@fx:item:${tkt}`, plugin: "dev.goldcoders.other", scope: "item", title: "another plugin" },
+  ];
+
+  const text = v1PromptSection(plugins, "hello", atts);
+
+  assert.match(text, new RegExp(`Attached: @fx:item:${tkt} \\(Acme\\): Fixture tools default to this item here`));
+  assert.ok(!text.includes("123-456-789") && !text.includes("not attachable") && !text.includes("another plugin"));
+  assert.match(text, /An attached item scopes fx_search/, "the attached scope's hint is in play");
+  writeTrust(b.trustFile, [b.pub], []);
+
+  try {
+    assert.equal(v1PromptSection(plugins, "hello", atts), "", "an unapproved plugin's attachments add nothing");
+  } finally {
+    writeTrust(b.trustFile, [b.pub], [[FX, b.pub.keyId]]);
+  }
+});
+
 test("AGT-03 a plugin not on the approved list contributes no text to the model", async () => {
   assert.match(v1PromptSection(plugins, "use @fx:item:acme"), /Instructions from Fixture/);
   writeTrust(b.trustFile, [b.pub], []);

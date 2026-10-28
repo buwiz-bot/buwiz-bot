@@ -16,9 +16,23 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
       try {
-        const { prompt: rawPrompt, reply, attachments } = JSON.parse(body || "{}");
+        const { prompt: rawPrompt, reply, attachments, v1_attachments: v1Attachments } = JSON.parse(body || "{}");
         const prompt = rawPrompt || (attachments?.length ? "" : null);
+
         if (prompt == null) throw new Error("missing prompt");
+        const extra = {};
+
+        if (reply?.text) {
+          extra.reply = { i: reply.i, text: String(reply.text).slice(0, 400) };
+
+          if (reply.files?.length) extra.reply.files = reply.files.slice(0, 8).map(String);
+        }
+
+        if (attachments?.length) extra.attachments = attachments;
+
+        // 10.3: the chat's v1 attachments Rox lets the model see
+        if (Array.isArray(v1Attachments) && v1Attachments.length) extra.v1Attachments = v1Attachments.slice(0, 16);
+
         const job = {
           id: allocJobId(),
           thread: store.active,
@@ -27,12 +41,11 @@ export default async function handle(req, res) {
           detail: "",
           done: false,
           result: null,
-          extra: {
-            ...(reply?.text ? { reply: { i: reply.i, text: String(reply.text).slice(0, 400), ...(reply.files?.length ? { files: reply.files.slice(0, 8).map(String) } : {}) } } : {}),
-            ...(attachments?.length ? { attachments } : {}),
-          },
+          extra,
         };
+
         jobs.set(job.id, job);
+
         if (jobs.size > 25) jobs.delete(jobs.keys().next().value);
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true, id: job.id }));
