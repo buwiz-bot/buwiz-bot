@@ -91,6 +91,18 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
   assert.ok(!log.includes(token), "the token is not logged");
 });
 
+test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
+  const second = spawn(process.execPath, [join(ROOT, "server", "app-server.mjs")], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile },
+    stdio: "ignore",
+  });
+
+  await new Promise((r) => second.once("exit", r));
+  assert.equal(readFileSync(join(dataDir, "host-token"), "utf8"), token, "the token file is the running server's");
+  assert.equal((await host("GET", "/v1/host/plugins")).status, 200, "Rox can still talk to the running server");
+});
+
 test("Rox's path over HTTP: inspect, install, list, open, call, resolve, title, source", async () => {
   const spec = fixtureSpec(b);
   const i = await host("POST", "/v1/host/plugins/inspect", spec);
