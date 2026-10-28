@@ -110,6 +110,24 @@ test("BRG-10 a 2 MiB result rejects result_too_large; just under 1 MiB passes", 
   assert.equal(await codeOf(call(board, "fx_echo", { x: "y".repeat(256 * 1024) })), "invalid_args", "args over 256 KiB");
 });
 
+test("rox.preview: only a preview call of an app with permissions.preview gets its larger limit (max_bytes)", async () => {
+  const doc = (bytes) => ({ bytes, as: "resource" });
+  const pv = { purpose: "preview" };
+
+  // an embedded resource counts toward the ordinary 1 MiB
+  assert.equal(await codeOf(call(board, "fx_big", doc(2 * 1024 * 1024))), "result_too_large");
+  const r = await call(board, "fx_big", doc(2 * 1024 * 1024), pv);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.result.content[0].resource.text.length, 2 * 1024 * 1024);
+  assert.equal(await codeOf(call(board, "fx_big", doc(3 * 1024 * 1024 + 1), pv)), "result_too_large", "over the fixture's max_bytes");
+  assert.equal(await codeOf(call(board, "fx_big", doc(1), { purpose: "print" })), "invalid_args");
+  const card = await openApp(sessions, m, "card");
+
+  assert.equal(await codeOf(call(card, "fx_echo", {}, pv)), "permission_denied", "card has no preview permission");
+  assert.equal(await codeOf(call(board, "fx_secret", {}, pv)), "permission_denied", "the tool must still be the app's own");
+});
+
 test("BRG-11 a call past the broker limit rejects timeout and sends cancellation", async () => {
   const was = (await stats()).cancelled;
   const e = await sessions.call(envelope(board, "fx_slow", { ms: 3000 })).catch((x) => x);

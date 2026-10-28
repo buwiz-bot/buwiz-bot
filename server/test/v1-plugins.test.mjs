@@ -195,6 +195,7 @@ test("install: the review lists every permission (13.1 step 3) and a changed man
     "Can read files: .xlsx, .csv up to 25 MB",
     "Storage: 1 MB",
     "Copy to clipboard",
+    "Show print previews (static pages, no scripts)",
   ]);
   assert.deepEqual(i.review.apps.find((a) => a.id === "card").inline, { width: 480, height: 320 });
   assert.deepEqual(i.review.routines, ["Routine 'Fixture digest' reads via dev.goldcoders.fixture: fx_search"]);
