@@ -186,6 +186,71 @@ test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a
   assert.equal(other.v1Cards, undefined);
 });
 
+test("CARD-01 an answer card keeps its size, snapshot and as_of; a bad size drops the card", async () => {
+  const job = { id: 40 };
+
+  await execTool(job, null, { name: "fx_open", input: { size: "small", snapshot: { due: 2 }, title: "Due soon" } });
+  const card = job.v1Cards[0];
+
+  assert.equal(card.size, "small");
+  assert.deepEqual(card.props.snapshot, { due: 2 });
+  assert.equal(typeof card.props.as_of, "number");
+  assert.equal(job.linkTurn.links[0].card.size, "small", "Rox reads it off the turn's link");
+  const main = { id: 41 };
+
+  await execTool(main, null, { name: "fx_open", input: {} });
+  assert.equal(main.v1Cards[0].size, undefined, "no size: the main card");
+  const bad = { id: 42 };
+
+  await execTool(bad, null, { name: "fx_open", input: { size: "huge" } });
+  assert.equal(bad.v1Cards, undefined);
+});
+
+test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off the model, ignored on errors", async () => {
+  const job = { id: 43 };
+  const suggest = [
+    { label: "File 0619E October", prompt: "File 0619E for October" },
+    { label: "L".repeat(60), prompt: "P".repeat(300) },
+    { label: "", prompt: "dropped: no label" },
+    { label: "no prompt" },
+    { label: "Third", prompt: "third" },
+    { label: "Fourth", prompt: "over the cap" },
+  ];
+  const r = await execTool(job, null, { name: "fx_open", input: { suggest } });
+
+  assert.ok(!r.content.includes("rox/suggest") && !r.content.includes("File 0619E"), "never shown to the model");
+  assert.deepEqual(job.linkTurn.suggest.map((s) => s.label), ["File 0619E October", "L".repeat(40), "Third"]);
+  assert.equal(job.linkTurn.suggest[1].prompt.length, 200);
+  const failed = { id: 44 };
+
+  await execTool(failed, null, { name: "fx_open", input: { fail: true, suggest } });
+  assert.equal(failed.linkTurn, undefined);
+});
+
+test("CARD-03 the plugin list says which plugins are first-party (approved, publisher dev.goldcoders)", () => {
+  const fx = plugins.list().find((p) => p.id === FX);
+
+  assert.equal(fx.publisher.id, "dev.goldcoders");
+  assert.equal(fx.first_party, true);
+});
+
+test("ATT-02 a sent message's v1 attachments and an answer's next steps come back in /turns", async () => {
+  const { turnsJson } = await import("../server/state.mjs");
+  const token = "@fx:item:tkt_0123456789ABCDEFGHJKMNPQRS";
+  const turns = turnsJson({
+    turns: [
+      { role: "user", text: "what is due?", v1Attachments: [{ token, plugin: FX, scope: "item", title: "Item One" }] },
+      { role: "ai", text: "", suggest: [{ label: "Next", prompt: "do next" }] },
+      { role: "user", text: "plain" },
+    ],
+  });
+
+  assert.deepEqual(turns[0].v1Attachments, [{ token, plugin: FX, scope: "item", title: "Item One" }]);
+  assert.deepEqual(turns[1].suggest, [{ label: "Next", prompt: "do next" }]);
+  assert.equal(turns[2].v1Attachments, undefined);
+  assert.deepEqual(turns[2].suggest, []);
+});
+
 test("routines: reads go only to approved plugins' readOnlyHint tools", async () => {
   assert.deepEqual(plugins.list()[0].routines[0].reads_status, [{ plugin: FX, tools: ["fx_search"], allowed: true, reason: null }]);
   const b3 = bed("agent-reads");

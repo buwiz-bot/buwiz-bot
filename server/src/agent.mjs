@@ -252,6 +252,13 @@ export async function agentTurn(job, prompt, thread) {
 // A turn nobody typed (a routine's, routines.mjs): the chat shows `shown`
 // as its message, the model reads `prompt`. It runs in `thread` whichever
 // chat is active, and never makes it the active one.
+// What the tools left on the job rides the reply's turn: Drive files and app
+// cards (`links`), and a v1 answer's next steps (`suggest`, 9.8).
+const linkFields = (job) => ({
+  ...(job.linkTurn?.links.length ? { links: job.linkTurn.links } : {}),
+  ...(job.linkTurn?.suggest?.length ? { suggest: job.linkTurn.suggest } : {}),
+});
+
 export async function backgroundTurn(job, thread, shown, prompt) {
   thread.turns.push({ id: uuidv7(), role: "user", text: shown });
   writeIndex();
@@ -262,9 +269,9 @@ export async function backgroundTurn(job, thread, shown, prompt) {
     text = !MOCK && PROVIDER === "anthropic" ? await agentTurn(job, prompt, thread) : await chatReply(prompt, thread, job);
   } finally {
     // Drive files and app cards the tools made ride the reply, even after a crash
-    const links = job.linkTurn?.links.length ? { links: job.linkTurn.links } : {};
+    const links = linkFields(job);
 
-    if (text || links.links) thread.turns.push({ id: uuidv7(), role: "ai", text: text || "", label, ...links });
+    if (text || links.links || links.suggest) thread.turns.push({ id: uuidv7(), role: "ai", text: text || "", label, ...links });
     writeIndex();
     setJob(job, "done", "replied");
     job.done = true;
@@ -607,13 +614,13 @@ export async function generate(job, prompt) {
     thread.turns.push({ id: uuidv7(), role: "user", text: prompt, ...job.extra });
     // Drive files the tools made or changed (drive.mjs) ride the reply's
     // turn — their own turn when there is no reply, even after a crash.
-    const links = () => (job.linkTurn?.links.length ? { links: job.linkTurn.links } : {});
+    const links = () => linkFields(job);
     let text;
 
     try {
       text = await agentTurn(job, prompt, thread);
     } catch (e) {
-      if (job.linkTurn?.links.length) {
+      if (job.linkTurn?.links.length || job.linkTurn?.suggest?.length) {
         thread.turns.push({ id: uuidv7(), role: "ai", text: "", label: labelOf(modelCtx.getStore()), ...links() });
         writeIndex();
       }
@@ -621,7 +628,7 @@ export async function generate(job, prompt) {
       throw e;
     }
 
-    if (text || job.linkTurn?.links.length)
+    if (text || job.linkTurn?.links.length || job.linkTurn?.suggest?.length)
       thread.turns.push({ id: uuidv7(), role: "ai", text: text || "", label: labelOf(modelCtx.getStore()), ...links() });
     writeIndex();
     console.log(`✓ turn via ${labelOf(modelCtx.getStore())} (${prompt.slice(0, 60)}) — ${job.cards || 0} card(s)`);
