@@ -468,9 +468,11 @@ enum RoutinesSection {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct ThisRoutine {
     name: String,
-    /// Its plugin and id, for Run now and Pause.
+    /// Its plugin, id and instance ("" before instances), for Run now and
+    /// Pause.
     plugin: String,
     id: String,
+    instance: String,
     /// The plugin that runs it ("" before the plugins are listed).
     by: String,
     /// "Checks every 5 min" ("" unknown).
@@ -479,8 +481,10 @@ struct ThisRoutine {
     status: String,
     failed: bool,
     /// Running on its schedule (Pause), or paused (Resume); false too
-    /// before the plugins are listed.
+    /// before the plugins are listed. `pending`: waiting for the user's
+    /// Enable (the agent made it).
     enabled: bool,
+    pending: bool,
     /// The chat it reports to, and the action back to it.
     chat: String,
     go: String,
@@ -493,19 +497,26 @@ fn routines_section(
     checked: impl Fn(f64) -> String,
 ) -> RoutinesSection {
     let Some(r) = open else { return RoutinesSection::List };
-    let found = listed
-        .iter()
-        .find(|p| p.id == r.plugin)
-        .and_then(|p| p.routines.iter().find(|x| x.id == r.id).map(|x| (p.title.clone(), x)));
-    let mut out = ThisRoutine { name: r.name, plugin: r.plugin, id: r.id, chat: r.thread, go: format!("Go to {bot} chat"), ..Default::default() };
-    if let Some((by, x)) = found {
-        let (status, failed) = x.last_check(checked);
+    // the instance's state as a routine's (the routine's own before instances)
+    let found = listed.iter().find(|p| p.id == r.plugin).and_then(|p| {
+        let x = p.routines.iter().find(|x| x.id == r.id)?;
+        let i = x.instances.iter().find(|i| i.instance == r.instance);
+        match (r.instance.is_empty(), i) {
+            (true, _) => Some((p.title.clone(), x.clone(), false, "schedule".to_owned())),
+            (false, Some(i)) => Some((p.title.clone(), i.as_routine(x), i.pending, i.trigger.clone())),
+            (false, None) => None,
+        }
+    });
+    let mut out = ThisRoutine { name: r.name, plugin: r.plugin, id: r.id, instance: r.instance, chat: r.thread, go: format!("Go to {bot} chat"), ..Default::default() };
+    if let Some((by, x, pending, trigger)) = found {
+        let (status, failed) = if pending { ("Waiting for your Enable".to_owned(), false) } else { x.last_check(checked) };
         let mut c = status.chars();
         out.status = c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default();
         out.failed = failed;
         out.by = by;
-        out.schedule = x.schedule();
+        out.schedule = if trigger == "webhook" { "Runs on its webhook".to_owned() } else { x.schedule() };
         out.enabled = x.enabled;
+        out.pending = pending;
     }
     RoutinesSection::This(out)
 }
@@ -537,12 +548,13 @@ fn routine_act(label: &'static str, aria: String, danger: bool, on: impl Fn() + 
 fn this_routine(r: ThisRoutine) -> impl IntoElement {
     let hov = signal(false);
     let chat = r.chat.clone();
-    let key = crate::routines::v1_key(&r.plugin, &r.id);
+    let key = crate::routines::v1_key(&r.plugin, if r.instance.is_empty() { &r.id } else { &r.instance });
     let usual = (r.status.clone(), r.failed);
     let line = |t: String, c| text(t).text_size(px(12.0)).text_color(c).number_of_lines(3);
-    let (p1, i1, p2, i2, c2) = (r.plugin.clone(), r.id.clone(), r.plugin.clone(), r.id.clone(), r.chat.clone());
+    let (p1, i1, n1) = (r.plugin.clone(), r.id.clone(), r.instance.clone());
+    let (p2, i2, n2, c2) = (r.plugin.clone(), r.id.clone(), r.instance.clone(), r.chat.clone());
     let known = !r.by.is_empty();
-    let enabled = r.enabled;
+    let (enabled, pending) = (r.enabled, r.pending);
     pane_card().child(
         view()
             .gap(px(2.0))
@@ -565,15 +577,9 @@ fn this_routine(r: ThisRoutine) -> impl IntoElement {
                         .pt(px(4.0))
                         .gap_1()
                         .when(enabled, |v| {
-                            v.child(routine_act("Run now", format!("Run {} now", r.name), false, move || store().v1_routine_run(&p1, &i1)))
+                            v.child(routine_act("Run now", format!("Run {} now", r.name), false, move || store().v1_routine_run(&p1, &i1, &n1)))
                         })
-                        .child(if enabled {
-                            routine_act("Pause", format!("Pause {}", r.name), false, move || {
-                                store().v1_routine(&p2, &i2, crate::mini_v1::host_api::RoutineAction::Disable)
-                            })
-                        } else {
-                            routine_act("Resume", format!("Resume {}", r.name), false, move || store().v1_routine_resume(&p2, &i2, &c2))
-                        }),
+                        .child(pause_or_resume(&r.name, enabled, pending, p2, i2, n2, c2)),
                 )
             })
             .child(
@@ -633,9 +639,12 @@ struct ChatRoutine {
 
 #[derive(Debug, Clone, PartialEq)]
 enum RoutineKind {
-    /// A v1 plugin's: its plugin, id, own thread ("" not made yet) and the
-    /// chat it reports to.
-    Plugin { plugin: String, id: String, home: String, chat: String },
+    /// A v1 plugin routine's instance: its plugin, routine id, instance
+    /// ("" before instances), own thread ("" not made yet), the chat it
+    /// reports to, trigger, whether its webhook has a URL, whether it waits
+    /// for the user's Enable, and its params as JSON ("" when the routine
+    /// takes none).
+    Plugin { plugin: String, id: String, instance: String, home: String, chat: String, trigger: String, hook: bool, pending: bool, params: String },
     /// The server's own (`/routines`): its turns post in this chat.
     Server { id: String },
 }
@@ -644,14 +653,14 @@ impl ChatRoutine {
     /// The key of its Run now (`routines::run_of`).
     fn key(&self) -> String {
         match &self.kind {
-            RoutineKind::Plugin { plugin, id, .. } => crate::routines::v1_key(plugin, id),
+            RoutineKind::Plugin { plugin, id, instance, .. } => crate::routines::v1_key(plugin, if instance.is_empty() { id } else { instance }),
             RoutineKind::Server { id } => crate::routines::v0_key(id),
         }
     }
 }
 
-/// The routines, v1 plugins' and the server's own, that report to `chat`,
-/// paused ones too (they resume here).
+/// The routines, v1 plugins' instances and the server's own, that report
+/// to `chat`, paused and pending ones too (they resume or start here).
 fn chat_routines(chat: &str, listed: &[crate::mini_v1::connect::Listed], server: &[crate::routines::Routine], app: &str) -> Vec<ChatRoutine> {
     let status = |enabled: bool, last_run: f64, last_error: &str| match (enabled, last_error.is_empty(), last_run > 0.0) {
         (false, _, _) => ("Paused".to_owned(), false),
@@ -661,17 +670,39 @@ fn chat_routines(chat: &str, listed: &[crate::mini_v1::connect::Listed], server:
     };
     let mut out = Vec::new();
     for p in listed {
-        for r in p.routines.iter().filter(|r| !chat.is_empty() && r.thread == chat) {
-            let (status, failed) =
-                if r.available || !r.enabled { status(r.enabled, r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
-            out.push(ChatRoutine {
-                name: r.name.clone(),
-                by: p.title.clone(),
-                status,
-                failed,
-                enabled: r.enabled,
-                kind: RoutineKind::Plugin { plugin: p.id.clone(), id: r.id.clone(), home: r.home.clone(), chat: r.thread.clone() },
-            });
+        for r in &p.routines {
+            for i in r.instances_or_self().into_iter().filter(|i| !chat.is_empty() && i.thread == chat) {
+                let (status, failed) = if i.pending {
+                    ("Waiting for your Enable".to_owned(), false)
+                } else if i.available || !i.enabled {
+                    status(i.enabled, i.last_run, &i.last_error)
+                } else {
+                    (i.reason.clone(), true)
+                };
+                let how = if i.trigger == "webhook" {
+                    "on its webhook".to_owned()
+                } else {
+                    crate::routines::interval(if i.every_s > 0.0 { i.every_s } else { r.every_s })
+                };
+                out.push(ChatRoutine {
+                    name: if i.summary.is_empty() { r.name.clone() } else { format!("{} · {}", r.name, i.summary) },
+                    by: format!("{} · {how}", p.title),
+                    status,
+                    failed,
+                    enabled: i.enabled,
+                    kind: RoutineKind::Plugin {
+                        plugin: p.id.clone(),
+                        id: r.id.clone(),
+                        instance: i.instance.clone(),
+                        home: i.home.clone(),
+                        chat: i.thread.clone(),
+                        trigger: i.trigger.clone(),
+                        hook: i.hook,
+                        pending: i.pending,
+                        params: if r.params_schema.is_null() { String::new() } else { i.params.to_string() },
+                    },
+                });
+            }
         }
     }
     for r in server.iter().filter(|r| !chat.is_empty() && r.thread == chat) {
@@ -691,27 +722,44 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
     let usual = (r.status.clone(), r.failed);
     let name = r.name.clone();
     let mut acts = view().flex_row().flex_wrap().gap_1().pt(px(2.0));
+    // a plugin instance's params editor and webhook URL, under its actions
+    let mut extra: Option<String> = None;
     match r.kind.clone() {
-        RoutineKind::Plugin { plugin, id, home, chat } => {
-            let (p1, i1, p2, i2) = (plugin.clone(), id.clone(), plugin.clone(), id.clone());
+        RoutineKind::Plugin { plugin, id, instance, home, chat, trigger, hook, pending, params } => {
+            let (p1, i1, n1) = (plugin.clone(), id.clone(), instance.clone());
             if r.enabled {
-                acts = acts
-                    .child(routine_act("Run now", format!("Run {name} now"), false, move || store().v1_routine_run(&p1, &i1)))
-                    .child(routine_act("Pause", format!("Pause {name}"), false, move || {
-                        store().v1_routine(&p2, &i2, crate::mini_v1::host_api::RoutineAction::Disable)
-                    }));
-            } else {
-                acts = acts.child(routine_act("Resume", format!("Resume {name}"), false, move || store().v1_routine_resume(&p2, &i2, &chat)));
+                acts = acts.child(routine_act("Run now", format!("Run {name} now"), false, move || store().v1_routine_run(&p1, &i1, &n1)));
             }
+            acts = acts.child(pause_or_resume(&name, r.enabled, pending, plugin.clone(), id.clone(), instance.clone(), chat));
+            if !params.is_empty() && !instance.is_empty() {
+                let (n2, text) = (instance.clone(), params.clone());
+                acts = acts.child(routine_act("Edit params", format!("Edit {name}'s params"), false, move || {
+                    store().routine_edit.set(Some((n2.clone(), text.clone())))
+                }));
+            }
+            if trigger == "webhook" && !instance.is_empty() {
+                let (p3, i3, n3) = (plugin.clone(), id.clone(), instance.clone());
+                acts = acts.child(routine_act(if hook { "New URL" } else { "Get URL" }, format!("Webhook URL of {name}"), false, move || {
+                    store().v1_instance_hook(&p3, &i3, &n3)
+                }));
+            }
+            let (p4, i4) = (plugin.clone(), id.clone());
             acts = acts.child(routine_act("Open", format!("Open {name}'s thread"), false, move || {
-                match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&plugin, &id)) {
+                match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&p4, &i4)) {
                     Some(thread) => store().go_to(&thread, None),
                     None => {
                         store().open_plugins();
-                        store().push_nav("v1plugin", &plugin, "");
+                        store().push_nav("v1plugin", &p4, "");
                     }
                 }
             }));
+            if !instance.is_empty() {
+                let n5 = instance.clone();
+                acts = acts.child(routine_act("Delete", format!("Delete {name}"), true, move || {
+                    store().v1_instance(&plugin, &id, &n5, crate::mini_v1::host_api::InstanceAction::Delete, serde_json::json!({}))
+                }));
+                extra = Some(instance);
+            }
         }
         RoutineKind::Server { id } => {
             let (i1, i2, i3) = (id.clone(), id.clone(), id);
@@ -739,7 +787,102 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
             text(t).text_size(px(12.0)).text_color(if failed { theme::DOWN } else { theme::DIM }).number_of_lines(2).into_element()
         }))
         .child(acts)
+        .when_some(extra, |v, instance| v.child(instance_extras(instance)))
         .into_element()
+}
+
+/// Pause or Resume (Enable for one waiting for the user's consent: the
+/// card's Enable, from here). Resume re-enables it in the chat it reports
+/// to (`chat`).
+fn pause_or_resume(name: &str, enabled: bool, pending: bool, plugin: String, id: String, instance: String, chat: String) -> AnyElement {
+    use crate::mini_v1::host_api::InstanceAction;
+    if enabled {
+        routine_act("Pause", format!("Pause {name}"), false, move || {
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Disable, serde_json::json!({}))
+        })
+    } else if pending {
+        routine_act("Enable", format!("Enable {name}"), false, move || {
+            store().routine_consented.update(|l| l.push((instance.clone(), "enabled".to_owned())));
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Enable, serde_json::json!({ "approve": true }))
+        })
+    } else {
+        routine_act("Resume", format!("Resume {name}"), false, move || {
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Enable, serde_json::json!({ "thread": chat }))
+        })
+    }
+}
+
+/// Under a plugin instance's row: its params editor while open (JSON,
+/// Save checks it), and its webhook URL right after it was made (Copy).
+fn instance_extras(instance: String) -> impl IntoElement {
+    dynamic(move || {
+        let st = store();
+        let editing = st.routine_edit.get().filter(|(i, _)| *i == instance);
+        let url = st.routine_hook.get().filter(|(i, _)| *i == instance).map(|(_, u)| u);
+        let mut v = view().gap(px(6.0));
+        if editing.is_some() {
+            let inst = instance.clone();
+            v = v.child(
+                view()
+                    .gap(px(4.0))
+                    .pt(px(4.0))
+                    .child(
+                        input()
+                            .auto_focus(true)
+                            .value(move || store().routine_edit.get().map(|(_, t)| t).unwrap_or_default())
+                            .placeholder("{\"taxpayers\": [...]}")
+                            .placeholder_color(|| color(theme::GHOST))
+                            .text_size(px(12.0))
+                            .text_color(theme::TEXT)
+                            .on_change(|t: &str| store().routine_edit.update(|e| if let Some((_, x)) = e { *x = t.to_owned() }))
+                            .h(px(30.0))
+                            .px_2()
+                            .rounded(px(7.0))
+                            .bg(theme::HOVER),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap_1()
+                            .child(routine_act("Save", "Save params".to_owned(), false, move || save_params(&inst)))
+                            .child(routine_act("Cancel", "Cancel editing params".to_owned(), false, || store().routine_edit.set(None))),
+                    ),
+            );
+        }
+        if let Some(url) = url {
+            let copy = url.clone();
+            v = v.child(
+                view()
+                    .gap(px(2.0))
+                    .child(text("Webhook URL (shown once; New URL retires it):").text_size(px(12.0)).text_color(theme::DIM))
+                    .child(text(url).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(3))
+                    .child(view().flex_row().gap_1().child(routine_act("Copy", "Copy webhook URL".to_owned(), false, move || {
+                        store().copy_text(&copy);
+                        crate::toast::show("Copied the webhook URL");
+                    })).child(routine_act("Hide", "Hide webhook URL".to_owned(), false, || store().routine_hook.set(None)))),
+            );
+        }
+        v.into_element()
+    })
+}
+
+/// Save on the params editor: the typed JSON, when it is an object, to
+/// the broker (`update`), which checks it against the routine's schema.
+fn save_params(instance: &str) {
+    let st = store();
+    let Some((_, text)) = st.routine_edit.get_untracked() else { return };
+    let params = match crate::routines::parse_params(&text) {
+        Ok(p) => p,
+        Err(e) => return crate::toast::show(e),
+    };
+    let found = st.v1.listed.with_untracked(|l| {
+        l.iter().find_map(|p| {
+            p.routines.iter().find_map(|r| r.instances.iter().any(|i| i.instance == instance).then(|| (p.id.clone(), r.id.clone())))
+        })
+    });
+    let Some((plugin, id)) = found else { return };
+    st.routine_edit.set(None);
+    st.v1_instance(&plugin, &id, instance, crate::mini_v1::host_api::InstanceAction::Update, serde_json::json!({ "params": params }));
 }
 
 /// The bot's context in Details: its description, and a row to its Bot
@@ -1947,18 +2090,20 @@ mod tests {
              "thread": "t2", "home": "t3", "last_run": 1793194720000u64, "last_items": 0}]}))];
         let at = |_: f64| "3:42 PM".to_owned();
         assert_eq!(routines_section(None, &listed, "Piccolo", at), RoutinesSection::List, "a chat lists its routines");
-        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), name: "BIR payments".into(), thread: "t2".into() };
+        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
         assert_eq!(
             routines_section(Some(open.clone()), &listed, "Piccolo", at),
             RoutinesSection::This(ThisRoutine {
                 name: "BIR payments".into(),
                 plugin: "dev.goldcoders.bir".into(),
                 id: "payments".into(),
+                instance: String::new(),
                 by: "BIR".into(),
                 schedule: "Checks every 5 min".into(),
                 status: "Last checked 3:42 PM · nothing new".into(),
                 failed: false,
                 enabled: true,
+                pending: false,
                 chat: "t2".into(),
                 go: "Go to Piccolo chat".into(),
             })
@@ -1989,7 +2134,21 @@ mod tests {
         let got = chat_routines("t2", &listed, &server, "Rox");
         assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR payments", "BIR confirmations", "Calendar sync"]);
         assert_eq!((got[0].status.as_str(), got[0].enabled), ("Waiting for its first run", true));
-        assert_eq!(got[0].kind, RoutineKind::Plugin { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), home: "t3".into(), chat: "t2".into() });
+        assert_eq!(got[0].by, "BIR · every 5 min");
+        assert_eq!(
+            got[0].kind,
+            RoutineKind::Plugin {
+                plugin: "dev.goldcoders.bir".into(),
+                id: "payments".into(),
+                instance: String::new(),
+                home: "t3".into(),
+                chat: "t2".into(),
+                trigger: "schedule".into(),
+                hook: false,
+                pending: false,
+                params: String::new(),
+            }
+        );
         // paused: it says so (not why it couldn't run), and resumes in t2
         assert_eq!((got[1].status.as_str(), got[1].failed, got[1].enabled), ("Paused", false, false));
         assert_eq!(
@@ -2006,5 +2165,31 @@ mod tests {
         assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/payments");
         assert_eq!(got[2].key(), "v0:r1");
         assert!(chat_routines("", &listed, &server, "Rox").is_empty(), "no chat open, none");
+    }
+
+    #[test]
+    fn a_routines_instances_list_in_their_own_chats_with_params_and_trigger() {
+        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+            {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": true, "available": true, "thread": "t2",
+             "params": {"type": "object", "properties": {"taxpayers": {"type": "array", "items": {"type": "string"}}}},
+             "writes": ["bir_confirm_filing"],
+             "instances": [
+                {"instance": "ri_a", "summary": "Taxpayer A", "params": {"taxpayers": ["tp_a"]}, "trigger": "schedule", "every_s": 600,
+                 "enabled": true, "available": true, "thread": "t2", "home": "t7", "last_run": 0},
+                {"instance": "ri_b", "summary": "Taxpayer B", "params": {"taxpayers": ["tp_b"]}, "trigger": "webhook", "every_s": 300,
+                 "enabled": false, "pending": true, "available": true, "thread": "t2", "hook": false},
+                {"instance": "ri_c", "summary": "Other bot", "params": {}, "trigger": "schedule", "enabled": true, "available": true, "thread": "t9"}]}]}))];
+        let got = chat_routines("t2", &listed, &[], "Rox");
+        assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR confirmations · Taxpayer A", "BIR confirmations · Taxpayer B"]);
+        assert_eq!(got[0].by, "BIR · every 10 min", "the instance's own interval");
+        assert_eq!(got[1].by, "BIR · on its webhook");
+        assert_eq!((got[1].status.as_str(), got[1].enabled), ("Waiting for your Enable", false));
+        let RoutineKind::Plugin { instance, params, pending, trigger, .. } = &got[1].kind else { panic!() };
+        assert_eq!((instance.as_str(), params.as_str(), *pending, trigger.as_str()), ("ri_b", r#"{"taxpayers":["tp_b"]}"#, true, "webhook"));
+        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/ri_a", "a run is the instance's");
+        // a routine thread's card is its instance's
+        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "confirm".into(), instance: "ri_b".into(), name: "BIR confirmations · Taxpayer B".into(), thread: "t2".into() };
+        let RoutinesSection::This(r) = routines_section(Some(open), &listed, "Piccolo", |_| "3:42 PM".to_owned()) else { panic!() };
+        assert_eq!((r.instance.as_str(), r.pending, r.enabled, r.status.as_str(), r.schedule.as_str()), ("ri_b", true, false, "Waiting for your Enable", "Runs on its webhook"));
     }
 }

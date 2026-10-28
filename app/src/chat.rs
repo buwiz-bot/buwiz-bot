@@ -486,6 +486,8 @@ pub(crate) fn routine_status_line() -> impl IntoElement {
 fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     if let Some(n) = t.notice.clone() {
         notice_row(n).into_element()
+    } else if let Some(c) = t.consent.clone() {
+        consent_row(c).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -540,6 +542,81 @@ fn notice_row(n: RoutineNotice) -> impl IntoElement {
                 )
             }),
     )
+}
+
+/// A routine instance the agent made that waits for the user (5.9): the
+/// question, Enable (switches it on, consenting to what it reads and
+/// changes) and Not now (deletes it); once answered, a quiet line.
+fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
+    let inst = c.instance.clone();
+    let answered = move || {
+        let local = store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()));
+        local
+    };
+    let (yes_hov, no_hov) = (signal(false), signal(false));
+    let (c1, c2, c3) = (c.clone(), c.clone(), c.clone());
+    let answer = move |c: &crate::store::ConsentNotice, state: &str| {
+        let st = store();
+        st.routine_consented.update(|l| l.push((c.instance.clone(), state.to_owned())));
+        let action = if state == "enabled" { crate::mini_v1::host_api::InstanceAction::Enable } else { crate::mini_v1::host_api::InstanceAction::Delete };
+        let extra = if state == "enabled" { serde_json::json!({"approve": true}) } else { serde_json::json!({}) };
+        st.v1_instance(&c.plugin, &c.routine, &c.instance, action, extra);
+    };
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = answered();
+        if let Some(done) = c1.answered(local.as_deref()) {
+            return text(format!("{} · {done}", c1.name))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1)
+                .into_element();
+        }
+        let (c2, c3) = (c2.clone(), c3.clone());
+        let (yes, no) = (format!("Enable {}", c2.name), format!("Don't enable {}", c3.name));
+        view()
+            .max_w(px(560.0))
+            .gap(px(8.0))
+            .px_3()
+            .py(px(10.0))
+            .rounded(px(12.0))
+            .bg(theme::SUBTLE)
+            .border(px(0.5))
+            .border_color(theme::BORDER_S)
+            .label(format!("Enable {}?", c1.name))
+            .child(text(c1.text.clone()).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        text("Enable")
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT)
+                            .px_3()
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .bg(move || if yes_hov.get() { theme::ACTIVE } else { theme::HOVER })
+                            .on_mouse_enter(move |_: &MouseEvent| yes_hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| yes_hov.set(false))
+                            .label(yes)
+                            .on_press(move || answer(&c2, "enabled")),
+                    )
+                    .child(
+                        text("Not now")
+                            .text_size(px(12.0))
+                            .text_color(move || if no_hov.get() { theme::TEXT } else { theme::MUTED })
+                            .px_3()
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .on_mouse_enter(move |_: &MouseEvent| no_hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| no_hov.set(false))
+                            .label(no)
+                            .on_press(move || answer(&c3, "declined")),
+                    ),
+            )
+            .into_element()
+    }))
 }
 
 /// An item's instruction in a routine's thread: what the routine gave the
