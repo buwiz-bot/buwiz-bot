@@ -403,19 +403,41 @@ pub(crate) fn widget_policy() -> nsh_engine::Policy {
     }
 }
 
-/// MCP apps call the server for their data; allow its HTTP origin on any path.
-/// NSH applies the same grant to WebSockets on that origin. This is derived
-/// from `client::GEN`, with no other capabilities.
+/// The app server's routes an MCP app may call: its tools (`/mcp/call`),
+/// another app or a new chat (`/mcp/open`) and the file picker
+/// (`/attach/pick`), all POST.
+#[cfg(any(target_os = "macos", test))]
+const MCP_APP_POSTS: [&str; 3] = ["/mcp/call", "/mcp/open", "/attach/pick"];
+
+/// What an MCP app may read: generated files and the asset base's images.
+#[cfg(any(target_os = "macos", test))]
+const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
+
+/// MCP apps call the server for their data; allow only the routes they use
+/// on its HTTP origin (`client::GEN`), and no other capabilities. Server
+/// settings, `/data/*`, `/state/*` and the chats stay out of reach. NSH
+/// checks a WebSocket as a GET of the same URL, so only the read prefixes
+/// would pass one; the server has no WebSocket routes.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     let (host, port) = mcp_app_server_host_port()?;
-    let mut grant = nsh_core::access::HttpGrant::default();
-    grant.host = nsh_core::access::HostPattern::new(&host)?;
-    grant.schemes = vec!["http".into()];
-    grant.port = Some(port);
+    let host = nsh_core::access::HostPattern::new(&host)?;
+    let grant = |method: &str| {
+        let mut grant = nsh_core::access::HttpGrant::default();
+        grant.host = host.clone();
+        grant.methods = vec![method.into()];
+        grant.schemes = vec!["http".into()];
+        grant.port = Some(port);
+        grant
+    };
+    let mut posts = grant("POST");
+    posts.paths = MCP_APP_POSTS.iter().map(|p| (*p).to_owned()).collect();
+    let mut gets = grant("GET");
+    gets.path_prefixes = MCP_APP_GETS.iter().map(|p| (*p).to_owned()).collect();
 
     let mut declared = nsh_core::access::Capabilities::default();
-    declared.network.http.push(grant);
+    declared.network.http.push(posts);
+    declared.network.http.push(gets);
     Ok(nsh_engine::Policy {
         declared: Some(declared),
         ..nsh_engine::Policy::default()
@@ -1169,13 +1191,33 @@ export default function R() {
         let policy = super::mini_bundle("mcp:bir/forms", String::new()).policy;
         let access = policy.access();
         assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/call"));
+        assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/open"));
+        assert!(access.allows_http("POST", "http://127.0.0.1:8787/attach/pick"));
+        assert!(access.allows_http("GET", "http://127.0.0.1:8787/file/raw/a/b.pdf"));
         assert!(access.allows_media("http://127.0.0.1:8787/file/raw/x"));
+        assert!(access.allows_media("http://127.0.0.1:8787/asset/generated/assets/x.png"));
+        assert!(access.allows_media("asset:/generated/assets/x.png"));
+        // Only those routes, with their methods.
+        assert!(!access.allows_http("POST", "http://127.0.0.1:8787/mcp/servers"));
+        assert!(!access.allows_http("POST", "http://127.0.0.1:8787/mcp/server/delete"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/data/linear/issues"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/state/x"));
+        assert!(!access.allows_http("POST", "http://127.0.0.1:8787/state/x"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/threads"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/mcp/call"));
+        assert!(!access.allows_http("POST", "http://127.0.0.1:8787/mcp/call/x"));
+        assert!(!access.allows_http("POST", "http://127.0.0.1:8787/file/raw/x"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/file/rawx"));
+        assert!(!access.allows_http("GET", "http://127.0.0.1:8787/asset/x.png"));
+        assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/call?x=1"));
         assert!(!access.allows_http("GET", "https://attacker.example/"));
         assert!(!access.allows_http("GET", "http://127.0.0.1:8788/"));
         assert!(!access.allows_http("GET", "http://localhost:8787/"));
         assert!(!access.allows_http("GET", "https://127.0.0.1:8787/"));
-        // NSH checks WebSockets as HTTP GETs to the same origin.
-        assert!(access.allows_websocket("ws://127.0.0.1:8787/"));
+        // NSH checks WebSockets as HTTP GETs of the same URL.
+        assert!(!access.allows_websocket("ws://127.0.0.1:8787/"));
+        assert!(!access.allows_websocket("ws://127.0.0.1:8787/mcp/call"));
         assert!(!access.allows_websocket("ws://127.0.0.1:8788/"));
         assert!(!access.allows_websocket("wss://attacker.example/"));
         assert!(!access.allows_socket("127.0.0.1", 8787));
@@ -1205,9 +1247,13 @@ export default function R() {
         );
         drop(engine);
 
+        // an MCP app reaches the app server's app routes only, not the chats
         let (engine, rx, seen) = start_widget(super::mini_bundle("mcp:bir/forms", js.clone()));
-        let commands = run_until_text(&engine, &rx, "fetched false []");
-        assert_eq!(*seen.lock().unwrap(), ["http://127.0.0.1:8787/threads"]);
+        let commands = run_until_text(&engine, &rx, "refused false []");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "network requests: {seen:?}"
+        );
         assert!(
             commands.is_empty(),
             "clipboard commands reached the platform: {commands:?}"
