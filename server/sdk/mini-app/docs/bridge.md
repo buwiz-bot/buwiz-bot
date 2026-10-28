@@ -74,7 +74,7 @@ The tool returns the page as an MCP embedded resource:
 
 Make the page **static**: Rox renders it with JavaScript off, no base URL
 and a policy that loads nothing (no network, no files; inline `<style>` and
-`data:` images and fonts only), and it does not follow links or navigate.
+`data:` images, fonts and objects, such as an embedded PDF, only), and it does not follow links or navigate.
 A result without a `text/html` resource rejects `tool_error`; `isError`
 rejects `tool_error` with its first text; a larger page `result_too_large`.
 Rox on other platforms rejects `not_supported`.
