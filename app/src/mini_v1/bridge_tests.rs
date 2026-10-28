@@ -694,3 +694,44 @@ fn app_08_runtime_errors_and_budget_trips_show_the_specs_messages() {
     let shown: Vec<_> = r.iter().filter_map(|(k, m)| load::runtime_message("Forms", *k, m)).collect();
     assert_eq!(shown.first().map(String::as_str), Some("Forms stopped: it ran out of memory."), "{r:?}");
 }
+
+#[test]
+fn con_01_in_the_bridge_only_open_url_and_attach_ask() {
+    // calls, titles, same-plugin opens, the file dialog, copy and storage
+    // never ask; an https URL and an attach ask once each (9.7)
+    let mut o = Open::start_with(
+        FIXTURE,
+        board_perms(),
+        &format!(
+            r#"
+        const out = [];
+        await rox.call("fx_echo", {{ a: 1 }}); out.push("call");
+        await rox.ticket.title("{TICKET}"); out.push("title");
+        await rox.open({{ app: "card", props: {{ ticket: "{TICKET}" }} }}); out.push("app");
+        await rox.pickFile({{}}); out.push("pick");
+        await rox.copy("x"); out.push("copy");
+        await rox.storage.set("k", "v"); out.push("storage");
+        const asked0 = "none";
+        await rox.open({{ url: "https://example.com/x" }}); out.push("url");
+        await rox.attach("item", "{TICKET}"); out.push("attach");
+        return "done " + out.join(",") + " " + asked0;
+        "#
+        ),
+        Limits::default(),
+        |ui| {
+            ui.yes.store(true, Ordering::SeqCst);
+            ui.chat.store(true, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(o.wait("done"), "done call,title,app,pick,copy,storage,url,attach none");
+    let asked = o.ui.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked,
+        [
+            Consent::OpenUrl { url: "https://example.com/x".to_owned(), app: "Fixture Board".to_owned() },
+            Consent::Attach { title: "Item One".to_owned(), app: "Fixture Board".to_owned() },
+        ]
+    );
+    // the file dialog was the pick's only question
+    assert_eq!(o.ui.picks.lock().unwrap().len(), 1);
+}
