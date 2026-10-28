@@ -45,7 +45,7 @@ pub(crate) enum UserFormReply {
 /// One request: `(status, body)`, the body as JSON or, when it is not
 /// JSON, as its text. `None` when the server could not be reached.
 async fn call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
-    let url = format!("{}{path}", client::GEN);
+    let url = format!("{}{path}", client::backend());
     let mut r = HttpRequest::new(method, url);
     if let Some(body) = body {
         r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));

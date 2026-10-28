@@ -4025,7 +4025,7 @@ impl Store {
                     display_name: s(r, "displayName"),
                     icon: {
                         let i = s(r, "icon");
-                        if i.is_empty() { i } else { format!("{}{}", client::GEN, i) }
+                        if i.is_empty() { i } else { format!("{}{}", client::backend(), i) }
                     },
                     cats: list(r, "cats").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect(),
                     publisher: s(r, "publisher"),
@@ -4110,7 +4110,7 @@ impl Store {
                 display_name: s(&v, "displayName"),
                 icon: {
                     let i = s(&v, "icon");
-                    if i.is_empty() { i } else { format!("{}{}", client::GEN, i) }
+                    if i.is_empty() { i } else { format!("{}{}", client::backend(), i) }
                 },
                 availability: s(&v, "availability"),
                 source: s(&v, "source"),
@@ -5309,7 +5309,7 @@ impl Store {
             .map(|p| crate::client::urlenc(p))
             .collect::<Vec<_>>()
             .join("/");
-        format!("{}/file/raw/{enc}", crate::client::GEN)
+        format!("{}/file/raw/{enc}", crate::client::backend())
     }
 
     /// `toLight(f)` — a reply file as a lightbox item.
@@ -5422,7 +5422,7 @@ impl Store {
         spawn(async move {
             let url = format!(
                 "{}/file/render?path={}",
-                crate::client::GEN,
+                crate::client::backend(),
                 crate::client::urlenc(&path)
             );
             let r = match client::get(&url).await {
@@ -6247,7 +6247,7 @@ impl Store {
             "image" => self.open_lightbox(
                 vec![LightItem {
                     kind: "image".to_owned(),
-                    uri: format!("{}/asset/generated/assets/{}", client::GEN, a.file),
+                    uri: format!("{}/asset/generated/assets/{}", client::backend(), a.file),
                     name: a.title.clone(),
                     path: String::new(),
                     poster: String::new(),

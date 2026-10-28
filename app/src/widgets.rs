@@ -182,7 +182,7 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                                 store().open_lightbox(
                                     vec![crate::store::LightItem {
                                         kind: "image".to_owned(),
-                                        uri: format!("{}/asset/generated/assets/{file}", crate::client::GEN),
+                                        uri: format!("{}/asset/generated/assets/{file}", crate::client::backend()),
                                         name: if title.is_empty() { file.clone() } else { title.clone() },
                                         path: String::new(),
                                         poster: String::new(),

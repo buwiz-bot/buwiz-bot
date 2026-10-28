@@ -2,19 +2,80 @@
 //! `127.0.0.1:8787`): the same endpoints the TSX app calls — `/chat`,
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
 //! `/state/:app`, `/artifacts`, `/mcp/servers`, `/skills`.
+//!
+//! The address comes from `ROX_BACKEND`, read once, so a test Rox can talk
+//! to a test broker on another port. The broker's host-internal routes
+//! (`/v1/host/*`, the mini app protocol's) also need the token the broker
+//! writes at start ([`host_token`]): only a process that can read it may
+//! open sessions.
 
 use nsh_core::prelude::*;
 
-/// The generation server the TSX app binds to.
-pub const GEN: &str = "http://127.0.0.1:8787";
+/// The app server when `ROX_BACKEND` names none.
+pub const DEFAULT_GEN: &str = "http://127.0.0.1:8787";
+
+/// The generation server the TSX app binds to: `ROX_BACKEND`, read once,
+/// else [`DEFAULT_GEN`].
+pub fn backend() -> &'static str {
+    static GEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    GEN.get_or_init(|| backend_from(std::env::var("ROX_BACKEND").ok().as_deref()))
+}
+
+/// `ROX_BACKEND`'s value as the server's origin: an `http(s)://` URL
+/// without its trailing `/`. Anything else is a typo, and talking to the
+/// default instead would reach the live server: logged, and the default
+/// is used only when the variable is unset or empty.
+pub(crate) fn backend_from(env: Option<&str>) -> String {
+    let Some(v) = env.map(str::trim).filter(|v| !v.is_empty()) else {
+        return DEFAULT_GEN.to_owned();
+    };
+    let v = v.trim_end_matches('/');
+    let rest = v.strip_prefix("http://").or_else(|| v.strip_prefix("https://")).unwrap_or_default();
+    if rest.is_empty() || rest.contains(['/', '?', '#', ' ']) {
+        log::error!("ROX_BACKEND {v:?} is not an http origin; using an unreachable one");
+        return "http://127.0.0.1:0".to_owned();
+    }
+    v.to_owned()
+}
+
+/// Where the broker keeps the host token: `ROX_HOST_TOKEN_FILE`, else
+/// `~/Library/Application Support/Grok Shell/host-token`.
+pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathBuf {
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(p) => p.into(),
+        None => std::path::Path::new(home).join("Library/Application Support/Grok Shell/host-token"),
+    }
+}
+
+/// The broker's host token (`X-Rox-Host`), read at each request: the
+/// broker makes a new one when it restarts. `None` when there is none.
+/// Never logged.
+pub(crate) fn host_token() -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
+    let token = std::fs::read_to_string(path).ok()?;
+    Some(token.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
+/// Whether `path` is one of the broker's host-internal routes, which carry
+/// the host token.
+pub(crate) fn is_host_route(path: &str) -> bool {
+    path.starts_with("/v1/host/")
+}
 
 fn req(method: &str, path: &str) -> HttpRequest {
     let url = if path.starts_with("http") {
         path.to_owned()
     } else {
-        format!("{GEN}{path}")
+        format!("{}{path}", backend())
     };
-    HttpRequest::new(method, url)
+    let mut r = HttpRequest::new(method, url);
+    if is_host_route(path)
+        && let Some(token) = host_token()
+    {
+        r.headers.push(("X-Rox-Host".to_owned(), token));
+    }
+    r
 }
 
 /// GET `path`, parsed as JSON. `None` on any transport or parse error —
@@ -106,4 +167,37 @@ pub fn urldec(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_backend_defaults_to_the_live_port_and_takes_rox_backend() {
+        assert_eq!(super::backend_from(None), "http://127.0.0.1:8787");
+        assert_eq!(super::backend_from(Some("")), "http://127.0.0.1:8787");
+        assert_eq!(super::backend_from(Some("  ")), "http://127.0.0.1:8787");
+        assert_eq!(super::backend_from(Some("http://127.0.0.1:8797")), "http://127.0.0.1:8797");
+        assert_eq!(super::backend_from(Some("http://127.0.0.1:8797/")), "http://127.0.0.1:8797");
+        assert_eq!(super::backend_from(Some("https://broker.local")), "https://broker.local");
+        // a typo never falls back to the live server
+        for bad in ["127.0.0.1:8797", "ftp://x", "http://", "http://h/x", "http://h?x"] {
+            assert_eq!(super::backend_from(Some(bad)), "http://127.0.0.1:0", "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_host_token_file_defaults_to_grok_shells_data_dir() {
+        assert_eq!(
+            super::host_token_path(None, "/Users/u"),
+            std::path::PathBuf::from("/Users/u/Library/Application Support/Grok Shell/host-token")
+        );
+        assert_eq!(super::host_token_path(Some(" "), "/Users/u"), super::host_token_path(None, "/Users/u"));
+        assert_eq!(
+            super::host_token_path(Some("/tmp/x/host-token"), "/Users/u"),
+            std::path::PathBuf::from("/tmp/x/host-token")
+        );
+        assert!(super::is_host_route("/v1/host/plugins"));
+        assert!(!super::is_host_route("/v1/hostx"));
+        assert!(!super::is_host_route("/mcp/call"));
+    }
 }
