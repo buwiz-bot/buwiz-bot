@@ -13,6 +13,13 @@ ra-jit-live = { path = "../blaze/crates/ra-jit-live" }
 env_logger = "0.11"
 log = "0.4"
 serde_json = "1"
+serde = "1"
+# Mini App Protocol v1: session keys and signed calls (JCS + ed25519),
+# fingerprints, base64url. Versions already in the lockfile.
+ed25519-dalek = "2.2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
@@ -24,6 +31,9 @@ nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-featur
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSFont"] }
 # Saved site logins' secrets: Keychain generic passwords (`vault/keychain.rs`).
 security-framework = "3.7"
+# A v1 mini app's bridge answers from the main thread (file dialog,
+# pasteboard, the full-screen stack).
+dispatch2 = "0.3"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 nsh-platform-ios = { path = "../nsh/crates/nsh-platform-ios", default-features = false }
