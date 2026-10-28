@@ -124,9 +124,6 @@ const server = createServer(async (req, res) => {
   res.end("not found");
 });
 
-// Rox's host token for /v1/host/* (v1/routes.mjs), fresh each start
-initHostToken();
-
 persist(); // seed the DB on first boot / after a JSON→SQLite migration
 
 if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
@@ -244,6 +241,10 @@ writeIndex();
 })().catch(() => {});
 
 server.listen(PORT, "127.0.0.1", () => {
+  // Rox's host token for /v1/host/* (v1/routes.mjs), fresh each start, and
+  // only once the port is ours: a second server that fails to bind must not
+  // replace the token of the one that runs
+  initHostToken();
   console.log(`app-server on http://127.0.0.1:${PORT}`);
   console.log(
     MOCK ||
