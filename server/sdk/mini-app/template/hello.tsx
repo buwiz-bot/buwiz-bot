@@ -1,8 +1,7 @@
 // The template's app: greets the friend in rox.props.ticket, shows where
 // it is mounted. Imports only nsh, nsh/base and rox (spec 6.3); data comes
 // from rox.call alone (no fetch, no network).
-import { signal } from "nsh";
-import { Text, View } from "nsh/base";
+import { signal, Text, View } from "nsh";
 import { rox } from "rox";
 
 export default function Hello() {

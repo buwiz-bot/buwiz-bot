@@ -1,5 +1,5 @@
 // The fixture's card: opens full screen or inline (480×320).
-import { Text, View } from "nsh/base";
+import { Text, View } from "nsh";
 import { rox } from "rox";
 
 export default function Card() {

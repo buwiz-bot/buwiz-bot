@@ -1,6 +1,5 @@
 // The fixture's full-screen app: every bridge method the manifest grants.
-import { signal } from "nsh";
-import { Text, View } from "nsh/base";
+import { signal, Text, View } from "nsh";
 import { rox } from "rox";
 
 export default function Board() {

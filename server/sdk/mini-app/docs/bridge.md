@@ -33,8 +33,7 @@ with `tool_error` and the first text content (at most 500 chars) as
 `message`, so put the user-facing sentence first.
 
 ```tsx
-import { signal } from "nsh";
-import { Text } from "nsh/base";
+import { signal, Text } from "nsh";
 import { rox } from "rox";
 
 export default function Status() {
