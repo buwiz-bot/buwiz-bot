@@ -1401,9 +1401,10 @@ export function markAppUsed(thread, serverId) {
 async function mcpSurface(thread, job) {
   const bot = threadBot(thread?.id);
 
-  const rows = db
-    .prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)")
-    .all(bot?.id || "");
+  // a routine's turn sees its own surface only (5.9): no v0 servers
+  const rows = job?.v1Surface
+    ? []
+    : db.prepare("SELECT * FROM mcp_servers WHERE enabled=1 AND (bot IS NULL OR bot=?)").all(bot?.id || "");
 
   const loaded = loadedFor(thread);
   const defs = [];
@@ -1488,10 +1489,15 @@ async function toolAppToolsLoad(thread, input) {
 }
 
 export async function toolList(thread, job) {
+  const { defs: mcp, deferred } = await mcpSurface(thread, job);
+
+  // A v1 routine's turn gets exactly its surface (5.9): the plugin's own
+  // tools and the reads the user approved. Hundreds of other tools only
+  // led the model away from the routine's prompt (live, 2026-10-29).
+  if (job?.v1Surface) return [...mcp, ...(deferred.length ? [appToolsLoad(deferred)] : [])];
   // The bundled BetterOffice MCP server contributes its office_* surface once
   // connected (office_create stays ours — its version mounts the file card).
   const office = officeMcpTools();
-  const { defs: mcp, deferred } = await mcpSurface(thread, job);
   const own = botOfThread(thread) ? BOT_TOOLS : [];
   const load = deferred.length ? [appToolsLoad(deferred)] : [];
 

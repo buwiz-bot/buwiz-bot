@@ -11,6 +11,9 @@ R="$1"
 mkdir -p "$R/server"
 # node runtime — the one on this machine for local builds; CI substitutes
 # the official tarball's binary per platform.
+# rm first: copying over the node a running server mapped keeps the old
+# file's code-signature cache, and macOS kills every later start (SIGKILL)
+rm -f "$R/server/node"
 cp "$(node -p 'process.execPath')" "$R/server/node"
 # Server as a single file: @anthropic-ai/sdk and our own modules inlined;
 # node:* builtins stay external. Dynamic ./office and widget imports are

@@ -49,6 +49,13 @@ test("AGT-01 tool names are <short>_<tool> and reach the model unchanged, prefix
   assert.equal(JSON.parse(r.content).caller.origin, "agent", "8.4: origin agent");
 });
 
+test("AGT-08 a routine's turn sees only its surface: its plugin's tools, no built-ins or other servers", async () => {
+  const everything = await names();
+  const surface = (await toolList(null, { v1Surface: { plugin: FX, routine: "r", reads: [], writes: [] } })).map((t) => t.name);
+  assert.ok(surface.length > 0 && surface.length < everything.length, `${surface.length} of ${everything.length}`);
+  assert.ok(surface.every((n) => n.startsWith("fx_")), surface.join(", "));
+});
+
 test("RSV-06 reserved rox.* names are absent from the agent tool list", async () => {
   assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "rox.provision"), "the plugin lists them");
   assert.ok(!(await names()).some((n) => n.startsWith("rox.")));
