@@ -189,6 +189,9 @@ try { db.exec("ALTER TABLE mcp_servers ADD COLUMN account TEXT"); } catch {}
 // client registration) and the transport ("sse" for legacy SSE servers).
 for (const col of ["headers TEXT", "oauth_client TEXT", "transport TEXT"])
   try { db.exec(`ALTER TABLE mcp_servers ADD COLUMN ${col}`); } catch {}
+// 1 on a server the agent installed (mcp_install) that the user has not yet
+// switched on: it stays off and unspawned, and the agent can't enable it.
+try { db.exec("ALTER TABLE mcp_servers ADD COLUMN agent_pending INTEGER"); } catch {}
 // Per-plugin setup values (the catalog's `fields`), keyed by catalog key;
 // substituted into ${KEY} references in the plugin's MCP config.
 try { db.exec("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)"); } catch {}

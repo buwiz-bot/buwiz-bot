@@ -301,7 +301,7 @@ export const TOOLS = [
   },
   {
     name: "mcp_install",
-    description: "Install a stdio MCP server and connect it — its tools become callable from your next step. Use when the user wants an external capability you lack (filesystem, GitHub, Slack, a database, …). command is the executable (npx, uvx, node, python, …), args its arguments, env the KEY=VALUE pairs it needs (ask the user for any secrets; never invent them). scope \"bot\" binds it to this bot only; default shares it with every bot.",
+    description: "Add a stdio MCP server, switched off: it is not started until the user reviews and enables it in Plugins, and only then do its tools become callable. Use when the user wants an external capability you lack (filesystem, GitHub, Slack, a database, …), then tell the user to enable it. command is the executable (npx, uvx, node, python, …), args its arguments, env the KEY=VALUE pairs it needs (ask the user for any secrets; never invent them). scope \"bot\" binds it to this bot only; default shares it with every bot.",
     input_schema: {
       type: "object",
       properties: {
@@ -324,7 +324,7 @@ export const TOOLS = [
   },
   {
     name: "mcp_enable",
-    description: "Re-enable a disabled MCP server (id or name) — its tools return next step.",
+    description: "Re-enable a disabled MCP server (id or name) — its tools return next step. A server you added with mcp_install can only be enabled by the user, in Plugins.",
     input_schema: {
       type: "object",
       properties: { id: { type: "string" }, name: { type: "string" } },
@@ -426,7 +426,7 @@ Artifacts are versioned: every app you mount keeps its versions under one name (
 
 Compose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.
 
-Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. Apps with many tools aren't listed until loaded: app_tools_load names them — load the one a request needs, then call its tools. When the user wants a capability you don't have, install it yourself with mcp_install (a stdio MCP server command — npx/uvx/node/…); it connects immediately and its mcp_* tools are callable from your next step. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
+Connected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. Apps with many tools aren't listed until loaded: app_tools_load names them — load the one a request needs, then call its tools. When the user wants a capability you don't have, add it with mcp_install (a stdio MCP server command — npx/uvx/node/…); it is added switched off, and its mcp_* tools appear only after the user enables it in Plugins, so tell them to. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.
 Office files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.
 Word, Excel or PowerPoint files in Google Drive (.docx/.xlsx/.pptx — not Google Docs, whose own docs tools edit them): get_drive_file_download_url saves the file under drive/ in the office workspace and returns its absolute path; office_open that path, find and stage the change, office_accept it, then office_export it to a new name in the same folder; finally update_drive_file with the file's id and file_path = the exported file's absolute path (the download's folder + the exported name). That replaces the Drive file's content in place — same id, link and sharing — so tell the user it is saved, not only that a copy exists.
 
@@ -1072,6 +1072,7 @@ export async function execTool(job, thread, block) {
         .prepare("SELECT * FROM mcp_servers WHERE id=?")
         .get(mm[0]);
       if (!row) return { content: `mcp server ${mm[0]} is not configured`, is_error: true };
+      if (!row.enabled) return { content: `mcp server ${mm[0]} is switched off; the user enables it in Plugins`, is_error: true };
       setJob(job, ...toolActivity(block.name));
       // the thread's bot actually used this server → it joins its integrations
       try { recordToolUse(thread, row.id); } catch {}
@@ -1257,8 +1258,10 @@ export async function toolList(thread) {
 }
 
 // Shared by POST /mcp/servers and the mcp_install agent tool. Omitted fields
-// keep their stored values so a partial call edits an existing row.
-export async function mcpUpsertServer({ id, name, command, args, env, bot, url, headers, oauth_client, transport, probe = true } = {}) {
+// keep their stored values so a partial call edits an existing row. byAgent
+// (mcp_install) creates the row switched off and waiting for the user
+// (agent_pending); a switched-off row is never spawned here.
+export async function mcpUpsertServer({ id, name, command, args, env, bot, url, headers, oauth_client, transport, probe = true, byAgent = false } = {}) {
   const cur = id
     ? db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id))
     : null;
@@ -1304,14 +1307,15 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
   // REPLACE rewrites the whole row — carry the OAuth state, account label
   // and per-tool switches over so an edit doesn't sign the account out.
   db.prepare(
-    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at,url,headers,oauth_client,transport,auth,account,disabled_tools) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),1),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?),?,?,?,?,?,?,?)",
+    "INSERT OR REPLACE INTO mcp_servers(id,name,command,args,env,enabled,bot,created_at,url,headers,oauth_client,transport,auth,account,disabled_tools,agent_pending) VALUES(?,?,?,?,?,COALESCE((SELECT enabled FROM mcp_servers WHERE id=?),?),?,COALESCE((SELECT created_at FROM mcp_servers WHERE id=?),?),?,?,?,?,?,?,?,?)",
   ).run(
-    sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, botId, sid, Date.now(), finalUrl || null,
+    sid, finalName.slice(0, 60), finalCommand, JSON.stringify(argList), JSON.stringify(envObj), sid, byAgent ? 0 : 1, botId, sid, Date.now(), finalUrl || null,
     keep(headers, "headers"), keep(oauth_client, "oauth_client"), keep(transport, "transport"),
-    cur?.auth ?? null, cur?.account ?? null, cur?.disabled_tools ?? null,
+    cur?.auth ?? null, cur?.account ?? null, cur?.disabled_tools ?? null, cur ? cur.agent_pending ?? null : byAgent ? 1 : null,
   );
   mcpInvalidate(sid); // config changed → drop any cached client
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(sid);
+  if (!row.enabled) return { id: sid, status: "off", tools: 0, toolNames: [], err: null };
   if (!probe) return { id: sid, status: "idle", tools: 0, toolNames: [], err: null };
   const rec = await mcpEnsure(row); // probe now so the reply carries real status
   const st = mcpStatus(sid);
@@ -1359,10 +1363,12 @@ export async function toolMcpAdmin(thread, tool, input) {
     const line = (r) => {
       const s = mcpStatus(r.id);
       const envKeys = Object.keys(JSON.parse(r.env || "{}"));
-      return `${r.id} — ${r.name} · ${r.enabled ? s.status + ` (${s.tools} tools)` : "disabled"} · scope: ${r.bot ? `bot ${r.bot}` : "all bots"}${envKeys.length ? ` · env: ${envKeys.join(",")}` : ""}${s.err ? ` · err: ${s.err}` : ""}`;
+      return `${r.id} — ${r.name} · ${r.enabled ? s.status + ` (${s.tools} tools)` : r.agent_pending ? "off, waiting for the user to enable it in Plugins" : "disabled"} · scope: ${r.bot ? `bot ${r.bot}` : "all bots"}${envKeys.length ? ` · env: ${envKeys.join(",")}` : ""}${s.err ? ` · err: ${s.err}` : ""}`;
     };
     return { content: rows.map(line).join("\n") };
   }
+  // A server the agent adds runs a command of its choosing, so it is stored
+  // switched off and never spawned until the user enables it in Plugins.
   if (tool === "mcp_install") {
     const bot = store.bots.find((b) => b.threadId === thread?.id);
     const r = await mcpUpsertServer({
@@ -1371,10 +1377,9 @@ export async function toolMcpAdmin(thread, tool, input) {
       args: input.args,
       env: input.env,
       bot: input.scope === "bot" && bot ? bot.id : null,
+      byAgent: true,
     });
-    if (r.status !== "connected")
-      return { content: `mcp install of "${input.name}" failed: ${r.err || "could not connect"} — check the command and args`, is_error: true };
-    return { content: `installed "${input.name}" as server ${r.id} — connected, ${r.tools} tool(s) now callable: ${r.toolNames.join(", ") || "none discovered"}` };
+    return { content: `added "${input.name}" as server ${r.id}, switched off: it has not been started. The user must review and enable it in Plugins before its tools exist; tell them so. You cannot enable it yourself.` };
   }
   const row = mcpServerRow(input);
   if (!row)
@@ -1385,6 +1390,8 @@ export async function toolMcpAdmin(thread, tool, input) {
     return { content: `removed MCP server ${row.id} (${row.name}) — its tools are gone` };
   }
   const enabled = tool === "mcp_enable";
+  if (enabled && row.agent_pending)
+    return { content: `${row.id} (${row.name}) waits for the user to enable it in Plugins; only they can switch on a server you added`, is_error: true };
   db.prepare("UPDATE mcp_servers SET enabled=? WHERE id=?").run(enabled ? 1 : 0, row.id);
   mcpInvalidate(row.id);
   return { content: `${row.id} (${row.name}) ${enabled ? "enabled — its tools return next step" : "disabled — its tools are withheld"}` };
