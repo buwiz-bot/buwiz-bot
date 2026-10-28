@@ -109,9 +109,9 @@ status = "local"
 note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"
 
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
-# stack on hexuria/nsh: Linux/Android (#2) <- Windows (#3) <- web (#4).
-# Parked until its reviews and verification are done; then it becomes local
-# and replaces the macOS-only host above if that migration is approved.
+# stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
+# verified, carried in `rox`; kept in the fork, not upstreamed. The macOS-only
+# host above moves onto it later (decided: after the stack settled).
 [[topic]]
 branch = "devin/gpui-agent-adapter"
 kind = "feature"
