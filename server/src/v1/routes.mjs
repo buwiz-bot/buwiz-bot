@@ -13,7 +13,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "../config.mjs";
-import { plugins, sessions } from "./broker.mjs";
+import { plugins, routines, sessions } from "./broker.mjs";
 import { errorBody } from "./errors.mjs";
 import { isObject } from "./jcs.mjs";
 
@@ -93,6 +93,11 @@ const POSTS = {
   "/v1/host/call": (b) => sessions.call(b),
   "/v1/host/tickets/title": (b) => sessions.ticketTitle(b),
   "/v1/host/resolve": (b) => sessions.resolve(b),
+  // v1 routines (5.9): the user's one-time approval of what one reads, and
+  // the switch that runs it in a chat
+  "/v1/host/routines/approve": (b) => routines.approve(b),
+  "/v1/host/routines/enable": (b) => routines.enable(b),
+  "/v1/host/routines/disable": (b) => routines.disable(b),
 };
 
 const ACTIONS = {

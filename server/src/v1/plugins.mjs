@@ -87,6 +87,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
   const events = new EventEmitter();
   const runtimes = new Map(); // id → runtime
   const closers = []; // (id) → Promise: sessions.mjs ends a plugin's opens
+  let routineInfo = () => ({}); // routines.mjs: a routine's user state
 
   events.setMaxListeners(0);
 
@@ -731,7 +732,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       apps: (m.apps || []).map((a) => ({ ...a, perms_sha256: permsDigest(a.permissions) })),
       commands: m.commands || [],
       scopes: m.scopes || [],
-      routines: (m.routines || []).map((r) => ({ ...r, reads_status: readsStatus(r) })),
+      routines: (m.routines || []).map((r) => ({ ...r, reads_status: readsStatus(r), ...routineInfo(row.id, r) })),
       tools: tools.map((t) => ({ name: t.name, description: t.description || "", disabled: off.has(t.name), readOnly: (t.annotations?.readOnlyHint ?? t.readOnly) === true })),
     };
   }
@@ -771,6 +772,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     events, runtime, rowOf, rows, manifestOf, disabledOf, inspect, install, enable, disable, uninstall, setTool, spawn,
     callTool, callReserved, readResource, fail, describe, startAll, stopAll, readsStatus, trust, timeouts: T, clock,
     onClose: (f) => closers.push(f),
+    useRoutineInfo: (f) => (routineInfo = f),
     list: () => rows().map(describe),
   };
 }

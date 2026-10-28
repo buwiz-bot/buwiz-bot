@@ -167,6 +167,31 @@ test("events: disable and enable stream plugin state and generation", async () =
   assert.equal((await host("POST", "/v1/host/plugins/inspect", { url: "http://127.0.0.1:1/mcp", command: "x" })).json.code, "not_supported");
 });
 
+test("RTN-09 POST /v1/host/routines/approve stores the approval; the plugin list shows it", async () => {
+  const body = JSON.stringify({ plugin: FX, routine: "fx-digest" });
+
+  assert.equal((await req("POST", "/v1/host/routines/approve", { headers: { "Content-Type": "application/json" }, body })).status, 401, "host token");
+  const digest = async () => (await host("GET", "/v1/host/plugins")).json.plugins.find((p) => p.id === FX).routines.find((r) => r.id === "fx-digest");
+  const was = await digest();
+
+  assert.deepEqual([was.approved, was.enabled, was.available], [false, false, false]);
+  const r = await host("POST", "/v1/host/routines/approve", { plugin: FX, routine: "fx-digest" });
+
+  assert.equal(r.status, 200);
+  assert.equal(r.json.routine.approved, true);
+  const now = await digest();
+
+  assert.equal(now.approved, true);
+  assert.equal(now.available, true);
+  assert.deepEqual(now.reads_status.map((x) => x.allowed), [true]);
+  const bad = await host("POST", "/v1/host/routines/enable", { plugin: FX, routine: "fx-digest", thread: "no-such-chat" });
+
+  assert.deepEqual([bad.status, bad.json.code], [400, "invalid_args"]);
+  const unknown = await host("POST", "/v1/host/routines/approve", { plugin: FX, routine: "nope" });
+
+  assert.deepEqual([unknown.status, unknown.json.code], [404, "not_found"]);
+});
+
 test("uninstall over HTTP leaves nothing behind", async () => {
   const seed = readFileSync(join(b.keysDir, `${FX}.key`), "utf8").trim();
 
