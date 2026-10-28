@@ -230,6 +230,7 @@ const LIMIT_CASES = [
   ["props schema maxLength", LIMITS.schemaMaxLength, (m, n) => (m.apps[0].props.properties.ticket.maxLength = n)],
   ["inline width", LIMITS.inlineWidth[1], (m, n) => (m.apps[1].inline.width = n)],
   ["inline height", LIMITS.inlineHeight[1], (m, n) => (m.apps[1].inline.height = n)],
+  ["inline max_height", LIMITS.inlineHeight[1], (m, n) => (m.apps[1].inline.max_height = n)],
   ["routine every_s", LIMITS.everyS[1], (m, n) => (m.routines[0].every_s = n)],
 ];
 
@@ -238,6 +239,7 @@ const LOWER_CASES = [
   ["short chars", 2, (m, n) => reshort(m, at(n, "f"))],
   ["inline width", LIMITS.inlineWidth[0], (m, n) => (m.apps[1].inline.width = n, m.apps[1].inline.min_width = Math.min(m.apps[1].inline.min_width, n))],
   ["inline height", LIMITS.inlineHeight[0], (m, n) => (m.apps[1].inline.height = n)],
+  ["inline min_height", LIMITS.inlineHeight[0], (m, n) => (m.apps[1].inline.min_height = n)],
   ["routine every_s", LIMITS.everyS[0], (m, n) => (m.routines[0].every_s = n)],
   ["title", 1, (m, n) => (m.title = at(n))],
 ];
@@ -295,6 +297,15 @@ test("manifest: a props schema outside the subset and non-integer numbers are re
   refused((m) => (m.apps[0].permissions.attach = ["note"]), "manifest_invalid", /attach: true/);
   refused((m) => (m.apps[0].permissions.open.apps = ["elsewhere"]), "manifest_invalid");
   refused((m) => (m.apps[0].permissions.open.external = ["http://example.com"]), "manifest_invalid");
+});
+
+test("manifest: inline min_height and max_height bound rox.fit around the declared height", () => {
+  ok((m) => Object.assign(m.apps[1].inline, { min_height: 120, max_height: 640 }));
+  // the declared height (the first frame) is within the range
+  ok((m) => Object.assign(m.apps[1].inline, { min_height: m.apps[1].inline.height, max_height: m.apps[1].inline.height }));
+  refused((m) => (m.apps[1].inline.min_height = m.apps[1].inline.height + 1), "manifest_invalid", /min_height/);
+  refused((m) => (m.apps[1].inline.max_height = m.apps[1].inline.height - 1), "manifest_invalid", /max_height/);
+  assert.throws(() => signed((m) => (m.apps[1].inline.min_height = 120.5)), /integers only/);
 });
 
 test("MAN-10 a tool name that does not start with <short>_ is refused", () => {

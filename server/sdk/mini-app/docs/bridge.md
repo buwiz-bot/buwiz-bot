@@ -17,6 +17,7 @@ app is shared between manifests: `if (rox.copy) …`.
 | `rox.props` | always | The open's props, validated against `apps[].props`; read-only | | 6.6 |
 | `rox.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
 | `rox.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
+| `rox.fit(height)` | always | Inline: Rox sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
 | `rox.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
 | `rox.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
 | `rox.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
@@ -83,6 +84,39 @@ Rox on other platforms rejects `not_supported`.
 if (rox.preview) await rox.preview({ tool: "acme_print_page", args: { ticket: rox.props.ticket } });
 ```
 
+## Inline cards that fit their content: `rox.fit`
+
+An inline app's card starts at `inline.height` and then takes whatever height
+the app reports with `rox.fit(height)`, clamped to `inline.min_height` ..
+`inline.max_height` ([manifest](manifest.md); default 120 .. 640). Report
+what the content needs, not the frame you were given (an app that reports
+its frame never grows), and report again when it changes: a status line, an
+error message or a button that appears should grow the card, not scroll it.
+Keep a `Scroll` only for content that can outgrow `max_height` (a list).
+
+```tsx
+import { View, Scroll } from "nsh";
+import { rox } from "rox";
+
+let sent = 0;
+const fit = (e: any) => {
+  const h = Math.ceil(e.bounds.size.height);
+  if (Math.abs(h - sent) >= 1 && rox.fit) rox.fit((sent = h));
+};
+
+export default function Card() {
+  // the content's own height: this view is not stretched to the frame
+  return <View class="p-3 gap-2" onLayout={fit}>{/* … */}</View>;
+}
+```
+
+A body that scrolls past `max_height` reports the column's height with the
+body's full height in place of the part the scroll shows (BIR's card kit
+does this). Rox ignores changes under 2 points and sends at most 8 heights a
+second per open, the last always landing; `rox.fit` needs no permission
+(it sizes only your own frame) and does nothing full screen. Check for it
+(`rox.fit &&`) if the app may run on an older Rox.
+
 ## What your tool receives
 
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
@@ -140,6 +174,7 @@ Rox renders your app in Rox's own light or dark setting, not the OS's, and switc
 | `rox.preview` document | `permissions.preview.max_bytes`, at most 8 MiB |
 | Calls in flight per open | 8 (the ninth waits) |
 | New calls per second per open | 20 (more: `rate_limited`) |
+| `rox.fit` heights per second per open | 8 (the last waits for a slot; under 2 points ignored) |
 | Bridge call timeout | 30 s (host), 120 s (broker to plugin) |
 | Resolve timeout | 10 s |
 | `rox.provision`, `rox.session.open`, `rox.uninstall` | 5 s each |
