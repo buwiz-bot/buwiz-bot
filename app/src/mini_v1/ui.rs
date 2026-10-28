@@ -160,8 +160,7 @@ fn change_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
     if let Err(e) = r.save(&dir) {
         log::warn!("mini v1: records not saved: {e}");
     }
-    #[cfg(target_os = "macos")]
-    super::native::on_main(move || store().v1.records.set(r));
+    super::to_store(move |st| st.v1.records.set(r));
     out
 }
 
@@ -182,7 +181,7 @@ impl super::native::Chat for OpenChat {
         let (token, title) = (token.to_owned(), title.to_owned());
         let added = change_records(|r| r.attach(&thread, &token, &title, &entry));
         if added {
-            super::native::on_main(move || crate::toast::show(format!("Attached {title} to this chat")));
+            super::to_store(move |_| crate::toast::show(format!("Attached {title} to this chat")));
         }
         added
     }
@@ -196,15 +195,17 @@ impl Store {
         #[cfg(target_os = "macos")]
         {
             super::native::set_consent(Arc::new(|ask: super::bridge::Consent, answer: Answer| {
-                super::native::on_main(move || store().v1_consent(ask, answer));
+                super::to_store(move |st| st.v1_consent(ask, answer));
             }));
             super::native::set_chat(Arc::new(OpenChat));
             super::session::set_event_listener(Arc::new(|v: &Value| {
                 let v = v.clone();
-                super::native::on_main(move || store().v1_plugin_event(&v));
+                super::to_store(move |st| st.v1_plugin_event(&v));
             }));
             super::session::listen_for_generations();
         }
+        // work from the main thread and the bridge reaches the store here
+        self.in_store(|| set_interval(std::time::Duration::from_millis(40), move || super::run_store_jobs(self)));
         self.in_store(|| {
             effect(move || {
                 let id = self.active_id.get();
@@ -533,6 +534,8 @@ impl Store {
         }
         let thread = self.active_id.get_untracked();
         let attached: Vec<Value> = self.v1.records.with_untracked(|r| r.model_tokens(&thread, &entries));
+        // the completion popup closes with the send (a late answer is dropped)
+        crate::slash::close();
         Owner::detached().run(|| {
             spawn(async move {
                 let entries2 = entries.clone();
@@ -571,6 +574,7 @@ impl Store {
                         }
                     }
                 });
+                crate::slash::close();
                 // the person typed on meanwhile: their new draft stays
                 if self.draft.get_untracked().trim() != text.trim() {
                     return;
@@ -742,6 +746,7 @@ impl Store {
             return text.to_owned();
         }
         let titles = self.v1.titles.get();
+        self.v1.entries.with(|_| ());
         let mut out = String::with_capacity(text.len());
         let mut at = 0;
         for t in toks {
@@ -766,13 +771,31 @@ impl Store {
         out
     }
 
+    /// `text` for a title (a chat's name, the window): each canonical token
+    /// as its ticket's title, or `@short:scope` until that is known, never
+    /// the ticket. Tracked: titles fill in as they arrive.
+    pub fn v1_plain(&'static self, text: &str) -> String {
+        if !text.contains("tkt_") {
+            return text.to_owned();
+        }
+        let titles = self.v1.titles.get();
+        // again once the plugins are listed: their titles can be asked then
+        self.v1.entries.with(|_| ());
+        let (out, missing) = tokens::plain(text, &|t| titles.get(t).cloned());
+        for token in missing {
+            self.v1_title(&token);
+        }
+        out
+    }
+
     /// Asks once for canonical `token`'s title (7.4) and caches it.
     fn v1_title(&'static self, token: &str) {
+        let Some((short, _, ticket)) = tokens::canonical(token) else { return };
+        // asked once the plugin is listed (a title may need the list first)
+        let Some(p) = self.v1.by_short(short) else { return };
         if !self.v1.asked.borrow_mut().insert(token.to_owned()) {
             return;
         }
-        let Some((short, _, ticket)) = tokens::canonical(token) else { return };
-        let Some(p) = self.v1.by_short(short) else { return };
         let (plugin, ticket, token) = (p.id, ticket.to_owned(), token.to_owned());
         Owner::detached().run(|| {
             spawn(async move {

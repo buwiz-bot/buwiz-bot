@@ -84,7 +84,7 @@ impl HostUi for MacUi {
     }
 
     fn open_app(&self, target: V1Key) {
-        on_main(move || crate::live::store().open_mini_token(&target.to_key(), "", ""));
+        super::to_store(move |st| st.open_mini_token(&target.to_key(), "", ""));
     }
 
     fn open_url(&self, url: &str) {
@@ -119,7 +119,7 @@ impl HostUi for MacUi {
         // plugin runs again, then the open reopens on it
         if why == Ended::Restarted {
             let (key, title) = (self.key.clone(), self.title.clone());
-            on_main(move || crate::live::store().v1_reconnecting(&key, &title));
+            super::to_store(move |st| st.v1_reconnecting(&key, &title));
         }
     }
 }
@@ -245,7 +245,8 @@ impl V1Open {
 impl Drop for V1Open {
     fn drop(&mut self) {
         self.close();
-        crate::live::store().v1_stopped(self.n);
+        let n = self.n;
+        super::to_store(move |st| st.v1_stopped(n));
     }
 }
 
@@ -280,10 +281,10 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
             Err(e) => {
                 log::warn!("mini v1: {} {}: {e}", p.plugin.id, p.key.app);
                 let text = shown(p, &e);
-                return on_main(move || {
+                on_main(move || {
                     VIEWS.with_borrow_mut(|v| v.remove(&id));
-                    crate::live::store().mini_err(&key).set(text);
                 });
+                return super::to_store(move |st| st.mini_err(&key).set(text));
             }
         };
         let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone() });
@@ -300,8 +301,8 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
         bridge::install(&channel, &ctx, viewport);
         let (js, policy) = (prepared.js.clone(), prepared.permissions.policy());
         let fingerprint = prepared.fingerprint.clone();
+        super::to_store(move |st| st.v1_running(id, &key, &fingerprint));
         on_main(move || {
-            crate::live::store().v1_running(id, &key, &fingerprint);
             let view = VIEWS.with_borrow_mut(|v| v.remove(&id)).and_then(|w| w.upgrade());
             if let Some(view) = view {
                 let bundle = nsh_engine::Bundle::source(js).with_policy(policy);
