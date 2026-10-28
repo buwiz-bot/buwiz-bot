@@ -576,7 +576,7 @@ pub fn prepare(broker: &dyn host_api::Broker, key: &str) -> Result<Prepared, Rox
 }
 
 /// [`prepare`] for a plugin already listed.
-pub fn prepare_with(broker: &dyn host_api::Broker, key: V1Key, plugin: PluginEntry) -> Result<Prepared, RoxError> {
+pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: PluginEntry) -> Result<Prepared, RoxError> {
     let app = plugin.app(&key.app).cloned().ok_or_else(|| {
         RoxError::new("not_found", format!("{} has no app {}.", plugin.title, key.app))
     })?;
@@ -587,6 +587,7 @@ pub fn prepare_with(broker: &dyn host_api::Broker, key: V1Key, plugin: PluginEnt
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
         .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+    ticket_prop(&mut key, app.get("props"));
     super::props::validate(&key.props, app.get("props"))?;
     let (source, served) = host_api::app_source(broker, &plugin.id, &key.app).map_err(|e| match e.code.as_str() {
         "fingerprint_mismatch" => RoxError::new("fingerprint_mismatch", say::FINGERPRINT),
@@ -606,6 +607,16 @@ pub fn prepare_with(broker: &dyn host_api::Broker, key: V1Key, plugin: PluginEnt
     Ok(Prepared { key, plugin, title, fingerprint: actual, permissions_json, permissions, js })
 }
 
+/// The open's ticket (a link's or pin's `?ticket=`) as `rox.props.ticket`
+/// when the app's props schema declares `ticket` and the props carry none
+/// (spec 6.6): a link or pin that names only a ticket opens its subject.
+fn ticket_prop(key: &mut V1Key, schema: Option<&Value>) {
+    let declared = schema.and_then(|s| s.get("properties")).and_then(|p| p.get("ticket")).is_some();
+    if let (true, Some(t)) = (declared, &key.ticket) {
+        key.props.entry("ticket").or_insert_with(|| Value::String(t.clone()));
+    }
+}
+
 /// `props` as the open's `rox.props`.
 pub fn props_value(props: &Map<String, Value>) -> Value {
     Value::Object(props.clone())
@@ -613,6 +624,21 @@ pub fn props_value(props: &Map<String, Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_05_a_ticket_only_open_gives_the_app_its_ticket_when_its_props_declare_one() {
+        let with = serde_json::json!({ "type": "object", "properties": { "ticket": { "type": "string" } } });
+        let mut key = V1Key::parse("v1:dev.goldcoders.bir/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
+        super::ticket_prop(&mut key, Some(&with));
+        assert_eq!(key.props.get("ticket").and_then(Value::as_str), Some("tkt_0123456789ABCDEFGHJKMNPQRS"));
+        // props that name a ticket keep theirs; an app without one gets none
+        let mut own = V1Key::parse("v1:dev.goldcoders.bir/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS&props=%7B%22ticket%22%3A%22tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ%22%7D").unwrap();
+        super::ticket_prop(&mut own, Some(&with));
+        assert_eq!(own.props.get("ticket").and_then(Value::as_str), Some("tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ"));
+        let mut none = V1Key::parse("v1:dev.goldcoders.fixture/board?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
+        super::ticket_prop(&mut none, None);
+        assert!(none.props.is_empty());
+    }
+
     use super::*;
     use crate::mini_v1::host_api::Broker as _;
 
