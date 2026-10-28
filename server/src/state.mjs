@@ -218,6 +218,9 @@ for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER D
 for (const col of ["hidden INTEGER DEFAULT 0", "archived INTEGER DEFAULT 0"]) {
   try { db.exec(`ALTER TABLE threads ADD COLUMN ${col}`); } catch {}
 }
+// A v1 routine's own thread (v1/routine-threads.mjs): JSON {plugin, id,
+// name, thread} — `thread` is the chat it reports to. Never a sidebar row.
+try { db.exec("ALTER TABLE threads ADD COLUMN routine TEXT"); } catch {}
 
 export const metaGet = (k) => db.prepare("SELECT v FROM meta WHERE k=?").get(k)?.v;
 export const metaSet = (k, v) =>
@@ -267,12 +270,13 @@ function loadStore() {
       title: t.title,
       hidden: !!t.hidden,
       archived: !!t.archived,
+      ...(t.routine ? { routine: JSON.parse(t.routine) } : {}),
       turns: db
         .prepare("SELECT * FROM turns WHERE thread_id=? ORDER BY seq")
         .all(t.id)
         .map((u) =>
-          u.role === "user"
-            ? { role: "user", ...(u.uid ? { id: u.uid } : {}), text: u.text, ...(u.meta ? JSON.parse(u.meta) : {}) }
+          u.role === "user" || u.role === "notice"
+            ? { role: u.role, ...(u.uid ? { id: u.uid } : {}), text: u.text, ...(u.meta ? JSON.parse(u.meta) : {}) }
             : {
                 role: "ai",
                 ...(u.uid ? { id: u.uid } : {}),
@@ -372,7 +376,7 @@ export function persist() {
     db.exec("DELETE FROM turns");
     db.exec("DELETE FROM bots");
     const it = db.prepare(
-      "INSERT INTO threads(id,title,ord,hidden,archived,uid) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO threads(id,title,ord,hidden,archived,uid,routine) VALUES(?,?,?,?,?,?,?)",
     );
     const ib = db.prepare(
       "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -390,7 +394,7 @@ export function persist() {
         JSON.stringify(b.memories || []), JSON.stringify(b.integrations || [])),
     );
     store.list.forEach((t, i) => {
-      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()));
+      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()), t.routine ? JSON.stringify(t.routine) : null);
       t.turns.forEach((u, j) => {
         // a still-building placeholder is in-flight work, not history
         if (u.building) return;
@@ -398,10 +402,11 @@ export function persist() {
           t.id, j, u.role, u.text ?? null, u.name ?? null, u.label ?? null,
           u.caption ?? null, u.reaction ?? null, u.retries ?? 0,
           u.widget ? 1 : 0,
-          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length || u.suggest?.length || u.v1Attachments?.length
+          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length || u.suggest?.length || u.v1Attachments?.length || u.routine || u.notice
             ? JSON.stringify({
               reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links,
               ...(u.suggest?.length ? { suggest: u.suggest } : {}), ...(u.v1Attachments?.length ? { v1Attachments: u.v1Attachments } : {}),
+              ...(u.routine ? { routine: u.routine } : {}), ...(u.notice ? { notice: u.notice } : {}),
             })
             : null,
           u.v ?? null,
@@ -435,6 +440,13 @@ export const activeThread = () =>
 // A thread by its "t<n>" id or its permanent uid.
 export const findThread = (key) =>
   key ? store.list.find((t) => t.id === key || t.uid === key) : undefined;
+// The bot a thread answers as: the one that owns it, else — a routine's
+// thread — the bot of the chat the routine reports to.
+export const threadBot = (id) => {
+  const t = findThread(id);
+  const own = (x) => store.bots.find((b) => b.threadId === x);
+  return own(t?.id ?? id) || (t?.routine?.thread ? own(t.routine.thread) : undefined);
+};
 
 // Backfill uids/ids for rows written before they existed, then persist so
 // they stay stable. Timestamps: an id that already exists keeps its own; an
@@ -577,6 +589,10 @@ export function turnsJson(thread = activeThread()) {
     // went to the model with (10.3)
     suggest: t.suggest || [],
     ...(t.v1Attachments?.length ? { v1Attachments: t.v1Attachments } : {}),
+    // a routine run's instruction in its thread, and the run's notice in
+    // the chat it reports to (v1/routine-threads.mjs)
+    ...(t.routine ? { routine: t.routine } : {}),
+    ...(t.notice ? { notice: t.notice } : {}),
     art: art(t),
     building: t.building || undefined,
     status: t.status || undefined,

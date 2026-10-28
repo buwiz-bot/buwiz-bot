@@ -3,10 +3,9 @@
 // (persisted by state.mjs); this module holds the operations on them, the
 // system-prompt section and the agent tools that act on the thread's bot.
 import { entryOf, iconFile } from "./plugins.mjs";
-import { db, persist, store, uuidv7 } from "./state.mjs";
+import { db, persist, store, threadBot, uuidv7 } from "./state.mjs";
 
-export const botOfThread = (thread) =>
-  thread?.id ? store.bots.find((b) => b.threadId === thread.id) : undefined;
+export const botOfThread = (thread) => (thread?.id ? threadBot(thread.id) : undefined);
 
 const clip = (s, n) => String(s ?? "").trim().slice(0, n);
 

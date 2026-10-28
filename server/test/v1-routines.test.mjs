@@ -15,9 +15,15 @@
 //   RTN-08 bad requests are refused; a deleted chat stops the routine;
 //          uninstall forgets it
 //   RTN-09 (v1-host.test.mjs) the host route approves; the list shows it
+//   RTN-10 a run's turns go to the routine's own thread, made on its first
+//          run and reused after; the chat it reports to holds no item turn
+//   RTN-11 each run with new items leaves one notice in the chat it reports
+//          to, pointing at the run; a run with nothing new leaves none
+//   RTN-12 a failure leaves one notice per failure streak
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
+import { createRoutineThreads } from "../server/v1/routine-threads.mjs";
 import { createRoutines } from "../server/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, fixtureSpec, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 
@@ -27,7 +33,27 @@ const b = bed("routines");
 const { plugins, db } = broker(b, { clock });
 const turns = [];
 const chats = new Set(["chat-1"]);
-const routines = createRoutines({ db, plugins, clock, runTurn: async (t) => turns.push(t), threadExists: (id) => chats.has(id) });
+// the chat store's shape, as routine-threads.mjs sees it
+const store = { list: [{ id: "chat-1", uid: "uid-chat-1", title: "Piccolo", turns: [] }] };
+let ids = 0;
+let failTurn = false;
+const threads = createRoutineThreads({ store, nextId: () => `t${100 + ++ids}`, uid: () => `uid-${++ids}`, save: () => {} });
+// the agent turn, recorded instead of run: the shown turn and a reply land
+// in the thread the runner named, as backgroundTurn's would
+async function runTurn(t) {
+  if (failTurn) throw new Error("the model is unreachable");
+  turns.push(t);
+  const th = store.list.find((x) => x.id === t.thread);
+  const at = { seq: th.turns.length, turn: `turn-${++ids}` };
+
+  th.turns.push({ id: at.turn, role: "user", text: t.shown, routine: t.mark }, { id: `turn-${++ids}`, role: "ai", text: "Recorded." });
+
+  return at;
+}
+const routines = createRoutines({ db, plugins, clock, runTurn, threads, threadExists: (id) => chats.has(id) });
+const chat = () => store.list[0];
+const notices = () => chat().turns.filter((t) => t.role === "notice");
+const home = () => store.list.find((t) => t.routine?.id === "bir-mail");
 
 const READS = [{ plugin: GWS, tools: ["gws_search_mail", "gws_read_mail"] }];
 
@@ -84,7 +110,9 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.equal(turns.length, 1, "exactly one prompt run");
   const [t] = turns;
 
-  assert.equal(t.thread, "chat-1");
+  assert.equal(t.thread, home().id, "the routine's own thread");
+  assert.equal(t.chat, "chat-1");
+  assert.equal(t.shown, "New item · Tax Return Receipt Confirmation");
   assert.deepEqual(t.item, { id: "m1", from: MAIL1.from, subject: MAIL1.subject, date: MAIL1.date, snippet: MAIL1.body });
   assert.match(t.prompt, /^\(This routine runs on its own every 300s/);
   assert.match(t.prompt, /## Routine: BIR mail \(approved plugin dev\.goldcoders\.fixture\)\nRecord each BIR confirmation\./, "10.2 label");
@@ -108,7 +136,7 @@ test("RTN-03 a seen item does not run again; a new one runs once; nothing runs b
   assert.equal(turns.length, 2);
   assert.equal(turns[1].item.id, "m2");
   // the seen ids survive a new runner on the same db
-  const again = createRoutines({ db, plugins, clock, runTurn: async (t) => turns.push(t), threadExists: (id) => chats.has(id) });
+  const again = createRoutines({ db, plugins, clock, runTurn, threads, threadExists: (id) => chats.has(id) });
 
   assert.deepEqual(await again.tick(FX, "bir-mail"), { ran: true, items: 2, prompts: 0 });
 });
@@ -181,6 +209,60 @@ test("RTN-07 an update that changes what a routine reads needs a new approval", 
   assert.match(r.reason, /changed in an update/);
   assert.equal((await routines.tick(FX, "bir-mail")).ran, false);
   assert.equal(routines.approve({ plugin: FX, routine: "bir-mail" }).routine.available, true);
+});
+
+test("RTN-10 a run's turns go to the routine's own thread, made on its first run and reused after", () => {
+  const h = home();
+
+  assert.equal(store.list.filter((t) => t.routine).length, 1, "one thread for the routine");
+  assert.equal(h.title, "BIR mail");
+  assert.deepEqual(h.routine, { plugin: FX, id: "bir-mail", name: "BIR mail", thread: "chat-1" });
+  assert.deepEqual(turns.map((t) => t.thread), [h.id, h.id], "the second run reused it");
+  const shown = h.turns.filter((t) => t.role === "user");
+
+  assert.deepEqual(shown.map((t) => t.routine.name), ["BIR mail", "BIR mail"], "each item's turn carries the routine's mark");
+  assert.notEqual(shown[0].routine.run, shown[1].routine.run, "one run id per run");
+  assert.ok(chat().turns.every((t) => t.role === "notice"), "the chat holds no item turn");
+});
+
+test("RTN-11 each run with new items leaves one notice pointing at the run; nothing new leaves none", () => {
+  const h = home();
+  const [a, b] = notices();
+
+  assert.equal(notices().length, 2, "two runs had new items; the empty and unchanged runs left nothing");
+  assert.equal(a.text, "BIR mail ran · 1 new item");
+  assert.deepEqual(a.notice, { kind: "routine", plugin: FX, routine: "bir-mail", name: "BIR mail", thread: h.id, thread_uid: h.uid, run: h.turns[0].routine.run, seq: 0, turn: h.turns[0].id, items: 1 });
+  assert.equal(b.notice.seq, 2, "the second run starts after the first's two turns");
+  assert.equal(b.notice.turn, h.turns[2].id);
+  assert.match(b.notice.run, /^run_\d+$/);
+});
+
+test("RTN-12 a failure leaves one notice per failure streak", async () => {
+  writeMail(b, [{ id: "m3", subject: "Payment confirmation", body: "Paid." }, MAIL2, MAIL1]);
+  failTurn = true;
+  const n = notices().length;
+  const r1 = await routines.tick(FX, "bir-mail");
+
+  assert.match(r1.error, /model is unreachable/);
+  assert.equal(notices().length, n + 1);
+  const f = notices().at(-1);
+
+  assert.equal(f.text, "BIR mail failed: the model is unreachable");
+  assert.equal(f.notice.error, "the model is unreachable");
+  assert.equal(f.notice.items, 0);
+  assert.equal(f.notice.thread, home().id, "the thread from earlier runs");
+  step(3600);
+  await routines.tick(FX, "bir-mail");
+  await routines.tick(FX, "bir-mail");
+  assert.equal(notices().length, n + 1, "no notice for the same streak");
+  failTurn = false;
+  await routines.tick(FX, "bir-mail");
+  assert.equal(notices().at(-1).text, "BIR mail ran · 1 new item", "it recovered");
+  failTurn = true;
+  writeMail(b, [{ id: "m4", subject: "Another", body: "x" }]);
+  await routines.tick(FX, "bir-mail");
+  assert.equal(notices().length, n + 3, "a new streak notices again");
+  failTurn = false;
 });
 
 test("RTN-08 bad requests are refused; a deleted chat stops the routine; uninstall forgets it", async () => {

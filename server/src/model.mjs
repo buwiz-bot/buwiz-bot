@@ -2,7 +2,7 @@
 // through opencodex per-thread), OpenAI-compatible, and the canned replies.
 import Anthropic from "@anthropic-ai/sdk";
 import { BASE_URL, MAX_TOKENS, MOCK, MODEL, OPENCODEX, PROVIDER } from "./config.mjs";
-import { activeThread, getLinearKey, jobs, metaGet, modelCtx, persist, setJob, store, db } from "./state.mjs";
+import { activeThread, getLinearKey, jobs, metaGet, modelCtx, persist, setJob, store, db, threadBot } from "./state.mjs";
 
 const anthropicDirect =
   PROVIDER === "anthropic"
@@ -27,7 +27,7 @@ export const anthropic = anthropicDirect && {
   },
 };
 export const choiceFor = (threadId) => {
-  const b = store.bots.find((x) => x.threadId === threadId);
+  const b = threadBot(threadId);
   const m = metaGet("model");
   // A bot on the Default model keeps its own effort / fast choice.
   const base = b?.model
@@ -230,7 +230,8 @@ export async function chatReply(prompt, thread, job) {
   const sys =
     "You are the assistant inside a generative-UI chat app: when the user asks for an interface, a tool builds and renders it natively. This message is conversation — answer in GitHub-flavored markdown, concise. If a UI would obviously help, offer to build it in one line.";
   const messages = [
-    ...thread.turns.slice(-10).map((t) =>
+    // a routine run's notice is the UI's, not the conversation's
+    ...thread.turns.filter((t) => t.role !== "notice").slice(-10).map((t) =>
       t.role === "user"
         ? { role: "user", content: t.text }
         : {

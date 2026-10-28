@@ -61,7 +61,8 @@ function dropPendingApp(job, thread) {
 
 export async function agentTurn(job, prompt, thread) {
   const messages = [
-    ...thread.turns.slice(-10).map((t) =>
+    // a routine run's notice is the UI's, not the conversation's
+    ...thread.turns.filter((t) => t.role !== "notice").slice(-10).map((t) =>
       t.role === "user"
         ? { role: "user", content: t.text }
         : {
@@ -259,8 +260,9 @@ const linkFields = (job) => ({
   ...(job.linkTurn?.suggest?.length ? { suggest: job.linkTurn.suggest } : {}),
 });
 
-export async function backgroundTurn(job, thread, shown, prompt) {
-  thread.turns.push({ id: uuidv7(), role: "user", text: shown });
+// `extra` rides the shown user turn (a v1 routine run's `routine` marker).
+export async function backgroundTurn(job, thread, shown, prompt, extra = {}) {
+  thread.turns.push({ id: uuidv7(), role: "user", text: shown, ...extra });
   writeIndex();
   const label = labelOf(modelCtx.getStore());
   let text;

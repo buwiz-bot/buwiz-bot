@@ -12,6 +12,10 @@
 // listed `reads` tools only. Seen ids (the last 1000) and the approval
 // live in `v1_routines` beside the install records.
 //
+// The turns run in the routine's own thread (`threads`, routine-threads.mjs),
+// not in the chat it was enabled in: that chat gets one notice per run that
+// ran items, and one when it fails after working (not on every retry).
+//
 // The runner sits beside v0's timer (routines.mjs), which is unchanged.
 // It never runs what may not run: a routine of a plugin off the approved
 // list, a `reads` plugin that is missing, unapproved by the trust store,
@@ -47,7 +51,7 @@ const parse = (s, d) => {
 const readsKey = (r) => JSON.stringify(r.reads || []);
 const firstText = (r) => (r.content || []).find((c) => c.type === "text")?.text || "";
 
-export function createRoutines({ db, plugins, runTurn, threadExists = () => true, clock = plugins.clock || systemClock, pollMs = POLL_MS }) {
+export function createRoutines({ db, plugins, runTurn, threads, threadExists = () => true, clock = plugins.clock || systemClock, pollMs = POLL_MS }) {
   db.exec(SCHEMA);
   const running = new Set();
   let timer = null;
@@ -207,6 +211,33 @@ export function createRoutines({ db, plugins, runTurn, threadExists = () => true
     ].join("\n\n");
   }
 
+  // the shown line of an item's turn: its subject or title when it has one
+  function shownOf(item) {
+    const head = ["subject", "title", "name"].map((k) => item[k]).find((v) => isString(v) && v.trim());
+
+    return head ? `New item · ${approvedText(head.replace(/\s+/g, " "), 120)}` : "New item";
+  }
+
+  // the run's notice in the chat it reports to: where its turns start in
+  // the routine's thread (`seq`, and `turn` by id) and how many ran
+  function notify(pluginId, r, row, run, error) {
+    const home = run.home || threads.find(pluginId, r.id);
+
+    threads.notice(row.thread, {
+      kind: "routine",
+      plugin: pluginId,
+      routine: r.id,
+      name: run.name,
+      thread: home?.id ?? null,
+      thread_uid: home?.uid ?? null,
+      run: run.id,
+      seq: run.seq ?? null,
+      turn: run.turn ?? null,
+      items: run.items,
+      ...(error ? { error: error.slice(0, 300) } : {}),
+    });
+  }
+
   /** One run of a routine: → {ran, items?, prompts?, reason?, error?}. */
   async function tick(pluginId, id) {
     const key = `${pluginId}/${id}`;
@@ -214,10 +245,11 @@ export function createRoutines({ db, plugins, runTurn, threadExists = () => true
     if (running.has(key)) return { ran: false, reason: "already running" };
     running.add(key);
     const started = clock.now();
+    let row, r, run;
 
     try {
-      const row = rowOf(pluginId, id);
-      const r = routineOf(pluginId, id);
+      row = rowOf(pluginId, id);
+      r = routineOf(pluginId, id);
 
       if (!row?.enabled || !r) return { ran: false, reason: "not enabled" };
 
@@ -235,12 +267,25 @@ export function createRoutines({ db, plugins, runTurn, threadExists = () => true
         return { ran: false, reason: why };
       }
 
-      return await runItems(pluginId, r, row, started);
+      run = { id: `run_${started}`, name: approvedText(r.name, 80), items: 0 };
+      const res = await runItems(pluginId, r, row, started, run);
+
+      if (run.items) notify(pluginId, r, row, run);
+
+      return res;
     } catch (e) {
       const msg = String(e?.message || e).slice(0, 500);
 
       db.prepare("UPDATE v1_routines SET last_run=?, last_error=?, errors=errors+1 WHERE plugin=? AND routine=?").run(started, msg, pluginId, id);
       console.error(`  v1 routine ${key}: ${msg.slice(0, 200)}`);
+
+      // once per failure streak (the first failure after a success), and
+      // whenever the failed run had already posted items
+      if (run && (run.items || !row.errors)) {
+        try {
+          notify(pluginId, r, row, run, msg);
+        } catch {}
+      }
 
       return { ran: false, error: msg };
     } finally {
@@ -248,26 +293,30 @@ export function createRoutines({ db, plugins, runTurn, threadExists = () => true
     }
   }
 
-  // step 3: one turn per unseen item; an item counts as seen once its turn ran
-  async function runItems(pluginId, r, row, started) {
+  // step 3: one turn per unseen item, in the routine's own thread; an item
+  // counts as seen once its turn ran
+  async function runItems(pluginId, r, row, started, run) {
     const items = await itemsOf(pluginId, r);
     const seen = parse(row.seen, []);
     const known = new Set(seen);
     const label = v1RoutinePrompt(plugins, pluginId, r.id);
     const surface = { plugin: pluginId, reads: r.reads || [] };
-    let prompts = 0;
 
     for (const item of items) {
       if (known.has(item.id)) continue;
-      await runTurn({ plugin: pluginId, routine: r.id, thread: row.thread, shown: `Routine · ${approvedText(r.name, 80)} · new item`, prompt: turnPrompt(r, label, item), item, surface });
+      run.home ||= threads.ensure({ plugin: pluginId, routine: r.id, name: run.name, chat: row.thread });
+      const mark = { plugin: pluginId, id: r.id, name: run.name, run: run.id };
+      const done = await runTurn({ plugin: pluginId, routine: r.id, thread: run.home.id, chat: row.thread, shown: shownOf(item), prompt: turnPrompt(r, label, item), item, surface, mark });
+
+      if (!run.items && done) Object.assign(run, { seq: done.seq, turn: done.turn });
       seen.push(item.id);
-      prompts++;
+      run.items++;
       db.prepare("UPDATE v1_routines SET seen=? WHERE plugin=? AND routine=?").run(JSON.stringify(seen.slice(-SEEN_MAX)), pluginId, r.id);
     }
 
     db.prepare("UPDATE v1_routines SET last_run=?, last_error=NULL, errors=0 WHERE plugin=? AND routine=?").run(started, pluginId, r.id);
 
-    return { ran: true, items: items.length, prompts };
+    return { ran: true, items: items.length, prompts: run.items };
   }
 
   /** Every enabled routine whose interval has passed, one after another. */
