@@ -53,6 +53,7 @@ function readBody(req) {
 
     req.on("data", (c) => {
       size += c.length;
+
       if (size <= BODY_MAX) chunks.push(c);
     });
     req.on("end", () => {
@@ -103,7 +104,9 @@ const ACTIONS = {
 
 async function answer(req, res, path) {
   if (req.method === "GET" && path === "/v1/host/plugins") return send(res, 200, { ok: true, plugins: plugins.list() });
+
   if (req.method === "GET" && path === "/v1/host/events") return events(req, res);
+
   if (req.method !== "POST") return send(res, 405, { ok: false, code: "not_supported", message: `${req.method} ${path}`, retryable: false });
   const action = /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools)$/.exec(path);
   const run = POSTS[path] || (action && ((b) => ACTIONS[action[2]](decodeURIComponent(action[1]), b)));
@@ -127,6 +130,7 @@ export default async function handle(req, res) {
   const path = new URL(req.url || "/", "http://x").pathname;
 
   if (!path.startsWith("/v1/host/")) return false;
+
   if (!authorized(req)) return send(res, 401, { ok: false, code: "unauthorized", message: "X-Rox-Host is missing or wrong", retryable: false });
   await answer(req, res, path);
 

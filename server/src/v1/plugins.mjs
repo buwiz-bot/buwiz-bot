@@ -152,7 +152,11 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: { PATH: process.env.PATH || "", ...spec.env }, stderr: "pipe" });
     const client = new Client({ name: "rox-broker", version: "1.0.0" });
     const conn = { client, transport, closed: false };
-    const sink = stderrSink(id, seed, () => hooks.onLeak?.(conn));
+
+    const sink = stderrSink(id, seed, () => {
+      conn.leaked = true;
+      hooks.onLeak?.(conn);
+    });
 
     transport.stderr?.on("data", (d) => sink(String(d)));
     client.onclose = () => {
@@ -200,6 +204,8 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       const v = await readVerified(conn);
 
       if (prov.manifest_sha256 !== v.sha256) refuse("manifest_invalid", "rox.provision reports a manifest other than the one the plugin serves");
+
+      if (conn.leaked) refuse("plugin_invalid", "the plugin wrote its key to stderr (4.3)");
 
       return { conn, ...v };
     } catch (e) {
