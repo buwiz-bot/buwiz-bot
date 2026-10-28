@@ -572,7 +572,9 @@ export function validateProps(s, props) {
 // ── install review (13.1 step 3) and update consent (13.2) ───────────────
 
 const mb = (n) => (n >= 1024 * 1024 ? `${Math.round((n / 1048576) * 10) / 10} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
-const noun = (s) => String(s?.description || s?.name || "").trim().split(/\s+/)[0] || s?.name;
+
+// the description's first word (5.8) without trailing punctuation ("Return:")
+const noun = (s) => String(s?.description || s?.name || "").trim().split(/\s+/)[0].replace(/[^\p{L}\p{N}]+$/u, "") || s?.name;
 
 function permissionLines(m, p) {
   if (!p) return [];

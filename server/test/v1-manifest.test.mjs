@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { V1, isV1, v1Canonical, v1TypedTokens } from "../server/grammar.mjs";
 import { b64u, fromB64u, generate, pubOf, sign, verify } from "../server/v1/ed.mjs";
 import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../server/v1/jcs.mjs";
-import { LIMITS, checkTools, compareSemver, validateProps, verifyManifest } from "../server/v1/manifest.mjs";
+import { reviewOf, LIMITS, checkTools, compareSemver, validateProps, verifyManifest } from "../server/v1/manifest.mjs";
 import { signManifest } from "../server/v1/sign-manifest.mjs";
 import { loadTrust } from "../server/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
@@ -335,4 +335,13 @@ test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a ma
 
   assert.equal(r.manifest.apps[1].fingerprint, `sha256:${createHash("sha256").update(readFileSync(join(fx, "card.tsx"))).digest("hex")}`);
   assert.ok(!readFileSync(out, "utf8").includes(pub.seed), "the seed is not in the output");
+});
+
+test("the install review names a scope by its description's first word, without punctuation", () => {
+  const m = {
+    title: "T", version: "1.0.0", publisher: { name: "P" }, scopes: [{ name: "taxform", description: "Return: form and period", attach: true }],
+    apps: [{ id: "a", title: "A", placement: ["full"], permissions: { attach: ["taxform"] } }],
+  };
+
+  assert.ok(reviewOf(m).lines.includes("  Can attach: Return"));
 });
