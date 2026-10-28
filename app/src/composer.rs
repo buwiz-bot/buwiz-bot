@@ -134,6 +134,8 @@ pub(crate) fn composer() -> impl IntoElement {
         .right(px(0.0))
         .pointer_events(PointerEvents::BoxNone)
         .on_layout(|b: &Bounds<Points>| dock_h().set(b.size.height.0))
+        // a routine's thread: when it last checked and what it found
+        .child(crate::chat::routine_status_line())
         // agent status row — the mark + shimmering label (App.tsx:2164).
         .child(
             view()
