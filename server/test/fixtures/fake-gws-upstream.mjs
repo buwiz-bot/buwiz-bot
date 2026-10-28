@@ -9,7 +9,8 @@
 // subject, date, body}], read on every call (tests add mail between
 // ticks). A search returns every message unless the query contains
 // "nothing". FAKE_GWS_LOG, when set, gets one JSON line per call
-// {tool, args}. FAKE_GWS_FAIL=1 makes every call an error result.
+// {tool, args, port} (port: its WORKSPACE_MCP_PORT). FAKE_GWS_FAIL=1 makes
+// every call an error result.
 import { appendFileSync, readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -86,7 +87,7 @@ server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: TOOLS.map(({ ru
 server.setRequestHandler(CallToolRequestSchema, (req) => {
   const { name, arguments: args = {} } = req.params;
 
-  if (process.env.FAKE_GWS_LOG) appendFileSync(process.env.FAKE_GWS_LOG, `${JSON.stringify({ tool: name, args })}\n`);
+  if (process.env.FAKE_GWS_LOG) appendFileSync(process.env.FAKE_GWS_LOG, `${JSON.stringify({ tool: name, args, port: process.env.WORKSPACE_MCP_PORT })}\n`);
 
   if (process.env.FAKE_GWS_FAIL === "1") return text("ACTION REQUIRED: Google Authentication Needed", true);
   const tool = TOOLS.find((t) => t.name === name);

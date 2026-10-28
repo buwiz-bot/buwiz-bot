@@ -83,7 +83,24 @@ function upstreamSpec() {
   if (!isObject(spec) || !isString(spec.command) || !spec.command)
     throw new Error("Google Workspace is not set up: the plugin's GWS_UPSTREAM does not name the Google Workspace MCP server to use");
 
-  return { command: spec.command, args: Array.isArray(spec.args) ? spec.args.map(String) : [], env: isObject(spec.env) ? spec.env : {} };
+  return { command: spec.command, args: Array.isArray(spec.args) ? spec.args.map(String) : [], env: ownCallbackPort(isObject(spec.env) ? spec.env : {}) };
+}
+
+// GWS_UPSTREAM is a copy of v0's workspace-mcp settings, and v0 runs its own
+// copy. workspace-mcp signs in on WORKSPACE_MCP_PORT (else PORT, else 8000)
+// or one of the next WORKSPACE_MCP_PORT_FALLBACK_COUNT (default 4) ports, so
+// this copy takes the ports after that range and two sign-ins never clash. A
+// desktop OAuth client accepts a loopback redirect on any port; a pinned
+// GOOGLE_OAUTH_REDIRECT_URI is left alone.
+function ownCallbackPort(env) {
+  if (env.GOOGLE_OAUTH_REDIRECT_URI) return env;
+  const port = Number(env.WORKSPACE_MCP_PORT ?? env.PORT ?? 8000);
+  const fallback = Number(env.WORKSPACE_MCP_PORT_FALLBACK_COUNT ?? 4);
+
+  if (!Number.isInteger(port) || !Number.isInteger(fallback)) return env;
+  const { PORT: _, ...rest } = env;
+
+  return { ...rest, WORKSPACE_MCP_PORT: String(port + 1 + Math.max(0, fallback)) };
 }
 
 const within = (p, ms, what) =>

@@ -129,6 +129,24 @@ test("GWS-04 a missing or failing upstream is an isError result with a plain mes
   assert.match(firstText(await noEmail.callTool({ name: "gws_search_mail", arguments: { query: "x" } })), /GWS_USER_EMAIL/);
 });
 
+test("GWS-05 the upstream signs in on ports past v0's: WORKSPACE_MCP_PORT moves past its fallback range", async () => {
+  const portFor = async (env) => {
+    const upstream = JSON.parse(gwsSpec(b).env.GWS_UPSTREAM);
+
+    upstream.env = { ...upstream.env, ...env };
+    const client = await raw({ GWS_UPSTREAM: JSON.stringify(upstream) });
+
+    await client.callTool({ name: "gws_search_mail", arguments: { query: "x" } });
+
+    return upstreamCalls(b).at(-1).port;
+  };
+
+  assert.equal(await portFor({ WORKSPACE_MCP_PORT: "8791" }), "8796");
+  assert.equal(await portFor({ WORKSPACE_MCP_PORT: "8791", WORKSPACE_MCP_PORT_FALLBACK_COUNT: "2" }), "8794");
+  assert.equal(await portFor({}), "8005");
+  assert.equal(await portFor({ WORKSPACE_MCP_PORT: "8791", GOOGLE_OAUTH_REDIRECT_URI: "http://localhost:8791/oauth2callback" }), "8791");
+});
+
 test("RSV-01 gws: rox.provision comes first; other tools before it fail", async () => {
   const c = await raw({}, false);
 
