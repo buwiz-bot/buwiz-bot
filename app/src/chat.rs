@@ -7,7 +7,7 @@ use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::live::store;
 use crate::md::markdown;
-use crate::store::{Attach, Turn};
+use crate::store::{Attach, RoutineNotice, Turn};
 use crate::theme;
 use crate::widgets::app_card;
 
@@ -429,11 +429,91 @@ pub(crate) fn empty_state() -> impl IntoElement {
 
 /// One turn of chat `chat` (its bot colors the user's bubbles).
 fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
-    if t.role == "user" {
+    if let Some(n) = t.notice.clone() {
+        notice_row(n).into_element()
+    } else if t.role == "notice" {
+        // a notice of a kind this build doesn't know
+        view().into_element()
+    } else if t.role == "user" && !t.instruction_from.is_empty() {
+        instruction_row(t).into_element()
+    } else if t.role == "user" {
         user_row(t, chat.to_owned()).into_element()
     } else {
         agent_row(t).into_element()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Routine runs
+// ---------------------------------------------------------------------------
+
+/// A routine's run in the chat it reports to: one centered, dim line —
+/// "BIR payments ran · 2 new items · Open" — not a bubble. Open shows the
+/// routine's thread at that run.
+fn notice_row(n: RoutineNotice) -> impl IntoElement {
+    let failed = !n.error.is_empty();
+    let hov = signal(false);
+    let (thread, turn) = (n.thread.clone(), n.turn.clone());
+    view().flex_row().w_full().justify_center().child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .max_w(px(560.0))
+            .child(
+                text(n.line())
+                    .text_size(px(12.0))
+                    .text_color(if failed { theme::DOWN } else { theme::MUTED })
+                    .number_of_lines(2)
+                    .flex_shrink(1.0),
+            )
+            .when(!thread.is_empty(), |v| {
+                v.child(text("·").text_size(px(12.0)).text_color(theme::FAINT)).child(
+                    view()
+                        .label(format!("Open {}", n.name))
+                        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                        .on_press(move || {
+                            store().go_to_key(&thread, Some(turn.clone()).filter(|t| !t.is_empty()))
+                        })
+                        .child(
+                            text("Open")
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }),
+                        ),
+                )
+            }),
+    )
+}
+
+/// An item's instruction in a routine's thread: what the routine gave the
+/// bot, captioned "Instruction from <routine>" — the user never typed it,
+/// so it is no bubble of theirs.
+fn instruction_row(t: Turn) -> impl IntoElement {
+    let body = t.text.clone();
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .child(
+            text(format!("Instruction from {}", t.instruction_from))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1),
+        )
+        .child(
+            view()
+                .max_w(px(560.0))
+                .flex_shrink(1.0)
+                .bg(theme::SUBTLE)
+                .border(px(0.5))
+                .border_color(theme::BORDER_S)
+                .rounded(px(12.0))
+                .px_3()
+                .py(px(7.0))
+                .child(highlight_ring(t.i, 12.0))
+                .child(markdown(move || store().v1_display(&body), || false, || false)),
+        )
 }
 
 // ---------------------------------------------------------------------------

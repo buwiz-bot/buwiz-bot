@@ -456,7 +456,8 @@ struct ChatRoutine {
     by: String,
     status: String,
     failed: bool,
-    plugin: Option<String>,
+    /// A v1 plugin's routine: (plugin, routine id).
+    plugin: Option<(String, String)>,
 }
 
 /// The enabled routines, v1 plugins' and the server's own, that post in
@@ -474,7 +475,7 @@ fn chat_routines() -> Vec<ChatRoutine> {
         for r in p.routines.iter().filter(|r| r.enabled && r.thread == chat) {
             let (status, failed) =
                 if r.available { status(r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
-            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some(p.id.clone()) });
+            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some((p.id.clone(), r.id.clone())) });
         }
     }
     for r in st.routines.get().into_iter().filter(|r| r.enabled && r.thread == chat) {
@@ -485,7 +486,8 @@ fn chat_routines() -> Vec<ChatRoutine> {
     out
 }
 
-/// One routine in the Details card; a v1 plugin's opens its plugin page.
+/// One routine in the Details card; a v1 plugin's opens its own thread
+/// once it has run, its plugin page before.
 fn routine_row(r: ChatRoutine) -> AnyElement {
     let row = view()
         .gap(px(2.0))
@@ -502,10 +504,13 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
                 .number_of_lines(2),
         );
     match r.plugin {
-        Some(id) => row
-            .on_press(move || {
-                store().open_plugins();
-                store().push_nav("v1plugin", &id, "");
+        Some((id, routine)) => row
+            .on_press(move || match store().routine_thread(&id, &routine) {
+                Some(thread) => store().go_to(&thread, None),
+                None => {
+                    store().open_plugins();
+                    store().push_nav("v1plugin", &id, "");
+                }
             })
             .into_element(),
         None => row.into_element(),

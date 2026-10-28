@@ -30,6 +30,68 @@ pub struct ThreadMeta {
     pub hidden: bool,
     pub archived: bool,
     pub last_app: String,
+    /// A v1 routine's own thread (`routine` on the row): never a sidebar
+    /// row nor a ⌘1–9 slot; its runs land here, its notices in `thread`.
+    pub routine: Option<RoutineOf>,
+}
+
+/// The `routine` field of a `/threads` row: whose thread it is and the
+/// chat the routine reports to (the way back).
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct RoutineOf {
+    pub plugin: String,
+    pub id: String,
+    pub name: String,
+    pub thread: String,
+}
+
+impl RoutineOf {
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        let r = Self { plugin: s(v, "plugin"), id: s(v, "id"), name: s(v, "name"), thread: s(v, "thread") };
+        (!r.plugin.is_empty() && !r.id.is_empty()).then_some(r)
+    }
+}
+
+/// A `notice` turn's payload: one run of a v1 routine, told in the chat it
+/// reports to. `thread`/`turn` say where the run starts in the routine's
+/// thread ("" when it ran nothing there); `error` is set on a failure.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct RoutineNotice {
+    pub name: String,
+    pub plugin: String,
+    pub routine: String,
+    pub thread: String,
+    pub turn: String,
+    pub items: i64,
+    pub error: String,
+}
+
+impl RoutineNotice {
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "routine" {
+            return None;
+        }
+        // the uid when there is one: it names the thread for good
+        let thread = Some(s(v, "thread_uid")).filter(|u| !u.is_empty()).unwrap_or_else(|| s(v, "thread"));
+        Some(Self {
+            name: Some(s(v, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| "Routine".to_owned()),
+            plugin: s(v, "plugin"),
+            routine: s(v, "routine"),
+            thread,
+            turn: s(v, "turn"),
+            items: i64of(v, "items"),
+            error: s(v, "error"),
+        })
+    }
+
+    /// The line it shows: "BIR payments ran · 2 new items".
+    pub fn line(&self) -> String {
+        if !self.error.is_empty() {
+            let e: String = self.error.chars().take(160).collect();
+            return format!("{} failed: {e}", self.name);
+        }
+        format!("{} ran · {} new item{}", self.name, self.items, if self.items == 1 { "" } else { "s" })
+    }
 }
 
 /// The `bot` field of a `/threads` row — the persona behind the chat.
@@ -480,6 +542,11 @@ pub struct Turn {
     pub v1_attachments: Vec<(String, String)>,
     /// An answer's next steps (9.8, `suggest`): (label, prompt).
     pub suggest: Vec<(String, String)>,
+    /// A `notice` turn: a routine's run, drawn as a centered line.
+    pub notice: Option<RoutineNotice>,
+    /// An item's instruction in a routine's thread (the user turn's
+    /// `routine` mark): the routine's name, its caption ("" otherwise).
+    pub instruction_from: String,
 }
 
 /// What a reply quotes of turn `t` (`onReply(i, text || caption || name)`):
@@ -1573,6 +1640,12 @@ impl Turn {
                     crate::mini_v1::tokens::canonical(&token).map(|_| (token.clone(), s(a, "title")))
                 })
                 .collect(),
+            notice: (s(v, "role") == "notice").then(|| v.get("notice").and_then(RoutineNotice::of)).flatten(),
+            instruction_from: if s(v, "role") == "user" {
+                v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -2474,6 +2547,7 @@ impl Store {
                 hidden: b(t, "hidden"),
                 archived: b(t, "archived"),
                 last_app: s(t, "lastApp"),
+                routine: t.get("routine").and_then(RoutineOf::of),
                 bot: {
                     let b = &t["bot"];
                     if b.is_null() {
@@ -2663,12 +2737,28 @@ impl Store {
         })
     }
 
-    /// `chats()` — visible chats: not bot-owned, not hidden, not archived.
+    /// The routine whose thread is open, when one is (tracked).
+    pub fn active_routine(&'static self) -> Option<RoutineOf> {
+        let id = self.active_id.get();
+        self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.routine.clone()))
+    }
+
+    /// The routine thread of v1 routine `plugin`/`id`, once it has run.
+    pub fn routine_thread(&'static self, plugin: &str, id: &str) -> Option<String> {
+        self.threads.with_untracked(|t| {
+            t.iter()
+                .find(|t| t.routine.as_ref().is_some_and(|r| r.plugin == plugin && r.id == id))
+                .map(|t| t.id.clone())
+        })
+    }
+
+    /// `chats()` — visible chats: not bot-owned, not a routine's, not
+    /// hidden, not archived.
     pub fn chats(&'static self) -> Vec<ThreadMeta> {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+            .filter(|t| t.bot.is_none() && t.routine.is_none() && !t.hidden && !t.archived)
             .collect()
     }
 
@@ -2677,7 +2767,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.hidden)
+            .filter(|t| t.bot.is_none() && t.routine.is_none() && t.hidden)
             .collect()
     }
 
@@ -2685,7 +2775,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.archived)
+            .filter(|t| t.bot.is_none() && t.routine.is_none() && t.archived)
             .collect()
     }
 
@@ -2891,7 +2981,7 @@ impl Store {
         }
         for t in threads
             .iter()
-            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+            .filter(|t| t.bot.is_none() && t.routine.is_none() && !t.hidden && !t.archived)
         {
             push(&t.id);
         }
@@ -7135,6 +7225,46 @@ mod tests {
         let t = "tkt_0123456789ABCDEFGHJKMNPQRS";
         let attached = Turn { text: format!("Attached @bir:taxprofile:{t}"), ..Default::default() };
         assert!(reply_label(&attached).contains(t));
+    }
+
+    #[test]
+    fn a_routine_notice_turn_parses_and_reads_as_one_line() {
+        use super::{RoutineNotice, Turn};
+        let v = serde_json::json!({
+            "i": 7, "id": "n1", "role": "notice", "text": "BIR payments ran · 2 new items",
+            "notice": {"kind": "routine", "plugin": "dev.example.bir", "routine": "payments", "name": "BIR payments",
+                "thread": "t9", "thread_uid": "uid-t9", "run": "run_1", "seq": 4, "turn": "turn-a", "items": 2}
+        });
+        let n = Turn::of(&v).notice.expect("a notice");
+        assert_eq!(n, RoutineNotice {
+            name: "BIR payments".into(), plugin: "dev.example.bir".into(), routine: "payments".into(),
+            thread: "uid-t9".into(), turn: "turn-a".into(), items: 2, error: String::new(),
+        });
+        assert_eq!(n.line(), "BIR payments ran · 2 new items");
+        assert_eq!(RoutineNotice { items: 1, ..n.clone() }.line(), "BIR payments ran · 1 new item");
+        // a failure before any run: no thread to open, the error shown
+        let f = Turn::of(&serde_json::json!({"role": "notice",
+            "notice": {"kind": "routine", "name": "BIR payments", "thread": null, "items": 0, "error": "fx_query: down"}}));
+        let f = f.notice.expect("a failure notice");
+        assert_eq!((f.thread.as_str(), f.line().as_str()), ("", "BIR payments failed: fx_query: down"));
+        // an unknown kind, or `notice` on another role, is no routine notice
+        assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "other"}})).notice.is_none());
+        assert!(Turn::of(&serde_json::json!({"role": "ai", "notice": {"kind": "routine"}})).notice.is_none());
+    }
+
+    #[test]
+    fn a_routine_threads_item_turn_is_an_instruction_and_its_row_names_the_routine() {
+        use super::{RoutineOf, Turn};
+        let mark = serde_json::json!({"plugin": "dev.example.bir", "id": "payments", "name": "BIR payments", "run": "run_1"});
+        let u = Turn::of(&serde_json::json!({"role": "user", "text": "New item", "routine": mark}));
+        assert_eq!(u.instruction_from, "BIR payments");
+        assert_eq!(Turn::of(&serde_json::json!({"role": "user", "text": "hi"})).instruction_from, "");
+        let row = serde_json::json!({"plugin": "dev.example.bir", "id": "payments", "name": "BIR payments", "thread": "t5"});
+        assert_eq!(RoutineOf::of(&row), Some(RoutineOf {
+            plugin: "dev.example.bir".into(), id: "payments".into(), name: "BIR payments".into(), thread: "t5".into(),
+        }));
+        assert_eq!(RoutineOf::of(&serde_json::Value::Null), None);
+        assert_eq!(RoutineOf::of(&serde_json::json!({"name": "x"})), None);
     }
 
     #[test]
