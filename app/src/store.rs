@@ -2420,7 +2420,8 @@ impl Store {
             .map(|t| ThreadMeta {
                 id: s(t, "id"),
                 uid: s(t, "uid"),
-                name: s(t, "title"),
+                // never a raw ticket in a title: its title, once known
+                name: untracked(|| self.v1_plain(&s(t, "title"))),
                 count: i64of(t, "count"),
                 created: f64of(t, "created"),
                 hidden: b(t, "hidden"),

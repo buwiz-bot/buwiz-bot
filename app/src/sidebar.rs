@@ -2044,7 +2044,8 @@ fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
                         .child(
                             text(move || {
                                 let v = t.get();
-                                if v.name.is_empty() { "New chat".to_owned() } else { v.name }
+                                // a v1 token in the title shows its ticket's title (9.3)
+                                if v.name.is_empty() { "New chat".to_owned() } else { store().v1_plain(&v.name) }
                             })
                             .text_size(px(13.0))
                             .text_color(theme::TEXT)
