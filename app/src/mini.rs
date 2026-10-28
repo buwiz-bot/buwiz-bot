@@ -74,7 +74,7 @@ pub(crate) fn mini_app(
             move || JsonValue::String(store().mini_source_title(&name2).get()),
         )
         .prop("dev_type", || JsonValue::String(store().mini_dev_type.get()))
-        // plugin apps follow Rox's theme (`plugin_appearance`)
+        // every mini app follows Rox's theme (`mini_appearance`)
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
@@ -102,16 +102,14 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
         .h(px(h))
 }
 
-/// The appearance a mini app of `module` takes under Rox's theme `pref`:
-/// `Some(true)` dark, `Some(false)` light, `None` the system's (the
-/// window's). Plugin apps (`mcp:` v0, `v1:`) follow Rox's own Light or
-/// Dark; Rox's System, and generated `R<n>` widgets whatever the pref,
-/// keep the system's.
-pub(crate) fn plugin_appearance(module: &str, pref: &str) -> Option<bool> {
-    let plugin = module.starts_with("mcp:") || crate::mini_v1::is_v1(module);
-    match (plugin, pref) {
-        (true, "dark") => Some(true),
-        (true, "light") => Some(false),
+/// The appearance every mini app (generated `R<n>` widgets, v0 `mcp:` and
+/// v1 plugin apps, full screen and in cards) takes under Rox's theme
+/// `pref`: `Some(true)` dark, `Some(false)` light, `None` the system's
+/// (the window's effective appearance) for System or anything else.
+pub(crate) fn mini_appearance(pref: &str) -> Option<bool> {
+    match pref {
+        "dark" => Some(true),
+        "light" => Some(false),
         _ => None,
     }
 }
@@ -610,10 +608,9 @@ mod imp {
         /// The element's `placement` prop (`full` or `inline`), for a v1
         /// app's `rox.viewport`.
         placement: RefCell<String>,
-        /// Rox's theme (`theme` prop) and the module shown: a plugin app
-        /// follows the theme (`plugin_appearance`).
+        /// Rox's theme (`theme` prop): the app follows it
+        /// (`mini_appearance`).
         theme: RefCell<String>,
-        module: RefCell<String>,
         /// The size last sent as a v1 app's `rox.viewport`.
         viewport: Cell<(f64, f64)>,
         /// Hears the size a v1 app lays out at when it changes.
@@ -811,7 +808,6 @@ mod imp {
                 app: RefCell::new(None),
                 placement: RefCell::new("full".to_owned()),
                 theme: RefCell::new(String::new()),
-                module: RefCell::new(String::new()),
                 viewport: Cell::new((0.0, 0.0)),
                 on_viewport: RefCell::new(None),
             });
@@ -865,17 +861,16 @@ mod imp {
             }
         }
 
-        /// Generated widgets keep the system's appearance whatever the
-        /// app's theme toggle says — Grok themes its own chrome through
-        /// `tc()` and never recolors the widgets it hosts. The theme sits on
-        /// the surface root; the window still carries the system's. Plugin
-        /// apps (v0 and v1) follow Rox's Light or Dark instead
-        /// (`plugin_appearance`), the system's under Rox's System.
+        /// Every mini app follows Rox's theme: Light or Dark as Rox is,
+        /// the window's (the system's) under Rox's System
+        /// (`mini_appearance`). The window itself carries the system's, so
+        /// the view sets its own; the app's surface background (what shows
+        /// before it draws) follows the same scheme.
         fn sync_appearance(&self) {
             let Some(window) = self.window() else {
                 return;
             };
-            let want = super::plugin_appearance(&self.ivars().module.borrow(), &self.ivars().theme.borrow());
+            let want = super::mini_appearance(&self.ivars().theme.borrow());
             let appearance = match want {
                 // SAFETY: immutable AppKit constants.
                 Some(true) => NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }),
@@ -1189,7 +1184,6 @@ mod imp {
                 return;
             }
             self.last = Some((module.clone(), js.clone()));
-            *self.fit.ivars().module.borrow_mut() = module.clone();
             self.fit.sync_appearance();
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
@@ -1361,18 +1355,14 @@ export default function R() {
     }
 
     #[test]
-    fn plugin_apps_follow_roxs_theme_and_widgets_the_systems() {
-        use super::plugin_appearance as look;
-        for module in ["mcp:bir/forms", r#"mcp:bir/forms|{"form":"1601C"}"#, "v1:dev.goldcoders.bir/tax-profile"] {
-            assert_eq!(look(module, "dark"), Some(true), "{module}");
-            assert_eq!(look(module, "light"), Some(false), "{module}");
-            assert_eq!(look(module, "system"), None, "{module}: the window's");
-            assert_eq!(look(module, ""), None, "{module}: no pref yet");
-        }
-        for module in ["R12", "R12@v3", "file:/x", ""] {
-            for pref in ["dark", "light", "system"] {
-                assert_eq!(look(module, pref), None, "{module} under {pref}: the system's");
-            }
+    fn every_mini_app_follows_roxs_theme() {
+        use super::mini_appearance as look;
+        // whatever the system is, Rox's Light and Dark win; System (or no
+        // pref yet) leaves the window's, which is the system's
+        assert_eq!(look("dark"), Some(true));
+        assert_eq!(look("light"), Some(false));
+        for pref in ["system", "", "sepia"] {
+            assert_eq!(look(pref), None, "{pref:?}: the window's appearance");
         }
     }
 
