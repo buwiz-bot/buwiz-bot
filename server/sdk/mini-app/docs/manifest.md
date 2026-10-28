@@ -48,7 +48,24 @@ to the system prompt when the scope is in play; approved plugins only).
 `id` (`^[a-z][a-z0-9-]{0,47}$`), `name`, `description`, `every_s`, `query`
 `{tool, field, args?}` (your own tool; `structuredContent[field]` is the
 search text), `prompt` (approved text), `reads` `[{plugin, tools}]` (read-only
-tools of another approved plugin, approved once by the user). No other keys.
+tools of another approved plugin, approved once by the user), `writes`
+(optional: your own tools that change data, which the routine's turn may call
+without asking). No other keys.
+
+A routine's turn may call your read-only tools (`readOnlyHint: true`) and the
+`reads` tools. A tool of yours that changes data runs only when the routine
+lists it in `writes`; the broker refuses any other. `writes` names only your
+own tools (`<short>_`), each once, and never a read-only one (the plugin is
+refused at install otherwise). The install review shows each routine's writes
+("Routine 'BIR payments' may change BIR data without asking:
+bir_record_payment"), and an update that adds one needs the user's consent.
+
+In the turn, a call to your plugin carries `_meta["rox/caller"]` with
+`origin: "agent"` and `routine: "<routine id>"`; the query call carries
+`origin: "routine"` and the same `routine`. Check `routine` in your own
+authorization too ([spec] P6): allow a write only for a routine that declares
+it, and only on evidence the routine was given (BIR records a payment only
+when the email's text it passes says so).
 
 ## `apps[]` ([spec] 5.5)
 
@@ -109,6 +126,7 @@ These are the limits the broker enforces (`LIMITS` in
 | `routines[].every_s` | 60 to 86400 s | `LIMITS.everyS` |
 | `routines[].reads` | 4 entries | `LIMITS.reads` |
 | `routines[].reads` tools, all entries together | 8 tools | `LIMITS.readsTools` |
+| `routines[].writes` | 8 tools | `LIMITS.writes` |
 | `permissions.tools` | 64 entries | `LIMITS.permTools` |
 | `permissions.open.apps` | 16 entries | `LIMITS.openApps` |
 | `permissions.open.external` | 8 entries | `LIMITS.openExternal` |
@@ -125,7 +143,7 @@ These are the limits the broker enforces (`LIMITS` in
 | Props schema `maxLength` | 512 chars | `LIMITS.schemaMaxLength` |
 | `inline.width` (and `min_width`) | 240 to 960 px | `LIMITS.inlineWidth` |
 | `inline.height` | 96 to 800 px | `LIMITS.inlineHeight` |
-| `inline.min_height` / `inline.max_height` | 96 to `height` / `height` to 800 px | `LIMITS.inlineHeight` |
+| `inline.min_height` / `inline.max_height` | 96 to `height` / `height` to 800 px | `LIMITS.inlineHeight` (as `inline.height`) |
 
 Limits outside the manifest (bridge calls, results, storage, timeouts) are
 in [bridge.md](bridge.md#limits).

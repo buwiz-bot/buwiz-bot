@@ -122,7 +122,9 @@ second per open, the last always landing; `rox.fit` needs no permission
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
 `_meta["rox/caller"]` = `{origin, plugin, app, open_id, ts}` ([spec] 8.4).
 `origin` is `app` for bridge calls, `agent` for the model, `routine` for a
-routine's query and `resolve` for resolve tools. `startPlugin` passes it to
+routine's query and `resolve` for resolve tools. In a routine's turn the
+model's calls to the routine's own plugin, and its query, also carry
+`routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-59)). `startPlugin` passes it to
 your `run(args, caller)` as `caller`. Use it to authorize (see
 [security.md](security.md)).
 

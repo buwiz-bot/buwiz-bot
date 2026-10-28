@@ -23,9 +23,12 @@
 //   RTN-13 the routine's thread exists once it is enabled, before any run
 //          (one enabled earlier gets it at the server's start or its next
 //          tick); a run with nothing new adds no turn to it
+//   RTN-14 in a routine's turn a call to its own plugin names the routine
+//          (rox/caller.routine), and a tool of it that changes data runs
+//          only when the routine lists it in `writes`
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
+import { v1AgentCall, v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
 import { createRoutineThreads } from "../server/v1/routine-threads.mjs";
 import { createRoutines } from "../server/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, fixtureSpec, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
@@ -124,7 +127,7 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.match(t.prompt, /^\(This routine runs on its own every 300s/);
   assert.match(t.prompt, /## Routine: BIR mail \(approved plugin dev\.goldcoders\.fixture\)\nRecord each BIR confirmation\./, "10.2 label");
   assert.match(t.prompt, /New item from dev\.goldcoders\.google-workspace gws_search_mail:\n\{\n "id": "m1"/);
-  assert.deepEqual(t.surface, { plugin: FX, reads: READS });
+  assert.deepEqual(t.surface, { plugin: FX, routine: "bir-mail", reads: READS, writes: [] });
   assert.equal(listed("bir-mail").seen_count, 1);
   assert.equal(listed("bir-mail").last_error, null);
   assert.equal(listed("bir-mail").last_items, 1);
@@ -230,6 +233,31 @@ test("RTN-06 the turn's v1 tools are the routine plugin's own plus only the list
   const full = v1Tools(plugins, new Set(), turns[0].surface).map((t) => t.name);
 
   assert.ok(full.includes("gws_search_mail") && full.includes("gws_read_mail"));
+});
+
+test("RTN-14 a routine's turn calls its own tools that change data only when its writes list them", async () => {
+  const job = { v1Surface: turns[0].surface };
+  const refused = await v1AgentCall(plugins, job, "fx_echo", { a: 1 });
+
+  assert.equal(refused.is_error, true);
+  assert.match(refused.content, /fx_echo changes data, and routine bir-mail may change data only with the tools its manifest lists in writes/);
+  assert.equal((await stats()).calls.fx_echo, undefined, "nothing reached the plugin");
+  // a read-only tool of its own runs
+  assert.equal((await v1AgentCall(plugins, job, "fx_search", { query: "x" })).is_error, false);
+  // a write the routine lists runs, and the plugin sees which routine calls
+  const allowed = await v1AgentCall(plugins, { v1Surface: { ...turns[0].surface, writes: ["fx_echo"] } }, "fx_echo", { a: 1 });
+
+  assert.equal(allowed.is_error, false, allowed.content);
+  const caller = JSON.parse(allowed.content).caller;
+
+  assert.equal(caller.origin, "agent");
+  assert.equal(caller.routine, "bir-mail");
+  assert.equal(caller.plugin, FX);
+  // outside a routine nothing changes: no routine named, no writes needed
+  const chat = JSON.parse((await v1AgentCall(plugins, { id: 1 }, "fx_echo", { a: 1 })).content).caller;
+
+  assert.equal(chat.origin, "agent");
+  assert.equal(chat.routine, undefined);
 });
 
 test("RTN-07 an update that changes what a routine reads needs a new approval", async () => {

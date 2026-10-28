@@ -9,7 +9,8 @@
 // the first `reads` entry as {query} (or uses the own result without
 // reads), and runs the routine's prompt as one agent turn per item whose
 // id it has not seen. The turn's v1 tools are the plugin's own plus the
-// listed `reads` tools only. Seen ids (the last 1000) and the approval
+// listed `reads` tools only, and of its own the turn calls only read-only
+// ones and the routine's `writes` (agent.mjs). Seen ids (the last 1000) and the approval
 // live in `v1_routines` beside the install records.
 //
 // The turns run in the routine's own thread (`threads`, routine-threads.mjs),
@@ -191,8 +192,9 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
 
   // ── one run ──────────────────────────────────────────────────────────
 
-  async function call(pluginId, tool, args) {
-    const meta = { "rox/caller": { origin: "routine", plugin: pluginId, ts: Date.now() } };
+  // `routine`: the routine's id, on a call to its own plugin (8.4)
+  async function call(pluginId, tool, args, routine) {
+    const meta = { "rox/caller": { origin: "routine", plugin: pluginId, ...(routine ? { routine } : {}), ts: Date.now() } };
     const r = await plugins.callTool(pluginId, tool, args, { meta });
 
     if (r.isError) throw new Error(`${tool}: ${firstText(r).slice(0, 300) || "failed"}`);
@@ -204,7 +206,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
 
   // steps 1-2: the search text from the own tool, then the items
   async function itemsOf(pluginId, r) {
-    const own = await call(pluginId, r.query.tool, r.query.args || {});
+    const own = await call(pluginId, r.query.tool, r.query.args || {}, r.id);
     const text = own[r.query.field];
 
     if (!isString(text)) throw new Error(`${r.query.tool} gave no string ${r.query.field}`);
@@ -323,7 +325,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
     const seen = parse(row.seen, []);
     const known = new Set(seen);
     const label = v1RoutinePrompt(plugins, pluginId, r.id);
-    const surface = { plugin: pluginId, reads: r.reads || [] };
+    const surface = { plugin: pluginId, routine: r.id, reads: r.reads || [], writes: r.writes || [] };
 
     for (const item of items) {
       if (known.has(item.id)) continue;

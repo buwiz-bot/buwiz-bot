@@ -40,7 +40,8 @@ function contributing(plugins) {
 }
 
 // A routine's turn (5.9) sees its own plugin's tools and only the `reads`
-// tools it names; `surface` is {plugin, reads} then, null otherwise.
+// tools it names; `surface` is {plugin, routine, reads, writes} then, null
+// otherwise.
 const inSurface = (surface, plugin, name) => !surface || plugin === surface.plugin || (surface.reads || []).some((x) => x.plugin === plugin && x.tools.includes(name));
 
 // 10.1: a tool marked `_meta["rox/audience"]` without "agent" serves apps
@@ -123,16 +124,27 @@ export function noteSuggest(job, suggest) {
   }
 }
 
-/** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}. */
+const readOnly = (plugins, plugin, name) => plugins.runtime(plugin).tools.some((t) => t.name === name && t.annotations?.readOnlyHint === true);
+
+/** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}.
+ *  In a routine's turn a call to its own plugin names the routine
+ *  (`rox/caller.routine`), and a tool of it that changes data runs only
+ *  when the routine lists it in `writes` (5.9). */
 export async function v1AgentCall(plugins, job, name, input) {
-  const plugin = v1ToolPlugin(plugins, name, job?.v1Surface);
+  const surface = job?.v1Surface;
+  const plugin = v1ToolPlugin(plugins, name, surface);
   const row = plugin && plugins.rowOf(plugin);
 
   if (!row) return { content: `${name} is not available: its plugin is off, failed, or the tool is switched off`, is_error: true };
+  const own = surface?.routine && plugin === surface.plugin;
+
+  if (own && !(surface.writes || []).includes(name) && !readOnly(plugins, plugin, name))
+    return { content: `${name} changes data, and routine ${surface.routine} may change data only with the tools its manifest lists in writes`, is_error: true };
+  const caller = { origin: "agent", plugin, ...(own ? { routine: surface.routine } : {}), ts: Date.now() };
   let r;
 
   try {
-    r = await plugins.callTool(plugin, name, isObject(input) ? input : {}, { meta: { "rox/caller": { origin: "agent", plugin, ts: Date.now() } } });
+    r = await plugins.callTool(plugin, name, isObject(input) ? input : {}, { meta: { "rox/caller": caller } });
   } catch (e) {
     return { content: `${name}: ${e.code || "error"}: ${String(e.message || e).slice(0, 300)}`, is_error: true };
   }
