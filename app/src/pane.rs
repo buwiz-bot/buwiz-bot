@@ -424,10 +424,13 @@ fn pane_card() -> View {
         .p_1()
 }
 
-/// Details — the Routines card (App.tsx:2627).
+/// Details — the Routines card (App.tsx:2627). Routines are managed
+/// here, with the bot they belong to (not in Settings): each row runs,
+/// pauses or resumes its routine; Suggested offers the templates.
 fn details_tab() -> impl IntoElement {
     store().v1_refresh(false);
-    crate::settings::load_routines();
+    crate::routines::load_routines();
+    crate::routines::load_templates();
     view()
         // An agent's own context: what it is, what it remembers, what it
         // has used — each fills on demand (asking it in chat, or using a
@@ -444,7 +447,11 @@ fn details_tab() -> impl IntoElement {
                 RoutinesSection::This(r) => {
                     view().child(pane_label("This routine".into())).child(this_routine(r)).into_element()
                 }
-                RoutinesSection::List => view().child(pane_label("Routines".into())).child(routines_list()).into_element(),
+                RoutinesSection::List => view()
+                    .child(pane_label("Routines".into()))
+                    .child(routines_list())
+                    .child(crate::routines::suggested())
+                    .into_element(),
             }
         }))
 }
@@ -461,6 +468,9 @@ enum RoutinesSection {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct ThisRoutine {
     name: String,
+    /// Its plugin and id, for Run now and Pause.
+    plugin: String,
+    id: String,
     /// The plugin that runs it ("" before the plugins are listed).
     by: String,
     /// "Checks every 5 min" ("" unknown).
@@ -468,6 +478,9 @@ struct ThisRoutine {
     /// "Last checked 3:42 PM · nothing new", its error, or why it can't.
     status: String,
     failed: bool,
+    /// Running on its schedule (Pause), or paused (Resume); false too
+    /// before the plugins are listed.
+    enabled: bool,
     /// The chat it reports to, and the action back to it.
     chat: String,
     go: String,
@@ -484,7 +497,7 @@ fn routines_section(
         .iter()
         .find(|p| p.id == r.plugin)
         .and_then(|p| p.routines.iter().find(|x| x.id == r.id).map(|x| (p.title.clone(), x)));
-    let mut out = ThisRoutine { name: r.name, chat: r.thread, go: format!("Go to {bot} chat"), ..Default::default() };
+    let mut out = ThisRoutine { name: r.name, plugin: r.plugin, id: r.id, chat: r.thread, go: format!("Go to {bot} chat"), ..Default::default() };
     if let Some((by, x)) = found {
         let (status, failed) = x.last_check(checked);
         let mut c = status.chars();
@@ -492,25 +505,77 @@ fn routines_section(
         out.failed = failed;
         out.by = by;
         out.schedule = x.schedule();
+        out.enabled = x.enabled;
     }
     RoutinesSection::This(out)
 }
 
-/// The "This routine" card: name, plugin, schedule, last check, and the
-/// way to the chat it reports to (as the header's back pill).
+/// A small text action on a routine (Run now, Pause, Open, Delete).
+fn routine_act(label: &'static str, aria: String, danger: bool, on: impl Fn() + 'static) -> AnyElement {
+    let hov = signal(false);
+    text(label)
+        .text_size(px(12.0))
+        .text_color(move || match (hov.get(), danger) {
+            (true, true) => theme::DOWN,
+            (true, false) => theme::TEXT,
+            _ => theme::MUTED,
+        })
+        .px_2()
+        .py_1()
+        .rounded(px(6.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .label(aria)
+        .into_element()
+}
+
+/// The "This routine" card: name, plugin, schedule, last check (or its
+/// Run now's state), Run now and Pause / Resume, and the way to the chat
+/// it reports to (as the header's back pill).
 fn this_routine(r: ThisRoutine) -> impl IntoElement {
     let hov = signal(false);
     let chat = r.chat.clone();
+    let key = crate::routines::v1_key(&r.plugin, &r.id);
+    let usual = (r.status.clone(), r.failed);
     let line = |t: String, c| text(t).text_size(px(12.0)).text_color(c).number_of_lines(3);
+    let (p1, i1, p2, i2, c2) = (r.plugin.clone(), r.id.clone(), r.plugin.clone(), r.id.clone(), r.chat.clone());
+    let known = !r.by.is_empty();
+    let enabled = r.enabled;
     pane_card().child(
         view()
             .gap(px(2.0))
             .px(px(10.0))
             .py(px(8.0))
-            .child(text(r.name).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(2))
+            .child(text(r.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(2))
             .when(!r.by.is_empty(), |v| v.child(line(r.by, theme::MUTED)))
             .when(!r.schedule.is_empty(), |v| v.child(line(r.schedule, theme::DIM)))
-            .when(!r.status.is_empty(), |v| v.child(line(r.status, if r.failed { theme::DOWN } else { theme::DIM })))
+            .child(dynamic(move || {
+                let (t, failed) = crate::routines::row_status(crate::routines::run_of(&key).as_ref(), usual.clone());
+                if t.is_empty() {
+                    return view().into_element();
+                }
+                line(t, if failed { theme::DOWN } else { theme::DIM }).into_element()
+            }))
+            .when(known, |v| {
+                v.child(
+                    view()
+                        .flex_row()
+                        .pt(px(4.0))
+                        .gap_1()
+                        .when(enabled, |v| {
+                            v.child(routine_act("Run now", format!("Run {} now", r.name), false, move || store().v1_routine_run(&p1, &i1)))
+                        })
+                        .child(if enabled {
+                            routine_act("Pause", format!("Pause {}", r.name), false, move || {
+                                store().v1_routine(&p2, &i2, crate::mini_v1::host_api::RoutineAction::Disable)
+                            })
+                        } else {
+                            routine_act("Resume", format!("Resume {}", r.name), false, move || store().v1_routine_resume(&p2, &i2, &c2))
+                        }),
+                )
+            })
             .child(
                 view()
                     .flex_row()
@@ -536,7 +601,8 @@ fn this_routine(r: ThisRoutine) -> impl IntoElement {
 /// The chat's routines, or how to get one.
 fn routines_list() -> impl IntoElement {
     dynamic(|| {
-        let routines = chat_routines();
+        let st = store();
+        let routines = chat_routines(&st.active_id.get(), &st.v1.listed.get(), &st.routines.get(), crate::app_name());
         if routines.is_empty() {
             let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
             return pane_card()
@@ -553,48 +619,114 @@ fn routines_list() -> impl IntoElement {
     })
 }
 
-/// A routine that posts in the open chat: its name, who runs it, how its
-/// last run went, and the v1 plugin whose page manages it.
+/// A routine that reports to the open chat: its name, who runs it, how
+/// its last run went, whether it runs on its schedule, and which kind.
+#[derive(Debug, Clone, PartialEq)]
 struct ChatRoutine {
     name: String,
     by: String,
     status: String,
     failed: bool,
-    /// A v1 plugin's routine: (plugin, routine id, its thread or "").
-    plugin: Option<(String, String, String)>,
+    enabled: bool,
+    kind: RoutineKind,
 }
 
-/// The enabled routines, v1 plugins' and the server's own, that post in
-/// the open chat. Both lists reload when the Details tab is built.
-fn chat_routines() -> Vec<ChatRoutine> {
-    let st = store();
-    let chat = st.active_id.get();
-    let status = |last_run: f64, last_error: &str| match (last_error.is_empty(), last_run > 0.0) {
-        (false, _) => (format!("Last run failed: {last_error}"), true),
-        (true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
-        (true, false) => ("Waiting for its first run".to_owned(), false),
-    };
-    let mut out = Vec::new();
-    for p in st.v1.listed.get() {
-        for r in p.routines.iter().filter(|r| r.enabled && r.thread == chat) {
-            let (status, failed) =
-                if r.available { status(r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
-            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some((p.id.clone(), r.id.clone(), r.home.clone())) });
+#[derive(Debug, Clone, PartialEq)]
+enum RoutineKind {
+    /// A v1 plugin's: its plugin, id, own thread ("" not made yet) and the
+    /// chat it reports to.
+    Plugin { plugin: String, id: String, home: String, chat: String },
+    /// The server's own (`/routines`): its turns post in this chat.
+    Server { id: String },
+}
+
+impl ChatRoutine {
+    /// The key of its Run now (`routines::run_of`).
+    fn key(&self) -> String {
+        match &self.kind {
+            RoutineKind::Plugin { plugin, id, .. } => crate::routines::v1_key(plugin, id),
+            RoutineKind::Server { id } => crate::routines::v0_key(id),
         }
     }
-    for r in st.routines.get().into_iter().filter(|r| r.enabled && r.thread == chat) {
-        let (status, failed) = status(r.last_run, &r.last_error);
-        let by = if r.bot_name.is_empty() { crate::app_name().to_owned() } else { r.bot_name.clone() };
-        out.push(ChatRoutine { name: r.name, by, status, failed, plugin: None });
+}
+
+/// The routines, v1 plugins' and the server's own, that report to `chat`,
+/// paused ones too (they resume here).
+fn chat_routines(chat: &str, listed: &[crate::mini_v1::connect::Listed], server: &[crate::routines::Routine], app: &str) -> Vec<ChatRoutine> {
+    let status = |enabled: bool, last_run: f64, last_error: &str| match (enabled, last_error.is_empty(), last_run > 0.0) {
+        (false, _, _) => ("Paused".to_owned(), false),
+        (true, false, _) => (format!("Last run failed: {last_error}"), true),
+        (true, true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
+        (true, true, false) => ("Waiting for its first run".to_owned(), false),
+    };
+    let mut out = Vec::new();
+    for p in listed {
+        for r in p.routines.iter().filter(|r| !chat.is_empty() && r.thread == chat) {
+            let (status, failed) =
+                if r.available || !r.enabled { status(r.enabled, r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
+            out.push(ChatRoutine {
+                name: r.name.clone(),
+                by: p.title.clone(),
+                status,
+                failed,
+                enabled: r.enabled,
+                kind: RoutineKind::Plugin { plugin: p.id.clone(), id: r.id.clone(), home: r.home.clone(), chat: r.thread.clone() },
+            });
+        }
+    }
+    for r in server.iter().filter(|r| !chat.is_empty() && r.thread == chat) {
+        let (status, failed) = status(r.enabled, r.last_run, &r.last_error);
+        let by = if r.bot_name.is_empty() { app.to_owned() } else { r.bot_name.clone() };
+        out.push(ChatRoutine { name: r.name.clone(), by, status, failed, enabled: r.enabled, kind: RoutineKind::Server { id: r.id.clone() } });
     }
     out
 }
 
-/// One routine in the Details card; a v1 plugin's opens its own thread
-/// (made once it is enabled), its plugin page only when the broker names
-/// none (an older broker, before its first run).
+/// One routine in the Details card, with its actions: Run now (while it
+/// runs on its schedule), Pause or Resume; a v1 plugin's Open (its own
+/// thread, made once it is enabled; its plugin page only when the broker
+/// names none), the server's own Delete.
 fn routine_row(r: ChatRoutine) -> AnyElement {
-    let row = view()
+    let key = r.key();
+    let usual = (r.status.clone(), r.failed);
+    let name = r.name.clone();
+    let mut acts = view().flex_row().flex_wrap().gap_1().pt(px(2.0));
+    match r.kind.clone() {
+        RoutineKind::Plugin { plugin, id, home, chat } => {
+            let (p1, i1, p2, i2) = (plugin.clone(), id.clone(), plugin.clone(), id.clone());
+            if r.enabled {
+                acts = acts
+                    .child(routine_act("Run now", format!("Run {name} now"), false, move || store().v1_routine_run(&p1, &i1)))
+                    .child(routine_act("Pause", format!("Pause {name}"), false, move || {
+                        store().v1_routine(&p2, &i2, crate::mini_v1::host_api::RoutineAction::Disable)
+                    }));
+            } else {
+                acts = acts.child(routine_act("Resume", format!("Resume {name}"), false, move || store().v1_routine_resume(&p2, &i2, &chat)));
+            }
+            acts = acts.child(routine_act("Open", format!("Open {name}'s thread"), false, move || {
+                match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&plugin, &id)) {
+                    Some(thread) => store().go_to(&thread, None),
+                    None => {
+                        store().open_plugins();
+                        store().push_nav("v1plugin", &plugin, "");
+                    }
+                }
+            }));
+        }
+        RoutineKind::Server { id } => {
+            let (i1, i2, i3) = (id.clone(), id.clone(), id);
+            let on = r.enabled;
+            if on {
+                acts = acts.child(routine_act("Run now", format!("Run {name} now"), false, move || crate::routines::run_v0(i1.clone())));
+            }
+            acts = acts
+                .child(routine_act(if on { "Pause" } else { "Resume" }, format!("{} {name}", if on { "Pause" } else { "Resume" }), false, move || {
+                    crate::routines::set_routine_enabled(i2.clone(), !on)
+                }))
+                .child(routine_act("Delete", format!("Delete {name}"), true, move || crate::routines::delete_routine(i3.clone())));
+        }
+    }
+    view()
         .gap(px(2.0))
         .px(px(10.0))
         .py(px(8.0))
@@ -602,24 +734,12 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
         .label(r.name.clone())
         .child(text(r.name).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
         .child(text(r.by).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
-        .child(
-            text(r.status)
-                .text_size(px(12.0))
-                .text_color(if r.failed { theme::DOWN } else { theme::DIM })
-                .number_of_lines(2),
-        );
-    match r.plugin {
-        Some((id, routine, home)) => row
-            .on_press(move || match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&id, &routine)) {
-                Some(thread) => store().go_to(&thread, None),
-                None => {
-                    store().open_plugins();
-                    store().push_nav("v1plugin", &id, "");
-                }
-            })
-            .into_element(),
-        None => row.into_element(),
-    }
+        .child(dynamic(move || {
+            let (t, failed) = crate::routines::row_status(crate::routines::run_of(&key).as_ref(), usual.clone());
+            text(t).text_size(px(12.0)).text_color(if failed { theme::DOWN } else { theme::DIM }).number_of_lines(2).into_element()
+        }))
+        .child(acts)
+        .into_element()
 }
 
 /// The bot's context in Details: its description, and a row to its Bot
@@ -1816,7 +1936,7 @@ async fn client_post(route: &str, body: serde_json::Value) -> Option<serde_json:
 
 #[cfg(test)]
 mod tests {
-    use super::{routines_section, RoutinesSection, ThisRoutine};
+    use super::{chat_routines, routines_section, ChatRoutine, RoutineKind, RoutinesSection, ThisRoutine};
     use crate::mini_v1::connect::Listed;
     use crate::store::RoutineOf;
 
@@ -1832,10 +1952,13 @@ mod tests {
             routines_section(Some(open.clone()), &listed, "Piccolo", at),
             RoutinesSection::This(ThisRoutine {
                 name: "BIR payments".into(),
+                plugin: "dev.goldcoders.bir".into(),
+                id: "payments".into(),
                 by: "BIR".into(),
                 schedule: "Checks every 5 min".into(),
                 status: "Last checked 3:42 PM · nothing new".into(),
                 failed: false,
+                enabled: true,
                 chat: "t2".into(),
                 go: "Go to Piccolo chat".into(),
             })
@@ -1848,5 +1971,40 @@ mod tests {
         assert_eq!((r.status.as_str(), r.failed), ("Last check failed: fx_query: offline", true));
         let RoutinesSection::This(r) = routines_section(Some(open), &[], "Piccolo", at) else { panic!() };
         assert_eq!((r.by.as_str(), r.status.as_str(), r.go.as_str()), ("", "", "Go to Piccolo chat"));
+        assert!(!r.enabled, "no Run now or Pause before the plugins are listed");
+    }
+
+    #[test]
+    fn a_chat_lists_its_routines_paused_ones_too_and_no_other_chats() {
+        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+            {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true, "thread": "t2", "home": "t3"},
+            {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": false, "available": false,
+             "reason": "you have not approved what it reads", "thread": "t2", "home": "t4"},
+            {"id": "elsewhere", "name": "Other chat", "every_s": 300, "enabled": true, "available": true, "thread": "t9"},
+            {"id": "never", "name": "Never enabled", "every_s": 300, "enabled": false, "available": false}]}))];
+        let server = vec![
+            crate::routines::Routine::of(&serde_json::json!({"id": "r1", "name": "Calendar sync", "thread": "t2", "enabled": true, "botName": "Piccolo", "last_error": "offline"})),
+            crate::routines::Routine::of(&serde_json::json!({"id": "r2", "name": "Not here", "thread": "t5", "enabled": true})),
+        ];
+        let got = chat_routines("t2", &listed, &server, "Rox");
+        assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR payments", "BIR confirmations", "Calendar sync"]);
+        assert_eq!((got[0].status.as_str(), got[0].enabled), ("Waiting for its first run", true));
+        assert_eq!(got[0].kind, RoutineKind::Plugin { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), home: "t3".into(), chat: "t2".into() });
+        // paused: it says so (not why it couldn't run), and resumes in t2
+        assert_eq!((got[1].status.as_str(), got[1].failed, got[1].enabled), ("Paused", false, false));
+        assert_eq!(
+            got[2],
+            ChatRoutine {
+                name: "Calendar sync".into(),
+                by: "Piccolo".into(),
+                status: "Last run failed: offline".into(),
+                failed: true,
+                enabled: true,
+                kind: RoutineKind::Server { id: "r1".into() },
+            }
+        );
+        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/payments");
+        assert_eq!(got[2].key(), "v0:r1");
+        assert!(chat_routines("", &listed, &server, "Rox").is_empty(), "no chat open, none");
     }
 }

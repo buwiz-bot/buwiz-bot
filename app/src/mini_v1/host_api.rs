@@ -206,6 +206,17 @@ pub fn routine_action(
     Ok(v.get("routine").cloned().unwrap_or(Value::Null))
 }
 
+/// `POST /v1/host/routines/run {plugin, routine}`: one run now, out of
+/// schedule. The broker answers at once (the routine with `running`); a
+/// paused, running or unavailable routine is refused with the reason.
+pub fn routine_run(b: &dyn Broker, plugin: &str, routine: &str) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !super::perms::app_id_ok(routine) {
+        return Err(RoxError::new("invalid_args", "not a plugin or routine id"));
+    }
+    let v = post(b, "/v1/host/routines/run", json!({"plugin": plugin, "routine": routine}), SHORT_TIMEOUT)?;
+    Ok(v.get("routine").cloned().unwrap_or(Value::Null))
+}
+
 /// The broker at `client::backend()`, over HTTP/1.1 on the loopback.
 pub struct HttpBroker {
     origin: String,

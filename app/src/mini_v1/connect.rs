@@ -68,6 +68,8 @@ pub struct Routine {
     pub last_error: String,
     /// New items the last run that went through ran (`None` unknown).
     pub last_items: Option<u64>,
+    /// A run is in progress (Run now, or its schedule).
+    pub running: bool,
 }
 
 impl Routine {
@@ -84,7 +86,7 @@ impl Routine {
 
     /// "Checks every 5 min".
     pub fn schedule(&self) -> String {
-        format!("Checks {}", crate::settings::interval(self.every_s))
+        format!("Checks {}", crate::routines::interval(self.every_s))
     }
 
     /// How its last check went, and whether that is a failure: "last
@@ -171,6 +173,7 @@ impl Listed {
                     last_items: r.get("last_items").and_then(Value::as_u64),
                     last_run: r.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
                     last_error: s(r, "last_error"),
+                    running: r.get("running").and_then(Value::as_bool).unwrap_or(false),
                     reads: list(r, "reads_status")
                         .iter()
                         .map(|x| {

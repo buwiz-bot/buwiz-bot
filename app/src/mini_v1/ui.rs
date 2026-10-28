@@ -1179,6 +1179,50 @@ impl Store {
         self.v1_job("", move || host_api::routine_action(&broker(), &p, &r, action, Some(thread.as_str())), |_| {});
     }
 
+    /// Resume of a paused routine: enabled again in the chat it reports to
+    /// (`chat`), wherever it is resumed from (its own thread included).
+    pub fn v1_routine_resume(&'static self, plugin: &str, routine: &str, chat: &str) {
+        let (p, r, c) = (plugin.to_owned(), routine.to_owned(), chat.to_owned());
+        self.v1_job("", move || host_api::routine_action(&broker(), &p, &r, host_api::RoutineAction::Enable, Some(c.as_str())), |_| {});
+    }
+
+    /// Run now (`POST /v1/host/routines/run`): "Running…" on its rows until
+    /// the plugin list says the run is done (checked every 2 s, 15 min at
+    /// most), then the run's result line.
+    pub fn v1_routine_run(&'static self, plugin: &str, routine: &str) {
+        let key = crate::routines::v1_key(plugin, routine);
+        if crate::routines::is_running(&key) {
+            return;
+        }
+        crate::routines::set_run(&key, crate::routines::RunState::Running);
+        let (p, r) = (plugin.to_owned(), routine.to_owned());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let (p2, r2) = (p.clone(), r.clone());
+                match crate::vault::off_main(move || host_api::routine_run(&broker(), &p2, &r2)).await {
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return crate::routines::finish(key, crate::routines::refused(&e.message)),
+                    None => return crate::routines::finish(key, crate::routines::refused("")),
+                }
+                for _ in 0..450 {
+                    let (p2, r2) = (p.clone(), r.clone());
+                    let now = crate::vault::off_main(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let list = host_api::plugins(&broker()).ok()?;
+                        list.iter().map(connect::Listed::of).find(|x| x.id == p2)?.routines.into_iter().find(|x| x.id == r2)
+                    })
+                    .await
+                    .flatten();
+                    if let Some(now) = now.filter(|x| !x.running) {
+                        crate::routines::finish(key, crate::routines::v1_outcome(&now));
+                        return self.v1_refresh(false);
+                    }
+                }
+                crate::routines::finish(key, ("Still running; its thread shows what it finds".to_owned(), false));
+            })
+        });
+    }
+
     /// Closes every open of `plugin`: the full-screen stack and the inline
     /// cards (13.4, 13.6 step 2).
     pub fn v1_close_opens(&'static self, plugin: &str) {
