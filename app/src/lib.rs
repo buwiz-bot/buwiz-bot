@@ -97,7 +97,8 @@ pub fn App() -> impl IntoElement {
     // print preview, `links::viewable` only) opened from another app
     // or a mini app (the dev bundle declares the scheme): the root never
     // remounts, so this handler lives as long as the app. `open_os_link`
-    // makes nothing until the person acts in Rox (a new chat asks first).
+    // makes nothing until the person acts in Rox (a new chat or a mini app
+    // asks first).
     // Other URLs are ignored here — the router would hand them to the
     // system, which for `rox://` sends them straight back.
     links::make_view_dir();

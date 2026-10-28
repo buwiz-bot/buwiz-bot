@@ -5039,12 +5039,13 @@ impl Store {
                 let label = if mins >= 1 { format!("{label} · {}", elapsed_label(mins)) } else { label };
                 self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
             }
-            // a server asked to show one of its mini apps (once per job)
+            // a server asked to show one of its mini apps (once per job),
+            // after Open in the link sheet
             if let Some(open) = v.get("open").filter(|o| o.is_object()) {
                 let key = s(open, "key");
                 if !key.is_empty() && opened.as_deref() != Some(key.as_str()) {
                     opened = Some(key.clone());
-                    self.open_mini_full(&key, &s(open, "title"));
+                    self.open_mini_from(crate::links::AppOpener::ToolResult, &key, &s(open, "title"), "");
                 }
             }
             // The reply streams into the transcript; the chat list less often.
@@ -6592,19 +6593,20 @@ impl Store {
 
     /// A `rox://` link another app or a web page opened (`lib.rs`, a launch
     /// argument): routed like [`open_link`], except that what would make
-    /// something (a new chat) waits on the person in Rox.
+    /// something (a new chat) or open a mini app waits on the person in Rox.
     pub fn open_os_link(&'static self, url: &str) {
         self.route_link(url, true);
     }
 
     fn route_link(&'static self, url: &str, os: bool) {
-        use crate::links::{LinkAsk, Outside};
+        use crate::links::{AppOpener, LinkAsk, Outside};
         if !self.booted.get() && url.starts_with("rox://") {
             *self.early_link.borrow_mut() = Some((url.to_owned(), os));
             return;
         }
         if let Some(key) = mini_link(url) {
-            self.open_mini_token(&key, "", &link_token(url));
+            let from = if os { AppOpener::Outside } else { AppOpener::Rox };
+            self.open_mini_from(from, &key, "", &link_token(url));
             return;
         }
         // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
@@ -6701,7 +6703,19 @@ impl Store {
                 self.mini_full.set(Vec::new());
                 Owner::detached().run(|| self.new_thread_with(draft));
             }
+            crate::links::LinkAsk::App(app) => self.open_mini_token(&app.key, &app.title, &app.token),
         }
+    }
+
+    /// A mini app full screen for `from`: at once when the person opened it
+    /// in Rox, else after Open in the link sheet
+    /// ([`crate::links::app_opens_unasked`]).
+    pub fn open_mini_from(&'static self, from: crate::links::AppOpener, key: &str, title: &str, token: &str) {
+        if crate::links::app_opens_unasked(from) {
+            return self.open_mini_token(key, title, token);
+        }
+        let ask = crate::links::AppAsk { key: key.to_owned(), title: title.to_owned(), token: token.to_owned(), from };
+        self.link_ask.set(Some(crate::links::LinkAsk::App(ask)));
     }
 
     fn mini_title(&'static self, app: &str) -> Signal<String> {
