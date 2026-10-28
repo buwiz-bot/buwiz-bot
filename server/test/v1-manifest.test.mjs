@@ -3,7 +3,9 @@
 // and every manifest limit of Appendix A at the limit and one over. Also
 // the JCS vectors shared with Rox and the ed25519 helpers.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { V1, isV1, v1Canonical, v1TypedTokens } from "../server/grammar.mjs";
@@ -311,4 +313,26 @@ test("MAN-11 a command named like a built-in (/status) is refused", () => {
 test("MAN-12 routines[].needs is refused as an unknown key", () => {
   refused((m) => (m.routines[0].needs = "gmail"), "manifest_invalid", /needs/);
   refused((m) => (m.routines[0].reads[0].scope = "all"), "manifest_invalid");
+});
+
+test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a manifest that verifies", () => {
+  const keyFile = join(dir, "publisher.key");
+  const template = join(dir, "template.json");
+  const out = join(dir, "signed.json");
+  const m = JSON.parse(readFileSync(join(ROOT, "server", "v1", "fixture", "manifest.json"), "utf8"));
+  const fx = join(ROOT, "server", "v1", "fixture");
+
+  m.publisher.key_id = pub.keyId;
+  writeFileSync(template, JSON.stringify(m));
+  writeFileSync(keyFile, pub.seed, { mode: 0o644 });
+  chmodSync(keyFile, 0o644);
+  const run = () => execFileSync(process.execPath, [join(ROOT, "server", "v1", "sign-manifest.mjs"), template, "--key-file", keyFile, "--app", `board=${join(fx, "board.tsx")}`, "--app", `card=${join(fx, "card.tsx")}`, "--out", out], { stdio: "pipe" });
+
+  assert.throws(run, /readable by others/);
+  chmodSync(keyFile, 0o600);
+  run();
+  const r = verifyManifest(readFileSync(out, "utf8"), trust);
+
+  assert.equal(r.manifest.apps[1].fingerprint, `sha256:${createHash("sha256").update(readFileSync(join(fx, "card.tsx"))).digest("hex")}`);
+  assert.ok(!readFileSync(out, "utf8").includes(pub.seed), "the seed is not in the output");
 });
