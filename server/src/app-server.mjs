@@ -59,6 +59,7 @@ import groupsRoute from "./routes/groups.mjs";
 import routinesRoute from "./routes/routines.mjs";
 import { migrateGroups } from "./groups.mjs";
 import { startRoutines } from "./routines.mjs";
+import { allowedOrigins, refusal } from "./guard.mjs";
 
 const routes = [
   miscRoute,
@@ -72,10 +73,26 @@ const routes = [
   marketRoute,
   dataRoute,
 ];
+// No wildcard CORS: an origin is answered only when it is allowed (the
+// server's own pages, plus GROK_ALLOWED_ORIGINS, comma-separated), and any
+// other Origin is refused before a route runs (guard.mjs).
+const ALLOWED = allowedOrigins(PORT, process.env.GROK_ALLOWED_ORIGINS);
 const server = createServer(async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "content-type");
-  if (req.method === "OPTIONS") return res.end();
+  const no = refusal(req, ALLOWED);
+  if (no) {
+    res.statusCode = no.status;
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ ok: false, error: no.error }));
+  }
+  if (req.headers.origin) {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+    res.setHeader("Access-Control-Allow-Headers", "content-type");
+    res.setHeader("Vary", "Origin");
+  }
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    return res.end();
+  }
   for (const h of routes) {
     try {
       if (await h(req, res) || res.writableEnded || res.headersSent) return;
