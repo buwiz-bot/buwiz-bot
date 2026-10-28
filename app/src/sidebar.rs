@@ -2074,7 +2074,7 @@ fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
         });
     draggable(row, src, key, move || {
         let t = t.get_untracked();
-        let title = if t.name.is_empty() { "New chat".to_owned() } else { t.name.clone() };
+        let title = if t.name.is_empty() { "New chat".to_owned() } else { untracked(|| store().v1_plain(&t.name)) };
         Dragged::new("chat", t.id, String::new(), title, Face::Chat(t.name))
     })
 }
