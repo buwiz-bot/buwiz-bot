@@ -20,6 +20,7 @@
 //   groups.mjs   the sidebar's user-made groups
 //   attachments.mjs  `@` tokens attached to chats   routines.mjs  timed agent work
 //   routes/      the ~80 HTTP endpoints, grouped by prefix
+//   v1/          the Mini App Protocol v1 broker (plugins, sessions, /v1/host/*)
 
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
@@ -57,11 +58,14 @@ import marketRoute from "./routes/market.mjs";
 import dataRoute from "./routes/data.mjs";
 import groupsRoute from "./routes/groups.mjs";
 import routinesRoute from "./routes/routines.mjs";
+import v1Route, { initHostToken } from "./v1/routes.mjs";
+import { plugins as v1Plugins } from "./v1/broker.mjs";
 import { migrateGroups } from "./groups.mjs";
 import { startRoutines } from "./routines.mjs";
 import { allowedOrigins, refusal } from "./guard.mjs";
 
 const routes = [
+  v1Route,
   miscRoute,
   chatRoute,
   botsRoute,
@@ -109,6 +113,8 @@ const server = createServer(async (req, res) => {
   res.end("not found");
 });
 
+// Rox's host token for /v1/host/* (v1/routes.mjs), fresh each start
+initHostToken();
 persist(); // seed the DB on first boot / after a JSON→SQLite migration
 if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
 writeShelf(); // sync widgets/index.tsx with the DB
@@ -216,4 +222,6 @@ server.listen(PORT, "127.0.0.1", () => {
   );
   // routines tick from here on (overdue ones at once)
   startRoutines();
+  // v1 plugins the user has enabled: spawned, provisioned and verified
+  v1Plugins.startAll().catch(() => {});
 });

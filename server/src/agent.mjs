@@ -26,6 +26,8 @@ import {
   agentStream, serverSearch, setAgentStream, setServerSearch,
 } from "./tools.mjs";
 import { scopeSection } from "./attachments.mjs";
+import { v1PromptSection } from "./v1/agent.mjs";
+import { plugins as v1Plugins } from "./v1/broker.mjs";
 
 // The streamed start of a generate_app input → its placeholder's title,
 // description and size (layout before code in the tool's schema).
@@ -66,7 +68,7 @@ export async function agentTurn(job, prompt, thread) {
     { role: "user", content: await userContent(prompt, job.extra, job.ctx) },
   ];
   // the chat's attachments and the hints of the `@` scopes in play
-  const scope = await scopeSection(thread, prompt).catch(() => "");
+  const scope = (await scopeSection(thread, prompt).catch(() => "")) + v1PromptSection(v1Plugins, prompt);
   let reply = "";
   // As in Grok Bot, the reply is held back behind "Typing..." and lands
   // whole; a note the model writes before calling tools ("Checking X
