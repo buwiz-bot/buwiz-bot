@@ -475,6 +475,36 @@ pub struct Turn {
     /// the reply, in document order: the optional `cards` array of raw wire
     /// objects (`cards::Card::from_wire`), or the dev hook's local turn.
     pub cards: Vec<crate::cards::TurnCard>,
+    /// The v1 attachments that went to the model with this user message
+    /// (`v1Attachments`, spec 10.3): (canonical token, title).
+    pub v1_attachments: Vec<(String, String)>,
+}
+
+/// What a reply quotes of turn `t` (`onReply(i, text || caption || name)`):
+/// a card's `app · <title> v<n>`, else its text, caption, the titles of
+/// what it links (a v1 app card, a file), its files' names, its name.
+/// Empty when it has nothing to show: no reply chip then.
+pub(crate) fn reply_label(t: &Turn) -> String {
+    if let Some(a) = &t.art {
+        return format!(
+            "{} · {}{}",
+            if a.kind == "image" { "image" } else { "app" },
+            if a.title.is_empty() { &t.name } else { &a.title },
+            if t.v > 0 { format!(" v{}", t.v) } else { String::new() }
+        );
+    }
+    let joined = |names: Vec<&str>| names.into_iter().filter(|n| !n.trim().is_empty()).collect::<Vec<_>>().join(", ");
+    [
+        t.text.trim().to_owned(),
+        t.caption.trim().to_owned(),
+        joined(t.links.iter().map(|l| l.name.as_str()).collect()),
+        joined(t.files.iter().chain(&t.attachments).map(|f| f.name.as_str()).collect()),
+        t.name.trim().to_owned(),
+    ]
+    .into_iter()
+    .find(|s| !s.is_empty())
+    .map(|s| s.chars().take(120).collect())
+    .unwrap_or_default()
 }
 
 /// One of a turn's `links`: a connected app's file the AI made or changed
@@ -1528,6 +1558,13 @@ impl Turn {
             revising: v.get("revising").and_then(|x| x.as_bool()).unwrap_or(false),
             links: list(v, "links").iter().map(DriveLink::of).filter(|l| !l.id.is_empty()).collect(),
             cards: v.get("cards").map(crate::cards::parse_list).unwrap_or_default(),
+            v1_attachments: list(v, "v1Attachments")
+                .iter()
+                .filter_map(|a| {
+                    let token = s(a, "token");
+                    crate::mini_v1::tokens::canonical(&token).map(|_| (token.clone(), s(a, "title")))
+                })
+                .collect(),
         }
     }
 }
@@ -4782,6 +4819,8 @@ impl Store {
             return;
         }
         let v1_attachments = self.v1_model_attachments();
+        // what this message goes to the model with, for its bubble
+        self.v1_note_sent(&text, &v1_attachments);
         // A new message moves the chat on: its unanswered cards are
         // superseded, as nativechat's steer closes them.
         if self.turns_of.get_untracked() == self.active_id.get_untracked() {
@@ -4801,7 +4840,9 @@ impl Store {
             bot.clone(),
             Some(("working".to_owned(), crate::statusfx::status_label("working"))),
         );
-        spawn(async move {
+        // under the store's owner: the press that sent it (the Send
+        // button) is replaced as the draft clears, and its owner with it
+        self.in_store(|| spawn(async move {
             // /chat reads {prompt, reply:{i,text,files}, attachments} and
             // runs on the server's active thread — select first so the
             // reply lands on the visible one.
@@ -4812,6 +4853,7 @@ impl Store {
             .await;
             let body = serde_json::json!({
                 "prompt": text,
+                // the quote keeps canonical tokens: the model gets the link
                 "reply": reply_to.map(|r| serde_json::json!({"i": r.i, "text": r.text})),
                 "attachments": files,
                 // the chat's v1 attachments the model may see (10.3: none
@@ -4845,7 +4887,7 @@ impl Store {
             // Grok: `if (!agent()) emphBot.set("")` — the row is gone.
             self.emph_bot.set(String::new());
             self.refresh_turns();
-        });
+        }));
     }
 
     /// Sends `text` as the next message, as the composer would, leaving the
@@ -5507,17 +5549,11 @@ impl Store {
     pub fn reply_to_turn(&'static self, i: i64) {
         let tr = self.turns.get_untracked();
         let Some(tt) = tr.iter().find(|x| x.i == i) else { return };
-        let label = match &tt.art {
-            Some(a) => format!(
-                "{} · {}{}",
-                if a.kind == "image" { "image" } else { "app" },
-                if a.title.is_empty() { &tt.name } else { &a.title },
-                if tt.v > 0 { format!(" v{}", tt.v) } else { String::new() }
-            ),
-            None if !tt.text.is_empty() => tt.text.chars().take(120).collect(),
-            None if !tt.caption.is_empty() => tt.caption.chars().take(120).collect(),
-            None => tt.name.clone(),
-        };
+        let label = reply_label(tt);
+        // nothing to quote: no empty chip
+        if label.is_empty() {
+            return crate::toast::show("This message has nothing to quote");
+        }
         let files = tt
             .art
             .as_ref()
@@ -7009,6 +7045,24 @@ fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
 mod tests {
     use super::{link_pass, link_token, mini_link};
     use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
+
+    #[test]
+    fn a_reply_quotes_a_title_and_never_an_empty_text() {
+        use super::{DriveLink, Turn, reply_label};
+        let text = Turn { text: "what are the due forms".into(), ..Default::default() };
+        assert_eq!(reply_label(&text), "what are the due forms");
+        // a card with no text quotes what it links (a v1 app card's title)
+        let card = Turn {
+            links: vec![DriveLink { provider: "rox-app".into(), id: "x".into(), name: "Buwiz Sign-in".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        assert_eq!(reply_label(&card), "Buwiz Sign-in");
+        assert_eq!(reply_label(&Turn { text: "  ".into(), ..Default::default() }), "", "no chip then");
+        // the attachment message keeps its canonical token: the reply links it
+        let t = "tkt_0123456789ABCDEFGHJKMNPQRS";
+        let attached = Turn { text: format!("Attached @bir:taxprofile:{t}"), ..Default::default() };
+        assert!(reply_label(&attached).contains(t));
+    }
 
     #[test]
     fn app_links_name_the_module_with_their_props() {
