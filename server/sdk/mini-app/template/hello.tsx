@@ -14,10 +14,12 @@ export default function Hello() {
     (e) => greeting.set(`Could not say hello (${e.code})`),
   );
 
+  // Rox renders the app in its own theme (spec 6.5): every color has its
+  // dark: variant, so the app follows Rox's light or dark setting
   return (
-    <View>
-      <Text>{greeting()}</Text>
-      <Text>{`${rox.viewport().placement}: ${rox.viewport().width}×${rox.viewport().height}`}</Text>
+    <View class="flex-1 gap-2 p-4 bg-white dark:bg-[#161616]">
+      <Text class="text-[14px] text-[#1c1c1c] dark:text-[#f5f5f5]">{greeting()}</Text>
+      <Text class="text-[12px] text-[#1c1c1c99] dark:text-[#f5f5f599]">{`${rox.viewport().placement}: ${rox.viewport().width}×${rox.viewport().height}`}</Text>
     </View>
   );
 }
