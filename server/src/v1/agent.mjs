@@ -140,7 +140,7 @@ export async function v1AgentCall(plugins, job, name, input) {
 
   if (own && !(surface.writes || []).includes(name) && !readOnly(plugins, plugin, name))
     return { content: `${name} changes data, and routine ${surface.routine} may change data only with the tools its manifest lists in writes`, is_error: true };
-  const caller = { origin: "agent", plugin, ...(own ? { routine: surface.routine } : {}), ts: Date.now() };
+  const caller = { origin: "agent", plugin, ...(own ? { routine: surface.routine, ...(surface.instance ? { instance: surface.instance, params: surface.params || {} } : {}) } : {}), ts: Date.now() };
   let r;
 
   try {

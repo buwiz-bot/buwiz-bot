@@ -330,6 +330,21 @@ test("MAN-12 routines[].needs is refused as an unknown key", () => {
   refused((m) => (m.routines[0].reads[0].scope = "all"), "manifest_invalid");
 });
 
+test("MAN-14 routines[].params is a small JSON Schema of an instance's settings, none of them in query.args", () => {
+  const params = { type: "object", properties: { taxpayers: { type: "array", items: { type: "string" }, maxItems: 20 }, forms: { type: "array", items: { type: "string", enum: ["2550Q", "1701Q"] } } }, required: ["taxpayers"] };
+
+  ok((m) => (m.routines[0].params = params));
+  refused((m) => (m.routines[0].params = { type: "array" }), "manifest_invalid", /params/);
+  refused((m) => (m.routines[0].params = { type: "object", properties: { Taxpayers: { type: "string" } } }), "manifest_invalid", /snake case/);
+  refused((m) => (m.routines[0].params = { type: "object", properties: { t: { type: "object" } } }), "manifest_invalid", /type must be/);
+  refused((m) => (m.routines[0].params = { type: "object", properties: { t: { type: "array", items: { type: "array" } } } }), "manifest_invalid", /nest/);
+  refused((m) => (m.routines[0].params = { ...params, required: ["nope"] }), "manifest_invalid", /required/);
+  refused((m) => ((m.routines[0].query.args = { taxpayers: [] }), (m.routines[0].params = params)), "manifest_invalid", /taxpayers is in query.args too/);
+  const m = signed((x) => (x.routines[0].params = params));
+
+  assert.ok(reviewOf(m).lines.some((l) => /runs per chat with its own settings: taxpayers, forms$/.test(l)));
+});
+
 test("MAN-13 routines[].writes names the plugin's own tools that change data, once each", () => {
   ok((m) => (m.routines[0].writes = ["fx_echo"]));
   refused((m) => (m.routines[0].writes = ["gws_send_mail"]), "manifest_invalid", /writes\[0\].*start with fx_/);

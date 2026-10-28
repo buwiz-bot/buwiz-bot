@@ -44,7 +44,7 @@ const send = (res, status, obj) => {
   res.end(JSON.stringify(obj));
 };
 
-const STATUS = { not_found: 404, plugin_unavailable: 503, plugin_restarted: 503, timeout: 504, rate_limited: 429, internal: 500 };
+const STATUS = { disabled: 409, not_found: 404, plugin_unavailable: 503, plugin_restarted: 503, timeout: 504, rate_limited: 429, internal: 500 };
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -100,6 +100,11 @@ const POSTS = {
   "/v1/host/routines/disable": (b) => routines.disable(b),
   // one run now, out of schedule (Run now)
   "/v1/host/routines/run": (b) => routines.run(b),
+  // an instance's params, trigger, interval or label; its removal; a new
+  // webhook secret
+  "/v1/host/routines/update": (b) => routines.update(b),
+  "/v1/host/routines/delete": (b) => routines.remove(b),
+  "/v1/host/routines/hook": (b) => routines.hook(b),
 };
 
 const ACTIONS = {
@@ -133,8 +138,31 @@ async function answer(req, res, path) {
   }
 }
 
+// POST /v1/hooks/<instance>/<secret>: a webhook instance's run (5.9). No
+// host token: the secret in the path is the key. 202 once it started.
+async function hookRoute(req, res, path) {
+  const m = /^\/v1\/hooks\/([^/]+)\/([^/]+)$/.exec(path);
+
+  if (!m || req.method !== "POST") return send(res, 404, { ok: false, code: "not_found", message: "no such hook", retryable: false });
+  const body = (await readBody(req)) || {};
+
+  try {
+    send(res, 202, await routines.hookCall(decodeURIComponent(m[1]), decodeURIComponent(m[2]), body));
+  } catch (e) {
+    const err = errorBody(e);
+
+    send(res, STATUS[err.code] || 400, err);
+  }
+}
+
 export default async function handle(req, res) {
   const path = new URL(req.url || "/", "http://x").pathname;
+
+  if (path.startsWith("/v1/hooks/")) {
+    await hookRoute(req, res, path);
+
+    return true;
+  }
 
   if (!path.startsWith("/v1/host/")) return false;
 

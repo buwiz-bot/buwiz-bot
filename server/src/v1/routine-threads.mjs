@@ -1,9 +1,10 @@
 // v1/routine-threads.mjs — where a v1 routine's runs land (spec 5.9,
-// "Where a routine's runs go"). Each routine has its own thread, made when
-// it is enabled (routines.mjs) and reused by every run, titled by the routine's
-// name and marked `routine: {plugin, id, name, thread}` — `thread` is the
-// chat the routine reports to (`v1_routines.thread`), whose bot answers in
-// the routine's thread too. It is never a sidebar row.
+// "Where a routine's runs go"). Each routine instance has its own thread,
+// made when it is enabled (routines.mjs) and reused by every run, titled by
+// the routine's name (and the instance's params) and marked `routine:
+// {plugin, id, instance, name, thread}` — `thread` is the chat the
+// instance reports to (`v1_instances.thread`), whose bot answers in the
+// routine's thread too. It is never a sidebar row.
 //
 // The chat it reports to gets one `notice` turn per run that ran items or
 // failed: a line the client draws centered, opening the routine's thread
@@ -12,18 +13,38 @@
 // hand it a plain object.
 import { approvedText } from "./agent.mjs";
 
-/** The notice's one line: "<name> ran · 2 new items" / "<name> failed: …". */
-export const noticeText = (n) =>
-  n.error ? `${n.name} failed: ${approvedText(n.error, 200)}` : `${n.name} ran · ${n.items} new item${n.items === 1 ? "" : "s"}`;
+/** The notice's one line: "<name> ran · 2 new items" / "<name> failed: …";
+ *  a consent card's question. */
+export function noticeText(n) {
+  if (n.kind === "routine_consent") {
+    const what = n.summary ? `${n.name} (${n.summary})` : n.name;
+    const may = n.writes?.length ? ` It may change ${n.title} data without asking: ${n.writes.join(", ")}.` : "";
+    const reads = n.reads?.length ? ` It reads ${n.reads.join("; ")}.` : "";
+
+    return `Enable ${what} here?${may}${reads}`;
+  }
+
+  return n.error ? `${n.name} failed: ${approvedText(n.error, 200)}` : `${n.name} ran · ${n.items} new item${n.items === 1 ? "" : "s"}`;
+}
 
 export function createRoutineThreads({ store, nextId, uid, save }) {
   const byKey = (key) => store.list.find((t) => t.id === key || t.uid === key);
-  const find = (plugin, routine) => store.list.find((t) => t.routine?.plugin === plugin && t.routine.id === routine) || null;
+  const find = (plugin, routine, instance) =>
+    store.list.find((t) => t.routine?.plugin === plugin && t.routine.id === routine && t.routine.instance === instance) || null;
 
-  /** The routine's thread, made the first time it is asked for. */
-  function ensure({ plugin, routine, name, chat }) {
-    const mark = { plugin, id: routine, name, thread: chat };
-    let t = find(plugin, routine);
+  /** Gives a routine's thread from before instances to `instance`. */
+  function adopt(plugin, routine, instance) {
+    const t = store.list.find((x) => x.routine?.plugin === plugin && x.routine.id === routine && !x.routine.instance);
+
+    if (!t) return;
+    t.routine = { ...t.routine, instance };
+    save();
+  }
+
+  /** The instance's thread, made the first time it is asked for. */
+  function ensure({ plugin, routine, instance, name, chat }) {
+    const mark = { plugin, id: routine, instance, name, thread: chat };
+    let t = find(plugin, routine, instance);
 
     if (!t) {
       t = { id: nextId(), uid: uid(), title: name, turns: [], routine: mark };
@@ -52,5 +73,21 @@ export function createRoutineThreads({ store, nextId, uid, save }) {
     return turn;
   }
 
-  return { ensure, find, notice };
+  /** The consent cards for `instance` in chat `chat` read as `state`
+   *  ("enabled" / "declined"). */
+  function settle(chat, instance, state) {
+    const t = byKey(chat);
+    let changed = false;
+
+    for (const u of t?.turns || []) {
+      if (u.notice?.kind === "routine_consent" && u.notice.instance === instance && u.notice.state === "pending") {
+        u.notice = { ...u.notice, state };
+        changed = true;
+      }
+    }
+
+    if (changed) save();
+  }
+
+  return { adopt, ensure, find, notice, settle };
 }
