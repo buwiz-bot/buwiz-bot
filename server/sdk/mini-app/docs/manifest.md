@@ -76,6 +76,7 @@ tools of another approved plugin, approved once by the user). No other keys.
 | `pick_file` | `rox.pickFile` | `{extensions: [".xlsx", …], max_bytes, multiple?}`. |
 | `storage` | `rox.storage` | `{quota_bytes?}`. |
 | `copy` | `rox.copy` | `true`. |
+| `preview` | `rox.preview` | `{max_bytes?}`: Rox shows a document one of your `tools` makes (a print preview). `{}` allows the host's 8 MiB. |
 
 The permissions digest is `sha256(JCS(permissions))` in lowercase hex, `{}`
 when absent. Your plugin compares it on every `rox.session.open`.
@@ -116,6 +117,7 @@ These are the limits the broker enforces (`LIMITS` in
 | `permissions.pick_file.max_bytes` | 50 MiB | `LIMITS.pickMaxBytes` |
 | `permissions.storage.quota_bytes` | 10 MiB | `LIMITS.storageQuota` |
 | `permissions.storage` default quota | 1 MiB | `LIMITS.storageDefault` |
+| `permissions.preview.max_bytes` (and its default) | 8 MiB | `LIMITS.previewMaxBytes` |
 | Props, serialized | 8 KiB | `LIMITS.propsBytes` |
 | Props and props schema depth | 8 levels | `LIMITS.propsDepth` |
 | Props array items | 100 items | `LIMITS.propsArray` |

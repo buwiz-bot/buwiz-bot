@@ -141,6 +141,8 @@ test("MAN-06 an unknown key in permissions is refused; an unknown top-level key 
   refused((m) => (m.apps[1].permissions.camera = true), "manifest_invalid", /camera/);
   refused((m) => (m.apps[0].permissions.open.intents = []), "manifest_invalid", /intents/);
   refused((m) => (m.apps[0].permissions.pick_file.paths = true), "manifest_invalid");
+  refused((m) => (m.apps[0].permissions.preview.scripts = true), "manifest_invalid", /scripts/);
+  refused((m) => (m.apps[0].permissions.preview = true), "manifest_invalid", /preview/);
   ok((m) => (m.x_future = { anything: 1 }));
 });
 
@@ -222,6 +224,7 @@ const LIMIT_CASES = [
   ["permissions.attach", LIMITS.attach, (m, n) => (m.apps[0].permissions.attach = many(n, () => "item"))],
   ["pick_file extensions", LIMITS.pickExtensions, (m, n) => (m.apps[0].permissions.pick_file.extensions = many(n, (i) => `.e${i}`))],
   ["pick_file max_bytes", LIMITS.pickMaxBytes, (m, n) => (m.apps[0].permissions.pick_file.max_bytes = n)],
+  ["preview max_bytes", LIMITS.previewMaxBytes, (m, n) => (m.apps[0].permissions.preview.max_bytes = n)],
   ["storage quota_bytes", LIMITS.storageQuota, (m, n) => (m.apps[0].permissions.storage.quota_bytes = n)],
   ["props schema properties", LIMITS.schemaProperties, (m, n) => (m.apps[0].props.properties = Object.fromEntries(many(n, (i) => [`p${i}`, { type: "string" }])))],
   ["props schema maxLength", LIMITS.schemaMaxLength, (m, n) => (m.apps[0].props.properties.ticket.maxLength = n)],
