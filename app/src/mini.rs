@@ -74,6 +74,8 @@ pub(crate) fn mini_app(
             move || JsonValue::String(store().mini_source_title(&name2).get()),
         )
         .prop("dev_type", || JsonValue::String(store().mini_dev_type.get()))
+        // plugin apps follow Rox's theme (`plugin_appearance`)
+        .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
         .when(h <= 0.0, |v| v.flex_1())
@@ -87,6 +89,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
     let hidden = use_context::<OutOfSight>();
     native("rox/mini-app")
         .prop("placement", || JsonValue::String("inline".to_owned()))
+        .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
         .prop("source", move || {
             serde_json::json!({
@@ -97,6 +100,20 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
         .w(px(w))
         .h(px(h))
+}
+
+/// The appearance a mini app of `module` takes under Rox's theme `pref`:
+/// `Some(true)` dark, `Some(false)` light, `None` the system's (the
+/// window's). Plugin apps (`mcp:` v0, `v1:`) follow Rox's own Light or
+/// Dark; Rox's System, and generated `R<n>` widgets whatever the pref,
+/// keep the system's.
+pub(crate) fn plugin_appearance(module: &str, pref: &str) -> Option<bool> {
+    let plugin = module.starts_with("mcp:") || crate::mini_v1::is_v1(module);
+    match (plugin, pref) {
+        (true, "dark") => Some(true),
+        (true, "light") => Some(false),
+        _ => None,
+    }
 }
 
 /// `source` with its imports moved to where nsh 0.3 serves them (it keeps
@@ -424,6 +441,10 @@ fn attach_button(key: &str, n: u64, token: &str) -> impl IntoElement {
 /// from there.
 fn pin_button(key: &str, n: u64) -> impl IntoElement {
     use crate::theme::tc;
+    // a v1 app's pin is Rox's own: {plugin, app, ticket?, placement} (12.3)
+    if crate::mini_v1::is_v1(key) {
+        return crate::mini_v1::ui::pin_button(key, n).into_element();
+    }
     let node = element_ref();
     let key = key.to_owned();
     let k2 = key.clone();
@@ -459,6 +480,7 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
                 })
             });
         })
+    .into_element()
 }
 
 /// Denies capability-gated access for generated widgets: network, web views,
@@ -558,7 +580,8 @@ mod imp {
             sel,
         },
         objc2_app_kit::{
-            NSAppearanceCustomization, NSAutoresizingMaskOptions, NSView,
+            NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+            NSAutoresizingMaskOptions, NSView,
             NSScreen, NSWindow, NSWindowDidChangeOcclusionStateNotification,
             NSWindowDidMoveNotification, NSWindowOcclusionState,
         },
@@ -587,6 +610,10 @@ mod imp {
         /// The element's `placement` prop (`full` or `inline`), for a v1
         /// app's `rox.viewport`.
         placement: RefCell<String>,
+        /// Rox's theme (`theme` prop) and the module shown: a plugin app
+        /// follows the theme (`plugin_appearance`).
+        theme: RefCell<String>,
+        module: RefCell<String>,
         /// The size last sent as a v1 app's `rox.viewport`.
         viewport: Cell<(f64, f64)>,
         /// Hears the size a v1 app lays out at when it changes.
@@ -783,6 +810,8 @@ mod imp {
                 watching: Cell::new(0),
                 app: RefCell::new(None),
                 placement: RefCell::new("full".to_owned()),
+                theme: RefCell::new(String::new()),
+                module: RefCell::new(String::new()),
                 viewport: Cell::new((0.0, 0.0)),
                 on_viewport: RefCell::new(None),
             });
@@ -839,15 +868,24 @@ mod imp {
         /// Generated widgets keep the system's appearance whatever the
         /// app's theme toggle says — Grok themes its own chrome through
         /// `tc()` and never recolors the widgets it hosts. The theme sits on
-        /// the surface root; the window still carries the system's.
+        /// the surface root; the window still carries the system's. Plugin
+        /// apps (v0 and v1) follow Rox's Light or Dark instead
+        /// (`plugin_appearance`), the system's under Rox's System.
         fn sync_appearance(&self) {
             let Some(window) = self.window() else {
                 return;
             };
-            let system = window.effectiveAppearance();
+            let want = super::plugin_appearance(&self.ivars().module.borrow(), &self.ivars().theme.borrow());
+            let appearance = match want {
+                // SAFETY: immutable AppKit constants.
+                Some(true) => NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }),
+                Some(false) => NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }),
+                None => None,
+            }
+            .unwrap_or_else(|| window.effectiveAppearance());
             let current = self.appearance().map(|a| a.name());
-            if current.as_deref() != Some(&*system.name()) {
-                self.setAppearance(Some(&system));
+            if current.as_deref() != Some(&*appearance.name()) {
+                self.setAppearance(Some(&appearance));
             }
         }
 
@@ -1111,6 +1149,11 @@ mod imp {
                 }
                 return;
             }
+            if name == "theme" {
+                *self.fit.ivars().theme.borrow_mut() = value.and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+                self.fit.sync_appearance();
+                return;
+            }
             if name == "placement" {
                 let p = value.and_then(|v| v.as_str()).filter(|p| *p == "inline").unwrap_or("full");
                 *self.fit.ivars().placement.borrow_mut() = p.to_owned();
@@ -1146,6 +1189,8 @@ mod imp {
                 return;
             }
             self.last = Some((module.clone(), js.clone()));
+            *self.fit.ivars().module.borrow_mut() = module.clone();
+            self.fit.sync_appearance();
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
             }
@@ -1311,6 +1356,22 @@ export default function R() {
             }
             if shown {
                 return commands;
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_apps_follow_roxs_theme_and_widgets_the_systems() {
+        use super::plugin_appearance as look;
+        for module in ["mcp:bir/forms", r#"mcp:bir/forms|{"form":"1601C"}"#, "v1:dev.goldcoders.bir/tax-profile"] {
+            assert_eq!(look(module, "dark"), Some(true), "{module}");
+            assert_eq!(look(module, "light"), Some(false), "{module}");
+            assert_eq!(look(module, "system"), None, "{module}: the window's");
+            assert_eq!(look(module, ""), None, "{module}: no pref yet");
+        }
+        for module in ["R12", "R12@v3", "file:/x", ""] {
+            for pref in ["dark", "light", "system"] {
+                assert_eq!(look(module, pref), None, "{module} under {pref}: the system's");
             }
         }
     }
