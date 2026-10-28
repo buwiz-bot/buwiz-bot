@@ -570,11 +570,13 @@ export default async function handle(req, res) {
         const state = parsed.state !== undefined ? parsed.state : parsed;
         if (!/^[\w.-]+$/.test(String(name || "")))
           throw new Error("bad module name");
+        const data = JSON.stringify(state ?? {});
         db.prepare("INSERT OR REPLACE INTO kv(name,data) VALUES(?,?)").run(
           name,
-          JSON.stringify(state ?? {}),
+          data,
         );
-        console.log(`  /state POST ${name} → ${JSON.stringify(state)}`);
+        // the size only: saved state can hold what the user typed (drafts, TINs)
+        console.log(`  /state POST ${name} → ${data.length} bytes`);
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
