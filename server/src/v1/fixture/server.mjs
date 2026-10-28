@@ -6,9 +6,10 @@
 // memory only, provision first, certificates over JCS, tickets with a
 // subject map that never leaves the process), plus tools that exercise the
 // broker: fx_echo (echoes args and `_meta["rox/caller"]`), fx_slow, fx_fail,
-// fx_big, fx_resolve, fx_open, fx_search (readOnlyHint), fx_secret (in no
-// app's permissions), fx_stats (what it was asked) and fx_reload (sends
-// resources/list_changed).
+// fx_big, fx_resolve, fx_open, fx_search (readOnlyHint), fx_query (a
+// routine's search text), fx_secret (in no app's permissions), fx_stats
+// (what it was asked, and each tool's last caller origin) and fx_reload
+// (sends resources/list_changed).
 //
 // The manifest is read from FX_MANIFEST on every request (tests sign one
 // per run and may change it); the app sources sit beside this file.
@@ -25,7 +26,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isV1 } from "../../grammar.mjs";
 import { generate, pubOf, sign } from "../ed.mjs";
-import { isObject, parseIJson, signedBytes } from "../jcs.mjs";
+import { isObject, isString, parseIJson, signedBytes } from "../jcs.mjs";
 import { manifestHash, permsDigest, sha256hex } from "../manifest.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,7 @@ const sessions = new Map(); // open_id → app
 const tickets = new Map(); // ticket → subject
 const bySubject = new Map(); // subject → ticket
 const calls = {};
+const origins = {}; // tool → the last caller's origin (8.4)
 let cancelled = 0;
 let served = 0;
 
@@ -210,8 +212,12 @@ const TOOLS = [
     name: "fx_search", description: "Search fixture items (read only).", inputSchema: { type: "object", properties: { query: { type: "string" } } }, annotations: { readOnlyHint: true },
     run: (args) => ok({ items: [{ id: String(args.query || "all") }] }),
   },
+  {
+    name: "fx_query", description: "A routine's search text: {query} from args.q.", inputSchema: { type: "object", properties: { q: { type: "string" } } },
+    run: (args) => ok({ query: isString(args.q) ? args.q : "from:fixture" }),
+  },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
-  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, cancelled, sessions: sessions.size, tickets: tickets.size }) },
+  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
     run: async () => (await server.sendResourceListChanged(), ok({ ok: true })),
@@ -243,6 +249,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
   if (!tool) throw new McpError(ErrorCode.InvalidParams, `no tool ${name}`);
   calls[name] = (calls[name] || 0) + 1;
+  origins[name] = meta?.["rox/caller"]?.origin ?? null;
   served++;
 
   if (crashAfter && served > crashAfter) process.exit(3);

@@ -59,7 +59,7 @@ import dataRoute from "./routes/data.mjs";
 import groupsRoute from "./routes/groups.mjs";
 import routinesRoute from "./routes/routines.mjs";
 import v1Route, { initHostToken } from "./v1/routes.mjs";
-import { plugins as v1Plugins } from "./v1/broker.mjs";
+import { plugins as v1Plugins, routines as v1Routines } from "./v1/broker.mjs";
 import { migrateGroups } from "./groups.mjs";
 import { startRoutines } from "./routines.mjs";
 import { allowedOrigins, refusal } from "./guard.mjs";
@@ -257,4 +257,6 @@ server.listen(PORT, "127.0.0.1", () => {
   startRoutines();
   // v1 plugins the user has enabled: spawned, provisioned and verified
   v1Plugins.startAll().catch(() => {});
+  // and their routines the user enabled and approved (5.9)
+  v1Routines.start();
 });
