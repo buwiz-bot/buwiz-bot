@@ -108,6 +108,13 @@ pr = 0
 status = "local"
 note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"
 
+[[topic]]
+branch = "pr/sandbox-desktop-homedir"
+kind = "fix"
+pr = 0
+status = "local"
+note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Rox's mini apps)"
+
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
 # verified, carried in `rox`; kept in the fork, not upstreamed. The macOS-only

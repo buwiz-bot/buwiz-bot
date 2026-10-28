@@ -106,13 +106,13 @@ Rules:
 
 | ID | Finding | Component | Likelihood / impact | Priority |
 |---|---|---|---|---|
-| RX-001 | Generated mini-app widgets run with broad default capabilities — fixed: non-`mcp:` modules deny all; `mcp:` apps reach only the app-server origin over HTTP and its NSH-authorized WebSocket | C3 | L3 (needs the model to follow injected instructions; unverified) / A4 | Medium |
+| RX-001 | Generated mini-app widgets run with broad default capabilities — fixed: non-`mcp:` modules deny all; `mcp:` apps reach only `POST /mcp/call`, `/mcp/open` and `/attach/pick` and `GET /file/raw/…` and `/asset/generated/assets/…` on the app server, with no WebSocket (`mcp_apps_reach_only_the_app_server`) | C3 | L3 (needs the model to follow injected instructions; unverified) / A4 | Medium |
 | RX-002 | `svg_view` interpolates the attachment URL into HTML unescaped, under the backend's origin | C4 | L3 (outside control of the attachment URL unverified) / A4 | Fixed in 7925692 (escaped, server files only, no base URL) |
 | RX-003 | `ra_jit_live::edit` connects to the daemon socket without a peer check | C7 | L2 (shared machine, other-user-writable socket root) / A3 | Low |
 | RX-004 | See the private advisory | C9 | See the private advisory | See the private advisory |
 | RX-005 | The dev launcher and README published a fixed gpui-agent token; any local user could drive the dev bundle's Rox ([GHSA-pwr9-c68j-6jr4](https://github.com/hexuria/rox/security/advisories/GHSA-pwr9-c68j-6jr4)) | C10 | L2 (another local user) / A4 | Fixed in 5e7b0a2 (a new random token per launch, in a 0600 file) |
 | RX-006 | `open_link` let links from content read any local file (`rox://view`) and open any scheme the deny-list allowed ([GHSA-xpgx-g4x9-7f5g](https://github.com/hexuria/rox/security/advisories/GHSA-xpgx-g4x9-7f5g)) | C8 | L3 (untrusted content, one click) / A4 | Fixed in 1e7f231, 369882d (previews only; other schemes and OS-created chats ask) |
-| RX-007 | Embedded mini apps can invoke ungated `nsh/desktop` window/menu commands and read `os.homedir()`; fix in NSH with an `Access` gate or desktop-module filter for untrusted runtimes (`known_gap_desktop_window_and_homedir_are_ungated`) | C3 | L3 (model-generated code; precondition unverified) / A2 | Low |
+| RX-007 | Embedded mini apps could invoke `nsh/desktop` window/menu commands and read `os.homedir()` — fixed: NSH gates both behind the `window` and `homeDir` capabilities (nsh topic `pr/sandbox-desktop-homedir`), which Rox's mini-app policies never grant (`a_widget_cannot_control_the_window_or_read_the_home_directory`) | C3 | L3 (model-generated code; precondition unverified) / A2 | Low |
 
 ## Open questions and validation limits
 
