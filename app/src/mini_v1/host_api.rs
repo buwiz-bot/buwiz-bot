@@ -171,6 +171,41 @@ pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: boo
     post(b, &format!("/v1/host/plugins/{plugin}/tools"), json!({"tool": tool, "disabled": disabled}), SHORT_TIMEOUT)
 }
 
+/// What the person does to a routine (5.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutineAction {
+    /// The one-time approval of what it reads.
+    Approve,
+    /// Runs it in a chat.
+    Enable,
+    Disable,
+}
+
+/// `POST /v1/host/routines/{approve,enable,disable}`: `{plugin, routine}`,
+/// with the chat it runs in for Enable. The routine as the broker now has it.
+pub fn routine_action(
+    b: &dyn Broker,
+    plugin: &str,
+    routine: &str,
+    action: RoutineAction,
+    thread: Option<&str>,
+) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !super::perms::app_id_ok(routine) {
+        return Err(RoxError::new("invalid_args", "not a plugin or routine id"));
+    }
+    let mut body = json!({"plugin": plugin, "routine": routine});
+    let verb = match action {
+        RoutineAction::Approve => "approve",
+        RoutineAction::Enable => {
+            body["thread"] = json!(thread.unwrap_or_default());
+            "enable"
+        }
+        RoutineAction::Disable => "disable",
+    };
+    let v = post(b, &format!("/v1/host/routines/{verb}"), body, SHORT_TIMEOUT)?;
+    Ok(v.get("routine").cloned().unwrap_or(Value::Null))
+}
+
 /// The broker at `client::backend()`, over HTTP/1.1 on the loopback.
 pub struct HttpBroker {
     origin: String,
@@ -266,10 +301,21 @@ fn unavailable(m: &str) -> RoxError {
 
 impl Broker for HttpBroker {
     fn request(&self, method: &str, route: &str, body: Option<Value>, timeout: Duration) -> Result<Value, RoxError> {
-        let (mut stream, authority) = self.connect(timeout)?;
         let body = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
+        match self.send(method, route, &body, timeout) {
+            // the broker makes a new token when it starts: the file is read
+            // again for one more try
+            Err(e) if e.code == "unauthorized" => self.send(method, route, &body, timeout),
+            r => r,
+        }
+    }
+}
+
+impl HttpBroker {
+    fn send(&self, method: &str, route: &str, body: &[u8], timeout: Duration) -> Result<Value, RoxError> {
+        let (mut stream, authority) = self.connect(timeout)?;
         stream
-            .write_all(&Self::head(method, route, &authority, &body, "application/json"))
+            .write_all(&Self::head(method, route, &authority, body, "application/json"))
             .map_err(|_| unavailable("the broker closed the connection"))?;
         let mut raw = Vec::new();
         stream.take(MAX_RESPONSE as u64 + 1).read_to_end(&mut raw).map_err(|e| match e.kind() {

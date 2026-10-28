@@ -24,16 +24,24 @@
 //! `mcp:` and generated `R<n>` keys are untouched.
 
 pub mod bridge;
+pub mod cards;
+pub mod connect;
+pub mod consent;
 pub mod host_api;
 pub mod jcs;
 pub mod keys;
+pub mod lifecycle;
+pub mod links;
 pub mod load;
+pub mod migrate;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod perms;
 pub mod props;
+pub mod records;
 pub mod session;
 pub mod storage;
+pub mod tokens;
 
 use serde_json::{Value, json};
 
