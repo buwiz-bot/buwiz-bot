@@ -445,8 +445,9 @@ pub(crate) fn main_picker_layer() -> impl IntoElement {
 
 /// A link waiting on the person (`Store::link_ask`), in the same dialog
 /// as the primary-Bot picker: an outside URL of another app's scheme
-/// (Open), or a new chat another app asked for (Start chat). It names
-/// what it would do; Cancel, Escape or a press outside drops it.
+/// (Open), a new chat another app asked for (Start chat), or a plugin's
+/// mini app another app or a tool result asked for (Open). It names what
+/// it would do; Cancel, Escape or a press outside drops it.
 pub(crate) fn link_ask_layer() -> impl IntoElement {
     dynamic(|| {
         let Some(ask) = store().link_ask.get() else {
@@ -454,16 +455,25 @@ pub(crate) fn link_ask_layer() -> impl IntoElement {
         };
         let (head, what, body, yes) = match ask {
             LinkAsk::Open(url) => (
-                "Open this link in another app?",
+                "Open this link in another app?".to_owned(),
                 "A link in Rox wants to open outside it:",
                 url,
                 "Open",
             ),
             LinkAsk::NewChat(draft) => (
-                "Start a new chat?",
+                "Start a new chat?".to_owned(),
                 "Another app asked Rox to start a chat with this draft. Nothing is sent until you send it.",
                 if draft.trim().is_empty() { "(no draft)".to_owned() } else { draft },
                 "Start chat",
+            ),
+            LinkAsk::App(app) => (
+                store().mcp_manifest.with(|ms| crate::links::app_question(&app, ms)),
+                match app.from {
+                    crate::links::AppOpener::ToolResult => "A tool's result asked Rox to show this app full screen:",
+                    _ => "Another app or a web page asked Rox to show this app full screen:",
+                },
+                crate::links::app_subject(&app).unwrap_or(app.key.as_str()).to_owned(),
+                "Open",
             ),
         };
         let close = || store().answer_link_ask(false);
@@ -482,7 +492,7 @@ pub(crate) fn link_ask_layer() -> impl IntoElement {
                     .border_1()
                     .border_color(theme::BORDER_F)
                     .overflow_hidden()
-                    .label(head)
+                    .label(head.clone())
                     // A press inside the card stays in it.
                     .on_press(|| {})
                     .child(

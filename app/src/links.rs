@@ -17,6 +17,10 @@
 //!   ([`LinkAsk`]), since it starts another app.
 //! - A link from another app creates nothing (a chat) until the person
 //!   says so in Rox.
+//! - A mini app opens unasked only when the person opens it in Rox (the
+//!   sidebar, a pin, the composer, a link card). Another app's or a web
+//!   page's `rox://app/` link, and a tool result's `rox/open`, wait on
+//!   Open in the sheet ([`app_opens_unasked`], [`AppAsk`]).
 
 use std::path::{Path, PathBuf};
 
@@ -105,6 +109,69 @@ pub enum LinkAsk {
     /// A new chat with this draft, asked for by another app
     /// (`rox://chat/new?draft=`).
     NewChat(String),
+    /// A plugin's mini app, full screen, asked for from outside Rox.
+    App(AppAsk),
+}
+
+/// Who asked for a mini app to open full screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppOpener {
+    /// The person, in Rox: the sidebar, a pin, the composer, a link card.
+    Rox,
+    /// Another app or a web page: a `rox://app/` link the system handed
+    /// Rox (a mini app's `/mcp/open` comes this way too).
+    Outside,
+    /// A tool's result (`_meta["rox/open"]`), during a reply.
+    ToolResult,
+}
+
+/// Whether an app opener goes straight to the app; the others ask first.
+pub(crate) fn app_opens_unasked(opener: AppOpener) -> bool {
+    opener == AppOpener::Rox
+}
+
+/// A mini app waiting on Open: its module name (`mcp:<server>/<app>[|<props>]`),
+/// the title and token it would open with, and who asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppAsk {
+    pub key: String,
+    pub title: String,
+    pub token: String,
+    pub from: AppOpener,
+}
+
+/// A module name's server and app (`mcp:<server>/<app>[|<props>]`).
+pub(crate) fn app_key_parts(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix("mcp:")?;
+    let path = rest.split_once('|').map_or(rest, |(path, _)| path);
+    let (server, app) = path.split_once('/')?;
+    (!server.is_empty() && !app.is_empty()).then_some((server, app))
+}
+
+/// A module's app and plugin, by the names the plugin announces (its ids
+/// when it announces none): ("BIR Forms", "BIR").
+pub(crate) fn app_names(key: &str, manifests: &[crate::slash::Manifest]) -> (String, String) {
+    let (server, app) = app_key_parts(key).unwrap_or(("a plugin", "an app"));
+    let manifest = manifests.iter().find(|m| m.id == server);
+    let plugin = manifest.map(|m| m.title.as_str()).filter(|t| !t.is_empty()).unwrap_or(server);
+    let app = manifest
+        .and_then(|m| m.apps.iter().find(|a| a.name == app))
+        .map(|a| a.title.as_str())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(app);
+    (app.to_owned(), plugin.to_owned())
+}
+
+/// The sheet's question for `ask`: "Open <app> from <plugin>?" ([`app_names`]).
+pub(crate) fn app_question(ask: &AppAsk, manifests: &[crate::slash::Manifest]) -> String {
+    let (app, plugin) = app_names(&ask.key, manifests);
+    format!("Open {app} from {plugin}?")
+}
+
+/// What the sheet shows the app would open on: the opener's title, else
+/// the token, else nothing.
+pub(crate) fn app_subject(ask: &AppAsk) -> Option<&str> {
+    [ask.title.as_str(), ask.token.as_str()].into_iter().map(str::trim).find(|t| !t.is_empty())
 }
 
 #[cfg(test)]
@@ -239,5 +306,50 @@ mod tests {
         ] {
             assert_eq!(outside(url), Outside::Refuse, "{url:?}");
         }
+    }
+
+    #[test]
+    fn only_opens_started_in_rox_skip_the_ask() {
+        assert!(app_opens_unasked(AppOpener::Rox));
+        assert!(!app_opens_unasked(AppOpener::Outside));
+        assert!(!app_opens_unasked(AppOpener::ToolResult));
+    }
+
+    #[test]
+    fn module_names_split_into_server_and_app() {
+        assert_eq!(app_key_parts("mcp:bir/forms"), Some(("bir", "forms")));
+        assert_eq!(app_key_parts(r#"mcp:bir/forms|{"tin":"1/2"}"#), Some(("bir", "forms")));
+        for key in ["bir/forms", "mcp:bir", "mcp:/forms", "mcp:bir/", "mcp:|{}/x", "R12", ""] {
+            assert_eq!(app_key_parts(key), None, "{key:?}");
+        }
+    }
+
+    fn ask(key: &str, title: &str, token: &str) -> AppAsk {
+        AppAsk { key: key.into(), title: title.into(), token: token.into(), from: AppOpener::Outside }
+    }
+
+    #[test]
+    fn the_app_question_names_the_app_and_its_plugin() {
+        let bir = crate::slash::Manifest {
+            id: "bir".into(),
+            title: "BIR".into(),
+            apps: vec![crate::slash::Entry { name: "forms".into(), title: "BIR Forms".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let untitled = crate::slash::Manifest { id: "x-1".into(), ..Default::default() };
+        let ms = [bir, untitled];
+        assert_eq!(app_question(&ask(r#"mcp:bir/forms|{"form":"1601C"}"#, "", ""), &ms), "Open BIR Forms from BIR?");
+        // an app or plugin it does not announce: its ids
+        assert_eq!(app_question(&ask("mcp:bir/calendar", "", ""), &ms), "Open calendar from BIR?");
+        assert_eq!(app_question(&ask("mcp:x-1/app", "", ""), &ms), "Open app from x-1?");
+        assert_eq!(app_question(&ask("mcp:gone/app", "", ""), &[]), "Open app from gone?");
+        assert_eq!(app_question(&ask("junk", "", ""), &ms), "Open an app from a plugin?");
+    }
+
+    #[test]
+    fn the_app_subject_is_its_title_else_its_token() {
+        assert_eq!(app_subject(&ask("mcp:bir/forms", "1601C March", "@bir:taxprofile:1")), Some("1601C March"));
+        assert_eq!(app_subject(&ask("mcp:bir/forms", " ", "@bir:taxprofile:1")), Some("@bir:taxprofile:1"));
+        assert_eq!(app_subject(&ask("mcp:bir/forms", "", "")), None);
     }
 }
