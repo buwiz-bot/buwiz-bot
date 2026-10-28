@@ -525,7 +525,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
                     .child(highlight_ring(i, 18.0))
                     .child(reaction_badge(i, "msg".to_owned(), false))
                     .child(fill_quote(reply))
-                    .child(markdown(move || body.clone(), || false, || true)),
+                    .child(markdown(move || store().v1_display(&body), || false, || true)),
             ),
         )
         // `bar(true, false)` (shell.tsx:472) — right-aligned, no react on
@@ -853,7 +853,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     .py(px(6.5))
                     .child(highlight_ring(i, 18.0))
                     .child(reaction_badge(i, "msg".to_owned(), true))
-                    .child(markdown(move || body.clone(), move || streaming, || false)),
+                    .child(markdown(move || store().v1_display(&body), move || streaming, || false)),
             ),
         ))
         // A building artifact renders its declared placeholder — before
@@ -1148,7 +1148,14 @@ fn links_section(t: &Turn) -> impl IntoElement {
         .gap_2()
         .w_full()
         .max_w(px(560.0))
-        .children(t.links.iter().map(|l| crate::files::link_card(l).into_element()))
+        .children(t.links.iter().map(|l| {
+            // a v1 tool result's open (9.6): a card with Open or Show
+            if l.provider == "rox-app" {
+                crate::mini_v1::ui::open_card(l, format!("{}:{}", t.id, l.id))
+            } else {
+                crate::files::link_card(l).into_element()
+            }
+        }))
 }
 
 /// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —

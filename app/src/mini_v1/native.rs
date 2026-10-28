@@ -115,11 +115,11 @@ impl HostUi for MacUi {
     }
 
     fn session_ended(&self, _: &V1Key, why: Ended) {
+        // a restart is a new generation (13.7): "Reconnecting" until the
+        // plugin runs again, then the open reopens on it
         if why == Ended::Restarted {
             let (key, title) = (self.key.clone(), self.title.clone());
-            on_main(move || {
-                crate::live::store().mini_err(&key).set(format!("{title} is reconnecting: its plugin restarted."))
-            });
+            on_main(move || crate::live::store().v1_reconnecting(&key, &title));
         }
     }
 }
@@ -215,6 +215,8 @@ thread_local! {
 /// One open's bridge, while its component lives.
 pub struct V1Open {
     slot: Arc<Slot>,
+    /// Its number among the opens running (12.2's banner).
+    n: u64,
 }
 
 #[derive(Default)]
@@ -243,6 +245,7 @@ impl V1Open {
 impl Drop for V1Open {
     fn drop(&mut self) {
         self.close();
+        crate::live::store().v1_stopped(self.n);
     }
 }
 
@@ -296,7 +299,9 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
         }
         bridge::install(&channel, &ctx, viewport);
         let (js, policy) = (prepared.js.clone(), prepared.permissions.policy());
+        let fingerprint = prepared.fingerprint.clone();
         on_main(move || {
+            crate::live::store().v1_running(id, &key, &fingerprint);
             let view = VIEWS.with_borrow_mut(|v| v.remove(&id)).and_then(|w| w.upgrade());
             if let Some(view) = view {
                 let bundle = nsh_engine::Bundle::source(js).with_policy(policy);
@@ -304,5 +309,5 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
             }
         });
     });
-    V1Open { slot }
+    V1Open { slot, n: id }
 }

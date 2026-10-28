@@ -111,6 +111,14 @@ pub enum LinkAsk {
     NewChat(String),
     /// A plugin's mini app, full screen, asked for from outside Rox.
     App(AppAsk),
+    /// A v1 plugin's app asked for by a link from outside Rox (9.7): its
+    /// module key and title.
+    V1App { key: String, title: String },
+    /// A v1 app's `rox.open({url})`: "Open <URL> in your browser?"; `id`
+    /// names the bridge's waiting answer.
+    V1Url { url: String, app: String, id: u64 },
+    /// A v1 app's `rox.attach`: "Attach <title> to this chat?".
+    V1Attach { title: String, app: String, id: u64 },
 }
 
 /// Who asked for a mini app to open full screen.

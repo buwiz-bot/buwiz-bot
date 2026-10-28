@@ -79,6 +79,26 @@ pub(crate) fn mini_app(
         .when(h <= 0.0, |v| v.flex_1())
 }
 
+/// A v1 app inline in a chat (spec 6.5): `w×h`, its viewport saying
+/// `inline`.
+pub(crate) fn mini_app_inline(app: &str, w: f32, h: f32) -> impl IntoElement {
+    let name = app.to_owned();
+    let name2 = app.to_owned();
+    let hidden = use_context::<OutOfSight>();
+    native("rox/mini-app")
+        .prop("placement", || JsonValue::String("inline".to_owned()))
+        .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .prop("source", move || {
+            serde_json::json!({
+                "module": name.clone(),
+                "js": store().mini_source(&name).get(),
+            })
+        })
+        .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
+        .w(px(w))
+        .h(px(h))
+}
+
 /// `source` with its imports moved to where nsh 0.3 serves them (it keeps
 /// no aliases): `nsh/ios` and `nsh/android` are `nsh/mobile`,
 /// `nsh/ui/mobile` is `nsh/base`, the other submodules (`nsh/canvas`,
@@ -367,7 +387,9 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                         }
                     },
                 ))
-                .child(mini_app(&key, 0.0, None, None)),
+                .child(crate::mini_v1::ui::banners(&key))
+                .child(mini_app(&key, 0.0, None, None))
+                .child(crate::mini_v1::ui::error_overlay(&key)),
         )
 }
 
@@ -977,6 +999,14 @@ mod imp {
                 },
             );
             self.replace_view(view);
+            // a running app's error shows the spec's message (6.7) over it,
+            // with Reload and Close
+            let (key, title) = (module.to_owned(), prepared.title.clone());
+            self.view.set_error_handler(move |text| {
+                if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
+                    crate::live::store().v1_error(&key, message);
+                }
+            });
             let channel = self.view.host();
             *self.fit.ivars().on_viewport.borrow_mut() = Some(Box::new(move |v| {
                 let _ = channel.send("rox.viewport", v);

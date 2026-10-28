@@ -490,6 +490,8 @@ pub struct DriveLink {
     /// Its Library kind ("document", …) and type's name ("Google Doc").
     pub kind: String,
     pub file_type: String,
+    /// A v1 tool result's open (provider `rox-app`, 9.6): its card.
+    pub card: Option<serde_json::Value>,
 }
 
 impl DriveLink {
@@ -503,6 +505,7 @@ impl DriveLink {
             action: s(v, "action"),
             kind: s(v, "kind"),
             file_type: s(v, "type"),
+            card: v.get("card").filter(|c| c.is_object()).cloned(),
         }
     }
 }
@@ -1834,6 +1837,11 @@ pub struct Store {
     /// A link waiting on Open or Cancel in Rox's sheet
     /// (`botmodal::link_ask_layer`).
     pub link_ask: Signal<Option<crate::links::LinkAsk>>,
+    /// What Rox keeps for v1 plugins (`mini_v1::ui`).
+    pub v1: crate::mini_v1::ui::V1,
+    /// The draft was rewritten for v1 plugins already: the next `send`
+    /// sends it as it is.
+    pub v1_resolved: std::cell::Cell<bool>,
     pub main_pick_q: Signal<String>,
     /// `botName`/`botShape`/`botColor` — the picker's draft.
     pub bot_name: Signal<String>,
@@ -2125,6 +2133,8 @@ impl Store {
             main_bot: signal(String::new()),
             main_pick: signal(None),
             link_ask: signal(None),
+            v1: crate::mini_v1::ui::V1::new(),
+            v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
             bot_shape: signal("blob".to_owned()),
@@ -2250,6 +2260,8 @@ impl Store {
     pub fn boot(&'static self) {
         self.track_drafts();
         crate::slash::boot();
+        // v1 plugins: records, consent, the broker's events, the plugin list
+        self.v1_boot();
         // The installed plugins' logos sit in the sidebar footer.
         self.fetch_plugins();
         self.fetch_app_meta();
@@ -4732,9 +4744,16 @@ impl Store {
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
         let text = self.draft.get_untracked().trim().to_owned();
+        // A v1 plugin's tokens and commands (9.3): tokens are rewritten to
+        // canonical ones before anything is sent; tokens or a command alone
+        // never reach the model (mini_v1::ui).
+        let resolved = self.v1_resolved.replace(false);
+        if !resolved && !text.starts_with("/status") && self.v1_send(&text) {
+            return;
+        }
         // Commands (`/status`, a server's) and a message of `@` tokens
         // alone run here — they never reach the model (slash.rs).
-        if crate::slash::dispatch(&text) {
+        if !resolved && crate::slash::dispatch(&text) {
             return;
         }
         let reply_to = self.reply_to.get_untracked();
@@ -4760,6 +4779,7 @@ impl Store {
         if (text.is_empty() && files.is_empty()) || self.sending.get_untracked() {
             return;
         }
+        let v1_attachments = self.v1_model_attachments();
         // A new message moves the chat on: its unanswered cards are
         // superseded, as nativechat's steer closes them.
         if self.turns_of.get_untracked() == self.active_id.get_untracked() {
@@ -4792,6 +4812,9 @@ impl Store {
                 "prompt": text,
                 "reply": reply_to.map(|r| serde_json::json!({"i": r.i, "text": r.text})),
                 "attachments": files,
+                // the chat's v1 attachments the model may see (10.3: none
+                // that needs update, nor of a disabled or missing plugin)
+                "v1_attachments": v1_attachments,
             });
             let mut job = None;
             if let Some(v) = client::post("/chat", body).await {
@@ -4843,6 +4866,33 @@ impl Store {
             self.attachments.set(kept.1);
             self.reply_to.set(kept.2);
         });
+    }
+
+    /// A v1 app the person opened inline (a command or token, spec Q9):
+    /// a local reply at the end of the open chat holding its card, shown
+    /// at once. The card's id (`<turn id>:<link id>`), "" without a chat.
+    pub fn add_local_link(&'static self, link: DriveLink) -> String {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            crate::toast::show("Open a chat first");
+            return String::new();
+        }
+        let n = self.local_turns.borrow().len() as i64;
+        let after = self
+            .turns
+            .with_untracked(|t| t.iter().rev().find(|t| t.i < LOCAL_TURN_BASE).map(|t| t.i))
+            .unwrap_or(-1);
+        let id = format!("local-app-{n}");
+        let card = format!("{id}:{}", link.id);
+        let turn = Turn { i: LOCAL_TURN_BASE + n, id, role: "ai".to_owned(), links: vec![link], ..Turn::default() };
+        self.local_turns.borrow_mut().push((chat.clone(), after, turn));
+        if self.turns_of.get_untracked() == chat {
+            self.turns.update(|t| {
+                t.retain(|t| t.i < LOCAL_TURN_BASE);
+                self.merge_local_turns(&chat, t);
+            });
+        }
+        card
     }
 
     /// The dev hook's cards as a local reply at the end of the open chat.
@@ -5788,8 +5838,13 @@ impl Store {
             })
             .await;
             match prepared {
-                Some(Ok(p)) => {
+                Some(Ok(mut p)) => {
                     self.mini_title(&name).set(p.title.clone());
+                    // each fetch is a new open (Reload, a reconnect): the
+                    // component reloads even when the source is the same
+                    static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let n = FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    p.js = format!("{}\n// open {n}\n", p.js);
                     let js = p.js.clone();
                     crate::mini_v1::keep_prepared(&name, p);
                     self.mini_err(&name).set(String::new());
@@ -6109,6 +6164,10 @@ impl Store {
     /// `gid` (an artifact with its origin chat `thread`, an app with its
     /// title there), or takes it out — of that group only.
     pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
+        // a v1 app's pin is Rox's too: {plugin, app, ticket?, placement}
+        if kind == "app" && crate::mini_v1::is_v1(id) {
+            self.v1_pinned(id, thread, add);
+        }
         let mut body = serde_json::json!({
             "id": gid, "kind": kind, "ref": id, "op": if add { "add" } else { "remove" },
         });
@@ -6631,11 +6690,20 @@ impl Store {
     }
 
     fn route_link(&'static self, url: &str, os: bool) {
-        use crate::links::{AppOpener, LinkAsk, Outside};
         if !self.booted.get() && url.starts_with("rox://") {
             *self.early_link.borrow_mut() = Some((url.to_owned(), os));
             return;
         }
+        // a v1 plugin's `rox://app/` link (9.4); v0 links go on as before
+        if url.starts_with("rox://app/") && self.v1_link(url, os) {
+            return;
+        }
+        self.route_link_v0(url, os);
+    }
+
+    /// [`route_link`] for everything but v1 plugins' links.
+    pub(crate) fn route_link_v0(&'static self, url: &str, os: bool) {
+        use crate::links::{AppOpener, LinkAsk, Outside};
         if let Some(key) = mini_link(url) {
             let token = link_token(url);
             let pass = link_pass(url);
@@ -6741,7 +6809,8 @@ impl Store {
         let Some(ask) = self.link_ask.get_untracked() else { return };
         self.link_ask.set(None);
         if !yes {
-            return;
+            // a v1 question hears the no (9.7: declining changes nothing)
+            return self.v1_answered(ask, false);
         }
         match ask {
             crate::links::LinkAsk::Open(url) => drop(open_url(url)),
@@ -6750,7 +6819,9 @@ impl Store {
                 Owner::detached().run(|| self.new_thread_with(draft));
             }
             crate::links::LinkAsk::App(app) => self.open_mini_token(&app.key, &app.title, &app.token),
+            v1 => return self.v1_answered(v1, true),
         }
+        self.v1_next_ask();
     }
 
     /// A mini app full screen for `from`: at once when the person opened it

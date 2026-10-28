@@ -261,6 +261,15 @@ pub fn end_plugin(plugin: &str, why: Ended) -> usize {
     n
 }
 
+/// Who else hears the broker's `plugin` events (part B: the list, and
+/// the opens waiting to reconnect), after their sessions are handled.
+static LISTENER: Mutex<Option<Arc<dyn Fn(&Value) + Send + Sync>>> = Mutex::new(None);
+
+/// Sets who hears the broker's `plugin` events after [`on_plugin_event`].
+pub fn set_event_listener(f: Arc<dyn Fn(&Value) + Send + Sync>) {
+    *LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
 /// Follows the broker's events on a thread of its own, once per process,
 /// reconnecting after a pause when the stream ends.
 pub fn listen_for_generations() {
@@ -276,6 +285,10 @@ pub fn listen_for_generations() {
                             && let Ok(v) = serde_json::from_str::<Value>(data)
                         {
                             on_plugin_event(&v);
+                            let f = LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            if let Some(f) = f {
+                                f(&v);
+                            }
                         }
                         true
                     });

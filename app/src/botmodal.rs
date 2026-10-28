@@ -475,6 +475,30 @@ pub(crate) fn link_ask_layer() -> impl IntoElement {
                 crate::links::app_subject(&app).unwrap_or(app.key.as_str()).to_owned(),
                 "Open",
             ),
+            // v1 plugins (spec 9.7): the questions the table fixes
+            LinkAsk::V1App { key, title } => (
+                crate::mini_v1::consent::open_app_question(&title, "another app or a web page"),
+                "A link from outside Rox asked to open this app. Nothing opens unless you say so.",
+                crate::mini_v1::links::link_of(&crate::mini_v1::V1Key::parse(&key).unwrap_or(crate::mini_v1::V1Key {
+                    plugin: String::new(),
+                    app: String::new(),
+                    ticket: None,
+                    props: Default::default(),
+                })),
+                "Open",
+            ),
+            LinkAsk::V1Url { url, app, .. } => (
+                crate::mini_v1::consent::open_url_question(&url),
+                if app.is_empty() { "A mini app asked to open this page:" } else { "This mini app asked to open a page:" },
+                format!("{url}\n\nFrom {app}"),
+                "Open",
+            ),
+            LinkAsk::V1Attach { title, app, .. } => (
+                crate::mini_v1::consent::attach_question(&title),
+                "The assistant will see it in this chat's messages.",
+                format!("From {app}"),
+                "Attach",
+            ),
         };
         let close = || store().answer_link_ask(false);
         view()

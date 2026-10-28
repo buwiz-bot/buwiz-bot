@@ -382,7 +382,8 @@ fn escape() {
     st.vers_pop.set(None);
     st.app_details.set(None);
     st.main_pick.set(None);
-    st.link_ask.set(None);
+    // a waiting question hears the no (a v1 app's ask, 9.7)
+    st.answer_link_ask(false);
     st.avatar_editing.set(false);
     // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
     st.light_close();

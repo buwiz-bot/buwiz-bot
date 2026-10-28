@@ -42,6 +42,7 @@ pub mod records;
 pub mod session;
 pub mod storage;
 pub mod tokens;
+pub mod ui;
 
 use serde_json::{Value, json};
 
