@@ -96,7 +96,8 @@ fn answerable(turn: i64) -> bool {
     let st = store();
     let last = st.turns.with(|t| t.last().map(|t| t.i));
     let running = st.agent().is_some_and(|a| a.state != "waiting");
-    last == Some(turn) && !running && !st.sending.get()
+    let thread = st.active_id.get();
+    last == Some(turn) && !running && st.sending.with(|s| crate::store::may_send(s, &thread))
 }
 
 pub(crate) fn card(spec: PluginNeedsSpec, key: String, turn: i64) -> impl IntoElement {
