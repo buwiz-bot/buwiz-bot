@@ -19,6 +19,9 @@ import { ROOT, tempDir } from "./helpers.mjs";
 export const FIXTURE_DIR = join(ROOT, "server", "v1", "fixture");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
 export const FX = "dev.goldcoders.fixture";
+export const GWS = "dev.goldcoders.google-workspace";
+export const GWS_DIR = join(ROOT, "server", "v1", "plugins", "google-workspace");
+export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
 
 /** A publisher key of this run: {keyId, seed, pub}. */
 export function publisher(keyId = `test-${random128().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10)}`) {
@@ -54,7 +57,7 @@ export function fixtureManifest(pub, edit = () => {}) {
 export function bed(label) {
   const dir = tempDir(`v1-${label}`);
   const pub = publisher();
-  const trustFile = writeTrust(join(dir, "trust.json"), [pub], [[FX, pub.keyId], ["dev.goldcoders.other", pub.keyId]]);
+  const trustFile = writeTrust(join(dir, "trust.json"), [pub], [[FX, pub.keyId], ["dev.goldcoders.other", pub.keyId], [GWS, pub.keyId]]);
   const manifestFile = join(dir, "manifest.json");
 
   const writeManifest = (edit) => {
@@ -83,6 +86,49 @@ export const fixtureSpec = (b, args = [], env = {}) => ({ command: process.execP
 /** inspect + install, as Rox does after the review. */
 export async function installFixture(plugins, b, args = [], env = {}) {
   const spec = fixtureSpec(b, args, env);
+  const i = await plugins.inspect(spec);
+
+  return plugins.install({ ...spec, manifest_sha256: i.manifest_sha256 });
+}
+
+// ── the Google Workspace plugin over the fake upstream ───────────────────
+
+/** Writes `mail` (the fake upstream's messages) to the bed; its path. */
+export function writeMail(b, mail) {
+  const file = join(b.dir, "gws-mail.json");
+
+  writeFileSync(file, JSON.stringify(mail));
+
+  return file;
+}
+
+/** The gws plugin's spawn spec in bed `b`: its manifest signed with the
+ *  bed's publisher, the fake upstream with a call log at b.dir/gws.log.
+ *  `env` overrides (e.g. GWS_UPSTREAM: "" for a missing upstream). */
+export function gwsSpec(b, env = {}) {
+  const m = JSON.parse(readFileSync(join(GWS_DIR, "manifest.json"), "utf8"));
+
+  m.publisher.key_id = b.pub.keyId;
+  const manifestFile = join(b.dir, "gws-manifest.json");
+
+  writeFileSync(manifestFile, JSON.stringify(signManifest(m, b.pub.seed), null, 2));
+  const upstream = { command: process.execPath, args: [FAKE_UPSTREAM], env: { FAKE_GWS_MESSAGES: join(b.dir, "gws-mail.json"), FAKE_GWS_LOG: join(b.dir, "gws.log") } };
+
+  return { command: process.execPath, args: [join(GWS_DIR, "server.mjs")], env: { GWS_MANIFEST: manifestFile, GWS_UPSTREAM: JSON.stringify(upstream), GWS_USER_EMAIL: "owner@example.com", ...env } };
+}
+
+/** The fake upstream's calls so far: [{tool, args}]. */
+export function upstreamCalls(b) {
+  try {
+    return readFileSync(join(b.dir, "gws.log"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+/** inspect + install of the gws plugin. */
+export async function installGws(plugins, b, env = {}) {
+  const spec = gwsSpec(b, env);
   const i = await plugins.inspect(spec);
 
   return plugins.install({ ...spec, manifest_sha256: i.manifest_sha256 });
