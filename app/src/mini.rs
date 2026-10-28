@@ -183,6 +183,25 @@ pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String>
     nsh_bundler::compile_module(&format!("{file}.tsx"), &wrapped, &sets)
 }
 
+/// `GET /module`'s answer: the module's source, or why there is none. The
+/// server answers `{source: "", error}` when the plugin has no such app or
+/// is off; its `error` is what the person sees, not "empty module".
+pub(crate) fn module_source(answer: &serde_json::Value) -> Result<String, String> {
+    let text = |k: &str| answer.get(k).and_then(|x| x.as_str()).unwrap_or_default().trim();
+    match (text("source"), text("error")) {
+        (source, _) if !source.is_empty() => Ok(answer["source"].as_str().unwrap_or(source).to_owned()),
+        (_, error) if !error.is_empty() => Err(error.to_owned()),
+        _ => Err("the server sent an empty module".to_owned()),
+    }
+}
+
+/// What [`compile_widget`]'s error shows: its first line that says
+/// something.
+pub(crate) fn compile_error(error: &str) -> String {
+    let first = error.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no details");
+    format!("it failed to compile: {first}")
+}
+
 thread_local! {
     /// The full-screen apps ✕ / ⌘W / ⌘[ took off, latest last: ⌘] puts
     /// them back, until another app opens.
@@ -305,15 +324,38 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                     {
                         let k = key.clone();
                         move || {
-                            let k = k.clone();
+                            let (k, k2) = (k.clone(), k.clone());
+                            // the plugin's own words, under which app of
+                            // which plugin failed
                             view()
                                 .flex_1()
                                 .items_center()
                                 .justify_center()
+                                .px_6()
                                 .child(
-                                    text(move || format!("Couldn't open this app: {}", store().mini_err(&k).get()))
-                                        .text_size(px(13.0))
-                                        .text_color(tc("#f5f5f5a8")),
+                                    view()
+                                        .max_w(px(560.0))
+                                        .gap_2()
+                                        .child(
+                                            text(move || {
+                                                if crate::links::app_key_parts(&k2).is_none() {
+                                                    return "Couldn't open this app".to_owned();
+                                                }
+                                                let (app, plugin) = store()
+                                                    .mcp_manifest
+                                                    .with(|ms| crate::links::app_names(&k2, ms));
+                                                format!("Couldn't open {app} from {plugin}")
+                                            })
+                                            .text_size(px(15.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(tc("#f5f5f5")),
+                                        )
+                                        .child(
+                                            text(move || store().mini_err(&k).get())
+                                                .number_of_lines(8)
+                                                .text_size(px(13.0))
+                                                .text_color(tc("#f5f5f5c8")),
+                                        ),
                                 )
                                 .into_element()
                         }
@@ -1184,6 +1226,38 @@ export default function R() {
             );
             assert!(policy.harden);
         }
+    }
+
+    #[test]
+    fn a_module_answer_gives_its_source_or_the_servers_error() {
+        use serde_json::json;
+        let ok = super::module_source(&json!({"source": "export default function R() {}", "title": "Forms"}));
+        assert_eq!(ok.as_deref(), Ok("export default function R() {}"));
+        // `{source: "", error}`: the plugin's words, not "empty module"
+        let gone = super::module_source(&json!({"source": "", "error": "bir ships no app nope"}));
+        assert_eq!(gone, Err("bir ships no app nope".to_owned()));
+        assert_eq!(
+            super::module_source(&json!({"error": " no such server "})),
+            Err("no such server".to_owned())
+        );
+        assert_eq!(
+            super::module_source(&json!({"source": "  "})),
+            Err("the server sent an empty module".to_owned())
+        );
+        assert_eq!(super::module_source(&json!({})), Err("the server sent an empty module".to_owned()));
+    }
+
+    #[test]
+    fn a_compile_error_shows_its_first_line() {
+        assert_eq!(
+            super::compile_error("\n  Expected `}` at forms.tsx:3:1\n  more\n"),
+            "it failed to compile: Expected `}` at forms.tsx:3:1"
+        );
+        assert_eq!(super::compile_error(""), "it failed to compile: no details");
+        let err = super::compile_widget("mcp:bir/forms", "export default function R() { return <View> }")
+            .expect_err("broken JSX");
+        let shown = super::compile_error(&err);
+        assert!(shown.starts_with("it failed to compile: ") && !shown.contains('\n'), "{shown}");
     }
 
     #[test]

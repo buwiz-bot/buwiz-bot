@@ -5753,11 +5753,14 @@ impl Store {
             };
             let title = v.get("title").and_then(|x| x.as_str()).unwrap_or_default();
             self.mini_title(&name).set(title.to_owned());
-            let src = s(&v, "source");
-            if src.is_empty() {
-                self.mini_err(&name).set("empty module".to_owned());
-                return;
-            }
+            let src = match crate::mini::module_source(&v) {
+                Ok(src) => src,
+                Err(e) => {
+                    log::warn!("mini {name}: {e}");
+                    self.mini_err(&name).set(e);
+                    return;
+                }
+            };
             match crate::mini::compile_widget(&name, &src) {
                 Ok(js) => {
                     self.mini_err(&name).set(String::new());
@@ -5765,8 +5768,7 @@ impl Store {
                 }
                 Err(e) => {
                     log::warn!("mini {name}: compile failed: {e}");
-                    let first = e.lines().next().unwrap_or("compile failed");
-                    self.mini_err(&name).set(first.to_owned());
+                    self.mini_err(&name).set(crate::mini::compile_error(&e));
                 }
             }
         }));
