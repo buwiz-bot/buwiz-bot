@@ -228,7 +228,13 @@ fn modal() -> impl IntoElement {
                                             when(|| store().plugin_page() == "mcp", mcp_page)
                                                 .otherwise(|| {
                                                     when(|| store().plugin_page() == "setup", setup_page)
-                                                        .otherwise(skill_page)
+                                                        .otherwise(|| {
+                                                            when(|| store().plugin_page() == "v1plugin", v1_plugin_page)
+                                                                .otherwise(|| {
+                                                                    when(|| store().plugin_page() == "v1install", v1_install_page)
+                                                                        .otherwise(skill_page)
+                                                                })
+                                                        })
                                                 })
                                         })
                                 })
@@ -1028,6 +1034,7 @@ fn connected_page() -> impl IntoElement {
                             .pt_1()
                             .pb(px(14.0)),
                     )
+                    .child(v1_section())
                     .child(
                         text("Installed")
                             .text_size(px(12.0))
@@ -3270,4 +3277,305 @@ fn private_skill_editor() -> impl IntoElement {
                         ),
                 ),
         )
+}
+
+
+// ——————————————— v1 mini app plugins (spec 13) ———————————————
+
+/// Connect Apps' v1 plugins: each with its state, version and publisher;
+/// Add… inspects a plugin's command and shows its review.
+fn v1_section() -> impl IntoElement {
+    store().v1_refresh(false);
+    view()
+        .pb(px(14.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pb_2()
+                .child(text("Mini app plugins").text_size(px(12.0)).text_color(theme::DIM).pl(px(2.0)))
+                .child(sm_btn(Btn::Secondary, || "Add…".to_owned(), || {
+                    store().v1.review.set(None);
+                    store().push_nav("v1install", "", "");
+                })),
+        )
+        .child(each(
+            || store().v1.listed.get(),
+            |p| format!("{}|{}|{}", p.id, p.state, p.version),
+            |p, _| v1_row(p.get_untracked()),
+        ))
+}
+
+fn v1_row(p: crate::mini_v1::connect::Listed) -> impl IntoElement {
+    let id = p.id.clone();
+    let status = if p.failed() { danger_ink() } else { ink3() };
+    card()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .mb(px(8.0))
+        .label(p.title.clone())
+        .child(plug_tile(&p.title, 32.0))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(text(p.title.clone()).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+                .child(
+                    text(format!("{} · {}", p.version, if p.publisher.is_empty() { p.id.clone() } else { p.publisher.clone() }))
+                        .number_of_lines(1)
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
+                        .text_color(ink3()),
+                ),
+        )
+        .child(text(p.state_label()).text_size(px(12.0)).text_color(status))
+        .on_press(move || store().push_nav("v1plugin", &id, ""))
+}
+
+/// The plugin on the nav stack's top, as listed now.
+fn v1_current() -> Option<crate::mini_v1::connect::Listed> {
+    let id = store().plugin_nav.get().last().map(|n| n.name.clone()).unwrap_or_default();
+    store().v1.listed.get().into_iter().find(|p| p.id == id)
+}
+
+/// A v1 plugin's page: state (a failed plugin's Retry and Open logs),
+/// Disable/Enable, Uninstall, its apps, the per-tool switches and its
+/// routines (approve once, then enable or disable).
+fn v1_plugin_page() -> impl IntoElement {
+    let confirm = signal(false);
+    view()
+        .flex_1()
+        .child(back_bar(None, &v1_current().map(|p| p.title).unwrap_or_default()))
+        .child(scroll().flex_1().child(dynamic(move || {
+            let Some(p) = v1_current() else {
+                return pane().child(text("This plugin is not installed.").text_size(px(13.0)).text_color(ink3())).into_element();
+            };
+            let (id1, id2, id3, id4, id5) = (p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone());
+            let enabled = p.enabled;
+            let mut page = pane()
+                .gap(px(14.0))
+                .child(
+                    view()
+                        .gap(px(2.0))
+                        .child(text(p.title.clone()).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                        .child(
+                            text(format!("{} · {} · {}", p.version, p.publisher, p.id))
+                                .text_size(px(12.0))
+                                .text_color(ink3()),
+                        )
+                        .child(
+                            text(p.state_label())
+                                .text_size(px(13.0))
+                                .text_color(if p.failed() { danger_ink() } else { theme::TEXT }),
+                        ),
+                );
+            if p.failed() {
+                page = page.child(
+                    card()
+                        .gap(px(8.0))
+                        .p(px(14.0))
+                        .child(text(if p.message.is_empty() { p.code.clone() } else { p.message.clone() }).text_size(px(13.0)).text_color(theme::TEXT))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(sm_btn(Btn::Primary, || "Retry".to_owned(), move || store().v1_set_enabled(&id1, true)))
+                                .child(sm_btn(Btn::Secondary, || "Open logs".to_owned(), move || store().v1_open_logs(&id2))),
+                        ),
+                );
+            }
+            if p.state == "update_available" {
+                page = page.child(
+                    text("A new version is ready. Add it again from its command to review what changed before it updates.")
+                        .text_size(px(13.0))
+                        .text_color(ink3()),
+                );
+            }
+            page = page.child(
+                view()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(sm_btn(
+                        Btn::Secondary,
+                        move || if enabled { "Disable".to_owned() } else { "Enable".to_owned() },
+                        move || store().v1_set_enabled(&id3, !enabled),
+                    ))
+                    .child(when(
+                        move || !confirm.get(),
+                        move || sm_btn(Btn::Danger, || "Uninstall…".to_owned(), move || confirm.set(true)).into_element(),
+                    ))
+                    .child(when(
+                        move || confirm.get(),
+                        move || {
+                            let id = id4.clone();
+                            view()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(sm_btn(Btn::DangerSolid, || "Uninstall: remove its pins, attachments and data".to_owned(), move || {
+                                    confirm.set(false);
+                                    store().v1_uninstall(&id);
+                                }))
+                                .child(sm_btn(Btn::Ghost, || "Cancel".to_owned(), move || confirm.set(false)))
+                                .into_element()
+                        },
+                    ))
+                    .child(text(move || store().v1.busy.get()).text_size(px(12.0)).text_color(ink3())),
+            );
+            if !p.apps.is_empty() {
+                let mut apps = card().child(sec_label("Apps"));
+                for a in &p.apps {
+                    apps = apps.child(text(a.clone()).px(px(14.0)).py(px(6.0)).text_size(px(13.0)).text_color(theme::TEXT));
+                }
+                page = page.child(apps);
+            }
+            if !p.tools.is_empty() {
+                let mut tools = card().child(sec_label(format!("Tools {} of {} on", p.tools.iter().filter(|t| !t.disabled).count(), p.tools.len())));
+                for t in p.tools.clone() {
+                    let (plugin, name, on) = (id5.clone(), t.name.clone(), !t.disabled);
+                    tools = tools.child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(text(t.name.clone()).text_size(px(13.0)).text_color(theme::TEXT))
+                                    .child(text(t.description.clone()).number_of_lines(2).text_size(px(12.0)).text_color(ink3())),
+                            )
+                            .child(tool_switch(move || on, move || store().v1_set_tool(&plugin, &name, on))),
+                    );
+                }
+                page = page.child(tools);
+            }
+            if !p.routines.is_empty() {
+                let mut routines = card().child(sec_label("Routines"));
+                for r in p.routines.clone() {
+                    let plugin = p.id.clone();
+                    let (rid1, rid2, rid3) = (r.id.clone(), r.id.clone(), r.id.clone());
+                    let (p1, p2, p3) = (plugin.clone(), plugin.clone(), plugin);
+                    let mut row = view().gap(px(4.0)).px(px(14.0)).py(px(10.0)).child(
+                        text(format!("{}{}", r.name, if r.enabled { " · on" } else { "" })).text_size(px(13.0)).text_color(theme::TEXT),
+                    );
+                    if !r.description.is_empty() {
+                        row = row.child(text(r.description.clone()).text_size(px(12.0)).text_color(ink3()));
+                    }
+                    for line in &r.reads {
+                        row = row.child(text(format!("Reads {line}")).text_size(px(12.0)).text_color(ink3()));
+                    }
+                    if !r.reason.is_empty() {
+                        row = row.child(text(r.reason.clone()).text_size(px(12.0)).text_color(warn_ink()));
+                    }
+                    let mut buttons = view().flex_row().gap(px(8.0));
+                    if !r.approved && !r.reads.is_empty() {
+                        buttons = buttons.child(sm_btn(Btn::Secondary, || "Approve what it reads".to_owned(), move || {
+                            store().v1_routine(&p1, &rid1, crate::mini_v1::host_api::RoutineAction::Approve)
+                        }));
+                    }
+                    if r.enabled {
+                        buttons = buttons.child(sm_btn(Btn::Secondary, || "Disable".to_owned(), move || {
+                            store().v1_routine(&p2, &rid2, crate::mini_v1::host_api::RoutineAction::Disable)
+                        }));
+                    } else if r.approved || r.reads.is_empty() {
+                        buttons = buttons.child(sm_btn(Btn::Primary, || "Run in this chat".to_owned(), move || {
+                            store().v1_routine(&p3, &rid3, crate::mini_v1::host_api::RoutineAction::Enable)
+                        }));
+                    }
+                    routines = routines.child(row.child(buttons));
+                }
+                page = page.child(routines);
+            }
+            page.into_element()
+        })))
+}
+
+/// Add a v1 plugin: its command line, then the review (13.1 step 3) with
+/// every line, Cancel (nothing changes) and Install — or, for an update,
+/// what it adds and Approve, or Install older version (12.1, 13.2).
+fn v1_install_page() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(back_bar(None, "Add a mini app plugin"))
+        .child(scroll().flex_1().child(dynamic(|| {
+            let Some(r) = store().v1.review.get() else {
+                return pane()
+                    .gap(px(10.0))
+                    .child(text("The command that starts the plugin (stdio), with its arguments.").text_size(px(13.0)).text_color(ink3()))
+                    .child(
+                        view().h(px(32.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(10.0)).justify_center().child(
+                            input()
+                                .value(|| store().v1.form.get())
+                                .placeholder("node /path/to/plugin.mjs")
+                                .placeholder_color(|| color(tc(0.4)))
+                                .text_size(px(13.0))
+                                .text_color(theme::TEXT)
+                                .h(px(32.0))
+                                .on_change(|t: &str| store().v1.form.set(t.to_owned())),
+                        ),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .child(sm_btn(Btn::Primary, || "Review…".to_owned(), || store().v1_inspect()))
+                            .child(text(|| store().v1.busy.get()).text_size(px(12.0)).text_color(ink3())),
+                    )
+                    .into_element();
+            };
+            let action = r.action();
+            let mut page = pane()
+                .gap(px(10.0))
+                .child(text(format!("{} {}", r.title, r.version)).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .child(text(format!("By {}", r.publisher)).text_size(px(13.0)).text_color(ink3()));
+            if let Some(from) = &r.from_version {
+                page = page.child(
+                    text(if r.downgrade {
+                        format!("This is an older version than the {from} installed.")
+                    } else {
+                        format!("Updates {from} to {}.", r.version)
+                    })
+                    .text_size(px(13.0))
+                    .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
+                );
+            }
+            if !r.added.is_empty() {
+                let mut added = card().child(sec_label("This update adds permissions"));
+                for l in &r.added {
+                    added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
+                }
+                page = page.child(added);
+            }
+            let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
+            for l in &r.lines {
+                let indent = l.starts_with("  ");
+                lines = lines.child(
+                    text(l.trim_start().to_owned())
+                        .pl(px(if indent { 28.0 } else { 14.0 }))
+                        .pr(px(14.0))
+                        .py(px(3.0))
+                        .text_size(px(13.0))
+                        .text_color(if indent { ink2() } else { theme::TEXT }),
+                );
+            }
+            page = page.child(lines);
+            for w in &r.warnings {
+                page = page.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
+            }
+            page.child(
+                view()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(sm_btn(Btn::Ghost, || "Cancel".to_owned(), || store().v1_cancel_review()))
+                    .child(sm_btn(Btn::Primary, move || action.to_owned(), || store().v1_install()))
+                    .child(text(|| store().v1.busy.get()).text_size(px(12.0)).text_color(ink3())),
+            )
+            .into_element()
+        })))
 }
