@@ -1295,8 +1295,6 @@ pub enum PaletteAct {
     /// Attach a token to a chat (a bot's main chat): (token, thread, its
     /// name).
     Attach(String, String, String),
-    /// Enable a server's routine template in a chat (a bot's main chat).
-    EnableRoutine { server: String, id: String, thread: String, place: String, email: String },
 }
 
 /// One thing a bot remembers (`memories` on a `/threads` bot).
@@ -1886,12 +1884,15 @@ pub struct Store {
     pub settings_sel: Signal<i64>,
     pub settings_sug: Signal<i64>,
     pub settings_note: Signal<String>,
-    /// Settings › Routines: the server's routines (`GET /routines`).
-    pub routines: Signal<Vec<crate::settings::Routine>>,
+    /// The server's own (v0) routines (`GET /routines`), for Details.
+    pub routines: Signal<Vec<crate::routines::Routine>>,
+    /// Run now in flight or just done, by routine (`routines::v1_key`,
+    /// `v0_key`).
+    pub routine_runs: Signal<Vec<(String, crate::routines::RunState)>>,
     /// The templates connected servers suggest (`GET /routines/templates`);
     /// the one whose Enable is asking for the Google address (server, id),
     /// and what's typed there.
-    pub routine_templates: Signal<Vec<crate::settings::RoutineTemplate>>,
+    pub routine_templates: Signal<Vec<crate::routines::RoutineTemplate>>,
     pub routine_ask_email: Signal<Option<(String, String)>>,
     pub routine_email: Signal<String>,
     /// The last menu action asked for, numbered (`rox/keys` sends it).
@@ -2230,6 +2231,7 @@ impl Store {
             settings_sug: signal(0),
             settings_note: signal(String::new()),
             routines: signal(Vec::new()),
+            routine_runs: signal(Vec::new()),
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
@@ -3133,7 +3135,6 @@ impl Store {
             PaletteAct::Thread(id) => self.go_to(&id, None),
             PaletteAct::Link(url) => self.open_link(&url),
             PaletteAct::Attach(tok, thread, place) => crate::slash::attach(vec![tok], thread, place, None),
-            PaletteAct::EnableRoutine { server, id, thread, place, email } => crate::settings::enable_template(server, id, thread, place, email),
         }
     }
 

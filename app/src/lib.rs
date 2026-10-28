@@ -38,6 +38,7 @@ mod pane;
 mod settings;
 mod slash;
 mod plugins;
+mod routines;
 mod sidebar;
 mod statusfx;
 mod store;
