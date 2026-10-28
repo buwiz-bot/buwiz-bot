@@ -477,10 +477,18 @@ export const ROUTINE_TOOLS = [
       "Example — \"sync my BIR calendar to Google\" (daily): call mcp_bir_bir_calendar_changes {since:\"1970-01-01T00:00:00Z\"} once to see its result's shape, then routine_create {name:\"BIR calendar → Google Calendar\", every_s:86400, " +
       "check:{server:\"bir\", tool:\"bir_calendar_changes\", args:{since:\"$last_check\"}, ids:\"<the result's list of changes>[]\"}, " +
       "prompt:\"For each change: an added event → mcp_google-workspace_manage_event {action:\\\"create\\\", summary:<form · taxpayer>, start_time/end_time:<the due date, all day>, description:<period and status>}, then mcp_bir_bir_calendar_link {key, event_id}; a changed one → manage_event {action:\\\"update\\\", event_id}; a removed one → manage_event {action:\\\"delete\\\", event_id}. Report what changed.\"}.\n" +
-      "Confirm to the user what you set up: its name, how often, and what wakes it.",
+      "Confirm to the user what you set up: its name, how often, and what wakes it.\n" +
+      "A PLUGIN routine (a Connect Apps plugin's, listed in its manifest; routine_list shows the ones here) is made instead with {plugin, routine, params?, every_s?, trigger?, label?}: an instance of it in this chat with its own thread. " +
+      "params are the routine's settings (its `params` schema, e.g. which taxpayers); every_s overrides its interval; trigger \"webhook\" runs it when a URL is called instead of on a timer (the user gets the URL in its panel). " +
+      "One whose routine changes data (writes) or reads what the user hasn't approved does not start: a card in this chat asks the user to Enable it. Tell them so.",
     input_schema: {
       type: "object",
       properties: {
+        plugin: { type: "string", description: "plugin routine: the plugin id" },
+        routine: { type: "string", description: "plugin routine: the routine id in its manifest" },
+        params: { type: "object", description: "plugin routine: its params" },
+        trigger: { type: "string", enum: ["schedule", "webhook"], description: "plugin routine: schedule (default) or webhook" },
+        label: { type: "string", description: "plugin routine: a short name for this instance, e.g. the taxpayer's name" },
         name: { type: "string", description: "short name the user sees in the chat's Details › Routines" },
         every_s: { type: "number", description: "seconds between ticks, 60 at least (60 = every minute, 3600 hourly, 86400 daily)" },
         prompt: { type: "string", description: "what to do when it wakes — you read it, plus the new items as JSON" },
@@ -500,30 +508,35 @@ export const ROUTINE_TOOLS = [
           required: ["server", "tool", "ids"],
         },
       },
-      required: ["name", "every_s", "prompt"],
+      required: [],
     },
   },
   {
     name: "routine_list",
     description:
       "List the user's routines: id, name, chat, interval, on/off, check, last run and last error. " +
-      "Also lists the plugin routines (Connect Apps plugins) enabled in this chat, id <plugin>/<routine>, with their own thread; those the user turns on, pauses and removes in the routine's panel, you can only run them.",
+      "Also lists the plugin routine instances of this chat (Connect Apps plugins): id ri_…, the routine <plugin>/<routine>, params, trigger, on/paused/waiting for the user, last run and their own thread.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "routine_run",
     description:
-      "Run a routine once now, out of its schedule (\"run my BIR routine\"). id from routine_list: a routine's id, or <plugin>/<routine> for a plugin routine of this chat. " +
+      "Run a routine once now, out of its schedule (\"run my BIR routine\"). id from routine_list: a routine's id, a plugin routine instance's ri_… id, or <plugin>/<routine> when it has one instance here. " +
       "A plugin routine's run checks for new items and runs each in the routine's own thread; you get what it found. A paused or unavailable routine is refused with the reason.",
     input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
   {
     name: "routine_update",
-    description: "Change a routine (routine_list gives ids): turn it on or off, change how often it runs, its prompt or its name. Pass only what changes. Not for plugin routines (<plugin>/<routine>): the user manages those in the routine's panel.",
+    description:
+      "Change a routine (routine_list gives ids): turn it on or off, change how often it runs, its prompt or its name. Pass only what changes. " +
+      "A plugin routine instance (ri_…) takes enabled, every_s, params, trigger and label; turning one on, or new params for one, whose routine changes data asks the user with a card instead.",
     input_schema: {
       type: "object",
       properties: {
         id: { type: "string" },
+        params: { type: "object", description: "plugin routine instance: its params" },
+        trigger: { type: "string", enum: ["schedule", "webhook"] },
+        label: { type: "string" },
         enabled: { type: "boolean" },
         every_s: { type: "number", description: "seconds between ticks, 60 at least" },
         prompt: { type: "string" },
@@ -534,7 +547,7 @@ export const ROUTINE_TOOLS = [
   },
   {
     name: "routine_delete",
-    description: "Delete a routine for good (routine_list gives ids). To pause one, routine_update enabled:false instead. Not for plugin routines (<plugin>/<routine>): the user removes those in the routine's panel.",
+    description: "Delete a routine, or a plugin routine instance (ri_…), for good (routine_list gives ids); a plugin instance's thread stays. To pause one, routine_update enabled:false instead.",
     input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
 ];
@@ -546,17 +559,19 @@ const line = (r, thread) =>
   `${r.check ? ` · check ${r.check.server}/${r.check.tool} (${r.seen_count} seen)` : " · no check"}` +
   `${r.last_run ? ` · last run ${new Date(r.last_run).toISOString()}` : ""}${r.last_error ? ` · error: ${r.last_error}` : ""}`;
 
-// a plugin routine's line: `<plugin>/<routine> — name · plugin · …`
+// a plugin routine instance's line: `ri_… — <plugin>/<routine> name · …`
 const v1Line = (x) =>
-  `${x.plugin}/${x.id} — ${x.name} · plugin ${x.title} · every ${every(x.every_s)} · ${x.enabled ? "on" : "paused"}` +
+  `${x.instance} — ${x.plugin}/${x.id} ${x.name}${x.summary ? ` (${x.summary})` : ""} · plugin ${x.title}` +
+  ` · ${x.trigger === "webhook" ? `on its webhook${x.hook ? "" : " (no URL yet)"}` : `every ${every(x.every_s)}`}` +
+  ` · ${x.enabled ? "on" : x.pending ? "waiting for the user's Enable" : "paused"}${x.writes.length ? ` · may change data: ${x.writes.join(", ")}` : ""}` +
   `${x.running ? " · running now" : ""}${x.available || !x.enabled ? "" : ` · can't run: ${x.reason}`}` +
   `${x.last_run ? ` · last run ${new Date(x.last_run).toISOString()}${x.last_error ? ` failed: ${x.last_error}` : x.last_items != null ? ` (${x.last_items} new)` : ""}` : " · not run yet"}` +
   `${x.home ? ` · thread ${x.home}` : ""}`;
-const isV1Ref = (id) => String(id ?? "").includes("/");
-const V1_HANDS_OFF = "is a plugin routine: the user pauses or removes it in the routine's panel (Details › Routines), not you. You can run it (routine_run).";
-// The chats whose plugin routines the agent sees: this one, the bot's own
-// chat, and in a routine's thread the chat it reports to.
-const chatsOf = (thread) => [thread?.id, thread?.routine?.thread, threadBot(thread?.id)?.threadId].filter(Boolean);
+const isV1Ref = (id) => String(id ?? "").includes("/") || String(id ?? "").startsWith("ri_");
+// The chats whose plugin routines the agent sees: in a routine's thread
+// the chat it reports to, the bot's own chat, and this one. The first is
+// where routine_create makes one.
+const chatsOf = (thread) => [...new Set([thread?.routine?.thread, threadBot(thread?.id)?.threadId, thread?.id].filter(Boolean))];
 // A routine's run, waited on for a minute at most.
 const within60 = (p) => {
   let t;
@@ -584,9 +599,14 @@ export async function toolRoutine(thread, name, input = {}, job = null) {
     const after = routineJson(rowOf(r.id));
     return after.last_error ? { content: `${r.name} ran and failed: ${after.last_error}`, is_error: true } : { content: `${r.name} ran` };
   }
-  if ((name === "routine_update" || name === "routine_delete") && isV1Ref(input.id))
-    return { content: `${input.id} ${V1_HANDS_OFF}`, is_error: true };
+  if (name === "routine_update" && isV1Ref(input.id)) {
+    const { id, ...patch } = input;
+    return (await v1()).agentUpdate(String(id), patch, chatsOf(thread));
+  }
+  if (name === "routine_delete" && isV1Ref(input.id)) return (await v1()).agentDelete(String(input.id), chatsOf(thread));
+  if (name === "routine_create" && input.plugin !== undefined) return (await v1()).agentCreate(input, chatsOf(thread));
   if (name === "routine_create") {
+    if (input.every_s === undefined) return { content: "a routine needs every_s (or plugin and routine for a plugin routine)", is_error: true };
     const r = await createRoutine({ ...input, thread: thread?.id });
     return { content: `created ${line(r, thread)}; first tick ${r.next_run && r.next_run <= Date.now() ? "now" : `at ${new Date(r.next_run).toISOString()}`}` };
   }

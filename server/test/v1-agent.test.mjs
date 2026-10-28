@@ -56,7 +56,7 @@ test("AGT-08 a routine's turn sees only its surface: its plugin's tools, no buil
   assert.ok(surface.every((n) => n.startsWith("fx_")), surface.join(", "));
 });
 
-test("AGT-09 the agent runs and lists routines; a plugin routine it cannot change; a routine's own turn has no routine tools", async () => {
+test("AGT-09 the agent runs and lists routines, only its chats' plugin routines; a routine's own turn has no routine tools", async () => {
   const all = await names();
 
   for (const t of ["routine_create", "routine_list", "routine_run", "routine_update", "routine_delete"]) assert.ok(all.includes(t), t);
@@ -68,7 +68,7 @@ test("AGT-09 the agent runs and lists routines; a plugin routine it cannot chang
     const r = await execTool({ id: 9 }, null, { name, input: { id: `${FX}/fx-digest`, enabled: true } });
 
     assert.equal(r.is_error, true);
-    assert.match(r.content, /the user pauses or removes it in the routine's panel/);
+    assert.match(r.content, /no plugin routine .* in this chat/);
   }
   const listed = await execTool({ id: 9 }, null, { name: "routine_list", input: {} });
 

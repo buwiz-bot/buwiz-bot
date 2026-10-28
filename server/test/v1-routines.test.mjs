@@ -64,6 +64,8 @@ const routines = createRoutines({ db, plugins, clock, runTurn, threads, threadEx
 const chat = () => store.list[0];
 const notices = () => chat().turns.filter((t) => t.role === "notice");
 const home = () => store.list.find((t) => t.routine?.id === "bir-mail");
+// a routine's only instance
+const inst = (id) => db.prepare("SELECT id FROM v1_instances WHERE plugin=? AND routine=?").get(FX, id)?.id;
 
 const READS = [{ plugin: GWS, tools: ["gws_search_mail", "gws_read_mail"] }];
 
@@ -131,7 +133,7 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.match(t.prompt, /^\(This routine runs on its own every 300s/);
   assert.match(t.prompt, /## Routine: BIR mail \(approved plugin dev\.goldcoders\.fixture\)\nRecord each BIR confirmation\./, "10.2 label");
   assert.match(t.prompt, /New item from dev\.goldcoders\.google-workspace gws_search_mail:\n\{\n "id": "m1"/);
-  assert.deepEqual(t.surface, { plugin: FX, routine: "bir-mail", reads: READS, writes: [] });
+  assert.deepEqual(t.surface, { plugin: FX, routine: "bir-mail", instance: inst("bir-mail"), params: {}, reads: READS, writes: [] });
   assert.equal(listed("bir-mail").seen_count, 1);
   assert.equal(listed("bir-mail").last_error, null);
   assert.equal(listed("bir-mail").last_items, 1);
@@ -203,12 +205,12 @@ test("RTN-13 an enabled routine's thread is made at the server's start or its ne
 
   // enabled before threads were made early: no thread yet
   store.list.splice(store.list.indexOf(empty()), 1);
-  db.prepare("UPDATE v1_routines SET enabled=1 WHERE plugin=? AND routine=?").run(FX, "empty");
+  db.prepare("UPDATE v1_instances SET enabled=1 WHERE plugin=? AND routine=?").run(FX, "empty");
   const again = createRoutines({ db, plugins, clock, runTurn, threads, threadExists: (id) => chats.has(id), pollMs: 3_600_000 });
 
   again.start();
   again.stop();
-  assert.deepEqual(empty().routine, { plugin: FX, id: "empty", name: "Empty", thread: "chat-1" });
+  assert.deepEqual(empty().routine, { plugin: FX, id: "empty", instance: inst("empty"), name: "Empty", thread: "chat-1" });
   assert.equal(empty().title, "Empty");
   assert.deepEqual(empty().turns, []);
   store.list.splice(store.list.indexOf(empty()), 1);
@@ -286,7 +288,7 @@ test("RTN-10 a run's turns go to the routine's own thread, made on its first run
 
   assert.equal(store.list.filter((t) => t.routine?.id === "bir-mail").length, 1, "one thread for the routine");
   assert.equal(h.title, "BIR mail");
-  assert.deepEqual(h.routine, { plugin: FX, id: "bir-mail", name: "BIR mail", thread: "chat-1" });
+  assert.deepEqual(h.routine, { plugin: FX, id: "bir-mail", instance: inst("bir-mail"), name: "BIR mail", thread: "chat-1" });
   assert.deepEqual(turns.map((t) => t.thread), [h.id, h.id], "the second run reused it");
   const shown = h.turns.filter((t) => t.role === "user");
 
@@ -301,7 +303,7 @@ test("RTN-11 each run with new items leaves one notice pointing at the run; noth
 
   assert.equal(notices().length, 2, "two runs had new items; the empty and unchanged runs left nothing");
   assert.equal(a.text, "BIR mail ran · 1 new item");
-  assert.deepEqual(a.notice, { kind: "routine", plugin: FX, routine: "bir-mail", name: "BIR mail", thread: h.id, thread_uid: h.uid, run: h.turns[0].routine.run, seq: 0, turn: h.turns[0].id, items: 1 });
+  assert.deepEqual(a.notice, { kind: "routine", plugin: FX, routine: "bir-mail", instance: inst("bir-mail"), name: "BIR mail", thread: h.id, thread_uid: h.uid, run: h.turns[0].routine.run, seq: 0, turn: h.turns[0].id, items: 1 });
   assert.equal(b.notice.seq, 2, "the second run starts after the first's two turns");
   assert.equal(b.notice.turn, h.turns[2].id);
   assert.match(b.notice.run, /^run_\d+$/);
@@ -405,7 +407,7 @@ test("RTN-16 the agent lists and runs the plugin routines of its chats only, and
   assert.match(paused.content, /Empty is paused; resume it first/);
   assert.equal(listed("empty").enabled, false, "running it did not enable it");
   // the agent's side has run and list, nothing that enables or approves
-  for (const k of ["agentEnable", "agentApprove", "agentUpdate"]) assert.equal(routines[k], undefined);
+  for (const k of ["agentEnable", "agentApprove"]) assert.equal(routines[k], undefined);
 });
 
 test("RTN-08 bad requests are refused; a deleted chat stops the routine; uninstall forgets it", async () => {

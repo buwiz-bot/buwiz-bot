@@ -205,9 +205,14 @@ test("RTN-09 POST /v1/host/routines/approve stores the approval; the plugin list
   // Run now: a paused routine is refused with the reason
   const paused = await host("POST", "/v1/host/routines/run", { plugin: FX, routine: "fx-digest" });
 
-  assert.deepEqual([paused.status, paused.json.code], [400, "disabled"]);
-  assert.match(paused.json.message, /paused; resume it first/);
+  assert.deepEqual([paused.status, paused.json.code], [409, "disabled"]);
+  assert.match(paused.json.message, /not enabled in any chat/);
   assert.equal((await digest()).running, false);
+  assert.deepEqual((await digest()).instances, [], "no instance yet");
+  // a webhook takes no host token, and a wrong one is just not found
+  const hook = await req("POST", "/v1/hooks/ri_nosuchinstance/secret", { headers: { "Content-Type": "application/json" }, body: "{}" });
+
+  assert.deepEqual([hook.status, hook.json.code], [404, "not_found"]);
 });
 
 test("uninstall over HTTP leaves nothing behind", async () => {

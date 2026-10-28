@@ -16,6 +16,7 @@ import { verify } from "./ed.mjs";
 import { JcsError, canonicalize, canonicalSigned, isInt, isObject, isString, kindOf, parseIJson, signedBytes } from "./jcs.mjs";
 import { isApproved } from "./trust.mjs";
 import { V1Error } from "./errors.mjs";
+import { schemaProblem } from "./params.mjs";
 
 export const HOST_PROTOCOL = "1.0.0";
 export const APP_MIME = "text/x-nsh-tsx";
@@ -263,7 +264,7 @@ function routines(m) {
     obj(r, at);
     // a routine carries access grants (`reads`, `writes`): unknown keys,
     // v0's `needs` among them, are refused (2.2, 5.9)
-    onlyKeys(r, ["id", "name", "description", "every_s", "query", "prompt", "reads", "writes"], at);
+    onlyKeys(r, ["id", "name", "description", "every_s", "query", "prompt", "reads", "writes", "params"], at);
     name(r.id, "routineId", `${at}.id`);
     text(r.name, `${at}.name`, { min: 1, max: LIMITS.routineName });
     text(r.description, `${at}.description`, { max: LIMITS.routineDescription });
@@ -274,6 +275,17 @@ function routines(m) {
     text(r.query.field, `${at}.query.field`, { min: 1, max: 64 });
 
     if (r.query.args !== undefined) obj(r.query.args, `${at}.query.args`);
+
+    // `params`: what one instance runs with (a small JSON Schema), passed
+    // to the query tool beside query.args, so no name may be in both
+    if (r.params !== undefined) {
+      const why = schemaProblem(r.params);
+
+      if (why) throw invalid(`${at}.params`, why);
+      const both = Object.keys(r.params.properties).find((k) => r.query.args && Object.hasOwn(r.query.args, k));
+
+      if (both) throw invalid(`${at}.params`, `${both} is in query.args too`);
+    }
     text(r.prompt, `${at}.prompt`, { min: 1, max: LIMITS.routinePrompt });
     let tools = 0;
 
@@ -654,6 +666,7 @@ export function reviewOf(m, titleOf = (id) => id) {
   const routines = (m.routines || []).flatMap((r) => [
     ...(r.reads || []).map((x) => `Routine '${r.name}' reads via ${titleOf(x.plugin)}: ${x.tools.join(", ")}`),
     ...(r.writes?.length ? [`Routine '${r.name}' may change ${m.title} data without asking: ${r.writes.join(", ")}`] : []),
+    ...(r.params ? [`Routine '${r.name}' runs per chat with its own settings: ${Object.keys(r.params.properties).join(", ")}`] : []),
   ]);
   const head = [`${m.title} ${m.version} by ${m.publisher.name}`, ...(m.description ? [m.description] : [])];
 
