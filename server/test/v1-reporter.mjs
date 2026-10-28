@@ -3,10 +3,11 @@
 // pass or FAIL and the tests that cover it. A test covers an ID when its
 // name starts with it (e.g. "BRG-04 the same envelope twice is replayed").
 // IDs outside spec 17's sections are this suite's extensions and are listed
-// after it: RTN (v1 routine runner, 5.9) and GWS (the Google Workspace plugin).
+// after it: RTN (v1 routine runner, 5.9), GWS (the Google Workspace plugin)
+// and SDK (the mini app developer kit, sdk/mini-app).
 const ID = /^([A-Z]{3}-\d{2})\b/;
 const SPEC = new Set(["MAN", "APP", "BRG", "RSV", "INV", "AGT", "LCY", "CON"]);
-const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)" };
+const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)", SDK: "mini app developer kit (sdk/mini-app)" };
 
 export default async function* checklist(source) {
   const ids = new Map(); // id → {ok, names}
