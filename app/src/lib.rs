@@ -31,6 +31,7 @@ mod mark;
 mod md;
 mod mermaid;
 pub mod mini;
+pub mod mini_v1;
 mod models;
 mod palette;
 mod pane;
