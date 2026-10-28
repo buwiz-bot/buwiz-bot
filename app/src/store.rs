@@ -2420,8 +2420,9 @@ impl Store {
             .map(|t| ThreadMeta {
                 id: s(t, "id"),
                 uid: s(t, "uid"),
-                // never a raw ticket in a title: its title, once known
-                name: untracked(|| self.v1_plain(&s(t, "title"))),
+                // as stored: shown through `v1_plain` (no ticket), so a
+                // title that lands later replaces `@short:scope`
+                name: s(t, "title"),
                 count: i64of(t, "count"),
                 created: f64of(t, "created"),
                 hidden: b(t, "hidden"),
@@ -2911,7 +2912,7 @@ impl Store {
             });
         }
         for t in self.chats() {
-            let name = if t.name.is_empty() { "New chat".to_owned() } else { t.name.clone() };
+            let name = if t.name.is_empty() { "New chat".to_owned() } else { untracked(|| self.v1_plain(&t.name)) };
             items.push(PaletteItem {
                 letter_of: name.clone(),
                 ..row(name, format!("Chat · {} messages", t.count), PaletteAct::Thread(t.id.clone()))
