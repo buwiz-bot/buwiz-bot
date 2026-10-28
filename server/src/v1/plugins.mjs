@@ -25,7 +25,11 @@ import { isObject, isString, kindOf } from "./jcs.mjs";
 import {
   MANIFEST_URI, addedPermissions, checkTools, compareSemver, permsDigest, reviewOf, verifyManifest,
 } from "./manifest.mjs";
-import { loadTrust } from "./trust.mjs";
+import { isApproved, loadTrust } from "./trust.mjs";
+
+// 9.8: the first-party publisher, whose approved plugins' answer cards
+// mount at once
+export const FIRST_PARTY = "dev.goldcoders";
 
 export const BACKOFF_S = [1, 2, 4, 8, 16, 32, 60];
 export const RESTART_WINDOW_MS = 10 * 60 * 1000;
@@ -728,6 +732,9 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       enabled: !!row.enabled,
       generation: rt.generation,
       plugin_pub: row.plugin_pub,
+      // 9.8: an approved plugin of the first-party publisher: its inline
+      // answer cards mount at once in Rox
+      first_party: m.publisher?.id === FIRST_PARTY && isApproved(trust(), row.id, row.publisher_key_id),
       manifest_sha256: row.manifest_sha256,
       apps: (m.apps || []).map((a) => ({ ...a, perms_sha256: permsDigest(a.permissions) })),
       commands: m.commands || [],

@@ -100,6 +100,29 @@ function noteCard(job, plugins, row, open) {
   });
 }
 
+export const SUGGEST_MAX = 3;
+export const SUGGEST_LABEL = 40;
+export const SUGGEST_PROMPT = 200;
+
+const capChars = (s, n) => [...String(s)].slice(0, n).join("");
+
+/** 9.8: a tool result's next steps `_meta["rox/suggest"]` (an approved
+ *  plugin's: only those reach this), kept on the job for Rox: at most 3
+ *  per answer, labels 40 and prompts 200 characters; anything else in
+ *  them is dropped. */
+export function noteSuggest(job, suggest) {
+  if (!Array.isArray(suggest)) return;
+  job.linkTurn ||= { links: [] };
+  const list = (job.linkTurn.suggest ||= []);
+
+  for (const s of suggest) {
+    if (list.length >= SUGGEST_MAX) break;
+
+    if (!isObject(s) || typeof s.label !== "string" || typeof s.prompt !== "string" || !s.label.trim() || !s.prompt.trim()) continue;
+    list.push({ label: capChars(s.label.trim(), SUGGEST_LABEL), prompt: capChars(s.prompt.trim(), SUGGEST_PROMPT) });
+  }
+}
+
 /** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}. */
 export async function v1AgentCall(plugins, job, name, input) {
   const plugin = v1ToolPlugin(plugins, name, job?.v1Surface);
@@ -117,6 +140,9 @@ export async function v1AgentCall(plugins, job, name, input) {
   const open = r._meta?.["rox/open"];
 
   if (open && !r.isError && job) noteCard(job, plugins, row, open);
+  const suggest = r._meta?.["rox/suggest"];
+
+  if (suggest && !r.isError && job) noteSuggest(job, suggest);
 
   return { content: fold(r), is_error: !!r.isError };
 }

@@ -194,13 +194,23 @@ const TOOLS = [
     run: (args) => ok(args.kind === "command" ? resolveCommand(String(args.value ?? "")) : resolveScope(args)),
   },
   {
-    name: "fx_open", description: "Answer with a card for the fixture card app.", inputSchema: { type: "object", properties: { fail: { type: "boolean" }, app: { type: "string" } } },
+    name: "fx_open", description: "Answer with a card for the fixture card app.",
+    inputSchema: {
+      type: "object",
+      properties: { fail: { type: "boolean" }, app: { type: "string" }, size: { type: "string" }, snapshot: { type: "object" }, suggest: { type: "array" }, title: { type: "string" } },
+    },
     run: (args) => {
       const t = ticketFor("opened");
+      const props = { ticket: t, label: args.title || "Opened" };
 
+      // 9.8: an answer card's snapshot and when it was taken
+      if (args.snapshot) Object.assign(props, { snapshot: args.snapshot, as_of: Date.now() });
+      const open = { app: args.app || "card", props, ticket: t, title: args.title || "Fixture Card", placement: "inline" };
+
+      if (args.size) open.size = args.size;
       const result = {
         content: [{ type: "text", text: args.fail ? "fx_open failed" : "Here is the card." }],
-        _meta: { "rox/open": { app: args.app || "card", props: { ticket: t, label: "Opened" }, ticket: t, title: "Fixture Card", placement: "inline" } },
+        _meta: { "rox/open": open, ...(args.suggest ? { "rox/suggest": args.suggest } : {}) },
       };
 
       if (args.fail) result.isError = true;

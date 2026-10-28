@@ -67,12 +67,17 @@ export function checkOpen(m, o) {
   if (o.ticket !== undefined && !isV1("ticket", o.ticket)) refuse("invalid_args", "ticket breaks the ticket grammar");
 
   if (o.placement !== undefined && !app.placement.includes(o.placement)) refuse("invalid_args", `${app.id} does not declare placement ${String(o.placement).slice(0, 20)}`);
+
+  // 9.8: an answer's small card; anything else is its main card
+  if (o.size !== undefined && o.size !== "small" && o.size !== "main") refuse("invalid_args", "size must be small or main");
   const props = o.props ?? {};
 
   validateProps(app.props, props);
   const out = { plugin: m.id, app: app.id, props, title: cap(isString(o.title) && o.title ? o.title : app.title, 60), placement: o.placement || app.placement[0] };
 
   if (o.ticket !== undefined) out.ticket = o.ticket;
+
+  if (o.size === "small") out.size = "small";
 
   return out;
 }

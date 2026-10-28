@@ -5,9 +5,9 @@
 // IDs outside spec 17's sections are this suite's extensions and are listed
 // after it: RTN (v1 routine runner, 5.9), GWS (the Google Workspace plugin)
 // and SDK (the mini app developer kit, sdk/mini-app).
-const ID = /^([A-Z]{3}-\d{2})\b/;
+const ID = /^([A-Z]{3,4}-\d{2})\b/;
 const SPEC = new Set(["MAN", "APP", "BRG", "RSV", "INV", "AGT", "LCY", "CON"]);
-const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)", SDK: "mini app developer kit (sdk/mini-app)", AUD: "app-only tools (10.1 audience)", ATT: "chat attachments to the model (10.3)", PKG: "the packaged (bundled) server" };
+const EXTENSIONS = { RTN: "v1 routine runner (5.9)", GWS: "Google Workspace plugin (dev.goldcoders.google-workspace)", SDK: "mini app developer kit (sdk/mini-app)", AUD: "app-only tools (10.1 audience)", ATT: "chat attachments to the model (10.3)", CARD: "answer cards (9.8)", PKG: "the packaged (bundled) server" };
 
 export default async function* checklist(source) {
   const ids = new Map(); // id → {ok, names}
@@ -33,7 +33,7 @@ export default async function* checklist(source) {
   const all = [...ids.keys()].sort();
   const spec = all.filter((id) => SPEC.has(id.slice(0, 3)));
   const ext = all.filter((id) => !SPEC.has(id.slice(0, 3)));
-  const kinds = [...new Set(ext.map((id) => id.slice(0, 3)))].map((k) => `${k} ${EXTENSIONS[k] || ""}`.trim()).join("; ");
+  const kinds = [...new Set(ext.map((id) => id.split("-")[0]))].map((k) => `${k} ${EXTENSIONS[k] || ""}`.trim()).join("; ");
 
   yield `\nRox Mini App Protocol v1, spec 17 (broker side): ${spec.length} IDs\n${spec.map(line).join("\n")}\n`;
 

@@ -398,8 +398,11 @@ export function persist() {
           t.id, j, u.role, u.text ?? null, u.name ?? null, u.label ?? null,
           u.caption ?? null, u.reaction ?? null, u.retries ?? 0,
           u.widget ? 1 : 0,
-          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length
-            ? JSON.stringify({ reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links })
+          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length || u.suggest?.length || u.v1Attachments?.length
+            ? JSON.stringify({
+              reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links,
+              ...(u.suggest?.length ? { suggest: u.suggest } : {}), ...(u.v1Attachments?.length ? { v1Attachments: u.v1Attachments } : {}),
+            })
             : null,
           u.v ?? null,
           (u.id ||= uuidv7()),
@@ -570,6 +573,10 @@ export function turnsJson(thread = activeThread()) {
       ...(l.provider === "mcp-app" ? { kind: "app", type: l.file_type || "Mini app" } : driveType(l.mime, l.name)),
     })),
     v: t.v ?? null,
+    // 9.8 next steps under the answer, and the v1 attachments a message
+    // went to the model with (10.3)
+    suggest: t.suggest || [],
+    ...(t.v1Attachments?.length ? { v1Attachments: t.v1Attachments } : {}),
     art: art(t),
     building: t.building || undefined,
     status: t.status || undefined,
