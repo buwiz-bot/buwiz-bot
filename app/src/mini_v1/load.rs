@@ -566,6 +566,13 @@ impl Prepared {
 /// their permissions, the props, the source, its fingerprint, the import
 /// table, the module. Errors carry the 6.7 text as their message.
 pub fn prepare(broker: &dyn host_api::Broker, key: &str) -> Result<Prepared, RoxError> {
+    prepare_in(broker, key, None)
+}
+
+/// [`prepare`] with the compiled-module cache under `cache_root` (the
+/// plugins dir; spec 14.6): a hit skips the source fetch and the compile.
+pub fn prepare_in(broker: &dyn host_api::Broker, key: &str, cache_root: Option<&std::path::Path>) -> Result<Prepared, RoxError> {
+    let t0 = std::time::Instant::now();
     let key = V1Key::parse(key)?;
     let plugin = host_api::plugins(broker)?
         .iter()
@@ -575,7 +582,59 @@ pub fn prepare(broker: &dyn host_api::Broker, key: &str) -> Result<Prepared, Rox
     if !plugin.enabled {
         return Err(RoxError::new("plugin_unavailable", format!("{} is disabled.", plugin.title)));
     }
-    prepare_with(broker, key, plugin)
+    let listed = t0.elapsed();
+    let r = prepare_cached(broker, key, plugin, cache_root);
+    if let Ok(p) = &r {
+        log::info!("mini v1 timing: {}/{} plugin list {} ms", p.plugin.id, p.key.app, listed.as_millis());
+    }
+    r
+}
+
+/// [`prepare_with`] through the cache under `cache_root`, if any.
+pub fn prepare_cached(
+    broker: &dyn host_api::Broker,
+    mut key: V1Key,
+    plugin: PluginEntry,
+    cache_root: Option<&std::path::Path>,
+) -> Result<Prepared, RoxError> {
+    let Some(root) = cache_root else { return prepare_with(broker, key, plugin) };
+    let t0 = std::time::Instant::now();
+    let app = plugin.app(&key.app).cloned();
+    let declared = app.as_ref().and_then(|a| a.get("fingerprint")).and_then(Value::as_str).unwrap_or_default().to_owned();
+    if let (Some(app), Some(js)) = (&app, super::cache::get(root, &plugin.id, &key.app, &declared, &super::cache::build_id())) {
+        // the checks that do not need the source still run on a hit
+        let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
+        let permissions_json = app.get("permissions").cloned();
+        let permissions = Permissions::parse(permissions_json.as_ref())
+            .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+        ticket_prop(&mut key, app.get("props"));
+        super::props::validate(&key.props, app.get("props"))?;
+        log::info!("mini v1 timing: {}/{} cache hit {} ms (no fetch, no compile)", plugin.id, key.app, t0.elapsed().as_millis());
+        return Ok(Prepared { key, plugin, title, fingerprint: declared, permissions_json, permissions, js });
+    }
+    let p = prepare_with(broker, key, plugin)?;
+    super::cache::put(root, &p.plugin.id, &p.key.app, &p.fingerprint, &super::cache::build_id(), &p.js);
+    Ok(p)
+}
+
+/// Prewarm (spec 14.6): fetches, checks and compiles `app` of `plugin` into
+/// the cache under `root` unless it is there. No props, no session, no
+/// engine. Whether it compiled (false: a hit).
+pub fn warm(broker: &dyn host_api::Broker, plugin: &PluginEntry, app: &str, root: &std::path::Path) -> Result<bool, RoxError> {
+    let entry = plugin.app(app).ok_or_else(|| RoxError::new("not_found", format!("{} has no app {app}", plugin.id)))?;
+    let declared = entry.get("fingerprint").and_then(Value::as_str).unwrap_or_default();
+    let rox = super::cache::build_id();
+    if super::cache::get(root, &plugin.id, app, declared, &rox).is_some() {
+        return Ok(false);
+    }
+    let title = entry.get("title").and_then(Value::as_str).unwrap_or(app);
+    let (source, served) = host_api::app_source(broker, &plugin.id, app)?;
+    if fingerprint(&source) != declared || served != declared || source.len() > MAX_SOURCE {
+        return Err(RoxError::new("fingerprint_mismatch", say::FINGERPRINT));
+    }
+    let js = build(app, title, &source)?;
+    super::cache::put(root, &plugin.id, app, declared, &rox, &js);
+    Ok(true)
 }
 
 /// [`prepare`] for a plugin already listed.
@@ -592,6 +651,7 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
         .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
     ticket_prop(&mut key, app.get("props"));
     super::props::validate(&key.props, app.get("props"))?;
+    let t_fetch = std::time::Instant::now();
     let (source, served) = host_api::app_source(broker, &plugin.id, &key.app).map_err(|e| match e.code.as_str() {
         "fingerprint_mismatch" => RoxError::new("fingerprint_mismatch", say::FINGERPRINT),
         "plugin_unavailable" => RoxError::new("plugin_unavailable", say::unavailable(&plugin.title)),
@@ -606,7 +666,15 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
         log::warn!("mini v1: {}/{}: fingerprint {actual} is not the manifest's {declared}", plugin.id, key.app);
         return Err(RoxError::new("fingerprint_mismatch", say::FINGERPRINT));
     }
+    let t_compile = std::time::Instant::now();
     let js = build(&key.app, &title, &source)?;
+    log::info!(
+        "mini v1 timing: {}/{} source fetch {} ms, checks+compile {} ms",
+        plugin.id,
+        key.app,
+        (t_compile - t_fetch).as_millis(),
+        t_compile.elapsed().as_millis()
+    );
     Ok(Prepared { key, plugin, title, fingerprint: actual, permissions_json, permissions, js })
 }
 

@@ -275,7 +275,21 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
         session::listen_for_generations();
         let broker: Arc<dyn host_api::Broker> = Arc::new(host_api::HttpBroker::configured());
         let p = &prepared;
-        let opened = Session::open(&*broker, &p.plugin.id, &p.key.app, p.permissions_json.as_ref(), p.plugin.generation);
+        let t0 = std::time::Instant::now();
+        // a session opened ahead of the card (14.6), else a new one
+        let pre = session::take_preopened(&p.plugin.id, &p.key.app, p.permissions_json.as_ref());
+        let reused = pre.is_some();
+        let opened = match pre {
+            Some(s) => Ok(s),
+            None => Session::open(&*broker, &p.plugin.id, &p.key.app, p.permissions_json.as_ref(), p.plugin.generation),
+        };
+        log::info!(
+            "mini v1 timing: {}/{} session open {} ms{}",
+            p.plugin.id,
+            p.key.app,
+            t0.elapsed().as_millis(),
+            if reused { " (pre-opened)" } else { "" }
+        );
         let session = match opened {
             Ok(session) => session,
             Err(e) => {
