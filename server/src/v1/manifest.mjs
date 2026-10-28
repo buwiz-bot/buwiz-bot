@@ -390,6 +390,11 @@ function apps(m) {
 
       if (a.inline.min_width !== undefined) int(a.inline.min_width, `${at}.inline.min_width`, LIMITS.inlineWidth[0], a.inline.width);
 
+      // rox.fit's range (6.5): min_height <= height <= max_height
+      if (a.inline.min_height !== undefined) int(a.inline.min_height, `${at}.inline.min_height`, LIMITS.inlineHeight[0], a.inline.height);
+
+      if (a.inline.max_height !== undefined) int(a.inline.max_height, `${at}.inline.max_height`, a.inline.height, LIMITS.inlineHeight[1]);
+
       if (a.inline.resizable !== undefined && kindOf(a.inline.resizable) !== "boolean") throw invalid(`${at}.inline.resizable`, "must be a boolean");
     }
 

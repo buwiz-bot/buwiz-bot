@@ -63,7 +63,7 @@ tools of another approved plugin, approved once by the user). No other keys.
 | `fingerprint` | yes | `sha256:` + lowercase hex SHA-256 of the source bytes as served ([spec] 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
 | `props` | no | JSON Schema subset for `rox.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top ([spec] 6.6). |
 | `placement` | yes | `["full"]`, `["inline"]` or `["full","inline"]`. |
-| `inline` | if inline | `{width, height, min_width?, resizable?}` in pixels. |
+| `inline` | if inline | `{width, height, min_width?, min_height?, max_height?, resizable?}` in pixels. `height` is the first frame; `min_height` (96..`height`, default 120) and `max_height` (`height`..800, default 640) bound what `rox.fit` sets ([bridge](bridge.md#inline-cards-that-fit-their-content-roxfit)). |
 | `permissions` | no | What the app may reach; absent means nothing. |
 
 ### `apps[].permissions` ([spec] 5.6)
@@ -125,6 +125,7 @@ These are the limits the broker enforces (`LIMITS` in
 | Props schema `maxLength` | 512 chars | `LIMITS.schemaMaxLength` |
 | `inline.width` (and `min_width`) | 240 to 960 px | `LIMITS.inlineWidth` |
 | `inline.height` | 96 to 800 px | `LIMITS.inlineHeight` |
+| `inline.min_height` / `inline.max_height` | 96 to `height` / `height` to 800 px | `LIMITS.inlineHeight` |
 
 Limits outside the manifest (bridge calls, results, storage, timeouts) are
 in [bridge.md](bridge.md#limits).
