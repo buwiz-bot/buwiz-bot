@@ -199,7 +199,9 @@ pub fn run(rox_dir: &Path, broker_dir: &Path, version: &str, mode: Mode, resolve
                 let r = match resolve(scope, value) {
                     Ok((ticket, title)) if perms::ticket_ok(&ticket) => Ok((ticket, title)),
                     Ok(_) => Err("the plugin sent no ticket".to_owned()),
-                    Err(why) => Err(why.chars().take(200).collect()),
+                    // a plugin's error may echo the value (BIR: "No taxpayer
+                    // with TIN …"): the report and records never carry an id
+                    Err(why) => Err(why.chars().take(200).map(|c| if c.is_ascii_digit() { '#' } else { c }).collect()),
                 };
                 cache.push(((scope.to_owned(), value.to_owned()), r.clone()));
                 r
@@ -395,7 +397,8 @@ mod tests {
         assert_eq!(scope, "taxprofile");
         match value {
             TIN => Ok((T1.to_owned(), "Dela Cruz Jane".to_owned())),
-            _ => Err(format!("No taxpayer {}", "x".repeat(value.len()))),
+            // as BIR answers: the error names the value
+            _ => Err(format!("No taxpayer with TIN {value}")),
         }
     }
 
@@ -468,6 +471,7 @@ mod tests {
         assert!(r.backup.as_ref().is_some_and(|b| b.exists()));
         assert_eq!(r.items.iter().filter(|i| matches!(i.outcome, Outcome::NeedsUpdate(_))).count(), 2);
         assert!(!r.to_string().contains(TIN));
+        assert!(r.to_string().contains("No taxpayer with TIN ###") && !r.to_string().contains("TIN 000"), "{r}");
         // once only
         let again = run(&rox, &broker, "1.2.0", Mode::Apply, &mut |_: &str, _: &str| Err("asked".to_owned())).unwrap();
         assert!(again.already && again.items.is_empty());
