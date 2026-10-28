@@ -224,6 +224,7 @@ fn dock_card() -> View {
         .child(reply_chip())
         .child(attachment_strip())
         .child(token_strip())
+        .child(crate::mini_v1::ui::attachments_strip())
         .child(input_area())
 }
 
@@ -737,9 +738,10 @@ fn token_strip() -> impl IntoElement {
     let tokens = computed(|| {
         let st = store();
         st.mcp_manifest.with(|_| ());
+        st.v1.entries.with(|_| ());
         st.draft.with(|d| {
             d.split_whitespace()
-                .filter(|w| crate::slash::token(w).is_some())
+                .filter(|w| crate::slash::token(w).is_some() || v1_token(w).is_some())
                 .map(str::to_owned)
                 .collect::<Vec<String>>()
         })
@@ -763,9 +765,21 @@ fn token_strip() -> impl IntoElement {
     })
 }
 
+/// A v1 plugin's token in the draft (`@short:scope:value` of an
+/// installed v1 plugin): its parts.
+fn v1_token(w: &str) -> Option<(String, String, String)> {
+    let t = crate::mini_v1::tokens::typed_tokens(w).into_iter().next().filter(|t| t.start == 0 && t.end == w.len())?;
+    store().v1.is_short(t.short).then(|| (t.short.to_owned(), t.scope.to_owned(), t.value.to_owned()))
+}
+
 fn token_chip(tok: String) -> impl IntoElement {
-    let (server, scope, value) = crate::slash::token(&tok).unwrap_or_default();
-    let label = crate::slash::token_label(&tok);
+    let (server, scope, value) = crate::slash::token(&tok).or_else(|| v1_token(&tok)).unwrap_or_default();
+    // a v1 ticket shows its title (9.3), never the ticket
+    let label = match store().v1.titles.with_untracked(|t| t.get(&tok).cloned()) {
+        Some(title) => title,
+        None if crate::mini_v1::perms::ticket_ok(&value) => "…".to_owned(),
+        None => crate::slash::token_label(&tok),
+    };
     let shown = if label.is_empty() { value } else { label };
     view()
         .flex_row()

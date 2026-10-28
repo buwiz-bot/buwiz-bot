@@ -489,7 +489,7 @@ pub fn build(app_id: &str, title: &str, source: &str) -> Result<String, RoxError
 }
 
 /// A v1 plugin as the broker lists it (`GET /v1/host/plugins`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PluginEntry {
     pub id: String,
     pub short: String,
@@ -498,9 +498,10 @@ pub struct PluginEntry {
     pub protocol: String,
     pub generation: Option<u64>,
     pub enabled: bool,
-    /// Its manifest's `scopes` and `apps`.
+    /// Its manifest's `scopes`, `apps` and `commands`.
     pub scopes: Vec<Value>,
     pub apps: Vec<Value>,
+    pub commands: Vec<Value>,
 }
 
 impl PluginEntry {
@@ -517,6 +518,7 @@ impl PluginEntry {
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             scopes: list("scopes"),
             apps: list("apps"),
+            commands: list("commands"),
         })
     }
 

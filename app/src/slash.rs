@@ -93,6 +93,11 @@ pub enum Pick {
     Choice(String, String, String, bool),
     /// An artifact or file (`/artifacts`).
     Artifact(AtItem),
+    /// A v1 plugin's command, in the form that reaches it (`name` or
+    /// `short:name`, 3.1).
+    V1Command(String),
+    /// One of a v1 resolve's choices: (plugin, kind, name, value).
+    V1Choice(String, &'static str, String, String),
 }
 
 /// A popup row: what it does, its name, a muted hint (a command's args)
@@ -497,6 +502,10 @@ fn note(msg: String) {
 
 /// The popup's own rows, its header (a resolve's question) and the first
 /// row selected.
+pub(crate) fn show_rows(rows: Vec<PopRow>) {
+    show(rows, String::new());
+}
+
 fn show(rows: Vec<PopRow>, head: String) {
     let st = store();
     batch(|| {
@@ -578,6 +587,22 @@ pub(crate) fn slash_menu(t: &str) -> bool {
             }
         }
     });
+    // v1 plugins' commands, each in the form that reaches it (3.1)
+    let entries = store().v1.entries.get_untracked();
+    for (label, plugin, name) in crate::mini_v1::tokens::command_rows(&q, &crate::mini_v1::ui::commands(&entries)) {
+        let p = entries.iter().find(|p| p.id == plugin);
+        let c = p.and_then(|p| p.commands.iter().find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name.as_str())));
+        rows.push(PopRow {
+            pick: Pick::V1Command(label.trim_start_matches('/').to_owned()),
+            hint: c.map(|c| js(c, "args")).unwrap_or_default(),
+            detail: [c.map(|c| js(c, "description")).unwrap_or_default(), p.map(|p| p.title.clone()).unwrap_or_default()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
+            label,
+        });
+    }
     show(rows, String::new());
     true
 }
@@ -586,7 +611,7 @@ pub(crate) fn slash_menu(t: &str) -> bool {
 pub(crate) fn server_menu(q: &str) {
     refresh();
     let q = q.to_lowercase();
-    let rows = store().mcp_manifest.with_untracked(|ms| {
+    let mut rows: Vec<PopRow> = store().mcp_manifest.with_untracked(|ms| {
         ms.iter()
             .filter(|m| !m.scopes.is_empty() || !m.apps.is_empty())
             .filter(|m| m.id.starts_with(&q) || m.title.to_lowercase().contains(&q))
@@ -602,6 +627,18 @@ pub(crate) fn server_menu(q: &str) {
             })
             .collect()
     });
+    // v1 plugins with scopes, by their short
+    for p in store().v1.entries.get_untracked().into_iter().filter(|p| p.enabled && !p.scopes.is_empty()) {
+        if p.short.starts_with(&q) || p.title.to_lowercase().contains(&q) {
+            rows.retain(|r| r.pick != Pick::Server(p.short.clone()));
+            rows.push(PopRow {
+                pick: Pick::Server(p.short.clone()),
+                label: format!("@{}", p.short),
+                hint: p.title.clone(),
+                detail: p.scopes.iter().map(|s| js(s, "name")).collect::<Vec<_>>().join(", "),
+            });
+        }
+    }
     show(rows, String::new());
 }
 
@@ -610,6 +647,31 @@ pub(crate) fn server_menu(q: &str) {
 /// typed (`complete: true`). False without a `:` (the server list then).
 pub(crate) fn token_menu(tail: &str) -> bool {
     let Some((server, rest)) = tail.split_once(':') else { return false };
+    // a v1 plugin's scopes and the choices its resolve offers (9.3)
+    if let Some(p) = store().v1.by_short(server) {
+        match rest.split_once(':') {
+            Some((scope, value)) => {
+                store().v1_complete(server, scope, value);
+            }
+            None => {
+                let q = rest.to_lowercase();
+                let rows = p
+                    .scopes
+                    .iter()
+                    .map(|sc| (js(sc, "name"), js(sc, "description")))
+                    .filter(|(n, _)| n.starts_with(&q))
+                    .map(|(n, d)| PopRow {
+                        pick: Pick::Scope(p.short.clone(), n.clone()),
+                        label: format!("@{}:{n}", p.short),
+                        hint: String::new(),
+                        detail: d,
+                    })
+                    .collect();
+                show(rows, String::new());
+            }
+        }
+        return true;
+    }
     refresh();
     let Some(m) = store().mcp_manifest.with_untracked(|ms| ms.iter().find(|m| m.id == server).cloned()) else {
         show(Vec::new(), String::new());
@@ -660,7 +722,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
 }
 
 /// A new completion ask's number: an older one's answer is dropped.
-fn next_ask() -> u64 {
+pub(crate) fn next_ask() -> u64 {
     let st = store();
     let n = st.complete_seq.get() + 1;
     st.complete_seq.set(n);
@@ -791,6 +853,8 @@ pub(crate) fn pick(row: &PopRow) {
             resolve(server.clone(), name.clone(), args.clone(), sent);
         }
         Pick::Artifact(it) => crate::composer::at_pick(it),
+        Pick::V1Command(form) => command(form.as_str()),
+        Pick::V1Choice(plugin, kind, name, value) => st.v1_pick(plugin.clone(), kind, name.clone(), value.clone(), row.label.clone()),
     }
 }
 
