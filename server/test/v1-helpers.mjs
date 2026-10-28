@@ -42,10 +42,11 @@ export function fixtureManifest(pub, edit = () => {}) {
   m.publisher.key_id = pub.keyId;
   edit(m);
 
-  return signManifest(m, pub.seed, {
-    board: readFileSync(join(FIXTURE_DIR, "board.tsx")),
-    card: readFileSync(join(FIXTURE_DIR, "card.tsx")),
-  });
+  const sources = {};
+
+  for (const id of ["board", "card"]) if ((m.apps || []).some((a) => a.id === id)) sources[id] = readFileSync(join(FIXTURE_DIR, `${id}.tsx`));
+
+  return signManifest(m, pub.seed, sources);
 }
 
 /** One test bed: a temp dir with a publisher, a trust file and a signed
@@ -111,10 +112,12 @@ export const codeOf = (p) => p.then(() => "resolved", (e) => e.code || String(e)
 export async function openApp(sessions, manifest, app, { notAfter = Date.now() + 3600_000, perms } = {}) {
   const ks = generate();
   const a = manifest.apps.find((x) => x.id === app);
+
   const req = {
     plugin: manifest.id, app, open_id: random128(), ks_pub: ks.pub,
     perms_sha256: perms ?? permsDigest(a?.permissions), not_after: notAfter,
   };
+
   const res = await sessions.open(req);
 
   return { ...req, ks, res };
