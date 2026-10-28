@@ -46,6 +46,19 @@ pub struct Pin {
     pub needs_update: bool,
 }
 
+/// A message sent with v1 attachments (10.3): what the model got with it,
+/// shown on the person's bubble.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Sent {
+    pub thread: String,
+    pub text: String,
+    /// (canonical token, title)
+    pub tokens: Vec<(String, String)>,
+}
+
+/// How many sent messages are remembered.
+const MAX_SENT: usize = 500;
+
 /// How an attachment or pin stands against the plugins installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -83,6 +96,8 @@ pub struct Records {
     pub opened: Vec<(String, String)>,
     /// When the v0 migration ran (ms), 0 if it has not.
     pub migrated_at: i64,
+    /// The last messages sent with attachments.
+    pub sent: Vec<Sent>,
 }
 
 /// The file in `dir` (Rox's data dir).
@@ -133,6 +148,21 @@ impl Records {
                 .map(|m| m.iter().map(|(k, f)| (k.clone(), f.as_str().unwrap_or_default().to_owned())).collect())
                 .unwrap_or_default(),
             migrated_at: v.get("migrated_at").and_then(Value::as_i64).unwrap_or(0),
+            sent: list("sent")
+                .iter()
+                .map(|m| Sent {
+                    thread: s(m, "thread"),
+                    text: s(m, "text"),
+                    tokens: m
+                        .get("tokens")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(|t| (s(t, "token"), s(t, "title")))
+                        .filter(|(t, _)| tokens::canonical(t).is_some())
+                        .collect(),
+                })
+                .collect(),
         }
     }
 
@@ -148,6 +178,10 @@ impl Records {
             })).collect::<Vec<_>>(),
             "opened": self.opened.iter().map(|(k, f)| (k.clone(), json!(f))).collect::<serde_json::Map<_, _>>(),
             "migrated_at": self.migrated_at,
+            "sent": self.sent.iter().map(|m| json!({
+                "thread": m.thread, "text": m.text,
+                "tokens": m.tokens.iter().map(|(t, ti)| json!({"token": t, "title": ti})).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
         })
     }
 
@@ -214,6 +248,25 @@ impl Records {
             .filter(|a| a.thread == thread && status(a, plugins) == Status::Ok)
             .map(|a| json!({"token": a.token, "plugin": a.plugin, "scope": a.scope, "title": a.title}))
             .collect()
+    }
+
+    /// Remembers that `text` went to `thread` with `tokens` (oldest
+    /// forgotten past the cap).
+    pub fn sent(&mut self, thread: &str, text: &str, tokens: Vec<(String, String)>) {
+        if tokens.is_empty() {
+            return;
+        }
+        self.sent.push(Sent { thread: thread.to_owned(), text: text.trim().to_owned(), tokens });
+        if self.sent.len() > MAX_SENT {
+            self.sent.remove(0);
+        }
+    }
+
+    /// What message `text` of `thread` went to the model with (the last
+    /// time it was sent).
+    pub fn sent_with(&self, thread: &str, text: &str) -> Vec<(String, String)> {
+        let text = text.trim();
+        self.sent.iter().rev().find(|m| m.thread == thread && m.text == text).map(|m| m.tokens.clone()).unwrap_or_default()
     }
 
     /// Records that `plugin`'s `app` opened with `fingerprint` (12.2): the
@@ -339,6 +392,21 @@ mod tests {
         assert!(r.attachments.iter().all(|a| a.plugin == other.id));
         assert!(r.pins.iter().all(|p| p.plugin == other.id));
         assert!(r.opened.is_empty());
+    }
+
+    #[test]
+    fn a_sent_message_remembers_what_the_model_got() {
+        let mut r = Records::default();
+        let tok = format!("@bir:taxprofile:{T}");
+        r.sent("th1", "what are the due forms ", vec![(tok.clone(), "Dela Cruz Jane".into())]);
+        r.sent("th1", "no attachments", vec![]);
+        assert_eq!(r.sent_with("th1", "what are the due forms"), [(tok.clone(), "Dela Cruz Jane".to_owned())]);
+        assert!(r.sent_with("th2", "what are the due forms").is_empty());
+        assert!(r.sent_with("th1", "no attachments").is_empty());
+        let dir = temp("sent");
+        r.save(&dir).unwrap();
+        assert_eq!(Records::load(&dir).sent, r.sent);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

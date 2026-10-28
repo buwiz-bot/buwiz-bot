@@ -235,8 +235,12 @@ fn reply_chip() -> impl IntoElement {
         let Some(r) = store().reply_to.get() else {
             return view().into_element();
         };
-        let quote: String = r
-            .text
+        // never an empty quote; a v1 token shows its title
+        if r.text.trim().is_empty() {
+            return view().into_element();
+        }
+        let quote: String = store()
+            .v1_plain(&r.text)
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")

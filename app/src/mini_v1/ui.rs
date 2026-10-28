@@ -181,7 +181,9 @@ impl super::native::Chat for OpenChat {
         let (token, title) = (token.to_owned(), title.to_owned());
         let added = change_records(|r| r.attach(&thread, &token, &title, &entry));
         if added {
-            super::to_store(move |_| crate::toast::show(format!("Attached {title} to this chat")));
+            // the attachment is a message of the person's in the chat
+            // (an id, a reply target, in order for the model)
+            super::to_store(move |st| st.v1_attach_message(&thread, &token, &title));
         }
         added
     }
@@ -423,6 +425,25 @@ impl Store {
         }
     }
 
+    /// `token` (titled `title`) was attached to chat `thread`: it is sent
+    /// as the person's message "Attached <token>" (shown with the ticket's
+    /// title), so it has a place in the transcript, can be replied to, and
+    /// reaches the model in order with the attachment.
+    pub fn v1_attach_message(&'static self, thread: &str, token: &str, title: &str) {
+        let token = token.to_owned();
+        self.v1.titles.update(|t| {
+            t.insert(token.clone(), title.to_owned());
+        });
+        if self.active_id.get_untracked() != thread {
+            return crate::toast::show(format!("Attached {title}"));
+        }
+        // the records as just saved: the message goes with the attachment
+        self.v1.records.set(Records::load(&data_dir()));
+        // sent as it is: no resolve, and not held back as a token-only message
+        self.v1_resolved.set(true);
+        self.send_text(attach_message(&token));
+    }
+
     /// A pin (or a library item) of v1 app `key` was opened (12.3, 9.7: no
     /// consent): its declared placement, an inline app mounted at once in
     /// the open chat (Q9).
@@ -526,6 +547,13 @@ impl Store {
             return false;
         }
         let shorts = |s: &str| entries.iter().any(|p| p.short == s && p.enabled);
+        // `@short:scope:value … attach`: the tokens attached to this chat
+        if let Some(toks) = attach_words(&text, &|s| shorts(s)) {
+            self.draft.set(String::new());
+            crate::slash::close();
+            self.v1_attach_tokens(toks);
+            return true;
+        }
         let ours: Vec<bool> = tokens::typed_tokens(&text).iter().filter(|t| shorts(t.short)).map(|t| super::perms::ticket_ok(t.value)).collect();
         let command = tokens::slash(&text).and_then(|c| match tokens::route(&c, &commands(&entries)) {
             tokens::Route::Plugin { plugin, .. } => Some((plugin, c.name.to_owned(), c.args.to_owned())),
@@ -607,11 +635,84 @@ impl Store {
                     return;
                 }
                 self.draft.set(r.text);
-                self.v1_resolved.set(true);
-                self.send();
+                // sent from the store's own timer (as a press would be): this
+                // task ends now, and the send's run must outlive it
+                super::to_store(|st| {
+                    st.v1_resolved.set(true);
+                    st.send();
+                });
             })
         });
         true
+    }
+
+    /// Attaches typed or canonical `toks` to the open chat (10.3): each is
+    /// resolved to its ticket (`complete: false`), its scope must allow
+    /// attaching, and the attachments go out as one message of the
+    /// person's ("Attached …").
+    fn v1_attach_tokens(&'static self, toks: Vec<String>) {
+        let thread = self.active_id.get_untracked();
+        if thread.is_empty() {
+            return crate::toast::show("Open a chat to attach to");
+        }
+        let entries = self.v1.entries.get_untracked();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let got = crate::vault::off_main(move || {
+                    let b = broker();
+                    let mut out = Vec::new();
+                    for tok in toks {
+                        let Some(t) = tokens::typed_tokens(&tok).into_iter().next() else { continue };
+                        let Some(p) = entries.iter().find(|p| p.short == t.short && p.enabled) else { continue };
+                        if !p.scope_attaches(t.scope) {
+                            out.push(Err(format!("@{}:{} can't be attached", t.short, t.scope)));
+                            continue;
+                        }
+                        let ask = host_api::ResolveAsk {
+                            plugin: p.id.clone(),
+                            kind: "scope",
+                            name: t.scope.to_owned(),
+                            value: t.value.to_owned(),
+                            complete: false,
+                            context: json!({"attached": []}),
+                        };
+                        out.push(match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
+                            Ok(tokens::Answer::Token { ticket, title }) => {
+                                Ok((p.clone(), format!("@{}:{}:{ticket}", t.short, t.scope), title))
+                            }
+                            Ok(tokens::Answer::Error(m)) => Err(m),
+                            Ok(_) => Err(format!("@{}:{} did not resolve to a token", t.short, t.scope)),
+                            Err(e) => Err(e.message),
+                        });
+                    }
+                    out
+                })
+                .await;
+                let mut attached = Vec::new();
+                for r in got.unwrap_or_default() {
+                    match r {
+                        Ok((plugin, token, title)) => {
+                            let (th, tk, ti) = (thread.clone(), token.clone(), title.clone());
+                            if change_records(move |r| r.attach(&th, &tk, &ti, &plugin)) {
+                                attached.push((token, title));
+                            }
+                        }
+                        Err(m) => crate::toast::show(m),
+                    }
+                }
+                if attached.is_empty() {
+                    return;
+                }
+                self.v1.titles.update(|t| t.extend(attached.iter().cloned()));
+                // the records as just saved: the message goes with them
+                self.v1.records.set(Records::load(&data_dir()));
+                let message = attach_message(&attached.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" "));
+                super::to_store(move |st| {
+                    st.v1_resolved.set(true);
+                    st.send_text(message);
+                });
+            })
+        });
     }
 
     /// A canonical token sent alone: its scope's resolve (`complete:
@@ -839,6 +940,25 @@ impl Store {
         });
     }
 
+    /// Remembers what message `text` went to the model with (shown on its
+    /// bubble).
+    pub fn v1_note_sent(&'static self, text: &str, attachments: &[Value]) {
+        let tokens: Vec<(String, String)> = attachments
+            .iter()
+            .filter_map(|a| Some((a.get("token")?.as_str()?.to_owned(), a.get("title").and_then(Value::as_str).unwrap_or("").to_owned())))
+            .collect();
+        if tokens.is_empty() {
+            return;
+        }
+        let (thread, text) = (self.active_id.get_untracked(), text.to_owned());
+        change_records(move |r| r.sent(&thread, &text, tokens));
+    }
+
+    /// What user message `text` of `thread` went to the model with.
+    pub fn v1_sent_with(&'static self, thread: &str, text: &str) -> Vec<(String, String)> {
+        self.v1.records.with(|r| r.sent_with(thread, text))
+    }
+
     /// The canonical tokens the model may see with the next message of
     /// the open chat (10.3, AGT-06).
     pub fn v1_model_attachments(&'static self) -> Vec<Value> {
@@ -1035,6 +1155,26 @@ fn url_names_plugin_id(url: &str) -> bool {
         .is_some_and(super::perms::plugin_id_ok)
 }
 
+/// The message an attachment is sent as: "Attached <canonical token>".
+pub fn attach_message(token: &str) -> String {
+    format!("Attached {token}")
+}
+
+/// `@short:scope:value … attach` (one `attach` word, every other word a
+/// token of a v1 plugin `is_short` names): the tokens to attach.
+pub fn attach_words(text: &str, is_short: &dyn Fn(&str) -> bool) -> Option<Vec<String>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 || words.iter().filter(|w| w.eq_ignore_ascii_case("attach")).count() != 1 {
+        return None;
+    }
+    let toks: Vec<String> = words.into_iter().filter(|w| !w.eq_ignore_ascii_case("attach")).map(str::to_owned).collect();
+    let ours = |w: &String| {
+        let t = tokens::typed_tokens(w);
+        t.len() == 1 && t[0].start == 0 && t[0].end == w.len() && is_short(t[0].short)
+    };
+    toks.iter().all(ours).then_some(toks)
+}
+
 /// The composer's view of the plugins' commands (3.1).
 pub fn commands(entries: &[PluginEntry]) -> Vec<tokens::Commands> {
     entries
@@ -1150,8 +1290,17 @@ fn small_button(label: &'static str, primary: bool, on: impl Fn() + 'static) -> 
         .on_press(on)
 }
 
+/// A card's button: "Open <title>" for a full app (a plugin's sign-in
+/// card reads "Open Buwiz Sign-in"), Show for an inline one (9.6).
+pub fn button_label(card: &OpenCard) -> String {
+    match card.placement {
+        Placement::Full => format!("Open {}", card.title.chars().take(40).collect::<String>()),
+        Placement::Inline => card.button().to_owned(),
+    }
+}
+
 /// A card's Open or Show; a shown inline card's Show reads Hide.
-fn toggle_button(label: &'static str, id: String, on: impl Fn() + 'static) -> impl IntoElement {
+fn toggle_button(label: String, id: String, on: impl Fn() + 'static) -> impl IntoElement {
     let id2 = id.clone();
     let shown = move || store().v1.shown.with(|s| s.contains(&id2));
     view()
@@ -1161,8 +1310,8 @@ fn toggle_button(label: &'static str, id: String, on: impl Fn() + 'static) -> im
         .items_center()
         .justify_center()
         .bg(theme::TEXT)
-        .label(label)
-        .child(text(move || if label == "Show" && shown() { "Hide".to_owned() } else { label.to_owned() }).text_size(px(13.0)).text_color(theme::POPOVER))
+        .label(label.clone())
+        .child(text(move || if label == "Show" && shown() { "Hide".to_owned() } else { label.clone() }).text_size(px(13.0)).text_color(theme::POPOVER))
         .on_press(on)
 }
 
@@ -1200,7 +1349,7 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
                                 .text_color(tc("#f5f5f5ad")),
                         ),
                 )
-                .child(toggle_button(card.button(), id3, move || match c1.placement {
+                .child(toggle_button(button_label(&card), id3, move || match c1.placement {
                     Placement::Full => store().open_v1(c1.key(), &c1.title, Opener::ToolResult),
                     Placement::Inline => store().v1.shown.update(|s| {
                         if !s.remove(&id2) {
@@ -1284,6 +1433,38 @@ pub fn pins_section() -> impl IntoElement {
             }))
             .into_element()
     })
+}
+
+/// The v1 attachments the model got with a sent message (10.3), as chips
+/// above the person's bubble: each ticket's title.
+pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_wrap()
+        .justify_end()
+        .gap(px(6.0))
+        .max_w(px(560.0))
+        .children(items.into_iter().map(|(token, title)| {
+            let tok = token.clone();
+            view()
+                .flex_row()
+                .items_center()
+                .h(px(22.0))
+                .px(px(8.0))
+                .rounded(px(11.0))
+                .bg(theme::ACCENT_TINT)
+                .label(format!("Attached: {title}"))
+                .child(
+                    text(move || {
+                        let shown = store().v1_plain(&tok);
+                        if title.is_empty() { shown } else { title.clone() }
+                    })
+                    .number_of_lines(1)
+                    .text_size(px(12.0))
+                    .text_color(theme::ACCENT),
+                )
+                .into_element()
+        }))
 }
 
 /// An inline app (6.5): a title bar with Open (full screen) over the app
@@ -1460,4 +1641,46 @@ pub fn attachments_strip() -> impl IntoElement {
             }))
             .into_element()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+    #[test]
+    fn an_attachment_is_sent_as_a_message_carrying_its_canonical_token() {
+        let token = format!("@bir:taxprofile:{T}");
+        let m = attach_message(&token);
+        assert_eq!(m, format!("Attached {token}"));
+        // a message, not tokens alone: it reaches the model, with the ticket
+        assert!(!tokens::only_tokens_or_command(&m));
+        assert_eq!(tokens::canonical_tokens(&m).len(), 1);
+        // shown with the ticket's title, never the ticket
+        let (shown, _) = tokens::plain(&m, &|_| Some("Galang Alejandro Pascua".to_owned()));
+        assert_eq!(shown, "Attached Galang Alejandro Pascua");
+    }
+
+    #[test]
+    fn tokens_and_attach_attach_them() {
+        let bir = |s: &str| s == "bir";
+        assert_eq!(attach_words("@bir:taxprofile:123456788 attach", &bir), Some(vec!["@bir:taxprofile:123456788".to_owned()]));
+        assert_eq!(attach_words("Attach @bir:taxprofile:1 @bir:taxform:x", &bir).map(|t| t.len()), Some(2));
+        assert_eq!(attach_words("@bir:taxprofile:1", &bir), None);
+        assert_eq!(attach_words("please attach @bir:taxprofile:1", &bir), None);
+        assert_eq!(attach_words("@gws:mail:1 attach", &bir), None, "v0 servers keep v0's attach");
+        assert_eq!(attach_words("attach attach @bir:taxprofile:1", &bir), None);
+    }
+
+    #[test]
+    fn a_plugins_sign_in_card_reads_open_and_its_app() {
+        let link = json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "register", "title": "Buwiz Sign-in", "placement": "full"}});
+        let card = OpenCard::from_link(&link).unwrap();
+        assert_eq!(button_label(&card), "Open Buwiz Sign-in");
+        let inline = OpenCard { placement: Placement::Inline, ..card };
+        assert_eq!(button_label(&inline), "Show");
+    }
 }
