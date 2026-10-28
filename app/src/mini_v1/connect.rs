@@ -57,6 +57,9 @@ pub struct Routine {
     pub thread: String,
     /// What it reads, a line per plugin ("Google Workspace: gws_search_mail").
     pub reads: Vec<String>,
+    /// Epoch ms of the last run (0 never), and its error ("" when it went fine).
+    pub last_run: f64,
+    pub last_error: String,
 }
 
 /// A v1 plugin as Connect Apps lists it.
@@ -112,6 +115,8 @@ impl Listed {
                     available: r.get("available").and_then(Value::as_bool).unwrap_or(false),
                     reason: s(r, "reason"),
                     thread: s(r, "thread"),
+                    last_run: r.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
+                    last_error: s(r, "last_error"),
                     reads: list(r, "reads_status")
                         .iter()
                         .map(|x| {
@@ -548,12 +553,14 @@ mod tests {
             "state": "failed", "code": "plugin_bad_signature", "message": "bad", "enabled": true, "generation": 4,
             "tools": [{"name": "bir_resolve", "description": "Resolve", "disabled": false}, {"name": "bir_file", "disabled": true}],
             "routines": [{"id": "bir-payments", "name": "Payments", "approved": false, "enabled": false, "available": false,
-                "reason": "dev.goldcoders.gws is not installed", "reads_status": [{"plugin": "dev.goldcoders.gws", "tools": ["gws_search_mail"]}]}],
+                "reason": "dev.goldcoders.gws is not installed", "reads_status": [{"plugin": "dev.goldcoders.gws", "tools": ["gws_search_mail"]}],
+                "last_run": 1793194720000u64, "last_error": "bir_payment_search: offline"}],
             "apps": [{"id": "forms", "title": "BIR Forms", "placement": ["full", "inline"]}],
         }));
         assert_eq!((l.publisher.as_str(), l.state_label().as_str(), l.failed()), ("Goldcoders", "Failed", true));
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
         assert_eq!(l.routines[0].reads, ["dev.goldcoders.gws: gws_search_mail"]);
+        assert_eq!((l.routines[0].last_run, l.routines[0].last_error.as_str()), (1793194720000.0, "bir_payment_search: offline"));
         assert_eq!(l.apps, ["BIR Forms · full screen, inline"]);
         let p = log_file("dev.goldcoders.bir").unwrap();
         assert!(p.ends_with("v1/logs/dev.goldcoders.bir.log"), "{}", p.display());

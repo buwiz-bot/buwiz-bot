@@ -420,6 +420,8 @@ fn pane_card() -> View {
 
 /// Details — the Routines card (App.tsx:2627).
 fn details_tab() -> impl IntoElement {
+    store().v1_refresh(false);
+    crate::settings::load_routines();
     view()
         // An agent's own context: what it is, what it remembers, what it
         // has used — each fills on demand (asking it in chat, or using a
@@ -429,19 +431,85 @@ fn details_tab() -> impl IntoElement {
             None => view().into_element(),
         }))
         .child(pane_label("Routines".into()))
+        .child(dynamic(|| {
+            let routines = chat_routines();
+            if routines.is_empty() {
+                let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
+                return pane_card()
+                    .py(px(14.0))
+                    .px(px(13.0))
+                    .child(
+                        text(format!("No routines yet. Ask {name} in chat to run something on a schedule."))
+                            .text_size(px(13.0))
+                            .text_color(theme::DIM),
+                    )
+                    .into_element();
+            }
+            pane_card().children(routines.into_iter().map(routine_row)).into_element()
+        }))
+}
+
+/// A routine that posts in the open chat: its name, who runs it, how its
+/// last run went, and the v1 plugin whose page manages it.
+struct ChatRoutine {
+    name: String,
+    by: String,
+    status: String,
+    failed: bool,
+    plugin: Option<String>,
+}
+
+/// The enabled routines, v1 plugins' and the server's own, that post in
+/// the open chat. Both lists reload when the Details tab is built.
+fn chat_routines() -> Vec<ChatRoutine> {
+    let st = store();
+    let chat = st.active_id.get();
+    let status = |last_run: f64, last_error: &str| match (last_error.is_empty(), last_run > 0.0) {
+        (false, _) => (format!("Last run failed: {last_error}"), true),
+        (true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
+        (true, false) => ("Waiting for its first run".to_owned(), false),
+    };
+    let mut out = Vec::new();
+    for p in st.v1.listed.get() {
+        for r in p.routines.iter().filter(|r| r.enabled && r.thread == chat) {
+            let (status, failed) =
+                if r.available { status(r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
+            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some(p.id.clone()) });
+        }
+    }
+    for r in st.routines.get().into_iter().filter(|r| r.enabled && r.thread == chat) {
+        let (status, failed) = status(r.last_run, &r.last_error);
+        let by = if r.bot_name.is_empty() { crate::app_name().to_owned() } else { r.bot_name.clone() };
+        out.push(ChatRoutine { name: r.name, by, status, failed, plugin: None });
+    }
+    out
+}
+
+/// One routine in the Details card; a v1 plugin's opens its plugin page.
+fn routine_row(r: ChatRoutine) -> AnyElement {
+    let row = view()
+        .gap(px(2.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .label(r.name.clone())
+        .child(text(r.name).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+        .child(text(r.by).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
         .child(
-            pane_card()
-                .py(px(14.0))
-                .px(px(13.0))
-                .child(
-                    text(move || {
-                        let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                        format!("No routines yet. Ask {name} in chat to run something on a schedule.")
-                    })
-                    .text_size(px(13.0))
-                    .text_color(theme::DIM),
-                ),
-        )
+            text(r.status)
+                .text_size(px(12.0))
+                .text_color(if r.failed { theme::DOWN } else { theme::DIM })
+                .number_of_lines(2),
+        );
+    match r.plugin {
+        Some(id) => row
+            .on_press(move || {
+                store().open_plugins();
+                store().push_nav("v1plugin", &id, "");
+            })
+            .into_element(),
+        None => row.into_element(),
+    }
 }
 
 /// The bot's context in Details: its description, and a row to its Bot
