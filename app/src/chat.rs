@@ -454,6 +454,8 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
     // A replied-to card travels as a module:// attachment for the model; the
     // quote already shows it, so it gets no tile of its own.
     let atts: Vec<_> = t.attachments.iter().filter(|a| !a.url.starts_with("module://")).cloned().collect();
+    // what the model got with it (10.3): the chat's v1 attachments
+    let v1_atts = if t.v1_attachments.is_empty() { store().v1_sent_with(&chat, &t.text) } else { t.v1_attachments.clone() };
     let i = t.i;
     // shell.tsx:425 — the row's `hover` gates the action bar; during a
     // scroll `chatScrolling` skips the writes (every write is a commit).
@@ -500,6 +502,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
                     })),
             )
         })
+        .when(!v1_atts.is_empty(), |v| v.child(crate::mini_v1::ui::sent_attachments(v1_atts)))
         .child(
             // The bubble: `bubbleFill` (the bot's color), radius 18,
             // padding 7×12, `maxWidth 560` (shell.tsx:438). Inside it
@@ -535,18 +538,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
             view()
                 .flex_row()
                 .gap(px(2.0))
-                .child(act("↩", "reply", move || {
-                    let st = store();
-                    let tr = st.turns.get_untracked();
-                    if let Some(tt) = tr.iter().find(|x| x.i == i) {
-                        st.reply_to.set(Some(crate::store::ReplyTo {
-                            i: tt.i,
-                            name: tt.name.clone(),
-                            text: tt.text.chars().take(120).collect(),
-                            ..Default::default()
-                        }));
-                    }
-                }))
+                .child(act("↩", "reply", move || store().reply_to_turn(i)))
                 .child(turn_more(i))
                 .into_element()
         }))
@@ -615,7 +607,7 @@ fn fill_quote(reply: Option<crate::store::Reply>) -> impl IntoElement {
         let Some(r) = reply.clone() else {
             return view().into_element();
         };
-        let q: String = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let q: String = store().v1_plain(&r.text).split_whitespace().collect::<Vec<_>>().join(" ");
         let q: String = q.chars().take(80).collect();
         let i = r.i;
         view()
@@ -771,41 +763,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
                 .flex_row()
                 .gap(px(2.0))
                 .child(react_act(i, "msg".to_owned()))
-                .child(act("↩", "reply", move || {
-                    let st = store();
-                    let tr = st.turns.get_untracked();
-                    if let Some(tt) = tr.iter().find(|x| x.i == i) {
-                        // `onReply(i, text || caption || name)`; a card's is
-                        // `app · <title> v<n>` (shell.tsx:1140), an image
-                        // card's `image · …`.
-                        let label = match &tt.art {
-                            Some(a) => format!(
-                                "{} · {}{}",
-                                if a.kind == "image" { "image" } else { "app" },
-                                if a.title.is_empty() { &tt.name } else { &a.title },
-                                if tt.v > 0 { format!(" v{}", tt.v) } else { String::new() }
-                            ),
-                            None if !tt.text.is_empty() => tt.text.chars().take(120).collect(),
-                            None if !tt.caption.is_empty() => tt.caption.chars().take(120).collect(),
-                            None => tt.name.clone(),
-                        };
-                        // A card goes along as its module (shell.tsx:1120): the
-                        // server hands the model its source, or an image card's
-                        // image.
-                        let files = tt
-                            .art
-                            .as_ref()
-                            .filter(|a| !a.app.is_empty())
-                            .map(|a| vec![format!("module://{}", a.app)])
-                            .unwrap_or_default();
-                        st.reply_to.set(Some(crate::store::ReplyTo {
-                            i: tt.i,
-                            name: tt.name.clone(),
-                            text: label,
-                            files,
-                        }));
-                    }
-                }))
+                .child(act("↩", "reply", move || store().reply_to_turn(i)))
                 .child(turn_more(i))
                 .into_element()
         })
