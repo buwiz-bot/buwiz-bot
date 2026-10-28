@@ -41,6 +41,15 @@ impl Placement {
     }
 }
 
+/// An answer card's size (9.8): one main card and up to two small ones
+/// per answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Size {
+    #[default]
+    Main,
+    Small,
+}
+
 /// A tool result's open, as its card shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenCard {
@@ -50,6 +59,7 @@ pub struct OpenCard {
     pub placement: Placement,
     pub ticket: Option<String>,
     pub props: Map<String, Value>,
+    pub size: Size,
 }
 
 impl OpenCard {
@@ -75,10 +85,28 @@ impl OpenCard {
             title: text("title").filter(|t| !t.is_empty()).unwrap_or_else(|| app.clone()).chars().take(60).collect(),
             placement: text("placement").and_then(|p| Placement::parse(&p)).unwrap_or(Placement::Full),
             props: c.get("props").and_then(Value::as_object).cloned().unwrap_or_default(),
+            size: if text("size").as_deref() == Some("small") { Size::Small } else { Size::Main },
             plugin,
             app,
             ticket,
         })
+    }
+
+    /// When its snapshot was taken (`props.as_of`, unix ms), if it has one
+    /// (9.8).
+    pub fn as_of(&self) -> Option<i64> {
+        self.props.get("snapshot")?;
+        self.props.get("as_of").and_then(Value::as_i64)
+    }
+
+    /// The key Refresh opens (9.8): the same open without its `snapshot`
+    /// and `as_of`, so the card reads live through its own tools. History
+    /// keeps the snapshot (the turn is not changed).
+    pub fn live_key(&self) -> V1Key {
+        let mut k = self.key();
+        k.props.remove("snapshot");
+        k.props.remove("as_of");
+        k
     }
 
     /// The module key it opens.
@@ -93,6 +121,98 @@ impl OpenCard {
             Placement::Inline => "Show",
         }
     }
+}
+
+/// Where an answer's card goes (9.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    /// The answer's one main card.
+    Main,
+    /// One of its two small cards.
+    Small,
+    /// Past those: a one-line link.
+    Link,
+}
+
+/// The slots of an answer's cards, in order: the first main card, the
+/// first two small ones; every other card is a link.
+pub fn arrange(cards: &[OpenCard]) -> Vec<Slot> {
+    let (mut main, mut small) = (false, 0);
+    cards
+        .iter()
+        .map(|c| match c.size {
+            Size::Main if !main => {
+                main = true;
+                Slot::Main
+            }
+            Size::Small if small < 2 => {
+                small += 1;
+                Slot::Small
+            }
+            _ => Slot::Link,
+        })
+        .collect()
+}
+
+/// How many of the person's messages after an answer collapse its cards
+/// to a one-line chip (9.8).
+pub const AGE: usize = 5;
+
+/// Whether an answer's cards show as chips: `user_after` of the person's
+/// messages came since.
+pub fn aged(user_after: usize) -> bool {
+    user_after >= AGE
+}
+
+/// "3:42 PM" of a local `hour` (0..24) and `minute`.
+pub fn clock(hour: u32, minute: u32) -> String {
+    let h12 = match hour % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h12}:{minute:02} {}", if hour < 12 { "AM" } else { "PM" })
+}
+
+/// The card's "as of" text for snapshot time `ms`: the local clock time,
+/// with the date when it is not today.
+pub fn as_of_label(ms: i64) -> String {
+    let (then, today) = (local(ms / 1000), local(super::session::now_ms() / 1000));
+    let time = clock(then.2, then.3);
+    if (then.0, then.1) == (today.0, today.1) {
+        format!("as of {time}")
+    } else {
+        const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        format!("as of {} {}, {time}", MONTHS[then.4 as usize % 12], then.5)
+    }
+}
+
+/// Local (year, day of year, hour, minute, month 0..12, day of month) of
+/// unix time `secs`.
+fn local(secs: i64) -> (i32, i32, u32, u32, i32, i32) {
+    #[repr(C)]
+    struct Tm {
+        sec: i32,
+        min: i32,
+        hour: i32,
+        mday: i32,
+        mon: i32,
+        year: i32,
+        wday: i32,
+        yday: i32,
+        isdst: i32,
+        gmtoff: i64,
+        zone: *const i8,
+    }
+    unsafe extern "C" {
+        fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    // SAFETY: `localtime_r` writes only the struct it is given.
+    let tm = unsafe {
+        let mut tm: Tm = std::mem::zeroed();
+        localtime_r(&secs, &mut tm);
+        tm
+    };
+    (tm.year, tm.yday, tm.hour as u32, tm.min as u32, tm.mon, tm.mday)
 }
 
 /// Who asked for an open: what decides whether an inline app mounts
@@ -172,6 +292,53 @@ mod tests {
         assert_eq!(OpenCard::from_link(&json!({"provider": "gdrive", "card": {"plugin": "dev.goldcoders.bir", "app": "forms"}})), None);
         assert_eq!(OpenCard::from_link(&link(json!({"plugin": "bir", "app": "forms"}))), None);
         assert_eq!(OpenCard::from_link(&link(json!({"plugin": "dev.goldcoders.bir", "app": "forms", "ticket": "123"}))), None);
+    }
+
+    fn card(size: Size) -> OpenCard {
+        OpenCard { plugin: "dev.goldcoders.bir".into(), app: "deadlines".into(), title: "T".into(), placement: Placement::Inline, ticket: None, props: Map::new(), size }
+    }
+
+    #[test]
+    fn card_02_an_answer_has_one_main_card_two_small_ones_and_links_after() {
+        use Size::*;
+        let cards: Vec<OpenCard> = [Small, Main, Small, Main, Small, Small].into_iter().map(card).collect();
+        assert_eq!(arrange(&cards), [Slot::Small, Slot::Main, Slot::Small, Slot::Link, Slot::Link, Slot::Link]);
+        assert!(arrange(&[]).is_empty());
+        let size = |s: Value| OpenCard::from_link(&json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "deadlines", "size": s}})).unwrap().size;
+        assert_eq!(size(json!("small")), Small);
+        assert_eq!(size(json!("main")), Main);
+        assert_eq!(size(Value::Null), Main);
+    }
+
+    #[test]
+    fn card_03_a_snapshot_shows_as_of_and_refresh_reads_live() {
+        let snap = OpenCard::from_link(&json!({"provider": "rox-app", "card": {
+            "plugin": "dev.goldcoders.bir", "app": "deadlines", "ticket": T,
+            "props": {"ticket": T, "snapshot": {"due": 2}, "as_of": 1_793_200_000_000_i64},
+        }}))
+        .unwrap();
+        assert_eq!(snap.as_of(), Some(1_793_200_000_000));
+        let live = snap.live_key();
+        assert!(!live.props.contains_key("snapshot") && !live.props.contains_key("as_of"));
+        assert_eq!(live.props["ticket"], T);
+        assert_eq!(live.ticket.as_deref(), Some(T));
+        assert!(snap.key().props.contains_key("snapshot"), "history keeps the snapshot");
+        // no snapshot, no "as of"
+        let plain = OpenCard { props: [("as_of".to_owned(), json!(5))].into_iter().collect(), ..card(Size::Main) };
+        assert_eq!(plain.as_of(), None);
+        assert_eq!(clock(15, 42), "3:42 PM");
+        assert_eq!(clock(0, 5), "12:05 AM");
+        assert_eq!(clock(12, 0), "12:00 PM");
+        assert!(as_of_label(crate::mini_v1::session::now_ms()).starts_with("as of "));
+        assert!(as_of_label(0).contains(','), "another day shows its date");
+    }
+
+    #[test]
+    fn card_04_cards_age_into_chips_after_five_of_the_persons_messages() {
+        assert!(!aged(0));
+        assert!(!aged(4));
+        assert!(aged(5));
+        assert!(aged(9));
     }
 
     #[test]

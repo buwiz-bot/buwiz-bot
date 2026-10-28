@@ -15,6 +15,9 @@ pub enum Trigger {
     ToolResultFull,
     /// A tool result's `_meta["rox/open"]` with placement inline.
     ToolResultInline,
+    /// The same from an approved first-party plugin (publisher
+    /// `dev.goldcoders`): an answer card, mounted at once (9.8).
+    FirstPartyAnswerCard,
     /// A click on an attachment or a pin (the person placed it).
     AttachmentOrPin,
     /// A command or token the person typed, resolving to `open`.
@@ -59,10 +62,18 @@ pub fn ask(t: Trigger) -> Ask {
         Trigger::OsLink | Trigger::AppOpenUrl | Trigger::PluginHttpsUrl | Trigger::AppAttach => Ask::Dialog,
         Trigger::ToolResultFull | Trigger::AgentResolveOpen { inline: false } => Ask::OpenCard,
         Trigger::ToolResultInline | Trigger::AgentResolveOpen { inline: true } => Ask::ShowCard,
-        Trigger::AttachmentOrPin | Trigger::UserTyped | Trigger::AppOpenApp => Ask::Nothing,
+        Trigger::AttachmentOrPin | Trigger::UserTyped | Trigger::AppOpenApp | Trigger::FirstPartyAnswerCard => {
+            Ask::Nothing
+        }
         Trigger::AppPickFile => Ask::NativeDialog,
         Trigger::PluginOtherScheme => Ask::Refuse,
     }
+}
+
+/// The row of a tool result's inline card (9.7, 9.8): a first-party
+/// plugin's mounts at once, any other plugin's waits for Show.
+pub fn inline_card(first_party: bool) -> Trigger {
+    if first_party { Trigger::FirstPartyAnswerCard } else { Trigger::ToolResultInline }
 }
 
 /// The row a URL in plugin output falls under: `https` asks; a v1 app
@@ -104,10 +115,11 @@ mod tests {
 
     /// Every trigger, so each row's test also checks that only its own
     /// triggers give its answer.
-    const ALL: [Trigger; 13] = [
+    const ALL: [Trigger; 14] = [
         Trigger::OsLink,
         Trigger::ToolResultFull,
         Trigger::ToolResultInline,
+        Trigger::FirstPartyAnswerCard,
         Trigger::AttachmentOrPin,
         Trigger::UserTyped,
         Trigger::AgentResolveOpen { inline: false },
@@ -137,8 +149,11 @@ mod tests {
     }
 
     #[test]
-    fn con_01_tool_result_inline_is_a_card_with_show() {
-        assert_eq!(ask(Trigger::ToolResultInline), Ask::ShowCard);
+    fn con_01_tool_result_inline_is_a_card_with_show_unless_first_party() {
+        // 9.8 replaces this row for approved first-party plugins: their
+        // answer cards mount at once; every other plugin keeps Show
+        assert_eq!(ask(inline_card(false)), Ask::ShowCard);
+        assert_eq!(ask(inline_card(true)), Ask::Nothing);
         assert_eq!(with(Ask::ShowCard), [Trigger::ToolResultInline, Trigger::AgentResolveOpen { inline: true }]);
     }
 
@@ -161,7 +176,10 @@ mod tests {
     #[test]
     fn con_01_app_open_app_asks_nothing() {
         assert_eq!(ask(Trigger::AppOpenApp), Ask::Nothing);
-        assert_eq!(with(Ask::Nothing), [Trigger::AttachmentOrPin, Trigger::UserTyped, Trigger::AppOpenApp]);
+        assert_eq!(
+            with(Ask::Nothing),
+            [Trigger::FirstPartyAnswerCard, Trigger::AttachmentOrPin, Trigger::UserTyped, Trigger::AppOpenApp]
+        );
     }
 
     #[test]

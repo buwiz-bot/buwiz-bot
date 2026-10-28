@@ -57,6 +57,12 @@ pub struct V1 {
     reconnecting: RefCell<HashMap<String, String>>,
     /// Inline cards shown (their ids).
     pub shown: Signal<HashSet<String>>,
+    /// Answer cards that mount at once (first-party, 9.8) the person hid.
+    pub hidden: Signal<HashSet<String>>,
+    /// Cards refreshed: they read live instead of their snapshot (9.8).
+    pub live: Signal<HashSet<String>>,
+    /// Aged cards the person expanded again (9.8).
+    pub expanded: Signal<HashSet<String>>,
     /// Rox's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
@@ -84,6 +90,9 @@ impl V1 {
             stale: signal(HashSet::new()),
             reconnecting: RefCell::new(HashMap::new()),
             shown: signal(HashSet::new()),
+            hidden: signal(HashSet::new()),
+            live: signal(HashSet::new()),
+            expanded: signal(HashSet::new()),
             records: signal(Records::default()),
             review: signal(None),
             busy: signal(String::new()),
@@ -460,7 +469,7 @@ impl Store {
         } else {
             placement
         };
-        let card = OpenCard { plugin: k.plugin, app: k.app, title, placement, ticket: k.ticket, props: k.props };
+        let card = OpenCard { plugin: k.plugin, app: k.app, title, placement, ticket: k.ticket, props: k.props, size: Default::default() };
         self.open_v1_placed(card, Opener::Pin);
     }
 
@@ -760,7 +769,7 @@ impl Store {
                         } else {
                             title
                         };
-                        self.open_v1_placed(OpenCard { plugin, app, title, placement, ticket, props }, Opener::User);
+                        self.open_v1_placed(OpenCard { plugin, app, title, placement, ticket, props, size: Default::default() }, Opener::User);
                     }
                     tokens::Answer::Choices(choices) => {
                         let rows = choices
@@ -1299,10 +1308,27 @@ pub fn button_label(card: &OpenCard) -> String {
     }
 }
 
+/// Whether card `id` is shown: an answer card that mounts at once (`auto`,
+/// a first-party plugin's, 9.8) unless the person hid it; any other once
+/// they pressed Show.
+fn card_shown(id: &str, auto: bool) -> bool {
+    if auto { !store().v1.hidden.with(|h| h.contains(id)) } else { store().v1.shown.with(|s| s.contains(id)) }
+}
+
+/// Show or hide card `id`.
+fn toggle_card(id: &str, auto: bool) {
+    let set = if auto { store().v1.hidden } else { store().v1.shown };
+    let id = id.to_owned();
+    set.update(|s| {
+        if !s.remove(&id) {
+            s.insert(id);
+        }
+    });
+}
+
 /// A card's Open or Show; a shown inline card's Show reads Hide.
-fn toggle_button(label: String, id: String, on: impl Fn() + 'static) -> impl IntoElement {
-    let id2 = id.clone();
-    let shown = move || store().v1.shown.with(|s| s.contains(&id2));
+fn toggle_button(label: String, id: String, auto: bool, on: impl Fn() + 'static) -> impl IntoElement {
+    let shown = move || card_shown(&id, auto);
     view()
         .h(px(28.0))
         .px_3()
@@ -1315,16 +1341,103 @@ fn toggle_button(label: String, id: String, on: impl Fn() + 'static) -> impl Int
         .on_press(on)
 }
 
+/// An answer's cards (9.6, 9.8), from the reply's `rox-app` links: one
+/// main card and up to two small ones, the rest as one-line links. A
+/// first-party plugin's inline card mounts at once; any other waits for
+/// Show (9.7). Once `user_after()` of the person's messages came since,
+/// the cards collapse to one-line chips; a tap expands one again.
+pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after: impl Fn() -> usize + Clone + 'static) -> AnyElement {
+    let cards: Vec<(String, OpenCard)> = links
+        .iter()
+        .filter_map(|l| {
+            let c = OpenCard::from_link(&json!({"provider": "rox-app", "card": l.card.clone()?}))?;
+            Some((format!("{turn}:{}", l.id), c))
+        })
+        .collect();
+    let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
+    view()
+        .gap_2()
+        .w_full()
+        .children(cards.into_iter().zip(slots).map(move |((id, card), slot)| {
+            let aged = user_after.clone();
+            let id2 = id.clone();
+            match slot {
+                cards::Slot::Link => link_row(card).into_element(),
+                _ => when(
+                    move || cards::aged(aged()) && !store().v1.expanded.with(|e| e.contains(&id2)),
+                    {
+                        let (card, id) = (card.clone(), id.clone());
+                        move || aged_chip(card.clone(), id.clone()).into_element()
+                    },
+                )
+                .otherwise(move || open_card(card.clone(), id.clone()))
+                .into_element(),
+            }
+        }))
+        .into_element()
+}
+
+/// A card past an answer's one main and two small ones: a one-line link
+/// (its title and Open).
+fn link_row(card: OpenCard) -> impl IntoElement {
+    let c = card.clone();
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px(px(10.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(tc("#f5f5f50a"))
+        .label(format!("Open {}", card.title))
+        .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
+        .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+        .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT))
+}
+
+/// An aged card (9.8): one line, its title and Open; a tap on the title
+/// expands the card again.
+fn aged_chip(card: OpenCard, id: String) -> impl IntoElement {
+    let c = card.clone();
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px(px(10.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(tc("#f5f5f50a"))
+        .child(
+            text(card.title.clone())
+                .flex_1()
+                .number_of_lines(1)
+                .text_size(px(13.0))
+                .text_color(tc("#f5f5f5"))
+                .label(format!("Expand {}", card.title))
+                .on_press(move || {
+                    let id = id.clone();
+                    store().v1.expanded.update(|e| {
+                        e.insert(id);
+                    })
+                }),
+        )
+        .child(
+            view()
+                .label(format!("Open {}", card.title))
+                .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
+                .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT)),
+        )
+}
+
 /// A tool result's card (9.6): its title, the plugin, and Open (full) or
-/// Show (inline). Nothing opens or mounts before the press (INV-08). A
-/// shown inline card mounts below it.
-pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement {
-    let Some(card) = link.card.as_ref().and_then(|c| OpenCard::from_link(&json!({"provider": "rox-app", "card": c}))) else {
-        return view().into_element();
-    };
-    let plugin_title = store().v1.entry(&card.plugin).map(|p| p.title).unwrap_or_else(|| card.plugin.clone());
-    let (c1, c2, id1, id2, id3) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone());
-    let shown = move || store().v1.shown.with(|s| s.contains(&id1));
+/// Show (inline). An inline card mounts below it when shown.
+pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
+    let entry = store().v1.entry(&card.plugin);
+    let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
+    let auto = card.placement == Placement::Inline
+        && consent::ask(consent::inline_card(entry.as_ref().is_some_and(|p| p.first_party))) == consent::Ask::Nothing;
+    let (c1, c2, id1, id2, id3, id4) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
+    let shown = move || card_shown(&id1, auto);
     view()
         .gap_2()
         .child(
@@ -1332,11 +1445,11 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .h(px(64.0))
+                .h(px(if card.size == cards::Size::Small { 48.0 } else { 64.0 }))
                 .px(px(12.0))
                 .rounded(px(12.0))
                 .bg(tc("#1f1f1f"))
-                .child(crate::appdetails::named_tile("", &card.title, 36.0))
+                .child(crate::appdetails::named_tile("", &card.title, if card.size == cards::Size::Small { 28.0 } else { 36.0 }))
                 .child(
                     view()
                         .flex_1()
@@ -1349,16 +1462,19 @@ pub fn open_card(link: &crate::store::DriveLink, card_id: String) -> AnyElement 
                                 .text_color(tc("#f5f5f5ad")),
                         ),
                 )
-                .child(toggle_button(button_label(&card), id3, move || match c1.placement {
+                .child(toggle_button(button_label(&card), id3, auto, move || match c1.placement {
                     Placement::Full => store().open_v1(c1.key(), &c1.title, Opener::ToolResult),
-                    Placement::Inline => store().v1.shown.update(|s| {
-                        if !s.remove(&id2) {
-                            s.insert(id2.clone());
-                        }
-                    }),
+                    Placement::Inline => toggle_card(&id2, auto),
                 })),
         )
-        .child(when(shown, move || inline_card(c2.clone()).into_element()))
+        .child(when(shown, move || {
+            let (c, id) = (c2.clone(), id4.clone());
+            dynamic(move || {
+                let live = store().v1.live.with(|l| l.contains(&id));
+                inline_card(c.clone(), id.clone(), live).into_element()
+            })
+            .into_element()
+        }))
         .into_element()
 }
 
@@ -1435,6 +1551,30 @@ pub fn pins_section() -> impl IntoElement {
     })
 }
 
+/// An answer's next steps (9.8, `_meta["rox/suggest"]`): chips under it;
+/// a tap sends the prompt as the person's message.
+pub fn suggest_chips(items: Vec<(String, String)>) -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(6.0))
+        .max_w(px(COLUMN))
+        .children(items.into_iter().map(|(label, prompt)| {
+            view()
+                .h(px(28.0))
+                .px(px(12.0))
+                .rounded(px(14.0))
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(theme::BORDER_S)
+                .label(label.clone())
+                .on_press(move || store().send_text(prompt.clone()))
+                .child(text(label).number_of_lines(1).text_size(px(13.0)).text_color(theme::TEXT))
+                .into_element()
+        }))
+}
+
 /// The v1 attachments the model got with a sent message (10.3), as chips
 /// above the person's bubble: each ticket's title.
 pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
@@ -1469,8 +1609,10 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
 
 /// An inline app (6.5): a title bar with Open (full screen) over the app
 /// at its declared size, clamped to the range and the column.
-pub fn inline_card(card: OpenCard) -> impl IntoElement {
-    let key = card.key().to_key();
+pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
+    // Refresh (9.8): the same open without its snapshot reads live
+    let key = if live { card.live_key().to_key() } else { card.key().to_key() };
+    let as_of = card.as_of().filter(|_| !live);
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
     let (w, h) = cards::inline_size(&app, COLUMN);
     let c = card.clone();
@@ -1489,6 +1631,17 @@ pub fn inline_card(card: OpenCard) -> impl IntoElement {
                 .px(px(10.0))
                 .bg(tc("#1f1f1f"))
                 .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+                .when(as_of.is_some(), |v| {
+                    let (id, ms) = (id.clone(), as_of.unwrap_or_default());
+                    v.child(text(cards::as_of_label(ms)).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
+                        .child(small_button("Refresh", false, move || {
+                            let id = id.clone();
+                            store().v1.live.update(|l| {
+                                l.insert(id);
+                            })
+                        }))
+                })
+                .when(live, |v| v.child(text("live").text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
                 .child(small_button("Open", false, move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
         .child(
