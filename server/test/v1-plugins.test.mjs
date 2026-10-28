@@ -3,7 +3,7 @@
 // file keystore, its own trust file). The restart policy runs on a fake
 // clock so backoff and the 10-minute window take milliseconds.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { generate, pubOf, verify } from "../server/v1/ed.mjs";
@@ -101,6 +101,7 @@ test("RSV-03 the certificate verifies with the plugin public key; the seed is ne
   const seed = readFileSync(join(b.keysDir, `${FX}.key`), "utf8").trim();
 
   assert.equal(pubOf(seed), inst.plugin_pub);
+  assert.equal(statSync(join(b.keysDir, `${FX}.key`)).mode & 0o777, 0o600, "the file keystore keeps keys 0600");
   const o = await openApp(sessions, plugins.manifestOf(plugins.rowOf(FX)), "board");
 
   assert.ok(verify(inst.plugin_pub, signedBytes(o.res.cert), o.res.cert_sig));
