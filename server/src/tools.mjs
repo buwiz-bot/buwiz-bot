@@ -533,7 +533,11 @@ export async function mcpAppModule(raw) {
 export async function mcpAppCall({ server, tool, args }) {
   const row = db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(server || ""));
   if (!row) return { ok: false, error: "no such server" };
-  return mcpCallJson(row, String(tool || ""), args || {});
+  const name = String(tool || "");
+  // the per-tool switch binds apps as it binds the agent (mcpSurface)
+  if (new Set(JSON.parse(row.disabled_tools || "[]")).has(name))
+    return { ok: false, error: `${name} is switched off for ${row.name || row.id}; turn it on in Plugins to let apps call it` };
+  return mcpCallJson(row, name, args || {});
 }
 
 // `GET /mcp/apps` — every enabled server's mini apps.
