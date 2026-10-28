@@ -16,7 +16,7 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
       try {
-        const { prompt: rawPrompt, reply, attachments, v1_attachments: v1Attachments } = JSON.parse(body || "{}");
+        const { prompt: rawPrompt, reply, attachments, v1_attachments: v1Attachments, thread: threadId } = JSON.parse(body || "{}");
         const prompt = rawPrompt || (attachments?.length ? "" : null);
 
         if (prompt == null) throw new Error("missing prompt");
@@ -33,9 +33,14 @@ export default async function handle(req, res) {
         // 10.3: the chat's v1 attachments Rox lets the model see
         if (Array.isArray(v1Attachments) && v1Attachments.length) extra.v1Attachments = v1Attachments.slice(0, 16);
 
+        // the chat it was sent from (several chats run at once); the
+        // server's active thread only for a client that names none
+        const target = threadId == null ? null : findThread(String(threadId));
+
+        if (threadId != null && !target) throw new Error(`unknown thread ${String(threadId).slice(0, 40)}`);
         const job = {
           id: allocJobId(),
-          thread: store.active,
+          thread: target ? target.id : store.active,
           seq: 0,
           phase: "queued",
           detail: "",
@@ -129,10 +134,14 @@ export default async function handle(req, res) {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ ok: true, id }));
   }
-  if (req.method === "GET" && req.url === "/turns") {
+  if (req.method === "GET" && req.url.split("?")[0] === "/turns") {
+    // `?thread=<id>`: that chat's turns (a chat answering while another is
+    // open); none: the active one's
+    const id = new URL(req.url, "http://localhost").searchParams.get("thread");
+    const t = (id && findThread(id)) || activeThread();
     res.setHeader("content-type", "application/json");
     return res.end(
-      JSON.stringify({ active: activeThread().id, activeUid: activeThread().uid, turns: turnsJson() }),
+      JSON.stringify({ active: activeThread().id, activeUid: activeThread().uid, thread: t.id, turns: turnsJson(t) }),
     );
   }
   // Chat-row context menu state: hide/show and archive/unarchive are plain
