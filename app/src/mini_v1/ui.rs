@@ -75,6 +75,8 @@ pub struct V1 {
     prewarm: RefCell<super::cache::Prewarm>,
     /// The opens running, with the fingerprint each loaded.
     running: RefCell<Vec<(u64, String, String)>>,
+    /// The document a `rox.preview` shows over the apps (7.10).
+    pub preview: Signal<Option<super::bridge::Preview>>,
 }
 
 impl V1 {
@@ -100,6 +102,7 @@ impl V1 {
             queue: RefCell::new(VecDeque::new()),
             prewarm: RefCell::new(Default::default()),
             running: RefCell::new(Vec::new()),
+            preview: signal(None),
         }
     }
 
@@ -591,6 +594,17 @@ impl Store {
         } else {
             self.retry_mini(key);
         }
+    }
+
+    /// Shows `doc`, a `rox.preview` document, over the apps (one at a
+    /// time: a newer one replaces it).
+    pub fn v1_preview(&'static self, doc: super::bridge::Preview) {
+        self.v1.preview.set(Some(doc));
+    }
+
+    /// Close (or ⌘W) on the preview: back to the app.
+    pub fn v1_close_preview(&'static self) {
+        self.v1.preview.set(None);
     }
 
     /// Close on an error: the full-screen open goes, an inline card hides.
@@ -1780,6 +1794,73 @@ pub fn error_overlay(key: &str) -> impl IntoElement {
                                 .child(small_button("Reload", true, move || store().v1_reload(&kr)))
                                 .child(small_button("Close", false, move || store().v1_close(&kc))),
                         ),
+                )
+                .into_element()
+        },
+    )
+}
+
+/// The preview a v1 app asked for (`rox.preview`, 7.10), over the
+/// full-screen apps: a title bar with the document's title, Print (the
+/// print panel, which also saves a PDF) and Close, and the page. The page
+/// is the plugin's static HTML: its web view runs no script, has no base
+/// URL, carries the sealed page's no-load policy ([`super::bridge::seal`])
+/// and goes nowhere: a navigation that starts is stopped, and one that
+/// lands anyway closes the preview.
+pub fn preview_layer() -> impl IntoElement {
+    when(
+        || store().v1.preview.with(Option::is_some),
+        || {
+            let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
+            let page = element_ref();
+            let stop = page.clone();
+            // a string loaded with no base URL is about:blank
+            let own = |url: &str| url.is_empty() || url.starts_with("about:");
+            view()
+                .absolute()
+                .size_full()
+                .bg(tc("#161616"))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(52.0))
+                        .pl(px(84.0))
+                        .pr(px(12.0))
+                        .border_b(px(0.5))
+                        .border_b_color(tc("#f5f5f51a"))
+                        .child(
+                            text(move || doc().title)
+                                .flex_1()
+                                .number_of_lines(1)
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tc("#f5f5f5")),
+                        )
+                        .child(small_button("Print", true, move || {
+                            let d = doc();
+                            crate::keys::print("html", d.html, &d.title);
+                        }))
+                        .child(small_button("Close", false, || store().v1_close_preview())),
+                )
+                .child(
+                    web_view_html(move || doc().html, None)
+                        .element_ref(&page)
+                        .java_script_enabled(false)
+                        .flex_1()
+                        .bg(AdaptiveColor::from(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 }))
+                        .on_load_start(move |n: &WebNavigation| {
+                            if !own(&n.url) {
+                                log::warn!("mini v1: preview stopped a navigation");
+                                stop.stop_loading();
+                            }
+                        })
+                        .on_load(move |n: &WebNavigation| {
+                            if !own(&n.url) {
+                                store().v1_close_preview();
+                            }
+                        }),
                 )
                 .into_element()
         },

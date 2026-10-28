@@ -101,6 +101,14 @@ impl host_api::Broker for FakeBroker {
                     "fx_text" => json!({"content": [{"type": "text", "text": "a"}, {"type": "image"}, {"type": "text", "text": "b"}]}),
                     "fx_fail" => json!({"isError": true, "content": [{"type": "text", "text": "the form has no period"}]}),
                     "fx_big" => json!({"content": [{"type": "text", "text": "x".repeat(2 << 20)}]}),
+                    "fx_doc" => json!({
+                        "content": [
+                            {"type": "text", "text": "made"},
+                            {"type": "resource", "resource": {"uri": "fx://doc.html", "mimeType": "text/html; charset=utf-8", "text": DOC}}
+                        ],
+                        "structuredContent": {"title": "Fixture document"}
+                    }),
+                    "fx_nodoc" => json!({"content": [{"type": "text", "text": "<p>no resource</p>"}]}),
                     "fx_slow" | "fx_count" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(150)));
                         json!({"structuredContent": {"ok": true}})
@@ -121,6 +129,9 @@ impl host_api::Broker for FakeBroker {
     }
 }
 
+/// The page `fx_doc` answers with.
+const DOC: &str = "<!DOCTYPE html><html><body><p>BIR Form 2551Q</p></body></html>";
+
 /// The person, as the tests play them.
 #[derive(Default)]
 struct TestUi {
@@ -134,6 +145,7 @@ struct TestUi {
     picks: Mutex<Vec<PickRequest>>,
     files: Mutex<Vec<PathBuf>>,
     ended: Mutex<Vec<Ended>>,
+    previews: Mutex<Vec<Preview>>,
 }
 
 impl HostUi for TestUi {
@@ -166,6 +178,10 @@ impl HostUi for TestUi {
     }
     fn copy(&self, text: &str) {
         self.copied.lock().unwrap().push(text.to_owned());
+    }
+    fn preview(&self, doc: Preview) -> Result<(), RoxError> {
+        self.previews.lock().unwrap().push(doc);
+        Ok(())
     }
     fn session_ended(&self, _: &V1Key, why: Ended) {
         self.ended.lock().unwrap().push(why);
@@ -734,4 +750,103 @@ fn con_01_in_the_bridge_only_open_url_and_attach_ask() {
     );
     // the file dialog was the pick's only question
     assert_eq!(o.ui.picks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn preview_is_absent_without_the_permission() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc"]}),
+        r#"
+        let host = "ran";
+        try { await probeHost("rox.preview", {tool: "fx_doc"}); } catch (e) { host = "refused"; }
+        return "preview " + typeof rox.preview + " " + host;
+        "#,
+    );
+    assert_eq!(o.wait("preview"), "preview undefined refused");
+    assert!(o.broker.calls.lock().unwrap().is_empty() && o.ui.previews.lock().unwrap().is_empty());
+}
+
+#[test]
+fn preview_shows_the_apps_own_tools_document_signed_for_preview() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc"], "preview": {}}),
+        r#"
+        const a = await rox.preview({tool: "fx_doc", args: {form: "2551Q"}});
+        await rox.preview({tool: "fx_doc", title: "  BIR Form 2551Q — Dela Cruz  "});
+        return "shown " + String(a);
+        "#,
+    );
+    // the page never reaches the app
+    assert_eq!(o.wait("shown"), "shown undefined");
+    let shown = o.ui.previews.lock().unwrap().clone();
+    assert_eq!(shown.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Fixture document", "BIR Form 2551Q — Dela Cruz"]);
+    assert_eq!(shown[0].html, seal(DOC));
+    assert!(shown[0].html.starts_with("<!DOCTYPE html><meta http-equiv=\"Content-Security-Policy\""), "{}", shown[0].html);
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0["purpose"], "preview");
+    assert_eq!(calls[0].0["tool"], "fx_doc");
+    assert_eq!(calls[0].0["args"], json!({"form": "2551Q"}));
+    assert_eq!(calls[1].0["args"], json!({}));
+}
+
+#[test]
+fn preview_refuses_undeclared_tools_bad_args_and_results_without_a_document() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc", "fx_nodoc", "fx_fail", "fx_echo"], "preview": {"max_bytes": 32}}),
+        r#"
+        const codes = [];
+        for (const ask of [
+          {tool: "fx_secret"},
+          {tool: "fx_doc", args: [1]},
+          {tool: "fx_doc", url: "https://example.com/"},
+          {tool: "fx_doc", title: 7},
+          {tool: "fx_nodoc"},
+          {tool: "fx_echo"},
+          {tool: "fx_fail"},
+          {tool: "fx_doc"},
+        ]) {
+          try { await rox.preview(ask); codes.push("shown"); } catch (e) { codes.push(e.code); }
+        }
+        return "codes " + codes.join(",");
+        "#,
+    );
+    assert_eq!(
+        o.wait("codes"),
+        "codes not_declared,invalid_args,invalid_args,invalid_args,tool_error,tool_error,tool_error,result_too_large"
+    );
+    assert!(o.ui.previews.lock().unwrap().is_empty());
+    // the undeclared tool and the bad arguments sent nothing
+    let sent: Vec<String> = o.broker.calls.lock().unwrap().iter().map(|c| c.0["tool"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(sent, ["fx_nodoc", "fx_echo", "fx_fail", "fx_doc"]);
+}
+
+#[test]
+fn preview_documents_are_embedded_html_resources_within_the_limit() {
+    let doc = |mime: &str, text: &str| json!({"content": [{"type": "resource", "resource": {"uri": "x:", "mimeType": mime, "text": text}}]});
+    assert_eq!(preview_document(doc("text/html", "<p>a</p>"), 64).unwrap(), ("<p>a</p>".to_owned(), None));
+    assert_eq!(preview_document(doc("TEXT/HTML; charset=utf-8", "<p>a</p>"), 64).unwrap().0, "<p>a</p>");
+    for wrong in [doc("text/plain", "<p>a</p>"), doc("image/svg+xml", "<svg/>"), json!({"structuredContent": {"html": "<p>a</p>"}})] {
+        assert_eq!(preview_document(wrong, 64).unwrap_err().code, "tool_error");
+    }
+    // a blob is not a page
+    let blob = json!({"content": [{"type": "resource", "resource": {"uri": "x:", "mimeType": "text/html", "blob": "PHA+"}}]});
+    assert_eq!(preview_document(blob, 64).unwrap_err().code, "tool_error");
+    assert_eq!(preview_document(doc("text/html", &"x".repeat(65)), 64).unwrap_err().code, "result_too_large");
+    assert_eq!(preview_document(doc("text/html", &"x".repeat(64)), 64).unwrap().0.len(), 64);
+    let named = json!({"content": doc("text/html", "<p>a</p>")["content"], "structuredContent": {"title": " Form 2551Q "}});
+    assert_eq!(preview_document(named, 64).unwrap().1.as_deref(), Some("Form 2551Q"));
+    let failed = json!({"isError": true, "content": [{"type": "text", "text": "no saved return"}]});
+    assert_eq!(preview_document(failed, 64).unwrap_err(), RoxError::new("tool_error", "no saved return"));
+}
+
+#[test]
+fn a_sealed_page_carries_the_no_load_policy_after_its_doctype() {
+    let head = seal("");
+    assert!(head.starts_with("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"), "{head}");
+    assert!(head.contains("img-src data:;") && head.contains("form-action 'none'") && head.contains("a{pointer-events:none}"));
+    assert!(!head.contains("script-src") && !head.contains("https:") && !head.contains("'self'"), "nothing is let in: {head}");
+    assert_eq!(seal("<!doctype html>\n<html></html>"), format!("<!doctype html>{head}\n<html></html>"));
+    assert_eq!(seal("\u{feff}\n <!DOCTYPE html><p>"), format!("\u{feff}\n <!DOCTYPE html>{head}<p>"));
+    assert_eq!(seal("<html><p>x</p>"), format!("{head}<html><p>x</p>"));
 }

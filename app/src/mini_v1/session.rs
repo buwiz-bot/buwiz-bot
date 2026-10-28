@@ -118,13 +118,27 @@ impl Session {
     /// The signed envelope of a call of `tool` with `args` (8.1):
     /// `(envelope, sig)`.
     pub fn sign_call(&self, tool: &str, args: &Value) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, None)
+    }
+
+    /// [`Session::sign_call`] for `rox.preview`: the envelope says
+    /// `"purpose": "preview"`, which the broker takes only from an app
+    /// granted `preview`, and answers with the larger document limit.
+    pub fn sign_preview(&self, tool: &str, args: &Value) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, Some("preview"))
+    }
+
+    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>) -> Result<(Value, String), RoxError> {
         self.check_live()?;
-        let envelope = json!({
+        let mut envelope = json!({
             "v": 1, "typ": "rox-call",
             "plugin": self.plugin, "app": self.app, "open_id": self.open_id,
             "tool": tool, "args": args,
             "ts": now_ms(), "nonce": keys::random_id(),
         });
+        if let Some(p) = purpose {
+            envelope["purpose"] = json!(p);
+        }
         let sig = self.key.sign(&envelope).map_err(|e| RoxError::new("invalid_args", e))?;
         Ok((envelope, sig))
     }
