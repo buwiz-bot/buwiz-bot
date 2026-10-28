@@ -52,6 +52,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
 import { PORT } from "./config.mjs";
+import { isName } from "./grammar.mjs";
 
 let authHooks = null; // {loadAuth(id), saveAuth(id, obj), done(id)} — app-server wires the db
 export const setAuthHooks = (h) => (authHooks = h);
@@ -429,7 +430,9 @@ export async function listApps(row) {
 
 // The commands and `@` scopes a server announces: its `rox://manifest`
 // resource (JSON, every field optional), read once per connection; {} when
-// it ships none or it doesn't parse.
+// it ships none or it doesn't parse. Commands and scopes whose name breaks
+// the grammar (grammar.mjs) are dropped with a warning: no `@` token or
+// `/` command could name them.
 export const MANIFEST_URI = "rox://manifest";
 export async function readManifest(row) {
   const rec = await ensureClient(row);
@@ -438,7 +441,17 @@ export async function readManifest(row) {
     .readResource({ uri: MANIFEST_URI })
     .then(({ contents }) => {
       const m = JSON.parse(contents?.find((c) => typeof c.text === "string")?.text || "{}");
-      return m && typeof m === "object" && !Array.isArray(m) ? m : {};
+      if (!m || typeof m !== "object" || Array.isArray(m)) return {};
+      for (const kind of ["commands", "scopes"]) {
+        if (m[kind] === undefined) continue;
+        const list = Array.isArray(m[kind]) ? m[kind] : [];
+        m[kind] = list.filter((x) => {
+          if (x && typeof x === "object" && isName(x.name)) return true;
+          console.warn(`  mcp ${row.id}: manifest ${kind} entry ${JSON.stringify(x?.name ?? x).slice(0, 80)} dropped: names are [A-Za-z0-9_-]+`);
+          return false;
+        });
+      }
+      return m;
     })
     .catch(() => ({}));
   return rec.manifest;
