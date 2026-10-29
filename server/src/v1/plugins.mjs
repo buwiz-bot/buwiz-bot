@@ -86,19 +86,14 @@ export function resultData(r) {
 const isMethodNotFound = (e) => e?.code === -32601;
 
 export function createPlugins({ db, keys, clock = systemClock, logDir, trust = loadTrust, timeouts = {} }) {
-  db.exec(SCHEMA);
   const T = { call: 120_000, resolve: 10_000, reserved: 5_000, cancel: 5_000, ...timeouts };
   const events = new EventEmitter();
   const runtimes = new Map(); // id → runtime
   const closers = []; // (id) → Promise: sessions.mjs ends a plugin's opens
-  let routineInfo = () => ({}); // routines.mjs: a routine's user state
+  const views = createViews({ db, runtime: (id) => runtime(id), trust });
+  const { rowOf, rows, manifestOf, disabledOf } = views;
 
   events.setMaxListeners(0);
-
-  const rowOf = (id) => db.prepare("SELECT * FROM v1_plugins WHERE id=?").get(String(id ?? ""));
-  const rows = () => db.prepare("SELECT * FROM v1_plugins ORDER BY created_at").all();
-  const manifestOf = (row) => parse(row.manifest, {});
-  const disabledOf = (row) => new Set(parse(row.disabled_tools, []));
 
   function runtime(id) {
     if (!runtimes.has(id)) runtimes.set(id, { id, state: "stopped", code: null, message: "", generation: 0, conn: null, tools: [], manifest: null, instructions: "", restarts: [], timer: null, inflight: new Set() });
@@ -712,6 +707,38 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     setState(rt, "failed", code, message);
   }
 
+  /** Spawn every enabled plugin (server start). */
+  const startAll = () => Promise.all(rows().filter((r) => r.enabled).map((r) => spawn(r.id).catch(() => {})));
+
+  /** Stop every process (tests, shutdown). */
+  async function stopAll() {
+    for (const rt of runtimes.values()) {
+      if (rt.timer) clock.clearTimeout(rt.timer);
+      rt.timer = null;
+      await stopConn(rt);
+    }
+  }
+
+  return {
+    ...views, events, runtime, inspect, install, enable, disable, uninstall, setTool, spawn,
+    callTool, callReserved, readResource, fail, startAll, stopAll, trust, timeouts: T, clock,
+    onClose: (f) => closers.push(f),
+  };
+}
+
+/** What the broker reads of its v1 plugins, wherever they run (here, or in
+ *  rox-broker over the line: plugins-line.mjs): the records in v1_plugins
+ *  and the plugin list of GET /v1/host/plugins, with each routine's user
+ *  state from routines.mjs. `runtime(id)` is the plugin's live state. */
+export function createViews({ db, runtime, trust }) {
+  db.exec(SCHEMA);
+  let routineInfo = () => ({}); // routines.mjs: a routine's user state
+
+  const rowOf = (id) => db.prepare("SELECT * FROM v1_plugins WHERE id=?").get(String(id ?? ""));
+  const rows = () => db.prepare("SELECT * FROM v1_plugins ORDER BY created_at").all();
+  const manifestOf = (row) => parse(row.manifest, {});
+  const disabledOf = (row) => new Set(parse(row.disabled_tools, []));
+
   /** The plugin as GET /v1/host/plugins lists it. */
   function describe(row) {
     const m = manifestOf(row);
@@ -763,22 +790,8 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     });
   }
 
-  /** Spawn every enabled plugin (server start). */
-  const startAll = () => Promise.all(rows().filter((r) => r.enabled).map((r) => spawn(r.id).catch(() => {})));
-
-  /** Stop every process (tests, shutdown). */
-  async function stopAll() {
-    for (const rt of runtimes.values()) {
-      if (rt.timer) clock.clearTimeout(rt.timer);
-      rt.timer = null;
-      await stopConn(rt);
-    }
-  }
-
   return {
-    events, runtime, rowOf, rows, manifestOf, disabledOf, inspect, install, enable, disable, uninstall, setTool, spawn,
-    callTool, callReserved, readResource, fail, describe, startAll, stopAll, readsStatus, trust, timeouts: T, clock,
-    onClose: (f) => closers.push(f),
+    rowOf, rows, manifestOf, disabledOf, describe, readsStatus,
     useRoutineInfo: (f) => (routineInfo = f),
     list: () => rows().map(describe),
   };

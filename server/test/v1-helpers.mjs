@@ -12,9 +12,10 @@ import { keystore } from "../src/v1/keystore.mjs";
 import { permsDigest } from "../src/v1/manifest.mjs";
 import { createPlugins, systemClock } from "../src/v1/plugins.mjs";
 import { createSessions } from "../src/v1/sessions.mjs";
+import { lineHost } from "../src/v1/line-host.mjs";
 import { signManifest } from "../src/v1/sign-manifest.mjs";
 import { loadTrust } from "../src/v1/trust.mjs";
-import { ROOT, tempDir } from "./helpers.mjs";
+import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 
 export const FIXTURE_DIR = join(ROOT, "src", "v1", "fixture");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
@@ -73,11 +74,23 @@ export function bed(label) {
   return { dir, pub, trustFile, manifestFile, writeManifest, keysDir: join(dir, "keys") };
 }
 
-/** An in-process broker for bed `b`: {plugins, sessions}. */
-export function broker(b, { clock = systemClock, timeouts = {}, db = new DatabaseSync(":memory:") } = {}) {
+/** An in-process broker for bed `b`: {plugins, sessions, db}. With
+ *  ROX_BROKER_CMD set, its plugins run in `rox-broker helper` and are
+ *  reached over the line (plugins-line.mjs, sessions-line.mjs), as the
+ *  Rust broker plan has them from 3.4; `db` is then the app.db the two
+ *  share. */
+export function broker(b, { clock = systemClock, timeouts = {}, db } = {}) {
+  if (process.env.ROX_BROKER_CMD) return lineBroker(b, { clock, timeouts });
+  db ??= new DatabaseSync(":memory:");
   const plugins = createPlugins({ db, keys: keystore(`file:${b.keysDir}`), clock, logDir: join(b.dir, "logs"), trust: () => loadTrust(b.trustFile), timeouts });
 
   return { plugins, sessions: createSessions(plugins), db };
+}
+
+function lineBroker(b, { clock, timeouts }) {
+  const [cmd] = brokerCommand();
+
+  return lineHost({ cmd, db: join(b.dir, "app.db"), logDir: join(b.dir, "logs"), trustFile: b.trustFile, keystore: `file:${b.keysDir}`, clock, timeouts });
 }
 
 /** The fixture's spawn spec, with extra args (e.g. --misbehave=…) and env. */

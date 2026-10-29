@@ -186,12 +186,12 @@ test("RTN-05 an empty search text is nothing to do; a switched-off tool or a sto
   assert.deepEqual(store.list.find((t) => t.routine?.id === "empty").turns, [], "nothing new adds no turn");
   assert.equal(listed("empty").last_items, 0);
   routines.disable({ plugin: FX, routine: "empty" });
-  plugins.setTool(GWS, "gws_search_mail", true);
+  await plugins.setTool(GWS, "gws_search_mail", true);
   assert.match((await routines.tick(FX, "bir-mail")).reason, /gws_search_mail is switched off/);
-  plugins.setTool(GWS, "gws_search_mail", false);
-  plugins.setTool(FX, "fx_query", true);
+  await plugins.setTool(GWS, "gws_search_mail", false);
+  await plugins.setTool(FX, "fx_query", true);
   assert.match((await routines.tick(FX, "bir-mail")).reason, /fx_query is switched off/);
-  plugins.setTool(FX, "fx_query", false);
+  await plugins.setTool(FX, "fx_query", false);
   await plugins.disable(GWS);
   assert.match(listed("bir-mail").reason, /google-workspace is disabled/);
   assert.equal((await routines.tick(FX, "bir-mail")).ran, false);
@@ -374,13 +374,13 @@ test("RTN-15 Run now ticks once out of schedule and counts like a run; paused, r
   // paused
   assert.equal(await codeOf(routines.run({ plugin: FX, routine: "empty" })), "disabled");
   // unavailable: refused, and the refusal is no run
-  plugins.setTool(FX, "fx_query", true);
+  await plugins.setTool(FX, "fx_query", true);
   const last = listed("bir-mail").last_run;
 
   step(5);
   assert.equal(await codeOf(routines.run({ plugin: FX, routine: "bir-mail" })), "plugin_unavailable");
   assert.equal(listed("bir-mail").last_run, last);
-  plugins.setTool(FX, "fx_query", false);
+  await plugins.setTool(FX, "fx_query", false);
   assert.equal(await codeOf(routines.run({ plugin: FX, routine: "nope" })), "not_found");
 });
 

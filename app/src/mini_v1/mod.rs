@@ -25,12 +25,12 @@
 
 pub mod bridge;
 pub mod cache;
+// JCS, keys and the composer's tokens: shared with the broker
+pub use rox_v1::{jcs, keys, tokens};
 pub mod cards;
 pub mod connect;
 pub mod consent;
 pub mod host_api;
-pub mod jcs;
-pub mod keys;
 pub mod lifecycle;
 pub mod links;
 pub mod load;
@@ -42,7 +42,6 @@ pub mod props;
 pub mod records;
 pub mod session;
 pub mod storage;
-pub mod tokens;
 pub mod ui;
 
 use serde_json::{Value, json};

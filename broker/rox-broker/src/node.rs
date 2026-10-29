@@ -111,6 +111,7 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
         if let Some(data) = &config.data {
             cmd.env("GROK_DATA_DIR", data);
         }
+        cmd.envs(config.node_env.iter().map(|(k, v)| (k, v)));
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {

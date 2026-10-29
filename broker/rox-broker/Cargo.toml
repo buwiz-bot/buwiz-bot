@@ -7,10 +7,13 @@ publish = false
 
 [dependencies]
 bytes = "1"
+ed25519-dalek = "2.2"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 libc = "0.2"
+rox-v1 = { path = "../rox-v1" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+url = "2"

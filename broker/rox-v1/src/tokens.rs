@@ -18,7 +18,7 @@
 
 use serde_json::Value;
 
-use super::perms;
+use crate::ids as perms;
 
 /// A typed token in a text: its byte range and parts.
 #[derive(Debug, Clone, PartialEq, Eq)]

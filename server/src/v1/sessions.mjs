@@ -413,5 +413,12 @@ export function createSessions(plugins) {
     return { ok: true, source, fingerprint };
   }
 
-  return { open, close, call, ticketTitle, resolve, appSource, opens };
+  /** An open's live state (tests): {active, queued}, or null when it is not open. */
+  const stat = (openId) => {
+    const s = opens.get(openId);
+
+    return s ? { active: s.active, queued: s.queue.length } : null;
+  };
+
+  return { open, close, call, ticketTitle, resolve, appSource, stat, opens };
 }
