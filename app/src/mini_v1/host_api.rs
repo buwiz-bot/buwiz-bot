@@ -206,6 +206,56 @@ pub fn routine_action(
     Ok(v.get("routine").cloned().unwrap_or(Value::Null))
 }
 
+/// What the person does to one routine instance (5.9, "Routine instances").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceAction {
+    /// One run now, out of schedule; the broker answers at once.
+    Run,
+    /// On (in the chat it reports to); `approve` in the body consents to
+    /// what it reads too (its consent card's Enable).
+    Enable,
+    Disable,
+    /// Its params, trigger, interval or label.
+    Update,
+    Delete,
+    /// A new webhook secret: the answer's `path`, shown once.
+    Hook,
+}
+
+/// `POST /v1/host/routines/{run,enable,disable,update,delete,hook}`:
+/// `{plugin, routine, instance?, ...extra}` (`instance` "" for a broker
+/// before instances). The broker's whole answer.
+pub fn instance_action(
+    b: &dyn Broker,
+    plugin: &str,
+    routine: &str,
+    instance: &str,
+    action: InstanceAction,
+    extra: Value,
+) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !super::perms::app_id_ok(routine) {
+        return Err(RoxError::new("invalid_args", "not a plugin or routine id"));
+    }
+    let mut body = json!({"plugin": plugin, "routine": routine});
+    if !instance.is_empty() {
+        body["instance"] = json!(instance);
+    }
+    if let (Some(o), Some(x)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in x {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    let verb = match action {
+        InstanceAction::Run => "run",
+        InstanceAction::Enable => "enable",
+        InstanceAction::Disable => "disable",
+        InstanceAction::Update => "update",
+        InstanceAction::Delete => "delete",
+        InstanceAction::Hook => "hook",
+    };
+    post(b, &format!("/v1/host/routines/{verb}"), body, SHORT_TIMEOUT)
+}
+
 /// The broker at `client::backend()`, over HTTP/1.1 on the loopback.
 pub struct HttpBroker {
     origin: String,

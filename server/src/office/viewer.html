@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  BetterOffice viewer — served by app-server at GET /office/?path=<rel>&kind=<pptx|xlsx>.
+  Paints the engines' own display lists onto canvases: this is the app's real
+  renderer for pptx (which has no native fallback) and the high-fidelity path
+  for xlsx. Font bytes come from @betteroffice/fonts assets, registered with
+  the engine (pptx) and the DOM (xlsx text uses CSS fonts).
+  Everything degrades quietly — a missing package or dead wasm leaves a plain
+  error line the app treats like "Preview unavailable" (it falls back).
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #161616; color: #f5f5f5; font: 13px -apple-system, sans-serif; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
+         padding: 8px 14px; background: #1f1f1f; border-bottom: .5px solid #f5f5f51a; }
+  #bar .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bar .badge { margin-left: auto; color: #f5f5f58a; font-size: 11px; flex-shrink: 0; }
+  #tabs { display: flex; gap: 4px; padding: 6px 14px 0; }
+  #tabs button { background: #f5f5f512; color: #f5f5f5ad; border: 0; border-radius: 7px 7px 0 0;
+                 padding: 6px 14px; font: inherit; cursor: pointer; }
+  #tabs button.on { background: #fff; color: #111; }
+  #deck { padding: 18px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  .slide { position: relative; width: min(860px, calc(100vw - 40px)); }
+  .slide canvas { width: 100%; display: block; border-radius: 6px; box-shadow: 0 2px 14px #0009; }
+  .slide .n { position: absolute; right: 8px; bottom: 8px; background: #0009; color: #fff;
+              font-size: 11px; padding: 2px 7px; border-radius: 6px; }
+  #sheetwrap { position: absolute; inset: 74px 0 0 0; overflow: auto; background: #fff; }
+  #sheetwrap.no-tabs { inset-top: 38px; }
+  #spacer { position: relative; }
+  #sheet { position: sticky; top: 0; left: 0; display: block; }
+  #err { padding: 40px; text-align: center; color: #f5f5f58a; display: none; }
+</style>
+<div id="bar"><span class="name" id="docname"></span><span class="badge">BetterOffice</span></div>
+<div id="tabs" hidden></div>
+<div id="deck"></div>
+<div id="sheetwrap"><div id="spacer"><canvas id="sheet"></canvas></div></div>
+<div id="err"></div>
+
+<script type="module">
+const q = new URLSearchParams(location.search);
+const kind = q.get("kind");
+const raw = "/file/raw/" + String(q.get("path") || "").split("/").map(encodeURIComponent).join("/");
+const vendor = (p) => "/office/vendor/" + p;
+const $ = (id) => document.getElementById(id);
+$("docname").textContent = String(q.get("path") || "").split("/").pop();
+if (kind === "xlsx") $("sheetwrap").hidden = false; else $("sheetwrap").hidden = true;
+if (kind !== "xlsx") $("deck").hidden = false; else $("deck").hidden = true;
+
+const fail = (msg) => { $("err").style.display = "block"; $("err").textContent = msg; $("deck").hidden = $("sheetwrap").hidden = true; };
+
+// Bundled substitute faces — Latin set only (script-fallback faces are big and
+// rare in the files this app makes). Registered both ways: engine-side for
+// pptx glyph paint, DOM-side for xlsx fillText CSS.
+let FONTS = null;
+try { FONTS = await import(vendor("fonts/dist/index.js")); } catch {}
+const FONT_OPTS = { baseUrl: vendor("fonts/assets/") };
+const LATIN = (FONTS?.BUNDLED_FONTS || []).filter((f) => !f.script);
+async function engineFaces() {
+  if (!FONTS) return [];
+  const faces = [];
+  for (const f of LATIN) {
+    let bytes;
+    try { bytes = new Uint8Array(await FONTS.loadBundledFontBytes(f, FONT_OPTS)); } catch { continue; }
+    for (const fam of new Set([f.metricCompatWith, f.family].filter(Boolean)))
+      faces.push({ family: fam, bold: f.weight === 700, italic: f.style === "italic", bytes });
+  }
+  return faces;
+}
+async function cssFaces() {
+  if (!FONTS) return;
+  for (const f of LATIN)
+    for (const fam of new Set([f.metricCompatWith, f.family].filter(Boolean)))
+      try { await FONTS.registerBundledFontFace(f, fam, FONT_OPTS); } catch {}
+}
+
+async function showPptx() {
+  const P = await import(vendor("pptx/dist/index.js"));
+  await P.initWasm(vendor("pptx/dist/generated/pptx_wasm_bg.wasm"));
+  const bytes = new Uint8Array(await (await fetch(raw)).arrayBuffer());
+  const faces = await engineFaces();
+  const h = P.openPresentation(bytes, { fonts: faces });
+  const images = new Map();
+  const resolveImage = async (id) => {
+    if (images.has(id)) return images.get(id);
+    try {
+      const b = h.mediaBytes(id);
+      const img = b && b.length ? await P.decodePresentationImage(b, "image decode failed") : null;
+      images.set(id, img);
+      return img;
+    } catch { images.set(id, null); return null; }
+  };
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  const slides = h.snapshot().slides;
+  for (let i = 0; i < slides.length; i++) {
+    const list = h.layoutSlide(i);
+    const wrap = document.createElement("div");
+    wrap.className = "slide";
+    const canvas = document.createElement("canvas");
+    const scale = () => Math.min(860, innerWidth - 40) / Math.max(1, list.width);
+    P.sizeCanvasForSlide(canvas, list, dpr, scale());
+    wrap.append(canvas);
+    const tag = document.createElement("span");
+    tag.className = "n";
+    tag.textContent = `${i + 1}/${slides.length}`;
+    wrap.append(tag);
+    $("deck").append(wrap);
+    await P.paintSlide(canvas.getContext("2d"), list, dpr, scale(), { resolveImage });
+  }
+  h.dispose?.();
+}
+
+// DOCX — the engine's own renderer: yrs session (embedded wasm) → resident
+// layout → display list → drawDisplayPage on Canvas2D. Same pipeline the MCP
+// server's office_render uses, run in the page (browser Path2D + createImageBitmap).
+async function showDocx() {
+  const [Y, E, L, R] = await Promise.all([
+    import(vendor("docx/dist/yrs/index.mjs")),
+    import(vendor("docx/dist/editor/index.mjs")),
+    import(vendor("docx/dist/layout/index.mjs")),
+    import(vendor("docx/dist/layout/render/index.mjs")),
+  ]);
+  const session = await Y.createYrsSession();
+  const bytes = new Uint8Array(await (await fetch(raw)).arrayBuffer());
+  session.seedFromDocx(bytes);
+  const doc = session.materializeDocx(); // the docx Document — shadows DOM `document` if misnamed
+  if (!doc) throw new Error("not a readable docx");
+  const source = L.createRustMeasureSource({ engine: session, bundled: FONTS ? FONTS.createFontProvider(FONT_OPTS) : undefined });
+  const request = E.buildResidentRegionLayoutRequest(doc, 0, {});
+  const reqs = JSON.parse(session.layoutFontRequirementsJson(JSON.stringify(request)));
+  await source.prepareFontRequirements(reqs);
+  const measurement = source.measurementConfigForRequirements(reqs);
+  if (!measurement) throw new Error("required fonts could not be loaded");
+  const { layout } = E.computeLayout({ document: doc, pageGap: 16, session, renderEnv: {}, measurement });
+  const kernel = E.getLayoutKernelInputs(layout);
+  if (!kernel) throw new Error("layout produced no pages");
+  const display = await R.buildRustDisplayList({ ...kernel, layout, fontChains: measurement.fontChains }, session);
+  // Images live in the package media store; image primitives name them by id
+  // or by relationship target — same resolution order as office_render.
+  const media = doc.package?.media;
+  const bySource = new Map([...(media?.values() ?? [])].map((f) => [f.dataUrl, f]));
+  const images = new Map();
+  const resolveImage = async (id) => {
+    if (images.has(id)) return images.get(id);
+    const rel = doc.package?.relationships?.get(id);
+    const target = rel?.target?.replace(/^\//, "").replace(/^\.\//, "");
+    const file = bySource.get(id) ?? media?.get(id) ?? (target ? media?.get(target) ?? media?.get(`word/${target}`) : undefined);
+    let img = null;
+    if (file) try { img = await createImageBitmap(new Blob([file.data])); } catch {}
+    images.set(id, img);
+    return img;
+  };
+  const glyphCache = new R.GlyphCache({ provider: (f, g) => session.outlineGlyphJson(f, g) });
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  display.pages.forEach((page, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "slide"; // same card look as slides
+    const canvas = document.createElement("canvas");
+    const zoom = Math.min(1, (innerWidth - 40) / Math.max(1, page.width));
+    R.sizeCanvasForPage(canvas, canvas.getContext("2d"), page, dpr, zoom);
+    wrap.append(canvas);
+    const tag = document.createElement("span");
+    tag.className = "n";
+    tag.textContent = `${i + 1}/${display.pages.length}`;
+    wrap.append(tag);
+    $("deck").append(wrap);
+    const primitives = [...page.primitives, ...(page.header?.primitives ?? []), ...(page.footer?.primitives ?? []),
+      ...(page.noteAreas ?? []).flatMap((a) => [...(a.separatorPrimitives ?? []), ...(a.primitives ?? [])])];
+    R.drawDisplayPage(canvas.getContext("2d"), { ...page, primitives, background: page.background ?? "#ffffff" }, { glyphCache, resolveImage });
+  });
+  session.destroy?.();
+}
+
+async function showXlsx() {
+  const X = await import(vendor("xlsx/dist/index.js"));
+  await X.initWasm(vendor("xlsx/dist/generated/xlsx_wasm_bg.wasm"));
+  const bytes = new Uint8Array(await (await fetch(raw)).arrayBuffer());
+  const wb = X.openWorkbook(bytes);
+  await cssFaces();
+  const wrap = $("sheetwrap"), spacer = $("spacer"), canvas = $("sheet");
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  let info = wb.sheetInfo();
+  if (info.sheetNames.length < 2) wrap.classList.add("no-tabs"), $("tabs").hidden = true;
+  else {
+    $("tabs").hidden = false;
+    info.sheetNames.forEach((name, i) => {
+      const b = document.createElement("button");
+      b.textContent = name;
+      b.className = i === info.activeSheet ? "on" : "";
+      b.onclick = () => { wb.setActiveSheet(i); [...$("tabs").children].forEach((c, j) => (c.className = j === i ? "on" : "")); info = wb.sheetInfo(); size(); paint(); };
+      $("tabs").append(b);
+    });
+  }
+  function size() {
+    spacer.style.width = Math.max(info.contentWidth, wrap.clientWidth) + "px";
+    spacer.style.height = Math.max(info.contentHeight, wrap.clientHeight) + "px";
+    canvas.width = Math.ceil(wrap.clientWidth * dpr);
+    canvas.height = Math.ceil(wrap.clientHeight * dpr);
+    canvas.style.width = wrap.clientWidth + "px";
+    canvas.style.height = wrap.clientHeight + "px";
+  }
+  function paint() {
+    const dl = wb.displayList({ x: wrap.scrollLeft, y: wrap.scrollTop, width: wrap.clientWidth, height: wrap.clientHeight });
+    X.paintDisplayList(canvas.getContext("2d"), dl, dpr);
+  }
+  let tick = false;
+  wrap.addEventListener("scroll", () => { if (!tick) { tick = true; requestAnimationFrame(() => { tick = false; paint(); }); } });
+  new ResizeObserver(() => { size(); paint(); }).observe(wrap);
+  size();
+  wrap.scrollLeft = info.initialScrollX || 0;
+  wrap.scrollTop = info.initialScrollY || 0;
+  paint();
+}
+
+try {
+  if (kind === "pptx") await showPptx();
+  else if (kind === "xlsx") await showXlsx();
+  else if (kind === "docx") await showDocx();
+  else fail("No BetterOffice renderer for this file.");
+} catch (e) {
+  console.error(e);
+  fail("Preview unavailable — " + (e && e.message ? e.message : e));
+}
+</script>

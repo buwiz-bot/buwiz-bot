@@ -43,7 +43,11 @@ pub(crate) fn pane() -> impl IntoElement {
                     // A plain chat gets the same profile as an agent (the
                     // app's default avatar, its own title): Details,
                     // Library and Computer apply to both.
-                    if st.active_bot().is_some() || !st.active_id.get().is_empty() {
+                    // an agents' conversation: its own Details (no name
+                    // field, model nor tabs: nobody talks in it)
+                    if st.active_agents().is_some() {
+                        conversation_pane().into_element()
+                    } else if st.active_bot().is_some() || !st.active_id.get().is_empty() {
                         bot_profile().into_element()
                     } else if st.detail_meta.get().is_some() {
                         app_detail().into_element()
@@ -263,10 +267,25 @@ fn bot_profile() -> impl IntoElement {
                         ),
                 )
                 // The agent's label (Grok Bot's "Add a label"): Enter saves
-                // it; a plain chat reads "Chat".
-                .child(dynamic(|| match store().active_bot() {
-                    Some(b) => label_field(b.id, b.label).into_element(),
-                    None => text("Chat")
+                // it; a plain chat reads "Chat", a routine's thread "Routine
+                // of <bot>" (the routine answers as the bot).
+                .child(dynamic(|| match (store().active_routine(), store().active_bot()) {
+                    (Some(_), b) => text(format!("Routine of {}", b.map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned())))
+                        .text_size(px(11.0))
+                        .text_color(theme::MUTED)
+                        .pt(px(4.0))
+                        .into_element(),
+                    (None, Some(b)) => {
+                        // "Made by Piccolo" under an agent another one made
+                        let made = crate::agents::made_by_line(&b, &store().bots.get());
+                        let parent = b.helper.as_ref().map(|h| h.parent.clone()).unwrap_or_else(|| b.made_by.clone());
+                        view()
+                            .items_center()
+                            .child(label_field(b.id, b.label))
+                            .when_some(made, |v, m| v.child(made_by(m, parent)))
+                            .into_element()
+                    }
+                    (None, None) => text("Chat")
                         .text_size(px(11.0))
                         .text_color(theme::MUTED)
                         .pt(px(4.0))
@@ -418,10 +437,13 @@ fn pane_card() -> View {
         .p_1()
 }
 
-/// Details — the Routines card (App.tsx:2627).
+/// Details — the Routines card (App.tsx:2627). Routines are managed
+/// here, with the bot they belong to (not in Settings): each row runs,
+/// pauses or resumes its routine; Suggested offers the templates.
 fn details_tab() -> impl IntoElement {
     store().v1_refresh(false);
-    crate::settings::load_routines();
+    crate::routines::load_routines();
+    crate::routines::load_templates();
     view()
         // An agent's own context: what it is, what it remembers, what it
         // has used — each fills on demand (asking it in chat, or using a
@@ -430,64 +452,659 @@ fn details_tab() -> impl IntoElement {
             Some(b) => bot_context(b).into_element(),
             None => view().into_element(),
         }))
-        .child(pane_label("Routines".into()))
+        // its agents: whom it takes messages from, its conversations with
+        // other agents, the helpers it started
+        .child(dynamic(|| match store().active_bot() {
+            Some(b) if store().active_routine().is_none() => agents_sections(b).into_element(),
+            _ => view().into_element(),
+        }))
+        // a routine's thread: that routine alone, nothing to open
         .child(dynamic(|| {
-            let routines = chat_routines();
-            if routines.is_empty() {
-                let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                return pane_card()
-                    .py(px(14.0))
-                    .px(px(13.0))
-                    .child(
-                        text(format!("No routines yet. Ask {name} in chat to run something on a schedule."))
-                            .text_size(px(13.0))
-                            .text_color(theme::DIM),
-                    )
-                    .into_element();
+            let bot = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
+            let listed = store().v1.listed.get();
+            match routines_section(store().active_routine(), &listed, &bot, crate::store::checked_at) {
+                RoutinesSection::This(r) => {
+                    view().child(pane_label("This routine".into())).child(this_routine(r)).into_element()
+                }
+                RoutinesSection::List => view()
+                    .child(pane_label("Routines".into()))
+                    .child(routines_list())
+                    .child(crate::routines::suggested())
+                    .into_element(),
             }
-            pane_card().children(routines.into_iter().map(routine_row)).into_element()
         }))
 }
 
-/// A routine that posts in the open chat: its name, who runs it, how its
-/// last run went, and the v1 plugin whose page manages it.
+// ————————————————————————— agents' conversations —————————————————————————
+
+/// "Made by Piccolo" under an agent's label: opens the parent's chat.
+fn made_by(line: String, parent: String) -> impl IntoElement {
+    let hov = signal(false);
+    text(line.clone())
+        .text_size(px(11.0))
+        .text_color(move || if hov.get() { theme::TEXT } else { theme::MUTED })
+        .pt(px(2.0))
+        .label(line)
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(move || {
+            let t = store().bot_thread(&parent);
+            if !t.is_empty() {
+                store().go_to(&t, None)
+            }
+        })
+}
+
+/// A section's quiet line ("No conversations yet …").
+fn pane_note(t: String) -> AnyElement {
+    pane_card().py(px(14.0)).px(px(13.0)).child(text(t).text_size(px(13.0)).text_color(theme::DIM)).into_element()
+}
+
+/// A bot's Details sections about other agents: Accept messages from,
+/// Conversations, Helper and Past helpers.
+fn agents_sections(b: crate::store::RoxBot) -> impl IntoElement {
+    let st = store();
+    let bots = st.bots.get();
+    let threads = st.threads.get();
+    let rows = crate::agents::conversations_of(&b.id, &threads, &bots);
+    st.load_agents_last(
+        rows.iter()
+            .filter(|r| !r.archived)
+            .map(|r| (r.thread.clone(), threads.iter().find(|t| t.id == r.thread).map(|t| t.count).unwrap_or(0)))
+            .collect(),
+    );
+    let (live, past) = crate::agents::helpers_of(&b.id, &bots);
+    let (open, archived): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| !r.archived);
+    let show_archived = signal(false);
+    let n_archived = archived.len();
+    let name = b.name.clone();
+    view()
+        .pb(px(14.0))
+        // a helper takes messages from its parent only: no setting
+        .when(b.helper.is_none(), |v| v.child(pane_label("Accept messages from".into())).child(accepts_card(b.id.clone(), b.accepts.clone())))
+        .child(view().pt(px(14.0)).child(pane_label("Conversations".into())))
+        .child(if open.is_empty() && archived.is_empty() {
+            pane_note(format!("No conversations yet. Ask {name} in chat to hand a task to another agent."))
+        } else {
+            pane_card()
+                .children(open.into_iter().map(conversation_row))
+                .when(n_archived > 0, move |v| {
+                    let hov = signal(false);
+                    v.child(
+                        view()
+                            .flex_row()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .rounded(px(8.0))
+                            .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                            .label(format!("Archived conversations ({n_archived})"))
+                            .on_press(move || show_archived.update(|s| *s = !*s))
+                            .child(
+                                text(move || format!("Archived ({n_archived}) {}", if show_archived.get() { "▾" } else { "›" }))
+                                    .text_size(px(12.0))
+                                    .text_color(theme::MUTED),
+                            ),
+                    )
+                    .child(when(show_archived, move || {
+                        view().children(archived.clone().into_iter().map(conversation_row)).into_element()
+                    }))
+                })
+                .into_element()
+        })
+        .when(!live.is_empty(), |v| {
+            v.child(view().pt(px(14.0)).child(pane_label("Helper".into())))
+                .child(pane_card().children(live.into_iter().map(helper_row)))
+        })
+        .when(!past.is_empty(), |v| {
+            v.child(view().pt(px(14.0)).child(pane_label("Past helpers".into())))
+                .child(pane_card().children(past.into_iter().map(helper_row)))
+        })
+}
+
+/// One conversation in a bot's Details: subject, participants, its last
+/// message; Open, Resume while paused, Archive or Unarchive.
+fn conversation_row(r: crate::agents::ConversationRow) -> AnyElement {
+    let last = {
+        let thread = r.thread.clone();
+        move || store().agents_last.with(|l| l.iter().find(|(t, ..)| *t == thread).map(|(.., m)| m.clone())).unwrap_or_default()
+    };
+    let (t1, c1, c2) = (r.thread.clone(), r.conversation.clone(), r.conversation.clone());
+    let subject = r.subject.clone();
+    let mut acts = view().flex_row().flex_wrap().gap_1().pt(px(2.0)).child(routine_act("Open", format!("Open {subject}"), false, move || store().go_to(&t1, None)));
+    if r.paused {
+        acts = acts.child(dynamic(move || {
+            let c = c2.clone();
+            if store().agents_paused(&c) {
+                routine_act("Resume", format!("Resume {}", "the conversation"), false, move || store().agents_resume(c.clone()))
+            } else {
+                view().into_element()
+            }
+        }));
+    }
+    let archived = r.archived;
+    acts = acts.child(routine_act(
+        if archived { "Unarchive" } else { "Archive" },
+        format!("{} {subject}", if archived { "Unarchive" } else { "Archive" }),
+        false,
+        move || store().agents_archive(c1.clone(), !archived),
+    ));
+    view()
+        .gap(px(2.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .label(r.subject.clone())
+        .child(text(r.subject).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+        .child(
+            text(if r.paused { format!("{} · paused", r.participants) } else { r.participants })
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1),
+        )
+        .when(!archived, |v| {
+            v.child(dynamic(move || {
+                let t = last();
+                if t.is_empty() {
+                    return view().into_element();
+                }
+                text(t).text_size(px(12.0)).text_color(theme::DIM).number_of_lines(2).into_element()
+            }))
+        })
+        .child(acts)
+        .into_element()
+}
+
+/// A temporary helper in its parent's Details: avatar, name, task; Open
+/// goes to its chat.
+fn helper_row(b: crate::store::RoxBot) -> AnyElement {
+    let hov = signal(false);
+    let thread = b.thread_id.clone();
+    let task = b.helper.as_ref().map(|h| h.task.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| b.purpose.clone());
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .label(format!("Open {}'s chat", b.name))
+        .on_press(move || store().go_to(&thread, None))
+        .child(crate::chat::peer_avatar(&b.id, &b.name, 26.0))
+        .child(
+            view()
+                .flex_1()
+                .child(text(b.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+                .when(!task.is_empty(), |v| v.child(text(task).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(2))),
+        )
+        .child(text("Open").text_size(px(12.0)).text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }))
+        .into_element()
+}
+
+/// Accept messages from: All my agents / None (`some`, a list an agent
+/// set, shows as such until one is picked).
+fn accepts_card(bot: String, now: String) -> impl IntoElement {
+    let choice = |word: &'static str, value: &'static str, on: bool, bot: String| {
+        let hov = signal(false);
+        view()
+            .flex_row()
+            .items_center()
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(8.0))
+            .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+            .label(format!("Accept messages from {}", word.to_lowercase()))
+            .on_press(move || {
+                if !on {
+                    store().agents_accepts(bot.clone(), value)
+                }
+            })
+            .child(text(word).text_size(px(13.0)).text_color(theme::TEXT).flex_1())
+            .when(on, |v| v.child(text("✓").text_size(px(13.0)).text_color(theme::ACCENT)))
+            .into_element()
+    };
+    pane_card()
+        .child(choice("All my agents", "all", now == "all", bot.clone()))
+        .child(choice("None", "none", now == "none", bot))
+        .when(now == "some", |v| {
+            v.child(text("Now: some agents only").text_size(px(12.0)).text_color(theme::MUTED).px(px(10.0)).pb(px(6.0)))
+        })
+}
+
+/// An agents' conversation's Details: its participants (each with "Go to
+/// <name> chat"), subject, when it started, how many messages; Resume
+/// while paused, Archive or Unarchive.
+fn conversation_pane() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(scroll().flex_1().child(view().px_4().pt(px(4.0)).pb_6().child(dynamic(|| {
+            let st = store();
+            let Some(a) = st.active_agents() else { return view().into_element() };
+            let names = st.agents_names(&a);
+            let title = crate::agents::pill_text(&names);
+            let id = st.active_id.get();
+            let count = if st.turns_of.get() == id {
+                st.turns.with(|t| t.iter().filter(|t| t.message.is_some()).count() as i64)
+            } else {
+                st.threads.with(|t| t.iter().find(|t| t.id == id).map(|t| t.count).unwrap_or(0))
+            };
+            let paused = st.agents_paused(&a.conversation);
+            let (c1, c2, archived) = (a.conversation.clone(), a.conversation.clone(), a.archived);
+            let fact = |k: &str, v: String| {
+                view()
+                    .flex_row()
+                    .gap(px(10.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .child(text(k.to_owned()).text_size(px(12.0)).text_color(theme::MUTED).w(px(70.0)))
+                    .child(text(v).text_size(px(13.0)).text_color(theme::TEXT).flex_1().number_of_lines(3))
+                    .into_element()
+            };
+            let status = match (archived, paused) {
+                (true, _) => "Archived",
+                (false, true) => "Paused",
+                _ => "Open",
+            };
+            view()
+                .child(
+                    view()
+                        .items_center()
+                        .gap(px(8.0))
+                        .pb(px(18.0))
+                        .child(view().flex_row().items_center().children(a.participants.iter().zip(&names).take(4).enumerate().map(|(k, (p, n))| {
+                            view().when(k > 0, |v| v.ml(px(-10.0))).child(crate::chat::peer_avatar(p, n, 44.0)).into_element()
+                        })))
+                        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT).text_center())
+                        .child(text("Agents' conversation · read-only").text_size(px(11.0)).text_color(theme::MUTED)),
+                )
+                .child(pane_label("Participants".into()))
+                .child(pane_card().children(a.participants.iter().zip(&names).map(|(p, n)| participant_row(p.clone(), n.clone()))))
+                .child(view().pt(px(14.0)).child(pane_label("Conversation".into())))
+                .child(
+                    pane_card()
+                        .child(fact("Subject", if a.subject.is_empty() { "—".to_owned() } else { a.subject.clone() }))
+                        .child(fact("Created", if a.created_at > 0.0 { crate::store::checked_at(a.created_at) } else { "—".to_owned() }))
+                        .child(fact("Messages", count.to_string()))
+                        .child(fact("Status", status.to_owned()))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap_1()
+                                .px(px(4.0))
+                                .pb(px(4.0))
+                                .when(paused && !archived, |v| v.child(routine_act("Resume", "Resume the conversation".to_owned(), false, move || store().agents_resume(c1.clone()))))
+                                .child(routine_act(
+                                    if archived { "Unarchive" } else { "Archive" },
+                                    format!("{} the conversation", if archived { "Unarchive" } else { "Archive" }),
+                                    false,
+                                    move || store().agents_archive(c2.clone(), !archived),
+                                )),
+                        ),
+                )
+                .into_element()
+        }))))
+}
+
+/// A participant in a conversation's Details: avatar, name, and "Go to
+/// <name> chat" (an outside endpoint has no chat).
+fn participant_row(id: String, name: String) -> AnyElement {
+    let hov = signal(false);
+    let chat = store().bot_thread(&id);
+    let go = format!("Go to {name} chat");
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .child(crate::chat::peer_avatar(&id, &name, 26.0))
+        .child(text(name.clone()).text_size(px(13.0)).text_color(theme::TEXT).flex_1().number_of_lines(1))
+        .child(if chat.is_empty() {
+            text(if crate::agents::is_external(&id) { "Outside" } else { "" }).text_size(px(12.0)).text_color(theme::MUTED).into_element()
+        } else {
+            view()
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(8.0))
+                .bg(move || if hov.get() { theme::CARD2 } else { theme::MAIN })
+                .border_1()
+                .border_color(theme::BORDER_F)
+                .label(go.clone())
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                .on_press(move || store().go_to(&chat, None))
+                .child(text(go).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .into_element()
+        })
+        .into_element()
+}
+
+/// What the Details pane's routine section shows: in a routine's thread,
+/// that routine (`This`); elsewhere the chat's routines (`List`).
+#[derive(Debug, Clone, PartialEq)]
+enum RoutinesSection {
+    This(ThisRoutine),
+    List,
+}
+
+/// The open routine thread's own routine, as its Details card shows it.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct ThisRoutine {
+    name: String,
+    /// Its plugin, id and instance ("" before instances), for Run now and
+    /// Pause.
+    plugin: String,
+    id: String,
+    instance: String,
+    /// The plugin that runs it ("" before the plugins are listed).
+    by: String,
+    /// "Checks every 5 min" ("" unknown).
+    schedule: String,
+    /// "Last checked 3:42 PM · nothing new", its error, or why it can't.
+    status: String,
+    failed: bool,
+    /// Running on its schedule (Pause), or paused (Resume); false too
+    /// before the plugins are listed. `pending`: waiting for the user's
+    /// Enable (the agent made it).
+    enabled: bool,
+    pending: bool,
+    /// The chat it reports to, and the action back to it.
+    chat: String,
+    go: String,
+}
+
+fn routines_section(
+    open: Option<crate::store::RoutineOf>,
+    listed: &[crate::mini_v1::connect::Listed],
+    bot: &str,
+    checked: impl Fn(f64) -> String,
+) -> RoutinesSection {
+    let Some(r) = open else { return RoutinesSection::List };
+    // the instance's state as a routine's (the routine's own before instances)
+    let found = listed.iter().find(|p| p.id == r.plugin).and_then(|p| {
+        let x = p.routines.iter().find(|x| x.id == r.id)?;
+        let i = x.instances.iter().find(|i| i.instance == r.instance);
+        match (r.instance.is_empty(), i) {
+            (true, _) => Some((p.title.clone(), x.clone(), false, "schedule".to_owned())),
+            (false, Some(i)) => Some((p.title.clone(), i.as_routine(x), i.pending, i.trigger.clone())),
+            (false, None) => None,
+        }
+    });
+    let mut out = ThisRoutine { name: r.name, plugin: r.plugin, id: r.id, instance: r.instance, chat: r.thread, go: format!("Go to {bot} chat"), ..Default::default() };
+    if let Some((by, x, pending, trigger)) = found {
+        let (status, failed) = if pending { ("Waiting for your Enable".to_owned(), false) } else { x.last_check(checked) };
+        let mut c = status.chars();
+        out.status = c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default();
+        out.failed = failed;
+        out.by = by;
+        out.schedule = if trigger == "webhook" { "Runs on its webhook".to_owned() } else { x.schedule() };
+        out.enabled = x.enabled;
+        out.pending = pending;
+    }
+    RoutinesSection::This(out)
+}
+
+/// A small text action on a routine (Run now, Pause, Open, Delete).
+/// A routine row's action: a pressable view, so the agent tree and
+/// VoiceOver read it as a button named `aria`.
+fn routine_act(label: &'static str, aria: String, danger: bool, on: impl Fn() + 'static) -> AnyElement {
+    let hov = signal(false);
+    view()
+        .px_2()
+        .py_1()
+        .rounded(px(6.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .label(aria)
+        .child(text(label).text_size(px(12.0)).text_color(move || match (hov.get(), danger) {
+            (true, true) => theme::DOWN,
+            (true, false) => theme::TEXT,
+            _ => theme::MUTED,
+        }))
+        .into_element()
+}
+
+/// The "This routine" card: name, plugin, schedule, last check (or its
+/// Run now's state), Run now and Pause / Resume, and the way to the chat
+/// it reports to (as the header's back pill).
+fn this_routine(r: ThisRoutine) -> impl IntoElement {
+    let hov = signal(false);
+    let chat = r.chat.clone();
+    let key = crate::routines::v1_key(&r.plugin, if r.instance.is_empty() { &r.id } else { &r.instance });
+    let usual = (r.status.clone(), r.failed);
+    let line = |t: String, c| text(t).text_size(px(12.0)).text_color(c).number_of_lines(3);
+    let (p1, i1, n1) = (r.plugin.clone(), r.id.clone(), r.instance.clone());
+    let (p2, i2, n2, c2) = (r.plugin.clone(), r.id.clone(), r.instance.clone(), r.chat.clone());
+    let known = !r.by.is_empty();
+    let (enabled, pending) = (r.enabled, r.pending);
+    pane_card().child(
+        view()
+            .gap(px(2.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .child(text(r.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(2))
+            .when(!r.by.is_empty(), |v| v.child(line(r.by, theme::MUTED)))
+            .when(!r.schedule.is_empty(), |v| v.child(line(r.schedule, theme::DIM)))
+            .child(dynamic(move || {
+                let (t, failed) = crate::routines::row_status(crate::routines::run_of(&key).as_ref(), usual.clone());
+                if t.is_empty() {
+                    return view().into_element();
+                }
+                line(t, if failed { theme::DOWN } else { theme::DIM }).into_element()
+            }))
+            .when(known, |v| {
+                v.child(
+                    view()
+                        .flex_row()
+                        .pt(px(4.0))
+                        .gap_1()
+                        .when(enabled, |v| {
+                            v.child(routine_act("Run now", format!("Run {} now", r.name), false, move || store().v1_routine_run(&p1, &i1, &n1)))
+                        })
+                        .child(pause_or_resume(&r.name, enabled, pending, p2, i2, n2, c2)),
+                )
+            })
+            .child(
+                view()
+                    .flex_row()
+                    .pt(px(8.0))
+                    .child(
+                        view()
+                            .px(px(10.0))
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .bg(move || if hov.get() { theme::CARD2 } else { theme::MAIN })
+                            .border_1()
+                            .border_color(theme::BORDER_F)
+                            .label(r.go.clone())
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                            .on_press(move || store().go_to(&chat, None))
+                            .child(text(r.go).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT)),
+                    ),
+            ),
+    )
+}
+
+/// The chat's routines, or how to get one.
+fn routines_list() -> impl IntoElement {
+    dynamic(|| {
+        let st = store();
+        let routines = chat_routines(&st.active_id.get(), &st.v1.listed.get(), &st.routines.get(), crate::app_name());
+        if routines.is_empty() {
+            let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
+            return pane_card()
+                .py(px(14.0))
+                .px(px(13.0))
+                .child(
+                    text(format!("No routines yet. Ask {name} in chat to run something on a schedule."))
+                        .text_size(px(13.0))
+                        .text_color(theme::DIM),
+                )
+                .into_element();
+        }
+        pane_card().children(routines.into_iter().map(routine_row)).into_element()
+    })
+}
+
+/// A routine that reports to the open chat: its name, who runs it, how
+/// its last run went, whether it runs on its schedule, and which kind.
+#[derive(Debug, Clone, PartialEq)]
 struct ChatRoutine {
     name: String,
     by: String,
     status: String,
     failed: bool,
-    plugin: Option<String>,
+    enabled: bool,
+    kind: RoutineKind,
 }
 
-/// The enabled routines, v1 plugins' and the server's own, that post in
-/// the open chat. Both lists reload when the Details tab is built.
-fn chat_routines() -> Vec<ChatRoutine> {
-    let st = store();
-    let chat = st.active_id.get();
-    let status = |last_run: f64, last_error: &str| match (last_error.is_empty(), last_run > 0.0) {
-        (false, _) => (format!("Last run failed: {last_error}"), true),
-        (true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
-        (true, false) => ("Waiting for its first run".to_owned(), false),
-    };
-    let mut out = Vec::new();
-    for p in st.v1.listed.get() {
-        for r in p.routines.iter().filter(|r| r.enabled && r.thread == chat) {
-            let (status, failed) =
-                if r.available { status(r.last_run, &r.last_error) } else { (r.reason.clone(), true) };
-            out.push(ChatRoutine { name: r.name.clone(), by: p.title.clone(), status, failed, plugin: Some(p.id.clone()) });
+#[derive(Debug, Clone, PartialEq)]
+enum RoutineKind {
+    /// A v1 plugin routine's instance: its plugin, routine id, instance
+    /// ("" before instances), own thread ("" not made yet), the chat it
+    /// reports to, trigger, whether its webhook has a URL, whether it waits
+    /// for the user's Enable, and its params as JSON ("" when the routine
+    /// takes none).
+    Plugin { plugin: String, id: String, instance: String, home: String, chat: String, trigger: String, hook: bool, pending: bool, params: String },
+    /// The server's own (`/routines`): its turns post in this chat.
+    Server { id: String },
+}
+
+impl ChatRoutine {
+    /// The key of its Run now (`routines::run_of`).
+    fn key(&self) -> String {
+        match &self.kind {
+            RoutineKind::Plugin { plugin, id, instance, .. } => crate::routines::v1_key(plugin, if instance.is_empty() { id } else { instance }),
+            RoutineKind::Server { id } => crate::routines::v0_key(id),
         }
     }
-    for r in st.routines.get().into_iter().filter(|r| r.enabled && r.thread == chat) {
-        let (status, failed) = status(r.last_run, &r.last_error);
-        let by = if r.bot_name.is_empty() { crate::app_name().to_owned() } else { r.bot_name.clone() };
-        out.push(ChatRoutine { name: r.name, by, status, failed, plugin: None });
+}
+
+/// The routines, v1 plugins' instances and the server's own, that report
+/// to `chat`, paused and pending ones too (they resume or start here).
+fn chat_routines(chat: &str, listed: &[crate::mini_v1::connect::Listed], server: &[crate::routines::Routine], app: &str) -> Vec<ChatRoutine> {
+    let status = |enabled: bool, last_run: f64, last_error: &str| match (enabled, last_error.is_empty(), last_run > 0.0) {
+        (false, _, _) => ("Paused".to_owned(), false),
+        (true, false, _) => (format!("Last run failed: {last_error}"), true),
+        (true, true, true) => (format!("Last ran {} ago", Store::ago(last_run)), false),
+        (true, true, false) => ("Waiting for its first run".to_owned(), false),
+    };
+    let mut out = Vec::new();
+    for p in listed {
+        for r in &p.routines {
+            for i in r.instances_or_self().into_iter().filter(|i| !chat.is_empty() && i.thread == chat) {
+                let (status, failed) = if i.pending {
+                    ("Waiting for your Enable".to_owned(), false)
+                } else if i.available || !i.enabled {
+                    status(i.enabled, i.last_run, &i.last_error)
+                } else {
+                    (i.reason.clone(), true)
+                };
+                let how = if i.trigger == "webhook" {
+                    "on its webhook".to_owned()
+                } else {
+                    crate::routines::interval(if i.every_s > 0.0 { i.every_s } else { r.every_s })
+                };
+                out.push(ChatRoutine {
+                    name: if i.summary.is_empty() { r.name.clone() } else { format!("{} · {}", r.name, i.summary) },
+                    by: format!("{} · {how}", p.title),
+                    status,
+                    failed,
+                    enabled: i.enabled,
+                    kind: RoutineKind::Plugin {
+                        plugin: p.id.clone(),
+                        id: r.id.clone(),
+                        instance: i.instance.clone(),
+                        home: i.home.clone(),
+                        chat: i.thread.clone(),
+                        trigger: i.trigger.clone(),
+                        hook: i.hook,
+                        pending: i.pending,
+                        params: if r.params_schema.is_null() { String::new() } else { i.params.to_string() },
+                    },
+                });
+            }
+        }
+    }
+    for r in server.iter().filter(|r| !chat.is_empty() && r.thread == chat) {
+        let (status, failed) = status(r.enabled, r.last_run, &r.last_error);
+        let by = if r.bot_name.is_empty() { app.to_owned() } else { r.bot_name.clone() };
+        out.push(ChatRoutine { name: r.name.clone(), by, status, failed, enabled: r.enabled, kind: RoutineKind::Server { id: r.id.clone() } });
     }
     out
 }
 
-/// One routine in the Details card; a v1 plugin's opens its plugin page.
+/// One routine in the Details card, with its actions: Run now (while it
+/// runs on its schedule), Pause or Resume; a v1 plugin's Open (its own
+/// thread, made once it is enabled; its plugin page only when the broker
+/// names none), the server's own Delete.
 fn routine_row(r: ChatRoutine) -> AnyElement {
-    let row = view()
+    let key = r.key();
+    let usual = (r.status.clone(), r.failed);
+    let name = r.name.clone();
+    let mut acts = view().flex_row().flex_wrap().gap_1().pt(px(2.0));
+    // a plugin instance's params editor and webhook URL, under its actions
+    let mut extra: Option<String> = None;
+    match r.kind.clone() {
+        RoutineKind::Plugin { plugin, id, instance, home, chat, trigger, hook, pending, params } => {
+            let (p1, i1, n1) = (plugin.clone(), id.clone(), instance.clone());
+            if r.enabled {
+                acts = acts.child(routine_act("Run now", format!("Run {name} now"), false, move || store().v1_routine_run(&p1, &i1, &n1)));
+            }
+            acts = acts.child(pause_or_resume(&name, r.enabled, pending, plugin.clone(), id.clone(), instance.clone(), chat));
+            if !params.is_empty() && !instance.is_empty() {
+                let (n2, text) = (instance.clone(), params.clone());
+                acts = acts.child(routine_act("Edit params", format!("Edit {name}'s params"), false, move || {
+                    store().routine_edit.set(Some((n2.clone(), text.clone())))
+                }));
+            }
+            if trigger == "webhook" && !instance.is_empty() {
+                let (p3, i3, n3) = (plugin.clone(), id.clone(), instance.clone());
+                acts = acts.child(routine_act(if hook { "New URL" } else { "Get URL" }, format!("Webhook URL of {name}"), false, move || {
+                    store().v1_instance_hook(&p3, &i3, &n3)
+                }));
+            }
+            let (p4, i4) = (plugin.clone(), id.clone());
+            acts = acts.child(routine_act("Open", format!("Open the {name} thread"), false, move || {
+                match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&p4, &i4)) {
+                    Some(thread) => store().go_to(&thread, None),
+                    None => {
+                        store().open_plugins();
+                        store().push_nav("v1plugin", &p4, "");
+                    }
+                }
+            }));
+            if !instance.is_empty() {
+                let n5 = instance.clone();
+                acts = acts.child(routine_act("Delete", format!("Delete {name}"), true, move || {
+                    store().v1_instance(&plugin, &id, &n5, crate::mini_v1::host_api::InstanceAction::Delete, serde_json::json!({}))
+                }));
+                extra = Some(instance);
+            }
+        }
+        RoutineKind::Server { id } => {
+            let (i1, i2, i3) = (id.clone(), id.clone(), id);
+            let on = r.enabled;
+            if on {
+                acts = acts.child(routine_act("Run now", format!("Run {name} now"), false, move || crate::routines::run_v0(i1.clone())));
+            }
+            acts = acts
+                .child(routine_act(if on { "Pause" } else { "Resume" }, format!("{} {name}", if on { "Pause" } else { "Resume" }), false, move || {
+                    crate::routines::set_routine_enabled(i2.clone(), !on)
+                }))
+                .child(routine_act("Delete", format!("Delete {name}"), true, move || crate::routines::delete_routine(i3.clone())));
+        }
+    }
+    view()
         .gap(px(2.0))
         .px(px(10.0))
         .py(px(8.0))
@@ -495,21 +1112,107 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
         .label(r.name.clone())
         .child(text(r.name).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
         .child(text(r.by).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
-        .child(
-            text(r.status)
-                .text_size(px(12.0))
-                .text_color(if r.failed { theme::DOWN } else { theme::DIM })
-                .number_of_lines(2),
-        );
-    match r.plugin {
-        Some(id) => row
-            .on_press(move || {
-                store().open_plugins();
-                store().push_nav("v1plugin", &id, "");
-            })
-            .into_element(),
-        None => row.into_element(),
+        .child(dynamic(move || {
+            let (t, failed) = crate::routines::row_status(crate::routines::run_of(&key).as_ref(), usual.clone());
+            text(t).text_size(px(12.0)).text_color(if failed { theme::DOWN } else { theme::DIM }).number_of_lines(2).into_element()
+        }))
+        .child(acts)
+        .when_some(extra, |v, instance| v.child(instance_extras(instance)))
+        .into_element()
+}
+
+/// Pause or Resume (Enable for one waiting for the user's consent: the
+/// card's Enable, from here). Resume re-enables it in the chat it reports
+/// to (`chat`).
+fn pause_or_resume(name: &str, enabled: bool, pending: bool, plugin: String, id: String, instance: String, chat: String) -> AnyElement {
+    use crate::mini_v1::host_api::InstanceAction;
+    if enabled {
+        routine_act("Pause", format!("Pause {name}"), false, move || {
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Disable, serde_json::json!({}))
+        })
+    } else if pending {
+        routine_act("Enable", format!("Enable {name}"), false, move || {
+            store().routine_consented.update(|l| l.push((instance.clone(), "enabled".to_owned())));
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Enable, serde_json::json!({ "approve": true }))
+        })
+    } else {
+        routine_act("Resume", format!("Resume {name}"), false, move || {
+            store().v1_instance(&plugin, &id, &instance, InstanceAction::Enable, serde_json::json!({ "thread": chat }))
+        })
     }
+}
+
+/// Under a plugin instance's row: its params editor while open (JSON,
+/// Save checks it), and its webhook URL right after it was made (Copy).
+fn instance_extras(instance: String) -> impl IntoElement {
+    dynamic(move || {
+        let st = store();
+        let editing = st.routine_edit.get().filter(|(i, _)| *i == instance);
+        let url = st.routine_hook.get().filter(|(i, _)| *i == instance).map(|(_, u)| u);
+        let mut v = view().gap(px(6.0));
+        if editing.is_some() {
+            let inst = instance.clone();
+            v = v.child(
+                view()
+                    .gap(px(4.0))
+                    .pt(px(4.0))
+                    .child(
+                        input()
+                            .auto_focus(true)
+                            .value(move || store().routine_edit.get().map(|(_, t)| t).unwrap_or_default())
+                            .placeholder("{\"taxpayers\": [...]}")
+                            .placeholder_color(|| color(theme::GHOST))
+                            .text_size(px(12.0))
+                            .text_color(theme::TEXT)
+                            .on_change(|t: &str| store().routine_edit.update(|e| if let Some((_, x)) = e { *x = t.to_owned() }))
+                            .h(px(30.0))
+                            .px_2()
+                            .rounded(px(7.0))
+                            .bg(theme::HOVER),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap_1()
+                            .child(routine_act("Save", "Save params".to_owned(), false, move || save_params(&inst)))
+                            .child(routine_act("Cancel", "Cancel editing params".to_owned(), false, || store().routine_edit.set(None))),
+                    ),
+            );
+        }
+        if let Some(url) = url {
+            let copy = url.clone();
+            v = v.child(
+                view()
+                    .gap(px(2.0))
+                    .child(text("Webhook URL (shown once; New URL retires it):").text_size(px(12.0)).text_color(theme::DIM))
+                    .child(text(url).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(3))
+                    .child(view().flex_row().gap_1().child(routine_act("Copy", "Copy webhook URL".to_owned(), false, move || {
+                        store().copy_text(&copy);
+                        crate::toast::show("Copied the webhook URL");
+                    })).child(routine_act("Hide", "Hide webhook URL".to_owned(), false, || store().routine_hook.set(None)))),
+            );
+        }
+        v.into_element()
+    })
+}
+
+/// Save on the params editor: the typed JSON, when it is an object, to
+/// the broker (`update`), which checks it against the routine's schema.
+fn save_params(instance: &str) {
+    let st = store();
+    let Some((_, text)) = st.routine_edit.get_untracked() else { return };
+    let params = match crate::routines::parse_params(&text) {
+        Ok(p) => p,
+        Err(e) => return crate::toast::show(e),
+    };
+    let found = st.v1.listed.with_untracked(|l| {
+        l.iter().find_map(|p| {
+            p.routines.iter().find_map(|r| r.instances.iter().any(|i| i.instance == instance).then(|| (p.id.clone(), r.id.clone())))
+        })
+    });
+    let Some((plugin, id)) = found else { return };
+    st.routine_edit.set(None);
+    st.v1_instance(&plugin, &id, instance, crate::mini_v1::host_api::InstanceAction::Update, serde_json::json!({ "params": params }));
 }
 
 /// The bot's context in Details: its description, and a row to its Bot
@@ -1702,4 +2405,121 @@ fn hue(s: &str) -> AdaptiveColor {
 /// `pub(crate)` already but the pane keeps its call sites short).
 async fn client_post(route: &str, body: serde_json::Value) -> Option<serde_json::Value> {
     crate::client::post(route, body).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chat_routines, routines_section, ChatRoutine, RoutineKind, RoutinesSection, ThisRoutine};
+    use crate::mini_v1::connect::Listed;
+    use crate::store::RoutineOf;
+
+    #[test]
+    fn a_routine_thread_shows_its_own_routine_and_a_chat_its_routines() {
+        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+            {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true,
+             "thread": "t2", "home": "t3", "last_run": 1793194720000u64, "last_items": 0}]}))];
+        let at = |_: f64| "3:42 PM".to_owned();
+        assert_eq!(routines_section(None, &listed, "Piccolo", at), RoutinesSection::List, "a chat lists its routines");
+        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
+        assert_eq!(
+            routines_section(Some(open.clone()), &listed, "Piccolo", at),
+            RoutinesSection::This(ThisRoutine {
+                name: "BIR payments".into(),
+                plugin: "dev.goldcoders.bir".into(),
+                id: "payments".into(),
+                instance: String::new(),
+                by: "BIR".into(),
+                schedule: "Checks every 5 min".into(),
+                status: "Last checked 3:42 PM · nothing new".into(),
+                failed: false,
+                enabled: true,
+                pending: false,
+                chat: "t2".into(),
+                go: "Go to Piccolo chat".into(),
+            })
+        );
+        // a failure reads as one; before the plugins are listed, the name
+        // and the way back still show
+        let mut failing = listed.clone();
+        failing[0].routines[0].last_error = "fx_query: offline".into();
+        let RoutinesSection::This(r) = routines_section(Some(open.clone()), &failing, "Piccolo", at) else { panic!() };
+        assert_eq!((r.status.as_str(), r.failed), ("Last check failed: fx_query: offline", true));
+        let RoutinesSection::This(r) = routines_section(Some(open), &[], "Piccolo", at) else { panic!() };
+        assert_eq!((r.by.as_str(), r.status.as_str(), r.go.as_str()), ("", "", "Go to Piccolo chat"));
+        assert!(!r.enabled, "no Run now or Pause before the plugins are listed");
+    }
+
+    #[test]
+    fn a_chat_lists_its_routines_paused_ones_too_and_no_other_chats() {
+        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+            {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true, "thread": "t2", "home": "t3"},
+            {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": false, "available": false,
+             "reason": "you have not approved what it reads", "thread": "t2", "home": "t4"},
+            {"id": "elsewhere", "name": "Other chat", "every_s": 300, "enabled": true, "available": true, "thread": "t9"},
+            {"id": "never", "name": "Never enabled", "every_s": 300, "enabled": false, "available": false}]}))];
+        let server = vec![
+            crate::routines::Routine::of(&serde_json::json!({"id": "r1", "name": "Calendar sync", "thread": "t2", "enabled": true, "botName": "Piccolo", "last_error": "offline"})),
+            crate::routines::Routine::of(&serde_json::json!({"id": "r2", "name": "Not here", "thread": "t5", "enabled": true})),
+        ];
+        let got = chat_routines("t2", &listed, &server, "Rox");
+        assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR payments", "BIR confirmations", "Calendar sync"]);
+        assert_eq!((got[0].status.as_str(), got[0].enabled), ("Waiting for its first run", true));
+        assert_eq!(got[0].by, "BIR · every 5 min");
+        assert_eq!(
+            got[0].kind,
+            RoutineKind::Plugin {
+                plugin: "dev.goldcoders.bir".into(),
+                id: "payments".into(),
+                instance: String::new(),
+                home: "t3".into(),
+                chat: "t2".into(),
+                trigger: "schedule".into(),
+                hook: false,
+                pending: false,
+                params: String::new(),
+            }
+        );
+        // paused: it says so (not why it couldn't run), and resumes in t2
+        assert_eq!((got[1].status.as_str(), got[1].failed, got[1].enabled), ("Paused", false, false));
+        assert_eq!(
+            got[2],
+            ChatRoutine {
+                name: "Calendar sync".into(),
+                by: "Piccolo".into(),
+                status: "Last run failed: offline".into(),
+                failed: true,
+                enabled: true,
+                kind: RoutineKind::Server { id: "r1".into() },
+            }
+        );
+        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/payments");
+        assert_eq!(got[2].key(), "v0:r1");
+        assert!(chat_routines("", &listed, &server, "Rox").is_empty(), "no chat open, none");
+    }
+
+    #[test]
+    fn a_routines_instances_list_in_their_own_chats_with_params_and_trigger() {
+        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+            {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": true, "available": true, "thread": "t2",
+             "params": {"type": "object", "properties": {"taxpayers": {"type": "array", "items": {"type": "string"}}}},
+             "writes": ["bir_confirm_filing"],
+             "instances": [
+                {"instance": "ri_a", "summary": "Taxpayer A", "params": {"taxpayers": ["tp_a"]}, "trigger": "schedule", "every_s": 600,
+                 "enabled": true, "available": true, "thread": "t2", "home": "t7", "last_run": 0},
+                {"instance": "ri_b", "summary": "Taxpayer B", "params": {"taxpayers": ["tp_b"]}, "trigger": "webhook", "every_s": 300,
+                 "enabled": false, "pending": true, "available": true, "thread": "t2", "hook": false},
+                {"instance": "ri_c", "summary": "Other bot", "params": {}, "trigger": "schedule", "enabled": true, "available": true, "thread": "t9"}]}]}))];
+        let got = chat_routines("t2", &listed, &[], "Rox");
+        assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR confirmations · Taxpayer A", "BIR confirmations · Taxpayer B"]);
+        assert_eq!(got[0].by, "BIR · every 10 min", "the instance's own interval");
+        assert_eq!(got[1].by, "BIR · on its webhook");
+        assert_eq!((got[1].status.as_str(), got[1].enabled), ("Waiting for your Enable", false));
+        let RoutineKind::Plugin { instance, params, pending, trigger, .. } = &got[1].kind else { panic!() };
+        assert_eq!((instance.as_str(), params.as_str(), *pending, trigger.as_str()), ("ri_b", r#"{"taxpayers":["tp_b"]}"#, true, "webhook"));
+        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/ri_a", "a run is the instance's");
+        // a routine thread's card is its instance's
+        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "confirm".into(), instance: "ri_b".into(), name: "BIR confirmations · Taxpayer B".into(), thread: "t2".into() };
+        let RoutinesSection::This(r) = routines_section(Some(open), &listed, "Piccolo", |_| "3:42 PM".to_owned()) else { panic!() };
+        assert_eq!((r.instance.as_str(), r.pending, r.enabled, r.status.as_str(), r.schedule.as_str()), ("ri_b", true, false, "Waiting for your Enable", "Runs on its webhook"));
+    }
 }

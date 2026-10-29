@@ -1,0 +1,444 @@
+// routes/chat.mjs — extracted from app-server.mjs
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { GEN_DIR, MODEL, MOCK, WIDGETS_DIR } from "../config.mjs";
+import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex, threadBot } from "../state.mjs";
+import { choiceFor } from "../model.mjs";
+import { integrationsOf } from "../botctx.mjs";
+import { artifactBlocks, generate } from "../agent.mjs";
+import { libraryOf } from "../artifacts.mjs";
+import { originOf } from "../appmeta.mjs";
+
+export default async function handle(req, res) {
+  if (req.method === "POST" && req.url === "/chat") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      try {
+        const { prompt: rawPrompt, reply, attachments, v1_attachments: v1Attachments, thread: threadId } = JSON.parse(body || "{}");
+        const prompt = rawPrompt || (attachments?.length ? "" : null);
+
+        if (prompt == null) throw new Error("missing prompt");
+        const extra = {};
+
+        if (reply?.text) {
+          extra.reply = { i: reply.i, text: String(reply.text).slice(0, 400) };
+
+          if (reply.files?.length) extra.reply.files = reply.files.slice(0, 8).map(String);
+        }
+
+        if (attachments?.length) extra.attachments = attachments;
+
+        // 10.3: the chat's v1 attachments Rox lets the model see
+        if (Array.isArray(v1Attachments) && v1Attachments.length) extra.v1Attachments = v1Attachments.slice(0, 16);
+
+        // the chat it was sent from (several chats run at once); the
+        // server's active thread only for a client that names none
+        const target = threadId == null ? null : findThread(String(threadId));
+
+        if (threadId != null && !target) throw new Error(`unknown thread ${String(threadId).slice(0, 40)}`);
+
+        // an agents' thread is the agents' alone: the user reads it, and
+        // messages an agent in its own chat (agents.mjs)
+        if ((target || findThread(store.active))?.agents) {
+          res.statusCode = 409;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ ok: false, code: "read_only", error: "an agents' conversation is read-only: message an agent in its own chat" }));
+
+          return;
+        }
+        const job = {
+          id: allocJobId(),
+          thread: target ? target.id : store.active,
+          seq: 0,
+          phase: "queued",
+          detail: "",
+          done: false,
+          result: null,
+          extra,
+        };
+
+        jobs.set(job.id, job);
+
+        if (jobs.size > 25) jobs.delete(jobs.keys().next().value);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, id: job.id }));
+        // a reply on an artifact: read the file(s) into the model's context first
+        artifactBlocks(job.extra.reply?.files)
+          .then((ctx) => {
+            job.ctx = ctx;
+            return modelCtx.run(choiceFor(job.thread), () => generate(job, prompt)); // files land after the response; nsh dev hot-patches
+          })
+          .catch((e) => {
+            console.error(`✗ job ${job.id} crashed:`, e);
+            job.done = true;
+            setJob(job, "done", `generator error — ${e.message}`);
+          });
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "GET" && req.url === "/threads") {
+    res.setHeader("content-type", "application/json");
+    return res.end(
+      JSON.stringify({
+        active: activeThread().id,
+        activeUid: activeThread().uid,
+        model: MOCK ? "mock" : MODEL,
+        list: store.list.map((t) => {
+          // a routine's thread answers as the bot of the chat it reports to
+          const bot = threadBot(t.id);
+          return {
+            id: t.id,
+            uid: (t.uid ||= uuidv7()),
+            title: t.title,
+            count: t.turns.length,
+            hidden: !!t.hidden,
+            archived: !!t.archived,
+            lastApp: [...t.turns].reverse().find((x) => x.name)?.name || "",
+            bot: bot
+              ? { id: bot.id, name: bot.name, shape: bot.shape, color: bot.color }
+              : null,
+            // a v1 routine's own thread — not a sidebar row (v1/routine-threads.mjs)
+            ...(t.routine ? { routine: t.routine } : {}),
+            // an agents' conversation — read-only, not a sidebar row (agents.mjs)
+            ...(t.agents ? { agents: t.agents } : {}),
+          };
+        }),
+        sections: store.sections || [],
+        bots: store.bots.map((b) => {
+          const t = store.list.find((x) => x.id === b.threadId);
+          // the subtitle / hover popover: the latest message, flattened
+          const last = t && [...t.turns].reverse().find((x) => x.text || x.caption);
+          return {
+            id: b.id,
+            name: b.name,
+            shape: b.shape,
+            color: b.color,
+            threadId: b.threadId,
+            pinned: !!b.pinned,
+            section: b.section || "",
+            hidden: !!b.hidden,
+            image: b.image || "",
+            crop: b.crop || null,
+            model: b.model || "",
+            effort: b.effort || "",
+            fast: !!b.fast,
+            label: b.label || "",
+            description: b.description || "",
+            instructions: b.instructions || "",
+            memories: b.memories || [],
+            integrations: integrationsOf(b),
+            // Bot Details' "Last updated": its last edit, else when it was made
+            updated_at: b.updated_at || 0,
+            // made by another agent (agents.mjs): its parent, its purpose, a
+            // temporary helper's task (not a sidebar row), whom it hears from
+            ...(b.made_by ? { made_by: b.made_by, purpose: b.purpose || "" } : {}),
+            ...(b.helper ? { helper: b.helper } : {}),
+            ...(b.accepts ? { accepts: b.accepts } : {}),
+            preview: String(last?.text || last?.caption || "").replace(/[#*`>_]/g, "").replace(/\s+/g, " ").trim().slice(0, 160),
+          };
+        }),
+      }),
+    );
+  }
+  if (req.method === "POST" && req.url === "/thread/new") {
+    const id = `t${nextThreadSeq()}`;
+    store.list.unshift({ id, uid: uuidv7(), title: "new chat", turns: [] });
+    store.active = id;
+    writeIndex();
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ ok: true, id }));
+  }
+  if (req.method === "GET" && req.url.split("?")[0] === "/turns") {
+    // `?thread=<id>`: that chat's turns (a chat answering while another is
+    // open); none: the active one's
+    const id = new URL(req.url, "http://localhost").searchParams.get("thread");
+    const t = (id && findThread(id)) || activeThread();
+    res.setHeader("content-type", "application/json");
+    return res.end(
+      JSON.stringify({ active: activeThread().id, activeUid: activeThread().uid, thread: t.id, turns: turnsJson(t) }),
+    );
+  }
+  // Chat-row context menu state: hide/show and archive/unarchive are plain
+  // flags on the thread (rename rides the same patch like /bot/update).
+  if (req.method === "POST" && req.url === "/thread/update") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { id, title, hidden, archived } = JSON.parse(body || "{}");
+        const thread = store.list.find((t) => t.id === id);
+        if (!thread) throw new Error(`unknown thread ${id}`);
+        if (title?.trim()) thread.title = title.trim();
+        if (hidden !== undefined) thread.hidden = !!hidden;
+        if (archived !== undefined) thread.archived = !!archived;
+        writeIndex();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // Deleting a chat drops its thread and sweeps the un-published modules
+  // its turns pointed at — same rule /bot/delete applies to a bot's thread.
+  // A bot that owned the thread keeps its persona, just loses the chat.
+  if (req.method === "POST" && req.url === "/thread/delete") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { id } = JSON.parse(body || "{}");
+        const thread = store.list.find((t) => t.id === id);
+        if (!thread) throw new Error(`unknown thread ${id}`);
+        const published = new Set(
+          db.prepare("SELECT name FROM widgets").all().map((w) => w.name),
+        );
+        for (const u of thread.turns || []) {
+          const name = u.role === "ai" ? u.name : "";
+          if (!/^R\d+$/.test(name || "") || published.has(name)) continue;
+          try {
+            unlinkSync(join(GEN_DIR, `${name}.tsx`));
+          } catch {}
+          db.prepare("DELETE FROM kv WHERE name=?").run(name);
+          db.prepare("DELETE FROM apps WHERE name=?").run(name);
+        }
+        for (const b of store.bots) if (b.threadId === id) b.threadId = null;
+        store.list = store.list.filter((t) => t.id !== id);
+        // never leave the app threadless — /threads dereferences one
+        if (!store.list.length)
+          store.list.push({ id: `t${nextThreadSeq()}`, uid: uuidv7(), title: "new chat", turns: [] });
+        if (store.active === id) store.active = store.list[0].id;
+        writeIndex();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, active: store.active }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "POST" && req.url === "/thread/select") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        // id may be the "t<n>" id or the thread's permanent uid
+        const { id, uid } = JSON.parse(body || "{}");
+        const thread = findThread(id) || findThread(uid);
+        if (!thread) throw new Error(`unknown thread ${id ?? uid}`);
+        store.active = thread.id;
+        writeIndex();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, id: thread.id, uid: thread.uid, turns: turnsJson(thread) }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "GET" && req.url.startsWith("/status")) {
+    const id = Number(new URL(req.url, "http://x").searchParams.get("id"));
+    const job = jobs.get(id);
+    res.setHeader("content-type", "application/json");
+    return res.end(
+      jobJson(job || { id, seq: 0, phase: "unknown", detail: "", done: true }),
+    );
+  }
+  if (req.method === "POST" && req.url === "/copy") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { text } = JSON.parse(body || "{}");
+        execFileSync("pbcopy", [], { input: String(text || "") });
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "POST" && req.url === "/react") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { name, key, r } = JSON.parse(body || "{}");
+        if (typeof key === "string" && key.startsWith("idx:")) {
+          const turn = activeThread().turns[Number(key.slice(4))];
+          if (turn) turn.reaction = r || undefined;
+        } else {
+          for (const t of store.list)
+            for (const turn of t.turns)
+              if (turn.role === "ai" && turn.name === name)
+                turn.reaction = r || undefined;
+        }
+        writeIndex();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // POST /turn/delete {key} — removes a conversation exchange: the AI turn
+  // and the user prompt that produced it. key is "name:<R#>" (module cards)
+  // or "idx:<n>" (text replies — index into the active thread). Only the
+  // conversation changes: the module file stays on disk and a published
+  // mini-app stays in Mini Apps until removed there.
+  if (req.method === "POST" && req.url === "/turn/delete") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { key } = JSON.parse(body || "{}");
+        const thread = activeThread();
+        let i = -1;
+        if (typeof key === "string" && key.startsWith("name:")) {
+          const name = key.slice(5);
+          i = thread.turns.findIndex(
+            (t) => t.role === "ai" && t.name === name,
+          );
+        } else if (typeof key === "string" && key.startsWith("idx:")) {
+          const n = Number(key.slice(4));
+          if (thread.turns[n]) i = n;
+        }
+        if (i < 0) throw new Error("no such turn");
+        const drop = [i];
+        // name: keys delete the exchange (card + the prompt that made it);
+        // idx: keys delete just that one message, either role.
+        if (typeof key === "string" && key.startsWith("name:")) {
+          const prev = thread.turns[i - 1];
+          if (prev?.role === "user") drop.unshift(i - 1);
+        }
+        thread.turns = thread.turns.filter((_, j) => !drop.includes(j));
+        writeIndex();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, dropped: drop.length }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "POST" && req.url === "/retry") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { name } = JSON.parse(body || "{}");
+        let thread, prompt;
+        for (const t of store.list) {
+          // Prefer the published turn — reusing a widget mounts it in the
+          // thread too, and retrying must patch widgets/<name>, not a stale
+          // generated copy.
+          const i =
+            t.turns.findIndex(
+              (x) => x.role === "ai" && x.name === name && x.widget,
+            ) ??
+            -1;
+          const idx =
+            i >= 0
+              ? i
+              : t.turns.findIndex((x) => x.role === "ai" && x.name === name);
+          if (idx < 0) continue;
+          thread = t;
+          for (let m = idx - 1; m >= 0; m--)
+            if (t.turns[m].role === "user") {
+              prompt = t.turns[m].text;
+              break;
+            }
+        }
+        if (!thread || !prompt) throw new Error(`no prompt found for ${name}`);
+        const job = {
+          id: allocJobId(),
+          thread: thread.id,
+          retry: name,
+          seq: 0,
+          phase: "queued",
+          detail: "",
+          done: false,
+          result: null,
+        };
+        jobs.set(job.id, job);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, id: job.id }));
+        generate(job, prompt).catch((e) => {
+          console.error(`✗ job ${job.id} crashed:`, e);
+          job.done = true;
+          setJob(job, "done", `generator error — ${e.message}`);
+        });
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "POST" && req.url === "/share") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const { name } = JSON.parse(body || "{}");
+        const file = [GEN_DIR, WIDGETS_DIR]
+          .map((d) => join(d, `${name}.tsx`))
+          .find(existsSync);
+        if (!/^R\d+$/.test(name) || !file)
+          throw new Error(`no such module ${name}`);
+        execFile("open", ["-R", file], () => {});
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  if (req.method === "POST" && req.url === "/share/thread") {
+    const thread = activeThread();
+    const text = thread.turns
+      .map((t) =>
+        t.role === "user"
+          ? `You: ${t.text}`
+          : `Gen UI (${t.name}.tsx via ${t.label}):\n${
+              existsSync(join(GEN_DIR, `${t.name}.tsx`))
+                ? readFileSync(join(GEN_DIR, `${t.name}.tsx`), "utf8")
+                : ""
+            }`,
+      )
+      .join("\n\n");
+    execFileSync("pbcopy", [], { input: text });
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ ok: true }));
+  }
+  // ————— publish / widgets shelf / persisted state —————
+  // The right pane's Details / Library: the viewed thread's artifacts
+  // (newest first, one record each — artifacts.mjs) — the app names its
+  // thread; the server's own active thread is wherever the last generation
+  // ran, which leaked one bot's apps into another's pane.
+  if (req.method === "GET" && req.url.split("?")[0] === "/thread/apps") {
+    const id = new URL(req.url, "http://localhost").searchParams.get("thread");
+    const t = (id && store.list.find((x) => x.id === id)) || activeThread();
+    const apps = await libraryOf(t, originOf(req));
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ apps }));
+  }
+  return false;
+}

@@ -14,7 +14,7 @@
 //! What needs the person goes through [`HostUi`]: consent (part B draws
 //! the dialogs; tests answer them), the full-screen stack `rox.open({app})`
 //! pushes on, the file dialog, the pasteboard, the chat an attachment goes
-//! to.
+//! to, the document view `rox.preview` shows.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -54,9 +54,22 @@ pub trait HostUi: Send + Sync {
     fn pick_files(&self, pick: PickRequest, answer: Box<dyn FnOnce(Vec<PathBuf>) + Send>);
     /// Puts `text` on the pasteboard.
     fn copy(&self, text: &str);
+    /// Shows `doc` over the app: its title, Print and Close, the page in a
+    /// web view that runs no script and loads nothing. Hosts without one
+    /// refuse `not_supported`.
+    fn preview(&self, doc: Preview) -> Result<(), RoxError> {
+        let _ = doc;
+        Err(RoxError::new("not_supported", "this Rox shows no print previews"))
+    }
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
     fn session_ended(&self, key: &V1Key, why: Ended);
+    /// Sets the inline open's card to `height` (`rox.fit`, already
+    /// clamped and paced: [`Fitter`]). Hosts without inline cards ignore
+    /// it.
+    fn fit(&self, height: f32) {
+        let _ = height;
+    }
 }
 
 /// A question for the person (spec 9.7).
@@ -78,11 +91,22 @@ pub struct PickRequest {
     pub max_bytes: u64,
 }
 
+/// A document `rox.preview` shows: its title and the page, sealed
+/// ([`seal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    pub title: String,
+    pub html: String,
+}
+
 /// The bridge's limits (spec 7.3, Appendix A); tests shorten them.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub max_args: usize,
     pub max_result: usize,
+    /// A `rox.preview` document's HTML (the app's `preview.max_bytes` may
+    /// lower it).
+    pub max_preview: usize,
     pub in_flight: usize,
     pub per_second: usize,
     pub timeout: Duration,
@@ -93,6 +117,7 @@ impl Default for Limits {
         Limits {
             max_args: 256 * 1024,
             max_result: 1024 * 1024,
+            max_preview: perms::MAX_PREVIEW as usize,
             in_flight: 8,
             per_second: 20,
             timeout: host_api::CALL_TIMEOUT,
@@ -104,6 +129,8 @@ impl Default for Limits {
 const MAX_COPY: usize = 1024 * 1024;
 /// The longest URL `rox.open` takes (Appendix A).
 const MAX_URL: usize = 2048;
+/// The longest title a preview shows.
+const MAX_TITLE: usize = 120;
 
 /// A file the person picked: only its id reaches the app.
 struct Picked {
@@ -118,6 +145,56 @@ struct Gate {
     running: usize,
     waiting: VecDeque<Box<dyn FnOnce() + Send>>,
     recent: VecDeque<Instant>,
+}
+
+/// `rox.fit`'s pacing (6.5, 7.11): a height within [`FIT_STEP`] of the
+/// one set changes nothing, and at most [`FIT_PER_SECOND`] go out a
+/// second; past that the latest waits for the next free slot, so the card
+/// still ends at the app's last height.
+pub const FIT_STEP: f32 = 2.0;
+pub const FIT_PER_SECOND: usize = 8;
+
+/// One inline open's `rox.fit` heights: the one set, when the recent ones
+/// went out, and the one waiting past the limit.
+#[derive(Debug, Default)]
+pub struct Fitter {
+    set: Option<f32>,
+    recent: VecDeque<Instant>,
+    waiting: Option<f32>,
+}
+
+impl Fitter {
+    /// Height `h` (clamped) asked at `now`: `Some` to set it now; `None`
+    /// when it changes nothing, or waits ([`Fitter::next`] says when).
+    pub fn ask(&mut self, h: f32, now: Instant) -> Option<f32> {
+        while self.recent.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) {
+            self.recent.pop_front();
+        }
+        if self.set.is_some_and(|s| (s - h).abs() < FIT_STEP) {
+            self.waiting = None;
+            return None;
+        }
+        if self.recent.len() >= FIT_PER_SECOND {
+            self.waiting = Some(h);
+            return None;
+        }
+        self.recent.push_back(now);
+        self.set = Some(h);
+        self.waiting = None;
+        Some(h)
+    }
+
+    /// When the waiting height may go out, if one waits.
+    pub fn next(&self) -> Option<Instant> {
+        self.waiting?;
+        self.recent.front().map(|t| *t + Duration::from_secs(1))
+    }
+
+    /// The waiting height, asked again at `now`.
+    pub fn retry(&mut self, now: Instant) -> Option<f32> {
+        let h = self.waiting.take()?;
+        self.ask(h, now)
+    }
 }
 
 /// One open's bridge state, shared by its handlers.
@@ -185,8 +262,10 @@ pub fn params(prepared: &Prepared, viewport: Value) -> Map<String, Value> {
 /// Wires `channel` for the open `ctx`: its parameters, a handler for each
 /// granted method and nothing else, and the session's end.
 pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
+    let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     channel.set_params(params(&ctx.prepared, viewport));
-    for method in ctx.prepared.permissions.methods() {
+    install_fit(channel, ctx, inline);
+    for method in ctx.prepared.permissions.methods().into_iter().filter(|m| *m != perms::FIT) {
         let c = ctx.clone();
         channel.handle(method, move |mut call: HostCall| {
             let data = call.take_data();
@@ -201,6 +280,46 @@ pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
             let _ = ch.send("rox.session", json!({"state": "reconnecting"}));
         }
         ui.session_ended(&key, why);
+    });
+}
+
+/// `rox.fit({height})`, a post: an `inline` open's card takes the height,
+/// clamped to its manifest's `inline` range and paced by a [`Fitter`]; a
+/// full-screen open's is ignored. It needs no permission: it sizes only
+/// the app's own frame.
+fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+    let app = ctx.prepared.plugin.app(&ctx.prepared.key.app).cloned().unwrap_or(Value::Null);
+    let (ui, fitter) = (ctx.ui.clone(), Arc::new(Mutex::new(Fitter::default())));
+    channel.handle(perms::FIT, move |mut call: HostCall| {
+        let data = call.take_data();
+        if let Some(reply) = call.into_reply() {
+            reply.resolve(Value::Null);
+        }
+        let Some(h) = data.get("height").and_then(Value::as_f64).filter(|h| h.is_finite() && *h > 0.0) else { return };
+        if !inline {
+            return;
+        }
+        let h = super::cards::fit_height(&app, h.ceil() as f32);
+        let mut f = fitter.lock().unwrap_or_else(|e| e.into_inner());
+        let waited = f.next().is_some();
+        if let Some(h) = f.ask(h, Instant::now()) {
+            return ui.fit(h);
+        }
+        // the first to wait sets a timer for the slot; later ones only
+        // replace the height it sends
+        let Some(mut at) = f.next().filter(|_| !waited) else { return };
+        let (ui, fitter) = (ui.clone(), fitter.clone());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                let mut f = fitter.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(h) = f.retry(Instant::now()) {
+                    ui.fit(h);
+                }
+                let Some(next) = f.next() else { return };
+                at = next;
+            }
+        });
     });
 }
 
@@ -238,6 +357,7 @@ impl OpenContext {
             perms::ATTACH => self.attach(data, reply),
             perms::PICK => self.pick(data, reply),
             perms::COPY => self.copy(data, reply),
+            perms::PREVIEW => self.preview(data, reply),
             storage => self.storage_named(storage, data, reply),
         }
     }
@@ -582,6 +702,54 @@ impl OpenContext {
         }
     }
 
+    /// `rox.preview({tool, args?, title?})` (7.10): the app's own tool,
+    /// called by the host as the app (signed, checked by the broker) with
+    /// the preview's limit, answers with an HTML document; the person sees
+    /// it over the app. The page never reaches the app.
+    fn preview(self: &Arc<Self>, data: Value, reply: HostReply) {
+        if let Err(e) = self.session.check_live() {
+            return reject(reply, e);
+        }
+        let Some(o) = data.as_object() else { return reject(reply, invalid("rox.preview takes {tool, args?, title?}")) };
+        if let Some(k) = o.keys().find(|k| !["tool", "args", "title"].contains(&k.as_str())) {
+            return reject(reply, invalid(&format!("rox.preview does not take {k}")));
+        }
+        let Some(tool) = text(&data, "tool").map(str::to_owned) else { return reject(reply, invalid("tool is a string")) };
+        if !self.prepared.permissions.tools.contains(&tool) {
+            let _ = self.admit();
+            return reject(reply, RoxError::new("not_declared", format!("{tool:?} is not in this app's tools")));
+        }
+        let args = match data.get("args") {
+            None | Some(Value::Null) => json!({}),
+            Some(a @ Value::Object(_)) => a.clone(),
+            Some(_) => return reject(reply, invalid("args is a JSON object")),
+        };
+        if args.to_string().len() > self.limits.max_args {
+            return reject(reply, invalid("args are over 256 KiB"));
+        }
+        let title = match data.get("title") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(t)) => Some(t.trim().chars().take(MAX_TITLE).collect::<String>()).filter(|t| !t.is_empty()),
+            Some(_) => return reject(reply, invalid("title is a string")),
+        };
+        let grant = self.prepared.permissions.preview.unwrap_or(perms::MAX_PREVIEW) as usize;
+        let max = grant.min(self.limits.max_preview);
+        self.gated(reply, move |me| {
+            let (envelope, sig) = me.session.sign_preview(&tool, &args)?;
+            let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
+            let p = &me.prepared;
+            match &result {
+                Ok(_) => log::info!("mini v1: {}/{} signed preview {tool}: ok", p.plugin.id, p.key.app),
+                Err(e) => log::info!("mini v1: {}/{} signed preview {tool}: {}", p.plugin.id, p.key.app, e.code),
+            }
+            let (html, named) = preview_document(result?, max)?;
+            let title = title.or(named).unwrap_or_else(|| p.title.clone());
+            me.session.check_live()?;
+            me.ui.preview(Preview { title, html: seal(&html) })?;
+            Ok(Value::Null)
+        });
+    }
+
     /// `rox.storage.get|set|remove|keys` (11), on the open's storage
     /// thread, in order.
     fn storage_named(self: &Arc<Self>, name: &'static str, data: Value, reply: HostReply) {
@@ -695,6 +863,60 @@ pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
         return Ok(s.clone());
     }
     Ok(Value::String(texts().collect::<Vec<_>>().join("\n")))
+}
+
+/// The document in a `rox.preview` tool result (7.10): the first embedded
+/// resource `{type: "resource", resource: {mimeType: "text/html", text}}`,
+/// and the title in `structuredContent.title`, if any. `isError` rejects
+/// `tool_error`; no HTML, `tool_error`; HTML over `max` bytes,
+/// `result_too_large`.
+pub fn preview_document(result: Value, max: usize) -> Result<(String, Option<String>), RoxError> {
+    if result.get("isError") == Some(&Value::Bool(true)) {
+        // rejects tool_error with its first text, as rox.call does
+        tool_result(result.clone(), usize::MAX)?;
+    }
+    let is_html = |m: &str| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/html");
+    let content = result.get("content").and_then(Value::as_array).into_iter().flatten();
+    let html = content
+        .filter(|c| c.get("type").and_then(Value::as_str) == Some("resource"))
+        .filter_map(|c| c.get("resource"))
+        .find(|r| r.get("mimeType").and_then(Value::as_str).is_some_and(is_html))
+        .and_then(|r| r.get("text").and_then(Value::as_str));
+    let Some(html) = html else {
+        return Err(RoxError::new("tool_error", "the tool returned no HTML document to preview"));
+    };
+    if html.len() > max {
+        return Err(RoxError::new("result_too_large", format!("the document is over {} KiB", max / 1024)));
+    }
+    let title = result
+        .pointer("/structuredContent/title")
+        .and_then(Value::as_str)
+        .map(|t| t.trim().chars().take(MAX_TITLE).collect::<String>())
+        .filter(|t| !t.is_empty());
+    Ok((html.to_owned(), title))
+}
+
+/// The policy a preview's page gets, before anything in it: no script,
+/// nothing loaded but inline styles and `data:` images, fonts and objects
+/// (a PDF receipt), no form posts, no `<base>`. The viewer also turns JavaScript off and keeps the
+/// page from navigating; this holds even where those would not.
+pub const PREVIEW_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; object-src data:; \
+    form-action 'none'; base-uri 'none'; frame-src 'none'";
+
+/// `html` with [`PREVIEW_CSP`] and a style that keeps links from being
+/// followed, put after its doctype (before it, the page would lay out in
+/// quirks mode) so the parser places them first in the head.
+pub fn seal(html: &str) -> String {
+    let head = format!(
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"{PREVIEW_CSP}\"><style>a{{pointer-events:none}}</style>"
+    );
+    let lead = html.len() - html.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}').len();
+    let at = html[lead..]
+        .get(..9)
+        .filter(|s| s.eq_ignore_ascii_case("<!doctype"))
+        .and_then(|_| html[lead..].find('>'))
+        .map_or(0, |end| lead + end + 1);
+    format!("{}{head}{}", &html[..at], &html[at..])
 }
 
 #[cfg(test)]

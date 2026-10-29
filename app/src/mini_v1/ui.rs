@@ -61,8 +61,9 @@ pub struct V1 {
     pub hidden: Signal<HashSet<String>>,
     /// Cards refreshed: they read live instead of their snapshot (9.8).
     pub live: Signal<HashSet<String>>,
-    /// Aged cards the person expanded again (9.8).
-    pub expanded: Signal<HashSet<String>>,
+    /// Per inline open (module key): the card height its `rox.fit` set
+    /// (clamped); the declared height until then.
+    pub fit: Signal<HashMap<String, f32>>,
     /// Rox's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
@@ -77,6 +78,8 @@ pub struct V1 {
     prewarm: RefCell<super::cache::Prewarm>,
     /// The opens running, with the fingerprint each loaded.
     running: RefCell<Vec<(u64, String, String)>>,
+    /// The document a `rox.preview` shows over the apps (7.10).
+    pub preview: Signal<Option<super::bridge::Preview>>,
 }
 
 impl V1 {
@@ -94,7 +97,7 @@ impl V1 {
             shown: signal(HashSet::new()),
             hidden: signal(HashSet::new()),
             live: signal(HashSet::new()),
-            expanded: signal(HashSet::new()),
+            fit: signal(HashMap::new()),
             records: signal(Records::default()),
             review: signal(None),
             busy: signal(String::new()),
@@ -103,6 +106,7 @@ impl V1 {
             queue: RefCell::new(VecDeque::new()),
             prewarm: RefCell::new(Default::default()),
             running: RefCell::new(Vec::new()),
+            preview: signal(None),
         }
     }
 
@@ -345,6 +349,13 @@ impl Store {
                 self.v1.notice.update(|n| {
                     n.remove(&key);
                 });
+                self.reload_mini(&key);
+            }
+            // a card out of view keeps its source in `minis`: it fetches
+            // the plugin's new code now, before it shows again
+            let running: Vec<String> = self.v1.running.borrow().iter().map(|(_, k, _)| k.clone()).collect();
+            let idle = lifecycle::idle_sources(self.minis.borrow().keys(), &running, &plugin);
+            for key in idle {
                 self.reload_mini(&key);
             }
         }
@@ -594,6 +605,17 @@ impl Store {
         } else {
             self.retry_mini(key);
         }
+    }
+
+    /// Shows `doc`, a `rox.preview` document, over the apps (one at a
+    /// time: a newer one replaces it).
+    pub fn v1_preview(&'static self, doc: super::bridge::Preview) {
+        self.v1.preview.set(Some(doc));
+    }
+
+    /// Close (or ⌘W) on the preview: back to the app.
+    pub fn v1_close_preview(&'static self) {
+        self.v1.preview.set(None);
     }
 
     /// Close on an error: the full-screen open goes, an inline card hides.
@@ -1164,6 +1186,67 @@ impl Store {
         self.v1_job("", move || host_api::routine_action(&broker(), &p, &r, action, Some(thread.as_str())), |_| {});
     }
 
+    /// An instance's Enable, Pause, edit or Delete (5.9); `instance` ""
+    /// for a broker before instances. Resume passes the chat it reports to
+    /// (`thread`), wherever it is resumed from (its own thread included).
+    pub fn v1_instance(&'static self, plugin: &str, routine: &str, instance: &str, action: host_api::InstanceAction, extra: Value) {
+        let (p, r, i) = (plugin.to_owned(), routine.to_owned(), instance.to_owned());
+        self.v1_job("", move || host_api::instance_action(&broker(), &p, &r, &i, action, extra), |_| {});
+    }
+
+    /// A webhook instance's new URL: shown once on its row with Copy.
+    pub fn v1_instance_hook(&'static self, plugin: &str, routine: &str, instance: &str) {
+        let (p, r, i) = (plugin.to_owned(), routine.to_owned(), instance.to_owned());
+        let key = instance.to_owned();
+        self.v1_job("", move || host_api::instance_action(&broker(), &p, &r, &i, host_api::InstanceAction::Hook, json!({})), move |v| {
+            let path = v.get("path").and_then(Value::as_str).unwrap_or_default();
+            if !path.is_empty() {
+                store().routine_hook.set(Some((key, format!("{}{path}", crate::client::backend()))));
+            }
+        });
+    }
+
+    /// Run now (`POST /v1/host/routines/run`): "Running…" on its rows until
+    /// the plugin list says the run is done (checked every 2 s, 15 min at
+    /// most), then the run's result line.
+    pub fn v1_routine_run(&'static self, plugin: &str, routine: &str, instance: &str) {
+        let key = crate::routines::v1_key(plugin, if instance.is_empty() { routine } else { instance });
+        if crate::routines::is_running(&key) {
+            return;
+        }
+        crate::routines::set_run(&key, crate::routines::RunState::Running);
+        let (p, r, i) = (plugin.to_owned(), routine.to_owned(), instance.to_owned());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let (p2, r2, i2) = (p.clone(), r.clone(), i.clone());
+                match crate::vault::off_main(move || host_api::instance_action(&broker(), &p2, &r2, &i2, host_api::InstanceAction::Run, json!({}))).await {
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return crate::routines::finish(key, crate::routines::refused(&e.message)),
+                    None => return crate::routines::finish(key, crate::routines::refused("")),
+                }
+                for _ in 0..450 {
+                    let (p2, r2, i2) = (p.clone(), r.clone(), i.clone());
+                    let now = crate::vault::off_main(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let list = host_api::plugins(&broker()).ok()?;
+                        let routine = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?.routines.into_iter().find(|x| x.id == r2)?;
+                        if i2.is_empty() {
+                            return Some(routine);
+                        }
+                        routine.instances.iter().find(|x| x.instance == i2).map(|x| x.as_routine(&routine))
+                    })
+                    .await
+                    .flatten();
+                    if let Some(now) = now.filter(|x| !x.running) {
+                        crate::routines::finish(key, crate::routines::v1_outcome(&now));
+                        return self.v1_refresh(false);
+                    }
+                }
+                crate::routines::finish(key, ("Still running; its thread shows what it finds".to_owned(), false));
+            })
+        });
+    }
+
     /// Closes every open of `plugin`: the full-screen stack and the inline
     /// cards (13.4, 13.6 step 2).
     pub fn v1_close_opens(&'static self, plugin: &str) {
@@ -1366,11 +1449,27 @@ fn small_button(label: &'static str, primary: bool, on: impl Fn() + 'static) -> 
         .on_press(on)
 }
 
+/// A title-bar icon button, `label` its accessible name.
+fn icon_button(icon: &'static str, label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .size(px(28.0))
+        .rounded(px(14.0))
+        .items_center()
+        .justify_center()
+        .bg(theme::SUBTLE)
+        .label(label)
+        .child(crate::icons::icon_ink(icon, 15.0, || tc("#f5f5f5ad")))
+        .on_press(on)
+}
+
 /// A card's button: "Open <title>" for a full app (a plugin's sign-in
-/// card reads "Open Buwiz Sign-in"), Show for an inline one (9.6).
+/// card reads "Open Buwiz Sign-in"), only Open when the title is long (the
+/// row shows it: "BIR Form 2551Q · Q3 2026 · …"), Show for an inline one
+/// (9.6).
 pub fn button_label(card: &OpenCard) -> String {
     match card.placement {
-        Placement::Full => format!("Open {}", card.title.chars().take(40).collect::<String>()),
+        Placement::Full if card.title.chars().count() > 20 => "Open".to_owned(),
+        Placement::Full => format!("Open {}", card.title),
         Placement::Inline => card.button().to_owned(),
     }
 }
@@ -1409,10 +1508,10 @@ fn toggle_button(label: String, id: String, auto: bool, on: impl Fn() + 'static)
 }
 
 /// An answer's cards (9.6, 9.8), from the reply's `rox-app` links: one
-/// main card and up to two small ones, the rest as one-line links. A
+/// main card and up to two small ones, the rest collapsed. A
 /// first-party plugin's inline card mounts at once; any other waits for
 /// Show (9.7). Once `user_after()` of the person's messages came since,
-/// the cards collapse to one-line chips; a tap expands one again.
+/// the cards collapse to their rows, each with Show.
 pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after: impl Fn() -> usize + Clone + 'static) -> AnyElement {
     let cards: Vec<(String, OpenCard)> = links
         .iter()
@@ -1437,81 +1536,27 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         .w_full()
         .children(cards.into_iter().zip(slots).map(move |((id, card), slot)| {
             let aged = user_after.clone();
-            let id2 = id.clone();
             match slot {
-                cards::Slot::Link => link_row(card).into_element(),
-                _ => when(
-                    move || cards::aged(aged()) && !store().v1.expanded.with(|e| e.contains(&id2)),
-                    {
-                        let (card, id) = (card.clone(), id.clone());
-                        move || aged_chip(card.clone(), id.clone()).into_element()
-                    },
-                )
-                .otherwise(move || open_card(card.clone(), id.clone()))
-                .into_element(),
+                cards::Slot::Link => card_row(card, id, true),
+                _ => dynamic(move || card_row(card.clone(), id.clone(), cards::aged(aged()))).into_element(),
             }
         }))
         .into_element()
 }
 
-/// A card past an answer's one main and two small ones: a one-line link
-/// (its title and Open).
-fn link_row(card: OpenCard) -> impl IntoElement {
-    let c = card.clone();
-    view()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(tc("#f5f5f50a"))
-        .label(format!("Open {}", card.title))
-        .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
-        .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
-        .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT))
-}
-
-/// An aged card (9.8): one line, its title and Open; a tap on the title
-/// expands the card again.
-fn aged_chip(card: OpenCard, id: String) -> impl IntoElement {
-    let c = card.clone();
-    view()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(tc("#f5f5f50a"))
-        .child(
-            text(card.title.clone())
-                .flex_1()
-                .number_of_lines(1)
-                .text_size(px(13.0))
-                .text_color(tc("#f5f5f5"))
-                .label(format!("Expand {}", card.title))
-                .on_press(move || {
-                    let id = id.clone();
-                    store().v1.expanded.update(|e| {
-                        e.insert(id);
-                    })
-                }),
-        )
-        .child(
-            view()
-                .label(format!("Open {}", card.title))
-                .on_press(move || store().open_v1(c.key(), &c.title, Opener::ToolResult))
-                .child(text("Open").text_size(px(13.0)).text_color(theme::ACCENT)),
-        )
-}
-
 /// A tool result's card (9.6): its title, the plugin, and Open (full) or
 /// Show (inline). An inline card mounts below it when shown.
 pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
+    card_row(card, card_id, false)
+}
+
+/// A card's row and, when shown, the card. A `collapsed` one (aged, or
+/// past an answer's one main and two small ones) waits for Show.
+fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
     let entry = store().v1.entry(&card.plugin);
     let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
-    let auto = card.placement == Placement::Inline
+    let auto = !collapsed
+        && card.placement == Placement::Inline
         && consent::ask(consent::inline_card(entry.as_ref().is_some_and(|p| p.first_party))) == consent::Ask::Nothing;
     let (c1, c2, id1, id2, id3, id4) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
     let shown = move || card_shown(&id1, auto);
@@ -1694,15 +1739,19 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
         }))
 }
 
-/// An inline app (6.5): a title bar with Open (full screen) over the app
-/// at its declared size, clamped to the range and the column.
+/// An inline app (6.5): a title bar with Refresh and Open (full screen,
+/// the maximize icon) over the app at its declared size, clamped to the
+/// range and the column. Its height then follows the app's `rox.fit`.
 pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
     let key = if live { card.live_key().to_key() } else { card.key().to_key() };
     let as_of = card.as_of().filter(|_| !live);
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
-    let (w, h) = cards::inline_size(&app, COLUMN);
+    let (w, declared) = cards::inline_size(&app, COLUMN);
+    let key_h = key.clone();
+    let h = move || store().v1.fit.with(|f| f.get(&key_h).copied()).unwrap_or(declared);
     let c = card.clone();
+    let key_r = key.clone();
     view()
         .w(px(w))
         .rounded(px(12.0))
@@ -1718,22 +1767,29 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                 .px(px(10.0))
                 .bg(tc("#1f1f1f"))
                 .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
-                .when(as_of.is_some(), |v| {
-                    let (id, ms) = (id.clone(), as_of.unwrap_or_default());
-                    v.child(text(cards::as_of_label(ms)).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
-                        .child(small_button("Refresh", false, move || {
+                .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
+                // a snapshot goes live; a live card reads again. An action
+                // card (no `as_of`: its tool changed something) has none.
+                .when(as_of.is_some() || live, |v| {
+                    v.child(icon_button("refresh", "Refresh", move || {
+                        if as_of.is_some() {
                             let id = id.clone();
                             store().v1.live.update(|l| {
                                 l.insert(id);
                             })
-                        }))
+                        } else {
+                            store().v1_reload(&key_r)
+                        }
+                    }))
                 })
-                .when(live, |v| v.child(text("live").text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
-                .child(small_button("Open", false, move || store().open_v1(c.key(), &c.title, Opener::User))),
+                .child(icon_button("maximize", "Open full screen", move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
         .child(
             view()
-                .h(px(h))
+                .h({
+                    let h = h.clone();
+                    move || px(h())
+                })
                 .child(banners(&key))
                 .child(crate::mini::mini_app_inline(&key, w, h))
                 .child(error_overlay(&key)),
@@ -1815,6 +1871,73 @@ pub fn error_overlay(key: &str) -> impl IntoElement {
                                 .child(small_button("Reload", true, move || store().v1_reload(&kr)))
                                 .child(small_button("Close", false, move || store().v1_close(&kc))),
                         ),
+                )
+                .into_element()
+        },
+    )
+}
+
+/// The preview a v1 app asked for (`rox.preview`, 7.10), over the
+/// full-screen apps: a title bar with the document's title, Print (the
+/// print panel, which also saves a PDF) and Close, and the page. The page
+/// is the plugin's static HTML: its web view runs no script, has no base
+/// URL, carries the sealed page's no-load policy ([`super::bridge::seal`])
+/// and goes nowhere: a navigation that starts is stopped, and one that
+/// lands anyway closes the preview.
+pub fn preview_layer() -> impl IntoElement {
+    when(
+        || store().v1.preview.with(Option::is_some),
+        || {
+            let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
+            let page = element_ref();
+            let stop = page.clone();
+            // a string loaded with no base URL is about:blank
+            let own = |url: &str| url.is_empty() || url.starts_with("about:");
+            view()
+                .absolute()
+                .size_full()
+                .bg(tc("#161616"))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(52.0))
+                        .pl(px(84.0))
+                        .pr(px(12.0))
+                        .border_b(px(0.5))
+                        .border_b_color(tc("#f5f5f51a"))
+                        .child(
+                            text(move || doc().title)
+                                .flex_1()
+                                .number_of_lines(1)
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tc("#f5f5f5")),
+                        )
+                        .child(small_button("Print", true, move || {
+                            let d = doc();
+                            crate::keys::print("html", d.html, &d.title);
+                        }))
+                        .child(small_button("Close", false, || store().v1_close_preview())),
+                )
+                .child(
+                    web_view_html(move || doc().html, None)
+                        .element_ref(&page)
+                        .java_script_enabled(false)
+                        .flex_1()
+                        .bg(AdaptiveColor::from(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 }))
+                        .on_load_start(move |n: &WebNavigation| {
+                            if !own(&n.url) {
+                                log::warn!("mini v1: preview stopped a navigation");
+                                stop.stop_loading();
+                            }
+                        })
+                        .on_load(move |n: &WebNavigation| {
+                            if !own(&n.url) {
+                                store().v1_close_preview();
+                            }
+                        }),
                 )
                 .into_element()
         },
@@ -1920,6 +2043,8 @@ mod tests {
         let link = json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "register", "title": "Buwiz Sign-in", "placement": "full"}});
         let card = OpenCard::from_link(&link).unwrap();
         assert_eq!(button_label(&card), "Open Buwiz Sign-in");
+        let long = OpenCard { title: "BIR Form 2551Q · Q3 2026 · Galang Alejandro Pascua".into(), ..card.clone() };
+        assert_eq!(button_label(&long), "Open");
         let inline = OpenCard { placement: Placement::Inline, ..card };
         assert_eq!(button_label(&inline), "Show");
     }
