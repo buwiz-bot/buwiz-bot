@@ -23,8 +23,8 @@ const run = (code) =>
 
 test("a routine's thread, its item turns and the chat's notice persist", () => {
   const made = run(`
-    import { store, nextThreadSeq, uuidv7, writeIndex } from "./server/state.mjs";
-    import { createRoutineThreads } from "./server/v1/routine-threads.mjs";
+    import { store, nextThreadSeq, uuidv7, writeIndex } from "./src/state.mjs";
+    import { createRoutineThreads } from "./src/v1/routine-threads.mjs";
     const chat = store.list[0];
     store.bots.push({ id: "b1", name: "Piccolo", shape: "blob", color: "#FFFFFF", threadId: chat.id });
     const threads = createRoutineThreads({ store, nextId: () => "t" + nextThreadSeq(), uid: uuidv7, save: writeIndex });
@@ -38,7 +38,7 @@ test("a routine's thread, its item turns and the chat's notice persist", () => {
 
   assert.equal(made.again, made.home, "ensure reuses the thread");
   const back = run(`
-    import { findThread, threadBot, turnsJson } from "./server/state.mjs";
+    import { findThread, threadBot, turnsJson } from "./src/state.mjs";
     const h = findThread(${JSON.stringify(made.home)});
     console.log(JSON.stringify({ routine: h.routine, title: h.title, bot: threadBot(h.id)?.id, home: turnsJson(h), chat: turnsJson(findThread(${JSON.stringify(made.chat)})) }));
   `);
