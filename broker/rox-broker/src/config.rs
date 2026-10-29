@@ -6,7 +6,8 @@
 //! `--node-script` (default `src/app-server.mjs`, from the working
 //! directory, as the broker's tests run it) with `--node` (default `node`).
 //! `--data` sets `GROK_DATA_DIR` for Node; without it Node keeps the
-//! environment's.
+//! environment's. The routes answered in Rust use the same data dir as
+//! Node (`data_dir`).
 
 use std::path::PathBuf;
 
@@ -41,6 +42,21 @@ impl Config {
         };
         Ok(Self { port, data, node, node_script })
     }
+
+    /// Node's data dir: `--data`, else `GROK_DATA_DIR`, else the folder
+    /// above the script's (config.mjs's APP_ROOT).
+    pub fn data_dir(&self, env: Option<&str>) -> PathBuf {
+        if let Some(data) = &self.data {
+            return data.clone();
+        }
+        if let Some(env) = env.filter(|e| !e.is_empty()) {
+            return PathBuf::from(env);
+        }
+        match self.node_script.parent().and_then(|p| p.parent()) {
+            Some(root) if !root.as_os_str().is_empty() => root.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -58,6 +74,18 @@ mod tests {
         assert_eq!(Config::parse(&args(&["--port", "8799"]), Some("8798")).unwrap().port, 8799);
         assert!(Config::parse(&args(&["--port", "x"]), None).is_err());
         assert!(Config::parse(&args(&["--nope"]), None).is_err());
+    }
+
+    #[test]
+    fn the_data_dir_is_nodes() {
+        let c = Config::parse(&args(&[]), None).unwrap();
+        assert_eq!(c.data_dir(None), PathBuf::from("."));
+        assert_eq!(c.data_dir(Some("")), PathBuf::from("."));
+        assert_eq!(c.data_dir(Some("/env")), PathBuf::from("/env"));
+        let c = Config::parse(&args(&["--node-script", "/r/server/app-server.mjs"]), None).unwrap();
+        assert_eq!(c.data_dir(None), PathBuf::from("/r"));
+        let c = Config::parse(&args(&["--data", "/d"]), None).unwrap();
+        assert_eq!(c.data_dir(Some("/env")), PathBuf::from("/d"));
     }
 
     #[test]

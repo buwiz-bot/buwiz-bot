@@ -118,7 +118,9 @@ export function jobJson(job) {
 
 export const openWindows = new Map(); // "name[@vK]" → child process
 
-export const db = new DatabaseSync(join(GEN_DIR, "app.db"));
+// rox-broker writes some tables too (kv, timeclock, meta rows): wait out
+// its lock rather than fail on it
+export const db = new DatabaseSync(join(GEN_DIR, "app.db"), { timeout: 5000 });
 db.exec(`
   CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
   CREATE TABLE IF NOT EXISTS threads(
