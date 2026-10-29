@@ -10,6 +10,7 @@
 //! and bumps `remount`, which the dynamic reads. [`live::init`] anchors the
 //! app's store under the root owner so the whole model survives remounts.
 
+mod agents;
 mod appdetails;
 mod avatar;
 mod botdetails;

@@ -191,8 +191,52 @@ pub(crate) fn composer() -> impl IntoElement {
                 .max_w(px(992.0))
                 .px_4()
                 .pb_4()
-                .child(dock_card()),
+                // an agents' conversation is read-only: a quiet line, no
+                // composer
+                .child(
+                    when(|| store().active_agents().is_some(), read_only_line)
+                        .otherwise(|| dock_card().into_element()),
+                ),
         )
+}
+
+/// "Agents only · read-only · Message Piccolo in its chat" in place of
+/// the composer in an agents' conversation; the name opens that chat.
+fn read_only_line() -> AnyElement {
+    let hov = signal(false);
+    dynamic(move || {
+        let st = store();
+        let Some(a) = st.active_agents() else { return view().into_element() };
+        let id = crate::agents::read_only_target(&a);
+        let name = crate::agents::participant_name(&id, &st.bots.get(), &[]);
+        let line = crate::agents::read_only_line(&name);
+        let (lead, tail) = line.split_once("Message ").map(|(l, _)| (l.trim_end().to_owned(), format!("Message {name} in its chat"))).unwrap_or((line.clone(), String::new()));
+        let chat = st.bot_thread(&id);
+        view()
+            .flex_row()
+            .w_full()
+            .justify_center()
+            .items_center()
+            .flex_wrap()
+            .gap(px(4.0))
+            .min_h(px(40.0))
+            .label(line)
+            .child(text(lead).text_size(px(12.0)).text_color(theme::MUTED))
+            .child(
+                view()
+                    .label(format!("Go to {name} chat"))
+                    .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                    .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                    .on_press(move || {
+                        if !chat.is_empty() {
+                            store().go_to(&chat, None)
+                        }
+                    })
+                    .child(text(tail).text_size(px(12.0)).text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT })),
+            )
+            .into_element()
+    })
+    .into_element()
 }
 
 /// The card: radius 18, 0.5px border at 12%, a soft shadow; the reply

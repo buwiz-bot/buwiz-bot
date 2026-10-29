@@ -557,6 +557,10 @@ fn top_bar() -> impl IntoElement {
                 // differs per theme (`#00000066` dark, `#0000001f` light).
                 .child(dynamic(move || {
                     let shadow_a = if dark() { 0.4 } else { 0.12 };
+                    // an agents' conversation: its participants instead
+                    if let Some(a) = store().active_agents() {
+                        return agents_pill(a, shadow_a).into_element();
+                    }
                     view()
                         .flex_row()
                         .items_center()
@@ -657,6 +661,46 @@ fn top_bar() -> impl IntoElement {
                     None => view().into_element(),
                 })),
         )
+}
+
+/// The header pill of an agents' conversation: the first two
+/// participants' avatars and "Piccolo ↔ Boss" ("+N" past two); pressing
+/// it toggles its Details pane.
+fn agents_pill(a: crate::agents::AgentsOf, shadow_a: f32) -> impl IntoElement {
+    let hov = signal(false);
+    let names = store().agents_names(&a);
+    let words = crate::agents::pill_text(&names);
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(38.0))
+        .pl(px(8.0))
+        .pr(px(16.0))
+        .rounded(px(19.0))
+        .bg(move || if hov.get() { PILL_HOVER } else { PILL })
+        .border(px(0.5))
+        .border_color(PILL_BORDER)
+        .shadow([BoxShadow {
+            offset_x: px(0.0),
+            offset_y: px(2.0),
+            blur: px(8.0),
+            spread: px(0.0),
+            color: theme::hsla(0.0, 0.0, 0.0, shadow_a).into(),
+            inset: false,
+        }])
+        .label(words.clone())
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(|| store().right_open.update(|v| *v = !*v))
+        .child(
+            view().flex_row().items_center().children(
+                a.participants.iter().zip(&names).take(2).enumerate().map(|(k, (id, name))| {
+                    view().when(k > 0, |v| v.ml(px(-6.0))).child(crate::chat::peer_avatar(id, name, 22.0)).into_element()
+                }),
+            ),
+        )
+        .child(text(words).text_size(px(14.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT).number_of_lines(1))
 }
 
 /// "Routine · <name>" beside the header pill in a routine's thread;
