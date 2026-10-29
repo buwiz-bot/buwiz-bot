@@ -167,6 +167,13 @@ const byPhase = {};
 
 for (const r of unique) byPhase[phaseOf(r.path)] = (byPhase[phaseOf(r.path)] || 0) + 1;
 
+// --json: the routes as data, for tools/parity.mjs
+if (process.argv.includes("--json")) {
+  for (const r of routes) if (r.methods) r.method = `ANY (${r.methods.join(", ")} branch)`;
+  process.stdout.write(JSON.stringify(unique.map((r) => ({ ...r, rox: used(rox, r), phase: phaseOf(r.path) }))) + "\n");
+  process.exit(0);
+}
+
 const out = [];
 
 out.push("# Node broker routes (for the Rust broker plan)");
