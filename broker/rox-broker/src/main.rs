@@ -77,9 +77,11 @@ async fn main() {
     let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
     let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
-        .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed));
+        .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
     let door = Arc::new(match &line {
+        // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
+        Some(line) if hosts.contains(&"mcp") => door.with_line(line.clone()).with_mcp(rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone())),
         Some(line) => door.with_line(line.clone()),
         None => door,
     });
