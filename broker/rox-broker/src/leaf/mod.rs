@@ -5,6 +5,7 @@
 
 mod files;
 mod keymap;
+pub mod mcp;
 mod prefs;
 mod skills;
 mod state;

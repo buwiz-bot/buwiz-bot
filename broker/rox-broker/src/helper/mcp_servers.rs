@@ -96,6 +96,13 @@ pub fn auth_error(text: &str) -> bool {
             .any(|w| t.contains(w))
 }
 
+pub const MANIFEST_URI: &str = "rox://manifest";
+
+/// grammar.mjs's `isName`: `[A-Za-z0-9_-]+`.
+pub fn is_name(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 const SIGNED_OUT: &str = "Sign-in expired or was rejected";
 const PREVIEW: &str = "Google only serves this to projects in the Google Workspace Developer Preview Program — enroll at https://developers.google.com/workspace/preview, then Reconnect.";
 
@@ -112,6 +119,8 @@ pub struct McpHost {
     failed: Mutex<HashMap<String, RpcError>>,
     /// Each server's status as it changes (the line's `mcp` events).
     events: tokio::sync::broadcast::Sender<Value>,
+    /// Each connection's `rox://manifest`, read once (Node's rec.manifest).
+    manifests: Mutex<HashMap<String, Value>>,
 }
 
 /// An `mcp_servers` row, as far as a client needs it.
@@ -239,6 +248,7 @@ impl McpHost {
             me: me.clone(),
             failed: Mutex::new(HashMap::new()),
             events: tokio::sync::broadcast::channel(256).0,
+            manifests: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -284,6 +294,7 @@ impl McpHost {
             return Err(e.clone());
         }
         let row = self.row(id).map_err(RpcError::local)?;
+        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         let made = self.connect(id, &row).await;
         match &made {
             Ok(_) => {
@@ -345,6 +356,67 @@ impl McpHost {
     fn worded(&self, row: &Row, e: RpcError) -> RpcError {
         let message = google_api_off(row, &e).unwrap_or_else(|| crate::js::slice_utf16(&e.message, 300));
         RpcError { message, ..e }
+    }
+
+    /// app.db, as this host holds it (the /mcp routes' rows).
+    pub fn db<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
+        let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        f(&db).map_err(|e| e.to_string())
+    }
+
+    /// mcp.mjs's `listResources`: the server's resources, `[]` when it
+    /// isn't connected, has no resources capability, or the list fails.
+    pub async fn resources(&self, id: &str) -> Vec<Value> {
+        let Ok((client, _, _)) = self.client(id).await else { return Vec::new() };
+        if !client.capabilities().get("resources").is_some_and(crate::js::truthy) {
+            return Vec::new();
+        }
+        match self.request(id, "resources/list", json!({}), mcp::DEFAULT_TIMEOUT).await {
+            Ok(r) => r.get("resources").and_then(Value::as_array).cloned().unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// mcp.mjs's `readManifest`: the server's `rox://manifest` (an object,
+    /// else `{}`), commands and scopes whose name breaks the grammar
+    /// dropped with a warning; read once per connection.
+    pub async fn manifest(&self, id: &str) -> Value {
+        if let Some(m) = self.manifests.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            return m.clone();
+        }
+        if !self.resources(id).await.iter().any(|r| r.get("uri") == Some(&json!(MANIFEST_URI))) {
+            return json!({});
+        }
+        let read = self.request(id, "resources/read", json!({"uri": MANIFEST_URI}), mcp::DEFAULT_TIMEOUT).await;
+        let text = read.ok().and_then(|r| {
+            r.get("contents").and_then(Value::as_array).and_then(|c| c.iter().find_map(|x| x.get("text").and_then(Value::as_str).map(str::to_owned)))
+        });
+        let mut m = match text.as_deref().map(serde_json::from_str::<Value>) {
+            Some(Ok(Value::Object(o))) => o,
+            _ => serde_json::Map::new(),
+        };
+        for kind in ["commands", "scopes"] {
+            let Some(list) = m.get(kind) else { continue };
+            let kept: Vec<Value> = list
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|x| {
+                    let name = x.get("name");
+                    if x.is_object() && name.and_then(Value::as_str).is_some_and(is_name) {
+                        return true;
+                    }
+                    let shown = crate::js::stringify(name.filter(|n| !n.is_null()).unwrap_or(x));
+                    eprintln!("  mcp {id}: manifest {kind} entry {} dropped: names are [A-Za-z0-9_-]+", crate::js::slice_utf16(&shown, 80));
+                    false
+                })
+                .collect();
+            m.insert(kind.into(), Value::Array(kept));
+        }
+        let m = Value::Object(m);
+        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), m.clone());
+        m
     }
 
     /// mcp.mjs's `statusOf`: `{status, tools, err?}`, status idle,
@@ -470,6 +542,7 @@ impl McpHost {
     pub async fn invalidate(&self, id: &str) {
         let gone = self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         let failed = self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id).is_some();
+        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         if let Some(l) = &gone {
             l.client.close().await;
         }
