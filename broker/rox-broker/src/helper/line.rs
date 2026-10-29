@@ -18,6 +18,9 @@
 //! | `POST sessions/stat` | `{open_id}` | `{ok, open: {active, queued} \| null}` |
 //! | `POST start`, `stop` | | `{ok}` |
 //! | `POST clock` | `{now?, fire?}` | `{ok, fired}`; a manual clock only (tests) |
+//! | `POST mcp/ensure` | `{id}` | a v0 MCP server's client: `{ok, tools, capabilities}` or `{ok: false, err}` |
+//! | `POST mcp/call`, `mcp/resources`, `mcp/read` | `{id, tool, args, timeout_ms?}`, `{id}`, `{id, uri}` | `{ok, result}` or `{ok: false, error, code}` |
+//! | `POST mcp/invalidate` | `{id}` | `{ok}`; the next use connects again |
 //!
 //! Answers that change a plugin carry its `runtime` snapshot, so Node's
 //! view is current when the call returns, before the event arrives.
@@ -34,6 +37,7 @@ use hyper::body::{Frame, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 
+use super::mcp_servers::McpHost;
 use super::plugins::Host;
 use super::sessions::Sessions;
 use crate::js;
@@ -46,12 +50,17 @@ const SESSION_ROUTES: &[&str] = &["sessions/open", "sessions/close", "sessions/c
 pub struct Line {
     host: Arc<Host>,
     sessions: Arc<Sessions>,
+    mcp: Arc<McpHost>,
     token: String,
 }
 
 impl Line {
-    pub fn new(host: Arc<Host>, token: String) -> Self {
-        Self { sessions: Sessions::new(host.clone()), host, token }
+    pub fn new(host: Arc<Host>, mcp: Arc<McpHost>, token: String) -> Self {
+        Self { sessions: Sessions::new(host.clone()), host, mcp, token }
+    }
+
+    pub fn mcp(&self) -> &Arc<McpHost> {
+        &self.mcp
     }
 
     pub fn host(&self) -> &Arc<Host> {
@@ -138,6 +147,9 @@ impl Line {
             return Ok(r);
         }
         let ss = &self.sessions;
+        if let Some(op) = path.strip_prefix("mcp/") {
+            return Ok(self.mcp_op(op, b).await);
+        }
         match path {
             "sessions/open" => ss.open(b).await,
             "sessions/close" => ss.close(b).await,
@@ -170,6 +182,31 @@ impl Line {
                 Ok(json!({"ok": true, "fired": h.clock.manual_step(now, get(b, "fire") == Some(&Value::Bool(true)))}))
             }
             _ => V1Error::err("not_found", format!("no route /v1/line/{path}")),
+        }
+    }
+
+    /// A v0 MCP server's client (mcp_servers.rs): an answer, never a
+    /// refusal; a failed request is `{ok: false, error, code}`.
+    async fn mcp_op(&self, op: &str, b: &Value) -> Value {
+        let id = get(b, "id").and_then(Value::as_str).unwrap_or_default();
+        let done = |r: Result<Value, super::mcp::RpcError>| match r {
+            Ok(result) => json!({"ok": true, "result": result}),
+            Err(e) => json!({"ok": false, "error": e.message, "code": e.code}),
+        };
+        match op {
+            "ensure" => self.mcp.ensure(id).await,
+            "invalidate" => {
+                self.mcp.invalidate(id).await;
+                json!({"ok": true})
+            }
+            "call" => {
+                let timeout = get(b, "timeout_ms").and_then(Value::as_f64).filter(|t| *t > 0.0).map_or(super::mcp::DEFAULT_TIMEOUT, |t| Duration::from_millis(t as u64));
+                let params = json!({"name": get(b, "tool"), "arguments": get(b, "args").cloned().unwrap_or(json!({}))});
+                done(self.mcp.request(id, "tools/call", params, timeout).await)
+            }
+            "resources" => done(self.mcp.request(id, "resources/list", json!({}), super::mcp::DEFAULT_TIMEOUT).await),
+            "read" => done(self.mcp.request(id, "resources/read", json!({"uri": get(b, "uri")}), super::mcp::DEFAULT_TIMEOUT).await),
+            _ => json!({"ok": false, "error": format!("no route /v1/line/mcp/{op}"), "code": 0}),
         }
     }
 
