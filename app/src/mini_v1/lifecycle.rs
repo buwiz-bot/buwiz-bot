@@ -48,6 +48,16 @@ pub fn running_again(event: &Value, plugin: &str) -> bool {
     id == Some(plugin) && event.get("state").and_then(Value::as_str) == Some("running")
 }
 
+/// The apps of `plugin` whose source Rox holds (`loaded`) but that are not
+/// running: after the plugin changed, they fetch its new code before they
+/// show again. A running open keeps its own until Reload (LCY-04).
+pub fn idle_sources<'a>(loaded: impl Iterator<Item = &'a String>, running: &[String], plugin: &str) -> Vec<String> {
+    let prefix = format!("v1:{plugin}/");
+    let mut keys: Vec<String> = loaded.filter(|k| k.starts_with(&prefix) && !running.contains(k)).cloned().collect();
+    keys.sort();
+    keys
+}
+
 /// What an open shows while its plugin restarts.
 pub fn reconnecting(title: &str) -> String {
     format!("{title} is reconnecting…")
@@ -66,6 +76,14 @@ mod tests {
             "apps": [{"id": "board", "title": "Board", "fingerprint": fp}, {"id": "card", "title": "Card", "fingerprint": "sha256:cc"}],
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn an_idle_card_of_a_changed_plugin_fetches_its_new_code() {
+        let loaded = ["v1:dev.goldcoders.bir/card-quick?c=1", "v1:dev.goldcoders.bir/forms", "v1:dev.goldcoders.other/x", "R12"].map(String::from);
+        let running = vec!["v1:dev.goldcoders.bir/forms".to_owned()];
+        assert_eq!(idle_sources(loaded.iter(), &running, "dev.goldcoders.bir"), ["v1:dev.goldcoders.bir/card-quick?c=1"]);
+        assert!(idle_sources(loaded.iter(), &running, "dev.goldcoders.none").is_empty());
     }
 
     #[test]
