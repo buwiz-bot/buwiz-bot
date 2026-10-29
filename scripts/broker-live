@@ -1,0 +1,102 @@
+#!/bin/bash
+# The live broker, in one command (Rust broker plan, 0.6).
+#
+#   scripts/broker-live status     health, who answers the port, plugins, last routine runs
+#   scripts/broker-live backup     app.db (sqlite .backup) and the bundle's server/ into
+#                                  <data dir>/backups/<UTC time>/
+#   scripts/broker-live start|stop|restart
+#   scripts/broker-live use-node   the Node broker on the port (the rollback)
+#   scripts/broker-live use-rust   rox-broker on the port, Node behind it (phase 1 on)
+#
+# GS: the data dir (default ~/Library/Application Support/Grok Shell).
+# RES: the app bundle's Resources dir holding server/ (default: the Grok
+# Shell.app built in a grok-shell checkout beside this repo).
+# PORT: default 8787.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+GS="${GS:-$HOME/Library/Application Support/Grok Shell}"
+RES="${RES:-$ROOT/../grok-shell/dist/Grok Shell.app/Contents/Resources}"
+PORT="${PORT:-8787}"
+URL="http://127.0.0.1:$PORT"
+DB="$GS/generated/app.db"
+
+listener() { lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1; }
+health() { curl -s -o /dev/null -w '%{http_code}' -m 5 "$URL/health" 2>/dev/null || true; }
+
+wait_health() {
+  for _ in $(seq 1 120); do
+    [ "$(health)" = 200 ] && return 0
+    sleep 0.5
+  done
+  echo "the broker did not answer on $PORT" >&2
+  return 1
+}
+
+stop() {
+  local pid
+  pid=$(listener)
+  [ -z "$pid" ] && { echo "nothing on $PORT"; return 0; }
+  kill -TERM "$pid"
+  for _ in $(seq 1 40); do
+    [ -z "$(listener)" ] && { echo "stopped $pid"; return 0; }
+    sleep 0.25
+  done
+  echo "$pid still holds $PORT" >&2
+  return 1
+}
+
+start_node() {
+  [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
+  [ -x "$RES/server/node" ] || { echo "no $RES/server/node (set RES)" >&2; return 1; }
+  (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
+    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" PORT="$PORT" \
+    nohup "$RES/server/node" "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
+  wait_health && echo "node broker on $PORT"
+}
+
+start_rust() {
+  [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
+  [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it)" >&2; return 1; }
+  (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
+    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
+    nohup "$RES/server/rox-broker" --port "$PORT" --data "$GS" --node "$RES/server/node" \
+      --node-script "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
+  wait_health && echo "rox-broker on $PORT"
+}
+
+status() {
+  local pid
+  pid=$(listener)
+  echo "health: $(health)"
+  if [ -n "$pid" ]; then echo "port $PORT: pid $pid $(ps -o comm= -p "$pid" | xargs basename)"; else echo "port $PORT: free"; fi
+  if [ -f "$GS/host-token" ] && [ -n "$pid" ]; then
+    curl -s -m 5 -H "X-Rox-Host: $(cat "$GS/host-token")" "$URL/v1/host/plugins" \
+      | python3 -c 'import json,sys
+for p in json.load(sys.stdin).get("plugins", []): print("plugin:", p.get("id"), p.get("version"), p.get("state"), "on" if p.get("enabled") else "off")' 2>/dev/null || echo "plugins: unreadable"
+  fi
+  sqlite3 "file:$DB?mode=ro" "SELECT 'routine: ' || routine || ' ' || CASE enabled WHEN 1 THEN 'on' ELSE 'off' END || ' last run ' || coalesce(datetime(last_run/1000,'unixepoch','localtime'),'never') || coalesce(' error: ' || last_error, '') FROM v1_instances" 2>/dev/null || true
+  echo "keychain dialog: $(pgrep -q SecurityAgent && echo UP || echo none)"
+}
+
+backup() {
+  local dir
+  dir="$GS/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$dir"
+  sqlite3 "$DB" ".backup '$dir/app.db'"
+  if [ -d "$RES/server" ]; then cp -R "$RES/server" "$dir/server"; fi
+  echo "$dir"
+}
+
+case "${1:-}" in
+  status) status ;;
+  backup) backup ;;
+  start) start_node ;;
+  stop) stop ;;
+  restart) stop && start_node ;;
+  use-node) stop && start_node ;;
+  use-rust)
+    # nothing stops before there is a rox-broker to start
+    [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it): nothing changed" >&2; exit 1; }
+    stop && start_rust || { echo "rox-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
