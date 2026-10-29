@@ -126,9 +126,10 @@ test("MAN-03 non-object JSON is refused, not turned into {}", () => {
     assert.throws(() => verifyManifest(text, trust), { code: "manifest_invalid" }, text);
 });
 
-test("MAN-04 protocol 2.x and 1.1.0 are refused by a 1.0 host; 1.0.1 is accepted", () => {
+test("MAN-04 protocol 2.x and 1.2.0 are refused by a 1.1 host; 1.0.1 and 1.1.0 are accepted", () => {
   refused((m) => (m.protocol = "2.0.0"), "protocol_unsupported", /needs a Rox/);
-  refused((m) => (m.protocol = "1.1.0"), "protocol_unsupported");
+  refused((m) => (m.protocol = "1.2.0"), "protocol_unsupported");
+  ok((m) => (m.protocol = "1.1.0"));
   refused((m) => (m.protocol = "0.9.0"), "protocol_unsupported");
   ok((m) => (m.protocol = "1.0.1"));
   refused((m) => (m.protocol = "1.0"), "manifest_invalid");

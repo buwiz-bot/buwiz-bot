@@ -28,6 +28,8 @@ export const RESULT_MAX = 1024 * 1024;
 // a rox.preview call's result (the document); permissions.preview.max_bytes may lower it
 export const PREVIEW_MAX = LIMITS.previewMaxBytes;
 export const SOURCE_MAX = 512 * 1024;
+// a resolve `prompt` answer's text (9.2, 1.1), in characters
+export const PROMPT_MAX = 4000;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 const cap = (s, n) => {
@@ -84,6 +86,21 @@ export function checkOpen(m, o) {
   if (o.size === "small") out.size = "small";
 
   return out;
+}
+
+/** A resolve tool's `prompt` answer (9.2, protocol 1.1): a starter
+ *  flow's text, which Rox puts in the composer for the person to edit and
+ *  send. Commands only; `text` has something other than spaces, tabs and
+ *  line breaks and is at most PROMPT_MAX characters (refused, not cut:
+ *  a cut prompt says something else). */
+export function checkPrompt(kind, data) {
+  if (kind !== "command") refuse("plugin_invalid", "a prompt result answers a command, not a scope");
+
+  if (!isString(data?.text) || !/[^ \t\r\n]/.test(data.text)) refuse("plugin_invalid", "a prompt result needs text");
+
+  if ([...data.text].length > PROMPT_MAX) refuse("plugin_invalid", `a prompt's text is at most ${PROMPT_MAX} characters`);
+
+  return { result: "prompt", text: data.text };
 }
 
 export function createSessions(plugins) {
@@ -353,6 +370,8 @@ export function createSessions(plugins) {
 
     if (r === "error") return { result: "error", message: cap(isString(data.message) ? data.message : "Could not resolve that", 200) };
 
+    if (r === "prompt") return checkPrompt(kind, data);
+
     if (r === "token") {
       if (!isV1("ticket", data.ticket)) refuse("plugin_invalid", "a token result needs a ticket");
       const out = { result: "token", ticket: data.ticket, title: cap(isString(data.title) ? data.title : "", 60) };
@@ -362,7 +381,7 @@ export function createSessions(plugins) {
       return out;
     }
 
-    refuse("plugin_invalid", `a resolve tool answered result ${JSON.stringify(r)?.slice(0, 40)}; 9.2 allows choices, open, token, error`);
+    refuse("plugin_invalid", `a resolve tool answered result ${JSON.stringify(r)?.slice(0, 40)}; 9.2 allows choices, open, token, prompt, error`);
   }
 
   /** POST /v1/host/resolve {plugin, kind, name, value, complete, context}

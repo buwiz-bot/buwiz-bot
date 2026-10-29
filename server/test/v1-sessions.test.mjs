@@ -9,6 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
+import { PROMPT_MAX, checkPrompt } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -205,6 +206,26 @@ test("INV-05 a resolve open naming another plugin's app is refused", async () =>
   assert.equal(open.placement, "inline");
   assert.match(open.ticket, /^tkt_[0-9A-HJKMNP-TV-Z]{26}$/);
   assert.equal(await codeOf(sessions.resolve({ plugin: FX, kind: "command", name: "taxform", value: "" })), "not_found");
+});
+
+test("INV-10 a resolve prompt answers a command with text for the composer; a scope's, a blank one or one over 4000 characters is refused", async () => {
+  const p = await sessions.resolve({ plugin: FX, kind: "command", name: "board", value: "prompt" });
+
+  assert.deepEqual(p, { ok: true, result: "prompt", text: "Draft this month's board update:\n- what shipped\n- what is next" });
+
+  for (const value of ["prompt-long", "prompt-blank"]) assert.equal(await codeOf(sessions.resolve({ plugin: FX, kind: "command", name: "board", value })), "plugin_invalid", value);
+  const scope = await sessions.resolve({ plugin: FX, kind: "scope", name: "item", value: "prompt" }).catch((e) => e);
+
+  assert.equal(scope.code, "plugin_invalid");
+  assert.equal(scope.message, "a prompt result answers a command, not a scope");
+});
+
+test("INV-10 checkPrompt: the cap counts characters, and the text is kept as sent", () => {
+  assert.deepEqual(checkPrompt("command", { result: "prompt", text: "é".repeat(PROMPT_MAX), extra: 1 }), { result: "prompt", text: "é".repeat(PROMPT_MAX) });
+  assert.throws(() => checkPrompt("command", { text: "x".repeat(PROMPT_MAX + 1) }), { code: "plugin_invalid", message: "a prompt's text is at most 4000 characters" });
+
+  for (const text of [undefined, "", " \t\r\n ", 5]) assert.throws(() => checkPrompt("command", { text }), { code: "plugin_invalid", message: "a prompt result needs text" }, String(text));
+  assert.throws(() => checkPrompt("scope", { text: "hi" }), { message: "a prompt result answers a command, not a scope" });
 });
 
 test("app source: the fingerprint is checked; a one-byte change is fingerprint_mismatch", async () => {
