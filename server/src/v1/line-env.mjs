@@ -4,7 +4,14 @@
 // it starts (stdio MCP servers, the office child, shell tools); none of
 // them may inherit a token that drives the plugins. app-server imports this
 // before anything else.
-export const LINE = Object.freeze({ base: process.env.ROX_V1_LINE || "", token: process.env.ROX_V1_LINE_TOKEN || "" });
+// `hosts`: what rox-broker hosts behind the line (ROX_LINE_HOSTS, "v1,mcp");
+// a broker that does not say hosts the v1 plugins only (phase 3's).
+export const LINE = Object.freeze({
+  base: process.env.ROX_V1_LINE || "",
+  token: process.env.ROX_V1_LINE_TOKEN || "",
+  hosts: Object.freeze((process.env.ROX_LINE_HOSTS || "v1").split(",").filter(Boolean)),
+});
 
 delete process.env.ROX_V1_LINE;
 delete process.env.ROX_V1_LINE_TOKEN;
+delete process.env.ROX_LINE_HOSTS;
