@@ -2175,7 +2175,8 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                                 .number_of_lines(1),
                         )
                         .child(
-                            text(move || b.get().desc)
+                            // "Made by Piccolo" first for an agent another made
+                            text(move || crate::agents::subtitle(&b.get(), &store().bots.get()))
                                 .text_size(px(11.0))
                                 .text_color(theme::GHOST)
                                 .number_of_lines(1),
@@ -2397,7 +2398,7 @@ pub(crate) fn rail_pop_layer() -> impl IntoElement {
         let preview = if pop.bot.desc.is_empty() {
             "No messages yet".to_owned()
         } else {
-            pop.bot.desc.clone()
+            crate::agents::subtitle(&pop.bot, &store().bots.get_untracked())
         };
         // h = pad(20) + name row(18) + gap(4) + lines(≤2 × 18)
         let lines = ((preview.len() as f32 / 34.0).ceil().max(1.0)).min(2.0);

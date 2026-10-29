@@ -43,7 +43,11 @@ pub(crate) fn pane() -> impl IntoElement {
                     // A plain chat gets the same profile as an agent (the
                     // app's default avatar, its own title): Details,
                     // Library and Computer apply to both.
-                    if st.active_bot().is_some() || !st.active_id.get().is_empty() {
+                    // an agents' conversation: its own Details (no name
+                    // field, model nor tabs: nobody talks in it)
+                    if st.active_agents().is_some() {
+                        conversation_pane().into_element()
+                    } else if st.active_bot().is_some() || !st.active_id.get().is_empty() {
                         bot_profile().into_element()
                     } else if st.detail_meta.get().is_some() {
                         app_detail().into_element()
@@ -271,7 +275,16 @@ fn bot_profile() -> impl IntoElement {
                         .text_color(theme::MUTED)
                         .pt(px(4.0))
                         .into_element(),
-                    (None, Some(b)) => label_field(b.id, b.label).into_element(),
+                    (None, Some(b)) => {
+                        // "Made by Piccolo" under an agent another one made
+                        let made = crate::agents::made_by_line(&b, &store().bots.get());
+                        let parent = b.helper.as_ref().map(|h| h.parent.clone()).unwrap_or_else(|| b.made_by.clone());
+                        view()
+                            .items_center()
+                            .child(label_field(b.id, b.label))
+                            .when_some(made, |v, m| v.child(made_by(m, parent)))
+                            .into_element()
+                    }
                     (None, None) => text("Chat")
                         .text_size(px(11.0))
                         .text_color(theme::MUTED)
@@ -439,6 +452,12 @@ fn details_tab() -> impl IntoElement {
             Some(b) => bot_context(b).into_element(),
             None => view().into_element(),
         }))
+        // its agents: whom it takes messages from, its conversations with
+        // other agents, the helpers it started
+        .child(dynamic(|| match store().active_bot() {
+            Some(b) if store().active_routine().is_none() => agents_sections(b).into_element(),
+            _ => view().into_element(),
+        }))
         // a routine's thread: that routine alone, nothing to open
         .child(dynamic(|| {
             let bot = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
@@ -454,6 +473,316 @@ fn details_tab() -> impl IntoElement {
                     .into_element(),
             }
         }))
+}
+
+// ————————————————————————— agents' conversations —————————————————————————
+
+/// "Made by Piccolo" under an agent's label: opens the parent's chat.
+fn made_by(line: String, parent: String) -> impl IntoElement {
+    let hov = signal(false);
+    text(line.clone())
+        .text_size(px(11.0))
+        .text_color(move || if hov.get() { theme::TEXT } else { theme::MUTED })
+        .pt(px(2.0))
+        .label(line)
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(move || {
+            let t = store().bot_thread(&parent);
+            if !t.is_empty() {
+                store().go_to(&t, None)
+            }
+        })
+}
+
+/// A section's quiet line ("No conversations yet …").
+fn pane_note(t: String) -> AnyElement {
+    pane_card().py(px(14.0)).px(px(13.0)).child(text(t).text_size(px(13.0)).text_color(theme::DIM)).into_element()
+}
+
+/// A bot's Details sections about other agents: Accept messages from,
+/// Conversations, Helper and Past helpers.
+fn agents_sections(b: crate::store::RoxBot) -> impl IntoElement {
+    let st = store();
+    let bots = st.bots.get();
+    let threads = st.threads.get();
+    let rows = crate::agents::conversations_of(&b.id, &threads, &bots);
+    st.load_agents_last(
+        rows.iter()
+            .filter(|r| !r.archived)
+            .map(|r| (r.thread.clone(), threads.iter().find(|t| t.id == r.thread).map(|t| t.count).unwrap_or(0)))
+            .collect(),
+    );
+    let (live, past) = crate::agents::helpers_of(&b.id, &bots);
+    let (open, archived): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| !r.archived);
+    let show_archived = signal(false);
+    let n_archived = archived.len();
+    let name = b.name.clone();
+    view()
+        .pb(px(14.0))
+        // a helper takes messages from its parent only: no setting
+        .when(b.helper.is_none(), |v| v.child(pane_label("Accept messages from".into())).child(accepts_card(b.id.clone(), b.accepts.clone())))
+        .child(view().pt(px(14.0)).child(pane_label("Conversations".into())))
+        .child(if open.is_empty() && archived.is_empty() {
+            pane_note(format!("No conversations yet. Ask {name} in chat to hand a task to another agent."))
+        } else {
+            pane_card()
+                .children(open.into_iter().map(conversation_row))
+                .when(n_archived > 0, move |v| {
+                    let hov = signal(false);
+                    v.child(
+                        view()
+                            .flex_row()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .rounded(px(8.0))
+                            .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                            .label(format!("Archived conversations ({n_archived})"))
+                            .on_press(move || show_archived.update(|s| *s = !*s))
+                            .child(
+                                text(move || format!("Archived ({n_archived}) {}", if show_archived.get() { "▾" } else { "›" }))
+                                    .text_size(px(12.0))
+                                    .text_color(theme::MUTED),
+                            ),
+                    )
+                    .child(when(show_archived, move || {
+                        view().children(archived.clone().into_iter().map(conversation_row)).into_element()
+                    }))
+                })
+                .into_element()
+        })
+        .when(!live.is_empty(), |v| {
+            v.child(view().pt(px(14.0)).child(pane_label("Helper".into())))
+                .child(pane_card().children(live.into_iter().map(helper_row)))
+        })
+        .when(!past.is_empty(), |v| {
+            v.child(view().pt(px(14.0)).child(pane_label("Past helpers".into())))
+                .child(pane_card().children(past.into_iter().map(helper_row)))
+        })
+}
+
+/// One conversation in a bot's Details: subject, participants, its last
+/// message; Open, Resume while paused, Archive or Unarchive.
+fn conversation_row(r: crate::agents::ConversationRow) -> AnyElement {
+    let last = {
+        let thread = r.thread.clone();
+        move || store().agents_last.with(|l| l.iter().find(|(t, ..)| *t == thread).map(|(.., m)| m.clone())).unwrap_or_default()
+    };
+    let (t1, c1, c2) = (r.thread.clone(), r.conversation.clone(), r.conversation.clone());
+    let subject = r.subject.clone();
+    let mut acts = view().flex_row().flex_wrap().gap_1().pt(px(2.0)).child(routine_act("Open", format!("Open {subject}"), false, move || store().go_to(&t1, None)));
+    if r.paused {
+        acts = acts.child(dynamic(move || {
+            let c = c2.clone();
+            if store().agents_paused(&c) {
+                routine_act("Resume", format!("Resume {}", "the conversation"), false, move || store().agents_resume(c.clone()))
+            } else {
+                view().into_element()
+            }
+        }));
+    }
+    let archived = r.archived;
+    acts = acts.child(routine_act(
+        if archived { "Unarchive" } else { "Archive" },
+        format!("{} {subject}", if archived { "Unarchive" } else { "Archive" }),
+        false,
+        move || store().agents_archive(c1.clone(), !archived),
+    ));
+    view()
+        .gap(px(2.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .label(r.subject.clone())
+        .child(text(r.subject).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+        .child(
+            text(if r.paused { format!("{} · paused", r.participants) } else { r.participants })
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1),
+        )
+        .when(!archived, |v| {
+            v.child(dynamic(move || {
+                let t = last();
+                if t.is_empty() {
+                    return view().into_element();
+                }
+                text(t).text_size(px(12.0)).text_color(theme::DIM).number_of_lines(2).into_element()
+            }))
+        })
+        .child(acts)
+        .into_element()
+}
+
+/// A temporary helper in its parent's Details: avatar, name, task; Open
+/// goes to its chat.
+fn helper_row(b: crate::store::RoxBot) -> AnyElement {
+    let hov = signal(false);
+    let thread = b.thread_id.clone();
+    let task = b.helper.as_ref().map(|h| h.task.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| b.purpose.clone());
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .label(format!("Open {}'s chat", b.name))
+        .on_press(move || store().go_to(&thread, None))
+        .child(crate::chat::peer_avatar(&b.id, &b.name, 26.0))
+        .child(
+            view()
+                .flex_1()
+                .child(text(b.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+                .when(!task.is_empty(), |v| v.child(text(task).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(2))),
+        )
+        .child(text("Open").text_size(px(12.0)).text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }))
+        .into_element()
+}
+
+/// Accept messages from: All my agents / None (`some`, a list an agent
+/// set, shows as such until one is picked).
+fn accepts_card(bot: String, now: String) -> impl IntoElement {
+    let choice = |word: &'static str, value: &'static str, on: bool, bot: String| {
+        let hov = signal(false);
+        view()
+            .flex_row()
+            .items_center()
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(8.0))
+            .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+            .label(format!("Accept messages from {}", word.to_lowercase()))
+            .on_press(move || {
+                if !on {
+                    store().agents_accepts(bot.clone(), value)
+                }
+            })
+            .child(text(word).text_size(px(13.0)).text_color(theme::TEXT).flex_1())
+            .when(on, |v| v.child(text("✓").text_size(px(13.0)).text_color(theme::ACCENT)))
+            .into_element()
+    };
+    pane_card()
+        .child(choice("All my agents", "all", now == "all", bot.clone()))
+        .child(choice("None", "none", now == "none", bot))
+        .when(now == "some", |v| {
+            v.child(text("Now: some agents only").text_size(px(12.0)).text_color(theme::MUTED).px(px(10.0)).pb(px(6.0)))
+        })
+}
+
+/// An agents' conversation's Details: its participants (each with "Go to
+/// <name> chat"), subject, when it started, how many messages; Resume
+/// while paused, Archive or Unarchive.
+fn conversation_pane() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(scroll().flex_1().child(view().px_4().pt(px(4.0)).pb_6().child(dynamic(|| {
+            let st = store();
+            let Some(a) = st.active_agents() else { return view().into_element() };
+            let names = st.agents_names(&a);
+            let title = crate::agents::pill_text(&names);
+            let id = st.active_id.get();
+            let count = if st.turns_of.get() == id {
+                st.turns.with(|t| t.iter().filter(|t| t.message.is_some()).count() as i64)
+            } else {
+                st.threads.with(|t| t.iter().find(|t| t.id == id).map(|t| t.count).unwrap_or(0))
+            };
+            let paused = st.agents_paused(&a.conversation);
+            let (c1, c2, archived) = (a.conversation.clone(), a.conversation.clone(), a.archived);
+            let fact = |k: &str, v: String| {
+                view()
+                    .flex_row()
+                    .gap(px(10.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .child(text(k.to_owned()).text_size(px(12.0)).text_color(theme::MUTED).w(px(70.0)))
+                    .child(text(v).text_size(px(13.0)).text_color(theme::TEXT).flex_1().number_of_lines(3))
+                    .into_element()
+            };
+            let status = match (archived, paused) {
+                (true, _) => "Archived",
+                (false, true) => "Paused",
+                _ => "Open",
+            };
+            view()
+                .child(
+                    view()
+                        .items_center()
+                        .gap(px(8.0))
+                        .pb(px(18.0))
+                        .child(view().flex_row().items_center().children(a.participants.iter().zip(&names).take(4).enumerate().map(|(k, (p, n))| {
+                            view().when(k > 0, |v| v.ml(px(-10.0))).child(crate::chat::peer_avatar(p, n, 44.0)).into_element()
+                        })))
+                        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT).text_center())
+                        .child(text("Agents' conversation · read-only").text_size(px(11.0)).text_color(theme::MUTED)),
+                )
+                .child(pane_label("Participants".into()))
+                .child(pane_card().children(a.participants.iter().zip(&names).map(|(p, n)| participant_row(p.clone(), n.clone()))))
+                .child(view().pt(px(14.0)).child(pane_label("Conversation".into())))
+                .child(
+                    pane_card()
+                        .child(fact("Subject", if a.subject.is_empty() { "—".to_owned() } else { a.subject.clone() }))
+                        .child(fact("Created", if a.created_at > 0.0 { crate::store::checked_at(a.created_at) } else { "—".to_owned() }))
+                        .child(fact("Messages", count.to_string()))
+                        .child(fact("Status", status.to_owned()))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap_1()
+                                .px(px(4.0))
+                                .pb(px(4.0))
+                                .when(paused && !archived, |v| v.child(routine_act("Resume", "Resume the conversation".to_owned(), false, move || store().agents_resume(c1.clone()))))
+                                .child(routine_act(
+                                    if archived { "Unarchive" } else { "Archive" },
+                                    format!("{} the conversation", if archived { "Unarchive" } else { "Archive" }),
+                                    false,
+                                    move || store().agents_archive(c2.clone(), !archived),
+                                )),
+                        ),
+                )
+                .into_element()
+        }))))
+}
+
+/// A participant in a conversation's Details: avatar, name, and "Go to
+/// <name> chat" (an outside endpoint has no chat).
+fn participant_row(id: String, name: String) -> AnyElement {
+    let hov = signal(false);
+    let chat = store().bot_thread(&id);
+    let go = format!("Go to {name} chat");
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .child(crate::chat::peer_avatar(&id, &name, 26.0))
+        .child(text(name.clone()).text_size(px(13.0)).text_color(theme::TEXT).flex_1().number_of_lines(1))
+        .child(if chat.is_empty() {
+            text(if crate::agents::is_external(&id) { "Outside" } else { "" }).text_size(px(12.0)).text_color(theme::MUTED).into_element()
+        } else {
+            view()
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(8.0))
+                .bg(move || if hov.get() { theme::CARD2 } else { theme::MAIN })
+                .border_1()
+                .border_color(theme::BORDER_F)
+                .label(go.clone())
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                .on_press(move || store().go_to(&chat, None))
+                .child(text(go).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .into_element()
+        })
+        .into_element()
 }
 
 /// What the Details pane's routine section shows: in a routine's thread,

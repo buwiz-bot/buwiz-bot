@@ -33,6 +33,9 @@ pub struct ThreadMeta {
     /// A v1 routine's own thread (`routine` on the row): never a sidebar
     /// row nor a ⌘1–9 slot; its runs land here, its notices in `thread`.
     pub routine: Option<RoutineOf>,
+    /// An agents' conversation's thread (`agents` on the row): never a
+    /// sidebar row, a ⌘1–9 slot nor the chat restored at launch; read-only.
+    pub agents: Option<crate::agents::AgentsOf>,
 }
 
 /// A routine's check time `ms` as local time: "3:42 PM", or with the date
@@ -385,6 +388,14 @@ pub struct RoxBot {
     pub integrations: Vec<BotIntegration>,
     /// Its last edit (Bot Details' "Last updated"), epoch ms; 0 if never.
     pub updated_at: f64,
+    /// The agent that made it (`made_by`; "" when the user did), and
+    /// what for (`purpose`).
+    pub made_by: String,
+    pub purpose: String,
+    /// A temporary helper's parent and task (`helper`): no sidebar row.
+    pub helper: Option<crate::agents::HelperOf>,
+    /// Whom it takes messages from: `all`, `none` or `some` (a list).
+    pub accepts: String,
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -598,6 +609,14 @@ pub struct Turn {
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
+    /// An `agent_message` turn's envelope (an agents' conversation).
+    pub message: Option<crate::agents::AgentMessage>,
+    /// A `notice` turn about agents (messages, a new agent, a pause).
+    pub agents_notice: Option<crate::agents::AgentsNotice>,
+    /// A turn in an agent's chat marked `agent`: a user turn that is
+    /// another agent's reply ("Reply from <name>"), or an answer made for
+    /// another agent's request ("For <name>'s request").
+    pub reply_from: Option<crate::agents::ReplyFrom>,
 }
 
 /// What a reply quotes of turn `t` (`onReply(i, text || caption || name)`):
@@ -1518,7 +1537,10 @@ const ZOOM_MAX: i32 = 300;
 /// Whether turn `t` is the one `key` names: its permanent `id`, or (old
 /// links) its index.
 fn turn_is(t: &Turn, key: &str) -> bool {
-    (!t.id.is_empty() && t.id == key) || t.i.to_string() == key
+    (!t.id.is_empty() && t.id == key)
+        || t.i.to_string() == key
+        // an agents' notice names the message (`msg_…`), not its turn
+        || t.message.as_ref().is_some_and(|m| m.id == key)
 }
 
 /// `rox://chat/<thread uid|id>[?m=<turn id|index>]` → (thread, turn key).
@@ -1611,7 +1633,7 @@ impl Attach {
 }
 
 impl Turn {
-    fn of(v: &serde_json::Value) -> Turn {
+    pub(crate) fn of(v: &serde_json::Value) -> Turn {
         let files = list(v, "files");
         let mut attachments: Vec<Attach> = list(v, "attachments").iter().map(Attach::of).collect();
         attachments.extend(list(v, "art").iter().map(|a| Attach {
@@ -1695,6 +1717,15 @@ impl Turn {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
                 String::new()
+            },
+            message: (s(v, "role") == "agent_message").then(|| v.get("message").and_then(crate::agents::AgentMessage::of)).flatten(),
+            agents_notice: (s(v, "role") == "notice")
+                .then(|| v.get("notice").and_then(|n| crate::agents::AgentsNotice::of(n, s(v, "text"))))
+                .flatten(),
+            reply_from: match s(v, "role").as_str() {
+                "user" => v.get("agent").and_then(|a| crate::agents::ReplyFrom::of(a, false)),
+                "ai" => v.get("agent").and_then(|a| crate::agents::ReplyFrom::of(a, true)),
+                _ => None,
             },
         }
     }
@@ -1947,6 +1978,12 @@ pub struct Store {
     pub routine_templates: Signal<Vec<crate::routines::RoutineTemplate>>,
     pub routine_ask_email: Signal<Option<(String, String)>>,
     pub routine_email: Signal<String>,
+    /// Agents' conversations' last messages, for a bot's Details:
+    /// (thread, its turn count when read, message count, last message).
+    pub agents_last: Signal<Vec<(String, i64, i64, String)>>,
+    /// Conversations the user resumed here (their notices stop offering
+    /// Resume before `/threads` says so).
+    pub agents_resumed: Signal<Vec<String>>,
     /// The last menu action asked for, numbered (`rox/keys` sends it).
     pub keys_send: Signal<(u64, String)>,
     /// The last print job, numbered: (n, "text" | "html" | "image", payload,
@@ -2290,6 +2327,8 @@ impl Store {
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
+            agents_last: signal(Vec::new()),
+            agents_resumed: signal(Vec::new()),
             keys_send: signal((0, String::new())),
             keys_print: signal((0, String::new(), String::new(), String::new())),
             viewer_versions: signal((String::new(), Vec::new(), 0)),
@@ -2612,6 +2651,7 @@ impl Store {
                 archived: b(t, "archived"),
                 last_app: s(t, "lastApp"),
                 routine: t.get("routine").and_then(RoutineOf::of),
+                agents: t.get("agents").and_then(crate::agents::AgentsOf::of),
                 bot: {
                     let b = &t["bot"];
                     if b.is_null() {
@@ -2690,12 +2730,17 @@ impl Store {
                         .map(BotIntegration::of)
                         .collect(),
                     updated_at: f64of(b, "updated_at"),
+                    made_by: s(b, "made_by"),
+                    purpose: s(b, "purpose"),
+                    helper: b.get("helper").and_then(crate::agents::HelperOf::of),
+                    accepts: crate::agents::accepts_of(b),
                 })
                 .collect(),
             );
         }
         // The server names its active thread; open that one on first load.
-        let active = s(&v, "active");
+        // never an agents' conversation (read-only, reached from a chat)
+        let active = crate::agents::restore_target(&s(&v, "active"), &rows, &self.bots.get_untracked());
         if !active.is_empty() && self.active_id.get_untracked().is_empty() {
             self.active_id.set(active);
         } else if !rows.is_empty() && self.active_id.get_untracked().is_empty() {
@@ -2739,7 +2784,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| b.pinned && !b.hidden)
+            .filter(|b| b.pinned && !b.hidden && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2748,7 +2793,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| b.hidden)
+            .filter(|b| b.hidden && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2764,7 +2809,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| !b.hidden && !b.pinned && !grouped.contains(&b.id))
+            .filter(|b| !b.hidden && !b.pinned && !grouped.contains(&b.id) && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2780,10 +2825,10 @@ impl Store {
         g.items
             .iter()
             .filter_map(|it| match it.kind.as_str() {
-                "bot" => bots.iter().find(|b| b.id == it.id && !b.hidden).cloned().map(GroupRow::Bot),
+                "bot" => bots.iter().find(|b| b.id == it.id && !b.hidden && crate::agents::listed_bot(b)).cloned().map(GroupRow::Bot),
                 "chat" => threads
                     .iter()
-                    .find(|t| t.id == it.id && !t.hidden && !t.archived)
+                    .find(|t| t.id == it.id && !t.hidden && !t.archived && t.agents.is_none())
                     .cloned()
                     .map(GroupRow::Chat),
                 "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
@@ -2805,6 +2850,107 @@ impl Store {
     pub fn active_routine(&'static self) -> Option<RoutineOf> {
         let id = self.active_id.get();
         self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.routine.clone()))
+    }
+
+    /// The open agents' conversation's mark, when one is open (tracked).
+    pub fn active_agents(&'static self) -> Option<crate::agents::AgentsOf> {
+        let id = self.active_id.get();
+        self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.agents.clone()))
+    }
+
+    /// The names a conversation's participants go by: its bots', or what
+    /// the open thread's messages call an outside endpoint (tracked).
+    pub fn agents_names(&'static self, a: &crate::agents::AgentsOf) -> Vec<String> {
+        let bots = self.bots.get();
+        let seen = crate::agents::peers_in(self.turns.with(|t| t.iter().filter_map(|t| t.message.clone()).collect::<Vec<_>>()));
+        a.participants.iter().map(|p| crate::agents::participant_name(p, &bots, &seen)).collect()
+    }
+
+    /// Bot `id`'s chat thread ("" when it has none).
+    pub fn bot_thread(&'static self, id: &str) -> String {
+        self.bots.with_untracked(|b| b.iter().find(|b| b.id == id).map(|b| b.thread_id.clone())).unwrap_or_default()
+    }
+
+    /// Archive or unarchive a conversation (`/v1/host/agents/archive`),
+    /// then list the threads again.
+    pub fn agents_archive(&'static self, conversation: String, archived: bool) {
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/archive", serde_json::json!({"conversation": conversation, "archived": archived})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents archive {conversation}: {r:?}");
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Resume a conversation the hourly cap paused
+    /// (`/v1/host/agents/resume`).
+    pub fn agents_resume(&'static self, conversation: String) {
+        self.agents_resumed.update(|l| l.push(conversation.clone()));
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/resume", serde_json::json!({"conversation": conversation})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents resume {conversation}: {r:?}");
+                self.agents_resumed.update(|l| l.retain(|c| *c != conversation));
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Whether conversation `c` is paused now (tracked): its row says so
+    /// and the user hasn't resumed it here.
+    pub fn agents_paused(&'static self, conversation: &str) -> bool {
+        !self.agents_resumed.with(|l| l.iter().any(|c| c == conversation))
+            && self.threads.with(|t| {
+                t.iter().any(|t| t.agents.as_ref().is_some_and(|a| a.conversation == conversation && a.paused > 0.0))
+            })
+    }
+
+    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`):
+    /// `all` or `none`.
+    pub fn agents_accepts(&'static self, bot: String, accepts: &'static str) {
+        self.bots.update(|bs| {
+            if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
+                b.accepts = accepts.to_owned();
+            }
+        });
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents accepts {bot}: {r:?}");
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Read the last message of each conversation in `rows` whose turn
+    /// count changed since (`GET /turns?thread=`), for a bot's Details.
+    pub fn load_agents_last(&'static self, rows: Vec<(String, i64)>) {
+        let stale: Vec<(String, i64)> = self.agents_last.with_untracked(|l| {
+            rows.into_iter().filter(|(t, n)| !l.iter().any(|(x, c, _, _)| x == t && c == n)).collect()
+        });
+        if stale.is_empty() {
+            return;
+        }
+        spawn_detached(async move {
+            for (thread, count) in stale {
+                let Some(v) = client::get(&format!("/turns?thread={}", client::urlenc(&thread))).await else { continue };
+                if s(&v, "thread") != thread {
+                    continue;
+                }
+                let (n, last) = crate::agents::last_message(&v);
+                self.agents_last.update(|l| {
+                    l.retain(|(x, ..)| *x != thread);
+                    l.push((thread.clone(), count, n, last));
+                });
+            }
+        });
     }
 
     /// The open routine thread's quiet line (tracked): when it checked and
@@ -2833,7 +2979,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.routine.is_none() && !t.hidden && !t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && !t.hidden && !t.archived)
             .collect()
     }
 
@@ -2842,7 +2988,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.routine.is_none() && t.hidden)
+            .filter(|t| crate::agents::listed_chat(t) && t.hidden)
             .collect()
     }
 
@@ -2850,7 +2996,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.routine.is_none() && t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && t.archived)
             .collect()
     }
 
@@ -3014,7 +3160,8 @@ impl Store {
     /// `/threads` carries), then the bots without a group, then the plain
     /// chats. Hidden bots never take a slot.
     pub fn shortcut_threads(&'static self) -> Vec<String> {
-        let bots = self.bots.get_untracked();
+        // a temporary helper takes no slot (no sidebar row)
+        let bots: Vec<RoxBot> = self.bots.get_untracked().into_iter().filter(crate::agents::listed_bot).collect();
         let threads = self.threads.get_untracked();
         let count_of = |tid: &str| {
             threads
@@ -3056,7 +3203,7 @@ impl Store {
         }
         for t in threads
             .iter()
-            .filter(|t| t.bot.is_none() && t.routine.is_none() && !t.hidden && !t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && !t.hidden && !t.archived)
         {
             push(&t.id);
         }
@@ -3116,7 +3263,7 @@ impl Store {
             app_of: String::new(),
         };
         let mut items = Vec::new();
-        for b in self.bots.get().into_iter().filter(|b| !b.hidden && !b.thread_id.is_empty()) {
+        for b in self.bots.get().into_iter().filter(|b| !b.hidden && !b.thread_id.is_empty() && crate::agents::listed_bot(b)) {
             items.push(PaletteItem {
                 bot: Some(b.clone()),
                 ..row(b.name.clone(), "Agent".into(), PaletteAct::Thread(b.thread_id.clone()))
@@ -4955,6 +5102,10 @@ impl Store {
 
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
+        // an agents' conversation is read-only (the broker refuses it too)
+        if untracked(|| self.active_agents().is_some()) {
+            return;
+        }
         let text = self.draft.get_untracked().trim().to_owned();
         // A v1 plugin's tokens and commands (9.3): tokens are rewritten to
         // canonical ones before anything is sent; tokens or a command alone
