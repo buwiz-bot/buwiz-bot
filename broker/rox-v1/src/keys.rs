@@ -65,6 +65,20 @@ impl SessionKey {
         SessionKey(key)
     }
 
+    /// The key pair of a stored seed (a plugin's key, spec 4.3): base64url
+    /// of exactly 32 bytes, in its one canonical form.
+    pub fn from_seed(seed: &str) -> Result<SessionKey, String> {
+        let bytes = unb64(seed)?;
+        let mut arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| "a key seed is 32 bytes".to_owned())?;
+        if b64(&arr) != seed {
+            arr.fill(0);
+            return Err("a key seed is 32 bytes of base64url".to_owned());
+        }
+        let key = ed25519_dalek::SigningKey::from_bytes(&arr);
+        arr.fill(0);
+        Ok(SessionKey(key))
+    }
+
     /// The public half, base64url (`ks_pub`).
     pub fn public(&self) -> String {
         b64(self.0.verifying_key().as_bytes())
@@ -112,6 +126,13 @@ mod tests {
         // key order does not matter (JCS); content does
         super::verify(&k.public(), &json!({"a": "x", "b": 1}), &sig).unwrap();
         assert!(super::verify(&k.public(), &json!({"a": "x", "b": 2}), &sig).is_err());
+        assert!(super::SessionKey::from_seed(&super::b64(&[7; 32])).is_ok());
+        assert!(super::SessionKey::from_seed(&super::b64(&[7; 31])).is_err());
+        // a non-canonical last character decodes to the same bytes: refused
+        let mut odd = super::b64(&[7; 32]);
+        odd.pop();
+        odd.push('d');
+        assert!(super::SessionKey::from_seed(&odd).is_err());
         let other = super::SessionKey::generate();
         assert!(super::verify(&other.public(), &v, &sig).is_err());
         assert!(k.sign(&json!({"a": 0.5})).is_err());

@@ -15,6 +15,9 @@ use rox_broker::proxy::FrontDoor;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("keystore-check") {
+        std::process::exit(keystore_check(&args[1..]));
+    }
     let config = match Config::parse(&args, std::env::var("PORT").ok().as_deref()) {
         Ok(config) => config,
         Err(e) => {
@@ -62,4 +65,59 @@ async fn main() {
     node.stop(Duration::from_millis(2500)).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
     eprintln!("rox-broker: stopped");
+}
+
+/// `rox-broker keystore-check <plugin id> [--data DIR]`: whether the
+/// keystore (`ROX_KEYSTORE`, else the Keychain) holds the plugin's key, and
+/// whether its public half is the one `v1_plugins` recorded. Prints the
+/// public key only, never the seed.
+fn keystore_check(args: &[String]) -> i32 {
+    use rox_broker::helper::keystore::Keystore;
+    let (Some(id), rest) = (args.first(), args.get(1..).unwrap_or(&[])) else {
+        eprintln!("usage: rox-broker keystore-check <plugin id> [--data DIR]");
+        return 2;
+    };
+    let data = match rest {
+        [flag, dir] if flag == "--data" => Some(std::path::PathBuf::from(dir)),
+        [] => std::env::var("GROK_DATA_DIR").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from),
+        _ => {
+            eprintln!("usage: rox-broker keystore-check <plugin id> [--data DIR]");
+            return 2;
+        }
+    };
+    let store = match Keystore::from_spec(&std::env::var("ROX_KEYSTORE").unwrap_or_default()) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("rox-broker: {e}");
+            return 2;
+        }
+    };
+    let public = match store.get(id) {
+        Ok(Some(seed)) => match rox_v1::keys::SessionKey::from_seed(&seed) {
+            Ok(key) => key.public(),
+            Err(e) => {
+                println!("{id}: {} holds a key that is not a seed ({e})", store.kind());
+                return 1;
+            }
+        },
+        Ok(None) => {
+            println!("{id}: no key in the {}", store.kind());
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("rox-broker: {e}");
+            return 2;
+        }
+    };
+    let recorded = data.and_then(|d| {
+        let db = rusqlite::Connection::open_with_flags(d.join("generated").join("app.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        db.query_row("SELECT plugin_pub FROM v1_plugins WHERE id=?", [id], |r| r.get::<_, String>(0)).ok()
+    });
+    let verdict = match recorded {
+        Some(r) if r == public => "matches v1_plugins",
+        Some(_) => "DIFFERS from v1_plugins",
+        None => "not in v1_plugins",
+    };
+    println!("{id}: {} key found, public key {public} ({verdict})", store.kind());
+    i32::from(verdict.starts_with("DIFFERS"))
 }
