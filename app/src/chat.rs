@@ -486,18 +486,293 @@ pub(crate) fn routine_status_line() -> impl IntoElement {
 fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     if let Some(n) = t.notice.clone() {
         notice_row(n).into_element()
+    } else if let Some(n) = t.agents_notice.clone() {
+        agents_notice_row(n).into_element()
     } else if let Some(c) = t.consent.clone() {
         consent_row(c).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
+    } else if let Some(m) = t.message.clone() {
+        message_row(t.i, m).into_element()
     } else if t.role == "user" && !t.instruction_from.is_empty() {
         instruction_row(t).into_element()
+    } else if let (true, Some(r)) = (t.role == "user", t.reply_from.clone()) {
+        reply_row(t, r).into_element()
     } else if t.role == "user" {
         user_row(t, chat.to_owned()).into_element()
+    } else if let Some(r) = t.reply_from.clone() {
+        // an answer made for another agent's request, its cards as usual
+        let mut t = t;
+        t.text = r.body(&t.text);
+        view().gap_1().child(reply_caption(r)).child(agent_row(t)).into_element()
     } else {
         agent_row(t).into_element()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agents messaging each other (agents.rs)
+// ---------------------------------------------------------------------------
+
+/// A small accent action in a centered notice line ("Open", "Resume").
+fn notice_act(word: &'static str, aria: String, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .label(aria)
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .child(
+            text(word)
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }),
+        )
+}
+
+fn notice_dot() -> impl IntoElement {
+    text("·").text_size(px(12.0)).text_color(theme::FAINT)
+}
+
+/// An agents' notice: one centered, dim line as a routine's run is —
+/// "Piccolo → Boss · Q3 payments · 2 messages · Open". A paused
+/// conversation's adds Resume while it is paused; a line inside the
+/// conversation it names has no Open.
+fn agents_notice_row(n: crate::agents::AgentsNotice) -> impl IntoElement {
+    use crate::agents::NoticeKind;
+    let st = store();
+    let here = untracked(|| {
+        let id = st.active_id.get();
+        st.threads.with(|t| t.iter().any(|t| t.id == id && (t.id == n.thread || t.uid == n.thread)))
+    });
+    let open = n.opens() && !here;
+    let (thread, message, label) = (n.thread.clone(), n.message.clone(), n.open_label());
+    let conv = n.conversation.clone();
+    view().flex_row().w_full().justify_center().child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .max_w(px(620.0))
+            // wraps in a narrow column instead of running off its edges
+            .flex_shrink(1.0)
+            .flex_wrap()
+            .justify_center()
+            .label(n.text.clone())
+            .child(
+                text(n.text.clone())
+                    .text_size(px(12.0))
+                    .text_color(theme::MUTED)
+                    .text_center()
+                    .number_of_lines(2)
+                    .flex_shrink(1.0),
+            )
+            .when(n.kind == NoticeKind::Paused && !conv.is_empty(), |v| {
+                v.child(dynamic(move || {
+                    let c = conv.clone();
+                    if store().agents_paused(&c) {
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(notice_dot())
+                            .child(notice_act("Resume", "Resume the conversation".to_owned(), move || store().agents_resume(c.clone())))
+                            .into_element()
+                    } else if store().agents_resumed.with(|l| l.contains(&c)) {
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(notice_dot())
+                            .child(text("Resumed").text_size(px(12.0)).text_color(theme::FAINT))
+                            .into_element()
+                    } else {
+                        view().into_element()
+                    }
+                }))
+            })
+            .when(open, |v| {
+                v.child(notice_dot()).child(notice_act("Open", label, move || {
+                    store().go_to_key(&thread, Some(message.clone()).filter(|m| !m.is_empty()))
+                }))
+            }),
+    )
+}
+
+/// A participant's avatar: its bot's mark, or for an outside endpoint
+/// (no bot) a neutral disc with its initials.
+pub(crate) fn peer_avatar(id: &str, name: &str, size: f32) -> AnyElement {
+    match store().bots.with_untracked(|b| b.iter().find(|b| b.id == id).cloned()) {
+        Some(b) => crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
+            box_: Some(size),
+            paused: true,
+            ..crate::avatar::BotAvatarProps::bot(&b, size / 0.82)
+        })
+        .into_element(),
+        None => view()
+            .size(px(size))
+            .rounded(px(size / 2.0))
+            .items_center()
+            .justify_center()
+            .bg(theme::SUBTLE)
+            .border(px(0.5))
+            .border_color(theme::BORDER_S)
+            .label(name.to_owned())
+            .child(
+                text(crate::agents::initials(name))
+                    .text_size(px((size * 0.42).round()))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::DIM),
+            )
+            .into_element(),
+    }
+}
+
+/// One message in an agents' conversation: the sender's avatar and name
+/// over a bubble of Markdown; its tickets as chips, its `data` collapsed
+/// under Details.
+fn message_row(i: i64, m: crate::agents::AgentMessage) -> impl IntoElement {
+    let body = m.text.clone();
+    let to = match m.to.as_slice() {
+        [] => String::new(),
+        [one] => format!("to {}", one.name),
+        many => format!("to {} agents", many.len()),
+    };
+    let data = m.data.clone();
+    let open = signal(false);
+    let hov = signal(false);
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .label(format!("{} · {}", m.header(), m.text.chars().take(80).collect::<String>()))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(peer_avatar(&m.from.id, &m.from.name, 22.0))
+                .child(text(m.from.name.clone()).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .when(!to.is_empty(), |v| v.child(text(to).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))),
+        )
+        .child(
+            view().flex_row().w_full().justify_start().pl(px(28.0)).child(
+                view()
+                    .max_w(px(560.0))
+                    .flex_shrink(1.0)
+                    .min_w(px(BUBBLE_MIN))
+                    .bg_linear_to_b()
+                    .gradient_from(theme::AGENT_BUBBLE_TOP)
+                    .gradient_to(theme::AGENT_BUBBLE_BOTTOM)
+                    .rounded(px(18.0))
+                    .border(px(0.5))
+                    .border_color(theme::AGENT_RIM)
+                    .px(px(11.5))
+                    .py(px(6.5))
+                    .child(highlight_ring(i, 18.0))
+                    .child(markdown(move || store().v1_display(&body), || false, || false)),
+            ),
+        )
+        .when(!m.attachments.is_empty(), |v| {
+            v.child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .pl(px(28.0))
+                    .max_w(px(588.0))
+                    .children(m.attachments.iter().map(|tok| {
+                        let t = tok.clone();
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .h(px(22.0))
+                            .px(px(8.0))
+                            .rounded(px(11.0))
+                            .bg(theme::ACCENT_TINT)
+                            .label(move || format!("Attached: {}", store().v1_plain(&t)))
+                            .child({
+                                let t = tok.clone();
+                                text(move || store().v1_plain(&t)).number_of_lines(1).text_size(px(12.0)).text_color(theme::ACCENT)
+                            })
+                            .into_element()
+                    })),
+            )
+        })
+        .when(!data.is_empty(), |v| {
+            v.child(
+                view()
+                    .pl(px(28.0))
+                    .gap(px(4.0))
+                    .child(
+                        view()
+                            .flex_row()
+                            .label(move || if open.get() { "Hide details".to_owned() } else { "Show details".to_owned() })
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                            .on_press(move || open.update(|o| *o = !*o))
+                            .child(
+                                text(move || if open.get() { "Details ▾" } else { "Details ›" })
+                                    .text_size(px(12.0))
+                                    .text_color(move || if hov.get() { theme::TEXT } else { theme::MUTED }),
+                            ),
+                    )
+                    .child(when(open, move || {
+                        view()
+                            .max_w(px(560.0))
+                            .px_3()
+                            .py(px(8.0))
+                            .rounded(px(10.0))
+                            .bg(theme::SUBTLE)
+                            .border(px(0.5))
+                            .border_color(theme::BORDER_S)
+                            .child(text(data.clone()).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::DIM))
+                            .into_element()
+                    })),
+            )
+        })
+}
+
+/// "Reply from Boss · Open" (or "For Piccolo's request · Open") over a
+/// turn another agent's message brought: Open shows the conversation at
+/// that message.
+fn reply_caption(r: crate::agents::ReplyFrom) -> impl IntoElement {
+    let (thread, message) = (r.thread.clone(), r.message.clone());
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .child(text(r.caption()).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
+        .when(!thread.is_empty(), |v| {
+            v.child(notice_dot()).child(notice_act("Open", "Open the conversation".to_owned(), move || {
+                store().go_to_key(&thread, Some(message.clone()).filter(|m| !m.is_empty()))
+            }))
+        })
+}
+
+/// A user turn that is another agent's reply: captioned, in a quiet
+/// bubble (the user never typed it), as a routine's instruction is.
+fn reply_row(t: Turn, r: crate::agents::ReplyFrom) -> impl IntoElement {
+    let body = r.body(&t.text);
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .child(reply_caption(r))
+        .when(!body.trim().is_empty(), |v| {
+            v.child(
+                view()
+                    .max_w(px(560.0))
+                    .flex_shrink(1.0)
+                    .bg(theme::SUBTLE)
+                    .border(px(0.5))
+                    .border_color(theme::BORDER_S)
+                    .rounded(px(12.0))
+                    .px_3()
+                    .py(px(7.0))
+                    .child(highlight_ring(t.i, 12.0))
+                    .child(markdown(move || store().v1_display(&body), || false, || false)),
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
