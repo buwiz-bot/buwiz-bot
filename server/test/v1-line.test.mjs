@@ -64,11 +64,15 @@ test("a Node restart leaves rox-broker's plugin running; Node, back, lists it an
   const [bin, args] = brokerCommand();
   const env = { ...process.env, ROX_BROKER_V1_HOST: "1", MOCK: "1", GROK_ALLOWED_ORIGINS: "", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile };
 
-  broker = spawn(bin, [...args, "--port", String(PORT), "--data", data], { cwd: ROOT, env, stdio: "ignore" });
+  let log = "";
+
+  broker = spawn(bin, [...args, "--port", String(PORT), "--data", data], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  broker.stdout.on("data", (d) => (log += d));
+  broker.stderr.on("data", (d) => (log += d));
   const healthy = () => req("GET", "/health", "").then((r) => r.status === 200, () => false);
   const tokenFile = join(data, "host-token");
 
-  await until(healthy, 20000, "the broker");
+  await until(healthy, 20000, `the broker on ${PORT}:\n${log.slice(-2000)}`);
   let token = readFileSync(tokenFile, "utf8");
   const i = await req("POST", "/v1/host/plugins/inspect", token, fixtureSpec(b));
   const inst = await req("POST", "/v1/host/plugins/install", token, { ...fixtureSpec(b), manifest_sha256: i.json.manifest_sha256 });
