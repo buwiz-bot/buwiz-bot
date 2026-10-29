@@ -1798,6 +1798,9 @@ pub struct Store {
     pub pop_rows: Signal<Vec<crate::slash::PopRow>>,
     pub pop_head: Signal<String>,
     pub pop_sel: Signal<usize>,
+    /// The composer text the popup's rows were computed for: Return takes
+    /// a row only while that is still the text (D20, slash.rs).
+    pub pop_query: std::cell::RefCell<String>,
     /// When `GET /mcp/manifest` was last asked; whether it has answered.
     pub mcp_asked: std::cell::Cell<Option<std::time::Instant>>,
     pub mcp_loaded: std::cell::Cell<bool>,
@@ -2267,6 +2270,7 @@ impl Store {
             pop_rows: signal(Vec::new()),
             pop_head: signal(String::new()),
             pop_sel: signal(0),
+            pop_query: std::cell::RefCell::new(String::new()),
             mcp_asked: std::cell::Cell::new(None),
             mcp_loaded: std::cell::Cell::new(false),
             complete_seq: std::cell::Cell::new(0),

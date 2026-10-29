@@ -237,7 +237,8 @@ pub(crate) static COMMANDS: &[Command] = &[
     // ——— The composer's / and @ popup ———
     always(repeating(cmd("popup.up", "Previous suggestion", Scope::ComposerPopup, &["up"], |_| crate::slash::step(-1)))),
     always(repeating(cmd("popup.down", "Next suggestion", Scope::ComposerPopup, &["down"], |_| crate::slash::step(1)))),
-    always(cmd("popup.pick", "Pick the suggestion", Scope::ComposerPopup, &["enter", "tab"], |_| crate::slash::enter())),
+    always(cmd("popup.pick", "Pick the suggestion", Scope::ComposerPopup, &["enter"], |_| crate::slash::enter())),
+    always(cmd("popup.complete", "Complete with the suggestion", Scope::ComposerPopup, &["tab"], |_| crate::slash::tab())),
     always(cmd("popup.close", "Close the suggestions", Scope::ComposerPopup, &["escape"], |_| crate::slash::close())),
     always(with_arg(cmd("popup.pick_1", "Pick suggestion 1", Scope::ComposerPopup, &["mod+1"], popup_pick), 1)),
     always(with_arg(cmd("popup.pick_2", "Pick suggestion 2", Scope::ComposerPopup, &["mod+2"], popup_pick), 2)),
