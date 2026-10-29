@@ -3,7 +3,9 @@
 // broker plan, 0.3.) Replays the GET routes Rox calls (from
 // route-inventory.mjs) against brokers A and B, each started on a copy of
 // the same data (scripts/live-copy), and diffs status and JSON. Fields that
-// differ between any two runs (VOLATILE) are left out.
+// differ between any two runs (VOLATILE) are left out. Besides the routes,
+// it reads every thread's /turns and /thread/apps, each app's /module and
+// /app/info, and each Library item's /artifact/info (phase 5 §4 step 0).
 //
 //   node server/tools/parity.mjs <url A>[,<data dir A>] <url B>[,<data dir B>]
 //
@@ -84,10 +86,23 @@ function diff(x, y, at = "$") {
   return x === y ? null : at;
 }
 
-// every thread's turns, as Rox reads a chat that isn't the active one
+// every thread's turns and its Library pane, as Rox reads a chat that
+// isn't the active one; every app's module and details; every artifact's
+// details (as Edit Details reads them)
 const threads = (await get(a, "/threads")).body?.list || [];
 
-for (const t of threads) paths.add(`/turns?thread=${t.id}`);
+for (const t of threads) {
+  paths.add(`/turns?thread=${t.id}`);
+  paths.add(`/thread/apps?thread=${t.id}`);
+
+  for (const x of (await get(a, `/thread/apps?thread=${t.id}`)).body?.apps || []) paths.add(`/artifact/info?id=${encodeURIComponent(x.id)}`);
+}
+
+for (const x of (await get(a, "/apps/meta")).body?.apps || []) {
+  paths.add(`/module?name=${x.name}`);
+  paths.add(`/app/info?name=${x.name}`);
+}
+
 let differ = 0;
 const lines = [];
 
