@@ -3,6 +3,7 @@
 //! row (decision D7). Each one answers as Node's handler does, byte for
 //! byte where a client could tell (server/test/leaf-routes.test.mjs).
 
+mod files;
 mod keymap;
 mod prefs;
 mod skills;
@@ -23,7 +24,7 @@ use rusqlite::Connection;
 use crate::proxy::Body;
 
 /// The route groups `/meta` lists as ported.
-pub const PORTED: &[&str] = &["state", "prefs", "keymap", "timeclock", "skills"];
+pub const PORTED: &[&str] = &["state", "prefs", "keymap", "timeclock", "skills", "files"];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Route {
@@ -35,6 +36,10 @@ pub enum Route {
     ClockIn,
     ClockOut,
     Skills,
+    FileRaw,
+    FileVersions,
+    FilesDir,
+    Asset,
 }
 
 /// The route a request takes here, matched as Node matches it (`req.url`,
@@ -50,6 +55,10 @@ pub fn route(method: &Method, url: &str) -> Option<Route> {
         "/data/timeclock/in" if post => Some(Route::ClockIn),
         "/data/timeclock/out" if post => Some(Route::ClockOut),
         "/skills" if get => Some(Route::Skills),
+        _ if get && url.starts_with("/file/raw/") => Some(Route::FileRaw),
+        _ if get && url.starts_with("/file/versions?") => Some(Route::FileVersions),
+        _ if get && (url.starts_with("/files/attachments/") || url.starts_with("/files/avatars/")) => Some(Route::FilesDir),
+        _ if get && url.starts_with("/asset/generated/assets/") => Some(Route::Asset),
         _ if get && url.starts_with("/state") => Some(Route::StateGet),
         _ if post && url.starts_with("/state") => Some(Route::StatePost),
         _ => None,
@@ -57,26 +66,37 @@ pub fn route(method: &Method, url: &str) -> Option<Route> {
 }
 
 /// An answer before CORS: status, whether Node set `content-type:
-/// application/json` on it, and the body.
+/// application/json` on it, any other headers, and the body.
 pub struct Answer {
     status: u16,
     json: bool,
-    body: String,
+    headers: Vec<(&'static str, String)>,
+    body: Vec<u8>,
 }
 
 impl Answer {
     fn json(status: u16, body: impl Into<String>) -> Self {
-        Self { status, json: true, body: body.into() }
+        Self { status, json: true, headers: Vec::new(), body: body.into().into_bytes() }
     }
 
     /// A body Node sends without setting a content type.
-    fn bare(status: u16, body: impl Into<String>) -> Self {
-        Self { status, json: false, body: body.into() }
+    fn bare(status: u16, body: impl Into<Vec<u8>>) -> Self {
+        Self { status, json: false, headers: Vec::new(), body: body.into() }
+    }
+
+    fn header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
     }
 
     /// `{ok: false, error}`.
     fn refused(status: u16, json: bool, error: &str) -> Self {
-        Self { status, json, body: format!("{{\"ok\":false,\"error\":{}}}", crate::js::quote(error)) }
+        Self::bare(status, format!("{{\"ok\":false,\"error\":{}}}", crate::js::quote(error))).with_json(json)
+    }
+
+    fn with_json(mut self, json: bool) -> Self {
+        self.json = json;
+        self
     }
 
     /// What Node's dispatcher sends when a route throws.
@@ -104,16 +124,17 @@ impl Leaf {
             return respond(Answer::refused(status.as_u16(), true, &error), None);
         }
         let method = req.method().clone();
+        let range = req.headers().get(hyper::header::RANGE).map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
         let url = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_owned();
         let body = match req.into_body().collect().await {
             Ok(b) => String::from_utf8_lossy(&b.to_bytes()).into_owned(),
             Err(_) => String::new(),
         };
-        let answer = tokio::task::block_in_place(|| self.answer(route, &method, &url, &body));
+        let answer = tokio::task::block_in_place(|| self.answer(route, &method, &url, &body, range.as_deref()));
         respond(answer, origin)
     }
 
-    fn answer(&self, route: Route, method: &Method, url: &str, body: &str) -> Answer {
+    fn answer(&self, route: Route, method: &Method, url: &str, body: &str, range: Option<&str>) -> Answer {
         match route {
             Route::StateGet => state::get(self, url),
             Route::StatePost => state::post(self, url, body),
@@ -125,6 +146,10 @@ impl Leaf {
             Route::ClockIn => timeclock::clock_in(self),
             Route::ClockOut => timeclock::clock_out(self),
             Route::Skills => skills::get(self),
+            Route::FileRaw => files::raw(self, url, range),
+            Route::FileVersions => files::versions(self, url),
+            Route::FilesDir => files::files_dir(self, url, range),
+            Route::Asset => files::asset(self, url, range),
         }
     }
 
@@ -157,6 +182,11 @@ fn respond(answer: Answer, origin: Option<HeaderValue>) -> Response<Body> {
     let h = res.headers_mut();
     if answer.json {
         h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    }
+    for (name, value) in answer.headers {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            h.insert(name, value);
+        }
     }
     if let Some(origin) = origin {
         h.insert("access-control-allow-origin", origin);
@@ -205,5 +235,11 @@ mod tests {
         assert_eq!(route(&get, "/skills"), Some(Route::Skills));
         assert_eq!(route(&post, "/skills"), None);
         assert_eq!(route(&get, "/threads"), None);
+        assert_eq!(route(&get, "/file/raw/t1/a.pdf"), Some(Route::FileRaw));
+        assert_eq!(route(&get, "/file/versions"), None);
+        assert_eq!(route(&get, "/file/versions?path=a"), Some(Route::FileVersions));
+        assert_eq!(route(&get, "/files/avatars/a.png"), Some(Route::FilesDir));
+        assert_eq!(route(&get, "/files/other/a.png"), None);
+        assert_eq!(route(&Method::HEAD, "/asset/generated/assets/a.png"), None);
     }
 }
