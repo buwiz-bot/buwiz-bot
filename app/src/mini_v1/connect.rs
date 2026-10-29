@@ -54,12 +54,166 @@ pub struct Routine {
     pub enabled: bool,
     pub available: bool,
     pub reason: String,
+    /// The chat it reports to.
     pub thread: String,
+    /// Its own thread (`home`), made once it is enabled ("" from an older
+    /// broker, or before).
+    pub home: String,
+    /// Seconds between its checks.
+    pub every_s: f64,
     /// What it reads, a line per plugin ("Google Workspace: gws_search_mail").
     pub reads: Vec<String>,
     /// Epoch ms of the last run (0 never), and its error ("" when it went fine).
     pub last_run: f64,
     pub last_error: String,
+    /// New items the last run that went through ran (`None` unknown).
+    pub last_items: Option<u64>,
+    /// A run is in progress (Run now, or its schedule).
+    pub running: bool,
+    /// Its instances (5.9): each runs in one chat with its own params,
+    /// trigger and thread. Empty from a broker before instances.
+    pub instances: Vec<Instance>,
+    /// Its `params` schema (`Null` when it takes none), and the plugin's
+    /// own tools it may change data with.
+    pub params_schema: Value,
+    pub writes: Vec<String>,
+}
+
+/// One instance of a routine (5.9, "Routine instances").
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Instance {
+    pub instance: String,
+    /// Its label, else its params in one line ("" none).
+    pub summary: String,
+    pub params: Value,
+    /// `schedule` or `webhook`.
+    pub trigger: String,
+    pub every_s: f64,
+    pub enabled: bool,
+    /// Waiting for the user's Enable on its consent card.
+    pub pending: bool,
+    pub thread: String,
+    pub home: String,
+    pub available: bool,
+    pub reason: String,
+    pub last_run: f64,
+    pub last_error: String,
+    pub last_items: Option<u64>,
+    pub running: bool,
+    /// Its webhook has a URL (shown once, when it is made).
+    pub hook: bool,
+}
+
+impl Instance {
+    fn of(v: &Value) -> Instance {
+        let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+        Instance {
+            instance: s(v, "instance"),
+            summary: s(v, "summary"),
+            params: v.get("params").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+            trigger: Some(s(v, "trigger")).filter(|t| !t.is_empty()).unwrap_or_else(|| "schedule".to_owned()),
+            every_s: v.get("every_s").and_then(Value::as_f64).unwrap_or(0.0),
+            enabled: b("enabled"),
+            pending: b("pending"),
+            thread: s(v, "thread"),
+            home: s(v, "home"),
+            available: b("available"),
+            reason: s(v, "reason"),
+            last_run: v.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
+            last_error: s(v, "last_error"),
+            last_items: v.get("last_items").and_then(Value::as_u64),
+            running: b("running"),
+            hook: b("hook"),
+        }
+    }
+
+    /// The routine as this instance runs it, for its lines
+    /// ([`Routine::last_check`], [`Routine::schedule`]).
+    pub fn as_routine(&self, r: &Routine) -> Routine {
+        Routine {
+            enabled: self.enabled,
+            available: self.available,
+            reason: self.reason.clone(),
+            thread: self.thread.clone(),
+            home: self.home.clone(),
+            every_s: if self.every_s > 0.0 { self.every_s } else { r.every_s },
+            last_run: self.last_run,
+            last_error: self.last_error.clone(),
+            last_items: self.last_items,
+            running: self.running,
+            instances: Vec::new(),
+            ..r.clone()
+        }
+    }
+}
+
+impl Routine {
+    /// The quiet line of its thread, and whether it reads as a failure:
+    /// "Checks every 5 min · last checked 3:42 PM · nothing new", why it
+    /// can't run, or its last error. `checked` is a run's local time.
+    pub fn quiet_line(&self, checked: impl Fn(f64) -> String) -> (String, bool) {
+        let (last, failed) = self.last_check(checked);
+        if !self.enabled || !self.available {
+            return (last, failed);
+        }
+        (format!("{} · {last}", self.schedule()), failed)
+    }
+
+    /// "Checks every 5 min".
+    pub fn schedule(&self) -> String {
+        format!("Checks {}", crate::routines::interval(self.every_s))
+    }
+
+    /// Its instances, or for a broker before instances the routine itself
+    /// as one (`instance` "", when it was ever enabled).
+    pub fn instances_or_self(&self) -> Vec<Instance> {
+        if !self.instances.is_empty() || self.thread.is_empty() {
+            return self.instances.clone();
+        }
+        vec![Instance {
+            instance: String::new(),
+            summary: String::new(),
+            params: json!({}),
+            trigger: "schedule".to_owned(),
+            every_s: self.every_s,
+            enabled: self.enabled,
+            pending: false,
+            thread: self.thread.clone(),
+            home: self.home.clone(),
+            available: self.available,
+            reason: self.reason.clone(),
+            last_run: self.last_run,
+            last_error: self.last_error.clone(),
+            last_items: self.last_items,
+            running: self.running,
+            hook: false,
+        }]
+    }
+
+    /// How its last check went, and whether that is a failure: "last
+    /// checked 3:42 PM · nothing new", "last check failed: …", "waiting for
+    /// its first check" — or "Turned off" / "Can't check: …".
+    pub fn last_check(&self, checked: impl Fn(f64) -> String) -> (String, bool) {
+        if !self.enabled {
+            return ("Turned off".to_owned(), false);
+        }
+        if !self.available {
+            return (format!("Can't check: {}", self.reason), true);
+        }
+        if !self.last_error.is_empty() {
+            return (format!("last check failed: {}", self.last_error), true);
+        }
+        if self.last_run <= 0.0 {
+            return ("waiting for its first check".to_owned(), false);
+        }
+        let found = match self.last_items {
+            Some(0) => " · nothing new".to_owned(),
+            Some(1) => " · 1 new item".to_owned(),
+            Some(n) => format!(" · {n} new items"),
+            None => String::new(),
+        };
+        (format!("last checked {}{found}", checked(self.last_run)), false)
+    }
 }
 
 /// A v1 plugin as Connect Apps lists it.
@@ -115,8 +269,15 @@ impl Listed {
                     available: r.get("available").and_then(Value::as_bool).unwrap_or(false),
                     reason: s(r, "reason"),
                     thread: s(r, "thread"),
+                    home: s(r, "home"),
+                    every_s: r.get("every_s").and_then(Value::as_f64).unwrap_or(0.0),
+                    last_items: r.get("last_items").and_then(Value::as_u64),
                     last_run: r.get("last_run").and_then(Value::as_f64).unwrap_or(0.0),
                     last_error: s(r, "last_error"),
+                    running: r.get("running").and_then(Value::as_bool).unwrap_or(false),
+                    instances: list(r, "instances").iter().map(Instance::of).collect(),
+                    params_schema: r.get("params").cloned().filter(Value::is_object).unwrap_or(Value::Null),
+                    writes: list(r, "writes").iter().filter_map(|w| w.as_str().map(str::to_owned)).collect(),
                     reads: list(r, "reads_status")
                         .iter()
                         .map(|x| {
@@ -561,9 +722,33 @@ mod tests {
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
         assert_eq!(l.routines[0].reads, ["dev.goldcoders.gws: gws_search_mail"]);
         assert_eq!((l.routines[0].last_run, l.routines[0].last_error.as_str()), (1793194720000.0, "bir_payment_search: offline"));
+        assert_eq!((l.routines[0].home.as_str(), l.routines[0].last_items), ("", None));
         assert_eq!(l.apps, ["BIR Forms · full screen, inline"]);
         let p = log_file("dev.goldcoders.bir").unwrap();
         assert!(p.ends_with("v1/logs/dev.goldcoders.bir.log"), "{}", p.display());
         assert_eq!(log_file("../x"), None);
+    }
+
+    #[test]
+    fn a_routine_threads_quiet_line_says_when_it_checked_and_what_it_found() {
+        let l = Listed::of(&json!({"id": "dev.goldcoders.bir", "routines": [{"id": "bir-payments", "name": "Payments",
+            "every_s": 300, "enabled": true, "available": true, "thread": "t1", "home": "t9",
+            "last_run": 1793194720000u64, "last_error": null, "last_items": 0}]}));
+        let r = l.routines[0].clone();
+        assert_eq!((r.home.as_str(), r.every_s, r.last_items), ("t9", 300.0, Some(0)));
+        let at = |_: f64| "3:42 PM".to_owned();
+        assert_eq!(r.quiet_line(at), ("Checks every 5 min · last checked 3:42 PM · nothing new".to_owned(), false));
+        assert_eq!(Routine { last_items: Some(2), ..r.clone() }.quiet_line(at).0, "Checks every 5 min · last checked 3:42 PM · 2 new items");
+        assert_eq!(Routine { last_items: None, ..r.clone() }.quiet_line(at).0, "Checks every 5 min · last checked 3:42 PM");
+        assert_eq!(Routine { last_run: 0.0, ..r.clone() }.quiet_line(at).0, "Checks every 5 min · waiting for its first check");
+        assert_eq!(
+            Routine { last_error: "bir_payment_search: offline".into(), ..r.clone() }.quiet_line(at),
+            ("Checks every 5 min · last check failed: bir_payment_search: offline".to_owned(), true)
+        );
+        assert_eq!(
+            Routine { available: false, reason: "you have not approved what it reads".into(), ..r.clone() }.quiet_line(at),
+            ("Can't check: you have not approved what it reads".to_owned(), true)
+        );
+        assert_eq!(Routine { enabled: false, ..r }.quiet_line(at).0, "Turned off");
     }
 }

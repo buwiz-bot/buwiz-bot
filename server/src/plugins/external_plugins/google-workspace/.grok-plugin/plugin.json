@@ -1,0 +1,10 @@
+{
+  "name": "google-workspace",
+  "version": "1.0.0",
+  "description": "Gmail, Google Calendar, Drive, Docs, Sheets and Slides through the open-source workspace-mcp server, run locally on the regular Google APIs with your own OAuth client.",
+  "author": { "name": "taylorwilsdon", "url": "https://github.com/taylorwilsdon/google_workspace_mcp" },
+  "homepage": "https://workspacemcp.com",
+  "repository": "https://github.com/taylorwilsdon/google_workspace_mcp",
+  "license": "MIT",
+  "keywords": ["google", "gmail", "calendar", "drive", "docs", "sheets", "slides", "mcp"]
+}

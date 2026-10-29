@@ -30,6 +30,120 @@ pub struct ThreadMeta {
     pub hidden: bool,
     pub archived: bool,
     pub last_app: String,
+    /// A v1 routine's own thread (`routine` on the row): never a sidebar
+    /// row nor a ⌘1–9 slot; its runs land here, its notices in `thread`.
+    pub routine: Option<RoutineOf>,
+    /// An agents' conversation's thread (`agents` on the row): never a
+    /// sidebar row, a ⌘1–9 slot nor the chat restored at launch; read-only.
+    pub agents: Option<crate::agents::AgentsOf>,
+}
+
+/// A routine's check time `ms` as local time: "3:42 PM", or with the date
+/// when not today ("Oct 2, 3:42 PM").
+pub fn checked_at(ms: f64) -> String {
+    let at = crate::mini_v1::cards::as_of_label(ms as i64);
+    at.strip_prefix("as of ").map(str::to_owned).unwrap_or(at)
+}
+
+/// The `routine` field of a `/threads` row: whose thread it is and the
+/// chat the routine reports to (the way back).
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct RoutineOf {
+    pub plugin: String,
+    pub id: String,
+    /// The instance whose thread it is ("" from a broker before instances).
+    pub instance: String,
+    pub name: String,
+    pub thread: String,
+}
+
+impl RoutineOf {
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        let r = Self { plugin: s(v, "plugin"), id: s(v, "id"), instance: s(v, "instance"), name: s(v, "name"), thread: s(v, "thread") };
+        (!r.plugin.is_empty() && !r.id.is_empty()).then_some(r)
+    }
+}
+
+/// A `notice` turn's payload: one run of a v1 routine, told in the chat it
+/// reports to. `thread`/`turn` say where the run starts in the routine's
+/// thread ("" when it ran nothing there); `error` is set on a failure.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct RoutineNotice {
+    pub name: String,
+    pub plugin: String,
+    pub routine: String,
+    pub thread: String,
+    pub turn: String,
+    pub items: i64,
+    pub error: String,
+}
+
+impl RoutineNotice {
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "routine" {
+            return None;
+        }
+        // the uid when there is one: it names the thread for good
+        let thread = Some(s(v, "thread_uid")).filter(|u| !u.is_empty()).unwrap_or_else(|| s(v, "thread"));
+        Some(Self {
+            name: Some(s(v, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| "Routine".to_owned()),
+            plugin: s(v, "plugin"),
+            routine: s(v, "routine"),
+            thread,
+            turn: s(v, "turn"),
+            items: i64of(v, "items"),
+            error: s(v, "error"),
+        })
+    }
+
+    /// The line it shows: "BIR payments ran · 2 new items".
+    pub fn line(&self) -> String {
+        if !self.error.is_empty() {
+            let e: String = self.error.chars().take(160).collect();
+            return format!("{} failed: {e}", self.name);
+        }
+        format!("{} ran · {} new item{}", self.name, self.items, if self.items == 1 { "" } else { "s" })
+    }
+}
+
+/// A `notice` turn that asks the user to switch on a routine instance the
+/// agent made (`routine_consent`, 5.9): its question (the turn's text),
+/// and whether it was answered.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct ConsentNotice {
+    pub plugin: String,
+    pub routine: String,
+    pub instance: String,
+    pub name: String,
+    pub text: String,
+    /// `pending`, `enabled` or `declined`.
+    pub state: String,
+}
+
+impl ConsentNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "routine_consent" || s(v, "instance").is_empty() {
+            return None;
+        }
+        Some(Self {
+            plugin: s(v, "plugin"),
+            routine: s(v, "routine"),
+            instance: s(v, "instance"),
+            name: s(v, "name"),
+            text,
+            state: Some(s(v, "state")).filter(|x| !x.is_empty()).unwrap_or_else(|| "pending".to_owned()),
+        })
+    }
+
+    /// Its state as the card shows it, the user's tap (`local`) over the
+    /// one the chat last loaded: None while it still asks.
+    pub fn answered(&self, local: Option<&str>) -> Option<&'static str> {
+        match local.unwrap_or(&self.state) {
+            "enabled" => Some("Enabled"),
+            "declined" => Some("Not enabled"),
+            _ => None,
+        }
+    }
 }
 
 /// The `bot` field of a `/threads` row — the persona behind the chat.
@@ -274,6 +388,14 @@ pub struct RoxBot {
     pub integrations: Vec<BotIntegration>,
     /// Its last edit (Bot Details' "Last updated"), epoch ms; 0 if never.
     pub updated_at: f64,
+    /// The agent that made it (`made_by`; "" when the user did), and
+    /// what for (`purpose`).
+    pub made_by: String,
+    pub purpose: String,
+    /// A temporary helper's parent and task (`helper`): no sidebar row.
+    pub helper: Option<crate::agents::HelperOf>,
+    /// Whom it takes messages from: `all`, `none` or `some` (a list).
+    pub accepts: String,
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -480,6 +602,21 @@ pub struct Turn {
     pub v1_attachments: Vec<(String, String)>,
     /// An answer's next steps (9.8, `suggest`): (label, prompt).
     pub suggest: Vec<(String, String)>,
+    /// A `notice` turn: a routine's run, drawn as a centered line.
+    pub notice: Option<RoutineNotice>,
+    /// A `notice` turn asking to switch on a routine (a card with Enable).
+    pub consent: Option<ConsentNotice>,
+    /// An item's instruction in a routine's thread (the user turn's
+    /// `routine` mark): the routine's name, its caption ("" otherwise).
+    pub instruction_from: String,
+    /// An `agent_message` turn's envelope (an agents' conversation).
+    pub message: Option<crate::agents::AgentMessage>,
+    /// A `notice` turn about agents (messages, a new agent, a pause).
+    pub agents_notice: Option<crate::agents::AgentsNotice>,
+    /// A turn in an agent's chat marked `agent`: a user turn that is
+    /// another agent's reply ("Reply from <name>"), or an answer made for
+    /// another agent's request ("For <name>'s request").
+    pub reply_from: Option<crate::agents::ReplyFrom>,
 }
 
 /// What a reply quotes of turn `t` (`onReply(i, text || caption || name)`):
@@ -1221,8 +1358,6 @@ pub enum PaletteAct {
     /// Attach a token to a chat (a bot's main chat): (token, thread, its
     /// name).
     Attach(String, String, String),
-    /// Enable a server's routine template in a chat (a bot's main chat).
-    EnableRoutine { server: String, id: String, thread: String, place: String, email: String },
 }
 
 /// One thing a bot remembers (`memories` on a `/threads` bot).
@@ -1402,7 +1537,10 @@ const ZOOM_MAX: i32 = 300;
 /// Whether turn `t` is the one `key` names: its permanent `id`, or (old
 /// links) its index.
 fn turn_is(t: &Turn, key: &str) -> bool {
-    (!t.id.is_empty() && t.id == key) || t.i.to_string() == key
+    (!t.id.is_empty() && t.id == key)
+        || t.i.to_string() == key
+        // an agents' notice names the message (`msg_…`), not its turn
+        || t.message.as_ref().is_some_and(|m| m.id == key)
 }
 
 /// `rox://chat/<thread uid|id>[?m=<turn id|index>]` → (thread, turn key).
@@ -1495,7 +1633,7 @@ impl Attach {
 }
 
 impl Turn {
-    fn of(v: &serde_json::Value) -> Turn {
+    pub(crate) fn of(v: &serde_json::Value) -> Turn {
         let files = list(v, "files");
         let mut attachments: Vec<Attach> = list(v, "attachments").iter().map(Attach::of).collect();
         attachments.extend(list(v, "art").iter().map(|a| Attach {
@@ -1573,6 +1711,22 @@ impl Turn {
                     crate::mini_v1::tokens::canonical(&token).map(|_| (token.clone(), s(a, "title")))
                 })
                 .collect(),
+            notice: (s(v, "role") == "notice").then(|| v.get("notice").and_then(RoutineNotice::of)).flatten(),
+            consent: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ConsentNotice::of(n, s(v, "text")))).flatten(),
+            instruction_from: if s(v, "role") == "user" {
+                v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
+            } else {
+                String::new()
+            },
+            message: (s(v, "role") == "agent_message").then(|| v.get("message").and_then(crate::agents::AgentMessage::of)).flatten(),
+            agents_notice: (s(v, "role") == "notice")
+                .then(|| v.get("notice").and_then(|n| crate::agents::AgentsNotice::of(n, s(v, "text"))))
+                .flatten(),
+            reply_from: match s(v, "role").as_str() {
+                "user" => v.get("agent").and_then(|a| crate::agents::ReplyFrom::of(a, false)),
+                "ai" => v.get("agent").and_then(|a| crate::agents::ReplyFrom::of(a, true)),
+                _ => None,
+            },
         }
     }
 }
@@ -1806,14 +1960,30 @@ pub struct Store {
     pub settings_sel: Signal<i64>,
     pub settings_sug: Signal<i64>,
     pub settings_note: Signal<String>,
-    /// Settings › Routines: the server's routines (`GET /routines`).
-    pub routines: Signal<Vec<crate::settings::Routine>>,
+    /// The server's own (v0) routines (`GET /routines`), for Details.
+    pub routines: Signal<Vec<crate::routines::Routine>>,
+    /// Run now in flight or just done, by routine (`routines::v1_key`,
+    /// `v0_key`).
+    pub routine_runs: Signal<Vec<(String, crate::routines::RunState)>>,
+    /// A webhook instance's URL, just made: (instance, URL), shown once.
+    pub routine_hook: Signal<Option<(String, String)>>,
+    /// The instance whose params are being edited, and the JSON typed.
+    pub routine_edit: Signal<Option<(String, String)>>,
+    /// Consent cards answered here, before the chat reloads: (instance,
+    /// "enabled" | "declined").
+    pub routine_consented: Signal<Vec<(String, String)>>,
     /// The templates connected servers suggest (`GET /routines/templates`);
     /// the one whose Enable is asking for the Google address (server, id),
     /// and what's typed there.
-    pub routine_templates: Signal<Vec<crate::settings::RoutineTemplate>>,
+    pub routine_templates: Signal<Vec<crate::routines::RoutineTemplate>>,
     pub routine_ask_email: Signal<Option<(String, String)>>,
     pub routine_email: Signal<String>,
+    /// Agents' conversations' last messages, for a bot's Details:
+    /// (thread, its turn count when read, message count, last message).
+    pub agents_last: Signal<Vec<(String, i64, i64, String)>>,
+    /// Conversations the user resumed here (their notices stop offering
+    /// Resume before `/threads` says so).
+    pub agents_resumed: Signal<Vec<String>>,
     /// The last menu action asked for, numbered (`rox/keys` sends it).
     pub keys_send: Signal<(u64, String)>,
     /// The last print job, numbered: (n, "text" | "html" | "image", payload,
@@ -2150,9 +2320,15 @@ impl Store {
             settings_sug: signal(0),
             settings_note: signal(String::new()),
             routines: signal(Vec::new()),
+            routine_runs: signal(Vec::new()),
+            routine_hook: signal(None),
+            routine_edit: signal(None),
+            routine_consented: signal(Vec::new()),
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
+            agents_last: signal(Vec::new()),
+            agents_resumed: signal(Vec::new()),
             keys_send: signal((0, String::new())),
             keys_print: signal((0, String::new(), String::new(), String::new())),
             viewer_versions: signal((String::new(), Vec::new(), 0)),
@@ -2474,6 +2650,8 @@ impl Store {
                 hidden: b(t, "hidden"),
                 archived: b(t, "archived"),
                 last_app: s(t, "lastApp"),
+                routine: t.get("routine").and_then(RoutineOf::of),
+                agents: t.get("agents").and_then(crate::agents::AgentsOf::of),
                 bot: {
                     let b = &t["bot"];
                     if b.is_null() {
@@ -2552,12 +2730,17 @@ impl Store {
                         .map(BotIntegration::of)
                         .collect(),
                     updated_at: f64of(b, "updated_at"),
+                    made_by: s(b, "made_by"),
+                    purpose: s(b, "purpose"),
+                    helper: b.get("helper").and_then(crate::agents::HelperOf::of),
+                    accepts: crate::agents::accepts_of(b),
                 })
                 .collect(),
             );
         }
         // The server names its active thread; open that one on first load.
-        let active = s(&v, "active");
+        // never an agents' conversation (read-only, reached from a chat)
+        let active = crate::agents::restore_target(&s(&v, "active"), &rows, &self.bots.get_untracked());
         if !active.is_empty() && self.active_id.get_untracked().is_empty() {
             self.active_id.set(active);
         } else if !rows.is_empty() && self.active_id.get_untracked().is_empty() {
@@ -2601,7 +2784,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| b.pinned && !b.hidden)
+            .filter(|b| b.pinned && !b.hidden && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2610,7 +2793,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| b.hidden)
+            .filter(|b| b.hidden && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2626,7 +2809,7 @@ impl Store {
         self.bots
             .get()
             .into_iter()
-            .filter(|b| !b.hidden && !b.pinned && !grouped.contains(&b.id))
+            .filter(|b| !b.hidden && !b.pinned && !grouped.contains(&b.id) && crate::agents::listed_bot(b))
             .collect()
     }
 
@@ -2642,10 +2825,10 @@ impl Store {
         g.items
             .iter()
             .filter_map(|it| match it.kind.as_str() {
-                "bot" => bots.iter().find(|b| b.id == it.id && !b.hidden).cloned().map(GroupRow::Bot),
+                "bot" => bots.iter().find(|b| b.id == it.id && !b.hidden && crate::agents::listed_bot(b)).cloned().map(GroupRow::Bot),
                 "chat" => threads
                     .iter()
-                    .find(|t| t.id == it.id && !t.hidden && !t.archived)
+                    .find(|t| t.id == it.id && !t.hidden && !t.archived && t.agents.is_none())
                     .cloned()
                     .map(GroupRow::Chat),
                 "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
@@ -2663,12 +2846,140 @@ impl Store {
         })
     }
 
-    /// `chats()` — visible chats: not bot-owned, not hidden, not archived.
+    /// The routine whose thread is open, when one is (tracked).
+    pub fn active_routine(&'static self) -> Option<RoutineOf> {
+        let id = self.active_id.get();
+        self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.routine.clone()))
+    }
+
+    /// The open agents' conversation's mark, when one is open (tracked).
+    pub fn active_agents(&'static self) -> Option<crate::agents::AgentsOf> {
+        let id = self.active_id.get();
+        self.threads.with(|t| t.iter().find(|t| t.id == id).and_then(|t| t.agents.clone()))
+    }
+
+    /// The names a conversation's participants go by: its bots', or what
+    /// the open thread's messages call an outside endpoint (tracked).
+    pub fn agents_names(&'static self, a: &crate::agents::AgentsOf) -> Vec<String> {
+        let bots = self.bots.get();
+        let seen = crate::agents::peers_in(self.turns.with(|t| t.iter().filter_map(|t| t.message.clone()).collect::<Vec<_>>()));
+        a.participants.iter().map(|p| crate::agents::participant_name(p, &bots, &seen)).collect()
+    }
+
+    /// Bot `id`'s chat thread ("" when it has none).
+    pub fn bot_thread(&'static self, id: &str) -> String {
+        self.bots.with_untracked(|b| b.iter().find(|b| b.id == id).map(|b| b.thread_id.clone())).unwrap_or_default()
+    }
+
+    /// Archive or unarchive a conversation (`/v1/host/agents/archive`),
+    /// then list the threads again.
+    pub fn agents_archive(&'static self, conversation: String, archived: bool) {
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/archive", serde_json::json!({"conversation": conversation, "archived": archived})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents archive {conversation}: {r:?}");
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Resume a conversation the hourly cap paused
+    /// (`/v1/host/agents/resume`).
+    pub fn agents_resume(&'static self, conversation: String) {
+        self.agents_resumed.update(|l| l.push(conversation.clone()));
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/resume", serde_json::json!({"conversation": conversation})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents resume {conversation}: {r:?}");
+                self.agents_resumed.update(|l| l.retain(|c| *c != conversation));
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Whether conversation `c` is paused now (tracked): its row says so
+    /// and the user hasn't resumed it here.
+    pub fn agents_paused(&'static self, conversation: &str) -> bool {
+        !self.agents_resumed.with(|l| l.iter().any(|c| c == conversation))
+            && self.threads.with(|t| {
+                t.iter().any(|t| t.agents.as_ref().is_some_and(|a| a.conversation == conversation && a.paused > 0.0))
+            })
+    }
+
+    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`):
+    /// `all` or `none`.
+    pub fn agents_accepts(&'static self, bot: String, accepts: &'static str) {
+        self.bots.update(|bs| {
+            if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
+                b.accepts = accepts.to_owned();
+            }
+        });
+        spawn_detached(async move {
+            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts})).await;
+            if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
+                log::warn!("agents accepts {bot}: {r:?}");
+            }
+            if let Some(v) = client::get("/threads").await {
+                self.set_threads(v);
+            }
+        });
+    }
+
+    /// Read the last message of each conversation in `rows` whose turn
+    /// count changed since (`GET /turns?thread=`), for a bot's Details.
+    pub fn load_agents_last(&'static self, rows: Vec<(String, i64)>) {
+        let stale: Vec<(String, i64)> = self.agents_last.with_untracked(|l| {
+            rows.into_iter().filter(|(t, n)| !l.iter().any(|(x, c, _, _)| x == t && c == n)).collect()
+        });
+        if stale.is_empty() {
+            return;
+        }
+        spawn_detached(async move {
+            for (thread, count) in stale {
+                let Some(v) = client::get(&format!("/turns?thread={}", client::urlenc(&thread))).await else { continue };
+                if s(&v, "thread") != thread {
+                    continue;
+                }
+                let (n, last) = crate::agents::last_message(&v);
+                self.agents_last.update(|l| {
+                    l.retain(|(x, ..)| *x != thread);
+                    l.push((thread.clone(), count, n, last));
+                });
+            }
+        });
+    }
+
+    /// The open routine thread's quiet line (tracked): when it checked and
+    /// what it found, or why it can't — and whether that is a failure.
+    /// `None` outside a routine's thread, or before the plugins are listed.
+    pub fn active_routine_status(&'static self) -> Option<(String, bool)> {
+        let r = self.active_routine()?;
+        let routine = self.v1.listed.with(|l| {
+            l.iter().find(|p| p.id == r.plugin).and_then(|p| p.routines.iter().find(|x| x.id == r.id).cloned())
+        })?;
+        Some(routine.quiet_line(checked_at))
+    }
+
+    /// The routine thread of v1 routine `plugin`/`id`, once it is made.
+    pub fn routine_thread(&'static self, plugin: &str, id: &str) -> Option<String> {
+        self.threads.with_untracked(|t| {
+            t.iter()
+                .find(|t| t.routine.as_ref().is_some_and(|r| r.plugin == plugin && r.id == id))
+                .map(|t| t.id.clone())
+        })
+    }
+
+    /// `chats()` — visible chats: not bot-owned, not a routine's, not
+    /// hidden, not archived.
     pub fn chats(&'static self) -> Vec<ThreadMeta> {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && !t.hidden && !t.archived)
             .collect()
     }
 
@@ -2677,7 +2988,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.hidden)
+            .filter(|t| crate::agents::listed_chat(t) && t.hidden)
             .collect()
     }
 
@@ -2685,7 +2996,7 @@ impl Store {
         self.threads
             .get()
             .into_iter()
-            .filter(|t| t.bot.is_none() && t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && t.archived)
             .collect()
     }
 
@@ -2849,7 +3160,8 @@ impl Store {
     /// `/threads` carries), then the bots without a group, then the plain
     /// chats. Hidden bots never take a slot.
     pub fn shortcut_threads(&'static self) -> Vec<String> {
-        let bots = self.bots.get_untracked();
+        // a temporary helper takes no slot (no sidebar row)
+        let bots: Vec<RoxBot> = self.bots.get_untracked().into_iter().filter(crate::agents::listed_bot).collect();
         let threads = self.threads.get_untracked();
         let count_of = |tid: &str| {
             threads
@@ -2891,7 +3203,7 @@ impl Store {
         }
         for t in threads
             .iter()
-            .filter(|t| t.bot.is_none() && !t.hidden && !t.archived)
+            .filter(|t| crate::agents::listed_chat(t) && !t.hidden && !t.archived)
         {
             push(&t.id);
         }
@@ -2951,7 +3263,7 @@ impl Store {
             app_of: String::new(),
         };
         let mut items = Vec::new();
-        for b in self.bots.get().into_iter().filter(|b| !b.hidden && !b.thread_id.is_empty()) {
+        for b in self.bots.get().into_iter().filter(|b| !b.hidden && !b.thread_id.is_empty() && crate::agents::listed_bot(b)) {
             items.push(PaletteItem {
                 bot: Some(b.clone()),
                 ..row(b.name.clone(), "Agent".into(), PaletteAct::Thread(b.thread_id.clone()))
@@ -3025,7 +3337,6 @@ impl Store {
             PaletteAct::Thread(id) => self.go_to(&id, None),
             PaletteAct::Link(url) => self.open_link(&url),
             PaletteAct::Attach(tok, thread, place) => crate::slash::attach(vec![tok], thread, place, None),
-            PaletteAct::EnableRoutine { server, id, thread, place, email } => crate::settings::enable_template(server, id, thread, place, email),
         }
     }
 
@@ -4791,6 +5102,10 @@ impl Store {
 
     /// `POST /chat` with the composer contents, then follow the run.
     pub fn send(&'static self) {
+        // an agents' conversation is read-only (the broker refuses it too)
+        if untracked(|| self.active_agents().is_some()) {
+            return;
+        }
         let text = self.draft.get_untracked().trim().to_owned();
         // A v1 plugin's tokens and commands (9.3): tokens are rewritten to
         // canonical ones before anything is sent; tokens or a command alone
@@ -6996,10 +7311,12 @@ impl Store {
         }
     }
 
-    /// ⌘W over the full-screen apps: the file viewer over them closes
-    /// first, then the top app.
+    /// ⌘W over the full-screen apps: a v1 app's print preview closes
+    /// first, then the file viewer over them, then the top app.
     pub fn mini_close_top(&'static self) {
-        if self.viewing.get_untracked().is_some() {
+        if self.v1.preview.with_untracked(Option::is_some) {
+            self.v1_close_preview();
+        } else if self.viewing.get_untracked().is_some() {
             self.viewing.set(None);
         } else {
             self.close_mini();
@@ -7135,6 +7452,62 @@ mod tests {
         let t = "tkt_0123456789ABCDEFGHJKMNPQRS";
         let attached = Turn { text: format!("Attached @bir:taxprofile:{t}"), ..Default::default() };
         assert!(reply_label(&attached).contains(t));
+    }
+
+    #[test]
+    fn a_routine_notice_turn_parses_and_reads_as_one_line() {
+        use super::{RoutineNotice, Turn};
+        let v = serde_json::json!({
+            "i": 7, "id": "n1", "role": "notice", "text": "BIR payments ran · 2 new items",
+            "notice": {"kind": "routine", "plugin": "dev.example.bir", "routine": "payments", "name": "BIR payments",
+                "thread": "t9", "thread_uid": "uid-t9", "run": "run_1", "seq": 4, "turn": "turn-a", "items": 2}
+        });
+        let n = Turn::of(&v).notice.expect("a notice");
+        assert_eq!(n, RoutineNotice {
+            name: "BIR payments".into(), plugin: "dev.example.bir".into(), routine: "payments".into(),
+            thread: "uid-t9".into(), turn: "turn-a".into(), items: 2, error: String::new(),
+        });
+        assert_eq!(n.line(), "BIR payments ran · 2 new items");
+        assert_eq!(RoutineNotice { items: 1, ..n.clone() }.line(), "BIR payments ran · 1 new item");
+        // a failure before any run: no thread to open, the error shown
+        let f = Turn::of(&serde_json::json!({"role": "notice",
+            "notice": {"kind": "routine", "name": "BIR payments", "thread": null, "items": 0, "error": "fx_query: down"}}));
+        let f = f.notice.expect("a failure notice");
+        assert_eq!((f.thread.as_str(), f.line().as_str()), ("", "BIR payments failed: fx_query: down"));
+        // an unknown kind, or `notice` on another role, is no routine notice
+        assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "other"}})).notice.is_none());
+        assert!(Turn::of(&serde_json::json!({"role": "ai", "notice": {"kind": "routine"}})).notice.is_none());
+    }
+
+    #[test]
+    fn a_routine_threads_item_turn_is_an_instruction_and_its_row_names_the_routine() {
+        use super::{RoutineOf, Turn};
+        let mark = serde_json::json!({"plugin": "dev.example.bir", "id": "payments", "name": "BIR payments", "run": "run_1"});
+        let u = Turn::of(&serde_json::json!({"role": "user", "text": "New item", "routine": mark}));
+        assert_eq!(u.instruction_from, "BIR payments");
+        assert_eq!(Turn::of(&serde_json::json!({"role": "user", "text": "hi"})).instruction_from, "");
+        let row = serde_json::json!({"plugin": "dev.example.bir", "id": "payments", "name": "BIR payments", "thread": "t5"});
+        assert_eq!(RoutineOf::of(&row), Some(RoutineOf {
+            plugin: "dev.example.bir".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t5".into(),
+        }));
+        assert_eq!(RoutineOf::of(&serde_json::Value::Null), None);
+        assert_eq!(RoutineOf::of(&serde_json::json!({"name": "x"})), None);
+    }
+
+    #[test]
+    fn a_consent_notice_is_a_card_until_answered() {
+        use super::Turn;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Enable Payments (Taxpayer B) here? It may change BIR data without asking: bir_record_payment.",
+            "notice": {"kind": "routine_consent", "plugin": "dev.example.bir", "routine": "payments", "instance": "ri_abc123", "name": "Payments", "state": "pending"}}));
+        assert!(t.notice.is_none(), "no run line");
+        let c = t.consent.expect("a consent card");
+        assert_eq!((c.instance.as_str(), c.routine.as_str(), c.state.as_str()), ("ri_abc123", "payments", "pending"));
+        assert!(c.text.starts_with("Enable Payments (Taxpayer B) here?"));
+        assert_eq!(c.answered(None), None, "it still asks");
+        assert_eq!(c.answered(Some("enabled")), Some("Enabled"), "the tap shows before the chat reloads");
+        let done = super::ConsentNotice { state: "declined".into(), ..c };
+        assert_eq!(done.answered(None), Some("Not enabled"));
+        assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "routine_consent"}})).consent.is_none(), "no instance, no card");
     }
 
     #[test]

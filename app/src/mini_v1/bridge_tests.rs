@@ -101,6 +101,14 @@ impl host_api::Broker for FakeBroker {
                     "fx_text" => json!({"content": [{"type": "text", "text": "a"}, {"type": "image"}, {"type": "text", "text": "b"}]}),
                     "fx_fail" => json!({"isError": true, "content": [{"type": "text", "text": "the form has no period"}]}),
                     "fx_big" => json!({"content": [{"type": "text", "text": "x".repeat(2 << 20)}]}),
+                    "fx_doc" => json!({
+                        "content": [
+                            {"type": "text", "text": "made"},
+                            {"type": "resource", "resource": {"uri": "fx://doc.html", "mimeType": "text/html; charset=utf-8", "text": DOC}}
+                        ],
+                        "structuredContent": {"title": "Fixture document"}
+                    }),
+                    "fx_nodoc" => json!({"content": [{"type": "text", "text": "<p>no resource</p>"}]}),
                     "fx_slow" | "fx_count" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(150)));
                         json!({"structuredContent": {"ok": true}})
@@ -121,6 +129,9 @@ impl host_api::Broker for FakeBroker {
     }
 }
 
+/// The page `fx_doc` answers with.
+const DOC: &str = "<!DOCTYPE html><html><body><p>BIR Form 2551Q</p></body></html>";
+
 /// The person, as the tests play them.
 #[derive(Default)]
 struct TestUi {
@@ -134,6 +145,8 @@ struct TestUi {
     picks: Mutex<Vec<PickRequest>>,
     files: Mutex<Vec<PathBuf>>,
     ended: Mutex<Vec<Ended>>,
+    previews: Mutex<Vec<Preview>>,
+    fits: Mutex<Vec<f32>>,
 }
 
 impl HostUi for TestUi {
@@ -167,8 +180,15 @@ impl HostUi for TestUi {
     fn copy(&self, text: &str) {
         self.copied.lock().unwrap().push(text.to_owned());
     }
+    fn preview(&self, doc: Preview) -> Result<(), RoxError> {
+        self.previews.lock().unwrap().push(doc);
+        Ok(())
+    }
     fn session_ended(&self, _: &V1Key, why: Ended) {
         self.ended.lock().unwrap().push(why);
+    }
+    fn fit(&self, height: f32) {
+        self.fits.lock().unwrap().push(height);
     }
 }
 
@@ -205,6 +225,10 @@ impl Open {
     }
 
     fn start_source(plugin_id: &str, perms: Value, source: &str, limits: Limits, ui_setup: impl FnOnce(&TestUi)) -> Open {
+        Open::start_placed("full", plugin_id, perms, source, limits, ui_setup)
+    }
+
+    fn start_placed(placement: &str, plugin_id: &str, perms: Value, source: &str, limits: Limits, ui_setup: impl FnOnce(&TestUi)) -> Open {
         let source = source.to_owned();
         let prepared = Arc::new(Prepared {
             key: V1Key { plugin: plugin_id.to_owned(), app: "board".to_owned(), ticket: None, props: Default::default() },
@@ -222,7 +246,7 @@ impl Open {
         let root = crate::mini_v1::storage::scratch_root("bridge");
         let ctx = OpenContext::new(prepared.clone(), session, broker.clone(), ui.clone(), &root, limits);
         let channel = HostChannel::new();
-        install(&channel, &ctx, json!({"width": 800, "height": 600, "placement": "full"}));
+        install(&channel, &ctx, json!({"width": 800, "height": 600, "placement": placement}));
         let bundle = Bundle::source(prepared.js.clone()).with_policy(prepared.permissions.policy());
         let mut config = EngineConfig::new(App::Js(bundle));
         config.host = channel.clone();
@@ -275,7 +299,7 @@ fn app_07_ungranted_methods_are_absent() {
     assert_eq!(o.wait("open"), "open,attach,pickFile,storage,copy function function true true undefined board 1");
     // and at the host level: the channel handles only the granted names
     let p = &o.ctx.prepared;
-    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.call"]);
+    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
     assert!(!p.permissions.policy().access().allows_host("rox.open"));
 }
 
@@ -621,6 +645,59 @@ export default function T() {
 }
 
 #[test]
+fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
+    // the fixture board declares no inline range: 120 .. 640
+    let script = r#"
+        rox.fit(284.2);
+        rox.fit(285);
+        rox.fit(20);
+        rox.fit(5000);
+        let bad = "";
+        try { rox.fit("tall"); } catch (e) { bad = e.code; }
+        try { rox.fit(-1); } catch (e) { bad += " " + e.code; }
+        return "fit " + typeof rox.fit + " " + bad;
+    "#;
+    let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
+    assert_eq!(o.wait("fit"), "fit function invalid_args invalid_args");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while o.ui.fits.lock().unwrap().len() < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // 285 is within 2 points of 285 (284.2 rounds up): no change
+    assert_eq!(*o.ui.fits.lock().unwrap(), [285.0, 120.0, 640.0]);
+    let mut full = Open::start(json!({}), r#"rox.fit(300); return "fit " + typeof rox.fit;"#);
+    assert_eq!(full.wait("fit"), "fit function");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(full.ui.fits.lock().unwrap().is_empty(), "a full-screen open's fit is ignored");
+}
+
+#[test]
+fn fit_is_paced_and_the_last_height_still_lands() {
+    let t0 = Instant::now();
+    let mut f = Fitter::default();
+    assert_eq!(f.ask(200.0, t0), Some(200.0));
+    assert_eq!(f.ask(201.5, t0), None, "under 2 points");
+    assert_eq!(f.next(), None);
+    for i in 1..FIT_PER_SECOND {
+        assert_eq!(f.ask(200.0 + 10.0 * i as f32, t0), Some(200.0 + 10.0 * i as f32));
+    }
+    // the ninth in a second waits; a later one replaces it
+    assert_eq!(f.ask(400.0, t0 + Duration::from_millis(100)), None);
+    assert_eq!(f.ask(420.0, t0 + Duration::from_millis(200)), None);
+    assert_eq!(f.next(), Some(t0 + Duration::from_secs(1)));
+    assert_eq!(f.retry(t0 + Duration::from_secs(1)), Some(420.0));
+    assert_eq!(f.next(), None);
+    // a wish back to the height set drops the waiting one
+    let mut g = Fitter::default();
+    for i in 0..FIT_PER_SECOND {
+        g.ask(100.0 + 10.0 * i as f32, t0);
+    }
+    assert_eq!(g.ask(300.0, t0), None);
+    assert_eq!(g.ask(170.0, t0), None);
+    assert_eq!(g.next(), None);
+}
+
+#[test]
 fn a_plugin_restart_ends_the_session_and_calls_reject_plugin_restarted() {
     let plugin = "dev.goldcoders.restartfixture";
     let mut o = Open::start_with(
@@ -734,4 +811,103 @@ fn con_01_in_the_bridge_only_open_url_and_attach_ask() {
     );
     // the file dialog was the pick's only question
     assert_eq!(o.ui.picks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn preview_is_absent_without_the_permission() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc"]}),
+        r#"
+        let host = "ran";
+        try { await probeHost("rox.preview", {tool: "fx_doc"}); } catch (e) { host = "refused"; }
+        return "preview " + typeof rox.preview + " " + host;
+        "#,
+    );
+    assert_eq!(o.wait("preview"), "preview undefined refused");
+    assert!(o.broker.calls.lock().unwrap().is_empty() && o.ui.previews.lock().unwrap().is_empty());
+}
+
+#[test]
+fn preview_shows_the_apps_own_tools_document_signed_for_preview() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc"], "preview": {}}),
+        r#"
+        const a = await rox.preview({tool: "fx_doc", args: {form: "2551Q"}});
+        await rox.preview({tool: "fx_doc", title: "  BIR Form 2551Q — Dela Cruz  "});
+        return "shown " + String(a);
+        "#,
+    );
+    // the page never reaches the app
+    assert_eq!(o.wait("shown"), "shown undefined");
+    let shown = o.ui.previews.lock().unwrap().clone();
+    assert_eq!(shown.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Fixture document", "BIR Form 2551Q — Dela Cruz"]);
+    assert_eq!(shown[0].html, seal(DOC));
+    assert!(shown[0].html.starts_with("<!DOCTYPE html><meta http-equiv=\"Content-Security-Policy\""), "{}", shown[0].html);
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0["purpose"], "preview");
+    assert_eq!(calls[0].0["tool"], "fx_doc");
+    assert_eq!(calls[0].0["args"], json!({"form": "2551Q"}));
+    assert_eq!(calls[1].0["args"], json!({}));
+}
+
+#[test]
+fn preview_refuses_undeclared_tools_bad_args_and_results_without_a_document() {
+    let mut o = Open::start(
+        json!({"tools": ["fx_doc", "fx_nodoc", "fx_fail", "fx_echo"], "preview": {"max_bytes": 32}}),
+        r#"
+        const codes = [];
+        for (const ask of [
+          {tool: "fx_secret"},
+          {tool: "fx_doc", args: [1]},
+          {tool: "fx_doc", url: "https://example.com/"},
+          {tool: "fx_doc", title: 7},
+          {tool: "fx_nodoc"},
+          {tool: "fx_echo"},
+          {tool: "fx_fail"},
+          {tool: "fx_doc"},
+        ]) {
+          try { await rox.preview(ask); codes.push("shown"); } catch (e) { codes.push(e.code); }
+        }
+        return "codes " + codes.join(",");
+        "#,
+    );
+    assert_eq!(
+        o.wait("codes"),
+        "codes not_declared,invalid_args,invalid_args,invalid_args,tool_error,tool_error,tool_error,result_too_large"
+    );
+    assert!(o.ui.previews.lock().unwrap().is_empty());
+    // the undeclared tool and the bad arguments sent nothing
+    let sent: Vec<String> = o.broker.calls.lock().unwrap().iter().map(|c| c.0["tool"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(sent, ["fx_nodoc", "fx_echo", "fx_fail", "fx_doc"]);
+}
+
+#[test]
+fn preview_documents_are_embedded_html_resources_within_the_limit() {
+    let doc = |mime: &str, text: &str| json!({"content": [{"type": "resource", "resource": {"uri": "x:", "mimeType": mime, "text": text}}]});
+    assert_eq!(preview_document(doc("text/html", "<p>a</p>"), 64).unwrap(), ("<p>a</p>".to_owned(), None));
+    assert_eq!(preview_document(doc("TEXT/HTML; charset=utf-8", "<p>a</p>"), 64).unwrap().0, "<p>a</p>");
+    for wrong in [doc("text/plain", "<p>a</p>"), doc("image/svg+xml", "<svg/>"), json!({"structuredContent": {"html": "<p>a</p>"}})] {
+        assert_eq!(preview_document(wrong, 64).unwrap_err().code, "tool_error");
+    }
+    // a blob is not a page
+    let blob = json!({"content": [{"type": "resource", "resource": {"uri": "x:", "mimeType": "text/html", "blob": "PHA+"}}]});
+    assert_eq!(preview_document(blob, 64).unwrap_err().code, "tool_error");
+    assert_eq!(preview_document(doc("text/html", &"x".repeat(65)), 64).unwrap_err().code, "result_too_large");
+    assert_eq!(preview_document(doc("text/html", &"x".repeat(64)), 64).unwrap().0.len(), 64);
+    let named = json!({"content": doc("text/html", "<p>a</p>")["content"], "structuredContent": {"title": " Form 2551Q "}});
+    assert_eq!(preview_document(named, 64).unwrap().1.as_deref(), Some("Form 2551Q"));
+    let failed = json!({"isError": true, "content": [{"type": "text", "text": "no saved return"}]});
+    assert_eq!(preview_document(failed, 64).unwrap_err(), RoxError::new("tool_error", "no saved return"));
+}
+
+#[test]
+fn a_sealed_page_carries_the_no_load_policy_after_its_doctype() {
+    let head = seal("");
+    assert!(head.starts_with("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"), "{head}");
+    assert!(head.contains("img-src data:;") && head.contains("form-action 'none'") && head.contains("a{pointer-events:none}"));
+    assert!(!head.contains("script-src") && !head.contains("https:") && !head.contains("'self'"), "nothing is let in: {head}");
+    assert_eq!(seal("<!doctype html>\n<html></html>"), format!("<!doctype html>{head}\n<html></html>"));
+    assert_eq!(seal("\u{feff}\n <!DOCTYPE html><p>"), format!("\u{feff}\n <!DOCTYPE html>{head}<p>"));
+    assert_eq!(seal("<html><p>x</p>"), format!("{head}<html><p>x</p>"));
 }

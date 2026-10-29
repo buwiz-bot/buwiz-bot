@@ -202,8 +202,8 @@ cd app && cargo build --target aarch64-apple-darwin
 ## Layout
 
 ```
-GOAL.md        the port spec and acceptance checks this was built against
 app/           the Rox application (dev.sh / ios.sh / ios-dev.sh inside)
+server/        the broker Rox talks to (Node): chats, models, routines, plugins, agent messaging
 app/src/hot.rs the patchable UI root
 app/src/live.rs the ra-jit bridge — store anchor; don't edit while live
 app/src/store.rs the model, as anchored signals

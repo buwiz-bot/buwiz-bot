@@ -7,7 +7,7 @@ use nsh_core::{TouchEvent, TouchPhase};
 
 use crate::live::store;
 use crate::md::markdown;
-use crate::store::{Attach, Turn};
+use crate::store::{Attach, RoutineNotice, Turn};
 use crate::theme;
 use crate::widgets::app_card;
 
@@ -417,23 +417,510 @@ fn new_messages_pill(list: ElementRef) -> impl IntoElement {
 }
 
 /// The empty state when no thread is open or no turns exist: Grok
-/// Shell's heading alone — no suggested prompts.
+/// Shell's heading alone — no suggested prompts. A routine's thread
+/// before it found anything: its name, and that new items land here (its
+/// quiet line sits over the composer).
 pub(crate) fn empty_state() -> impl IntoElement {
-    view().flex_1().items_center().justify_center().child(
-        text("What's on the agenda today?")
-            .text_size(px(22.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme::TEXT),
-    )
+    dynamic(|| match store().active_routine() {
+        Some(r) => view()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(text(r.name).text_size(px(22.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT))
+            .child(
+                text("Nothing new yet. What it finds shows up here.")
+                    .text_size(px(14.0))
+                    .text_color(theme::MUTED),
+            )
+            .into_element(),
+        None => view()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .child(
+                text("What's on the agenda today?")
+                    .text_size(px(22.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::TEXT),
+            )
+            .into_element(),
+    })
+}
+
+/// A routine thread's quiet line, centered over the composer: "Checks
+/// every 5 min · last checked 3:42 PM · nothing new", or its error. A run
+/// with nothing new adds no turn; this is where it shows. The plugins'
+/// list (where it reads from) is pulled again on opening the thread and
+/// every minute while it is open.
+pub(crate) fn routine_status_line() -> impl IntoElement {
+    effect(|| {
+        if store().active_routine().is_some() {
+            untracked(|| store().v1_refresh(false));
+        }
+    });
+    set_interval(std::time::Duration::from_secs(60), || {
+        if untracked(|| store().active_routine().is_some()) {
+            store().v1_refresh(false);
+        }
+    });
+    dynamic(|| match store().active_routine_status() {
+        Some((line, failed)) => view()
+            .flex_row()
+            .w_full()
+            .justify_center()
+            .pb(px(6.0))
+            .child(
+                text(line)
+                    .text_size(px(12.0))
+                    .text_color(if failed { theme::DOWN } else { theme::MUTED })
+                    .number_of_lines(2)
+                    .max_w(px(560.0)),
+            )
+            .into_element(),
+        None => view().into_element(),
+    })
 }
 
 /// One turn of chat `chat` (its bot colors the user's bubbles).
 fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
-    if t.role == "user" {
+    if let Some(n) = t.notice.clone() {
+        notice_row(n).into_element()
+    } else if let Some(n) = t.agents_notice.clone() {
+        agents_notice_row(n).into_element()
+    } else if let Some(c) = t.consent.clone() {
+        consent_row(c).into_element()
+    } else if t.role == "notice" {
+        // a notice of a kind this build doesn't know
+        view().into_element()
+    } else if let Some(m) = t.message.clone() {
+        message_row(t.i, m).into_element()
+    } else if t.role == "user" && !t.instruction_from.is_empty() {
+        instruction_row(t).into_element()
+    } else if let (true, Some(r)) = (t.role == "user", t.reply_from.clone()) {
+        reply_row(t, r).into_element()
+    } else if t.role == "user" {
         user_row(t, chat.to_owned()).into_element()
+    } else if let Some(r) = t.reply_from.clone() {
+        // an answer made for another agent's request, its cards as usual
+        let mut t = t;
+        t.text = r.body(&t.text);
+        view().gap_1().child(reply_caption(r)).child(agent_row(t)).into_element()
     } else {
         agent_row(t).into_element()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agents messaging each other (agents.rs)
+// ---------------------------------------------------------------------------
+
+/// A small accent action in a centered notice line ("Open", "Resume").
+fn notice_act(word: &'static str, aria: String, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .label(aria)
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .child(
+            text(word)
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }),
+        )
+}
+
+fn notice_dot() -> impl IntoElement {
+    text("·").text_size(px(12.0)).text_color(theme::FAINT)
+}
+
+/// An agents' notice: one centered, dim line as a routine's run is —
+/// "Piccolo → Boss · Q3 payments · 2 messages · Open". A paused
+/// conversation's adds Resume while it is paused; a line inside the
+/// conversation it names has no Open.
+fn agents_notice_row(n: crate::agents::AgentsNotice) -> impl IntoElement {
+    use crate::agents::NoticeKind;
+    let st = store();
+    let here = untracked(|| {
+        let id = st.active_id.get();
+        st.threads.with(|t| t.iter().any(|t| t.id == id && (t.id == n.thread || t.uid == n.thread)))
+    });
+    let open = n.opens() && !here;
+    let (thread, message, label) = (n.thread.clone(), n.message.clone(), n.open_label());
+    let conv = n.conversation.clone();
+    view().flex_row().w_full().justify_center().child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .max_w(px(620.0))
+            // wraps in a narrow column instead of running off its edges
+            .flex_shrink(1.0)
+            .flex_wrap()
+            .justify_center()
+            .label(n.text.clone())
+            .child(
+                text(n.text.clone())
+                    .text_size(px(12.0))
+                    .text_color(theme::MUTED)
+                    .text_center()
+                    .number_of_lines(2)
+                    .flex_shrink(1.0),
+            )
+            .when(n.kind == NoticeKind::Paused && !conv.is_empty(), |v| {
+                v.child(dynamic(move || {
+                    let c = conv.clone();
+                    if store().agents_paused(&c) {
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(notice_dot())
+                            .child(notice_act("Resume", "Resume the conversation".to_owned(), move || store().agents_resume(c.clone())))
+                            .into_element()
+                    } else if store().agents_resumed.with(|l| l.contains(&c)) {
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(notice_dot())
+                            .child(text("Resumed").text_size(px(12.0)).text_color(theme::FAINT))
+                            .into_element()
+                    } else {
+                        view().into_element()
+                    }
+                }))
+            })
+            .when(open, |v| {
+                v.child(notice_dot()).child(notice_act("Open", label, move || {
+                    store().go_to_key(&thread, Some(message.clone()).filter(|m| !m.is_empty()))
+                }))
+            }),
+    )
+}
+
+/// A participant's avatar: its bot's mark, or for an outside endpoint
+/// (no bot) a neutral disc with its initials.
+pub(crate) fn peer_avatar(id: &str, name: &str, size: f32) -> AnyElement {
+    match store().bots.with_untracked(|b| b.iter().find(|b| b.id == id).cloned()) {
+        Some(b) => crate::avatar::bot_avatar(crate::avatar::BotAvatarProps {
+            box_: Some(size),
+            paused: true,
+            ..crate::avatar::BotAvatarProps::bot(&b, size / 0.82)
+        })
+        .into_element(),
+        None => view()
+            .size(px(size))
+            .rounded(px(size / 2.0))
+            .items_center()
+            .justify_center()
+            .bg(theme::SUBTLE)
+            .border(px(0.5))
+            .border_color(theme::BORDER_S)
+            .label(name.to_owned())
+            .child(
+                text(crate::agents::initials(name))
+                    .text_size(px((size * 0.42).round()))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::DIM),
+            )
+            .into_element(),
+    }
+}
+
+/// One message in an agents' conversation: the sender's avatar and name
+/// over a bubble of Markdown; its tickets as chips, its `data` collapsed
+/// under Details.
+fn message_row(i: i64, m: crate::agents::AgentMessage) -> impl IntoElement {
+    let body = m.text.clone();
+    let to = match m.to.as_slice() {
+        [] => String::new(),
+        [one] => format!("to {}", one.name),
+        many => format!("to {} agents", many.len()),
+    };
+    let data = m.data.clone();
+    let open = signal(false);
+    let hov = signal(false);
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .label(format!("{} · {}", m.header(), m.text.chars().take(80).collect::<String>()))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(peer_avatar(&m.from.id, &m.from.name, 22.0))
+                .child(text(m.from.name.clone()).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .when(!to.is_empty(), |v| v.child(text(to).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))),
+        )
+        .child(
+            view().flex_row().w_full().justify_start().pl(px(28.0)).child(
+                view()
+                    .max_w(px(560.0))
+                    .flex_shrink(1.0)
+                    .min_w(px(BUBBLE_MIN))
+                    .bg_linear_to_b()
+                    .gradient_from(theme::AGENT_BUBBLE_TOP)
+                    .gradient_to(theme::AGENT_BUBBLE_BOTTOM)
+                    .rounded(px(18.0))
+                    .border(px(0.5))
+                    .border_color(theme::AGENT_RIM)
+                    .px(px(11.5))
+                    .py(px(6.5))
+                    .child(highlight_ring(i, 18.0))
+                    .child(markdown(move || store().v1_display(&body), || false, || false)),
+            ),
+        )
+        .when(!m.attachments.is_empty(), |v| {
+            v.child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .pl(px(28.0))
+                    .max_w(px(588.0))
+                    .children(m.attachments.iter().map(|tok| {
+                        let t = tok.clone();
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .h(px(22.0))
+                            .px(px(8.0))
+                            .rounded(px(11.0))
+                            .bg(theme::ACCENT_TINT)
+                            .label(move || format!("Attached: {}", store().v1_plain(&t)))
+                            .child({
+                                let t = tok.clone();
+                                text(move || store().v1_plain(&t)).number_of_lines(1).text_size(px(12.0)).text_color(theme::ACCENT)
+                            })
+                            .into_element()
+                    })),
+            )
+        })
+        .when(!data.is_empty(), |v| {
+            v.child(
+                view()
+                    .pl(px(28.0))
+                    .gap(px(4.0))
+                    .child(
+                        view()
+                            .flex_row()
+                            .label(move || if open.get() { "Hide details".to_owned() } else { "Show details".to_owned() })
+                            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                            .on_press(move || open.update(|o| *o = !*o))
+                            .child(
+                                text(move || if open.get() { "Details ▾" } else { "Details ›" })
+                                    .text_size(px(12.0))
+                                    .text_color(move || if hov.get() { theme::TEXT } else { theme::MUTED }),
+                            ),
+                    )
+                    .child(when(open, move || {
+                        view()
+                            .max_w(px(560.0))
+                            .px_3()
+                            .py(px(8.0))
+                            .rounded(px(10.0))
+                            .bg(theme::SUBTLE)
+                            .border(px(0.5))
+                            .border_color(theme::BORDER_S)
+                            .child(text(data.clone()).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::DIM))
+                            .into_element()
+                    })),
+            )
+        })
+}
+
+/// "Reply from Boss · Open" (or "For Piccolo's request · Open") over a
+/// turn another agent's message brought: Open shows the conversation at
+/// that message.
+fn reply_caption(r: crate::agents::ReplyFrom) -> impl IntoElement {
+    let (thread, message) = (r.thread.clone(), r.message.clone());
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .child(text(r.caption()).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1))
+        .when(!thread.is_empty(), |v| {
+            v.child(notice_dot()).child(notice_act("Open", "Open the conversation".to_owned(), move || {
+                store().go_to_key(&thread, Some(message.clone()).filter(|m| !m.is_empty()))
+            }))
+        })
+}
+
+/// A user turn that is another agent's reply: captioned, in a quiet
+/// bubble (the user never typed it), as a routine's instruction is.
+fn reply_row(t: Turn, r: crate::agents::ReplyFrom) -> impl IntoElement {
+    let body = r.body(&t.text);
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .child(reply_caption(r))
+        .when(!body.trim().is_empty(), |v| {
+            v.child(
+                view()
+                    .max_w(px(560.0))
+                    .flex_shrink(1.0)
+                    .bg(theme::SUBTLE)
+                    .border(px(0.5))
+                    .border_color(theme::BORDER_S)
+                    .rounded(px(12.0))
+                    .px_3()
+                    .py(px(7.0))
+                    .child(highlight_ring(t.i, 12.0))
+                    .child(markdown(move || store().v1_display(&body), || false, || false)),
+            )
+        })
+}
+
+// ---------------------------------------------------------------------------
+// Routine runs
+// ---------------------------------------------------------------------------
+
+/// A routine's run in the chat it reports to: one centered, dim line —
+/// "BIR payments ran · 2 new items · Open" — not a bubble. Open shows the
+/// routine's thread at that run.
+fn notice_row(n: RoutineNotice) -> impl IntoElement {
+    let failed = !n.error.is_empty();
+    let hov = signal(false);
+    let (thread, turn) = (n.thread.clone(), n.turn.clone());
+    view().flex_row().w_full().justify_center().child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .max_w(px(560.0))
+            .child(
+                text(n.line())
+                    .text_size(px(12.0))
+                    .text_color(if failed { theme::DOWN } else { theme::MUTED })
+                    .number_of_lines(2)
+                    .flex_shrink(1.0),
+            )
+            .when(!thread.is_empty(), |v| {
+                v.child(text("·").text_size(px(12.0)).text_color(theme::FAINT)).child(
+                    view()
+                        .label(format!("Open {}", n.name))
+                        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                        .on_press(move || {
+                            store().go_to_key(&thread, Some(turn.clone()).filter(|t| !t.is_empty()))
+                        })
+                        .child(
+                            text("Open")
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }),
+                        ),
+                )
+            }),
+    )
+}
+
+/// A routine instance the agent made that waits for the user (5.9): the
+/// question, Enable (switches it on, consenting to what it reads and
+/// changes) and Not now (deletes it); once answered, a quiet line.
+fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
+    let inst = c.instance.clone();
+    let answered = move || {
+        let local = store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()));
+        local
+    };
+    let (yes_hov, no_hov) = (signal(false), signal(false));
+    let (c1, c2, c3) = (c.clone(), c.clone(), c.clone());
+    let answer = move |c: &crate::store::ConsentNotice, state: &str| {
+        let st = store();
+        st.routine_consented.update(|l| l.push((c.instance.clone(), state.to_owned())));
+        let action = if state == "enabled" { crate::mini_v1::host_api::InstanceAction::Enable } else { crate::mini_v1::host_api::InstanceAction::Delete };
+        let extra = if state == "enabled" { serde_json::json!({"approve": true}) } else { serde_json::json!({}) };
+        st.v1_instance(&c.plugin, &c.routine, &c.instance, action, extra);
+    };
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = answered();
+        if let Some(done) = c1.answered(local.as_deref()) {
+            return text(format!("{} · {done}", c1.name))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1)
+                .into_element();
+        }
+        let (c2, c3) = (c2.clone(), c3.clone());
+        let (yes, no) = (format!("Enable {}", c2.name), format!("Don't enable {}", c3.name));
+        view()
+            .max_w(px(560.0))
+            .gap(px(8.0))
+            .px_3()
+            .py(px(10.0))
+            .rounded(px(12.0))
+            .bg(theme::SUBTLE)
+            .border(px(0.5))
+            .border_color(theme::BORDER_S)
+            .label(format!("Enable {}?", c1.name))
+            .child(text(c1.text.clone()).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        text("Enable")
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT)
+                            .px_3()
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .bg(move || if yes_hov.get() { theme::ACTIVE } else { theme::HOVER })
+                            .on_mouse_enter(move |_: &MouseEvent| yes_hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| yes_hov.set(false))
+                            .label(yes)
+                            .on_press(move || answer(&c2, "enabled")),
+                    )
+                    .child(
+                        text("Not now")
+                            .text_size(px(12.0))
+                            .text_color(move || if no_hov.get() { theme::TEXT } else { theme::MUTED })
+                            .px_3()
+                            .py(px(5.0))
+                            .rounded(px(8.0))
+                            .on_mouse_enter(move |_: &MouseEvent| no_hov.set(true))
+                            .on_mouse_leave(move |_: &MouseEvent| no_hov.set(false))
+                            .label(no)
+                            .on_press(move || answer(&c3, "declined")),
+                    ),
+            )
+            .into_element()
+    }))
+}
+
+/// An item's instruction in a routine's thread: what the routine gave the
+/// bot, captioned "Instruction from <routine>" — the user never typed it,
+/// so it is no bubble of theirs.
+fn instruction_row(t: Turn) -> impl IntoElement {
+    let body = t.text.clone();
+    view()
+        .items_start()
+        .gap(px(4.0))
+        .child(
+            text(format!("Instruction from {}", t.instruction_from))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED)
+                .number_of_lines(1),
+        )
+        .child(
+            view()
+                .max_w(px(560.0))
+                .flex_shrink(1.0)
+                .bg(theme::SUBTLE)
+                .border(px(0.5))
+                .border_color(theme::BORDER_S)
+                .rounded(px(12.0))
+                .px_3()
+                .py(px(7.0))
+                .child(highlight_ring(t.i, 12.0))
+                .child(markdown(move || store().v1_display(&body), || false, || false)),
+        )
 }
 
 // ---------------------------------------------------------------------------

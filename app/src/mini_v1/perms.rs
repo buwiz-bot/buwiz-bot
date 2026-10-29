@@ -24,6 +24,8 @@ pub const MAX_PICK_BYTES: u64 = 52_428_800;
 pub const MAX_QUOTA: u64 = 10_485_760;
 /// 1 MiB.
 pub const DEFAULT_QUOTA: u64 = 1_048_576;
+/// 8 MiB: the largest `rox.preview` document, and its default.
+pub const MAX_PREVIEW: u64 = 8_388_608;
 
 /// What one app may reach.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -35,6 +37,8 @@ pub struct Permissions {
     /// `quota_bytes`, when storage is granted.
     pub storage: Option<u64>,
     pub copy: bool,
+    /// `max_bytes` of a `rox.preview` document, when previews are granted.
+    pub preview: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,7 +62,10 @@ pub const OPEN: &str = "rox.open";
 pub const ATTACH: &str = "rox.attach";
 pub const PICK: &str = "rox.pickFile";
 pub const COPY: &str = "rox.copy";
+pub const PREVIEW: &str = "rox.preview";
 pub const TICKET_TITLE: &str = "rox.ticket.title";
+/// An inline app's content height (a post; 6.5, 7.11).
+pub const FIT: &str = "rox.fit";
 pub const STORAGE: [&str; 4] = ["rox.storage.get", "rox.storage.set", "rox.storage.remove", "rox.storage.keys"];
 
 impl Permissions {
@@ -75,15 +82,17 @@ impl Permissions {
                 "pick_file" => p.pick_file = Some(pick(v)?),
                 "storage" => p.storage = Some(storage(v)?),
                 "copy" => p.copy = v.as_bool().ok_or_else(|| invalid("copy is a boolean"))?,
+                "preview" => p.preview = Some(preview(v)?),
                 _ => return Err(invalid(&format!("unknown permission {k:?}"))),
             }
         }
         Ok(p)
     }
 
-    /// The bridge methods granted (6.4), `rox.ticket.title` always.
+    /// The bridge methods granted (6.4), `rox.ticket.title` and `rox.fit`
+    /// always.
     pub fn methods(&self) -> Vec<&'static str> {
-        let mut m = vec![TICKET_TITLE];
+        let mut m = vec![TICKET_TITLE, FIT];
         if !self.tools.is_empty() {
             m.push(CALL);
         }
@@ -101,6 +110,9 @@ impl Permissions {
         }
         if self.copy {
             m.push(COPY);
+        }
+        if self.preview.is_some() {
+            m.push(PREVIEW);
         }
         m
     }
@@ -184,6 +196,18 @@ fn storage(v: &Value) -> Result<u64, RoxError> {
     Ok(quota)
 }
 
+fn preview(v: &Value) -> Result<u64, RoxError> {
+    let mut max = MAX_PREVIEW;
+    for (k, v) in object(v, "preview")? {
+        match (k.as_str(), v.as_u64()) {
+            ("max_bytes", Some(n)) if (1..=MAX_PREVIEW).contains(&n) => max = n,
+            ("max_bytes", _) => return Err(invalid("preview.max_bytes is at most 8 MiB")),
+            _ => return Err(invalid(&format!("unknown key preview.{k}"))),
+        }
+    }
+    Ok(max)
+}
+
 /// `https://host[:port]` of an https URL, lower-cased; `None` for any other
 /// scheme or a URL with credentials.
 pub fn https_origin(url: &str) -> Option<String> {
@@ -259,7 +283,8 @@ mod tests {
             "attach": ["item"],
             "pick_file": { "extensions": [".XLSX", ".csv"], "max_bytes": 26214400, "multiple": false },
             "storage": { "quota_bytes": 1048576 },
-            "copy": true
+            "copy": true,
+            "preview": {}
         })
     }
 
@@ -268,6 +293,9 @@ mod tests {
         let p = Permissions::parse(Some(&fixture_board())).unwrap();
         assert_eq!(p.pick_file.as_ref().unwrap().extensions, [".xlsx", ".csv"]);
         assert_eq!(p.storage, Some(1048576));
+        assert_eq!(p.preview, Some(MAX_PREVIEW));
+        let capped = Permissions::parse(Some(&json!({"preview": {"max_bytes": 2048}}))).unwrap();
+        assert_eq!(capped.preview, Some(2048));
         assert_eq!(Permissions::parse(None).unwrap(), Permissions::default());
         // MAN-06: an unknown key in permissions, or in a grant inside it, is refused
         for bad in [
@@ -279,6 +307,10 @@ mod tests {
             json!({"open": {"external": ["https://example.com/path"]}}),
             json!({"tools": ["rox.provision"]}),
             json!({"copy": "yes"}),
+            json!({"preview": true}),
+            json!({"preview": {"scripts": true}}),
+            json!({"preview": {"max_bytes": 8388609}}),
+            json!({"preview": {"max_bytes": 0}}),
         ] {
             assert!(Permissions::parse(Some(&bad)).is_err(), "{bad}");
         }
@@ -287,11 +319,12 @@ mod tests {
     #[test]
     fn app_07_policy_grants_host_for_granted_methods_only() {
         let p = Permissions::parse(Some(&json!({"tools": ["fx_echo"]}))).unwrap();
-        assert_eq!(p.methods(), ["rox.ticket.title", "rox.call"]);
+        assert_eq!(p.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
         let access = p.policy().access();
         assert!(access.allows_host("rox.call"));
         assert!(access.allows_host("rox.ticket.title"));
-        for absent in ["rox.open", "rox.attach", "rox.pickFile", "rox.copy", "rox.storage.get", "anything"] {
+        assert!(access.allows_host("rox.fit"));
+        for absent in ["rox.open", "rox.attach", "rox.pickFile", "rox.copy", "rox.preview", "rox.storage.get", "anything"] {
             assert!(!access.allows_host(absent), "{absent}");
         }
         assert!(!access.allows_http("GET", "http://127.0.0.1:8787/v1/host/call"));
@@ -307,7 +340,10 @@ mod tests {
         assert!(!access.allows_process("sh"));
         assert!(p.policy().harden);
         let all = Permissions::parse(Some(&fixture_board())).unwrap();
-        assert_eq!(all.methods().len(), 10);
+        assert_eq!(all.methods().len(), 12);
+        assert!(all.policy().access().allows_host("rox.preview"));
+        // a preview is the host's own web view, not one the app gets
+        assert!(!all.policy().access().allows_webviews());
         // copy granted is the bridge's pasteboard write, not nsh's clipboard
         assert!(!all.policy().access().allows_clipboard());
     }
