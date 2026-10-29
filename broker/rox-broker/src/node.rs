@@ -1,7 +1,8 @@
 //! The Node broker behind the front door: started on a free loopback port,
-//! watched, and restarted with backoff when it exits. It runs in the front
-//! door's process group, so a signal to the group reaches it too; the front
-//! door's own shutdown stops it first.
+//! watched, and restarted with backoff when it exits. Node leads a process
+//! group of its own, which its plugin and MCP children join: stopping Node
+//! stops the group, so no child outlives it (Node itself leaves them
+//! running on SIGTERM; a Google Workspace plugin did, once per restart).
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -24,31 +25,39 @@ impl Node {
         self.ready.load(Ordering::SeqCst).then(|| self.port.load(Ordering::SeqCst))
     }
 
-    /// Asks Node to stop and keeps it stopped: SIGTERM, then SIGKILL after
-    /// `grace`. Returns once it has exited.
+    /// Asks Node and its children to stop and keeps them stopped. Returns
+    /// once the group is gone.
     pub async fn stop(&self, grace: Duration) {
         self.stopping.store(true, Ordering::SeqCst);
         let pid = self.pid.load(Ordering::SeqCst);
-        if pid <= 0 {
-            return;
-        }
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-        let deadline = Instant::now() + grace;
-        while alive(pid) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if alive(pid) {
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            while alive(pid) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        if pid > 0 {
+            stop_group(pid, grace).await;
         }
     }
 }
 
-fn alive(pid: i32) -> bool {
-    // a reaped child answers ESRCH; the supervisor's wait reaps it
-    unsafe { libc::kill(pid, 0) == 0 }
+/// SIGTERM to process group `pgid`, SIGKILL after `grace` to whatever is
+/// left, then wait until none is.
+async fn stop_group(pgid: i32, grace: Duration) {
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + grace;
+    while group_alive(pgid) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if group_alive(pgid) {
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        for _ in 0..100 {
+            if !group_alive(pgid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+fn group_alive(pgid: i32) -> bool {
+    // the leader counts until the supervisor's wait reaps it
+    unsafe { libc::kill(-pgid, 0) == 0 }
 }
 
 /// A port nothing listens on now, on loopback.
@@ -95,7 +104,7 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
             }
         };
         let mut cmd = tokio::process::Command::new(&config.node);
-        cmd.arg(&config.node_script)
+        cmd.process_group(0).arg(&config.node_script)
             .env("PORT", port.to_string())
             .env("GROK_ALLOWED_ORIGINS", allowed_origins(std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref(), config.port))
             .stdin(std::process::Stdio::null());
@@ -126,12 +135,17 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
                 }
             })
         };
+        let pgid = node.pid.load(Ordering::SeqCst);
         let status = child.wait().await;
         watch.abort();
         node.ready.store(false, Ordering::SeqCst);
-        node.pid.store(0, Ordering::SeqCst);
         if node.stopping.load(Ordering::SeqCst) {
             break;
+        }
+        node.pid.store(0, Ordering::SeqCst);
+        // Node went down on its own: its children go with it before the next
+        if pgid > 0 {
+            stop_group(pgid, Duration::from_secs(2)).await;
         }
         eprintln!("rox-broker: node exited ({}); restarting", status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string()));
         if started.elapsed() > Duration::from_secs(60) {
