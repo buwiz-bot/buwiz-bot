@@ -26,23 +26,32 @@ fn free_port() -> u16 {
 }
 
 fn start_on(port: u16, pids: &PathBuf) -> Child {
+    start_with(port, pids, &[])
+}
+
+fn start_with(port: u16, pids: &PathBuf, env: &[(&str, &str)]) -> Child {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture-node.mjs");
     Command::new(env!("CARGO_BIN_EXE_rox-broker"))
         .args(["--port", &port.to_string(), "--node", "node", "--node-script"])
         .arg(&fixture)
         .env("FIXTURE_PID_FILE", pids)
         .env("FIXTURE_CHILD_FILE", pids.with_extension("children"))
+        .envs(env.iter().copied())
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap()
 }
 
 fn start(name: &str) -> Broker {
+    start_env(name, &[])
+}
+
+fn start_env(name: &str, env: &[(&str, &str)]) -> Broker {
     let port = free_port();
     let pids = std::env::temp_dir().join(format!("rox-broker-test-{name}-{}-{port}.pids", std::process::id()));
     let _ = std::fs::remove_file(&pids);
     let _ = std::fs::remove_file(pids.with_extension("children"));
-    let broker = Broker { child: start_on(port, &pids), port, pids };
+    let broker = Broker { child: start_with(port, &pids, env), port, pids };
     wait_healthy(broker.port, Duration::from_secs(15));
     broker
 }
@@ -117,8 +126,17 @@ fn it_answers_health_and_meta_itself() {
     assert_eq!(status, 200);
     let meta: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(meta["broker"], "rox-broker");
-    assert_eq!(meta["ported"], serde_json::json!([]));
+    assert_eq!(meta["ported"], serde_json::json!(["state", "prefs", "keymap", "timeclock", "skills", "files"]));
     assert!(meta["node_version"].as_str().unwrap().starts_with('v'), "{body}");
+}
+
+#[test]
+fn forward_all_sends_the_ported_routes_to_node_again() {
+    let b = start_env("forward-all", &[("ROX_BROKER_FORWARD_ALL", "1")]);
+    let meta: serde_json::Value = serde_json::from_str(&get(b.port, "/meta").unwrap().1).unwrap();
+    assert_eq!(meta["ported"], serde_json::json!([]));
+    // the fixture answers 404 "no" to what it doesn't know
+    assert_eq!(get(b.port, "/prefs").unwrap(), (404, "no".to_owned()));
 }
 
 #[test]

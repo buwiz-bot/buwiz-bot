@@ -8,6 +8,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use rox_broker::config::Config;
+use rox_broker::leaf::Leaf;
 use rox_broker::node::{self, Node};
 use rox_broker::proxy::FrontDoor;
 
@@ -31,7 +32,10 @@ async fn main() {
     let node = Arc::new(Node::default());
     let _ = node.version.set(node::version_of(&config.node));
     let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
-    let door = Arc::new(FrontDoor::new(node.clone()));
+    let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
+    let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
+        .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed));
+    let door = Arc::new(FrontDoor::new(node.clone(), leaf));
     eprintln!("rox-broker on http://127.0.0.1:{}", config.port);
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
