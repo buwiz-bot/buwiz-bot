@@ -941,6 +941,7 @@ impl Store {
             context: json!({"attached": []}),
         };
         let n = crate::slash::next_ask();
+        let query = self.draft.get_untracked();
         Owner::detached().run(|| {
             spawn(async move {
                 let plugin = ask.plugin.clone();
@@ -961,7 +962,7 @@ impl Store {
                         .collect(),
                     _ => Vec::new(),
                 };
-                crate::slash::show_rows(rows);
+                crate::slash::show_rows_for(query, rows);
             })
         });
         true

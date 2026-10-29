@@ -8,7 +8,9 @@
 //! The composer's popup (`/` commands, `@` servers, scopes and values, a
 //! resolve's choices, and the artifacts the old @ picker listed) is one
 //! list: ↑ ↓ move, Enter or Tab picks, ⌘1…⌘9 pick a shown row, Escape
-//! closes (keys.rs).
+//! closes (keys.rs). The rows remember the text they were computed for:
+//! when the answer lags the typing (plugin commands resolve over the
+//! broker), Enter sends what's typed rather than an older query's row.
 //!
 //! Tokens of a scope the server marks `attach` can be attached to a chat
 //! or a bot (`POST /mcp/attach`): `@server:scope:value attach` sent from
@@ -501,13 +503,24 @@ fn note(msg: String) {
 }
 
 /// The popup's own rows, its header (a resolve's question) and the first
-/// row selected.
+/// row selected, for the composer's text as it is now.
 pub(crate) fn show_rows(rows: Vec<PopRow>) {
     show(rows, String::new());
 }
 
+/// `show_rows` for completions asked when the text was `query`: an
+/// answer landing after more was typed is no pick for Enter.
+pub(crate) fn show_rows_for(query: String, rows: Vec<PopRow>) {
+    show_for(query, rows, String::new());
+}
+
 fn show(rows: Vec<PopRow>, head: String) {
+    show_for(store().draft.get_untracked(), rows, head);
+}
+
+fn show_for(query: String, rows: Vec<PopRow>, head: String) {
     let st = store();
+    *st.pop_query.borrow_mut() = query;
     batch(|| {
         st.pop_rows.set(rows);
         st.pop_head.set(head);
@@ -711,10 +724,11 @@ pub(crate) fn token_menu(tail: &str) -> bool {
     }
     let (server, scope, value) = (m.id.clone(), scope.to_owned(), value.to_owned());
     let n = next_ask();
+    let query = store().draft.get_untracked();
     Owner::detached().run(|| {
         spawn(async move {
             if let Some(found) = complete(n, &server, &scope, &value).await {
-                show(value_rows(&server, &scope, found), String::new());
+                show_for(query, value_rows(&server, &scope, found), String::new());
             }
         })
     });
@@ -769,7 +783,7 @@ fn value_picked(server: String, scope: String, value: String, draft: String) {
             let Some(found) = found else { return };
             let more = value.ends_with('/') || found.iter().any(|(v, _, _)| v != &value && v.starts_with(&value));
             if more && !found.is_empty() {
-                show(value_rows(&server, &scope, found), String::new());
+                show_for(draft, value_rows(&server, &scope, found), String::new());
                 return;
             }
             close();
@@ -884,18 +898,59 @@ pub(crate) fn step(d: i64) {
     }
 }
 
-/// Enter / Tab: picks the selected row.
-pub(crate) fn enter() {
+/// What Enter does with the popup open.
+#[derive(PartialEq)]
+enum Enter<'a> {
+    /// Picks this row.
+    Pick(&'a PopRow),
+    /// Sends what's typed.
+    Send,
+}
+
+/// Enter with row `sel` selected in rows computed for the text `query`,
+/// the composer holding `text` (D20): the row while the rows are for
+/// that text, else what's typed. Rows for `/books` still showing when
+/// `/books month-end` is typed would otherwise run plain `/books`.
+fn on_enter<'a>(rows: &'a [PopRow], sel: usize, query: &str, text: &str) -> Enter<'a> {
+    match rows.get(sel.min(rows.len().saturating_sub(1))) {
+        Some(r) if query == text => Enter::Pick(r),
+        _ => Enter::Send,
+    }
+}
+
+/// The selected row while the rows are for the text as typed.
+fn fresh_pick() -> Option<PopRow> {
+    let st = store();
     let rows = untracked(rows);
-    let sel = store().pop_sel.get_untracked().min(rows.len().saturating_sub(1));
-    if let Some(r) = rows.get(sel) {
-        pick(r);
+    let query = st.pop_query.borrow().clone();
+    match on_enter(&rows, st.pop_sel.get_untracked(), &query, &st.draft.get_untracked()) {
+        Enter::Pick(r) => Some(r.clone()),
+        Enter::Send => None,
+    }
+}
+
+/// Enter: picks the selected row, or sends what's typed when the rows
+/// are for an older text.
+pub(crate) fn enter() {
+    match fresh_pick() {
+        Some(r) => pick(&r),
+        None => {
+            close();
+            store().send();
+        }
+    }
+}
+
+/// Tab: picks the selected row while the rows are for the text as typed.
+pub(crate) fn tab() {
+    if let Some(r) = fresh_pick() {
+        pick(&r);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_token;
+    use super::{Enter, Pick, PopRow, on_enter, parse_token};
 
     #[test]
     fn tokens_parse_in_the_app_servers_grammar() {
@@ -929,5 +984,29 @@ mod tests {
         ] {
             assert_eq!(parse_token(w), None, "{w:?}");
         }
+    }
+
+    fn command_row(name: &str) -> PopRow {
+        PopRow { pick: Pick::V1Command(name.to_owned()), label: format!("/{name}"), hint: String::new(), detail: String::new() }
+    }
+
+    #[test]
+    fn enter_sends_what_is_typed_over_rows_for_an_older_text() {
+        // `/books` rows still showing, `/books month-end` typed since
+        let rows = [command_row("books"), command_row("books-close")];
+        assert!(on_enter(&rows, 0, "/books", "/books month-end") == Enter::Send);
+        // the rows were for `/bo`: `/books` typed in full is sent as it is
+        assert!(on_enter(&rows, 1, "/bo", "/books") == Enter::Send);
+    }
+
+    #[test]
+    fn enter_picks_a_completion_computed_for_the_text_as_typed() {
+        let rows = [command_row("books"), command_row("books-close")];
+        assert!(on_enter(&rows, 0, "/books", "/books") == Enter::Pick(&rows[0]));
+        assert!(on_enter(&rows, 1, "/bo", "/bo") == Enter::Pick(&rows[1]));
+        // a selection past the end is the last row
+        assert!(on_enter(&rows, 9, "/bo", "/bo") == Enter::Pick(&rows[1]));
+        // no rows: what's typed
+        assert!(on_enter(&[], 0, "/bo", "/bo") == Enter::Send);
     }
 }
