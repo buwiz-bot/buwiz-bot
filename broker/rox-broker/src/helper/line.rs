@@ -205,6 +205,11 @@ impl Line {
                 done(self.mcp.request(id, "tools/call", params, timeout).await)
             }
             "resources" => done(self.mcp.request(id, "resources/list", json!({}), super::mcp::DEFAULT_TIMEOUT).await),
+            "auth/begin" => self.mcp.auth_begin(id, get(b, "open") != Some(&Value::Bool(false))).await,
+            "auth/finish" => {
+                let s = |k: &str| get(b, k).and_then(Value::as_str).filter(|v| !v.is_empty());
+                self.mcp.auth_finish(id, s("code"), s("state"), s("error")).await
+            }
             "read" => done(self.mcp.request(id, "resources/read", json!({"uri": get(b, "uri")}), super::mcp::DEFAULT_TIMEOUT).await),
             _ => json!({"ok": false, "error": format!("no route /v1/line/mcp/{op}"), "code": 0}),
         }

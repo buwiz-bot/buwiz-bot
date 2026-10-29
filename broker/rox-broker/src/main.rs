@@ -58,7 +58,7 @@ async fn main() {
         let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
         let trust = config.trust_file(std::env::var("ROX_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false), McpHost::new(&db)) {
+        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
                 let token = rox_v1::keys::b64(&rox_v1::keys::random::<32>());
                 config.node_env.push(("ROX_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
@@ -240,7 +240,9 @@ async fn helper(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let mcp = match McpHost::new(&db) {
+    // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
+    let public = ["ROX_PUBLIC_PORT", "PORT"].iter().find_map(|k| std::env::var(k).ok()?.parse::<u16>().ok()).unwrap_or(8787);
+    let mcp = match McpHost::new(&db, public) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("rox-broker helper: {e}");
