@@ -1,5 +1,6 @@
 // Shared by the server tests: a server of this checkout on its own port
-// and data directory (MOCK, so no model calls), and raw HTTP requests to it.
+// and data directory (MOCK by default, so no model calls; a test can turn
+// it off through startServer's env), and raw HTTP requests to it.
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -57,15 +58,31 @@ export const postJson = (path, obj) =>
 
 const up = () => request("GET", "/health").then((r) => r.status === 200, () => false);
 
-/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to a stop(). */
-export async function startServer(dataDir) {
+/** The environment startServer gives the broker: this process's, the test
+ *  defaults (PORT, GROK_DATA_DIR, MOCK=1, no extra origins), then `env`
+ *  over them; a key set to `undefined` is removed (`{MOCK: undefined}`
+ *  turns MOCK off). */
+export function serverEnv(dataDir, env = {}) {
+  const out = { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" };
+
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) delete out[k];
+    else out[k] = String(v);
+  }
+
+  return out;
+}
+
+/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to a
+ *  stop(). `env` overrides the environment (serverEnv). */
+export async function startServer(dataDir, { env } = {}) {
   if (await up()) throw new Error(`port ${PORT} is already serving; stop that first`);
 
   // its own process group, so stop() also ends the MCP children it spawned
   const [bin, args] = brokerCommand();
   const child = spawn(bin, args, {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" },
+    env: serverEnv(dataDir, env),
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
