@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+// osascript stub for the broker tests: runs no script and shows no dialog.
+//   OSASCRIPT_STUB_OUT: printed to stdout (a picker's chosen paths, one per
+//     line; a JXA script's JSON); default nothing.
+//   OSASCRIPT_STUB_FAIL=1: exits 1 as a cancelled dialog does.
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync } = require("node:fs");
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "osascript", argv: process.argv.slice(2) }) + "\n");
+
+if (process.env.OSASCRIPT_STUB_FAIL === "1") {
+  process.stderr.write("execution error: User canceled. (-128)\n");
+  process.exit(1);
+}
+
+process.stdout.write(process.env.OSASCRIPT_STUB_OUT || "");
