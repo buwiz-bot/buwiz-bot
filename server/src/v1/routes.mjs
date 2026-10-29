@@ -16,7 +16,8 @@ import { DATA_DIR } from "../config.mjs";
 import { plugins, routines, sessions } from "./broker.mjs";
 import { V1Error, errorBody } from "./errors.mjs";
 import { AgentError } from "../agents.mjs";
-import { agents } from "../agents-wire.mjs";
+import { agents, externals } from "../agents-wire.mjs";
+import { ExternalError } from "../agents-external.mjs";
 import { isObject } from "./jcs.mjs";
 
 export const HOST_TOKEN_FILE = join(DATA_DIR, "host-token");
@@ -112,7 +113,24 @@ const POSTS = {
   "/v1/host/agents/archive": agentsCall((b) => agents.archive(b.conversation, b.archived !== false)),
   "/v1/host/agents/resume": agentsCall((b) => agents.resume(b.conversation)),
   "/v1/host/agents/accepts": agentsCall((b) => agents.setAccepts(b.bot, b.accepts)),
+  // an agent's outside endpoints (agents-external.mjs): a webhook or a
+  // Claude Code bridge; the secrets are answered only when made or rotated
+  "/v1/host/agents/endpoints/create": externalCall((b) => externals.create(b)),
+  "/v1/host/agents/endpoints/list": externalCall((b) => ({ ok: true, endpoints: externals.list(b.bot) })),
+  "/v1/host/agents/endpoints/rotate": externalCall((b) => externals.rotate(b.id)),
+  "/v1/host/agents/endpoints/delete": externalCall((b) => (externals.remove(b.id), { ok: true })),
 };
+
+/** An endpoints call as a host route, its refusal as a V1Error. */
+function externalCall(run) {
+  return (b) => {
+    try {
+      return { ok: true, ...run(b) };
+    } catch (e) {
+      throw e instanceof ExternalError ? new V1Error(e.code, e.message) : e;
+    }
+  };
+}
 
 /** An agents call as a host route: {ok: true}, or its refusal as a V1Error. */
 function agentsCall(run) {
@@ -164,6 +182,19 @@ async function hookRoute(req, res, path) {
   const m = /^\/v1\/hooks\/([^/]+)\/([^/]+)$/.exec(path);
 
   if (!m || req.method !== "POST") return send(res, 404, { ok: false, code: "not_found", message: "no such hook", retryable: false });
+
+  // an agent's webhook (ah_…): a signed message, read as its raw bytes
+  if (m[1].startsWith("ah_")) {
+    const raw = await rawBody(req);
+
+    try {
+      return send(res, 202, { ok: true, ...externals.incoming(decodeURIComponent(m[1]), decodeURIComponent(m[2]), raw, req.headers["x-rox-signature"]) });
+    } catch (e) {
+      if (!(e instanceof ExternalError)) throw e;
+
+      return send(res, e.status, { ok: false, code: e.code, message: e.message, retryable: e.status === 429 });
+    }
+  }
   const body = (await readBody(req)) || {};
 
   try {
@@ -175,11 +206,60 @@ async function hookRoute(req, res, path) {
   }
 }
 
+/** The request body as text; past 512 KB, a string one byte too long. */
+function rawBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+
+    req.on("data", (c) => {
+      size += c.length;
+
+      if (size <= 512 * 1024) chunks.push(c);
+    });
+    req.on("end", () => resolve(size > 512 * 1024 ? "x".repeat(512 * 1024 + 1) : Buffer.concat(chunks).toString("utf8")));
+  });
+}
+
+// /v1/bridge/*: rox-bridge (bridge/rox-bridge.mjs), a Claude Code
+// session's way in, with its endpoint's token as `Authorization: Bearer`
+async function bridgeRoute(req, res, path) {
+  try {
+    const r = externals.bridge(String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""));
+    const me = agents.party(`ext:${r.id}`);
+    const body = req.method === "POST" ? (await readBody(req)) || {} : {};
+
+    if (path === "/v1/bridge/agents") {
+      const b = agents.party(r.bot);
+
+      return send(res, 200, { ok: true, agents: b ? [{ id: b.id, name: b.name, description: b.purpose || b.description || "" }] : [] });
+    }
+
+    if (path === "/v1/bridge/send" && req.method === "POST") return send(res, 202, { ok: true, ...agents.sendFrom(externals.get(r.id), body, { id: body.id }) });
+
+    if (path === "/v1/bridge/receive" && req.method === "POST") return send(res, 200, { ok: true, ...(await externals.receive(r, body)) });
+
+    if (path === "/v1/bridge/conversations") return send(res, 200, { ok: true, conversations: agents.conversations(me, body) });
+
+    return send(res, 404, { ok: false, code: "not_found", message: `no route ${path}`, retryable: false });
+  } catch (e) {
+    const status = e instanceof ExternalError ? e.status : e instanceof AgentError ? 400 : 500;
+
+    return send(res, status, { ok: false, code: e.code || "internal", message: String(e.message).slice(0, 300), retryable: false });
+  }
+}
+
 export default async function handle(req, res) {
   const path = new URL(req.url || "/", "http://x").pathname;
 
   if (path.startsWith("/v1/hooks/")) {
     await hookRoute(req, res, path);
+
+    return true;
+  }
+
+  if (path.startsWith("/v1/bridge/")) {
+    await bridgeRoute(req, res, path);
 
     return true;
   }

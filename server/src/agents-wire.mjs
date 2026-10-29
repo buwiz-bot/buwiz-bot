@@ -6,8 +6,9 @@
 // restart left undelivered.
 import { MOCK, PROVIDER } from "./config.mjs";
 import { createAgents } from "./agents.mjs";
+import { createExternals } from "./agents-external.mjs";
 import { createDelivery, historyFor, peerPrompt } from "./agents-run.mjs";
-import { actingBot, allocJobId, botDefaults, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "./state.mjs";
+import { actingBot, allocJobId, botDefaults, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "./state.mjs";
 
 const jobFor = (thread, msg, bot) => ({
   id: allocJobId(), thread, seq: 0, phase: "queued", detail: "", done: false, result: null, extra: {},
@@ -41,7 +42,7 @@ async function runReply(bot, msg, t) {
   await modelCtx.run(choiceFor(chat.id), () => backgroundTurn(job, chat, `Reply from ${msg.from.name} · ${msg.subject}`, peerPrompt(msg, { replying: true }), { agent: mark }));
 }
 
-let delivery;
+let delivery, externals;
 
 export const agents = createAgents({
   store,
@@ -49,12 +50,26 @@ export const agents = createAgents({
   uid: uuidv7,
   save: writeIndex,
   defaults: botDefaults,
-  deliver: (bot, msg, t) => delivery.deliver(bot, msg, t),
+  externals: { get: (id) => externals.get(id) },
+  deliver: (to, msg, t) => route(to, msg, t),
 });
 
-delivery = createDelivery({ agents, runRequest, runReply, log: (line) => console.log(line) });
+// an outside endpoint's message goes out (or is held) at once; an agent's
+// waits its turn
+function route(to, msg, t) {
+  if (!to.external) return delivery.deliver(to, msg, t);
+  externals.deliver(to, msg);
+  agents.delivered(t, msg.id, to.id);
+}
 
-/** Hands what a restart left undelivered to its recipients again. */
+delivery = createDelivery({ agents, runRequest, runReply, log: (line) => console.log(line) });
+externals = createExternals({ db, agents, save: writeIndex, log: (line) => console.log(line) });
+
+export { externals };
+
+/** Hands what a restart left undelivered to its recipients again, and
+ *  retries the outgoing webhooks still queued. */
 export function startAgents() {
-  for (const { bot, msg, t } of agents.undelivered()) delivery.deliver(bot, msg, t);
+  for (const { bot, msg, t } of agents.undelivered()) route(bot, msg, t);
+  externals.resume();
 }
