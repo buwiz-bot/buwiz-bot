@@ -5,5 +5,6 @@
 pub mod keystore;
 pub mod line;
 pub mod mcp;
+pub mod mcp_servers;
 pub mod plugins;
 pub mod sessions;
