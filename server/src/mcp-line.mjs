@@ -46,10 +46,17 @@ async function post(path, body) {
   return out;
 }
 
+let listening = new AbortController();
+
+/** Stops following the line's events (a test's teardown). */
+export function stopLineEvents() {
+  listening.abort();
+}
+
 async function listen() {
-  for (;;) {
+  while (!listening.signal.aborted) {
     try {
-      const res = await fetch(`${LINE.base}/v1/line/events`, { headers: { "x-rox-line": LINE.token } });
+      const res = await fetch(`${LINE.base}/v1/line/events`, { headers: { "x-rox-line": LINE.token }, signal: listening.signal });
       const decoder = new TextDecoder();
       let buf = "";
 
@@ -69,7 +76,7 @@ async function listen() {
       }
     } catch {}
 
-    await new Promise((r) => setTimeout(r, 500));
+    if (!listening.signal.aborted) await new Promise((r) => setTimeout(r, 500));
   }
 }
 
