@@ -6,7 +6,9 @@
 #                                  <data dir>/backups/<UTC time>/
 #   scripts/broker-live start|stop|restart
 #   scripts/broker-live use-node   the Node broker on the port (the rollback)
-#   scripts/broker-live use-rust   rox-broker on the port, Node behind it (phase 1 on)
+#   scripts/broker-live use-rust   rox-broker on the port, Node behind it (phase 1 on);
+#                                  from phase 3 it hosts the v1 plugins and sessions
+#                                  (ROX_BROKER_V1_HOST=0 leaves them to Node)
 #
 # GS: the data dir (default ~/Library/Application Support/Grok Shell).
 # RES: the app bundle's Resources dir holding server/ (default: the Grok
@@ -60,7 +62,7 @@ start_rust() {
   [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
   [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it)" >&2; return 1; }
   (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
-    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
+    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" ROX_BROKER_V1_HOST="${ROX_BROKER_V1_HOST:-1}" \
     exec nohup "$RES/server/rox-broker" --port "$PORT" --data "$GS" --node "$RES/server/node" \
       --node-script "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
   wait_health && echo "rox-broker on $PORT"
@@ -70,13 +72,20 @@ status() {
   local pid
   pid=$(listener)
   echo "health: $(health)"
-  if [ -n "$pid" ]; then echo "port $PORT: pid $pid $(ps -o comm= -p "$pid" | xargs basename)"; else echo "port $PORT: free"; fi
+  if [ -n "$pid" ]; then echo "port $PORT: pid $pid $(basename "$(ps -o comm= -p "$pid")")"; else echo "port $PORT: free"; fi
   if [ -f "$GS/host-token" ] && [ -n "$pid" ]; then
     curl -s -m 5 -H "X-Rox-Host: $(cat "$GS/host-token")" "$URL/v1/host/plugins" \
       | python3 -c 'import json,sys
 for p in json.load(sys.stdin).get("plugins", []): print("plugin:", p.get("id"), p.get("version"), p.get("state"), "on" if p.get("enabled") else "off")' 2>/dev/null || echo "plugins: unreadable"
   fi
   sqlite3 "file:$DB?mode=ro" "SELECT 'routine: ' || routine || ' ' || CASE enabled WHEN 1 THEN 'on' ELSE 'off' END || ' last run ' || coalesce(datetime(last_run/1000,'unixepoch','localtime'),'never') || coalesce(' error: ' || last_error, '') FROM v1_instances" 2>/dev/null || true
+  # who runs each v1 plugin process: rox-broker (phase 3) or Node
+  sqlite3 "file:$DB?mode=ro" "SELECT id, command FROM v1_plugins WHERE enabled=1" 2>/dev/null | while IFS='|' read -r id cmd; do
+    local p parent
+    p=$(pgrep -f -n "^$cmd" 2>/dev/null || true)
+    parent=$([ -n "$p" ] && basename "$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')")" || echo none)
+    echo "process: $id pid ${p:-none} under ${parent}"
+  done
   echo "keychain dialog: $(pgrep -q SecurityAgent && echo UP || echo none)"
 }
 

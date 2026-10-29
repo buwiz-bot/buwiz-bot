@@ -273,7 +273,7 @@ test("LCY-05 disable stops the process and removes tools and commands; storage a
   assert.equal(plugins.runtime(FX).state, "stopped");
   assert.deepEqual(v1Tools(plugins), []);
   assert.equal(plugins.list()[0].enabled, false);
-  assert.equal(sessions.opens.has(o.open_id), false, "its opens end");
+  assert.equal(await sessions.stat(o.open_id), null, "its opens end");
   assert.equal(await codeOf(sessions.resolve({ plugin: FX, kind: "command", name: "board", value: "" })), "plugin_unavailable");
   assert.ok(existsSync(join(b.keysDir, `${FX}.key`)), "the key is kept");
   const on = await plugins.enable(FX);
@@ -295,7 +295,7 @@ test("LCY-06 uninstall removes the key, the record and the opens; a later open i
   await until(() => !alive(pid), 5000, "the process to exit");
   assert.equal(existsSync(join(b.keysDir, `${FX}.key`)), false);
   assert.deepEqual(plugins.list(), []);
-  assert.equal(sessions.opens.has(o.open_id), false);
+  assert.equal(await sessions.stat(o.open_id), null);
   assert.equal(await codeOf(openApp(sessions, m, "card")), "not_found");
   assert.equal(await codeOf(sessions.appSource({ plugin: FX, app: "card" })), "not_found");
   // installs again from scratch, with a new key

@@ -15,6 +15,7 @@ use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 
+use crate::helper::line::Line;
 use crate::leaf::{self, Leaf};
 use crate::node::Node;
 
@@ -24,12 +25,19 @@ pub struct FrontDoor {
     pub node: Arc<Node>,
     /// the routes answered in Rust; `None` forwards them too
     leaf: Option<Leaf>,
+    /// the plugin host's API for Node, when this broker hosts v1 plugins
+    line: Option<Arc<Line>>,
     client: Client<HttpConnector, Incoming>,
 }
 
 impl FrontDoor {
     pub fn new(node: Arc<Node>, leaf: Option<Leaf>) -> Self {
-        Self { node, leaf, client: Client::builder(TokioExecutor::new()).build_http() }
+        Self { node, leaf, line: None, client: Client::builder(TokioExecutor::new()).build_http() }
+    }
+
+    pub fn with_line(mut self, line: Arc<Line>) -> Self {
+        self.line = Some(line);
+        self
     }
 
     pub async fn handle(&self, req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
@@ -39,6 +47,10 @@ impl FrontDoor {
         let (res, side) = match req.uri().path() {
             "/health" => (self.health(), "rust"),
             "/meta" => (self.meta(), "rust"),
+            p if p.starts_with("/v1/line/") => match &self.line {
+                Some(line) => (line.serve(req).await, "rust"),
+                None => (json(StatusCode::NOT_FOUND, serde_json::json!({ "ok": false, "error": "this broker hosts no v1 plugins" })), "rust"),
+            },
             _ => match (&self.leaf, leaf::route(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"))) {
                 (Some(leaf), Some(route)) => (leaf.serve(route, req).await, "rust"),
                 _ => (self.forward(req).await, "node"),

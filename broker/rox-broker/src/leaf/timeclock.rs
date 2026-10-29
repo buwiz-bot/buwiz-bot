@@ -34,7 +34,7 @@ pub fn clock_in(leaf: &Leaf) -> Answer {
         Err(e) => return Answer::thrown(&e),
     };
     if !open {
-        if let Err(e) = leaf.db(|db| db.execute("INSERT INTO timeclock(clock_in) VALUES(?)", [iso(now_ms())])) {
+        if let Err(e) = leaf.db(|db| db.execute("INSERT INTO timeclock(clock_in) VALUES(?)", [crate::js::iso(now_ms())])) {
             return Answer::thrown(&e);
         }
     }
@@ -42,7 +42,7 @@ pub fn clock_in(leaf: &Leaf) -> Answer {
 }
 
 pub fn clock_out(leaf: &Leaf) -> Answer {
-    if let Err(e) = leaf.db(|db| db.execute("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL", [iso(now_ms())])) {
+    if let Err(e) = leaf.db(|db| db.execute("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL", [crate::js::iso(now_ms())])) {
         return Answer::thrown(&e);
     }
     with_summary(leaf, json!({ "ok": true }))
@@ -146,23 +146,6 @@ fn parse_iso(s: &str) -> f64 {
     ((days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + sec) * 1000 + millis) as f64
 }
 
-/// `new Date(ms).toISOString()`
-fn iso(ms: f64) -> String {
-    let ms = ms as i64;
-    let (days, rem) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
-    // civil_from_days (Howard Hinnant)
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3_600_000, rem / 60_000 % 60, rem / 1000 % 60, rem % 1000)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,7 +153,7 @@ mod tests {
     #[test]
     fn iso_times_round_trip() {
         for s in ["1970-01-01T00:00:00.000Z", "2026-10-29T03:04:05.678Z", "2000-02-29T23:59:59.999Z", "1969-12-31T23:59:59.000Z"] {
-            assert_eq!(iso(parse_iso(s)), s);
+            assert_eq!(crate::js::iso(parse_iso(s)), s);
         }
         assert_eq!(parse_iso("2026-10-29T03:04:05Z"), parse_iso("2026-10-29T03:04:05.000Z"));
         assert_eq!(parse_iso("2026-10-29T03:04:05.6Z"), parse_iso("2026-10-29T03:04:05.600Z"));
