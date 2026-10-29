@@ -146,3 +146,23 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "nsh run --target web attach, stacked on the adapter; kept in the fork (hexuria/nsh#4 closed 2026-10-28)"
+
+[[topic]]
+branch = "pr/gpui-wheel-passthrough"
+kind = "fix"
+pr = 0
+status = "parked"
+note = "GPUI backend only; Rox runs on AppKit (pr/macos-embedded-scroll is its counterpart). Kept for upstream"
+
+[[topic]]
+branch = "pr/gpui-launch-without-activation"
+kind = "feature"
+pr = 0
+status = "parked"
+note = "GPUI backend only; Rox runs on AppKit (pr/macos-launch-without-activation is its counterpart). Kept for upstream"
+
+[[topic]]
+branch = "pr/macos-launch-without-activation"
+kind = "feature"
+pr = 0
+status = "local"
