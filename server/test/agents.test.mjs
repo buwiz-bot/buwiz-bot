@@ -48,7 +48,7 @@ const code = (fn) => {
 
 test("A2A-01 a message makes a conversation, its read-only thread and a notice in each chat", () => {
   const w = world();
-  const r = w.agents.send(w.bot("piccolo"), { to: ["Boss"], subject: "Q3 payments", text: "Check Q3.", expects_reply: true });
+  const r = w.agents.send(w.bot("piccolo"), { to: "Boss", subject: "Q3 payments", text: "Check Q3.", expects_reply: true });
   const t = w.agents.conversation(r.conversation);
 
   assert.match(r.id, /^msg_/);
@@ -152,6 +152,17 @@ test("limits: 30 sends per agent in ten minutes; 20 messages an hour pause the c
   assert.equal(code(() => w.agents.send(piccolo, { to: ["ada"], subject: "one too many", text: "x" })), "rate_limited");
   w.clock.t += 11 * 60_000;
   assert.ok(w.agents.send(piccolo, { to: ["ada"], subject: "later", text: "x" }).id);
+});
+
+test("a reply the asker read with agent_read needs no wake-up", () => {
+  const w = world();
+  const ask = w.agents.send(w.bot("piccolo"), { to: "boss", subject: "Sum", text: "17 × 23?", expects_reply: true });
+  const answer = w.agents.send(w.bot("boss"), { conversation: ask.conversation, in_reply_to: ask.id, text: "391" });
+
+  assert.equal(w.agents.readBy(answer.id, "piccolo"), false);
+  w.agents.read(w.bot("piccolo"), { conversation: ask.conversation });
+  assert.equal(w.agents.readBy(answer.id, "piccolo"), true);
+  assert.equal(w.agents.readBy(answer.id, "boss"), false);
 });
 
 test("ARC-01 an archived conversation leaves the list's default, keeps its messages and reopens on a new one", () => {

@@ -209,6 +209,9 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
     }
     let to;
 
+    // one agent may come as its id or name alone
+    if (typeof input.to === "string" && input.to !== "*") input = { ...input, to: [input.to] };
+
     if (input.to === "*") to = reachable(caller).filter((b) => !b.helper);
     else if (Array.isArray(input.to) && input.to.length) to = [...new Set(input.to.map((r) => recipient(caller, r)))];
     else if (input.to === undefined && t) to = t.agents.participants.filter((p) => p !== caller.id).map(party).filter((p) => p && (p.external || live(p)));
@@ -352,8 +355,18 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
 
       msgs = i >= 0 ? msgs.slice(i + 1) : msgs.filter((m) => m.sent_at > String(since));
     }
+    // what the reader has seen: a reply it read needs no wake-up (agents-run.mjs)
+    const ids = new Set(msgs.map((m) => m.id));
+
+    for (const u of t.turns) if (ids.has(u.message?.id) && !(u.read_by || []).includes(caller.id)) u.read_by = [...(u.read_by || []), caller.id];
+    save();
 
     return { conversation: t.agents.conversation, subject: t.agents.subject, messages: msgs };
+  }
+
+  /** Whether `botId` has read message `msgId` with agent_read. */
+  function readBy(msgId, botId) {
+    return store.list.some((t) => t.agents && t.turns.some((u) => u.message?.id === msgId && (u.read_by || []).includes(botId)));
   }
 
   /** `agent_create`: a permanent agent the user asked for, or the caller's
@@ -472,5 +485,5 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
     return send(caller, input, { hop: 0, id });
   }
 
-  return { list, send, sendFrom, delivered, undelivered, conversations, read, create, remove, archive, resume, setAccepts, conversation, reachable, party };
+  return { list, send, sendFrom, readBy, delivered, undelivered, conversations, read, create, remove, archive, resume, setAccepts, conversation, reachable, party };
 }
