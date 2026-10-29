@@ -142,14 +142,20 @@ test("BRG-12 the 9th concurrent call waits; the 21st call in one second is rate_
   const o = await openApp(sessions, m, "board");
   const nine = Array.from({ length: 9 }, () => call(o, "fx_slow", { ms: 300 }));
 
-  await new Promise((r) => setImmediate(r));
-  const s = sessions.opens.get(o.open_id);
+  const s = await until(async () => {
+    const st = await sessions.stat(o.open_id);
+
+    return st.active + st.queued === 9 && st;
+  }, 3000, "nine calls in");
 
   assert.equal(s.active, 8);
-  assert.equal(s.queue.length, 1, "the ninth waits in order");
+  assert.equal(s.queued, 1, "the ninth waits in order");
   assert.ok((await Promise.all(nine)).every((r) => r.ok));
   const o2 = await openApp(sessions, m, "board");
-  const codes = await Promise.all(Array.from({ length: 21 }, () => codeOf(call(o2, "fx_echo"))));
+  const codes = [];
+
+  // one after another, well inside a second (concurrent requests may arrive in any order)
+  for (let n = 0; n < 21; n++) codes.push(await codeOf(call(o2, "fx_echo")));
 
   assert.equal(codes.filter((c) => c === "rate_limited").length, 1);
   assert.equal(codes.at(-1), "rate_limited");

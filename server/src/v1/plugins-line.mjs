@@ -7,9 +7,8 @@
 // same app.db, row by row), each plugin's runtime (a snapshot the line
 // sends on every change, newest wins by `seq`) and the plugin list. Tool
 // results come back raw and go through the MCP SDK's schemas here, so
-// callers see what the in-process client gave them. Sessions keep ending
-// a plugin's opens before it stops (disable, uninstall); on an update they
-// end once the new version runs.
+// callers see what the in-process client gave them. App sessions live in
+// rox-broker too (sessions-line.mjs), which ends a plugin's opens itself.
 //
 // With a fake clock (tests) rox-broker runs a manual clock: each restart it
 // schedules is mirrored as a timer on that clock, whose firing tells the
@@ -26,7 +25,6 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
   const events = new EventEmitter();
   const runtimes = new Map(); // id → runtime, as rox-broker last sent it
   const seqs = new Map(); // id → the newest snapshot's seq
-  const closers = [];
   const manual = clock !== systemClock;
   const views = createViews({ db, runtime: (id) => runtime(id), trust });
   let stopped = false;
@@ -131,27 +129,7 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
 
   if (manual) address.then(() => request("clock", { method: "POST", body: JSON.stringify({ now: clock.now() }) })).catch(() => {});
 
-  const endOpens = (id, stop) => Promise.all(closers.map((f) => f(id, { stop })));
-
-  async function install(body) {
-    const r = await post("plugins/install", body);
-
-    if (r.updated) await endOpens(r.id, false);
-
-    return r;
-  }
-
-  async function disable(id) {
-    if (views.rowOf(id)) await endOpens(id, true);
-
-    return post(`plugins/${encodeURIComponent(id)}/disable`);
-  }
-
-  async function uninstall(id) {
-    if (views.rowOf(id)) await endOpens(id, true);
-
-    return post(`plugins/${encodeURIComponent(id)}/uninstall`);
-  }
+  const action = (id, what, body) => post(`plugins/${encodeURIComponent(id)}/${what}`, body);
 
   async function callTool(id, name, args, { meta, timeout = T.call } = {}) {
     const { result } = await post("call", { plugin: id, tool: name, args, ...(meta ? { meta } : {}), timeout_ms: timeout });
@@ -170,17 +148,21 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
   }
 
   return {
-    ...views, events, runtime, trust, timeouts: T, clock, install, disable, uninstall, callTool, readResource,
+    ...views, events, runtime, trust, timeouts: T, clock, callTool, readResource,
     inspect: (body) => post("plugins/inspect", body),
-    enable: (id) => post(`plugins/${encodeURIComponent(id)}/enable`),
-    setTool: (id, tool, disabled) => post(`plugins/${encodeURIComponent(id)}/tools`, { tool, disabled }),
+    install: (body) => post("plugins/install", body),
+    enable: (id) => action(id, "enable"),
+    disable: (id) => action(id, "disable"),
+    uninstall: (id) => action(id, "uninstall"),
+    setTool: (id, tool, disabled) => action(id, "tools", { tool, disabled }),
     callReserved: async (id, name, args) => (await post("reserved", { plugin: id, name, args })).value,
-    fail: (id, code, message) => post(`plugins/${encodeURIComponent(id)}/fail`, { code, message }),
+    fail: (id, code, message) => action(id, "fail", { code, message }),
     startAll: () => post("start"),
     stopAll: async () => {
       await post("stop").catch(() => {});
       stopped = true;
     },
-    onClose: (f) => closers.push(f),
+    /** One line request (sessions-line.mjs): its answer, or a V1Error. */
+    line: post,
   };
 }

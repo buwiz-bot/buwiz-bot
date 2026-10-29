@@ -14,6 +14,7 @@ import { permsDigest } from "../src/v1/manifest.mjs";
 import { createPlugins, systemClock } from "../src/v1/plugins.mjs";
 import { createLinePlugins } from "../src/v1/plugins-line.mjs";
 import { createSessions } from "../src/v1/sessions.mjs";
+import { createLineSessions } from "../src/v1/sessions-line.mjs";
 import { signManifest } from "../src/v1/sign-manifest.mjs";
 import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
@@ -77,8 +78,9 @@ export function bed(label) {
 
 /** An in-process broker for bed `b`: {plugins, sessions, db}. With
  *  ROX_BROKER_CMD set, its plugins run in `rox-broker helper` and are
- *  reached over the line (plugins-line.mjs), as the Rust broker plan has
- *  them from 3.4; `db` is then the app.db the two share. */
+ *  reached over the line (plugins-line.mjs, sessions-line.mjs), as the
+ *  Rust broker plan has them from 3.4; `db` is then the app.db the two
+ *  share. */
 export function broker(b, { clock = systemClock, timeouts = {}, db } = {}) {
   if (process.env.ROX_BROKER_CMD) return lineBroker(b, { clock, timeouts });
   db ??= new DatabaseSync(":memory:");
@@ -117,7 +119,7 @@ function lineBroker(b, { clock, timeouts }) {
     child.kill("SIGTERM");
   };
 
-  return { plugins, sessions: createSessions(plugins), db };
+  return { plugins, sessions: createLineSessions(plugins), db };
 }
 
 /** The fixture's spawn spec, with extra args (e.g. --misbehave=…) and env. */
