@@ -3,7 +3,8 @@
 # own), its own gpui-agent port and token, its window on AeroSpace
 # workspace 4. The focus stays where it was (the window that had it gets it
 # back) and the visible workspace never changes. Prints the pid; drive it
-# with scripts/test-agent.
+# with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
+# never lists its window within 30 seconds.
 #   scripts/test-rox <rox binary> <instance dir> <agent port> [VAR=value ...]
 # e.g. ROX_BACKEND=http://127.0.0.1:8798 ROX_HOST_TOKEN_FILE=<data>/host-token
 set -e
@@ -23,6 +24,14 @@ for _ in $(seq 1 120); do
   [ -n "$W" ] && break
   sleep 0.25
 done
-[ -n "$W" ] && aerospace move-node-to-workspace 4 --window-id "$W"
+# a window AeroSpace never lists stays where macOS put it, over every
+# workspace: stop this instance (its own pid) rather than leave it there
+if [ -z "$W" ]; then
+  kill "$P" 2>/dev/null || true
+  [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
+  echo "pid $P: AeroSpace never listed its window; stopped" >&2
+  exit 1
+fi
+aerospace move-node-to-workspace 4 --window-id "$W"
 [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
-echo "pid $P window ${W:-none}"
+echo "pid $P window $W"
