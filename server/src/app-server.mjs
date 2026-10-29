@@ -22,6 +22,8 @@
 //   routes/      the ~80 HTTP endpoints, grouped by prefix
 //   v1/          the Mini App Protocol v1 broker (plugins, sessions, /v1/host/*)
 
+// first: takes the line token out of the environment before anything spawns
+import "./v1/line-env.mjs";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import {
