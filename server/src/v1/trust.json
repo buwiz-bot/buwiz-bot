@@ -20,6 +20,10 @@
     {
       "id": "dev.goldcoders.fixture",
       "publisher_key_id": "gc-2026-01"
+    },
+    {
+      "id": "dev.goldcoders.books",
+      "publisher_key_id": "gc-2026-01"
     }
   ]
 }
