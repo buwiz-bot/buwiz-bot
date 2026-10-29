@@ -552,21 +552,7 @@ fn conn_chip() -> impl IntoElement {
                 .flex_row()
                 .pl(px(2.0))
                 .child(each(
-                    || {
-                        let st = store();
-                        let (inst, standalone) = st.conn_items();
-                        inst.iter()
-                            .map(|p| p.name.clone())
-                            .chain(standalone.iter().map(|s| {
-                                if s.name.is_empty() {
-                                    s.id.clone()
-                                } else {
-                                    s.name.clone()
-                                }
-                            }))
-                            .take(4)
-                            .collect::<Vec<_>>()
-                    },
+                    || store().connected_names().into_iter().take(4).collect::<Vec<_>>(),
                     |n| n.clone(),
                     |n, i| {
                         let neg = if i.get() == 0 { 0.0 } else { -7.0 };
@@ -577,12 +563,7 @@ fn conn_chip() -> impl IntoElement {
         .child(
             text(move || {
                 let st = store();
-                let (inst, standalone) = st.conn_items();
-                format!(
-                    "{} Connected / {} Skills",
-                    inst.len() + standalone.len(),
-                    st.private_skills.get().len()
-                )
+                format!("{} Connected / {} Skills", st.connected_names().len(), st.private_skills.get().len())
             })
             .text_size(px(13.0))
             .text_color(theme::DIM),

@@ -3,7 +3,7 @@
 `sdk/mini-app/bin/rox-plugin-test.mjs` runs the plugin-side checks of
 [spec] 17 against one plugin and prints a checklist with the spec ID of each
 check. It spawns your plugin the way the broker does and runs the broker's
-real v1 code in its own process (`server/v1/plugins.mjs`, `sessions.mjs`,
+real v1 code in its own process (`src/v1/plugins.mjs`, `sessions.mjs`,
 `manifest.mjs`) on an in-memory database, a file keystore in a temp
 directory and a trust file written for the run. It opens no port, never
 reads Rox's or the broker's data directory and never touches the login
@@ -27,17 +27,36 @@ npm run plugin-test -- --command node --args sdk/mini-app/hello-world/server.mjs
 | Option | Meaning |
 |---|---|
 | `--command <cmd>` | The program to spawn (stdio only). |
-| `--args <arg>` | One argument; repeat for more, or pass a JSON array. Relative paths are from the repo root (where npm runs). |
+| `--args <arg>` | One argument; repeat for more, or pass a JSON array. Relative paths are from rox's `server/` (where npm runs). |
 | `--env KEY=VAL` | An environment variable for the plugin; repeat for more. |
 | `--sign-with <key file>` | Read the manifest the plugin serves, fill each app's fingerprint from the source it serves, sign with this key. |
 | `--key-id <id>` | With `--sign-with`: the `publisher.key_id` to sign under (default: the manifest's). |
-| `--manifest <file>` | A manifest you signed. Trusted with `--key-file`, else with the shipped `server/v1/trust.json`. |
+| `--manifest <file>` | A manifest you signed. Trusted with `--key-file`, else with the shipped `src/v1/trust.json` (see [Trust](#trust)). |
 | `--key-file <key file>` | With `--manifest`: the key it was signed with. |
 | `--manifest-env NAME` | The variable that tells the plugin where its signed manifest is (default `ROX_PLUGIN_MANIFEST`, which the template reads). |
-| `--json` | Print `{plugin, rows: [{id, what, status, note}], ok}` instead of the checklist. |
+| `--json` | Print `{plugin, trust, rows: [{id, what, status, note}], ok}` instead of the checklist. |
 | `--keygen <file>` | Write a new test key (0600) and print its public key. |
 
 Exit status: 0 when nothing failed, 1 when a check failed, 2 for a usage error.
+
+## Trust
+
+By default a run makes its own trust store: it trusts your key under the
+manifest's `publisher.key_id` and puts your plugin's id on the approved list,
+for that run only. That checks the protocol, not whether a given Rox would
+accept the plugin.
+
+Set `ROX_TRUST_FILE` to a trust store (the format of `src/v1/trust.json`)
+and the run uses it as it is, the way the broker does. The key must be that
+store's key under the manifest's key id, and the plugin's id must be on its
+`approved_plugins` under that key id. Otherwise MAN-01 fails with the
+broker's own message (`… is not a trusted publisher key`, `… is not on the
+approved list for key …`). Use a test key id of your own (`--key-id`) in a
+store of your own; never put a test key under a release key id.
+
+The checklist's third line says which it was, for example
+`trust: ROX_TRUST_FILE /tmp/trust.json: key books-test-01 trusted,
+dev.goldcoders.books approved`.
 
 ## What it checks
 

@@ -101,7 +101,7 @@ when absent. Your plugin compares it on every `rox.session.open`.
 ## Limits
 
 These are the limits the broker enforces (`LIMITS` in
-`server/v1/manifest.mjs`, the spec's Appendix A). `test/v1-sdk.test.mjs`
+`src/v1/manifest.mjs`, the spec's Appendix A). `test/v1-sdk.test.mjs`
 (SDK-07) fails when this table and the code disagree.
 
 | Field | Limit | Key |
