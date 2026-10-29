@@ -18,6 +18,9 @@ app is shared between manifests: `if (rox.copy) …`.
 | `rox.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
 | `rox.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
 | `rox.fit(height)` | always | Inline: Rox sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
+| `rox.actions(list)`, `rox.onAction(handler)` | always (1.1) | Inline: Rox draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
+| `rox.meta({text, pill?})` | always (1.1) | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
+| `rox.settle(text)` | always (1.1) | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
 | `rox.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
 | `rox.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
 | `rox.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
@@ -117,6 +120,58 @@ second per open, the last always landing; `rox.fit` needs no permission
 (it sizes only your own frame) and does nothing full screen. Check for it
 (`rox.fit &&`) if the app may run on an older Rox.
 
+## Cards that look like Rox's: `rox.actions`, `rox.meta`, `rox.settle`
+
+Protocol 1.1 ([spec] 7.12 to 7.14). An inline card can hand Rox its chrome
+instead of drawing it, so it looks like Rox's own cards (an approval card's
+buttons, its settled line):
+
+- `rox.actions([{id, label, primary?, disabled?}])`: footer buttons under
+  the app, drawn by Rox as 28-point pills, right-aligned, the primary first.
+  At most 3; `id` 1 to 64 of `A-Z a-z 0-9 _ . : -`, unique; `label` one line
+  of 1 to 24 characters; at most one `primary`. `[]` removes them; each call
+  replaces the list. A press of an enabled button calls every
+  `rox.onAction(handler)` with its `id` (`onAction` returns a function that
+  removes the handler). The press does nothing else: do the work with your
+  own tools (`rox.call`), and update the buttons (`disabled: true` while it
+  runs).
+- `rox.meta({text, pill?})`: a status after the card's title, one line of
+  at most 32 characters, as dim text or (`pill: true`) a pill. `null`
+  removes it.
+- `rox.settle(text)`: when the card is done, it collapses to one line of at
+  most 120 characters ("Marked paid · ₱12,000") and your app unmounts (its
+  session closes). There is no undo.
+
+A call outside these rules rejects `invalid_args` and changes nothing. Full
+screen, each call is checked the same way, then ignored: draw your own
+buttons there (`rox.viewport().placement` says which). They need no
+permission. Declare `"protocol": "1.1.0"` when you use them, and check for
+them (`if (rox.actions)`) if the app may run on a 1.0 Rox.
+
+```tsx
+import { rox } from "rox";
+
+const busy = (b: boolean) =>
+  rox.actions([
+    { id: "pay", label: "Mark paid", primary: true, disabled: b },
+    { id: "later", label: "Later", disabled: b },
+  ]);
+
+rox.onAction(async (id) => {
+  if (id === "later") return rox.settle("Snoozed until tomorrow");
+  await busy(true);
+  try {
+    await rox.call("acme_mark_paid", { ticket: rox.props.ticket });
+    await rox.settle("Marked paid");
+  } catch (e) {
+    await rox.meta({ text: "Could not mark it paid", pill: true });
+    await busy(false);
+  }
+});
+busy(false);
+rox.meta({ text: "Due in 3 days", pill: true });
+```
+
 ## What your tool receives
 
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
@@ -144,7 +199,18 @@ answers `structuredContent` with one `result`:
 | `choices` | `choices: [{label, detail?, value}]`; `value` should be a ticket | 20 choices; label 80, detail 160 chars |
 | `open` | `app` (yours), `props?`, `ticket?`, `title`, `placement?` | title 60 chars; props validate; no other plugin's app |
 | `token` | `ticket`, `title` | title 60 chars; ticket `^tkt_[0-9A-HJKMNP-TV-Z]{26}$` |
+| `prompt` (1.1) | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
 | `error` | `message` | 200 chars |
+
+`prompt` is a starter flow: Rox puts `text` in the message field for the
+user to edit and send (after their own draft and a blank line, if they typed
+one) and never sends it. Answer it for a command, for example a bare
+`/draft`, with the text as the user would type it (tokens and line breaks
+are kept). Declare `"protocol": "1.1.0"`: a 1.0 Rox cannot read it.
+
+```js
+if (args.kind === "command" && !args.value) return ok({ result: "prompt", text: "Draft this month's update:\n- " });
+```
 
 An attachable scope must answer `token` for a value it offered as a choice:
 `rox.attach` and the composer rely on it ([spec] 7.6, 9.3).
@@ -177,6 +243,9 @@ Rox renders your app in Rox's own light or dark setting, not the OS's, and switc
 | Calls in flight per open | 8 (the ninth waits) |
 | New calls per second per open | 20 (more: `rate_limited`) |
 | `rox.fit` heights per second per open | 8 (the last waits for a slot; under 2 points ignored) |
+| `rox.actions` | 3 buttons; id 64 chars `[A-Za-z0-9_.:-]`; label 24 chars, one line; one primary |
+| `rox.meta` / `rox.settle` | 32 / 120 chars, one line |
+| Resolve `prompt` text | 4000 chars, commands only |
 | Bridge call timeout | 30 s (host), 120 s (broker to plugin) |
 | Resolve timeout | 10 s |
 | `rox.provision`, `rox.session.open`, `rox.uninstall` | 5 s each |
