@@ -549,7 +549,8 @@ export default async function handle(req, res) {
     });
     return true;
   }
-  // POST /mcp/auth {id} — kick the OAuth browser flow for a remote server.
+  // POST /mcp/auth {id, open?} — kick the OAuth browser flow for a remote
+  // server; open:false returns the authorize URL instead of opening a tab.
   if (req.method === "POST" && req.url === "/mcp/auth") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -557,10 +558,10 @@ export default async function handle(req, res) {
       (async () => {
         res.setHeader("content-type", "application/json");
         try {
-          const { id } = JSON.parse(body || "{}");
+          const { id, open } = JSON.parse(body || "{}");
           const row = db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(String(id || ""));
           if (!row) throw new Error("no such server");
-          res.end(JSON.stringify(await mcpBeginAuth(row)));
+          res.end(JSON.stringify(await mcpBeginAuth(row, { open: open !== false })));
         } catch (e) {
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
