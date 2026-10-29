@@ -3,3 +3,6 @@
 //! an in-process API shaped like the line, so a remote Hub needs no rework.
 
 pub mod keystore;
+pub mod line;
+pub mod mcp;
+pub mod plugins;
