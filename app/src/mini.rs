@@ -403,7 +403,7 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                         }
                     },
                 ))
-                .child(crate::mini_v1::ui::banners(&key))
+                .child(crate::mini_v1::ui::banners(&key, true))
                 .child(mini_app(&key, 0.0, None, None))
                 .child(crate::mini_v1::ui::error_overlay(&key)),
         )
