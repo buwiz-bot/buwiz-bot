@@ -21,7 +21,10 @@ export const STATIC = { client_id: "static-client", client_secret: "static-secre
 const rand = () => randomBytes(12).toString("hex");
 const b64url = (buf) => buf.toString("base64url");
 
-const TOOLS = [{ name: "whoami", description: "The caller's client", inputSchema: { type: "object" } }];
+const TOOLS = [
+  { name: "whoami", description: "The caller's client", inputSchema: { type: "object" } },
+  { name: "denied", description: "Answers as a server whose token was revoked", inputSchema: { type: "object" } },
+];
 
 export async function oauthServer() {
   const log = [];
@@ -84,6 +87,8 @@ export async function oauthServer() {
       case "tools/list":
         return ok({ tools: TOOLS });
       case "tools/call":
+        if (msg.params?.name === "denied") return ok({ content: [{ type: "text", text: "401 Unauthorized: the token was revoked" }], isError: true });
+
         return ok({ content: [{ type: "text", text: JSON.stringify({ client: who }) }], structuredContent: { client: who } });
       case "ping":
         return ok({});
