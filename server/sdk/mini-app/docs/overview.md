@@ -53,8 +53,8 @@ tool with `_meta["rox/caller"]` saying who asked ([spec] 8).
 | `sdk/mini-app/template/` | The smallest correct plugin: copy it ([README](../README.md)) |
 | `sdk/mini-app/lib/rox-plugin.mjs` | The reserved tools of [spec] 7.8, done once: `startPlugin`, `ticketStore`, `ok`, `fail` |
 | `sdk/mini-app/bin/rox-plugin-test.mjs` | The test runner (`npm run plugin-test`), see [testing.md](testing.md) |
-| `server/v1/sign-manifest.mjs` | Fills fingerprints and signs a manifest |
-| `server/v1/fixture/` | The conformance fixture: every feature, used by the broker's own suite |
+| `src/v1/sign-manifest.mjs` | Fills fingerprints and signs a manifest |
+| `src/v1/fixture/` | The conformance fixture: every feature, used by the broker's own suite |
 
 ## Read next
 
