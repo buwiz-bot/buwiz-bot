@@ -108,7 +108,7 @@ test("dynamic registration: sign-in end to end, the redirect on the broker's por
   const t = await tools("dcr");
 
   assert.equal(t.json.status, "connected");
-  assert.deepEqual(t.json.tools.map((x) => x.name), ["whoami"]);
+  assert.deepEqual(t.json.tools.map((x) => x.name), ["whoami", "denied"]);
   assert.equal((await listed("dcr")).status, "connected");
   const c = await call("dcr");
 

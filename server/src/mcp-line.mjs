@@ -12,15 +12,68 @@ import { LINE } from "./v1/line-env.mjs";
 /** Whether rox-broker hosts the v0 MCP servers (ROX_LINE_HOSTS names mcp). */
 export const mcpOnLine = !!LINE.base && LINE.hosts.includes("mcp");
 
+// rox-broker owns each server's status (plan 4.3); this is its mirror:
+// every line answer carries the status after it, and the line's `mcp`
+// events bring the changes made elsewhere (its own /mcp routes).
+const mirror = new Map(); // id -> {status, tools, err?}
+let onDrop = () => {};
+
+/** rox-broker's status of `id` ({status, tools, err?}), as statusOf. */
+export const lineStatus = (id) => mirror.get(id) || { status: "idle", tools: 0 };
+
+/** `f(id)` when rox-broker drops a server's client (it went idle there). */
+export const onLineDrop = (f) => (onDrop = f);
+
+function note(id, st) {
+  if (!id || !st || typeof st !== "object") return;
+  const was = mirror.get(id)?.status;
+
+  if (st.status === "idle") mirror.delete(id);
+  else mirror.set(id, { status: st.status, tools: st.tools || 0, ...(st.err ? { err: st.err } : {}) });
+  if (st.status === "idle" && was && was !== "idle") onDrop(id);
+}
+
 async function post(path, body) {
   const res = await fetch(`${LINE.base}/v1/line/${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-rox-line": LINE.token },
     body: JSON.stringify(body),
   });
+  const out = await res.json();
 
-  return res.json();
+  if (body?.id && out?.status) note(body.id, out.status);
+
+  return out;
 }
+
+async function listen() {
+  for (;;) {
+    try {
+      const res = await fetch(`${LINE.base}/v1/line/events`, { headers: { "x-rox-line": LINE.token } });
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      for await (const chunk of res.body) {
+        buf += decoder.decode(chunk, { stream: true });
+        let cut;
+
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut);
+
+          buf = buf.slice(cut + 2);
+          if (/^event: (.*)$/m.exec(block)?.[1] !== "mcp") continue;
+          const st = JSON.parse(/^data: (.*)$/m.exec(block)?.[1] || "{}");
+
+          note(st.id, st);
+        }
+      }
+    } catch {}
+
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+if (mcpOnLine) listen();
 
 /** Connects `id`'s server in rox-broker: {client, tools, needsAuth}.
  *  Throws the connection's error, worded as the SDK words it (with its
