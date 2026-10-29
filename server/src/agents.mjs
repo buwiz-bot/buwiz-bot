@@ -51,9 +51,19 @@ export function agentsNoticeText(n) {
   return `${n.from.name} → ${to} · ${n.subject}${n.count > 1 ? ` · ${n.count} messages` : ""}`;
 }
 
-export function createAgents({ store, nextId, uid, save, now = () => Date.now(), deliver = () => {}, defaults = () => ({}) }) {
-  const sent = new Map(); // agent id → send times, for the rate limit
+// `externals.get(id)` names an outside endpoint (agents-external.mjs: a
+// webhook or a Claude Code bridge) as {id, name, bot}: the agent it belongs
+// to. In a conversation it is the participant `ext:<id>`.
+export function createAgents({ store, nextId, uid, save, now = () => Date.now(), deliver = () => {}, defaults = () => ({}), externals = { get: () => null } }) {
+  const sent = new Map(); // sender id → send times, for the rate limit
   const bot = (id) => store.bots.find((b) => b.id === id);
+  /** A participant: a bot, or an outside endpoint as {id: "ext:…", name, external, owner}. */
+  const party = (id) => {
+    if (!String(id).startsWith("ext:")) return bot(id);
+    const ep = externals.get(String(id).slice(4));
+
+    return ep ? { id: `ext:${ep.id}`, name: ep.name, external: true, owner: ep.bot } : undefined;
+  };
   const live = (b) => !!b && !b.helper?.ended_at;
   const thread = (key) => store.list.find((t) => t.id === key || t.uid === key);
   const conversation = (conv) => store.list.find((t) => t.agents?.conversation === conv);
@@ -70,6 +80,9 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
   /** The agents `caller` may message: live, not itself, taking messages
    *  from it; a temporary helper only to its parent. */
   function reachable(caller) {
+    // an outside sender reaches the one agent its endpoint belongs to
+    if (caller.external) return store.bots.filter((b) => b.id === caller.owner && live(b) && accepts(b, caller));
+
     return store.bots.filter((b) => b.id !== caller.id && live(b) && accepts(b, caller) && (!b.helper || b.helper.parent === caller.id));
   }
 
@@ -87,9 +100,20 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
 
   /** One recipient as `to` names it: an id, a name, or {id}. */
   function recipient(caller, r) {
-    const key = typeof r === "string" ? r : r?.id;
+    const key = typeof r === "string" ? r : r?.kind === "external" && r?.id && !String(r.id).startsWith("ext:") ? `ext:${r.id}` : r?.id;
 
     if (typeof key !== "string" || !key.trim()) fail("invalid_args", "each of `to` is an agent id or name");
+
+    // an agent writes to an outside endpoint of its own
+    if (key.startsWith("ext:")) {
+      const ep = party(key);
+
+      if (!ep) fail("invalid_args", `no outside endpoint ${clip(key, 40)}`);
+
+      if (ep.owner !== caller.id) fail("not_allowed", `${ep.name} is not one of your outside endpoints`);
+
+      return ep;
+    }
     const k = key.trim().toLowerCase();
     const b = store.bots.find((x) => x.id === key) || store.bots.find((x) => live(x) && x.name.toLowerCase() === k);
 
@@ -105,7 +129,7 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
   /** The conversation's notice in `b`'s chat: a new line, or the last one
    *  updated in place within the merge window (spec 6). */
   function noticeIn(b, t, msg) {
-    const chat = b && thread(b.threadId);
+    const chat = b && !b.external && thread(b.threadId);
 
     if (!chat) return;
     const last = [...chat.turns].reverse().find((u) => u.notice?.kind === "agents" && u.notice.conversation === t.agents.conversation);
@@ -145,7 +169,7 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
    *  thread, posts the notices and hands it to `deliver` for each
    *  recipient. `hop` is the broker's: 0 from a human-driven turn, +1 for
    *  each relay while handling another agent's message. */
-  function send(caller, input = {}, { hop = 0 } = {}) {
+  function send(caller, input = {}, { hop = 0, id } = {}) {
     const text = typeof input.text === "string" ? input.text : "";
 
     if (!text.trim()) fail("invalid_args", "`text` is required");
@@ -187,7 +211,8 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
 
     if (input.to === "*") to = reachable(caller).filter((b) => !b.helper);
     else if (Array.isArray(input.to) && input.to.length) to = [...new Set(input.to.map((r) => recipient(caller, r)))];
-    else if (input.to === undefined && t) to = t.agents.participants.filter((id) => id !== caller.id).map(bot).filter(live);
+    else if (input.to === undefined && t) to = t.agents.participants.filter((p) => p !== caller.id).map(party).filter((p) => p && (p.external || live(p)));
+    else if (input.to === undefined && caller.external) to = reachable(caller);
     else fail("invalid_args", 'give `to`: a list of agents, or "*" for all of them');
 
     if (!to.length) fail("invalid_args", "no agent to send to");
@@ -225,16 +250,18 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
       save();
       fail("paused", `these agents exchanged ${LIMITS.perHour} messages in an hour; the user resumes the conversation`);
     }
-    limited(caller);
+    // an outside sender has its endpoint's own rate (agents-external.mjs)
+    if (!caller.external) limited(caller);
 
     for (const b of to) if (!t.agents.participants.includes(b.id)) t.agents.participants.push(b.id);
+    const kind = (p) => (p.external ? "external" : "agent");
     const msg = {
       v: 1,
-      id: `msg_${uid()}`,
+      id: id || `msg_${uid()}`,
       conversation: t.agents.conversation,
       ...(input.in_reply_to !== undefined ? { in_reply_to: input.in_reply_to } : {}),
-      from: { kind: "agent", id: caller.id, name: caller.name },
-      to: to.map((b) => ({ kind: "agent", id: b.id, name: b.name })),
+      from: { kind: kind(caller), id: caller.id, name: caller.name },
+      to: to.map((b) => ({ kind: kind(b), id: b.id, name: b.name })),
       subject: t.agents.subject,
       text,
       ...(input.data ? { data: input.data } : {}),
@@ -276,7 +303,12 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
     for (const t of store.list) {
       if (!t.agents) continue;
 
-      for (const u of t.turns) for (const id of u.pending || []) if (live(bot(id))) out.push({ bot: bot(id), msg: u.message, t });
+      for (const u of t.turns)
+        for (const id of u.pending || []) {
+          const p = party(id);
+
+          if (p && (p.external || live(p))) out.push({ bot: p, msg: u.message, t });
+        }
     }
 
     return out;
@@ -294,7 +326,7 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
         return {
           conversation: t.agents.conversation,
           subject: t.agents.subject,
-          participants: t.agents.participants.map((id) => ({ id, name: bot(id)?.name || id })),
+          participants: t.agents.participants.map((id) => ({ id, name: party(id)?.name || id })),
           last_at: msgs.at(-1)?.message.sent_at || null,
           count: msgs.length,
           ...(t.agents.archived ? { archived: true } : {}),
@@ -430,5 +462,15 @@ export function createAgents({ store, nextId, uid, save, now = () => Date.now(),
     save();
   }
 
-  return { list, send, delivered, undelivered, conversations, read, create, remove, archive, resume, setAccepts, conversation, reachable };
+  /** A message from an outside endpoint {id, name, bot}: to its agent unless
+   *  `to` says otherwise; `id` is the sender's idempotency key. */
+  function sendFrom(ep, input = {}, { id } = {}) {
+    const caller = party(`ext:${ep.id}`);
+
+    if (!caller) fail("invalid_args", "no such outside endpoint");
+
+    return send(caller, input, { hop: 0, id });
+  }
+
+  return { list, send, sendFrom, delivered, undelivered, conversations, read, create, remove, archive, resume, setAccepts, conversation, reachable, party };
 }
