@@ -1,0 +1,28 @@
+<!doctype html>
+<!--
+  BetterOffice editor — served by app-server at GET /office/editor/?path=<rel>&kind=<docx|xlsx|pptx>.
+  The real editing chrome from @betteroffice/*-react (toolbar, canvas,
+  dialogs) bundled into dist/editor.js; engine wasm + fonts come from
+  /office/vendor. Edits save back through POST /file/write.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- docx-react ships a compiled stylesheet; pptx/xlsx paint their own chrome -->
+<link rel="stylesheet" href="/office/vendor/docx-react/dist/styles.css">
+<style>
+  /* The packages' chrome is authored against Tailwind's preflight — their
+     stylesheet colors/pads buttons but never removes the UA border, so
+     without this reset every toolbar control renders as a bordered box. */
+  *, *::before, *::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: currentColor; }
+  html, body, #root { margin: 0; height: 100%; }
+  body { background: #f5f5f5; font: 13px -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+  button, input, select, textarea { margin: 0; padding: 0; font: inherit; color: inherit; background: transparent; }
+  button, [role="button"], select { cursor: pointer; }
+  button { appearance: none; }
+  img, svg, canvas { display: block; }
+  #shell, .bo-editor { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .bo-editor > * { flex: 1; min-height: 0; }
+  #load, #err { padding: 60px; text-align: center; color: #666; }
+</style>
+<div id="root"></div>
+<script type="module" src="/office/dist/editor.js"></script>

@@ -1,0 +1,41 @@
+{
+  "name": "grok-shell",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\"",
+    "build:office-editor": "esbuild src/office/editor/editor.jsx --bundle --format=esm --splitting --outdir=src/office/editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node src/office/editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" src/office/editor/dist/generated/ 2>/dev/null; done",
+    "plugin-test": "node --disable-warning=ExperimentalWarning sdk/mini-app/bin/rox-plugin-test.mjs",
+    "conformance": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./test/v1-reporter.mjs --test-reporter-destination=stdout \"test/v1-*.test.mjs\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "@betteroffice/docx": "^0.4.3",
+    "@betteroffice/docx-react": "^0.4.3",
+    "@betteroffice/fonts": "^0.4.0",
+    "@betteroffice/pptx": "^0.2.0",
+    "@betteroffice/pptx-react": "^0.2.0",
+    "@betteroffice/xlsx": "^0.3.0",
+    "@betteroffice/xlsx-react": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@napi-rs/canvas": "^1.0.8",
+    "esbuild": "^0.28.2",
+    "exceljs": "4.4.0",
+    "image-size": "^2.0.4",
+    "mammoth": "1.13.0",
+    "mermaid": "12.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "shiki": "4.5.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.89.0",
+    "oxlint": "1.89.0"
+  }
+}
