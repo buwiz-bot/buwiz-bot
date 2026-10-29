@@ -1,8 +1,9 @@
 // Shared by the server tests: a server of this checkout on its own port
 // and data directory (MOCK by default, so no model calls; a test can turn
 // it off through startServer's env), and raw HTTP requests to it.
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,6 +39,35 @@ export const stubEnv = (log) => ({ PATH: `${STUB_BIN}:${process.env.PATH}`, NSH:
 /** The stubs' calls so far: [{bin, argv, stdin?}], oldest first. */
 export const stubCalls = (log) =>
   existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+
+/** The stubs plus every model URL at a closed port: MOCK does not guard
+ *  /models, /avatar/gen, image models or app icons, and nothing a test
+ *  starts may reach a real opencodex. */
+export const offlineEnv = (log) => ({ ...stubEnv(log), OPENCODEX_URL: "http://127.0.0.1:9", ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: undefined });
+
+/** Runs `code` (an ES module body, cwd server/) in a Node of its own on
+ *  data dir `dataDir` (its widgets/ made first), as the broker's modules see it (seeding a store
+ *  through state.mjs, say); returns its last line of output. */
+export const nodeIn = (dataDir, code, env = {}) => (
+  mkdirSync(join(dataDir, "widgets"), { recursive: true }),
+  execFileSync(process.execPath, ["--input-type=module", "-e", `${code}\nprocess.exit(0);`], {
+    cwd: ROOT,
+    env: { ...process.env, GROK_DATA_DIR: dataDir, MOCK: "1", ...env },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim().split("\n").at(-1)
+);
+
+/** Rows of `sql` in data dir `dataDir`'s app.db, read-only. */
+export function dbRows(dataDir, sql, ...args) {
+  const db = new DatabaseSync(join(dataDir, "generated", "app.db"), { readOnly: true, timeout: 5000 });
+
+  try {
+    return db.prepare(sql).all(...args);
+  } finally {
+    db.close();
+  }
+}
 
 /** The env for a broker that talks to a fake opencodex (fixtures/
  *  fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
