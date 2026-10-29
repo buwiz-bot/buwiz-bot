@@ -261,3 +261,45 @@ test("SDK-11 BRG-03's pacer holds when the broker counts a call after the gate l
 
   assert.deepEqual(crowded, [], `more than 3 calls in 300 ms as the broker counts: ${counted.map((t) => t - counted[0])}`);
 });
+
+test("SDK-12 INV-04 asks an attachable scope to resolve only a ticket its own completion offered, and skips when it offered none", async () => {
+  const dir = tempDir("sdk-scope");
+
+  copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "quiet.tsx"));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+    protocol: "1.0.0", id: "dev.goldcoders.quiet", short: "quiet", version: "0.1.0", title: "Quiet",
+    publisher: { id: "dev.goldcoders", key_id: "test-sdk-12", name: "Goldcoders" },
+    apps: [{
+      id: "quiet", title: "Quiet", description: "", entry: "rox-app://quiet", mime: "text/x-nsh-tsx", sdk: "1",
+      fingerprint: `sha256:${"0".repeat(64)}`, placement: ["full"], permissions: { tools: [] },
+    }],
+    commands: [{ name: "quiet", args: "", description: "Open Quiet", resolve: "quiet_resolve" }],
+    scopes: [{ name: "handoff", description: "A hand-off", resolve: "quiet_resolve", attach: true }],
+  }));
+  // the command's open always carries a ticket; the scope has nothing to
+  // offer and refuses any ticket it did not offer itself
+  writeFileSync(join(dir, "server.mjs"), `
+    import { ok, startPlugin, ticketStore } from ${JSON.stringify(join(SDK, "lib", "rox-plugin.mjs"))};
+    const tickets = ticketStore();
+    const offered = new Set();
+    function resolve(args) {
+      if (args.kind === "command") return ok({ result: "open", app: "quiet", props: { ticket: tickets.issue("home") }, title: "Quiet", placement: "full" });
+      if (args.complete) return ok({ result: "choices", choices: [] });
+      if (!offered.has(args.value)) return ok({ result: "error", message: "That is not a hand-off." });
+      return ok({ result: "token", ticket: args.value, title: "Hand-off" });
+    }
+    await startPlugin({
+      name: "quiet", manifestFile: process.env.ROX_PLUGIN_MANIFEST || ${JSON.stringify(join(dir, "manifest.json"))},
+      apps: { quiet: ${JSON.stringify(join(dir, "quiet.tsx"))} }, tickets, ticketTitle: (n) => n,
+      tools: [{ name: "quiet_resolve", description: "Resolve /quiet and @quiet:handoff.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, run: resolve }],
+    });
+  `);
+  const { code, res, stderr } = await runner(["--command", process.execPath, "--args", join(dir, "server.mjs"), "--sign-with", KEY]);
+
+  assert.ok(res, stderr);
+  const chosen = res.rows.filter((r) => r.id === "INV-04" && /a chosen completion/.test(r.what));
+
+  assert.deepEqual(chosen.map((r) => r.status), ["skip"]);
+  assert.deepEqual(failed(res), []);
+  assert.equal(code, 0);
+});

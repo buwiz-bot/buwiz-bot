@@ -673,6 +673,8 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   if (!entries.length) skip("INV-04", "resolve shapes", "the manifest has no commands or scopes");
 
   for (const [kind, e] of entries) {
+    // the tickets this entry's own completion offered (7.6: a chosen one)
+    const offered = [];
     const modes = kind === "scope" ? [["", true], ["sdk-probe", false]] : [["sdk-probe", false]];
 
     for (const [value, complete] of modes)
@@ -682,7 +684,10 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
         if (r.isError) return "answered isError (shown as an error)";
         const data = resultData(r);
 
-        tickets.push(...checkResolve(m, data));
+        const issued = checkResolve(m, data);
+
+        tickets.push(...issued);
+        if (complete) offered.push(...issued);
         await sessions.resolve({ plugin: m.id, kind, name: e.name, value, complete });
 
         return `result ${data.result}`;
@@ -690,7 +695,7 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
     // an attachable scope: a chosen completion resolves to a token (7.6)
     if (kind === "scope" && e.attach) {
-      const choice = tickets.find((t) => isV1("ticket", t));
+      const choice = offered.find((t) => isV1("ticket", t));
 
       if (!choice) skip("INV-04", `scope ${e.name}: a chosen completion resolves to a token`, "the completion offered no ticket");
       else
