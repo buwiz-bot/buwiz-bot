@@ -23,6 +23,11 @@ const PORT = Number(process.env.PORT || 8787);
 // process on a port of its own (ROX_PUBLIC_PORT); PORT when Node is it. URLs
 // that leave this process (OAuth redirects, file links) use this one.
 const PUBLIC_PORT = Number(process.env.ROX_PUBLIC_PORT || PORT);
+// ROX_NODE_ROLE=office: Node behind rox-broker's hub (ROX_BROKER_HUB=1),
+// which owns the brain. Node then serves only the office routes and holds
+// no hub state: it never writes the store, the host token or .stage, and
+// starts no routines, agents or plugins (app-server.mjs).
+const OFFICE_ROLE = process.env.ROX_NODE_ROLE === "office";
 // Providers: Claude goes through opencodex's Anthropic Messages endpoint by
 // default (OPENCODEX_URL — it owns the real key; the client key is a dummy).
 // GEN_PROVIDER=openai + GEN_BASE_URL/GEN_MODEL selects an OpenAI-compatible
@@ -96,23 +101,26 @@ mkdirSync(OUT_DIR, { recursive: true });
 // Stale stage files (crashed checks, old candidates) sit inside the stage
 // tsconfig's include — one broken sibling fails every later check. Clear
 // check entries, candidates and outputs left over from earlier runs.
-for (const f of readdirSync(STAGE_DIR))
-  if (f.endsWith(".tsx") || f.startsWith("out-"))
-    rmSync(join(STAGE_DIR, f), { recursive: true, force: true });
+// (Not in the office role: .stage is the hub's, which checks there.)
+if (!OFFICE_ROLE)
+  for (const f of readdirSync(STAGE_DIR))
+    if (f.endsWith(".tsx") || f.startsWith("out-"))
+      rmSync(join(STAGE_DIR, f), { recursive: true, force: true });
 // `nsh check` needs a tsconfig.json in the candidate's directory. It extends
 // .nsh/tsconfig.json — the build step (which always runs first) regenerates
 // .nsh/ and its types there — and scopes its include to the stage files
 // themselves (a broken leftover would otherwise fail every later check).
-writeFileSync(
-  join(STAGE_DIR, "tsconfig.json"),
-  JSON.stringify({
-    extends: "./.nsh/tsconfig.json",
-    include: ["*.ts", "*.tsx"],
-  }) + "\n",
-);
+if (!OFFICE_ROLE)
+  writeFileSync(
+    join(STAGE_DIR, "tsconfig.json"),
+    JSON.stringify({
+      extends: "./.nsh/tsconfig.json",
+      include: ["*.ts", "*.tsx"],
+    }) + "\n",
+  );
 
 export {
-  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, PROVIDER, BASE_URL, MODEL,
+  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, OFFICE_ROLE, PROVIDER, BASE_URL, MODEL,
   MAX_TOKENS, MOCK, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W,
   POP_H, WINDOWS_DIR, CHUNK_DIR, AVATAR_DIR, ATTACH_DIR, OUT_DIR, ASSETS_DIR,
   PLUGIN_CATALOG, GROKBOT_CATALOG, PLUGINS_DIR, git, outFile,

@@ -42,6 +42,7 @@ import {
   GEN_DIR,
   MOCK,
   MODEL,
+  OFFICE_ROLE,
   OUT_DIR,
   PORT,
   PROVIDER,
@@ -66,6 +67,16 @@ import { startAgents } from "./agents-wire.mjs";
 import { migrateGroups } from "./groups.mjs";
 import { startRoutines } from "./routines.mjs";
 import { allowedOrigins, refusal } from "./guard.mjs";
+
+// The office role (ROX_NODE_ROLE=office, plan 5.0c) answers only these:
+// /office/*, and /file/render, /highlight and /mermaid* until 6.1/6.2
+// (D32); /health and / so the front door sees it up. Every other route is
+// the hub's, and rox-broker never forwards one: one that reaches Node
+// anyway gets 501, never a write.
+const officeRoute = (method, url) =>
+  method === "GET" && (url === "/" || url === "/health" || url.startsWith("/office/") ||
+    url.startsWith("/file/render?") || url === "/mermaid.js" || url.startsWith("/mermaid?")) ||
+  method === "POST" && url === "/highlight";
 
 const routes = [
   v1Route,
@@ -108,6 +119,13 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
 
+  if (OFFICE_ROLE && !officeRoute(req.method, req.url)) {
+    res.statusCode = 501;
+    res.setHeader("content-type", "application/json");
+
+    return res.end(JSON.stringify({ ok: false, code: "not_ported" }));
+  }
+
   for (const h of routes) {
     try {
       if (await h(req, res) || res.writableEnded || res.headersSent) return;
@@ -127,15 +145,19 @@ const server = createServer(async (req, res) => {
   res.end("not found");
 });
 
-persist(); // seed the DB on first boot / after a JSON→SQLite migration
+// The store's startup writes, and the office tools' MCP child, are the
+// hub's in the office role (rox-broker runs them): Node skips every one.
+if (!OFFICE_ROLE) {
+  persist(); // seed the DB on first boot / after a JSON→SQLite migration
 
-if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
+  if (migrateGroups()) console.log("bot sections + pinned Mini Apps → sidebar groups");
 
-writeShelf(); // sync widgets/index.tsx with the DB
+  writeShelf(); // sync widgets/index.tsx with the DB
 
-// BetterOffice MCP child (office_* tools) — connected in the background; a
-// failed spawn just leaves the surface out of toolList().
-ensureOfficeMcp(OUT_DIR).catch(() => {});
+  // BetterOffice MCP child (office_* tools) — connected in the background; a
+  // failed spawn just leaves the surface out of toolList().
+  ensureOfficeMcp(OUT_DIR).catch(() => {});
+}
 
 // The editor bundle is gitignored (dist/) — build it once when the engines
 // are installed and dist/editor.js is missing; until then renderFile hands
@@ -165,12 +187,12 @@ ensureOfficeMcp(OUT_DIR).catch(() => {});
 
 // Materialise generated/index.tsx so a fresh clone typechecks before the
 // first generation lands (generated/ is gitignored — nothing tracks it).
-writeIndex();
+if (!OFFICE_ROLE) writeIndex();
 
 // Migrate pre-versioning artifacts: the file as it stands becomes v1, the
 // head pointer opens on it. (Cards rendered before `v` existed resolve the
 // bare name — the head mirror — which is what they'd show anyway.)
-for (const f of readdirSync(GEN_DIR)) {
+for (const f of OFFICE_ROLE ? [] : readdirSync(GEN_DIR)) {
   const m = f.match(/^(R\d+)\.tsx$/);
 
   if (!m || headOf(m[1])) continue;
@@ -189,7 +211,7 @@ for (const f of readdirSync(GEN_DIR)) {
 }
 
 // Pre-slug version files (v<n>.tsx) rename to <slug>.v<n>.tsx.
-for (const d of readdirSync(GEN_DIR)) {
+for (const d of OFFICE_ROLE ? [] : readdirSync(GEN_DIR)) {
   if (!/^R\d+$/.test(d)) continue;
 
   try {
@@ -205,13 +227,13 @@ for (const d of readdirSync(GEN_DIR)) {
   } catch {}
 }
 
-writeIndex();
+if (!OFFICE_ROLE) writeIndex();
 
 // Backfill runtime chunks for modules that predate them (the packaged app
 // imports these through NSH_CHUNK_DIR; without a chunk its card shows
 // "module missing"). Version files get their own chunks — a card pins the
 // exact version it rendered.
-(async () => {
+if (!OFFICE_ROLE) (async () => {
   for (const dir of [GEN_DIR, WIDGETS_DIR]) {
     if (!existsSync(dir)) continue;
 
@@ -244,6 +266,12 @@ writeIndex();
 })().catch(() => {});
 
 server.listen(PORT, "127.0.0.1", () => {
+  if (OFFICE_ROLE) {
+    // the hub writes the host token and runs routines, plugins and agents
+    console.log(`app-server (office role) on http://127.0.0.1:${PORT}`);
+
+    return;
+  }
   // Rox's host token for /v1/host/* (v1/routes.mjs), fresh each start, and
   // only once the port is ours: a second server that fails to bind must not
   // replace the token of the one that runs

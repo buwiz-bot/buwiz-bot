@@ -7,7 +7,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { execFile, execFileSync } from "node:child_process";
 import { randomFillSync } from "node:crypto";
-import { CHUNK_DIR, GEN_DIR, WIDGETS_DIR } from "./config.mjs";
+import { CHUNK_DIR, GEN_DIR, OFFICE_ROLE, WIDGETS_DIR } from "./config.mjs";
 import { driveType } from "./drive.mjs";
 
 // Model picker: a thread's choice ({ model, effort, fast }) rides an async
@@ -503,7 +503,8 @@ function backfillIds() {
   }
   return true;
 }
-if (backfillIds()) persist();
+// The office role writes no store rows: the hub mints uids (5.0c).
+if (!OFFICE_ROLE && backfillIds()) persist();
 
 // ————— data sources —————
 // Generated widgets fetch these on 127.0.0.1:8787 — the only host the
