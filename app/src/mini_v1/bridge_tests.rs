@@ -147,6 +147,10 @@ struct TestUi {
     ended: Mutex<Vec<Ended>>,
     previews: Mutex<Vec<Preview>>,
     fits: Mutex<Vec<f32>>,
+    actions: Mutex<Vec<Vec<CardAction>>>,
+    press: Mutex<Option<Press>>,
+    metas: Mutex<Vec<Option<CardMeta>>>,
+    settled: Mutex<Vec<String>>,
 }
 
 impl HostUi for TestUi {
@@ -189,6 +193,16 @@ impl HostUi for TestUi {
     }
     fn fit(&self, height: f32) {
         self.fits.lock().unwrap().push(height);
+    }
+    fn actions(&self, actions: Vec<CardAction>, press: Press) {
+        self.actions.lock().unwrap().push(actions);
+        *self.press.lock().unwrap() = Some(press);
+    }
+    fn meta(&self, meta: Option<CardMeta>) {
+        self.metas.lock().unwrap().push(meta);
+    }
+    fn settle(&self, line: String) {
+        self.settled.lock().unwrap().push(line);
     }
 }
 
@@ -299,7 +313,7 @@ fn app_07_ungranted_methods_are_absent() {
     assert_eq!(o.wait("open"), "open,attach,pickFile,storage,copy function function true true undefined board 1");
     // and at the host level: the channel handles only the granted names
     let p = &o.ctx.prepared;
-    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.call"]);
+    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
     assert!(!p.permissions.policy().access().allows_host("rox.open"));
 }
 
@@ -669,6 +683,91 @@ fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
     assert_eq!(full.wait("fit"), "fit function");
     std::thread::sleep(Duration::from_millis(200));
     assert!(full.ui.fits.lock().unwrap().is_empty(), "a full-screen open's fit is ignored");
+}
+
+#[test]
+fn brg_19_an_inline_card_takes_rox_drawn_actions_and_a_press_reaches_the_app() {
+    let script = r#"
+        const got = [];
+        const off = rox.onAction((id) => got.push("other " + id));
+        off();
+        rox.onAction((id) => got.push(id));
+        await rox.actions([
+          { id: "later", label: "Later" },
+          { id: "pay", label: "Mark paid", primary: true },
+          { id: "void", label: "Void", disabled: true },
+        ]);
+        const codes = [];
+        for (const bad of [
+          [1, 2, 3, 4].map((i) => ({ id: "a" + i, label: "A" })),
+          [{ id: "a", label: "A" }, { id: "a", label: "B" }],
+          [{ id: "a", label: "x".repeat(25) }],
+          [{ id: "a", label: "A", tone: "red" }],
+          "pay",
+        ]) {
+          try { await rox.actions(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
+        }
+        try { rox.onAction("pay"); } catch (e) { codes.push("on " + e.code); }
+        await rox.meta({ text: "Due in 3 days", pill: true });
+        try { await rox.meta({ text: "x".repeat(33) }); } catch (e) { codes.push("meta " + e.code); }
+        await rox.meta(null);
+        for (let i = 0; i < 500 && !got.length; i++) await new Promise((r) => setTimeout(r, 10));
+        await new Promise((r) => setTimeout(r, 50));
+        return "pressed " + got.join(",") + " " + codes.join(" ");
+    "#;
+    let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while o.ui.press.lock().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let press = o.ui.press.lock().unwrap().clone().expect("the footer was set");
+    // a disabled button and an id the app did not list send nothing
+    press("void");
+    press("nope");
+    press("pay");
+    assert_eq!(
+        o.wait("pressed"),
+        "pressed pay invalid_args invalid_args invalid_args invalid_args invalid_args on invalid_args meta invalid_args"
+    );
+    let actions = o.ui.actions.lock().unwrap().clone();
+    assert_eq!(actions.len(), 1, "a refused list changes nothing");
+    let ids: Vec<&str> = actions[0].iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, ["later", "pay", "void"]);
+    assert!(actions[0][1].primary && actions[0][2].disabled);
+    assert_eq!(*o.ui.metas.lock().unwrap(), [Some(CardMeta { text: "Due in 3 days".into(), pill: true }), None]);
+    // after the open closes, a press reaches no one
+    o.ctx.close();
+    press("pay");
+}
+
+#[test]
+fn brg_19_settle_collapses_an_inline_card_to_one_line_and_full_screen_ignores_the_chrome() {
+    let script = r#"
+        const codes = [];
+        for (const bad of ["", "Paid\nThanks", "x".repeat(121), 5]) {
+          try { await rox.settle(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
+        }
+        await rox.settle("  Marked paid · ₱12,000  ");
+        return "settled " + codes.join(" ");
+    "#;
+    let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
+    assert_eq!(o.wait("settled"), "settled invalid_args invalid_args invalid_args invalid_args");
+    assert_eq!(*o.ui.settled.lock().unwrap(), ["Marked paid · ₱12,000"]);
+    // full screen: every call is checked the same, then has no effect
+    let mut full = Open::start(
+        json!({}),
+        r#"
+        await rox.actions([{ id: "pay", label: "Pay", primary: true }]);
+        await rox.meta({ text: "Paid" });
+        await rox.settle("Paid");
+        let bad = "";
+        try { await rox.actions([{ id: "a b", label: "A" }]); } catch (e) { bad = e.code; }
+        return "full " + [typeof rox.actions, typeof rox.onAction, typeof rox.settle, typeof rox.meta].join(",") + " " + bad;
+        "#,
+    );
+    assert_eq!(full.wait("full"), "full function,function,function,function invalid_args");
+    let ui = &full.ui;
+    assert!(ui.actions.lock().unwrap().is_empty() && ui.metas.lock().unwrap().is_empty() && ui.settled.lock().unwrap().is_empty());
 }
 
 #[test]

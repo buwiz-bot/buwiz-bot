@@ -10,10 +10,16 @@
 //! `rox.fit` moves it to its content's within `inline.min_height` ..
 //! `inline.max_height` ([`fit_height`]). A user's own command, token or pin mounts an
 //! inline app at once (Q9); a tool result or link waits for the chevron.
+//!
+//! An inline app may hand Rox its card's chrome (7.12 to 7.14, protocol
+//! 1.1): footer buttons Rox draws in its own style (`rox.actions`,
+//! [`parse_actions`]), a short status in the header (`rox.meta`,
+//! [`parse_meta`]), and the one line the card settles to (`rox.settle`,
+//! [`parse_settle`]).
 
 use serde_json::{Map, Value};
 
-use super::{V1Key, perms};
+use super::{RoxError, V1Key, perms};
 
 /// Inline width and height ranges (5.5, Appendix A).
 pub const WIDTH: (f32, f32) = (240.0, 960.0);
@@ -272,6 +278,126 @@ pub fn fit_height(app: &Value, height: f32) -> f32 {
     height.clamp(lo, hi)
 }
 
+/// The most footer buttons an inline card has (`rox.actions`, 7.12).
+pub const MAX_ACTIONS: usize = 3;
+/// The longest action id; ids are `[A-Za-z0-9_.:-]`.
+pub const MAX_ACTION_ID: usize = 64;
+/// The longest button label, in characters (after trimming).
+pub const MAX_LABEL: usize = 24;
+/// The longest status `rox.meta` shows in the header.
+pub const MAX_META: usize = 32;
+/// The longest line `rox.settle` leaves.
+pub const MAX_SETTLE: usize = 120;
+
+/// One footer button of an inline card (`rox.actions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardAction {
+    pub id: String,
+    pub label: String,
+    pub primary: bool,
+    pub disabled: bool,
+}
+
+/// The status in an inline card's header (`rox.meta`): plain dim text,
+/// or a pill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardMeta {
+    pub text: String,
+    pub pill: bool,
+}
+
+fn invalid(m: impl Into<String>) -> RoxError {
+    RoxError::new("invalid_args", m)
+}
+
+/// `v` as one line of text, trimmed: 1 to `max` characters, no line
+/// breaks or other control characters.
+fn one_line(v: Option<&Value>, what: &str, max: usize) -> Result<String, RoxError> {
+    let t = v.and_then(Value::as_str).ok_or_else(|| invalid(format!("{what} is a string")))?.trim();
+    if t.is_empty() {
+        return Err(invalid(format!("{what} is empty")));
+    }
+    if t.chars().any(char::is_control) {
+        return Err(invalid(format!("{what} is one line")));
+    }
+    if t.chars().count() > max {
+        return Err(invalid(format!("{what} is at most {max} characters")));
+    }
+    Ok(t.to_owned())
+}
+
+/// Field `k` of `o` as a boolean, false when absent or null.
+fn flag(o: &Map<String, Value>, k: &str) -> Result<bool, RoxError> {
+    match o.get(k) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(invalid(format!("{k} is a boolean"))),
+    }
+}
+
+/// `rox.actions(list)` checked (7.12): a list of at most [`MAX_ACTIONS`]
+/// `{id, label, primary?, disabled?}` and no other key; ids unique, of
+/// `[A-Za-z0-9_.:-]`, at most [`MAX_ACTION_ID`]; labels one line, at most
+/// [`MAX_LABEL`] characters; at most one primary. `[]` clears the footer.
+pub fn parse_actions(v: Option<&Value>) -> Result<Vec<CardAction>, RoxError> {
+    let list = v.and_then(Value::as_array).ok_or_else(|| invalid("rox.actions takes a list"))?;
+    if list.len() > MAX_ACTIONS {
+        return Err(invalid(format!("a card has at most {MAX_ACTIONS} actions")));
+    }
+    let mut out: Vec<CardAction> = Vec::new();
+    for a in list {
+        let o = a.as_object().ok_or_else(|| invalid("an action is {id, label, primary?, disabled?}"))?;
+        if let Some(k) = o.keys().find(|k| !["id", "label", "primary", "disabled"].contains(&k.as_str())) {
+            return Err(invalid(format!("an action does not take {k}")));
+        }
+        let id = o.get("id").and_then(Value::as_str).unwrap_or_default();
+        let id_ok = |c: char| c.is_ascii_alphanumeric() || "_.:-".contains(c);
+        if id.is_empty() || id.len() > MAX_ACTION_ID || !id.chars().all(id_ok) {
+            return Err(invalid(format!("an action's id is 1 to {MAX_ACTION_ID} of A-Z a-z 0-9 _ . : -")));
+        }
+        if out.iter().any(|x| x.id == id) {
+            return Err(invalid(format!("two actions are {id}")));
+        }
+        let action = CardAction {
+            id: id.to_owned(),
+            label: one_line(o.get("label"), "a label", MAX_LABEL)?,
+            primary: flag(o, "primary")?,
+            disabled: flag(o, "disabled")?,
+        };
+        if action.primary && out.iter().any(|x| x.primary) {
+            return Err(invalid("a card has one primary action"));
+        }
+        out.push(action);
+    }
+    Ok(out)
+}
+
+/// The footer's order: the primary first, then the rest as the app listed
+/// them (the row is right-aligned, as Rox's own cards).
+pub fn footer_order(actions: &[CardAction]) -> Vec<&CardAction> {
+    actions.iter().filter(|a| a.primary).chain(actions.iter().filter(|a| !a.primary)).collect()
+}
+
+/// `rox.meta({text, pill?})` checked (7.13): `text` one line of at most
+/// [`MAX_META`] characters, `pill` a boolean; `null` clears it.
+pub fn parse_meta(v: Option<&Value>) -> Result<Option<CardMeta>, RoxError> {
+    let o = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(invalid("rox.meta takes {text, pill?} or null")),
+    };
+    if let Some(k) = o.keys().find(|k| !["text", "pill"].contains(&k.as_str())) {
+        return Err(invalid(format!("rox.meta does not take {k}")));
+    }
+    Ok(Some(CardMeta { text: one_line(o.get("text"), "the status", MAX_META)?, pill: flag(o, "pill")? }))
+}
+
+/// `rox.settle(text)` checked (7.14): one line of at most [`MAX_SETTLE`]
+/// characters, trimmed.
+pub fn parse_settle(v: Option<&Value>) -> Result<String, RoxError> {
+    one_line(v, "the outcome", MAX_SETTLE)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -386,5 +512,76 @@ mod tests {
         // a maximum under the minimum is the minimum
         assert_eq!(fit_range(&app(json!({"min_height": 300, "max_height": 200}))), (300.0, 300.0));
         assert_eq!(fit_range(&Value::Null), FIT);
+    }
+
+    fn act(id: &str, label: &str, primary: bool, disabled: bool) -> CardAction {
+        CardAction { id: id.into(), label: label.into(), primary, disabled }
+    }
+
+    #[test]
+    fn brg_19_actions_are_at_most_three_one_line_labels_with_one_primary() {
+        let ok = parse_actions(Some(&json!([
+            {"id": "later", "label": "  Later  "},
+            {"id": "pay.now", "label": "Mark paid", "primary": true},
+            {"id": "x:1", "label": "Off", "disabled": true, "primary": null},
+        ])))
+        .unwrap();
+        assert_eq!(ok, [act("later", "Later", false, false), act("pay.now", "Mark paid", true, false), act("x:1", "Off", false, true)]);
+        // the primary first, the rest in the app's order
+        let ids: Vec<&str> = footer_order(&ok).iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["pay.now", "later", "x:1"]);
+        assert!(parse_actions(Some(&json!([]))).unwrap().is_empty(), "an empty list clears the footer");
+        assert_eq!(parse_actions(Some(&json!([{"id": "a", "label": "x".repeat(MAX_LABEL)}]))).unwrap()[0].label.len(), MAX_LABEL);
+        let refused = |v: Value| parse_actions(Some(&v)).unwrap_err();
+        let four: Vec<Value> = (0..4).map(|i| json!({"id": format!("a{i}"), "label": "A"})).collect();
+        for (v, why) in [
+            (json!(four), "a card has at most 3 actions"),
+            (json!([{"id": "a", "label": "A"}, {"id": "a", "label": "B"}]), "two actions are a"),
+            (json!([{"id": "a", "label": "A", "primary": true}, {"id": "b", "label": "B", "primary": true}]), "a card has one primary action"),
+            (json!([{"id": "a", "label": "   "}]), "a label is empty"),
+            (json!([{"id": "a", "label": "Pay\nnow"}]), "a label is one line"),
+            (json!([{"id": "a", "label": "x".repeat(MAX_LABEL + 1)}]), "a label is at most 24 characters"),
+            (json!([{"id": "a", "label": 5}]), "a label is a string"),
+            (json!([{"id": "a b", "label": "A"}]), "an action's id is 1 to 64 of A-Z a-z 0-9 _ . : -"),
+            (json!([{"id": "x".repeat(MAX_ACTION_ID + 1), "label": "A"}]), "an action's id is 1 to 64 of A-Z a-z 0-9 _ . : -"),
+            (json!([{"label": "A"}]), "an action's id is 1 to 64 of A-Z a-z 0-9 _ . : -"),
+            (json!([{"id": "a", "label": "A", "color": "red"}]), "an action does not take color"),
+            (json!([{"id": "a", "label": "A", "primary": "yes"}]), "primary is a boolean"),
+            (json!(["a"]), "an action is {id, label, primary?, disabled?}"),
+            (json!({"id": "a"}), "rox.actions takes a list"),
+        ] {
+            let e = refused(v);
+            assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", why));
+        }
+        assert_eq!(parse_actions(None).unwrap_err().code, "invalid_args");
+    }
+
+    #[test]
+    fn brg_19_meta_is_a_short_status_and_settle_one_outcome_line() {
+        assert_eq!(parse_meta(Some(&json!({"text": " Due in 3 days ", "pill": true}))).unwrap(), Some(CardMeta { text: "Due in 3 days".into(), pill: true }));
+        assert_eq!(parse_meta(Some(&json!({"text": "Paid"}))).unwrap(), Some(CardMeta { text: "Paid".into(), pill: false }));
+        assert_eq!(parse_meta(Some(&Value::Null)).unwrap(), None, "null clears it");
+        assert_eq!(parse_meta(None).unwrap(), None);
+        for (v, why) in [
+            (json!({"text": "x".repeat(MAX_META + 1)}), "the status is at most 32 characters"),
+            (json!({"text": ""}), "the status is empty"),
+            (json!({"text": "a\tb"}), "the status is one line"),
+            (json!({"text": "Paid", "tone": "green"}), "rox.meta does not take tone"),
+            (json!({"text": "Paid", "pill": 1}), "pill is a boolean"),
+            (json!("Paid"), "rox.meta takes {text, pill?} or null"),
+        ] {
+            assert_eq!(parse_meta(Some(&v)).unwrap_err().message, why);
+        }
+        assert_eq!(parse_settle(Some(&json!("  Marked paid · ₱12,000  "))).unwrap(), "Marked paid · ₱12,000");
+        assert_eq!(parse_settle(Some(&json!("é".repeat(MAX_SETTLE)))).unwrap().chars().count(), MAX_SETTLE);
+        for (v, why) in [
+            (json!("x".repeat(MAX_SETTLE + 1)), "the outcome is at most 120 characters"),
+            (json!("Paid\nThanks"), "the outcome is one line"),
+            (json!(" "), "the outcome is empty"),
+            (json!(5), "the outcome is a string"),
+        ] {
+            assert_eq!(parse_settle(Some(&v)).unwrap_err().message, why);
+        }
+        assert_eq!(parse_settle(None).unwrap_err().code, "invalid_args");
     }
 }

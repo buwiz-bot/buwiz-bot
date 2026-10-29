@@ -45,6 +45,11 @@ const __roxBridge = (() => {
   __roxHost.on("rox.viewport", (v) => {
     if (v && typeof v === "object") viewport.set(freeze(v));
   });
+  // presses of the card's footer buttons (rox.actions): the id pressed
+  const pressed = new Set();
+  __roxHost.on("rox.action", (e) => {
+    if (e && typeof e.id === "string") for (const f of [...pressed]) f(e.id);
+  });
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const table = new Int16Array(128).fill(-1);
   for (let i = 0; i < 64; i++) table[B64.charCodeAt(i)] = i;
@@ -80,6 +85,18 @@ const __roxBridge = (() => {
       if (!(h > 0) || !Number.isFinite(h)) throw new RoxError("invalid_args", "rox.fit takes a height in points");
       __roxHost.post("rox.fit", { height: Math.ceil(h) });
     },
+    // an inline card's chrome, drawn by Rox (full screen: checked, then
+    // ignored): footer buttons, the outcome line it settles to, a status
+    actions: (list) => ask("rox.actions", { actions: list === undefined ? null : list }).then(done),
+    onAction: (f) => {
+      if (typeof f !== "function") throw new RoxError("invalid_args", "rox.onAction takes a function");
+      pressed.add(f);
+      return () => {
+        pressed.delete(f);
+      };
+    },
+    settle: (text) => ask("rox.settle", { text: text === undefined ? null : text }).then(done),
+    meta: (meta) => ask("rox.meta", { meta: meta === undefined ? null : meta }).then(done),
   };
   if (has("rox.call")) rox.call = (tool, args) => ask("rox.call", { tool, args: args === undefined ? {} : args });
   if (has("rox.open")) rox.open = (target) => ask("rox.open", target).then(done);

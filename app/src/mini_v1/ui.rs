@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use super::{
     RoxError, V1Key,
-    cards::{self, OpenCard, Opener, Placement},
+    cards::{self, CardAction, CardMeta, OpenCard, Opener, Placement},
     connect, consent,
     host_api::{self, HttpBroker},
     lifecycle, links,
@@ -65,6 +65,14 @@ pub struct V1 {
     /// Per inline open (module key): the card height its `rox.fit` set
     /// (clamped); the declared height until then.
     pub fit: Signal<HashMap<String, f32>>,
+    /// Per inline open (module key): its footer buttons (`rox.actions`).
+    pub footer: Signal<HashMap<String, Footer>>,
+    /// Per inline open: its header status (`rox.meta`), with the number
+    /// of the open that set it.
+    pub meta: Signal<HashMap<String, (u64, CardMeta)>>,
+    /// Inline cards settled (`rox.settle`), by module key: the one line
+    /// each shows instead of its app, for the rest of this run.
+    pub settled: Signal<HashMap<String, String>>,
     /// Rox's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
@@ -99,6 +107,9 @@ impl V1 {
             hidden: signal(HashSet::new()),
             live: signal(HashSet::new()),
             fit: signal(HashMap::new()),
+            footer: signal(HashMap::new()),
+            meta: signal(HashMap::new()),
+            settled: signal(HashMap::new()),
             records: signal(Records::default()),
             review: signal(None),
             busy: signal(String::new()),
@@ -124,6 +135,21 @@ impl V1 {
     /// Whether `short` names an installed v1 plugin (its tokens are v1's).
     pub fn is_short(&self, short: &str) -> bool {
         self.entries.with_untracked(|e| e.iter().any(|p| p.short == short))
+    }
+}
+
+/// An inline open's footer (`rox.actions`): its buttons, how a press
+/// reaches the app, and the number of the open that set them.
+#[derive(Clone)]
+pub struct Footer {
+    pub owner: u64,
+    pub actions: Vec<CardAction>,
+    pub press: super::bridge::Press,
+}
+
+impl PartialEq for Footer {
+    fn eq(&self, other: &Footer) -> bool {
+        self.owner == other.owner && self.actions == other.actions && Arc::ptr_eq(&self.press, &other.press)
     }
 }
 
@@ -573,6 +599,39 @@ impl Store {
         }
     }
 
+    /// The inline open `key` settled (`rox.settle`): its card is `line`
+    /// from now on, and its app unmounts with its buttons and status.
+    pub fn v1_settle(&'static self, key: &str, line: String) {
+        let k = key.to_owned();
+        batch(|| {
+            self.v1.footer.update(|f| {
+                f.remove(&k);
+            });
+            self.v1.meta.update(|m| {
+                m.remove(&k);
+            });
+            self.v1.settled.update(|s| {
+                s.insert(k.clone(), line);
+            });
+        });
+    }
+
+    /// Open `n` of `key` ended: the buttons and status it set go (a newer
+    /// open of the same card keeps its own).
+    pub fn v1_card_ended(&'static self, key: &str, n: u64) {
+        let mine = |owner: u64| owner == n;
+        if self.v1.footer.with_untracked(|f| f.get(key).is_some_and(|x| mine(x.owner))) {
+            self.v1.footer.update(|f| {
+                f.remove(key);
+            });
+        }
+        if self.v1.meta.with_untracked(|m| m.get(key).is_some_and(|x| mine(x.0))) {
+            self.v1.meta.update(|m| {
+                m.remove(key);
+            });
+        }
+    }
+
     /// Open `n` ended.
     pub fn v1_stopped(&'static self, n: u64) {
         self.v1.running.borrow_mut().retain(|(i, _, _)| *i != n);
@@ -836,7 +895,9 @@ impl Store {
 
     /// Runs a resolve the person asked for and acts on its answer (9.2):
     /// open (no consent; placement as the app declares), choices in the
-    /// popup, a token (opened as its scope's), an error as a toast.
+    /// popup, a token (opened as its scope's), a command's prompt in the
+    /// composer for them to edit and send (never sent here), an error as a
+    /// toast.
     fn v1_resolve(&'static self, plugin: String, kind: &'static str, name: String, value: String) {
         let thread = self.active_id.get_untracked();
         let entries = self.v1.entries.get_untracked();
@@ -894,6 +955,12 @@ impl Store {
                             crate::toast::show(if title.is_empty() { "Resolved".to_owned() } else { title });
                         }
                     }
+                    tokens::Answer::Prompt(text) if kind == "command" => {
+                        let draft = tokens::prompt_draft(&self.draft.get_untracked(), &text);
+                        self.draft.set(draft);
+                        crate::composer::focus();
+                    }
+                    tokens::Answer::Prompt(_) => crate::toast::show("The plugin's answer could not be read."),
                     tokens::Answer::Error(m) => crate::toast::show(m),
                 }
             })
@@ -1749,9 +1816,26 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
 /// that does not mount at once (`auto` false: a third party's, 9.7, or an
 /// aged one) shows its header only, with the plugin's name, until the
 /// chevron opens it; opening it is the consent.
+///
+/// The app may hand Rox its card's chrome (7.12 to 7.14): a status in the
+/// header (`rox.meta`), footer buttons under the app (`rox.actions`), and
+/// the one line the card settles to (`rox.settle`), which replaces the
+/// whole card and unmounts the app, as an answered approval card does.
 pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: String) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
     let key = if live { card.live_key().to_key() } else { card.key().to_key() };
+    let k = key.clone();
+    dynamic(move || match store().v1.settled.with(|s| s.get(&k).cloned()) {
+        Some(line) => crate::cards::outcome_line(line).into_element(),
+        None => {
+            let (card, id, key, plugin) = (card.clone(), id.clone(), key.clone(), plugin.clone());
+            untracked(move || open_inline_card(card, id, key, live, auto, plugin).into_element())
+        }
+    })
+}
+
+/// [`inline_card`] until it settles.
+fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: bool, plugin: String) -> impl IntoElement {
     let as_of = card.as_of().filter(|_| !live);
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
     let (w, declared) = cards::inline_size(&app, COLUMN);
@@ -1780,6 +1864,7 @@ pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: S
                 // the title and the plugin's name give way to the buttons,
                 // cut to one line
                 .child(text(card.title.clone()).flex_auto().min_w(px(0.0)).number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+                .child(card_meta(&key))
                 // until it mounts, whose app this is (9.7)
                 .when(!auto, |v| {
                     v.child(text(plugin).flex_shrink(1.0).min_w(px(0.0)).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
@@ -1813,12 +1898,52 @@ pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: S
             let h = h.clone();
             let h2 = h.clone();
             view()
-                .h(move || px(h()))
-                .child(banners(&key, false))
-                .child(crate::mini::mini_app_inline(&key, w, h2))
-                .child(error_overlay(&key))
+                .child(
+                    view()
+                        .h(move || px(h()))
+                        .child(banners(&key, false))
+                        .child(crate::mini::mini_app_inline(&key, w, h2))
+                        .child(error_overlay(&key)),
+                )
+                .child(card_footer(&key))
                 .into_element()
         }))
+}
+
+/// The status an inline app put in its card's header (`rox.meta`): dim
+/// text, or a pill as a settled card's.
+fn card_meta(key: &str) -> impl IntoElement {
+    let key = key.to_owned();
+    dynamic(move || {
+        let meta = store().v1.meta.with(|m| m.get(&key).map(|(_, m)| m.clone()))?;
+        Some(if meta.pill {
+            crate::cards::pill(&meta.text).into_element()
+        } else {
+            text(meta.text).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad")).into_element()
+        })
+    })
+}
+
+/// An inline app's footer buttons (`rox.actions`), as Rox's own cards
+/// draw theirs: 28-point pills, right-aligned, the primary first. A
+/// disabled one is dimmed and does nothing; a press goes to the app.
+fn card_footer(key: &str) -> impl IntoElement {
+    let key = key.to_owned();
+    dynamic(move || {
+        let footer = store().v1.footer.with(|f| f.get(&key).cloned()).filter(|f| !f.actions.is_empty())?;
+        let mut row = view().flex_row().flex_wrap().justify_end().gap_2().px(px(10.0)).py(px(8.0)).bg(theme::CARD);
+        for a in cards::footer_order(&footer.actions) {
+            let kind = if a.primary { crate::cards::Btn::Primary } else { crate::cards::Btn::Secondary };
+            let (press, id, off) = (footer.press.clone(), a.id.clone(), a.disabled);
+            let button = crate::cards::btn(kind, &a.label, move || {
+                if !off {
+                    press(&id)
+                }
+            });
+            row = row.child(view().opacity(if off { 0.4f32 } else { 1.0 }).child(button));
+        }
+        Some(row.into_element())
+    })
 }
 
 /// The banners over an open (`key`): its notice ("This item is no longer
