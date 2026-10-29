@@ -492,12 +492,15 @@ export async function runPluginTest(o) {
   return { plugin: m ? { id: m.id, short: m.short, version: m.version } : null, trust: trustReport, rows, ok: rows.every((r) => r.status !== "fail") };
 }
 
-/** A gate letting at most `max` calls through in any `windowMs`: await it
- *  before each call. */
+/** A gate letting at most `max` calls through in any `windowMs`:
+ *  `await pace(() => call())`. Each call is stamped when it has settled,
+ *  never earlier than the broker counted it, so a slow call (a cold first
+ *  one, a loaded machine) can't leave the broker still counting a call the
+ *  gate has already let go of. */
 export function pacer(max, windowMs) {
   const sent = [];
 
-  return async () => {
+  return async (fn) => {
     for (;;) {
       while (sent.length && Date.now() - sent[0] >= windowMs) sent.shift();
 
@@ -505,7 +508,11 @@ export function pacer(max, windowMs) {
       await new Promise((r) => setTimeout(r, windowMs - (Date.now() - sent[0]) + 5));
     }
 
-    sent.push(Date.now());
+    try {
+      return await fn();
+    } finally {
+      sent.push(Date.now());
+    }
   };
 }
 
@@ -632,11 +639,13 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
     for (const tool of a.permissions.tools)
       await run("BRG-03", `${a.id}: a signed call of ${tool} reaches the plugin and is answered`, async () => {
         // as an app must: the broker takes 20 calls a second per open (8.2)
-        await pace();
-        const call = envelope(open, tool);
+        const code = await pace(() => {
+          const call = envelope(open, tool);
 
-        first ||= call;
-        const code = await codeOf(sessions.call(call));
+          first ||= call;
+
+          return codeOf(sessions.call(call));
+        });
 
         // an isError answer still went through the signed path
         expect(code === "resolved" || code === "tool_error", `${tool}: ${code}`);

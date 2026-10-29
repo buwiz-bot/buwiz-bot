@@ -243,3 +243,21 @@ test("SDK-10 BRG-03 paces an app's calls to the broker's 20 a second: 25 tools a
   assert.deepEqual(failed(res), []);
   assert.equal(code, 0);
 });
+
+test("SDK-11 BRG-03's pacer holds when the broker counts a call after the gate let it go (a slow first call)", async () => {
+  const { pacer } = await import(RUNNER);
+  const pace = pacer(3, 300);
+  const counted = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // the broker counts each call this long after it leaves the gate
+  for (const lag of [150, 0, 0, 0, 0, 0, 0])
+    await pace(async () => {
+      await sleep(lag);
+      counted.push(Date.now());
+    });
+
+  const crowded = counted.filter((t) => counted.filter((u) => u <= t && t - u < 300).length > 3).map((t) => t - counted[0]);
+
+  assert.deepEqual(crowded, [], `more than 3 calls in 300 ms as the broker counts: ${counted.map((t) => t - counted[0])}`);
+});
