@@ -1,7 +1,9 @@
 #!/bin/bash
 # A test Rox: its own data dir, its own TMPDIR (so its dev hook file is its
 # own), its own gpui-agent port and token, its window on AeroSpace
-# workspace 4. Prints the pid; drive it with scripts/test-agent.
+# workspace 4. The focus stays where it was (the window that had it gets it
+# back) and the visible workspace never changes. Prints the pid; drive it
+# with scripts/test-agent.
 #   scripts/test-rox <rox binary> <instance dir> <agent port> [VAR=value ...]
 # e.g. ROX_BACKEND=http://127.0.0.1:8798 ROX_HOST_TOKEN_FILE=<data>/host-token
 set -e
@@ -10,6 +12,7 @@ mkdir -p "$R/data" "$R/tmp"
 umask 077
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/token"
 echo "127.0.0.1:$PORT" > "$R/addr"
+F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
 env TMPDIR="$R/tmp/" ROX_DATA_DIR="$R/data" GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/token")" "$@" \
   nohup "$BIN" > "$R/rox.log" 2>&1 < /dev/null &
@@ -21,4 +24,5 @@ for _ in $(seq 1 120); do
   sleep 0.25
 done
 [ -n "$W" ] && aerospace move-node-to-workspace 4 --window-id "$W"
+[ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
 echo "pid $P window ${W:-none}"
