@@ -156,31 +156,34 @@ export async function startServer(dataDir, { env } = {}) {
   child.stdout.on("data", (d) => (log += d));
   child.stderr.on("data", (d) => (log += d));
   const exited = new Promise((r) => child.once("exit", r));
+  const stop = async () => {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {}
 
-  for (let i = 0; i < 200 && !(await up()); i++) {
+    const t = setTimeout(() => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {}
+    }, 3000);
+
+    if (child.exitCode === null && child.signalCode === null) await exited;
+    clearTimeout(t);
+  };
+
+  // a cold start loads the whole module graph first: allow a minute, and
+  // never leave a server behind that would hold the port for the next test
+  for (let i = 0; i < 600 && !(await up()); i++) {
     if (child.exitCode !== null) throw new Error(`server exited early:\n${log}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 
-  if (!(await up())) throw new Error(`server did not answer on ${PORT}:\n${log}`);
+  if (!(await up())) {
+    await stop();
+    throw new Error(`server did not answer on ${PORT}:\n${log}`);
+  }
 
-  return {
-    log: () => log,
-    stop: async () => {
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {}
-
-      const t = setTimeout(() => {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {}
-      }, 3000);
-
-      await exited;
-      clearTimeout(t);
-    },
-  };
+  return { log: () => log, stop };
 }
 
 /** Polls `check` until it returns truthy (its value) or `ms` pass (null). */
