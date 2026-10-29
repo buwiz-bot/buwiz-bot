@@ -4,7 +4,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, STAGE_DIR, outFile } from "./config.mjs";
+import { ASSETS_DIR, GEN_DIR, MODEL, OUT_DIR, PUBLIC_PORT, STAGE_DIR, outFile } from "./config.mjs";
 import { uuidv7, db, modelCtx, openWindows, nextSeq, setJob, store, slugFile, writeIndex, cardTurn, markRevising, clearRevising, threadBot } from "./state.mjs";
 import { contractFor, labelOf } from "./model.mjs";
 import { checkCandidate, fixImports, headOf, setHead, verFile, writeVersion } from "./pipeline.mjs";
@@ -910,10 +910,12 @@ export function toolShell(input) {
 export async function toolQuerySource(input) {
   const src = String(input.source || "");
 
+  // this broker's own front door (rox-broker's when it runs Node), never a
+  // fixed 8787: a test or rehearsal broker must not reach the live one
   const url =
     src === "linear"
-      ? "http://127.0.0.1:8787/data/linear/issues"
-      : `http://127.0.0.1:8787/data/${src}`;
+      ? `http://127.0.0.1:${PUBLIC_PORT}/data/linear/issues`
+      : `http://127.0.0.1:${PUBLIC_PORT}/data/${src}`;
 
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(25000) });
@@ -1100,7 +1102,7 @@ export async function toolArtifact(block, input) {
     return { content: `bad artifact name ${name}`, is_error: true };
 
   const self = async (path, b) => {
-    const r = await fetch(`http://127.0.0.1:8787${path}`, {
+    const r = await fetch(`http://127.0.0.1:${PUBLIC_PORT}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(b),
