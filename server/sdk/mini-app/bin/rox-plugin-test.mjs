@@ -9,7 +9,7 @@
 //   npm run plugin-test -- --keygen ~/.config/rox/test.key
 //
 // The plugin is spawned the way Rox's broker spawns it, under the broker's
-// real v1 manager (server/v1/plugins.mjs, sessions.mjs) running in this
+// real v1 manager (src/v1/plugins.mjs, sessions.mjs) running in this
 // process on an in-memory database, a file keystore in a temp directory
 // and a trust file written for this run. Nothing here opens a port, reads
 // Rox's or the broker's data directory, or touches the login Keychain.
@@ -21,14 +21,21 @@
 // --manifest <file>: a manifest already signed; its key is trusted from
 // --key-file, else from the shipped src/v1/trust.json.
 //
+// Trust: by default the run trusts that one key under the manifest's key
+// id and approves the plugin's id, for this run only. With ROX_TRUST_FILE
+// set, the run uses that trust store as it is, the way a broker does: the
+// key must be its key under that id, and the plugin must be on its
+// approved list (else MAN-01 fails with the broker's message). The output
+// says which it was.
+//
 // The checklist names the spec ID of each check and exits 1 when any
 // fails. --json prints the results as JSON instead.
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { isV1 } from "../../../src/grammar.mjs";
+import { isMain } from "../../../src/v1/cli.mjs";
 import { generate, pubOf, random128, sign, verify } from "../../../src/v1/ed.mjs";
 import { isObject, isString, parseIJson, signedBytes } from "../../../src/v1/jcs.mjs";
 import { keystore } from "../../../src/v1/keystore.mjs";
@@ -36,7 +43,7 @@ import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } f
 import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
 import { checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
 import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
-import { TRUST_FILE, loadTrust } from "../../../src/v1/trust.mjs";
+import { TRUST_FILE, isApproved, loadTrust } from "../../../src/v1/trust.mjs";
 import { newTicket } from "../lib/rox-plugin.mjs";
 
 const USAGE = `usage: rox-plugin-test --command <cmd> [--args <arg>]... [--env KEY=VAL]...
@@ -286,6 +293,10 @@ export async function runPluginTest(o) {
   let raw = null;
   let plugins = null;
   const seeds = [];
+  // a real trust store (a broker's): used as it is, approved list and all
+  const store = process.env.ROX_TRUST_FILE || "";
+  let trustFrom = "";
+  let trustReport = null;
 
   try {
     // the signed manifest and the trust file of this run
@@ -300,15 +311,22 @@ export async function runPluginTest(o) {
 
       if (o.keyId) unsigned.publisher.key_id = o.keyId;
       writeFileSync(manifestFile, JSON.stringify(signManifest(unsigned, seed, got.sources), null, 2));
-      writeTrust(trustFile, { [unsigned.publisher.key_id]: pubOf(seed) }, unsigned);
+
+      if (!store) writeTrust(trustFile, { [unsigned.publisher.key_id]: pubOf(seed) }, unsigned);
+      trustFrom = "the --sign-with key";
     } else {
       const signed = parseIJson(readFileSync(o.manifest, "utf8"));
       const keyId = signed?.publisher?.key_id;
       const pubs = o.keyFile ? { [keyId]: pubOf(readKey(o.keyFile)) } : Object.fromEntries([...loadTrust(TRUST_FILE()).publishers].map(([k, p]) => [k, p.public_key]));
 
       writeFileSync(manifestFile, readFileSync(o.manifest));
-      writeTrust(trustFile, pubs, signed);
+
+      if (!store) writeTrust(trustFile, pubs, signed);
+      trustFrom = o.keyFile ? "--key-file" : "the shipped src/v1/trust.json";
     }
+
+    if (store) writeFileSync(trustFile, readFileSync(store));
+    trustReport = trustOf(trustFile, store, trustFrom, manifestFile);
 
     spec.env[o.manifestEnv] = manifestFile;
     const trust = () => loadTrust(trustFile);
@@ -471,7 +489,31 @@ export async function runPluginTest(o) {
   rows.push({ id: "RSV-03", what: "the plugin never writes its key to stderr (4.3, P4)", status: leaked || /\[redacted key\]/.test(logs) ? "fail" : "pass", note: leaked ? "a seed appeared in stderr" : "" });
   rmSync(dir, { recursive: true, force: true });
 
-  return { plugin: m ? { id: m.id, short: m.short, version: m.version } : null, rows, ok: rows.every((r) => r.status !== "fail") };
+  return { plugin: m ? { id: m.id, short: m.short, version: m.version } : null, trust: trustReport, rows, ok: rows.every((r) => r.status !== "fail") };
+}
+
+/** Which trust the run used, for the report: {store (ROX_TRUST_FILE or
+ *  null for the run's own), key_id, key_from, approved}. */
+function trustOf(trustFile, store, keyFrom, manifestFile) {
+  let m = null;
+
+  try {
+    m = parseIJson(readFileSync(manifestFile, "utf8"));
+  } catch {}
+
+  const keyId = String(m?.publisher?.key_id ?? "");
+  let t = { publishers: new Map(), approved: [] };
+
+  try {
+    t = loadTrust(trustFile);
+  } catch {}
+
+  return {
+    store: store || null,
+    key_id: keyId,
+    key_from: store ? (t.publishers.has(keyId) ? "ROX_TRUST_FILE" : null) : keyFrom,
+    approved: !!m && isApproved(t, String(m.id ?? ""), keyId),
+  };
 }
 
 function writeTrust(file, pubs, m) {
@@ -655,6 +697,16 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
 // ── output ───────────────────────────────────────────────────────────────
 
+/** The report's trust line: which store, which key, whether approved. */
+function trustLine(t, id) {
+  if (!t) return "trust: (none)";
+
+  if (!t.store) return `trust: this run's own, key ${t.key_id} from ${t.key_from}, ${id || "the plugin"} approved for this run only (set ROX_TRUST_FILE to check a real trust store)`;
+  const key = t.key_from ? `key ${t.key_id} trusted` : `key ${t.key_id} NOT in it`;
+
+  return `trust: ROX_TRUST_FILE ${t.store}: ${key}, ${id || "the plugin"} ${t.approved ? "approved" : "NOT approved"}`;
+}
+
 export function format(res, o) {
   const mark = { pass: "[x]", fail: "[ ]", skip: "[-]" };
   const word = { pass: "pass", fail: "FAIL", skip: "skip" };
@@ -664,6 +716,7 @@ export function format(res, o) {
   return [
     `Rox Mini App Protocol v1, plugin checks: ${head}`,
     `  ${[o.command, ...o.args].join(" ")}`,
+    `  ${trustLine(res.trust, res.plugin?.id)}`,
     ...res.rows.toSorted((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1)).map((r) => `  ${mark[r.status]} ${r.id} ${word[r.status]}  ${r.what}${r.note ? `\n        ${r.note}` : ""}`),
     `${n("pass")} pass, ${n("fail")} fail, ${n("skip")} skipped: ${res.ok ? "conforms" : "does NOT conform"}`,
   ].join("\n");
@@ -687,7 +740,7 @@ async function main(argv) {
   return res.ok ? 0 : 1;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url))
+if (isMain(import.meta.url))
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (e) => {
