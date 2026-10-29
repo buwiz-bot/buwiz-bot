@@ -14,6 +14,7 @@ import { createLinePlugins } from "./plugins-line.mjs";
 import { createRoutineThreads } from "./routine-threads.mjs";
 import { createRoutines } from "./routines.mjs";
 import { createSessions } from "./sessions.mjs";
+import { createLineSessions } from "./sessions-line.mjs";
 
 const timeouts = {};
 
@@ -24,7 +25,7 @@ if (Number(process.env.ROX_V1_CALL_TIMEOUT_MS) > 0) timeouts.call = Number(proce
 export const plugins = process.env.ROX_V1_LINE
   ? createLinePlugins({ base: process.env.ROX_V1_LINE, token: process.env.ROX_V1_LINE_TOKEN, db, timeouts })
   : createPlugins({ db, keys: keystore(), logDir: join(DATA_DIR, "v1", "logs"), timeouts });
-export const sessions = createSessions(plugins);
+export const sessions = process.env.ROX_V1_LINE ? createLineSessions(plugins) : createSessions(plugins);
 
 // A v1 routine's agent turn: v0's backgroundTurn in the routine's thread,
 // with the job narrowing the v1 tools to the routine's surface (5.9). The
