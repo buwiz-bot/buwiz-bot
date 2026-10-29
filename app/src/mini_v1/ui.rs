@@ -1471,21 +1471,17 @@ fn icon_button(icon: &'static str, label: &'static str, on: impl Fn() + 'static)
         .on_press(on)
 }
 
-/// A card's button: "Open <title>" for a full app (a plugin's sign-in
+/// A full app card's button (9.6): "Open <title>" (a plugin's sign-in
 /// card reads "Open Buwiz Sign-in"), only Open when the title is long (the
-/// row shows it: "BIR Form 2551Q · Q3 2026 · …"), Show for an inline one
-/// (9.6).
+/// row shows it: "BIR Form 2551Q · Q3 2026 · …"). An inline card has none:
+/// its header's chevron shows it ([`inline_card`]).
 pub fn button_label(card: &OpenCard) -> String {
-    match card.placement {
-        Placement::Full if card.title.chars().count() > 20 => "Open".to_owned(),
-        Placement::Full => format!("Open {}", card.title),
-        Placement::Inline => card.button().to_owned(),
-    }
+    if card.title.chars().count() > 20 { "Open".to_owned() } else { format!("Open {}", card.title) }
 }
 
-/// Whether card `id` is shown: an answer card that mounts at once (`auto`,
-/// a first-party plugin's, 9.8) unless the person hid it; any other once
-/// they pressed Show.
+/// Whether inline card `id` is shown: an answer card that mounts at once
+/// (`auto`, a first-party plugin's, 9.8) unless the person collapsed it;
+/// any other once they expanded it.
 fn card_shown(id: &str, auto: bool) -> bool {
     if auto { !store().v1.hidden.with(|h| h.contains(id)) } else { store().v1.shown.with(|s| s.contains(id)) }
 }
@@ -1501,9 +1497,8 @@ fn toggle_card(id: &str, auto: bool) {
     });
 }
 
-/// A card's Open or Show; a shown inline card's Show reads Hide.
-fn toggle_button(label: String, id: String, auto: bool, on: impl Fn() + 'static) -> impl IntoElement {
-    let shown = move || card_shown(&id, auto);
+/// A full app card's Open.
+fn open_button(label: String, on: impl Fn() + 'static) -> impl IntoElement {
     view()
         .h(px(28.0))
         .px_3()
@@ -1512,15 +1507,16 @@ fn toggle_button(label: String, id: String, auto: bool, on: impl Fn() + 'static)
         .justify_center()
         .bg(theme::TEXT)
         .label(label.clone())
-        .child(text(move || if label == "Show" && shown() { "Hide".to_owned() } else { label.clone() }).text_size(px(13.0)).text_color(theme::POPOVER))
+        .child(text(label).text_size(px(13.0)).text_color(theme::POPOVER))
         .on_press(on)
 }
 
 /// An answer's cards (9.6, 9.8), from the reply's `rox-app` links: one
 /// main card and up to two small ones, the rest collapsed. A
-/// first-party plugin's inline card mounts at once; any other waits for
-/// Show (9.7). Once `user_after()` of the person's messages came since,
-/// the cards collapse to their rows, each with Show.
+/// first-party plugin's inline card mounts at once; any other shows its
+/// header until its chevron expands it (9.7). Once `user_after()` of the
+/// person's messages came since, the cards collapse: an inline one to its
+/// header, a full one to its row with Open.
 pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after: impl Fn() -> usize + Clone + 'static) -> AnyElement {
     let cards: Vec<(String, OpenCard)> = links
         .iter()
@@ -1553,8 +1549,9 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         .into_element()
 }
 
-/// A tool result's card (9.6): its title, the plugin, and Open (full) or
-/// Show (inline). An inline card mounts below it when shown.
+/// A tool result's card (9.6): a full app's row with its title, the
+/// plugin and Open, or an inline app's one card, whose header's chevron
+/// shows the app under it ([`inline_card`]).
 pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
     card_row(card, card_id, false)
 }
@@ -1601,7 +1598,7 @@ fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
                                 .text_color(tc("#f5f5f5ad")),
                         ),
                 )
-                .child(toggle_button(button_label(&card), card_id, auto, move || store().open_v1(c1.key(), &c1.title, Opener::ToolResult))),
+                .child(open_button(button_label(&card), move || store().open_v1(c1.key(), &c1.title, Opener::ToolResult))),
         )
         .into_element()
 }
@@ -1780,9 +1777,13 @@ pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: S
                 .px(px(10.0))
                 .bg(tc("#1f1f1f"))
                 .child(crate::appdetails::named_tile("", &card.title, 22.0))
-                .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+                // the title and the plugin's name give way to the buttons,
+                // cut to one line
+                .child(text(card.title.clone()).flex_auto().min_w(px(0.0)).number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
                 // until it mounts, whose app this is (9.7)
-                .when(!auto, |v| v.child(text(plugin).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
+                .when(!auto, |v| {
+                    v.child(text(plugin).flex_shrink(1.0).min_w(px(0.0)).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
+                })
                 .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
                 // a snapshot goes live; a live card reads again. An action
                 // card (no `as_of`: its tool changed something) has none.
@@ -2070,7 +2071,5 @@ mod tests {
         assert_eq!(button_label(&card), "Open Buwiz Sign-in");
         let long = OpenCard { title: "BIR Form 2551Q · Q3 2026 · Galang Alejandro Pascua".into(), ..card.clone() };
         assert_eq!(button_label(&long), "Open");
-        let inline = OpenCard { placement: Placement::Inline, ..card };
-        assert_eq!(button_label(&inline), "Show");
     }
 }
