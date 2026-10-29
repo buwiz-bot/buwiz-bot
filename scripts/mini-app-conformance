@@ -1,24 +1,25 @@
 #!/bin/sh
 # The Mini App Protocol v1 conformance run (drafts/rox-mini-app-protocol-v1.md,
 # section 17), both sides: the broker's suite against the fixture plugin
-# (grok-shell, `npm run conformance`) and Rox's host tests, named by spec ID.
-# Prints each side's checklist and exits non-zero if either fails.
+# (`npm run conformance`) and Rox's host tests, named by spec ID. Prints
+# each side's checklist and exits non-zero if either fails.
 #
-#   scripts/mini-app-conformance [grok-shell checkout]
+#   scripts/mini-app-conformance [broker dir]
 #
-# The grok-shell checkout defaults to ../grok-shell beside this repo, on a
-# branch with server/v1 (mini-app-v1 or later). CARGO_TARGET_DIR is honoured;
-# set it to keep the build out of app/target while Rox is running from there.
+# The broker dir defaults to this repo's server/; a grok-shell checkout
+# (server/v1) still works. CARGO_TARGET_DIR is honoured: set it to keep the
+# build out of app/target while Rox is running from there. TEST_PORT moves
+# the broker's test port off a running one.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-GS="${1:-$ROOT/../grok-shell}"
+BROKER="${1:-$ROOT/server}"
 fail=0
 
-echo "== broker (grok-shell: $GS)"
-if [ -f "$GS/server/v1/plugins.mjs" ]; then
-  (cd "$GS" && npm run -s conformance) || fail=1
+echo "== broker ($BROKER)"
+if [ -f "$BROKER/src/v1/plugins.mjs" ] || [ -f "$BROKER/server/v1/plugins.mjs" ]; then
+  (cd "$BROKER" && npm run -s conformance) || fail=1
 else
-  echo "no server/v1 in $GS: check out grok-shell mini-app-v1"; fail=1
+  echo "no broker v1 code in $BROKER (src/v1 or server/v1)"; fail=1
 fi
 
 echo "== Rox host"

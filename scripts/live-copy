@@ -1,0 +1,52 @@
+#!/bin/bash
+# A rehearsal copy of the live broker's data dir (Rust broker plan, 0.4).
+# app.db goes through sqlite's .backup; generated/, widgets/, chunks/,
+# plugins/, windows/ and the v1 manifests are copied. No key files, no host
+# token, no plugin logs, and no credentials: MCP env/auth/headers, plugin
+# settings and endpoint secrets are blanked. Every plugin, MCP server,
+# routine, outgoing webhook and pending agent delivery is switched off, so a
+# broker on the copy never runs the real BIR, Gmail or local tools.
+#
+#   scripts/live-copy <dir>        # SRC=<data dir> copies another one
+#
+# The copy holds your chats: keep it out of any repo (refused here).
+set -euo pipefail
+DEST="${1:?usage: scripts/live-copy <dir>}"
+SRC="${SRC:-$HOME/Library/Application Support/Grok Shell}"
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+[ -f "$SRC/generated/app.db" ] || { echo "no app.db under $SRC" >&2; exit 1; }
+if [ -d "$DEST" ] && [ -n "$(ls -A "$DEST")" ]; then echo "$DEST is not empty" >&2; exit 1; fi
+mkdir -p "$DEST/generated"
+case "$(cd "$DEST" && pwd -P)/" in "$REPO"/*) rmdir "$DEST/generated" "$DEST" 2>/dev/null; echo "refusing to copy into the repo" >&2; exit 1 ;; esac
+umask 077
+
+sqlite3 "$SRC/generated/app.db" ".backup '$DEST/generated/app.db'"
+rsync -a --exclude 'app.db*' --exclude '*.db-journal' "$SRC/generated/" "$DEST/generated/"
+for d in widgets chunks plugins windows; do
+  if [ -d "$SRC/$d" ]; then rsync -a "$SRC/$d/" "$DEST/$d/"; fi
+done
+mkdir -p "$DEST/v1"
+rsync -a --exclude '*.key' --exclude 'keys/' --exclude 'logs/' "$SRC/v1/" "$DEST/v1/"
+if [ -f "$SRC/keymap.json" ]; then cp "$SRC/keymap.json" "$DEST/"; fi
+
+# switched off and scrubbed, table by table (older data may lack some)
+DB="$DEST/generated/app.db"
+has() { [ "$(sqlite3 "$DB" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='$1'")" = 1 ]; }
+SQL=""
+has v1_plugins && SQL+="UPDATE v1_plugins SET enabled=0;"
+has v1_instances && SQL+="UPDATE v1_instances SET enabled=0, pending=0;"
+has v1_routines && SQL+="UPDATE v1_routines SET enabled=0;"
+has routines && SQL+="UPDATE routines SET enabled=0;"
+has mcp_servers && SQL+="UPDATE mcp_servers SET enabled=0, env='{}', auth=NULL, headers=NULL, oauth_client=NULL;"
+has plugin_settings && SQL+="UPDATE plugin_settings SET vals='{}';"
+has agent_endpoints && SQL+="UPDATE agent_endpoints SET secret=lower(hex(randomblob(24))), url=NULL, out_secret=NULL;"
+has agent_outbox && SQL+="DELETE FROM agent_outbox;"
+has turns && SQL+="UPDATE turns SET meta=json_remove(meta, '\$.pending') WHERE meta LIKE '%\"pending\"%';"
+sqlite3 "$DB" "$SQL"
+
+q() { sqlite3 "$DB" "$1" 2>/dev/null || echo "-"; }
+echo "copy: $DEST"
+echo "threads $(q 'SELECT count(*) FROM threads') · bots $(q 'SELECT count(*) FROM bots')"
+echo "on: v1 plugins $(q 'SELECT count(*) FROM v1_plugins WHERE enabled=1') · v1 instances $(q 'SELECT count(*) FROM v1_instances WHERE enabled=1') · routines $(q 'SELECT count(*) FROM routines WHERE enabled=1') · mcp servers $(q 'SELECT count(*) FROM mcp_servers WHERE enabled=1')"
+echo "key files: $(find "$DEST" -name '*.key' -o -name host-token | wc -l | tr -d ' ')"

@@ -11,6 +11,18 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const PORT = Number(process.env.TEST_PORT || 8797);
 export const FIXTURE = join(ROOT, "test", "fixtures", "mcp-server.mjs");
 
+/** The broker the HTTP tests start: `ROX_BROKER_CMD` (a command line,
+ *  relative paths from server/) when set, else Node as it ships. The tests
+ *  are the contract, whichever broker answers (the Rust broker plan, R4). */
+export function brokerCommand() {
+  const cmd = (process.env.ROX_BROKER_CMD || "").trim();
+
+  if (!cmd) return [process.execPath, [join(ROOT, "src", "app-server.mjs")]];
+  const [bin, ...args] = cmd.split(/\s+/);
+
+  return [bin === "node" ? process.execPath : bin, args];
+}
+
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
 
 /** One request: {status, headers, text, json}. `headers` as given (an
@@ -50,7 +62,8 @@ export async function startServer(dataDir) {
   if (await up()) throw new Error(`port ${PORT} is already serving; stop that first`);
 
   // its own process group, so stop() also ends the MCP children it spawned
-  const child = spawn(process.execPath, [join(ROOT, "src", "app-server.mjs")], {
+  const [bin, args] = brokerCommand();
+  const child = spawn(bin, args, {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" },
     stdio: ["ignore", "pipe", "pipe"],
