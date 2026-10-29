@@ -31,6 +31,7 @@ fn start_on(port: u16, pids: &PathBuf) -> Child {
         .args(["--port", &port.to_string(), "--node", "node", "--node-script"])
         .arg(&fixture)
         .env("FIXTURE_PID_FILE", pids)
+        .env("FIXTURE_CHILD_FILE", pids.with_extension("children"))
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap()
@@ -40,6 +41,7 @@ fn start(name: &str) -> Broker {
     let port = free_port();
     let pids = std::env::temp_dir().join(format!("rox-broker-test-{name}-{}-{port}.pids", std::process::id()));
     let _ = std::fs::remove_file(&pids);
+    let _ = std::fs::remove_file(pids.with_extension("children"));
     let broker = Broker { child: start_on(port, &pids), port, pids };
     wait_healthy(broker.port, Duration::from_secs(15));
     broker
@@ -95,6 +97,10 @@ fn unchunk(mut s: &str) -> String {
 
 fn pids(b: &Broker) -> Vec<i32> {
     std::fs::read_to_string(&b.pids).unwrap_or_default().lines().filter_map(|l| l.trim().parse().ok()).collect()
+}
+
+fn children(b: &Broker) -> Vec<i32> {
+    std::fs::read_to_string(b.pids.with_extension("children")).unwrap_or_default().lines().filter_map(|l| l.trim().parse().ok()).collect()
 }
 
 fn alive(pid: i32) -> bool {
@@ -178,14 +184,37 @@ fn node_comes_back_after_it_exits() {
 }
 
 #[test]
-fn stopping_the_front_door_leaves_no_node() {
+fn stopping_the_front_door_leaves_no_node_and_no_child_of_it() {
     let mut b = start("stop");
     let node = pids(&b)[0];
-    assert!(alive(node));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while children(&b).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let child = children(&b)[0];
+    assert!(alive(node) && alive(child));
     unsafe { libc::kill(b.child.id() as i32, libc::SIGTERM) };
     let status = b.child.wait().unwrap();
     assert!(status.success(), "{status}");
     assert!(!alive(node), "node {node} outlived the front door");
+    assert!(!alive(child), "node's child {child} outlived the front door");
+}
+
+#[test]
+fn a_child_of_a_node_that_died_goes_with_it() {
+    let b = start("orphan");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while children(&b).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let first = children(&b)[0];
+    let _ = get(b.port, "/exit");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(first) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(first), "the dead node's child {first} was left running");
+    wait_healthy(b.port, Duration::from_secs(10));
 }
 
 #[test]

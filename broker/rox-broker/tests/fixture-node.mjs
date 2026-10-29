@@ -2,10 +2,18 @@
 // listens on PORT, appends its pid to FIXTURE_PID_FILE, and answers:
 // /health, /echo (what it received), /sse (two events 300 ms apart) and
 // /exit (answers, then exits 3).
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 if (process.env.FIXTURE_PID_FILE) appendFileSync(process.env.FIXTURE_PID_FILE, `${process.pid}\n`);
+
+// a child that ignores its stdin closing, as a plugin can (FIXTURE_CHILD_FILE)
+if (process.env.FIXTURE_CHILD_FILE) {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+
+  appendFileSync(process.env.FIXTURE_CHILD_FILE, `${child.pid}\n`);
+}
 
 createServer((req, res) => {
   const chunks = [];

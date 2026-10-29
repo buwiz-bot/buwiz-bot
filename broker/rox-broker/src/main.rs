@@ -54,7 +54,8 @@ async fn main() {
         }
     }
     drop(listener);
-    node.stop(Duration::from_secs(5)).await;
+    // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
+    node.stop(Duration::from_millis(2500)).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
     eprintln!("rox-broker: stopped");
 }
