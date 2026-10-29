@@ -126,7 +126,7 @@ fn it_answers_health_and_meta_itself() {
     assert_eq!(status, 200);
     let meta: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(meta["broker"], "rox-broker");
-    assert_eq!(meta["ported"], serde_json::json!(["state", "prefs", "keymap", "timeclock", "skills"]));
+    assert_eq!(meta["ported"], serde_json::json!(["state", "prefs", "keymap", "timeclock", "skills", "files"]));
     assert!(meta["node_version"].as_str().unwrap().starts_with('v'), "{body}");
 }
 
