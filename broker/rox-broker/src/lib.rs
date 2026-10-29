@@ -1,13 +1,16 @@
 //! rox-broker: the Rox broker's front door (the Rust broker plan, phase 1).
 //!
-//! It owns the broker's port and answers `/health` and `/meta` itself. Every
-//! other request goes to the Node broker, which it runs on a free loopback
+//! It owns the broker's port and answers `/health`, `/meta` and the routes
+//! ported so far (`leaf`) itself. Every other request goes to the Node broker, which it runs on a free loopback
 //! port and restarts when it exits. Bytes, headers and streams pass through
 //! unchanged: server-sent events, long polls, ranges, raw webhook bodies. A
 //! route group moves into Rust in a later phase by answering here instead of
 //! forwarding.
 
 pub mod config;
+pub mod guard;
+pub mod js;
+pub mod leaf;
 pub mod node;
 pub mod proxy;
 
