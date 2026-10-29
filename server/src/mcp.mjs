@@ -51,7 +51,7 @@ export function ensureClient(row) {
 import { execFile } from "node:child_process";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
-import { PORT } from "./config.mjs";
+import { PUBLIC_PORT } from "./config.mjs";
 import { isName } from "./grammar.mjs";
 import { lineConnect, mcpOnLine } from "./mcp-line.mjs";
 
@@ -72,7 +72,7 @@ const donePage = (title) =>
 // Pre-registered (static) OAuth clients redirect to the main server — a
 // fixed URI the user registers with the provider (X validates it exactly);
 // dynamic-registration clients keep the ephemeral loopback listener.
-export const fixedRedirectUrl = (id) => `http://127.0.0.1:${PORT}/oauth/callback/${encodeURIComponent(id)}`;
+export const fixedRedirectUrl = (id) => `http://127.0.0.1:${PUBLIC_PORT}/oauth/callback/${encodeURIComponent(id)}`;
 const staticClient = (row) => {
   try {
     const c = JSON.parse(row.oauth_client || "null");
