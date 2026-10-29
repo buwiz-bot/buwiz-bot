@@ -18,7 +18,7 @@ use super::trust::Trust;
 use super::{canonicalize, ed_verify, get, is_v1, kind_of, safe_int, same, shown, signed_bytes, tpl, V1Error};
 use crate::js;
 
-pub const HOST_PROTOCOL: &str = "1.0.0";
+pub const HOST_PROTOCOL: &str = "1.1.0";
 pub const APP_MIME: &str = "text/x-nsh-tsx";
 pub const MANIFEST_URI: &str = "rox://manifest";
 
@@ -1093,6 +1093,7 @@ mod tests {
     #[test]
     fn refusals_name_the_field_and_carry_the_spec_code() {
         assert_eq!(refused(|m| m["protocol"] = json!("2.0.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("1.2.0")).code, "protocol_unsupported");
         assert_eq!(refused(|m| m["needs"] = json!(["gmail"])).code, "not_supported");
         assert_eq!(refused(|m| m["commands"][0]["name"] = json!("status")).message, "commands[0].name: /status is a built-in command");
         assert_eq!(
