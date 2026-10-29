@@ -9,8 +9,8 @@ import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { generate } from "../server/v1/ed.mjs";
-import { LIMITS } from "../server/v1/manifest.mjs";
+import { generate } from "../src/v1/ed.mjs";
+import { LIMITS } from "../src/v1/manifest.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FIXTURE } from "./v1-helpers.mjs";
 
@@ -113,7 +113,7 @@ test("SDK-06 the README flow: sign-manifest.mjs --key-file, then the runner with
   const tdir = join(SDK, "template");
 
   await new Promise((resolve, reject) =>
-    execFile(process.execPath, [join(ROOT, "server", "v1", "sign-manifest.mjs"), join(tdir, "manifest.json"), "--key-file", KEY, "--app", `hello=${join(tdir, "hello.tsx")}`, "--out", signed], (e) => (e ? reject(e) : resolve())));
+    execFile(process.execPath, [join(ROOT, "src", "v1", "sign-manifest.mjs"), join(tdir, "manifest.json"), "--key-file", KEY, "--app", `hello=${join(tdir, "hello.tsx")}`, "--out", signed], (e) => (e ? reject(e) : resolve())));
   const { code, res } = await runner(["--command", process.execPath, "--args", TEMPLATE, "--manifest", signed, "--key-file", KEY]);
 
   assert.deepEqual(failed(res), []);
@@ -147,7 +147,7 @@ function documentedLimits() {
   });
 }
 
-test("SDK-07 every limit in docs/manifest.md equals server/v1/manifest.mjs LIMITS, and every limit is documented", () => {
+test("SDK-07 every limit in docs/manifest.md equals src/v1/manifest.mjs LIMITS, and every limit is documented", () => {
   const rows = documentedLimits();
 
   assert.deepEqual(rows.map(([k]) => k).sort(), Object.keys(LIMITS).sort(), "the docs table lists each LIMITS key once");

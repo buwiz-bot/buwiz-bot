@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { generate, random128 } from "../server/v1/ed.mjs";
+import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
 

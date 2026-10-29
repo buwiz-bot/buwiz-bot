@@ -19,7 +19,7 @@
 // 0600 file holding a base64url seed) and hands the signed copy to the
 // plugin through the --manifest-env variable (default ROX_PLUGIN_MANIFEST).
 // --manifest <file>: a manifest already signed; its key is trusted from
-// --key-file, else from the shipped server/v1/trust.json.
+// --key-file, else from the shipped src/v1/trust.json.
 //
 // The checklist names the spec ID of each check and exits 1 when any
 // fails. --json prints the results as JSON instead.
@@ -28,15 +28,15 @@ import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { isV1 } from "../../../server/grammar.mjs";
-import { generate, pubOf, random128, sign, verify } from "../../../server/v1/ed.mjs";
-import { isObject, isString, parseIJson, signedBytes } from "../../../server/v1/jcs.mjs";
-import { keystore } from "../../../server/v1/keystore.mjs";
-import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../server/v1/manifest.mjs";
-import { createPlugins, resultData } from "../../../server/v1/plugins.mjs";
-import { checkOpen, createSessions, SOURCE_MAX } from "../../../server/v1/sessions.mjs";
-import { fingerprintOf, signManifest } from "../../../server/v1/sign-manifest.mjs";
-import { TRUST_FILE, loadTrust } from "../../../server/v1/trust.mjs";
+import { isV1 } from "../../../src/grammar.mjs";
+import { generate, pubOf, random128, sign, verify } from "../../../src/v1/ed.mjs";
+import { isObject, isString, parseIJson, signedBytes } from "../../../src/v1/jcs.mjs";
+import { keystore } from "../../../src/v1/keystore.mjs";
+import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../src/v1/manifest.mjs";
+import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
+import { checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
+import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
+import { TRUST_FILE, loadTrust } from "../../../src/v1/trust.mjs";
 import { newTicket } from "../lib/rox-plugin.mjs";
 
 const USAGE = `usage: rox-plugin-test --command <cmd> [--args <arg>]... [--env KEY=VAL]...

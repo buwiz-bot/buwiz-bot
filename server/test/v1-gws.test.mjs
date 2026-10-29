@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { generate } from "../server/v1/ed.mjs";
+import { generate } from "../src/v1/ed.mjs";
 import { GWS, bed, broker, codeOf, gwsSpec, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 
 const b = bed("gws");

@@ -32,9 +32,9 @@
 //          it has no way to enable, approve or change one
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { v1AgentCall, v1ToolPlugin, v1Tools } from "../server/v1/agent.mjs";
-import { createRoutineThreads } from "../server/v1/routine-threads.mjs";
-import { createRoutines } from "../server/v1/routines.mjs";
+import { v1AgentCall, v1ToolPlugin, v1Tools } from "../src/v1/agent.mjs";
+import { createRoutineThreads } from "../src/v1/routine-threads.mjs";
+import { createRoutines } from "../src/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, fixtureSpec, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 
 let now = 1_800_000_000_000;

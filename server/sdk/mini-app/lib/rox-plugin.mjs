@@ -27,10 +27,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema, ErrorCode, ListResourcesRequestSchema, ListToolsRequestSchema, McpError, ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { isV1 } from "../../../server/grammar.mjs";
-import { pubOf, sign } from "../../../server/v1/ed.mjs";
-import { isObject, parseIJson, signedBytes } from "../../../server/v1/jcs.mjs";
-import { MANIFEST_URI, manifestHash, permsDigest } from "../../../server/v1/manifest.mjs";
+import { isV1 } from "../../../src/grammar.mjs";
+import { pubOf, sign } from "../../../src/v1/ed.mjs";
+import { isObject, parseIJson, signedBytes } from "../../../src/v1/jcs.mjs";
+import { MANIFEST_URI, manifestHash, permsDigest } from "../../../src/v1/manifest.mjs";
 
 const EIGHT_HOURS = 8 * 3600 * 1000;
 const APP_MIME = "text/x-nsh-tsx";

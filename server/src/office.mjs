@@ -1,4 +1,4 @@
-// server/office.mjs — BetterOffice (openooxml/betteroffice, Apache-2.0) glue.
+// src/office.mjs — BetterOffice (openooxml/betteroffice, Apache-2.0) glue.
 //
 //   Generation: real .docx/.xlsx/.pptx bytes straight from the wasm cores —
 //   the same payload contract the bundled MCP server's office_create uses.
