@@ -1,0 +1,5 @@
+#!/bin/bash
+# gpui-agent against a test Rox that scripts/test-rox launched.
+#   scripts/test-agent <instance dir> snapshot | screenshot --out x.png | click <id> | …
+R="$1"; shift
+GPUI_AGENT_TOKEN="$(cat "$R/token")" GPUI_AGENT_ADDR="$(cat "$R/addr")" exec gpui-agent "$@"
