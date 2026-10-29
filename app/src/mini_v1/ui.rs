@@ -351,6 +351,13 @@ impl Store {
                 });
                 self.reload_mini(&key);
             }
+            // a card out of view keeps its source in `minis`: it fetches
+            // the plugin's new code now, before it shows again
+            let running: Vec<String> = self.v1.running.borrow().iter().map(|(_, k, _)| k.clone()).collect();
+            let idle = lifecycle::idle_sources(self.minis.borrow().keys(), &running, &plugin);
+            for key in idle {
+                self.reload_mini(&key);
+            }
         }
         self.v1_refresh(false);
     }
