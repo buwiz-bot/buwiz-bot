@@ -422,7 +422,7 @@ export function persist() {
               reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links,
               ...(u.suggest?.length ? { suggest: u.suggest } : {}), ...(u.v1Attachments?.length ? { v1Attachments: u.v1Attachments } : {}),
               ...(u.routine ? { routine: u.routine } : {}), ...(u.notice ? { notice: u.notice } : {}),
-              ...(u.message ? { message: u.message } : {}), ...(u.pending?.length ? { pending: u.pending } : {}), ...(u.agent ? { agent: u.agent } : {}),
+              ...(u.message ? { message: u.message } : {}), ...(u.pending?.length ? { pending: u.pending } : {}), ...(u.read_by?.length ? { read_by: u.read_by } : {}), ...(u.agent ? { agent: u.agent } : {}),
             })
             : null,
           u.v ?? null,

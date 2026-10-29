@@ -8,7 +8,7 @@ import { MOCK, PROVIDER } from "./config.mjs";
 import { createAgents } from "./agents.mjs";
 import { createExternals } from "./agents-external.mjs";
 import { createDelivery, historyFor, peerPrompt } from "./agents-run.mjs";
-import { actingBot, allocJobId, botDefaults, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "./state.mjs";
+import { actingBot, allocJobId, botDefaults, db, findThread, jobs, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "./state.mjs";
 
 const jobFor = (thread, msg, bot) => ({
   id: allocJobId(), thread, seq: 0, phase: "queued", detail: "", done: false, result: null, extra: {},
@@ -47,10 +47,17 @@ export function cardsToChat(bot, msg, t, job) {
   writeIndex();
 }
 
+// A reply wakes the asker once its chat is idle (spec 5.3), unless the
+// turn that asked read the answer already and told the user.
 async function runReply(bot, msg, t) {
   const chat = findThread(bot.threadId);
 
   if (!chat) return;
+  const busy = () => [...jobs.values()].some((j) => j.thread === chat.id && !j.done);
+
+  for (let i = 0; i < 600 && busy(); i++) await new Promise((r) => setTimeout(r, 1000));
+
+  if (agents.readBy(msg.id, bot.id)) return;
   const [{ backgroundTurn }, { choiceFor }] = await Promise.all([import("./agent.mjs"), import("./model.mjs")]);
   const job = { ...jobFor(chat.id, msg, bot), agentBot: undefined };
   const mark = { conversation: msg.conversation, message: msg.id, from: msg.from, thread: t.id, thread_uid: t.uid };

@@ -6,8 +6,8 @@ import { agents } from "./agents-wire.mjs";
 import { store, threadBot } from "./state.mjs";
 
 const TO = {
-  description: 'Agent ids or names (from agents_list), or "*" for all of them.',
-  anyOf: [{ type: "array", items: { type: "string" }, maxItems: 8 }, { type: "string", enum: ["*"] }],
+  description: 'An agent id or name (from agents_list), a list of them, or "*" for all of them.',
+  anyOf: [{ type: "array", items: { type: "string" }, maxItems: 8 }, { type: "string" }],
 };
 
 export const AGENT_TOOLS = [
