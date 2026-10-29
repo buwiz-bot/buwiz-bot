@@ -10,6 +10,7 @@ import { DATA_DIR } from "../config.mjs";
 import { allocJobId, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "../state.mjs";
 import { keystore } from "./keystore.mjs";
 import { createPlugins } from "./plugins.mjs";
+import { LINE } from "./line-env.mjs";
 import { createLinePlugins } from "./plugins-line.mjs";
 import { createRoutineThreads } from "./routine-threads.mjs";
 import { createRoutines } from "./routines.mjs";
@@ -20,12 +21,12 @@ const timeouts = {};
 
 if (Number(process.env.ROX_V1_CALL_TIMEOUT_MS) > 0) timeouts.call = Number(process.env.ROX_V1_CALL_TIMEOUT_MS);
 
-// ROX_V1_LINE: rox-broker hosts the plugins (it sets this, and the line's
-// token, when it is started with ROX_BROKER_V1_HOST=1)
-export const plugins = process.env.ROX_V1_LINE
-  ? createLinePlugins({ base: process.env.ROX_V1_LINE, token: process.env.ROX_V1_LINE_TOKEN, db, timeouts })
+// LINE.base: rox-broker hosts the plugins (it hands Node the line's address
+// and token when it is started with ROX_BROKER_V1_HOST=1)
+export const plugins = LINE.base
+  ? createLinePlugins({ base: LINE.base, token: LINE.token, db, timeouts })
   : createPlugins({ db, keys: keystore(), logDir: join(DATA_DIR, "v1", "logs"), timeouts });
-export const sessions = process.env.ROX_V1_LINE ? createLineSessions(plugins) : createSessions(plugins);
+export const sessions = LINE.base ? createLineSessions(plugins) : createSessions(plugins);
 
 // A v1 routine's agent turn: v0's backgroundTurn in the routine's thread,
 // with the job narrowing the v1 tools to the routine's surface (5.9). The
