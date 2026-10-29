@@ -27,7 +27,9 @@
 //   (its own request, no step used); the default is "UI".
 //
 // Every request is recorded: {method, path, headers (the ones opencodex
-// reads), body (parsed JSON when it is), stream}. Nothing listens beyond
+// reads), body (parsed JSON when it is), stream}; `fake.calls()` lists the
+// model calls. `fake.reset()` forgets them and rewinds every script,
+// `fake.clear()` forgets them only. Nothing listens beyond
 // 127.0.0.1 and nothing is fetched.
 import { createServer } from "node:http";
 
@@ -161,6 +163,10 @@ export async function startFakeOpencodex({ port = 0 } = {}) {
     reset() {
       requests.length = 0;
       used.clear();
+    },
+    /** forget the recorded requests only (scripts carry on) */
+    clear() {
+      requests.length = 0;
     },
     /** recorded model calls (Messages and chat/completions), oldest first */
     calls: () => requests.filter((r) => /\/(messages|chat\/completions)$/.test(r.path)),
