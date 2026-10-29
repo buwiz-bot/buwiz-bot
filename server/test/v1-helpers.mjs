@@ -3,6 +3,7 @@
 // it, an in-process broker on an in-memory db with a file keystore, and a
 // "fake Rox" that makes session keys and signs call envelopes exactly as
 // spec 8.1 says. Nothing here touches the login Keychain or port 8787.
+import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,10 +12,11 @@ import { signedBytes } from "../src/v1/jcs.mjs";
 import { keystore } from "../src/v1/keystore.mjs";
 import { permsDigest } from "../src/v1/manifest.mjs";
 import { createPlugins, systemClock } from "../src/v1/plugins.mjs";
+import { createLinePlugins } from "../src/v1/plugins-line.mjs";
 import { createSessions } from "../src/v1/sessions.mjs";
 import { signManifest } from "../src/v1/sign-manifest.mjs";
 import { loadTrust } from "../src/v1/trust.mjs";
-import { ROOT, tempDir } from "./helpers.mjs";
+import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 
 export const FIXTURE_DIR = join(ROOT, "src", "v1", "fixture");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
@@ -73,9 +75,47 @@ export function bed(label) {
   return { dir, pub, trustFile, manifestFile, writeManifest, keysDir: join(dir, "keys") };
 }
 
-/** An in-process broker for bed `b`: {plugins, sessions}. */
-export function broker(b, { clock = systemClock, timeouts = {}, db = new DatabaseSync(":memory:") } = {}) {
+/** An in-process broker for bed `b`: {plugins, sessions, db}. With
+ *  ROX_BROKER_CMD set, its plugins run in `rox-broker helper` and are
+ *  reached over the line (plugins-line.mjs), as the Rust broker plan has
+ *  them from 3.4; `db` is then the app.db the two share. */
+export function broker(b, { clock = systemClock, timeouts = {}, db } = {}) {
+  if (process.env.ROX_BROKER_CMD) return lineBroker(b, { clock, timeouts });
+  db ??= new DatabaseSync(":memory:");
   const plugins = createPlugins({ db, keys: keystore(`file:${b.keysDir}`), clock, logDir: join(b.dir, "logs"), trust: () => loadTrust(b.trustFile), timeouts });
+
+  return { plugins, sessions: createSessions(plugins), db };
+}
+
+function lineBroker(b, { clock, timeouts }) {
+  const file = join(b.dir, "app.db");
+  const db = new DatabaseSync(file, { timeout: 5000 });
+  const token = random128();
+  const [bin] = brokerCommand();
+  const env = {
+    ...process.env, ROX_LINE_TOKEN: token, ROX_TRUST_FILE: b.trustFile, ROX_KEYSTORE: `file:${b.keysDir}`,
+    ...(clock !== systemClock ? { ROX_V1_MANUAL_CLOCK: "1" } : {}),
+    ...(timeouts.call ? { ROX_V1_CALL_TIMEOUT_MS: String(timeouts.call) } : {}),
+  };
+  const child = spawn(bin, ["helper", "--db", file, "--log-dir", join(b.dir, "logs")], { env, stdio: ["ignore", "pipe", "inherit"] });
+  const base = new Promise((resolve, reject) => {
+    let out = "";
+
+    child.stdout.on("data", (d) => {
+      out += d;
+      const m = /helper on (127\.0\.0\.1:\d+)/.exec(out);
+
+      if (m) resolve(`http://${m[1]}`);
+    });
+    child.on("exit", (code) => reject(new Error(`rox-broker helper exited (${code})`)));
+  });
+  const plugins = createLinePlugins({ base, token, db, clock, trust: () => loadTrust(b.trustFile), timeouts });
+  const stopAll = plugins.stopAll;
+
+  plugins.stopAll = async () => {
+    await stopAll();
+    child.kill("SIGTERM");
+  };
 
   return { plugins, sessions: createSessions(plugins), db };
 }

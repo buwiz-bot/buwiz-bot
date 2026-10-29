@@ -38,9 +38,9 @@ test("BRG-01 a tool outside permissions.tools is permission_denied and nothing i
 });
 
 test("BRG-02 a tool the user disabled is refused on the app path (disabled)", async () => {
-  plugins.setTool(FX, "fx_echo", true);
+  await plugins.setTool(FX, "fx_echo", true);
   assert.equal(await codeOf(call(board, "fx_echo")), "disabled");
-  plugins.setTool(FX, "fx_echo", false);
+  await plugins.setTool(FX, "fx_echo", false);
   assert.equal((await call(board, "fx_echo")).ok, true);
 });
 
