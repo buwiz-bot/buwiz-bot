@@ -57,15 +57,16 @@ export const postJson = (path, obj) =>
 
 const up = () => request("GET", "/health").then((r) => r.status === 200, () => false);
 
-/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to a stop(). */
-export async function startServer(dataDir) {
+/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to a
+ *  stop(). `env` adds to (or overrides) the server's environment. */
+export async function startServer(dataDir, { env = {} } = {}) {
   if (await up()) throw new Error(`port ${PORT} is already serving; stop that first`);
 
   // its own process group, so stop() also ends the MCP children it spawned
   const [bin, args] = brokerCommand();
   const child = spawn(bin, args, {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" },
+    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "", ...env },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
