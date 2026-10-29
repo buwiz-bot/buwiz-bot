@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+// nsh stub for the broker tests (put this dir first on PATH, or point NSH
+// at this file). `nsh build <entry> --out <dir>` writes <dir>/bundle.js;
+// `nsh check <entry>` passes; anything else passes silently.
+//   NSH_STUB=pass (default) | fail | missing
+//     fail: every build and check prints NSH_STUB_TEXT (default "error
+//       TS2304: Cannot find name 'nope'.") to stderr and exits 1;
+//     missing: exits 127 with no output, as a missing binary reads to
+//       pipeline.mjs (an empty error).
+//   A module containing the text "nsh-stub:fail" fails too, whatever the
+//   mode: the entry itself, or the "./<name>" module a check entry imports.
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { basename, dirname, join } = require("node:path");
+
+const argv = process.argv.slice(2);
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "nsh", argv }) + "\n");
+const mode = process.env.NSH_STUB || "pass";
+
+if (mode === "missing") process.exit(127);
+const [cmd, entry] = argv;
+const read = (p) => {
+  try {
+    return readFileSync(p, "utf8");
+  } catch {
+    return "";
+  }
+};
+const src = entry ? read(entry) : "";
+const dep = src.match(/from\s+"\.\/(R\d+)"/)?.[1];
+const marked = src.includes("nsh-stub:fail") || (dep && read(join(dirname(entry), `${dep}.tsx`)).includes("nsh-stub:fail"));
+
+if ((cmd === "build" || cmd === "check") && (mode === "fail" || marked)) {
+  process.stderr.write(`${process.env.NSH_STUB_TEXT || "error TS2304: Cannot find name 'nope'."}\n`);
+  process.exit(1);
+}
+
+if (cmd === "build") {
+  const out = argv[argv.indexOf("--out") + 1];
+
+  if (out && argv.includes("--out")) {
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "bundle.js"), `// nsh stub bundle of ${basename(entry || "")}\nexport default null;\n`);
+  }
+}
+
+process.exit(0);

@@ -2,7 +2,7 @@
 // and data directory (MOCK by default, so no model calls; a test can turn
 // it off through startServer's env), and raw HTTP requests to it.
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,6 +25,41 @@ export function brokerCommand() {
 }
 
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
+
+// PATH stubs for the Mac tools the broker shells out to (nsh, pbcopy,
+// open, osascript, sips, qlmanage, secret): each file's header says what it
+// does and which env vars steer it.
+export const STUB_BIN = join(ROOT, "test", "fixtures", "bin");
+
+/** The env that puts the stubs first on the broker's PATH, NSH at the nsh
+ *  stub, and their call log at `log` (ROX_STUB_LOG). */
+export const stubEnv = (log) => ({ PATH: `${STUB_BIN}:${process.env.PATH}`, NSH: join(STUB_BIN, "nsh"), ROX_STUB_LOG: log });
+
+/** The stubs' calls so far: [{bin, argv, stdin?}], oldest first. */
+export const stubCalls = (log) =>
+  existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+
+/** The env for a broker that talks to a fake opencodex (fixtures/
+ *  fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
+ *  provider keys and model overrides of this shell removed, the stubs on
+ *  PATH. `extra` goes over it. */
+export const modelEnv = (fake, log, extra = {}) => ({
+  MOCK: undefined,
+  OPENCODEX_URL: fake.url,
+  ANTHROPIC_BASE_URL: undefined,
+  ANTHROPIC_API_KEY: undefined,
+  ANTHROPIC_AUTH_TOKEN: undefined,
+  GEN_PROVIDER: undefined,
+  GEN_BASE_URL: undefined,
+  GEN_MODEL: undefined,
+  GEN_MAX_TOKENS: undefined,
+  OPENROUTER_API_KEY: undefined,
+  OPENAI_API_KEY: undefined,
+  GEMINI_API_KEY: undefined,
+  LINEAR_API_KEY: undefined,
+  ...stubEnv(log),
+  ...extra,
+});
 
 /** One request: {status, headers, text, json}. `headers` as given (an
  *  Origin is sent as is); `body` a string or a Buffer. */
