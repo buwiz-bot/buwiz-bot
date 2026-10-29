@@ -2,7 +2,7 @@
 
 Build a first-party plugin for the Rox Mini App Protocol v1: an MCP server
 that ships apps into Rox. Read [docs/overview.md](docs/overview.md) first (one
-page), then follow these ten steps. Paths are from the repo root.
+page), then follow these ten steps. Paths are from rox's `server/` directory, where `npm run plugin-test` runs.
 
 1. **Copy the template** next to it, so its one import
    (`../lib/rox-plugin.mjs`) still resolves:
@@ -43,7 +43,7 @@ page), then follow these ten steps. Paths are from the repo root.
    fills each app's `fingerprint` from its source and signs the result:
 
    ```sh
-   node server/v1/sign-manifest.mjs sdk/mini-app/hello-world/manifest.json \
+   node src/v1/sign-manifest.mjs sdk/mini-app/hello-world/manifest.json \
      --key-file ~/.config/rox/test.key \
      --app hello=sdk/mini-app/hello-world/hello.tsx --out /tmp/hello.signed.json
    ```
@@ -57,7 +57,9 @@ page), then follow these ten steps. Paths are from the repo root.
    ```
 
    (`--sign-with ~/.config/rox/test.key` instead of `--manifest … --key-file …`
-   does step 7 for you on every run.)
+   does step 7 for you on every run. To check your plugin against a real
+   trust store, its key id and approved list included, set `ROX_TRUST_FILE`:
+   see [docs/testing.md](docs/testing.md#trust).)
 
 9. **Go through the security checklist** ([docs/security.md](docs/security.md)):
    the runner checks provisioning, certificates, key hygiene and ticket titles;
@@ -65,12 +67,12 @@ page), then follow these ten steps. Paths are from the repo root.
 
 10. **Release: the owner signs.** Hand the owner the plugin with its unsigned
     `manifest.json` and app sources. The owner adds the plugin id to
-    `approved_plugins` in `server/v1/trust.json` and signs with the Goldcoders
+    `approved_plugins` in `src/v1/trust.json` and signs with the Goldcoders
     key from the login Keychain (key id `gc-2026-01`, the manifest's
     `publisher.key_id`):
 
     ```sh
-    node server/v1/sign-manifest.mjs sdk/mini-app/hello-world/manifest.json \
+    node src/v1/sign-manifest.mjs sdk/mini-app/hello-world/manifest.json \
       --keychain gc-2026-01 --app hello=sdk/mini-app/hello-world/hello.tsx \
       --out sdk/mini-app/hello-world/manifest.json
     ```

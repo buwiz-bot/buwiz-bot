@@ -1,10 +1,11 @@
 // v1/trust.mjs — the trust store (spec 4.1): which publisher keys sign
 // manifests and which plugins may be installed.
 //
-// Rox ships server/v1/trust.json; ROX_TRUST_FILE points at another file
-// (every test run writes its own, with a key it generated). The file is
-// read on every use, so an edit takes effect at the next verification and
-// at the next look at the agent surface (approved-plugin text, 10.2).
+// Rox ships src/v1/trust.json (trust.json beside the bundled server);
+// ROX_TRUST_FILE points at another file (every test run writes its own,
+// with a key it generated). The file is read on every use, so an edit
+// takes effect at the next verification and at the next look at the agent
+// surface (approved-plugin text, 10.2).
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

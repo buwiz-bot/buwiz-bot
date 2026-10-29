@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // v1/sign-manifest.mjs — sign a plugin manifest with a publisher key (4.2).
 //
-//   node server/v1/sign-manifest.mjs manifest.json --keychain gc-2026-01 \
+//   node src/v1/sign-manifest.mjs manifest.json --keychain gc-2026-01 \
 //        --app forms=dist/forms.tsx --app calendar=dist/calendar.tsx [--out signed.json]
-//   node server/v1/sign-manifest.mjs manifest.json --key-file test.key ...
+//   node src/v1/sign-manifest.mjs manifest.json --key-file test.key ...
 //
 // Fills each named app's `fingerprint` from its source bytes (6.2), then
 // `signature` = ed25519 over the JCS bytes of the manifest without it. The
@@ -13,7 +13,7 @@
 // stdout.
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { isMain } from "./cli.mjs";
 import { isObject, parseIJson } from "./jcs.mjs";
 import { PUBLISHER_SERVICE, signManifest } from "./signing.mjs";
 
@@ -60,7 +60,7 @@ function cli(argv) {
   else process.stdout.write(text);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url))
+if (isMain(import.meta.url))
   try {
     cli(process.argv.slice(2));
   } catch (e) {
