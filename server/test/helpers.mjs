@@ -63,7 +63,7 @@ export function dbRows(dataDir, sql, ...args) {
   const db = new DatabaseSync(join(dataDir, "generated", "app.db"), { readOnly: true, timeout: 5000 });
 
   try {
-    return db.prepare(sql).all(...args);
+    return db.prepare(sql).all(...args).map((r) => ({ ...r }));
   } finally {
     db.close();
   }
