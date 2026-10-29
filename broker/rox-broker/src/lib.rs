@@ -9,6 +9,7 @@
 
 pub mod config;
 pub mod guard;
+pub mod helper;
 pub mod js;
 pub mod leaf;
 pub mod node;

@@ -488,6 +488,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "rox-v1",
  "rusqlite",
  "serde_json",
  "tokio",
