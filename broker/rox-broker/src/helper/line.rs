@@ -14,6 +14,8 @@
 //! | `POST call` | `{plugin, tool, args, meta?, timeout_ms?}` | `{ok, result}` (the raw tools/call result) |
 //! | `POST reserved` | `{plugin, name, args}` | `{ok, value}` (`null` when the plugin has no such tool) |
 //! | `POST resource` | `{plugin, uri}` | `{ok, result}` |
+//! | `POST sessions/open\|close\|call`, `tickets/title`, `resolve`, `apps/source` | the host API's body | its answer (sessions.rs), plus the plugin's `runtime` |
+//! | `POST sessions/stat` | `{open_id}` | `{ok, open: {active, queued} \| null}` |
 //! | `POST start`, `stop` | | `{ok}` |
 //! | `POST clock` | `{now?, fire?}` | `{ok, fired}`; a manual clock only (tests) |
 //!
@@ -33,20 +35,23 @@ use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 
 use super::plugins::Host;
+use super::sessions::Sessions;
 use crate::js;
 use crate::proxy::Body;
 use crate::v1::{get, tpl, V1Error};
 
 const BODY_MAX: usize = 2 * 1024 * 1024;
+const SESSION_ROUTES: &[&str] = &["sessions/open", "sessions/close", "sessions/call", "tickets/title", "resolve", "apps/source"];
 
 pub struct Line {
     host: Arc<Host>,
+    sessions: Arc<Sessions>,
     token: String,
 }
 
 impl Line {
     pub fn new(host: Arc<Host>, token: String) -> Self {
-        Self { host, token }
+        Self { sessions: Sessions::new(host.clone()), host, token }
     }
 
     pub fn host(&self) -> &Arc<Host> {
@@ -83,15 +88,23 @@ impl Line {
         if !body.is_object() {
             return answer(StatusCode::BAD_REQUEST, &V1Error::new("invalid_args", "the body must be a JSON object (at most 2 MiB)").body());
         }
-        match self.run(&path, &body).await {
-            Ok(v) => answer(StatusCode::OK, &v),
+        let (status, mut out) = match self.run(&path, &body).await {
+            Ok(v) => (StatusCode::OK, v),
             Err(e) => {
                 if e.code == "internal" {
                     eprintln!("  v1 line {path}: {}", js::slice_utf16(&e.message, 200));
                 }
-                answer(status_of(&e.code), &e.body())
+                (status_of(&e.code), e.body())
+            }
+        };
+        // a session route may have failed the plugin: its state comes along
+        if SESSION_ROUTES.contains(&path.as_str()) {
+            let plugin = get(&body, "plugin").or_else(|| get(&body, "envelope").and_then(|e| get(e, "plugin"))).and_then(Value::as_str);
+            if let Some(rt) = plugin.and_then(|p| self.host.snapshot_if(p)) {
+                out["runtime"] = rt;
             }
         }
+        answer(status, &out)
     }
 
     async fn run(&self, path: &str, b: &Value) -> Result<Value, V1Error> {
@@ -124,7 +137,15 @@ impl Line {
             }
             return Ok(r);
         }
+        let ss = &self.sessions;
         match path {
+            "sessions/open" => ss.open(b).await,
+            "sessions/close" => ss.close(b).await,
+            "sessions/call" => ss.call(b).await,
+            "sessions/stat" => Ok(json!({"ok": true, "open": ss.stat(&str_of("open_id"))})),
+            "tickets/title" => ss.ticket_title(b).await,
+            "resolve" => ss.resolve(b).await,
+            "apps/source" => ss.app_source(b).await,
             "call" => {
                 let timeout = get(b, "timeout_ms").and_then(Value::as_f64).filter(|t| *t > 0.0).map(|t| Duration::from_millis(t as u64));
                 let r = h.call_tool(&str_of("plugin"), &tpl(get(b, "tool")), get(b, "args").unwrap_or(&json!({})), get(b, "meta").filter(|m| js::truthy(m)), timeout).await?;
