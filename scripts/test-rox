@@ -1,0 +1,24 @@
+#!/bin/bash
+# A test Rox: its own data dir, its own TMPDIR (so its dev hook file is its
+# own), its own gpui-agent port and token, its window on AeroSpace
+# workspace 4. Prints the pid; drive it with scripts/test-agent.
+#   scripts/test-rox <rox binary> <instance dir> <agent port> [VAR=value ...]
+# e.g. ROX_BACKEND=http://127.0.0.1:8798 ROX_HOST_TOKEN_FILE=<data>/host-token
+set -e
+BIN="$1"; R="$2"; PORT="$3"; shift 3
+mkdir -p "$R/data" "$R/tmp"
+umask 077
+head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/token"
+echo "127.0.0.1:$PORT" > "$R/addr"
+env TMPDIR="$R/tmp/" ROX_DATA_DIR="$R/data" GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
+  GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/token")" "$@" \
+  nohup "$BIN" > "$R/rox.log" 2>&1 < /dev/null &
+P=$!
+echo "$P" > "$R/pid"
+for _ in $(seq 1 120); do
+  W=$(aerospace list-windows --all --format '%{window-id} %{app-pid}' 2>/dev/null | awk -v p="$P" '$2==p {print $1; exit}')
+  [ -n "$W" ] && break
+  sleep 0.25
+done
+[ -n "$W" ] && aerospace move-node-to-workspace 4 --window-id "$W"
+echo "pid $P window ${W:-none}"
