@@ -1559,16 +1559,24 @@ pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
     card_row(card, card_id, false)
 }
 
-/// A card's row and, when shown, the card. A `collapsed` one (aged, or
-/// past an answer's one main and two small ones) waits for Show.
+/// A card of an answer or a tool result. An inline app is one card (its
+/// header shows or hides the app under it: [`inline_card`]); a full app is
+/// a row with Open. A `collapsed` one (aged, or past an answer's one main
+/// and two small ones) shows its header only until it is opened.
 fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
     let entry = store().v1.entry(&card.plugin);
     let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
     let auto = !collapsed
         && card.placement == Placement::Inline
         && consent::ask(consent::inline_card(entry.as_ref().is_some_and(|p| p.first_party))) == consent::Ask::Nothing;
-    let (c1, c2, id1, id2, id3, id4) = (card.clone(), card.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
-    let shown = move || card_shown(&id1, auto);
+    if card.placement == Placement::Inline {
+        return dynamic(move || {
+            let live = store().v1.live.with(|l| l.contains(&card_id));
+            inline_card(card.clone(), card_id.clone(), live, auto, plugin_title.clone()).into_element()
+        })
+        .into_element();
+    }
+    let c1 = card.clone();
     view()
         .gap_2()
         .child(
@@ -1593,19 +1601,8 @@ fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
                                 .text_color(tc("#f5f5f5ad")),
                         ),
                 )
-                .child(toggle_button(button_label(&card), id3, auto, move || match c1.placement {
-                    Placement::Full => store().open_v1(c1.key(), &c1.title, Opener::ToolResult),
-                    Placement::Inline => toggle_card(&id2, auto),
-                })),
+                .child(toggle_button(button_label(&card), card_id, auto, move || store().open_v1(c1.key(), &c1.title, Opener::ToolResult))),
         )
-        .child(when(shown, move || {
-            let (c, id) = (c2.clone(), id4.clone());
-            dynamic(move || {
-                let live = store().v1.live.with(|l| l.contains(&id));
-                inline_card(c.clone(), id.clone(), live).into_element()
-            })
-            .into_element()
-        }))
         .into_element()
 }
 
@@ -1748,10 +1745,14 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
         }))
 }
 
-/// An inline app (6.5): a title bar with Refresh and Open (full screen,
-/// the maximize icon) over the app at its declared size, clamped to the
-/// range and the column. Its height then follows the app's `rox.fit`.
-pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
+/// An inline app (6.5, 9.6) is one card. Its header carries the app's
+/// tile and title, Refresh, a chevron that shows or hides the app, and
+/// maximize (full screen); the app sits under it at its declared size,
+/// clamped to the range and the column, then follows its `rox.fit`. A card
+/// that does not mount at once (`auto` false: a third party's, 9.7, or an
+/// aged one) shows its header only, with the plugin's name, until the
+/// chevron opens it; opening it is the consent.
+pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: String) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
     let key = if live { card.live_key().to_key() } else { card.key().to_key() };
     let as_of = card.as_of().filter(|_| !live);
@@ -1761,6 +1762,9 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
     let h = move || store().v1.fit.with(|f| f.get(&key_h).copied()).unwrap_or(declared);
     let c = card.clone();
     let key_r = key.clone();
+    let (id_shown, id_toggle) = (id.clone(), id.clone());
+    let shown = move || card_shown(&id_shown, auto);
+    let open = shown.clone();
     view()
         .w(px(w))
         .rounded(px(12.0))
@@ -1772,10 +1776,13 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .h(px(36.0))
+                .h(px(40.0))
                 .px(px(10.0))
                 .bg(tc("#1f1f1f"))
+                .child(crate::appdetails::named_tile("", &card.title, 22.0))
                 .child(text(card.title.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
+                // until it mounts, whose app this is (9.7)
+                .when(!auto, |v| v.child(text(plugin).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
                 .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
                 // a snapshot goes live; a live card reads again. An action
                 // card (no `as_of`: its tool changed something) has none.
@@ -1791,18 +1798,26 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                         }
                     }))
                 })
+                .child(dynamic(move || {
+                    let id = id_toggle.clone();
+                    if shown() {
+                        icon_button("chevronDown", "Collapse", move || toggle_card(&id, auto)).into_element()
+                    } else {
+                        icon_button("chevronRight", "Expand", move || toggle_card(&id, auto)).into_element()
+                    }
+                }))
                 .child(icon_button("maximize", "Open full screen", move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
-        .child(
+        .child(when(open, move || {
+            let h = h.clone();
+            let h2 = h.clone();
             view()
-                .h({
-                    let h = h.clone();
-                    move || px(h())
-                })
+                .h(move || px(h()))
                 .child(banners(&key, false))
-                .child(crate::mini::mini_app_inline(&key, w, h))
-                .child(error_overlay(&key)),
-        )
+                .child(crate::mini::mini_app_inline(&key, w, h2))
+                .child(error_overlay(&key))
+                .into_element()
+        }))
 }
 
 /// The banners over an open (`key`): its notice ("This item is no longer
