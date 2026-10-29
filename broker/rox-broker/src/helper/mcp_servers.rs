@@ -78,9 +78,26 @@ struct Live {
     client: Client,
     tools: Vec<Value>,
     /// A remote server that answers without a token but publishes OAuth
-    /// metadata (Node's `rec.needsAuth`).
+    /// metadata, or whose call failed as signed out (Node's `rec.needsAuth`).
     needs_auth: Option<String>,
+    /// Google's preview gate (Node's `rec.unavailable`).
+    unavailable: Option<String>,
 }
+
+/// mcp.mjs's AUTH_ERR: a failure that reads as a sign-in problem.
+pub fn auth_error(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let b = t.as_bytes();
+    let word = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+    let has_401 = t.match_indices("401").any(|(i, _)| (i == 0 || !word(i - 1)) && !word(i + 3));
+    has_401
+        || ["unauthorized", "unauthorised", "unauthenticated", "invalid_token", "invalid token", "invalid_grant", "login required", "reauthenticate", "re-authenticate", "sign in again"]
+            .iter()
+            .any(|w| t.contains(w))
+}
+
+const SIGNED_OUT: &str = "Sign-in expired or was rejected";
+const PREVIEW: &str = "Google only serves this to projects in the Google Workspace Developer Preview Program — enroll at https://developers.google.com/workspace/preview, then Reconnect.";
 
 pub struct McpHost {
     db: Mutex<Connection>,
@@ -90,6 +107,11 @@ pub struct McpHost {
     /// The front door's port: the OAuth redirect's.
     port: u16,
     me: Weak<McpHost>,
+    /// A connection that failed, kept until the row changes (Node's
+    /// cached attempt): its error.
+    failed: Mutex<HashMap<String, RpcError>>,
+    /// Each server's status as it changes (the line's `mcp` events).
+    events: tokio::sync::broadcast::Sender<Value>,
 }
 
 /// An `mcp_servers` row, as far as a client needs it.
@@ -215,6 +237,8 @@ impl McpHost {
             oauth: OAuthState::default(),
             port,
             me: me.clone(),
+            failed: Mutex::new(HashMap::new()),
+            events: tokio::sync::broadcast::channel(256).0,
         }))
     }
 
@@ -256,7 +280,24 @@ impl McpHost {
             }
         }
         self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        if let Some(e) = self.failed.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            return Err(e.clone());
+        }
         let row = self.row(id).map_err(RpcError::local)?;
+        let made = self.connect(id, &row).await;
+        match &made {
+            Ok(_) => {
+                self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+            }
+            Err(e) => {
+                self.failed.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), e.clone());
+            }
+        }
+        self.changed(id);
+        made
+    }
+
+    async fn connect(&self, id: &str, row: &Row) -> Result<(Client, Vec<Value>, Option<String>), RpcError> {
         let (client, needs_auth) = if row.url.is_empty() {
             let home = std::env::var("HOME").unwrap_or_default();
             let mut env = vec![("PATH".to_owned(), tool_path(&std::env::var("PATH").unwrap_or_default(), &home))];
@@ -265,20 +306,20 @@ impl McpHost {
             let conn = Conn::connect(&spec, Arc::new(LogHooks { id: id.to_owned() })).await.map_err(|e| RpcError { message: crate::js::slice_utf16(&e.message, 300), ..e })?;
             (Client::Local(conn), false)
         } else {
-            self.connect_remote(id, &row).await?
+            self.connect_remote(id, row).await?
         };
         let tools = match client.request("tools/list", json!({}), mcp::DEFAULT_TIMEOUT).await {
             Ok(r) => r.get("tools").and_then(Value::as_array).cloned().unwrap_or_default(),
             Err(e) => {
                 client.close().await;
-                return Err(self.worded(&row, e));
+                return Err(self.worded(row, e));
             }
         };
         let needs_auth = match needs_auth {
             true => self.oauth.wants_oauth(&row.url).await.then(|| "Sign-in required".to_owned()),
             false => None,
         };
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), Live { client: client.clone(), tools: tools.clone(), needs_auth: needs_auth.clone() });
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), Live { client: client.clone(), tools: tools.clone(), needs_auth: needs_auth.clone(), unavailable: None });
         Ok((client, tools, needs_auth))
     }
 
@@ -306,18 +347,92 @@ impl McpHost {
         RpcError { message, ..e }
     }
 
+    /// mcp.mjs's `statusOf`: `{status, tools, err?}`, status idle,
+    /// connected, needs-auth or error.
+    pub fn status(&self, id: &str) -> Value {
+        if let Some(l) = self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            let n = l.tools.len();
+            return match (&l.needs_auth, &l.unavailable) {
+                (Some(why), _) => json!({"status": "needs-auth", "tools": n, "err": why}),
+                (None, Some(why)) => json!({"status": "error", "tools": n, "err": why}),
+                _ => json!({"status": "connected", "tools": n}),
+            };
+        }
+        match self.failed.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            Some(e) => json!({"status": "error", "tools": 0, "err": e.message}),
+            None => json!({"status": "idle", "tools": 0}),
+        }
+    }
+
+    /// Every server's status this host knows, for a new listener.
+    pub fn statuses(&self) -> Vec<Value> {
+        let mut ids: Vec<String> = self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        ids.extend(self.failed.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned());
+        ids.sort();
+        ids.dedup();
+        ids.iter().map(|id| self.status_event(id)).collect()
+    }
+
+    fn status_event(&self, id: &str) -> Value {
+        let mut v = self.status(id);
+        v["id"] = json!(id);
+        v
+    }
+
+    fn changed(&self, id: &str) {
+        let _ = self.events.send(self.status_event(id));
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        self.events.subscribe()
+    }
+
+    /// A remote server's call that reads as signed out, or as Google's
+    /// preview gate, marks it (callTool's checks, now for every caller).
+    fn flag(&self, id: &str, client: &Client, answer: &Result<Value, RpcError>) {
+        if !matches!(client, Client::Remote(_)) {
+            return;
+        }
+        let text = match answer {
+            Err(e) => e.message.clone(),
+            Ok(r) if r.get("isError") == Some(&Value::Bool(true)) => r
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|parts| parts.iter().map(|c| if c.get("type") == Some(&json!("text")) { crate::js::string_of(c.get("text").unwrap_or(&Value::Null)) } else { crate::js::stringify(c) }).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_default(),
+            Ok(_) => return,
+        };
+        let head = crate::js::slice_utf16(&text, 2000);
+        let preview = answer.is_ok() && head.contains("Developer Preview Program");
+        let signed_out = auth_error(if answer.is_ok() { &head } else { &text });
+        if !signed_out && !preview {
+            return;
+        }
+        {
+            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(l) = live.get_mut(id).filter(|l| l.client.same(client)) else { return };
+            if signed_out {
+                l.needs_auth = Some(SIGNED_OUT.to_owned());
+            }
+            if preview {
+                l.unavailable = Some(PREVIEW.to_owned());
+            }
+        }
+        self.changed(id);
+    }
+
     /// mcp.mjs's `ensureClient`: `{ok, tools, capabilities, needsAuth?}` or
     /// `{ok: false, err, code}`.
     pub async fn ensure(&self, id: &str) -> Value {
         match self.client(id).await {
             Ok((client, tools, needs_auth)) => {
-                let mut r = json!({"ok": true, "tools": tools, "capabilities": client.capabilities()});
+                let mut r = json!({"ok": true, "tools": tools, "capabilities": client.capabilities(), "status": self.status(id)});
                 if let Some(n) = needs_auth {
                     r["needsAuth"] = json!(n);
                 }
                 r
             }
-            Err(e) => json!({"ok": false, "err": e.message, "code": e.code}),
+            Err(e) => json!({"ok": false, "err": e.message, "code": e.code, "status": self.status(id)}),
         }
     }
 
@@ -325,16 +440,21 @@ impl McpHost {
     /// resources/read): the raw result, or the error as the SDK words it.
     pub async fn request(&self, id: &str, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
         let (client, _, _) = self.client(id).await?;
-        match client.request(method, params.clone(), timeout).await {
+        let (client, answer) = match client.request(method, params.clone(), timeout).await {
             // its process or stream died before this was sent: once more,
             // on a new one
             Err(e) if e.unsent => {
                 self.drop_dead(id, &client);
                 let (client, _, _) = self.client(id).await?;
-                client.request(method, params, timeout).await
+                let answer = client.request(method, params, timeout).await;
+                (client, answer)
             }
-            other => other,
+            other => (client, other),
+        };
+        if method == "tools/call" {
+            self.flag(id, &client, &answer);
         }
+        answer
     }
 
     /// Forgets `client` as `id`'s if it still is.
@@ -349,8 +469,12 @@ impl McpHost {
     /// in); the next use connects again.
     pub async fn invalidate(&self, id: &str) {
         let gone = self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        if let Some(l) = gone {
+        let failed = self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id).is_some();
+        if let Some(l) = &gone {
             l.client.close().await;
+        }
+        if gone.is_some() || failed {
+            self.changed(id);
         }
     }
 
@@ -392,6 +516,17 @@ impl McpHost {
 #[cfg(test)]
 mod tests {
     use super::tool_path;
+
+    #[test]
+    fn auth_errors_read_as_mcp_mjs_reads_them() {
+        use super::auth_error;
+        for t in ["HTTP 401", "401 Unauthorized", "invalid_grant", "Invalid token", "please re-authenticate", "Login required", "UNAUTHENTICATED"] {
+            assert!(auth_error(t), "{t}");
+        }
+        for t in ["4010 items", "a1401", "token refreshed", "forbidden"] {
+            assert!(!auth_error(t), "{t}");
+        }
+    }
 
     #[test]
     fn tool_path_adds_the_usual_tool_folders_once() {

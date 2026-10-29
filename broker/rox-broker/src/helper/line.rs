@@ -186,12 +186,17 @@ impl Line {
     }
 
     /// A v0 MCP server's client (mcp_servers.rs): an answer, never a
-    /// refusal; a failed request is `{ok: false, error, code}`.
+    /// refusal; a failed request is `{ok: false, error, code}`. A call's
+    /// answer carries the server's status after it.
     async fn mcp_op(&self, op: &str, b: &Value) -> Value {
         let id = get(b, "id").and_then(Value::as_str).unwrap_or_default();
-        let done = |r: Result<Value, super::mcp::RpcError>| match r {
-            Ok(result) => json!({"ok": true, "result": result}),
-            Err(e) => json!({"ok": false, "error": e.message, "code": e.code}),
+        let done = |r: Result<Value, super::mcp::RpcError>| {
+            let mut v = match r {
+                Ok(result) => json!({"ok": true, "result": result}),
+                Err(e) => json!({"ok": false, "error": e.message, "code": e.code}),
+            };
+            v["status"] = self.mcp.status(id);
+            v
         };
         match op {
             "ensure" => self.mcp.ensure(id).await,
@@ -215,17 +220,21 @@ impl Line {
         }
     }
 
-    /// Every plugin's snapshot, then each change, as SSE; a ping every 25 s.
+    /// Every plugin's snapshot, then each change, as SSE; after `ready`,
+    /// each MCP server's status (`mcp`) and its changes; a ping every 25 s.
     fn events(&self) -> Response<Body> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
         let host = self.host.clone();
         let mut sub = host.events();
+        let mcp = self.mcp.clone();
+        let mut msub = mcp.subscribe();
         tokio::spawn(async move {
             let event = |name: &str, v: &Value| Bytes::from(format!("event: {name}\ndata: {}\n\n", js::stringify(v)));
             let all = |host: &Host| host.snapshots().iter().map(|v| event("snapshot", v)).collect::<Vec<_>>();
             let mut first = all(&host);
             first.insert(0, Bytes::from_static(b": rox line events\n\n"));
             first.push(event("ready", &json!({})));
+            first.extend(mcp.statuses().iter().map(|v| event("mcp", v)));
             for e in first {
                 if tx.send(e).await.is_err() {
                     return;
@@ -239,6 +248,11 @@ impl Line {
                         Ok(v) => vec![event("plugin", &v)],
                         // fell behind: everything again, as changes
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => host.snapshots().iter().map(|v| event("plugin", v)).collect(),
+                        Err(_) => return,
+                    },
+                    got = msub.recv() => match got {
+                        Ok(v) => vec![event("mcp", &v)],
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => mcp.statuses().iter().map(|v| event("mcp", v)).collect(),
                         Err(_) => return,
                     },
                     _ = beat.tick() => vec![Bytes::from_static(b": ping\n\n")],

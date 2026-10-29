@@ -10,6 +10,8 @@ const attempts = new Map(); // id -> Promise<{client,tools,err}>
 const recs = new Map(); // id -> settled {client,tools,err}
 
 export function statusOf(id) {
+  // rox-broker's status, the one its /mcp routes show (plan 4.3)
+  if (mcpOnLine) return lineStatus(id);
   const r = recs.get(id);
   if (!r) return { status: "idle", tools: 0 };
   // A server that lists tools without auth but whose resource metadata
@@ -53,7 +55,14 @@ import os from "node:os";
 import { randomBytes } from "node:crypto";
 import { PUBLIC_PORT } from "./config.mjs";
 import { isName } from "./grammar.mjs";
-import { lineAuthBegin, lineAuthFinish, lineConnect, mcpOnLine } from "./mcp-line.mjs";
+import { lineAuthBegin, lineAuthFinish, lineConnect, lineStatus, mcpOnLine, onLineDrop } from "./mcp-line.mjs";
+
+// rox-broker dropped a server's client (switched off, deleted, signed in
+// there): forget ours, so the next use connects again
+onLineDrop((id) => {
+  attempts.delete(id);
+  recs.delete(id);
+});
 
 let authHooks = null; // {loadAuth(id), saveAuth(id, obj), done(id)} — app-server wires the db
 export const setAuthHooks = (h) => (authHooks = h);
@@ -411,7 +420,7 @@ export async function callTool(row, toolName, input) {
       content: `mcp server ${row.id} is not connected (${rec.err || "failed to start"})`,
       is_error: true,
     };
-  if (rec.needsAuth)
+  if (mcpOnLine ? statusOf(row.id).status === "needs-auth" : rec.needsAuth)
     return { content: `${row.id} needs sign-in — ask the user to open Connect Apps, find this app and press Authenticate`, is_error: true };
   let result;
   try {
