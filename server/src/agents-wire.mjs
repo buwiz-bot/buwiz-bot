@@ -25,10 +25,26 @@ async function runRequest(bot, msg, t) {
   // what the turn writes into it is the turn's own, never shown
   const history = { id: t.id, uid: t.uid, title: t.title, turns: historyFor(bot, t, msg) };
   const prompt = peerPrompt(msg);
-
-  return actingBot.run(bot, () =>
+  const answer = await actingBot.run(bot, () =>
     modelCtx.run(choiceFor(bot.threadId), () => (!MOCK && PROVIDER === "anthropic" ? agentTurn(job, prompt, history) : chatReply(prompt, history, job))),
   );
+
+  cardsToChat(bot, msg, t, job);
+
+  return answer;
+}
+
+// A card the hidden turn made (an approval, a consent, an app) goes to the
+// agent's own chat, where the user can press it; the read-only
+// conversation says where it waits (spec 7, A2A-08).
+export function cardsToChat(bot, msg, t, job) {
+  const links = job.linkTurn?.links || [];
+  const chat = findThread(bot.threadId);
+
+  if (!links.length || !chat) return;
+  chat.turns.push({ id: uuidv7(), role: "ai", text: `For ${msg.from.name}'s request · ${msg.subject}`, label: bot.name, links, agent: { conversation: msg.conversation, message: msg.id, from: msg.from, thread: t.id, thread_uid: t.uid } });
+  t.turns.push({ id: uuidv7(), role: "notice", text: `Waiting for your OK in ${bot.name}'s chat`, notice: { kind: "agents_waiting", bot: bot.id, thread: chat.id, thread_uid: chat.uid, at: Date.now() } });
+  writeIndex();
 }
 
 async function runReply(bot, msg, t) {
