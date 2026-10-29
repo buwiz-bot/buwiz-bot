@@ -38,6 +38,16 @@ export default async function handle(req, res) {
         const target = threadId == null ? null : findThread(String(threadId));
 
         if (threadId != null && !target) throw new Error(`unknown thread ${String(threadId).slice(0, 40)}`);
+
+        // an agents' thread is the agents' alone: the user reads it, and
+        // messages an agent in its own chat (agents.mjs)
+        if ((target || findThread(store.active))?.agents) {
+          res.statusCode = 409;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ ok: false, code: "read_only", error: "an agents' conversation is read-only: message an agent in its own chat" }));
+
+          return;
+        }
         const job = {
           id: allocJobId(),
           thread: target ? target.id : store.active,
@@ -95,6 +105,8 @@ export default async function handle(req, res) {
               : null,
             // a v1 routine's own thread — not a sidebar row (v1/routine-threads.mjs)
             ...(t.routine ? { routine: t.routine } : {}),
+            // an agents' conversation — read-only, not a sidebar row (agents.mjs)
+            ...(t.agents ? { agents: t.agents } : {}),
           };
         }),
         sections: store.sections || [],
@@ -123,6 +135,11 @@ export default async function handle(req, res) {
             integrations: integrationsOf(b),
             // Bot Details' "Last updated": its last edit, else when it was made
             updated_at: b.updated_at || 0,
+            // made by another agent (agents.mjs): its parent, its purpose, a
+            // temporary helper's task (not a sidebar row), whom it hears from
+            ...(b.made_by ? { made_by: b.made_by, purpose: b.purpose || "" } : {}),
+            ...(b.helper ? { helper: b.helper } : {}),
+            ...(b.accepts ? { accepts: b.accepts } : {}),
             preview: String(last?.text || last?.caption || "").replace(/[#*`>_]/g, "").replace(/\s+/g, " ").trim().slice(0, 160),
           };
         }),

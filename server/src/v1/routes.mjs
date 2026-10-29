@@ -14,7 +14,9 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "../config.mjs";
 import { plugins, routines, sessions } from "./broker.mjs";
-import { errorBody } from "./errors.mjs";
+import { V1Error, errorBody } from "./errors.mjs";
+import { AgentError } from "../agents.mjs";
+import { agents } from "../agents-wire.mjs";
 import { isObject } from "./jcs.mjs";
 
 export const HOST_TOKEN_FILE = join(DATA_DIR, "host-token");
@@ -105,7 +107,25 @@ const POSTS = {
   "/v1/host/routines/update": (b) => routines.update(b),
   "/v1/host/routines/delete": (b) => routines.remove(b),
   "/v1/host/routines/hook": (b) => routines.hook(b),
+  // agents' conversations (agents.mjs): the user archives one, resumes a
+  // paused one, and says whom an agent takes messages from
+  "/v1/host/agents/archive": agentsCall((b) => agents.archive(b.conversation, b.archived !== false)),
+  "/v1/host/agents/resume": agentsCall((b) => agents.resume(b.conversation)),
+  "/v1/host/agents/accepts": agentsCall((b) => agents.setAccepts(b.bot, b.accepts)),
 };
+
+/** An agents call as a host route: {ok: true}, or its refusal as a V1Error. */
+function agentsCall(run) {
+  return (b) => {
+    try {
+      run(b);
+
+      return { ok: true };
+    } catch (e) {
+      throw e instanceof AgentError ? new V1Error(e.code, e.message) : e;
+    }
+  };
+}
 
 const ACTIONS = {
   enable: (id) => plugins.enable(id),
