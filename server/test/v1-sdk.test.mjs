@@ -6,7 +6,7 @@
 // developer runs it; it opens no port and uses only temp directories.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -210,4 +210,36 @@ test("SDK-09 the v1 command-line tools run when started through a symlinked fold
     assert.notEqual(code, 0, `${tool} ran nothing through ${link}`);
     assert.match(stderr, /usage/, tool);
   }
+});
+
+test("SDK-10 BRG-03 paces an app's calls to the broker's 20 a second: 25 tools all answer", async () => {
+  const dir = tempDir("sdk-many");
+  const tools = Array.from({ length: 25 }, (_, i) => `many_t${i}`);
+
+  copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "many.tsx"));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+    protocol: "1.0.0", id: "dev.goldcoders.many", short: "many", version: "0.1.0", title: "Many",
+    publisher: { id: "dev.goldcoders", key_id: "test-sdk-10", name: "Goldcoders" },
+    apps: [{
+      id: "many", title: "Many", description: "", entry: "rox-app://many", mime: "text/x-nsh-tsx", sdk: "1",
+      fingerprint: `sha256:${"0".repeat(64)}`, placement: ["full"], permissions: { tools },
+    }],
+  }));
+  writeFileSync(join(dir, "server.mjs"), `
+    import { ok, startPlugin, ticketStore } from ${JSON.stringify(join(SDK, "lib", "rox-plugin.mjs"))};
+    await startPlugin({
+      name: "many", manifestFile: process.env.ROX_PLUGIN_MANIFEST || ${JSON.stringify(join(dir, "manifest.json"))},
+      apps: { many: ${JSON.stringify(join(dir, "many.tsx"))} }, tickets: ticketStore(), ticketTitle: (n) => n,
+      tools: ${JSON.stringify(tools)}.map((name) => ({ name, description: name, inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, run: () => ok({ name }) })),
+    });
+  `);
+  const { code, res, stderr } = await runner(["--command", process.execPath, "--args", join(dir, "server.mjs"), "--sign-with", KEY]);
+
+  assert.ok(res, stderr);
+  const calls = res.rows.filter((r) => r.id === "BRG-03" && / reaches the plugin/.test(r.what));
+
+  assert.equal(calls.length, 25);
+  assert.deepEqual(calls.filter((r) => r.status !== "pass").map((r) => `${r.what}: ${r.note}`), []);
+  assert.deepEqual(failed(res), []);
+  assert.equal(code, 0);
 });

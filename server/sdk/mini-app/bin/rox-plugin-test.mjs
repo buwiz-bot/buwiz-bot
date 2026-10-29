@@ -41,7 +41,7 @@ import { isObject, isString, parseIJson, signedBytes } from "../../../src/v1/jcs
 import { keystore } from "../../../src/v1/keystore.mjs";
 import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../src/v1/manifest.mjs";
 import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
-import { checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
+import { MAX_PER_SECOND, checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
 import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
 import { TRUST_FILE, isApproved, loadTrust } from "../../../src/v1/trust.mjs";
 import { newTicket } from "../lib/rox-plugin.mjs";
@@ -492,6 +492,23 @@ export async function runPluginTest(o) {
   return { plugin: m ? { id: m.id, short: m.short, version: m.version } : null, trust: trustReport, rows, ok: rows.every((r) => r.status !== "fail") };
 }
 
+/** A gate letting at most `max` calls through in any `windowMs`: await it
+ *  before each call. */
+export function pacer(max, windowMs) {
+  const sent = [];
+
+  return async () => {
+    for (;;) {
+      while (sent.length && Date.now() - sent[0] >= windowMs) sent.shift();
+
+      if (sent.length < max) break;
+      await new Promise((r) => setTimeout(r, windowMs - (Date.now() - sent[0]) + 5));
+    }
+
+    sent.push(Date.now());
+  };
+}
+
 /** Which trust the run used, for the report: {store (ROX_TRUST_FILE or
  *  null for the run's own), key_id, key_from, approved}. */
 function trustOf(trustFile, store, keyFrom, manifestFile) {
@@ -610,9 +627,12 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
     if (!open) continue;
     let first = null;
+    const pace = pacer(MAX_PER_SECOND, 1000);
 
     for (const tool of a.permissions.tools)
       await run("BRG-03", `${a.id}: a signed call of ${tool} reaches the plugin and is answered`, async () => {
+        // as an app must: the broker takes 20 calls a second per open (8.2)
+        await pace();
         const call = envelope(open, tool);
 
         first ||= call;
