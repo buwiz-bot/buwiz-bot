@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // v1/publisher-keygen.mjs — make a publisher signing key (spec 4.1, 4.2).
 //
-//   node server/v1/publisher-keygen.mjs gc-2026-01 [--publisher dev.goldcoders]
-//   node server/v1/publisher-keygen.mjs gc-2026-01 --public   # the key the Keychain holds
+//   node src/v1/publisher-keygen.mjs gc-2026-01 [--publisher dev.goldcoders]
+//   node src/v1/publisher-keygen.mjs gc-2026-01 --public   # the key the Keychain holds
 //
 // Generates an ed25519 key, stores the seed in the macOS login Keychain
 // (service dev.goldcoders.publisher, account = key id) through
@@ -10,8 +10,8 @@
 // and prints the public key with the trust.json entry to paste. Refuses
 // when the Keychain already holds that key id: rotating a key is a new id.
 import { execFileSync, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { isV1 } from "../grammar.mjs";
+import { isMain } from "./cli.mjs";
 import { generate, pubOf } from "./ed.mjs";
 import { PUBLISHER_SERVICE } from "./signing.mjs";
 
@@ -61,7 +61,7 @@ function printEntry(keyId, publisher, pub) {
   console.log(JSON.stringify({ [keyId]: { publisher, alg: "ed25519", public_key: pub } }, null, 2));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url))
+if (isMain(import.meta.url))
   try {
     cli(process.argv.slice(2));
   } catch (e) {

@@ -6,10 +6,11 @@
 // developer runs it; it opens no port and uses only temp directories.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { generate } from "../src/v1/ed.mjs";
+import { generate, pubOf } from "../src/v1/ed.mjs";
 import { LIMITS } from "../src/v1/manifest.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FIXTURE } from "./v1-helpers.mjs";
@@ -29,10 +30,16 @@ function keyFile() {
 
 const KEY = keyFile();
 
-/** Runs the runner with `args` and --json: {code, res, stderr}. */
-function runner(args) {
+/** Runs the runner with `args` and --json: {code, res, stderr}. `env`
+ *  adds to the environment (ROX_TRUST_FILE); without it the runner sees
+ *  none of the test run's own. */
+function runner(args, env = {}) {
+  const { ROX_TRUST_FILE, ...rest } = process.env;
+
+  void ROX_TRUST_FILE;
+
   return new Promise((resolve) => {
-    execFile(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER, ...args, "--json"], { cwd: ROOT, timeout: 120_000 }, (e, stdout, stderr) => {
+    execFile(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER, ...args, "--json"], { cwd: ROOT, timeout: 120_000, env: { ...rest, ...env } }, (e, stdout, stderr) => {
       let res = null;
 
       try {
@@ -153,4 +160,54 @@ test("SDK-07 every limit in docs/manifest.md equals src/v1/manifest.mjs LIMITS, 
   assert.deepEqual(rows.map(([k]) => k).sort(), Object.keys(LIMITS).sort(), "the docs table lists each LIMITS key once");
 
   for (const [k, v] of rows) assert.deepEqual(v, LIMITS[k], `LIMITS.${k}`);
+});
+
+test("SDK-08 with ROX_TRUST_FILE the runner checks that store as a broker does: key id and approved list", async () => {
+  const dir = tempDir("sdk-trust");
+  const pub = pubOf(readFileSync(KEY, "utf8").trim());
+  const store = (approved) => {
+    const file = join(dir, `trust-${approved.length}.json`);
+
+    writeFileSync(file, JSON.stringify({ v: 1, publishers: { "test-sdk-08": { publisher: "dev.goldcoders", alg: "ed25519", public_key: pub } }, approved_plugins: approved }));
+
+    return file;
+  };
+  const args = ["--command", process.execPath, "--args", TEMPLATE, "--sign-with", KEY, "--key-id", "test-sdk-08"];
+  // without it: the run's own trust, which approves the plugin for the run
+  const own = await runner(args);
+
+  assert.equal(own.code, 0);
+  assert.deepEqual(own.res.trust, { store: null, key_id: "test-sdk-08", key_from: "the --sign-with key", approved: true });
+  // a store that trusts the key but does not approve the plugin: refused as a broker refuses it
+  const unapproved = await runner(args, { ROX_TRUST_FILE: store([]) });
+
+  assert.equal(unapproved.code, 1);
+  assert.match(unapproved.res.rows.find((r) => r.id === "MAN-01" && r.status === "fail").note, /not on the approved list for key test-sdk-08/);
+  assert.equal(unapproved.res.trust.approved, false);
+  // approved under that key id: it passes, and the report names the store
+  const file = store([{ id: "dev.goldcoders.hello", publisher_key_id: "test-sdk-08" }]);
+  const approved = await runner(args, { ROX_TRUST_FILE: file });
+
+  assert.deepEqual(failed(approved.res), []);
+  assert.deepEqual(approved.res.trust, { store: file, key_id: "test-sdk-08", key_from: "ROX_TRUST_FILE", approved: true });
+  // another key id than the store knows: not a trusted publisher key
+  const wrongKey = await runner(["--command", process.execPath, "--args", TEMPLATE, "--sign-with", KEY, "--key-id", "test-other"], { ROX_TRUST_FILE: file });
+
+  assert.match(wrongKey.res.rows.find((r) => r.id === "MAN-01").note, /test-other is not a trusted publisher key/);
+  assert.equal(wrongKey.res.trust.key_from, null);
+});
+
+test("SDK-09 the v1 command-line tools run when started through a symlinked folder", async () => {
+  // on macOS anything under $TMPDIR is such a path (/var -> /private/var)
+  const link = join(mkdtempSync(join(tmpdir(), "sdk-link-")), "server");
+
+  symlinkSync(ROOT, link);
+
+  for (const tool of ["src/v1/sign-manifest.mjs", "src/v1/publisher-keygen.mjs", "sdk/mini-app/bin/rox-plugin-test.mjs"]) {
+    const { code, stderr } = await new Promise((resolve) =>
+      execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(link, tool)], (e, stdout, err) => resolve({ code: e ? e.code : 0, stderr: err })));
+
+    assert.notEqual(code, 0, `${tool} ran nothing through ${link}`);
+    assert.match(stderr, /usage/, tool);
+  }
 });
