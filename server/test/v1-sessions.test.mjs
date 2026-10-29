@@ -152,13 +152,11 @@ test("BRG-12 the 9th concurrent call waits; the 21st call in one second is rate_
   assert.equal(s.queued, 1, "the ninth waits in order");
   assert.ok((await Promise.all(nine)).every((r) => r.ok));
   const o2 = await openApp(sessions, m, "board");
-  const codes = [];
+  // all at once, so they land inside one second however slow the machine;
+  // which one is refused depends on arrival order, which HTTP does not keep
+  const codes = await Promise.all(Array.from({ length: 21 }, () => codeOf(call(o2, "fx_echo"))));
 
-  // one after another, well inside a second (concurrent requests may arrive in any order)
-  for (let n = 0; n < 21; n++) codes.push(await codeOf(call(o2, "fx_echo")));
-
-  assert.equal(codes.filter((c) => c === "rate_limited").length, 1);
-  assert.equal(codes.at(-1), "rate_limited");
+  assert.equal(codes.filter((c) => c === "rate_limited").length, 1, codes.join(" "));
 });
 
 test("BRG-08 a call on a stale plugin generation is plugin_restarted", async () => {

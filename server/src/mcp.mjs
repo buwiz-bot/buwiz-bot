@@ -53,6 +53,7 @@ import os from "node:os";
 import { randomBytes } from "node:crypto";
 import { PORT } from "./config.mjs";
 import { isName } from "./grammar.mjs";
+import { lineConnect, mcpOnLine } from "./mcp-line.mjs";
 
 let authHooks = null; // {loadAuth(id), saveAuth(id, obj), done(id)} — app-server wires the db
 export const setAuthHooks = (h) => (authHooks = h);
@@ -265,6 +266,16 @@ async function connect(row) {
       const credHeader = Object.entries(headers).some(([k, v]) => v && /auth|key|token|secret/i.test(k));
       if (!hasTokens && !credHeader && (await wantsOAuth(row.url))) rec.needsAuth = "Sign-in required";
       console.log(`  mcp ${row.id}: connected (http), ${rec.tools.length} tools${rec.needsAuth ? " — needs sign-in" : ""}`);
+      return rec;
+    }
+    // rox-broker hosts the stdio servers (plan 4.1): its client, over the line
+    if (mcpOnLine) {
+      const { client, tools } = await lineConnect(row.id);
+
+      rec.client = client;
+      rec.tools = tools;
+      console.log(`  mcp ${row.id}: connected, ${rec.tools.length} tools`);
+
       return rec;
     }
     const [{ StdioClientTransport }] = await Promise.all([
