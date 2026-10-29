@@ -51,7 +51,8 @@ pub struct V1 {
     pub notice: Signal<HashMap<String, String>>,
     /// Per open: a running app's error (6.7), with Reload and Close.
     pub error: Signal<HashMap<String, String>>,
-    /// Opens a new version left on old source: a Reload banner (12.2).
+    /// Full-screen opens a new version left on old source: a Reload
+    /// banner (12.2). Inline cards reload instead.
     pub stale: Signal<HashSet<String>>,
     /// Opens whose plugin restarted, by key: their plugin (13.7).
     reconnecting: RefCell<HashMap<String, String>>,
@@ -248,7 +249,12 @@ impl Store {
                 self.v1_prewarm(&list);
                 let running: Vec<(String, String)> =
                     self.v1.running.borrow().iter().map(|(_, k, f)| (k.clone(), f.clone())).collect();
-                let stale = lifecycle::stale(&running, &entries);
+                // a full-screen open keeps its source and offers Reload
+                // (12.2); an inline card reloads in place, as its Refresh
+                // does: an update is the plugin page's news, not the card's
+                let full: HashSet<String> = self.mini_full.with_untracked(|f| f.iter().map(|o| o.key.clone()).collect());
+                let (stale, reload): (Vec<String>, Vec<String>) =
+                    lifecycle::stale(&running, &entries).into_iter().partition(|k| full.contains(k));
                 batch(|| {
                     self.v1.listed.set(list.iter().map(connect::Listed::of).collect());
                     self.v1.entries.set(entries.clone());
@@ -257,6 +263,9 @@ impl Store {
                         self.v1.stale.update(|s| s.extend(stale));
                     }
                 });
+                for key in reload {
+                    self.v1_reload(&key);
+                }
                 let bir = list.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(links::BIR));
                 let runs = bir.is_some_and(|p| p.get("state").and_then(Value::as_str) == Some("running"));
                 if migrate && runs && self.v1.records.with_untracked(|r| r.migrated_at == 0) {
@@ -1790,15 +1799,16 @@ pub fn inline_card(card: OpenCard, id: String, live: bool) -> impl IntoElement {
                     let h = h.clone();
                     move || px(h())
                 })
-                .child(banners(&key))
+                .child(banners(&key, false))
                 .child(crate::mini::mini_app_inline(&key, w, h))
                 .child(error_overlay(&key)),
         )
 }
 
 /// The banners over an open (`key`): its notice ("This item is no longer
-/// available", "reconnecting") and a stale open's Reload (12.2).
-pub fn banners(key: &str) -> impl IntoElement {
+/// available", "reconnecting") and, `full` screen, a stale open's Reload
+/// (12.2). An inline card has no Reload strip: it reloads in place.
+pub fn banners(key: &str, full: bool) -> impl IntoElement {
     let (k1, k2, k3, k4) = (key.to_owned(), key.to_owned(), key.to_owned(), key.to_owned());
     view()
         .child(when(
@@ -1818,7 +1828,7 @@ pub fn banners(key: &str) -> impl IntoElement {
             },
         ))
         .child(when(
-            move || store().v1.stale.with(|s| s.contains(&k3)),
+            move || full && store().v1.stale.with(|s| s.contains(&k3)),
             move || {
                 let k = k4.clone();
                 view()

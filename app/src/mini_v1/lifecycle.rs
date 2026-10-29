@@ -22,8 +22,8 @@ pub fn error_message(title: &str, text: &str) -> Option<String> {
 }
 
 /// The opens (module keys, with the fingerprint each runs) whose app now
-/// has another fingerprint in `plugins`' manifests: they keep their source
-/// and show a Reload banner (12.2).
+/// has another fingerprint in `plugins`' manifests: a full-screen one keeps
+/// its source and shows a Reload banner (12.2), an inline card reloads.
 pub fn stale(running: &[(String, String)], plugins: &[PluginEntry]) -> Vec<String> {
     running
         .iter()
