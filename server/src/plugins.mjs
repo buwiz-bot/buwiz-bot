@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { APP_ROOT, GROKBOT_CATALOG, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git, serverFile } from "./config.mjs";
+import { GROKBOT_CATALOG, SERVER_DIR, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git, serverFile } from "./config.mjs";
 import { db } from "./state.mjs";
 import { fixedRedirectUrl } from "./mcp.mjs";
 import { adjustServers as adjust, repoOf, resolveEntry, sourceUrlInfo } from "./plugin_resolve.mjs";
@@ -116,7 +116,7 @@ export function pluginRoot(key) {
   const p = legacyOf(key);
   if (!p) return null;
   if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
-    const root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
+    const root = join(SERVER_DIR, "plugins", String(p.source.path).replace(/^\.\//, ""));
     return existsSync(root) ? root : null;
   }
   const dir = join(PLUGINS_DIR, p.name);

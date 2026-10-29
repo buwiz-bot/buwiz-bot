@@ -8,12 +8,12 @@ import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { V1, isV1, v1Canonical, v1TypedTokens } from "../server/grammar.mjs";
-import { b64u, fromB64u, generate, pubOf, sign, verify } from "../server/v1/ed.mjs";
-import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../server/v1/jcs.mjs";
-import { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } from "../server/v1/manifest.mjs";
-import { signManifest } from "../server/v1/sign-manifest.mjs";
-import { loadTrust } from "../server/v1/trust.mjs";
+import { V1, isV1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
+import { b64u, fromB64u, generate, pubOf, sign, verify } from "../src/v1/ed.mjs";
+import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../src/v1/jcs.mjs";
+import { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } from "../src/v1/manifest.mjs";
+import { signManifest } from "../src/v1/sign-manifest.mjs";
+import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FX, fixtureManifest, publisher, writeTrust } from "./v1-helpers.mjs";
 
@@ -383,14 +383,14 @@ test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a ma
   const keyFile = join(dir, "publisher.key");
   const template = join(dir, "template.json");
   const out = join(dir, "signed.json");
-  const m = JSON.parse(readFileSync(join(ROOT, "server", "v1", "fixture", "manifest.json"), "utf8"));
-  const fx = join(ROOT, "server", "v1", "fixture");
+  const m = JSON.parse(readFileSync(join(ROOT, "src", "v1", "fixture", "manifest.json"), "utf8"));
+  const fx = join(ROOT, "src", "v1", "fixture");
 
   m.publisher.key_id = pub.keyId;
   writeFileSync(template, JSON.stringify(m));
   writeFileSync(keyFile, pub.seed, { mode: 0o644 });
   chmodSync(keyFile, 0o644);
-  const run = () => execFileSync(process.execPath, [join(ROOT, "server", "v1", "sign-manifest.mjs"), template, "--key-file", keyFile, "--app", `board=${join(fx, "board.tsx")}`, "--app", `card=${join(fx, "card.tsx")}`, "--out", out], { stdio: "pipe" });
+  const run = () => execFileSync(process.execPath, [join(ROOT, "src", "v1", "sign-manifest.mjs"), template, "--key-file", keyFile, "--app", `board=${join(fx, "board.tsx")}`, "--app", `card=${join(fx, "card.tsx")}`, "--out", out], { stdio: "pipe" });
 
   assert.throws(run, /readable by others/);
   chmodSync(keyFile, 0o600);

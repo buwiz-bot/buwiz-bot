@@ -10,7 +10,7 @@ import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { generate, random128 } from "../server/v1/ed.mjs";
+import { generate, random128 } from "../src/v1/ed.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FX, bed, envelope, fixtureSpec, until } from "./v1-helpers.mjs";
 
@@ -56,7 +56,7 @@ function host(method, path, obj, extra = {}) {
 }
 
 before(async () => {
-  child = spawn(process.execPath, [join(ROOT, "server", "app-server.mjs")], {
+  child = spawn(process.execPath, [join(ROOT, "src", "app-server.mjs")], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile },
     stdio: ["ignore", "pipe", "pipe"],
@@ -92,7 +92,7 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
 });
 
 test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
-  const second = spawn(process.execPath, [join(ROOT, "server", "app-server.mjs")], {
+  const second = spawn(process.execPath, [join(ROOT, "src", "app-server.mjs")], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile },
     stdio: "ignore",

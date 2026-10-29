@@ -29,9 +29,9 @@ function graph(entry) {
 }
 
 test("PKG-01 the server's import graph reaches no module that runs as a CLI", () => {
-  const files = graph(join(ROOT, "server", "app-server.mjs"));
+  const files = graph(join(ROOT, "src", "app-server.mjs"));
   const clis = [...files].filter((f) => MAIN_CHECK.test(readFileSync(f, "utf8")));
 
-  assert.ok(files.has(join(ROOT, "server", "v1", "sessions.mjs")), "the walk reaches the v1 modules");
+  assert.ok(files.has(join(ROOT, "src", "v1", "sessions.mjs")), "the walk reaches the v1 modules");
   assert.deepEqual(clis, []);
 });

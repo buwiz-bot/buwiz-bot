@@ -19,8 +19,8 @@ process.env.MOCK = "1";
 
 process.env.PORT = String(PORT);
 
-const { toolMcpAdmin } = await import("../server/tools.mjs");
-const { db } = await import("../server/state.mjs");
+const { toolMcpAdmin } = await import("../src/tools.mjs");
+const { db } = await import("../src/state.mjs");
 
 const rowOf = (id) => db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(id);
 const listed = async (id) => (await request("GET", "/mcp/servers")).json.servers.find((s) => s.id === id);

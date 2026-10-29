@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { APP_ROOT, PLUGINS_DIR, git } from "../config.mjs";
+import { PLUGINS_DIR, SERVER_DIR, git } from "../config.mjs";
 import { db } from "../state.mjs";
 import { mcpAppCall, mcpAppList, mcpManifest, mcpResolve, mcpUpsertServer } from "../tools.mjs";
 import { attach, detach, listAttachments, renameToken } from "../attachments.mjs";
@@ -41,7 +41,7 @@ async function installLegacy(p) {
   const dir = join(PLUGINS_DIR, p.name);
   let root;
   if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
-    root = join(APP_ROOT, "server/plugins", String(p.source.path).replace(/^\.\//, ""));
+    root = join(SERVER_DIR, "plugins", String(p.source.path).replace(/^\.\//, ""));
     if (!existsSync(root)) throw new Error(`vendored source missing for ${p.name}`);
   } else {
     if (!existsSync(join(dir, ".git"))) {

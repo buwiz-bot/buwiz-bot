@@ -50,7 +50,7 @@ export async function startServer(dataDir) {
   if (await up()) throw new Error(`port ${PORT} is already serving; stop that first`);
 
   // its own process group, so stop() also ends the MCP children it spawned
-  const child = spawn(process.execPath, [join(ROOT, "server", "app-server.mjs")], {
+  const child = spawn(process.execPath, [join(ROOT, "src", "app-server.mjs")], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" },
     stdio: ["ignore", "pipe", "pipe"],

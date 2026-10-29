@@ -64,7 +64,7 @@ const OUT_DIR = join(GEN_DIR, "files");
 const ASSETS_DIR = join(GEN_DIR, "assets");
 
 const PLUGIN_CATALOG = (() => {
-  try { return JSON.parse(readFileSync(join(APP_ROOT, "server/plugins/marketplace.json"), "utf8")); }
+  try { return JSON.parse(readFileSync(join(SERVER_DIR, "plugins", "marketplace.json"), "utf8")); }
   catch { return { plugins: [] }; }
 })();
 // Grok Bot's plugin catalog snapshot (tools/sync-grokbot-catalog.mjs):

@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { generate, pubOf, verify } from "../server/v1/ed.mjs";
-import { signedBytes } from "../server/v1/jcs.mjs";
-import { manifestHash, permsDigest } from "../server/v1/manifest.mjs";
-import { BACKOFF_S } from "../server/v1/plugins.mjs";
-import { v1Tools } from "../server/v1/agent.mjs";
+import { generate, pubOf, verify } from "../src/v1/ed.mjs";
+import { signedBytes } from "../src/v1/jcs.mjs";
+import { manifestHash, permsDigest } from "../src/v1/manifest.mjs";
+import { BACKOFF_S } from "../src/v1/plugins.mjs";
+import { v1Tools } from "../src/v1/agent.mjs";
 import { FIXTURE, FX, bed, broker, codeOf, fixtureManifest, fixtureSpec, installFixture, openApp, until } from "./v1-helpers.mjs";
 
 const stops = [];

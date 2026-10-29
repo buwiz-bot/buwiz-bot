@@ -1,4 +1,4 @@
-// server/mcp.mjs — user-connected MCP servers (stdio).
+// src/mcp.mjs — user-connected MCP servers (stdio).
 //
 // app-server owns the mcp_servers table and the endpoints; this module owns
 // client lifecycle: lazy spawn on first use, tool discovery, namespaced tool

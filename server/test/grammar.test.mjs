@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isName, isServerId, parseToken, tokensIn } from "../server/grammar.mjs";
+import { isName, isServerId, parseToken, tokensIn } from "../src/grammar.mjs";
 
 test("a token parses into server, scope and value", () => {
   assert.deepEqual(parseToken("@bir:tin:123-456-789-000"), { server: "bir", scope: "tin", value: "123-456-789-000" });

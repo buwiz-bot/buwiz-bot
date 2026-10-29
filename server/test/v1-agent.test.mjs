@@ -5,7 +5,7 @@
 // 10.2 and routine reads of 5.9.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { V1, v1Canonical, v1TypedTokens } from "../server/grammar.mjs";
+import { V1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
 import { tempDir } from "./helpers.mjs";
 import { FX, bed, broker, installFixture, writeTrust } from "./v1-helpers.mjs";
 
@@ -20,9 +20,9 @@ process.env.ROX_KEYSTORE = `file:${b.keysDir}`;
 
 process.env.ROX_TRUST_FILE = b.trustFile;
 
-const { toolList, execTool } = await import("../server/tools.mjs");
-const { plugins, sessions } = await import("../server/v1/broker.mjs");
-const { TRUNCATED, approvedText, v1PromptSection, v1RoutinePrompt, v1Tools } = await import("../server/v1/agent.mjs");
+const { toolList, execTool } = await import("../src/tools.mjs");
+const { plugins, sessions } = await import("../src/v1/broker.mjs");
+const { TRUNCATED, approvedText, v1PromptSection, v1RoutinePrompt, v1Tools } = await import("../src/v1/agent.mjs");
 
 const names = async () => (await toolList(null)).map((t) => t.name);
 const def = async (name) => (await toolList(null)).find((t) => t.name === name);
@@ -268,7 +268,7 @@ test("CARD-03 the plugin list says which plugins are first-party (approved, publ
 });
 
 test("ATT-02 a sent message's v1 attachments and an answer's next steps come back in /turns", async () => {
-  const { turnsJson } = await import("../server/state.mjs");
+  const { turnsJson } = await import("../src/state.mjs");
   const token = "@fx:item:tkt_0123456789ABCDEFGHJKMNPQRS";
   const turns = turnsJson({
     turns: [

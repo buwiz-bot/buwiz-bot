@@ -6,21 +6,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { generate, random128, sign } from "../server/v1/ed.mjs";
-import { signedBytes } from "../server/v1/jcs.mjs";
-import { keystore } from "../server/v1/keystore.mjs";
-import { permsDigest } from "../server/v1/manifest.mjs";
-import { createPlugins, systemClock } from "../server/v1/plugins.mjs";
-import { createSessions } from "../server/v1/sessions.mjs";
-import { signManifest } from "../server/v1/sign-manifest.mjs";
-import { loadTrust } from "../server/v1/trust.mjs";
+import { generate, random128, sign } from "../src/v1/ed.mjs";
+import { signedBytes } from "../src/v1/jcs.mjs";
+import { keystore } from "../src/v1/keystore.mjs";
+import { permsDigest } from "../src/v1/manifest.mjs";
+import { createPlugins, systemClock } from "../src/v1/plugins.mjs";
+import { createSessions } from "../src/v1/sessions.mjs";
+import { signManifest } from "../src/v1/sign-manifest.mjs";
+import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 
-export const FIXTURE_DIR = join(ROOT, "server", "v1", "fixture");
+export const FIXTURE_DIR = join(ROOT, "src", "v1", "fixture");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
 export const FX = "dev.goldcoders.fixture";
 export const GWS = "dev.goldcoders.google-workspace";
-export const GWS_DIR = join(ROOT, "server", "v1", "plugins", "google-workspace");
+export const GWS_DIR = join(ROOT, "src", "v1", "plugins", "google-workspace");
 export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
 
 /** A publisher key of this run: {keyId, seed, pub}. */

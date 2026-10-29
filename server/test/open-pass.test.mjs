@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { redeem, withPass } from "../server/open-pass.mjs";
+import { redeem, withPass } from "../src/open-pass.mjs";
 
 const passOf = (url) => new URL(url).searchParams.get("rox_pass");
 

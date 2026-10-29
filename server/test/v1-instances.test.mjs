@@ -18,8 +18,8 @@
 //          retires the old; the schedule leaves it alone
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { createRoutineThreads } from "../server/v1/routine-threads.mjs";
-import { HOOK_RATE, createRoutines } from "../server/v1/routines.mjs";
+import { createRoutineThreads } from "../src/v1/routine-threads.mjs";
+import { HOOK_RATE, createRoutines } from "../src/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 
 let now = 1_800_000_000_000;
