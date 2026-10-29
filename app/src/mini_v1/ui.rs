@@ -247,6 +247,13 @@ impl Store {
                 let entries: Vec<PluginEntry> = list.iter().filter_map(PluginEntry::from_json).collect();
                 *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = entries.clone();
                 self.v1_prewarm(&list);
+                // each plugin's version, so its page can say it was updated
+                // (saved only when one is new or changed)
+                let seen: Vec<(String, String)> = entries.iter().map(|p| (p.id.clone(), p.version.clone())).collect();
+                let now = super::session::now_ms();
+                if self.v1.records.with_untracked(|r| r.clone().saw_versions(&seen, now)) {
+                    change_records(move |r| r.saw_versions(&seen, now));
+                }
                 let running: Vec<(String, String)> =
                     self.v1.running.borrow().iter().map(|(_, k, f)| (k.clone(), f.clone())).collect();
                 // a full-screen open keeps its source and offers Reload
