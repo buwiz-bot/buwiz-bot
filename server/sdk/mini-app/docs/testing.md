@@ -65,7 +65,7 @@ dev.goldcoders.books approved`.
 | MAN-01 | The manifest is signed by the trusted key; the signature verifies over JCS. |
 | MAN-02 | A byte changed in the manifest fails verification. |
 | MAN-03 | The manifest is a JSON object (I-JSON). |
-| MAN-04 | `protocol` 1.0.x; `version` is semver. |
+| MAN-04 | `protocol` 1.0.x or 1.1.x; `version` is semver. |
 | MAN-05 | `needs` absent or `[]`. |
 | MAN-06 | `permissions` hold only known keys. |
 | MAN-07, MAN-08 | Every grammar and limit ([manifest.md](manifest.md)). |
@@ -85,9 +85,11 @@ dev.goldcoders.books approved`.
 | BRG-04 | The same envelope sent again is `replayed`. |
 | BRG-06 | An envelope signed by another key is `bad_signature`. |
 | INV-04 | Each scope's resolve, with `complete` true and false, answers a [spec] 9.2 shape within its caps (checked on the raw answer, before the broker would cap it); an attachable scope resolves a chosen completion to a token. |
-| INV-05 | Each command's resolve answers a 9.2 shape; an `open` names one of this plugin's apps with valid props. |
+| INV-05 | Each command's resolve, for a bare command and for `sdk-probe`, answers a 9.2 shape; an `open` names one of this plugin's apps with valid props. |
+| INV-10 | Each `prompt` a resolve answers (protocol 1.1): a command's, not a scope's; text not only spaces and line breaks, at most 4000 characters; the manifest declares protocol 1.1.0 or later; the broker passes it unchanged. Listed only when a resolve answered `prompt`. |
 
-The calls send `{}` as arguments and the probe value `sdk-probe` to resolve
+The calls send `{}` as arguments, and the values `""` (commands only: a
+bare command, where a starter flow answers) and `sdk-probe` to resolve
 tools. Keep side effects behind explicit arguments (P5) and these calls are
 harmless.
 

@@ -41,7 +41,7 @@ import { isObject, isString, parseIJson, signedBytes } from "../../../src/v1/jcs
 import { keystore } from "../../../src/v1/keystore.mjs";
 import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../src/v1/manifest.mjs";
 import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
-import { MAX_PER_SECOND, checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
+import { MAX_PER_SECOND, PROMPT_MAX, checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
 import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
 import { TRUST_FILE, isApproved, loadTrust } from "../../../src/v1/trust.mjs";
 import { newTicket } from "../lib/rox-plugin.mjs";
@@ -216,7 +216,7 @@ function manIdOf(e) {
 const MAN_ROWS = [
   ["MAN-01", "the manifest is signed by a trusted publisher key; the signature verifies over JCS (4.2)"],
   ["MAN-03", "the manifest is a JSON object (I-JSON, no duplicate keys)"],
-  ["MAN-04", "protocol 1.0.x is accepted by a 1.0 host; version is semver"],
+  ["MAN-04", "protocol 1.0.x or 1.1.x is accepted by a 1.1 host; version is semver"],
   ["MAN-05", "needs is absent or []"],
   ["MAN-06", "permissions carry only known keys"],
   ["MAN-07", "every name follows its grammar (3)"],
@@ -245,7 +245,7 @@ function checkResolve(m, data) {
   const r = data?.result;
   const found = [];
 
-  expect(["choices", "open", "token", "error"].includes(r), `result ${JSON.stringify(r)?.slice(0, 40)} is not choices, open, token or error`);
+  expect(["choices", "open", "token", "prompt", "error"].includes(r), `result ${JSON.stringify(r)?.slice(0, 40)} is not choices, open, token, prompt or error`);
 
   if (r === "choices") {
     expect(Array.isArray(data.choices), "choices must be an array");
@@ -278,6 +278,18 @@ function checkResolve(m, data) {
   }
 
   return found;
+}
+
+// A raw `prompt` answer (9.2, protocol 1.1) held to its rules: a
+// command's only, non-blank text of at most PROMPT_MAX characters, from a
+// plugin that declares protocol 1.1 or later (a 1.0 host cannot read it).
+function checkPromptAnswer(m, kind, data) {
+  const [maj, min] = String(m.protocol).split(".").map(Number);
+
+  expect(maj > 1 || (maj === 1 && min >= 1), `the manifest declares protocol ${m.protocol}; a prompt answer needs 1.1.0 or later`);
+  expect(kind === "command", "a prompt result answers a command, not a scope");
+  expect(isString(data.text) && /[^ \t\r\n]/.test(data.text), "a prompt result needs text (not only spaces and line breaks)");
+  expect([...data.text].length <= PROMPT_MAX, `a prompt's text is ${[...data.text].length} characters; at most ${PROMPT_MAX}`);
 }
 
 // ── the run ──────────────────────────────────────────────────────────────
@@ -663,7 +675,9 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
     await sessions.close({ open_id: open.open_id });
   }
 
-  // INV-04, INV-05: every command and scope's resolve, raw and through the broker
+  // INV-04, INV-05: every command and scope's resolve, raw and through the
+  // broker; INV-10: any prompt answer they give (a bare command is where a
+  // starter flow answers one)
   const tickets = [];
   const entries = [...(m.commands || []).map((c) => ["command", c]), ...(m.scopes || []).map((s) => ["scope", s])];
 
@@ -675,10 +689,12 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   for (const [kind, e] of entries) {
     // the tickets this entry's own completion offered (7.6: a chosen one)
     const offered = [];
-    const modes = kind === "scope" ? [["", true], ["sdk-probe", false]] : [["sdk-probe", false]];
+    const modes = kind === "scope" ? [["", true], ["sdk-probe", false]] : [["", false], ["sdk-probe", false]];
 
-    for (const [value, complete] of modes)
-      await run(kind === "command" ? "INV-05" : "INV-04", `${kind} ${e.name}: ${e.resolve} with complete: ${complete} answers a 9.2 shape within its caps${kind === "command" ? "; an open names an app of this plugin" : ""}`, async () => {
+    for (const [value, complete] of modes) {
+      let prompt = null;
+
+      await run(kind === "command" ? "INV-05" : "INV-04", `${kind} ${e.name}: ${e.resolve} with value ${JSON.stringify(value)} and complete: ${complete} answers a 9.2 shape within its caps${kind === "command" ? "; an open names an app of this plugin" : ""}`, async () => {
         const r = await resolveRaw(kind, e, value, complete);
 
         if (r.isError) return "answered isError (shown as an error)";
@@ -686,12 +702,26 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
         const issued = checkResolve(m, data);
 
+        // a prompt's own rules are INV-10's, below
+        if (data.result === "prompt") return ((prompt = data), "result prompt (INV-10)");
+
         tickets.push(...issued);
         if (complete) offered.push(...issued);
         await sessions.resolve({ plugin: m.id, kind, name: e.name, value, complete });
 
         return `result ${data.result}`;
       });
+
+      if (prompt)
+        await run("INV-10", `${kind} ${e.name}: the prompt ${e.resolve} answers for ${JSON.stringify(value)} is a command's, non-blank, at most ${PROMPT_MAX} characters, and passes the broker unchanged`, async () => {
+          checkPromptAnswer(m, kind, prompt);
+          const res = await sessions.resolve({ plugin: m.id, kind, name: e.name, value, complete });
+
+          expect(res.result === "prompt" && res.text === prompt.text, `the broker answered ${res.result}`);
+
+          return `${[...prompt.text].length} characters`;
+        });
+    }
 
     // an attachable scope: a chosen completion resolves to a token (7.6)
     if (kind === "scope" && e.attach) {
