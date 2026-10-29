@@ -4852,6 +4852,14 @@ impl Store {
         out
     }
 
+    /// What the Connect Apps chip counts and shows: the v1 mini app
+    /// plugins (BIR, Books…) first, then [`Store::conn_items`].
+    pub fn connected_names(&self) -> Vec<String> {
+        let (inst, standalone) = self.conn_items();
+        let v1: Vec<(String, String)> = self.v1.listed.get().into_iter().map(|p| (p.id, p.title)).collect();
+        conn_names(&v1, &inst, &standalone)
+    }
+
     /// `connItems` — installed plugins + standalone MCP servers
     /// (App.tsx:3528): `(installed, standalone)`.
     pub fn conn_items(&self) -> (Vec<PluginRow>, Vec<McpServer>) {
@@ -7419,10 +7427,32 @@ fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
     });
 }
 
+/// The connected names in order: v1 plugins as `(id, title)` (the title,
+/// else the id), installed catalog plugins, then standalone MCP servers
+/// (the name, else the id).
+fn conn_names(v1: &[(String, String)], inst: &[PluginRow], standalone: &[McpServer]) -> Vec<String> {
+    let or = |name: &str, id: &str| if name.is_empty() { id.to_owned() } else { name.to_owned() };
+    v1.iter()
+        .map(|(id, title)| or(title, id))
+        .chain(inst.iter().map(|p| p.name.clone()))
+        .chain(standalone.iter().map(|s| or(&s.name, &s.id)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{link_pass, link_token, mini_link};
     use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
+
+    #[test]
+    fn connected_counts_v1_plugins_first_then_catalog_then_servers() {
+        use super::{conn_names, McpServer, PluginRow};
+        let v1 = [("dev.goldcoders.bir".to_owned(), "BIR".to_owned()), ("dev.goldcoders.books".to_owned(), String::new())];
+        let inst = [PluginRow { name: "github".into(), ..Default::default() }];
+        let standalone = [McpServer { id: "cua-driver".into(), ..Default::default() }, McpServer { id: "x".into(), name: "Everything".into(), ..Default::default() }];
+        assert_eq!(conn_names(&v1, &inst, &standalone), ["BIR", "dev.goldcoders.books", "github", "cua-driver", "Everything"]);
+        assert!(conn_names(&[], &[], &[]).is_empty());
+    }
 
     #[test]
     fn chats_send_in_parallel_and_only_a_busy_chat_waits() {
