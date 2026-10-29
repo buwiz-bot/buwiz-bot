@@ -45,12 +45,14 @@ stop() {
   return 1
 }
 
+# `exec`: the broker replaces the backgrounded subshell, which otherwise
+# stays as its parent holding the caller's stdout (a pipe never closes).
 start_node() {
   [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
   [ -x "$RES/server/node" ] || { echo "no $RES/server/node (set RES)" >&2; return 1; }
   (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
     NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" PORT="$PORT" \
-    nohup "$RES/server/node" "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
+    exec nohup "$RES/server/node" "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
   wait_health && echo "node broker on $PORT"
 }
 
@@ -59,7 +61,7 @@ start_rust() {
   [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it)" >&2; return 1; }
   (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
     NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
-    nohup "$RES/server/rox-broker" --port "$PORT" --data "$GS" --node "$RES/server/node" \
+    exec nohup "$RES/server/rox-broker" --port "$PORT" --data "$GS" --node "$RES/server/node" \
       --node-script "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
   wait_health && echo "rox-broker on $PORT"
 }
