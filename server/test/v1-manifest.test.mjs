@@ -1,7 +1,10 @@
 // Spec 17.1 (manifest), against server/v1/manifest.mjs: verification
 // order, signature, protocol and version rules, every grammar of section 3
 // and every manifest limit of Appendix A at the limit and one over. Also
-// the JCS vectors shared with Rox and the ed25519 helpers.
+// the JCS vectors shared with Rox and the ed25519 helpers. With
+// ROX_BROKER_CMD set, every manifest check also runs in rox-broker and must
+// answer as Node does (v1-rust.mjs), and its sign-manifest must write the
+// same bytes.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -11,11 +14,13 @@ import { test } from "node:test";
 import { V1, isV1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
 import { b64u, fromB64u, generate, pubOf, sign, verify } from "../src/v1/ed.mjs";
 import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../src/v1/jcs.mjs";
-import { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } from "../src/v1/manifest.mjs";
 import { signManifest } from "../src/v1/sign-manifest.mjs";
 import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FX, fixtureManifest, publisher, writeTrust } from "./v1-helpers.mjs";
+
+const RUST = process.env.ROX_BROKER_CMD;
+const { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } = await import(RUST ? "./v1-rust.mjs" : "../src/v1/manifest.mjs");
 
 const pub = publisher();
 const dir = tempDir("v1-manifest");
@@ -387,18 +392,29 @@ test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a ma
   const fx = join(ROOT, "src", "v1", "fixture");
 
   m.publisher.key_id = pub.keyId;
+  // what a serializer could get wrong: integer-like keys, -0, 1e3, U+2028, control characters
+  m.x_extra = JSON.parse('{"b":"\\u0007 é \u2028","10":[-0,1e3],"2":{}}');
   writeFileSync(template, JSON.stringify(m));
   writeFileSync(keyFile, pub.seed, { mode: 0o644 });
   chmodSync(keyFile, 0o644);
-  const run = () => execFileSync(process.execPath, [join(ROOT, "src", "v1", "sign-manifest.mjs"), template, "--key-file", keyFile, "--app", `board=${join(fx, "board.tsx")}`, "--app", `card=${join(fx, "card.tsx")}`, "--out", out], { stdio: "pipe" });
+  const args = (to) => [template, "--key-file", keyFile, "--app", `board=${join(fx, "board.tsx")}`, "--app", `card=${join(fx, "card.tsx")}`, "--out", to];
+  const run = () => execFileSync(process.execPath, [join(ROOT, "src", "v1", "sign-manifest.mjs"), ...args(out)], { stdio: "pipe" });
+  const runRust = () => execFileSync(RUST, ["sign-manifest", ...args(`${out}.rust`)], { stdio: "pipe" });
 
   assert.throws(run, /readable by others/);
+
+  if (RUST) assert.throws(runRust, /readable by others/);
   chmodSync(keyFile, 0o600);
   run();
   const r = verifyManifest(readFileSync(out, "utf8"), trust);
 
   assert.equal(r.manifest.apps[1].fingerprint, `sha256:${createHash("sha256").update(readFileSync(join(fx, "card.tsx"))).digest("hex")}`);
   assert.ok(!readFileSync(out, "utf8").includes(pub.seed), "the seed is not in the output");
+
+  if (RUST) {
+    runRust();
+    assert.equal(readFileSync(`${out}.rust`, "utf8"), readFileSync(out, "utf8"), "rox-broker sign-manifest writes Node's bytes");
+  }
 });
 
 test("the install review names a scope by its description's first word, without punctuation", () => {
