@@ -522,15 +522,11 @@ fn routines_section(
 }
 
 /// A small text action on a routine (Run now, Pause, Open, Delete).
+/// A routine row's action: a pressable view, so the agent tree and
+/// VoiceOver read it as a button named `aria`.
 fn routine_act(label: &'static str, aria: String, danger: bool, on: impl Fn() + 'static) -> AnyElement {
     let hov = signal(false);
-    text(label)
-        .text_size(px(12.0))
-        .text_color(move || match (hov.get(), danger) {
-            (true, true) => theme::DOWN,
-            (true, false) => theme::TEXT,
-            _ => theme::MUTED,
-        })
+    view()
         .px_2()
         .py_1()
         .rounded(px(6.0))
@@ -539,6 +535,11 @@ fn routine_act(label: &'static str, aria: String, danger: bool, on: impl Fn() + 
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(on)
         .label(aria)
+        .child(text(label).text_size(px(12.0)).text_color(move || match (hov.get(), danger) {
+            (true, true) => theme::DOWN,
+            (true, false) => theme::TEXT,
+            _ => theme::MUTED,
+        }))
         .into_element()
 }
 
@@ -744,7 +745,7 @@ fn routine_row(r: ChatRoutine) -> AnyElement {
                 }));
             }
             let (p4, i4) = (plugin.clone(), id.clone());
-            acts = acts.child(routine_act("Open", format!("Open {name}'s thread"), false, move || {
+            acts = acts.child(routine_act("Open", format!("Open the {name} thread"), false, move || {
                 match Some(home.clone()).filter(|h| !h.is_empty()).or_else(|| store().routine_thread(&p4, &i4)) {
                     Some(thread) => store().go_to(&thread, None),
                     None => {
