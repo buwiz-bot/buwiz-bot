@@ -1,5 +1,5 @@
-//! The front door: `/health` and `/meta` here, everything else forwarded to
-//! Node with its method, path, query, headers and body as they came, and
+//! The front door: `/health`, `/meta` and the routes ported to Rust
+//! (`leaf`) here, everything else forwarded to Node with its method, path, query, headers and body as they came, and
 //! the answer streamed back as it arrives. No timeout: an event stream or a
 //! long poll stays open as long as Node keeps it.
 
@@ -15,18 +15,21 @@ use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 
+use crate::leaf::{self, Leaf};
 use crate::node::Node;
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
 
 pub struct FrontDoor {
     pub node: Arc<Node>,
+    /// the routes answered in Rust; `None` forwards them too
+    leaf: Option<Leaf>,
     client: Client<HttpConnector, Incoming>,
 }
 
 impl FrontDoor {
-    pub fn new(node: Arc<Node>) -> Self {
-        Self { node, client: Client::builder(TokioExecutor::new()).build_http() }
+    pub fn new(node: Arc<Node>, leaf: Option<Leaf>) -> Self {
+        Self { node, leaf, client: Client::builder(TokioExecutor::new()).build_http() }
     }
 
     pub async fn handle(&self, req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
@@ -36,7 +39,10 @@ impl FrontDoor {
         let (res, side) = match req.uri().path() {
             "/health" => (self.health(), "rust"),
             "/meta" => (self.meta(), "rust"),
-            _ => (self.forward(req).await, "node"),
+            _ => match (&self.leaf, leaf::route(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"))) {
+                (Some(leaf), Some(route)) => (leaf.serve(route, req).await, "rust"),
+                _ => (self.forward(req).await, "node"),
+            },
         };
         println!("rox-broker {method} {shown} {} {}ms {side}", res.status().as_u16(), started.elapsed().as_millis());
         Ok(res)
@@ -57,7 +63,7 @@ impl FrontDoor {
                 "version": env!("CARGO_PKG_VERSION"),
                 "node_version": self.node.version.get().cloned().unwrap_or_default(),
                 // route groups answered in Rust (phase 2 on)
-                "ported": [],
+                "ported": if self.leaf.is_some() { leaf::PORTED } else { &[] },
             }),
         )
     }
