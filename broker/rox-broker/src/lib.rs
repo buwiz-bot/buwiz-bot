@@ -14,6 +14,7 @@ pub mod js;
 pub mod leaf;
 pub mod node;
 pub mod proxy;
+pub mod v1;
 
 /// A request path as the log shows it: no query, and the secret of a
 /// webhook (`/v1/hooks/<id>/<secret>`) replaced.

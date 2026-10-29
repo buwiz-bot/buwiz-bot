@@ -87,7 +87,12 @@ impl SessionKey {
     /// The signature over JCS(`v`), base64url.
     pub fn sign(&self, v: &serde_json::Value) -> Result<String, String> {
         let bytes = super::jcs::signed_bytes(v)?;
-        Ok(b64(&self.0.sign(&bytes).to_bytes()))
+        Ok(self.sign_bytes(&bytes))
+    }
+
+    /// The signature over `bytes`, base64url.
+    pub fn sign_bytes(&self, bytes: &[u8]) -> String {
+        b64(&self.0.sign(bytes).to_bytes())
     }
 }
 

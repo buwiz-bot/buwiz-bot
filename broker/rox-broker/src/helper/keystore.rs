@@ -127,7 +127,7 @@ fn security_stdin(line: &str) -> Result<(), String> {
 }
 
 /// `security <args>`'s stdout, or `None` on failure or after 10 s.
-fn security(args: &[&str]) -> Option<String> {
+pub(crate) fn security(args: &[&str]) -> Option<String> {
     let mut child = Command::new(SECURITY).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

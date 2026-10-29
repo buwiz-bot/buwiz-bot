@@ -15,8 +15,17 @@ use rox_broker::proxy::FrontDoor;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("keystore-check") {
-        std::process::exit(keystore_check(&args[1..]));
+    match args.first().map(String::as_str) {
+        Some("keystore-check") => std::process::exit(keystore_check(&args[1..])),
+        Some("sign-manifest") => std::process::exit(match rox_broker::v1::signing::cli(&args[1..]) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("sign-manifest: {}", rox_broker::js::slice_utf16(&e, 300));
+                1
+            }
+        }),
+        Some("manifest") => std::process::exit(manifest_op(&args[1..])),
+        _ => {}
     }
     let config = match Config::parse(&args, std::env::var("PORT").ok().as_deref()) {
         Ok(config) => config,
@@ -120,4 +129,30 @@ fn keystore_check(args: &[String]) -> i32 {
     };
     println!("{id}: {} key found, public key {public} ({verdict})", store.kind());
     i32::from(verdict.starts_with("DIFFERS"))
+}
+
+/// `rox-broker manifest <op>`: one manifest check on the JSON request on
+/// stdin, its answer on stdout (`v1::cli`).
+fn manifest_op(args: &[String]) -> i32 {
+    use std::io::Read as _;
+    let mut input = String::new();
+    let parsed = std::io::stdin().read_to_string(&mut input).map_err(|e| e.to_string()).and_then(|_| rox_v1::jcs::parse_ijson(&input));
+    let answer = match (args, parsed) {
+        ([op], Ok(input)) => rox_broker::v1::cli::run(op, &input),
+        (_, Err(e)) => {
+            eprintln!("rox-broker manifest: stdin is not JSON ({e})");
+            return 2;
+        }
+        _ => None,
+    };
+    match answer {
+        Some(answer) => {
+            println!("{}", rox_broker::js::stringify(&answer));
+            0
+        }
+        None => {
+            eprintln!("usage: rox-broker manifest <verify|tools|props|review|added|semver|limits> < request.json");
+            2
+        }
+    }
 }
