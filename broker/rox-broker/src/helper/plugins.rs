@@ -11,8 +11,8 @@
 //! `v1_plugins`; keys live in the keystore and reach the plugin only on its
 //! stdin.
 //!
-//! Node keeps the views (the plugin list, routines, sessions until 3.5)
-//! and reaches this host over the line (`helper::line`); each change of a
+//! Node keeps the views (the plugin list, routines) and reaches this
+//! host and its sessions (`sessions.rs`) over the line (`helper::line`); each change of a
 //! plugin's state goes out as a snapshot on [`Host::events`].
 
 use std::collections::{HashMap, VecDeque};
@@ -47,6 +47,10 @@ const SCHEMA: &str = "
 ";
 
 type Res<T = Value> = Result<T, V1Error>;
+
+/// Ends a plugin's opens (sessions.rs): disable, uninstall and update run
+/// it, as plugins.mjs ran its closers.
+pub type Closer = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The broker's limits on a plugin's answers.
 #[derive(Debug, Clone, Copy)]
@@ -211,7 +215,7 @@ impl Row {
 }
 
 /// `JSON.parse(s) ?? d`, `d` when it throws.
-fn parse(s: &str, d: Value) -> Value {
+pub(crate) fn parse(s: &str, d: Value) -> Value {
     match serde_json::from_str::<Value>(s) {
         Ok(Value::Null) | Err(_) => d,
         Ok(v) => v,
@@ -308,6 +312,7 @@ pub struct Host {
     events: broadcast::Sender<Value>,
     /// orders snapshots: a newer one replaces an older one in Node's view
     seq: AtomicU64,
+    closers: Mutex<Vec<Closer>>,
     me: Weak<Host>,
 }
 
@@ -331,6 +336,7 @@ impl Host {
             locks: Mutex::new(HashMap::new()),
             events,
             seq: AtomicU64::new(1),
+            closers: Mutex::new(Vec::new()),
             me: me.clone(),
         }))
     }
@@ -387,6 +393,28 @@ impl Host {
                 "pid": rt.conn.as_ref().and_then(|c| c.pid), "timer": rt.timer, "next_delay_ms": rt.next_delay,
             })
         })
+    }
+
+    /// The snapshot of a plugin this host knows (a runtime), else `None`.
+    pub fn snapshot_if(&self, id: &str) -> Option<Value> {
+        let known = self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id);
+        known.then(|| self.snapshot(id))
+    }
+
+    /// Registers what ends a plugin's opens.
+    pub fn on_close(&self, f: Closer) {
+        self.closers.lock().unwrap_or_else(|e| e.into_inner()).push(f);
+    }
+
+    async fn end_opens(&self, id: &str) {
+        let closers = self.closers.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for f in closers {
+            f(id.to_owned()).await;
+        }
+    }
+
+    pub fn runtime_of(&self, id: &str) -> (&'static str, u64, Vec<Value>) {
+        self.with_rt(id, |rt| (rt.state, rt.generation, rt.tools.clone()))
     }
 
     /// Every plugin with a runtime or a record.
@@ -821,9 +849,10 @@ impl Host {
         let lock = self.lock_of(&id);
         let _held = lock.lock().await;
         let g = if row.is_some() {
-            // 13.3 step 5-6: stop the old version (Node ends its opens)
+            // 13.3 step 5-6: stop the old version; its opens end with it
             self.clear_timer(&id);
             self.stop_conn(&id).await;
+            self.end_opens(&id).await;
             let g = self.bootstrap(&spec, &seed, Some(&id), &id).await.map_err(Fail::into_v1)?;
             if g.sha256 != wanted {
                 g.conn.close().await;
@@ -865,8 +894,8 @@ impl Host {
         self.row(id).ok_or_else(|| V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(id, 80))))
     }
 
-    /// 13.4: stop the process (Node ends its opens first); storage, keys
-    /// and tickets stay.
+    /// 13.4: end the opens and stop the process; storage, keys and
+    /// tickets stay.
     pub async fn disable(&self, id: &str) -> Res {
         self.must_row(id)?;
         let lock = self.lock_of(id);
@@ -874,6 +903,7 @@ impl Host {
         let now = self.clock.now() as i64;
         self.sql(|db| db.execute("UPDATE v1_plugins SET enabled=0, updated_at=? WHERE id=?", params![now, id]))?;
         self.clear_timer(id);
+        self.end_opens(id).await;
         self.stop_conn(id).await;
         self.set_state(id, "stopped", None, "");
         Ok(json!({"ok": true, "state": "stopped"}))
@@ -899,8 +929,8 @@ impl Host {
         }))
     }
 
-    /// 13.6, broker side: rox.uninstall (best effort, 5 s), stop, delete
-    /// the key, remove the record (Node ends the opens first).
+    /// 13.6, broker side: rox.uninstall (best effort, 5 s), end the opens,
+    /// stop, delete the key, remove the record.
     pub async fn uninstall(&self, id: &str) -> Res {
         let row = self.must_row(id)?;
         let lock = self.lock_of(id);
@@ -925,6 +955,7 @@ impl Host {
         if let Some(t) = temp {
             t.close().await;
         }
+        self.end_opens(id).await;
         self.clear_timer(id);
         self.stop_conn(id).await;
         self.remove_key(id).await;
