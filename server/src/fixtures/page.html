@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse — Analytics</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --card2: #f0f1f4; --ink: #14161a;
+    --mut: #6b7280; --line: #e5e7eb; --acc: #4f46e5; --acc2: #06b6d4;
+    --up: #16a34a; --dn: #dc2626; --shadow: 0 1px 3px rgba(16,24,40,.08), 0 4px 16px rgba(16,24,40,.06);
+    --tip: #14161a; --tipink: #f9fafb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d10; --card: #14171c; --card2: #1c2027; --ink: #f3f4f6;
+      --mut: #9aa1ad; --line: #262b33; --acc: #818cf8; --acc2: #22d3ee;
+      --up: #4ade80; --dn: #f87171; --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+      --tip: #e8eaee; --tipink: #14161a;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 20px clamp(14px, 3vw, 28px) 40px; }
+
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .logo {
+    width: 34px; height: 34px; border-radius: 10px; flex: none;
+    background: linear-gradient(135deg, var(--acc), var(--acc2));
+    display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 15px;
+    box-shadow: var(--shadow);
+  }
+  h1 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+  .sub { color: var(--mut); font-size: 12.5px; }
+  .clock { margin-left: auto; color: var(--mut); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .live { display: inline-flex; align-items: center; gap: 6px; color: var(--up); font-size: 12px; font-weight: 600; }
+  .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--up); animation: pulse 1.6s ease-out infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(74,222,128,.5);} 100% { box-shadow: 0 0 0 9px rgba(74,222,128,0);} }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); position: relative; overflow: hidden; transition: transform .15s ease; }
+  .kpi:hover { transform: translateY(-2px); }
+  .kpi .t { color: var(--mut); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .kpi .v { font-size: 26px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin: 2px 0 4px; }
+  .delta { font-size: 12px; font-weight: 700; border-radius: 6px; padding: 1px 7px; }
+  .delta.up { color: var(--up); background: color-mix(in srgb, var(--up) 12%, transparent); }
+  .delta.dn { color: var(--dn); background: color-mix(in srgb, var(--dn) 12%, transparent); }
+  .kpi canvas { position: absolute; right: 0; bottom: 0; opacity: .9; }
+
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 16px; min-width: 0; }
+  .card h2 { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .tabs { margin-left: auto; display: flex; gap: 4px; background: var(--card2); border-radius: 8px; padding: 3px; }
+  .tab { border: 0; background: none; color: var(--mut); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; cursor: pointer; transition: all .15s; }
+  .tab.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  #main { width: 100%; height: 240px; display: block; margin-top: 8px; cursor: crosshair; }
+  #donut { width: 150px; height: 150px; display: block; margin: 10px auto 4px; }
+  .legend { display: grid; gap: 7px; margin-top: 6px; font-size: 12.5px; }
+  .legend .row { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+  .legend b { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  .feed { max-height: 250px; overflow-y: auto; margin-top: 8px; display: grid; gap: 6px; }
+  .evt { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 7px 9px; background: var(--card2); border-radius: 9px; animation: in .3s ease; }
+  @keyframes in { from { opacity: 0; transform: translateY(-6px);} }
+  .evt .ic { width: 26px; height: 26px; border-radius: 8px; flex: none; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .evt time { margin-left: auto; color: var(--mut); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  th { text-align: left; color: var(--mut); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 7px 8px; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--ink); }
+  th .ar { opacity: .5; }
+  td { padding: 8px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .bar { height: 5px; border-radius: 3px; background: linear-gradient(90deg, var(--acc), var(--acc2)); min-width: 3px; }
+  .page { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+  footer { margin-top: 18px; color: var(--mut); font-size: 11.5px; text-align: center; }
+  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">⌁</div>
+    <div><h1>Pulse Analytics</h1><div class="sub">Product overview · last refreshed <span class="live"><i></i>LIVE</span></div></div>
+    <div class="clock" id="clock"></div>
+  </header>
+
+  <section class="kpis" id="kpis"></section>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Sessions
+        <div class="tabs" id="tabs">
+          <button class="tab on" data-r="24">24H</button><button class="tab" data-r="7">7D</button><button class="tab" data-r="30">30D</button>
+        </div>
+      </h2>
+      <canvas id="main"></canvas>
+    </div>
+    <div class="card">
+      <h2>Traffic sources</h2>
+      <canvas id="donut"></canvas>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="card">
+      <h2>Live activity</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+    <div class="card">
+      <h2>Top pages <span class="sub" style="font-weight:400">click a column to sort</span></h2>
+      <table id="tbl"><thead><tr>
+        <th data-k="page">Page <span class="ar">↕</span></th>
+        <th data-k="views">Views <span class="ar">↕</span></th>
+        <th data-k="conv">Conv. <span class="ar">↕</span></th>
+        <th></th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <footer>Sandbox data · rendered inside a WKWebView · resize the window to see the responsive grid</footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : Math.round(n).toString();
+const rnd = (a,b) => a + Math.random()*(b-a);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const dpr = window.devicePixelRatio || 1;
+
+function fit(cv) {
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  return cv.getContext("2d");
+}
+const ease = t => 1 - Math.pow(1 - t, 3);
+
+/* ---- clock ---- */
+function tick() { $("#clock").textContent = new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
+tick(); setInterval(tick, 1000);
+
+/* ---- KPI cards + sparklines ---- */
+const KPI = [
+  { t:"Revenue",      v: 48210, pre:"$", d:+12.4, seed:.7 },
+  { t:"Active users", v: 9214,          d:+8.1,  seed:.5 },
+  { t:"Conversion",   v: 3.42, suf:"%", d:-0.6,  seed:.6 },
+  { t:"Uptime",       v: 99.98, suf:"%",d:+0.02, seed:.9 },
+];
+KPI.forEach((k,i) => {
+  const el = document.createElement("div"); el.className = "kpi";
+  el.innerHTML = `<div class="t">${k.t}</div><div class="v">0</div>
+    <span class="delta ${k.d>=0?"up":"dn"}">${k.d>=0?"▲":"▼"} ${Math.abs(k.d)}%</span>
+    <canvas width="90" height="34" style="width:90px;height:34px"></canvas>`;
+  $("#kpis").appendChild(el);
+  const t0 = performance.now();
+  (function anim(t){
+    const p = ease(Math.min(1,(t-t0)/900));
+    el.querySelector(".v").textContent = (k.pre||"") + (k.v*p).toLocaleString(undefined,{maximumFractionDigits:k.v%1?2:0}) + (k.suf||"");
+    if (p<1) requestAnimationFrame(anim);
+  })(t0);
+  const cv = el.querySelector("canvas"), c = fit(cv);
+  const pts = Array.from({length:14},(_,j)=>k.seed+rnd(-.12,.12)+j*.008);
+  const mn=Math.min(...pts), mx=Math.max(...pts), W=90*dpr, H=34*dpr;
+  c.beginPath();
+  pts.forEach((p,j)=>c[j?"lineTo":"moveTo"](j/(pts.length-1)*W, H-4-((p-mn)/(mx-mn))*(H-10)));
+  c.strokeStyle=css("--acc2"); c.lineWidth=1.6*dpr; c.stroke();
+});
+
+/* ---- main chart ---- */
+let series = [];
+function gen(n){ return Array.from({length:n},(_,i)=>50+Math.sin(i/3)*18+rnd(-9,9)+i*(rnd(-.2,.6))); }
+const main = $("#main"), tip = document.createElement("div");
+tip.style.cssText = "position:fixed;pointer-events:none;background:"+css("--tip")+";color:"+css("--tipink")+";padding:5px 9px;border-radius:8px;font-size:12px;font-weight:600;opacity:0;transition:opacity .12s;z-index:9;font-variant-numeric:tabular-nums";
+document.body.appendChild(tip);
+
+function drawMain() {
+  const c = fit(main), W = main.width, H = main.height, pad = 8*dpr;
+  const mx = Math.max(...series)*1.1;
+  const pts = series.map((v,i)=>({x: pad + i/(series.length-1)*(W-2*pad), y: H-14- (v/mx)*(H-30)}));
+  c.clearRect(0,0,W,H);
+  // gridlines
+  c.strokeStyle = css("--line"); c.lineWidth = 1;
+  for (let g=1; g<=4; g++){ const y = H-14-g*(H-30)/4; c.beginPath(); c.moveTo(0,y); c.lineTo(W,y); c.stroke(); }
+  // area
+  const grad = c.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, css("--acc")+"55"); grad.addColorStop(1, css("--acc")+"00");
+  c.beginPath(); c.moveTo(pts[0].x, H-14);
+  pts.forEach(p=>c.lineTo(p.x,p.y)); c.lineTo(pts[pts.length-1].x, H-14); c.closePath();
+  c.fillStyle = grad; c.fill();
+  // line
+  c.beginPath(); pts.forEach((p,i)=>c[i?"lineTo":"moveTo"](p.x,p.y));
+  c.strokeStyle = css("--acc"); c.lineWidth = 2.2*dpr; c.lineJoin="round"; c.stroke();
+  return pts;
+}
+let pts = [];
+function setRange(r){ series = gen(+r===24?24:+r===7?28:30); pts = drawMain(); }
+setRange(24);
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest(".tab"); if(!b) return;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t===b));
+  setRange(b.dataset.r);
+});
+main.addEventListener("mousemove", e => {
+  const r = main.getBoundingClientRect(), x = (e.clientX-r.left)*dpr;
+  let best = 0; pts.forEach((p,i)=>{ if (Math.abs(p.x-x)<Math.abs(pts[best].x-x)) best=i; });
+  const p = pts[best], c = fit(main);
+  drawMain();
+  c.beginPath(); c.moveTo(p.x,0); c.lineTo(p.x,main.height); c.strokeStyle=css("--mut")+"66"; c.lineWidth=1; c.stroke();
+  c.beginPath(); c.arc(p.x,p.y,4*dpr,0,7); c.fillStyle=css("--acc"); c.fill();
+  c.lineWidth=2*dpr; c.strokeStyle=css("--card"); c.stroke();
+  tip.textContent = fmt(series[best]) + " sessions";
+  tip.style.left = (e.clientX+12)+"px"; tip.style.top = (e.clientY-30)+"px"; tip.style.opacity = 1;
+});
+main.addEventListener("mouseleave", ()=>{ tip.style.opacity=0; drawMain(); });
+
+/* ---- donut ---- */
+const SRC = [["Organic",42,"--acc"],["Referral",24,"--acc2"],["Social",19,"--up"],["Direct",15,"--mut"]];
+(function(){
+  const cv=$("#donut"), c=fit(cv), W=cv.width, cx=W/2, cy=W/2, R=W/2-6*dpr, r2=R*.62;
+  let a=-Math.PI/2;
+  SRC.forEach(([,v,col])=>{
+    const a2 = a + v/100*Math.PI*2;
+    c.beginPath(); c.arc(cx,cy,R,a+.02,a2-.02); c.arc(cx,cy,r2,a2-.02,a+.02,true); c.closePath();
+    c.fillStyle = css(col); c.fill(); a=a2;
+  });
+  $("#legend").innerHTML = SRC.map(([n,v,col])=>`<div class="row"><span class="dot" style="background:${css(col)}"></span>${n}<b>${v}%</b></div>`).join("");
+})();
+
+/* ---- live feed ---- */
+const EV = [["deploy","#6366f1","↻ v2.4.1 deployed to prod"],["signup","#16a34a","+ new signup · sofia@acme.co"],["alert","#f59e0b","▲ p95 latency 240ms on /api/search"],["pay","#06b6d4","$ invoice #8841 paid — $1,240"],["flag","#ec4899","⚑ feature flag `dash-v2` at 50%"],["signup","#16a34a","+ new signup · team@lumen.dev"],["deploy","#6366f1","↻ canary healthy, ramping to 100%"]];
+function feed() {
+  const [kind,color,txt] = EV[Math.floor(Math.random()*EV.length)];
+  const el = document.createElement("div"); el.className="evt";
+  el.innerHTML = `<span class="ic" style="background:${color}">${txt[0]}</span><span>${txt.slice(2)}</span><time>${new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</time>`;
+  const f = $("#feed"); f.prepend(el);
+  while (f.children.length > 8) f.lastChild.remove();
+}
+for (let i=0;i<5;i++) feed();
+setInterval(feed, 2400);
+
+/* ---- sortable table ---- */
+let ROWS = [["/dashboard",18432,4.2],["/pricing",12908,6.8],["/docs/quickstart",9877,3.1],["/changelog",7204,1.9],["/integrations",6312,2.7],["/blog/launch",5109,1.2]];
+let sk="views", sd=-1;
+function drawTable(){
+  const mx = Math.max(...ROWS.map(r=>r[1]));
+  $("#tbl tbody").innerHTML = ROWS.map(r=>`<tr>
+    <td class="page">${r[0]}</td><td>${r[1].toLocaleString()}</td><td>${r[2]}%</td>
+    <td style="width:34%"><div class="bar" style="width:${Math.round(r[1]/mx*100)}%"></div></td></tr>`).join("");
+}
+$("#tbl thead").addEventListener("click", e=>{
+  const th = e.target.closest("th"); if(!th||!th.dataset.k) return;
+  const k = th.dataset.k, idx = {page:0,views:1,conv:2}[k];
+  sd = (sk===k) ? -sd : -1; sk = k;
+  ROWS.sort((a,b)=> (a[idx]>b[idx]?1:a[idx]<b[idx]?-1:0)*sd);
+  drawTable();
+});
+drawTable();
+
+window.addEventListener("resize", () => { pts = drawMain(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { pts = drawMain(); });
+</script>
+</body>
+</html>
