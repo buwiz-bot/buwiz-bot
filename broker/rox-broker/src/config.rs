@@ -17,6 +17,8 @@ pub struct Config {
     pub data: Option<PathBuf>,
     pub node: PathBuf,
     pub node_script: PathBuf,
+    /// More environment for Node (the line's address and token).
+    pub node_env: Vec<(String, String)>,
 }
 
 impl Config {
@@ -40,7 +42,23 @@ impl Config {
             Some(p) => p.parse().map_err(|_| format!("the port {p} is not a number"))?,
             None => 8787,
         };
-        Ok(Self { port, data, node, node_script })
+        Ok(Self { port, data, node, node_script, node_env: Vec::new() })
+    }
+
+    /// The trust store Node reads (v1/trust.mjs): `ROX_TRUST_FILE`, else
+    /// `trust.json` beside the script (a bundle), else `v1/trust.json`
+    /// (a checkout).
+    pub fn trust_file(&self, env: Option<&str>) -> PathBuf {
+        if let Some(f) = env.filter(|e| !e.is_empty()) {
+            return PathBuf::from(f);
+        }
+        let dir = self.node_script.parent().unwrap_or(std::path::Path::new("."));
+        let beside = dir.join("trust.json");
+        if beside.exists() {
+            beside
+        } else {
+            dir.join("v1").join("trust.json")
+        }
     }
 
     /// Node's data dir: `--data`, else `GROK_DATA_DIR`, else the folder

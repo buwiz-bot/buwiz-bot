@@ -18,25 +18,41 @@ use crate::js;
 /// A refusal with the spec's code (14.1; `v1/errors.mjs`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct V1Error {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
+    pub details: Option<Value>,
 }
 
 impl V1Error {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { code: code.into(), message: message.into(), details: None }
+    }
+
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    /// `refused` with code `code` and `message`; for `?` in a host call.
+    pub fn err<T>(code: impl Into<String>, message: impl Into<String>) -> Result<T, Self> {
+        Err(Self::new(code, message))
     }
 
     /// Whether the spec's table calls the code retryable.
     pub fn retryable(&self) -> bool {
-        matches!(self.code, "rate_limited" | "timeout" | "plugin_unavailable" | "plugin_restarted" | "internal")
+        matches!(self.code.as_str(), "rate_limited" | "timeout" | "plugin_unavailable" | "plugin_restarted" | "internal")
     }
 
     /// The wire form: `{ok: false, code, message, retryable}`.
     pub fn body(&self) -> Value {
-        json!({"ok": false, "code": self.code, "message": js::slice_utf16(&self.message, 500), "retryable": self.retryable()})
+        let mut body = json!({"ok": false, "code": self.code, "message": js::slice_utf16(&self.message, 500), "retryable": self.retryable()});
+        if let Some(d) = &self.details {
+            body["details"] = d.clone();
+        }
+        body
     }
 }
+
 
 /// Whether `s` is a whole `kind` name of the v1 grammar table
 /// (`grammar.mjs` `V1`, spec 3).
