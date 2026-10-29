@@ -3,3 +3,8 @@ target/
 *.log
 .DS_Store
 .env
+
+# Private, managed by stow (hexuria/rox-stow)
+.stow/
+drafts/
+.stow-README.md
