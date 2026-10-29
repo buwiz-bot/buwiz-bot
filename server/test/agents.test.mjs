@@ -355,3 +355,26 @@ test("the agent tools: in an agent's own turns only; no making agents while answ
   assert.equal(r.listed.length, 2, "Boss and Piccolo's own helper");
   assert.match(r.relay, /^hop_limit/);
 });
+
+test("A2A-08 a card the recipient's hidden turn made waits in its own chat, and the conversation says where", () => {
+  const r = JSON.parse(inServer(`
+    const { store } = await import("./src/state.mjs");
+    const { agents, cardsToChat } = await import("./src/agents-wire.mjs");
+    const piccolo = store.bots.find((b) => b.id === "piccolo");
+    const boss = store.bots.find((b) => b.id === "boss");
+    const sent = agents.send(piccolo, { to: ["boss"], subject: "Allow sending", text: "Can you file it?", expects_reply: false });
+    const t = agents.conversation(sent.conversation);
+    const msg = t.turns.at(-1).message;
+    cardsToChat(boss, msg, t, { linkTurn: { links: [{ app: "dev.goldcoders.bir/card-quick", title: "Allow once?" }] } });
+    const chat = store.list.find((x) => x.id === boss.threadId);
+    console.log(JSON.stringify({ card: chat.turns.at(-1), notice: t.turns.at(-1) }));
+    process.exit(0);
+  `));
+
+  assert.equal(r.card.role, "ai");
+  assert.equal(r.card.text, "For Piccolo's request · Allow sending");
+  assert.equal(r.card.links[0].title, "Allow once?");
+  assert.equal(r.card.agent.from.id, "piccolo");
+  assert.equal(r.notice.notice.kind, "agents_waiting");
+  assert.equal(r.notice.text, "Waiting for your OK in Boss's chat");
+});
