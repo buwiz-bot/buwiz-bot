@@ -20,6 +20,8 @@ ed25519-dalek = "2.2"
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
+# the protocol pieces shared with the broker (JCS, keys, ids, tokens)
+rox-v1 = { path = "../broker/rox-v1" }
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
