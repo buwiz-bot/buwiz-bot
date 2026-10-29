@@ -239,7 +239,9 @@ export async function chatReply(prompt, thread, job) {
             content: t.name ? `[built widget ${t.name}]` : t.text || "",
           },
     ),
-    { role: "user", content: await userContent(prompt, job?.extra, job?.ctx) },
+    // agent.mjs imports this module: userContent comes in late (the bundle
+    // shares one scope, so only unbundled runs had missed it)
+    { role: "user", content: await (await import("./agent.mjs")).userContent(prompt, job?.extra, job?.ctx) },
   ];
   if (MOCK) return "_(mock reply — no model configured)_";
   // userContent speaks Anthropic's block shapes; chat/completions wants

@@ -15,6 +15,9 @@ import { driveType } from "./drive.mjs";
 // Messages endpoint with that model instead (fast = its "--fast" variant,
 // effort as output_config.effort / reasoning_effort).
 export const modelCtx = new AsyncLocalStorage();
+// The bot a delivery turn answers as (agents.mjs): in an agents' thread
+// several bots take part, so the turn names its own instead of the thread.
+export const actingBot = new AsyncLocalStorage();
 
 // Permanent ids: UUID v7 (RFC 9562) — 48-bit unix-ms timestamp, version 7,
 // variant 10, the rest random. rand_a (12 bits) counts up within the same
@@ -203,6 +206,10 @@ try {
 // Marketplace plugins the user installed (cloned under plugins/<name>).
 try { db.exec("CREATE TABLE IF NOT EXISTS installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER)"); } catch {}
 try { db.exec("ALTER TABLE turns ADD COLUMN v INTEGER"); } catch {}
+// An agents' thread's mark (agents.mjs), and what an agent made by another
+// agent keeps: its parent, its purpose, a helper's task, who it hears from.
+try { db.exec("ALTER TABLE threads ADD COLUMN agents TEXT"); } catch {}
+try { db.exec("ALTER TABLE bots ADD COLUMN extra TEXT"); } catch {}
 // Permanent UUID v7 ids (turns.id is a per-persist rowid, not stable).
 try { db.exec("ALTER TABLE threads ADD COLUMN uid TEXT"); } catch {}
 try { db.exec("ALTER TABLE turns ADD COLUMN uid TEXT"); } catch {}
@@ -271,11 +278,12 @@ function loadStore() {
       hidden: !!t.hidden,
       archived: !!t.archived,
       ...(t.routine ? { routine: JSON.parse(t.routine) } : {}),
+      ...(t.agents ? { agents: JSON.parse(t.agents) } : {}),
       turns: db
         .prepare("SELECT * FROM turns WHERE thread_id=? ORDER BY seq")
         .all(t.id)
         .map((u) =>
-          u.role === "user" || u.role === "notice"
+          u.role === "user" || u.role === "notice" || u.role === "agent_message"
             ? { role: u.role, ...(u.uid ? { id: u.uid } : {}), text: u.text, ...(u.meta ? JSON.parse(u.meta) : {}) }
             : {
                 role: "ai",
@@ -314,6 +322,7 @@ function loadStore() {
       instructions: b.instructions ?? botDefaults(b.name).instructions,
       memories: jsonList(b.memories),
       integrations: jsonList(b.integrations),
+      ...(b.extra ? JSON.parse(b.extra) : {}),
     });
   s.sections = JSON.parse(metaGet("sections") || "[]");
   return s;
@@ -369,6 +378,12 @@ export function sendRanged(req, res, path, type) {
   return res.end(buf.subarray(start, end + 1));
 }
 
+// The bots table's `extra`: what agents.mjs adds to a bot made by an agent.
+const botExtra = (b) => {
+  const x = { made_by: b.made_by, purpose: b.purpose, helper: b.helper, accepts: b.accepts };
+  return Object.values(x).some((v) => v !== undefined) ? JSON.stringify(x) : null;
+};
+
 export function persist() {
   db.exec("BEGIN");
   try {
@@ -376,10 +391,10 @@ export function persist() {
     db.exec("DELETE FROM turns");
     db.exec("DELETE FROM bots");
     const it = db.prepare(
-      "INSERT INTO threads(id,title,ord,hidden,archived,uid,routine) VALUES(?,?,?,?,?,?,?)",
+      "INSERT INTO threads(id,title,ord,hidden,archived,uid,routine,agents) VALUES(?,?,?,?,?,?,?,?)",
     );
     const ib = db.prepare(
-      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const iu = db.prepare(
       `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta,v,uid)
@@ -391,10 +406,10 @@ export function persist() {
         b.image || null, b.crop ? JSON.stringify(b.crop) : null,
         b.model || null, b.effort || null, b.fast ? 1 : 0, b.label || null,
         b.description ?? null, b.instructions ?? null,
-        JSON.stringify(b.memories || []), JSON.stringify(b.integrations || [])),
+        JSON.stringify(b.memories || []), JSON.stringify(b.integrations || []), botExtra(b)),
     );
     store.list.forEach((t, i) => {
-      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()), t.routine ? JSON.stringify(t.routine) : null);
+      it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()), t.routine ? JSON.stringify(t.routine) : null, t.agents ? JSON.stringify(t.agents) : null);
       t.turns.forEach((u, j) => {
         // a still-building placeholder is in-flight work, not history
         if (u.building) return;
@@ -402,11 +417,12 @@ export function persist() {
           t.id, j, u.role, u.text ?? null, u.name ?? null, u.label ?? null,
           u.caption ?? null, u.reaction ?? null, u.retries ?? 0,
           u.widget ? 1 : 0,
-          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length || u.suggest?.length || u.v1Attachments?.length || u.routine || u.notice
+          u.reply || u.attachments?.length || u.files?.length || u.art || u.links?.length || u.suggest?.length || u.v1Attachments?.length || u.routine || u.notice || u.message || u.agent
             ? JSON.stringify({
               reply: u.reply, attachments: u.attachments, files: u.files, art: u.art, links: u.links,
               ...(u.suggest?.length ? { suggest: u.suggest } : {}), ...(u.v1Attachments?.length ? { v1Attachments: u.v1Attachments } : {}),
               ...(u.routine ? { routine: u.routine } : {}), ...(u.notice ? { notice: u.notice } : {}),
+              ...(u.message ? { message: u.message } : {}), ...(u.pending?.length ? { pending: u.pending } : {}), ...(u.agent ? { agent: u.agent } : {}),
             })
             : null,
           u.v ?? null,
@@ -443,6 +459,8 @@ export const findThread = (key) =>
 // The bot a thread answers as: the one that owns it, else — a routine's
 // thread — the bot of the chat the routine reports to.
 export const threadBot = (id) => {
+  const acting = actingBot.getStore();
+  if (acting) return acting;
   const t = findThread(id);
   const own = (x) => store.bots.find((b) => b.threadId === x);
   return own(t?.id ?? id) || (t?.routine?.thread ? own(t.routine.thread) : undefined);
@@ -593,6 +611,10 @@ export function turnsJson(thread = activeThread()) {
     // the chat it reports to (v1/routine-threads.mjs)
     ...(t.routine ? { routine: t.routine } : {}),
     ...(t.notice ? { notice: t.notice } : {}),
+    // an agents' thread's message, and a chat turn an agent's reply woke
+    // (agents.mjs)
+    ...(t.message ? { message: t.message } : {}),
+    ...(t.agent ? { agent: t.agent } : {}),
     art: art(t),
     building: t.building || undefined,
     status: t.status || undefined,
