@@ -134,12 +134,15 @@ fn hub_on_forwards_office_routes_and_answers_unknown_paths_404() {
     assert_eq!((status, missing.as_str()), (200, r#"{"name":"a.docx","ext":"docx","size":0,"kind":"docx","variant":"docx","error":"missing"}"#));
     // the fixture answers 404 "no" to what it doesn't know: forwarded
     assert_eq!(request(b.port, "GET", "/file/render?path=a.md", b"").unwrap(), (404, "no".to_owned()));
-    assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "no".to_owned()));
-    assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (404, "no".to_owned()));
+    // deleted in 6.2 (no caller): no entry, so the hub's own 404
+    assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "not found".to_owned()));
+    // the hub's since 6.2 (/mermaid*) and 6.3 (/popout)
+    assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (200, r#"{"ok":false,"error":"no such module"}"#.to_owned()));
+    assert_eq!(request(b.port, "GET", "/mermaid", b"").unwrap(), (404, "not found".to_owned()));
     // a path no broker has: Node's last resort, from the hub (Node's office
     // role would answer it 501)
     assert_eq!(request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap(), (404, "not found".to_owned()));
-    assert_eq!(b.seen(), ["GET /file/render?path=a.md", "POST /highlight", "POST /popout"]);
+    assert_eq!(b.seen(), ["GET /file/render?path=a.md"]);
 }
 
 #[test]
