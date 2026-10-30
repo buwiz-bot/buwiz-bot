@@ -122,11 +122,43 @@ its Info.plist changes, or to repackage the broker: it also puts
 `ROX_BACKGROUND=1` or `ROX_DATA_DIR` set), Rox starts that broker detached,
 logging to `~/Library/Logs/Rox/broker.log` (`app/src/broker.rs`).
 
+The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
+from Rox: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
+`Contents/Resources/broker/bin/`, from `NSH_BIN`/`NSH_HOST_BIN`, else the
+nsh submodule's release build (`nsh/target/release`), else Grok Shell.app's
+`Resources/server/`.
+
 ```sh
 app/bundle-dev.sh                       # once
 open -a ~/Applications/Rox.app          # launch Rox through the bundle
 open "rox://chat/t1?m=10"               # thread t1, turn 10
 ```
+
+### Switching the live broker to Rox.app's
+
+`scripts/broker-live use-rox` stops whatever broker holds port 8787 and
+starts Rox.app's own `rox-broker` with the same command line Rox uses.
+Rox then finds it answering, and later launches start the same broker if
+it is not running.
+
+1. `app/bundle-dev.sh`, then `ls ~/Applications/Rox.app/Contents/Resources/broker/{rox-broker,bin/nsh,bin/nsh-macos-host}`.
+2. `scripts/broker-live backup`. Check that it prints a
+   `backups/<time>/` dir holding `app.db`, `server/` and `rox-broker/`.
+3. `scripts/broker-live use-rox`. Check that it ends with
+   `Rox.app's rox-broker on 8787`. If the broker doesn't come up, the
+   script starts Node again and exits 1.
+4. `scripts/broker-live status`. Check:
+   - `health: 200` and `mode: rox`;
+   - every `plugin:` line is running;
+   - every `routine:` line ran again with no `error:`;
+   - `keychain dialog: none`.
+   Then build a widget in Rox, and watch `~/Library/Logs/Rox/broker.log`.
+
+Rollback: `scripts/broker-live use-node` brings back the Node broker, and
+`use-rust` brings back Grok Shell.app's rox-broker with Node behind it. Both
+need Grok Shell.app's `Resources/server/` (`RES`). After either, run
+`status` again and check that `mode:` reads `node` or `rust`, then make the
+same checks as in step 4.
 
 Links reach the running Rox only when it was launched through the bundle. A
 bare `./target/debug/rox` is a different app to macOS, so a link would start
