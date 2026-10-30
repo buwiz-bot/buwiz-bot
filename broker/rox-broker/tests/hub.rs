@@ -47,6 +47,10 @@ fn start(name: &str, hub: bool) -> Broker {
         .arg("--data")
         .arg(&data)
         .env("FIXTURE_LOG", &log)
+        // never the real opencodex on 8080 (GET /models is a hub route)
+        .env("OPENCODEX_URL", "http://127.0.0.1:9")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        .env("GEN_BASE_URL", "http://127.0.0.1:9")
         .env_remove("ROX_BROKER_HUB")
         .env_remove("ROX_NODE_ROLE")
         .stdout(std::process::Stdio::null());
@@ -119,12 +123,15 @@ fn hub_on_still_forwards_office_routes_and_unknown_paths() {
     // the fixture answers 404 "no" to what it doesn't know: forwarded
     assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap(), (404, "no".to_owned()));
+    // deleted in 6.2: no entry, so Node's (its office role refuses it)
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "no".to_owned()));
-    assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (404, "no".to_owned()));
+    // the hub's since 6.2 (/mermaid*) and 6.3 (/popout)
+    assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (200, r#"{"ok":false,"error":"no such module"}"#.to_owned()));
+    assert_eq!(request(b.port, "GET", "/mermaid", b"").unwrap(), (404, "not found".to_owned()));
     let (status, echo) = request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap();
     assert_eq!(status, 200);
     assert!(echo.contains(r#""url":"/echo?x=1""#) && echo.contains(r#""body":"{\"a\":1}""#), "{echo}");
-    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /popout", "POST /echo?x=1"]);
+    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /echo?x=1"]);
 }
 
 #[test]
