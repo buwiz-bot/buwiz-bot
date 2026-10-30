@@ -5,10 +5,8 @@
 //! the one the stream drew.
 //!
 //! The Library's side (5.7b: `genAppIcon`, `appInfo`, `updateAppMeta`) is
-//! the [`AppMetaSeam`] in `ctx.ext`, which 5.7b fills; until then an icon
-//! is not drawn and `app_details_update` answers that it is not ported.
-//! `setAppCols` is the one `apps` write the tool needs before its version
-//! file is named, done here as appmeta.mjs does it.
+//! the [`AppMetaSeam`] in `ctx.ext`, which 5.7b's `library::appmeta` fills
+//! (`routes::apps::install`). `setAppCols` and `iconPath` are its own.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +16,7 @@ use serde_json::{json, Value};
 
 use super::{Out, Run};
 use crate::hub::ctx::HubCtx;
+use crate::hub::library::appmeta;
 use crate::hub::pipeline::{self, versions, Dirs};
 use crate::hub::store::{uuidv7, Turn};
 use crate::hub::types::BoxFuture;
@@ -28,7 +27,7 @@ pub trait AppMeta: Send + Sync {
     /// `genAppIcon(name, prompt, model)`: the icon drawn; the backend's name.
     fn gen_icon(&self, ctx: Arc<HubCtx>, name: String, prompt: String, model: String) -> BoxFuture<'static, Result<String, String>>;
     /// `updateAppMeta(name, meta)` then `appInfo(name)`: the app's details.
-    fn update(&self, ctx: &HubCtx, name: &str, meta: &Value) -> Result<Value, String>;
+    fn update(&self, ctx: Arc<HubCtx>, name: String, meta: Value) -> BoxFuture<'static, Result<Value, String>>;
 }
 
 #[derive(Clone)]
@@ -128,20 +127,6 @@ pub fn clear_revising(run: &Run) {
             }
         }
     });
-}
-
-/// appmeta.mjs `setAppCols(name, cols)`: the `apps` row, made if missing.
-fn set_app_cols(ctx: &HubCtx, name: &str, cols: &[(&str, Option<String>)]) -> Result<(), String> {
-    ctx.db.with(|c| {
-        c.execute("INSERT INTO apps(name) VALUES(?) ON CONFLICT(name) DO NOTHING", [name])?;
-        if !cols.is_empty() {
-            let sql = format!("UPDATE apps SET {} WHERE name=?", cols.iter().map(|(k, _)| format!("{k}=?")).collect::<Vec<_>>().join(","));
-            let mut params: Vec<&dyn rusqlite::ToSql> = cols.iter().map(|(_, v)| v as &dyn rusqlite::ToSql).collect();
-            params.push(&name);
-            c.execute(&sql, params.as_slice())?;
-        }
-        Ok(())
-    })
 }
 
 /// The model's `const S = "tipcalc"` (a self-named state key) pinned to the
@@ -305,7 +290,8 @@ pub async fn generate_app(run: &Run, input: &Value) -> Result<Out, String> {
     if !description.is_empty() {
         cols.push(("description", Some(description)));
     }
-    set_app_cols(ctx, &name, &cols)?;
+    let cols: Vec<(&str, rusqlite::types::Value)> = cols.into_iter().map(|(k, v)| (k, v.map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text))).collect();
+    appmeta::set_app_cols(ctx, &name, &cols)?;
     // BUG: toolGenerateApp records `job.prompt`, which no job carries, so a
     // tool-made version's prompt is the caption or NULL (LOOP-04)
     let prompt = caption.clone();
@@ -343,7 +329,7 @@ pub async fn generate_app(run: &Run, input: &Value) -> Result<Out, String> {
     println!("✓ {name}@v{v}.tsx via {} (tool)", run.label());
     // the icon draws in the background: never blocks or fails the result
     let icon_prompt = text_of(input.get("icon_prompt")).trim_matches(js::is_space).to_owned();
-    if !ctx.store.gen_dir().join(&name).join("icon.png").exists() || (rev.is_some() && !icon_prompt.is_empty()) {
+    if !appmeta::icon_path(ctx, &name).exists() || (rev.is_some() && !icon_prompt.is_empty()) {
         if let Some(m) = ctx.ext.get::<AppMetaSeam>().cloned() {
             let model = run.turn.model.as_ref().map(|m| m.model.clone()).filter(|m| !m.is_empty()).unwrap_or_else(|| run.settings.model.clone());
             let (ctx2, name2) = (ctx.clone(), name.clone());
@@ -581,7 +567,8 @@ pub async fn app_icon(run: &Run, input: &Value) -> Result<Out, String> {
     run.set_job("generating", "Sketching something up");
     let Some(m) = run.ctx.ext.get::<AppMetaSeam>().cloned() else { return Err("not ported: app icons (5.7b)".into()) };
     let model = run.turn.model.as_ref().map(|m| m.model.clone()).filter(|m| !m.is_empty()).unwrap_or_else(|| run.settings.model.clone());
-    let prompt = input.get("prompt").map(js::string_of).unwrap_or_else(|| "undefined".into());
+    // genAppIcon reads it as `String(prompt || "")`
+    let prompt = text_of(input.get("prompt"));
     let backend = m.0.gen_icon(run.ctx.clone(), name.clone(), prompt, model).await?;
     Ok(Out::ok(format!("{} has a new icon (drawn by {backend}).", crate::hub::store::json::template(input.get("name")))))
 }
@@ -605,7 +592,7 @@ pub async fn app_details_update(run: &Run, input: &Value) -> Result<Out, String>
             }
         }
     }
-    let i = m.0.update(&run.ctx, &name, &Value::Object(meta))?;
+    let i = m.0.update(run.ctx.clone(), name, Value::Object(meta)).await?;
     let t = |k: &str| crate::hub::store::json::template(i.get(k));
     Ok(Out::ok(format!(
         "{} details: title \"{}\", file {}, description \"{}\", size {}×{}",
