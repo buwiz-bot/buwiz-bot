@@ -10,10 +10,18 @@
 # It also packages the broker Rox starts when none answers (plan 7.2) into
 # Contents/Resources/broker/: rox-broker (a release build with
 # RUSTC_WRAPPER= unless ROX_BROKER_BIN names one) and the static files it
-# serves, `server/` being its --assets and `node_modules/` beside it.
+# serves, `server/` being its --assets and `node_modules/` beside it, and
+# bin/nsh and bin/nsh-macos-host (widget builds and pop-outs; a Finder-
+# launched Rox has no nsh on PATH). nsh comes from, in order: NSH_BIN and
+# NSH_HOST_BIN; the release build of this checkout's nsh submodule
+# (nsh/target/release, `cargo build --release -p nsh-cli -p nsh-macos-host`
+# in nsh/); Grok Shell.app's Resources/server/ (GROK_SHELL_APP, default
+# ../grok-shell/dist/Grok Shell.app beside this repo).
 #   ROX_APP=<dir>/Rox.app   bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices
 #   ROX_BROKER_BIN=<path>   the rox-broker to package
+#   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
+#                           package (both, or neither)
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
 #                           server/src/office/editor/dist; built by
 #                           `npm run build:office-editor` in server/)
@@ -92,10 +100,25 @@ if [ -z "${ROX_BROKER_BIN:-}" ]; then
   (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-broker)
   ROX_BROKER_BIN="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release/rox-broker"
 fi
+if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
+  GROK_SHELL_APP="${GROK_SHELL_APP:-$ROOT/../grok-shell/dist/Grok Shell.app}"
+  for d in "$ROOT/nsh/target/release" "$GROK_SHELL_APP/Contents/Resources/server"; do
+    if [ -x "$d/nsh" ] && [ -x "$d/nsh-macos-host" ]; then
+      NSH_BIN="$d/nsh" NSH_HOST_BIN="$d/nsh-macos-host"
+      break
+    fi
+  done
+fi
+if [ ! -x "${NSH_BIN:-}" ] || [ ! -x "${NSH_HOST_BIN:-}" ]; then
+  echo "no nsh and nsh-macos-host: build the nsh submodule (cargo build --release -p nsh-cli -p nsh-macos-host in nsh/), or set NSH_BIN and NSH_HOST_BIN" >&2
+  exit 1
+fi
 # rm first: a copy over a binary keeps its old code signature
 rm -rf "$B"
-mkdir -p "$B/server/office/editor" "$B/node_modules/mermaid/dist"
+mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules/mermaid/dist"
 cp "$ROX_BROKER_BIN" "$B/rox-broker"
+cp "$NSH_BIN" "$B/bin/nsh"
+cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
 cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
 cp -R "$SERVER/src/office/seeds" "$B/server/office/seeds"
@@ -115,4 +138,4 @@ cp -R "$SERVER/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
 if [ "$APP" = "$DEFAULT_APP" ]; then
   "$LSREGISTER" -f "$APP"
 fi
-echo "bundled $APP -> $BIN (broker: $B)"
+echo "bundled $APP -> $BIN (broker: $B; nsh: $NSH_BIN)"

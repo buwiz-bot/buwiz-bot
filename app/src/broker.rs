@@ -147,9 +147,14 @@ pub fn data_dir(home: &Path) -> PathBuf {
 /// The command line for `broker` (the bundle's `rox-broker`): the default
 /// origin's port, today's data dir, the static files beside it
 /// (`broker/server`), no Node; the hub on, hosting v1 plugins and MCP.
+/// `nsh` and `nsh-macos-host` are the bundle's (`broker/bin/`, as Grok
+/// Shell.app set them): a Finder-launched Rox has no nsh on PATH. The
+/// widget pipeline runs `nsh build`/`check`, pop-outs `nsh-macos-host`,
+/// which loads generated modules from `NSH_CHUNK_DIR`.
 pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
     let data = data_dir(home);
-    let assets = broker.parent().unwrap_or(Path::new(".")).join("server");
+    let dir = broker.parent().unwrap_or(Path::new("."));
+    let assets = dir.join("server");
     let args = vec![
         "--port".into(),
         port.to_string().into(),
@@ -164,6 +169,9 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
         ("ROX_BROKER_V1_HOST", "1".into()),
         ("ROX_BROKER_MCP_HOST", "1".into()),
         ("GROK_DATA_DIR", data.clone().into()),
+        ("NSH", dir.join("bin").join("nsh").into()),
+        ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
+        ("NSH_CHUNK_DIR", data.join("chunks").into()),
     ];
     let env_remove = vec![
         "GPUI_AGENT",
@@ -395,12 +403,24 @@ mod tests {
                 ("ROX_BROKER_HUB", "1"),
                 ("ROX_BROKER_V1_HOST", "1"),
                 ("ROX_BROKER_MCP_HOST", "1"),
-                ("GROK_DATA_DIR", data)
+                ("GROK_DATA_DIR", data),
+                ("NSH", "/A/Rox.app/Contents/Resources/broker/bin/nsh"),
+                ("NSH_HOST", "/A/Rox.app/Contents/Resources/broker/bin/nsh-macos-host"),
+                ("NSH_CHUNK_DIR", "/Users/u/Library/Application Support/Grok Shell/chunks")
             ]
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
         assert_eq!(l.data, PathBuf::from(data));
         assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Rox/broker.log"));
+    }
+
+    #[test]
+    fn nsh_is_the_bundles_and_chunks_go_to_the_data_dir() {
+        let l = launch(Path::new("/B/Rox.app/Contents/Resources/broker/rox-broker"), Path::new("/Users/v"), 8800);
+        let get = |k: &str| l.env.iter().find(|(n, _)| *n == k).map(|(_, v)| PathBuf::from(v));
+        assert_eq!(get("NSH"), Some(PathBuf::from("/B/Rox.app/Contents/Resources/broker/bin/nsh")));
+        assert_eq!(get("NSH_HOST"), Some(PathBuf::from("/B/Rox.app/Contents/Resources/broker/bin/nsh-macos-host")));
+        assert_eq!(get("NSH_CHUNK_DIR"), Some(l.data.join("chunks")));
     }
 
     #[test]
