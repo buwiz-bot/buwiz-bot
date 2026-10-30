@@ -1,6 +1,6 @@
 //! The colors (and fonts, radius, weights) Pele's `--pele-*` tokens take in
-//! Rox: its own look by default — the ten the Node helper set
-//! (`pele/serve.mjs` `PALETTES`), Pele's own fallbacks for the rest — and
+//! Rox: its own look by default — the ten the old Node helper set (its
+//! `PALETTES`), Pele's own fallbacks for the rest — and
 //! the user's overrides on top, per mode (`mermaid.colors`: the `colors`
 //! of Rox's own `/state/rox-mermaid`, as its zoom and drafts are kept).
 

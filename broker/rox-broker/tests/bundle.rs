@@ -43,7 +43,6 @@ fn a_bundled_broker_runs_without_node_and_serves_its_assets() {
     let _ = std::fs::remove_dir_all(&root);
     let (assets, data) = (root.join("broker/server"), root.join("data"));
     write(&assets.join("office/viewer.html"), "<!doctype html><title>viewer fixture</title>");
-    write(&root.join("broker/node_modules/mermaid/dist/mermaid.min.js"), "/* mermaid fixture */");
     std::fs::create_dir_all(&data).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_rox-broker"))
         // a Node that can't start: --no-node must never try it
@@ -75,8 +74,6 @@ fn a_bundled_broker_runs_without_node_and_serves_its_assets() {
     // up with no Node to wait for
     assert_eq!(health.0, 200, "{}", health.1);
     assert!(health.1.contains(r#""ok":true"#), "{}", health.1);
-    let (status, body) = request(PORT, "/mermaid.js").unwrap();
-    assert_eq!((status, body.as_str()), (200, "/* mermaid fixture */"));
     let (status, body) = request(PORT, "/office/").unwrap();
     assert_eq!(status, 200);
     assert!(body.contains("viewer fixture"), "{body}");

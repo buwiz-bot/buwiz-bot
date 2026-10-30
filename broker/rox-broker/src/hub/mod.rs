@@ -112,7 +112,6 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     agent::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
-    routes::mermaid::install(routes, ctx);
     routes::popout::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);

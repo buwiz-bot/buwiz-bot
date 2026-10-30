@@ -214,21 +214,11 @@ nsh itself, delete the block. For a fair comparison with other apps, use
 
 ## Mermaid diagrams (Pele)
 
-```` ```mermaid ```` fences render natively: `app/pele/serve.mjs` runs
-[Pele](https://pele.run) (`pele.js`, vendored, MIT) behind a localhost
-port, resolves its CSS variables to Rox's palette and rasterizes with
-`@resvg/resvg-js` (nsh's SVG renderer draws no `<text>`), and Rox shows
-the PNG as an image — no WKWebView per diagram. Rox starts the helper on
-the first diagram and it exits with Rox.
-
-- One-time setup: `cd app/pele && npm install` (pinned in
-  `package.json`; `node_modules/` is ignored).
-- Node is found at `/opt/homebrew/bin/node`, `/usr/local/bin/node` or on
-  `PATH`; `ROX_NODE` overrides. `ROX_PELE_DIR` points at the helper's
-  folder (a packaged app must ship `pele/` and set it).
-- If the helper can't start or a diagram doesn't parse, the block falls
-  back to mermaid.js in a web view (the server's `/mermaid` page). The
-  full-screen lightbox still uses that page.
+```` ```mermaid ```` fences render natively: Pele ported to Rust
+([hexuria/pele-rs](https://github.com/hexuria/pele-rs), MIT) lays the
+diagram out, and nsh's canvas draws the scene in Rox's palette
+(`app/src/mermaid/`) — no Node, no web view. A diagram Pele does not draw
+shows Pele's message and line in its place.
 
 ## Smoke build without ra-jit
 
@@ -245,7 +235,7 @@ app/src/hot.rs the patchable UI root
 app/src/live.rs the ra-jit bridge — store anchor; don't edit while live
 app/src/store.rs the model, as anchored signals
 app/src/mini.rs the mini-app host (scaled AppView per card)
-app/src/mermaid.rs + app/pele/ native Mermaid via the Pele helper
+app/src/mermaid/ native Mermaid via pele-rs and nsh's canvas
 nsh/           the UI engine (submodule; crates/nsh-platform-macos is the AppKit backend)
 blaze/         ra-jit, the live-patching toolchain (submodule)
 ```

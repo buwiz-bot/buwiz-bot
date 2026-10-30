@@ -148,8 +148,9 @@ fn hub_on_answers_every_route_and_unknown_paths_404() {
     assert!(status == 200 && root.starts_with("app-server ok — "), "{status} {root}");
     // deleted in 6.2 (no caller): no entry, so the hub's own 404
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "not found".to_owned()));
-    // the hub's since 6.2 (/mermaid*) and 6.3 (/popout)
+    // the hub's since 6.3 (/popout)
     assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (200, r#"{"ok":false,"error":"no such module"}"#.to_owned()));
+    // deleted: Rox draws every diagram natively
     assert_eq!(request(b.port, "GET", "/mermaid", b"").unwrap(), (404, "not found".to_owned()));
     // a path no broker has: Node's last resort, from the hub (Node's office
     // role would answer it 501)

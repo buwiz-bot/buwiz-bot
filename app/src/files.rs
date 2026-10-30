@@ -89,32 +89,11 @@ fn is_svg(uri: &str) -> bool {
     u.split('?').next().unwrap_or("").ends_with(".svg")
 }
 
-/// `mermaidUrl` — base64url(utf8(code)) on the server's mermaid page.
-fn mermaid_url(code: &str, mode: &str) -> String {
-    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = code.as_bytes();
-    let mut out = String::with_capacity(bytes.len() * 4 / 3 + 4);
-    for ch in bytes.chunks(3) {
-        let n = ch.iter().fold(0u32, |a, b| (a << 8) | *b as u32) << (8 * (3 - ch.len()));
-        for i in 0..(ch.len() + 1) {
-            let c = B64[((n >> (18 - 6 * i)) & 63) as usize] as char;
-            out.push(match c {
-                '+' => '-',
-                '/' => '_',
-                c => c,
-            });
-        }
-    }
-    let theme = if dark() { "dark" } else { "light" };
-    format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::backend())
-}
-
 /// `MermaidBlock` (md.tsx:119): a ```mermaid fence drawn natively — Pele
 /// ported to Rust lays it out, nsh's canvas draws it (`mermaid::diagram`)
-/// at its natural size, scaled down to the column. A type the port does not
-/// register keeps the old way: the Node helper's image, then mermaid.js in
-/// a web view; text Pele rejects shows its message. A press opens the
-/// lightbox; a node's `click` link opens through `links.rs`.
+/// at its natural size, scaled down to the column. A diagram Pele does not
+/// draw shows its message instead. A press opens the lightbox; a node's
+/// `click` link opens through `links.rs`.
 pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
     let code = code.to_owned();
     view().max_w(percentage(1.0)).child(dynamic(move || {
@@ -126,21 +105,7 @@ pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
                 let code = code.clone();
                 diagram_canvas(g, None).label("Open diagram").on_press(move || open_diagram(&code)).into_element()
             }
-            Some(Err(e @ crate::mermaid::Unported::Rejected { .. })) => diagram_note(&e).into_element(),
-            Some(Err(_)) => {
-                let code_p = code.clone();
-                view()
-                    .max_w(percentage(1.0))
-                    .child(mermaid_helper_block(&code))
-                    .child(
-                        view()
-                            .absolute()
-                            .inset(px(0.0))
-                            .label("Open diagram")
-                            .on_press(move || open_diagram(&code_p)),
-                    )
-                    .into_element()
-            }
+            Some(Err(e)) => diagram_note(&e).into_element(),
         }
     }))
 }
@@ -219,63 +184,6 @@ fn diagram_canvas(g: std::sync::Arc<crate::mermaid::Drawn>, fixed: Option<f32>) 
         );
     }
     out
-}
-
-/// The Node helper's image of a diagram the port does not draw, else the
-/// web view (what every fence took before the port).
-fn mermaid_helper_block(code: &str) -> impl IntoElement {
-    let code = code.to_owned();
-    dynamic(move || {
-        let d = crate::mermaid::web::diagram(&code, dark());
-        match d.get() {
-            None => view().h(px(24.0)).into_element(),
-            Some(Ok(g)) => image(g.uri.clone())
-                .w(px(g.w))
-                .max_w(percentage(1.0))
-                .aspect_ratio(g.w / g.h)
-                .into_element(),
-            Some(Err(_)) => mermaid_web(&code).into_element(),
-        }
-    })
-}
-
-/// The fallback: mermaid.js in a web view sized to the diagram — the
-/// page posts its measured `{w,h}`; the sizes cache (the TSX's
-/// `mermaidSizes` map) lets a remount lay out at the final height at once.
-fn mermaid_web(code: &str) -> impl IntoElement {
-    let sizes = crate::live::keep("mermaid-sizes", std::collections::HashMap::<String, (f64, f64)>::new);
-    let code = code.to_owned();
-    let size = signal(
-        sizes
-            .get_untracked()
-            .get(&code)
-            .copied()
-            .unwrap_or((0.0, 60.0)),
-    );
-    let code_v = code.clone();
-    view()
-        .w(move || -> Length {
-            let w = size.get().0;
-            if w > 0.0 { px(w as f32).into() } else { percentage(1.0).into() }
-        })
-        .max_w(percentage(1.0))
-        .h(move || px(size.get().1 as f32))
-        .child(
-            web_view(mermaid_url(&code_v, "inline"))
-                .w_full()
-                .h_full()
-                .on_message(move |data: &str| {
-                    if let Some(d) = serde_json::from_str::<serde_json::Value>(data).ok() {
-                        let (w, h) = (d["w"].as_f64().unwrap_or(0.0), d["h"].as_f64().unwrap_or(0.0));
-                        if h > 0.0 && (w, h) != size.get_untracked() {
-                            sizes.update(|m| {
-                                m.insert(code.clone(), (w, h));
-                            });
-                            size.set((w, h));
-                        }
-                    }
-                }),
-        )
 }
 
 // ——————————————————— FileTile (`filetile.tsx`) ———————————————————
@@ -1269,7 +1177,6 @@ fn round_btn(glyph: &'static str, label: &'static str, on: impl Fn() + 'static) 
 
 /// The lightbox layer — mount in the root stack (lightbox.tsx `Lightbox`).
 pub(crate) fn lightbox_layer() -> impl IntoElement {
-    let web = element_ref();
     dynamic(move || {
         let st = store();
         let items = st.light_items.get();
@@ -1345,14 +1252,8 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                 )
                 .into_element(),
             // The same drawing as inline, fitted to the window on the
-            // bubble's surface; the helper's 4× image, then the web page,
-            // for a diagram the port does not draw.
-            "diagram"
-                if matches!(
-                    crate::mermaid::diagram(&cur.code, dark()).get(),
-                    Some(Ok(_) | Err(crate::mermaid::Unported::Rejected { .. })) | None
-                ) =>
-            {
+            // bubble's surface.
+            "diagram" => {
                 match crate::mermaid::diagram(&cur.code, dark()).get() {
                     Some(Ok(g)) => {
                         let pad = 24.0f32;
@@ -1370,56 +1271,6 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                     Some(Err(e)) => diagram_note(&e).into_element(),
                     _ => view().into_element(),
                 }
-            }
-            "diagram" if matches!(
-                crate::mermaid::web::diagram_at(&cur.code, dark(), 4).get(),
-                Some(Ok(_)) | None
-            ) => match crate::mermaid::web::diagram_at(&cur.code, dark(), 4).get() {
-                Some(Ok(g)) => {
-                    let pad = 24.0f32;
-                    let k = ((sw as f32 - 2.0 * pad) / g.w)
-                        .min((sh as f32 - 2.0 * pad) / g.h)
-                        .clamp(0.1, 3.0);
-                    view()
-                        .scale(zoom as f32)
-                        .p(px(pad))
-                        .rounded(px(12.0))
-                        .bg(theme::AGENT_BUBBLE)
-                        .border(px(0.5))
-                        .border_color(media_card_border)
-                        .child(
-                            image(g.uri.clone())
-                                .w(px(g.w * k))
-                                .h(px(g.h * k))
-                                .object_fit(ResizeMode::Contain)
-                                .fade_duration(0.0),
-                        )
-                        .into_element()
-                }
-                _ => view().into_element(),
-            },
-            "diagram" => {
-                let (dw, dh) = st.light_diag.get();
-                let w = if dw > 0.0 { dw.min(sw) } else { sw.max(1.0) };
-                let h = if dh > 0.0 { dh.min(sh) } else { sh.max(1.0) };
-                web_view(mermaid_url(&cur.code, "full"))
-                    .element_ref(&web)
-                    .scrollable(false)
-                    .on_message(move |data: &str| {
-                        if let Ok(d) = serde_json::from_str::<serde_json::Value>(data) {
-                            let (w, h) = (
-                                d.get("w").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                                d.get("h").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                            );
-                            if w > 0.0 && h > 0.0 {
-                                store().light_diag.set((w, h));
-                            }
-                        }
-                    })
-                    .w(px(w as f32))
-                    .h(px(h as f32))
-                    .bg(AdaptiveColor::TRANSPARENT)
-                    .into_element()
             }
             _ => view().into_element(),
         };
@@ -1597,14 +1448,8 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
             )
             // zoom pill (images and diagrams)
             .when(cur.kind == "diagram" || cur.kind == "image", move |v| {
-                let is_diag = cur.kind == "diagram";
                 let zoom_by: std::rc::Rc<dyn Fn(f64)> = std::rc::Rc::new(move |k: f64| {
                     let st = store();
-                    // The Pele diagram zooms as an image; the web fallback
-                    // (if that is what shows) zooms itself.
-                    if is_diag {
-                        web.post_message(if k > 1.0 { "in" } else { "out" });
-                    }
                     st.light_zoom.set((st.light_zoom.get_untracked() * k).clamp(0.25, 4.0));
                 });
                 let (z1, z2) = (zoom_by.clone(), zoom_by);
@@ -1627,12 +1472,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .border_color(media_card_border)
                         .child(round_pill("−", move || z1(1.0 / 1.25)))
                         .child(round_pill("+", move || z2(1.25)))
-                        .child(round_pill("⤢", move || {
-                            if is_diag {
-                                web.post_message("fit");
-                            }
-                            store().light_zoom.set(1.0);
-                        })),
+                        .child(round_pill("⤢", move || store().light_zoom.set(1.0))),
                 )
             })
             .into_element()

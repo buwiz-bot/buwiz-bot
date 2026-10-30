@@ -32,14 +32,13 @@ bun build "$ROOT/src/app-server.mjs" --target=node --format=esm \
 cp -R "$ROOT/widgets" "$R/server/widgets" 2>/dev/null || true
 cp -R "$ROOT/src/plugins" "$R/server/plugins" 2>/dev/null || true
 # Runtime assets the bundle reads beside itself: TSX templates, the office
-# viewer/editor, and mermaid for the diagram web view.
+# viewer/editor.
 cp -R "$ROOT/src/templates" "$R/server/templates" 2>/dev/null || true
 cp -R "$ROOT/src/office" "$R/server/office" 2>/dev/null || true
-mkdir -p "$R/node_modules/mermaid/dist"
-cp "$ROOT/node_modules/mermaid/dist/mermaid.min.js" "$R/node_modules/mermaid/dist/" 2>/dev/null || true
 # The BetterOffice engines are runtime-resolved (import.meta.resolve for the
 # caps probe, /office/vendor/ for the viewer's ESM imports, wasm + font
 # assets loaded off disk) — they must ship as real packages, not be inlined.
+mkdir -p "$R/node_modules"
 cp -R "$ROOT/node_modules/@betteroffice" "$R/node_modules/@betteroffice" 2>/dev/null || true
 # The office MCP child spawns its own node; bundling mcp-main drops its
 # @modelcontextprotocol/sdk + zod deps. The engines stay external — they
