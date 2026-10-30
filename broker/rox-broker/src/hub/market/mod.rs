@@ -26,6 +26,8 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     let (server, port) = node_paths();
     let market = Arc::new(Market::load(&server, &ctx.data, port));
     super::routes::market::register(routes, market.clone());
+    // the tool loop's system prompt reads its plugin skills (5.4)
+    ctx.ext.insert(market.clone());
     skills::register(ctx);
     routes.on_start(|ctx| {
         if let Err(e) = schema(&ctx) {
@@ -36,7 +38,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
 
 /// Node's SERVER_DIR (the folder of `--node-script`, default
 /// `src/app-server.mjs`) and the broker's port, read as main.rs reads them.
-fn node_paths() -> (PathBuf, u16) {
+pub fn node_paths() -> (PathBuf, u16) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok();
     let script = config.as_ref().map(|c| c.node_script.clone()).unwrap_or_else(|| PathBuf::from("src/app-server.mjs"));
