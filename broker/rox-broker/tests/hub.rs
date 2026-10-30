@@ -83,9 +83,9 @@ const NOT_PORTED: &str = r#"{"ok":false,"code":"not_ported"}"#;
 fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
     let b = start("on", true);
     for (method, path, body) in [
-        ("GET", "/threads", ""),
-        ("POST", "/chat", r#"{"prompt":"hi"}"#),
-        ("GET", "/turns?thread=t1", ""),
+        ("GET", "/models", ""),
+        ("GET", "/routines", ""),
+        ("POST", "/app/meta", "{}"),
         ("POST", "/v1/host/plugins/acme/enable", "{}"),
         ("GET", "/v1/host/plugins", ""),
         ("POST", "/v1/hooks/ah_x/secret", "{}"),

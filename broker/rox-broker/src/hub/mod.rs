@@ -10,8 +10,10 @@
 
 pub mod ctx;
 pub mod jobs;
+pub mod library;
 pub mod model;
 pub mod routes;
+pub mod store;
 pub mod traits;
 pub mod types;
 
@@ -94,6 +96,8 @@ impl Registry {
 /// What each track adds. The skeleton adds nothing; a track adds one line
 /// here calling its own `install(routes, ctx)`.
 fn install(routes: &mut Registry, ctx: &mut HubCtx) {
+    // track A first: it loads the store the others' starts read
+    routes::chat::install(routes, ctx);
     model::install(routes, ctx);
 }
 

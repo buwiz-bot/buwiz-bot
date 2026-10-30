@@ -448,7 +448,7 @@ impl McpRoutes {
 
     /// `mcpResolve`: the tool the server's manifest names for a command or
     /// scope, with the chat's attached tokens of that server.
-    async fn resolve(&self, b: &Value) -> Value {
+    pub async fn resolve(&self, b: &Value) -> Value {
         let server = text(b, "server");
         let row: Option<String> = self.mcp.db(|db| db.query_row("SELECT id FROM mcp_servers WHERE id=? AND enabled=1", [&server], |r| r.get(0)).optional()).ok().flatten();
         let Some(id) = row else { return json!({"ok": false, "error": "no such server"}) };
