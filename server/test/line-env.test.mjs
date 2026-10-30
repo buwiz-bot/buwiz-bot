@@ -19,7 +19,7 @@ test("the line's address and token are read once and kept from every child", () 
     encoding: "utf8",
   }));
 
-  assert.deepEqual(out.LINE, { base: "http://127.0.0.1:1", token: "secret-line-token" });
+  assert.deepEqual(out.LINE, { base: "http://127.0.0.1:1", token: "secret-line-token", hosts: ["v1"] });
   assert.deepEqual(out.here, ["", ""], "gone from Node's own environment");
   assert.deepEqual(out.child, ["", ""], "and from a child's");
 });

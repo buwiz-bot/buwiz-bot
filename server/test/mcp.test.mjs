@@ -5,7 +5,7 @@
 // test's data directory) before the server starts on the same directory;
 // everything after that goes over HTTP.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { FIXTURE, PORT, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
@@ -109,4 +109,29 @@ test("manifest commands and scopes outside the grammar are dropped", async () =>
   assert.deepEqual(s.commands.map((c) => c.name), ["good"]);
   assert.deepEqual(s.scopes.map((c) => c.name), ["item"]);
   assert.match(server.log(), /mcp ui-fixture: manifest scopes entry "bad\.scope" dropped/);
+});
+
+// rox-broker (plan 4.1) starts a stdio server whose process died again on
+// its next use; Node kept the dead client until the row changed
+const MCP_IN_RUST = !!process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
+
+test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (ROX_BROKER_MCP_HOST=1) only" }, async () => {
+  const pids = () => readFileSync(mark, "utf8").split("\n").filter(Boolean).map(Number);
+  const pid = pids().at(-1);
+  const gone = () => {
+    try {
+      process.kill(pid, 0);
+
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  process.kill(pid, "SIGKILL");
+  assert.ok(await waitFor(async () => gone()), "the server process did not die");
+  const call = await postJson("/mcp/call", { server: agentId, tool: "echo", args: { again: true } });
+
+  assert.deepEqual(call.json, { ok: true, result: { tool: "echo", args: { again: true } } });
+  assert.notEqual(pids().at(-1), pid, "a new process answered");
 });

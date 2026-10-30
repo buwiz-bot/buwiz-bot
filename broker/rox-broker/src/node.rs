@@ -106,6 +106,9 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
         let mut cmd = tokio::process::Command::new(&config.node);
         cmd.process_group(0).arg(&config.node_script)
             .env("PORT", port.to_string())
+            // the port URLs leaving Node must name (OAuth redirects, file
+            // links): this front door's, not Node's own
+            .env("ROX_PUBLIC_PORT", config.port.to_string())
             .env("GROK_ALLOWED_ORIGINS", allowed_origins(std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref(), config.port))
             .stdin(std::process::Stdio::null());
         if let Some(data) = &config.data {

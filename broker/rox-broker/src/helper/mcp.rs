@@ -38,6 +38,12 @@ pub struct Spec {
     pub args: Vec<String>,
     /// In the order given.
     pub env: Vec<(String, String)>,
+    /// The environment under `env`: the SDK's six inherited names (v1
+    /// plugins), or all of this process's (v0 MCP servers, as mcp.mjs gives
+    /// them Node's).
+    pub inherit_all: bool,
+    /// `clientInfo.name` in the handshake.
+    pub client: &'static str,
 }
 
 /// A failed request: a JSON-RPC error, a timeout, a closed connection, or
@@ -47,11 +53,23 @@ pub struct Spec {
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// The request never reached the server (the connection was already
+    /// closed): safe to send again on a new connection.
+    pub unsent: bool,
 }
 
 impl RpcError {
     fn mcp(code: i64, message: &str) -> Self {
-        Self { code, message: format!("MCP error {code}: {message}") }
+        Self { code, message: format!("MCP error {code}: {message}"), unsent: false }
+    }
+
+    fn unsent() -> Self {
+        Self { unsent: true, ..Self::mcp(CONNECTION_CLOSED, "Connection closed") }
+    }
+
+    /// An error of this process's own (a spawn that failed), not the server's.
+    pub fn local(message: impl Into<String>) -> Self {
+        Self { code: 0, message: message.into(), unsent: true }
     }
 }
 
@@ -78,14 +96,16 @@ pub struct Conn {
     /// The owner is stopping it: its close is not a crash.
     pub stopping: AtomicBool,
     instructions: Mutex<String>,
+    capabilities: Mutex<Value>,
 }
 
 /// The environment the child starts with.
 fn child_env(spec: &Spec) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = INHERITED
-        .iter()
-        .filter_map(|k| std::env::var(k).ok().filter(|v| !v.starts_with("()")).map(|v| (k.to_string(), v)))
-        .collect();
+    let mut env: Vec<(String, String)> = if spec.inherit_all {
+        std::env::vars().collect()
+    } else {
+        INHERITED.iter().filter_map(|k| std::env::var(k).ok().filter(|v| !v.starts_with("()")).map(|v| (k.to_string(), v))).collect()
+    };
     for (k, v) in &spec.env {
         env.retain(|(e, _)| e != k);
         env.push((k.clone(), v.clone()));
@@ -115,7 +135,7 @@ impl Conn {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| RpcError { code: 0, message: spawn_error(&spec.command, &e) })?;
+        let mut child = cmd.spawn().map_err(|e| RpcError::local(spawn_error(&spec.command, &e)))?;
         let (stdout, mut stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
         let conn = Arc::new(Conn {
             pid: child.id(),
@@ -127,6 +147,7 @@ impl Conn {
             exited: Notify::new(),
             stopping: AtomicBool::new(false),
             instructions: Mutex::new(String::new()),
+            capabilities: Mutex::new(Value::Null),
         });
         let h = hooks.clone();
         tokio::spawn(async move {
@@ -141,7 +162,7 @@ impl Conn {
         tokio::spawn(read_loop(conn.clone(), stdout, hooks));
 
         let init = conn
-            .request("initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "rox-broker", "version": "1.0.0"}}), DEFAULT_TIMEOUT)
+            .request("initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": spec.client, "version": "1.0.0"}}), DEFAULT_TIMEOUT)
             .await;
         let init = match init {
             Ok(v) => v,
@@ -153,13 +174,19 @@ impl Conn {
         let version = init.get("protocolVersion").and_then(Value::as_str).unwrap_or_default();
         if !SUPPORTED.contains(&version) {
             conn.close().await;
-            return Err(RpcError { code: 0, message: format!("Server's protocol version is not supported: {version}") });
+            return Err(RpcError { code: 0, message: format!("Server's protocol version is not supported: {version}"), unsent: false });
         }
+        *conn.capabilities.lock().unwrap_or_else(|e| e.into_inner()) = init.get("capabilities").cloned().unwrap_or(Value::Null);
         if let Some(i) = init.get("instructions").and_then(Value::as_str) {
             *conn.instructions.lock().unwrap_or_else(|e| e.into_inner()) = i.to_owned();
         }
         conn.notify("notifications/initialized", None).await;
         Ok(conn)
+    }
+
+    /// The server's `capabilities` from the handshake.
+    pub fn capabilities(&self) -> Value {
+        self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn instructions(&self) -> String {
@@ -191,14 +218,14 @@ impl Conn {
     /// One request; its result, or the error.
     pub async fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
         if self.is_closed() {
-            return Err(RpcError::mcp(CONNECTION_CLOSED, "Connection closed"));
+            return Err(RpcError::unsent());
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
         if !self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).await {
             self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-            return Err(RpcError::mcp(CONNECTION_CLOSED, "Connection closed"));
+            return Err(RpcError::unsent());
         }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(answer)) => answer,

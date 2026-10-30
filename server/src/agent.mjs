@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFi
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ASSETS_DIR, ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PORT, PROVIDER,
+  ASSETS_DIR, ATTACH_DIR, GEN_DIR, MAX_TOKENS, MOCK, MODEL, OUT_DIR, PUBLIC_PORT, PROVIDER,
   STAGE_DIR, WIDGETS_DIR, outFile,
 } from "./config.mjs";
 import {
@@ -412,8 +412,8 @@ export async function generate(job, prompt) {
       // row) AND the reply as files (MediaGallery) — both render paths get
       // exercised by one command.
       const attachments = files.map((f) => ({
-        uri: `http://127.0.0.1:${PORT}/file/raw/${f.path.split("/").map(encodeURIComponent).join("/")}`,
-        thumb: `http://127.0.0.1:${PORT}/file/raw/${(f.feed || f.path).split("/").map(encodeURIComponent).join("/")}`,
+        uri: `http://127.0.0.1:${PUBLIC_PORT}/file/raw/${f.path.split("/").map(encodeURIComponent).join("/")}`,
+        thumb: `http://127.0.0.1:${PUBLIC_PORT}/file/raw/${(f.feed || f.path).split("/").map(encodeURIComponent).join("/")}`,
         name: f.name, ext: f.ext, kind: "image", size: f.size, width: f.width, height: f.height,
       }));
 

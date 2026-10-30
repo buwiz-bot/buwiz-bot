@@ -207,6 +207,8 @@ impl Row {
         let args = parse(&self.args, json!([]));
         let env = parse(&self.env, json!({}));
         Spec {
+            inherit_all: false,
+            client: "rox-broker",
             command: self.command.clone(),
             args: args.as_array().into_iter().flatten().map(js::string_of).collect(),
             env: env.as_object().map(js::ordered).unwrap_or_default().into_iter().map(|(k, v)| (k.clone(), js::string_of(v))).collect(),
@@ -1113,6 +1115,8 @@ pub fn spawn_spec(body: &Value) -> Res<(Spec, (Value, Value))> {
         return V1Error::err("invalid_args", "env must map names to strings");
     };
     let spec = Spec {
+        inherit_all: false,
+        client: "rox-broker",
         command: command.to_owned(),
         args: list.iter().map(js::string_of).collect(),
         env: js::ordered(map).into_iter().map(|(k, v)| (k.clone(), js::string_of(v))).collect(),

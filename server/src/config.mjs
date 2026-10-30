@@ -19,6 +19,10 @@ const GEN_DIR = join(DATA_DIR, "generated");
 // graph — so a bad module never reaches the dev server (no red overlay flash).
 const STAGE_DIR = join(DATA_DIR, ".stage");
 const PORT = Number(process.env.PORT || 8787);
+// The port Rox and browsers reach: rox-broker's front door, which runs this
+// process on a port of its own (ROX_PUBLIC_PORT); PORT when Node is it. URLs
+// that leave this process (OAuth redirects, file links) use this one.
+const PUBLIC_PORT = Number(process.env.ROX_PUBLIC_PORT || PORT);
 // Providers: Claude goes through opencodex's Anthropic Messages endpoint by
 // default (OPENCODEX_URL — it owns the real key; the client key is a dummy).
 // GEN_PROVIDER=openai + GEN_BASE_URL/GEN_MODEL selects an OpenAI-compatible
@@ -108,7 +112,7 @@ writeFileSync(
 );
 
 export {
-  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PROVIDER, BASE_URL, MODEL,
+  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, PROVIDER, BASE_URL, MODEL,
   MAX_TOKENS, MOCK, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W,
   POP_H, WINDOWS_DIR, CHUNK_DIR, AVATAR_DIR, ATTACH_DIR, OUT_DIR, ASSETS_DIR,
   PLUGIN_CATALOG, GROKBOT_CATALOG, PLUGINS_DIR, git, outFile,

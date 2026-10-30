@@ -27,16 +27,23 @@ pub struct FrontDoor {
     leaf: Option<Leaf>,
     /// the plugin host's API for Node, when this broker hosts v1 plugins
     line: Option<Arc<Line>>,
+    /// the /mcp routes, when this broker hosts the MCP servers (4.3)
+    mcp: Option<leaf::mcp::McpRoutes>,
     client: Client<HttpConnector, Incoming>,
 }
 
 impl FrontDoor {
     pub fn new(node: Arc<Node>, leaf: Option<Leaf>) -> Self {
-        Self { node, leaf, line: None, client: Client::builder(TokioExecutor::new()).build_http() }
+        Self { node, leaf, line: None, mcp: None, client: Client::builder(TokioExecutor::new()).build_http() }
     }
 
     pub fn with_line(mut self, line: Arc<Line>) -> Self {
         self.line = Some(line);
+        self
+    }
+
+    pub fn with_mcp(mut self, routes: leaf::mcp::McpRoutes) -> Self {
+        self.mcp = Some(routes);
         self
     }
 
@@ -50,6 +57,10 @@ impl FrontDoor {
             p if p.starts_with("/v1/line/") => match &self.line {
                 Some(line) => (line.serve(req).await, "rust"),
                 None => (json(StatusCode::NOT_FOUND, serde_json::json!({ "ok": false, "error": "this broker hosts no v1 plugins" })), "rust"),
+            },
+            p if self.mcp.is_some() && leaf::mcp::route(&method, req.uri().path_and_query().map(|q| q.as_str()).unwrap_or(p)) => match &self.mcp {
+                Some(m) => (m.serve(req).await, "rust"),
+                None => (self.forward(req).await, "node"),
             },
             _ => match (&self.leaf, leaf::route(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"))) {
                 (Some(leaf), Some(route)) => (leaf.serve(route, req).await, "rust"),

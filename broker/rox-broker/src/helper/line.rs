@@ -18,6 +18,9 @@
 //! | `POST sessions/stat` | `{open_id}` | `{ok, open: {active, queued} \| null}` |
 //! | `POST start`, `stop` | | `{ok}` |
 //! | `POST clock` | `{now?, fire?}` | `{ok, fired}`; a manual clock only (tests) |
+//! | `POST mcp/ensure` | `{id}` | a v0 MCP server's client: `{ok, tools, capabilities}` or `{ok: false, err}` |
+//! | `POST mcp/call`, `mcp/resources`, `mcp/read` | `{id, tool, args, timeout_ms?}`, `{id}`, `{id, uri}` | `{ok, result}` or `{ok: false, error, code}` |
+//! | `POST mcp/invalidate` | `{id}` | `{ok}`; the next use connects again |
 //!
 //! Answers that change a plugin carry its `runtime` snapshot, so Node's
 //! view is current when the call returns, before the event arrives.
@@ -34,6 +37,7 @@ use hyper::body::{Frame, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 
+use super::mcp_servers::McpHost;
 use super::plugins::Host;
 use super::sessions::Sessions;
 use crate::js;
@@ -46,12 +50,17 @@ const SESSION_ROUTES: &[&str] = &["sessions/open", "sessions/close", "sessions/c
 pub struct Line {
     host: Arc<Host>,
     sessions: Arc<Sessions>,
+    mcp: Arc<McpHost>,
     token: String,
 }
 
 impl Line {
-    pub fn new(host: Arc<Host>, token: String) -> Self {
-        Self { sessions: Sessions::new(host.clone()), host, token }
+    pub fn new(host: Arc<Host>, mcp: Arc<McpHost>, token: String) -> Self {
+        Self { sessions: Sessions::new(host.clone()), host, mcp, token }
+    }
+
+    pub fn mcp(&self) -> &Arc<McpHost> {
+        &self.mcp
     }
 
     pub fn host(&self) -> &Arc<Host> {
@@ -138,6 +147,9 @@ impl Line {
             return Ok(r);
         }
         let ss = &self.sessions;
+        if let Some(op) = path.strip_prefix("mcp/") {
+            return Ok(self.mcp_op(op, b).await);
+        }
         match path {
             "sessions/open" => ss.open(b).await,
             "sessions/close" => ss.close(b).await,
@@ -173,17 +185,56 @@ impl Line {
         }
     }
 
-    /// Every plugin's snapshot, then each change, as SSE; a ping every 25 s.
+    /// A v0 MCP server's client (mcp_servers.rs): an answer, never a
+    /// refusal; a failed request is `{ok: false, error, code}`. A call's
+    /// answer carries the server's status after it.
+    async fn mcp_op(&self, op: &str, b: &Value) -> Value {
+        let id = get(b, "id").and_then(Value::as_str).unwrap_or_default();
+        let done = |r: Result<Value, super::mcp::RpcError>| {
+            let mut v = match r {
+                Ok(result) => json!({"ok": true, "result": result}),
+                Err(e) => json!({"ok": false, "error": e.message, "code": e.code}),
+            };
+            v["status"] = self.mcp.status(id);
+            v
+        };
+        match op {
+            "ensure" => self.mcp.ensure(id).await,
+            "invalidate" => {
+                self.mcp.invalidate(id).await;
+                json!({"ok": true})
+            }
+            "call" => {
+                let timeout = get(b, "timeout_ms").and_then(Value::as_f64).filter(|t| *t > 0.0).map_or(super::mcp::DEFAULT_TIMEOUT, |t| Duration::from_millis(t as u64));
+                let params = json!({"name": get(b, "tool"), "arguments": get(b, "args").cloned().unwrap_or(json!({}))});
+                done(self.mcp.request(id, "tools/call", params, timeout).await)
+            }
+            "resources" => done(self.mcp.request(id, "resources/list", json!({}), super::mcp::DEFAULT_TIMEOUT).await),
+            "auth/begin" => self.mcp.auth_begin(id, get(b, "open") != Some(&Value::Bool(false))).await,
+            "auth/finish" => {
+                let s = |k: &str| get(b, k).and_then(Value::as_str).filter(|v| !v.is_empty());
+                self.mcp.auth_finish(id, s("code"), s("state"), s("error")).await
+            }
+            "read" => done(self.mcp.request(id, "resources/read", json!({"uri": get(b, "uri")}), super::mcp::DEFAULT_TIMEOUT).await),
+            _ => json!({"ok": false, "error": format!("no route /v1/line/mcp/{op}"), "code": 0}),
+        }
+    }
+
+    /// Every plugin's snapshot, then each change, as SSE; after `ready`,
+    /// each MCP server's status (`mcp`) and its changes; a ping every 25 s.
     fn events(&self) -> Response<Body> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
         let host = self.host.clone();
         let mut sub = host.events();
+        let mcp = self.mcp.clone();
+        let mut msub = mcp.subscribe();
         tokio::spawn(async move {
             let event = |name: &str, v: &Value| Bytes::from(format!("event: {name}\ndata: {}\n\n", js::stringify(v)));
             let all = |host: &Host| host.snapshots().iter().map(|v| event("snapshot", v)).collect::<Vec<_>>();
             let mut first = all(&host);
             first.insert(0, Bytes::from_static(b": rox line events\n\n"));
             first.push(event("ready", &json!({})));
+            first.extend(mcp.statuses().iter().map(|v| event("mcp", v)));
             for e in first {
                 if tx.send(e).await.is_err() {
                     return;
@@ -197,6 +248,11 @@ impl Line {
                         Ok(v) => vec![event("plugin", &v)],
                         // fell behind: everything again, as changes
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => host.snapshots().iter().map(|v| event("plugin", v)).collect(),
+                        Err(_) => return,
+                    },
+                    got = msub.recv() => match got {
+                        Ok(v) => vec![event("mcp", &v)],
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => mcp.statuses().iter().map(|v| event("mcp", v)).collect(),
                         Err(_) => return,
                     },
                     _ = beat.tick() => vec![Bytes::from_static(b": ping\n\n")],
