@@ -11,6 +11,7 @@ use rox_broker::config::Config;
 use rox_broker::helper::line::Line;
 use rox_broker::helper::mcp_servers::McpHost;
 use rox_broker::helper::plugins::{Clock, Host, Options, Timeouts};
+use rox_broker::hub::{ctx::HubCtx, Hub};
 use rox_broker::leaf::Leaf;
 use rox_broker::node::{self, Node};
 use rox_broker::proxy::FrontDoor;
@@ -72,17 +73,34 @@ async fn main() {
             }
         }
     };
+    let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
+    // the hub (plan phase 5, D30): the brain's routes answered here, and
+    // Node in its office role, holding none of the brain's state
+    let hub = (std::env::var("ROX_BROKER_HUB").as_deref() == Ok("1")).then(|| {
+        config.node_env.push(("ROX_NODE_ROLE".to_owned(), "office".to_owned()));
+        let mut ctx = HubCtx::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), Clock::system());
+        if let Some(line) = &line {
+            ctx.plugins = hosts.contains(&"v1").then(|| line.host().clone());
+            ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
+        }
+        let hub = Arc::new(Hub::new(ctx, allowed.clone()));
+        hub.start();
+        hub
+    });
     let node = Arc::new(Node::default());
     let _ = node.version.set(node::version_of(&config.node));
     let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
-    let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
         .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
-    let door = Arc::new(match &line {
+    let door = match &line {
         // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
         Some(line) if hosts.contains(&"mcp") => door.with_line(line.clone()).with_mcp(rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone())),
         Some(line) => door.with_line(line.clone()),
+        None => door,
+    };
+    let door = Arc::new(match hub {
+        Some(hub) => door.with_hub(hub),
         None => door,
     });
     eprintln!("rox-broker on http://127.0.0.1:{}", config.port);
