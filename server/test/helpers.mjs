@@ -146,8 +146,9 @@ export function serverEnv(dataDir, env = {}) {
   return out;
 }
 
-/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to a
- *  stop(). `env` overrides the environment (serverEnv). */
+/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to
+ *  {log, stop, pid} (pid leads the broker's process group). `env`
+ *  overrides the environment (serverEnv). */
 export async function startServer(dataDir, { env } = {}) {
   if (await up()) throw new Error(`port ${PORT} is already serving; stop that first`);
 
@@ -191,7 +192,7 @@ export async function startServer(dataDir, { env } = {}) {
     throw new Error(`server did not answer on ${PORT}:\n${log}`);
   }
 
-  return { log: () => log, stop };
+  return { log: () => log, stop, pid: child.pid };
 }
 
 /** Polls `check` until it returns truthy (its value) or `ms` pass (null). */
