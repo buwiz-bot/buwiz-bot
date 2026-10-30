@@ -16,6 +16,7 @@ pub mod library;
 pub mod market;
 pub mod model;
 pub mod pipeline;
+pub mod render;
 pub mod routes;
 pub mod store;
 pub mod tools;
@@ -116,6 +117,9 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);
     routines::install(routes, ctx);
+    // phase 7: /file/render of every other kind, and GET / (before
+    // office's: it hands office files on to office's render)
+    render::install(routes);
     // 6.1: office in Rust (the tools in process, /office/*, /file/render)
     crate::office::install(routes, ctx);
 }
@@ -168,7 +172,12 @@ impl Hub {
         }
         let origin = req.headers.get(ORIGIN).cloned();
         let path = req.path().to_owned();
-        let mut res = if path.starts_with("/v1/hooks/") {
+        // a preflight: Node's 204 (only with no Node; else Node answers it)
+        let mut res = if req.method == Method::OPTIONS {
+            let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}).boxed());
+            *res.status_mut() = StatusCode::NO_CONTENT;
+            res
+        } else if path.starts_with("/v1/hooks/") {
             self.hook(req).await
         } else {
             match self.routes.find(&req.method, &path) {

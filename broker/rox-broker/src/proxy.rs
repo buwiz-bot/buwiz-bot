@@ -80,6 +80,8 @@ impl FrontDoor {
                     // a route no broker has (the table holds all of Node's):
                     // Node's 404, which its office role would answer 501
                     (Some(hub), None) if method != Method::OPTIONS => (hub.serve(req).await, "hub"),
+                    // with no Node, a preflight too (Node's 204)
+                    (Some(hub), _) if self.node.is_absent() => (hub.serve(req).await, "hub"),
                     _ => (self.forward(req).await, "node"),
                 },
             },
@@ -89,8 +91,9 @@ impl FrontDoor {
     }
 
     fn health(&self) -> Response<Body> {
-        match self.node.port() {
+        match self.node.port().or(self.node.is_absent().then_some(0)) {
             Some(_) => json(StatusCode::OK, serde_json::json!({ "ok": true, "broker": "rox-broker" })),
+            None if self.node.is_absent() => json(StatusCode::OK, serde_json::json!({ "ok": true, "broker": "rox-broker" })),
             None => json(StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({ "ok": false, "broker": "rox-broker", "node": "starting" })),
         }
     }
