@@ -112,9 +112,9 @@ fn mermaid_url(code: &str, mode: &str) -> String {
 /// `MermaidBlock` (md.tsx:119): a ```mermaid fence drawn natively — Pele
 /// ported to Rust lays it out, nsh's canvas draws it (`mermaid::diagram`)
 /// at its natural size, scaled down to the column. A type the port does not
-/// cover yet, or a diagram it rejects, keeps the old way: the Node helper's
-/// image, then mermaid.js in a web view. A press opens the lightbox; a
-/// node's `click` link opens through `links.rs`.
+/// register keeps the old way: the Node helper's image, then mermaid.js in
+/// a web view; text Pele rejects shows its message. A press opens the
+/// lightbox; a node's `click` link opens through `links.rs`.
 pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
     let code = code.to_owned();
     view().max_w(percentage(1.0)).child(dynamic(move || {
@@ -126,6 +126,7 @@ pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
                 let code = code.clone();
                 diagram_canvas(g, None).label("Open diagram").on_press(move || open_diagram(&code)).into_element()
             }
+            Some(Err(e @ crate::mermaid::Unported::Rejected { .. })) => diagram_note(&e).into_element(),
             Some(Err(_)) => {
                 let code_p = code.clone();
                 view()
@@ -142,6 +143,11 @@ pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
             }
         }
     }))
+}
+
+/// Why Pele did not draw a diagram, in place of it.
+fn diagram_note(e: &crate::mermaid::Unported) -> impl IntoElement {
+    text(e.note()).text_size(px(13.0)).text_color(theme::MUTED).pt(px(4.0)).pb(px(4.0))
 }
 
 /// The diagram `code` in the lightbox.
@@ -1341,7 +1347,12 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
             // The same drawing as inline, fitted to the window on the
             // bubble's surface; the helper's 4× image, then the web page,
             // for a diagram the port does not draw.
-            "diagram" if matches!(crate::mermaid::diagram(&cur.code, dark()).get(), Some(Ok(_)) | None) => {
+            "diagram"
+                if matches!(
+                    crate::mermaid::diagram(&cur.code, dark()).get(),
+                    Some(Ok(_) | Err(crate::mermaid::Unported::Rejected { .. })) | None
+                ) =>
+            {
                 match crate::mermaid::diagram(&cur.code, dark()).get() {
                     Some(Ok(g)) => {
                         let pad = 24.0f32;
@@ -1356,6 +1367,7 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                             .child(diagram_canvas(g, Some(k)))
                             .into_element()
                     }
+                    Some(Err(e)) => diagram_note(&e).into_element(),
                     _ => view().into_element(),
                 }
             }

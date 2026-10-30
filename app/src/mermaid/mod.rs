@@ -1,8 +1,9 @@
 //! ```mermaid fences drawn natively: Pele ported to Rust (hexuria/pele-rs) lays the
 //! diagram out off the UI thread, and nsh's canvas draws the scene in
-//! Rox's palette — no Node, no web view. A type the port does not cover
-//! yet, or a diagram it rejects, takes the old way (`web.rs`: the Node
-//! helper, then mermaid.js in a web view).
+//! Rox's palette — no Node, no web view. Only a type the port does not
+//! register (today: architecture) takes the old way (`web.rs`: the Node
+//! helper, then mermaid.js in a web view); a diagram of a type it draws
+//! that Pele rejects shows Pele's message.
 
 mod draw;
 pub(crate) mod palette;
@@ -62,8 +63,33 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
 /// Why a fence is not drawn natively.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Unported {
-    /// A type the port does not cover yet, or text Pele rejects (its message).
+    /// A type the port does not register, or none Pele knows: the old way
+    /// may draw it.
     Pele(String),
+    /// Text of a type the port draws that Pele rejects: its message, and
+    /// the source line (1-based; 0 when Pele gives none).
+    Rejected { message: String, line: usize },
+}
+
+impl Unported {
+    /// What an error of a type the port draws looks like; any other error
+    /// takes the old way.
+    fn from(e: &pele::PeleError) -> Self {
+        use pele::PeleErrorCode as C;
+        match e.code {
+            C::NotYetPorted | C::UnsupportedDiagram => Unported::Pele(e.message.clone()),
+            C::Syntax | C::Semantic | C::Limit => Unported::Rejected { message: e.message.clone(), line: e.line },
+        }
+    }
+
+    /// The inline note for a rejected diagram.
+    pub(crate) fn note(&self) -> String {
+        match self {
+            Unported::Pele(m) => format!("can't draw: {m}"),
+            Unported::Rejected { message, line: 0 } => format!("can't draw: {message}"),
+            Unported::Rejected { message, line } => format!("can't draw: {message} (line {line})"),
+        }
+    }
 }
 
 /// A diagram as Pele laid it out: the scene, with upstream's SVG for "copy".
@@ -77,20 +103,22 @@ fn code_hash(code: &str) -> u64 {
     h.finish()
 }
 
-fn scenes() -> &'static Mutex<Lru<u64, Arc<Result<Laid, String>>>> {
-    static SCENES: OnceLock<Mutex<Lru<u64, Arc<Result<Laid, String>>>>> = OnceLock::new();
+fn scenes() -> &'static Mutex<Lru<u64, Arc<Result<Laid, Unported>>>> {
+    static SCENES: OnceLock<Mutex<Lru<u64, Arc<Result<Laid, Unported>>>>> = OnceLock::new();
     SCENES.get_or_init(|| Mutex::new(Lru::new(KEEP)))
 }
 
 /// Lays `code` out (cached by its hash). Runs on any thread.
-pub(crate) fn lay_out(code: &str) -> Arc<Result<Laid, String>> {
+pub(crate) fn lay_out(code: &str) -> Arc<Result<Laid, Unported>> {
     let key = code_hash(code);
     if let Some(hit) = scenes().lock().unwrap().get(&key) {
         return hit;
     }
     let laid = match pele::render(code) {
-        Ok(r) => pele::Scene::parse(&r.svg).map(|scene| Laid { scene }).ok_or_else(|| "unreadable scene".to_owned()),
-        Err(e) => Err(e.message),
+        Ok(r) => pele::Scene::parse(&r.svg)
+            .map(|scene| Laid { scene })
+            .ok_or_else(|| Unported::Rejected { message: "unreadable scene".to_owned(), line: 0 }),
+        Err(e) => Err(Unported::from(&e)),
     };
     let laid = Arc::new(laid);
     scenes().lock().unwrap().put(key, laid.clone());
@@ -110,7 +138,7 @@ thread_local! {
 
 /// The drawing for `code` in the dark or light palette: `None` while Pele
 /// lays it out (on a blocking thread), then the drawing, or why it is not
-/// drawn natively (the caller takes the old way then).
+/// drawn natively (the caller takes the old way for `Unported::Pele`).
 pub(crate) fn diagram(code: &str, dark: bool) -> Native {
     let pal = palette(dark);
     let key = (code_hash(code), pal.hash64());
@@ -126,13 +154,13 @@ pub(crate) fn diagram(code: &str, dark: bool) -> Native {
                 let laid = lay_out(&code);
                 match &*laid {
                     Ok(l) => Ok(Arc::new(draw::draw(&l.scene, &pal))),
-                    Err(e) => Err(Unported::Pele(e.clone())),
+                    Err(e) => Err(e.clone()),
                 }
             })
             .await
-            .unwrap_or_else(|e| Err(Unported::Pele(e.to_string())));
-            if let Err(Unported::Pele(e)) = &result {
-                log::debug!("mermaid: not native: {e}");
+            .unwrap_or_else(|e| Err(Unported::Rejected { message: e.to_string(), line: 0 }));
+            if let Err(e) = &result {
+                log::debug!("mermaid: not native: {e:?}");
             }
             sig.set(Some(result));
         });
@@ -346,6 +374,23 @@ mod tests {
         };
         assert_eq!(radius("rx:min(6px,3px)"), Some(3.0));
         assert_eq!(radius("rx:min(var(--nope,2px),3px)"), Some(2.0));
+    }
+
+    #[test]
+    fn only_an_unregistered_type_takes_the_old_way() {
+        use super::{lay_out, Unported};
+        assert!(!pele::PORTED.contains(&"architecture"));
+        let old_way = |code: &str| matches!(&*lay_out(code), Err(Unported::Pele(_)));
+        assert!(old_way("architecture-beta\n  service db(database)[Database]\n"));
+        assert!(old_way("not a diagram\n"));
+        for (ty, inputs) in pele::corpus::all() {
+            for (name, code) in inputs {
+                assert!(!old_way(&code), "{ty} {name} takes the old way");
+            }
+        }
+        let Err(e) = &*lay_out("flowchart LR\n  A-->\n") else { panic!("renders") };
+        assert!(matches!(e, Unported::Rejected { line, .. } if *line > 0), "{e:?}");
+        assert!(e.note().starts_with("can't draw: ") && e.note().ends_with(&format!("(line {})", match e { Unported::Rejected { line, .. } => *line, _ => 0 })));
     }
 
     #[test]
