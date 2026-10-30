@@ -1,8 +1,8 @@
 //! The colors (and fonts, radius, weights) Pele's `--pele-*` tokens take in
 //! Rox: its own look by default — the ten the Node helper set
 //! (`pele/serve.mjs` `PALETTES`), Pele's own fallbacks for the rest — and
-//! the user's overrides on top, per mode (`/mermaid-colors`, kept like the
-//! keymap).
+//! the user's overrides on top, per mode (`mermaid.colors`: the `colors`
+//! of Rox's own `/state/rox-mermaid`, as its zoom and drafts are kept).
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -109,6 +109,11 @@ impl Overrides {
         };
         Overrides { dark: side("dark"), light: side("light") }
     }
+
+    /// From `GET /state/rox-mermaid`'s body: `{"state": {"colors": {…}}}`.
+    pub fn from_state(v: &serde_json::Value) -> Self {
+        v.get("state").and_then(|st| st.get("colors")).map(Self::from_json).unwrap_or_default()
+    }
 }
 
 impl PelePalette {
@@ -153,5 +158,15 @@ mod tests {
         assert_ne!(p.hash64(), PelePalette::new(true, &Overrides::default()).hash64());
         let parsed = Overrides::from_json(&serde_json::json!({"light": {"fg": "#000", "nope": "#fff"}}));
         assert_eq!(parsed.light.len(), 1);
+    }
+
+    #[test]
+    fn overrides_come_from_the_mermaid_state() {
+        let body = serde_json::json!({"state": {"colors": {"dark": {"accent": "#f80"}, "light": {"bg": "#fafafa"}}}});
+        let o = Overrides::from_state(&body);
+        assert_eq!(o.dark.get("accent").map(String::as_str), Some("#f80"));
+        assert_eq!(o.light.get("bg").map(String::as_str), Some("#fafafa"));
+        assert_eq!(Overrides::from_state(&serde_json::json!({"state": null})), Overrides::default());
+        assert_eq!(Overrides::from_state(&serde_json::json!({})), Overrides::default());
     }
 }
