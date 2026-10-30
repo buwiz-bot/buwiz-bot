@@ -58,7 +58,7 @@ const alive = (pid) => {
   }
 };
 
-test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: !RUST && "needs ROX_BROKER_CMD" }, async () => {
+test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs ROX_BROKER_CMD") || (process.env.ROX_BROKER_NO_NODE === "1" && "Node-only: restarts the Node behind rox-broker; with ROX_BROKER_NO_NODE=1 there is none") }, async () => {
   const b = bed("line");
   const data = tempDir("v1-line-data");
   const [bin, args] = brokerCommand();
