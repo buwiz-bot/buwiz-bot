@@ -201,7 +201,7 @@ impl TurnRunner for Stub {
         let th = s.list.iter_mut().find(|x| x.id == t.turn.thread).expect("the runner's thread");
         let seq = th.turns.len();
         let mut user = json!({"id": turn, "role": "user", "text": t.shown});
-        if let Some(m) = &t.mark {
+        if let Some(m) = t.mark.as_ref().and_then(|m| m.get("routine")) {
             user["routine"] = m.clone();
         }
         th.turns.push(user);
@@ -225,7 +225,7 @@ impl Stub {
 /// The instance a recorded turn ran for, and its item's id (read back from
 /// the prompt: the runner gets no item of its own).
 fn instance_of(t: &TurnRequest) -> String {
-    t.mark.as_ref().map(|m| m["instance"].as_str().unwrap().to_owned()).unwrap_or_default()
+    t.mark.as_ref().map(|m| m["routine"]["instance"].as_str().unwrap().to_owned()).unwrap_or_default()
 }
 
 fn item_of(t: &TurnRequest) -> String {
