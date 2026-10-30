@@ -17,11 +17,13 @@ use crate::theme;
 const PAGES: [(&str, &str); 2] = [("keyboard", "Keyboard"), ("logins", "Logins")];
 
 /// The order Keyboard lists the places in: the broad ones first.
-const LIST_ORDER: [Scope; 10] = [
+const LIST_ORDER: [Scope; 12] = [
     Scope::Global,
     Scope::Chat,
     Scope::Menu,
     Scope::Viewer,
+    Scope::Sheet,
+    Scope::SheetEdit,
     Scope::ViewerTable,
     Scope::Lightbox,
     Scope::Palette,
@@ -299,8 +301,8 @@ const GROUPS: [(&str, &[Scope]); 17] = [
     ("viewer", &[Scope::Viewer, Scope::ViewerTable]),
     ("docx", &[Scope::Viewer]),
     ("pptx", &[Scope::Viewer]),
-    ("xlsx", &[Scope::Viewer, Scope::ViewerTable]),
-    ("csv", &[Scope::Viewer, Scope::ViewerTable]),
+    ("xlsx", &[Scope::Viewer, Scope::Sheet, Scope::SheetEdit, Scope::ViewerTable]),
+    ("csv", &[Scope::Viewer, Scope::Sheet, Scope::SheetEdit, Scope::ViewerTable]),
     ("pdf", &[Scope::Viewer]),
     ("code", &[Scope::Viewer]),
     ("image", &[Scope::Viewer, Scope::Lightbox]),
@@ -309,7 +311,7 @@ const GROUPS: [(&str, &[Scope]); 17] = [
     ("plugins", &[Scope::Plugins, Scope::PluginsSearch]),
     ("plugins-search", &[Scope::PluginsSearch]),
     ("settings", &[Scope::Settings]),
-    ("spreadsheet", &[Scope::ViewerTable]),
+    ("spreadsheet", &[Scope::Sheet, Scope::SheetEdit, Scope::ViewerTable]),
 ];
 
 /// A key pattern: `cmd+` (any key with ⌘), `cmd+shift+`, `c+s+`, `cmd+k`

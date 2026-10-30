@@ -1661,7 +1661,7 @@ fn web_page() -> Option<WebPage> {
     let st = store();
     let f = st.viewing.get()?;
     let r = st.rendered.get();
-    if r.as_ref().is_some_and(|r| !r.error.is_empty()) {
+    if r.as_ref().is_some_and(|r| !r.error.is_empty()) || crate::office::showing() {
         return None;
     }
     let office = r.as_ref().map(|r| r.office.clone()).unwrap_or_default();
@@ -1780,7 +1780,9 @@ pub(crate) fn layer() -> impl IntoElement {
         let sheet_i = st.sheet_idx.get();
         let html_mode = st.html_mode.get();
         // body per kind
-        let body: AnyElement = if on_web {
+        let body: AnyElement = if crate::office::showing() {
+            crate::office::xlsx::edit::sheet_view().into_element()
+        } else if on_web {
             view().flex_1().pointer_events(PointerEvents::None).into_element()
         } else if r.as_ref().map(|r| !r.error.is_empty()).unwrap_or(false) {
             unavailable(&f, "Couldn't load preview", &r.unwrap().error).into_element()
@@ -2014,7 +2016,11 @@ pub(crate) fn layer() -> impl IntoElement {
                                     .text_size(px(13.0))
                                     .text_color(tc("#f5f5f5a8")),
                             )
-                            .on_press(|| store().viewing.set(None)),
+                            .on_press(|| {
+                                if crate::office::may_close() {
+                                    store().viewing.set(None);
+                                }
+                            }),
                     ),
             )
             .child(
@@ -2677,6 +2683,10 @@ fn office_open() -> bool {
 pub(crate) fn viewer_save() {
     let st = store();
     let Some(f) = st.viewing.get_untracked() else { return };
+    if crate::office::showing() {
+        crate::office::xlsx::edit::commit_editing();
+        return crate::office::save();
+    }
     if !office_open() {
         return;
     }
@@ -2756,6 +2766,14 @@ pub(crate) fn viewer_actions() {
     }
     if office_open() {
         items.push(CtxItem::row("Save as New Version", "download", "viewer-save", String::new()));
+    }
+    if untracked(crate::office::showing) {
+        items.push(CtxItem::row("Save", "download", "viewer-save", String::new()));
+    }
+    // the native spreadsheet or the web editor (`office.native`)
+    if crate::office::native_ext(&f.path) {
+        let label = if store().office.native.get_untracked() { "Open Spreadsheets in the Web Editor" } else { "Open Spreadsheets Natively" };
+        items.push(CtxItem::row(label, "spreadsheet", "office-native", String::new()));
     }
     if printable(&f).is_some() {
         items.push(CtxItem::row("Print…", "document", "viewer-print", String::new()));
