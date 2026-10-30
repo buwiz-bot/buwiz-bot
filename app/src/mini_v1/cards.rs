@@ -272,6 +272,13 @@ pub fn fit_range(app: &Value) -> (f32, f32) {
     (lo, dim("max_height", FIT.1).max(lo))
 }
 
+/// Whether an inline app's card waits for its `rox.ready()` before it
+/// shows (`inline.wait_ready`, an optional addition apps feature-detect;
+/// `mini_v1::settle`).
+pub fn wait_ready(app: &Value) -> bool {
+    app.get("inline").and_then(|i| i.get("wait_ready")).and_then(Value::as_bool).unwrap_or(false)
+}
+
 /// The card height `rox.fit(height)` sets: `height` in [`fit_range`].
 pub fn fit_height(app: &Value, height: f32) -> f32 {
     let (lo, hi) = fit_range(app);
@@ -512,6 +519,16 @@ mod tests {
         // a maximum under the minimum is the minimum
         assert_eq!(fit_range(&app(json!({"min_height": 300, "max_height": 200}))), (300.0, 300.0));
         assert_eq!(fit_range(&Value::Null), FIT);
+    }
+
+    #[test]
+    fn wait_ready_is_the_manifests_boolean() {
+        let app = |i: Value| json!({"placement": ["inline"], "inline": i});
+        assert!(wait_ready(&app(json!({"width": 560, "height": 230, "wait_ready": true}))));
+        assert!(!wait_ready(&app(json!({"width": 560, "height": 230, "wait_ready": false}))));
+        assert!(!wait_ready(&app(json!({"width": 560, "height": 230}))));
+        assert!(!wait_ready(&app(json!({"wait_ready": "yes"}))));
+        assert!(!wait_ready(&Value::Null));
     }
 
     fn act(id: &str, label: &str, primary: bool, disabled: bool) -> CardAction {

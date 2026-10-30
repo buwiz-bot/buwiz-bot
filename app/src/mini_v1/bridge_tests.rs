@@ -147,6 +147,7 @@ struct TestUi {
     ended: Mutex<Vec<Ended>>,
     previews: Mutex<Vec<Preview>>,
     fits: Mutex<Vec<f32>>,
+    readies: AtomicUsize,
     actions: Mutex<Vec<Vec<CardAction>>>,
     press: Mutex<Option<Press>>,
     metas: Mutex<Vec<Option<CardMeta>>>,
@@ -193,6 +194,9 @@ impl HostUi for TestUi {
     }
     fn fit(&self, height: f32) {
         self.fits.lock().unwrap().push(height);
+    }
+    fn ready(&self) {
+        self.readies.fetch_add(1, Ordering::SeqCst);
     }
     fn actions(&self, actions: Vec<CardAction>, press: Press) {
         self.actions.lock().unwrap().push(actions);
@@ -313,7 +317,7 @@ fn app_07_ungranted_methods_are_absent() {
     assert_eq!(o.wait("open"), "open,attach,pickFile,storage,copy function function true true undefined board 1");
     // and at the host level: the channel handles only the granted names
     let p = &o.ctx.prepared;
-    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
+    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
     assert!(!p.permissions.policy().access().allows_host("rox.open"));
 }
 
@@ -683,6 +687,23 @@ fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
     assert_eq!(full.wait("fit"), "fit function");
     std::thread::sleep(Duration::from_millis(200));
     assert!(full.ui.fits.lock().unwrap().is_empty(), "a full-screen open's fit is ignored");
+}
+
+#[test]
+fn ready_reaches_an_inline_card_and_full_screen_ignores_it() {
+    // a post, granted to every app: apps feature-detect it (`rox.ready?.()`)
+    let script = r#"rox.ready(); rox.ready?.(); return "ready " + typeof rox.ready;"#;
+    let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
+    assert_eq!(o.wait("ready"), "ready function");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while o.ui.readies.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(o.ui.readies.load(Ordering::SeqCst), 2);
+    let mut full = Open::start(json!({}), script);
+    assert_eq!(full.wait("ready"), "ready function");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(full.ui.readies.load(Ordering::SeqCst), 0, "a full-screen open's ready is ignored");
 }
 
 #[test]

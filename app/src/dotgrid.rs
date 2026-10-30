@@ -37,6 +37,17 @@ pub(crate) const TAU_APP: f64 = 15.0;
 /// `Store::art_started`: the same key (a turn id) keeps its progress
 /// through a rebuilt row or a recycled cell.
 pub(crate) fn dot_grid(key: String, tau: f64) -> impl IntoElement {
+    grid(key, tau, false)
+}
+
+/// The dot grid at rest, for Reduce Motion: no twinkle, no front moving,
+/// no percentage (a number that never moves reads as stuck). It paints
+/// once per size and never asks the clock for frames.
+pub(crate) fn dot_grid_still(key: String) -> impl IntoElement {
+    grid(key, TAU_APP, true)
+}
+
+fn grid(key: String, tau: f64, still: bool) -> impl IntoElement {
     let started = *store()
         .art_started
         .borrow_mut()
@@ -47,13 +58,13 @@ pub(crate) fn dot_grid(key: String, tau: f64) -> impl IntoElement {
     // The store's shared ~30fps clock drives the paint; the progress is
     // read off the wall clock, so a dropped frame never slows it.
     canvas(move || {
-        let t = store().tick() as f32;
+        let t = if still { 0.0 } else { store().tick() as f32 };
         let area = bounds.get().size;
         let (w, h) = (area.width.0, area.height.0);
         if w < 1.0 || h < 1.0 {
             return Painter::new();
         }
-        let p = (1.0 - (-started.elapsed().as_secs_f64() / tau).exp()).min(CAP);
+        let p = if still { 0.0 } else { (1.0 - (-started.elapsed().as_secs_f64() / tau).exp()).min(CAP) };
         let (idle, fill) = (color(theme::DOT_IDLE), color(theme::DOT_FILL));
         let front = front_of(p as f32);
         let diag = (w * w + h * h).sqrt();
@@ -73,7 +84,7 @@ pub(crate) fn dot_grid(key: String, tau: f64) -> impl IntoElement {
                 let s = smoothstep((front - d) / SOFT + 0.5);
                 let speed = 0.6 + 0.8 * hash(ix, iy, 2);
                 let tw = (t * speed * 1.6 + hash(ix, iy, 3) * TAU).sin();
-                let s = (s + tw * TWINKLE).clamp(0.0, 1.0);
+                let s = if still { 0.0 } else { (s + tw * TWINKLE).clamp(0.0, 1.0) };
                 levels[(s * (LEVELS - 1) as f32).round() as usize].push((x, y));
             }
         }
@@ -89,6 +100,9 @@ pub(crate) fn dot_grid(key: String, tau: f64) -> impl IntoElement {
                 painter = painter.move_to(x + r, y).arc(x, y, r, 0.0, TAU);
             }
             painter = painter.fill();
+        }
+        if still {
+            return painter;
         }
         // The percentage pill, bottom-right: the accent on a lifted plate.
         let label = format!("{}%", (p * 100.0).floor() as i32);

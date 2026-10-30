@@ -419,6 +419,10 @@ function apps(m) {
       if (a.inline.max_height !== undefined) int(a.inline.max_height, `${at}.inline.max_height`, a.inline.height, LIMITS.inlineHeight[1]);
 
       if (a.inline.resizable !== undefined && kindOf(a.inline.resizable) !== "boolean") throw invalid(`${at}.inline.resizable`, "must be a boolean");
+
+      // the card holds its placeholder until the app's rox.ready() (an
+      // optional addition under 1.0: older hosts ignore it)
+      if (a.inline.wait_ready !== undefined && kindOf(a.inline.wait_ready) !== "boolean") throw invalid(`${at}.inline.wait_ready`, "must be a boolean");
     }
 
     if (a.permissions !== undefined) permissions(a.permissions, m, `${at}.permissions`);

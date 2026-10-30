@@ -85,6 +85,11 @@ const __roxBridge = (() => {
       if (!(h > 0) || !Number.isFinite(h)) throw new RoxError("invalid_args", "rox.fit takes a height in points");
       __roxHost.post("rox.fit", { height: Math.ceil(h) });
     },
+    // an inline card's data is in: with the manifest's inline.wait_ready
+    // the card holds its placeholder until this (full screen: ignored)
+    ready: () => {
+      __roxHost.post("rox.ready", {});
+    },
     // an inline card's chrome, drawn by Rox (full screen: checked, then
     // ignored): footer buttons, the outcome line it settles to, a status
     actions: (list) => ask("rox.actions", { actions: list === undefined ? null : list }).then(done),
