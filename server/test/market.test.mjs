@@ -119,7 +119,7 @@ before(async () => {
     });
     s.on("error", () => {});
   });
-  await new Promise((ok) => sink.listen(SINK_PORT, "127.0.0.1", ok));
+  await new Promise((ok, bad) => sink.once("error", bad).listen(SINK_PORT, "127.0.0.1", ok));
   server = await startServer(dir, { env: env() });
 });
 
