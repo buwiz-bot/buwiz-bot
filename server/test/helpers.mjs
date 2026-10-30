@@ -25,6 +25,13 @@ export function brokerCommand() {
   return [bin === "node" ? process.execPath : bin, args];
 }
 
+/** Whether the tests run through rox-broker with its hub on
+ *  (ROX_BROKER_HUB=1, plan D30): the brain answers in Rust, and Node runs
+ *  only its office role. A case that tests Node's own brain is skipped
+ *  then (`{ skip: HUB && "Node-only: …" }`), as a Rust-only case is
+ *  skipped on plain Node. */
+export const HUB = !!(process.env.ROX_BROKER_CMD || "").trim() && process.env.ROX_BROKER_HUB === "1";
+
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
 
 // PATH stubs for the Mac tools the broker shells out to (nsh, pbcopy,

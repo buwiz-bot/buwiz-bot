@@ -21,12 +21,14 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use super::agents::run::{AgentRequest, AgentRequestTurn, RequestDone};
 use super::ctx::HubCtx;
 use super::model::choice::{choice_for_db, retry_choice, BotModel};
 use super::model::Settings;
+use super::store::{Thread, Turn};
 use super::tools::Run;
 use super::traits::{ChatTurn, TurnDone, TurnRequest, TurnRunner};
-use super::types::{BoxFuture, ModelChoice};
+use super::types::{BoxFuture, ModelChoice, TurnCtx};
 use super::Registry;
 use crate::office::Office;
 
@@ -58,8 +60,8 @@ fn thread_of(ctx: &HubCtx, id: &str) -> String {
 }
 
 impl TurnRunner for Agent {
-    /// `backgroundTurn`: a routine's or an agent's turn. The mark rides the
-    /// shown turn as `routine` (a routine's turn) or `agent`.
+    /// `backgroundTurn`: a routine's or an agent's turn. `req.mark` is its
+    /// `extra`, spread onto the shown turn as it is (see [`TurnRequest`]).
     fn run(&self, ctx: Arc<HubCtx>, req: TurnRequest) -> BoxFuture<'static, Result<TurnDone, String>> {
         let settings = self.settings.clone();
         Box::pin(async move {
@@ -71,11 +73,7 @@ impl TurnRunner for Agent {
             if turn.model.is_none() {
                 turn.model = choice_of(&ctx, &turn.thread, turn.acting_bot.as_deref());
             }
-            let extra = match req.mark {
-                Some(m) if turn.routine.is_some() => json!({"routine": m}),
-                Some(m) => json!({"agent": m}),
-                None => json!({}),
-            };
+            let extra = req.mark.unwrap_or_else(|| json!({}));
             let run = Run::new(ctx, turn, job, settings);
             generate::background_turn(&run, &req.shown, &req.prompt, &extra).await
         })
@@ -96,12 +94,36 @@ impl TurnRunner for Agent {
     }
 }
 
-/// Track B's 5.4: the runner (in place of any other). The office it calls
-/// is installed by `office::install` (6.1, in process; it was D31's Node
-/// child, started here).
+/// An agent's request (agents-wire.mjs `runRequest`): the recipient's turn
+/// on a stand-in thread (the conversation from its side, `history`), whose
+/// writes are its own and never shown; `agentTurn` with the tools, else
+/// `chatReply`. → its answer and the cards it made (`job.linkTurn.links`).
+pub async fn request_turn(ctx: Arc<HubCtx>, settings: Arc<Settings>, req: AgentRequest) -> Result<RequestDone, String> {
+    let (id, uid, title) = req.thread;
+    // allocJobId(): a job of its own, never on the jobs table's thread
+    let key = format!("stand-in:{id}:{}", super::store::uuidv7());
+    let job = ctx.jobs.create(&key, Value::Null, None, false);
+    let turns = req
+        .history
+        .iter()
+        .map(|h| Turn { role: h.get("role").map(crate::js::string_of).unwrap_or_default(), text: h.get("text").filter(|t| !t.is_null()).map(crate::js::string_of), ..Turn::default() })
+        .collect();
+    ctx.store.touch(|s| s.stand_ins.insert(key.clone(), Thread { id, uid, title, turns, ..Thread::default() }));
+    let run = Run::new(ctx.clone(), TurnCtx { thread: key.clone(), ..req.turn }, job, settings);
+    let answer = generate::request_reply(&run, &req.prompt).await;
+    let links = run.state().link_turn.as_ref().map(|l| l.links.clone()).unwrap_or_default();
+    ctx.store.touch(|s| s.stand_ins.remove(&key));
+    ctx.jobs.with(job, |j| j.done = true);
+    Ok(RequestDone { answer: answer?, links })
+}
+
+/// Track B's 5.4: the runner (in place of any other) and an agent's
+/// request turn (5.6's seam). The office it calls is installed by
+/// `office::install` (6.1, in process; it was D31's Node child).
 pub fn install(_routes: &mut Registry, ctx: &mut HubCtx) {
     let settings = Arc::new(Settings::global().clone());
-    ctx.turns = Some(Arc::new(Agent::new(settings)));
+    ctx.turns = Some(Arc::new(Agent::new(settings.clone())));
+    ctx.ext.insert(AgentRequestTurn(Arc::new(move |ctx, req| Box::pin(request_turn(ctx, settings.clone(), req)))));
 }
 
 /// The hub's office, for a test or a caller outside the hub.

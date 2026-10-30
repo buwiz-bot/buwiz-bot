@@ -27,13 +27,15 @@ pub struct TurnRequest {
     pub shown: String,
     /// what the model is sent
     pub prompt: String,
-    /// what backgroundTurn's `extra` sets on the shown turn: `{routine:
-    /// mark}`, `{agent: …}`
+    /// backgroundTurn's `extra`: an object whose fields are spread onto
+    /// the shown turn as they are. The caller names the field, the runner
+    /// never wraps it: a v1 routine passes `{routine: mark}`, an agent's
+    /// reply `{agent: mark}`, a v0 routine `None` (Node's `{}`).
     pub mark: Option<Value>,
 }
 
 /// Where a turn landed: the shown (user) turn's index in the thread and
-/// its uid (`routineTurn`'s `at`).
+/// its uid (`routineTurn`'s `at`). Every runner answers it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TurnDone {
     pub seq: usize,

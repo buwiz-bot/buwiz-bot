@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { postJson, request, startServer, tempDir } from "./helpers.mjs";
+import { HUB, postJson, request, startServer, tempDir } from "./helpers.mjs";
 
 const dir = tempDir("office-role");
 const gen = join(dir, "generated");
@@ -56,7 +56,9 @@ const snapshot = () => ({
   generated: readdirSync(gen).sort(),
 });
 
-test("OFFICE-01 the office role writes no hub state, serves the office routes and refuses hub routes", async () => {
+// Node-only: it starts Node in its office role and asserts Node's own 501s;
+// through rox-broker's hub those routes are the hub's and answer
+test("OFFICE-01 the office role writes no hub state, serves the office routes and refuses hub routes", { skip: HUB && "Node-only: Node's office role answers these routes 501; the hub answers them" }, async () => {
   // a data dir as a normal Node start leaves it, with a chat and a /state row
   let server = await startServer(dir);
 
