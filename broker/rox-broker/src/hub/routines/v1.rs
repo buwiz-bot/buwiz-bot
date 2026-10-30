@@ -1200,7 +1200,8 @@ impl V1 {
                 turn: TurnCtx { thread: home.id.clone(), routine: Some(format!("{}/{}", row.plugin, rid(r))), surface: Some(surface.clone()), ..TurnCtx::default() },
                 shown: shown_of(item),
                 prompt: Self::turn_prompt(r, row, &label, item, hooked),
-                mark: Some(mark),
+                // backgroundTurn's `{routine: mark}` on the shown turn
+                mark: Some(json!({"routine": mark})),
             };
             let done = routine_turn(ctx, self.host.as_ref(), turn).await?;
             if run.items == 0 {

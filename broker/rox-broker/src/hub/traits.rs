@@ -27,11 +27,13 @@ pub struct TurnRequest {
     pub shown: String,
     /// what the model is sent
     pub prompt: String,
-    /// the shown turn's mark (`routine`, `agent`)
+    /// what backgroundTurn's `extra` sets on the shown turn: `{routine:
+    /// mark}`, `{agent: …}`
     pub mark: Option<Value>,
 }
 
-/// Where a turn landed: its index in the thread and its uid.
+/// Where a turn landed: the shown (user) turn's index in the thread and
+/// its uid (`routineTurn`'s `at`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TurnDone {
     pub seq: usize,
