@@ -16,6 +16,7 @@ pub mod model;
 pub mod pipeline;
 pub mod routes;
 pub mod store;
+pub mod routines;
 pub mod traits;
 pub mod types;
 
@@ -104,6 +105,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     model::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
+    routines::install(routes, ctx);
 }
 
 pub struct Hub {
