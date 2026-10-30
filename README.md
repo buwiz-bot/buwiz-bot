@@ -115,7 +115,12 @@ LaunchServices. The bundle (`dev.goldcoders.rox`) declares the `rox://`
 URL scheme. Its executable `exec`s `app/target/debug/rox` with the
 gpui-agent variables above and `ROX_FPS=0`, so it picks up each cargo rebuild
 without re-bundling. Run the script again only if the bundle is deleted or
-its Info.plist changes.
+its Info.plist changes, or to repackage the broker: it also puts
+`rox-broker` and the static files it serves into
+`Contents/Resources/broker/`. At launch, when nothing answers on
+`127.0.0.1:8787` and it is no test instance (`ROX_BACKEND`,
+`ROX_BACKGROUND=1` or `ROX_DATA_DIR` set), Rox starts that broker detached,
+logging to `~/Library/Logs/Rox/broker.log` (`app/src/broker.rs`).
 
 ```sh
 app/bundle-dev.sh                       # once
