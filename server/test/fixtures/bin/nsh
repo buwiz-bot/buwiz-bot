@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // nsh stub for the broker tests (put this dir first on PATH, or point NSH
 // at this file). `nsh build <entry> --out <dir>` writes <dir>/bundle.js;
-// `nsh check <entry>` passes; anything else passes silently.
+// `nsh build <entry> -o <dir>` (a pop-out's wrapper) writes
+// <dir>/bundle.nshc; `nsh check <entry>` passes; anything else passes
+// silently.
 //   NSH_STUB=pass (default) | fail | missing
 //     fail: every build and check prints NSH_STUB_TEXT (default "error
 //       TS2304: Cannot find name 'nope'.") to stderr and exits 1;
 //     missing: exits 127 with no output, as a missing binary reads to
 //       pipeline.mjs (an empty error).
 //   A module containing the text "nsh-stub:fail" fails too, whatever the
-//   mode: the entry itself, or the "./<name>" module a check entry imports.
+//   mode: the entry itself, the "./<name>" module a check entry imports, or
+//   the "../<dir>/<name>" module a pop-out wrapper imports.
 // ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
@@ -29,7 +32,9 @@ const read = (p) => {
 };
 const src = entry ? read(entry) : "";
 const dep = src.match(/from\s+"\.\/(R\d+)"/)?.[1];
-const marked = src.includes("nsh-stub:fail") || (dep && read(join(dirname(entry), `${dep}.tsx`)).includes("nsh-stub:fail"));
+const up = src.match(/from\s+"(\.\.\/[^"]+)"/)?.[1];
+const marked = src.includes("nsh-stub:fail") || (dep && read(join(dirname(entry), `${dep}.tsx`)).includes("nsh-stub:fail")) ||
+  (up && read(join(dirname(entry), `${up}.tsx`)).includes("nsh-stub:fail"));
 
 if ((cmd === "build" || cmd === "check") && (mode === "fail" || marked)) {
   process.stderr.write(`${process.env.NSH_STUB_TEXT || "error TS2304: Cannot find name 'nope'."}\n`);
@@ -42,6 +47,13 @@ if (cmd === "build") {
   if (out && argv.includes("--out")) {
     mkdirSync(out, { recursive: true });
     writeFileSync(join(out, "bundle.js"), `// nsh stub bundle of ${basename(entry || "")}\nexport default null;\n`);
+  }
+
+  const o = argv[argv.indexOf("-o") + 1];
+
+  if (o && argv.includes("-o")) {
+    mkdirSync(o, { recursive: true });
+    writeFileSync(join(o, "bundle.nshc"), `nsh stub bundle of ${basename(entry || "")}\n`);
   }
 }
 

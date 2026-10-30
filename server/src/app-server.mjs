@@ -69,14 +69,13 @@ import { startRoutines } from "./routines.mjs";
 import { allowedOrigins, refusal } from "./guard.mjs";
 
 // The office role (ROX_NODE_ROLE=office, plan 5.0c) answers only these:
-// /office/*, and /file/render, /highlight and /mermaid* until 6.1/6.2
-// (D32), /popout until 6.3 (D36); /health and / so the front door sees
-// it up. Every other route is the hub's, and rox-broker never forwards
-// one: one that reaches Node anyway gets 501, never a write.
+// /office/*, and /file/render until 6.1 (D32); /health and / so the front
+// door sees it up. Every other route is the hub's (/mermaid* since 6.2,
+// /popout since 6.3) or deleted (/highlight, 6.2), and rox-broker never
+// forwards one: one that reaches Node anyway gets 501, never a write.
 const officeRoute = (method, url) =>
   method === "GET" && (url === "/" || url === "/health" || url.startsWith("/office/") ||
-    url.startsWith("/file/render?") || url === "/mermaid.js" || url.startsWith("/mermaid?")) ||
-  method === "POST" && (url === "/highlight" || url === "/popout");
+    url.startsWith("/file/render?"));
 
 const routes = [
   v1Route,
