@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/flowchart/flow-text.spec.js",
+ "error": {
+  "code": "syntax",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 2,
+  "column": 13,
+  "message": "Parse error on line 2:\nX(- My Text (\n------------^\nExpecting '-)', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS'",
+  "snippet": "X(- My Text (\n------------^"
+ }
+}

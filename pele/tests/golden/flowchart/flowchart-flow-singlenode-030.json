@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/flowchart/flow-singlenode.spec.js",
+ "error": {
+  "code": "syntax",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 1,
+  "column": 25,
+  "message": "Parse error on line 1:\ngraph TD; ${specialChar}node --> A\n------------------------^\nExpecting 'SEMI', 'NEWLINE', 'EOF', got 'NODE_STRING'",
+  "snippet": "graph TD; ${specialChar}node --> A\n------------------------^"
+ }
+}

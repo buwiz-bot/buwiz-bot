@@ -1,0 +1,8 @@
+{
+ "source": "tests/compat/flowchart/subgraph.spec.js",
+ "type": "flowchart",
+ "mermaidType": "flowchart-v2",
+ "width": 164,
+ "height": 265,
+ "links": []
+}

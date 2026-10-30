@@ -1,0 +1,8 @@
+{
+ "source": "samples/kanban.mmd",
+ "type": "kanban",
+ "mermaidType": "kanban",
+ "width": 428,
+ "height": 105,
+ "links": []
+}

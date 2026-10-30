@@ -1,0 +1,8 @@
+{
+ "source": "samples/fc-elk.mmd",
+ "type": "flowchart",
+ "mermaidType": "flowchart-elk",
+ "width": 256,
+ "height": 92,
+ "links": []
+}

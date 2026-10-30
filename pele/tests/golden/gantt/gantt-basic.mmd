@@ -1,0 +1,9 @@
+gantt
+  title Plan
+  dateFormat YYYY-MM-DD
+  axisFormat %m/%d
+  section Build
+  Design :done, d1, 2024-01-01, 5d
+  Code :active, c1, after d1, 10d
+  Test :crit, t1, after c1, 3d
+  Ship :milestone, m1, after t1, 0d

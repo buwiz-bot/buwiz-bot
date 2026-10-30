@@ -1,0 +1,8 @@
+{
+ "source": "samples/state-choice-note.mmd",
+ "type": "state",
+ "mermaidType": "stateDiagram",
+ "width": 275,
+ "height": 217,
+ "links": []
+}
