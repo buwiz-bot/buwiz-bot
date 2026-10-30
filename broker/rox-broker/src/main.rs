@@ -43,9 +43,10 @@ async fn main() {
         }
     };
     let hub_on = std::env::var("ROX_BROKER_HUB").as_deref() == Ok("1");
-    let no_node = std::env::var("ROX_BROKER_NO_NODE").as_deref() == Ok("1");
+    // `--no-node` (the broker inside Rox.app, 7.1) or ROX_BROKER_NO_NODE=1
+    let no_node = config.no_node || std::env::var("ROX_BROKER_NO_NODE").as_deref() == Ok("1");
     if no_node && !hub_on {
-        eprintln!("rox-broker: ROX_BROKER_NO_NODE=1 needs ROX_BROKER_HUB=1 (the hub answers what Node would)");
+        eprintln!("rox-broker: --no-node (ROX_BROKER_NO_NODE=1) needs ROX_BROKER_HUB=1 (the hub answers what Node would)");
         std::process::exit(2);
     }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {

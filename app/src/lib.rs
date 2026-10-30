@@ -15,6 +15,7 @@ mod appdetails;
 mod avatar;
 mod botdetails;
 mod botmodal;
+pub mod broker;
 mod cards;
 mod chat;
 mod client;
