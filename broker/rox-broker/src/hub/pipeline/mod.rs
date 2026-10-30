@@ -16,11 +16,35 @@ use std::path::{Path, PathBuf};
 
 use crate::js;
 
-/// The hub's nsh: the shell-out (`NSH`, else `nsh`), unless a test set one.
+/// The hub's nsh: the shell-out (`NSH`, else `nsh`), unless a test set one;
+/// and the stage dir as config.mjs leaves it at start ([`prepare_stage`]).
 pub fn install(ctx: &mut crate::hub::ctx::HubCtx) {
     if ctx.nsh.is_none() {
         ctx.nsh = Some(std::sync::Arc::new(nsh::NshCli::from_env()));
     }
+    if let Err(e) = prepare_stage(&Dirs::of(&ctx.data).stage) {
+        eprintln!("rox-broker: .stage: {e}");
+    }
+}
+
+/// config.mjs at start: `.stage` made; check entries, candidates and
+/// outputs left by earlier runs (`*.tsx`, `out-*`) cleared, as one broken
+/// sibling fails every later check; and the `tsconfig.json` `nsh check`
+/// needs there written, extending the `.nsh/` the build step regenerates and
+/// scoped to the stage files. With no Node behind the hub nothing else
+/// writes it, and a data dir without one fails every check.
+pub fn prepare_stage(stage: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(stage)?;
+    for e in std::fs::read_dir(stage)? {
+        let e = e?;
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".tsx") || name.starts_with("out-") {
+            let p = e.path();
+            let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+    std::fs::write(stage.join("tsconfig.json"), "{\"extends\":\"./.nsh/tsconfig.json\",\"include\":[\"*.ts\",\"*.tsx\"]}\n")
 }
 
 /// Where the pipeline reads and writes, under Node's data dir
@@ -194,6 +218,28 @@ pub(crate) mod tests {
 
     fn sha(s: &str) -> String {
         Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn the_stage_gets_its_tsconfig_and_loses_old_candidates() {
+        let dir = std::env::temp_dir().join(format!("rox-stage-{}", std::process::id()));
+        let stage = dir.join(".stage");
+        std::fs::create_dir_all(stage.join("out-R1")).unwrap();
+        std::fs::create_dir_all(stage.join(".nsh")).unwrap();
+        std::fs::create_dir_all(stage.join("chunk-R2")).unwrap();
+        for f in ["cand-R1.tsx", "keep.ts", "tsconfig.json"] {
+            std::fs::write(stage.join(f), "x").unwrap();
+        }
+        prepare_stage(&stage).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&stage).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, [".nsh", "chunk-R2", "keep.ts", "tsconfig.json"]);
+        assert_eq!(std::fs::read_to_string(stage.join("tsconfig.json")).unwrap(), "{\"extends\":\"./.nsh/tsconfig.json\",\"include\":[\"*.ts\",\"*.tsx\"]}\n");
+        // a data dir with no .stage gets one
+        let fresh = dir.join("fresh/.stage");
+        prepare_stage(&fresh).unwrap();
+        assert!(fresh.join("tsconfig.json").is_file());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
