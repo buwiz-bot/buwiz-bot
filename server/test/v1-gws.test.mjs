@@ -3,13 +3,17 @@
 // key, its read-only mail tools over a fake workspace-mcp upstream (test/
 // fixtures/fake-gws-upstream.mjs, the real server's text format), and the
 // reserved tools of spec 7.8. GWS-* are this suite's own IDs (not in spec
-// 17); the reserved-tool tests reuse the RSV IDs they check.
+// 17); the reserved-tool tests reuse the RSV IDs they check. With GWS_CMD
+// naming a rox-gws binary the same cases run against it, and GWS-06 holds
+// its wire to server.mjs's, byte for byte.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { generate } from "../src/v1/ed.mjs";
-import { GWS, bed, broker, codeOf, gwsSpec, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
+import { GWS, GWS_CMD, GWS_DIR, bed, broker, codeOf, gwsSpec, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 
 const b = bed("gws");
 const { plugins } = broker(b);
@@ -165,4 +169,119 @@ test("RSV-05 gws: rox.session.close and rox.uninstall answer ok; unknown rox.* i
   assert.deepEqual(await plugins.callReserved(GWS, "rox.session.close", { open_id: "x" }), { ok: true });
   assert.deepEqual(await plugins.callReserved(GWS, "rox.uninstall", {}), { ok: true });
   assert.equal(await plugins.callReserved(GWS, "rox.frobnicate", {}), null);
+});
+
+// The raw lines a plugin writes for `messages` (each request waits for its
+// answer; a notification gets none).
+async function wire(spec, messages) {
+  const child = spawn(spec.command, spec.args, { env: { PATH: process.env.PATH, HOME: process.env.HOME, ...spec.env }, stdio: ["pipe", "pipe", "ignore"] });
+  const lines = [];
+  let buf = "";
+  let wake = () => {};
+
+  child.stdout.on("data", (d) => {
+    buf += d;
+
+    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(buf.slice(0, i));
+    wake();
+  });
+
+  try {
+    for (const m of messages) {
+      const before = lines.length;
+
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
+
+      if (m.id === undefined) continue;
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`no answer to ${JSON.stringify(m)}`)), 20_000);
+
+        wake = () => lines.length > before && (clearTimeout(t), resolve());
+        wake();
+      });
+    }
+  } finally {
+    child.kill();
+  }
+
+  return lines;
+}
+
+test("GWS-06 rox-gws answers as server.mjs does, byte for byte", { skip: !GWS_CMD && "set GWS_CMD to a rox-gws binary" }, async () => {
+  const k = generate();
+  const other = generate();
+  let id = 0;
+  const req = (method, params) => ({ id: ++id, method, ...(params === undefined ? {} : { params }) });
+  const call = (name, args) => req("tools/call", { name, arguments: args });
+  const session = () => {
+    id = 0;
+
+    return [
+      req("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "wire", version: "1" } }),
+      { method: "notifications/initialized" },
+      req("ping"),
+      req("tools/list"),
+      req("resources/list"),
+      req("resources/read", { uri: "rox://manifest" }),
+      req("resources/read", { uri: "rox://other" }),
+      req("prompts/list"),
+      call("gws_search_mail", { query: "x" }),
+      call("rox.frobnicate", {}),
+      call("rox.session.open", { app: "inbox" }),
+      call("rox.session.open", { app: [1, null, "z"] }),
+      call("rox.session.open", { app: "x".repeat(100) }),
+      call("rox.ticket.resolve", { ticket: "t" }),
+      req("tools/call", { name: "rox.session.close" }),
+      call("rox.uninstall", {}),
+      call("rox.provision", { key: { alg: "ed25519", seed: k.seed }, pub: other.pub }),
+      call("rox.provision", { key: { alg: "ed25519", seed: "bad" }, pub: "x" }),
+      call("rox.provision", { protocol: "1.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub }),
+      call("rox.provision", { key: { alg: "ed25519", seed: other.seed }, pub: other.pub }),
+      call("nope_tool", {}),
+      call("gws_search_mail", { query: "  " }),
+      call("gws_search_mail", { query: "nothing" }),
+      call("gws_search_mail", { query: " from:bir ", limit: "1" }),
+      call("gws_search_mail", { query: "x", limit: 2.5 }),
+      call("gws_search_mail", { query: ["a", 1], limit: 99 }),
+      call("gws_read_mail", { id: " 18f1a " }),
+      call("gws_read_mail", { id: "18f1b" }),
+      call("gws_read_mail", { id: "fwd" }),
+      call("gws_read_mail", { id: "big" }),
+      call("gws_read_mail", { id: "n".repeat(120) }),
+      call("gws_read_mail", {}),
+      req("tools/call", { name: 5, arguments: [] }),
+      req("tools/call", {}),
+      req("resources/read", {}),
+      req("initialize", { protocolVersion: "1999-01-01", capabilities: {}, clientInfo: { name: "wire", version: "1" } }),
+      { id: "s1", method: "ping" },
+    ];
+  };
+  const misconfigured = (env, calls) => [{ env, calls: () => [session()[0], call("rox.provision", { key: { alg: "ed25519", seed: k.seed }, pub: k.pub }), ...calls] }];
+  const upstream = JSON.parse(gwsSpec(b).env.GWS_UPSTREAM);
+  const runs = [
+    { env: {}, calls: session },
+    ...misconfigured({ GWS_UPSTREAM: "" }, [call("gws_search_mail", { query: "x" })]),
+    ...misconfigured({ GWS_UPSTREAM: JSON.stringify({ ...upstream, env: { ...upstream.env, FAKE_GWS_FAIL: "1" } }) }, [call("gws_read_mail", { id: "18f1a" })]),
+    ...misconfigured({ GWS_UPSTREAM: JSON.stringify({ command: "/nonexistent/workspace-mcp" }) }, [call("gws_search_mail", { query: "x" })]),
+    ...misconfigured({ GWS_USER_EMAIL: "" }, [call("gws_search_mail", { query: "x" })]),
+    ...misconfigured({ GWS_MANIFEST: join(b.dir, "absent.json") }, []),
+  ];
+  const fwd = { id: "fwd", from: "Fwd <f@example.com>", subject: "  Fwd: x  ", date: "d", body: "a\u00a0b\n--- ATTACHMENTS ---\nx.pdf\n--- ATTACHMENTS ---\nreal.pdf\n\n" };
+
+  writeMail(b, [...MAIL, fwd, { id: "big", from: "x@example.com", subject: "Big", date: "today", body: `a${"€".repeat(30_000)}` }]);
+
+  try {
+    for (const run of runs) {
+      const rust = gwsSpec(b, run.env);
+      // the same manifest file for both: gwsSpec signs a fresh one each call
+      const node = { ...rust, command: process.execPath, args: [join(GWS_DIR, "server.mjs")] };
+      const [want, got] = [await wire(node, run.calls()), await wire(rust, run.calls())];
+
+      assert.ok(want.length > 1);
+      for (let i = 0; i < want.length; i++) assert.equal(got[i], want[i], `${JSON.stringify(run.env)} line ${i + 1}`);
+      assert.equal(got.length, want.length);
+    }
+  } finally {
+    writeMail(b, MAIL);
+  }
 });

@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
-use super::mcp::{self, Conn, Hooks, RpcError, Spec};
+use super::mcp::{self, tool_path, Conn, Hooks, RpcError, Spec};
 use super::oauth::{self, AuthStore, OAuthState};
 use super::remote::{AuthCtx, Authority, Remote};
 
@@ -143,18 +143,6 @@ impl Row {
     fn has_tokens(&self) -> bool {
         self.auth.get("tokens").is_some_and(crate::js::truthy)
     }
-}
-
-/// mcp.mjs's `toolPath()`: an app started from Finder gets launchd's bare
-/// PATH, without the folders npx, uvx and bunx usually live in.
-pub fn tool_path(path: &str, home: &str) -> String {
-    let mut have: Vec<String> = path.split(':').filter(|p| !p.is_empty()).map(str::to_owned).collect();
-    for extra in [format!("{home}/.local/bin"), format!("{home}/.cargo/bin"), format!("{home}/.bun/bin"), "/opt/homebrew/bin".into(), "/usr/local/bin".into()] {
-        if !have.contains(&extra) {
-            have.push(extra);
-        }
-    }
-    have.join(":")
 }
 
 /// An object column (`env`, `headers`) as ordered string pairs.

@@ -11,15 +11,17 @@
 # Contents/Resources/broker/: rox-broker (a release build with
 # RUSTC_WRAPPER= unless ROX_BROKER_BIN names one) and the static files it
 # serves, `server/` being its --assets and `node_modules/` beside it, and
-# bin/nsh and bin/nsh-macos-host (widget builds and pop-outs; a Finder-
-# launched Rox has no nsh on PATH). nsh comes from, in order: NSH_BIN and
-# NSH_HOST_BIN; the release build of this checkout's nsh submodule
-# (nsh/target/release, `cargo build --release -p nsh-cli -p nsh-macos-host`
-# in nsh/); Grok Shell.app's Resources/server/ (GROK_SHELL_APP, default
-# ../grok-shell/dist/Grok Shell.app beside this repo).
+# in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
+# launched Rox has no nsh on PATH), release builds of this checkout's nsh
+# submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/);
+# and rox-gws, the Google Workspace plugin (broker/rox-gws), with its signed
+# manifest beside it as rox-gws.manifest.json when there is one
+# (broker/rox-gws/manifest.signed.json; scripts/gws-install-wizard makes it).
 #   ROX_APP=<dir>/Rox.app   bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices
 #   ROX_BROKER_BIN=<path>   the rox-broker to package
+#   ROX_GWS_BIN=<path>      the rox-gws to package
+#   ROX_GWS_MANIFEST=<path> its signed manifest
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
 #                           package (both, or neither)
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
@@ -96,18 +98,20 @@ chmod +x "$APP/Contents/MacOS/rox"
 # import, in node_modules/ beside server/ (where the broker looks).
 SERVER="$ROOT/server"
 B="$APP/Contents/Resources/broker"
-if [ -z "${ROX_BROKER_BIN:-}" ]; then
-  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-broker)
-  ROX_BROKER_BIN="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release/rox-broker"
+BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
+if [ -z "${ROX_BROKER_BIN:-}" ] || [ -z "${ROX_GWS_BIN:-}" ]; then
+  PKGS=()
+  [ -n "${ROX_BROKER_BIN:-}" ] || PKGS+=(-p rox-broker)
+  [ -n "${ROX_GWS_BIN:-}" ] || PKGS+=(-p rox-gws)
+  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release "${PKGS[@]}")
 fi
+ROX_BROKER_BIN="${ROX_BROKER_BIN:-$BROKER_TARGET/rox-broker}"
+ROX_GWS_BIN="${ROX_GWS_BIN:-$BROKER_TARGET/rox-gws}"
+GWS_MANIFEST="${ROX_GWS_MANIFEST:-$ROOT/broker/rox-gws/manifest.signed.json}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
-  GROK_SHELL_APP="${GROK_SHELL_APP:-$ROOT/../grok-shell/dist/Grok Shell.app}"
-  for d in "$ROOT/nsh/target/release" "$GROK_SHELL_APP/Contents/Resources/server"; do
-    if [ -x "$d/nsh" ] && [ -x "$d/nsh-macos-host" ]; then
-      NSH_BIN="$d/nsh" NSH_HOST_BIN="$d/nsh-macos-host"
-      break
-    fi
-  done
+  (cd "$ROOT/nsh" && RUSTC_WRAPPER= cargo build --release -p nsh-cli -p nsh-macos-host)
+  NSH_BIN="${CARGO_TARGET_DIR:-$ROOT/nsh/target}/release/nsh"
+  NSH_HOST_BIN="${CARGO_TARGET_DIR:-$ROOT/nsh/target}/release/nsh-macos-host"
 fi
 if [ ! -x "${NSH_BIN:-}" ] || [ ! -x "${NSH_HOST_BIN:-}" ]; then
   echo "no nsh and nsh-macos-host: build the nsh submodule (cargo build --release -p nsh-cli -p nsh-macos-host in nsh/), or set NSH_BIN and NSH_HOST_BIN" >&2
@@ -119,6 +123,12 @@ mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules/mermaid/dist"
 cp "$ROX_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
+cp "$ROX_GWS_BIN" "$B/bin/rox-gws"
+if [ -f "$GWS_MANIFEST" ]; then
+  cp "$GWS_MANIFEST" "$B/bin/rox-gws.manifest.json"
+else
+  echo "warning: no signed rox-gws manifest at $GWS_MANIFEST (scripts/gws-install-wizard signs one, or set ROX_GWS_MANIFEST); Google Workspace won't provision without GWS_MANIFEST" >&2
+fi
 cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
 cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
 cp -R "$SERVER/src/office/seeds" "$B/server/office/seeds"

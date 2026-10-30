@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Moves the Google Workspace plugin (dev.goldcoders.google-workspace) to
+# its Rust binary, rox-gws 1.1.0, step by step; each step asks first.
+#
+#   1. builds rox-gws and rox-broker (release, RUSTC_WRAPPER= empty);
+#   2. signs the manifest with the publisher key gc-2026-01 from the login
+#      Keychain (macOS asks you) into broker/rox-gws/manifest.signed.json;
+#   3. bundles Rox.app (app/bundle-dev.sh), which ships rox-gws and that
+#      manifest in Contents/Resources/broker/bin/;
+#   4. tells you what to type in Connect Apps to update the plugin.
+#
+# It reads no tokens, secrets or install records, and prints none: the
+# plugin's current environment stays where it is, and step 4 says where.
+#   ROX_APP=<dir>/Rox.app   the bundle (default ~/Applications/Rox.app)
+#   CARGO_TARGET_DIR        honoured, as by bundle-dev.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="${ROX_APP:-$HOME/Applications/Rox.app}"
+TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
+SIGNED="$ROOT/broker/rox-gws/manifest.signed.json"
+GWS="$APP/Contents/Resources/broker/bin/rox-gws"
+KEY_ID=gc-2026-01
+
+step() { printf '\n== %s\n' "$1"; }
+ask() {
+  local a
+  read -r -p "$1 [y/N] " a
+  [ "$a" = y ] || [ "$a" = Y ]
+}
+
+step "1/4 Build rox-gws and rox-broker (release)"
+if ask "Build now?"; then
+  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-gws -p rox-broker)
+fi
+[ -x "$TARGET/rox-gws" ] && [ -x "$TARGET/rox-broker" ] || { echo "no release build in $TARGET: build first" >&2; exit 1; }
+echo "manifest version: $("$TARGET/rox-gws" manifest | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')"
+
+step "2/4 Sign the manifest with $KEY_ID (you approve the Keychain prompt)"
+echo "Writes $SIGNED. The key stays in the Keychain; nothing prints it."
+if ask "Sign now?"; then
+  UNSIGNED="$(mktemp -t rox-gws-manifest)"
+  trap 'rm -f "$UNSIGNED"' EXIT
+  "$TARGET/rox-gws" manifest > "$UNSIGNED"
+  "$TARGET/rox-broker" sign-manifest "$UNSIGNED" --keychain "$KEY_ID" --out "$SIGNED"
+fi
+[ -f "$SIGNED" ] && grep -q '"signature"' "$SIGNED" || { echo "no signed manifest at $SIGNED: sign first" >&2; exit 1; }
+echo "signed: $SIGNED"
+
+step "3/4 Bundle $APP"
+echo "Runs app/bundle-dev.sh with this build: rox-gws and its signed manifest go to $(dirname "$GWS")/."
+echo "Quit Rox first; it starts nothing."
+if ask "Bundle now?"; then
+  ROX_APP="$APP" ROX_BROKER_BIN="$TARGET/rox-broker" ROX_GWS_BIN="$TARGET/rox-gws" ROX_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
+fi
+[ -x "$GWS" ] || { echo "no $GWS: bundle first" >&2; exit 1; }
+
+step "4/4 Update the plugin in Connect Apps"
+cat <<TEXT
+Start Rox, open Connect Apps → Add, and type one line: the environment as
+VAR=value words (no spaces inside a value; GWS_UPSTREAM is compact JSON),
+then the command and its argument:
+
+  GWS_MANIFEST=$GWS.manifest.json GWS_UPSTREAM=<as now> GWS_USER_EMAIL=<as now> $GWS mcp
+
+GWS_UPSTREAM and GWS_USER_EMAIL keep the values the plugin runs with now.
+They are in the broker's database, which this wizard does not open:
+  <data dir>/generated/app.db, table v1_plugins, row id
+  'dev.goldcoders.google-workspace', column env (a JSON object)
+where <data dir> is the broker's (~/Library/Application Support/Grok Shell
+on this Mac). They hold your OAuth client settings: copy them yourself,
+and don't paste them into chats or logs. Pin the upstream while you are
+there: in GWS_UPSTREAM's args, "workspace-mcp" becomes "workspace-mcp==2.2.1".
+
+The review shows version 1.0.0 → 1.1.0 with no new permissions; press
+Update. The plugin then lists two read-only tools, gws_search_mail and
+gws_read_mail, as before.
+TEXT
