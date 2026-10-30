@@ -369,8 +369,8 @@ mod tests {
             Ok(_) => panic!("{code}: renders"),
             Err(e) => e.note(),
         };
-        // Not ported yet: architecture has no line.
-        assert_eq!(note("architecture-beta\n  service db(database)[Database]\n"), "can't draw: Diagram type \"architecture\" is not yet ported.");
+        // No diagram type: no line.
+        assert_eq!(note("not a diagram\n"), "can't draw: No diagram type detected for the given text.");
         let n = note("flowchart LR\n  A-->\n");
         assert!(n.starts_with("can't draw: ") && n.contains("(line "), "{n}");
     }
