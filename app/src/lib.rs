@@ -32,6 +32,7 @@ pub mod live;
 mod mark;
 mod md;
 mod mermaid;
+mod office;
 pub mod mini;
 pub mod mini_v1;
 mod models;
