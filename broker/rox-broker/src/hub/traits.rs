@@ -38,8 +38,33 @@ pub struct TurnDone {
     pub turn: String,
 }
 
+/// A `/chat` or `/retry` job (agent.mjs `generate(job, prompt)`): its job
+/// is queued and answered already; `generate` runs it to its end through
+/// `ctx.jobs` (`finish`). An `Err` ends the job as Node's crash does
+/// ("generator error — <e>").
+#[derive(Clone, Debug, Default)]
+pub struct ChatTurn {
+    /// the thread and the job (`turn.job`); `turn.model` is `None`: `/chat`
+    /// runs under the thread's `choiceFor`, `/retry` under none (Node runs
+    /// a retry outside `modelCtx`)
+    pub turn: TurnCtx,
+    /// the user's message
+    pub prompt: String,
+    /// `job.extra`: `reply` (`{i, text, files?}`), `attachments`,
+    /// `v1Attachments`, as the turn carries them
+    pub extra: Value,
+    /// `/retry`'s card name (`job.retry`)
+    pub retry: Option<String>,
+}
+
 pub trait TurnRunner: Send + Sync {
     fn run(&self, ctx: Arc<HubCtx>, turn: TurnRequest) -> BoxFuture<'static, Result<TurnDone, String>>;
+
+    /// `/chat` and `/retry`'s turn. Until the tool loop (5.4) implements
+    /// it, a runner answers `not ported`.
+    fn generate(&self, _ctx: Arc<HubCtx>, _chat: ChatTurn) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Err("not ported".to_owned()) })
+    }
 }
 
 /// The model gateway (5.3): an Anthropic Messages body in, the final
