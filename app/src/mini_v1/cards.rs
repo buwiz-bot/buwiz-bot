@@ -2,14 +2,14 @@
 //!
 //! A tool result's `_meta["rox/open"]` reaches Rox as a card on the reply
 //! (the broker adds it to the turn's `links`, provider `rox-app`, with the
-//! checked open under `card`). The card has the title and **Open** (full)
-//! or **Show** (inline); nothing opens or mounts until it is pressed
-//! (INV-08, 9.7). An inline app is sized from its manifest's `inline`,
-//! clamped to 240–960 × 96–800 and to the chat column, under a title bar
-//! with Open (full screen). Its height is the first frame's: the app's
+//! checked open under `card`). A full app's card has the title and
+//! **Open**; an inline app is one card whose header's chevron expands it.
+//! Nothing opens or mounts until it is pressed (INV-08, 9.7). An inline
+//! app is sized from its manifest's `inline`, clamped to 240–960 × 96–800
+//! and to the chat column, under its header with Open (full screen). Its height is the first frame's: the app's
 //! `rox.fit` moves it to its content's within `inline.min_height` ..
 //! `inline.max_height` ([`fit_height`]). A user's own command, token or pin mounts an
-//! inline app at once (Q9); a tool result or link waits for Show.
+//! inline app at once (Q9); a tool result or link waits for the chevron.
 
 use serde_json::{Map, Value};
 
@@ -117,14 +117,6 @@ impl OpenCard {
     /// The module key it opens.
     pub fn key(&self) -> V1Key {
         V1Key { plugin: self.plugin.clone(), app: self.app.clone(), ticket: self.ticket.clone(), props: self.props.clone() }
-    }
-
-    /// Its button: Open for a full app, Show for an inline one (9.6).
-    pub fn button(&self) -> &'static str {
-        match self.placement {
-            Placement::Full => "Open",
-            Placement::Inline => "Show",
-        }
     }
 }
 
@@ -296,15 +288,15 @@ mod tests {
     }
 
     #[test]
-    fn inv_08_a_tool_result_card_offers_open_or_show_and_never_opens_by_itself() {
+    fn inv_08_a_tool_result_card_offers_open_or_expand_and_never_opens_by_itself() {
         let full = OpenCard::from_link(&link(json!({
             "plugin": "dev.goldcoders.bir", "app": "forms", "props": {"form": "1601C"}, "ticket": T, "title": "BIR Forms", "placement": "full",
         })))
         .unwrap();
-        assert_eq!(full.button(), "Open");
+        assert_eq!(full.placement, Placement::Full);
         assert_eq!(full.key().to_key(), format!("v1:dev.goldcoders.bir/forms?ticket={T}&props=%7B%22form%22%3A%221601C%22%7D"));
         let inline = OpenCard::from_link(&link(json!({"plugin": "dev.goldcoders.bir", "app": "calendar", "title": "Calendar", "placement": "inline"}))).unwrap();
-        assert_eq!(inline.button(), "Show");
+        assert_eq!(inline.placement, Placement::Inline);
         // tool results and links wait for the press; the person's own
         // commands and pins do not
         assert!(!mounts_at_once(Opener::ToolResult));
