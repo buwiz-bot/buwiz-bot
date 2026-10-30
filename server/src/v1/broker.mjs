@@ -6,7 +6,7 @@
 // enabled plugins and the routine poll once it listens.
 // ROX_V1_CALL_TIMEOUT_MS shortens the broker's 120 s call limit for tests.
 import { join } from "node:path";
-import { DATA_DIR } from "../config.mjs";
+import { DATA_DIR, OFFICE_ROLE } from "../config.mjs";
 import { allocJobId, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "../state.mjs";
 import { keystore } from "./keystore.mjs";
 import { createPlugins } from "./plugins.mjs";
@@ -50,4 +50,9 @@ async function routineTurn({ plugin, routine, thread, shown, prompt, surface, ma
 
 const threads = createRoutineThreads({ store, nextId: () => `t${nextThreadSeq()}`, uid: uuidv7, save: writeIndex });
 
-export const routines = createRoutines({ db, plugins, runTurn: routineTurn, threads, threadExists: (id) => !!findThread(String(id || "")) });
+// Not in Node's office role (ROX_NODE_ROLE=office): rox-broker owns
+// v1_routines and v1_instances there, and createRoutines would write them
+// on import (the one-time move to instances, racing rox-broker's on an
+// older database) and on a plugin's uninstall. Nothing in the role reaches
+// the routines: their routes answer 501 and app-server never starts them.
+export const routines = OFFICE_ROLE ? null : createRoutines({ db, plugins, runTurn: routineTurn, threads, threadExists: (id) => !!findThread(String(id || "")) });
