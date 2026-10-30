@@ -69,9 +69,11 @@ struct Ctx<'a> {
     nodes: Vec<CanvasNode>,
     links: Vec<(Bounds<Points>, String)>,
     unknown: Vec<String>,
-    // The translation the current element sits at (only translations occur).
-    tx: f32,
-    ty: f32,
+    // The transform the current element sits in, [a b c d e f] as canvas's
+    // `transform`: for link areas and label nodes, which are in diagram points.
+    m: [f32; 6],
+    // Inside the root `<svg>`: a nested one is a viewport (an icon).
+    nested: bool,
     // The area drawn inside each open `<a>`.
     link_box: Vec<(String, [f32; 4])>,
 }
@@ -127,13 +129,27 @@ impl Ctx<'_> {
         Some(format!("#{:08x}", c.0))
     }
 
-    fn color(&self, value: &str, st: &State, opacity: f32) -> Option<Color> {
+    /// A length that may be `min(a,b)` of lengths and `var()`s (treemap's
+    /// `rx:min(var(--_r),Npx)`).
+    fn length(&self, value: &str) -> Option<f32> {
+        let v = self.resolve(value, 0);
+        if let Some(inner) = v.strip_prefix("min(").and_then(|r| r.strip_suffix(')')) {
+            let (a, b) = split_top(inner)?;
+            return Some(self.length(a)?.min(self.length(b)?));
+        }
+        v.trim().trim_end_matches("px").parse().ok()
+    }
+
+    fn color(&mut self, value: &str, st: &State, opacity: f32) -> Option<Color> {
         let v = if value.trim() == "currentColor" { st.color.clone() } else { value.to_owned() };
         let r = self.resolve(&v, 0);
         if r.is_empty() || r == "none" || r == "transparent" {
             return None;
         }
-        let c = Color::parse(&r)?;
+        let Some(c) = Color::parse(&r) else {
+            self.unknown.push(format!("color {value:?}"));
+            return None;
+        };
         if opacity >= 1.0 {
             return Some(c);
         }
@@ -141,13 +157,25 @@ impl Ctx<'_> {
         Some(Color(c.0 & !0xff | a))
     }
 
+    /// The point (x, y) of the current element in diagram points.
+    fn at(&self, x: f32, y: f32) -> (f32, f32) {
+        let m = self.m;
+        (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+    }
+
     fn grow(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        let (tx, ty) = (self.tx, self.ty);
+        if self.link_box.is_empty() {
+            return;
+        }
+        // A rotated box grows the area by its corners' bounds.
+        let corners = [self.at(x0, y0), self.at(x1, y0), self.at(x0, y1), self.at(x1, y1)];
         for (_, b) in self.link_box.iter_mut() {
-            b[0] = b[0].min(x0 + tx);
-            b[1] = b[1].min(y0 + ty);
-            b[2] = b[2].max(x1 + tx);
-            b[3] = b[3].max(y1 + ty);
+            for (x, y) in corners {
+                b[0] = b[0].min(x);
+                b[1] = b[1].min(y);
+                b[2] = b[2].max(x);
+                b[3] = b[3].max(y);
+            }
         }
     }
 
@@ -314,7 +342,8 @@ impl Ctx<'_> {
             self.grow(left, ly - size, left + total, ly + size * 0.3);
         }
         if !label.trim().is_empty() {
-            let b = Bounds::new(point(px(x - 1.0 + self.tx), px(y - size + self.ty)), nsh_core::prelude::size(px(2.0), px(size * 1.3)));
+            let (bx, by) = self.at(x - 1.0, y - size);
+            let b = Bounds::new(point(px(bx), px(by)), nsh_core::prelude::size(px(2.0), px(size * 1.3)));
             self.nodes.push(CanvasNode::new(b, AccessibilityRole::Text, label.trim().to_owned()));
         }
     }
@@ -326,6 +355,40 @@ impl Ctx<'_> {
         }
         let mut st = parent.clone();
         self.apply(el, &mut st);
+        // Any element may carry a `transform`; a nested `<svg>` maps its
+        // viewBox onto its x/y/width/height.
+        let mut t = match el.attr("transform") {
+            Some(v) => parse_transform(v).unwrap_or_else(|| {
+                self.unknown.push(format!("transform {v:?}"));
+                IDENTITY
+            }),
+            None => IDENTITY,
+        };
+        if el.name == "svg" {
+            if self.nested {
+                t = multiply(t, viewport(el));
+            }
+            self.nested = true;
+        }
+        let saved = self.m;
+        if t != IDENTITY {
+            self.ops.push(CanvasOp::Save);
+            self.ops.push(if t[..4] == IDENTITY[..4] {
+                CanvasOp::Translate(n(t[4]), n(t[5]))
+            } else {
+                CanvasOp::Transform(t.map(n))
+            });
+            self.m = multiply(self.m, t);
+        }
+        self.shape(el, &st);
+        if t != IDENTITY {
+            self.ops.push(CanvasOp::Restore);
+            self.m = saved;
+        }
+    }
+
+    fn shape(&mut self, el: &Element, st: &State) {
+        let st = st.clone();
         match el.name.as_str() {
             "title" | "desc" | "image" => {}
             "text" => self.text(el, &st),
@@ -336,9 +399,12 @@ impl Ctx<'_> {
             }
             "rect" => {
                 let (x, y, w, h) = (num(el.attr("x")), num(el.attr("y")), num(el.attr("width")), num(el.attr("height")));
-                let rx = match el.attr("rx") {
-                    Some(r) => num(Some(r)),
-                    None => st.rx.as_deref().map_or(0.0, |r| num(Some(&self.resolve(r, 0)))),
+                let rx = match el.attr("rx").or(st.rx.as_deref()) {
+                    Some(r) => self.length(r).unwrap_or_else(|| {
+                        self.unknown.push(format!("rx {r:?}"));
+                        0.0
+                    }),
+                    None => 0.0,
                 };
                 let op = if rx > 0.0 { PathOp::RoundRect([n(x), n(y), n(w), n(h)], [n(rx); 4]) } else { PathOp::Rect([n(x), n(y), n(w), n(h)]) };
                 self.grow(x, y, x + w, y + h);
@@ -365,13 +431,6 @@ impl Ctx<'_> {
             }
             _ => {
                 // svg, g, a: groups.
-                let translate = el.attr("transform").and_then(parse_translate);
-                if let Some((x, y)) = translate {
-                    self.ops.push(CanvasOp::Save);
-                    self.ops.push(CanvasOp::Translate(n(x), n(y)));
-                    self.tx += x;
-                    self.ty += y;
-                }
                 let href = if el.name == "a" { el.attr("href").map(unescape) } else { None };
                 if let Some(h) = &href {
                     self.link_box.push((h.clone(), [f32::MAX, f32::MAX, f32::MIN, f32::MIN]));
@@ -386,11 +445,6 @@ impl Ctx<'_> {
                     if b[0] <= b[2] {
                         self.links.push((Bounds::new(point(px(b[0]), px(b[1])), nsh_core::prelude::size(px(b[2] - b[0]), px(b[3] - b[1]))), h));
                     }
-                }
-                if let Some((x, y)) = translate {
-                    self.ops.push(CanvasOp::Restore);
-                    self.tx -= x;
-                    self.ty -= y;
                 }
             }
         }
@@ -451,10 +505,67 @@ fn split_top(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn parse_translate(t: &str) -> Option<(f32, f32)> {
-    let inner = t.trim().strip_prefix("translate(")?.strip_suffix(')')?;
-    let (x, y) = inner.split_once(',').unwrap_or((inner, "0"));
-    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// `p` then `q`: the matrix of `transform(p); transform(q)`.
+fn multiply(p: [f32; 6], q: [f32; 6]) -> [f32; 6] {
+    [
+        p[0] * q[0] + p[2] * q[1],
+        p[1] * q[0] + p[3] * q[1],
+        p[0] * q[2] + p[2] * q[3],
+        p[1] * q[2] + p[3] * q[3],
+        p[0] * q[4] + p[2] * q[5] + p[4],
+        p[1] * q[4] + p[3] * q[5] + p[5],
+    ]
+}
+
+/// An SVG `transform` list (translate, rotate with or without a centre,
+/// scale, matrix, skewX/Y) as one matrix; `None` if it does not parse.
+fn parse_transform(t: &str) -> Option<[f32; 6]> {
+    let mut m = IDENTITY;
+    let mut rest = t.trim();
+    while !rest.is_empty() {
+        let open = rest.find('(')?;
+        let close = rest.find(')')?;
+        let name = rest[..open].trim();
+        let args: Vec<f32> = rest[open + 1..close].split([' ', ',']).filter(|a| !a.is_empty()).map(|a| a.parse().ok()).collect::<Option<_>>()?;
+        let f = match (name, args.as_slice()) {
+            ("translate", [x]) => [1.0, 0.0, 0.0, 1.0, *x, 0.0],
+            ("translate", [x, y]) => [1.0, 0.0, 0.0, 1.0, *x, *y],
+            ("scale", [k]) => [*k, 0.0, 0.0, *k, 0.0, 0.0],
+            ("scale", [x, y]) => [*x, 0.0, 0.0, *y, 0.0, 0.0],
+            ("rotate", [a]) => rotation(*a),
+            // rotate(a cx cy) = translate(cx cy) rotate(a) translate(-cx -cy).
+            ("rotate", [a, cx, cy]) => multiply(multiply([1.0, 0.0, 0.0, 1.0, *cx, *cy], rotation(*a)), [1.0, 0.0, 0.0, 1.0, -cx, -cy]),
+            ("skewX", [a]) => [1.0, 0.0, a.to_radians().tan(), 1.0, 0.0, 0.0],
+            ("skewY", [a]) => [1.0, a.to_radians().tan(), 0.0, 1.0, 0.0, 0.0],
+            ("matrix", [a, b, c, d, e, f]) => [*a, *b, *c, *d, *e, *f],
+            _ => return None,
+        };
+        m = multiply(m, f);
+        rest = rest[close + 1..].trim_start_matches([' ', ',']);
+    }
+    Some(m)
+}
+
+fn rotation(deg: f32) -> [f32; 6] {
+    let (s, c) = deg.to_radians().sin_cos();
+    [c, s, -s, c, 0.0, 0.0]
+}
+
+/// A nested `<svg x y width height viewBox>`'s user space in its parent's.
+fn viewport(el: &Element) -> [f32; 6] {
+    let (x, y, w, h) = (num(el.attr("x")), num(el.attr("y")), num(el.attr("width")), num(el.attr("height")));
+    let vb: Vec<f32> = el.attr("viewBox").unwrap_or("").split([' ', ',']).filter_map(|v| v.parse().ok()).collect();
+    match vb.as_slice() {
+        // preserveAspectRatio's default, xMidYMid meet.
+        [vx, vy, vw, vh] if *vw > 0.0 && *vh > 0.0 => {
+            let k = (w / vw).min(h / vh);
+            let (ox, oy) = (x + (w - vw * k) / 2.0, y + (h - vh * k) / 2.0);
+            [k, 0.0, 0.0, k, ox - vx * k, oy - vy * k]
+        }
+        _ => [1.0, 0.0, 0.0, 1.0, x, y],
+    }
 }
 
 /// The drawing for `scene` in `palette`.
@@ -466,8 +577,8 @@ pub(crate) fn draw(scene: &Scene, palette: &PelePalette) -> Drawn {
         nodes: Vec::new(),
         links: Vec::new(),
         unknown: Vec::new(),
-        tx: 0.0,
-        ty: 0.0,
+        m: IDENTITY,
+        nested: false,
         link_box: Vec::new(),
     };
     let family = ctx.aliases.iter().find(|(k, _)| k == "font-family").map(|(_, v)| v.clone()).unwrap_or_else(|| "sans-serif".into());

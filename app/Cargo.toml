@@ -26,7 +26,7 @@ rox-v1 = { path = "../broker/rox-v1" }
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
 # ```mermaid fences: Pele (the Mermaid renderer) ported to Rust, drawn natively.
-pele = { git = "https://github.com/hexuria/pele-rs", rev = "16d844c281855b2d69af45040b5b6c40022a3a92" }
+pele = { git = "https://github.com/hexuria/pele-rs", rev = "7ad178420139fde960b336d632972867a043364c" }
 # Office files in native views (`office/`): BetterOffice's engines, the
 # ones the broker's office tools use, and their parse/render layers for a
 # first paint before the full workbook is built; office_oxide reads legacy
@@ -43,7 +43,7 @@ tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 # pele::corpus: the port's test inputs, to check the drawing of every one.
-pele = { git = "https://github.com/hexuria/pele-rs", rev = "16d844c281855b2d69af45040b5b6c40022a3a92", features = ["corpus"] }
+pele = { git = "https://github.com/hexuria/pele-rs", rev = "7ad178420139fde960b336d632972867a043364c", features = ["corpus"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
