@@ -88,12 +88,13 @@ pub fn ver_file(dirs: &Dirs, name: &str, v: &str) -> Option<PathBuf> {
     read_dir_sorted(&dir).ok()?.into_iter().map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.ends_with(&tail)).map(|f| dir.join(f))
 }
 
-/// `versionsOf(name)`: `[{v, parent, created_at, label}]` by v.
+/// `versionsOf(name)`: `[{v, parent, created_at, label}]` by v (a
+/// migrated v1's `created_at` is its file's mtime, a REAL).
 pub fn versions_of(ctx: &HubCtx, name: &str) -> Result<Vec<Value>, String> {
     ctx.db.with(|db| {
         let mut st = db.prepare("SELECT v,parent,created_at,label FROM versions WHERE name=? ORDER BY v")?;
         let rows = st.query_map([name], |r| {
-            Ok(json!({ "v": r.get::<_, Option<i64>>(0)?, "parent": r.get::<_, Option<i64>>(1)?, "created_at": r.get::<_, Option<i64>>(2)?, "label": r.get::<_, Option<String>>(3)? }))
+            Ok(json!({ "v": r.get::<_, Option<i64>>(0)?, "parent": r.get::<_, Option<i64>>(1)?, "created_at": crate::hub::store::write::to_json(r.get(2)?), "label": r.get::<_, Option<String>>(3)? }))
         })?;
         rows.collect()
     })
