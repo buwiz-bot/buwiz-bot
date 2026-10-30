@@ -8,6 +8,7 @@
 //! files through one `install` call below; this file, `types`, `ctx`,
 //! `traits` and `routes` are the shared skeleton.
 
+pub mod agent;
 pub mod ctx;
 pub mod jobs;
 pub mod library;
@@ -16,6 +17,7 @@ pub mod model;
 pub mod pipeline;
 pub mod routes;
 pub mod store;
+pub mod tools;
 pub mod routines;
 pub mod traits;
 pub mod types;
@@ -103,6 +105,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes::chat::install(routes, ctx);
     pipeline::install(ctx);
     model::install(routes, ctx);
+    agent::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
     routines::install(routes, ctx);
