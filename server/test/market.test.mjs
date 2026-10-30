@@ -187,11 +187,14 @@ test("MKT-01 the catalog: every listed entry (OAuth-app ones hidden), its rev, a
   const same = await get(`/plugins/catalog?rev=${encodeURIComponent(r.json.rev)}`);
 
   assert.equal(same.text, JSON.stringify({ rev: r.json.rev, unchanged: true }));
-  // a listed connector with a vendor's own client id (lovable's) was
-  // probed for dynamic registration, through the proxy (never reached); the
-  // hidden OAuth-app entries never are
-  assert.ok(await waitFor(() => sinkHits.some((h) => h.startsWith("CONNECT mcp.lovable.dev:443 "))), sinkHits.join("\n"));
-  assert.ok(!sinkHits.some((h) => h.startsWith("CONNECT api.x.com:443 ")), sinkHits.join("\n"));
+  // the listed connectors with a vendor's own client id were probed for
+  // dynamic registration, through the proxy (never reached); the hidden
+  // OAuth-app entries (x, …) never are
+  const probed = () => [...new Set(sinkHits)].sort();
+  const PROBED = ["CONNECT mcp.gopuff.com:443 HTTP/1.1", "CONNECT mcp.harness.io:443 HTTP/1.1", "CONNECT mcp.lovable.dev:443 HTTP/1.1"];
+
+  assert.ok(await waitFor(() => probed().length >= PROBED.length), sinkHits.join("\n"));
+  assert.deepEqual(probed(), PROBED);
 });
 
 test("MKT-02 a plugin's page before install: the catalog's skills, its servers from the install hints, setup fields; 404 for an unknown one", async () => {
