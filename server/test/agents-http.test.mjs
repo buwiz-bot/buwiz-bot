@@ -36,7 +36,7 @@ import { signature } from "../src/agents-external.mjs";
 import { PORT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const MOCK_REPLY = "_(mock reply — no model configured)_";
-const RECV_PORT = PORT === 8807 ? 8806 : 8807;
+const RECV_PORT = PORT + 1;
 const dataDir = tempDir("agents-http");
 const env = () => offlineEnv(join(tempDir("agents-http-stubs"), "stubs.log"));
 let server;
