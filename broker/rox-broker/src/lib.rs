@@ -14,6 +14,7 @@ pub mod hub;
 pub mod js;
 pub mod leaf;
 pub mod node;
+pub mod office;
 pub mod proxy;
 pub mod v1;
 
