@@ -47,6 +47,10 @@ fn start(name: &str, hub: bool) -> Broker {
         .arg("--data")
         .arg(&data)
         .env("FIXTURE_LOG", &log)
+        // never the real opencodex on 8080 (GET /models is a hub route)
+        .env("OPENCODEX_URL", "http://127.0.0.1:9")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        .env("GEN_BASE_URL", "http://127.0.0.1:9")
         .env_remove("ROX_BROKER_HUB")
         .env_remove("ROX_NODE_ROLE")
         .stdout(std::process::Stdio::null());
