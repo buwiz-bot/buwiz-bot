@@ -25,6 +25,7 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
   const events = new EventEmitter();
   const runtimes = new Map(); // id → runtime, as rox-broker last sent it
   const seqs = new Map(); // id → the newest snapshot's seq
+  const said = new Map(); // id → the last state announced to Rox
   const manual = clock !== systemClock;
   const views = createViews({ db, runtime: (id) => runtime(id), trust });
   let stopped = false;
@@ -45,6 +46,17 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
     }
   };
 
+  // what Rox hears of a plugin: a change of these (session answers carry a
+  // snapshot of an unchanged plugin, which is no event: Rox reloads a
+  // plugin's cards on each one)
+  function tell(e) {
+    const key = JSON.stringify([e.state, e.code, e.generation, e.enabled]);
+
+    if (said.get(e.id) === key) return;
+    said.set(e.id, key);
+    events.emit("plugin", e);
+  }
+
   // a snapshot from the line; `announce`: tell listeners (Rox's events)
   function take(s, announce) {
     if (s.seq <= (seqs.get(s.id) ?? 0)) return;
@@ -53,7 +65,7 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
     if (s.state === "uninstalled") {
       runtimes.delete(s.id);
 
-      if (announce) events.emit("plugin", { id: s.id, state: s.state, code: null, generation: s.generation, enabled: false });
+      if (announce) tell({ id: s.id, state: s.state, code: null, generation: s.generation, enabled: false });
 
       return;
     }
@@ -70,7 +82,7 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
 
     if (restart) clock.setTimeout(() => post("clock", { now: clock.now(), fire: true }).catch(() => {}), s.next_delay_ms);
 
-    if (announce) events.emit("plugin", { id: s.id, state: s.state, code: s.code, generation: s.generation, enabled: s.enabled });
+    if (announce) tell({ id: s.id, state: s.state, code: s.code, generation: s.generation, enabled: s.enabled });
   }
 
   const address = Promise.resolve(base);
