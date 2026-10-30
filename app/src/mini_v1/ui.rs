@@ -1864,6 +1864,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
     let as_of = card.as_of().filter(|_| !live);
     let app = store().v1.entry(&card.plugin).and_then(|p| p.app(&card.app).cloned()).unwrap_or(Value::Null);
     let (w, declared) = cards::inline_size(&app, COLUMN);
+    let wait_ready = cards::wait_ready(&app);
     let key_h = key.clone();
     let h = move || store().v1.fit.with(|f| f.get(&key_h).copied()).unwrap_or(declared);
     let c = card.clone();
@@ -1928,7 +1929,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                     view()
                         .h(move || px(h()))
                         .child(banners(&key, false))
-                        .child(crate::mini::mini_app_inline(&key, w, h2, title.clone()))
+                        .child(crate::mini::mini_app_inline(&key, w, h2, title.clone(), wait_ready))
                         .child(error_overlay(&key)),
                 )
                 .child(card_footer(&key))
