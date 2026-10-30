@@ -4,11 +4,11 @@
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
 //!   `/office/*` and `/file/render` for office files are the hub's since
-//!   6.1 (`Hub(OfficeFiles)`), `/mermaid*` (6.2) and `/popout` (6.3) too,
+//!   6.1 (`Hub(OfficeFiles)`), `/popout` (6.3) too,
 //!   and `GET /` and `/file/render` for every other kind since phase 7
 //!   (`Hub(Files)`): no route is Node's office role's any more, so the hub
 //!   runs without Node (`ROX_BROKER_NO_NODE=1`). `/highlight` is deleted
-//!   (6.2: no caller).
+//!   (6.2: no caller), and `/mermaid*` too (Rox draws every diagram natively).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
 //!   with that part switched off, the hub answers 501 instead of Node.
 //!
@@ -43,8 +43,6 @@ pub mod routines;
 /// the mini-app and Library routes (5.7b, track C)
 pub mod apps;
 pub mod artifacts;
-/// `/mermaid.js` and the `/mermaid?` page (6.2)
-pub mod mermaid;
 /// pop-out windows and their table (6.3)
 pub mod popout;
 
@@ -229,9 +227,6 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/file/write"), Hub(Leftovers)),
     e(Post, X("/file/open"), Hub(Leftovers)),
     e(Post, X("/file/save"), Hub(Leftovers)),
-    // the mermaid fallback page and its script (6.2)
-    e(Get, X("/mermaid.js"), Hub(Leftovers)),
-    e(Get, X("/mermaid"), Hub(Leftovers)),
     // pop-out windows (6.3; Node's office role's until then, D36)
     e(Post, X("/popout"), Hub(Artifacts)),
     // office: in Rust since 6.1 (`classify` gives office files'
@@ -332,9 +327,9 @@ mod tests {
         assert_eq!(owner(Method::GET, "/file/render?path=d%2FB.XLSX"), Some(Hub(OfficeFiles)));
         assert_eq!(owner(Method::GET, "/file/render?path=a.md"), Some(Hub(Files)));
         assert_eq!(owner(Method::GET, "/file/render?path=app:R3"), Some(Hub(Files)));
-        assert_eq!(owner(Method::GET, "/mermaid?d=abc"), Some(Hub(Leftovers)));
         assert_eq!(owner(Method::POST, "/popout"), Some(Hub(Artifacts)));
         assert_eq!(owner(Method::POST, "/highlight"), None);
+        assert_eq!(owner(Method::GET, "/mermaid?d=abc"), None);
         assert_eq!(owner(Method::GET, "/"), Some(Hub(Files)));
         assert_eq!(owner(Method::GET, "/state/R3"), Some(Rust));
         assert_eq!(owner(Method::GET, "/oauth/callback/x"), Some(Rust));
@@ -358,7 +353,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 122);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 120);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }
