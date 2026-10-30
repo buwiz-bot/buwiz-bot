@@ -46,6 +46,10 @@ struct State {
     stroke_width: f32,
     fill_opacity: f32,
     stroke_opacity: f32,
+    // A group's `opacity`, carried down to what it holds. The canvas has no
+    // layers, so overlapping children are each faded rather than faded as one.
+    opacity: f32,
+    underline: bool,
     dash: Option<String>,
     cap: LineCap,
     join: LineJoin,
@@ -149,8 +153,8 @@ impl Ctx<'_> {
 
     /// Fills and strokes the path `ops` as `st` says.
     fn paint(&mut self, ops: Vec<PathOp>, st: &State) {
-        let fill = self.color(&st.fill, st, st.fill_opacity);
-        let stroke = self.color(&st.stroke, st, st.stroke_opacity);
+        let fill = self.color(&st.fill, st, st.fill_opacity * st.opacity);
+        let stroke = self.color(&st.stroke, st, st.stroke_opacity * st.opacity);
         if fill.is_none() && stroke.is_none() {
             return;
         }
@@ -193,6 +197,8 @@ impl Ctx<'_> {
                 "stroke-width" => st.stroke_width = num(Some(&self.resolve(v, 0))),
                 "fill-opacity" => st.fill_opacity = num(Some(v)),
                 "stroke-opacity" => st.stroke_opacity = num(Some(v)),
+                "opacity" => st.opacity *= num(Some(v)),
+                "text-decoration" => st.underline = v.contains("underline"),
                 "stroke-dasharray" => st.dash = Some(v.clone()),
                 "stroke-linecap" => st.cap = if v == "round" { LineCap::Round } else if v == "square" { LineCap::Square } else { LineCap::Butt },
                 "stroke-linejoin" => st.join = if v == "round" { LineJoin::Round } else if v == "bevel" { LineJoin::Bevel } else { LineJoin::Miter },
@@ -272,8 +278,8 @@ impl Ctx<'_> {
                 }
             };
             for ((text, sst), w) in spans.iter().zip(&widths) {
-                let fill = self.color(&sst.fill, sst, sst.fill_opacity);
-                let stroke = self.color(&sst.stroke, sst, sst.stroke_opacity);
+                let fill = self.color(&sst.fill, sst, sst.fill_opacity * sst.opacity);
+                let stroke = self.color(&sst.stroke, sst, sst.stroke_opacity * sst.opacity);
                 self.ops.push(CanvasOp::Font(self.font(sst)));
                 self.ops.push(CanvasOp::TextAlign(align));
                 self.ops.push(CanvasOp::TextBaseline(CanvasTextBaseline::Alphabetic));
@@ -287,6 +293,16 @@ impl Ctx<'_> {
                 if let Some(c) = fill {
                     self.ops.push(CanvasOp::FillStyle(CPaint::Color(c)));
                     self.ops.push(CanvasOp::FillText { text: t, x: n(x), y: n(ly), max_width: None });
+                    if sst.underline {
+                        // A rule under the span, as a browser draws `text-decoration: underline`.
+                        let left = match align {
+                            CanvasTextAlign::Center => x - w / 2.0,
+                            CanvasTextAlign::Right => x - w,
+                            _ => x,
+                        };
+                        let thick = (sst.font_size / 16.0).max(1.0);
+                        self.ops.push(CanvasOp::FillRect([n(left), n(ly + sst.font_size * 0.12), n(*w), n(thick)]));
+                    }
                 }
                 x += w;
             }
@@ -461,6 +477,8 @@ pub(crate) fn draw(scene: &Scene, palette: &PelePalette) -> Drawn {
         stroke_width: 1.0,
         fill_opacity: 1.0,
         stroke_opacity: 1.0,
+        opacity: 1.0,
+        underline: false,
         dash: None,
         cap: LineCap::Butt,
         join: LineJoin::Miter,
