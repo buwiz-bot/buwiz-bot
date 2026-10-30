@@ -3337,23 +3337,26 @@ fn v1_plugin_page() -> impl IntoElement {
             };
             let (id1, id2, id3, id4, id5) = (p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone());
             let enabled = p.enabled;
-            let mut page = pane()
-                .gap(px(14.0))
+            let mut head = view()
+                .gap(px(2.0))
+                .child(text(p.title.clone()).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
                 .child(
-                    view()
-                        .gap(px(2.0))
-                        .child(text(p.title.clone()).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
-                        .child(
-                            text(format!("{} · {} · {}", p.version, p.publisher, p.id))
-                                .text_size(px(12.0))
-                                .text_color(ink3()),
-                        )
-                        .child(
-                            text(p.state_label())
-                                .text_size(px(13.0))
-                                .text_color(if p.failed() { danger_ink() } else { theme::TEXT }),
-                        ),
+                    text(format!("{} · {} · {}", p.version, p.publisher, p.id))
+                        .text_size(px(12.0))
+                        .text_color(ink3()),
                 );
+            // for a day after its version changed (inline cards just reload)
+            let now = crate::mini_v1::session::now_ms();
+            if let Some(updated) = store().v1.records.with(|r| r.updated(&p.id, now)) {
+                head = head.child(text(updated).text_size(px(12.0)).text_color(ink3()));
+            }
+            let mut page = pane().gap(px(14.0)).child(
+                head.child(
+                    text(p.state_label())
+                        .text_size(px(13.0))
+                        .text_color(if p.failed() { danger_ink() } else { theme::TEXT }),
+                ),
+            );
             if p.failed() {
                 page = page.child(
                     card()

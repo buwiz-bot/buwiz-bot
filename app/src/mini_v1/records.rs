@@ -1,7 +1,9 @@
 //! What Rox keeps for v1 plugins in its own data dir
 //! (`<data dir>/mini-v1.json`): the chats' attachments (10.3), the pins
-//! (12.3), the fingerprint each app was last opened with (12.2) and
-//! whether the one-time v0 migration ran (Q11).
+//! (12.3), the fingerprint each app was last opened with (12.2), the
+//! version each plugin was last seen at (its Connect Apps page says
+//! "Updated to v…" for a day after it changes) and whether the one-time
+//! v0 migration ran (Q11).
 //!
 //! - An attachment is a canonical token plus its plugin id, the plugin's
 //!   major version when it was attached, the scope, the title then and
@@ -59,6 +61,18 @@ pub struct Sent {
 /// How many sent messages are remembered.
 const MAX_SENT: usize = 500;
 
+/// How long a plugin's page says it was updated (ms): a day.
+pub const UPDATED_FOR_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// The version a plugin was last seen at, and when it changed to it (ms;
+/// 0 when it has not changed since Rox first saw the plugin).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Seen {
+    pub plugin: String,
+    pub version: String,
+    pub changed_at: i64,
+}
+
 /// How an attachment or pin stands against the plugins installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -98,6 +112,8 @@ pub struct Records {
     pub migrated_at: i64,
     /// The last messages sent with attachments.
     pub sent: Vec<Sent>,
+    /// Each plugin's version as last listed.
+    pub versions: Vec<Seen>,
 }
 
 /// The file in `dir` (Rox's data dir).
@@ -163,6 +179,19 @@ impl Records {
                         .collect(),
                 })
                 .collect(),
+            versions: v
+                .get("versions")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, x)| Seen {
+                            plugin: k.clone(),
+                            version: s(x, "version"),
+                            changed_at: x.get("changed_at").and_then(Value::as_i64).unwrap_or(0),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -182,6 +211,9 @@ impl Records {
                 "thread": m.thread, "text": m.text,
                 "tokens": m.tokens.iter().map(|(t, ti)| json!({"token": t, "title": ti})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "versions": self.versions.iter().map(|x| (x.plugin.clone(), json!({
+                "version": x.version, "changed_at": x.changed_at,
+            }))).collect::<serde_json::Map<_, _>>(),
         })
     }
 
@@ -283,15 +315,47 @@ impl Records {
         }
     }
 
+    /// Records the `(plugin, version)`s the broker lists now, at `now`
+    /// (ms): a plugin seen for the first time is not an update; one whose
+    /// version differs from the last seen changed at `now`. Whether
+    /// anything is new (the records want saving).
+    pub fn saw_versions(&mut self, listed: &[(String, String)], now: i64) -> bool {
+        let mut new = false;
+        for (plugin, version) in listed.iter().filter(|(_, v)| !v.is_empty()) {
+            match self.versions.iter_mut().find(|x| x.plugin == *plugin) {
+                Some(x) if x.version == *version => {}
+                Some(x) => {
+                    x.version = version.clone();
+                    x.changed_at = now;
+                    new = true;
+                }
+                None => {
+                    self.versions.push(Seen { plugin: plugin.clone(), version: version.clone(), changed_at: 0 });
+                    new = true;
+                }
+            }
+        }
+        new
+    }
+
+    /// What `plugin`'s page says at `now` (ms): "Updated to v1.2.3" for a
+    /// day after its version changed, else nothing.
+    pub fn updated(&self, plugin: &str, now: i64) -> Option<String> {
+        let x = self.versions.iter().find(|x| x.plugin == plugin)?;
+        let fresh = x.changed_at > 0 && now >= x.changed_at && now - x.changed_at < UPDATED_FOR_MS;
+        fresh.then(|| format!("Updated to v{}", x.version.trim_start_matches('v')))
+    }
+
     /// Removes everything that names `plugin` (13.6 step 4): its
-    /// attachments in every chat, its pins, its apps' fingerprints. How
-    /// many attachments and pins went.
+    /// attachments in every chat, its pins, its apps' fingerprints, the
+    /// version it was seen at. How many attachments and pins went.
     pub fn remove_plugin(&mut self, plugin: &str) -> (usize, usize) {
         let (a, p) = (self.attachments.len(), self.pins.len());
         self.attachments.retain(|x| x.plugin != plugin);
         self.pins.retain(|x| x.plugin != plugin);
         let prefix = format!("{plugin}/");
         self.opened.retain(|(k, _)| !k.starts_with(&prefix));
+        self.versions.retain(|x| x.plugin != plugin);
         (a - self.attachments.len(), p - self.pins.len())
     }
 }
@@ -388,10 +452,44 @@ mod tests {
         r.pin(Pin { plugin: bir.id.clone(), app: "forms".into(), ..Default::default() });
         r.pin(Pin { plugin: other.id.clone(), app: "board".into(), ..Default::default() });
         r.opened(&bir.id, "forms", "sha256:aa");
+        r.saw_versions(&[(bir.id.clone(), "1.0.0".into())], 1);
         assert_eq!(r.remove_plugin(&bir.id), (2, 1));
         assert!(r.attachments.iter().all(|a| a.plugin == other.id));
         assert!(r.pins.iter().all(|p| p.plugin == other.id));
         assert!(r.opened.is_empty());
+        assert!(r.versions.is_empty(), "a reinstall is a first sight, not an update");
+    }
+
+    #[test]
+    fn a_plugins_page_says_it_was_updated_for_a_day_after_its_version_changes() {
+        const BIR: &str = "dev.goldcoders.bir";
+        let at = |v: &str| vec![(BIR.to_owned(), v.to_owned())];
+        let t0 = 1_800_000_000_000;
+        let mut r = Records::default();
+        // first sight: remembered, not an update
+        assert!(r.saw_versions(&at("1.0.0"), t0));
+        assert_eq!(r.updated(BIR, t0), None);
+        // the same version again: nothing new, nothing to say
+        assert!(!r.saw_versions(&at("1.0.0"), t0 + 1000));
+        assert!(!r.saw_versions(&at(""), t0 + 1000), "a listing without a version is skipped");
+        assert_eq!(r.updated(BIR, t0 + 1000), None);
+        // a change: said from then on
+        let t1 = t0 + 5000;
+        assert!(r.saw_versions(&at("1.2.3"), t1));
+        assert_eq!(r.updated(BIR, t1).as_deref(), Some("Updated to v1.2.3"));
+        assert!(!r.saw_versions(&at("1.2.3"), t1 + 60_000), "listing it again keeps the time it changed");
+        assert_eq!(r.updated(BIR, t1 + UPDATED_FOR_MS - 1).as_deref(), Some("Updated to v1.2.3"));
+        assert_eq!(r.updated("dev.goldcoders.other", t1), None);
+        // a restart keeps it: neither lost nor announced again
+        let dir = temp("versions");
+        r.save(&dir).unwrap();
+        let mut back = Records::load(&dir);
+        assert_eq!(back.versions, r.versions);
+        assert!(!back.saw_versions(&at("1.2.3"), t1 + 120_000));
+        assert_eq!(back.updated(BIR, t1 + 120_000).as_deref(), Some("Updated to v1.2.3"));
+        // 24 hours on: gone
+        assert_eq!(back.updated(BIR, t1 + UPDATED_FOR_MS), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -415,6 +513,8 @@ mod tests {
         let mut r = Records { migrated_at: 5, ..Default::default() };
         r.attach("th", &format!("@bir:taxprofile:{T}"), "Jane", &plugin("dev.goldcoders.bir", "1.0.0", true));
         r.opened("p.q.r", "a", "sha256:x");
+        r.saw_versions(&[("p.q.r".into(), "1.0.0".into())], 5);
+        r.saw_versions(&[("p.q.r".into(), "1.1.0".into())], 9);
         r.save(&dir).unwrap();
         assert_eq!(Records::load(&dir), r);
         std::fs::write(file(&dir), "{oops").unwrap();
