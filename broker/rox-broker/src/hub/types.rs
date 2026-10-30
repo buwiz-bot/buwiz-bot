@@ -126,8 +126,12 @@ pub struct TurnCtx {
     /// the thread's `t<n>` id
     pub thread: String,
     pub job: Option<JobId>,
-    /// the bot a delivery turn answers as (Node's `actingBot`)
+    /// the bot a delivery turn answers as (Node's `actingBot`, and the
+    /// job's `agentBot`: agents-wire.mjs sets both, to the same bot)
     pub acting_bot: Option<String>,
+    /// how many relays deep an agent's delivery turn is (Node's
+    /// `job.agentHop`); its agent tools send at one more
+    pub agent_hop: Option<i64>,
     pub model: Option<ModelChoice>,
     /// a v1 routine's surface, when the turn may use only its tools (Node's
     /// `job.v1Surface`: `{plugin, routine, instance, params, reads, writes}`)
