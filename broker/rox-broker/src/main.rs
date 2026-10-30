@@ -1,5 +1,6 @@
 //! rox-broker: binds the broker's port first (a second instance exits
-//! without starting Node), then runs Node behind it and serves.
+//! without starting Node), then runs Node behind it (none with
+//! `--no-node`) and serves.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,9 +111,12 @@ async fn main() {
         hub.start();
         hub
     });
-    let node = Arc::new(Node::default());
-    let _ = node.version.set(node::version_of(&config.node));
-    let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
+    // `--no-node` (plan 7.1, the broker inside Rox.app): no Node at all
+    let node = Arc::new(if config.no_node { Node::absent() } else { Node::default() });
+    let supervisor = (!config.no_node).then(|| {
+        let _ = node.version.set(node::version_of(&config.node));
+        tokio::spawn(node::supervise(config.clone(), node.clone()))
+    });
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
         .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
@@ -163,7 +167,9 @@ async fn main() {
     }
     // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
     node.stop(Duration::from_millis(2500)).await;
-    let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
+    if let Some(supervisor) = supervisor {
+        let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
+    }
     eprintln!("rox-broker: stopped");
 }
 
