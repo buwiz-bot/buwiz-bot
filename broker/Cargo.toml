@@ -1,3 +1,14 @@
 [workspace]
 members = ["rox-broker", "rox-v1"]
 resolver = "2"
+
+# /file/render's highlighter matches every line with fancy-regex: unoptimized
+# it takes seconds a file, so debug builds (the tests') optimize it
+[profile.dev.package.syntect]
+opt-level = 3
+[profile.dev.package.fancy-regex]
+opt-level = 3
+[profile.dev.package.regex-automata]
+opt-level = 3
+[profile.dev.package.regex-syntax]
+opt-level = 3

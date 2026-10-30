@@ -199,7 +199,7 @@ fn encode_component(s: &str) -> String {
     s.replace("%21", "!").replace("%7E", "~").replace("%27", "'").replace("%28", "(").replace("%29", ")").replace("%2A", "*")
 }
 
-async fn render(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+pub(crate) async fn render(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let rel = req.query("path").unwrap_or_default();
     let Some(p) = crate::hub::tools::office::out_file(&ctx, &rel) else {
         return json_response(StatusCode::OK, &json!({ "error": "bad path" }));
