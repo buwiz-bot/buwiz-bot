@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/pie/pie.spec.ts",
+ "error": {
+  "code": "unsupported-diagram",
+  "type": null,
+  "mermaidType": null,
+  "line": 0,
+  "column": 0,
+  "message": "No diagram type detected for the given text.",
+  "snippet": ""
+ }
+}

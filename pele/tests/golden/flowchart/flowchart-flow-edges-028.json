@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/flowchart/flow-edges.spec.js",
+ "error": {
+  "code": "syntax",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 2,
+  "column": 15,
+  "message": "Lexical error on line 2. Unrecognized text.\nA -. Label ${'.'.repeat(length)}- B;\n--------------^",
+  "snippet": "A -. Label ${'.'.repeat(length)}- B;\n--------------^"
+ }
+}

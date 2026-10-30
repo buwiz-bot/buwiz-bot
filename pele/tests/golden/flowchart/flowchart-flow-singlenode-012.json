@@ -1,0 +1,8 @@
+{
+ "source": "tests/compat/flowchart/flow-singlenode.spec.js",
+ "type": "flowchart",
+ "mermaidType": "flowchart-v2",
+ "width": 79,
+ "height": 82,
+ "links": []
+}

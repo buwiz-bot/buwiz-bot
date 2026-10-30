@@ -1,0 +1,8 @@
+{
+ "source": "samples/sankey.mmd",
+ "type": "sankey",
+ "mermaidType": "sankey",
+ "width": 616,
+ "height": 416,
+ "links": []
+}

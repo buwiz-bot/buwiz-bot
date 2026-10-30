@@ -1,0 +1,11 @@
+gitGraph
+  commit id: "a"
+  branch dev
+  checkout dev
+  commit id: "b" tag: "v1"
+  checkout main
+  merge dev
+  commit type: HIGHLIGHT
+  branch feat
+  commit
+  cherry-pick id: "b"

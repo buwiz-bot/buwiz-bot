@@ -1,0 +1,12 @@
+{
+ "source": "samples/err-syntax-flowchart.mmd",
+ "error": {
+  "code": "syntax",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 3,
+  "column": 13,
+  "message": "Parse error on line 3:\n  B[unclosed\n------------^\nExpecting 'SQE', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got '$end'",
+  "snippet": "  B[unclosed\n------------^"
+ }
+}

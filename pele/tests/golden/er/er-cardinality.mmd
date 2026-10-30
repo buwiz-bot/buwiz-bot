@@ -1,0 +1,11 @@
+erDiagram
+  CUSTOMER ||--o{ ORDER : places
+  ORDER ||--|{ LINE-ITEM : contains
+  PRODUCT |o--o| CATEGORY : in
+  CUSTOMER }|..|{ ADDRESS : uses
+  ORDER }o--o{ TAG : tagged
+  CUSTOMER {
+    string name PK
+    string email UK "unique"
+    int id FK "comment"
+  }

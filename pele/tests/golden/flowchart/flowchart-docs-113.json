@@ -1,0 +1,8 @@
+{
+ "source": "tests/corpus/flowchart-docs.json",
+ "type": "flowchart",
+ "mermaidType": "flowchart-v2",
+ "width": 151,
+ "height": 160,
+ "links": []
+}
