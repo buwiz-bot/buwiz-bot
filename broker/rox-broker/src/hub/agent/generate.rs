@@ -95,6 +95,16 @@ pub async fn background_turn(run: &Run, shown: &str, prompt: &str, extra: &Value
     text.map(|_| done)
 }
 
+/// An agent's request (agents-wire.mjs `runRequest`): `agentTurn` on the
+/// run's stand-in thread when the tools are on, else `chatReply`.
+pub async fn request_reply(run: &Run, prompt: &str) -> Result<String, String> {
+    if tools_on(run) {
+        agent_turn(run, prompt, &json!({}), &[]).await
+    } else {
+        Ok(chat_reply(run, prompt, &json!({}), &[]).await)
+    }
+}
+
 /// Pushes the user's turn (its title on an empty thread).
 fn push_user(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> {
     run.ctx.store.write(|s| {
