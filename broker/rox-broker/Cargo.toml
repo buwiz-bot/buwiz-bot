@@ -11,6 +11,13 @@ publish = false
 betteroffice-docx = "0.5.1"
 betteroffice-xlsx = "0.5.1"
 betteroffice-pptx = "0.5.1"
+# the engines' own layers the agent port drives directly (all already in
+# the facades' tree, so nothing new is fetched): the docx editing core and
+# package writer, the pptx editing session, and the OPC zip
+docx-edit = { package = "betteroffice-docx-edit", version = "0.5.1" }
+docx-parse = { package = "betteroffice-docx-parse", version = "0.5.1" }
+pptx-edit = { package = "betteroffice-pptx-edit", version = "0.5.1" }
+ooxml-opc = { package = "betteroffice-opc", version = "0.5.1" }
 base64 = "0.22"
 bytes = "1"
 ed25519-dalek = "2.2"
@@ -23,6 +30,7 @@ libc = "0.2"
 regex-lite = "0.1"
 rox-v1 = { path = "../rox-v1" }
 rusqlite = { version = "0.32", features = ["bundled"] }
+serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 sha1 = "0.10"

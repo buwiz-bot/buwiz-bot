@@ -114,6 +114,8 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);
     routines::install(routes, ctx);
+    // 6.1: office in Rust (the tools in process, /office/*, /file/render)
+    crate::office::install(routes, ctx);
 }
 
 pub struct Hub {
