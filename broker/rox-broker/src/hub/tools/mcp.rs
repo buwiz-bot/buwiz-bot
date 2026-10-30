@@ -149,7 +149,7 @@ pub async fn surface(run: &Run) -> (Vec<Value>, Vec<Deferred>) {
     let ctx = &run.ctx;
     let bot = ctx.store.read(|s| botctx::bot_of(s, &run.turn).map(|b| b.id.clone())).unwrap_or_default();
     let servers = if run.turn.surface.is_some() { Vec::new() } else { rows(ctx, "WHERE enabled=1 AND (bot IS NULL OR bot=?)", &[&bot]) };
-    let loaded = loaded_for(&run.turn.thread);
+    let loaded = loaded_for(&run.thread_id());
     let (mut defs, mut deferred) = (Vec::new(), Vec::new());
     for r in &servers {
         let id = s(r, "id");
@@ -222,7 +222,7 @@ pub async fn app_tools_load(run: &Run, input: &Value) -> Out {
     let plugins = super::v1::view(ctx);
     if server.is_none() {
         if let Some(p) = plugins.rows().into_iter().find(|r| r.short == id && r.enabled) {
-            mark_loaded(&run.turn.thread, &format!("v1:{id}"));
+            mark_loaded(&run.thread_id(), &format!("v1:{id}"));
             let names: Vec<String> = super::v1::v1_tools(plugins.as_ref(), &[], None).into_iter().filter(|(pl, _)| *pl == p.id).map(|(_, t)| js::string_of(&t["name"])).collect();
             return Out::ok(format!("Loaded {} {id} tools; call them from your next step:\n{}", names.len(), names.join("\n")));
         }
@@ -236,7 +236,7 @@ pub async fn app_tools_load(run: &Run, input: &Value) -> Out {
         let err = rec.get("err").filter(|e| js::truthy(e)).map(js::string_of).unwrap_or_else(|| "failed to start".into());
         return Out::err(format!("{id} is not connected ({err})"));
     }
-    mark_loaded(&run.turn.thread, &id);
+    mark_loaded(&run.thread_id(), &id);
     let off = off_of(&r);
     let names: Vec<String> = rec["tools"]
         .as_array()
@@ -303,7 +303,7 @@ pub async fn exec(run: &Run, name: &str, input: &Value) -> Option<Result<Out, St
     run.set_job(&phase, &detail);
     // the thread's bot actually used this server → it joins its integrations
     let _ = botctx::record_tool_use(ctx, &run.turn, &server);
-    mark_used(&run.turn.thread, &server);
+    mark_used(&run.thread_id(), &server);
     Some(
         async {
             let (out, meta) = call_tool(ctx, &server, &tool, input).await?;

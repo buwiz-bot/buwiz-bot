@@ -172,6 +172,12 @@ impl Hub {
                     req.params = params;
                     h(self.ctx.clone(), req).await
                 }
+                // no route of Node's either: its last resort
+                None if routes::classify(&req.method, &req.url).is_none() => {
+                    let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from_static(b"not found")).map_err(|never| match never {}).boxed());
+                    *res.status_mut() = StatusCode::NOT_FOUND;
+                    res
+                }
                 None => not_ported(),
             }
         };
@@ -232,9 +238,14 @@ mod tests {
         });
         assert_eq!(text(hub.answer(req(Method::GET, "/threads")).await).await, (200, r#"{"says":"threads","params":[]}"#.to_owned()));
         assert_eq!(text(hub.answer(req(Method::POST, "/v1/host/plugins/acme/enable")).await).await, (200, r#"{"says":"enable","params":["acme"]}"#.to_owned()));
-        // registered for GET only; another hub route; a path no track has
-        for (m, url) in [(Method::POST, "/threads"), (Method::GET, "/turns"), (Method::POST, "/v1/host/plugins/acme/disable")] {
+        // a hub route no track registered here
+        for (m, url) in [(Method::GET, "/turns"), (Method::POST, "/v1/host/plugins/acme/disable")] {
             assert_eq!(text(hub.answer(req(m, url)).await).await, (501, r#"{"ok":false,"code":"not_ported"}"#.to_owned()));
+        }
+        // a route Node has neither (POST /threads, a path no table entry
+        // names): Node's last resort
+        for (m, url) in [(Method::POST, "/threads"), (Method::GET, "/files/other/a.png")] {
+            assert_eq!(text(hub.answer(req(m, url)).await).await, (404, "not found".to_owned()));
         }
     }
 

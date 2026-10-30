@@ -2,7 +2,8 @@
 //! Node (tests/fixture-node.mjs, logging every request it gets): with the
 //! hub on, a hub route no track has ported answers 501 and Node never sees
 //! it, and Node runs in its office role; with it off, the same request is
-//! forwarded as today. Office routes and unknown paths go to Node either way.
+//! forwarded as today. Office routes go to Node either way; a path no
+//! broker has is Node's 404 from the hub when it is on.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -21,6 +22,7 @@ impl Drop for Broker {
         unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.log);
+        let _ = std::fs::remove_file(self.log.with_extension("role"));
     }
 }
 
@@ -47,12 +49,17 @@ fn start(name: &str, hub: bool) -> Broker {
         .arg("--data")
         .arg(&data)
         .env("FIXTURE_LOG", &log)
-        // never the real opencodex on 8080 (GET /models is a hub route)
+        .env("FIXTURE_ROLE_FILE", log.with_extension("role"))
+        .env_remove("ROX_BROKER_HUB")
+        .env_remove("ROX_NODE_ROLE")
+        // the hub's /models and image routes call the model gateway: at a
+        // closed port, never the real opencodex (localhost:8080), and no
+        // connections file from this user's home
         .env("OPENCODEX_URL", "http://127.0.0.1:9")
         .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
         .env("GEN_BASE_URL", "http://127.0.0.1:9")
-        .env_remove("ROX_BROKER_HUB")
-        .env_remove("ROX_NODE_ROLE")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env("HOME", &data)
         .stdout(std::process::Stdio::null());
     if hub {
         cmd.env("ROX_BROKER_HUB", "1");
@@ -114,21 +121,21 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
     assert_eq!(request(b.port, "GET", "/v1/hooks/ri_x/secret", b"").unwrap().0, 404);
     assert_eq!(b.seen(), Vec::<String>::new(), "Node saw a hub route");
     // Node runs in its office role
-    assert_eq!(request(b.port, "GET", "/role", b"").unwrap(), (200, "office".to_owned()));
+    assert_eq!(std::fs::read_to_string(b.log.with_extension("role")).unwrap(), "office\n");
 }
 
 #[test]
-fn hub_on_still_forwards_office_routes_and_unknown_paths() {
+fn hub_on_forwards_office_routes_and_answers_unknown_paths_404() {
     let b = start("office", true);
     // the fixture answers 404 "no" to what it doesn't know: forwarded
     assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (404, "no".to_owned()));
-    let (status, echo) = request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap();
-    assert_eq!(status, 200);
-    assert!(echo.contains(r#""url":"/echo?x=1""#) && echo.contains(r#""body":"{\"a\":1}""#), "{echo}");
-    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /popout", "POST /echo?x=1"]);
+    // a path no broker has: Node's last resort, from the hub (Node's office
+    // role would answer it 501)
+    assert_eq!(request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap(), (404, "not found".to_owned()));
+    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /popout"]);
 }
 
 #[test]

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
+import { HUB, ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 import { FX, bed, fixtureSpec, until } from "./v1-helpers.mjs";
 
 const RUST = !!process.env.ROX_BROKER_CMD;
@@ -83,7 +83,20 @@ test("a Node restart leaves rox-broker's plugin running; Node, back, lists it an
 
   assert.ok(plugin && node, "the plugin and Node are both rox-broker's children");
   process.kill(node, "SIGKILL");
-  await until(async () => !alive(node) && (await healthy()) && readFileSync(tokenFile, "utf8") !== token, 20000, "Node to come back");
+  // Node writes a new host token at each start; with the hub on (D30) the
+  // token is rox-broker's, written once, and Node comes back in its office role
+  const isNode = (p) => {
+    try {
+      return commandOf(p).includes("app-server.mjs");
+    } catch {
+      return false;
+    }
+  };
+  const back = HUB
+    ? () => children(broker.pid).some((p) => p !== node && isNode(p)) && readFileSync(tokenFile, "utf8") === token
+    : () => readFileSync(tokenFile, "utf8") !== token;
+
+  await until(async () => !alive(node) && (await healthy()) && back(), 20000, "Node to come back");
   token = readFileSync(tokenFile, "utf8");
   assert.ok(alive(plugin), "the plugin process outlived Node");
   const listed = (await req("GET", "/v1/host/plugins", token)).json.plugins.find((p) => p.id === FX);

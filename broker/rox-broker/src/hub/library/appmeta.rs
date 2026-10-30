@@ -649,6 +649,27 @@ async fn draw_icon(ctx: &Arc<HubCtx>, name: &str, prompt: &str, model: &str) -> 
     r
 }
 
+/// The tool loop's side of the Library (5.4's [`AppMetaSeam`]): `app_icon`,
+/// `app_details_update` and a new card's icon.
+///
+/// [`AppMetaSeam`]: crate::hub::tools::artifact::AppMetaSeam
+pub struct ToolSide;
+
+impl crate::hub::tools::artifact::AppMeta for ToolSide {
+    fn gen_icon(&self, ctx: Arc<HubCtx>, name: String, prompt: String, model: String) -> crate::hub::types::BoxFuture<'static, Result<String, String>> {
+        Box::pin(gen_app_icon(ctx, &name, &prompt, &model))
+    }
+
+    /// tools.mjs: `updateAppMeta(String(name || ""), meta)` then
+    /// `appInfo(String(name))` (no origin: the answer reads no URL).
+    fn update(&self, ctx: Arc<HubCtx>, name: String, meta: Value) -> crate::hub::types::BoxFuture<'static, Result<Value, String>> {
+        Box::pin(async move {
+            update_app_meta(&ctx, &name, &meta).await?;
+            app_info(&ctx, &name, "undefined")
+        })
+    }
+}
+
 /// `${v}` of a body field, for messages.
 pub fn shown(v: Option<&Value>) -> String {
     template(v)

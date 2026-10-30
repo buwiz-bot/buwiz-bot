@@ -28,12 +28,29 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     super::routes::market::register(routes, market.clone());
     // the tool loop's system prompt reads its plugin skills (5.4)
     ctx.ext.insert(market.clone());
+    // a bot's integrations read the catalog's entries and logos (5.2)
+    ctx.ext.insert(crate::hub::library::botctx::Catalog(Arc::new(BotCatalog(market.clone()))));
     skills::register(ctx);
     routes.on_start(|ctx| {
         if let Err(e) = schema(&ctx) {
             eprintln!("rox-broker: market tables: {e}");
         }
     });
+}
+
+/// plugins.mjs's `entryOf` and `iconFile` for botctx (5.2's [`Catalog`]).
+///
+/// [`Catalog`]: crate::hub::library::botctx::Catalog
+struct BotCatalog(Arc<Market>);
+
+impl crate::hub::library::botctx::PluginCatalog for BotCatalog {
+    fn entry(&self, key: &str) -> Option<Value> {
+        self.0.entry_of(key).cloned()
+    }
+
+    fn has_icon(&self, key: &str) -> bool {
+        self.0.icon_file(key).is_some()
+    }
 }
 
 /// Node's SERVER_DIR (the folder of `--node-script`, default

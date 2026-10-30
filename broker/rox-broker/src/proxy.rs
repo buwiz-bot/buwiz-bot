@@ -11,7 +11,7 @@ use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
-use hyper::{Request, Response, StatusCode, Uri};
+use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 
@@ -77,6 +77,9 @@ impl FrontDoor {
                 // state for either (its office role)
                 _ => match (&self.hub, routes::classify(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/")).map(|r| r.owner)) {
                     (Some(hub), Some(routes::Owner::Hub(_) | routes::Owner::Rust)) => (hub.serve(req).await, "hub"),
+                    // a route no broker has (the table holds all of Node's):
+                    // Node's 404, which its office role would answer 501
+                    (Some(hub), None) if method != Method::OPTIONS => (hub.serve(req).await, "hub"),
                     _ => (self.forward(req).await, "node"),
                 },
             },

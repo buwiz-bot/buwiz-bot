@@ -36,6 +36,10 @@ import { v1AgentCall, v1ToolPlugin, v1Tools } from "../src/v1/agent.mjs";
 import { createRoutineThreads } from "../src/v1/routine-threads.mjs";
 import { createRoutines } from "../src/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, fixtureSpec, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
+import { HUB } from "./helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)
+const NODE_ONLY = { skip: HUB && "Node-only: v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)" };
 
 let now = 1_800_000_000_000;
 const clock = { now: () => now, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) };
@@ -92,7 +96,7 @@ before(async () => {
 
 after(() => plugins.stopAll());
 
-test("RTN-01 an enabled routine the user has not approved does not run", async () => {
+test("RTN-01 an enabled routine the user has not approved does not run", NODE_ONLY, async () => {
   routines.enable({ plugin: FX, routine: "bir-mail", thread: "chat-1" });
   const r = listed("bir-mail");
 
@@ -111,7 +115,7 @@ test("RTN-01 an enabled routine the user has not approved does not run", async (
   assert.equal(searches().length, 0, "nothing was searched");
 });
 
-test("RTN-02 a tick: own query with origin routine, the reads search with its text, one prompt per new item", async () => {
+test("RTN-02 a tick: own query with origin routine, the reads search with its text, one prompt per new item", NODE_ONLY, async () => {
   const a = routines.approve({ plugin: FX, routine: "bir-mail" });
 
   assert.equal(a.routine.approved, true);
@@ -139,7 +143,7 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.equal(listed("bir-mail").last_items, 1);
 });
 
-test("RTN-03 a seen item does not run again; a new one runs once; nothing runs before it is due", async () => {
+test("RTN-03 a seen item does not run again; a new one runs once; nothing runs before it is due", NODE_ONLY, async () => {
   step(300);
   await routines.runDue();
   assert.equal(searches().length, 2);
@@ -158,7 +162,7 @@ test("RTN-03 a seen item does not run again; a new one runs once; nothing runs b
   assert.deepEqual(await again.tick(FX, "bir-mail"), { ran: true, items: 2, prompts: 0 });
 });
 
-test("RTN-04 a reads tool without readOnlyHint makes the routine unavailable", async () => {
+test("RTN-04 a reads tool without readOnlyHint makes the routine unavailable", NODE_ONLY, async () => {
   routines.enable({ plugin: FX, routine: "bad-reads", thread: "chat-1" });
   routines.approve({ plugin: FX, routine: "bad-reads" });
   const r = listed("bad-reads");
@@ -176,7 +180,7 @@ test("RTN-04 a reads tool without readOnlyHint makes the routine unavailable", a
   routines.disable({ plugin: FX, routine: "bad-reads" });
 });
 
-test("RTN-05 an empty search text is nothing to do; a switched-off tool or a stopped reads plugin makes it unavailable", async () => {
+test("RTN-05 an empty search text is nothing to do; a switched-off tool or a stopped reads plugin makes it unavailable", NODE_ONLY, async () => {
   routines.enable({ plugin: FX, routine: "empty", thread: "chat-1" });
   routines.approve({ plugin: FX, routine: "empty" });
   const n = searches().length;
@@ -199,7 +203,7 @@ test("RTN-05 an empty search text is nothing to do; a switched-off tool or a sto
   assert.equal((await routines.tick(FX, "bir-mail")).ran, true);
 });
 
-test("RTN-13 an enabled routine's thread is made at the server's start or its next tick, empty", async () => {
+test("RTN-13 an enabled routine's thread is made at the server's start or its next tick, empty", NODE_ONLY, async () => {
   const empty = () => store.list.find((t) => t.routine?.id === "empty");
   const notes = notices().length;
 
@@ -227,7 +231,7 @@ test("RTN-13 an enabled routine's thread is made at the server's start or its ne
   routines.disable({ plugin: FX, routine: "empty" });
 });
 
-test("RTN-06 the turn's v1 tools are the routine plugin's own plus only the listed reads tools", () => {
+test("RTN-06 the turn's v1 tools are the routine plugin's own plus only the listed reads tools", NODE_ONLY, () => {
   const surface = { plugin: FX, reads: [{ plugin: GWS, tools: ["gws_search_mail"] }] };
   const names = v1Tools(plugins, new Set(), surface).map((t) => t.name);
 
@@ -241,7 +245,7 @@ test("RTN-06 the turn's v1 tools are the routine plugin's own plus only the list
   assert.ok(full.includes("gws_search_mail") && full.includes("gws_read_mail"));
 });
 
-test("RTN-14 a routine's turn calls its own tools that change data only when its writes list them", async () => {
+test("RTN-14 a routine's turn calls its own tools that change data only when its writes list them", NODE_ONLY, async () => {
   const job = { v1Surface: turns[0].surface };
   const refused = await v1AgentCall(plugins, job, "fx_echo", { a: 1 });
 
@@ -266,7 +270,7 @@ test("RTN-14 a routine's turn calls its own tools that change data only when its
   assert.equal(chat.routine, undefined);
 });
 
-test("RTN-07 an update that changes what a routine reads needs a new approval", async () => {
+test("RTN-07 an update that changes what a routine reads needs a new approval", NODE_ONLY, async () => {
   b.writeManifest((m) => {
     m.version = "1.0.1";
     m.routines = ROUTINES.map((r) => (r.id === "bir-mail" ? { ...r, reads: [{ plugin: GWS, tools: ["gws_search_mail"] }] } : r));
@@ -283,7 +287,7 @@ test("RTN-07 an update that changes what a routine reads needs a new approval", 
   assert.equal(routines.approve({ plugin: FX, routine: "bir-mail" }).routine.available, true);
 });
 
-test("RTN-10 a run's turns go to the routine's own thread, made on its first run and reused after", () => {
+test("RTN-10 a run's turns go to the routine's own thread, made on its first run and reused after", NODE_ONLY, () => {
   const h = home();
 
   assert.equal(store.list.filter((t) => t.routine?.id === "bir-mail").length, 1, "one thread for the routine");
@@ -297,7 +301,7 @@ test("RTN-10 a run's turns go to the routine's own thread, made on its first run
   assert.ok(chat().turns.every((t) => t.role === "notice"), "the chat holds no item turn");
 });
 
-test("RTN-11 each run with new items leaves one notice pointing at the run; nothing new leaves none", () => {
+test("RTN-11 each run with new items leaves one notice pointing at the run; nothing new leaves none", NODE_ONLY, () => {
   const h = home();
   const [a, b] = notices();
 
@@ -309,7 +313,7 @@ test("RTN-11 each run with new items leaves one notice pointing at the run; noth
   assert.match(b.notice.run, /^run_\d+$/);
 });
 
-test("RTN-12 a failure leaves one notice per failure streak", async () => {
+test("RTN-12 a failure leaves one notice per failure streak", NODE_ONLY, async () => {
   writeMail(b, [{ id: "m3", subject: "Payment confirmation", body: "Paid." }, MAIL2, MAIL1]);
   failTurn = true;
   const n = notices().length;
@@ -337,7 +341,7 @@ test("RTN-12 a failure leaves one notice per failure streak", async () => {
   failTurn = false;
 });
 
-test("RTN-15 Run now ticks once out of schedule and counts like a run; paused, running or unavailable is refused", async () => {
+test("RTN-15 Run now ticks once out of schedule and counts like a run; paused, running or unavailable is refused", NODE_ONLY, async () => {
   const before = listed("bir-mail");
   const n = turns.length;
 
@@ -384,7 +388,7 @@ test("RTN-15 Run now ticks once out of schedule and counts like a run; paused, r
   assert.equal(await codeOf(routines.run({ plugin: FX, routine: "nope" })), "not_found");
 });
 
-test("RTN-16 the agent lists and runs the plugin routines of its chats only, and cannot enable one", async () => {
+test("RTN-16 the agent lists and runs the plugin routines of its chats only, and cannot enable one", NODE_ONLY, async () => {
   const mine = routines.ofChats(["chat-1"]);
 
   assert.deepEqual(mine.map((x) => [x.id, x.enabled]).sort(), [["bad-reads", false], ["bir-mail", true], ["empty", false]]);
@@ -410,7 +414,7 @@ test("RTN-16 the agent lists and runs the plugin routines of its chats only, and
   for (const k of ["agentEnable", "agentApprove"]) assert.equal(routines[k], undefined);
 });
 
-test("RTN-08 bad requests are refused; a deleted chat stops the routine; uninstall forgets it", async () => {
+test("RTN-08 bad requests are refused; a deleted chat stops the routine; uninstall forgets it", NODE_ONLY, async () => {
   assert.equal(await codeOf(Promise.resolve().then(() => routines.approve({ plugin: FX, routine: "nope" }))), "not_found");
   assert.equal(await codeOf(Promise.resolve().then(() => routines.enable({ plugin: FX, routine: "bir-mail", thread: "no-such-chat" }))), "invalid_args");
   assert.equal(await codeOf(Promise.resolve().then(() => routines.approve({ plugin: FX }))), "invalid_args");
