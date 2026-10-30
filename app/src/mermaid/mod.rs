@@ -182,6 +182,24 @@ mod tests {
         }
     }
 
+    // The types the port has added since flowchart: every input that renders
+    // draws with no element or attribute the translation does not know.
+    #[test]
+    fn every_ported_type_translates_completely() {
+        let pal = PelePalette::new(true, &Overrides::default());
+        let mut seen = 0;
+        for (ty, inputs) in [("er", pele::corpus::er()), ("class", pele::corpus::class_diagram()), ("state", pele::corpus::state()), ("sequence", pele::corpus::sequence())] {
+            for (name, code) in inputs {
+                let Ok(r) = pele::render(&code) else { continue };
+                let scene = pele::Scene::parse(&r.svg).unwrap_or_else(|| panic!("{ty} {name}: scene"));
+                let d = draw(&scene, &pal);
+                assert!(d.unknown.is_empty(), "{ty} {name}: unknown {:?}", d.unknown);
+                seen += 1;
+            }
+        }
+        assert!(seen > 300, "inputs: {seen}");
+    }
+
     // The x and y of every text that sets its own (a one-line label, or a
     // tspan that starts a line) are where the canvas draws it.
     fn positioned(el: &Element, tx: f32, ty: f32, out: &mut Vec<(f32, f32)>) {
@@ -230,6 +248,32 @@ mod tests {
         let fills = |ops: &[CanvasOp]| ops.iter().filter(|op| matches!(op, CanvasOp::FillStyle(nsh_core::canvas::Paint::Color(c)) if c.0 == 0xff0000ff)).count();
         assert_eq!(fills(&plain.drawing.ops), 0);
         assert!(fills(&red.drawing.ops) >= 2, "both node boxes take the surface color");
+    }
+
+    #[test]
+    fn a_group_opacity_fades_what_it_holds() {
+        // Over a fill the diagram chose, an entity's row stripes are a tint of it: a group at 0.6.
+        let svg = pele::render("erDiagram\n  CUSTOMER:::red {\n    string name\n    string email\n  }\n  classDef red fill:#ff0000\n").unwrap().svg;
+        assert!(svg.contains(" opacity=\"0.6\""));
+        let pal = PelePalette::new(true, &Overrides::default());
+        let faded = |svg: &str| {
+            let d = draw(&pele::Scene::parse(svg).unwrap(), &pal);
+            d.drawing.ops.iter().filter(|op| matches!(op, CanvasOp::FillStyle(nsh_core::canvas::Paint::Color(c)) if c.0 & 0xff == 153)).count()
+        };
+        assert!(faded(&svg) >= 1);
+        assert_eq!(faded(&svg.replace(" opacity=\"0.6\"", "")), 0);
+    }
+
+    #[test]
+    fn an_underlined_span_draws_its_rule() {
+        let rules = |code: &str| {
+            let svg = pele::render(code).unwrap().svg;
+            let d = draw(&pele::Scene::parse(&svg).unwrap(), &PelePalette::new(false, &Overrides::default()));
+            d.drawing.ops.iter().filter(|op| matches!(op, CanvasOp::FillRect(_))).count()
+        };
+        // A static member is underlined.
+        assert_eq!(rules("classDiagram\n  class Counter {\n    +total$\n  }\n"), 1);
+        assert_eq!(rules("classDiagram\n  class Counter {\n    +total\n  }\n"), 0);
     }
 
     #[test]
