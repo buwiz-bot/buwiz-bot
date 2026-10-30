@@ -347,7 +347,11 @@ pub(crate) fn file_icon(a: &Attach, size: f32) -> impl IntoElement {
 // ——————————————————— DocGlyph (`Xg` + `XF`) ———————————————————
 
 /// Grok's 44pt document illustration: a 32×40 page (40×34 for slides),
-/// radius 6, 4pt bars, a 12pt colored stripe per kind.
+/// radius 6, 4pt bars, a 12pt colored stripe per kind. One canvas on
+/// the page's box: drawn as views it was 7–20 of them per card (a
+/// spreadsheet's grid alone 16), and a reply's two dozen cards mounted
+/// hundreds of views in one frame. The bars sit where the views' layout
+/// put them: the page's 0.5pt border and 4pt padding, a 3pt gap.
 fn doc_glyph(variant: &str) -> impl IntoElement {
     let landscape = variant == "ppt" || variant == "keynote";
     let stripe = match variant {
@@ -357,103 +361,101 @@ fn doc_glyph(variant: &str) -> impl IntoElement {
         "spreadsheet" => Some(tc("#0e9f5a")),
         _ => None,
     };
-    let bg2 = tc("#f5f5f51f");
-    let bar = move |half: bool| {
-        view()
-            .h(px(4.0))
-            .rounded(px(2.0))
-            .bg(bg2)
-            .w(if half { percentage(0.48) } else { percentage(1.0) })
-            .into_element()
-    };
-    let dot = move || view().size(px(4.0)).rounded(px(2.0)).bg(bg2).into_element();
-    let body: Vec<AnyElement> = match variant {
-        "docx" => vec![bar(false), bar(false), bar(true)],
-        "ppt" | "keynote" => vec![bar(false), bar(true)],
-        "json" => vec![
-            dot(),
-            view().flex_row().gap(px(2.0)).pl(px(4.0)).child(dot()).child(
-                view().flex_1().h(px(4.0)).rounded(px(2.0)).bg(bg2),
-            ).into_element(),
-            view().flex_row().gap(px(2.0)).pl(px(4.0)).child(dot()).child(
-                view().flex_1().h(px(4.0)).rounded(px(2.0)).bg(bg2),
-            ).into_element(),
-            dot(),
-        ],
-        "pdf" => vec![
-            bar(false),
-            view().flex_row().gap(px(2.0)).flex_1().child(
-                view().flex_1().gap(px(3.0)).child(bar(false)).child(bar(false)),
-            ).child(
-                view().flex_1().rounded(px(2.0)).bg(bg2),
-            ).into_element(),
-        ],
-        "spreadsheet" => vec![
-            view().flex_1().flex_row().flex_wrap().child(each(
-                move || (0..15).collect::<Vec<i32>>(),
-                |i| *i,
-                move |i, _| {
-                    let i = i.get();
-                    view()
-                        .w(percentage(1.0 / 3.0))
-                        .h(percentage(0.2))
-                        .border_r(px(if i % 3 < 2 { 0.5 } else { 0.0 }))
-                        .border_t(px(if i >= 3 { 0.5 } else { 0.0 }))
-                        .border_color(tc("#f5f5f51a"))
-                        .into_element()
-                },
-            )).into_element(),
-        ],
-        "zip" => ["end", "start", "end", "start", "end", "start"]
-            .iter()
-            .map(|side| {
-                view()
-                    .w(percentage(0.25))
-                    .h(px(4.0))
-                    .bg(bg2)
-                    .ml(percentage(if *side == "start" { 0.25 } else { 0.5 }))
-                    .rounded(px(2.0))
-                    .into_element()
-            })
-            .collect(),
-        "audio" => vec![
-            view().flex_1().flex_row().items_center().justify_center().gap(px(3.0))
-                .child(view().w(px(4.0)).h(px(16.0)).rounded(px(6.0)).bg(bg2))
-                .child(view().w(px(4.0)).h(px(24.0)).rounded(px(6.0)).bg(bg2))
-                .child(view().w(px(4.0)).h(px(16.0)).rounded(px(6.0)).bg(bg2))
-                .into_element(),
-        ],
-        "font" | "unknown" => vec![
-            view().flex_1().items_center().justify_center().child(
-                text(if variant == "font" { "Aa" } else { "?" })
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(tc("#f5f5f58a")),
-            ).into_element(),
-        ],
-        _ => vec![bar(true), bar(false), bar(false), bar(true)], // generic
-    };
-    view()
-        .size(px(44.0))
-        .p(px(2.0))
-        .items_center()
-        .justify_center()
-        .child(
-            view()
-                .w(px(if landscape { 40.0 } else { 32.0 }))
-                .h(px(if landscape { 34.0 } else { 40.0 }))
-                .rounded(px(6.0))
-                .overflow_hidden()
-                .bg(tc("#1f1f1f"))
-                .border(px(0.5))
-                .border_color(tc("#f5f5f51a"))
-                .child(view().flex_1().gap(px(3.0)).p(px(4.0)).children(body))
-                .when_some(stripe, |v, s| v.child(view().h(px(12.0)).bg(s))),
-        )
+    let (w, h) = if landscape { (40.0f32, 34.0f32) } else { (32.0, 40.0) };
+    let variant = variant.to_owned();
+    canvas(move || {
+        let bar = color(tc("#f5f5f51f"));
+        // the body: inside the border, padded 4; the stripe under it
+        let (x0, y0) = (4.5f32, 4.5f32);
+        let cw = w - 9.0;
+        let ch = h - 9.0 - if stripe.is_some() { 12.0 } else { 0.0 };
+        let rr = |p: Painter, x: f32, y: f32, bw: f32, bh: f32, r: f32| {
+            p.begin_path()
+                .round_rect(Bounds { origin: point(px(x0 + x), px(y0 + y)), size: size(px(bw), px(bh)) }, px(r))
+                .fill()
+        };
+        // a column of 4pt bars 3pt apart, each `(width, left)`
+        let bars = |p: Painter, rows: &[(f32, f32)]| {
+            rows.iter().enumerate().fold(p, |p, (k, &(bw, at))| rr(p, at, k as f32 * 7.0, bw, 4.0, 2.0))
+        };
+        let mut p = Painter::new().fill_color(bar);
+        p = match variant.as_str() {
+            "docx" => bars(p, &[(cw, 0.0), (cw, 0.0), (cw * 0.48, 0.0)]),
+            "ppt" | "keynote" => bars(p, &[(cw, 0.0), (cw * 0.48, 0.0)]),
+            "json" => {
+                // dot, an indented dot and bar twice, dot
+                let p = rr(p, 0.0, 0.0, 4.0, 4.0, 2.0);
+                let p = rr(p, 4.0, 7.0, 4.0, 4.0, 2.0);
+                let p = rr(p, 10.0, 7.0, cw - 10.0, 4.0, 2.0);
+                let p = rr(p, 4.0, 14.0, 4.0, 4.0, 2.0);
+                let p = rr(p, 10.0, 14.0, cw - 10.0, 4.0, 2.0);
+                rr(p, 0.0, 21.0, 4.0, 4.0, 2.0)
+            }
+            "pdf" => {
+                // a bar, then two bars beside a block filling the rest
+                let half = (cw - 2.0) / 2.0;
+                let p = rr(p, 0.0, 0.0, cw, 4.0, 2.0);
+                let p = rr(p, 0.0, 7.0, half, 4.0, 2.0);
+                let p = rr(p, 0.0, 14.0, half, 4.0, 2.0);
+                rr(p, half + 2.0, 7.0, half, ch - 7.0, 2.0)
+            }
+            "spreadsheet" => {
+                // 3×5 cells: a hairline right of the first two columns,
+                // above every row but the first
+                let (cell_w, cell_h) = (cw / 3.0, ch / 5.0);
+                let mut p = p.fill_color(color(tc("#f5f5f51a")));
+                for i in 0..15 {
+                    let (cx, cy) = ((i % 3) as f32 * cell_w, (i / 3) as f32 * cell_h);
+                    let right = i % 3 < 2;
+                    if right {
+                        p = p.fill_rect(x0 + cx + cell_w - 0.5, y0 + cy, 0.5, cell_h);
+                    }
+                    if i >= 3 {
+                        let top_w = cell_w - if right { 0.5 } else { 0.0 };
+                        p = p.fill_rect(x0 + cx, y0 + cy, top_w, 0.5);
+                    }
+                }
+                p
+            }
+            "zip" => {
+                let rows: Vec<(f32, f32)> =
+                    [0.5, 0.25, 0.5, 0.25, 0.5, 0.25].iter().map(|at| (cw * 0.25, cw * at)).collect();
+                bars(p, &rows)
+            }
+            "audio" => {
+                // three bars, 16 / 24 / 16 tall, centered
+                let left = (cw - 18.0) / 2.0;
+                [16.0f32, 24.0, 16.0].iter().enumerate().fold(p, |p, (k, bh)| {
+                    rr(p, left + k as f32 * 7.0, (ch - bh) / 2.0, 4.0, *bh, 2.0)
+                })
+            }
+            "font" | "unknown" => p
+                .font("600 15px -apple-system, system-ui, sans-serif")
+                .text_align(nsh_core::canvas::CanvasTextAlign::Center)
+                .text_baseline(nsh_core::canvas::CanvasTextBaseline::Middle)
+                .fill_color(color(tc("#f5f5f58a")))
+                .fill_text(if variant == "font" { "Aa" } else { "?" }, x0 + cw / 2.0, y0 + ch / 2.0),
+            _ => bars(p, &[(cw * 0.48, 0.0), (cw, 0.0), (cw, 0.0), (cw * 0.48, 0.0)]),
+        };
+        if let Some(s) = stripe {
+            p = p.fill_color(color(s)).fill_rect(0.5, h - 12.5, w - 1.0, 12.0);
+        }
+        p
+    })
+    .w(px(w))
+    .h(px(h))
+    // the 44pt square the page sits centered in
+    .mx(px((44.0 - w) / 2.0))
+    .my(px((44.0 - h) / 2.0))
+    .rounded(px(6.0))
+    .overflow_hidden()
+    .bg(tc("#1f1f1f"))
+    .border(px(0.5))
+    .border_color(tc("#f5f5f51a"))
 }
 
 /// `FileName` — the stem truncates, the extension always shows.
-fn file_name(name: &str) -> impl IntoElement {
+fn file_name(name: &str) -> View {
     let (stem, ext) = stem_ext(name);
     // the stem shrinks (ellipsis) so a long name stops short of the
     // card's trailing button instead of running under it
@@ -479,20 +481,45 @@ fn file_name(name: &str) -> impl IntoElement {
         )
 }
 
-fn save_btn(f: &Attach) -> impl IntoElement {
+/// The card's ⤓: one text, its 28pt line centering the glyph.
+/// The width of a 230pt card's name and size lines: what the glyph, the
+/// ⤓ and the paddings and gaps leave.
+const LINES_W: f32 = 119.0;
+
+/// A card's name at `(left, top)` of its row, its size line set 20pt
+/// under it by the caller: placed, not stacked in a column view, and one
+/// text when the name fits (stem and extension share a style, so it
+/// reads the same); `file_name`'s two only when the stem must truncate.
+fn card_name(name: &str, left: f32, top: f32) -> AnyElement {
+    let fits = measure_text("500 14px -apple-system, system-ui, sans-serif", name).0 <= LINES_W - 2.0;
+    if !fits {
+        return file_name(name).absolute().left(px(left)).top(px(top)).w(px(LINES_W)).into_element();
+    }
+    text(name.to_owned())
+        .number_of_lines(1)
+        .text_size(px(14.0))
+        .line_height(px(20.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(tc("#f5f5f5"))
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(LINES_W))
+        .into_element()
+}
+
+fn save_btn(f: &Attach) -> Text {
     let path = f.path.clone();
     let name = f.name.clone();
-    view()
+    text("⤓")
         .label(format!("Save {name}"))
         .size(px(28.0))
         .rounded(px(14.0))
-        .items_center()
-        .justify_center()
-        .child(
-            text("⤓")
-                .text_size(px(14.0))
-                .text_color(tc("#f5f5f5a8")),
-        )
+        .text_center()
+        .line_height(px(28.0))
+        .number_of_lines(1)
+        .text_size(px(14.0))
+        .text_color(tc("#f5f5f5a8"))
         .on_press(move || store().save_file(&path))
 }
 
@@ -510,31 +537,34 @@ fn card_box() -> View {
 pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
     let f2 = f.clone();
     let hov = signal(false);
-    view()
+    // the box is the button: no wrapper view around it
+    card_box()
         .label(format!("Open {}", f.name))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(64.0))
+        .pl(px(10.0))
+        .pr(px(12.0))
+        .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .child(doc_glyph(&f.variant))
+        // name and size where the column centered them: past the border,
+        // the padding, the glyph and a gap; 38pt of lines in 63
+        .child(card_name(&f.name, 62.0, 12.5))
         .child(
-            card_box()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .h(px(64.0))
-                .pl(px(10.0))
-                .pr(px(12.0))
-                .bg(move || if hov.get() { tc("#262626") } else { tc("#1f1f1f") })
-                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
-                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-                .child(doc_glyph(&f.variant))
-                .child(
-                    view().flex_1().child(file_name(&f.name)).child(
-                        text(fmt_size(f.size))
-                            .number_of_lines(1)
-                            .text_size(px(13.0))
-                            .line_height(px(18.0))
-                            .text_color(tc("#f5f5f5ad")),
-                    ),
-                )
-                .child(save_btn(f)),
+            text(fmt_size(f.size))
+                .number_of_lines(1)
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(tc("#f5f5f5ad"))
+                .absolute()
+                .left(px(62.0))
+                .top(px(32.5))
+                .w(px(LINES_W)),
         )
+        .child(save_btn(f).ml(auto()))
         .on_press(move || store().open_file(&f2))
 }
 
@@ -694,6 +724,12 @@ impl Audio {
                 if e.duration > 0.0 {
                     dur.set(e.duration as f64);
                 }
+                // a card's player comes on first use: where a scrub
+                // before it put the time
+                let at = time.get_untracked();
+                if at > 0.0 {
+                    player.seek(at);
+                }
             })
             .on_progress(move |e: &VideoProgress| time.set(e.current_time as f64))
             .on_end(move || {
@@ -715,7 +751,9 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
     let a2 = a.clone();
     let a2b = a.clone();
     let a3 = a.clone();
+    let a3b = a.clone();
     let a4 = a.clone();
+    let a6 = a.clone();
     let a5 = a.clone();
     let a5b = a.clone();
     let a5c = a.clone();
@@ -731,8 +769,19 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
     };
     const W: f32 = 93.0;
     let bars = peaks.len().div_ceil(2).max(1) as f64;
+    let an = a.clone();
+    // The player (a native video view) is made the first time the card
+    // plays or seeks: a reply's audio cards made three of them on mount.
+    let used = std::cell::Cell::new(false);
+    let used = computed(move || {
+        if !used.get() && (!an.paused.get() || an.scrub.get()) {
+            used.set(true);
+        }
+        used.get()
+    });
+    let an = a.clone();
     card_box()
-        .child(a.node())
+        .child(when(used, move || an.node().into_element()))
         .child(
             view()
                 .flex_row()
@@ -742,21 +791,23 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
                 .pl(px(10.0))
                 .pr(px(12.0))
                 .child(doc_glyph("audio"))
-                .child(view().flex_1().child(file_name(&f.name)).child(
-                    dynamic(move || {
-                        text(format!(
-                            "{} · {}",
-                            fmt_time(a.dur.get()),
-                            fmt_size(f2.size)
-                        ))
+                // as a file card's lines (this row has no border)
+                .child(card_name(&f.name, 62.0, 13.0))
+                .child(
+                    text({
+                        let size = f.size;
+                        move || format!("{} · {}", fmt_time(a.dur.get()), fmt_size(size))
+                    })
                         .number_of_lines(1)
                         .text_size(px(13.0))
                         .line_height(px(18.0))
                         .text_color(tc("#f5f5f5ad"))
-                        .into_element()
-                    }),
-                ))
-                .child(save_btn(f))
+                        .absolute()
+                        .left(px(62.0))
+                        .top(px(33.0))
+                        .w(px(LINES_W)),
+                )
+                .child(save_btn(f).ml(auto()))
                 .on_press(move || store().open_file(&f2)),
         )
         .child(
@@ -766,83 +817,69 @@ pub(crate) fn audio_card(f: &Attach, tint: AdaptiveColor) -> impl IntoElement {
                 .h(px(48.0))
                 .pl(px(14.0))
                 .pr(px(12.0))
+                // each control is one text, its line centering the glyph
                 .child(
-                    view()
+                    text(move || if a2.playing() { "❚❚" } else { "▶" })
                         .label("Play/Pause")
                         .size(px(24.0))
                         .rounded(px(12.0))
-                        .items_center()
-                        .justify_center()
-                        .child(dynamic(move || {
-                            text(if a2.playing() { "❚❚" } else { "▶" })
-                                .text_size(px(13.0))
-                                .text_color(tc("#f5f5f5"))
-                                .into_element()
-                        }))
+                        .text_center()
+                        .line_height(px(24.0))
+                        .number_of_lines(1)
+                        .text_size(px(13.0))
+                        .text_color(tc("#f5f5f5"))
                         .on_press(move || a2b.toggle()),
                 )
                 .child(
-                    view()
+                    text(move || format!("{}×", a3.rate.get()))
                         .label("Playback speed")
                         .w(px(34.0))
                         .h(px(32.0))
-                        .items_center()
-                        .justify_center()
+                        .text_center()
+                        .line_height(px(32.0))
+                        .number_of_lines(1)
                         .border_r(px(0.5))
                         .border_r_color(tc("#f5f5f50f"))
-                        .child(dynamic(move || {
-                            text(format!("{}×", a3.rate.get()))
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(tc("#f5f5f5ad"))
-                                .into_element()
-                        }))
-                        .on_press(move || a3.next_rate()),
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tc("#f5f5f5ad"))
+                        .on_press(move || a3b.next_rate()),
                 )
+                // The waveform: one canvas, 1.5pt bars spread edge to
+                // edge, played ones in the tint (24 views before).
                 .child(
-                    view()
-                        .label("Seek")
-                        .w(px(W))
-                        .h(px(24.0))
-                        .ml(px(10.0))
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .children(
-                            peaks
-                                .iter()
-                                .step_by(2)
-                                .enumerate()
-                                .map(|(i, p)| {
-                                    let p = *p;
-                                    view()
-                                        .w(px(1.5))
-                                        .h(px((p * 24.0).max(2.0) as f32))
-                                        .rounded(px(1.0))
-                                        .bg(move || {
-                                            let (d, t) =
-                                                (a4.dur.get(), a4.time.get());
-                                            if d > 0.0 && (i as f64 / bars) < t / d {
-                                                tint
-                                            } else {
-                                                fade
-                                            }
-                                        })
-                                        .into_element()
-                                })
-                                .collect::<Vec<_>>(),
-                        )
-                        .on_mouse_move(move |e: &nsh_core::MouseEvent| {
-                            a5.seek_at(e.position.x.0, W);
+                    canvas(move || {
+                        let (d, t) = (a4.dur.get(), a4.time.get());
+                        let (played, rest) = (color(tint), color(fade));
+                        let n = peaks.len().div_ceil(2).max(1);
+                        let step = if n > 1 { (W - 1.5) / (n - 1) as f32 } else { 0.0 };
+                        peaks.iter().step_by(2).enumerate().fold(Painter::new(), |p, (i, peak)| {
+                            let h = (*peak as f32 * 24.0).max(2.0);
+                            let on = d > 0.0 && (i as f64 / bars) < t / d;
+                            p.fill_color(if on { played } else { rest })
+                                .begin_path()
+                                .round_rect(
+                                    Bounds { origin: point(px(i as f32 * step), px((24.0 - h) / 2.0)), size: size(px(1.5), px(h)) },
+                                    px(0.75),
+                                )
+                                .fill()
                         })
-                        .on_press_down(move || a5b.scrub_on(W))
-                        .on_press_up(move || a5c.scrub_off()),
+                    })
+                    .label("Seek")
+                    .w(px(W))
+                    .h(px(24.0))
+                    .ml(px(10.0))
+                    .on_mouse_move(move |e: &nsh_core::MouseEvent| {
+                        a5.seek_at(e.position.x.0, W);
+                    })
+                    .on_press_down(move || a5b.scrub_on(W))
+                    .on_press_up(move || a5c.scrub_off()),
                 )
                 .child(dynamic(move || {
-                    let show = if a4.paused.get() && a4.time.get() == 0.0 {
-                        a4.dur.get()
+                    let show = if a6.paused.get() && a6.time.get() == 0.0 {
+                        a6.dur.get()
                     } else {
-                        a4.time.get()
+                        a6.time.get()
                     };
                     text(fmt_time(show))
                         .ml(px(10.0))
@@ -930,10 +967,13 @@ fn media_tile(f: Attach, w: f32, h: f32, more: usize, on_open: impl Fn() + 'stat
                     .h(px(h)),
             )
         })
+        // The badges are one text each, padded and plated: a view around
+        // a text per badge, and the play disc in a centering layer, cost a
+        // gallery a dozen views.
         // a still for animated media carries Grok's GIF badge
         .when(animated, move |v| {
             v.child(
-                view()
+                text(if ext == "gif" { "GIF".to_owned() } else { ext.to_uppercase() })
                     .absolute()
                     .left(px(6.0))
                     .bottom(px(6.0))
@@ -941,43 +981,32 @@ fn media_tile(f: Attach, w: f32, h: f32, more: usize, on_open: impl Fn() + 'stat
                     .py(px(2.0))
                     .rounded(px(6.0))
                     .bg(LIGHT_BG)
-                    .child(
-                        text(if ext == "gif" {
-                            "GIF".to_owned()
-                        } else {
-                            ext.to_uppercase()
-                        })
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
-                    ),
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
             )
         })
         .when(f.kind == "video", move |v| {
             v.child(
-                view()
+                // the 44pt disc centered on the tile; the glyph 3pt right
+                // of center (its margin, halved by the centering)
+                text("▶")
                     .absolute()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        view()
-                            .size(px(44.0))
-                            .rounded(px(22.0))
-                            .bg(Hsla { a: 0.65, ..LIGHT_BG })
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                text("▶")
-                                    .text_size(px(16.0))
-                                    .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0))
-                                    .ml(px(3.0)),
-                            ),
-                    ),
+                    .left(px((w - 44.0) / 2.0))
+                    .top(px((h - 44.0) / 2.0))
+                    .size(px(44.0))
+                    .rounded(px(22.0))
+                    .bg(Hsla { a: 0.65, ..LIGHT_BG })
+                    .pl(px(3.0))
+                    .text_center()
+                    .line_height(px(44.0))
+                    .number_of_lines(1)
+                    .text_size(px(16.0))
+                    .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
             )
             .when(dur > 0.0, move |v| {
                 v.child(
-                    view()
+                    text(fmt_time(dur))
                         .absolute()
                         .right(px(6.0))
                         .bottom(px(6.0))
@@ -985,28 +1014,26 @@ fn media_tile(f: Attach, w: f32, h: f32, more: usize, on_open: impl Fn() + 'stat
                         .py(px(2.0))
                         .rounded(px(6.0))
                         .bg(LIGHT_BG)
-                        .child(
-                            text(fmt_time(dur))
-                                .text_size(px(11.0))
-                                .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
-                        ),
+                        .text_size(px(11.0))
+                        .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
                 )
             })
         })
         .when(more > 0, move |v| {
             v.child(
-                view()
+                text(format!("+{more}"))
                     .absolute()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w(px(w))
+                    .h(px(h))
                     .bg(Hsla { a: 0.5, ..LIGHT_BG })
-                    .child(
-                        text(format!("+{more}"))
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
-                    ),
+                    .text_center()
+                    .line_height(px(h))
+                    .number_of_lines(1)
+                    .text_size(px(20.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0)),
             )
         })
         .on_press(move || {
