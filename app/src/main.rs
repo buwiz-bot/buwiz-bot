@@ -143,6 +143,9 @@ fn main() -> impl std::process::Termination {
     if let Some(code) = rox::mini_v1::ui::migrate_cli(&std::env::args().collect::<Vec<_>>()) {
         std::process::exit(code);
     }
+    // the bundled broker, when none answers and this is no test instance
+    // (plan 7.2)
+    rox::broker::ensure_started();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: rox::app_name().to_owned(),
