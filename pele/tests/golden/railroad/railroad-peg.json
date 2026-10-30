@@ -1,0 +1,8 @@
+{
+ "source": "samples/railroad-peg.mmd",
+ "type": "railroad",
+ "mermaidType": "railroadPeg",
+ "width": 90,
+ "height": 76,
+ "links": []
+}

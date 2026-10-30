@@ -1,0 +1,8 @@
+{
+ "source": "tests/compat/flowchart/flow-vertice-chaining.spec.js",
+ "type": "flowchart",
+ "mermaidType": "flowchart-v2",
+ "width": 64,
+ "height": 256,
+ "links": []
+}

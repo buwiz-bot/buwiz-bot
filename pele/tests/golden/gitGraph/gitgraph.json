@@ -1,0 +1,8 @@
+{
+ "source": "samples/gitgraph.mmd",
+ "type": "gitGraph",
+ "mermaidType": "gitGraph",
+ "width": 409,
+ "height": 267,
+ "links": []
+}

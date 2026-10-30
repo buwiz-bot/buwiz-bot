@@ -1,0 +1,6 @@
+architecture-beta
+  group api(cloud)[API]
+  service db(database)[DB] in api
+  service srv(server)[Server] in api
+  db:L -- R:srv
+  junction j

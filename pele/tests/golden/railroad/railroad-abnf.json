@@ -1,0 +1,8 @@
+{
+ "source": "samples/railroad-abnf.mmd",
+ "type": "railroad",
+ "mermaidType": "railroadAbnf",
+ "width": 90,
+ "height": 76,
+ "links": []
+}

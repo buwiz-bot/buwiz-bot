@@ -25,6 +25,8 @@ rox-v1 = { path = "../broker/rox-v1" }
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
+# ```mermaid fences: Pele (the Mermaid renderer) ported to Rust, drawn natively.
+pele = { path = "../pele" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
