@@ -701,18 +701,19 @@ impl TurnRunner for MockTurns {
             }
             let thread = turn.turn.thread.clone();
             let user = Turn::user(&turn.shown).with_extra(turn.mark.as_ref().unwrap_or(&Value::Null));
-            ctx.store.append_turn(&thread, user)?;
+            // where the turn landed is the shown turn (routineTurn's `at`)
+            let shown = ctx.store.append_turn(&thread, user)?.ok_or_else(|| format!("unknown thread {thread}"))?;
             ctx.store.write_index();
             let label = match &turn.turn.model {
                 Some(m) if !m.model.is_empty() => format!("{}{}", m.model, if m.fast { "--fast" } else { "" }),
                 _ => model(),
             };
-            let done = ctx.store.append_turn(&thread, Turn::ai(MOCK_REPLY, &label))?.ok_or_else(|| format!("unknown thread {thread}"))?;
+            ctx.store.append_turn(&thread, Turn::ai(MOCK_REPLY, &label))?.ok_or_else(|| format!("unknown thread {thread}"))?;
             ctx.store.write_index();
             if let Some(job) = turn.turn.job {
                 ctx.jobs.finish(&ctx.store, job, "replied", Some("reply"));
             }
-            Ok(done)
+            Ok(shown)
         })
     }
 

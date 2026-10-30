@@ -119,10 +119,10 @@ pub const ROUTES: &[Entry] = &[
     // 5.5 routines
     e(Get, X("/routines"), Hub(Routines)),
     e(Get, X("/routines/templates"), Hub(Routines)),
-    e(Post, X("/routine/update"), Hub(Routines)),
+    e(Any, X("/routine/update"), Hub(Routines)),
     e(Any, X("/routine/delete"), Hub(Routines)),
-    e(Post, X("/routine/run"), Hub(Routines)),
-    e(Post, X("/routine/from-template"), Hub(Routines)),
+    e(Any, X("/routine/run"), Hub(Routines)),
+    e(Any, X("/routine/from-template"), Hub(Routines)),
     e(Post, X("/v1/host/routines/approve"), Hub(Routines)),
     e(Post, X("/v1/host/routines/enable"), Hub(Routines)),
     e(Post, X("/v1/host/routines/disable"), Hub(Routines)),

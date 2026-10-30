@@ -14,6 +14,7 @@
 pub mod host;
 pub mod mcp;
 pub mod plugins;
+pub mod store_host;
 pub mod templates;
 pub mod text;
 pub mod threads;
@@ -28,9 +29,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use self::host::{RoutineHost, Unstored};
+use self::host::RoutineHost;
 use self::mcp::{HostMcp, McpView, NoMcp};
 use self::plugins::{NoPlugins, PluginView};
+use self::store_host::StoreHost;
 use self::v0::V0;
 use self::v1::V1;
 use super::ctx::HubCtx;
@@ -71,12 +73,17 @@ impl Routines {
     }
 }
 
-/// The routines on the hub's plugin and MCP hosts, with no store yet
-/// ([`Unstored`]): every route answers, no chat exists, and the
-/// schedulers stay off, so a real data dir's routines are never ticked
-/// (and switched off as "its chat was deleted") before the store is in.
+/// The routines on the hub's store, plugin and MCP hosts ([`StoreHost`]),
+/// their timers and poll on. A store that did not load has no chat, so the
+/// schedulers stay off then: a real data dir's routines are never ticked
+/// (and switched off as "its chat was deleted") without their chats.
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
-    install_with(routes, ctx, Arc::new(Unstored), false);
+    let host = Arc::new(StoreHost::new());
+    let bind = host.clone();
+    // before the routines' own start, which reads the store
+    routes.on_start(move |ctx| bind.bind(&ctx));
+    let loaded = ctx.store.read(|s| !s.list.is_empty());
+    install_with(routes, ctx, host, loaded);
 }
 
 /// The routines on the store `host`; `scheduled`: their timers and poll

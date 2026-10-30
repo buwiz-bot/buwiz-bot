@@ -1,7 +1,8 @@
 // Node's office role (ROX_NODE_ROLE=office, Rust broker plan 5.0c): behind
 // rox-broker's hub Node serves only the office routes and holds no hub
 // state. On a seeded data dir that a normal start would rewrite (a thread
-// without a uid, an unversioned module, stale .stage files, a host token),
+// without a uid, an unversioned module, stale .stage files, a host token,
+// a database from before v1 routine instances with an enabled routine),
 // an office-role start and stop leave app.db's rows, the host token, .stage
 // and the index files as they were; an office route answers and a hub
 // route gets 501. A normal start afterwards does rewrite them, so the seed
@@ -72,6 +73,10 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
   const db = new DatabaseSync(join(gen, "app.db"));
 
   db.exec("UPDATE threads SET uid=NULL WHERE rowid=(SELECT min(rowid) FROM threads)");
+  // a v1 routine enabled before instances: v1/routines.mjs moves it to an
+  // instance once, at import (rox-broker's job behind the hub)
+  db.exec("DROP TABLE v1_instances");
+  db.prepare("INSERT INTO v1_routines(plugin, routine, thread, enabled, seen, last_run) VALUES(?,?,?,1,?,?)").run("dev.example.office", "watch", "t1", "[\"a\"]", 1700000000000);
   db.close();
   writeFileSync(join(gen, "R41.tsx"), "export default function R41() { return null; }\n");
   writeFileSync(join(stage, "candidate.tsx"), "export const x = 1;\n");
@@ -82,6 +87,7 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
   const before = snapshot();
 
   assert.ok(before.rows.threads.some((t) => t.uid === null), "the seed has a thread without a uid");
+  assert.ok(!("v1_instances" in before.rows), "the seed is from before instances");
 
   server = await startServer(dir, { env: { ROX_NODE_ROLE: "office" } });
 
@@ -117,7 +123,11 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
     await server.stop();
   }
 
-  assert.deepEqual(snapshot(), before);
+  const office = snapshot();
+
+  assert.ok(!("v1_instances" in office.rows), "no v1_instances: the move to instances did not run");
+  assert.deepEqual(office.rows.v1_routines, before.rows.v1_routines);
+  assert.deepEqual(office, before);
 
   // the control: a normal start on the same dir rewrites what the role kept
   server = await startServer(dir);
@@ -128,4 +138,9 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
   assert.ok(!("candidate.tsx" in after.stage), "a normal start clears .stage");
   assert.ok(after.rows.heads.some((h) => h.name === "R41"), "a normal start migrates R41");
   assert.notEqual(after.hostToken, "the-hub-token", "a normal start writes its own host token");
+  assert.deepEqual(
+    after.rows.v1_instances.map((i) => [i.plugin, i.routine, i.thread, i.enabled, i.seen, i.last_run]),
+    [["dev.example.office", "watch", "t1", 1, "[\"a\"]", 1700000000000]],
+    "a normal start moves the routine to an instance",
+  );
 });
