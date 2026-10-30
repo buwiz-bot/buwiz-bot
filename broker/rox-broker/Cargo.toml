@@ -28,6 +28,7 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12", "webpki-tokio"] }
 libc = "0.2"
 regex-lite = "0.1"
+rox-mcp = { path = "../rox-mcp" }
 rox-v1 = { path = "../rox-v1" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = "1"
