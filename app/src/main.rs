@@ -151,10 +151,11 @@ fn main() -> impl std::process::Termination {
         // `ROX_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
         // costs, CPU/GPU/memory) at the window's top right.
         fps: std::env::var("ROX_FPS").is_ok_and(|v| v != "0"),
-        // A dev/test instance (`GPUI_AGENT=1`, which the dev bundles and
-        // scripts/test-rox set) starts in the background: launching it
-        // never takes the focus from the app in front.
-        activate: std::env::var("GPUI_AGENT").as_deref() != Ok("1"),
+        // A test instance (`ROX_BACKGROUND=1`, which scripts/test-rox sets)
+        // starts in the background: launching it never takes the focus from
+        // the app in front. The owner's Rox, automation on or not, comes
+        // to the front as any app does.
+        activate: std::env::var("ROX_BACKGROUND").as_deref() != Ok("1"),
         ..Default::default()
     };
     rox::mini::register_mini_app(&options.components);
