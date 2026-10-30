@@ -585,9 +585,9 @@ test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload an
 
   writeFileSync(md, "# hi\n");
   assert.deepEqual(await render("note.md"), { name: "note.md", ext: "md", size: 5, kind: "markdown", variant: "generic", text: "# hi\n" });
-  // the front door's log (queries redacted): the office files in Rust, the
-  // markdown file in Node's office role
-  if (RUST) assert.deepEqual(server.log().match(/GET \/file\/render 200 \d+ms \w+/g).map((l) => l.split(" ").at(-1)), ["hub", "hub", "hub", "hub", "hub", "node"]);
+  // the front door's log (queries redacted): every kind in Rust, the
+  // markdown file too since phase 7 (render.test)
+  if (RUST) assert.deepEqual(server.log().match(/GET \/file\/render 200 \d+ms \w+/g).map((l) => l.split(" ").at(-1)), ["hub", "hub", "hub", "hub", "hub", "hub"]);
 });
 
 test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose, accept, export (a card), create (a card); rox-broker runs no office child", async () => {

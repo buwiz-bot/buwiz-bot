@@ -201,11 +201,14 @@ function shikiTheme(name, p) {
     ],
   };
 }
+/** The two themes the highlighter uses, as Shiki takes them (rox-broker
+ *  ships them as tmTheme files: tools/tmtheme.mjs). */
+export const cursorThemes = () => [shikiTheme("cursor-dark", SYNTAX.dark), shikiTheme("cursor-light", SYNTAX.light)];
 const LANG = { rs: "rust", ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript", py: "python", go: "go", swift: "swift", json: "json", jsonc: "jsonc", toml: "toml", yaml: "yaml", yml: "yaml", sh: "bash", bash: "bash", zsh: "bash", css: "css", scss: "scss", html: "html", htm: "html", xml: "xml", sql: "sql", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", java: "java", kt: "kotlin", rb: "ruby", php: "php", cs: "csharp", md: "markdown", ini: "ini", tex: "latex" };
 let highlighter;
 async function hl() {
   highlighter ??= await createHighlighter({
-    themes: [shikiTheme("cursor-dark", SYNTAX.dark), shikiTheme("cursor-light", SYNTAX.light)],
+    themes: cursorThemes(),
     langs: [...new Set(Object.values(LANG))],
   });
   return highlighter;

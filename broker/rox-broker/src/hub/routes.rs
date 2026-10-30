@@ -3,21 +3,23 @@
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
-//! - `Office`: forwarded to Node in its office role (`/file/render` for
-//!   kinds other than docx/xlsx/pptx, D32). `/office/*` and `/file/render`
-//!   for office files are the hub's since 6.1 (`Hub(OfficeFiles)`);
-//!   `/mermaid*` (6.2) and `/popout` (6.3) are the hub's too, and
-//!   `/highlight` is deleted (6.2: no caller).
+//!   `/office/*` and `/file/render` for office files are the hub's since
+//!   6.1 (`Hub(OfficeFiles)`), `/mermaid*` (6.2) and `/popout` (6.3) too,
+//!   and `GET /` and `/file/render` for every other kind since phase 7
+//!   (`Hub(Files)`): no route is Node's office role's any more, so the hub
+//!   runs without Node (`ROX_BROKER_NO_NODE=1`). `/highlight` is deleted
+//!   (6.2: no caller).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
 //!   with that part switched off, the hub answers 501 instead of Node.
 //!
-//! A path in no entry (and every OPTIONS preflight) goes to Node as today.
+//! A path in no entry gets the hub's copy of Node's last resort (404); an
+//! OPTIONS preflight goes to Node, or with no Node the hub answers it as
+//! Node does (204).
 //! The first matching entry wins: specific paths before the prefixes.
 //!
 //! Deleted in 6.2 (no caller; drafts' route inventory has the evidence):
-//! `POST /highlight`. It has no entry, so with the hub on it reaches
-//! Node's office role, which refuses it (501); plain Node still answers it
-//! until phase 7 (D11/D12).
+//! `POST /highlight`. It has no entry, so with the hub on it gets the
+//! hub's 404; plain Node still answers it until phase 7 (D11/D12).
 
 /// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
 pub mod agents;
@@ -72,12 +74,13 @@ pub enum Track {
     Leftovers,
     /// 6.1: office in Rust (`/office/*`, `/file/render` for office files)
     OfficeFiles,
+    /// phase 7: `/file/render` for every other kind, and `GET /`
+    Files,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
     Hub(Track),
-    Office,
     Rust,
 }
 
@@ -92,7 +95,7 @@ const fn e(verb: Verb, pattern: Pattern, owner: Owner) -> Entry {
     Entry { verb, pattern, owner }
 }
 
-use Owner::{Hub, Office, Rust};
+use Owner::{Hub, Rust};
 use Track::*;
 
 pub const ROUTES: &[Entry] = &[
@@ -231,11 +234,11 @@ pub const ROUTES: &[Entry] = &[
     e(Get, X("/mermaid"), Hub(Leftovers)),
     // pop-out windows (6.3; Node's office role's until then, D36)
     e(Post, X("/popout"), Hub(Artifacts)),
-    // office: in Rust since 6.1; `/file/render` of other kinds and the
-    // rest stay with Node's office role (see `classify`)
-    e(Get, X("/"), Office),
+    // office: in Rust since 6.1 (`classify` gives office files'
+    // `/file/render` to it); the other kinds and `/` since phase 7
+    e(Get, X("/"), Hub(Files)),
     e(Get, P("/office/"), Hub(OfficeFiles)),
-    e(Get, X("/file/render"), Office),
+    e(Get, X("/file/render"), Hub(Files)),
     // already Rust's: leaf (phase 2)
     e(Any, X("/prefs"), Rust),
     e(Any, X("/keymap"), Rust),
@@ -269,7 +272,8 @@ pub const ROUTES: &[Entry] = &[
     e(Get, P("/oauth/callback/"), Rust),
 ];
 
-/// The entry a request falls under, or `None` (Node's, as today).
+/// The entry a request falls under, or `None` (the hub's 404 with the hub
+/// on; Node's, as today, with it off).
 pub fn classify(method: &Method, url: &str) -> Option<&'static Entry> {
     if method == Method::OPTIONS {
         return None;
@@ -326,12 +330,12 @@ mod tests {
         assert_eq!(owner(Method::GET, "/office/caps"), Some(Hub(OfficeFiles)));
         assert_eq!(owner(Method::GET, "/file/render?path=a.docx"), Some(Hub(OfficeFiles)));
         assert_eq!(owner(Method::GET, "/file/render?path=d%2FB.XLSX"), Some(Hub(OfficeFiles)));
-        assert_eq!(owner(Method::GET, "/file/render?path=a.md"), Some(Office));
-        assert_eq!(owner(Method::GET, "/file/render?path=app:R3"), Some(Office));
+        assert_eq!(owner(Method::GET, "/file/render?path=a.md"), Some(Hub(Files)));
+        assert_eq!(owner(Method::GET, "/file/render?path=app:R3"), Some(Hub(Files)));
         assert_eq!(owner(Method::GET, "/mermaid?d=abc"), Some(Hub(Leftovers)));
         assert_eq!(owner(Method::POST, "/popout"), Some(Hub(Artifacts)));
         assert_eq!(owner(Method::POST, "/highlight"), None);
-        assert_eq!(owner(Method::GET, "/"), Some(Office));
+        assert_eq!(owner(Method::GET, "/"), Some(Hub(Files)));
         assert_eq!(owner(Method::GET, "/state/R3"), Some(Rust));
         assert_eq!(owner(Method::GET, "/oauth/callback/x"), Some(Rust));
         assert_eq!(owner(Method::OPTIONS, "/threads"), None);
@@ -354,8 +358,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 120);
-        assert_eq!(count(&|o| o == Office), 2);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 122);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }
