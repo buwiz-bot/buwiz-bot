@@ -104,6 +104,31 @@ impl Index {
         Some(p.pm + (s.offset - p.start) as i64)
     }
 
+    /// Takes a change inside one paragraph without a rebuild: at `at`,
+    /// `removed` units out and `inserted` in (typing, a Backspace). False
+    /// when `at` isn't inside a paragraph (the index is then rebuilt).
+    pub(crate) fn patch(&mut self, at: &Spot, removed: u32, inserted: &[u16]) -> bool {
+        let Some(i) = self.para_of(at) else { return false };
+        let p = &mut self.paras[i];
+        let k = (at.offset - p.start) as usize;
+        if k + removed as usize > p.text.len() {
+            return false;
+        }
+        p.text.splice(k..k + removed as usize, inserted.iter().copied());
+        let delta = inserted.len() as i64 - removed as i64;
+        p.len = (p.len as i64 + delta) as u32;
+        let (story, start, pm) = (p.story.clone(), p.start, p.pm);
+        for q in &mut self.paras {
+            if q.story == story && q.start > start {
+                q.start = (q.start as i64 + delta) as u32;
+            }
+            if q.pm > pm {
+                q.pm += delta;
+            }
+        }
+        true
+    }
+
     /// The text between two spots of one story (paragraph breaks as `\n`).
     pub(crate) fn text_between(&self, a: &Spot, b: &Spot) -> String {
         let (a, b) = if a.offset <= b.offset { (a, b) } else { (b, a) };
