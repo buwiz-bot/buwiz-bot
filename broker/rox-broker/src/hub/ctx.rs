@@ -9,6 +9,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 use super::jobs::Jobs;
+use super::store::Store;
 use super::traits::{Clock, LocalTools, ModelApi, Nsh, ToolRegistry, TurnRunner};
 use crate::helper::mcp_servers::McpHost;
 use crate::helper::plugins::Host;
@@ -17,6 +18,8 @@ pub struct HubCtx {
     /// Node's data dir (`GROK_DATA_DIR`)
     pub data: PathBuf,
     pub db: Db,
+    /// threads, turns, bots (5.1): `store/mod.rs` documents its API
+    pub store: Store,
     /// the v0 MCP servers' clients, when this broker hosts them
     pub mcp: Option<Arc<McpHost>>,
     /// the v1 plugin host, when this broker hosts the plugins
@@ -28,12 +31,47 @@ pub struct HubCtx {
     pub model: Option<Arc<dyn ModelApi>>,
     pub nsh: Option<Arc<dyn Nsh>>,
     pub local: Option<Arc<dyn LocalTools>>,
+    /// seams one track fills for another, by type (see [`Ext`])
+    pub ext: Ext,
 }
 
 impl HubCtx {
     pub fn new(data: PathBuf, clock: Clock) -> Self {
         let db = Db::new(data.join("generated").join("app.db"));
-        Self { data, db, mcp: None, plugins: None, clock: Arc::new(clock), jobs: Jobs::default(), tools: ToolRegistry::default(), turns: None, model: None, nsh: None, local: None }
+        let store = Store::new(data.clone());
+        Self {
+            data,
+            db,
+            store,
+            mcp: None,
+            plugins: None,
+            clock: Arc::new(clock),
+            jobs: Jobs::default(),
+            tools: ToolRegistry::default(),
+            turns: None,
+            model: None,
+            nsh: None,
+            local: None,
+            ext: Ext::default(),
+        }
+    }
+}
+
+/// Values keyed by their type: a seam a track declares in its own files
+/// (a newtype over an `Arc<dyn Fn…>`) and another track's `install` fills,
+/// so neither edits the skeleton for it.
+#[derive(Default)]
+pub struct Ext {
+    map: std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any + Send + Sync>>,
+}
+
+impl Ext {
+    pub fn insert<T: std::any::Any + Send + Sync>(&mut self, value: T) {
+        self.map.insert(std::any::TypeId::of::<T>(), Box::new(value));
+    }
+
+    pub fn get<T: std::any::Any + Send + Sync>(&self) -> Option<&T> {
+        self.map.get(&std::any::TypeId::of::<T>()).and_then(|b| b.downcast_ref())
     }
 }
 

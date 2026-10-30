@@ -10,7 +10,9 @@
 
 pub mod ctx;
 pub mod jobs;
+pub mod library;
 pub mod routes;
+pub mod store;
 pub mod traits;
 pub mod types;
 
