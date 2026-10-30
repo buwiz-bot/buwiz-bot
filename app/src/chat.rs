@@ -2042,6 +2042,163 @@ pub(crate) fn pill_layer() -> impl IntoElement {
 mod tests {
     use super::{in_view, nearest, row_waits};
 
+    /// Native views per transcript row, as the engine mounts them headless:
+    /// the 24-file `/mock files` reply, a plain reply, a user message and
+    /// one card of each kind (`cargo test -p rox views_per_row --
+    /// --nocapture` prints them).
+    mod views {
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use nsh_core::element::Root;
+        use nsh_core::prelude::*;
+        use nsh_core::{ApproxTextEngine, MountBatch, MountItem, NodeId};
+        use nsh_engine::{App, Engine, EngineConfig, MountSink};
+
+        use crate::store::{Attach, Turn};
+
+        struct Sink(mpsc::Sender<MountBatch>);
+
+        impl MountSink for Sink {
+            fn submit(&self, batch: MountBatch) {
+                let _ = self.0.send(batch);
+            }
+        }
+
+        fn file(name: &str, kind: &str, variant: &str) -> Attach {
+            let ext = name.rsplit('.').next().unwrap_or("").to_owned();
+            Attach {
+                kind: kind.to_owned(),
+                path: format!("files/m1/{name}"),
+                name: name.to_owned(),
+                ext,
+                size: if name == "missing.png" { 0.0 } else { 18_432.0 },
+                variant: variant.to_owned(),
+                duration: if kind == "audio" || kind == "video" { 12.0 } else { 0.0 },
+                peaks: if kind == "audio" { (0..48).map(|i| (i % 7) as f64 / 7.0).collect() } else { Vec::new() },
+                width: if kind == "image" { 640.0 } else { 0.0 },
+                height: if kind == "image" { 480.0 } else { 0.0 },
+                animated: name.ends_with(".gif"),
+                ..Attach::default()
+            }
+        }
+
+        /// The `/mock files` reply's files: one of each kind the viewer
+        /// handles (`slash_mock.rs`), 24 in all.
+        fn mock_files() -> Vec<Attach> {
+            let mut files = Vec::new();
+            for n in ["photo.png", "missing.png", "shot.jpg", "logo.svg", "spin.gif", "pic.webp"] {
+                files.push(file(n, "image", "media"));
+            }
+            for n in ["demo.mov", "replay.mov"] {
+                files.push(file(n, "video", "video"));
+            }
+            for n in ["tone.m4a", "tone.wav", "tone.aiff"] {
+                files.push(file(n, "audio", "audio"));
+            }
+            for (n, v) in [
+                ("report.pdf", "pdf"),
+                ("notes.md", "generic"),
+                ("page.html", "generic"),
+                ("readme.txt", "generic"),
+                ("data.json", "json"),
+                ("table.csv", "spreadsheet"),
+                ("main.rs", "generic"),
+                ("App.tsx", "generic"),
+                ("card.vcf", "unknown"),
+                ("letter.docx", "docx"),
+                ("sheet.xlsx", "spreadsheet"),
+                ("deck.pptx", "ppt"),
+                ("config.yaml", "generic"),
+            ] {
+                files.push(file(n, "file", v));
+            }
+            files
+        }
+
+        fn agent(i: i64, text: &str, files: Vec<Attach>) -> Turn {
+            Turn { i, id: format!("t{i}"), role: "assistant".to_owned(), text: text.to_owned(), files, ..Turn::default() }
+        }
+
+        fn cases() -> Vec<(&'static str, Turn)> {
+            let mock = "Here are 24 sample files — one of each kind the viewer handles.\n\n```mermaid\nflowchart LR\n  A[You ask] --> B[Kiffy makes the file] --> C[You click to view]\n```";
+            vec![
+                ("mock files reply (24 files)", agent(1, mock, mock_files())),
+                ("plain reply (2 paragraphs)", agent(2, "Sure, here it is.\n\nA second paragraph with **bold** text.", Vec::new())),
+                ("user message", Turn { i: 3, id: "t3".to_owned(), role: "user".to_owned(), text: "Show me the files".to_owned(), ..Turn::default() }),
+                ("reply with one file card", agent(4, "", vec![file("report.pdf", "file", "pdf")])),
+                ("reply with one spreadsheet card", agent(5, "", vec![file("sheet.xlsx", "file", "spreadsheet")])),
+                ("reply with one audio card", agent(6, "", vec![file("tone.m4a", "audio", "audio")])),
+                ("reply with two videos", agent(7, "", vec![file("demo.mov", "video", "video"), file("replay.mov", "video", "video")])),
+            ]
+        }
+
+        #[component]
+        fn Rows() -> impl IntoElement {
+            view().children(cases().into_iter().map(|(name, t)| {
+                view().label(format!("case:{name}")).child(super::super::turn_row(t, "c1")).into_element()
+            }))
+        }
+
+        /// Each case's views: its row's, the case's own wrapper left out.
+        fn count() -> Vec<(String, usize)> {
+            let (tx, rx) = mpsc::channel();
+            let mut config = EngineConfig::new(App::Rust(Root::new::<Rows>(|| ())));
+            config.viewport = Size::new(px(900.0), px(4000.0));
+            let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
+            let (mut children, mut labels, mut live): (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>) =
+                Default::default();
+            // Until nothing comes for a while: a diagram lays out in a task.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while let Ok(batch) = rx.recv_timeout(Duration::from_millis(600)) {
+                for item in &batch.items {
+                    match item {
+                        MountItem::Create { id, .. } => {
+                            live.insert(*id);
+                        }
+                        MountItem::Delete { id } => {
+                            live.remove(id);
+                        }
+                        MountItem::Insert { parent, child, .. } => {
+                            for c in children.values_mut() {
+                                c.retain(|x| x != child);
+                            }
+                            children.entry(*parent).or_default().push(*child);
+                        }
+                        MountItem::AccessibilityLabel { id, label } => {
+                            if let Some(name) = label.as_deref().and_then(|l| l.strip_prefix("case:")) {
+                                labels.push((*id, name.to_owned()));
+                            }
+                        }
+                        MountItem::ViewProps { id, props } => {
+                            if let Some(name) = props.accessibility.label.as_deref().and_then(|l| l.strip_prefix("case:")) {
+                                labels.push((*id, name.to_owned()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if Instant::now() > deadline {
+                    break;
+                }
+            }
+            fn under(id: NodeId, children: &HashMap<NodeId, Vec<NodeId>>, live: &std::collections::HashSet<NodeId>) -> usize {
+                children.get(&id).map_or(0, |c| c.iter().filter(|c| live.contains(c)).map(|c| 1 + under(*c, children, live)).sum())
+            }
+            labels.into_iter().map(|(id, name)| (name, under(id, &children, &live))).collect()
+        }
+
+        #[test]
+        fn views_per_row() {
+            let counts = count();
+            for (name, n) in &counts {
+                println!("{n:>4} views  {name}");
+            }
+            assert_eq!(counts.len(), cases().len(), "every case mounted");
+        }
+    }
+
     #[test]
     fn rows_in_or_next_to_view_mount_with_their_bind() {
         let seen = Some((10, 14));
