@@ -98,6 +98,11 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
 
     assert.equal(lit.status, 200, lit.text);
     assert.ok("lines" in lit.json);
+    // a pop-out stays Node's until 6.3 (D36): no such module, no window
+    const pop = await postJson("/popout", { name: "R999" });
+
+    assert.equal(pop.status, 200, pop.text);
+    assert.deepEqual(pop.json, { ok: false, error: "no such module" });
 
     for (const [method, path] of [["GET", "/threads"], ["POST", "/thread/new"], ["GET", "/turns"], ["GET", "/v1/host/plugins"], ["POST", "/v1/hooks/ri_x/secret"], ["GET", "/state/office-role"], ["GET", "/routines"]]) {
       const r = method === "GET" ? await request(method, path) : await postJson(path, {});

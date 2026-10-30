@@ -90,7 +90,6 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
         ("GET", "/v1/host/plugins", ""),
         ("POST", "/v1/hooks/ah_x/secret", "{}"),
         ("POST", "/v1/hooks/ri_x/secret", "{}"),
-        ("POST", "/popout", r#"{"name":"R1"}"#),
     ] {
         assert_eq!(request(b.port, method, path, body.as_bytes()).unwrap(), (501, NOT_PORTED.to_owned()), "{method} {path}");
     }
@@ -108,10 +107,11 @@ fn hub_on_still_forwards_office_routes_and_unknown_paths() {
     assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "no".to_owned()));
+    assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (404, "no".to_owned()));
     let (status, echo) = request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap();
     assert_eq!(status, 200);
     assert!(echo.contains(r#""url":"/echo?x=1""#) && echo.contains(r#""body":"{\"a\":1}""#), "{echo}");
-    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /echo?x=1"]);
+    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /popout", "POST /echo?x=1"]);
 }
 
 #[test]

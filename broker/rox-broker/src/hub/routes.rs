@@ -4,7 +4,8 @@
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
 //! - `Office`: forwarded to Node in its office role (`/office/*`, and
-//!   `/file/render`, `/highlight`, `/mermaid*` until 6.1/6.2, D32).
+//!   `/file/render`, `/highlight`, `/mermaid*` until 6.1/6.2, D32; `/popout`
+//!   until 6.3, D36).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
 //!   with that part switched off, the hub answers 501 instead of Node.
 //!
@@ -37,8 +38,6 @@ pub enum Track {
     Market,
     /// track L: leaves no 5.x item names
     Leftovers,
-    /// 6.3: pop-out windows (Node's office role refuses them too)
-    Windows,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,8 +192,9 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/file/write"), Hub(Leftovers)),
     e(Post, X("/file/open"), Hub(Leftovers)),
     e(Post, X("/file/save"), Hub(Leftovers)),
-    // 6.3 pop-outs
-    e(Post, X("/popout"), Hub(Windows)),
+    // pop-outs: Node's office role until 6.3 (D36); they read versions
+    // and spawn `nsh run`, and write no store table
+    e(Post, X("/popout"), Office),
     // office: Node's office role
     e(Get, X("/"), Office),
     e(Get, P("/office/"), Office),
@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 117);
-        assert_eq!(count(&|o| o == Office), 6);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 116);
+        assert_eq!(count(&|o| o == Office), 7);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }
