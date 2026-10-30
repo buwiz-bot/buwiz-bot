@@ -112,6 +112,12 @@ impl Run {
         self.ctx.jobs.set(&self.ctx.store, self.job, phase, detail);
     }
 
+    /// The id of the thread Node's turn holds (`thread.id`): the run's own,
+    /// or, on a stand-in (an agent's request), its conversation's.
+    pub fn thread_id(&self) -> String {
+        self.ctx.store.read(|s| s.thread(&self.turn.thread).map(|t| t.id.clone())).unwrap_or_else(|| self.turn.thread.clone())
+    }
+
     /// `labelOf(modelCtx.getStore())`.
     pub fn label(&self) -> String {
         label_of(self.turn.model.as_ref(), &self.settings)
