@@ -97,14 +97,16 @@ enum Hold {
 /// resizes in place, and the app lays out at the new size. `h` is also
 /// the height the card keeps while its app is held (its last `rox.fit`,
 /// else the manifest's): the app stays hidden until its layout settles,
-/// with `title`'s placeholder over it past 100 ms, then shows.
-pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, title: String) -> impl IntoElement {
+/// with `title`'s placeholder over it past 100 ms, then shows. An app
+/// that `wait_ready`s loads its data after it draws: its placeholder is
+/// up from the mount.
+pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, title: String, wait_ready: bool) -> impl IntoElement {
     use crate::mini_v1::settle::{self, Reveal};
     let name = app.to_owned();
     let name2 = app.to_owned();
     let name3 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
-    let hold = signal(Hold::Quiet);
+    let hold = signal(if wait_ready { Hold::Placeholder } else { Hold::Quiet });
     let owner = Owner::current();
     let h = std::rc::Rc::new(h);
     let h2 = h.clone();

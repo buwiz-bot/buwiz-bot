@@ -2,7 +2,9 @@
 //! app out over several frames, so a card shown at once has its buttons
 //! pop in and its height jump. The card holds its app hidden until the
 //! layout settles, with a placeholder over it once the hold is long
-//! enough to see, then reveals it.
+//! enough to see, then reveals it. An app that asks `inline.wait_ready`
+//! loads its data after it draws, so its hold is long by design: its
+//! placeholder is up from the mount.
 //!
 //! Settled is the layout's signature (every visible frame's origin and
 //! size, hashed) unchanged for [`STABLE_TICKS`] ticks [`TICK`] apart; an
@@ -20,8 +22,10 @@ pub const TICK: Duration = Duration::from_millis(33);
 /// Ticks in a row whose signature matched the one before: settled.
 pub const STABLE_TICKS: u32 = 2;
 /// A hold shorter than this shows nothing: a fast card never flashes a
-/// placeholder.
+/// placeholder. A `wait_ready` app's shows at once.
 pub const SHOW_AFTER: Duration = Duration::from_millis(100);
+/// A placeholder once up stays this long: shorter is a flicker.
+pub const MIN_SHOWN: Duration = Duration::from_millis(250);
 /// The longest hold, from the mount.
 pub const CAP: Duration = Duration::from_millis(1500);
 /// The longest hold of an app that waits for its `rox.ready()`.
@@ -32,7 +36,8 @@ pub const FADE_MS: f32 = 175.0;
 /// What a tick changed, for the card to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// The hold is long enough to see: the placeholder goes up.
+    /// The hold is long enough to see: the placeholder goes up. A
+    /// `wait_ready` app's card put it up at its mount and hears nothing.
     Placeholder,
     /// Settled (or capped): the app shows.
     Settled,
@@ -61,25 +66,30 @@ pub struct Settle {
     ready: bool,
     last: Option<u64>,
     stable: u32,
-    placeholder: bool,
+    /// Since when the placeholder is up.
+    shown: Option<Instant>,
     settled: bool,
 }
 
 impl Settle {
     /// A card mounted at `now`: held.
     pub fn new(now: Instant) -> Settle {
-        Settle { mounted: now, wait_ready: false, ready: false, last: None, stable: 0, placeholder: false, settled: false }
+        Settle { mounted: now, wait_ready: false, ready: false, last: None, stable: 0, shown: None, settled: false }
     }
 
     /// The app loaded into the card, its manifest asking `wait_ready` or
     /// not. Once the card has settled this changes nothing: a reload
     /// replaces the app in place, the card stays shown. Before, the new
-    /// app's layout starts over.
+    /// app's layout starts over. A `wait_ready` app's card has had its
+    /// placeholder up since the mount.
     pub fn loaded(&mut self, wait_ready: bool) {
         if self.settled {
             return;
         }
         self.wait_ready = wait_ready;
+        if wait_ready {
+            self.shown.get_or_insert(self.mounted);
+        }
         self.ready = false;
         self.last = None;
         self.stable = 0;
@@ -115,12 +125,14 @@ impl Settle {
         let age = now.saturating_duration_since(self.mounted);
         let cap = if self.wait_ready { CAP_READY } else { CAP };
         let stable = self.stable >= STABLE_TICKS && (!self.wait_ready || self.ready);
-        if stable || age >= cap {
+        // a placeholder up stays its minimum, past the cap too
+        let seen = self.shown.is_none_or(|at| now.saturating_duration_since(at) >= MIN_SHOWN);
+        if (stable || age >= cap) && seen {
             self.settled = true;
             return Some(Phase::Settled);
         }
-        if !self.placeholder && age >= SHOW_AFTER {
-            self.placeholder = true;
+        if self.shown.is_none() && age >= SHOW_AFTER {
+            self.shown = Some(now);
             return Some(Phase::Placeholder);
         }
         None
@@ -164,10 +176,10 @@ mod tests {
     fn a_change_resets_the_count() {
         let t0 = Instant::now();
         let mut s = Settle::new(t0);
-        let seen = run(&mut s, t0, ms(0), &[Some(1), Some(1), Some(2), Some(2), Some(3), Some(3), Some(3)]);
+        let seen = run(&mut s, t0, ms(0), &[Some(1), Some(1), Some(2), Some(2), Some(2)]);
         let settled: Vec<_> = seen.iter().filter(|(_, p)| *p == Some(Phase::Settled)).collect();
         assert_eq!(settled.len(), 1);
-        assert_eq!(settled[0].0, TICK * 6, "only the third run of equal signatures is long enough");
+        assert_eq!(settled[0].0, TICK * 4, "the change starts the count over");
     }
 
     #[test]
@@ -205,7 +217,7 @@ mod tests {
         let mut s = Settle::new(t0);
         s.loaded(true);
         assert_eq!(s.tick(t0 + ms(50), Some(1)), None);
-        assert_eq!(s.tick(t0 + ms(150), Some(1)), Some(Phase::Placeholder));
+        assert_eq!(s.tick(t0 + ms(150), Some(1)), None, "its placeholder has been up since the mount");
         assert_eq!(s.tick(t0 + ms(1600), Some(1)), None, "a stable skeleton is not ready");
         assert_eq!(s.tick(t0 + ms(2999), Some(1)), None);
         assert_eq!(s.tick(t0 + ms(3000), Some(1)), Some(Phase::Settled));
@@ -245,6 +257,39 @@ mod tests {
         let up: Vec<_> = seen.iter().filter(|(_, p)| *p == Some(Phase::Placeholder)).map(|(at, _)| *at).collect();
         assert_eq!(up, [TICK * 4]);
         assert!(up[0] >= SHOW_AFTER);
+    }
+
+    #[test]
+    fn wait_ready_shows_the_placeholder_from_the_mount_for_250_ms() {
+        // a fast app: its data in and drawn well inside 250 ms
+        let t0 = Instant::now();
+        let mut s = Settle::new(t0);
+        s.loaded(true);
+        s.ready();
+        let seen = run(&mut s, t0, ms(0), &[Some(1); 12]);
+        assert!(!seen.iter().any(|(_, p)| *p == Some(Phase::Placeholder)), "the card put it up itself");
+        let settled: Vec<_> = seen.iter().filter(|(_, p)| *p == Some(Phase::Settled)).map(|(at, _)| *at).collect();
+        assert_eq!(settled, [TICK * 8], "the first tick 250 ms after the mount");
+        assert!(settled[0] >= MIN_SHOWN);
+    }
+
+    #[test]
+    fn a_placeholder_up_stays_250_ms() {
+        let t0 = Instant::now();
+        let mut s = Settle::new(t0);
+        s.loaded(false);
+        // still moving at 100 ms: the placeholder goes up, then it settles
+        let seen = run(&mut s, t0, ms(0), &[Some(1), Some(2), Some(3), Some(4), Some(5), Some(5), Some(5)]);
+        assert_eq!(seen[4], (TICK * 4, Some(Phase::Placeholder)));
+        assert!(!seen.iter().any(|(_, p)| *p == Some(Phase::Settled)), "settled 66 ms in: held");
+        assert_eq!(s.tick(t0 + TICK * 4 + ms(249), Some(5)), None);
+        assert_eq!(s.tick(t0 + TICK * 4 + MIN_SHOWN, Some(5)), Some(Phase::Settled));
+
+        // the cap waits for it too
+        let mut s = Settle::new(t0);
+        assert_eq!(s.tick(t0 + ms(1400), None), Some(Phase::Placeholder));
+        assert_eq!(s.tick(t0 + ms(1500), None), None);
+        assert_eq!(s.tick(t0 + ms(1650), None), Some(Phase::Settled));
     }
 
     #[test]
