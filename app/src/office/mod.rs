@@ -3,3 +3,4 @@
 
 pub(crate) mod draw;
 pub(crate) mod session;
+pub(crate) mod xlsx;
