@@ -15,6 +15,7 @@
 pub mod bots;
 pub mod chat;
 pub mod groups;
+pub mod market;
 pub mod mcp_chat;
 
 use hyper::Method;

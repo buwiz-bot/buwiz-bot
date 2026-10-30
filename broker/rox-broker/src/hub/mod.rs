@@ -11,7 +11,9 @@
 pub mod ctx;
 pub mod jobs;
 pub mod library;
+pub mod market;
 pub mod model;
+pub mod pipeline;
 pub mod routes;
 pub mod store;
 pub mod traits;
@@ -98,7 +100,9 @@ impl Registry {
 fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // track A first: it loads the store the others' starts read
     routes::chat::install(routes, ctx);
+    pipeline::install(ctx);
     model::install(routes, ctx);
+    market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
 }
 
