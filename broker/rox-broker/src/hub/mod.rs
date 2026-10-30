@@ -10,6 +10,7 @@
 
 pub mod ctx;
 pub mod jobs;
+pub mod market;
 pub mod pipeline;
 pub mod routes;
 pub mod traits;
@@ -93,8 +94,9 @@ impl Registry {
 
 /// What each track adds. The skeleton adds nothing; a track adds one line
 /// here calling its own `install(routes, ctx)`.
-fn install(_routes: &mut Registry, ctx: &mut HubCtx) {
+fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     pipeline::install(ctx);
+    market::install(routes, ctx);
 }
 
 pub struct Hub {
