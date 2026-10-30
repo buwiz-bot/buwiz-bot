@@ -11,13 +11,17 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { oauthServer } from "./fixtures/oauth-server.mjs";
-import { PORT, ROOT, tempDir } from "./helpers.mjs";
+import { HUB, PORT, ROOT, tempDir } from "./helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)
+const NODE_ONLY = { skip: HUB && "Node-only: tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)" };
 
 const dataDir = tempDir("mcp-agent");
 const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
 const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
-const RUST = process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1" ? process.env.ROX_BROKER_CMD.trim().split(/\s+/)[0] : "";
+// (not under the hub, where every case here is skipped: no helper to start)
+const RUST = !HUB && process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1" ? process.env.ROX_BROKER_CMD.trim().split(/\s+/)[0] : "";
 
 process.env.GROK_DATA_DIR = dataDir;
 process.env.MOCK = "1";
@@ -83,7 +87,7 @@ after(async () => {
   await fx?.close();
 });
 
-test("the agent sees an enabled server's tools under mcp_<server>_<tool>; a switched-off server is never started", async () => {
+test("the agent sees an enabled server's tools under mcp_<server>_<tool>; a switched-off server is never started", NODE_ONLY, async () => {
   const names = (await toolList(activeThread())).map((t) => t.name);
 
   assert.ok(names.includes("mcp_apps_echo") && names.includes("mcp_apps_resolve"), names.filter((n) => n.startsWith("mcp_")).join(" "));
@@ -91,7 +95,7 @@ test("the agent sees an enabled server's tools under mcp_<server>_<tool>; a swit
   assert.deepEqual(pids(offMark), []);
 });
 
-test("the agent's call reaches the server and comes back as text; under rox-broker, the server is rox-broker's child", async () => {
+test("the agent's call reaches the server and comes back as text; under rox-broker, the server is rox-broker's child", NODE_ONLY, async () => {
   const r = await call("mcp_apps_echo", { a: 1 });
 
   assert.equal(r.is_error, false, r.content);
@@ -110,7 +114,7 @@ test("the agent's call reaches the server and comes back as text; under rox-brok
   assert.match(none.content, /not configured/);
 });
 
-test("a routine's check calls the server; nothing new means no turn", async () => {
+test("a routine's check calls the server; nothing new means no turn", NODE_ONLY, async () => {
   const r = await createRoutine({ name: "Echo check", thread: activeThread().id, every_s: 3600, prompt: "Report new items.", enabled: false, check: { server: "apps", tool: "echo", args: { n: 1 }, ids: "nothing[].id" } });
 
   await runRoutine(r.id);
@@ -120,7 +124,7 @@ test("a routine's check calls the server; nothing new means no turn", async () =
   assert.ok(row.last_check && row.last_check === row.last_run, "the check ran");
 });
 
-test("a remote server's answer that reads as signed out marks it; the agent's next call asks for sign-in", async () => {
+test("a remote server's answer that reads as signed out marks it; the agent's next call asks for sign-in", NODE_ONLY, async () => {
   addRow("remote", { url: `${fx.base}/open`, headers: JSON.stringify({ "x-api-key": "k" }) });
   const ok = await call("mcp_remote_whoami", {});
 

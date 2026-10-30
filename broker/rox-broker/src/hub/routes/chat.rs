@@ -7,8 +7,9 @@
 //! `/thread/apps`' body is the Library's (5.7b): the [`LibraryOf`] seam in
 //! `ctx.ext`; without it the route answers 501.
 //!
-//! Until the tool loop (5.4) lands, `ctx.turns` is [`MockTurns`]: under
-//! MOCK it answers what Node answers without a model or a pipeline
+//! `ctx.turns` defaults to [`MockTurns`], which the tool loop (5.4,
+//! `agent::install`) replaces on the hub: a hub built without it (a test)
+//! answers under MOCK what Node answers without a model or a pipeline
 //! (`/upload` with no files, `/mock <word>` for an unknown word, a chat
 //! reply when files ride the message, `backgroundTurn`'s mock reply);
 //! every other `/chat` ends its job "generator error — not ported".
@@ -614,7 +615,7 @@ async fn thread_apps(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     ok(&json!({"apps": apps}))
 }
 
-// ————— the MOCK turns until the tool loop lands —————
+// ————— the MOCK turns of a hub without the tool loop —————
 
 /// What MOCK Node answers with no model and no pipeline (see the module's
 /// docs); everything else is not ported.
