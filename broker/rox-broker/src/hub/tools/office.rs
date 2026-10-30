@@ -1,21 +1,21 @@
-//! The office tools (tools.mjs `toolOffice`, `officeArt`, `cardOfficeFile`;
-//! plan D31): `office_create` writes its file through the BetterOffice
-//! child's own `office_create` (the same payloads) and lands it as a file
-//! card; every other `office_*` call goes to the child as is, and an
-//! export's new file becomes a card too.
+//! The office tools (tools.mjs `toolOffice`, `officeArt`, `cardOfficeFile`):
+//! `office_create` writes its file with office.mjs's `officeCreateBytes`
+//! (`office::Office::create_bytes`) and lands it as a file card; every
+//! other `office_*` call goes to the in-process office (plan 6.1, which
+//! retired D31's Node child), and an export's new file becomes a card too.
 
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
 use super::{Out, Run};
-use crate::helper::office::Office;
 use crate::hub::agent::files::file_record;
 use crate::hub::ctx::HubCtx;
 use crate::hub::store::{uuidv7, Turn};
 use crate::js;
+use crate::office::Office;
 
-/// The hub's office child, when installed.
+/// The hub's office, when installed.
 pub fn office(ctx: &HubCtx) -> Option<Arc<Office>> {
     ctx.ext.get::<Arc<Office>>().cloned()
 }
@@ -130,21 +130,9 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         let dir = ctx.store.gen_dir().join("files").join(&rel);
         let _ = std::fs::create_dir_all(&dir);
         let key = format!("{rel}/{file}");
-        let made = match office(ctx) {
-            None => Err("the BetterOffice MCP server is not installed".to_owned()),
-            Some(o) => match o
-                .call("office_create", &{
-                    let mut args = serde_json::Map::new();
-                    args.insert("path".into(), json!(key));
-                    args.insert(format.into(), payload.clone());
-                    Value::Object(args)
-                })
-                .await
-            {
-                Ok((_, false)) => Ok(()),
-                Ok((text, true)) => Err(text),
-                Err(e) => Err(e),
-            },
+        let made = match Office::create_bytes(format, payload).await {
+            Ok(bytes) => std::fs::write(dir.join(&file), bytes).map_err(|e| format!("{}: {e}", dir.join(&file).display())),
+            Err(e) => Err(e),
         };
         if let Err(e) = made {
             drop_turn(run, &id);

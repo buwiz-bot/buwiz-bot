@@ -30,6 +30,7 @@ async fn main() {
         }),
         Some("manifest") => std::process::exit(manifest_op(&args[1..])),
         Some("helper") => std::process::exit(helper(&args[1..]).await),
+        Some("office-mcp") => std::process::exit(rox_broker::office::mcp::cli(&args[1..])),
         _ => {}
     }
     let mut config = match Config::parse(&args, std::env::var("PORT").ok().as_deref()) {

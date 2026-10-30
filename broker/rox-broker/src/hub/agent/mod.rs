@@ -28,7 +28,7 @@ use super::tools::Run;
 use super::traits::{ChatTurn, TurnDone, TurnRequest, TurnRunner};
 use super::types::{BoxFuture, ModelChoice};
 use super::Registry;
-use crate::helper::office::Office;
+use crate::office::Office;
 
 /// The hub's turn runner.
 pub struct Agent {
@@ -96,23 +96,15 @@ impl TurnRunner for Agent {
     }
 }
 
-/// Track B's 5.4: the runner (in place of any other), and the office child
-/// started in the background at the hub's start (Node's `ensureOfficeMcp`).
-pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
+/// Track B's 5.4: the runner (in place of any other). The office it calls
+/// is installed by `office::install` (6.1, in process; it was D31's Node
+/// child, started here).
+pub fn install(_routes: &mut Registry, ctx: &mut HubCtx) {
     let settings = Arc::new(Settings::global().clone());
     ctx.turns = Some(Arc::new(Agent::new(settings)));
-    let office = Arc::new(crate::helper::office::for_hub(&ctx.data));
-    ctx.ext.insert(office.clone());
-    routes.on_start(move |_| {
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                let _ = office.ensure().await;
-            });
-        }
-    });
 }
 
-/// The office child, for a test or a caller outside the hub.
+/// The hub's office, for a test or a caller outside the hub.
 pub fn office_of(ctx: &HubCtx) -> Option<Arc<Office>> {
     ctx.ext.get::<Arc<Office>>().cloned()
 }

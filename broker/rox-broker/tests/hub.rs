@@ -116,15 +116,19 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
 #[test]
 fn hub_on_still_forwards_office_routes_and_unknown_paths() {
     let b = start("office", true);
+    // the office routes are Rust's since 6.1: /office/* and /file/render
+    // for an office file never reach Node
+    assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap().0, 200);
+    let (status, missing) = request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap();
+    assert_eq!((status, missing.as_str()), (200, r#"{"name":"a.docx","ext":"docx","size":0,"kind":"docx","variant":"docx","error":"missing"}"#));
     // the fixture answers 404 "no" to what it doesn't know: forwarded
-    assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap(), (404, "no".to_owned()));
-    assert_eq!(request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap(), (404, "no".to_owned()));
+    assert_eq!(request(b.port, "GET", "/file/render?path=a.md", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (404, "no".to_owned()));
     let (status, echo) = request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap();
     assert_eq!(status, 200);
     assert!(echo.contains(r#""url":"/echo?x=1""#) && echo.contains(r#""body":"{\"a\":1}""#), "{echo}");
-    assert_eq!(b.seen(), ["GET /office/caps", "GET /file/render?path=a.docx", "POST /highlight", "POST /popout", "POST /echo?x=1"]);
+    assert_eq!(b.seen(), ["GET /file/render?path=a.md", "POST /highlight", "POST /popout", "POST /echo?x=1"]);
 }
 
 #[test]

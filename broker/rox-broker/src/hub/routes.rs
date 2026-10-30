@@ -3,9 +3,10 @@
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
-//! - `Office`: forwarded to Node in its office role (`/office/*`, and
-//!   `/file/render`, `/highlight`, `/mermaid*` until 6.1/6.2, D32; `/popout`
-//!   until 6.3, D36).
+//! - `Office`: forwarded to Node in its office role (`/file/render` for
+//!   kinds other than docx/xlsx/pptx, `/highlight`, `/mermaid*` until 6.2,
+//!   D32; `/popout` until 6.3, D36). `/office/*` and `/file/render` for
+//!   office files are the hub's since 6.1 (`Hub(OfficeFiles)`).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
 //!   with that part switched off, the hub answers 501 instead of Node.
 //!
@@ -59,6 +60,8 @@ pub enum Track {
     Market,
     /// track L: leaves no 5.x item names
     Leftovers,
+    /// 6.1: office in Rust (`/office/*`, `/file/render` for office files)
+    OfficeFiles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,9 +219,10 @@ pub const ROUTES: &[Entry] = &[
     // pop-outs: Node's office role until 6.3 (D36); they read versions
     // and spawn `nsh run`, and write no store table
     e(Post, X("/popout"), Office),
-    // office: Node's office role
+    // office: in Rust since 6.1; `/file/render` of other kinds and the
+    // rest stay with Node's office role (see `classify`)
     e(Get, X("/"), Office),
-    e(Get, P("/office/"), Office),
+    e(Get, P("/office/"), Hub(OfficeFiles)),
     e(Get, X("/file/render"), Office),
     e(Post, X("/highlight"), Office),
     e(Get, X("/mermaid.js"), Office),
@@ -262,8 +266,14 @@ pub fn classify(method: &Method, url: &str) -> Option<&'static Entry> {
         return None;
     }
     let path = url.split('?').next().unwrap_or("");
+    if method == Method::GET && path == "/file/render" && crate::office::routes::renders(url) {
+        return Some(&OFFICE_RENDER);
+    }
     ROUTES.iter().find(|r| r.verb.allows(method) && r.pattern.matches(path).is_some())
 }
+
+/// `/file/render` of a docx, xlsx or pptx file: the hub's (6.1).
+const OFFICE_RENDER: Entry = e(Get, X("/file/render"), Hub(OfficeFiles));
 
 #[cfg(test)]
 mod tests {
@@ -304,8 +314,11 @@ mod tests {
         assert_eq!(owner(Method::DELETE, "/v1/host/plugins"), Some(Hub(Host)));
         assert_eq!(owner(Method::POST, "/v1/hooks/ah_x/secret"), Some(Hub(Hooks)));
         assert_eq!(owner(Method::GET, "/v1/bridge/nope"), Some(Hub(Agents)));
-        assert_eq!(owner(Method::GET, "/office/caps"), Some(Office));
-        assert_eq!(owner(Method::GET, "/file/render?path=a.docx"), Some(Office));
+        assert_eq!(owner(Method::GET, "/office/caps"), Some(Hub(OfficeFiles)));
+        assert_eq!(owner(Method::GET, "/file/render?path=a.docx"), Some(Hub(OfficeFiles)));
+        assert_eq!(owner(Method::GET, "/file/render?path=d%2FB.XLSX"), Some(Hub(OfficeFiles)));
+        assert_eq!(owner(Method::GET, "/file/render?path=a.md"), Some(Office));
+        assert_eq!(owner(Method::GET, "/file/render?path=app:R3"), Some(Office));
         assert_eq!(owner(Method::GET, "/mermaid?d=abc"), Some(Office));
         assert_eq!(owner(Method::GET, "/"), Some(Office));
         assert_eq!(owner(Method::GET, "/state/R3"), Some(Rust));
@@ -330,8 +343,8 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 116);
-        assert_eq!(count(&|o| o == Office), 7);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 117);
+        assert_eq!(count(&|o| o == Office), 6);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }
