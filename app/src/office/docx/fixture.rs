@@ -39,7 +39,7 @@ fn picture(n: u32) -> String {
 }
 
 /// The body of a document about `pages` pages long.
-fn body(pages: usize) -> (String, usize) {
+fn body(pages: usize, with_notes: bool) -> (String, usize) {
     let mut b = String::new();
     let mut id = 0x100u32;
     let mut notes = 0usize;
@@ -54,7 +54,7 @@ fn body(pages: usize) -> (String, usize) {
             let mut runs = r(&format!("Record {}.{}: ", page + 1, k + 1));
             runs += &format!(r#"<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#, "Bold words ");
             runs += &r(TEXT[(page + k) % 3]);
-            if k == 1 {
+            if k == 1 && with_notes {
                 notes += 1;
                 runs += &format!(r#"<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="{notes}"/></w:r>"#);
             }
@@ -86,7 +86,13 @@ fn body(pages: usize) -> (String, usize) {
 /// A document of about `pages` pages: each a heading, three paragraphs (one
 /// with a footnote), a three-item list, and a table or a picture.
 pub(crate) fn document(pages: usize) -> Vec<u8> {
-    let (body, notes) = body(pages);
+    let (body, notes) = body(pages, true);
+    package(&body, notes, "")
+}
+
+/// [`document`] without footnotes.
+pub(crate) fn document_without_notes(pages: usize) -> Vec<u8> {
+    let (body, notes) = body(pages, false);
     package(&body, notes, "")
 }
 

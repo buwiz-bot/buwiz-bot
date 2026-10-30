@@ -45,9 +45,6 @@ fn stand_in(family: &str) -> &'static str {
     }
 }
 
-/// The family a missing script falls back to: wide coverage, one face.
-const FALLBACK: &str = "Arial Unicode MS";
-
 /// `family` as nsh's canvas makes it (`nsh-platform-macos` `family_font`
 /// and `make_font`): `None` when it isn't installed.
 fn installed(family: &str, bold: bool, italic: bool) -> Option<CFRetained<CTFont>> {
@@ -179,8 +176,10 @@ impl Fonts {
         Some(id)
     }
 
-    /// The chain for the layout's `family|bold|italic` key: the face, then
-    /// the wide fallback for scripts it lacks.
+    /// The chain for the layout's `family|bold|italic` key: the face alone.
+    /// (A wide fallback such as Arial Unicode MS costs most of a second to
+    /// hand over, so text in a script the face lacks is measured with its
+    /// missing glyphs while CoreText draws it from a fallback.)
     pub(crate) fn chain(&mut self, key: &str) -> Vec<u32> {
         if let Some(c) = self.chains.get(key) {
             return c.clone();
@@ -191,9 +190,6 @@ impl Fonts {
         let family = parts.next().unwrap_or("");
         let mut chain = Vec::new();
         chain.extend(self.register(Fonts::resolve(family, bold, italic)));
-        if !chain.is_empty() && !family.eq_ignore_ascii_case(FALLBACK) {
-            chain.extend(self.register(Face { family: FALLBACK.to_owned(), bold: false, italic: false }));
-        }
         self.chains.insert(key.to_owned(), chain.clone());
         chain
     }

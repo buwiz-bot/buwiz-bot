@@ -31,9 +31,14 @@ fn pages_200() {
     let bytes = fixture::document(200);
     println!("generated {} KB in {:.1} ms", bytes.len() / 1024, ms(t));
     let rss0 = peak_rss();
+    // CoreText's first lookup in a process (over a second, cold) is paid
+    // long before a document opens in Rox
+    let t = Instant::now();
+    fonts::Fonts::resolve("Arial", false, false);
+    println!("CoreText warm-up {:.0} ms (not counted)", ms(t));
 
     let t = Instant::now();
-    let mut l = Layout::open(&bytes).unwrap();
+    let mut l = Layout::preview(&bytes).unwrap().expect("a preview");
     let opened = ms(t);
     let t1 = Instant::now();
     l.first(1).unwrap();
@@ -43,15 +48,19 @@ fn pages_200() {
     let d0 = draw::page(&p0, &l.fonts, 1.0);
     let drawn0 = ms(t2);
     println!(
-        "open (seed + request + fonts) {opened:.1} ms; first page laid out and listed {first:.1} ms (provisional: {}); drawn {drawn0:.1} ms ({} ops); total to first page {:.1} ms",
+        "open (parse + preview seed + fonts) {opened:.1} ms; first page laid out and listed {first:.1} ms (provisional: {}); drawn {drawn0:.1} ms ({} ops); total to first page {:.1} ms",
         l.provisional,
         d0.drawing.ops.len(),
         ms(t)
     );
 
     let t = Instant::now();
+    let mut l = l.whole(&bytes).unwrap();
+    let seeded = ms(t);
+    let t = Instant::now();
     l.full(0..3).unwrap();
     let full = ms(t);
+    println!("whole seed {seeded:.1} ms");
     let pages = l.page_count();
     println!("full layout + lists of 3 pages: {full:.1} ms, {pages} pages; peak RSS +{:.0} MB", peak_rss() - rss0);
 
@@ -180,8 +189,14 @@ fn parts_200() {
     println!("seed {:.1} ms", ms(t));
     let mut f2 = super::fonts::Fonts::new();
     let t = Instant::now();
+    super::fonts::Fonts::resolve("Arial", false, false);
+    println!("CoreText's first lookup {:.1} ms", ms(t));
+    let t = Instant::now();
+    super::fonts::Fonts::resolve("Calibri", false, false);
+    println!("a missing family's lookup {:.1} ms", ms(t));
+    let t = Instant::now();
     f2.chain("arial|0|0");
-    println!("fonts arial + fallback {:.1} ms", ms(t));
+    println!("Arial's face to the shaper {:.1} ms", ms(t));
     let engine2 = docx_edit::EngineSession::new(8);
     let t = Instant::now();
     {
@@ -190,16 +205,63 @@ fn parts_200() {
         println!("preview seed (40 blocks) {:.1} ms ok={ok}", ms(t));
     }
     let mut l = Layout::open(&bytes).unwrap();
-    l.full(0..1).unwrap();
+    l.full(0..3).unwrap();
+    l.engine.set_display_retain_built_pages(false);
+    let extras = serde_json::json!({ "fontChains": l.fonts.chains_json() }).to_string();
+    let mut v = Vec::new();
+    for first in (0..195).step_by(5) {
+        let t = Instant::now();
+        let _s = l.fonts.enter();
+        l.engine.set_display_window(Some(first..first + 5));
+        let f = l.engine.build_display_list_frame(&extras, l.epoch).unwrap();
+        drop(_s);
+        l.took(&f);
+        v.push(ms(t));
+    }
+    v.sort_by(f64::total_cmp);
+    println!("5-page windows, others dropped: median {:.1} / max {:.1} ms; peak RSS {:.0} MB", v[v.len() / 2], v[v.len() - 1], peak_rss());
+}
+
+/// An edit's echo on a 200-page document: the key in, the relayout from
+/// its paragraph, the pages in view listed and drawn again.
+#[test]
+#[ignore = "bench: run with --ignored --nocapture"]
+fn typing_200() {
+    fonts::Fonts::resolve("Arial", false, false);
+    println!("-- with footnotes");
+    typing(fixture::document(200));
+    println!("-- without footnotes");
+    typing(fixture::document_without_notes(200));
+}
+
+fn typing(bytes: Vec<u8>) {
+    use super::doc::{Cmd, Move, Word};
+    use crate::office::session::Document;
     let t = Instant::now();
-    l.engine.set_display_window(None);
-    let _s = l.fonts.enter();
-    l.engine.build_display_list_frame(&serde_json::json!({ "fontChains": l.fonts.chains_json() }).to_string(), 0).unwrap();
-    drop(_s);
-    println!("all 200 pages' lists in one build {:.1} ms; peak RSS {:.0} MB", ms(t), peak_rss());
+    let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();
+    let (outs, _) = w.tick();
+    println!("Word::open + first tick (first page drawn) {:.1} ms ({} answers)", ms(t), outs.len());
     let t = Instant::now();
-    let _s = l.fonts.enter();
-    l.engine.set_display_window(Some(100..101));
-    l.engine.build_display_list_frame(&serde_json::json!({ "fontChains": l.fonts.chains_json() }).to_string(), 0).unwrap();
-    println!("a windowed rebuild {:.1} ms", ms(t));
+    w.tick();
+    println!("second tick (the whole document) {:.1} ms", ms(t));
+    // to page 100's start, as a scroll and a click would
+    w.run(Cmd::View { pages: vec![99, 100, 101], zoom: 1.0 });
+    w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+    w.run(Cmd::Move { to: Move::LineEnd, extend: false });
+    let mut v = Vec::new();
+    for k in 0..30 {
+        let t = Instant::now();
+        let (outs, _) = w.run(Cmd::Type(if k % 5 == 4 { " ".into() } else { "x".into() }));
+        v.push(ms(t));
+        if k == 0 {
+            let pages = outs.iter().filter(|o| matches!(o, super::doc::Out::Page { drawn, .. } if drawn.w > 0.0)).count();
+            println!("first key: {pages} pages drawn again");
+        }
+    }
+    v.sort_by(f64::total_cmp);
+    println!("typing echo: median {:.1} / p90 {:.1} / max {:.1} ms", v[v.len() / 2], v[v.len() * 9 / 10], v[v.len() - 1]);
+    let mut parts: Vec<(f64, f64, f64)> = (0..10).map(|_| w.echo_parts()).collect();
+    parts.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let m = parts[5];
+    println!("of which (median): insert {:.2} ms, engine relayout + lists {:.1} ms, index {:.1} ms", m.0, m.1, m.2);
 }

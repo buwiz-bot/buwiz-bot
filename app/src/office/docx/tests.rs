@@ -148,3 +148,17 @@ fn print_html_has_the_text_and_tables() {
     assert!(html.contains("<table") && html.contains("Item 1.1.1"));
     assert!(html.contains("<b>Bold words </b>"));
 }
+
+#[test]
+fn typing_patches_the_index_as_a_rebuild_would() {
+    let mut w = open(fixture::document(2));
+    w.run(Cmd::Move { to: Move::Down, extend: false });
+    w.run(Cmd::Move { to: Move::WordRight, extend: false });
+    for t in ["a", "bc", "é", "😀"] {
+        w.run(Cmd::Type(t.into()));
+        assert!(w.index_is_fresh(), "after typing {t:?}");
+    }
+    w.run(Cmd::Backspace);
+    w.run(Cmd::Backspace);
+    assert!(w.index_is_fresh(), "after Backspace");
+}

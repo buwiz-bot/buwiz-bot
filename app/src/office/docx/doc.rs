@@ -160,6 +160,13 @@ pub(crate) struct Word {
     pub(crate) edited: bool,
     /// Where the next save goes, when not the file itself.
     target: Option<PathBuf>,
+    /// A change inside one paragraph the index can take as it is: at,
+    /// units removed, units inserted.
+    patch: Option<(Spot, u32, Vec<u16>)>,
+    /// The review list, read again when changes may have come or gone.
+    review: Option<Vec<(String, String, String)>>,
+    /// The last formats read, kept while typing (typing continues them).
+    formats: (bool, bool, bool, f32),
 }
 
 fn ctx() -> EditCtx {
@@ -172,7 +179,11 @@ fn spot(story: &str, offset: u32) -> Spot {
 
 impl Word {
     pub(crate) fn from_docx(bytes: Vec<u8>, legacy: bool) -> Result<Word, String> {
-        let mut layout = Layout::open(&bytes)?;
+        // the first page from the first blocks; the whole document next tick
+        let mut layout = match Layout::preview(&bytes)? {
+            Some(l) => l,
+            None => Layout::open(&bytes)?,
+        };
         layout.first(1)?;
         let undo = UndoSession::new();
         undo.track(layout.engine.doc());
@@ -198,6 +209,9 @@ impl Word {
             complete: false,
             edited: false,
             target: None,
+            patch: None,
+            review: None,
+            formats: (false, false, false, 11.0),
         };
         // the caret starts in the first paragraph
         let first = w.index().paras.first().map(|p| spot(&p.story, p.start));
@@ -219,9 +233,21 @@ impl Word {
     }
 
     fn meta(&mut self) -> Meta {
+        self.meta_with(false)
+    }
+
+    /// The meta; `typing` keeps the formats and the review list as they were
+    /// (a key doesn't change them; reading them walks the whole story).
+    fn meta_with(&mut self, typing: bool) -> Meta {
         let pages = self.layout.with_pages(|ps| ps.iter().map(|p| (p.width.as_f64().unwrap_or(816.0) as f32, p.height.as_f64().unwrap_or(1056.0) as f32)).collect()).unwrap_or_default();
-        let (bold, italic, underline, size) = self.formats();
-        let review = self.review();
+        if !typing {
+            self.formats = self.formats();
+        }
+        let (bold, italic, underline, size) = self.formats;
+        if self.review.is_none() {
+            self.review = Some(self.review());
+        }
+        let review = self.review.clone().unwrap_or_default();
         Meta {
             rev: self.rev,
             pages,
@@ -301,26 +327,52 @@ impl Word {
             self.finish(outs);
         }
         let _scope = self.layout.fonts.enter();
-        if let Err(e) = self.layout.engine.apply_and_layout(story, 0) {
-            log::warn!("word: relayout: {e}");
-            outs.push(Out::Note(format!("Couldn't lay the page out again: {e}")));
-        }
+        let frame = self.layout.engine.apply_and_layout(story, self.layout.epoch);
         drop(_scope);
+        match frame {
+            Ok(f) => self.layout.took(&f),
+            Err(e) => {
+                log::warn!("word: relayout: {e}");
+                outs.push(Out::Note(format!("Couldn't lay the page out again: {e}")));
+            }
+        }
         self.rev += 1;
         self.edited = true;
-        self.index = None;
+        let typed = self.patch.take();
+        let patched = match (&typed, self.index.as_mut()) {
+            (Some((at, removed, inserted)), Some(index)) => index.patch(at, *removed, inserted),
+            _ => false,
+        };
+        if !patched {
+            self.index = None;
+            self.review = None;
+        }
         // matches move with the text
         if !self.query.is_empty() {
             let q = self.query.clone();
             self.found = self.index().find(&q);
             self.found_at = self.found_at.min(self.found.len().saturating_sub(1));
         }
-        outs.push(Out::Meta(self.meta()));
+        outs.push(Out::Meta(self.meta_with(patched)));
         self.redraw(outs);
     }
 
     /// The rest of the document laid out (the first page came at open).
     fn finish(&mut self, outs: &mut Vec<Out>) {
+        if self.layout.preview {
+            // the preview's engine gives way to one seeded with everything
+            let fonts_kept = std::mem::replace(&mut self.layout, Layout::empty());
+            match fonts_kept.whole(&self.source) {
+                Ok(l) => self.layout = l,
+                Err(e) => {
+                    outs.push(Out::Note(format!("Couldn't open the whole document: {e}")));
+                    return;
+                }
+            }
+            self.undo = UndoSession::new();
+            self.undo.track(self.layout.engine.doc());
+            self.drawn.clear();
+        }
         let window = self.window();
         if let Err(e) = self.layout.full(window) {
             outs.push(Out::Note(format!("Couldn't lay the document out: {e}")));
@@ -329,6 +381,7 @@ impl Word {
         self.complete = true;
         self.rev += 1;
         self.index = None;
+        self.review = None;
         outs.push(Out::Meta(self.meta()));
         self.redraw(outs);
     }
@@ -453,6 +506,9 @@ impl Word {
     }
 
     fn insert(&mut self, text: &str) -> Result<(), String> {
+        if self.collapsed() && !text.contains('\n') {
+            self.patch = Some((self.head.clone(), 0, text.trim_end_matches('\r').encode_utf16().collect()));
+        }
         self.delete_selection()?;
         let doc = self.layout.engine.doc();
         let story = self.head.story.clone();
@@ -492,6 +548,7 @@ impl Word {
             let n = if k >= 2 && (0xDC00..0xE000).contains(&p.text[k - 1]) { 2 } else { 1 };
             self.layout.engine.doc().delete_range(&ctx(), StoryRange::new(&p.story, off - n, off)).map_err(|e| e.to_string())?;
             self.set_caret(spot(&p.story, off - n));
+            self.patch = Some((spot(&p.story, off - n), n, Vec::new()));
         } else if p.start > 0 {
             // joins the paragraph before, in the same story
             let before = self.index().paras.iter().rev().find(|q| q.story == p.story && q.start + q.len + 1 == p.start).cloned();
@@ -809,6 +866,32 @@ impl Word {
     }
 }
 
+#[cfg(test)]
+impl Word {
+    /// Whether the index as patched by the last edits is the one a rebuild makes.
+    pub(crate) fn index_is_fresh(&mut self) -> bool {
+        let fresh = Index::build(self.layout.engine.doc());
+        self.index().paras == fresh.paras
+    }
+
+    /// The engine's part of a key's echo, and the index's, in ms.
+    pub(crate) fn echo_parts(&mut self) -> (f64, f64, f64) {
+        let t = std::time::Instant::now();
+        let at = self.head.clone();
+        self.layout.engine.doc().insert_text(&ctx(), Position::new(&at.story, at.offset), "y", FormatPolicy::Inherit).unwrap();
+        let insert = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        let _scope = self.layout.fonts.enter();
+        let f = self.layout.engine.apply_and_layout(&at.story, self.layout.epoch).unwrap();
+        drop(_scope);
+        self.layout.took(&f);
+        let layout = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        self.index = Some(Index::build(self.layout.engine.doc()));
+        (insert, layout, t.elapsed().as_secs_f64() * 1e3)
+    }
+}
+
 /// Word's font size steps.
 fn size_step(size: f32, up: bool) -> f32 {
     const STEPS: [f32; 16] = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0, 96.0, 144.0];
@@ -860,6 +943,8 @@ impl Document for Word {
                     true
                 }
                 Err(e) => {
+                    w.patch = None;
+                    w.index = None;
                     outs.push(Out::Note(e));
                     false
                 }
