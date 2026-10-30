@@ -15,7 +15,7 @@ refusal: objects that grant access fail closed ([spec] 2.2).
 
 | Field | Req | Rule |
 |---|---|---|
-| `protocol` | yes | Semver of the protocol you implement: `"1.0.0"`. A 1.0 host refuses `1.1.x` and `2.x` (`protocol_unsupported`). |
+| `protocol` | yes | Semver of the protocol you implement: `"1.0.0"`, or `"1.1.0"` when you use a 1.1 feature (a resolve `prompt`; `rox.actions`, `rox.meta`, `rox.settle`). A 1.1 host accepts `1.0.x` and `1.1.x` and refuses `1.2.x` and `2.x` (`protocol_unsupported`); a 1.0 host refuses `1.1.x`. |
 | `id` | yes | Reverse DNS, `^[a-z][a-z0-9-]{0,62}(\.[a-z][a-z0-9-]{0,62}){2,7}$`, at most 255 chars. Not `rox.` or `dev.goldcoders.rox.`. Must be on the trust store's approved list. |
 | `short` | yes | `^[a-z][a-z0-9]{1,15}$`. Not `rox`, `app`, `chat`, `mcp`, `nsh`, `all`. Unique among enabled plugins. Every tool name starts with `<short>_`. |
 | `version` | yes | Semver, at most 32 chars. Raise it on every release: a manifest that changes under the same version is `manifest_changed`. |

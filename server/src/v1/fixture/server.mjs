@@ -154,6 +154,13 @@ function resolveCommand(value) {
 
   if (value === "bad-props") return { result: "open", app: "card", props: { label: "no ticket" }, title: "Fixture Card" };
 
+  // starter flows (9.2, 1.1): text for the composer, never sent by Rox
+  if (value === "prompt") return { result: "prompt", text: "Draft this month's board update:\n- what shipped\n- what is next" };
+
+  if (value === "prompt-long") return { result: "prompt", text: "x".repeat(4001) };
+
+  if (value === "prompt-blank") return { result: "prompt", text: " \n\t " };
+
   return { result: "open", app: "board", title: "Fixture Board", placement: "full" };
 }
 
@@ -172,6 +179,9 @@ function resolveScope(args) {
       })),
     };
   }
+
+  // a scope never answers prompt (9.2): the broker refuses it
+  if (value === "prompt") return { result: "prompt", text: "Attach this item" };
 
   if (!value || value === "error") return { result: "error", message: `No item matches that. ${"x".repeat(300)}` };
 

@@ -18,7 +18,7 @@ import { isApproved } from "./trust.mjs";
 import { V1Error } from "./errors.mjs";
 import { schemaProblem } from "./params.mjs";
 
-export const HOST_PROTOCOL = "1.0.0";
+export const HOST_PROTOCOL = "1.1.0";
 export const APP_MIME = "text/x-nsh-tsx";
 export const MANIFEST_URI = "rox://manifest";
 

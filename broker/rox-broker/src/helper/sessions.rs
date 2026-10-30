@@ -32,6 +32,8 @@ pub const MAX_PER_SECOND: usize = 20;
 pub const ARGS_MAX: usize = 256 * 1024;
 pub const RESULT_MAX: usize = 1024 * 1024;
 pub const SOURCE_MAX: usize = 512 * 1024;
+/// A resolve `prompt` answer's text (9.2, 1.1), in characters.
+pub const PROMPT_MAX: usize = 4000;
 
 type Res<T = Value> = Result<T, V1Error>;
 
@@ -553,6 +555,24 @@ fn choices(list: Option<&Value>) -> Res<Vec<Value>> {
         .collect()
 }
 
+/// A resolve tool's `prompt` answer (9.2, protocol 1.1): a starter
+/// flow's text, which Rox puts in the composer for the person to edit and
+/// send. Commands only; `text` has something other than spaces, tabs and
+/// line breaks and is at most [`PROMPT_MAX`] characters (refused, not cut:
+/// a cut prompt says something else).
+pub fn check_prompt(kind: &str, data: &Value) -> Res {
+    if kind != "command" {
+        return V1Error::err("plugin_invalid", "a prompt result answers a command, not a scope");
+    }
+    let Some(text) = get(data, "text").and_then(Value::as_str).filter(|t| t.chars().any(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))) else {
+        return V1Error::err("plugin_invalid", "a prompt result needs text");
+    };
+    if text.chars().count() > PROMPT_MAX {
+        return V1Error::err("plugin_invalid", format!("a prompt's text is at most {PROMPT_MAX} characters"));
+    }
+    Ok(json!({"result": "prompt", "text": text}))
+}
+
 /// A resolve tool's answer as 9.2 allows it.
 fn resolved(m: &Value, kind: &str, name: Option<&Value>, data: &Value) -> Res {
     match get(data, "result").and_then(Value::as_str) {
@@ -568,6 +588,7 @@ fn resolved(m: &Value, kind: &str, name: Option<&Value>, data: &Value) -> Res {
             let msg = get(data, "message").and_then(Value::as_str).unwrap_or("Could not resolve that");
             Ok(json!({"result": "error", "message": cap(msg, 200)}))
         }
+        Some("prompt") => check_prompt(kind, data),
         Some("token") => {
             if !is_v1("ticket", get(data, "ticket")) {
                 return V1Error::err("plugin_invalid", "a token result needs a ticket");
@@ -581,7 +602,7 @@ fn resolved(m: &Value, kind: &str, name: Option<&Value>, data: &Value) -> Res {
         }
         _ => V1Error::err(
             "plugin_invalid",
-            format!("a resolve tool answered result {}; 9.2 allows choices, open, token, error", js::slice_utf16(&crate::v1::shown(get(data, "result"), usize::MAX), 40)),
+            format!("a resolve tool answered result {}; 9.2 allows choices, open, token, prompt, error", js::slice_utf16(&crate::v1::shown(get(data, "result"), usize::MAX), 40)),
         ),
     }
 }
@@ -617,7 +638,26 @@ mod tests {
         assert_eq!(r["choices"][0]["label"].as_str().unwrap().len(), 80);
         let t = resolved(&m, "scope", Some(&json!("item")), &json!({"result": "token", "ticket": "tkt_0123456789ABCDEFGHJKMNPQRS"})).unwrap();
         assert_eq!(t["token"], "@ab:item:tkt_0123456789ABCDEFGHJKMNPQRS");
-        assert_eq!(resolved(&m, "command", None, &json!({"result": "nope"})).unwrap_err().message, "a resolve tool answered result \"nope\"; 9.2 allows choices, open, token, error");
-        assert_eq!(resolved(&m, "command", None, &Value::Null).unwrap_err().message, "a resolve tool answered result undefined; 9.2 allows choices, open, token, error");
+        assert_eq!(resolved(&m, "command", None, &json!({"result": "nope"})).unwrap_err().message, "a resolve tool answered result \"nope\"; 9.2 allows choices, open, token, prompt, error");
+        assert_eq!(resolved(&m, "command", None, &Value::Null).unwrap_err().message, "a resolve tool answered result undefined; 9.2 allows choices, open, token, prompt, error");
+    }
+
+    #[test]
+    fn a_prompt_answers_a_command_with_text_for_the_composer() {
+        let m = json!({"id": "dev.a.b", "short": "ab", "apps": []});
+        let text = "Draft the 1601C for September:\n- payee: @ab:item:tkt_0123456789ABCDEFGHJKMNPQRS";
+        let p = resolved(&m, "command", Some(&json!("draft")), &json!({"result": "prompt", "text": text, "extra": 1})).unwrap();
+        assert_eq!(p, json!({"result": "prompt", "text": text}));
+        // exactly the cap passes, as code points; one more is refused, not cut
+        let most = "é".repeat(PROMPT_MAX);
+        assert_eq!(resolved(&m, "command", None, &json!({"result": "prompt", "text": most})).unwrap()["text"].as_str().map(|t| t.chars().count()), Some(PROMPT_MAX));
+        let over = resolved(&m, "command", None, &json!({"result": "prompt", "text": "x".repeat(PROMPT_MAX + 1)})).unwrap_err();
+        assert_eq!((over.code.as_str(), over.message.as_str()), ("plugin_invalid", "a prompt's text is at most 4000 characters"));
+        for bad in [json!({"result": "prompt"}), json!({"result": "prompt", "text": ""}), json!({"result": "prompt", "text": " \t\r\n "}), json!({"result": "prompt", "text": 5})] {
+            assert_eq!(resolved(&m, "command", None, &bad).unwrap_err().message, "a prompt result needs text", "{bad}");
+        }
+        // a scope's resolve attaches; it never fills the composer
+        let scope = resolved(&m, "scope", Some(&json!("item")), &json!({"result": "prompt", "text": "hi"})).unwrap_err();
+        assert_eq!((scope.code.as_str(), scope.message.as_str()), ("plugin_invalid", "a prompt result answers a command, not a scope"));
     }
 }
