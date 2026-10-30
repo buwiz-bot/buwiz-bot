@@ -8,6 +8,7 @@
 //! files through one `install` call below; this file, `types`, `ctx`,
 //! `traits` and `routes` are the shared skeleton.
 
+pub mod agent;
 pub mod agents;
 pub mod ctx;
 pub mod jobs;
@@ -17,6 +18,7 @@ pub mod model;
 pub mod pipeline;
 pub mod routes;
 pub mod store;
+pub mod tools;
 pub mod routines;
 pub mod traits;
 pub mod types;
@@ -106,6 +108,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // 5.7b: after the store's start, as app-server.mjs runs its migration
     routes::apps::install(routes, ctx);
     model::install(routes, ctx);
+    agent::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
