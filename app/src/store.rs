@@ -1923,7 +1923,6 @@ pub struct Store {
     pub light_idx: Signal<usize>,
     pub light_zoom: Signal<f64>,
     pub light_stage: Signal<(f64, f64)>,
-    pub light_diag: Signal<(f64, f64)>,
     /// (the model popover's `open` lives in `models.rs` via `live::keep` —
     /// `models_open` is gone with the old card.)
     /// The group name prompt (New Group…, Rename), or None.
@@ -2229,14 +2228,6 @@ pub struct Store {
     /// key: its simulated progress counts from there, so a re-rendered
     /// row picks up where it was.
     pub art_started: std::cell::RefCell<std::collections::HashMap<String, std::time::Instant>>,
-    /// The Pele helper (`pele/serve.mjs`): its base URL once started, and
-    /// the child (it exits when its stdin, held here, closes).
-    pub pele: std::cell::RefCell<Option<(String, std::process::Child)>>,
-    /// Diagrams the Node helper rendered, by theme + scale + code
-    /// (`mermaid::web::diagram`), for the types the port does not draw.
-    pub diagrams: std::cell::RefCell<
-        std::collections::HashMap<String, Signal<Option<Result<crate::mermaid::Diagram, String>>>>,
-    >,
 
     /// The owner the store was made under (the anchor's — it outlives
     /// remounts). Lazily-made signals must live under it, not under
@@ -2465,7 +2456,6 @@ impl Store {
             light_idx: signal(0usize),
             light_zoom: signal(1.0f64),
             light_stage: signal((0.0, 0.0)),
-            light_diag: signal((0.0, 0.0)),
             // `models_open` removed — see the note on the struct.
             theme_pref: signal("dark".to_owned()),
             chat_scrolling: signal(false),
@@ -2482,8 +2472,6 @@ impl Store {
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
             art_started: std::cell::RefCell::new(std::collections::HashMap::new()),
-            pele: std::cell::RefCell::new(None),
-            diagrams: std::cell::RefCell::new(std::collections::HashMap::new()),
             owner: Owner::current(),
         }
     }
@@ -5836,7 +5824,6 @@ impl Store {
 
     /// `openLightbox(list, at)`.
     pub fn open_lightbox(&'static self, items: Vec<LightItem>, at: usize) {
-        self.light_diag.set((0.0, 0.0));
         self.light_zoom.set(1.0);
         let last = items.len().saturating_sub(1);
         self.light_idx.set(at.min(last));
