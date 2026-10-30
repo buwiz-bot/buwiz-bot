@@ -1019,16 +1019,15 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
             ),
         )
         // `bar(true, false)` (shell.tsx:472) — right-aligned, no react on
-        // your own bubbles: reply + ⋯ only. Its buttons exist only while
-        // shown; the slot keeps the row's height (`bar_slot`).
-        .child(bar_slot(true, move || bar_opacity() > 0.5 || store().ctx_open_for(i, "msg"), move || {
-            view()
-                .flex_row()
-                .gap(px(2.0))
-                .child(act("↩", "reply", move || store().reply_to_turn(i)))
-                .child(turn_more(i))
-                .into_element()
-        }))
+        // your own bubbles: reply + ⋯ only (`bar_slot`).
+        .child(bar_slot(
+            true,
+            move || bar_opacity() > 0.5 || store().ctx_open_for(i, "msg"),
+            vec![
+                act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
+                turn_more(i).into_element(),
+            ],
+        ))
 }
 
 /// `badge` (shell.tsx:375) — the iMessage tapback: a 36pt knockout disc
@@ -1241,8 +1240,8 @@ fn agent_row(t: Turn) -> impl IntoElement {
     let bar = move || -> AnyElement {
         // `bar(false, true)` — react / reply / ⋯ (shell.tsx:503), under
         // the bubble before the artifacts, shown only while the row is
-        // hovered (or its pill is open). The slot (the pill's anchor)
-        // stays; the buttons exist only while shown.
+        // hovered (or its pill is open). The bar (the pill's anchor)
+        // stays mounted either way.
         let shown = move || {
             bar_opacity() > 0.5
                 || store()
@@ -1252,15 +1251,15 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     .is_some_and(|a| a.i == i && a.slot == "msg")
                 || store().ctx_open_for(i, "msg")
         };
-        bar_slot(false, shown, move || {
-            view()
-                .flex_row()
-                .gap(px(2.0))
-                .child(react_act(i, "msg".to_owned()))
-                .child(act("↩", "reply", move || store().reply_to_turn(i)))
-                .child(turn_more(i))
-                .into_element()
-        })
+        bar_slot(
+            false,
+            shown,
+            vec![
+                react_act(i, "msg".to_owned()).into_element(),
+                act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
+                turn_more(i).into_element(),
+            ],
+        )
         .into_element()
     };
     view()
@@ -1392,23 +1391,25 @@ pub(crate) fn highlight_ring(i: i64, radius: f32) -> impl IntoElement {
 /// A one-line bubble's height (7 + 22 + 7): no bubble is narrower.
 const BUBBLE_MIN: f32 = 36.0;
 
-/// A message's hover-bar slot: always there at the bar's height (rows
-/// keep their size), its buttons built only while `shown` — a hidden bar
-/// was 7 native views per message, mounted for every row on screen.
-fn bar_slot(
-    right: bool,
-    shown: impl Fn() -> bool + 'static,
-    build: impl Fn() -> AnyElement + 'static,
-) -> View {
+/// A message's hover bar: always mounted at its height (rows keep their
+/// size), made invisible while not `shown` — a hover only flips a style.
+/// Building its buttons on hover put views in and out of the window on
+/// every enter and leave, 8–13 ms a frame for 5–14 views; a style flip
+/// costs well under one. The bar is the slot itself and each button a
+/// single text, so it adds 2–3 views to a row.
+fn bar_slot(right: bool, shown: impl Fn() -> bool + 'static, acts: Vec<AnyElement>) -> View {
     view()
         .flex_row()
         .when(right, |v| v.justify_end())
-        .h(px(24.0))
-        .child(when(shown, build))
+        .gap(px(2.0))
+        .h(px(ACT))
+        .style_when(move || !shown(), |s| s.invisible())
+        .children(acts)
 }
 
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
-/// rounded plate. No icon drawing: Grok's glyphs are text.
+/// rounded plate. No icon drawing: Grok's glyphs are text, and the glyph
+/// is the button (one view, centered by its 24pt line).
 fn act(
     glyph: &'static str,
     label: &'static str,
@@ -1430,14 +1431,16 @@ fn act_at(
     let hovered = signal(false);
     let origin = std::rc::Rc::new(std::cell::Cell::new((0.0f32, 0.0f32)));
     let at = origin.clone();
-    view()
+    text(glyph)
         .label(label)
         .size(px(ACT))
         .rounded(px(6.0))
-        .items_center()
-        .justify_center()
+        .text_center()
+        .text_size(px(15.0))
+        .line_height(px(ACT))
+        .number_of_lines(1)
+        .text_color(theme::DIM)
         .bg(move || if hovered.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
-        .child(text(glyph).text_size(px(15.0)).text_color(theme::DIM))
         .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .on_mouse_move(move |e: &MouseEvent| {
@@ -1652,8 +1655,8 @@ fn artifact(
         // This artifact's own reaction (`slot`), not the message's: a
         // reply's files each take theirs.
         .child(reaction_badge(i, slot.clone(), true))
-        // The bar's slot is the pill's anchor; its buttons exist only while
-        // shown (hovered, or its pill open).
+        // The bar is the pill's anchor; shown while hovered, or its pill
+        // open.
         .child(
             // On the left: the artifact's tapback sits at its top-right,
             // and a bar under that corner ran into the next one's.
@@ -1668,32 +1671,24 @@ fn artifact(
                         || store().ctx_open_for(i, &slot2)
                         || (hov.get() && !store().chat_scrolling.get())
                 },
-                move || {
-                    let slot = slot.clone();
-                    let reply_label = reply_label.clone();
-                    let reply_file = reply_file.clone();
-                    let items = items.clone();
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(2.0))
-                        .child(react_act(i, slot.clone()))
-                        .child(act("↩", "reply", move || {
-                            let st = store();
-                            let name = st
-                                .active_bot_untracked()
-                                .map(|b| b.name)
-                                .unwrap_or_default();
-                            st.reply_to.set(Some(crate::store::ReplyTo {
-                                i,
-                                name,
-                                text: reply_label.clone(),
-                                files: reply_file.iter().cloned().collect(),
-                            }));
-                        }))
-                        .child(more_act(i, slot, move || items.clone()))
-                        .into_element()
-                },
+                vec![
+                    react_act(i, slot.clone()).into_element(),
+                    act("↩", "reply", move || {
+                        let st = store();
+                        let name = st
+                            .active_bot_untracked()
+                            .map(|b| b.name)
+                            .unwrap_or_default();
+                        st.reply_to.set(Some(crate::store::ReplyTo {
+                            i,
+                            name,
+                            text: reply_label.clone(),
+                            files: reply_file.iter().cloned().collect(),
+                        }));
+                    })
+                    .into_element(),
+                    more_act(i, slot, move || items.clone()).into_element(),
+                ],
             ),
         )
 }
@@ -1894,5 +1889,3 @@ pub(crate) fn pill_layer() -> impl IntoElement {
             .into_element()
     })
 }
-
-
