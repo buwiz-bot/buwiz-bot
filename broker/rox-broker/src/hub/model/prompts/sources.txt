@@ -1,0 +1,6 @@
+  timeclock — local clock-in/out tracker stored in the app's sqlite db
+     GET  /data/timeclock → {status:"in"|"out", since:iso|null, todayMin:number, sessions:[{in,out,min}]}
+     POST /data/timeclock/in  — clock in    POST /data/timeclock/out — clock out
+  reminders — the user's macOS Reminders
+     GET  /data/reminders → [{name,list,due,flagged}] (or {error:"…"})
+     POST /data/reminders/add {name,list?,due?}    POST /data/reminders/complete {name}
