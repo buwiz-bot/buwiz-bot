@@ -82,8 +82,12 @@ const NOT_PORTED: &str = r#"{"ok":false,"code":"not_ported"}"#;
 #[test]
 fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
     let b = start("on", true);
+    // ported or not, the hub answers: the stand-in Node answers 404 "no"
+    // to all of these, and its log stays empty (the registry's own test
+    // checks that an unregistered route is 501 not_ported)
     for (method, path, body) in [
         ("GET", "/models", ""),
+        ("GET", "/artifacts", ""),
         ("GET", "/routines", ""),
         ("POST", "/app/meta", "{}"),
         ("POST", "/v1/host/plugins/acme/enable", "{}"),
@@ -91,7 +95,9 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
         ("POST", "/v1/hooks/ah_x/secret", "{}"),
         ("POST", "/v1/hooks/ri_x/secret", "{}"),
     ] {
-        assert_eq!(request(b.port, method, path, body.as_bytes()).unwrap(), (501, NOT_PORTED.to_owned()), "{method} {path}");
+        let answer = request(b.port, method, path, body.as_bytes()).unwrap();
+        assert_ne!(answer, (404, "no".to_owned()), "{method} {path} reached Node");
+        assert!(answer.0 != 501 || answer.1 == NOT_PORTED, "{method} {path}: {answer:?}");
     }
     // a malformed hook path is Node's 404, answered by the dispatcher
     assert_eq!(request(b.port, "GET", "/v1/hooks/ri_x/secret", b"").unwrap().0, 404);
