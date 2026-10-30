@@ -98,7 +98,7 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
 
     assert.equal(caps.status, 200, caps.text);
     assert.equal(typeof caps.json, "object");
-    // the hub's since 6.2 (/mermaid*) and 6.3 (/popout); /highlight deleted (6.2)
+    // the hub's since 6.3 (/popout); /highlight and /mermaid* deleted
     for (const [method, path] of [["GET", "/threads"], ["POST", "/thread/new"], ["GET", "/turns"], ["GET", "/v1/host/plugins"], ["POST", "/v1/hooks/ri_x/secret"], ["GET", "/state/office-role"], ["GET", "/routines"],
       ["GET", `/mermaid?d=${Buffer.from("graph TD; a-->b").toString("base64url")}`], ["GET", "/mermaid.js"], ["POST", "/highlight"], ["POST", "/popout"]]) {
       const r = method === "GET" ? await request(method, path) : await postJson(path, {});

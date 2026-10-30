@@ -3328,7 +3328,7 @@ dependencies = [
 [[package]]
 name = "pele"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/pele-rs?rev=7ad178420139fde960b336d632972867a043364c#7ad178420139fde960b336d632972867a043364c"
+source = "git+https://github.com/hexuria/pele-rs?rev=9af923e41c031b8c7644940685afc201df4f340f#9af923e41c031b8c7644940685afc201df4f340f"
 dependencies = [
  "url",
 ]

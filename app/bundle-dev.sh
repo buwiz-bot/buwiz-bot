@@ -94,8 +94,8 @@ chmod +x "$APP/Contents/MacOS/rox"
 
 # The broker and its static files: the office viewer and editor pages, the
 # editor's bundle and seed files, the plugin catalog and icons, the trust
-# store; mermaid.min.js and the BetterOffice packages the office pages
-# import, in node_modules/ beside server/ (where the broker looks).
+# store; the BetterOffice packages the office pages import, in
+# node_modules/ beside server/ (where the broker looks).
 SERVER="$ROOT/server"
 B="$APP/Contents/Resources/broker"
 BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
@@ -119,7 +119,7 @@ if [ ! -x "${NSH_BIN:-}" ] || [ ! -x "${NSH_HOST_BIN:-}" ]; then
 fi
 # rm first: a copy over a binary keeps its old code signature
 rm -rf "$B"
-mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules/mermaid/dist"
+mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules"
 cp "$ROX_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
@@ -141,7 +141,6 @@ else
 fi
 cp -R "$SERVER/src/plugins" "$B/server/plugins"
 cp "$SERVER/src/v1/trust.json" "$B/server/trust.json"
-cp "$SERVER/node_modules/mermaid/dist/mermaid.min.js" "$B/node_modules/mermaid/dist/mermaid.min.js"
 cp -R "$SERVER/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
 
 # only the real bundle answers rox:// links

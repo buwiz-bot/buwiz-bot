@@ -13,32 +13,6 @@ import { officeCaps, officePkgRoot } from "../office.mjs";
 export default async function handle(req, res) {
   // Image avatars (Grok's Generate / Upload tabs): files land in
   // generated/avatars and the app shows them by file:// URI.
-  // Mermaid, rendered by mermaid.js in a web view (served locally: the web
-  // view's grant is 127.0.0.1). The page reports its size; "full" mode zooms.
-  if (req.method === "GET" && req.url === "/mermaid.js") {
-    res.setHeader("content-type", "text/javascript");
-    return res.end(readFileSync(serverFile("../node_modules/mermaid/dist/mermaid.min.js")));
-  }
-  if (req.method === "GET" && req.url.startsWith("/mermaid?")) {
-    const q = new URL(req.url, "http://x").searchParams;
-    const code = Buffer.from(q.get("d") || "", "base64url").toString("utf8");
-    const dark = q.get("theme") === "dark";
-    const full = q.get("mode") === "full";
-    const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-    res.setHeader("content-type", "text/html; charset=utf-8");
-    return res.end(`<!doctype html><html><head><meta charset="utf-8"><style>
-html,body{margin:0;background:transparent;overflow:hidden;font-family:-apple-system,system-ui}
-#wrap{display:inline-block;transform-origin:${full ? "center" : "0 0"};${full ? "padding:28px;background:" + (dark ? "#262626" : "#fff") + ";border-radius:12px" : ""}}
-${full ? "body{display:flex;align-items:center;justify-content:center;height:100vh}" : ""}
-</style></head><body><div id="wrap"><pre class="mermaid">${esc(code)}</pre></div>
-<script src="/mermaid.js"></script><script>
-mermaid.initialize({startOnLoad:false,markdownAutoWrap:false,flowchart:{wrappingWidth:600,useMaxWidth:false},theme:${JSON.stringify(dark ? "dark" : "neutral")},securityLevel:"strict",fontFamily:"-apple-system,system-ui"});
-let z=1;const w=document.getElementById("wrap");
-const post=(m)=>window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify(m));
-mermaid.run().then(()=>{const r=w.getBoundingClientRect();post({w:Math.ceil(r.width),h:Math.ceil(r.height)});}).catch(e=>post({error:String(e)}));
-window.addEventListener("message",(e)=>{const c=e.data;z=c==="in"?Math.min(4,z*1.25):c==="out"?Math.max(0.25,z/1.25):1;w.style.transform="scale("+z+")";const r=w.getBoundingClientRect();post({w:Math.ceil(r.width),h:Math.ceil(r.height)});});
-</script></body></html>`);
-  }
   // Shiki tokens for a markdown code fence (Grok's cursor palettes)
   if (req.method === "POST" && req.url === "/highlight") {
     let body = "";
