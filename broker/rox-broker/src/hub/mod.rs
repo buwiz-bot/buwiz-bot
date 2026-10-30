@@ -12,6 +12,7 @@ pub mod ctx;
 pub mod jobs;
 pub mod model;
 pub mod routes;
+pub mod routines;
 pub mod traits;
 pub mod types;
 
@@ -95,6 +96,7 @@ impl Registry {
 /// here calling its own `install(routes, ctx)`.
 fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     model::install(routes, ctx);
+    routines::install(routes, ctx);
 }
 
 pub struct Hub {

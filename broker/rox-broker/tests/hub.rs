@@ -82,17 +82,16 @@ const NOT_PORTED: &str = r#"{"ok":false,"code":"not_ported"}"#;
 #[test]
 fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
     let b = start("on", true);
-    for (method, path, body) in [
-        ("GET", "/threads", ""),
-        ("POST", "/chat", r#"{"prompt":"hi"}"#),
-        ("GET", "/turns?thread=t1", ""),
-        ("POST", "/v1/host/plugins/acme/enable", "{}"),
-        ("GET", "/v1/host/plugins", ""),
-        ("POST", "/v1/hooks/ah_x/secret", "{}"),
-        ("POST", "/v1/hooks/ri_x/secret", "{}"),
-    ] {
+    for (method, path, body) in [("GET", "/threads", ""), ("POST", "/chat", r#"{"prompt":"hi"}"#), ("GET", "/turns?thread=t1", ""), ("POST", "/v1/hooks/ah_x/secret", "{}")] {
         assert_eq!(request(b.port, method, path, body.as_bytes()).unwrap(), (501, NOT_PORTED.to_owned()), "{method} {path}");
     }
+    // the host routes and the routine webhooks are answered (5.5h): the
+    // token first, an unknown hook not found
+    let unauthorized = r#"{"ok":false,"code":"unauthorized","message":"X-Rox-Host is missing or wrong","retryable":false}"#;
+    for (method, path, body) in [("POST", "/v1/host/plugins/acme/enable", "{}"), ("GET", "/v1/host/plugins", "")] {
+        assert_eq!(request(b.port, method, path, body.as_bytes()).unwrap(), (401, unauthorized.to_owned()), "{method} {path}");
+    }
+    assert_eq!(request(b.port, "POST", "/v1/hooks/ri_x/secret", b"{}").unwrap(), (404, r#"{"ok":false,"code":"not_found","message":"no such hook","retryable":false}"#.to_owned()));
     // a malformed hook path is Node's 404, answered by the dispatcher
     assert_eq!(request(b.port, "GET", "/v1/hooks/ri_x/secret", b"").unwrap().0, 404);
     assert_eq!(b.seen(), Vec::<String>::new(), "Node saw a hub route");
