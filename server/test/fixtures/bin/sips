@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// sips stub for the broker tests. `sips … <in> --out <out>` copies <in> to
+// <out> (a 1×1 PNG when <in> is missing): no real conversion or resize.
+// `sips -g pixelWidth -g pixelHeight <file>` prints SIPS_STUB_SIZE ("WxH",
+// default 64x64). SIPS_STUB_FAIL=1 exits 1 instead.
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync, copyFileSync, existsSync, writeFileSync } = require("node:fs");
+
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+const argv = process.argv.slice(2);
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "sips", argv }) + "\n");
+
+if (process.env.SIPS_STUB_FAIL === "1") process.exit(1);
+const o = argv.indexOf("--out");
+
+if (o > 0) {
+  const src = argv[o - 1];
+
+  if (existsSync(src)) copyFileSync(src, argv[o + 1]);
+  else writeFileSync(argv[o + 1], PNG);
+} else if (argv.includes("-g")) {
+  const [w, h] = (process.env.SIPS_STUB_SIZE || "64x64").split("x");
+
+  process.stdout.write(`${argv.at(-1)}\n  pixelWidth: ${w}\n  pixelHeight: ${h}\n`);
+}

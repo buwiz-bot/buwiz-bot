@@ -11,11 +11,12 @@ use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
-use hyper::{Request, Response, StatusCode, Uri};
+use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 
 use crate::helper::line::Line;
+use crate::hub::{routes, Hub};
 use crate::leaf::{self, Leaf};
 use crate::node::Node;
 
@@ -29,12 +30,14 @@ pub struct FrontDoor {
     line: Option<Arc<Line>>,
     /// the /mcp routes, when this broker hosts the MCP servers (4.3)
     mcp: Option<leaf::mcp::McpRoutes>,
+    /// the brain's routes, with `ROX_BROKER_HUB=1` (plan D30)
+    hub: Option<Arc<Hub>>,
     client: Client<HttpConnector, Incoming>,
 }
 
 impl FrontDoor {
     pub fn new(node: Arc<Node>, leaf: Option<Leaf>) -> Self {
-        Self { node, leaf, line: None, mcp: None, client: Client::builder(TokioExecutor::new()).build_http() }
+        Self { node, leaf, line: None, mcp: None, hub: None, client: Client::builder(TokioExecutor::new()).build_http() }
     }
 
     pub fn with_line(mut self, line: Arc<Line>) -> Self {
@@ -44,6 +47,11 @@ impl FrontDoor {
 
     pub fn with_mcp(mut self, routes: leaf::mcp::McpRoutes) -> Self {
         self.mcp = Some(routes);
+        self
+    }
+
+    pub fn with_hub(mut self, hub: Arc<Hub>) -> Self {
+        self.hub = Some(hub);
         self
     }
 
@@ -64,7 +72,16 @@ impl FrontDoor {
             },
             _ => match (&self.leaf, leaf::route(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"))) {
                 (Some(leaf), Some(route)) => (leaf.serve(route, req).await, "rust"),
-                _ => (self.forward(req).await, "node"),
+                // with the hub on, a hub route never reaches Node, nor does
+                // a Rust route whose part is switched off: Node holds no
+                // state for either (its office role)
+                _ => match (&self.hub, routes::classify(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/")).map(|r| r.owner)) {
+                    (Some(hub), Some(routes::Owner::Hub(_) | routes::Owner::Rust)) => (hub.serve(req).await, "hub"),
+                    // a route no broker has (the table holds all of Node's):
+                    // Node's 404, which its office role would answer 501
+                    (Some(hub), None) if method != Method::OPTIONS => (hub.serve(req).await, "hub"),
+                    _ => (self.forward(req).await, "node"),
+                },
             },
         };
         println!("rox-broker {method} {shown} {} {}ms {side}", res.status().as_u16(), started.elapsed().as_millis());

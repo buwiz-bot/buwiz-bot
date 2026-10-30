@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// qlmanage stub for the broker tests. `qlmanage -t -s <n> -o <dir> <file>…`
+// writes <dir>/<file name>.png, a 1×1 PNG, for each file: no QuickLook.
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync, writeFileSync } = require("node:fs");
+const { basename, join } = require("node:path");
+
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+const argv = process.argv.slice(2);
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "qlmanage", argv }) + "\n");
+const o = argv.indexOf("-o");
+
+if (o >= 0) for (const f of argv.slice(o + 2)) writeFileSync(join(argv[o + 1], `${basename(f)}.png`), PNG);

@@ -5,9 +5,11 @@
 pub mod http;
 pub mod keystore;
 pub mod line;
+pub mod local;
 pub mod mcp;
 pub mod mcp_servers;
 pub mod oauth;
+pub mod office;
 pub mod plugins;
 pub mod remote;
 pub mod sessions;
