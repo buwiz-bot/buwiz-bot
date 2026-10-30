@@ -13,7 +13,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createAgents } from "../src/agents.mjs";
 import { createDelivery } from "../src/agents-run.mjs";
 import { BODY_MAX, HOOK_RATE, createExternals, signature } from "../src/agents-external.mjs";
-import { PORT, ROOT, postJson, startServer, tempDir } from "./helpers.mjs";
+import { HUB, PORT, postJson, ROOT, startServer, tempDir } from "./helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): agents-external.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)
+const NODE_ONLY = { skip: HUB && "Node-only: agents-external.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)" };
 
 function world({ post = async () => 200 } = {}) {
   let n = 0;
@@ -55,7 +58,7 @@ const status = (fn) => {
   assert.fail("expected a refusal");
 };
 
-test("HOOK-01 a signed message is accepted; a bad or stale signature, a replay with another body and an oversize body are refused", () => {
+test("HOOK-01 a signed message is accepted; a bad or stale signature, a replay with another body and an oversize body are refused", NODE_ONLY, () => {
   const w = world();
   const hook = w.externals.create({ bot: "boss", kind: "hook", name: "CI" });
 
@@ -90,7 +93,7 @@ test("HOOK-01 a signed message is accepted; a bad or stale signature, a replay w
   assert.deepEqual(status(() => w.externals.incoming(hook.id, hook.secret, elsewhere, signed(w, hook.secret, elsewhere))), [400, "not_allowed"], "a hook reaches only its own agent");
 });
 
-test("HOOK-02 the same id and body are taken once; the hook allows 60 calls an hour", () => {
+test("HOOK-02 the same id and body are taken once; the hook allows 60 calls an hour", NODE_ONLY, () => {
   const w = world();
   const hook = w.externals.create({ bot: "boss", kind: "hook", name: "CI" });
   const body = env();
@@ -110,7 +113,7 @@ test("HOOK-02 the same id and body are taken once; the hook allows 60 calls an h
   assert.deepEqual(status(() => w.externals.incoming(hook.id, hook.secret, over, signed(w, hook.secret, over))), [429, "rate_limited"]);
 });
 
-test("HOOK-03 an agent's answer goes out signed; 5xx is retried, 4xx dropped with a notice", async () => {
+test("HOOK-03 an agent's answer goes out signed; 5xx is retried, 4xx dropped with a notice", NODE_ONLY, async () => {
   const answers = [500, 200, 404];
   const w = world({ post: async () => answers.shift() });
   const hook = w.externals.create({ bot: "boss", kind: "hook", name: "CI", url: "https://ci.example.com/rox" });
@@ -146,7 +149,7 @@ test("HOOK-03 an agent's answer goes out signed; 5xx is retried, 4xx dropped wit
   assert.throws(() => w.agents.send(w.bot("piccolo"), { to: [`ext:${hook.id}`], subject: "x", text: "y" }), /not one of your outside endpoints/);
 });
 
-test("a bridge receives what its agent sends, waiting for it when asked", async () => {
+test("a bridge receives what its agent sends, waiting for it when asked", NODE_ONLY, async () => {
   const w = world();
   const bridge = w.externals.create({ bot: "boss", kind: "bridge", name: "Claude Code · rox" });
 
