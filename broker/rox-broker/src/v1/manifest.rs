@@ -536,6 +536,9 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
                 int(inl.get("max_height"), &format!("{at}.inline.max_height"), height, h.1 as f64)?;
             }
             boolean(inl, "resizable", &format!("{at}.inline"))?;
+            // the card holds its placeholder until the app's rox.ready()
+            // (an optional addition under 1.0: older hosts ignore it)
+            boolean(inl, "wait_ready", &format!("{at}.inline"))?;
         }
         if o.contains_key("permissions") {
             permissions(o.get("permissions"), m, short, &format!("{at}.permissions"))?;
@@ -1102,6 +1105,15 @@ mod tests {
         );
         assert_eq!(refused(|m| m["apps"][0]["permissions"]["open"]["external"] = json!(["https://example.com/"])).code, "manifest_invalid");
         assert_eq!(refused(|m| m["apps"][1]["inline"]["width"] = json!(961)).message, "apps[1].inline.width: must be 240 to 960");
+        assert_eq!(refused(|m| m["apps"][1]["inline"]["wait_ready"] = json!("yes")).message, "apps[1].inline.wait_ready: must be a boolean");
+    }
+
+    #[test]
+    fn inline_wait_ready_is_accepted() {
+        for v in [true, false] {
+            let (text, trust) = signed(|m| m["apps"][1]["inline"]["wait_ready"] = json!(v));
+            assert!(verify(&text, &trust, HOST_PROTOCOL).is_ok());
+        }
     }
 
     #[test]

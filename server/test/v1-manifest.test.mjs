@@ -315,6 +315,13 @@ test("manifest: inline min_height and max_height bound rox.fit around the declar
   assert.throws(() => signed((m) => (m.apps[1].inline.min_height = 120.5)), /integers only/);
 });
 
+test("manifest: inline wait_ready is a boolean", () => {
+  ok((m) => (m.apps[1].inline.wait_ready = true));
+  ok((m) => (m.apps[1].inline.wait_ready = false));
+  refused((m) => (m.apps[1].inline.wait_ready = "yes"), "manifest_invalid", /inline\.wait_ready: must be a boolean/);
+  refused((m) => (m.apps[1].inline.wait_ready = 1), "manifest_invalid", /wait_ready/);
+});
+
 test("MAN-10 a tool name that does not start with <short>_ is refused", () => {
   refused((m) => (m.commands[0].resolve = "bir_resolve"), "manifest_invalid", /start with fx_/);
   refused((m) => (m.apps[0].permissions.tools[0] = "echo"), "manifest_invalid", /start with fx_/);
