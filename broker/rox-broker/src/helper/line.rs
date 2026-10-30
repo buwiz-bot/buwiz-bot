@@ -67,6 +67,10 @@ impl Line {
         &self.host
     }
 
+    pub fn sessions(&self) -> &Arc<Sessions> {
+        &self.sessions
+    }
+
     fn authorized(&self, req: &Request<Incoming>) -> bool {
         let got = req.headers().get("x-rox-line").map(|v| v.as_bytes()).unwrap_or_default();
         let want = self.token.as_bytes();

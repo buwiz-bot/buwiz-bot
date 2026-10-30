@@ -14,8 +14,13 @@ pub fn stringify(v: &Value) -> String {
 
 /// `JSON.stringify(v, null, 2)`.
 pub fn stringify_pretty(v: &Value) -> String {
+    stringify_indent(v, 2)
+}
+
+/// `JSON.stringify(v, null, n)`.
+pub fn stringify_indent(v: &Value, n: usize) -> String {
     let mut out = String::new();
-    write(&mut out, v, Some(2), 0);
+    write(&mut out, v, Some(n), 0);
     out
 }
 
