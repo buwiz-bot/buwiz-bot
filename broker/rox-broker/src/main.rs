@@ -9,6 +9,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use rox_broker::config::Config;
 use rox_broker::helper::line::Line;
+use rox_broker::helper::mcp_servers::McpHost;
 use rox_broker::helper::plugins::{Clock, Host, Options, Timeouts};
 use rox_broker::leaf::Leaf;
 use rox_broker::node::{self, Node};
@@ -44,33 +45,43 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    // v1 plugins hosted here (plan 3.4-3.8): off until the live switch
-    let line = if std::env::var("ROX_BROKER_V1_HOST").as_deref() == Ok("1") {
+    // what this broker hosts behind the line, for Node (ROX_LINE_HOSTS):
+    // v1 plugins (phase 3) and v0 MCP servers (phase 4), each switched on
+    let hosts: Vec<&str> = [("v1", "ROX_BROKER_V1_HOST"), ("mcp", "ROX_BROKER_MCP_HOST")]
+        .into_iter()
+        .filter(|(_, var)| std::env::var(var).as_deref() == Ok("1"))
+        .map(|(name, _)| name)
+        .collect();
+    let line = if hosts.is_empty() {
+        None
+    } else {
         let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
         let trust = config.trust_file(std::env::var("ROX_TRUST_FILE").ok().as_deref());
-        match plugin_host(&data.join("generated").join("app.db"), Some(data.join("v1").join("logs")), trust, false) {
-            Ok(host) => {
+        let db = data.join("generated").join("app.db");
+        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false), McpHost::new(&db, config.port)) {
+            (Ok(host), Ok(mcp)) => {
                 let token = rox_v1::keys::b64(&rox_v1::keys::random::<32>());
                 config.node_env.push(("ROX_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
                 config.node_env.push(("ROX_V1_LINE_TOKEN".to_owned(), token.clone()));
-                Some(Arc::new(Line::new(host, token)))
+                config.node_env.push(("ROX_LINE_HOSTS".to_owned(), hosts.join(",")));
+                Some(Arc::new(Line::new(host, mcp, token)))
             }
-            Err(e) => {
-                eprintln!("rox-broker: v1 plugin host: {e}; Node hosts them");
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("rox-broker: the line: {e}; Node hosts everything");
                 None
             }
         }
-    } else {
-        None
     };
     let node = Arc::new(Node::default());
     let _ = node.version.set(node::version_of(&config.node));
     let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
     let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
-        .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed));
+        .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
     let door = Arc::new(match &line {
+        // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
+        Some(line) if hosts.contains(&"mcp") => door.with_line(line.clone()).with_mcp(rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone())),
         Some(line) => door.with_line(line.clone()),
         None => door,
     });
@@ -98,6 +109,7 @@ async fn main() {
     drop(listener);
     if let Some(line) = &line {
         line.host().stop_all().await;
+        line.mcp().stop_all().await;
     }
     // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
     node.stop(Duration::from_millis(2500)).await;
@@ -230,7 +242,16 @@ async fn helper(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let line = Arc::new(Line::new(host.clone(), token));
+    // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
+    let public = ["ROX_PUBLIC_PORT", "PORT"].iter().find_map(|k| std::env::var(k).ok()?.parse::<u16>().ok()).unwrap_or(8787);
+    let mcp = match McpHost::new(&db, public) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("rox-broker helper: {e}");
+            return 1;
+        }
+    };
+    let line = Arc::new(Line::new(host.clone(), mcp.clone(), token));
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) => {
@@ -259,5 +280,6 @@ async fn helper(args: &[String]) -> i32 {
         }
     }
     host.stop_all().await;
+    mcp.stop_all().await;
     0
 }

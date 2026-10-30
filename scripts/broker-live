@@ -8,7 +8,9 @@
 #   scripts/broker-live use-node   the Node broker on the port (the rollback)
 #   scripts/broker-live use-rust   rox-broker on the port, Node behind it (phase 1 on);
 #                                  from phase 3 it hosts the v1 plugins and sessions
-#                                  (ROX_BROKER_V1_HOST=0 leaves them to Node)
+#                                  (ROX_BROKER_V1_HOST=0 leaves them to Node), from
+#                                  phase 4 the MCP servers (ROX_BROKER_MCP_HOST=0
+#                                  leaves them to Node)
 #
 # GS: the data dir (default ~/Library/Application Support/Grok Shell).
 # RES: the app bundle's Resources dir holding server/ (default: the Grok
@@ -63,6 +65,7 @@ start_rust() {
   [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it)" >&2; return 1; }
   (cd /tmp && GROK_DATA_DIR="$GS" GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
     NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" ROX_BROKER_V1_HOST="${ROX_BROKER_V1_HOST:-1}" \
+    ROX_BROKER_MCP_HOST="${ROX_BROKER_MCP_HOST:-1}" \
     exec nohup "$RES/server/rox-broker" --port "$PORT" --data "$GS" --node "$RES/server/node" \
       --node-script "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
   wait_health && echo "rox-broker on $PORT"
@@ -86,6 +89,15 @@ for p in json.load(sys.stdin).get("plugins", []): print("plugin:", p.get("id"), 
     parent=$([ -n "$p" ] && basename "$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')")" || echo none)
     echo "process: $id pid ${p:-none} under ${parent}"
   done
+  # the MCP servers' status, and who runs the stdio ones: processes under
+  # rox-broker (phase 4) or under Node
+  if [ -n "$pid" ]; then
+    curl -s -m 5 "$URL/mcp/servers" | python3 -c 'import json,sys
+for s in json.load(sys.stdin).get("servers", []): print("mcp:", s.get("id"), s.get("status"))' 2>/dev/null || echo "mcp: unreadable"
+    local node
+    node=$(pgrep -P "$pid" -f "server/node" | head -1 || true)
+    echo "children: rox-broker $(pgrep -P "$pid" | grep -vc "^${node:-x}$" || true), node $([ -n "$node" ] && pgrep -P "$node" | wc -l | tr -d ' ' || echo 0)"
+  fi
   echo "keychain dialog: $(pgrep -q SecurityAgent && echo UP || echo none)"
 }
 

@@ -21,12 +21,14 @@ const timeouts = {};
 
 if (Number(process.env.ROX_V1_CALL_TIMEOUT_MS) > 0) timeouts.call = Number(process.env.ROX_V1_CALL_TIMEOUT_MS);
 
-// LINE.base: rox-broker hosts the plugins (it hands Node the line's address
-// and token when it is started with ROX_BROKER_V1_HOST=1)
-export const plugins = LINE.base
+// rox-broker hosts the plugins when it was started with ROX_BROKER_V1_HOST=1:
+// it hands Node the line's address and token, and "v1" in ROX_LINE_HOSTS
+const onLine = !!LINE.base && LINE.hosts.includes("v1");
+
+export const plugins = onLine
   ? createLinePlugins({ base: LINE.base, token: LINE.token, db, timeouts })
   : createPlugins({ db, keys: keystore(), logDir: join(DATA_DIR, "v1", "logs"), timeouts });
-export const sessions = LINE.base ? createLineSessions(plugins) : createSessions(plugins);
+export const sessions = onLine ? createLineSessions(plugins) : createSessions(plugins);
 
 // A v1 routine's agent turn: v0's backgroundTurn in the routine's thread,
 // with the job narrowing the v1 tools to the routine's surface (5.9). The

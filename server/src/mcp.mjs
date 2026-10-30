@@ -10,6 +10,8 @@ const attempts = new Map(); // id -> Promise<{client,tools,err}>
 const recs = new Map(); // id -> settled {client,tools,err}
 
 export function statusOf(id) {
+  // rox-broker's status, the one its /mcp routes show (plan 4.3)
+  if (mcpOnLine) return lineStatus(id);
   const r = recs.get(id);
   if (!r) return { status: "idle", tools: 0 };
   // A server that lists tools without auth but whose resource metadata
@@ -51,8 +53,16 @@ export function ensureClient(row) {
 import { execFile } from "node:child_process";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
-import { PORT } from "./config.mjs";
+import { PUBLIC_PORT } from "./config.mjs";
 import { isName } from "./grammar.mjs";
+import { lineAuthBegin, lineAuthFinish, lineConnect, lineStatus, mcpOnLine, onLineDrop } from "./mcp-line.mjs";
+
+// rox-broker dropped a server's client (switched off, deleted, signed in
+// there): forget ours, so the next use connects again
+onLineDrop((id) => {
+  attempts.delete(id);
+  recs.delete(id);
+});
 
 let authHooks = null; // {loadAuth(id), saveAuth(id, obj), done(id)} — app-server wires the db
 export const setAuthHooks = (h) => (authHooks = h);
@@ -71,7 +81,7 @@ const donePage = (title) =>
 // Pre-registered (static) OAuth clients redirect to the main server — a
 // fixed URI the user registers with the provider (X validates it exactly);
 // dynamic-registration clients keep the ephemeral loopback listener.
-export const fixedRedirectUrl = (id) => `http://127.0.0.1:${PORT}/oauth/callback/${encodeURIComponent(id)}`;
+export const fixedRedirectUrl = (id) => `http://127.0.0.1:${PUBLIC_PORT}/oauth/callback/${encodeURIComponent(id)}`;
 const staticClient = (row) => {
   try {
     const c = JSON.parse(row.oauth_client || "null");
@@ -99,6 +109,18 @@ export function handleOAuthCallback(req, res) {
     res.setHeader("content-type", "text/html");
     const code = u.searchParams.get("code");
     const errTxt = u.searchParams.get("error");
+    // rox-broker holds the flow (plan 4.2): it checks and finishes it
+    if (mcpOnLine) {
+      lineAuthFinish(id, { code, state: u.searchParams.get("state"), error: errTxt }).then(({ result, error }) => {
+        if (result === "connected") authHooks?.done(id);
+        else if (result === "refused") res.statusCode = 400;
+        else if (error) console.error(`  mcp ${id}: token exchange failed: ${String(error).slice(0, 200)}`);
+        res.end(donePage(result === "connected" ? "Connected" : "Authentication failed"));
+      }, () => {
+        res.end(donePage("Authentication failed"));
+      });
+      return;
+    }
     if (!id || (!code && !errTxt) || !pending.has(id)) {
       res.statusCode = 400;
       res.end(donePage("Authentication failed"));
@@ -196,6 +218,13 @@ const noOpen = new Set(); // ids whose next flow returns the URL without a tab
 // open:false returns the authorize URL instead of opening a browser tab.
 export async function beginAuth(row, { open = true } = {}) {
   if (!row.url) throw new Error("not a remote server");
+  if (mcpOnLine) {
+    const r = await lineAuthBegin(row.id, open);
+
+    if (r.authorized) authHooks?.done(row.id);
+
+    return r;
+  }
   const fixed = staticClient(row);
   const provider = providerFor(row);
   const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
@@ -233,6 +262,18 @@ export async function beginAuth(row, { open = true } = {}) {
 async function connect(row) {
   const rec = { client: null, tools: [], err: null };
   try {
+    // rox-broker hosts the servers, stdio and remote (plan 4.1, 4.2): its
+    // client, over the line
+    if (mcpOnLine) {
+      const { client, tools, needsAuth } = await lineConnect(row.id);
+
+      rec.client = client;
+      rec.tools = tools;
+      if (needsAuth) rec.needsAuth = needsAuth;
+      console.log(`  mcp ${row.id}: connected${row.url ? " (http)" : ""}, ${rec.tools.length} tools${rec.needsAuth ? " — needs sign-in" : ""}`);
+
+      return rec;
+    }
     const [{ Client }] = await Promise.all([import("@modelcontextprotocol/sdk/client/index.js")]);
     if (row.url) {
       // A provider makes the transport drive the full auth flow on a 401
@@ -379,7 +420,7 @@ export async function callTool(row, toolName, input) {
       content: `mcp server ${row.id} is not connected (${rec.err || "failed to start"})`,
       is_error: true,
     };
-  if (rec.needsAuth)
+  if (mcpOnLine ? statusOf(row.id).status === "needs-auth" : rec.needsAuth)
     return { content: `${row.id} needs sign-in — ask the user to open Connect Apps, find this app and press Authenticate`, is_error: true };
   let result;
   try {
