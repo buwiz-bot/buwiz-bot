@@ -87,6 +87,8 @@ pub trait Nsh: Send + Sync {
 pub struct LocalCommand {
     pub program: String,
     pub args: Vec<String>,
+    /// set over the broker's own environment (JXA reads its arguments here)
+    pub env: Vec<(String, String)>,
     pub stdin: Option<Vec<u8>>,
     pub timeout: Option<Duration>,
 }
