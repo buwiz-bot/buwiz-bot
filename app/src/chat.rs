@@ -1169,10 +1169,12 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
         .child(bar_slot(
             true,
             move || bar_opacity() > 0.5 || store().ctx_open_for(i, "msg"),
-            vec![
-                act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
-                turn_more(i).into_element(),
-            ],
+            move || {
+                vec![
+                    act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
+                    turn_more(i).into_element(),
+                ]
+            },
         ))
 }
 
@@ -1184,13 +1186,10 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
 pub(crate) fn reaction_badge(i: i64, slot: String, right: bool) -> impl IntoElement {
     dynamic(move || {
         let r = store().reaction_of(i, &slot);
-        if r.is_empty() {
-            // Absolute as the badge is: a column's `gap` skips both, so a
-            // reaction coming or going moves nothing.
-            view().absolute().into_element()
-        } else {
-            tapback_in(i, slot.clone(), r, right).into_element()
-        }
+        // No reaction, no view: an empty absolute one stood in each
+        // bubble and card. Absolute as the badge is, a column's `gap`
+        // skips it, so a reaction coming or going moves nothing.
+        (!r.is_empty()).then(|| tapback_in(i, slot.clone(), r, right))
     })
 }
 
@@ -1397,15 +1396,13 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     .is_some_and(|a| a.i == i && a.slot == "msg")
                 || store().ctx_open_for(i, "msg")
         };
-        bar_slot(
-            false,
-            shown,
+        bar_slot(false, shown, move || {
             vec![
                 react_act(i, "msg".to_owned()).into_element(),
                 act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
                 turn_more(i).into_element(),
-            ],
-        )
+            ]
+        })
         .into_element()
     };
     view()
@@ -1537,20 +1534,35 @@ pub(crate) fn highlight_ring(i: i64, radius: f32) -> impl IntoElement {
 /// A one-line bubble's height (7 + 22 + 7): no bubble is narrower.
 const BUBBLE_MIN: f32 = 36.0;
 
-/// A message's hover bar: always mounted at its height (rows keep their
-/// size), made invisible while not `shown` — a hover only flips a style.
-/// Building its buttons on hover put views in and out of the window on
-/// every enter and leave, 8–13 ms a frame for 5–14 views; a style flip
-/// costs well under one. The bar is the slot itself and each button a
-/// single text, so it adds 2–3 views to a row.
-fn bar_slot(right: bool, shown: impl Fn() -> bool + 'static, acts: Vec<AnyElement>) -> View {
+/// A message's hover bar: always at its height (rows keep their size),
+/// made invisible while not `shown` — a hover only flips a style.
+/// Building its buttons on every hover put views in and out of the window
+/// on each enter and leave, 8–13 ms a frame for 5–14 views; a style flip
+/// costs well under one. The buttons (each a single text) come the first
+/// time the bar shows and stay: a reply's dozens of cards no longer mount
+/// three views each that nobody hovered.
+fn bar_slot(right: bool, shown: impl Fn() -> bool + 'static, acts: impl Fn() -> Vec<AnyElement> + 'static) -> View {
+    let shown = std::rc::Rc::new(shown);
+    let first = shown.clone();
     view()
         .flex_row()
         .when(right, |v| v.justify_end())
         .gap(px(2.0))
         .h(px(ACT))
         .style_when(move || !shown(), |s| s.invisible())
-        .children(acts)
+        .child(when(armed(move || first()), acts))
+}
+
+/// `shown`, until it first holds; then true for good (it stops reading
+/// `shown`).
+fn armed(shown: impl Fn() -> bool + 'static) -> Memo<bool> {
+    let held = std::cell::Cell::new(false);
+    computed(move || {
+        if !held.get() && shown() {
+            held.set(true);
+        }
+        held.get()
+    })
 }
 
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
@@ -1780,7 +1792,18 @@ fn artifact(
     // `"art:" + (f?.path || "gallery")` (shell.tsx:339) — each artifact's
     // bar owns its own pill slot.
     let slot = format!("art:{}", f.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| "gallery".to_owned()));
-    let slot2 = slot.clone();
+    let shown = {
+        let slot = slot.clone();
+        std::rc::Rc::new(move || {
+            store()
+                .pill
+                .get()
+                .as_ref()
+                .is_some_and(|a| a.i == i && a.slot == slot)
+                || store().ctx_open_for(i, &slot)
+                || (hov.get() && !store().chat_scrolling.get())
+        })
+    };
     // The file itself goes along with a reply on it (App.tsx:580).
     let reply_file = f.as_ref().map(|f| f.path.clone()).filter(|p| !p.is_empty());
     let reply_label = f
@@ -1797,46 +1820,45 @@ fn artifact(
             }
         })
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        // The bar's room under the card (its height and the column's
+        // gap): the bar itself mounts the first time it shows, over that
+        // room, so a card nobody hovered has no bar views at all.
+        .pb(px(ACT + 4.0))
         .child(node)
         // This artifact's own reaction (`slot`), not the message's: a
         // reply's files each take theirs.
         .child(reaction_badge(i, slot.clone(), true))
         // The bar is the pill's anchor; shown while hovered, or its pill
         // open.
-        .child(
+        .child(when(armed({ let s = shown.clone(); move || s() }), move || {
+            let (slot, items, reply_label, reply_file) = (slot.clone(), items.clone(), reply_label.clone(), reply_file.clone());
+            let shown = shown.clone();
             // On the left: the artifact's tapback sits at its top-right,
             // and a bar under that corner ran into the next one's.
-            bar_slot(
-                false,
-                move || {
-                    store()
-                        .pill
-                        .get()
-                        .as_ref()
-                        .is_some_and(|a| a.i == i && a.slot == slot2)
-                        || store().ctx_open_for(i, &slot2)
-                        || (hov.get() && !store().chat_scrolling.get())
-                },
-                vec![
-                    react_act(i, slot.clone()).into_element(),
-                    act("↩", "reply", move || {
-                        let st = store();
-                        let name = st
-                            .active_bot_untracked()
-                            .map(|b| b.name)
-                            .unwrap_or_default();
-                        st.reply_to.set(Some(crate::store::ReplyTo {
-                            i,
-                            name,
-                            text: reply_label.clone(),
-                            files: reply_file.iter().cloned().collect(),
-                        }));
-                    })
-                    .into_element(),
-                    more_act(i, slot, move || items.clone()).into_element(),
-                ],
-            ),
-        )
+            view()
+                .absolute()
+                .left(px(0.0))
+                .bottom(px(0.0))
+                .flex_row()
+                .gap(px(2.0))
+                .h(px(ACT))
+                .style_when(move || !shown(), |s| s.invisible())
+                .child(react_act(i, slot.clone()))
+                .child(act("↩", "reply", move || {
+                    let st = store();
+                    let name = st
+                        .active_bot_untracked()
+                        .map(|b| b.name)
+                        .unwrap_or_default();
+                    st.reply_to.set(Some(crate::store::ReplyTo {
+                        i,
+                        name,
+                        text: reply_label.clone(),
+                        files: reply_file.iter().cloned().collect(),
+                    }));
+                }))
+                .child(more_act(i, slot, move || items.clone()))
+        }))
 }
 
 // ---------------------------------------------------------------------------
