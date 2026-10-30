@@ -1,10 +1,16 @@
 //! The command line and environment.
 //!
 //!   rox-broker [--port P] [--data DIR] [--node PATH] [--node-script PATH]
+//!              [--assets DIR] [--no-node]
 //!
 //! The port comes from `--port`, else `PORT`, else 8787. Node runs
 //! `--node-script` (default `src/app-server.mjs`, from the working
 //! directory, as the broker's tests run it) with `--node` (default `node`).
+//! `--no-node` runs no Node at all (the hub answers everything; plan 7.1).
+//! `--assets` is the folder of the static files the broker serves and
+//! reads (office pages, the plugin catalog, trust.json; `node_modules`
+//! beside it): Node's server dir, the script's folder, when not given, as
+//! a checkout and the Grok Shell bundle lay them out (plan 7.1).
 //! `--data` sets `GROK_DATA_DIR` for Node; without it Node keeps the
 //! environment's. The routes answered in Rust use the same data dir as
 //! Node (`data_dir`).
@@ -17,6 +23,10 @@ pub struct Config {
     pub data: Option<PathBuf>,
     pub node: PathBuf,
     pub node_script: PathBuf,
+    /// `--assets`: the server dir, when it is not the script's folder.
+    pub assets: Option<PathBuf>,
+    /// `--no-node`: no Node behind the front door.
+    pub no_node: bool,
     /// More environment for Node (the line's address and token).
     pub node_env: Vec<(String, String)>,
 }
@@ -27,6 +37,7 @@ impl Config {
         let mut data = None;
         let mut node = PathBuf::from("node");
         let mut node_script = PathBuf::from("src/app-server.mjs");
+        let (mut assets, mut no_node) = (None, false);
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
@@ -35,6 +46,8 @@ impl Config {
                 "--data" => data = Some(PathBuf::from(value("--data")?)),
                 "--node" => node = PathBuf::from(value("--node")?),
                 "--node-script" => node_script = PathBuf::from(value("--node-script")?),
+                "--assets" => assets = Some(PathBuf::from(value("--assets")?)),
+                "--no-node" => no_node = true,
                 other => return Err(format!("unknown argument {other}")),
             }
         }
@@ -42,17 +55,26 @@ impl Config {
             Some(p) => p.parse().map_err(|_| format!("the port {p} is not a number"))?,
             None => 8787,
         };
-        Ok(Self { port, data, node, node_script, node_env: Vec::new() })
+        Ok(Self { port, data, node, node_script, assets, no_node, node_env: Vec::new() })
+    }
+
+    /// Node's server dir (its `serverFile()` root): `--assets`, else the
+    /// script's folder (`.` for a bare script name).
+    pub fn server_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.assets {
+            return dir.clone();
+        }
+        self.node_script.parent().filter(|p| !p.as_os_str().is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
     }
 
     /// The trust store Node reads (v1/trust.mjs): `ROX_TRUST_FILE`, else
-    /// `trust.json` beside the script (a bundle), else `v1/trust.json`
+    /// `trust.json` in the server dir (a bundle), else `v1/trust.json`
     /// (a checkout).
     pub fn trust_file(&self, env: Option<&str>) -> PathBuf {
         if let Some(f) = env.filter(|e| !e.is_empty()) {
             return PathBuf::from(f);
         }
-        let dir = self.node_script.parent().unwrap_or(std::path::Path::new("."));
+        let dir = self.server_dir();
         let beside = dir.join("trust.json");
         if beside.exists() {
             beside
@@ -114,5 +136,22 @@ mod tests {
         assert_eq!(c.node_script, PathBuf::from("/n/app-server.mjs"));
         let d = Config::parse(&args(&[]), None).unwrap();
         assert_eq!((d.node, d.node_script), (PathBuf::from("node"), PathBuf::from("src/app-server.mjs")));
+    }
+
+    #[test]
+    fn the_assets_default_to_the_scripts_folder_and_take_the_flag() {
+        let d = Config::parse(&args(&[]), None).unwrap();
+        assert_eq!((d.assets.clone(), d.no_node), (None, false));
+        assert_eq!(d.server_dir(), PathBuf::from("src"));
+        let c = Config::parse(&args(&["--node-script", "/r/server/app-server.mjs"]), None).unwrap();
+        assert_eq!(c.server_dir(), PathBuf::from("/r/server"));
+        assert_eq!(Config::parse(&args(&["--node-script", "app-server.mjs"]), None).unwrap().server_dir(), PathBuf::from("."));
+        let c = Config::parse(&args(&["--node-script", "/r/server/app-server.mjs", "--assets", "/b/broker/server", "--no-node"]), None).unwrap();
+        assert_eq!(c.assets, Some(PathBuf::from("/b/broker/server")));
+        assert!(c.no_node);
+        assert_eq!(c.server_dir(), PathBuf::from("/b/broker/server"));
+        // the trust store is the assets' (no file there: the checkout's path under it)
+        assert_eq!(c.trust_file(None), PathBuf::from("/b/broker/server/v1/trust.json"));
+        assert!(Config::parse(&args(&["--assets"]), None).is_err());
     }
 }

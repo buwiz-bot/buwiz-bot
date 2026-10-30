@@ -93,6 +93,7 @@ impl FrontDoor {
     fn health(&self) -> Response<Body> {
         match self.node.port().or(self.node.is_absent().then_some(0)) {
             Some(_) => json(StatusCode::OK, serde_json::json!({ "ok": true, "broker": "rox-broker" })),
+            None if self.node.is_absent() => json(StatusCode::OK, serde_json::json!({ "ok": true, "broker": "rox-broker" })),
             None => json(StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({ "ok": false, "broker": "rox-broker", "node": "starting" })),
         }
     }

@@ -173,9 +173,13 @@ fn no_node_starts_no_node_and_answers_preflights() {
 
 #[test]
 fn no_node_needs_the_hub() {
-    let out = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string()]).env_remove("ROX_BROKER_HUB").env("ROX_BROKER_NO_NODE", "1").output().unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ROX_BROKER_NO_NODE=1 needs ROX_BROKER_HUB=1"));
+    // the env var and the flag (the broker inside Rox.app) alike
+    let env = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string()]).env_remove("ROX_BROKER_HUB").env("ROX_BROKER_NO_NODE", "1").output().unwrap();
+    let flag = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string(), "--no-node"]).env_remove("ROX_BROKER_HUB").env_remove("ROX_BROKER_NO_NODE").output().unwrap();
+    for out in [env, flag] {
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("(ROX_BROKER_NO_NODE=1) needs ROX_BROKER_HUB=1"));
+    }
 }
 
 #[test]
