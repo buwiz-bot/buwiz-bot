@@ -220,7 +220,9 @@ test("MKT-02 a plugin's page before install: the catalog's skills, its servers f
     ["GOOGLE_CLIENT_ID", true, false, false, "", true, "google"],
     ["GOOGLE_CLIENT_SECRET", true, true, false, "", true, "google"],
   ]);
-  assert.equal(sha(g.text), GMAIL_SHA);
+  // the body names this broker's port (the OAuth callback URL): hashed
+  // with it as ":PORT", so the pin holds on any TEST_PORT
+  assert.equal(sha(g.text.replaceAll(`:${PORT}`, ":PORT")), GMAIL_SHA);
   const none = await get("/plugins/detail?name=nope");
 
   assert.equal(none.status, 404);
@@ -544,4 +546,4 @@ test("MKT-14 installed plugin skills as the agent's index (module level)", () =>
 
 const CATALOG_COUNT = 450;
 const CATALOG_SHA = "970aafe0295d40da5c553d1ca22f872ef2f67eb7868633566ebb30249b3a117c";
-const GMAIL_SHA = "aa26f67e561eac6999e6626f4590364d8015b84b58f6876a3b6cd198c832d870";
+const GMAIL_SHA = "3fe39577fcbc9b4db98de7d715fdb97d1e4501bfdcabeb15b8fbe2cb21fb912e";
