@@ -1,8 +1,0 @@
-{
- "source": "tests/compat/flowchart/flow-arrows.spec.js",
- "type": "flowchart",
- "mermaidType": "flowchart-v2",
- "width": 160,
- "height": 64,
- "links": []
-}

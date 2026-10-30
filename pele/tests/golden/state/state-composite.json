@@ -1,8 +1,0 @@
-{
- "source": "samples/state-composite.mmd",
- "type": "state",
- "mermaidType": "stateDiagram",
- "width": 335,
- "height": 609,
- "links": []
-}
