@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+// aerospace stub for the broker tests: moves, floats and focuses nothing.
+//   `list-windows …` prints AEROSPACE_STUB_WINDOWS (a file read at each
+//     call, "<window-id> <title>" lines; missing: nothing);
+//   `list-workspaces --focused` prints AEROSPACE_STUB_WORKSPACE (default
+//     "1"); anything else succeeds silently.
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+
+const argv = process.argv.slice(2);
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "aerospace", argv }) + "\n");
+const file = process.env.AEROSPACE_STUB_WINDOWS;
+
+if (argv[0] === "list-windows" && file && existsSync(file)) process.stdout.write(readFileSync(file, "utf8"));
+if (argv[0] === "list-workspaces") process.stdout.write(`${process.env.AEROSPACE_STUB_WORKSPACE || "1"}\n`);

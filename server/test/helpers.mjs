@@ -27,9 +27,10 @@ export function brokerCommand() {
 
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
 
-// PATH stubs for the Mac tools the broker shells out to (nsh, pbcopy,
-// open, osascript, sips, qlmanage, secret): each file's header says what it
-// does and which env vars steer it.
+// PATH stubs for the Mac tools the broker shells out to (nsh and the
+// nsh-macos-host beside it, pbcopy, open, osascript, sips, qlmanage,
+// secret, aerospace): each file's header says what it does and which env
+// vars steer it.
 export const STUB_BIN = join(ROOT, "test", "fixtures", "bin");
 
 /** The env that puts the stubs first on the broker's PATH, NSH at the nsh
