@@ -12,6 +12,8 @@
 //! A path in no entry (and every OPTIONS preflight) goes to Node as today.
 //! The first matching entry wins: specific paths before the prefixes.
 
+/// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
+pub mod agents;
 pub mod bots;
 pub mod chat;
 pub mod groups;
