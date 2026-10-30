@@ -109,51 +109,128 @@ fn mermaid_url(code: &str, mode: &str) -> String {
     format!("{}/mermaid?d={out}&theme={theme}&mode={mode}", crate::client::backend())
 }
 
-/// `MermaidBlock` (md.tsx:119): a ```mermaid fence as a native SVG image
-/// rendered by Pele (`mermaid::diagram`) at its natural size, scaled down
-/// to the column. Only when Pele cannot draw it (no Node, a diagram it
-/// does not parse) does it fall back to mermaid.js in a web view. A press
-/// opens the diagram in the lightbox.
+/// `MermaidBlock` (md.tsx:119): a ```mermaid fence drawn natively — Pele
+/// ported to Rust lays it out, nsh's canvas draws it (`mermaid::diagram`)
+/// at its natural size, scaled down to the column. A type the port does not
+/// cover yet, or a diagram it rejects, keeps the old way: the Node helper's
+/// image, then mermaid.js in a web view. A press opens the lightbox; a
+/// node's `click` link opens through `links.rs`.
 pub(crate) fn mermaid_block(code: &str) -> impl IntoElement {
     let code = code.to_owned();
-    let code_p = code.clone();
-    view()
-        .max_w(percentage(1.0))
-        .child(dynamic(move || {
-            let d = crate::mermaid::diagram(&code, dark());
-            match d.get() {
-                // Rendering (well under a millisecond once the helper is
-                // up): hold the line's height.
-                None => view().h(px(24.0)).into_element(),
-                Some(Ok(g)) => image(g.uri.clone())
-                    .w(px(g.w))
-                    .max_w(percentage(1.0))
-                    .aspect_ratio(g.w / g.h)
-                    .into_element(),
-                Some(Err(_)) => mermaid_web(&code).into_element(),
+    view().max_w(percentage(1.0)).child(dynamic(move || {
+        let d = crate::mermaid::diagram(&code, dark());
+        match d.get() {
+            // Laying out (well under a millisecond): hold the line's height.
+            None => view().h(px(24.0)).into_element(),
+            Some(Ok(g)) => {
+                let code = code.clone();
+                diagram_canvas(g, None).label("Open diagram").on_press(move || open_diagram(&code)).into_element()
             }
-        }))
+            Some(Err(_)) => {
+                let code_p = code.clone();
+                view()
+                    .max_w(percentage(1.0))
+                    .child(mermaid_helper_block(&code))
+                    .child(
+                        view()
+                            .absolute()
+                            .inset(px(0.0))
+                            .label("Open diagram")
+                            .on_press(move || open_diagram(&code_p)),
+                    )
+                    .into_element()
+            }
+        }
+    }))
+}
+
+/// The diagram `code` in the lightbox.
+fn open_diagram(code: &str) {
+    store().open_lightbox(
+        vec![crate::store::LightItem {
+            kind: "diagram".to_owned(),
+            uri: String::new(),
+            name: "Diagram".to_owned(),
+            path: String::new(),
+            poster: String::new(),
+            w: 0.0,
+            h: 0.0,
+            code: code.to_owned(),
+        }],
+        0,
+    );
+}
+
+/// A native diagram: its drawing at its natural size, scaled to fit the
+/// column as an image would (`fixed`: drawn at that scale instead, for the
+/// lightbox). Its `click` links are pressable areas over it.
+fn diagram_canvas(g: std::sync::Arc<crate::mermaid::Drawn>, fixed: Option<f32>) -> View {
+    let width = signal(g.w);
+    let gw = g.w;
+    let k = move || fixed.unwrap_or_else(|| (width.get() / gw).min(1.0).max(0.01));
+    let gd = g.clone();
+    let mut out = view()
+        .w(px(g.w * fixed.unwrap_or(1.0)))
+        .max_w(percentage(1.0))
+        .aspect_ratio(g.w / g.h)
         .child(
+            canvas(move || {
+                let k = k();
+                let mut ops = Vec::with_capacity(gd.drawing.ops.len() + 1);
+                ops.push(nsh_core::canvas::CanvasOp::Scale(nsh_core::canvas::Num::Const(k), nsh_core::canvas::Num::Const(k)));
+                ops.extend(gd.drawing.ops.iter().cloned());
+                let nodes = gd
+                    .drawing
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        let mut n = n.clone();
+                        n.bounds = n.bounds.map(|v| px(v.0 * k));
+                        n
+                    })
+                    .collect();
+                Painter::from(nsh_core::canvas::Drawing { ops, nodes, ..Default::default() })
+            })
+            .absolute()
+            .inset(px(0.0)),
+        )
+        .on_layout(move |b: &Bounds<Points>| {
+            if fixed.is_none() && (b.size.width.0 - width.get_untracked()).abs() > 0.5 {
+                width.set(b.size.width.0);
+            }
+        });
+    for (b, href) in g.links.iter().cloned() {
+        let href_p = href.clone();
+        out = out.child(
             view()
                 .absolute()
-                .inset(px(0.0))
-                .label("Open diagram")
-                .on_press(move || {
-                    store().open_lightbox(
-                        vec![crate::store::LightItem {
-                            kind: "diagram".to_owned(),
-                            uri: String::new(),
-                            name: "Diagram".to_owned(),
-                            path: String::new(),
-                            poster: String::new(),
-                            w: 0.0,
-                            h: 0.0,
-                            code: code_p.clone(),
-                        }],
-                        0,
-                    );
-                }),
-        )
+                .left(move || px(b.origin.x.0 * k()))
+                .top(move || px(b.origin.y.0 * k()))
+                .w(move || px(b.size.width.0 * k()))
+                .h(move || px(b.size.height.0 * k()))
+                .label(href)
+                .on_press(move || store().open_link(&href_p)),
+        );
+    }
+    out
+}
+
+/// The Node helper's image of a diagram the port does not draw, else the
+/// web view (what every fence took before the port).
+fn mermaid_helper_block(code: &str) -> impl IntoElement {
+    let code = code.to_owned();
+    dynamic(move || {
+        let d = crate::mermaid::web::diagram(&code, dark());
+        match d.get() {
+            None => view().h(px(24.0)).into_element(),
+            Some(Ok(g)) => image(g.uri.clone())
+                .w(px(g.w))
+                .max_w(percentage(1.0))
+                .aspect_ratio(g.w / g.h)
+                .into_element(),
+            Some(Err(_)) => mermaid_web(&code).into_element(),
+        }
+    })
 }
 
 /// The fallback: mermaid.js in a web view sized to the diagram — the
@@ -1261,13 +1338,31 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
                         .size_full(),
                 )
                 .into_element(),
-            // The same Pele diagram as inline, at 4× and fitted to the
-            // window on the bubble's surface; the web page only when Pele
-            // cannot draw it.
+            // The same drawing as inline, fitted to the window on the
+            // bubble's surface; the helper's 4× image, then the web page,
+            // for a diagram the port does not draw.
+            "diagram" if matches!(crate::mermaid::diagram(&cur.code, dark()).get(), Some(Ok(_)) | None) => {
+                match crate::mermaid::diagram(&cur.code, dark()).get() {
+                    Some(Ok(g)) => {
+                        let pad = 24.0f32;
+                        let k = ((sw as f32 - 2.0 * pad) / g.w).min((sh as f32 - 2.0 * pad) / g.h).clamp(0.1, 3.0);
+                        view()
+                            .scale(zoom as f32)
+                            .p(px(pad))
+                            .rounded(px(12.0))
+                            .bg(theme::AGENT_BUBBLE)
+                            .border(px(0.5))
+                            .border_color(media_card_border)
+                            .child(diagram_canvas(g, Some(k)))
+                            .into_element()
+                    }
+                    _ => view().into_element(),
+                }
+            }
             "diagram" if matches!(
-                crate::mermaid::diagram_at(&cur.code, dark(), 4).get(),
+                crate::mermaid::web::diagram_at(&cur.code, dark(), 4).get(),
                 Some(Ok(_)) | None
-            ) => match crate::mermaid::diagram_at(&cur.code, dark(), 4).get() {
+            ) => match crate::mermaid::web::diagram_at(&cur.code, dark(), 4).get() {
                 Some(Ok(g)) => {
                     let pad = 24.0f32;
                     let k = ((sw as f32 - 2.0 * pad) / g.w)

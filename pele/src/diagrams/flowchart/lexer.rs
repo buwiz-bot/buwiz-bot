@@ -266,6 +266,7 @@ impl Lx<'_> {
     }
 }
 
+#[allow(unused_assignments)]
 pub fn tokenize(src: &[u16]) -> Tokens {
     let lx = Lx { src, n: src.len() };
     let n = src.len();
