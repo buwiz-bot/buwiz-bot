@@ -12,6 +12,11 @@
 //! A path in no entry (and every OPTIONS preflight) goes to Node as today.
 //! The first matching entry wins: specific paths before the prefixes.
 
+pub mod bots;
+pub mod chat;
+pub mod groups;
+pub mod mcp_chat;
+
 use hyper::Method;
 
 use super::types::Pattern::{self, Exact as X, Prefix as P, Segments as S};

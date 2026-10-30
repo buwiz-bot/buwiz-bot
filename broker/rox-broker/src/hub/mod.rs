@@ -94,7 +94,10 @@ impl Registry {
 
 /// What each track adds. The skeleton adds nothing; a track adds one line
 /// here calling its own `install(routes, ctx)`.
-fn install(_routes: &mut Registry, _ctx: &mut HubCtx) {}
+fn install(routes: &mut Registry, ctx: &mut HubCtx) {
+    // track A first: it loads the store the others' starts read
+    routes::chat::install(routes, ctx);
+}
 
 pub struct Hub {
     ctx: Arc<HubCtx>,
