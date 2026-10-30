@@ -111,9 +111,13 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     agent::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
+    routes::mermaid::install(routes, ctx);
+    routes::popout::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);
     routines::install(routes, ctx);
+    // 6.1: office in Rust (the tools in process, /office/*, /file/render)
+    crate::office::install(routes, ctx);
 }
 
 pub struct Hub {

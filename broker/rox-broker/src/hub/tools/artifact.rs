@@ -488,7 +488,7 @@ pub async fn generate_image(run: &Run, input: &Value) -> Result<Out, String> {
 }
 
 /// A POST to this broker's front door (its public port, D34).
-async fn self_post(path: &str, body: &Value) -> Value {
+pub(crate) async fn self_post(path: &str, body: &Value) -> Value {
     let port = crate::hub::market::node_paths().1;
     let Ok(url) = url::Url::parse(&format!("http://127.0.0.1:{port}{path}")) else { return json!({}) };
     let req = crate::helper::http::Req::post(url, js::stringify(body).into_bytes()).header("Content-Type", "application/json");
@@ -522,8 +522,7 @@ pub async fn artifact_tool(run: &Run, tool: &str, input: &Value) -> Result<Out, 
             let shown = v_in.map(|v| format!(" v{}", js::string_of(v))).unwrap_or_default();
             Ok(if ok(&r) { Out::ok(format!("{name}{shown} opened in its own window.")) } else { Out::err(format!("launch failed: {}", err(&r).unwrap_or_else(|| "no such module".into()))) })
         }
-        // the pop-outs are Node's office role's (D36): this broker holds none
-        "close_app" => Ok(Out::ok(format!("no open window for {name}."))),
+        "close_app" => Ok(Out::ok(crate::hub::routes::popout::close_app(ctx, &name))),
         "promote_app" => {
             let r = self_post("/publish", &json!({"name": name})).await;
             Ok(if ok(&r) { Out::ok(format!("{name} is now in Mini Apps.")) } else { Out::err(format!("promote failed: {}", err(&r).unwrap_or_else(|| "?".into()))) })

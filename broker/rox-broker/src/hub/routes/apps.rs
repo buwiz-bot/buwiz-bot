@@ -5,8 +5,7 @@
 //! app-server.mjs runs after the store's start: the pre-versioning
 //! migration, the pre-slug renames, the index, and the chunk backfill.
 //!
-//! `/app/version` does not reopen an open pop-out on the new head: the
-//! pop-outs are Node's office role's (`/popout`, D36).
+//! `/app/version` reopens an open pop-out on the new head (`popout.rs`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -353,6 +352,8 @@ async fn app_version(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         if !moved {
             return Err("no such version".to_owned());
         }
+        // an open pop-out of the app shows the old head: reopen it on v
+        super::popout::reopen(&ctx, get(&j, "name"), v);
         Ok(json!({"ok": true, "v": num(v)}))
     })();
     match r {

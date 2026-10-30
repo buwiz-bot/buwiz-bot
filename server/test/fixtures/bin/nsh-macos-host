@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// nsh-macos-host stub for the broker tests (a pop-out's window host, found
+// beside the nsh stub as config.mjs finds NSH_HOST): opens no window. It
+// logs {bin, argv, pid} to ROX_STUB_LOG, stays alive as a window would,
+// and on SIGTERM logs {bin, signal: "SIGTERM", pid} and exits. It ends
+// itself after NSH_HOST_STUB_MS (default 120000) so a test that dies
+// leaves nothing running.
+const { appendFileSync } = require("node:fs");
+
+const log = (o) => process.env.ROX_STUB_LOG && appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "nsh-macos-host", ...o, pid: process.pid }) + "\n");
+
+log({ argv: process.argv.slice(2) });
+process.on("SIGTERM", () => {
+  log({ signal: "SIGTERM" });
+  process.exit(0);
+});
+setTimeout(() => process.exit(0), Number(process.env.NSH_HOST_STUB_MS || 120000));
