@@ -5,7 +5,7 @@
 // a database from before v1 routine instances with an enabled routine),
 // an office-role start and stop leave app.db's rows, the host token, .stage
 // and the index files as they were; an office route answers and a hub
-// route gets 501. A normal start afterwards does rewrite them, so the seed
+// route (or a deleted one) gets 501. A normal start afterwards does rewrite them, so the seed
 // is one the guards were needed for.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -96,21 +96,9 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
 
     assert.equal(caps.status, 200, caps.text);
     assert.equal(typeof caps.json, "object");
-    const page = await request("GET", `/mermaid?d=${Buffer.from("graph TD; a-->b").toString("base64url")}`);
-
-    assert.equal(page.status, 200);
-    assert.match(page.text, /mermaid/);
-    const lit = await postJson("/highlight", { code: "const x = 1;", lang: "js" });
-
-    assert.equal(lit.status, 200, lit.text);
-    assert.ok("lines" in lit.json);
-    // a pop-out stays Node's until 6.3 (D36): no such module, no window
-    const pop = await postJson("/popout", { name: "R999" });
-
-    assert.equal(pop.status, 200, pop.text);
-    assert.deepEqual(pop.json, { ok: false, error: "no such module" });
-
-    for (const [method, path] of [["GET", "/threads"], ["POST", "/thread/new"], ["GET", "/turns"], ["GET", "/v1/host/plugins"], ["POST", "/v1/hooks/ri_x/secret"], ["GET", "/state/office-role"], ["GET", "/routines"]]) {
+    // the hub's since 6.2 (/mermaid*) and 6.3 (/popout); /highlight deleted (6.2)
+    for (const [method, path] of [["GET", "/threads"], ["POST", "/thread/new"], ["GET", "/turns"], ["GET", "/v1/host/plugins"], ["POST", "/v1/hooks/ri_x/secret"], ["GET", "/state/office-role"], ["GET", "/routines"],
+      ["GET", `/mermaid?d=${Buffer.from("graph TD; a-->b").toString("base64url")}`], ["GET", "/mermaid.js"], ["POST", "/highlight"], ["POST", "/popout"]]) {
       const r = method === "GET" ? await request(method, path) : await postJson(path, {});
 
       assert.equal(r.status, 501, `${method} ${path}: ${r.text}`);
