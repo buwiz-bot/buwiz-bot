@@ -9,14 +9,11 @@ use std::path::Path;
 /// The Mini Apps tab's shelf, the very file Node copies.
 pub const SHELF: &str = include_str!("../../../../../server/src/templates/shelf.tsx");
 
-/// `R<n>.tsx` names (without ".tsx") in directory order.
+/// `R<n>.tsx` names (without ".tsx") in directory order (readdirSync's:
+/// libuv sorts the names bytewise).
 fn modules(dir: &Path) -> Vec<String> {
-    let Ok(d) = std::fs::read_dir(dir) else { return Vec::new() };
-    d.filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|f| super::load::module_number(f).is_some() && f != "index.tsx")
-        .map(|f| f[..f.len() - 4].to_owned())
-        .collect()
+    let Ok(d) = crate::hub::pipeline::versions::read_dir_sorted(dir) else { return Vec::new() };
+    d.into_iter().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|f| super::load::module_number(f).is_some() && f != "index.tsx").map(|f| f[..f.len() - 4].to_owned()).collect()
 }
 
 /// `<slug>.v<n>.tsx` → n.
@@ -32,8 +29,8 @@ pub fn index_text(gen: &Path, widgets: &Path) -> (String, String) {
     let pubs = modules(widgets);
     let mut vers: Vec<(String, u64, String)> = Vec::new();
     for n in &g {
-        if let Ok(d) = std::fs::read_dir(gen.join(n)) {
-            for e in d.filter_map(|e| e.ok()) {
+        if let Ok(d) = crate::hub::pipeline::versions::read_dir_sorted(&gen.join(n)) {
+            for e in d {
                 let f = e.file_name().to_string_lossy().into_owned();
                 if let Some(v) = version_of(&f) {
                     vers.push((n.clone(), v, f[..f.len() - 4].to_owned()));
