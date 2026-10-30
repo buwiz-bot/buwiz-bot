@@ -6,6 +6,11 @@ description = "The Rox broker: the front door on the broker's port, with the Nod
 publish = false
 
 [dependencies]
+# office in Rust (plan 6.1): BetterOffice's engines, the crates its npm
+# packages are built from
+betteroffice-docx = "0.5.1"
+betteroffice-xlsx = "0.5.1"
+betteroffice-pptx = "0.5.1"
 base64 = "0.22"
 bytes = "1"
 ed25519-dalek = "2.2"
