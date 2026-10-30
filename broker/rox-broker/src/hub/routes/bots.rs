@@ -256,7 +256,7 @@ async fn run_ok(ctx: &HubCtx, program: &str, args: &[&str], timeout_ms: u64) -> 
 
 /// `osa(script)`: `osascript -e <script>`, its output trimmed.
 async fn osa(ctx: &HubCtx, script: &str) -> Result<String, String> {
-    exec(ctx, LocalCommand { program: "osascript".into(), args: vec!["-e".into(), script.into()], stdin: None, timeout: None }).await.map(|o| o.trim().to_owned())
+    exec(ctx, LocalCommand { program: "osascript".into(), args: vec!["-e".into(), script.into()], ..Default::default() }).await.map(|o| o.trim().to_owned())
 }
 
 /// files.mjs `imageSize(path)`: `{width, height}`, or `{}`.

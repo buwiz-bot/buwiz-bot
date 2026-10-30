@@ -99,6 +99,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // track A first: it loads the store the others' starts read
     routes::chat::install(routes, ctx);
     model::install(routes, ctx);
+    routes::leftovers::install(routes, ctx);
 }
 
 pub struct Hub {
