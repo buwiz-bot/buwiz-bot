@@ -1,8 +1,9 @@
 //! ```mermaid fences drawn natively: Pele ported to Rust (hexuria/pele-rs) lays the
 //! diagram out off the UI thread, and nsh's canvas draws the scene in
-//! Rox's palette — no Node, no web view. A type the port does not cover
-//! yet, or a diagram it rejects, takes the old way (`web.rs`: the Node
-//! helper, then mermaid.js in a web view).
+//! Rox's palette — no Node, no web view. Only a type the port does not
+//! register (today: architecture) takes the old way (`web.rs`: the Node
+//! helper, then mermaid.js in a web view); a diagram of a type it draws
+//! that Pele rejects shows Pele's message.
 
 mod draw;
 pub(crate) mod palette;
@@ -62,8 +63,33 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
 /// Why a fence is not drawn natively.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Unported {
-    /// A type the port does not cover yet, or text Pele rejects (its message).
+    /// A type the port does not register, or none Pele knows: the old way
+    /// may draw it.
     Pele(String),
+    /// Text of a type the port draws that Pele rejects: its message, and
+    /// the source line (1-based; 0 when Pele gives none).
+    Rejected { message: String, line: usize },
+}
+
+impl Unported {
+    /// What an error of a type the port draws looks like; any other error
+    /// takes the old way.
+    fn from(e: &pele::PeleError) -> Self {
+        use pele::PeleErrorCode as C;
+        match e.code {
+            C::NotYetPorted | C::UnsupportedDiagram => Unported::Pele(e.message.clone()),
+            C::Syntax | C::Semantic | C::Limit => Unported::Rejected { message: e.message.clone(), line: e.line },
+        }
+    }
+
+    /// The inline note for a rejected diagram.
+    pub(crate) fn note(&self) -> String {
+        match self {
+            Unported::Pele(m) => format!("can't draw: {m}"),
+            Unported::Rejected { message, line: 0 } => format!("can't draw: {message}"),
+            Unported::Rejected { message, line } => format!("can't draw: {message} (line {line})"),
+        }
+    }
 }
 
 /// A diagram as Pele laid it out: the scene, with upstream's SVG for "copy".
@@ -77,20 +103,22 @@ fn code_hash(code: &str) -> u64 {
     h.finish()
 }
 
-fn scenes() -> &'static Mutex<Lru<u64, Arc<Result<Laid, String>>>> {
-    static SCENES: OnceLock<Mutex<Lru<u64, Arc<Result<Laid, String>>>>> = OnceLock::new();
+fn scenes() -> &'static Mutex<Lru<u64, Arc<Result<Laid, Unported>>>> {
+    static SCENES: OnceLock<Mutex<Lru<u64, Arc<Result<Laid, Unported>>>>> = OnceLock::new();
     SCENES.get_or_init(|| Mutex::new(Lru::new(KEEP)))
 }
 
 /// Lays `code` out (cached by its hash). Runs on any thread.
-pub(crate) fn lay_out(code: &str) -> Arc<Result<Laid, String>> {
+pub(crate) fn lay_out(code: &str) -> Arc<Result<Laid, Unported>> {
     let key = code_hash(code);
     if let Some(hit) = scenes().lock().unwrap().get(&key) {
         return hit;
     }
     let laid = match pele::render(code) {
-        Ok(r) => pele::Scene::parse(&r.svg).map(|scene| Laid { scene }).ok_or_else(|| "unreadable scene".to_owned()),
-        Err(e) => Err(e.message),
+        Ok(r) => pele::Scene::parse(&r.svg)
+            .map(|scene| Laid { scene })
+            .ok_or_else(|| Unported::Rejected { message: "unreadable scene".to_owned(), line: 0 }),
+        Err(e) => Err(Unported::from(&e)),
     };
     let laid = Arc::new(laid);
     scenes().lock().unwrap().put(key, laid.clone());
@@ -110,7 +138,7 @@ thread_local! {
 
 /// The drawing for `code` in the dark or light palette: `None` while Pele
 /// lays it out (on a blocking thread), then the drawing, or why it is not
-/// drawn natively (the caller takes the old way then).
+/// drawn natively (the caller takes the old way for `Unported::Pele`).
 pub(crate) fn diagram(code: &str, dark: bool) -> Native {
     let pal = palette(dark);
     let key = (code_hash(code), pal.hash64());
@@ -126,13 +154,13 @@ pub(crate) fn diagram(code: &str, dark: bool) -> Native {
                 let laid = lay_out(&code);
                 match &*laid {
                     Ok(l) => Ok(Arc::new(draw::draw(&l.scene, &pal))),
-                    Err(e) => Err(Unported::Pele(e.clone())),
+                    Err(e) => Err(e.clone()),
                 }
             })
             .await
-            .unwrap_or_else(|e| Err(Unported::Pele(e.to_string())));
-            if let Err(Unported::Pele(e)) = &result {
-                log::debug!("mermaid: not native: {e}");
+            .unwrap_or_else(|e| Err(Unported::Rejected { message: e.to_string(), line: 0 }));
+            if let Err(e) = &result {
+                log::debug!("mermaid: not native: {e:?}");
             }
             sig.set(Some(result));
         });
@@ -182,22 +210,31 @@ mod tests {
         }
     }
 
-    // The types the port has added since flowchart: every input that renders
-    // draws with no element or attribute the translation does not know.
+    // Every type the port registers: each input that renders draws with no
+    // element or attribute the translation does not know.
     #[test]
     fn every_ported_type_translates_completely() {
         let pal = PelePalette::new(true, &Overrides::default());
-        let mut seen = 0;
-        for (ty, inputs) in [("er", pele::corpus::er()), ("class", pele::corpus::class_diagram()), ("state", pele::corpus::state()), ("sequence", pele::corpus::sequence())] {
+        let all = pele::corpus::all();
+        let types: Vec<&str> = all.iter().map(|(ty, _)| *ty).collect();
+        assert_eq!(types, pele::PORTED);
+        let mut unknown: std::collections::BTreeMap<String, (usize, String)> = Default::default();
+        for (ty, inputs) in all {
+            let mut seen = 0;
             for (name, code) in inputs {
                 let Ok(r) = pele::render(&code) else { continue };
                 let scene = pele::Scene::parse(&r.svg).unwrap_or_else(|| panic!("{ty} {name}: scene"));
                 let d = draw(&scene, &pal);
-                assert!(d.unknown.is_empty(), "{ty} {name}: unknown {:?}", d.unknown);
+                assert!(d.w > 0.0 && d.h > 0.0, "{ty} {name}");
+                for u in d.unknown {
+                    let e = unknown.entry(format!("{ty}: {u}")).or_insert((0, name.clone()));
+                    e.0 += 1;
+                }
                 seen += 1;
             }
+            assert!(seen > 0, "{ty}: no input renders");
         }
-        assert!(seen > 300, "inputs: {seen}");
+        assert!(unknown.is_empty(), "unknown (uses, first input): {unknown:#?}");
     }
 
     // The x and y of every text that sets its own (a one-line label, or a
@@ -274,6 +311,86 @@ mod tests {
         // A static member is underlined.
         assert_eq!(rules("classDiagram\n  class Counter {\n    +total$\n  }\n"), 1);
         assert_eq!(rules("classDiagram\n  class Counter {\n    +total\n  }\n"), 0);
+    }
+
+    fn hand_drawn(body: &str) -> super::Drawn {
+        let svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" width=\"100\" height=\"100\">{body}</svg>");
+        draw(&pele::Scene::parse(&svg).unwrap(), &PelePalette::new(false, &Overrides::default()))
+    }
+
+    fn transforms(ops: &[CanvasOp]) -> Vec<[f32; 6]> {
+        ops.iter()
+            .filter_map(|op| match op {
+                CanvasOp::Transform(m) => Some(m.map(|v| if let Num::Const(v) = v { v } else { f32::NAN })),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rotation_turns_about_its_centre() {
+        // gitGraph sets each commit label at -45 degrees about its own point.
+        let svg = pele::render("gitGraph\n  commit\n").unwrap().svg;
+        assert!(svg.contains("transform=\"rotate(-45 3 16.36)\""), "{svg}");
+        let d = draw(&pele::Scene::parse(&svg).unwrap(), &PelePalette::new(true, &Overrides::default()));
+        let m = transforms(&d.drawing.ops);
+        let (s, c) = (-45f32).to_radians().sin_cos();
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let turn = m.iter().find(|m| near(m[0], c) && near(m[1], s) && near(m[2], -s) && near(m[3], c)).expect("a rotation");
+        // The centre stays where it is.
+        let (x, y) = (3.0, 16.36);
+        assert!(near(turn[0] * x + turn[2] * y + turn[4], x) && near(turn[1] * x + turn[3] * y + turn[5], y), "{turn:?}");
+        assert!(d.unknown.is_empty(), "{:?}", d.unknown);
+    }
+
+    #[test]
+    fn text_anchor_is_inherited_from_a_group() {
+        let aligns = |d: &super::Drawn| -> Vec<nsh_core::canvas::CanvasTextAlign> {
+            d.drawing.ops.iter().filter_map(|op| if let CanvasOp::TextAlign(a) = op { Some(*a) } else { None }).collect()
+        };
+        use nsh_core::canvas::CanvasTextAlign::{Center, Left, Right};
+        assert_eq!(aligns(&hand_drawn("<g text-anchor=\"middle\"><text x=\"50\" y=\"20\">Hi</text></g>")), vec![Center]);
+        assert_eq!(aligns(&hand_drawn("<g text-anchor=\"middle\"><text x=\"50\" y=\"20\" text-anchor=\"end\">Hi</text></g>")), vec![Right]);
+        assert_eq!(aligns(&hand_drawn("<g><text x=\"50\" y=\"20\">Hi</text></g>")), vec![Left]);
+    }
+
+    #[test]
+    fn a_nested_svg_maps_its_view_box() {
+        // An icon: 24-unit artwork in a 12-point box at (10,20).
+        let d = hand_drawn("<svg class=\"pele-icon\" x=\"10\" y=\"20\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\"><path d=\"M0,0L24,24\"/></svg>");
+        assert_eq!(transforms(&d.drawing.ops), vec![[0.5, 0.0, 0.0, 0.5, 10.0, 20.0]]);
+        assert!(d.unknown.is_empty(), "{:?}", d.unknown);
+    }
+
+    #[test]
+    fn a_rounding_may_be_the_smaller_of_two() {
+        let radius = |style: &str| {
+            let d = hand_drawn(&format!("<rect x=\"0\" y=\"0\" width=\"40\" height=\"20\" fill=\"red\" style=\"{style}\"/>"));
+            assert!(d.unknown.is_empty(), "{:?}", d.unknown);
+            d.drawing.ops.iter().find_map(|op| match op {
+                CanvasOp::Path(nsh_core::canvas::PathOp::RoundRect(_, [Num::Const(r), ..])) => Some(*r),
+                _ => None,
+            })
+        };
+        assert_eq!(radius("rx:min(6px,3px)"), Some(3.0));
+        assert_eq!(radius("rx:min(var(--nope,2px),3px)"), Some(2.0));
+    }
+
+    #[test]
+    fn only_an_unregistered_type_takes_the_old_way() {
+        use super::{lay_out, Unported};
+        assert!(!pele::PORTED.contains(&"architecture"));
+        let old_way = |code: &str| matches!(&*lay_out(code), Err(Unported::Pele(_)));
+        assert!(old_way("architecture-beta\n  service db(database)[Database]\n"));
+        assert!(old_way("not a diagram\n"));
+        for (ty, inputs) in pele::corpus::all() {
+            for (name, code) in inputs {
+                assert!(!old_way(&code), "{ty} {name} takes the old way");
+            }
+        }
+        let Err(e) = &*lay_out("flowchart LR\n  A-->\n") else { panic!("renders") };
+        assert!(matches!(e, Unported::Rejected { line, .. } if *line > 0), "{e:?}");
+        assert!(e.note().starts_with("can't draw: ") && e.note().ends_with(&format!("(line {})", match e { Unported::Rejected { line, .. } => *line, _ => 0 })));
     }
 
     #[test]
