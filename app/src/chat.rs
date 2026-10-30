@@ -316,7 +316,20 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                                     let (chat, mounted) = (chat.clone(), mounted.clone());
                                     when(move || go.get(), move || {
                                         mounted.set(Some(i));
-                                        turn_row(t.clone(), &chat).into_element()
+                                        // Still out of view: its Markdown
+                                        // comes in a few blocks a frame
+                                        // (a long reply was ~420 views in
+                                        // one commit), the row holding its
+                                        // last height meanwhile.
+                                        if in_view(untracked(|| at.index()), seen.get_untracked()) {
+                                            return turn_row(t.clone(), &chat).into_element();
+                                        }
+                                        let staging = signal(0u32);
+                                        provide_context(crate::md::Staged(staging));
+                                        view()
+                                            .min_h(move || px(if staging.get() > 0 { h } else { 0.0 }))
+                                            .child(turn_row(t.clone(), &chat))
+                                            .into_element()
                                     })
                                     .otherwise(move || view().h(px(h)).into_element())
                                     .into_element()

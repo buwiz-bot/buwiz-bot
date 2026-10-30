@@ -222,8 +222,12 @@ fn cells(u: &'static SheetUi) -> impl IntoElement {
                     .absolute()
                     .left(move || px(-place(frozen(), z()).0 - if moves.0 { shift().0 } else { 0.0 }))
                     .top(move || px(-place(frozen(), z()).1 - if moves.1 { shift().1 } else { 0.0 }))
-                    .w(move || px(u.shown.with(|s| s.as_ref().map_or(0.0, |s| s.list.width))))
-                    .h(move || px(u.shown.with(|s| s.as_ref().map_or(0.0, |s| s.list.height)))),
+                    // A frozen pane shows only the frozen rows or columns
+                    // at the drawing's top left: its canvas is that strip,
+                    // not the whole window, which Core Animation would draw
+                    // in full for each pane.
+                    .w(move || px(u.shown.with(|s| s.as_ref().map_or(0.0, |s| if moves.0 { s.list.width } else { (frozen().0 * s.scale).min(s.list.width) }))))
+                    .h(move || px(u.shown.with(|s| s.as_ref().map_or(0.0, |s| if moves.1 { s.list.height } else { (frozen().1 * s.scale).min(s.list.height) })))),
             )
     };
     let has_cols = move || frozen().0 > 0.0;
@@ -242,40 +246,88 @@ fn cells(u: &'static SheetUi) -> impl IntoElement {
         .child(when(move || has_rows() && has_cols(), move || pane(|_, _| (0.0, 0.0), (false, false)).right(Length::Auto).bottom(Length::Auto).w(move || px(frozen().0 * z())).h(move || px(frozen().1 * z())).into_element()))
 }
 
+/// Where the selection's parts go in the cells area: the range (clamped
+/// a little past the area) and the active cell inside it.
+#[derive(Clone, Copy, PartialEq, Default)]
+struct SelRects {
+    range: (f32, f32, f32, f32),
+    active: (f32, f32, f32, f32),
+    single: bool,
+}
+
+fn sel_rects(u: &SheetUi) -> Option<SelRects> {
+    let (shape, f) = frame(u)?;
+    let g = &shape.0.geometry;
+    let sel = u.sel.get();
+    let (w, h) = u.area.get();
+    let ((r0, c0), (r1, c1)) = sel.range();
+    let clamp_x = |x: f32| x.clamp(-4.0, w + 4.0);
+    let clamp_y = |y: f32| y.clamp(-4.0, h + 4.0);
+    let (x0, y0) = (clamp_x(f.screen_x(g.col_x(c0))), clamp_y(f.screen_y(g.row_y(r0))));
+    let (x1, y1) = (clamp_x(f.screen_x(g.col_x(c1.saturating_add(1).min(LAST_COL + 1)))), clamp_y(f.screen_y(g.row_y(r1.saturating_add(1).min(LAST_ROW + 1)))));
+    let (ax, ay, aw, ah) = cell_rect(g, &f, sel.active);
+    Some(SelRects { range: (x0, y0, x1, y1), active: (ax, ay, ax + aw.max(0.0), ay + ah.max(0.0)), single: sel.is_single() })
+}
+
+/// The range's tint around the active cell, which shows through it: the
+/// bands above, below, left and right of it (empty for a single cell).
+fn tint_bands(s: &SelRects) -> [(f32, f32, f32, f32); 4] {
+    if s.single {
+        return [(0.0, 0.0, 0.0, 0.0); 4];
+    }
+    let (x0, y0, x1, y1) = s.range;
+    let ax0 = s.active.0.clamp(x0, x1);
+    let ax1 = s.active.2.clamp(x0, x1);
+    let ay0 = s.active.1.clamp(y0, y1);
+    let ay1 = s.active.3.clamp(y0, y1);
+    [
+        (x0, y0, x1 - x0, ay0 - y0),
+        (x0, ay1, x1 - x0, y1 - ay1),
+        (x0, ay0, ax0 - x0, ay1 - ay0),
+        (ax1, ay0, x1 - ax1, ay1 - ay0),
+    ]
+}
+
 /// The selection over the cells: the range tinted, the active cell and
-/// the range outlined.
+/// the range outlined. Views that move: a drag or a scroll changes their
+/// frames, where a canvas the area's size was recorded and drawn again
+/// (and its whole bitmap sent to the GPU) on every step.
 fn selection(u: &'static SheetUi) -> impl IntoElement {
-    canvas(move || {
-        let p = Painter::new();
-        let Some((shape, f)) = frame(u) else { return p };
-        let g = &shape.0.geometry;
-        let sel = u.sel.get();
-        let (w, h) = u.area.get();
-        let accent = color(theme::ACCENT);
-        let ((r0, c0), (r1, c1)) = sel.range();
-        let clamp_x = |x: f32| x.clamp(-4.0, w + 4.0);
-        let clamp_y = |y: f32| y.clamp(-4.0, h + 4.0);
-        let (x0, y0) = (clamp_x(f.screen_x(g.col_x(c0))), clamp_y(f.screen_y(g.row_y(r0))));
-        let (x1, y1) = (clamp_x(f.screen_x(g.col_x(c1.saturating_add(1).min(LAST_COL + 1)))), clamp_y(f.screen_y(g.row_y(r1.saturating_add(1).min(LAST_ROW + 1)))));
-        let mut p = p;
-        if !sel.is_single() {
-            let mut tint = accent;
-            tint.a = 0.12;
-            p = p.fill_color(tint).fill_rect(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
-        }
-        let (ax, ay, aw, ah) = cell_rect(g, &f, sel.active);
-        // the active cell shows through the tint
-        if !sel.is_single() {
-            p = p.clear_rect(Bounds { origin: point(px(ax), px(ay)), size: size(px(aw.max(0.0)), px(ah.max(0.0))) });
-        }
-        p = p.stroke_color(accent).line_width(2.0f32).line_dash(&[]);
-        p = p.begin_path().rect(Bounds { origin: point(px(x0), px(y0)), size: size(px((x1 - x0).max(0.0)), px((y1 - y0).max(0.0))) }).stroke();
-        // the fill handle's corner
-        p.fill_color(accent).fill_rect(x1 - 3.0, y1 - 3.0, 6.0f32, 6.0f32)
-    })
-    .absolute()
-    .size_full()
-    .pointer_events(PointerEvents::None)
+    let rects = computed(move || sel_rects(u).unwrap_or_default());
+    let shown = move || rects.with(|r| r.range != (0.0, 0.0, 0.0, 0.0));
+    // a box at `at()` (x, y, w, h)
+    let place = move |v: View, at: std::rc::Rc<dyn Fn() -> (f32, f32, f32, f32)>| {
+        let (a, b, c, d) = (at.clone(), at.clone(), at.clone(), at);
+        v.absolute()
+            .pointer_events(PointerEvents::None)
+            .left(move || px(a().0))
+            .top(move || px(b().1))
+            .w(move || px(c().2.max(0.0)))
+            .h(move || px(d().3.max(0.0)))
+    };
+    let tint = move || {
+        let mut t = color(theme::ACCENT);
+        t.a = 0.12;
+        t
+    };
+    let mut layer = view().absolute().size_full().pointer_events(PointerEvents::None).opacity(move || if shown() { 1.0f32 } else { 0.0 });
+    for k in 0..4 {
+        layer = layer.child(place(view(), std::rc::Rc::new(move || rects.with(|r| tint_bands(r)[k]))).bg(tint));
+    }
+    // the outline: a 2pt stroke centered on the range's edges
+    layer = layer.child(
+        place(
+            view(),
+            std::rc::Rc::new(move || rects.with(|r| {
+                let (x0, y0, x1, y1) = r.range;
+                (x0 - 1.0, y0 - 1.0, (x1 - x0).max(0.0) + 2.0, (y1 - y0).max(0.0) + 2.0)
+            })),
+        )
+        .border(px(2.0))
+        .border_color(theme::ACCENT),
+    );
+    // the fill handle's corner
+    layer.child(place(view(), std::rc::Rc::new(move || rects.with(|r| (r.range.2 - 3.0, r.range.3 - 3.0, 6.0, 6.0)))).bg(theme::ACCENT))
 }
 
 /// The column letters (`cols`) or row numbers along the cells, the
@@ -547,6 +599,18 @@ mod tests {
         assert_eq!(again.y, MARGIN + 1.0);
         // a bigger view needs a new window
         assert!(!covers(&vp, &f, 800.0, 600.0 + MARGIN * 3.0));
+    }
+
+    #[test]
+    fn the_tint_leaves_the_active_cell_out() {
+        let s = SelRects { range: (0.0, 0.0, 100.0, 60.0), active: (20.0, 20.0, 40.0, 40.0), single: false };
+        let bands = tint_bands(&s);
+        assert_eq!(bands, [(0.0, 0.0, 100.0, 20.0), (0.0, 40.0, 100.0, 20.0), (0.0, 20.0, 20.0, 20.0), (40.0, 20.0, 60.0, 20.0)]);
+        // the bands and the cell cover the range exactly
+        let area: f32 = bands.iter().map(|b| b.2 * b.3).sum();
+        assert_eq!(area + 20.0 * 20.0, 100.0 * 60.0);
+        // a single cell is outlined, not tinted
+        assert!(tint_bands(&SelRects { single: true, ..s }).iter().all(|b| b.2 * b.3 == 0.0));
     }
 
     #[test]
