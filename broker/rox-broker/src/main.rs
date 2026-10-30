@@ -1,5 +1,7 @@
 //! rox-broker: binds the broker's port first (a second instance exits
-//! without starting Node), then runs Node behind it and serves.
+//! without starting Node), then runs Node behind it and serves. With the
+//! hub on and `ROX_BROKER_NO_NODE=1` it starts no Node at all: every route
+//! is Rust's or the hub's 404 (plan phase 7).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +42,12 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let hub_on = std::env::var("ROX_BROKER_HUB").as_deref() == Ok("1");
+    let no_node = std::env::var("ROX_BROKER_NO_NODE").as_deref() == Ok("1");
+    if no_node && !hub_on {
+        eprintln!("rox-broker: ROX_BROKER_NO_NODE=1 needs ROX_BROKER_HUB=1 (the hub answers what Node would)");
+        std::process::exit(2);
+    }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -79,7 +87,7 @@ async fn main() {
     // Node in its office role, holding none of the brain's state; so this
     // broker hosts the v1 plugins and MCP servers the brain calls, the
     // line's when it has them, else its own
-    let hub = (std::env::var("ROX_BROKER_HUB").as_deref() == Ok("1")).then(|| {
+    let hub = hub_on.then(|| {
         config.node_env.push(("ROX_NODE_ROLE".to_owned(), "office".to_owned()));
         let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
         let db = data.join("generated").join("app.db");
@@ -110,9 +118,10 @@ async fn main() {
         hub.start();
         hub
     });
-    let node = Arc::new(Node::default());
-    let _ = node.version.set(node::version_of(&config.node));
-    let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
+    // no Node: nothing started, not even `node --version` for /meta
+    let node = Arc::new(if no_node { Node::absent() } else { Node::default() });
+    let _ = node.version.set(if no_node { String::new() } else { node::version_of(&config.node) });
+    let supervisor = (!no_node).then(|| tokio::spawn(node::supervise(config.clone(), node.clone())));
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
         .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
@@ -163,7 +172,9 @@ async fn main() {
     }
     // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
     node.stop(Duration::from_millis(2500)).await;
-    let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
+    if let Some(supervisor) = supervisor {
+        let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
+    }
     eprintln!("rox-broker: stopped");
 }
 

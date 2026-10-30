@@ -33,7 +33,7 @@ pub fn img_type(ext: &str) -> Option<&'static str> {
 }
 
 /// files.mjs `parseDelimited(text, sep)`.
-fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
+pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
     let cs: Vec<char> = text.chars().collect();
     let (mut rows, mut row, mut cell, mut q) = (Vec::new(), Vec::new(), String::new(), false);
     let mut i = 0;
