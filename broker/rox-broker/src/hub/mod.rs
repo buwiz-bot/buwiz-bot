@@ -172,7 +172,12 @@ impl Hub {
         }
         let origin = req.headers.get(ORIGIN).cloned();
         let path = req.path().to_owned();
-        let mut res = if path.starts_with("/v1/hooks/") {
+        // a preflight: Node's 204 (only with no Node; else Node answers it)
+        let mut res = if req.method == Method::OPTIONS {
+            let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}).boxed());
+            *res.status_mut() = StatusCode::NO_CONTENT;
+            res
+        } else if path.starts_with("/v1/hooks/") {
             self.hook(req).await
         } else {
             match self.routes.find(&req.method, &path) {
