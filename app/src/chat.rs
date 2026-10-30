@@ -14,6 +14,98 @@ use crate::widgets::app_card;
 /// A turn's height before it is measured (points).
 const ROW_ESTIMATE: f32 = 150.0;
 
+/// How often a waiting row mounts ([`RowPacer`]): one about every frame
+/// and a half at 120 Hz.
+const PACE_MS: u64 = 12;
+
+/// Rows this close to the reported viewable range mount with their bind.
+const NEAR: usize = 2;
+
+/// Whether row `index` is in view, or next to it, while the list reports
+/// `seen` (before its first report, every row is).
+fn in_view(index: usize, seen: Option<(usize, usize)>) -> bool {
+    seen.is_none_or(|(first, last)| index + NEAR >= first && index <= last + NEAR)
+}
+
+/// Whether row `index`, bound while the list reports `seen`, waits its
+/// turn ([`RowPacer`]) instead of mounting in its bind's commit: the rows
+/// of the overscan, beyond the view on either side. Rows in view mount at
+/// once, and so does every row a jump lands on (beyond twice the view's
+/// rows: the window moved, not grew).
+fn row_waits(index: usize, seen: Option<(usize, usize)>) -> bool {
+    let Some((first, last)) = seen else {
+        return false;
+    };
+    let band = 2 * (last.saturating_sub(first) + 1) + NEAR;
+    !in_view(index, seen) && index + band >= first && index <= last + band
+}
+
+/// Of the waiting rows at `indices`, the one to mount next: the nearest
+/// to the reported view (the first of them before a report).
+fn nearest(indices: impl Iterator<Item = usize>, seen: Option<(usize, usize)>) -> Option<usize> {
+    let away = |i: usize| match seen {
+        Some((first, _)) if i < first => first - i,
+        Some((_, last)) if i > last => i - last,
+        _ => 0,
+    };
+    indices.enumerate().min_by_key(|&(k, i)| (away(i), k)).map(|(k, _)| k)
+}
+
+/// A row waiting to mount: its cell, its switch, and whether it is still
+/// the cell's row (a rebind drops it).
+type Waiting = (Position, Signal<bool>, std::rc::Rc<std::cell::Cell<bool>>);
+
+/// Mounts the overscan's rows one at a time. nsh binds a Rust list's whole
+/// window in one commit: a scroll that brings a viewport's worth of rows
+/// into the overscan mounted them all in one frame (~380 views, 12 ms at
+/// a 8.3 ms budget). Those rows show a placeholder at their last height
+/// instead and mount one per [`PACE_MS`], nearest the view first; one the
+/// view reaches before its turn mounts at once.
+#[derive(Clone)]
+struct RowPacer {
+    waiting: std::rc::Rc<std::cell::RefCell<Vec<Waiting>>>,
+    running: std::rc::Rc<std::cell::Cell<bool>>,
+    seen: Signal<Option<(usize, usize)>>,
+    owner: Owner,
+}
+
+impl RowPacer {
+    fn new(seen: Signal<Option<(usize, usize)>>) -> Self {
+        RowPacer {
+            waiting: Default::default(),
+            running: Default::default(),
+            seen,
+            owner: Owner::current(),
+        }
+    }
+
+    fn wait(&self, row: Waiting) {
+        self.waiting.borrow_mut().push(row);
+        if self.running.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                loop {
+                    timer(std::time::Duration::from_millis(PACE_MS)).await;
+                    let next = {
+                        let mut waiting = this.waiting.borrow_mut();
+                        // `alive` first: a dropped row's switch is gone.
+                        waiting.retain(|(_, go, alive)| alive.get() && !go.get_untracked());
+                        let seen = this.seen.get_untracked();
+                        nearest(waiting.iter().map(|(at, ..)| untracked(|| at.index())), seen)
+                            .map(|k| waiting.swap_remove(k))
+                    };
+                    let Some((_, go, _)) = next else { break };
+                    go.set(true);
+                }
+                this.running.set(false);
+            })
+        });
+    }
+}
+
 /// Where a freshly mounted transcript opens.
 #[derive(Clone, Copy)]
 enum Opening {
@@ -58,6 +150,10 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     // The rows the list reports in view (`None` before its first report):
     // a row's live mini app holds while out of it.
     let seen = signal(None::<(usize, usize)>);
+    let pacer = RowPacer::new(seen);
+    // Each turn's height when last mounted: a waiting row's placeholder
+    // keeps it, so nothing under it moves when the row comes in.
+    let heights = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::<i64, f32>::new()));
     effect(move || {
         if active.get() {
             let t = store().turns.get();
@@ -139,6 +235,11 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
             // composer's card meets (shell.tsx:617, App.tsx:2188).
             move |at| {
                 let chat = cell_chat.clone();
+                let pacer = pacer.clone();
+                // The turn whose row (not its placeholder) the cell shows.
+                let mounted = std::rc::Rc::new(std::cell::Cell::new(None::<i64>));
+                let (mounted2, heights2) = (mounted.clone(), heights.clone());
+                let heights = heights.clone();
                 view()
                     .items_center()
                     .child(
@@ -146,6 +247,11 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                             .w_full()
                             .max_w(px(992.0))
                             .px_4()
+                            .on_layout(move |b: &Bounds<Points>| {
+                                if let Some(i) = mounted2.get() {
+                                    heights2.borrow_mut().insert(i, b.size.height.0);
+                                }
+                            })
                             // The cell's row is bound, not its index's:
                             // recycled cells re-render for their new
                             // index, and a turn's streamed text lands in
@@ -186,7 +292,34 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                                         let off = seen.with(|r| r.is_some_and(|(a, b)| !(a..=b).contains(&at.index())));
                                         off || !store().mini_full.with(Vec::is_empty)
                                     })));
-                                    turn_row(t, &chat).into_element()
+                                    let i = t.i;
+                                    if !row_waits(untracked(|| at.index()), seen.get_untracked()) {
+                                        mounted.set(Some(i));
+                                        return turn_row(t, &chat).into_element();
+                                    }
+                                    mounted.set(None);
+                                    let go = signal(false);
+                                    let alive = std::rc::Rc::new(std::cell::Cell::new(true));
+                                    {
+                                        let alive = alive.clone();
+                                        cleanup(move || alive.set(false));
+                                    }
+                                    // A fling that outran the pacer: in
+                                    // view, it mounts now.
+                                    effect(move || {
+                                        if in_view(at.index(), seen.get()) && !go.get_untracked() {
+                                            go.set(true);
+                                        }
+                                    });
+                                    pacer.wait((at, go, alive));
+                                    let h = heights.borrow().get(&i).copied().unwrap_or(ROW_ESTIMATE);
+                                    let (chat, mounted) = (chat.clone(), mounted.clone());
+                                    when(move || go.get(), move || {
+                                        mounted.set(Some(i));
+                                        turn_row(t.clone(), &chat).into_element()
+                                    })
+                                    .otherwise(move || view().h(px(h)).into_element())
+                                    .into_element()
                                 })
                             }),
                     )
@@ -1888,4 +2021,45 @@ pub(crate) fn pill_layer() -> impl IntoElement {
             )
             .into_element()
     })
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::{in_view, nearest, row_waits};
+
+    #[test]
+    fn rows_in_or_next_to_view_mount_with_their_bind() {
+        let seen = Some((10, 14));
+        for i in 8..=16 {
+            assert!(in_view(i, seen) && !row_waits(i, seen), "row {i}");
+        }
+        // before the list's first report (a chat opening) nothing waits
+        assert!(in_view(40, None) && !row_waits(40, None));
+    }
+
+    #[test]
+    fn overscan_rows_wait_and_a_jumps_rows_do_not() {
+        let seen = Some((10, 14));
+        // five rows in view: the band reaches 2 × 5 + 2 rows past them
+        for i in [0, 7, 17, 26] {
+            assert!(row_waits(i, seen), "row {i}");
+        }
+        for i in [27, 60] {
+            assert!(!row_waits(i, seen), "row {i}");
+        }
+        assert!(!row_waits(0, Some((40, 44))));
+    }
+
+    #[test]
+    fn the_row_nearest_the_view_mounts_first() {
+        let seen = Some((10, 14));
+        assert_eq!(nearest([20, 16, 3, 15].into_iter(), seen), Some(3));
+        assert_eq!(nearest([5, 18].into_iter(), seen), Some(1));
+        // ties go in order, as do rows before any report
+        assert_eq!(nearest([17, 7].into_iter(), seen), Some(0));
+        assert_eq!(nearest([30, 2].into_iter(), None), Some(0));
+        assert_eq!(nearest(std::iter::empty(), seen), None);
+    }
 }
