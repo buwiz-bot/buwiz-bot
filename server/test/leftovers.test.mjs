@@ -220,6 +220,15 @@ test("LEFT-06 POST /file/write stays inside the files folder", async () => {
   mkdirSync(join(FILES, "abs"), { recursive: true });
   assert.deepEqual(json200(await postJson("/file/write", { path: "/abs/in.txt", data: "aW4=" })), { ok: true, v: 1 });
   assert.equal(readFileSync(join(FILES, "abs", "in.txt"), "utf8"), "in");
+
+  // what throws comes back as {ok: false, error} (its first 200 characters):
+  // a body that is no JSON or null, a folder where the file should be
+  assert.deepEqual(json200(await raw("/file/write", "nope")), { ok: false, error: `Unexpected token 'o', "nope" is not valid JSON` });
+  assert.deepEqual(json200(await raw("/file/write", "null")), { ok: false, error: "Cannot destructure property 'path' of 'JSON.parse(...)' as it is null." });
+  assert.deepEqual(json200(await postJson("/file/write", { path: "t1", data: "eA==" })), {
+    ok: false,
+    error: `ENOTSUP: operation not supported on socket, copyfile '${join(FILES, "t1")}' -> '${join(FILES, ".versions", "t1", "v1.bin")}'`.slice(0, 200),
+  });
 });
 
 test("LEFT-07 POST /file/open: a reply's file or an app's source, in its own app", async () => {
