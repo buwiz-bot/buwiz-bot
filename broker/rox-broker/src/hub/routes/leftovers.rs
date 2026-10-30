@@ -233,7 +233,7 @@ async fn reminder_change(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 static LINEAR_KEY: Mutex<Option<String>> = Mutex::new(None);
 
 /// `getLinearKey()`: `LINEAR_API_KEY`, else `secret get LINEAR_API_KEY`.
-pub(crate) async fn linear_key(ctx: &HubCtx) -> Option<String> {
+pub async fn linear_key(ctx: &HubCtx) -> Option<String> {
     if let Some(k) = LINEAR_KEY.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return Some(k);
     }
