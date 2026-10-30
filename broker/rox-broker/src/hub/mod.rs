@@ -103,6 +103,8 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // track A first: it loads the store the others' starts read
     routes::chat::install(routes, ctx);
     pipeline::install(ctx);
+    // 5.7b: after the store's start, as app-server.mjs runs its migration
+    routes::apps::install(routes, ctx);
     model::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
