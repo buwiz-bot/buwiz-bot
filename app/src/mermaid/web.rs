@@ -1,8 +1,8 @@
-//! ```mermaid fences drawn by Pele (`pele/serve.mjs`, MIT) as native SVG
-//! images: one small Node helper renders every diagram in well under a
-//! millisecond, where each fence used to be a WKWebView (its own web
-//! content process) loading mermaid.js — the red spikes on the frame
-//! monitor. The helper starts on the first diagram and quits with Rox.
+//! The old way, for the diagram types the Rust port (`mod.rs`) does not
+//! draw yet: Pele's JavaScript bundle behind a small Node helper
+//! (`pele/serve.mjs`, MIT) rasterizes the diagram to a PNG, and without
+//! Node the fence falls back to mermaid.js in a web view (`files.rs`). The
+//! helper starts on the first such diagram and quits with Rox.
 
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
