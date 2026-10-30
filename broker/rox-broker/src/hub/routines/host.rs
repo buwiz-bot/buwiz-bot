@@ -1,11 +1,11 @@
 //! What routines need from the store (track A's `hub/store`), as one
 //! narrow trait: Node's routines read and change `store.list` (threads and
 //! their turns) and `store.bots` through `state.mjs`, and save with
-//! `writeIndex()`. Each method says which Node code it stands for. The
-//! main session implements it on the store; [`MemoryHost`] is the store's
-//! shape in memory (the JS tests hand `routine-threads.mjs` a plain
-//! object), and [`Unstored`] stands in until the adapter lands: no chat
-//! exists, so nothing that needs one runs.
+//! `writeIndex()`. Each method says which Node code it stands for.
+//! `store_host::StoreHost` implements it on the store; [`MemoryHost`] is
+//! the store's shape in memory (the JS tests hand `routine-threads.mjs` a
+//! plain object), and [`Unstored`] has no chat at all, so nothing that
+//! needs one runs.
 
 use std::sync::Mutex;
 
