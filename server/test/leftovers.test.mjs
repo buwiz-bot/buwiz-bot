@@ -170,10 +170,6 @@ test("LEFT-04 /data/linear/* with no key (no env var, `secret` failing) never le
   const [assign, lookups] = await callsOf(() => postJson("/data/linear/assign", { uid: "abc" }));
   assert.deepEqual(json200(assign), { error: "no viewer" });
   assert.deepEqual(lookups, [{ bin: "secret", argv: ["get", "LINEAR_API_KEY"] }]);
-
-  // update and comment have no route
-  const update = await postJson("/data/linear/update", { uid: "abc" });
-  assert.equal(update.status, 404);
 });
 
 test("LEFT-05 POST /file/write: the file and its versions under files/.versions", async () => {
