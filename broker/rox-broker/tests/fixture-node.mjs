@@ -2,12 +2,15 @@
 // listens on PORT, appends its pid to FIXTURE_PID_FILE, and answers:
 // /health, /echo (what it received), /sse (two events 300 ms apart),
 // /exit (answers, then exits 3) and /role (its ROX_NODE_ROLE). With
-// FIXTURE_LOG set it appends every request's method and URL there.
+// FIXTURE_LOG set it appends every request's method and URL there; with
+// FIXTURE_ROLE_FILE, its ROX_NODE_ROLE at start (a path the hub never
+// forwards can't ask it).
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 if (process.env.FIXTURE_PID_FILE) appendFileSync(process.env.FIXTURE_PID_FILE, `${process.pid}\n`);
+if (process.env.FIXTURE_ROLE_FILE) appendFileSync(process.env.FIXTURE_ROLE_FILE, `${process.env.ROX_NODE_ROLE || ""}\n`);
 
 // a child that ignores its stdin closing, as a plugin can (FIXTURE_CHILD_FILE)
 if (process.env.FIXTURE_CHILD_FILE) {

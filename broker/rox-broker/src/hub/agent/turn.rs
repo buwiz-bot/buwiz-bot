@@ -49,7 +49,8 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
     let mut messages = ctx.store.read(|s| history(s.thread(&run.turn.thread)));
     messages.push(json!({"role": "user", "content": user_content(ctx, prompt, extra, ctx_blocks).await}));
     // the chat's attachments and the hints of the `@` scopes in play
-    let scope = crate::hub::library::attachments::scope_section(ctx, &run.turn.thread, prompt).await
+    // a stand-in thread (an agent's request) reads its conversation's
+    let scope = crate::hub::library::attachments::scope_section(ctx, &run.thread_id(), prompt).await
         + &crate::hub::tools::v1::prompt_section(crate::hub::tools::v1::view(ctx).as_ref(), prompt, extra.get("v1Attachments"));
     let label = run.label();
     let think = || {

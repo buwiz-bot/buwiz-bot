@@ -286,6 +286,11 @@ pub struct State {
     pub sections: Value,
     pub list: Vec<Thread>,
     pub bots: Vec<Bot>,
+    /// stand-in threads by their own key, never listed or written: an
+    /// agent's request turn runs on one (agents-wire.mjs's `history`, the
+    /// conversation from the recipient's side); [`State::thread`] finds
+    /// them by that key
+    pub stand_ins: std::collections::HashMap<String, Thread>,
     pub(crate) written: Written,
 }
 
@@ -295,12 +300,18 @@ impl State {
         if key.is_empty() {
             return None;
         }
+        if let Some(t) = self.stand_ins.get(key) {
+            return Some(t);
+        }
         self.list.iter().find(|t| t.id == key || t.uid.as_deref() == Some(key))
     }
 
     pub fn thread_mut(&mut self, key: &str) -> Option<&mut Thread> {
         if key.is_empty() {
             return None;
+        }
+        if self.stand_ins.contains_key(key) {
+            return self.stand_ins.get_mut(key);
         }
         self.list.iter_mut().find(|t| t.id == key || t.uid.as_deref() == Some(key))
     }
