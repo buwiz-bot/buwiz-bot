@@ -14,7 +14,7 @@ umask 077
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
-env TMPDIR="$R/tmp/" ROX_DATA_DIR="$R/data" GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
+env TMPDIR="$R/tmp/" ROX_DATA_DIR="$R/data" ROX_BACKGROUND=1 GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/token")" "$@" \
   nohup "$BIN" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
