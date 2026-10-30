@@ -109,12 +109,14 @@ pub fn not_ported() -> HubResponse {
 }
 
 /// A thread's model choice (Node's `modelCtx`): opencodex's model, its
-/// effort, and whether to take its `--fast` variant.
+/// effort, whether to take its `--fast` variant, and the bot whose thread
+/// it is (status labels credit it: `labelOf`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelChoice {
     pub model: String,
     pub effort: String,
     pub fast: bool,
+    pub name: Option<String>,
 }
 
 /// What a turn runs under, passed explicitly where Node's rides
