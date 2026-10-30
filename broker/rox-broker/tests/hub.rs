@@ -2,8 +2,9 @@
 //! Node (tests/fixture-node.mjs, logging every request it gets): with the
 //! hub on, a hub route no track has ported answers 501 and Node never sees
 //! it, and Node runs in its office role; with it off, the same request is
-//! forwarded as today. Office routes go to Node either way; a path no
-//! broker has is Node's 404 from the hub when it is on.
+//! forwarded as today. No route reaches Node with the hub on (phase 7); a
+//! path no broker has is Node's 404 from the hub. With
+//! `ROX_BROKER_NO_NODE=1` too, Node is never started.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -38,6 +39,10 @@ fn free_port() -> u16 {
 }
 
 fn start(name: &str, hub: bool) -> Broker {
+    start_with(name, hub, false)
+}
+
+fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
     let port = free_port();
     let log = std::env::temp_dir().join(format!("rox-broker-hub-{name}-{}-{port}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
@@ -51,6 +56,7 @@ fn start(name: &str, hub: bool) -> Broker {
         .env("FIXTURE_LOG", &log)
         .env("FIXTURE_ROLE_FILE", log.with_extension("role"))
         .env_remove("ROX_BROKER_HUB")
+        .env_remove("ROX_BROKER_NO_NODE")
         .env_remove("ROX_NODE_ROLE")
         // the hub's /models and image routes call the model gateway: at a
         // closed port, never the real opencodex (localhost:8080), and no
@@ -63,6 +69,9 @@ fn start(name: &str, hub: bool) -> Broker {
         .stdout(std::process::Stdio::null());
     if hub {
         cmd.env("ROX_BROKER_HUB", "1");
+    }
+    if no_node {
+        cmd.env("ROX_BROKER_NO_NODE", "1");
     }
     let broker = Broker { child: cmd.spawn().unwrap(), port, log };
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -125,15 +134,18 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
 }
 
 #[test]
-fn hub_on_forwards_office_routes_and_answers_unknown_paths_404() {
+fn hub_on_answers_every_route_and_unknown_paths_404() {
     let b = start("office", true);
     // the office routes are Rust's since 6.1: /office/* and /file/render
     // for an office file never reach Node
     assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap().0, 200);
     let (status, missing) = request(b.port, "GET", "/file/render?path=a.docx", b"").unwrap();
     assert_eq!((status, missing.as_str()), (200, r#"{"name":"a.docx","ext":"docx","size":0,"kind":"docx","variant":"docx","error":"missing"}"#));
-    // the fixture answers 404 "no" to what it doesn't know: forwarded
-    assert_eq!(request(b.port, "GET", "/file/render?path=a.md", b"").unwrap(), (404, "no".to_owned()));
+    // every other kind since phase 7, and GET /
+    let (status, missing) = request(b.port, "GET", "/file/render?path=a.md", b"").unwrap();
+    assert_eq!((status, missing.as_str()), (200, r#"{"name":"a.md","ext":"md","size":0,"kind":"markdown","variant":"generic","error":"missing"}"#));
+    let (status, root) = request(b.port, "GET", "/", b"").unwrap();
+    assert!(status == 200 && root.starts_with("app-server ok — "), "{status} {root}");
     // deleted in 6.2 (no caller): no entry, so the hub's own 404
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "not found".to_owned()));
     // the hub's since 6.2 (/mermaid*) and 6.3 (/popout)
@@ -142,7 +154,28 @@ fn hub_on_forwards_office_routes_and_answers_unknown_paths_404() {
     // a path no broker has: Node's last resort, from the hub (Node's office
     // role would answer it 501)
     assert_eq!(request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap(), (404, "not found".to_owned()));
-    assert_eq!(b.seen(), ["GET /file/render?path=a.md"]);
+    assert_eq!(b.seen(), Vec::<String>::new(), "Node saw a request");
+}
+
+#[test]
+fn no_node_starts_no_node_and_answers_preflights() {
+    let b = start_with("no-node", true, true);
+    let (status, root) = request(b.port, "GET", "/", b"").unwrap();
+    assert!(status == 200 && root.starts_with("app-server ok — "), "{status} {root}");
+    assert_eq!(request(b.port, "OPTIONS", "/threads", b"").unwrap(), (204, String::new()));
+    assert_eq!(request(b.port, "GET", "/echo", b"").unwrap(), (404, "not found".to_owned()));
+    let (_, meta) = request(b.port, "GET", "/meta", b"").unwrap();
+    assert!(meta.contains("\"node_version\":\"\""), "{meta}");
+    // the stand-in Node writes its role file when it starts: it never did
+    assert!(!b.log.with_extension("role").exists(), "Node was started");
+    assert_eq!(b.seen(), Vec::<String>::new());
+}
+
+#[test]
+fn no_node_needs_the_hub() {
+    let out = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string()]).env_remove("ROX_BROKER_HUB").env("ROX_BROKER_NO_NODE", "1").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ROX_BROKER_NO_NODE=1 needs ROX_BROKER_HUB=1"));
 }
 
 #[test]
