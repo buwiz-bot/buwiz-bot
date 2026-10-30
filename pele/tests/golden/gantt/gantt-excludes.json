@@ -1,8 +1,0 @@
-{
- "source": "samples/gantt-excludes.mmd",
- "type": "gantt",
- "mermaidType": "gantt",
- "width": 800,
- "height": 67,
- "links": []
-}

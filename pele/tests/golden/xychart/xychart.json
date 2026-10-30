@@ -1,8 +1,0 @@
-{
- "source": "samples/xychart.mmd",
- "type": "xychart",
- "mermaidType": "xychart",
- "width": 700,
- "height": 500,
- "links": []
-}
