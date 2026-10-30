@@ -23,6 +23,10 @@ export const FX = "dev.goldcoders.fixture";
 export const GWS = "dev.goldcoders.google-workspace";
 export const GWS_DIR = join(ROOT, "src", "v1", "plugins", "google-workspace");
 export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
+/** The gws plugin under test: `GWS_CMD` names a rox-gws binary (broker/
+ *  rox-gws, run as `rox-gws mcp` with its own manifest), else server.mjs. */
+export const GWS_CMD = (process.env.GWS_CMD || "").trim();
+const GWS_MANIFEST = GWS_CMD ? join(ROOT, "..", "broker", "rox-gws", "manifest.json") : join(GWS_DIR, "manifest.json");
 
 /** A publisher key of this run: {keyId, seed, pub}. */
 export function publisher(keyId = `test-${random128().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10)}`) {
@@ -119,7 +123,7 @@ export function writeMail(b, mail) {
  *  bed's publisher, the fake upstream with a call log at b.dir/gws.log.
  *  `env` overrides (e.g. GWS_UPSTREAM: "" for a missing upstream). */
 export function gwsSpec(b, env = {}) {
-  const m = JSON.parse(readFileSync(join(GWS_DIR, "manifest.json"), "utf8"));
+  const m = JSON.parse(readFileSync(GWS_MANIFEST, "utf8"));
 
   m.publisher.key_id = b.pub.keyId;
   const manifestFile = join(b.dir, "gws-manifest.json");
@@ -127,7 +131,9 @@ export function gwsSpec(b, env = {}) {
   writeFileSync(manifestFile, JSON.stringify(signManifest(m, b.pub.seed), null, 2));
   const upstream = { command: process.execPath, args: [FAKE_UPSTREAM], env: { FAKE_GWS_MESSAGES: join(b.dir, "gws-mail.json"), FAKE_GWS_LOG: join(b.dir, "gws.log") } };
 
-  return { command: process.execPath, args: [join(GWS_DIR, "server.mjs")], env: { GWS_MANIFEST: manifestFile, GWS_UPSTREAM: JSON.stringify(upstream), GWS_USER_EMAIL: "owner@example.com", ...env } };
+  const [command, args] = GWS_CMD ? [GWS_CMD, ["mcp"]] : [process.execPath, [join(GWS_DIR, "server.mjs")]];
+
+  return { command, args, env: { GWS_MANIFEST: manifestFile, GWS_UPSTREAM: JSON.stringify(upstream), GWS_USER_EMAIL: "owner@example.com", ...env } };
 }
 
 /** The fake upstream's calls so far: [{tool, args}]. */
