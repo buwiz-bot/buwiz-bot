@@ -43,9 +43,10 @@ pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
             types::json(StatusCode::OK, &json!(templates::list(&ctx.db, rs.host.as_ref(), rs.v0.mcp.as_ref()).await))
         }
     });
-    for (verb, path) in [(Verb::Post, "/routine/update"), (Verb::Any, "/routine/delete"), (Verb::Post, "/routine/run"), (Verb::Post, "/routine/from-template")] {
+    // any method: another one is Node's final 404, not the office role's 501
+    for path in ["/routine/update", "/routine/delete", "/routine/run", "/routine/from-template"] {
         let rs = rs.clone();
-        routes.route(verb, Pattern::Exact(path), move |ctx, req| {
+        routes.route(Verb::Any, Pattern::Exact(path), move |ctx, req| {
             let rs = rs.clone();
             async move { change(rs, ctx, req).await }
         });
