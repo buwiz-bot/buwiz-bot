@@ -159,13 +159,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn pipe_01_a_hung_nsh_times_out_with_what_it_printed() {
-        let d = temp("nsh-hang");
-        let script = d.join("hang.sh");
-        std::fs::write(&script, "#!/bin/sh\necho started\nexec sleep 30\n").unwrap();
-        std::process::Command::new("chmod").arg("+x").arg(&script).status().unwrap();
-        let nsh = NshCli { bin: script, timeout: Duration::from_millis(500), env: vec![] };
+        // a shell as "nsh", told what to run: it prints, then hangs
+        let nsh = NshCli { bin: PathBuf::from("/bin/sh"), timeout: Duration::from_millis(1500), env: vec![] };
         let t = std::time::Instant::now();
-        assert_eq!(nsh.run(&[std::ffi::OsStr::new("build")]).await.as_deref(), Some("started\n"));
+        let out = nsh.run(&[std::ffi::OsStr::new("-c"), std::ffi::OsStr::new("echo started; exec sleep 30")]).await;
+        assert_eq!(out.as_deref(), Some("started\n"));
         assert!(t.elapsed() < Duration::from_secs(10));
     }
 
