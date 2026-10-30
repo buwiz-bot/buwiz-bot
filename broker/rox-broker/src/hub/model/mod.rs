@@ -401,6 +401,14 @@ pub async fn chat_reply(settings: &Settings, api: &dyn ModelApi, turn: &TurnCtx,
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     let settings = Arc::new(Settings::global().clone());
     ctx.model = Some(Arc::new(ModelClient::new(settings.clone())));
+    // /avatar/image/gen draws through the image models (5.2's seam)
+    ctx.ext.insert(super::routes::bots::AvatarImage(Arc::new(|ctx: Arc<HubCtx>, description: String, out: std::path::PathBuf| -> super::types::BoxFuture<'static, Result<(), String>> {
+        Box::pin(async move {
+            let api = ctx.model.clone().ok_or_else(|| "no model client".to_owned())?;
+            let local = crate::helper::local::tools(&ctx);
+            images::generate_avatar_image(Settings::global(), api.as_ref(), &super::types::TurnCtx::default(), local.as_ref(), &description, &out).await.map(|_| ())
+        })
+    })));
     routes.route(Verb::Get, Pattern::Exact("/models"), move |_, req| {
         let settings = settings.clone();
         async move { super::routes::models::handle(&settings, &req).await }

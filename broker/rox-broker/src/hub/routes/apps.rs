@@ -119,6 +119,8 @@ fn later(ms: u64, f: impl FnOnce() + Send + 'static) {
 
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     artifacts::seams(ctx);
+    // the tool loop's app_icon, app_details_update and a new card's icon (5.4)
+    ctx.ext.insert(crate::hub::tools::artifact::AppMetaSeam(Arc::new(crate::hub::library::appmeta::ToolSide)));
     migrate(ctx);
     routes.on_start(|ctx| {
         tokio::spawn(backfill(ctx));
