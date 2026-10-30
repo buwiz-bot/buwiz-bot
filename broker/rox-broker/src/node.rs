@@ -16,10 +16,26 @@ pub struct Node {
     ready: AtomicBool,
     pid: AtomicI32,
     stopping: AtomicBool,
+    /// `--no-node`: none runs, and none is waited for
+    absent: AtomicBool,
     pub version: std::sync::OnceLock<String>,
 }
 
 impl Node {
+    /// No Node behind the front door (`--no-node`): the broker is up as
+    /// soon as it listens, and a request the hub doesn't take is the
+    /// "starting" answer forever.
+    pub fn absent() -> Self {
+        let node = Self::default();
+        node.absent.store(true, Ordering::SeqCst);
+        node
+    }
+
+    /// Whether this broker runs without Node.
+    pub fn is_absent(&self) -> bool {
+        self.absent.load(Ordering::SeqCst)
+    }
+
     /// The port Node answers on, once it is up.
     pub fn port(&self) -> Option<u16> {
         self.ready.load(Ordering::SeqCst).then(|| self.port.load(Ordering::SeqCst))
