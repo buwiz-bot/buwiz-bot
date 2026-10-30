@@ -20,10 +20,15 @@ pub mod mcp_chat;
 
 use hyper::Method;
 
+/// the Rox-facing `/v1/host/*` routes, the `ri_` webhooks and the host
+/// token (5.5h, track D)
+pub mod host;
 /// `GET /models` (5.3, track B)
 pub mod models;
 /// track L's leaves
 pub mod leftovers;
+/// v0 routines (5.5, track D)
+pub mod routines;
 
 use super::types::Pattern::{self, Exact as X, Prefix as P, Segments as S};
 use super::types::Verb::{self, Any, Get, Post};

@@ -13,6 +13,7 @@ use super::store::Store;
 use super::traits::{Clock, LocalTools, ModelApi, Nsh, ToolRegistry, TurnRunner};
 use crate::helper::mcp_servers::McpHost;
 use crate::helper::plugins::Host;
+use crate::helper::sessions::Sessions;
 
 pub struct HubCtx {
     /// Node's data dir (`GROK_DATA_DIR`)
@@ -24,6 +25,8 @@ pub struct HubCtx {
     pub mcp: Option<Arc<McpHost>>,
     /// the v1 plugin host, when this broker hosts the plugins
     pub plugins: Option<Arc<Host>>,
+    /// the v1 app sessions on that host (`/v1/host/sessions/*`, `call`, …)
+    pub sessions: Option<Arc<Sessions>>,
     pub clock: Arc<Clock>,
     pub jobs: Jobs,
     pub tools: ToolRegistry,
@@ -45,6 +48,7 @@ impl HubCtx {
             store,
             mcp: None,
             plugins: None,
+            sessions: None,
             clock: Arc::new(clock),
             jobs: Jobs::default(),
             tools: ToolRegistry::default(),

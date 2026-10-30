@@ -70,7 +70,8 @@ impl Default for Timeouts {
 
 // ── the clock ────────────────────────────────────────────────────────────
 
-type Timer = Box<dyn FnOnce() + Send>;
+/// What a clock timer runs when it fires.
+pub type Timer = Box<dyn FnOnce() + Send>;
 
 /// Time for records and the restart policy. `Manual` (tests) keeps the
 /// time it is told and fires timers only when asked, oldest first, as
@@ -102,7 +103,8 @@ impl Clock {
         }
     }
 
-    fn set_timeout(&self, ms: u64, f: Timer) -> u64 {
+    /// Runs `f` after `ms` (a manual clock: when told to fire); → its id.
+    pub fn set_timeout(&self, ms: u64, f: Timer) -> u64 {
         match self {
             Clock::System(timers, next) => {
                 let id = next.fetch_add(1, Ordering::SeqCst);
@@ -123,7 +125,8 @@ impl Clock {
         }
     }
 
-    fn clear(&self, id: u64) {
+    /// Cancels the timer `id` (none: nothing).
+    pub fn clear(&self, id: u64) {
         match self {
             Clock::System(timers, _) => {
                 if let Some(t) = timers.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
@@ -245,6 +248,18 @@ impl Runtime {
     }
 }
 
+/// A plugin's runtime as the views read it (`Host::runtime_view`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RuntimeView {
+    pub state: &'static str,
+    pub code: Option<String>,
+    pub message: String,
+    pub generation: u64,
+    pub conn: bool,
+    pub tools: Vec<Value>,
+    pub instructions: String,
+}
+
 /// A spawn that passed the gate.
 struct Gate {
     conn: Arc<Conn>,
@@ -348,7 +363,8 @@ impl Host {
         self.events.subscribe()
     }
 
-    fn trust(&self) -> Trust {
+    /// The trust store, read now.
+    pub fn trust(&self) -> Trust {
         Trust::load(&self.trust_file)
     }
 
@@ -413,6 +429,21 @@ impl Host {
         for f in closers {
             f(id.to_owned()).await;
         }
+    }
+
+    /// A plugin's live state as v1/plugins.mjs's views read `runtime(id)`:
+    /// state, code, message, generation, whether it has a connection, its
+    /// tools and its instructions.
+    pub fn runtime_view(&self, id: &str) -> RuntimeView {
+        self.with_rt(id, |rt| RuntimeView {
+            state: rt.state,
+            code: rt.code.clone(),
+            message: rt.message.clone(),
+            generation: rt.generation,
+            conn: rt.conn.is_some(),
+            tools: rt.tools.clone(),
+            instructions: rt.instructions.clone(),
+        })
     }
 
     pub fn runtime_of(&self, id: &str) -> (&'static str, u64, Vec<Value>) {
