@@ -1263,12 +1263,16 @@ export default function R() {
 import { signal, Text } from "nsh";
 import { Clipboard } from "nsh/clipboard";
 
+// a refused clipboard call rejects with its code (nsh: no `clipboard`
+// capability, ERR_ACCESS_DENIED before the platform is asked)
+const code = (e) => e.code;
+
 export default function R() {
   const result = signal("waiting");
   Promise.all([
     fetch("http://127.0.0.1:8787/threads").then(() => "fetched", () => "refused"),
-    Clipboard.hasText(),
-    Clipboard.readText(),
+    Clipboard.hasText().catch(code),
+    Clipboard.readText().catch(code),
   ]).then(([fetchOutcome, has, text]) => {
     result.set(`${fetchOutcome} ${has} [${text}]`);
   });
@@ -1519,7 +1523,7 @@ export default function R() {
         let js = super::compile_widget("R998", WIDGET_EXFIL).expect("compile widget");
 
         let (engine, rx, seen) = start_widget(super::mini_bundle("R998", js.clone()));
-        let commands = run_until_text(&engine, &rx, "refused false []");
+        let commands = run_until_text(&engine, &rx, "refused ERR_ACCESS_DENIED [ERR_ACCESS_DENIED]");
         assert!(
             seen.lock().unwrap().is_empty(),
             "network requests: {seen:?}"
@@ -1532,7 +1536,7 @@ export default function R() {
 
         // an MCP app reaches the app server's app routes only, not the chats
         let (engine, rx, seen) = start_widget(super::mini_bundle("mcp:bir/forms", js.clone()));
-        let commands = run_until_text(&engine, &rx, "refused false []");
+        let commands = run_until_text(&engine, &rx, "refused ERR_ACCESS_DENIED [ERR_ACCESS_DENIED]");
         assert!(
             seen.lock().unwrap().is_empty(),
             "network requests: {seen:?}"
