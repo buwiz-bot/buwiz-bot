@@ -129,8 +129,12 @@ pub struct TurnCtx {
     /// the bot a delivery turn answers as (Node's `actingBot`)
     pub acting_bot: Option<String>,
     pub model: Option<ModelChoice>,
-    /// a routine's tools, when the turn may use only those (`v1Surface`)
-    pub surface: Option<Vec<String>>,
+    /// a v1 routine's surface, when the turn may use only its tools (Node's
+    /// `job.v1Surface`: `{plugin, routine, instance, params, reads, writes}`)
+    pub surface: Option<serde_json::Value>,
+    /// the routine a turn runs for (Node's `job.routine`: a v0 routine's
+    /// id, or `<plugin>/<routine>`); its turn gets no routine tools
+    pub routine: Option<String>,
 }
 
 /// A tool's answer as the model gets it (Node's `{content, is_error}`).
