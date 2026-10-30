@@ -1,0 +1,33 @@
+sequenceDiagram
+  autonumber
+  A->>B: start
+  loop Every minute
+    B->>A: ping
+  end
+  alt ok
+    A->>B: yes
+  else no
+    A->>B: no
+  end
+  opt maybe
+    A->>B: opt
+  end
+  par p1
+    A->>B: one
+  and p2
+    A->>C: two
+  end
+  critical c
+    A->>B: crit
+  option o
+    A->>B: opt
+  end
+  break stop
+    A->>B: break
+  end
+  rect rgb(200,220,255)
+    A->>B: in rect
+  end
+  activate B
+  B->>A: act
+  deactivate B

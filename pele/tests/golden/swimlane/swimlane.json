@@ -1,0 +1,8 @@
+{
+ "source": "samples/swimlane.mmd",
+ "type": "swimlane",
+ "mermaidType": "swimlane",
+ "width": 228,
+ "height": 146,
+ "links": []
+}

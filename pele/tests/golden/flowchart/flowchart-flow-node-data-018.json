@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/flowchart/flow-node-data.spec.js",
+ "error": {
+  "code": "semantic",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 0,
+  "column": 0,
+  "message": "No such shape: rect_left_inv_arrow. Shape names should be lowercase.",
+  "snippet": ""
+ }
+}

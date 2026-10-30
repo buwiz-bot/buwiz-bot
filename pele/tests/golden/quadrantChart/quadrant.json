@@ -1,0 +1,8 @@
+{
+ "source": "samples/quadrant.mmd",
+ "type": "quadrantChart",
+ "mermaidType": "quadrantChart",
+ "width": 500,
+ "height": 500,
+ "links": []
+}

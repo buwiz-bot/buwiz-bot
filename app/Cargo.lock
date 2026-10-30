@@ -3106,6 +3106,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pele"
+version = "0.1.0"
+dependencies = [
+ "url",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3785,6 +3792,7 @@ dependencies = [
  "nsh-platform-ios",
  "nsh-platform-macos",
  "objc2-app-kit",
+ "pele",
  "ra-jit-live",
  "rox-v1",
  "rusqlite",

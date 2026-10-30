@@ -1,0 +1,12 @@
+{
+ "source": "tests/compat/flowchart/flow.spec.js",
+ "error": {
+  "code": "syntax",
+  "type": "flowchart",
+  "mermaidType": "flowchart-v2",
+  "line": 3,
+  "column": 17,
+  "message": "Parse error on line 3:\n      subgraph ${unsafeProp}\n----------------^\nExpecting 'SEMI', 'NEWLINE', 'EOF', 'SQS', got 'DIAMOND_START'",
+  "snippet": "      subgraph ${unsafeProp}\n----------------^"
+ }
+}

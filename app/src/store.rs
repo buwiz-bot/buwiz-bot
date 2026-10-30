@@ -1933,6 +1933,9 @@ pub struct Store {
     /// The user's keyboard shortcuts: command id → keystrokes, only those
     /// changed from the defaults (`keymap.json`, `GET/POST /keymap`).
     pub keymap: Signal<std::collections::BTreeMap<String, Vec<String>>>,
+    /// The user's diagram colors over Rox's (`--pele-*` token → color, per
+    /// mode; `GET /mermaid-colors`, absent until set: the defaults).
+    pub mermaid_colors: Signal<crate::mermaid::palette::Overrides>,
     /// Bot Details: the bot and mode, its page stack ("main", "context",
     /// "integrations", "add", "memory:<id>"), and the edit drafts.
     pub bot_details: Signal<Option<crate::botdetails::BotDetails>>,
@@ -2226,7 +2229,8 @@ pub struct Store {
     /// The Pele helper (`pele/serve.mjs`): its base URL once started, and
     /// the child (it exits when its stdin, held here, closes).
     pub pele: std::cell::RefCell<Option<(String, std::process::Child)>>,
-    /// Rendered diagrams by theme + code (`mermaid::diagram`).
+    /// Diagrams the Node helper rendered, by theme + scale + code
+    /// (`mermaid::web::diagram`), for the types the port does not draw.
     pub diagrams: std::cell::RefCell<
         std::collections::HashMap<String, Signal<Option<Result<crate::mermaid::Diagram, String>>>>,
     >,
@@ -2306,6 +2310,7 @@ impl Store {
             group_prompt: signal(None),
             group_name: signal(String::new()),
             keymap: signal(Default::default()),
+            mermaid_colors: signal(Default::default()),
             bot_details: signal(None),
             bd_nav: signal(vec!["main".to_owned()]),
             bd_desc: signal(String::new()),
@@ -2549,6 +2554,9 @@ impl Store {
             }
             if let Some(v) = client::get("/keymap").await {
                 self.keymap.set(crate::keys::overrides_of(&v));
+            }
+            if let Some(v) = client::get("/mermaid-colors").await {
+                self.mermaid_colors.set(crate::mermaid::palette::Overrides::from_json(&v));
             }
             if let Some(v) = client::get("/prefs").await {
                 if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
