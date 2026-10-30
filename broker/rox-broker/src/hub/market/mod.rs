@@ -53,13 +53,13 @@ impl crate::hub::library::botctx::PluginCatalog for BotCatalog {
     }
 }
 
-/// Node's SERVER_DIR (the folder of `--node-script`, default
-/// `src/app-server.mjs`) and the broker's port, read as main.rs reads them.
+/// Node's SERVER_DIR (`--assets`, else the folder of `--node-script`,
+/// default `src/app-server.mjs`) and the broker's port, read as main.rs
+/// reads them.
 pub fn node_paths() -> (PathBuf, u16) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok();
-    let script = config.as_ref().map(|c| c.node_script.clone()).unwrap_or_else(|| PathBuf::from("src/app-server.mjs"));
-    let server = script.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let server = config.as_ref().map(|c| c.server_dir()).unwrap_or_else(|| PathBuf::from("src"));
     let server = std::env::current_dir().map(|d| d.join(&server)).unwrap_or(server);
     (server, std::env::var("ROX_PUBLIC_PORT").ok().and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787))
 }

@@ -3,6 +3,7 @@
 //! group of its own, which its plugin and MCP children join: stopping Node
 //! stops the group, so no child outlives it (Node itself leaves them
 //! running on SIGTERM; a Google Workspace plugin did, once per restart).
+//! With `ROX_BROKER_NO_NODE=1` there is no Node at all ([`Node::absent`]).
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -16,10 +17,21 @@ pub struct Node {
     ready: AtomicBool,
     pid: AtomicI32,
     stopping: AtomicBool,
+    /// no Node runs behind this front door (the hub answers everything)
+    absent: bool,
     pub version: std::sync::OnceLock<String>,
 }
 
 impl Node {
+    /// No Node: nothing is started or forwarded to.
+    pub fn absent() -> Self {
+        Self { absent: true, ..Self::default() }
+    }
+
+    pub fn is_absent(&self) -> bool {
+        self.absent
+    }
+
     /// The port Node answers on, once it is up.
     pub fn port(&self) -> Option<u16> {
         self.ready.load(Ordering::SeqCst).then(|| self.port.load(Ordering::SeqCst))
