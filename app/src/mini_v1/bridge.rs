@@ -72,6 +72,9 @@ pub trait HostUi: Send + Sync {
     fn fit(&self, height: f32) {
         let _ = height;
     }
+    /// The inline open's app has its data (`rox.ready`): its card may
+    /// show. Hosts without inline cards ignore it.
+    fn ready(&self) {}
     /// Sets the inline open's footer buttons (`rox.actions`, checked;
     /// empty clears them); `press(id)` sends a press back to the app.
     /// Hosts without inline cards ignore them.
@@ -286,8 +289,9 @@ pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     channel.set_params(params(&ctx.prepared, viewport));
     install_fit(channel, ctx, inline);
+    install_ready(channel, ctx, inline);
     install_card(channel, ctx, inline);
-    let own = [perms::FIT, perms::ACTIONS, perms::SETTLE, perms::META];
+    let own = [perms::FIT, perms::READY, perms::ACTIONS, perms::SETTLE, perms::META];
     for method in ctx.prepared.permissions.methods().into_iter().filter(|m| !own.contains(m)) {
         let c = ctx.clone();
         channel.handle(method, move |mut call: HostCall| {
@@ -343,6 +347,22 @@ fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
                 at = next;
             }
         });
+    });
+}
+
+/// `rox.ready()`, a post: an `inline` open's app has its data, so its
+/// card may show (`mini_v1::settle`); a full-screen open's is ignored.
+/// Like `rox.fit`, it needs no permission: it only ends the app's own
+/// card's hold.
+fn install_ready(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+    let ui = ctx.ui.clone();
+    channel.handle(perms::READY, move |call: HostCall| {
+        if let Some(reply) = call.into_reply() {
+            reply.resolve(Value::Null);
+        }
+        if inline {
+            ui.ready();
+        }
     });
 }
 

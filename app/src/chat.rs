@@ -1169,32 +1169,13 @@ fn art_placeholder(t: &Turn) -> impl IntoElement {
             (true, "document" | "pdf") => "Document".to_owned(),
             _ => "Mini app".to_owned(),
         };
-        let desc = art.desc.clone();
-        view()
+        app_placeholder(title, art.desc.clone(), grid)
             .w(move || px(iw() + pad))
             .max_w(percentage(1.0))
             .bg(theme::CARD)
             .rounded(px(16.0))
             .border_1()
             .border_color(theme::BORDER_F)
-            .p_3()
-            .child(
-                text(title)
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT)
-                    .number_of_lines(1),
-            )
-            .when(!desc.is_empty(), |v| {
-                v.child(
-                    text(desc.clone())
-                        .text_size(px(12.0))
-                        .text_color(theme::FAINT)
-                        .pt(px(2.0))
-                        .number_of_lines(1),
-                )
-            })
-            .child(grid.mt(px(10.0)))
             .into_element()
     };
     view()
@@ -1206,6 +1187,32 @@ fn art_placeholder(t: &Turn) -> impl IntoElement {
             }
         })
         .child(body)
+}
+
+/// A mini app's placeholder: its title (and `desc`) over `grid`, the dot
+/// grid at the size it is given, padded as a card. A building widget's
+/// card is one ([`art_placeholder`]); an inline card's hold puts one over
+/// the app it holds (`mini::mini_app_inline`).
+pub(crate) fn app_placeholder(title: String, desc: String, grid: View) -> View {
+    view()
+        .p_3()
+        .child(
+            text(title)
+                .text_size(px(14.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::TEXT)
+                .number_of_lines(1),
+        )
+        .when(!desc.is_empty(), |v| {
+            v.child(
+                text(desc)
+                    .text_size(px(12.0))
+                    .text_color(theme::FAINT)
+                    .pt(px(2.0))
+                    .number_of_lines(1),
+            )
+        })
+        .child(grid.mt(px(10.0)))
 }
 
 fn agent_row(t: Turn) -> impl IntoElement {
