@@ -79,5 +79,5 @@ test("NONODE-03 ROX_BROKER_NO_NODE=1 without the hub is refused at start", RUST_
   const r = spawnSync(bin, args, { env: serverEnv(DATA, { ROX_BROKER_HUB: undefined, ROX_BROKER_NO_NODE: "1" }), encoding: "utf8", timeout: 10000 });
 
   assert.equal(r.status, 2, r.stderr);
-  assert.match(r.stderr, /ROX_BROKER_NO_NODE=1 needs ROX_BROKER_HUB=1/);
+  assert.match(r.stderr, /ROX_BROKER_NO_NODE=1\) needs ROX_BROKER_HUB=1/);
 });
