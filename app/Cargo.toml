@@ -26,7 +26,11 @@ rox-v1 = { path = "../broker/rox-v1" }
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
 # ```mermaid fences: Pele (the Mermaid renderer) ported to Rust, drawn natively.
-pele = { path = "../pele" }
+pele = { git = "https://github.com/hexuria/pele-rs", rev = "e0120543ba4cb2b513b1901b01bfbf2c1fa406e7" }
+
+[dev-dependencies]
+# pele::corpus: the port's test inputs, to check the drawing of every one.
+pele = { git = "https://github.com/hexuria/pele-rs", rev = "e0120543ba4cb2b513b1901b01bfbf2c1fa406e7", features = ["corpus"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }

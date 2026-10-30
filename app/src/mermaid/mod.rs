@@ -1,4 +1,4 @@
-//! ```mermaid fences drawn natively: Pele ported to Rust (`pele/`) lays the
+//! ```mermaid fences drawn natively: Pele ported to Rust (hexuria/pele-rs) lays the
 //! diagram out off the UI thread, and nsh's canvas draws the scene in
 //! Rox's palette — no Node, no web view. A type the port does not cover
 //! yet, or a diagram it rejects, takes the old way (`web.rs`: the Node
@@ -146,18 +146,18 @@ mod tests {
     use super::palette::{Overrides, PelePalette};
     use nsh_core::canvas::{CanvasOp, Num};
     use pele::scene::{Element, Node};
-    use std::path::Path;
 
-    fn goldens() -> Vec<(String, String)> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pele/tests/golden/flowchart");
+    // Every flowchart input of the port's own tests that Pele renders, as the
+    // scene it laid out. The scene must write back Pele's SVG byte for byte,
+    // so a drawing checked against it is checked against the oracle.
+    fn flowchart_scenes() -> Vec<(String, pele::Scene)> {
         let mut out = Vec::new();
-        for e in std::fs::read_dir(dir).unwrap().flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "svg") {
-                out.push((p.file_stem().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(&p).unwrap()));
-            }
+        for (name, code) in pele::corpus::flowchart() {
+            let Ok(r) = pele::render(&code) else { continue };
+            let scene = pele::Scene::parse(&r.svg).unwrap_or_else(|| panic!("{name}: scene"));
+            assert_eq!(pele::svg::write::write(&scene), r.svg, "{name}: scene round trip");
+            out.push((name, scene));
         }
-        out.sort();
         out
     }
 
@@ -171,12 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn every_flowchart_golden_translates_completely() {
+    fn every_flowchart_input_translates_completely() {
         let pal = PelePalette::new(true, &Overrides::default());
-        let all = goldens();
-        assert!(all.len() > 300, "goldens: {}", all.len());
-        for (name, svg) in all {
-            let scene = pele::Scene::parse(&svg).unwrap_or_else(|| panic!("{name}: scene"));
+        let all = flowchart_scenes();
+        assert!(all.len() > 300, "flowchart inputs: {}", all.len());
+        for (name, scene) in all {
             let d = draw(&scene, &pal);
             assert!(d.unknown.is_empty(), "{name}: unknown {:?}", d.unknown);
             assert!(d.w > 0.0 && d.h > 0.0, "{name}");
@@ -206,10 +205,9 @@ mod tests {
     }
 
     #[test]
-    fn single_line_labels_draw_at_the_goldens_x_and_y() {
+    fn single_line_labels_draw_at_the_scenes_x_and_y() {
         let pal = PelePalette::new(false, &Overrides::default());
-        for (name, svg) in goldens() {
-            let scene = pele::Scene::parse(&svg).unwrap();
+        for (name, scene) in flowchart_scenes() {
             let mut want = Vec::new();
             positioned(&scene.root, 0.0, 0.0, &mut want);
             let d = draw(&scene, &pal);
@@ -250,9 +248,7 @@ mod tests {
     #[ignore]
     fn translate_times() {
         use std::time::Instant;
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pele/tests/samples");
-        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("fc-")).collect();
-        names.sort();
+        let samples: Vec<_> = pele::corpus::samples().into_iter().filter(|(name, _)| name.starts_with("fc-")).collect();
         let pal = PelePalette::new(true, &Overrides::default());
         let stats = |mut t: Vec<f64>| {
             t.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -260,8 +256,7 @@ mod tests {
         };
         println!("| sample | render median ms | render p95 ms | translate median ms | translate p95 ms |");
         println!("|---|---:|---:|---:|---:|");
-        for p in names {
-            let code = std::fs::read_to_string(&p).unwrap();
+        for (name, code) in samples {
             let (mut render, mut translate) = (Vec::new(), Vec::new());
             for _ in 0..200 {
                 let t = Instant::now();
@@ -273,7 +268,7 @@ mod tests {
                 translate.push(t.elapsed().as_secs_f64() * 1000.0);
             }
             let ((rm, rp), (tm, tp)) = (stats(render), stats(translate));
-            println!("| {} | {:.3} | {:.3} | {:.3} | {:.3} |", p.file_stem().unwrap().to_string_lossy(), rm, rp, tm, tp);
+            println!("| {} | {:.3} | {:.3} | {:.3} | {:.3} |", name, rm, rp, tm, tp);
         }
     }
 }

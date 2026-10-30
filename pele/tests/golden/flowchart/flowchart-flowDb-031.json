@@ -1,8 +1,0 @@
-{
- "source": "tests/compat/flowchart/flowDb.spec.ts",
- "type": "flowchart",
- "mermaidType": "flowchart-v2",
- "width": 144,
- "height": 184,
- "links": []
-}
