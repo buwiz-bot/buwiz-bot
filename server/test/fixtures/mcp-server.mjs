@@ -2,7 +2,8 @@
 // SDK, no network. Tools `echo` and `secret`; a `rox://manifest` resource
 // that mixes valid and invalid command and scope names. When FIXTURE_MARK
 // names a file, each start appends its pid there, so a test can tell
-// whether the server was ever spawned.
+// whether the server was ever spawned. FIXTURE_TOOLS=<n> adds n more tools
+// (tool_1…tool_n), for an app big enough to load on demand.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -11,6 +12,7 @@ if (process.env.FIXTURE_MARK) appendFileSync(process.env.FIXTURE_MARK, `${proces
 const TOOLS = [
   { name: "echo", description: "Echo the arguments", inputSchema: { type: "object" } },
   { name: "secret", description: "A tool the user switches off", inputSchema: { type: "object" } },
+  ...Array.from({ length: Number(process.env.FIXTURE_TOOLS) || 0 }, (_, k) => ({ name: `tool_${k + 1}`, description: `Extra tool ${k + 1}`, inputSchema: { type: "object" } })),
 ];
 
 const MANIFEST = {

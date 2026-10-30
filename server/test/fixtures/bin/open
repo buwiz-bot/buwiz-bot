@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// open stub for the broker tests: opens nothing (no Finder, no browser).
+// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+const { appendFileSync } = require("node:fs");
+
+if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "open", argv: process.argv.slice(2) }) + "\n");
