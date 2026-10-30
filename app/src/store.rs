@@ -1934,7 +1934,8 @@ pub struct Store {
     /// changed from the defaults (`keymap.json`, `GET/POST /keymap`).
     pub keymap: Signal<std::collections::BTreeMap<String, Vec<String>>>,
     /// The user's diagram colors over Rox's (`--pele-*` token → color, per
-    /// mode; `GET /mermaid-colors`, absent until set: the defaults).
+    /// mode; `mermaid.colors`, kept in `/state/rox-mermaid` as `colors`;
+    /// absent until set: the defaults).
     pub mermaid_colors: Signal<crate::mermaid::palette::Overrides>,
     /// Bot Details: the bot and mode, its page stack ("main", "context",
     /// "integrations", "add", "memory:<id>"), and the edit drafts.
@@ -2555,8 +2556,8 @@ impl Store {
             if let Some(v) = client::get("/keymap").await {
                 self.keymap.set(crate::keys::overrides_of(&v));
             }
-            if let Some(v) = client::get("/mermaid-colors").await {
-                self.mermaid_colors.set(crate::mermaid::palette::Overrides::from_json(&v));
+            if let Some(v) = client::get("/state/rox-mermaid").await {
+                self.mermaid_colors.set(crate::mermaid::palette::Overrides::from_state(&v));
             }
             if let Some(v) = client::get("/prefs").await {
                 if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
