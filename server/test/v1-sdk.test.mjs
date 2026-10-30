@@ -303,3 +303,66 @@ test("SDK-12 INV-04 asks an attachable scope to resolve only a ticket its own co
   assert.deepEqual(failed(res), []);
   assert.equal(code, 0);
 });
+
+test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blank, at most 4000 characters, from a 1.1 plugin", async () => {
+  const dir = tempDir("sdk-prompt");
+  const manifest = (protocol) => ({
+    protocol, id: "dev.goldcoders.starter", short: "starter", version: "0.1.0", title: "Starter",
+    publisher: { id: "dev.goldcoders", key_id: "test-sdk-13", name: "Goldcoders" },
+    apps: [{
+      id: "starter", title: "Starter", description: "", entry: "rox-app://starter", mime: "text/x-nsh-tsx", sdk: "1",
+      fingerprint: `sha256:${"0".repeat(64)}`, placement: ["full"], permissions: { tools: [] },
+    }],
+    commands: [{ name: "draft", args: "", description: "Start a draft", resolve: "starter_resolve" }],
+    scopes: [{ name: "note", description: "A note", resolve: "starter_resolve" }],
+  });
+
+  copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "starter.tsx"));
+  writeFileSync(join(dir, "manifest-1.1.json"), JSON.stringify(manifest("1.1.0")));
+  writeFileSync(join(dir, "manifest-1.0.json"), JSON.stringify(manifest("1.0.0")));
+  // a bare /draft is a starter flow: text for the composer. MODE=bad
+  // answers it over the cap, and answers prompt for the scope too; SRC
+  // serves another manifest
+  writeFileSync(join(dir, "server.mjs"), `
+    import { ok, startPlugin } from ${JSON.stringify(join(SDK, "lib", "rox-plugin.mjs"))};
+    const bad = process.env.MODE === "bad";
+    function resolve(args) {
+      if (args.kind === "scope") return ok(bad ? { result: "prompt", text: "Note this" } : args.complete ? { result: "choices", choices: [] } : { result: "error", message: "No such note." });
+      if (args.value === "") return ok({ result: "prompt", text: bad ? "x".repeat(4001) : "Draft a note to the team about:\\n- " });
+      return ok({ result: "open", app: "starter", title: "Starter", placement: "full" });
+    }
+    await startPlugin({
+      name: "starter", manifestFile: process.env.ROX_PLUGIN_MANIFEST || process.env.SRC || ${JSON.stringify(join(dir, "manifest-1.1.json"))},
+      apps: { starter: ${JSON.stringify(join(dir, "starter.tsx"))} },
+      tools: [{ name: "starter_resolve", description: "Resolve /draft and @starter:note.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, run: resolve }],
+    });
+  `);
+  const server = ["--command", process.execPath, "--args", join(dir, "server.mjs"), "--sign-with", KEY];
+  const prompts = (res) => res.rows.filter((r) => r.id === "INV-10").map((r) => [r.status, r.note]);
+
+  // a 1.1 plugin: the bare command's prompt passes
+  const good = await runner(server);
+
+  assert.ok(good.res, good.stderr);
+  assert.deepEqual(failed(good.res), []);
+  assert.deepEqual(prompts(good.res), [["pass", "34 characters"]]);
+  assert.equal(good.code, 0);
+
+  // over the cap, and a scope's prompt (complete and not): INV-10 fails
+  const bad = await runner([...server, "--env", "MODE=bad"]);
+
+  assert.ok(bad.res, bad.stderr);
+  assert.deepEqual(prompts(bad.res), [
+    ["fail", "a prompt's text is 4001 characters; at most 4000"],
+    ["fail", "a prompt result answers a command, not a scope"],
+    ["fail", "a prompt result answers a command, not a scope"],
+  ]);
+  assert.deepEqual(failed(bad.res).filter((f) => !f.startsWith("INV-10")), [], "the other checks pass: the shape is 9.2's");
+  assert.equal(bad.code, 1);
+
+  // a 1.0 plugin cannot answer prompt: a 1.0 host would not read it
+  const old = await runner([...server, "--env", `SRC=${join(dir, "manifest-1.0.json")}`]);
+
+  assert.ok(old.res, old.stderr);
+  assert.deepEqual(prompts(old.res), [["fail", "the manifest declares protocol 1.0.0; a prompt answer needs 1.1.0 or later"]]);
+});

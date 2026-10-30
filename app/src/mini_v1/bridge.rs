@@ -14,7 +14,8 @@
 //! What needs the person goes through [`HostUi`]: consent (part B draws
 //! the dialogs; tests answer them), the full-screen stack `rox.open({app})`
 //! pushes on, the file dialog, the pasteboard, the chat an attachment goes
-//! to, the document view `rox.preview` shows.
+//! to, the document view `rox.preview` shows, and an inline card's
+//! chrome (`rox.actions`, `rox.settle`, `rox.meta`).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -27,8 +28,9 @@ use nsh_engine::{HostCall, HostChannel, HostReply};
 use serde_json::{Map, Value, json};
 
 use super::{
-    RoxError, V1Key, host_api,
-    keys,
+    RoxError, V1Key,
+    cards::{self, CardAction, CardMeta},
+    host_api, keys,
     load::Prepared,
     perms,
     session::{Ended, Session},
@@ -70,7 +72,26 @@ pub trait HostUi: Send + Sync {
     fn fit(&self, height: f32) {
         let _ = height;
     }
+    /// Sets the inline open's footer buttons (`rox.actions`, checked;
+    /// empty clears them); `press(id)` sends a press back to the app.
+    /// Hosts without inline cards ignore them.
+    fn actions(&self, actions: Vec<CardAction>, press: Press) {
+        let _ = (actions, press);
+    }
+    /// Sets the inline open's header status (`rox.meta`; `None` clears it).
+    fn meta(&self, meta: Option<CardMeta>) {
+        let _ = meta;
+    }
+    /// The inline open's card collapses to `line` and its app unmounts
+    /// (`rox.settle`).
+    fn settle(&self, line: String) {
+        let _ = line;
+    }
 }
+
+/// Sends a press of the footer button `id` to the app (`rox.action`):
+/// only a button the app lists now, not disabled, while the open lives.
+pub type Press = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// A question for the person (spec 9.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,7 +286,9 @@ pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     channel.set_params(params(&ctx.prepared, viewport));
     install_fit(channel, ctx, inline);
-    for method in ctx.prepared.permissions.methods().into_iter().filter(|m| *m != perms::FIT) {
+    install_card(channel, ctx, inline);
+    let own = [perms::FIT, perms::ACTIONS, perms::SETTLE, perms::META];
+    for method in ctx.prepared.permissions.methods().into_iter().filter(|m| !own.contains(m)) {
         let c = ctx.clone();
         channel.handle(method, move |mut call: HostCall| {
             let data = call.take_data();
@@ -321,6 +344,56 @@ fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
             }
         });
     });
+}
+
+/// `rox.actions(list)`, `rox.meta(meta)` and `rox.settle(text)` (7.12 to
+/// 7.14): an inline card's footer buttons, header status and the line it
+/// settles to, drawn by Rox in its own style. Each is checked whatever the
+/// placement (a bad one rejects `invalid_args`); a full-screen open's are
+/// then ignored. They need no permission: they change only the app's own
+/// card, and a press reaches only the app. A press is the `rox.action`
+/// event, `{id}`.
+fn install_card(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+    let listed: Arc<Mutex<Vec<CardAction>>> = Arc::default();
+    let press: Press = {
+        let (ch, listed, session) = (channel.clone(), listed.clone(), ctx.session.clone());
+        Arc::new(move |id: &str| {
+            let on = listed.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|a| a.id == id && !a.disabled);
+            if on && session.check_live().is_ok() {
+                let _ = ch.send("rox.action", json!({"id": id}));
+            }
+        })
+    };
+    for method in [perms::ACTIONS, perms::SETTLE, perms::META] {
+        let (ui, session, listed, press) = (ctx.ui.clone(), ctx.session.clone(), listed.clone(), press.clone());
+        channel.handle(method, move |mut call: HostCall| {
+            let data = call.take_data();
+            let Some(reply) = call.into_reply() else { return };
+            if let Err(e) = session.check_live() {
+                return reject(reply, e);
+            }
+            let r = match method {
+                perms::ACTIONS => cards::parse_actions(data.get("actions")).map(|list| {
+                    if inline {
+                        *listed.lock().unwrap_or_else(|e| e.into_inner()) = list.clone();
+                        ui.actions(list, press.clone());
+                    }
+                }),
+                perms::SETTLE => cards::parse_settle(data.get("text")).map(|line| {
+                    if inline {
+                        listed.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        ui.settle(line);
+                    }
+                }),
+                _ => cards::parse_meta(data.get("meta")).map(|meta| {
+                    if inline {
+                        ui.meta(meta);
+                    }
+                }),
+            };
+            answer(reply, r.map(|()| Value::Null));
+        });
+    }
 }
 
 fn reject(reply: HostReply, e: RoxError) {

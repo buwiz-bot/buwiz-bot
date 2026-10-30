@@ -32,7 +32,8 @@ use serde_json::Value;
 
 use super::{
     RoxError, V1Key,
-    bridge::{self, Consent, HostUi, OpenContext, PickRequest},
+    bridge::{self, Consent, HostUi, OpenContext, PickRequest, Press},
+    cards::{CardAction, CardMeta},
     host_api, load,
     load::Prepared,
     session::{self, Ended, Session},
@@ -66,10 +67,12 @@ pub fn set_chat(chat: Arc<dyn Chat>) {
     *CHAT.lock().unwrap_or_else(|e| e.into_inner()) = Some(chat);
 }
 
-/// The person, as one open of `key` (its module key) reaches them.
+/// The person, as one open of `key` (its module key) reaches them. `n`
+/// is the open's number: what its card's buttons and status are set by.
 pub struct MacUi {
     key: String,
     title: String,
+    n: u64,
 }
 
 impl HostUi for MacUi {
@@ -129,7 +132,39 @@ impl HostUi for MacUi {
         });
     }
 
+    fn actions(&self, actions: Vec<CardAction>, press: Press) {
+        let (key, owner) = (self.key.clone(), self.n);
+        super::to_store(move |st| {
+            st.v1.footer.update(|f| {
+                f.insert(key, super::ui::Footer { owner, actions, press });
+            })
+        });
+    }
+
+    fn meta(&self, meta: Option<CardMeta>) {
+        let (key, owner) = (self.key.clone(), self.n);
+        super::to_store(move |st| {
+            st.v1.meta.update(|m| match meta {
+                Some(meta) => {
+                    m.insert(key, (owner, meta));
+                }
+                None => {
+                    m.remove(&key);
+                }
+            })
+        });
+    }
+
+    fn settle(&self, line: String) {
+        let key = self.key.clone();
+        super::to_store(move |st| st.v1_settle(&key, line));
+    }
+
     fn session_ended(&self, _: &V1Key, why: Ended) {
+        // its buttons and status go with it, unless a newer open of the
+        // same card set them since
+        let (key, owner) = (self.key.clone(), self.n);
+        super::to_store(move |st| st.v1_card_ended(&key, owner));
         // a restart is a new generation (13.7): "Reconnecting" until the
         // plugin runs again, then the open reopens on it
         if why == Ended::Restarted {
@@ -316,7 +351,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                 return super::to_store(move |st| st.mini_err(&key).set(text));
             }
         };
-        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone() });
+        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone(), n: id });
         let dir = super::plugins_dir();
         let ctx = OpenContext::new(prepared.clone(), session, broker, ui, &dir, bridge::Limits::default());
         {

@@ -264,6 +264,10 @@ pub fn rewrite(
     out
 }
 
+/// The longest text a resolve's `prompt` answer may put in the composer
+/// (9.2, protocol 1.1), in characters.
+pub const PROMPT_MAX: usize = 4000;
+
 /// What a resolve answered (9.2), for the composer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
@@ -272,6 +276,9 @@ pub enum Answer {
     /// `placement` as the plugin asked (else the app's declared one).
     Open { app: String, props: serde_json::Map<String, Value>, ticket: Option<String>, title: String, placement: Option<String> },
     Token { ticket: String, title: String },
+    /// A starter flow (protocol 1.1): text for the composer, which the
+    /// person edits and sends; Rox never sends it. A command's only.
+    Prompt(String),
     Error(String),
 }
 
@@ -290,9 +297,24 @@ pub fn answer(v: &Value) -> Answer {
         Some("token") if perms::ticket_ok(&text("ticket")) => {
             Answer::Token { ticket: text("ticket"), title: cap(&text("title"), 60) }
         }
+        Some("prompt") if prompt_ok(&text("text")) => Answer::Prompt(text("text")),
         Some("error") => Answer::Error(cap(&text("message"), 200)),
         _ => Answer::Error("The plugin's answer could not be read.".to_owned()),
     }
+}
+
+/// A `prompt`'s text as the broker passes it: something other than spaces,
+/// tabs and line breaks, at most [`PROMPT_MAX`] characters.
+fn prompt_ok(t: &str) -> bool {
+    t.chars().any(|c| !matches!(c, ' ' | '\t' | '\r' | '\n')) && t.chars().count() <= PROMPT_MAX
+}
+
+/// The draft after a starter flow's `prompt` answered: its text, or, when
+/// the person typed something meanwhile, their draft with the text after
+/// a blank line. Nothing they typed is lost, and nothing is sent.
+pub fn prompt_draft(draft: &str, text: &str) -> String {
+    let kept = draft.trim_end();
+    if kept.trim().is_empty() { text.to_owned() } else { format!("{kept}\n\n{text}") }
 }
 
 /// Whether `text` is only tokens and/or a single slash command (9.3): such
@@ -517,5 +539,19 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn inv_10_a_prompt_is_text_for_the_composer_held_to_the_brokers_rules() {
+        let text = "Draft the 1601C for September:\n- payee: ";
+        assert_eq!(answer(&json!({"result": "prompt", "text": text})), Answer::Prompt(text.into()));
+        assert_eq!(answer(&json!({"result": "prompt", "text": "é".repeat(PROMPT_MAX)})), Answer::Prompt("é".repeat(PROMPT_MAX)));
+        for bad in [json!({"result": "prompt"}), json!({"result": "prompt", "text": " \n\t"}), json!({"result": "prompt", "text": "x".repeat(PROMPT_MAX + 1)})] {
+            assert!(matches!(answer(&bad), Answer::Error(_)), "{bad}");
+        }
+        // an empty draft takes the text; one the person typed keeps theirs first
+        assert_eq!(prompt_draft("", text), text);
+        assert_eq!(prompt_draft("  \n", text), text);
+        assert_eq!(prompt_draft("note to self  \n", "Draft it"), "note to self\n\nDraft it");
     }
 }
