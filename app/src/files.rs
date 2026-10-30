@@ -1632,7 +1632,9 @@ pub(crate) fn layer() -> impl IntoElement {
         let sheet_i = st.sheet_idx.get();
         let html_mode = st.html_mode.get();
         // body per kind
-        let body: AnyElement = if crate::office::showing() {
+        let body: AnyElement = if crate::office::showing() && st.office.is_word.get() {
+            crate::office::docx::view::word_view().into_element()
+        } else if crate::office::showing() {
             crate::office::xlsx::edit::sheet_view().into_element()
         } else if on_web {
             view().flex_1().pointer_events(PointerEvents::None).into_element()
@@ -2537,7 +2539,7 @@ pub(crate) fn viewer_save() {
     let Some(f) = st.viewing.get_untracked() else { return };
     if crate::office::showing() {
         crate::office::xlsx::edit::commit_editing();
-        return crate::office::save();
+        return crate::office::save_asking();
     }
     if !office_open() {
         return;
@@ -2569,6 +2571,10 @@ fn printable(f: &Attach) -> Option<&'static str> {
 pub(crate) fn viewer_print() {
     let st = store();
     let Some(f) = st.viewing.get_untracked() else { return };
+    // a native Word document prints as it is now, edits included
+    if crate::office::showing() && st.office.is_word.get_untracked() {
+        return crate::office::docx::view::print();
+    }
     match printable(&f) {
         Some("image") => crate::keys::print("image", Store::file_raw_url(&f.path), &f.name),
         // an html file prints laid out, as the preview shows it
@@ -2624,8 +2630,14 @@ pub(crate) fn viewer_actions() {
     }
     // the native spreadsheet or the web editor (`office.native`)
     if crate::office::native_ext(&f.path) {
-        let label = if store().office.native.get_untracked() { "Open Spreadsheets in the Web Editor" } else { "Open Spreadsheets Natively" };
-        items.push(CtxItem::row(label, "spreadsheet", "office-native", String::new()));
+        let word = crate::office::is_word(&f.path);
+        let label = match (store().office.native.get_untracked(), word) {
+            (true, false) => "Open Spreadsheets in the Web Editor",
+            (false, false) => "Open Spreadsheets Natively",
+            (true, true) => "Open Documents in the Web Editor",
+            (false, true) => "Open Documents Natively",
+        };
+        items.push(CtxItem::row(label, if word { "document" } else { "spreadsheet" }, "office-native", String::new()));
     }
     if printable(&f).is_some() {
         items.push(CtxItem::row("Print…", "document", "viewer-print", String::new()));

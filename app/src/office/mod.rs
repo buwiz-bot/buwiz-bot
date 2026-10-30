@@ -1,6 +1,7 @@
-//! Office files in native views: Excel first (`xlsx/`), Word and
+//! Office files in native views: Excel (`xlsx/`) and Word (`docx/`),
 //! PowerPoint later. Each format is a [`session::Document`] on a worker
-//! thread, drawn from BetterOffice's display lists ([`draw`]).
+//! thread, drawn from BetterOffice's display lists ([`draw`],
+//! `docx/draw.rs`).
 //!
 //! The viewer routes a file here by its extension while the
 //! `office.native` setting is on (the default; kept in `/state/rox-office`):
@@ -10,6 +11,7 @@
 //! go through `/file/write`, so they become versions as the web editor's
 //! did).
 
+pub(crate) mod docx;
 pub(crate) mod draw;
 pub(crate) mod session;
 pub(crate) mod xlsx;
@@ -21,8 +23,9 @@ use nsh_core::prelude::*;
 
 use crate::live::store;
 use crate::store::Attach;
-use session::{Event, Session, Sink, State};
-use xlsx::doc::{Book, Out};
+use docx::doc::Word;
+use session::{Document, Event, Session, Sink, State};
+use xlsx::doc::Book;
 
 /// The open native document's UI state, kept in the store (one viewer).
 pub(crate) struct Ui {
@@ -32,13 +35,24 @@ pub(crate) struct Ui {
     pub key: Signal<String>,
     pub state: Signal<State>,
     pub sheet: xlsx::SheetUi,
+    pub word: docx::WordUi,
+    /// The open document is a Word document (else a spreadsheet).
+    pub is_word: Signal<bool>,
     /// Closing asked while the document holds edits.
     pub ask_close: Signal<bool>,
 }
 
 impl Ui {
     pub(crate) fn new() -> Ui {
-        Ui { native: signal(true), key: signal(String::new()), state: signal(State::default()), sheet: xlsx::SheetUi::new(), ask_close: signal(false) }
+        Ui {
+            native: signal(true),
+            key: signal(String::new()),
+            state: signal(State::default()),
+            sheet: xlsx::SheetUi::new(),
+            word: docx::WordUi::new(),
+            is_word: signal(false),
+            ask_close: signal(false),
+        }
     }
 }
 
@@ -46,9 +60,15 @@ fn ui() -> &'static Ui {
     &store().office
 }
 
+/// The open document's session, by format.
+enum Doc {
+    Sheet(Session<Book>),
+    Word(Session<Word>),
+}
+
 struct Open {
     key: String,
-    session: Session<Book>,
+    session: Doc,
     /// The broker's files folder, for a reply's file (uploads name their
     /// path in it).
     files: Option<PathBuf>,
@@ -64,7 +84,12 @@ thread_local! {
 /// The formats with a native view.
 pub(crate) fn native_ext(name: &str) -> bool {
     let ext = xlsx::ext(std::path::Path::new(name));
-    matches!(ext.as_str(), "xlsx" | "xlsm" | "xls" | "csv" | "tsv")
+    matches!(ext.as_str(), "xlsx" | "xlsm" | "xls" | "csv" | "tsv") || is_word(name)
+}
+
+/// The formats the Word view opens.
+pub(crate) fn is_word(name: &str) -> bool {
+    matches!(xlsx::ext(std::path::Path::new(name)).as_str(), "docx" | "doc")
 }
 
 /// The broker's reply files: `generated/files` in its data folder, which
@@ -102,14 +127,24 @@ pub(crate) fn open(f: &Attach) -> bool {
         g.set(g.get() + 1);
         g.get()
     });
+    let word = is_word(&f.path);
     batch(|| {
         u.key.set(f.path.clone());
         u.state.set(State { path: path.clone(), ..State::default() });
         u.ask_close.set(false);
+        u.is_word.set(word);
         u.sheet.reset();
+        u.word.reset();
     });
+    let session = if word { Doc::Word(start(path, sink, generation, |o| docx::on_out(&ui().word, o))) } else { Doc::Sheet(start(path, sink, generation, |o| xlsx::on_out(&ui().sheet, o))) };
+    OPEN.with_borrow_mut(|o| *o = Some(Open { key: f.path.clone(), session, files, generation }));
+    true
+}
+
+/// A session on `path`, its answers going to `out` while it is the open one.
+fn start<D: Document>(path: PathBuf, sink: Sink, generation: u64, out: fn(D::Out)) -> Session<D> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let session = Session::<Book>::open(path, sink, move |e| {
+    let session = Session::<D>::open(path, sink, move |e| {
         let _ = tx.send(e);
     });
     crate::store::spawn_detached(async move {
@@ -117,11 +152,10 @@ pub(crate) fn open(f: &Attach) -> bool {
             if OPEN.with_borrow(|o| o.as_ref().map(|o| o.generation)) != Some(generation) {
                 return;
             }
-            on_event(e);
+            on_event(e, out);
         }
     });
-    OPEN.with_borrow_mut(|o| *o = Some(Open { key: f.path.clone(), session, files, generation }));
-    true
+    session
 }
 
 /// Drops the open document (its worker stops).
@@ -136,13 +170,65 @@ pub(crate) fn close() {
     }
 }
 
-/// Runs `f` with the open session.
+/// Runs `f` with the open spreadsheet's session.
 pub(crate) fn with_session(f: impl FnOnce(&Session<Book>)) {
     OPEN.with_borrow(|o| {
-        if let Some(o) = o {
-            f(&o.session)
+        if let Some(Open { session: Doc::Sheet(s), .. }) = o {
+            f(s)
         }
     });
+}
+
+/// Runs `f` with the open Word document's session.
+pub(crate) fn with_word(f: impl FnOnce(&Session<Word>)) {
+    OPEN.with_borrow(|o| {
+        if let Some(Open { session: Doc::Word(s), .. }) = o {
+            f(s)
+        }
+    });
+}
+
+/// Runs the session's own command (save, reload, keep mine, an upload's
+/// answer), whatever its format.
+fn control(f: impl Fn(&dyn Control)) {
+    OPEN.with_borrow(|o| match o.as_ref().map(|o| &o.session) {
+        Some(Doc::Sheet(s)) => f(s),
+        Some(Doc::Word(s)) => f(s),
+        None => {}
+    });
+}
+
+/// What every session takes, whatever its document.
+trait Control {
+    fn save(&self);
+    fn reload(&self);
+    fn keep_mine(&self);
+    fn uploaded(&self, version: u64, ok: bool, error: String);
+}
+
+impl<D: Document> Control for Session<D> {
+    fn save(&self) {
+        Session::save(self)
+    }
+    fn reload(&self) {
+        Session::reload(self)
+    }
+    fn keep_mine(&self) {
+        Session::keep_mine(self)
+    }
+    fn uploaded(&self, version: u64, ok: bool, error: String) {
+        Session::uploaded(self, version, ok, error)
+    }
+}
+
+/// Takes the file as it changed outside Rox (dropping the edits).
+pub(crate) fn reload() {
+    control(|s| s.reload());
+}
+
+/// Keeps the edits over the outside change.
+pub(crate) fn keep_mine() {
+    control(|s| s.keep_mine());
 }
 
 /// Whether the viewer shows a native document.
@@ -174,7 +260,7 @@ pub(crate) fn answer_close(save: Option<bool>) {
         }
         Some(true) => {
             CLOSE_AFTER_SAVE.with(|c| c.set(true));
-            with_session(Session::save);
+            save_asking();
         }
     }
 }
@@ -183,20 +269,35 @@ thread_local! {
     static CLOSE_AFTER_SAVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// ⌘S on a native document.
-pub(crate) fn save() {
-    with_session(Session::save);
+/// ⌘S in the viewer: a legacy `.doc` on this Mac asks where its `.docx`
+/// goes (once); everything else saves in place.
+pub(crate) fn save_asking() {
+    let u = ui();
+    let st = u.state.get_untracked();
+    let local = OPEN.with_borrow(|o| o.as_ref().is_some_and(|o| o.files.is_none()));
+    if u.is_word.get_untracked() && local && xlsx::ext(&st.path) == "doc" {
+        return docx::view::save_legacy(st.path);
+    }
+    save();
 }
 
-fn on_event(e: Event<Out>) {
+/// ⌘S on a native document.
+pub(crate) fn save() {
+    control(|s| s.save());
+}
+
+fn on_event<O>(e: Event<O>, out: fn(O)) {
     let u = ui();
     match e {
         Event::State(s) => u.state.set(s),
-        Event::Out(o) => xlsx::on_out(&u.sheet, o),
-        Event::Reloaded => u.sheet.reloaded(),
+        Event::Out(o) => out(o),
+        Event::Reloaded => {
+            u.sheet.reloaded();
+            u.word.reloaded();
+        }
         Event::Saved(path) => {
             let shown = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            if xlsx::ext(&path) == "xlsx" && !native_ext_same(&u.key.get_untracked(), &path) {
+            if !native_ext_same(&u.key.get_untracked(), &path) {
                 crate::toast::show(&format!("Saved as {shown}"));
             }
             let key = u.key.get_untracked();
@@ -222,7 +323,7 @@ fn upload(bytes: Vec<u8>, path: PathBuf, version: u64) {
     use base64::Engine as _;
     let rel = OPEN.with_borrow(|o| o.as_ref().and_then(|o| o.files.clone())).and_then(|dir| path.strip_prefix(&dir).ok().map(|p| p.to_string_lossy().into_owned()));
     let Some(rel) = rel else {
-        with_session(|s| s.uploaded(version, false, "The file is outside the broker's files".to_owned()));
+        control(|s| s.uploaded(version, false, "The file is outside the broker's files".to_owned()));
         return;
     };
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -230,7 +331,7 @@ fn upload(bytes: Vec<u8>, path: PathBuf, version: u64) {
         let answer = crate::client::post("/file/write", serde_json::json!({ "path": rel, "data": data })).await;
         let ok = answer.as_ref().and_then(|a| a.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
         let error = answer.as_ref().and_then(|a| a.get("error")).and_then(|v| v.as_str()).unwrap_or("The broker didn't answer").to_owned();
-        with_session(|s| s.uploaded(version, ok, if ok { String::new() } else { format!("Couldn't save: {error}") }));
+        control(|s| s.uploaded(version, ok, if ok { String::new() } else { format!("Couldn't save: {error}") }));
     });
 }
 
