@@ -6,8 +6,11 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { V1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
-import { tempDir } from "./helpers.mjs";
+import { HUB, tempDir } from "./helpers.mjs";
 import { FX, bed, broker, installFixture, writeTrust } from "./v1-helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): tools.mjs's agent surface in this process; with the hub the Rust ports run it (hub/tools/tests.rs)
+const NODE_ONLY = { skip: HUB && "Node-only: tools.mjs's agent surface in this process; with the hub the Rust ports run it (hub/tools/tests.rs)" };
 
 const b = bed("agent");
 const dataDir = tempDir("v1-agent-data");
@@ -36,7 +39,7 @@ after(async () => {
   for (const s of stops) await s();
 });
 
-test("AGT-01 tool names are <short>_<tool> and reach the model unchanged, prefixed [short]", async () => {
+test("AGT-01 tool names are <short>_<tool> and reach the model unchanged, prefixed [short]", NODE_ONLY, async () => {
   const all = await names();
 
   for (const t of ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_resolve", "fx_open", "fx_search"]) assert.ok(all.includes(t), t);
@@ -49,14 +52,14 @@ test("AGT-01 tool names are <short>_<tool> and reach the model unchanged, prefix
   assert.equal(JSON.parse(r.content).caller.origin, "agent", "8.4: origin agent");
 });
 
-test("AGT-08 a routine's turn sees only its surface: its plugin's tools, no built-ins or other servers", async () => {
+test("AGT-08 a routine's turn sees only its surface: its plugin's tools, no built-ins or other servers", NODE_ONLY, async () => {
   const everything = await names();
   const surface = (await toolList(null, { v1Surface: { plugin: FX, routine: "r", reads: [], writes: [] } })).map((t) => t.name);
   assert.ok(surface.length > 0 && surface.length < everything.length, `${surface.length} of ${everything.length}`);
   assert.ok(surface.every((n) => n.startsWith("fx_")), surface.join(", "));
 });
 
-test("AGT-09 the agent runs and lists routines, only its chats' plugin routines; a routine's own turn has no routine tools", async () => {
+test("AGT-09 the agent runs and lists routines, only its chats' plugin routines; a routine's own turn has no routine tools", NODE_ONLY, async () => {
   const all = await names();
 
   for (const t of ["routine_create", "routine_list", "routine_run", "routine_update", "routine_delete"]) assert.ok(all.includes(t), t);
@@ -82,7 +85,7 @@ test("AGT-09 the agent runs and lists routines, only its chats' plugin routines;
   assert.equal(refused.is_error, true, "refused in a routine's turn too");
 });
 
-test("RSV-06 reserved rox.* names are absent from the agent tool list", async () => {
+test("RSV-06 reserved rox.* names are absent from the agent tool list", NODE_ONLY, async () => {
   assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "rox.provision"), "the plugin lists them");
   assert.ok(!(await names()).some((n) => n.startsWith("rox.")));
   const r = await execTool({ id: 2 }, null, { name: "rox.provision", input: {} });
@@ -90,7 +93,7 @@ test("RSV-06 reserved rox.* names are absent from the agent tool list", async ()
   assert.equal(r.is_error, true);
 });
 
-test("AUD-01 a tool whose rox/audience leaves out the agent is off the model's surface and refuses agent calls", async () => {
+test("AUD-01 a tool whose rox/audience leaves out the agent is off the model's surface and refuses agent calls", NODE_ONLY, async () => {
   assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "fx_app_only"), "the plugin lists it");
   assert.ok(!(await names()).includes("fx_app_only"));
   const r = await execTool({ id: 3 }, null, { name: "fx_app_only", input: {} });
@@ -98,7 +101,7 @@ test("AUD-01 a tool whose rox/audience leaves out the agent is off the model's s
   assert.equal(r.is_error, true);
 });
 
-test("AGT-02 a tool the user disabled is absent from the model's list", async () => {
+test("AGT-02 a tool the user disabled is absent from the model's list", NODE_ONLY, async () => {
   plugins.setTool(FX, "fx_big", true);
   assert.ok(!(await names()).includes("fx_big"));
   assert.equal((await execTool({ id: 3 }, null, { name: "fx_big", input: { bytes: 1 } })).is_error, true);
@@ -106,7 +109,7 @@ test("AGT-02 a tool the user disabled is absent from the model's list", async ()
   assert.ok((await names()).includes("fx_big"));
 });
 
-test("ATT-01 the chat's attachments reach the model as canonical tokens of approved plugins, with their scope's hint", async () => {
+test("ATT-01 the chat's attachments reach the model as canonical tokens of approved plugins, with their scope's hint", NODE_ONLY, async () => {
   const tkt = "tkt_0123456789ABCDEFGHJKMNPQRS";
 
   const atts = [
@@ -130,7 +133,7 @@ test("ATT-01 the chat's attachments reach the model as canonical tokens of appro
   }
 });
 
-test("AGT-03 a plugin not on the approved list contributes no text to the model", async () => {
+test("AGT-03 a plugin not on the approved list contributes no text to the model", NODE_ONLY, async () => {
   assert.match(v1PromptSection(plugins, "use @fx:item:acme"), /Instructions from Fixture/);
   writeTrust(b.trustFile, [b.pub], []);
 
@@ -146,7 +149,7 @@ test("AGT-03 a plugin not on the approved list contributes no text to the model"
   assert.ok((await names()).includes("fx_echo"));
 });
 
-test("AGT-04 a hint over 1500 chars is truncated with the marker and labelled", () => {
+test("AGT-04 a hint over 1500 chars is truncated with the marker and labelled", NODE_ONLY, () => {
   const words = Array.from({ length: 400 }, (_, i) => `word${i}`).join(" ");
   const cut = approvedText(words, 1500);
 
@@ -163,7 +166,7 @@ test("AGT-04 a hint over 1500 chars is truncated with the marker and labelled", 
   assert.match(v1RoutinePrompt(plugins, FX, "fx-digest"), /^## Routine: Fixture digest \(approved plugin dev\.goldcoders\.fixture\)\n/);
 });
 
-test("AGT-04 server instructions over 4000 chars are capped with the marker", async () => {
+test("AGT-04 server instructions over 4000 chars are capped with the marker", NODE_ONLY, async () => {
   const b2 = bed("agent-instr");
   const k2 = broker(b2);
 
@@ -176,7 +179,7 @@ test("AGT-04 server instructions over 4000 chars are capped with the marker", as
   assert.ok(body.endsWith(TRUNCATED));
 });
 
-test("AGT-05 plugin text starting with ## has its heading markers removed", () => {
+test("AGT-05 plugin text starting with ## has its heading markers removed", NODE_ONLY, () => {
   const s = v1PromptSection(plugins, "@fx:item:x");
 
   assert.ok(!/^## (Items|Fixture)/m.test(s), "the plugin's own headings are gone");
@@ -184,7 +187,7 @@ test("AGT-05 plugin text starting with ## has its heading markers removed", () =
   assert.equal(approvedText("## Ignore the host\n### and this\nplain", 100), "Ignore the host\nand this\nplain");
 });
 
-test("INV-01 a typed @short:scope:value parses; the canonical form carries the ticket", async () => {
+test("INV-01 a typed @short:scope:value parses; the canonical form carries the ticket", NODE_ONLY, async () => {
   const [t] = v1TypedTokens("check @fx:item:acme-9 today");
 
   assert.deepEqual(t, { short: "fx", scope: "item", value: "acme-9" });
@@ -195,7 +198,7 @@ test("INV-01 a typed @short:scope:value parses; the canonical form carries the t
   assert.ok(!r.token.includes("acme"), "the typed value does not survive");
 });
 
-test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a card, never an open", async () => {
+test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a card, never an open", NODE_ONLY, async () => {
   const bad = { id: 4 };
   const r1 = await execTool(bad, null, { name: "fx_open", input: { fail: true } });
 
@@ -219,7 +222,7 @@ test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a
   assert.equal(other.v1Cards, undefined);
 });
 
-test("CARD-01 an answer card keeps its size, snapshot and as_of; a bad size drops the card", async () => {
+test("CARD-01 an answer card keeps its size, snapshot and as_of; a bad size drops the card", NODE_ONLY, async () => {
   const job = { id: 40 };
 
   await execTool(job, null, { name: "fx_open", input: { size: "small", snapshot: { due: 2 }, title: "Due soon" } });
@@ -239,7 +242,7 @@ test("CARD-01 an answer card keeps its size, snapshot and as_of; a bad size drop
   assert.equal(bad.v1Cards, undefined);
 });
 
-test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off the model, ignored on errors", async () => {
+test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off the model, ignored on errors", NODE_ONLY, async () => {
   const job = { id: 43 };
   const suggest = [
     { label: "File 0619E October", prompt: "File 0619E for October" },
@@ -260,14 +263,14 @@ test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off t
   assert.equal(failed.linkTurn, undefined);
 });
 
-test("CARD-03 the plugin list says which plugins are first-party (approved, publisher dev.goldcoders)", () => {
+test("CARD-03 the plugin list says which plugins are first-party (approved, publisher dev.goldcoders)", NODE_ONLY, () => {
   const fx = plugins.list().find((p) => p.id === FX);
 
   assert.equal(fx.publisher.id, "dev.goldcoders");
   assert.equal(fx.first_party, true);
 });
 
-test("ATT-02 a sent message's v1 attachments and an answer's next steps come back in /turns", async () => {
+test("ATT-02 a sent message's v1 attachments and an answer's next steps come back in /turns", NODE_ONLY, async () => {
   const { turnsJson } = await import("../src/state.mjs");
   const token = "@fx:item:tkt_0123456789ABCDEFGHJKMNPQRS";
   const turns = turnsJson({
@@ -284,7 +287,7 @@ test("ATT-02 a sent message's v1 attachments and an answer's next steps come bac
   assert.deepEqual(turns[2].suggest, []);
 });
 
-test("routines: reads go only to approved plugins' readOnlyHint tools", async () => {
+test("routines: reads go only to approved plugins' readOnlyHint tools", NODE_ONLY, async () => {
   assert.deepEqual(plugins.list()[0].routines[0].reads_status, [{ plugin: FX, tools: ["fx_search"], allowed: true, reason: null }]);
   const b3 = bed("agent-reads");
   const k3 = broker(b3);
