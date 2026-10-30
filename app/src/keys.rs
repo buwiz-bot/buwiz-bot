@@ -33,6 +33,8 @@ pub(crate) enum Scope {
     SheetEdit,
     /// A native spreadsheet (`office/`), nothing being edited.
     Sheet,
+    /// A native Word document (`office/docx/`), its find bar closed.
+    Doc,
     /// The file viewer showing a spreadsheet.
     ViewerTable,
     Viewer,
@@ -51,12 +53,13 @@ pub(crate) enum Scope {
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 15] = [
+pub(crate) const ORDER: [Scope; 16] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
     Scope::SheetEdit,
     Scope::Sheet,
+    Scope::Doc,
     Scope::ViewerTable,
     Scope::Viewer,
     Scope::MiniApp,
@@ -77,6 +80,7 @@ impl Scope {
             Scope::Palette => "$palette",
             Scope::SheetEdit => "$sheet-edit",
             Scope::Sheet => "$sheet",
+            Scope::Doc => "$document",
             Scope::ViewerTable => "$spreadsheet",
             Scope::Viewer => "$viewer",
             Scope::MiniApp => "$mini-app",
@@ -100,6 +104,7 @@ impl Scope {
             Scope::Palette => st.palette.get(),
             Scope::SheetEdit => crate::office::xlsx::edit::editing(),
             Scope::Sheet => crate::office::xlsx::edit::navigating(),
+            Scope::Doc => crate::office::docx::view::editing(),
             Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table") && !crate::office::showing(),
             Scope::Viewer => viewing().is_some(),
             Scope::MiniApp => !st.mini_full.with(Vec::is_empty),
@@ -360,6 +365,50 @@ pub(crate) static COMMANDS: &[Command] = &[
     always(cmd("sheet_edit.prev", "Enter and the previous cell", Scope::SheetEdit, &["shift+tab"], |_| crate::office::xlsx::edit::commit_and(Dir::Left))),
     always(cmd("sheet_edit.up", "Enter and the cell above", Scope::SheetEdit, &["shift+enter"], |_| crate::office::xlsx::edit::commit_and(Dir::Up))),
     always(cmd("sheet_edit.cancel", "Cancel the edit", Scope::SheetEdit, &["escape"], |_| crate::office::xlsx::edit::cancel())),
+    // ——— Word (`office/docx/view.rs`) ———
+    always(repeating(cmd("doc.left", "Left", Scope::Doc, &["left"], |_| doc_step(Move::Left, false)))),
+    always(repeating(cmd("doc.right", "Right", Scope::Doc, &["right"], |_| doc_step(Move::Right, false)))),
+    always(repeating(cmd("doc.up", "Line up", Scope::Doc, &["up"], |_| doc_step(Move::Up, false)))),
+    always(repeating(cmd("doc.down", "Line down", Scope::Doc, &["down"], |_| doc_step(Move::Down, false)))),
+    always(repeating(cmd("doc.extend_left", "Extend left", Scope::Doc, &["shift+left"], |_| doc_step(Move::Left, true)))),
+    always(repeating(cmd("doc.extend_right", "Extend right", Scope::Doc, &["shift+right"], |_| doc_step(Move::Right, true)))),
+    always(repeating(cmd("doc.extend_up", "Extend up", Scope::Doc, &["shift+up"], |_| doc_step(Move::Up, true)))),
+    always(repeating(cmd("doc.extend_down", "Extend down", Scope::Doc, &["shift+down"], |_| doc_step(Move::Down, true)))),
+    always(repeating(cmd("doc.word_left", "Word left", Scope::Doc, &["alt+left"], |_| doc_step(Move::WordLeft, false)))),
+    always(repeating(cmd("doc.word_right", "Word right", Scope::Doc, &["alt+right"], |_| doc_step(Move::WordRight, false)))),
+    always(repeating(cmd("doc.extend_word_left", "Extend a word left", Scope::Doc, &["alt+shift+left"], |_| doc_step(Move::WordLeft, true)))),
+    always(repeating(cmd("doc.extend_word_right", "Extend a word right", Scope::Doc, &["alt+shift+right"], |_| doc_step(Move::WordRight, true)))),
+    always(cmd("doc.line_start", "Line start", Scope::Doc, &["mod+left", "home"], |_| doc_step(Move::LineStart, false))),
+    always(cmd("doc.line_end", "Line end", Scope::Doc, &["mod+right", "end"], |_| doc_step(Move::LineEnd, false))),
+    always(cmd("doc.extend_line_start", "Extend to the line start", Scope::Doc, &["mod+shift+left", "shift+home"], |_| doc_step(Move::LineStart, true))),
+    always(cmd("doc.extend_line_end", "Extend to the line end", Scope::Doc, &["mod+shift+right", "shift+end"], |_| doc_step(Move::LineEnd, true))),
+    always(cmd("doc.start", "Document start", Scope::Doc, &["mod+up"], |_| doc_step(Move::DocStart, false))),
+    always(cmd("doc.end", "Document end", Scope::Doc, &["mod+down"], |_| doc_step(Move::DocEnd, false))),
+    always(cmd("doc.extend_start", "Extend to the start", Scope::Doc, &["mod+shift+up"], |_| doc_step(Move::DocStart, true))),
+    always(cmd("doc.extend_end", "Extend to the end", Scope::Doc, &["mod+shift+down"], |_| doc_step(Move::DocEnd, true))),
+    always(repeating(cmd("doc.page_up", "Page up", Scope::Doc, &["pageup"], |_| doc_step(Move::PageUp, false)))),
+    always(repeating(cmd("doc.page_down", "Page down", Scope::Doc, &["pagedown"], |_| doc_step(Move::PageDown, false)))),
+    always(repeating(cmd("doc.backspace", "Delete back", Scope::Doc, &["backspace"], |_| crate::office::docx::view::key("backspace")))),
+    always(repeating(cmd("doc.delete", "Delete forward", Scope::Doc, &["delete"], |_| crate::office::docx::view::key("delete")))),
+    always(repeating(cmd("doc.enter", "New paragraph", Scope::Doc, &["enter"], |_| crate::office::docx::view::key("enter")))),
+    always(repeating(cmd("doc.tab", "Tab", Scope::Doc, &["tab"], |_| crate::office::docx::view::key("tab")))),
+    always(cmd("doc.all", "Select all", Scope::Doc, &["mod+a"], |_| crate::office::docx::view::key("all"))),
+    always(cmd("doc.copy", "Copy", Scope::Doc, &["mod+c"], |_| crate::office::docx::view::copy(false))),
+    always(cmd("doc.cut", "Cut", Scope::Doc, &["mod+x"], |_| crate::office::docx::view::copy(true))),
+    always(cmd("doc.paste", "Paste", Scope::Doc, &["mod+v"], |_| crate::office::docx::view::paste())),
+    always(repeating(cmd("doc.undo", "Undo", Scope::Doc, &["mod+z"], |_| crate::office::docx::view::key("undo")))),
+    always(repeating(cmd("doc.redo", "Redo", Scope::Doc, &["mod+shift+z", "mod+y"], |_| crate::office::docx::view::key("redo")))),
+    always(cmd("doc.bold", "Bold", Scope::Doc, &["mod+b"], |_| doc_format(Fmt::Bold))),
+    always(cmd("doc.italic", "Italic", Scope::Doc, &["mod+i"], |_| doc_format(Fmt::Italic))),
+    always(cmd("doc.underline", "Underline", Scope::Doc, &["mod+u"], |_| doc_format(Fmt::Underline))),
+    always(cmd("doc.bigger", "Bigger text", Scope::Doc, &["mod+shift+."], |_| doc_format(Fmt::Size(true)))),
+    always(cmd("doc.smaller", "Smaller text", Scope::Doc, &["mod+shift+,"], |_| doc_format(Fmt::Size(false)))),
+    always(cmd("doc.bullets", "Bulleted list", Scope::Doc, &["mod+shift+8"], |_| doc_format(Fmt::Bullets))),
+    always(cmd("doc.numbers", "Numbered list", Scope::Doc, &["mod+shift+7"], |_| doc_format(Fmt::Numbers))),
+    always(cmd("doc.find", "Find", Scope::Doc, &["mod+f"], |_| crate::office::docx::view::find())),
+    always(cmd("doc.zoom_in", "Zoom in", Scope::Doc, &["mod+="], |_| crate::office::docx::view::zoom_by(0.1))),
+    always(cmd("doc.zoom_out", "Zoom out", Scope::Doc, &["mod+-"], |_| crate::office::docx::view::zoom_by(-0.1))),
+    always(cmd("doc.escape", "Close", Scope::Doc, &["escape"], |_| crate::office::docx::view::escape())),
     // ——— Lightbox ———
     repeating(cmd("light.prev", "Previous image", Scope::Lightbox, &["left"], |_| store().light_step(-1))),
     repeating(cmd("light.next", "Next image", Scope::Lightbox, &["right"], |_| store().light_step(1))),
@@ -369,7 +418,16 @@ pub(crate) static COMMANDS: &[Command] = &[
     cmd("plugins.choose", "Open the match", Scope::PluginsSearch, &["enter"], |_| store().drop_choose()),
 ];
 
+use crate::office::docx::doc::{Fmt, Move};
 use crate::office::xlsx::select::{Dir, Step};
+
+fn doc_step(to: Move, extend: bool) {
+    crate::office::docx::view::step(to, extend);
+}
+
+fn doc_format(f: Fmt) {
+    crate::office::docx::view::format(f);
+}
 
 fn sheet_nav(dir: Dir, step: Step, shift: bool) {
     crate::office::xlsx::edit::nav(dir, step, shift);

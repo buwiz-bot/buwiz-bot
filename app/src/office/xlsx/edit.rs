@@ -494,7 +494,7 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
 
 /// A bar over the grid: the file changed outside Rox while it held
 /// edits, or closing asks what to do with them.
-fn prompts() -> impl IntoElement {
+pub(crate) fn prompts() -> impl IntoElement {
     let button = |label: &'static str, primary: bool, on: fn()| {
         view()
             .label(label)
@@ -523,8 +523,8 @@ fn prompts() -> impl IntoElement {
                 .into_element()
         } else {
             row.child(text(format!("{name} changed outside Rox while you were editing it.")).flex_1().text_size(px(13.0)).text_color(theme::TEXT))
-                .child(button("Keep Mine", false, || office::with_session(|s| s.keep_mine())))
-                .child(button("Reload", true, || office::with_session(|s| s.reload())))
+                .child(button("Keep Mine", false, || office::keep_mine()))
+                .child(button("Reload", true, || office::reload()))
                 .into_element()
         }
     })
