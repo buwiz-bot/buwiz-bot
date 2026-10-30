@@ -7,7 +7,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { tempDir } from "./helpers.mjs";
+import { HUB, tempDir } from "./helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): state.mjs in this process; with the hub the store is Rust's (hub/routines/store_host.rs, STORE-01)
+const NODE_ONLY = { skip: HUB && "Node-only: state.mjs in this process; with the hub the store is Rust's (hub/routines/store_host.rs, STORE-01)" };
 
 const dir = tempDir("routine-threads");
 
@@ -21,7 +24,7 @@ const run = (code) =>
     }).trim().split("\n").at(-1),
   );
 
-test("a routine's thread, its item turns and the chat's notice persist", () => {
+test("a routine's thread, its item turns and the chat's notice persist", NODE_ONLY, () => {
   const made = run(`
     import { store, nextThreadSeq, uuidv7, writeIndex } from "./src/state.mjs";
     import { createRoutineThreads } from "./src/v1/routine-threads.mjs";

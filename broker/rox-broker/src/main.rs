@@ -11,6 +11,7 @@ use rox_broker::config::Config;
 use rox_broker::helper::line::Line;
 use rox_broker::helper::mcp_servers::McpHost;
 use rox_broker::helper::plugins::{Clock, Host, Options, Timeouts};
+use rox_broker::hub::{ctx::HubCtx, Hub};
 use rox_broker::leaf::Leaf;
 use rox_broker::node::{self, Node};
 use rox_broker::proxy::FrontDoor;
@@ -72,17 +73,57 @@ async fn main() {
             }
         }
     };
+    let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
+    // the hub (plan phase 5, D30): the brain's routes answered here, and
+    // Node in its office role, holding none of the brain's state; so this
+    // broker hosts the v1 plugins and MCP servers the brain calls, the
+    // line's when it has them, else its own
+    let hub = (std::env::var("ROX_BROKER_HUB").as_deref() == Ok("1")).then(|| {
+        config.node_env.push(("ROX_NODE_ROLE".to_owned(), "office".to_owned()));
+        let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
+        let db = data.join("generated").join("app.db");
+        let mut ctx = HubCtx::new(data.clone(), Clock::system());
+        if let Some(line) = &line {
+            if hosts.contains(&"v1") {
+                ctx.plugins = Some(line.host().clone());
+                ctx.sessions = Some(line.sessions().clone());
+            }
+            ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
+        }
+        if ctx.plugins.is_none() {
+            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("ROX_TRUST_FILE").ok().as_deref()), false) {
+                Ok(host) => {
+                    ctx.sessions = Some(rox_broker::helper::sessions::Sessions::new(host.clone()));
+                    ctx.plugins = Some(host);
+                }
+                Err(e) => eprintln!("rox-broker: the hub's plugin host: {e}"),
+            }
+        }
+        if ctx.mcp.is_none() {
+            match McpHost::new(&db, config.port) {
+                Ok(mcp) => ctx.mcp = Some(mcp),
+                Err(e) => eprintln!("rox-broker: the hub's MCP host: {e}"),
+            }
+        }
+        let hub = Arc::new(Hub::new(ctx, allowed.clone()));
+        hub.start();
+        hub
+    });
     let node = Arc::new(Node::default());
     let _ = node.version.set(node::version_of(&config.node));
     let supervisor = tokio::spawn(node::supervise(config.clone(), node.clone()));
-    let allowed = rox_broker::guard::allowed_origins(config.port, std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref());
     let leaf = (std::env::var("ROX_BROKER_FORWARD_ALL").as_deref() != Ok("1"))
         .then(|| Leaf::new(config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref()), allowed.clone()));
     let door = FrontDoor::new(node.clone(), leaf);
-    let door = Arc::new(match &line {
+    let door = match &line {
         // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
         Some(line) if hosts.contains(&"mcp") => door.with_line(line.clone()).with_mcp(rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone())),
         Some(line) => door.with_line(line.clone()),
+        None => door,
+    };
+    let hub_ctx = hub.as_ref().map(|h| h.ctx().clone());
+    let door = Arc::new(match hub {
+        Some(hub) => door.with_hub(hub),
         None => door,
     });
     eprintln!("rox-broker on http://127.0.0.1:{}", config.port);
@@ -110,6 +151,14 @@ async fn main() {
     if let Some(line) = &line {
         line.host().stop_all().await;
         line.mcp().stop_all().await;
+    }
+    if let Some(ctx) = &hub_ctx {
+        if let Some(host) = &ctx.plugins {
+            host.stop_all().await;
+        }
+        if let Some(mcp) = &ctx.mcp {
+            mcp.stop_all().await;
+        }
     }
     // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
     node.stop(Duration::from_millis(2500)).await;

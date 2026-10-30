@@ -1,0 +1,7 @@
+  linear — the user's Linear issues (assigned, else recent workspace issues). Every issue has uid (internal id for mutations), id (FER-12 label), stateId.
+     GET  /data/linear/issues → {scope:"assigned"|"workspace", issues:[{uid,id,title,state,stateId,priority,assignee,team,url}]}
+     GET  /data/linear/states → {teams:[{team,states:[{id,name,type}]}]} (transition targets per team)
+     POST /data/linear/update {uid, stateId?, priority?}  — change state/priority
+     POST /data/linear/assign {uid}                       — assign to me
+     POST /data/linear/comment {uid, body}                — comment on it
+     Interactive Linear widgets SHOULD: list issues, let a tap select one, then offer per-team state transitions (GET states once), assign-to-me, and a small comment input; refetch issues after any mutation.

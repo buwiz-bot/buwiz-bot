@@ -21,6 +21,10 @@ import { after, before, test } from "node:test";
 import { createRoutineThreads } from "../src/v1/routine-threads.mjs";
 import { HOOK_RATE, createRoutines } from "../src/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
+import { HUB } from "./helpers.mjs";
+
+// Node-only under the hub (ROX_BROKER_HUB=1): v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)
+const NODE_ONLY = { skip: HUB && "Node-only: v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)" };
 
 let now = 1_800_000_000_000;
 const clock = { now: () => now, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) };
@@ -80,7 +84,7 @@ before(async () => {
 
 after(() => plugins.stopAll());
 
-test("INS-01 a routine enabled before instances becomes one instance with its chat, seen ids, last run and thread", () => {
+test("INS-01 a routine enabled before instances becomes one instance with its chat, seen ids, last run and thread", NODE_ONLY, () => {
   const rows = db.prepare("SELECT * FROM v1_instances WHERE routine='bir-mail'").all();
 
   assert.equal(rows.length, 1);
@@ -101,7 +105,7 @@ test("INS-01 a routine enabled before instances becomes one instance with its ch
   assert.equal(listed.seen_count, 1);
 });
 
-test("INS-03 params go to the query tool, the prompt and the surface; ones that don't fit are refused", async () => {
+test("INS-03 params go to the query tool, the prompt and the surface; ones that don't fit are refused", NODE_ONLY, async () => {
   const [old] = db.prepare("SELECT id FROM v1_instances WHERE routine='bir-mail'").all();
   const e = routines.enable({ plugin: FX, routine: "bir-mail", thread: "chat-2", params: { q: "from:taxpayer-a", forms: ["2550Q"] }, label: "Taxpayer A" });
 
@@ -126,7 +130,7 @@ test("INS-03 params go to the query tool, the prompt and the surface; ones that 
   assert.equal(await codeOf(Promise.resolve().then(() => routines.enable({ plugin: FX, routine: "payments", thread: "chat-1" }))), "invalid_args", "payments needs q");
 });
 
-test("INS-02 two instances of one routine keep separate seen ids, threads and notices", async () => {
+test("INS-02 two instances of one routine keep separate seen ids, threads and notices", NODE_ONLY, async () => {
   const [a, c] = db.prepare("SELECT id, thread FROM v1_instances WHERE routine='bir-mail' ORDER BY created_at, rowid").all();
 
   assert.deepEqual([a.thread, c.thread], ["chat-1", "chat-2"]);
@@ -154,7 +158,7 @@ test("INS-02 two instances of one routine keep separate seen ids, threads and no
   assert.equal(await codeOf(routines.run({ plugin: FX, routine: "bir-mail" })), "invalid_args");
 });
 
-test("INS-04 the agent's instance of a routine that changes data waits behind a consent card", async () => {
+test("INS-04 the agent's instance of a routine that changes data waits behind a consent card", NODE_ONLY, async () => {
   const before = notices().length;
   const made = routines.agentCreate({ plugin: FX, routine: "payments", params: { q: "from:payments" }, label: "Taxpayer B" }, ["chat-1"]);
 
@@ -208,7 +212,7 @@ test("INS-04 the agent's instance of a routine that changes data waits behind a 
   assert.equal(inst(id), undefined);
 });
 
-test("INS-05 a webhook instance runs on its secret URL only, with the items it is handed, rate limited", async () => {
+test("INS-05 a webhook instance runs on its secret URL only, with the items it is handed, rate limited", NODE_ONLY, async () => {
   const e = routines.enable({ plugin: FX, routine: "hooked", thread: "chat-1", trigger: "webhook", approve: true });
   const id = e.instance.instance;
 
