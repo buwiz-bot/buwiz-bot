@@ -63,6 +63,15 @@ pub fn reconnecting(title: &str) -> String {
     format!("{title} is reconnecting…")
 }
 
+/// Whether a broker `plugin` event repeats the last one Rox heard for its
+/// plugin (the same state, code, generation and enabled): no news, so no
+/// list and no reload. `last` keeps what each plugin last said.
+pub fn repeated(last: &mut std::collections::HashMap<String, String>, event: &Value) -> bool {
+    let id = event.get("id").or_else(|| event.get("plugin")).and_then(Value::as_str).unwrap_or_default();
+    let said = [&event["state"], &event["code"], &event["generation"], &event["enabled"]].map(|v| v.to_string()).join(" ");
+    last.insert(id.to_owned(), said.clone()).is_some_and(|before| before == said)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -119,5 +128,18 @@ mod tests {
         assert!(!running_again(&json!({"id": "dev.goldcoders.fixture", "state": "restarting"}), "dev.goldcoders.fixture"));
         assert!(!running_again(&json!({"id": "dev.goldcoders.other", "state": "running"}), "dev.goldcoders.fixture"));
         assert_eq!(reconnecting("Board"), "Board is reconnecting…");
+    }
+
+    #[test]
+    fn a_plugin_event_that_says_nothing_new_is_a_repeat() {
+        use serde_json::json;
+        let mut last = std::collections::HashMap::new();
+        let running = json!({"id": "p", "state": "running", "code": null, "generation": 1, "enabled": true});
+        assert!(!super::repeated(&mut last, &running), "the first is news");
+        assert!(super::repeated(&mut last, &running), "the same again is not");
+        assert!(super::repeated(&mut last, &json!({"id": "p", "state": "running", "code": null, "generation": 1, "enabled": true, "seq": 9})), "a new seq alone is not");
+        assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "running", "code": null, "generation": 2, "enabled": true})), "a new generation is");
+        assert!(!super::repeated(&mut last, &json!({"id": "q", "state": "running", "code": null, "generation": 2, "enabled": true})), "another plugin's is its own");
+        assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "stopped", "code": null, "generation": 2, "enabled": true})), "a new state is");
     }
 }

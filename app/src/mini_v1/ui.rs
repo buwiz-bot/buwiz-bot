@@ -379,6 +379,13 @@ impl Store {
     /// A broker `plugin` event: the list again; the opens that wait on a
     /// restarted plugin reopen on its new generation (13.7).
     pub fn v1_plugin_event(&'static self, event: &Value) {
+        // an event with nothing new (a chatty broker) is not a restart:
+        // reloading on it would open the cards' sessions again, each of
+        // which another broker may echo as an event
+        static LAST: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+        if lifecycle::repeated(LAST.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new), event) {
+            return;
+        }
         let plugin = event.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
         if lifecycle::running_again(event, &plugin) {
             let keys: Vec<String> = {
