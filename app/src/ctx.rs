@@ -200,7 +200,13 @@ fn run(it: &CtxItem) {
                 st.open_externally(&f.path);
             }
         }
-        "viewer-close" => st.viewing.set(None),
+        "viewer-close" => {
+            if crate::office::may_close() {
+                st.viewing.set(None);
+            }
+        }
+        "office-native" => crate::office::toggle_native(),
+        "sheet" => crate::office::xlsx::edit::action(arg),
         "lib-hide" => st.archive_library_item(arg, true),
         "lib-unhide" => st.archive_library_item(arg, false),
         "lib-delete" => st.delete_library_file(arg),

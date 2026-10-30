@@ -1998,6 +1998,8 @@ pub struct Store {
     pub keys_print: Signal<(u64, String, String, String)>,
     /// The viewer's mini app code: (app, its versions, the current one).
     pub viewer_versions: Signal<(String, Vec<i64>, i64)>,
+    /// The Office file open in a native view (`office/`).
+    pub(crate) office: crate::office::Ui,
     /// The ra-jit stats pill's switch (⌘⇧R), set by the hot area.
     pub livebar: std::cell::Cell<Option<Signal<bool>>>,
     /// Color › Custom…: the group whose color is being picked, and the
@@ -2342,6 +2344,7 @@ impl Store {
             keys_send: signal((0, String::new())),
             keys_print: signal((0, String::new(), String::new(), String::new())),
             viewer_versions: signal((String::new(), Vec::new(), 0)),
+            office: crate::office::Ui::new(),
             livebar: std::cell::Cell::new(None),
             color_edit: signal(None),
             color_draft: signal(String::new()),
@@ -5884,6 +5887,12 @@ impl Store {
         self.html_mode.set("preview".to_owned());
         self.sel_a.set(None);
         self.sel_b.set(None);
+        // A spreadsheet opens in its native view (`office/`) when it can:
+        // nothing to render on the server
+        if crate::office::open(f) {
+            self.rendered.set(Some(Rendered::default()));
+            return;
+        }
         // A file on this Mac outside the server's files (`rox://view`'s, a
         // mini app's print preview): read here, its text the source view
         // and what prints.
@@ -7338,7 +7347,9 @@ impl Store {
         if self.v1.preview.with_untracked(Option::is_some) {
             self.v1_close_preview();
         } else if self.viewing.get_untracked().is_some() {
-            self.viewing.set(None);
+            if crate::office::may_close() {
+                self.viewing.set(None);
+            }
         } else {
             self.close_mini();
         }
@@ -7434,7 +7445,7 @@ pub(crate) fn may_send(busy: &std::collections::BTreeSet<String>, thread: &str) 
 
 /// `spawn`, but owned by no layer: for work started from a menu or a modal
 /// that closes right after (a task under that owner dies before it runs).
-fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
+pub(crate) fn spawn_detached(f: impl std::future::Future<Output = ()> + 'static) {
     Owner::detached().run(|| {
         spawn(f);
     });

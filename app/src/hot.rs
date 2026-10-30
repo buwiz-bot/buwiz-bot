@@ -179,6 +179,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // walk the places `history` records.
     crate::history::track();
     crate::keys::track_sel();
+    // Office files' native views: their setting, and the open document
+    // closing with the viewer
+    crate::office::track();
     // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`)
     let live_bar_show = crate::live::keep("rox.livebar.show", || true);
     store().livebar.set(Some(live_bar_show));

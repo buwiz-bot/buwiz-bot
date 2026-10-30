@@ -29,6 +29,10 @@ pub(crate) enum Scope {
     /// A right-click / ⋯ / ⌘K menu is open.
     Menu,
     Palette,
+    /// A native spreadsheet's cell is being edited.
+    SheetEdit,
+    /// A native spreadsheet (`office/`), nothing being edited.
+    Sheet,
     /// The file viewer showing a spreadsheet.
     ViewerTable,
     Viewer,
@@ -47,10 +51,12 @@ pub(crate) enum Scope {
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 13] = [
+pub(crate) const ORDER: [Scope; 15] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
+    Scope::SheetEdit,
+    Scope::Sheet,
     Scope::ViewerTable,
     Scope::Viewer,
     Scope::MiniApp,
@@ -69,6 +75,8 @@ impl Scope {
             Scope::Recording => "$recording",
             Scope::Menu => "$menu",
             Scope::Palette => "$palette",
+            Scope::SheetEdit => "$sheet-edit",
+            Scope::Sheet => "$sheet",
             Scope::ViewerTable => "$spreadsheet",
             Scope::Viewer => "$viewer",
             Scope::MiniApp => "$mini-app",
@@ -90,7 +98,9 @@ impl Scope {
             Scope::Recording => st.key_record.get().is_some(),
             Scope::Menu => st.ctx.get().is_some(),
             Scope::Palette => st.palette.get(),
-            Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table"),
+            Scope::SheetEdit => crate::office::xlsx::edit::editing(),
+            Scope::Sheet => crate::office::xlsx::edit::navigating(),
+            Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table") && !crate::office::showing(),
             Scope::Viewer => viewing().is_some(),
             Scope::MiniApp => !st.mini_full.with(Vec::is_empty),
             Scope::Lightbox => !st.light_items.get().is_empty(),
@@ -313,6 +323,43 @@ pub(crate) static COMMANDS: &[Command] = &[
             st.copy_sel();
         }
     }),
+    // ——— Native spreadsheet (`office/xlsx`) ———
+    // Bound over the cell editor, which keeps the focus to catch typing.
+    always(repeating(cmd("sheet.up", "Cell up", Scope::Sheet, &["up"], |_| sheet_nav(Dir::Up, Step::Cell, false)))),
+    always(repeating(cmd("sheet.down", "Cell down", Scope::Sheet, &["down"], |_| sheet_nav(Dir::Down, Step::Cell, false)))),
+    always(repeating(cmd("sheet.left", "Cell left", Scope::Sheet, &["left"], |_| sheet_nav(Dir::Left, Step::Cell, false)))),
+    always(repeating(cmd("sheet.right", "Cell right", Scope::Sheet, &["right"], |_| sheet_nav(Dir::Right, Step::Cell, false)))),
+    always(repeating(cmd("sheet.extend_up", "Extend up", Scope::Sheet, &["shift+up"], |_| sheet_nav(Dir::Up, Step::Cell, true)))),
+    always(repeating(cmd("sheet.extend_down", "Extend down", Scope::Sheet, &["shift+down"], |_| sheet_nav(Dir::Down, Step::Cell, true)))),
+    always(repeating(cmd("sheet.extend_left", "Extend left", Scope::Sheet, &["shift+left"], |_| sheet_nav(Dir::Left, Step::Cell, true)))),
+    always(repeating(cmd("sheet.extend_right", "Extend right", Scope::Sheet, &["shift+right"], |_| sheet_nav(Dir::Right, Step::Cell, true)))),
+    always(cmd("sheet.edge_up", "To the top of the data", Scope::Sheet, &["mod+up"], |_| sheet_nav(Dir::Up, Step::Edge, false))),
+    always(cmd("sheet.edge_down", "To the bottom of the data", Scope::Sheet, &["mod+down"], |_| sheet_nav(Dir::Down, Step::Edge, false))),
+    always(cmd("sheet.edge_left", "To the first column", Scope::Sheet, &["mod+left"], |_| sheet_nav(Dir::Left, Step::Edge, false))),
+    always(cmd("sheet.edge_right", "To the last column of the data", Scope::Sheet, &["mod+right"], |_| sheet_nav(Dir::Right, Step::Edge, false))),
+    always(cmd("sheet.extend_edge_up", "Extend to the top", Scope::Sheet, &["mod+shift+up"], |_| sheet_nav(Dir::Up, Step::Edge, true))),
+    always(cmd("sheet.extend_edge_down", "Extend to the bottom of the data", Scope::Sheet, &["mod+shift+down"], |_| sheet_nav(Dir::Down, Step::Edge, true))),
+    always(cmd("sheet.extend_edge_left", "Extend to the first column", Scope::Sheet, &["mod+shift+left"], |_| sheet_nav(Dir::Left, Step::Edge, true))),
+    always(cmd("sheet.extend_edge_right", "Extend to the last column of the data", Scope::Sheet, &["mod+shift+right"], |_| sheet_nav(Dir::Right, Step::Edge, true))),
+    always(repeating(cmd("sheet.page_up", "Page up", Scope::Sheet, &["pageup"], |_| sheet_nav(Dir::Up, Step::Page, false)))),
+    always(repeating(cmd("sheet.page_down", "Page down", Scope::Sheet, &["pagedown"], |_| sheet_nav(Dir::Down, Step::Page, false)))),
+    always(repeating(cmd("sheet.next", "Next cell", Scope::Sheet, &["tab"], |_| crate::office::xlsx::edit::walk(Dir::Right)))),
+    always(repeating(cmd("sheet.prev", "Previous cell", Scope::Sheet, &["shift+tab"], |_| crate::office::xlsx::edit::walk(Dir::Left)))),
+    always(repeating(cmd("sheet.enter", "Cell below", Scope::Sheet, &["enter"], |_| crate::office::xlsx::edit::walk(Dir::Down)))),
+    always(repeating(cmd("sheet.enter_up", "Cell above", Scope::Sheet, &["shift+enter"], |_| crate::office::xlsx::edit::walk(Dir::Up)))),
+    always(cmd("sheet.edit", "Edit the cell", Scope::Sheet, &["f2"], |_| crate::office::xlsx::edit::edit_active())),
+    always(cmd("sheet.all", "Select all", Scope::Sheet, &["mod+a"], |_| crate::office::xlsx::edit::select_all())),
+    always(cmd("sheet.copy", "Copy", Scope::Sheet, &["mod+c"], |_| crate::office::xlsx::edit::copy(false))),
+    always(cmd("sheet.cut", "Cut", Scope::Sheet, &["mod+x"], |_| crate::office::xlsx::edit::copy(true))),
+    always(cmd("sheet.paste", "Paste", Scope::Sheet, &["mod+v"], |_| crate::office::xlsx::edit::paste())),
+    always(cmd("sheet.clear", "Clear the cells", Scope::Sheet, &["delete", "backspace"], |_| crate::office::xlsx::edit::clear())),
+    always(repeating(cmd("sheet.undo", "Undo", Scope::Sheet, &["mod+z"], |_| crate::office::xlsx::edit::undo(false)))),
+    always(repeating(cmd("sheet.redo", "Redo", Scope::Sheet, &["mod+shift+z", "mod+y"], |_| crate::office::xlsx::edit::undo(true)))),
+    always(cmd("sheet.escape", "Collapse the selection / close", Scope::Sheet, &["escape"], |_| crate::office::xlsx::edit::escape())),
+    always(cmd("sheet_edit.next", "Enter and the next cell", Scope::SheetEdit, &["tab"], |_| crate::office::xlsx::edit::commit_and(Dir::Right))),
+    always(cmd("sheet_edit.prev", "Enter and the previous cell", Scope::SheetEdit, &["shift+tab"], |_| crate::office::xlsx::edit::commit_and(Dir::Left))),
+    always(cmd("sheet_edit.up", "Enter and the cell above", Scope::SheetEdit, &["shift+enter"], |_| crate::office::xlsx::edit::commit_and(Dir::Up))),
+    always(cmd("sheet_edit.cancel", "Cancel the edit", Scope::SheetEdit, &["escape"], |_| crate::office::xlsx::edit::cancel())),
     // ——— Lightbox ———
     repeating(cmd("light.prev", "Previous image", Scope::Lightbox, &["left"], |_| store().light_step(-1))),
     repeating(cmd("light.next", "Next image", Scope::Lightbox, &["right"], |_| store().light_step(1))),
@@ -321,6 +368,12 @@ pub(crate) static COMMANDS: &[Command] = &[
     repeating(cmd("plugins.down", "Next match", Scope::PluginsSearch, &["down"], |_| drop_step(1))),
     cmd("plugins.choose", "Open the match", Scope::PluginsSearch, &["enter"], |_| store().drop_choose()),
 ];
+
+use crate::office::xlsx::select::{Dir, Step};
+
+fn sheet_nav(dir: Dir, step: Step, shift: bool) {
+    crate::office::xlsx::edit::nav(dir, step, shift);
+}
 
 fn menu_pick(n: u8) {
     crate::ctx::menu_pick(n as usize);
@@ -388,7 +441,9 @@ fn escape() {
     st.avatar_editing.set(false);
     // lightbox + fullscreen viewer (lightbox.tsx:98, fileviewer.tsx:783)
     st.light_close();
-    st.viewing.set(None);
+    if crate::office::may_close() {
+        st.viewing.set(None);
+    }
     crate::models::close();
     crate::composer::plus_menu().set(None);
     // the plugins modal pops a page, or closes at the market page.
