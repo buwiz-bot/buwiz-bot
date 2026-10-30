@@ -29,6 +29,9 @@ pub mod models;
 pub mod leftovers;
 /// v0 routines (5.5, track D)
 pub mod routines;
+/// the mini-app and Library routes (5.7b, track C)
+pub mod apps;
+pub mod artifacts;
 
 use super::types::Pattern::{self, Exact as X, Prefix as P, Segments as S};
 use super::types::Verb::{self, Any, Get, Post};
