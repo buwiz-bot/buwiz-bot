@@ -166,3 +166,24 @@ branch = "pr/macos-launch-without-activation"
 kind = "feature"
 pr = 0
 status = "local"
+
+[[topic]]
+branch = "pr/macos-canvas-typeset-cache"
+kind = "fix"
+pr = 0
+status = "local"
+note = "canvas texts keep their CoreText lines and fonts between paints"
+
+[[topic]]
+branch = "pr/macos-draw-ahead"
+kind = "fix"
+pr = 0
+status = "local"
+note = "static text and canvases within a viewport of a scroll view draw before they show"
+
+[[topic]]
+branch = "pr/macos-jank-paint-time"
+kind = "feature"
+pr = 0
+status = "local"
+note = "stacked on pr/perf-jank-log: the jank line names text and canvas drawing time"
