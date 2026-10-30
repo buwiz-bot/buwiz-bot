@@ -65,6 +65,10 @@ pub struct V1 {
     /// Per inline open (module key): the card height its `rox.fit` set
     /// (clamped); the declared height until then.
     pub fit: Signal<HashMap<String, f32>>,
+    /// Per inline open (module key): the number of the open whose app
+    /// called `rox.ready()`, which ends its card's hold
+    /// (`mini_v1::settle`).
+    pub ready: Signal<HashMap<String, u64>>,
     /// Per inline open (module key): its footer buttons (`rox.actions`).
     pub footer: Signal<HashMap<String, Footer>>,
     /// Per inline open: its header status (`rox.meta`), with the number
@@ -107,6 +111,7 @@ impl V1 {
             hidden: signal(HashSet::new()),
             live: signal(HashSet::new()),
             fit: signal(HashMap::new()),
+            ready: signal(HashMap::new()),
             footer: signal(HashMap::new()),
             meta: signal(HashMap::new()),
             settled: signal(HashMap::new()),
@@ -642,6 +647,11 @@ impl Store {
         if self.v1.meta.with_untracked(|m| m.get(key).is_some_and(|x| mine(x.0))) {
             self.v1.meta.update(|m| {
                 m.remove(key);
+            });
+        }
+        if self.v1.ready.with_untracked(|r| r.get(key).is_some_and(|x| mine(*x))) {
+            self.v1.ready.update(|r| {
+                r.remove(key);
             });
         }
     }
@@ -1857,6 +1867,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
     let key_h = key.clone();
     let h = move || store().v1.fit.with(|f| f.get(&key_h).copied()).unwrap_or(declared);
     let c = card.clone();
+    let title = card.title.clone();
     let key_r = key.clone();
     let (id_shown, id_toggle) = (id.clone(), id.clone());
     let shown = move || card_shown(&id_shown, auto);
@@ -1917,7 +1928,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                     view()
                         .h(move || px(h()))
                         .child(banners(&key, false))
-                        .child(crate::mini::mini_app_inline(&key, w, h2))
+                        .child(crate::mini::mini_app_inline(&key, w, h2, title.clone()))
                         .child(error_overlay(&key)),
                 )
                 .child(card_footer(&key))

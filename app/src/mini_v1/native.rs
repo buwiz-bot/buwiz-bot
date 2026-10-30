@@ -132,6 +132,15 @@ impl HostUi for MacUi {
         });
     }
 
+    fn ready(&self) {
+        let (key, n) = (self.key.clone(), self.n);
+        super::to_store(move |st| {
+            st.v1.ready.update(|r| {
+                r.insert(key, n);
+            })
+        });
+    }
+
     fn actions(&self, actions: Vec<CardAction>, press: Press) {
         let (key, owner) = (self.key.clone(), self.n);
         super::to_store(move |st| {
@@ -282,6 +291,11 @@ impl V1Open {
         if let Some(ctx) = self.slot.ctx.lock().unwrap_or_else(|e| e.into_inner()).take() {
             ctx.close();
         }
+    }
+
+    /// Its number: what its card's buttons, status and ready are set by.
+    pub fn n(&self) -> u64 {
+        self.n
     }
 
     /// The channel's viewport event, once the bridge is up.

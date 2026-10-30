@@ -41,6 +41,7 @@ pub mod perms;
 pub mod props;
 pub mod records;
 pub mod session;
+pub mod settle;
 pub mod storage;
 pub mod ui;
 

@@ -66,13 +66,16 @@ pub const PREVIEW: &str = "rox.preview";
 pub const TICKET_TITLE: &str = "rox.ticket.title";
 /// An inline app's content height (a post; 6.5, 7.11).
 pub const FIT: &str = "rox.fit";
+/// An inline app's data is in: its card may show (a post; an optional
+/// addition under 1.0 that apps feature-detect, `rox.ready?.()`).
+pub const READY: &str = "rox.ready";
 /// An inline card's chrome, drawn by Rox (7.12 to 7.14, protocol 1.1):
 /// its footer buttons, the outcome it settles to, its header status.
 pub const ACTIONS: &str = "rox.actions";
 pub const SETTLE: &str = "rox.settle";
 pub const META: &str = "rox.meta";
 /// The methods every app has, whatever it is granted.
-pub const ALWAYS: [&str; 5] = [TICKET_TITLE, FIT, ACTIONS, SETTLE, META];
+pub const ALWAYS: [&str; 6] = [TICKET_TITLE, FIT, READY, ACTIONS, SETTLE, META];
 pub const STORAGE: [&str; 4] = ["rox.storage.get", "rox.storage.set", "rox.storage.remove", "rox.storage.keys"];
 
 impl Permissions {
@@ -282,9 +285,9 @@ mod tests {
     #[test]
     fn app_07_policy_grants_host_for_granted_methods_only() {
         let p = Permissions::parse(Some(&json!({"tools": ["fx_echo"]}))).unwrap();
-        assert_eq!(p.methods(), ["rox.ticket.title", "rox.fit", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
+        assert_eq!(p.methods(), ["rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
         let access = p.policy().access();
-        for always in ["rox.call", "rox.ticket.title", "rox.fit", "rox.actions", "rox.settle", "rox.meta"] {
+        for always in ["rox.call", "rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta"] {
             assert!(access.allows_host(always), "{always}");
         }
         for absent in ["rox.open", "rox.attach", "rox.pickFile", "rox.copy", "rox.preview", "rox.storage.get", "anything"] {
@@ -303,7 +306,7 @@ mod tests {
         assert!(!access.allows_process("sh"));
         assert!(p.policy().harden);
         let all = Permissions::parse(Some(&fixture_board())).unwrap();
-        assert_eq!(all.methods().len(), 15);
+        assert_eq!(all.methods().len(), 16);
         assert!(all.policy().access().allows_host("rox.preview"));
         // a preview is the host's own web view, not one the app gets
         assert!(!all.policy().access().allows_webviews());

@@ -81,14 +81,34 @@ pub(crate) fn mini_app(
         .when(h <= 0.0, |v| v.flex_1())
 }
 
+/// Where an inline card's hold is (`mini_v1::settle`): nothing over the
+/// held app at first, the placeholder once the hold is long enough to
+/// see, its fade once the app shows, then nothing again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    Quiet,
+    Placeholder,
+    Fading,
+    Done,
+}
+
 /// A v1 app inline in a chat (spec 6.5): `w×h`, its viewport saying
 /// `inline`. `h` is read live (the app's `rox.fit` moves it): the view
-/// resizes in place, and the app lays out at the new size.
-pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static) -> impl IntoElement {
+/// resizes in place, and the app lays out at the new size. `h` is also
+/// the height the card keeps while its app is held (its last `rox.fit`,
+/// else the manifest's): the app stays hidden until its layout settles,
+/// with `title`'s placeholder over it past 100 ms, then shows.
+pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, title: String) -> impl IntoElement {
+    use crate::mini_v1::settle::{self, Reveal};
     let name = app.to_owned();
     let name2 = app.to_owned();
+    let name3 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
-    native("rox/mini-app")
+    let hold = signal(Hold::Quiet);
+    let owner = Owner::current();
+    let h = std::rc::Rc::new(h);
+    let h2 = h.clone();
+    let app_view = native("rox/mini-app")
         .prop("placement", || JsonValue::String("inline".to_owned()))
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
@@ -99,8 +119,62 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static) 
             })
         })
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
+        // the open whose app called `rox.ready()`
+        .prop("ready", move || store().v1.ready.with(|r| r.get(&name3).map_or(JsonValue::Null, |n| (*n).into())))
+        .on_native_event(move |e: &NativeEvent| match (&*e.name, hold.get_untracked()) {
+            ("placeholder", Hold::Quiet) => hold.set(Hold::Placeholder),
+            // settled before the placeholder was due: nothing to take down
+            ("settled", Hold::Quiet) => hold.set(Hold::Done),
+            ("settled", Hold::Placeholder) => match settle::reveal(reduce_motion()) {
+                Reveal::Swap => hold.set(Hold::Done),
+                Reveal::Fade => {
+                    hold.set(Hold::Fading);
+                    owner.run(|| {
+                        set_timeout(std::time::Duration::from_millis(settle::FADE_MS as u64), move || hold.set(Hold::Done))
+                    });
+                }
+            },
+            _ => {}
+        })
         .w(px(w))
-        .h(move || px(h()))
+        .h(move || px(h()));
+    let key = format!("settle:{app}");
+    {
+        // the grid's progress counts from this hold, not from one before
+        let (k1, k2) = (key.clone(), key.clone());
+        effect(move || {
+            if hold.get() == Hold::Done {
+                store().art_started.borrow_mut().remove(&k1);
+            }
+        });
+        cleanup(move || {
+            store().art_started.borrow_mut().remove(&k2);
+        });
+    }
+    view().w(px(w)).h(move || px(h2())).child(app_view).child(when(
+        move || matches!(hold.get(), Hold::Placeholder | Hold::Fading),
+        move || {
+            // made shown, then faded by flipping its opacity: a transition
+            // does not start from the default style
+            let grid = if reduce_motion() {
+                crate::dotgrid::dot_grid_still(key.clone()).into_element()
+            } else {
+                crate::dotgrid::dot_grid(key.clone(), crate::dotgrid::TAU_APP).into_element()
+            };
+            crate::chat::app_placeholder(title.clone(), String::new(), view().flex_1().child(grid))
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .bg(crate::theme::CARD)
+                .pointer_events(PointerEvents::None)
+                .opacity(move || if hold.get() == Hold::Fading { 0.0f32 } else { 1.0 })
+                .transition_opacity()
+                .duration(settle::FADE_MS)
+                .into_element()
+        },
+    ))
 }
 
 /// The appearance every mini app (generated `R<n>` widgets, v0 `mcp:` and
@@ -575,7 +649,8 @@ mod imp {
         objc2::{
             DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
             rc::Retained,
-            runtime::{AnyObject, NSObjectProtocol},
+            ClassType,
+            runtime::{AnyObject, NSObject, NSObjectProtocol},
             sel,
         },
         objc2_app_kit::{
@@ -619,6 +694,9 @@ mod imp {
         viewport: Cell<(f64, f64)>,
         /// Hears the size a v1 app lays out at when it changes.
         on_viewport: RefCell<Option<Box<dyn Fn(serde_json::Value)>>>,
+        /// An inline card's hold until its app's layout settles
+        /// (`mini_v1::settle`): armed by the mount, not by the app's loads.
+        settle: RefCell<Option<crate::mini_v1::settle::Settle>>,
     }
 
     define_class!(
@@ -667,7 +745,9 @@ mod imp {
                 }
                 self.sync_appearance();
                 self.fit();
-                if collapsed(self) {
+                let folded = collapsed(self);
+                self.settle_tick(folded);
+                if folded {
                     self.ivars().collapsed_ticks.set(self.ivars().collapsed_ticks.get() + 1);
                     self.schedule();
                     return;
@@ -768,6 +848,42 @@ mod imp {
         }
     }
 
+    /// A hash of the origin and size of every visible view under the
+    /// app's surface, while the app has a sized frame: what a settling
+    /// card compares tick to tick. Unlike [`natural`] it goes into views
+    /// that clip, since what pops in inside a list pops in all the same.
+    fn signature(container: &NSView) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let root = container.subviews().firstObject()?;
+        let mut h = std::hash::DefaultHasher::new();
+        let (mut budget, mut sized) = (4000usize, false);
+        frames(&root, &mut h, &mut budget, &mut sized);
+        sized.then(|| {
+            budget.hash(&mut h);
+            h.finish()
+        })
+    }
+
+    fn frames(view: &NSView, h: &mut std::hash::DefaultHasher, budget: &mut usize, sized: &mut bool) {
+        use std::hash::Hash;
+        let subs = view.subviews();
+        subs.count().hash(h);
+        for sub in subs.iter() {
+            if *budget == 0 {
+                return;
+            }
+            *budget -= 1;
+            if sub.isHidden() {
+                continue;
+            }
+            let f = sub.frame();
+            *sized |= f.size.width > 0.0 && f.size.height > 0.0;
+            // half points: what can be seen to move
+            [f.origin.x, f.origin.y, f.size.width, f.size.height].map(|v| (v * 2.0).round() as i64).hash(h);
+            frames(&sub, h, budget, sized);
+        }
+    }
+
     fn clips(view: &NSView) -> bool {
         // SAFETY: NSView's `clipsToBounds` (macOS 14+) and CALayer's
         // `masksToBounds`, both BOOL getters.
@@ -822,6 +938,7 @@ mod imp {
                 first_frame: RefCell::new(None),
                 viewport: Cell::new((0.0, 0.0)),
                 on_viewport: RefCell::new(None),
+                settle: RefCell::new(None),
             });
             // SAFETY: NSView's designated `init` on a fresh allocation.
             let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -904,21 +1021,32 @@ mod imp {
             let delay = if self.ivars().first_frame.borrow().is_some() {
                 // a v1 open's first frame is timed to the frame
                 0.008
+            } else if self.holding() {
+                // a settling card reads its layout often, until it shows
+                crate::mini_v1::settle::TICK.as_secs_f64()
             } else if n > 0 && n < 40 {
                 0.05
             } else {
                 MEASURE_EVERY
             };
             // SAFETY: `roxMeasure:` is this class's method taking one
-            // object argument (nil here).
-            let () = unsafe {
-                msg_send![
+            // object argument (nil here); NSObject's class method cancels
+            // the one pending, so a kick (a load, a mount) never starts a
+            // second loop.
+            unsafe {
+                let () = msg_send![
+                    NSObject::class(),
+                    cancelPreviousPerformRequestsWithTarget: self,
+                    selector: sel!(roxMeasure:),
+                    object: None::<&AnyObject>
+                ];
+                let () = msg_send![
                     self,
                     performSelector: sel!(roxMeasure:),
                     withObject: None::<&AnyObject>,
                     afterDelay: delay
-                ]
-            };
+                ];
+            }
         }
 
         /// The size the app lays out at, and its placement, as a v1 app's
@@ -939,15 +1067,53 @@ mod imp {
             }
         }
 
+        /// Whether an inline card holds its app hidden while it settles.
+        fn holding(&self) -> bool {
+            self.ivars().settle.borrow().as_ref().is_some_and(|s| s.holding())
+        }
+
+        /// Arms an inline card's hold: its mount.
+        fn arm(&self) {
+            if self.ivars().settle.borrow().is_some() {
+                return;
+            }
+            *self.ivars().settle.borrow_mut() = Some(crate::mini_v1::settle::Settle::new(std::time::Instant::now()));
+            self.fit();
+            self.schedule();
+        }
+
+        /// A settling card's tick: its layout's signature (none while
+        /// collapsed: only the cap can end that hold), then the card hears
+        /// `placeholder` when the hold is long enough to see and `settled`
+        /// when the app shows. A settled card skips all of it.
+        fn settle_tick(&self, folded: bool) {
+            use crate::mini_v1::settle::Phase;
+            let phase = {
+                let mut settle = self.ivars().settle.borrow_mut();
+                let Some(s) = settle.as_mut().filter(|s| s.holding()) else { return };
+                let sig = if folded { None } else { self.subviews().firstObject().and_then(|app| signature(&app)) };
+                s.tick(std::time::Instant::now(), sig)
+            };
+            let Some(phase) = phase else { return };
+            if phase == Phase::Settled {
+                self.fit();
+            }
+            if let Some(ctx) = self.ivars().ctx.borrow().as_ref() {
+                ctx.emit(if phase == Phase::Settled { "settled" } else { "placeholder" }, serde_json::Value::Null);
+            }
+        }
+
         /// Design size, or the frame's own size (no scaling) without one.
         fn fit(&self) {
             let frame = self.frame().size;
             // An empty frame (no scale can be set on it) or a collapsed
             // branch above: the app would draw where it should not — over
-            // the transcript's top. Hide it.
+            // the transcript's top. Hide it. A settling card's app is
+            // hidden too (hidden, not transparent: an autofocused field
+            // can't take the focus).
             let empty = frame.width < 1.0 || frame.height < 1.0 || collapsed(self);
             if let Some(app) = self.subviews().firstObject() {
-                app.setHidden(empty);
+                app.setHidden(empty || self.holding());
             }
             if empty {
                 return;
@@ -1056,6 +1222,10 @@ mod imp {
                 },
             );
             self.replace_view(view);
+            if let Some(s) = self.fit.ivars().settle.borrow_mut().as_mut() {
+                let app = prepared.plugin.app(&prepared.key.app).cloned().unwrap_or_default();
+                s.loaded(crate::mini_v1::cards::wait_ready(&app));
+            }
             *self.fit.ivars().first_frame.borrow_mut() = Some((module.to_owned(), std::time::Instant::now()));
             self.fit.schedule();
             // a running app's error shows the spec's message (6.7) over it,
@@ -1173,6 +1343,19 @@ mod imp {
             if name == "placement" {
                 let p = value.and_then(|v| v.as_str()).filter(|p| *p == "inline").unwrap_or("full");
                 *self.fit.ivars().placement.borrow_mut() = p.to_owned();
+                if p == "inline" {
+                    self.fit.arm();
+                }
+                return;
+            }
+            if name == "ready" {
+                // `rox.ready()` of this card's open, not of one before it
+                let n = value.and_then(|v| v.as_u64());
+                if n.is_some() && n == self.v1.as_ref().map(|o| o.n())
+                    && let Some(s) = self.fit.ivars().settle.borrow_mut().as_mut()
+                {
+                    s.ready();
+                }
                 return;
             }
             if name == "paused" {
