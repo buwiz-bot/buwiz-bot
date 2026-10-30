@@ -8,6 +8,7 @@
 //! files through one `install` call below; this file, `types`, `ctx`,
 //! `traits` and `routes` are the shared skeleton.
 
+pub mod agents;
 pub mod ctx;
 pub mod jobs;
 pub mod library;
@@ -105,6 +106,8 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     model::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
+    // before routines: its /v1/host/ catch-all would answer the agents' routes
+    agents::install(routes, ctx);
     routines::install(routes, ctx);
 }
 
