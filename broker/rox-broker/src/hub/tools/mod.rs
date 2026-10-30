@@ -227,3 +227,6 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
     }
     Ok(Out::err(format!("unknown tool {name}")))
 }
+
+#[cfg(test)]
+mod tests;
