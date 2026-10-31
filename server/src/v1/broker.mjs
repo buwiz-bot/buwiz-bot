@@ -6,9 +6,9 @@
 // enabled plugins and the routine poll once it listens.
 // ROX_V1_CALL_TIMEOUT_MS shortens the broker's 120 s call limit for tests.
 import { join } from "node:path";
-import { DATA_DIR, OFFICE_ROLE } from "../config.mjs";
+import { DATA_DIR, GEN_DIR, OFFICE_ROLE } from "../config.mjs";
 import { allocJobId, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "../state.mjs";
-import { keystore } from "./keystore.mjs";
+import { MOVED_MARKER, keystore, moveFromRox } from "./keystore.mjs";
 import { createPlugins } from "./plugins.mjs";
 import { LINE } from "./line-env.mjs";
 import { createLinePlugins } from "./plugins-line.mjs";
@@ -28,6 +28,19 @@ const onLine = !!LINE.base && LINE.hosts.includes("v1");
 export const plugins = onLine
   ? createLinePlugins({ base: LINE.base, token: LINE.token, db, timeouts })
   : createPlugins({ db, keys: keystore(), logDir: join(DATA_DIR, "v1", "logs"), timeouts });
+
+// Rox's plugin keys move to the new Keychain service (once) before any
+// plugin starts; on the line, rox-broker moves them
+if (!onLine) {
+  const keys = keystore();
+  const ids = db.prepare("SELECT id FROM v1_plugins").all().map((r) => r.id);
+  const moved = moveFromRox(keys, ids, join(GEN_DIR, MOVED_MARKER))
+    .then((n) => n && console.log(`  keystore: ${n} plugin key(s) moved from the old service`))
+    .catch((e) => console.error(`  keystore: plugin keys not moved from the old service yet: ${e.message}`));
+  const startAll = plugins.startAll;
+
+  plugins.startAll = () => moved.then(startAll);
+}
 export const sessions = onLine ? createLineSessions(plugins) : createSessions(plugins);
 
 // A v1 routine's agent turn: v0's backgroundTurn in the routine's thread,
