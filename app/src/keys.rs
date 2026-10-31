@@ -31,6 +31,9 @@ pub(crate) enum Scope {
     Palette,
     /// A native spreadsheet's cell is being edited.
     SheetEdit,
+    /// A chart is selected in a native spreadsheet (the cells' keys are
+    /// off).
+    Chart,
     /// A native spreadsheet (`office/`), nothing being edited.
     Sheet,
     /// A native Word document (`office/docx/`), its find bar closed.
@@ -53,11 +56,12 @@ pub(crate) enum Scope {
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 16] = [
+pub(crate) const ORDER: [Scope; 17] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
     Scope::SheetEdit,
+    Scope::Chart,
     Scope::Sheet,
     Scope::Doc,
     Scope::ViewerTable,
@@ -79,6 +83,7 @@ impl Scope {
             Scope::Menu => "$menu",
             Scope::Palette => "$palette",
             Scope::SheetEdit => "$sheet-edit",
+            Scope::Chart => "$chart",
             Scope::Sheet => "$sheet",
             Scope::Doc => "$document",
             Scope::ViewerTable => "$spreadsheet",
@@ -106,6 +111,7 @@ impl Scope {
             Scope::Menu => s.menu,
             Scope::Palette => s.palette,
             Scope::SheetEdit => s.sheet_edit,
+            Scope::Chart => s.chart,
             Scope::Sheet => s.sheet,
             Scope::Doc => s.doc,
             Scope::ViewerTable => s.table && !s.office,
@@ -140,6 +146,7 @@ pub(crate) struct Shown {
     menu: bool,
     palette: bool,
     sheet_edit: bool,
+    chart: bool,
     sheet: bool,
     doc: bool,
     /// The viewer shows a table…
@@ -172,6 +179,7 @@ impl Shown {
             menu: st.ctx.get().is_some(),
             palette: st.palette.get(),
             sheet_edit: crate::office::xlsx::edit::editing(),
+            chart: crate::office::xlsx::chart::selected() && st.ctx.get().is_none() && !st.office.ask_close.get(),
             sheet: crate::office::xlsx::edit::navigating(),
             doc: crate::office::docx::view::editing(),
             table: viewing.as_ref().is_some_and(|v| v.kind == "table"),
@@ -460,6 +468,23 @@ pub(crate) static COMMANDS: &[Command] = &[
     always(repeating(cmd("sheet.undo", "Undo", Scope::Sheet, &["mod+z"], |_| crate::office::xlsx::edit::undo(false)))),
     always(repeating(cmd("sheet.redo", "Redo", Scope::Sheet, &["mod+shift+z", "mod+y"], |_| crate::office::xlsx::edit::undo(true)))),
     always(cmd("sheet.escape", "Collapse the selection / close", Scope::Sheet, &["escape"], |_| crate::office::xlsx::edit::escape())),
+    // ——— A chart selected in the native spreadsheet (the web editor's keys) ———
+    always(repeating(cmd("chart.left", "Nudge the chart left", Scope::Chart, &["left"], |_| crate::office::xlsx::chart::nudge(-1.0, 0.0, false)))),
+    always(repeating(cmd("chart.right", "Nudge the chart right", Scope::Chart, &["right"], |_| crate::office::xlsx::chart::nudge(1.0, 0.0, false)))),
+    always(repeating(cmd("chart.up", "Nudge the chart up", Scope::Chart, &["up"], |_| crate::office::xlsx::chart::nudge(0.0, -1.0, false)))),
+    always(repeating(cmd("chart.down", "Nudge the chart down", Scope::Chart, &["down"], |_| crate::office::xlsx::chart::nudge(0.0, 1.0, false)))),
+    always(repeating(cmd("chart.left_far", "Nudge the chart left 10 px", Scope::Chart, &["shift+left"], |_| crate::office::xlsx::chart::nudge(-1.0, 0.0, true)))),
+    always(repeating(cmd("chart.right_far", "Nudge the chart right 10 px", Scope::Chart, &["shift+right"], |_| crate::office::xlsx::chart::nudge(1.0, 0.0, true)))),
+    always(repeating(cmd("chart.up_far", "Nudge the chart up 10 px", Scope::Chart, &["shift+up"], |_| crate::office::xlsx::chart::nudge(0.0, -1.0, true)))),
+    always(repeating(cmd("chart.down_far", "Nudge the chart down 10 px", Scope::Chart, &["shift+down"], |_| crate::office::xlsx::chart::nudge(0.0, 1.0, true)))),
+    always(cmd("chart.escape", "Deselect the chart", Scope::Chart, &["escape"], |_| crate::office::xlsx::chart::escape())),
+    // Delete does nothing to a chart, and never reaches the cells under it
+    always(cmd("chart.delete", "Delete (nothing for a chart)", Scope::Chart, &["delete", "backspace"], |_| {})),
+    always(repeating(cmd("chart.undo", "Undo", Scope::Chart, &["mod+z"], |_| crate::office::xlsx::chart::undo(false)))),
+    always(repeating(cmd("chart.redo", "Redo", Scope::Chart, &["mod+shift+z", "mod+y"], |_| crate::office::xlsx::chart::undo(true)))),
+    always(cmd("chart.cells", "Cell commands (refused for a chart)", Scope::Chart, &["mod+c", "mod+x", "mod+v", "mod+a", "f2", "enter", "shift+enter", "tab", "shift+tab"], |_| {
+        crate::office::xlsx::chart::refused();
+    })),
     always(cmd("sheet_edit.next", "Enter and the next cell", Scope::SheetEdit, &["tab"], |_| crate::office::xlsx::edit::commit_and(Dir::Right))),
     always(cmd("sheet_edit.prev", "Enter and the previous cell", Scope::SheetEdit, &["shift+tab"], |_| crate::office::xlsx::edit::commit_and(Dir::Left))),
     always(cmd("sheet_edit.up", "Enter and the cell above", Scope::SheetEdit, &["shift+enter"], |_| crate::office::xlsx::edit::commit_and(Dir::Up))),
