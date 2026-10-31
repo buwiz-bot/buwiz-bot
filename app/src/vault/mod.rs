@@ -39,11 +39,11 @@ use touch_id::{AuthOutcome, OwnerGate};
 
 /// Keychain service; the account is the `site_logins` row id.
 pub(crate) const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.site-login";
-/// Rox's: its items are moved over once ([`move_rox_secrets`]).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Rox's: its items are moved over once (`move_rox_secrets`).
+#[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
 pub(crate) const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.site-login";
 /// Written in the data dir once Rox's secrets were moved.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
 const KEYCHAIN_MARKER: &str = ".keychain-moved-from-rox";
 
 /// The three kinds of row.
@@ -151,7 +151,7 @@ fn new_id() -> String {
 /// ours, once: [`KEYCHAIN_MARKER`] in `dir` says it is done; a failure
 /// writes none, so the next launch tries again. macOS may ask once for
 /// each item, which Rox's binary saved.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn move_rox_secrets(dir: &std::path::Path, c: &Connection) {
     let marker = dir.join(KEYCHAIN_MARKER);
     if marker.exists() {
@@ -184,7 +184,8 @@ impl Vault {
             .map_err(|e| e.to_string())
             .and_then(|()| Connection::open(dir.join("logins.db")).map_err(|e| e.to_string()))
             .and_then(|c| db::migrate(&c).map(|()| c).map_err(|e| e.to_string()));
-        #[cfg(target_os = "macos")]
+        // never from a test: it would reach the owner's Keychain
+        #[cfg(all(target_os = "macos", not(test)))]
         if let Ok(c) = &conn {
             move_rox_secrets(&dir, c);
         }
