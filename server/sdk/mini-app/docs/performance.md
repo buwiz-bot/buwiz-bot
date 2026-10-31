@@ -23,7 +23,7 @@ fingerprint: its first open compiles again (or prewarm already did).
 ## What you should do
 
 1. **Render from the snapshot.** Put the data the answer was based on in
-   `_meta["rox/open"].props.snapshot` (with `as_of`, unix ms) and draw it on the
+   `_meta["buwiz/open"].props.snapshot` (with `as_of`, unix ms) and draw it on the
    first render. Call tools only when the person presses Refresh: Buwiz Bot then
    mounts the card again without `snapshot` and `as_of`, and the card reads
    live. A card that calls three tools before it draws anything costs three
@@ -49,10 +49,10 @@ fingerprint: its first open compiles again (or prewarm already did).
 Buwiz Bot logs each open at info level (`RUST_LOG=info`):
 
 ```
-mini v1 timing: dev.goldcoders.bir/deadlines cache hit 0 ms (no fetch, no compile)
-mini v1 timing: dev.goldcoders.bir/deadlines plugin list 3 ms
-mini v1 timing: dev.goldcoders.bir/deadlines session open 0 ms (pre-opened)
-mini v1 timing: v1:dev.goldcoders.bir/deadlines?ticket=… view to first frame 9 ms (session, engine start, module, layout)
+mini v1 timing: app.buwiz.ebirforms/deadlines cache hit 0 ms (no fetch, no compile)
+mini v1 timing: app.buwiz.ebirforms/deadlines plugin list 3 ms
+mini v1 timing: app.buwiz.ebirforms/deadlines session open 0 ms (pre-opened)
+mini v1 timing: v1:app.buwiz.ebirforms/deadlines?ticket=… view to first frame 9 ms (session, engine start, module, layout)
 ```
 
 | Line | What it measures | If it is large |
@@ -60,7 +60,7 @@ mini v1 timing: v1:dev.goldcoders.bir/deadlines?ticket=… view to first frame 9
 | `source fetch` | Reading the app's source from your plugin (a miss only) | Your server is slow to answer `resources/read`; keep the source in memory. |
 | `checks+compile` | The import check and the compile (a miss only) | The source is large; split it. |
 | `cache hit` | The cached module was used | — |
-| `session open` | The signed session (4.4); `pre-opened` when Buwiz Bot opened it ahead | Your `rox.session.open` is slow; it must only sign. |
+| `session open` | The signed session (4.4); `pre-opened` when Buwiz Bot opened it ahead | Your `buwiz.session.open` is slow; it must only sign. |
 | `view to first frame` | From the view to the first laid-out frame: the session, engine start, module evaluation and the first layout | Top-level work in the module, or a first render that waits on tools. |
 | `prewarmed in` | A background compile after your plugin started | — |
 

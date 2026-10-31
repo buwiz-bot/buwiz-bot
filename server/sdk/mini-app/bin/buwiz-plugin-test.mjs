@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// sdk/mini-app/bin/rox-plugin-test.mjs — the plugin-side conformance checks
+// sdk/mini-app/bin/buwiz-plugin-test.mjs — the plugin-side conformance checks
 // of the Rox Mini App Protocol v1 (spec 17), run against one plugin.
 //
 //   npm run plugin-test -- --command node --args sdk/mini-app/template/server.mjs \
@@ -17,12 +17,12 @@
 // --sign-with <key file>: reads the manifest the plugin serves, fills each
 // app's fingerprint from the source it serves, signs it with the key (a
 // 0600 file holding a base64url seed) and hands the signed copy to the
-// plugin through the --manifest-env variable (default ROX_PLUGIN_MANIFEST).
+// plugin through the --manifest-env variable (default BUWIZ_PLUGIN_MANIFEST).
 // --manifest <file>: a manifest already signed; its key is trusted from
 // --key-file, else from the shipped src/v1/trust.json.
 //
 // Trust: by default the run trusts that one key under the manifest's key
-// id and approves the plugin's id, for this run only. With ROX_TRUST_FILE
+// id and approves the plugin's id, for this run only. With BUWIZ_TRUST_FILE
 // set, the run uses that trust store as it is, the way a broker does: the
 // key must be its key under that id, and the plugin must be on its
 // approved list (else MAN-01 fails with the broker's message). The output
@@ -44,21 +44,21 @@ import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
 import { MAX_PER_SECOND, PROMPT_MAX, checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
 import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
 import { TRUST_FILE, isApproved, loadTrust } from "../../../src/v1/trust.mjs";
-import { newTicket } from "../lib/rox-plugin.mjs";
+import { newTicket } from "../lib/buwiz-plugin.mjs";
 
-const USAGE = `usage: rox-plugin-test --command <cmd> [--args <arg>]... [--env KEY=VAL]...
+const USAGE = `usage: buwiz-plugin-test --command <cmd> [--args <arg>]... [--env KEY=VAL]...
                        (--sign-with <key file> [--key-id <id>] | --manifest <signed.json> [--key-file <key file>])
                        [--manifest-env NAME] [--json]
-       rox-plugin-test --keygen <key file>`;
+       buwiz-plugin-test --keygen <key file>`;
 
-const ALLOWED_IMPORTS = ["nsh", "nsh/base", "rox"];
+const ALLOWED_IMPORTS = ["nsh", "nsh/base", "buwiz"];
 const NO_NETWORK = /\b(fetch|XMLHttpRequest|WebSocket|localStorage|sessionStorage)\b/;
 const CALL_MS = 10_000;
 
 // ── options ──────────────────────────────────────────────────────────────
 
 export function parseArgs(argv) {
-  const o = { command: "", args: [], env: {}, manifest: "", signWith: "", keyFile: "", keyId: "", manifestEnv: "ROX_PLUGIN_MANIFEST", json: false, keygen: "" };
+  const o = { command: "", args: [], env: {}, manifest: "", signWith: "", keyFile: "", keyId: "", manifestEnv: "BUWIZ_PLUGIN_MANIFEST", json: false, keygen: "" };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -152,7 +152,7 @@ async function rawClient(spec) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
   const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: { PATH: process.env.PATH || "", ...spec.env }, stderr: "pipe" });
-  const client = new Client({ name: "rox-plugin-test", version: "1.0.0" });
+  const client = new Client({ name: "buwiz-plugin-test", version: "1.0.0" });
   const conn = { client, stderr: "" };
 
   transport.stderr?.on("data", (d) => (conn.stderr += String(d)));
@@ -173,7 +173,7 @@ async function served(spec) {
     const { contents = [] } = await conn.client.readResource({ uri: MANIFEST_URI });
     const m = parseIJson(contents.find((c) => isString(c.text))?.text ?? "");
 
-    if (!isObject(m)) throw new Error("the plugin's rox://manifest is not a JSON object");
+    if (!isObject(m)) throw new Error("the plugin's buwiz://manifest is not a JSON object");
     const sources = {};
 
     for (const a of Array.isArray(m.apps) ? m.apps : []) {
@@ -216,7 +216,7 @@ function manIdOf(e) {
 const MAN_ROWS = [
   ["MAN-01", "the manifest is signed by a trusted publisher key; the signature verifies over JCS (4.2)"],
   ["MAN-03", "the manifest is a JSON object (I-JSON, no duplicate keys)"],
-  ["MAN-04", "protocol 1.0.x or 1.1.x is accepted by a 1.1 host; version is semver"],
+  ["MAN-04", "protocol 2.0.x is accepted by a 2.0 host; version is semver"],
   ["MAN-05", "needs is absent or []"],
   ["MAN-06", "permissions carry only known keys"],
   ["MAN-07", "every name follows its grammar (3)"],
@@ -295,7 +295,7 @@ function checkPromptAnswer(m, kind, data) {
 // ── the run ──────────────────────────────────────────────────────────────
 
 export async function runPluginTest(o) {
-  const dir = mkdtempSync(join(tmpdir(), "rox-plugin-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "buwiz-plugin-test-"));
   const { rows, run, skip } = checklist();
   const spec = { command: o.command, args: o.args, env: { ...o.env } };
   const manifestFile = join(dir, "manifest.json");
@@ -306,7 +306,7 @@ export async function runPluginTest(o) {
   let plugins = null;
   const seeds = [];
   // a real trust store (a broker's): used as it is, approved list and all
-  const store = process.env.ROX_TRUST_FILE || "";
+  const store = process.env.BUWIZ_TRUST_FILE || "";
   let trustFrom = "";
   let trustReport = null;
 
@@ -393,25 +393,25 @@ export async function runPluginTest(o) {
 
     for (const a of m?.apps || []) await appChecks(raw, a, run);
 
-    // RSV-01: nothing before rox.provision; provision answers the manifest hash
+    // RSV-01: nothing before buwiz.provision; provision answers the manifest hash
     const key = generate();
 
     seeds.push(key.seed);
     const provisionArgs = { protocol: "1.0.0", plugin: m?.id || "", key: { alg: "ed25519", seed: key.seed }, pub: key.pub };
 
     if (own.length)
-      await run("RSV-01", `a tool before rox.provision fails (${own[0].name})`, async () => {
+      await run("RSV-01", `a tool before buwiz.provision fails (${own[0].name})`, async () => {
         const r = await callRaw(raw, own[0].name, {}).catch((e) => ({ thrown: e }));
 
-        expect(r.thrown || r.isError, `${own[0].name} answered before rox.provision`);
+        expect(r.thrown || r.isError, `${own[0].name} answered before buwiz.provision`);
       });
 
-    await run("RSV-01", "rox.provision answers {ok: true, manifest_sha256} of the served manifest; again with the same key too", async () => {
+    await run("RSV-01", "buwiz.provision answers {ok: true, manifest_sha256} of the served manifest; again with the same key too", async () => {
       for (let i = 0; i < 2; i++) {
-        const r = await callRaw(raw, "rox.provision", provisionArgs);
+        const r = await callRaw(raw, "buwiz.provision", provisionArgs);
         const d = resultData(r);
 
-        expect(!r.isError && d?.ok === true, `rox.provision answered ${JSON.stringify(d)?.slice(0, 120)}`);
+        expect(!r.isError && d?.ok === true, `buwiz.provision answered ${JSON.stringify(d)?.slice(0, 120)}`);
 
         if (m) expect(d.manifest_sha256 === manifestHash(m), "manifest_sha256 is not sha256 of the served manifest's JCS bytes (5.2 step 7)");
       }
@@ -422,23 +422,23 @@ export async function runPluginTest(o) {
     const reservedArgs = (over) => ({ app: app?.id, open_id: random128(), ks_pub: generate().pub, perms_sha256: permsDigest(app?.permissions), not_after: Date.now() + 3600_000, ...over });
     const isInvalid = (r) => r.isError && resultData(r)?.code === "invalid_args";
 
-    await run("RSV-02", "rox.session.open with an unknown app fails invalid_args", async () => {
-      expect(isInvalid(await callRaw(raw, "rox.session.open", reservedArgs({ app: "sdk-no-such-app" }))), "an unknown app was not refused with code invalid_args");
+    await run("RSV-02", "buwiz.session.open with an unknown app fails invalid_args", async () => {
+      expect(isInvalid(await callRaw(raw, "buwiz.session.open", reservedArgs({ app: "sdk-no-such-app" }))), "an unknown app was not refused with code invalid_args");
     });
 
     if (app) {
-      await run("RSV-02", `rox.session.open of ${app.id} with a wrong perms_sha256, or not_after past 8 h, fails invalid_args`, async () => {
-        expect(isInvalid(await callRaw(raw, "rox.session.open", reservedArgs({ perms_sha256: permsDigest({ tools: ["sdk_not_granted"] }) }))), "a wrong perms_sha256 was not refused");
-        expect(isInvalid(await callRaw(raw, "rox.session.open", reservedArgs({ not_after: Date.now() + 9 * 3600_000 }))), "a certificate over 8 h was not refused");
+      await run("RSV-02", `buwiz.session.open of ${app.id} with a wrong perms_sha256, or not_after past 8 h, fails invalid_args`, async () => {
+        expect(isInvalid(await callRaw(raw, "buwiz.session.open", reservedArgs({ perms_sha256: permsDigest({ tools: ["sdk_not_granted"] }) }))), "a wrong perms_sha256 was not refused");
+        expect(isInvalid(await callRaw(raw, "buwiz.session.open", reservedArgs({ not_after: Date.now() + 9 * 3600_000 }))), "a certificate over 8 h was not refused");
       });
 
       await run("RSV-03", `the session certificate for ${app.id} is the request, signed by the plugin key over JCS (4.4)`, async () => {
         const req = reservedArgs();
-        const r = await callRaw(raw, "rox.session.open", req);
+        const r = await callRaw(raw, "buwiz.session.open", req);
         const d = resultData(r);
 
-        expect(!r.isError && isObject(d?.cert), `rox.session.open answered ${JSON.stringify(d)?.slice(0, 120)}`);
-        const want = { v: 1, typ: "rox-session", plugin: m.id, app: app.id, open_id: req.open_id, ks_pub: req.ks_pub, perms_sha256: req.perms_sha256, not_after: req.not_after };
+        expect(!r.isError && isObject(d?.cert), `buwiz.session.open answered ${JSON.stringify(d)?.slice(0, 120)}`);
+        const want = { v: 1, typ: "buwiz-session", plugin: m.id, app: app.id, open_id: req.open_id, ks_pub: req.ks_pub, perms_sha256: req.perms_sha256, not_after: req.not_after };
 
         expect(JSON.stringify(Object.keys(d.cert).sort()) === JSON.stringify(Object.keys(want).sort()), `the certificate has fields ${Object.keys(d.cert).join(", ")}`);
 
@@ -450,19 +450,19 @@ export async function runPluginTest(o) {
       });
     } else skip("RSV-03", "session certificates", "the plugin has no apps");
 
-    await run("RSV-05", "rox.session.close answers ok: true; an unknown rox.* answers -32601 (7.9)", async () => {
-      const closed = resultData(await callRaw(raw, "rox.session.close", { open_id: raw.openId || random128() }));
+    await run("RSV-05", "buwiz.session.close answers ok: true; an unknown rox.* answers -32601 (7.9)", async () => {
+      const closed = resultData(await callRaw(raw, "buwiz.session.close", { open_id: raw.openId || random128() }));
 
-      expect(closed?.ok === true, `rox.session.close answered ${JSON.stringify(closed)?.slice(0, 80)}`);
-      const code = await callRaw(raw, "rox.sdk.probe", {}).then(() => "answered", (e) => e?.code);
+      expect(closed?.ok === true, `buwiz.session.close answered ${JSON.stringify(closed)?.slice(0, 80)}`);
+      const code = await callRaw(raw, "buwiz.sdk.probe", {}).then(() => "answered", (e) => e?.code);
 
-      expect(code === -32601, `rox.sdk.probe answered ${code}, not -32601`);
+      expect(code === -32601, `buwiz.sdk.probe answered ${code}, not -32601`);
     });
 
-    await run("RSV-05", "rox.uninstall answers ok: true", async () => {
-      const d = resultData(await callRaw(raw, "rox.uninstall", {}));
+    await run("RSV-05", "buwiz.uninstall answers ok: true", async () => {
+      const d = resultData(await callRaw(raw, "buwiz.uninstall", {}));
 
-      expect(d?.ok === true, `rox.uninstall answered ${JSON.stringify(d)?.slice(0, 80)}`);
+      expect(d?.ok === true, `buwiz.uninstall answered ${JSON.stringify(d)?.slice(0, 80)}`);
     });
     await raw.close();
 
@@ -486,7 +486,7 @@ export async function runPluginTest(o) {
     if (installed) await brokerChecks(plugins, sessions, m, run, skip);
     else for (const [id, what] of [["BRG-03", "signed calls"], ["RSV-04", "ticket titles"], ["INV-04", "resolve shapes"]]) skip(id, what, "the plugin did not install");
 
-    if (installed) await run("RSV-05", "uninstall through the broker (rox.uninstall, key removed)", () => plugins.uninstall(m.id).then(() => ""));
+    if (installed) await run("RSV-05", "uninstall through the broker (buwiz.uninstall, key removed)", () => plugins.uninstall(m.id).then(() => ""));
   } catch (e) {
     rows.push({ id: "RUN", what: "the run", status: "fail", note: errText(e) });
   } finally {
@@ -528,7 +528,7 @@ export function pacer(max, windowMs) {
   };
 }
 
-/** Which trust the run used, for the report: {store (ROX_TRUST_FILE or
+/** Which trust the run used, for the report: {store (BUWIZ_TRUST_FILE or
  *  null for the run's own), key_id, key_from, approved}. */
 function trustOf(trustFile, store, keyFrom, manifestFile) {
   let m = null;
@@ -547,7 +547,7 @@ function trustOf(trustFile, store, keyFrom, manifestFile) {
   return {
     store: store || null,
     key_id: keyId,
-    key_from: store ? (t.publishers.has(keyId) ? "ROX_TRUST_FILE" : null) : keyFrom,
+    key_from: store ? (t.publishers.has(keyId) ? "BUWIZ_TRUST_FILE" : null) : keyFrom,
     approved: !!m && isApproved(t, String(m.id ?? ""), keyId),
   };
 }
@@ -599,7 +599,7 @@ async function appChecks(raw, a, run) {
   await run("APP-04", `${a.id}: uses no fetch, XMLHttpRequest, WebSocket or web storage (6.3)`, () => {
     const hit = NO_NETWORK.exec(s.code);
 
-    expect(!hit, `uses ${hit?.[1]}; apps get data from rox.call only`);
+    expect(!hit, `uses ${hit?.[1]}; apps get data from buwiz.call only`);
   });
 }
 
@@ -614,7 +614,7 @@ async function openAs(sessions, m, app) {
 }
 
 function envelope(open, tool, args = {}, signer = open.ks.seed) {
-  const env = { v: 1, typ: "rox-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128() };
+  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128() };
 
   return { envelope: env, sig: sign(signer, signedBytes(env)) };
 }
@@ -682,7 +682,7 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   const entries = [...(m.commands || []).map((c) => ["command", c]), ...(m.scopes || []).map((s) => ["scope", s])];
 
   const resolveRaw = (kind, e, value, complete) =>
-    plugins.callTool(m.id, e.resolve, { kind, name: e.name, value, complete, context: { attached: [] } }, { meta: { "rox/caller": { origin: "resolve", plugin: m.id, ts: Date.now() } }, timeout: 10_000 });
+    plugins.callTool(m.id, e.resolve, { kind, name: e.name, value, complete, context: { attached: [] } }, { meta: { "buwiz/caller": { origin: "resolve", plugin: m.id, ts: Date.now() } }, timeout: 10_000 });
 
   if (!entries.length) skip("INV-04", "resolve shapes", "the manifest has no commands or scopes");
 
@@ -740,8 +740,8 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   // RSV-04: titles only, never a subject
   const titleOnly = (d) => Object.keys(d || {}).every((k) => k === "valid" || k === "title");
 
-  await run("RSV-04", "rox.ticket.resolve of an unknown ticket is {valid: false}", async () => {
-    const d = await plugins.callReserved(m.id, "rox.ticket.resolve", { ticket: newTicket() });
+  await run("RSV-04", "buwiz.ticket.resolve of an unknown ticket is {valid: false}", async () => {
+    const d = await plugins.callReserved(m.id, "buwiz.ticket.resolve", { ticket: newTicket() });
 
     expect(d === null || (d.valid === false && titleOnly(d)), `answered ${JSON.stringify(d)?.slice(0, 120)}`);
 
@@ -750,8 +750,8 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
   if (!tickets.length) skip("RSV-04", "a ticket the plugin issued resolves to a title", "no resolve answer carried a ticket");
   else
-    await run("RSV-04", "rox.ticket.resolve of an issued ticket returns a title and no subject field", async () => {
-      const d = await plugins.callReserved(m.id, "rox.ticket.resolve", { ticket: tickets[0] });
+    await run("RSV-04", "buwiz.ticket.resolve of an issued ticket returns a title and no subject field", async () => {
+      const d = await plugins.callReserved(m.id, "buwiz.ticket.resolve", { ticket: tickets[0] });
 
       expect(d?.valid === true && isString(d.title), `answered ${JSON.stringify(d)?.slice(0, 120)}`);
       expect(titleOnly(d), `fields other than valid and title: ${Object.keys(d).join(", ")}`);
@@ -765,10 +765,10 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 function trustLine(t, id) {
   if (!t) return "trust: (none)";
 
-  if (!t.store) return `trust: this run's own, key ${t.key_id} from ${t.key_from}, ${id || "the plugin"} approved for this run only (set ROX_TRUST_FILE to check a real trust store)`;
+  if (!t.store) return `trust: this run's own, key ${t.key_id} from ${t.key_from}, ${id || "the plugin"} approved for this run only (set BUWIZ_TRUST_FILE to check a real trust store)`;
   const key = t.key_from ? `key ${t.key_id} trusted` : `key ${t.key_id} NOT in it`;
 
-  return `trust: ROX_TRUST_FILE ${t.store}: ${key}, ${id || "the plugin"} ${t.approved ? "approved" : "NOT approved"}`;
+  return `trust: BUWIZ_TRUST_FILE ${t.store}: ${key}, ${id || "the plugin"} ${t.approved ? "approved" : "NOT approved"}`;
 }
 
 export function format(res, o) {
@@ -808,7 +808,7 @@ if (isMain(import.meta.url))
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (e) => {
-      console.error(`rox-plugin-test: ${String(e?.message || e)}`);
+      console.error(`buwiz-plugin-test: ${String(e?.message || e)}`);
       process.exit(2);
     },
   );

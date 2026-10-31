@@ -1,11 +1,11 @@
 {
-  "protocol": "1.0.0",
-  "id": "dev.goldcoders.hello",
+  "protocol": "2.0.0",
+  "id": "app.buwiz.hello",
   "short": "hello",
   "version": "0.1.0",
   "title": "Hello",
   "description": "The Mini App template: one tool, one scope, one app.",
-  "publisher": { "id": "dev.goldcoders", "key_id": "gc-2026-01", "name": "Goldcoders" },
+  "publisher": { "id": "app.buwiz", "key_id": "gc-2026-01", "name": "Goldcoders" },
   "commands": [
     { "name": "hello", "args": "[name]", "description": "Open Hello, optionally for a friend", "resolve": "hello_resolve" }
   ],
@@ -15,7 +15,7 @@
   "apps": [
     {
       "id": "hello", "title": "Hello", "description": "Greets a friend.",
-      "entry": "rox-app://hello", "mime": "text/x-nsh-tsx", "sdk": "1",
+      "entry": "buwiz-app://hello", "mime": "text/x-nsh-tsx", "sdk": "1",
       "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "props": { "type": "object", "properties": { "ticket": { "type": "string", "maxLength": 30 } } },
       "placement": ["full", "inline"],

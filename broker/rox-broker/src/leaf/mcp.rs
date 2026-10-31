@@ -75,9 +75,9 @@ fn html(status: u16, title: &str) -> Answer {
     Answer::bare(status, done_page(title)).header("content-type", "text/html")
 }
 
-/// `rox://app/<server>/<app>[?…]`.
+/// `buwiz://app/<server>/<app>[?…]`.
 fn app_link(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("rox://app/") else { return false };
+    let Some(rest) = url.strip_prefix("buwiz://app/") else { return false };
     let (path, query) = rest.split_once('?').map_or((rest, None), |(p, q)| (p, Some(q)));
     let Some((server, app)) = path.split_once('/') else { return false };
     let server_ok = !server.is_empty() && server.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
@@ -85,9 +85,9 @@ fn app_link(url: &str) -> bool {
     server_ok && app_ok && query.is_none_or(|q| !q.chars().any(char::is_whitespace))
 }
 
-/// `rox://view?path=<absolute path>`: the path, when it is absolute.
+/// `buwiz://view?path=<absolute path>`: the path, when it is absolute.
 fn view_path(url: &str) -> Option<String> {
-    let q = url.strip_prefix("rox://view?")?;
+    let q = url.strip_prefix("buwiz://view?")?;
     if q.chars().any(char::is_whitespace) {
         return None;
     }
@@ -97,7 +97,7 @@ fn view_path(url: &str) -> Option<String> {
 }
 
 fn chat_link(url: &str) -> bool {
-    url.strip_prefix("rox://chat/new?draft=").is_some_and(|r| !r.chars().any(char::is_whitespace))
+    url.strip_prefix("buwiz://chat/new?draft=").is_some_and(|r| !r.chars().any(char::is_whitespace))
 }
 
 /// The tool's data as `callToolJson` hands it to a mini app.
@@ -534,7 +534,7 @@ impl McpRoutes {
     async fn open(&self, url: &str) -> Answer {
         let app = app_link(url);
         if !app && !chat_link(url) && view_path(url).is_none() {
-            return out(400, &json!({"ok": false, "error": "only rox://app/<server>/<app>, rox://chat/new?draft= and rox://view?path=<absolute path> links"}));
+            return out(400, &json!({"ok": false, "error": "only buwiz://app/<server>/<app>, buwiz://chat/new?draft= and buwiz://view?path=<absolute path> links"}));
         }
         let target = if app { self.with_pass(url) } else { url.to_owned() };
         let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
@@ -552,7 +552,7 @@ impl McpRoutes {
         passes.retain(|_, until| *until > now);
         let pass = rox_v1::keys::random_id();
         passes.insert(pass.clone(), now + PASS_FOR);
-        format!("{url}{}rox_pass={pass}", if url.contains('?') { "&" } else { "?" })
+        format!("{url}{}buwiz_pass={pass}", if url.contains('?') { "&" } else { "?" })
     }
 
     /// open-pass.mjs's `redeem`: once, while fresh.
@@ -573,16 +573,16 @@ mod tests {
 
     #[test]
     fn links_are_checked_as_market_mjs_checks_them() {
-        assert!(app_link("rox://app/apps/hello"));
-        assert!(app_link("rox://app/apps/hello.v2?x=1&y=2"));
-        assert!(!app_link("rox://app/Apps/hello"));
-        assert!(!app_link("rox://app/apps/hello/more"));
-        assert!(!app_link("rox://app/apps/hello?x= 1"));
-        assert!(chat_link("rox://chat/new?draft=hi%20there"));
-        assert!(!chat_link("rox://chat/new?draft=hi there"));
-        assert_eq!(view_path("rox://view?path=/tmp/x.pdf").as_deref(), Some("/tmp/x.pdf"));
-        assert_eq!(view_path("rox://view?path=%2Ftmp%2Fa%20b.pdf").as_deref(), Some("/tmp/a b.pdf"));
-        assert_eq!(view_path("rox://view?path=relative"), None);
+        assert!(app_link("buwiz://app/apps/hello"));
+        assert!(app_link("buwiz://app/apps/hello.v2?x=1&y=2"));
+        assert!(!app_link("buwiz://app/Apps/hello"));
+        assert!(!app_link("buwiz://app/apps/hello/more"));
+        assert!(!app_link("buwiz://app/apps/hello?x= 1"));
+        assert!(chat_link("buwiz://chat/new?draft=hi%20there"));
+        assert!(!chat_link("buwiz://chat/new?draft=hi there"));
+        assert_eq!(view_path("buwiz://view?path=/tmp/x.pdf").as_deref(), Some("/tmp/x.pdf"));
+        assert_eq!(view_path("buwiz://view?path=%2Ftmp%2Fa%20b.pdf").as_deref(), Some("/tmp/a b.pdf"));
+        assert_eq!(view_path("buwiz://view?path=relative"), None);
         assert_eq!(view_path("https://x/view?path=/a"), None);
     }
 

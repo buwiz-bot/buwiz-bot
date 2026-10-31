@@ -4,7 +4,7 @@
 //
 // The tools are driven through the office MCP server as the hub calls it:
 // Node's child (`node mcp-main.ts --root <dir>`, what office.mjs and
-// helper/office.rs spawn) or, with ROX_BROKER_CMD set, rox-broker's own
+// helper/office.rs spawn) or, with BUWIZ_BROKER_CMD set, rox-broker's own
 // (`rox-broker office-mcp --root <dir>`, the same in-process code the hub's
 // office tools call). OFF-30 then runs office tools through a chat turn of the
 // broker itself, with the fake opencodex scripting the calls, and checks the
@@ -41,7 +41,7 @@ import { ROOT, modelEnv, postJson, request, startServer, tempDir, waitFor } from
 const SEEDS = join(ROOT, "src", "office", "seeds");
 const GOLDEN = join(ROOT, "test", "fixtures", "office-golden.json");
 const TOOLS_JSON = join(ROOT, "..", "broker", "rox-broker", "src", "office", "tools.json");
-const RUST = !!(process.env.ROX_BROKER_CMD || "").trim();
+const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
 const WRITE = process.env.OFFICE_GOLDEN === "write";
 const golden = !WRITE && existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, "utf8")) : {};
 const recorded = {};
@@ -49,7 +49,7 @@ const recorded = {};
 /** The office MCP server for workspace `root`: Node's child, or rox-broker's. */
 function officeCommand(root) {
   if (RUST) {
-    const [bin] = process.env.ROX_BROKER_CMD.trim().split(/\s+/);
+    const [bin] = process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/);
 
     return [bin, ["office-mcp", "--root", root]];
   }

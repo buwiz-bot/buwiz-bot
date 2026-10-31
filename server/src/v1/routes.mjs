@@ -2,7 +2,7 @@
 //
 // Not part of the protocol (spec 14.3): the routes the host design (its
 // section 4) fixes between Rox and this broker. Every request carries
-// `X-Rox-Host: <token>`; the token is 32 random bytes the broker writes to
+// `X-Buwiz-Host: <token>`; the token is 32 random bytes the broker writes to
 // <GROK_DATA_DIR>/host-token (0600) when it starts, and a request without
 // it is answered 401 before anything else happens. The Origin and JSON
 // guard (guard.mjs) has already run. Bodies are JSON; refusals are
@@ -35,7 +35,7 @@ export function initHostToken(file = HOST_TOKEN_FILE) {
 }
 
 function authorized(req) {
-  const got = Buffer.from(String(req.headers["x-rox-host"] || ""));
+  const got = Buffer.from(String(req.headers["x-buwiz-host"] || ""));
   const want = Buffer.from(token || "");
 
   return !!token && got.length === want.length && timingSafeEqual(got, want);
@@ -188,7 +188,7 @@ async function hookRoute(req, res, path) {
     const raw = await rawBody(req);
 
     try {
-      return send(res, 202, { ok: true, ...externals.incoming(decodeURIComponent(m[1]), decodeURIComponent(m[2]), raw, req.headers["x-rox-signature"]) });
+      return send(res, 202, { ok: true, ...externals.incoming(decodeURIComponent(m[1]), decodeURIComponent(m[2]), raw, req.headers["x-buwiz-signature"]) });
     } catch (e) {
       if (!(e instanceof ExternalError)) throw e;
 
@@ -266,7 +266,7 @@ export default async function handle(req, res) {
 
   if (!path.startsWith("/v1/host/")) return false;
 
-  if (!authorized(req)) return send(res, 401, { ok: false, code: "unauthorized", message: "X-Rox-Host is missing or wrong", retryable: false });
+  if (!authorized(req)) return send(res, 401, { ok: false, code: "unauthorized", message: "X-Buwiz-Host is missing or wrong", retryable: false });
   await answer(req, res, path);
 
   return true;

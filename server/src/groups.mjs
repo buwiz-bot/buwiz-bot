@@ -6,7 +6,7 @@
 //   group_items — (group_id, kind, ref): kind "bot" | "chat" | "artifact"
 //                 | "app", ref the bot id, thread id, artifact id (R<n> |
 //                 file:<path> | gdrive:<file id>) or a server's mini app
-//                 (mcp:<server>/<app>|<props>, as rox://app/ links open it);
+//                 (mcp:<server>/<app>|<props>, as buwiz://app/ links open it);
 //                 thread is an artifact's origin chat, title an app's.
 // Bot sections and the sidebar's pinned Mini Apps became groups once
 // (migrateGroups); bot.section and /state/rox-pinned-apps stay readable

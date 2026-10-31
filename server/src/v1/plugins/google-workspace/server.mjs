@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // v1/plugins/google-workspace/server.mjs — the first-party Google Workspace
-// plugin (stdio MCP), id dev.goldcoders.google-workspace, short `gws`.
+// plugin (stdio MCP), id app.buwiz.google-workspace, short `gws`.
 //
 // v1 routines read mail only through `reads`, from read-only tools of an
 // approved plugin (spec 5.9, Q1); this plugin is that source. It holds no
@@ -61,11 +61,11 @@ function provision(args) {
 }
 
 const RESERVED = {
-  "rox.provision": provision,
-  "rox.session.open": (args) => fail("invalid_args", `no app ${String(args?.app).slice(0, 60)}: this plugin has no apps`),
-  "rox.session.close": () => ok({ ok: true }),
-  "rox.ticket.resolve": () => ok({ valid: false }),
-  "rox.uninstall": () => ok({ ok: true }),
+  "buwiz.provision": provision,
+  "buwiz.session.open": (args) => fail("invalid_args", `no app ${String(args?.app).slice(0, 60)}: this plugin has no apps`),
+  "buwiz.session.close": () => ok({ ok: true }),
+  "buwiz.ticket.resolve": () => ok({ valid: false }),
+  "buwiz.uninstall": () => ok({ ok: true }),
 };
 
 // ── the upstream Google Workspace MCP server ─────────────────────────────
@@ -281,7 +281,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (isV1("reservedTool", name)) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
 
   // P7: nothing before a successful provision
-  if (!key) throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
+  if (!key) throw new McpError(ErrorCode.InvalidRequest, "buwiz.provision must come first");
   const tool = TOOLS.find((t) => t.name === name);
 
   if (!tool) throw new McpError(ErrorCode.InvalidParams, `no tool ${name}`);
@@ -293,12 +293,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
-server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [{ uri: "rox://manifest", name: "manifest", mimeType: "application/json" }] }));
+server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [{ uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" }] }));
 
 server.setRequestHandler(ReadResourceRequestSchema, (req) => {
   const { uri } = req.params;
 
-  if (uri !== "rox://manifest") throw new McpError(ErrorCode.InvalidParams, `no resource ${uri}`);
+  if (uri !== "buwiz://manifest") throw new McpError(ErrorCode.InvalidParams, `no resource ${uri}`);
 
   return { contents: [{ uri, mimeType: "application/json", text: manifestText() }] };
 });

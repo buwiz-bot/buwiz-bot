@@ -81,7 +81,7 @@ mod tests {
 
     fn plugin(fp: &str) -> PluginEntry {
         PluginEntry::from_json(&json!({
-            "id": "dev.goldcoders.fixture", "title": "Fixture", "version": "1.1.0",
+            "id": "app.buwiz.fixture", "title": "Fixture", "version": "1.1.0",
             "apps": [{"id": "board", "title": "Board", "fingerprint": fp}, {"id": "card", "title": "Card", "fingerprint": "sha256:cc"}],
         }))
         .unwrap()
@@ -89,27 +89,27 @@ mod tests {
 
     #[test]
     fn an_idle_card_of_a_changed_plugin_fetches_its_new_code() {
-        let loaded = ["v1:dev.goldcoders.bir/card-quick?c=1", "v1:dev.goldcoders.bir/forms", "v1:dev.goldcoders.other/x", "R12"].map(String::from);
-        let running = vec!["v1:dev.goldcoders.bir/forms".to_owned()];
-        assert_eq!(idle_sources(loaded.iter(), &running, "dev.goldcoders.bir"), ["v1:dev.goldcoders.bir/card-quick?c=1"]);
-        assert!(idle_sources(loaded.iter(), &running, "dev.goldcoders.none").is_empty());
+        let loaded = ["v1:app.buwiz.ebirforms/card-quick?c=1", "v1:app.buwiz.ebirforms/forms", "v1:app.buwiz.other/x", "R12"].map(String::from);
+        let running = vec!["v1:app.buwiz.ebirforms/forms".to_owned()];
+        assert_eq!(idle_sources(loaded.iter(), &running, "app.buwiz.ebirforms"), ["v1:app.buwiz.ebirforms/card-quick?c=1"]);
+        assert!(idle_sources(loaded.iter(), &running, "app.buwiz.none").is_empty());
     }
 
     #[test]
     fn lcy_04_a_new_fingerprint_refreshes_the_next_open_and_running_opens_keep_theirs_until_reload() {
         let running = vec![
-            ("v1:dev.goldcoders.fixture/board".to_owned(), "sha256:aa".to_owned()),
-            ("v1:dev.goldcoders.fixture/card".to_owned(), "sha256:cc".to_owned()),
+            ("v1:app.buwiz.fixture/board".to_owned(), "sha256:aa".to_owned()),
+            ("v1:app.buwiz.fixture/card".to_owned(), "sha256:cc".to_owned()),
         ];
         // same version: nothing is stale
         assert!(stale(&running, &[plugin("sha256:aa")]).is_empty());
         // the board changed: its running open is stale (a Reload banner),
         // the card is not; the open stays on its source
-        assert_eq!(stale(&running, &[plugin("sha256:bb")]), ["v1:dev.goldcoders.fixture/board"]);
+        assert_eq!(stale(&running, &[plugin("sha256:bb")]), ["v1:app.buwiz.fixture/board"]);
         // the next open loads the new source, and says so (`app_changed`)
         let mut r = Records::default();
-        assert_eq!(r.opened("dev.goldcoders.fixture", "board", "sha256:aa"), None);
-        assert_eq!(r.opened("dev.goldcoders.fixture", "board", "sha256:bb").as_deref(), Some("sha256:aa"));
+        assert_eq!(r.opened("app.buwiz.fixture", "board", "sha256:aa"), None);
+        assert_eq!(r.opened("app.buwiz.fixture", "board", "sha256:bb").as_deref(), Some("sha256:aa"));
         // a plugin that went away leaves the open as it is (its session ends)
         assert!(stale(&running, &[]).is_empty());
     }
@@ -124,9 +124,9 @@ mod tests {
 
     #[test]
     fn reconnecting_opens_reopen_when_their_plugin_runs_again() {
-        assert!(running_again(&json!({"id": "dev.goldcoders.fixture", "state": "running", "generation": 5}), "dev.goldcoders.fixture"));
-        assert!(!running_again(&json!({"id": "dev.goldcoders.fixture", "state": "restarting"}), "dev.goldcoders.fixture"));
-        assert!(!running_again(&json!({"id": "dev.goldcoders.other", "state": "running"}), "dev.goldcoders.fixture"));
+        assert!(running_again(&json!({"id": "app.buwiz.fixture", "state": "running", "generation": 5}), "app.buwiz.fixture"));
+        assert!(!running_again(&json!({"id": "app.buwiz.fixture", "state": "restarting"}), "app.buwiz.fixture"));
+        assert!(!running_again(&json!({"id": "app.buwiz.other", "state": "running"}), "app.buwiz.fixture"));
         assert_eq!(reconnecting("Board"), "Board is reconnecting…");
     }
 

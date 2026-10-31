@@ -659,7 +659,7 @@ pub struct DriveLink {
     /// Its Library kind ("document", …) and type's name ("Google Doc").
     pub kind: String,
     pub file_type: String,
-    /// A v1 tool result's open (provider `rox-app`, 9.6): its card.
+    /// A v1 tool result's open (provider `buwiz-app`, 9.6): its card.
     pub card: Option<serde_json::Value>,
 }
 
@@ -743,7 +743,7 @@ pub struct RoxApp {
     /// connected app's own history) or "none".
     pub versioning: String,
     /// An `mcp-app` item (a server's token attached here): the token, the
-    /// `rox://app/` link it opens, its picture and what the server tells
+    /// `buwiz://app/` link it opens, its picture and what the server tells
     /// of it.
     pub token: String,
     pub open: String,
@@ -1256,7 +1256,7 @@ pub struct RoxGroup {
 /// One member of a group: `kind` "bot" | "chat" | "artifact" | "app",
 /// `id` the bot's id, the chat's thread id, the artifact's (`R<n>` |
 /// `file:<path>`) or a server's mini app's module name
-/// (`mcp:<server>/<app>[|<props>]`, a pinned `rox://app/` link). An
+/// (`mcp:<server>/<app>[|<props>]`, a pinned `buwiz://app/` link). An
 /// artifact carries its origin chat and its Library record — it opens
 /// from whatever chat is open; an app its title.
 #[derive(Clone, PartialEq, Default)]
@@ -1353,7 +1353,7 @@ pub enum PaletteAct {
     App(String),
     /// Open a chat — an agent's session or a plain chat.
     Thread(String),
-    /// A `rox://` link: a chat at a message (Show in Chat's places).
+    /// A `buwiz://` link: a chat at a message (Show in Chat's places).
     Link(String),
     /// Attach a token to a chat (a bot's main chat): (token, thread, its
     /// name).
@@ -1543,9 +1543,9 @@ fn turn_is(t: &Turn, key: &str) -> bool {
         || t.message.as_ref().is_some_and(|m| m.id == key)
 }
 
-/// `rox://chat/<thread uid|id>[?m=<turn id|index>]` → (thread, turn key).
+/// `buwiz://chat/<thread uid|id>[?m=<turn id|index>]` → (thread, turn key).
 fn parse_chat_link(url: &str) -> Option<(String, Option<String>)> {
-    let rest = url.strip_prefix("rox://chat/")?;
+    let rest = url.strip_prefix("buwiz://chat/")?;
     let (thread, query) = rest.split_once('?').unwrap_or((rest, ""));
     let thread = thread.trim_end_matches('/');
     if thread.is_empty() {
@@ -2528,12 +2528,12 @@ impl Store {
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
-            // Launched on a link (`open rox://…`, or `rox rox://…`): Rox
+            // Launched on a link (`open buwiz://…`, or `rox buwiz://…`): Rox
             // opens there once the chats are known.
             self.booted.set(true);
             let early = self.early_link.borrow_mut().take();
             if let Some((url, os)) = early
-                .or_else(|| std::env::args().skip(1).find(|a| a.starts_with("rox://")).map(|u| (u, true)))
+                .or_else(|| std::env::args().skip(1).find(|a| a.starts_with("buwiz://")).map(|u| (u, true)))
             {
                 self.route_link(&url, os);
             }
@@ -4323,10 +4323,10 @@ impl Store {
         });
     }
 
-    /// Share / "Copy link to this plugin" — `rox://plugin/<name>` (opens
+    /// Share / "Copy link to this plugin" — `buwiz://plugin/<name>` (opens
     /// this page through `open_link`), with a 1.5s "Copied".
     pub fn copy_plugin_link(&'static self, name: &str) {
-        self.copy_text(&format!("rox://plugin/{name}"));
+        self.copy_text(&format!("buwiz://plugin/{name}"));
         self.plugin_copied.set(true);
         spawn(async move {
             timer(std::time::Duration::from_millis(1500)).await;
@@ -5568,7 +5568,7 @@ impl Store {
     }
 
     /// A fresh chat whose composer holds `draft`, unsent
-    /// (`rox://chat/new?draft=`).
+    /// (`buwiz://chat/new?draft=`).
     pub fn new_thread_with(&'static self, draft: String) {
         spawn(async move {
             if let Some(v) = client::post("/thread/new", serde_json::json!({})).await {
@@ -5772,7 +5772,7 @@ impl Store {
 
     /// `raw(f)` — the server's bytes of a reply file.
     pub fn file_raw_url(path: &str) -> String {
-        // a file on this Mac outside the server's (`rox://view`'s)
+        // a file on this Mac outside the server's (`buwiz://view`'s)
         if path.starts_with('/') {
             let enc = path.split('/').map(|p| crate::client::urlenc(p)).collect::<Vec<_>>().join("/");
             return format!("file://{enc}");
@@ -5880,7 +5880,7 @@ impl Store {
             self.rendered.set(Some(Rendered::default()));
             return;
         }
-        // A file on this Mac outside the server's files (`rox://view`'s, a
+        // A file on this Mac outside the server's files (`buwiz://view`'s, a
         // mini app's print preview): read here, its text the source view
         // and what prints.
         if local {
@@ -6788,7 +6788,7 @@ impl Store {
         }
     }
 
-    /// A Library item's link — `rox://chat/<thread uid>?m=<turn id>`, as
+    /// A Library item's link — `buwiz://chat/<thread uid>?m=<turn id>`, as
     /// the card's Copy Link; a connector's file has its own (the Drive
     /// link).
     pub fn library_link(&'static self, a: &RoxApp) -> String {
@@ -6798,7 +6798,7 @@ impl Store {
         if a.thread_uid.is_empty() || a.turn_id.is_empty() {
             return self.turn_link(a.i);
         }
-        format!("rox://chat/{}?m={}", a.thread_uid, a.turn_id)
+        format!("buwiz://chat/{}?m={}", a.thread_uid, a.turn_id)
     }
 
     /// Download: the save panel for an image card's png or a file, under
@@ -7084,7 +7084,7 @@ impl Store {
     }
 
     /// A link to turn `i` of the open chat, by permanent ids:
-    /// `rox://chat/<thread uid>?m=<turn id>` (the old `t<n>` / index when
+    /// `buwiz://chat/<thread uid>?m=<turn id>` (the old `t<n>` / index when
     /// a server has none yet).
     pub fn turn_link(&'static self, i: i64) -> String {
         let id = self.active_id.get_untracked();
@@ -7098,17 +7098,17 @@ impl Store {
             .with_untracked(|t| t.iter().find(|t| t.i == i).map(|t| t.id.clone()))
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| i.to_string());
-        format!("rox://chat/{thread}?m={turn}")
+        format!("buwiz://chat/{thread}?m={turn}")
     }
 
-    /// A link pressed in Rox: `rox://chat/<thread>[?m=<i>]` goes to that
+    /// A link pressed in Rox: `buwiz://chat/<thread>[?m=<i>]` goes to that
     /// chat (and turn); an outside URL opens outside Rox as
     /// [`crate::links::outside`] decides.
     pub fn open_link(&'static self, url: &str) {
         self.route_link(url, false);
     }
 
-    /// A `rox://` link another app or a web page opened (`lib.rs`, a launch
+    /// A `buwiz://` link another app or a web page opened (`lib.rs`, a launch
     /// argument): routed like [`open_link`], except that what would make
     /// something (a new chat) or open a mini app waits on the person in Rox.
     pub fn open_os_link(&'static self, url: &str) {
@@ -7116,12 +7116,12 @@ impl Store {
     }
 
     fn route_link(&'static self, url: &str, os: bool) {
-        if !self.booted.get() && url.starts_with("rox://") {
+        if !self.booted.get() && url.starts_with("buwiz://") {
             *self.early_link.borrow_mut() = Some((url.to_owned(), os));
             return;
         }
-        // a v1 plugin's `rox://app/` link (9.4); v0 links go on as before
-        if url.starts_with("rox://app/") && self.v1_link(url, os) {
+        // a v1 plugin's `buwiz://app/` link (9.4); v0 links go on as before
+        if url.starts_with("buwiz://app/") && self.v1_link(url, os) {
             return;
         }
         self.route_link_v0(url, os);
@@ -7149,11 +7149,11 @@ impl Store {
             self.open_mini_from(from, &key, "", &token);
             return;
         }
-        // `rox://view?path=<abs path>&title=<…>`: a file a mini app made (a
+        // `buwiz://view?path=<abs path>&title=<…>`: a file a mini app made (a
         // print preview), in the viewer over the full-screen app. Only a
         // preview in the account's temporary folder (`links::viewable`),
         // however the path is spelled.
-        if let Some(q) = url.strip_prefix("rox://view").filter(|q| q.is_empty() || q.starts_with(['?', '/'])) {
+        if let Some(q) = url.strip_prefix("buwiz://view").filter(|q| q.is_empty() || q.starts_with(['?', '/'])) {
             let arg = |k: &str| {
                 q.trim_start_matches(['/', '?'])
                     .split('&')
@@ -7166,7 +7166,7 @@ impl Store {
                 return;
             }
             let Some(path) = crate::links::viewable(&path, &crate::links::view_root()) else {
-                log::warn!("rox: rox://view of a file that is no preview in {} refused", crate::links::view_root().display());
+                log::warn!("rox: buwiz://view of a file that is no preview in {} refused", crate::links::view_root().display());
                 return crate::toast::show("Buwiz Bot shows only previews from its temporary folder");
             };
             let path = path.to_string_lossy().into_owned();
@@ -7192,11 +7192,11 @@ impl Store {
             });
             return;
         }
-        // `rox://chat/new?draft=<text>`: a new chat, its composer holding
+        // `buwiz://chat/new?draft=<text>`: a new chat, its composer holding
         // the text (a mini app handing work to the assistant). From another
         // app (a mini app's link comes through the system too), the chat is
         // made only after Start chat in Rox's sheet.
-        if let Some(q) = url.strip_prefix("rox://chat/new").filter(|q| q.is_empty() || q.starts_with('?') || q == &"/") {
+        if let Some(q) = url.strip_prefix("buwiz://chat/new").filter(|q| q.is_empty() || q.starts_with('?') || q == &"/") {
             let draft = q
                 .trim_start_matches(['/', '?'])
                 .split('&')
@@ -7210,7 +7210,7 @@ impl Store {
             Owner::detached().run(|| self.new_thread_with(draft));
             return;
         }
-        if let Some(name) = url.strip_prefix("rox://plugin/") {
+        if let Some(name) = url.strip_prefix("buwiz://plugin/") {
             let name = name.trim_end_matches('/').to_owned();
             self.open_plugins();
             if !name.is_empty() {
@@ -7354,7 +7354,7 @@ pub struct MiniOpen {
     pub token: String,
 }
 
-/// The token a `rox://app/` link names (`&token=`), "" when none: the app
+/// The token a `buwiz://app/` link names (`&token=`), "" when none: the app
 /// it opens can be attached from the title bar then.
 pub(crate) fn link_token(url: &str) -> String {
     url.split_once('?')
@@ -7363,19 +7363,19 @@ pub(crate) fn link_token(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The one-time pass the app server adds to a `rox://app/` link it opens
-/// for a mini app (`&rox_pass=`), "" when none.
+/// The one-time pass the app server adds to a `buwiz://app/` link it opens
+/// for a mini app (`&buwiz_pass=`), "" when none.
 pub(crate) fn link_pass(url: &str) -> String {
     url.split_once('?')
-        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("rox_pass=")))
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("buwiz_pass=")))
         .unwrap_or_default()
         .to_owned()
 }
 
-/// `rox://app/<server>/<app>[?props=<JSON>]` → the mini app's module name
+/// `buwiz://app/<server>/<app>[?props=<JSON>]` → the mini app's module name
 /// (`mcp:<server>/<app>[|<props>]`).
 pub(crate) fn mini_link(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("rox://app/")?;
+    let rest = url.strip_prefix("buwiz://app/")?;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (server, app) = path.trim_end_matches('/').split_once('/')?;
     if server.is_empty() || app.is_empty() {
@@ -7458,10 +7458,10 @@ mod tests {
     #[test]
     fn connected_counts_v1_plugins_first_then_catalog_then_servers() {
         use super::{conn_names, McpServer, PluginRow};
-        let v1 = [("dev.goldcoders.bir".to_owned(), "BIR".to_owned()), ("dev.goldcoders.books".to_owned(), String::new())];
+        let v1 = [("app.buwiz.ebirforms".to_owned(), "BIR".to_owned()), ("app.buwiz.books".to_owned(), String::new())];
         let inst = [PluginRow { name: "github".into(), ..Default::default() }];
         let standalone = [McpServer { id: "cua-driver".into(), ..Default::default() }, McpServer { id: "x".into(), name: "Everything".into(), ..Default::default() }];
-        assert_eq!(conn_names(&v1, &inst, &standalone), ["BIR", "dev.goldcoders.books", "github", "cua-driver", "Everything"]);
+        assert_eq!(conn_names(&v1, &inst, &standalone), ["BIR", "app.buwiz.books", "github", "cua-driver", "Everything"]);
         assert!(conn_names(&[], &[], &[]).is_empty());
     }
 
@@ -7484,7 +7484,7 @@ mod tests {
         assert_eq!(reply_label(&text), "what are the due forms");
         // a card with no text quotes what it links (a v1 app card's title)
         let card = Turn {
-            links: vec![DriveLink { provider: "rox-app".into(), id: "x".into(), name: "Buwiz Sign-in".into(), ..Default::default() }],
+            links: vec![DriveLink { provider: "buwiz-app".into(), id: "x".into(), name: "Buwiz Sign-in".into(), ..Default::default() }],
             ..Default::default()
         };
         assert_eq!(reply_label(&card), "Buwiz Sign-in");
@@ -7553,45 +7553,45 @@ mod tests {
 
     #[test]
     fn app_links_name_the_module_with_their_props() {
-        assert_eq!(mini_link("rox://app/bir/forms").as_deref(), Some("mcp:bir/forms"));
-        assert_eq!(mini_link("rox://app/bir/forms/").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("buwiz://app/bir/forms").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("buwiz://app/bir/forms/").as_deref(), Some("mcp:bir/forms"));
         let props = "%7B%22form%22%3A%221601C%22%2C%22tin%22%3A%22123%2F00000%22%7D";
-        let url = format!("rox://app/bir/forms?props={props}&token=%40bir%3Ataxprofile%3A123");
+        let url = format!("buwiz://app/bir/forms?props={props}&token=%40bir%3Ataxprofile%3A123");
         let key = Some(r#"mcp:bir/forms|{"form":"1601C","tin":"123/00000"}"#);
         assert_eq!(mini_link(&url).as_deref(), key);
-        assert_eq!(mini_link(&format!("rox://app/bir/forms?props={props}")).as_deref(), key);
+        assert_eq!(mini_link(&format!("buwiz://app/bir/forms?props={props}")).as_deref(), key);
         // props that are no object, or an empty one, are left off
-        assert_eq!(mini_link("rox://app/bir/forms?props=%7B%7D").as_deref(), Some("mcp:bir/forms"));
-        assert_eq!(mini_link("rox://app/bir/forms?props=5").as_deref(), Some("mcp:bir/forms"));
-        assert_eq!(mini_link("rox://app/bir/forms?props=").as_deref(), Some("mcp:bir/forms"));
-        for url in ["rox://app/", "rox://app/bir", "rox://app/bir/", "rox://app//forms", "rox://chat/new", "https://x/app/bir/forms"] {
+        assert_eq!(mini_link("buwiz://app/bir/forms?props=%7B%7D").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("buwiz://app/bir/forms?props=5").as_deref(), Some("mcp:bir/forms"));
+        assert_eq!(mini_link("buwiz://app/bir/forms?props=").as_deref(), Some("mcp:bir/forms"));
+        for url in ["buwiz://app/", "buwiz://app/bir", "buwiz://app/bir/", "buwiz://app//forms", "buwiz://chat/new", "https://x/app/bir/forms"] {
             assert_eq!(mini_link(url), None, "{url:?}");
         }
     }
 
     #[test]
     fn app_links_carry_their_token() {
-        assert_eq!(link_token("rox://app/bir/forms?props=%7B%7D&token=%40bir%3Ataxprofile%3A123"), "@bir:taxprofile:123");
-        assert_eq!(link_token("rox://app/bir/forms?token=%40bir%3Ataxprofile%3A123%2F00001"), "@bir:taxprofile:123/00001");
-        assert_eq!(link_token("rox://app/bir/forms?props=%7B%7D"), "");
-        assert_eq!(link_token("rox://app/bir/forms"), "");
+        assert_eq!(link_token("buwiz://app/bir/forms?props=%7B%7D&token=%40bir%3Ataxprofile%3A123"), "@bir:taxprofile:123");
+        assert_eq!(link_token("buwiz://app/bir/forms?token=%40bir%3Ataxprofile%3A123%2F00001"), "@bir:taxprofile:123/00001");
+        assert_eq!(link_token("buwiz://app/bir/forms?props=%7B%7D"), "");
+        assert_eq!(link_token("buwiz://app/bir/forms"), "");
     }
 
     #[test]
     fn app_links_carry_the_servers_one_time_pass() {
-        let url = "rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D&rox_pass=AbC-d_e";
+        let url = "buwiz://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D&buwiz_pass=AbC-d_e";
         assert_eq!(link_pass(url), "AbC-d_e");
-        assert_eq!(link_pass("rox://app/bir/forms?rox_pass=x1"), "x1");
-        assert_eq!(link_pass("rox://app/bir/forms?props=%7B%7D"), "");
-        assert_eq!(link_pass("rox://app/bir/forms"), "");
+        assert_eq!(link_pass("buwiz://app/bir/forms?buwiz_pass=x1"), "x1");
+        assert_eq!(link_pass("buwiz://app/bir/forms?props=%7B%7D"), "");
+        assert_eq!(link_pass("buwiz://app/bir/forms"), "");
         // the pass changes neither the module nor the token
-        assert_eq!(mini_link(url), mini_link("rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D"));
+        assert_eq!(mini_link(url), mini_link("buwiz://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D"));
         assert_eq!(link_token(url), "");
     }
 
     #[test]
     fn an_app_link_routes_to_its_module_and_asks_unless_rox_opened_it() {
-        let key = mini_link("rox://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D").expect("an app link");
+        let key = mini_link("buwiz://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D").expect("an app link");
         assert_eq!(app_key_parts(&key), Some(("bir", "forms")));
         // `route_link`: a link card in Rox opens it; the system's (`os`) asks
         assert!(app_opens_unasked(AppOpener::Rox));

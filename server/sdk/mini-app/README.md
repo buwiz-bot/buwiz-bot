@@ -6,14 +6,14 @@ ships apps into Buwiz Bot. Read [docs/overview.md](docs/overview.md) first
 directory, where `npm run plugin-test` runs.
 
 1. **Copy the template** next to it, so its one import
-   (`../lib/rox-plugin.mjs`) still resolves:
+   (`../lib/buwiz-plugin.mjs`) still resolves:
 
    ```sh
    cp -R sdk/mini-app/template sdk/mini-app/hello-world
    ```
 
 2. **Rename it.** In `manifest.json` set `id` (reverse DNS, e.g.
-   `dev.goldcoders.notes`), `short` (2 to 16 lowercase letters and digits,
+   `app.buwiz.notes`), `short` (2 to 16 lowercase letters and digits,
    e.g. `notes`), `title`, `description`, and start `version` at `0.1.0`. Every
    tool name must start with `<short>_` ([docs/manifest.md](docs/manifest.md)).
 
@@ -30,15 +30,15 @@ directory, where `npm run plugin-test` runs.
    ([docs/bridge.md](docs/bridge.md#resolve-tools)).
 
 5. **Write the app** (`hello.tsx` → `<id>.tsx`): a default-exported
-   component that imports only `nsh`, `nsh/base` and `rox`, reads
-   `rox.props`, calls your tools with `rox.call`, and sizes itself from
-   `rox.viewport`. List it in `startPlugin({apps})` and in the manifest's
+   component that imports only `nsh`, `nsh/base` and `buwiz`, reads
+   `buwiz.props`, calls your tools with `buwiz.call`, and sizes itself from
+   `buwiz.viewport`. List it in `startPlugin({apps})` and in the manifest's
    `apps[]`, and grant it exactly the tools it calls in `permissions.tools`.
 
 6. **Make a local test key** (once; it is not a release key):
 
    ```sh
-   npm run plugin-test -- --keygen ~/.config/rox/test.key
+   npm run plugin-test -- --keygen ~/.config/buwiz/test.key
    ```
 
 7. **Compute fingerprints and sign** for local tests. `sign-manifest.mjs`
@@ -46,7 +46,7 @@ directory, where `npm run plugin-test` runs.
 
    ```sh
    node src/v1/sign-manifest.mjs sdk/mini-app/hello-world/manifest.json \
-     --key-file ~/.config/rox/test.key \
+     --key-file ~/.config/buwiz/test.key \
      --app hello=sdk/mini-app/hello-world/hello.tsx --out /tmp/hello.signed.json
    ```
 
@@ -55,12 +55,12 @@ directory, where `npm run plugin-test` runs.
 
    ```sh
    npm run plugin-test -- --command node --args sdk/mini-app/hello-world/server.mjs \
-     --manifest /tmp/hello.signed.json --key-file ~/.config/rox/test.key
+     --manifest /tmp/hello.signed.json --key-file ~/.config/buwiz/test.key
    ```
 
-   (`--sign-with ~/.config/rox/test.key` instead of `--manifest … --key-file …`
+   (`--sign-with ~/.config/buwiz/test.key` instead of `--manifest … --key-file …`
    does step 7 for you on every run. To check your plugin against a real
-   trust store, its key id and approved list included, set `ROX_TRUST_FILE`:
+   trust store, its key id and approved list included, set `BUWIZ_TRUST_FILE`:
    see [docs/testing.md](docs/testing.md#trust).)
 
 9. **Go through the security checklist** ([docs/security.md](docs/security.md)):
@@ -80,7 +80,7 @@ directory, where `npm run plugin-test` runs.
     ```
 
     The signed `manifest.json` ships beside `server.mjs`, which serves it when
-    `ROX_PLUGIN_MANIFEST` is unset. Any change to an app's source or to the
+    `BUWIZ_PLUGIN_MANIFEST` is unset. Any change to an app's source or to the
     manifest needs a new `version` and a new signature.
 
 ## What is where
@@ -90,8 +90,8 @@ directory, where `npm run plugin-test` runs.
 | `template/server.mjs` | The plugin: one tool (`hello_greet`), one resolve tool (`hello_resolve`) for the `/hello` command and the attachable `@hello:friend` scope, tickets |
 | `template/hello.tsx` | The app: full screen and inline 360×160 |
 | `template/manifest.json` | The unsigned manifest; fingerprints are placeholders until step 7 |
-| `lib/rox-plugin.mjs` | `startPlugin`, `ticketStore`, `ok`, `fail`: the reserved tools of spec 7.8, done once |
-| `bin/rox-plugin-test.mjs` | The test runner |
+| `lib/buwiz-plugin.mjs` | `startPlugin`, `ticketStore`, `ok`, `fail`: the reserved tools of spec 7.8, done once |
+| `bin/buwiz-plugin-test.mjs` | The test runner |
 | `docs/` | [overview](docs/overview.md), [manifest](docs/manifest.md), [bridge](docs/bridge.md), [security](docs/security.md), [testing](docs/testing.md) |
 
 11. **Make cards fast** ([docs/performance.md](docs/performance.md)): render

@@ -576,7 +576,7 @@ export async function mcpAppList() {
 }
 
 // `GET /mcp/manifest` — what every enabled server offers the composer: its
-// mini apps plus the slash commands and `@` scopes its `rox://manifest`
+// mini apps plus the slash commands and `@` scopes its `buwiz://manifest`
 // announces. A server with neither is left out.
 export async function mcpManifest() {
   const rows = db.prepare("SELECT * FROM mcp_servers WHERE enabled=1").all();
@@ -600,7 +600,7 @@ export async function mcpManifest() {
 // `POST /mcp/resolve` lives with the attachments that scope it.
 export { mcpResolve } from "./attachments.mjs";
 
-// A server's `rox/open` ({uri, props?}): the reply carries a card for that
+// A server's `buwiz/open` ({uri, props?}): the reply carries a card for that
 // mini app and the client opens it full screen when the job reports it.
 async function noteAppOpen(job, row, open) {
   const app = appOfUri(open.uri);
@@ -615,7 +615,7 @@ async function noteAppOpen(job, row, open) {
   const links = job.linkTurn.links.filter((l) => l.id !== key);
   // `token` names what the app shows (an attachable value), carried on the link
   const token = isString(open.token) ? open.token : "";
-  const link = `rox://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const link = `buwiz://app/${row.id}/${app}?props=${encodeURIComponent(JSON.stringify(props))}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const card = { provider: "mcp-app", id: key, name: title, link, action: "open", kind: "app", file_type: res?.description || "Mini app" };
 
   if (token) card.token = token;
@@ -1273,7 +1273,7 @@ export async function execTool(job, thread, block) {
       if (!r.is_error) noteGoogleEmail(block.input);
       // a server asking to show one of its mini apps: it opens full screen
       // and its card joins the reply
-      const open = meta?.["rox/open"];
+      const open = meta?.["buwiz/open"];
 
       if (open?.uri && !r.is_error) try { await noteAppOpen(job, row, open); } catch {}
 
@@ -1534,7 +1534,7 @@ export async function mcpUpsertServer({ id, name, command, args, env, bot, url, 
 
   if (!finalCommand && !finalUrl) throw new Error("server needs a command or url");
 
-  // a new row's id is what `@<server>:…` tokens and rox://app links name
+  // a new row's id is what `@<server>:…` tokens and buwiz://app links name
   if (id && !cur && !isServerId(String(id))) throw new Error(`server id ${String(id).slice(0, 40)} must be [a-z0-9-]+`);
 
   const sid =

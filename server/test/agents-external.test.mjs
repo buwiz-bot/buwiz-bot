@@ -133,7 +133,7 @@ test("HOOK-03 an agent's answer goes out signed; 5xx is retried, 4xx dropped wit
   assert.equal(msg.text, "Fixed in a3f2c1.");
   assert.equal(msg.in_reply_to, got.id);
   assert.deepEqual(msg.to, [{ kind: "external", id: `ext:${hook.id}`, name: "CI" }]);
-  const [, t, v1] = /^t=(\d+),v1=([0-9a-f]+)$/.exec(sent.headers["x-rox-signature"]);
+  const [, t, v1] = /^t=(\d+),v1=([0-9a-f]+)$/.exec(sent.headers["x-buwiz-signature"]);
 
   assert.equal(signature(hook.out_secret, sent.body, t), `t=${t},v1=${v1}`);
   // 500: tried again after a backoff, then 200
@@ -222,7 +222,7 @@ test("BRG-01 rox-bridge round-trips a message through a test server", async () =
 async function postJsonHost(path, obj, token) {
   const { request } = await import("./helpers.mjs");
 
-  return request("POST", path, { headers: { "Content-Type": "application/json", "X-Rox-Host": token }, body: JSON.stringify(obj) });
+  return request("POST", path, { headers: { "Content-Type": "application/json", "X-Buwiz-Host": token }, body: JSON.stringify(obj) });
 }
 
 void postJson;

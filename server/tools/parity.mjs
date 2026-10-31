@@ -49,7 +49,7 @@ const paths = new Set(
 for (const k of STATE) paths.add(`/state/${k}`);
 
 async function get(side, path) {
-  const res = await fetch(side.url + path, { headers: path.startsWith("/v1/host/") ? { "X-Rox-Host": side.token } : {}, signal: AbortSignal.timeout(20_000) });
+  const res = await fetch(side.url + path, { headers: path.startsWith("/v1/host/") ? { "X-Buwiz-Host": side.token } : {}, signal: AbortSignal.timeout(20_000) });
   let text = await res.text();
 
   // where the answer names this broker's own data dir or address

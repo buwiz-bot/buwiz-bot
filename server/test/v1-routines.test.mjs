@@ -24,7 +24,7 @@
 //          (one enabled earlier gets it at the server's start or its next
 //          tick); a run with nothing new adds no turn to it
 //   RTN-14 in a routine's turn a call to its own plugin names the routine
-//          (rox/caller.routine), and a tool of it that changes data runs
+//          (buwiz/caller.routine), and a tool of it that changes data runs
 //          only when the routine lists it in `writes`
 //   RTN-15 Run now (POST /v1/host/routines/run) ticks once out of schedule
 //          and counts like a run; paused, running or unavailable is refused
@@ -135,8 +135,8 @@ test("RTN-02 a tick: own query with origin routine, the reads search with its te
   assert.equal(t.shown, "New item · Tax Return Receipt Confirmation");
   assert.deepEqual(t.item, { id: "m1", from: MAIL1.from, subject: MAIL1.subject, date: MAIL1.date, snippet: MAIL1.body });
   assert.match(t.prompt, /^\(This routine runs on its own every 300s/);
-  assert.match(t.prompt, /## Routine: BIR mail \(approved plugin dev\.goldcoders\.fixture\)\nRecord each BIR confirmation\./, "10.2 label");
-  assert.match(t.prompt, /New item from dev\.goldcoders\.google-workspace gws_search_mail:\n\{\n "id": "m1"/);
+  assert.match(t.prompt, /## Routine: BIR mail \(approved plugin app\.buwiz\.fixture\)\nRecord each BIR confirmation\./, "10.2 label");
+  assert.match(t.prompt, /New item from app\.buwiz\.google-workspace gws_search_mail:\n\{\n "id": "m1"/);
   assert.deepEqual(t.surface, { plugin: FX, routine: "bir-mail", instance: inst("bir-mail"), params: {}, reads: READS, writes: [] });
   assert.equal(listed("bir-mail").seen_count, 1);
   assert.equal(listed("bir-mail").last_error, null);

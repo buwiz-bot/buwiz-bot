@@ -113,7 +113,7 @@ test("manifest commands and scopes outside the grammar are dropped", async () =>
 
 // rox-broker (plan 4.1) starts a stdio server whose process died again on
 // its next use; Node kept the dead client until the row changed
-const MCP_IN_RUST = !!process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
+const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
 
 test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (ROX_BROKER_MCP_HOST=1) only" }, async () => {
   const pids = () => readFileSync(mark, "utf8").split("\n").filter(Boolean).map(Number);

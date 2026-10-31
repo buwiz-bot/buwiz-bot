@@ -602,12 +602,12 @@ pub(crate) fn empty_state() -> impl IntoElement {
 pub(crate) fn routine_status_line() -> impl IntoElement {
     effect(|| {
         if store().active_routine().is_some() {
-            untracked(|| store().v1_refresh(false));
+            untracked(|| store().v1_refresh());
         }
     });
     set_interval(std::time::Duration::from_secs(60), || {
         if untracked(|| store().active_routine().is_some()) {
-            store().v1_refresh(false);
+            store().v1_refresh();
         }
     });
     dynamic(|| match store().active_routine_status() {
@@ -1766,7 +1766,7 @@ fn links_section(t: &Turn) -> impl IntoElement {
         // a v1 answer's cards (9.6, 9.8): one main, two small, links after;
         // they age into chips after five of your messages
         .child({
-            let cards: Vec<_> = t.links.iter().filter(|l| l.provider == "rox-app").cloned().collect();
+            let cards: Vec<_> = t.links.iter().filter(|l| l.provider == "buwiz-app").cloned().collect();
             let i = t.i;
             // the person's messages shown after this one (local replies sit
             // among the server's turns, so the order counts, not `i`)
@@ -1775,7 +1775,7 @@ fn links_section(t: &Turn) -> impl IntoElement {
             };
             crate::mini_v1::ui::answer_cards(&t.id, cards, user_after)
         })
-        .children(t.links.iter().filter(|l| l.provider != "rox-app").map(|l| crate::files::link_card(l).into_element()))
+        .children(t.links.iter().filter(|l| l.provider != "buwiz-app").map(|l| crate::files::link_card(l).into_element()))
 }
 
 /// `artifact(node, f)` (shell.tsx:331): the card with its own hover bar —

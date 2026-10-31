@@ -1,6 +1,6 @@
 //! The person-facing side of v1 plugins in Rox: what the store keeps for
 //! them ([`V1`], `Store::v1`), the consent sheet's v1 questions (9.7), the
-//! chat seam attachments go through (10.3), `rox://app/` links (9.4), the
+//! chat seam attachments go through (10.3), `buwiz://app/` links (9.4), the
 //! composer's tokens and commands (9.2, 9.3), tool-result and inline cards
 //! (6.5, 9.6), chips, the running app's banners and errors (6.7, 12.2,
 //! 13.7), and Connect Apps' actions (13). The decisions are in the pure
@@ -62,19 +62,19 @@ pub struct V1 {
     pub hidden: Signal<HashSet<String>>,
     /// Cards refreshed: they read live instead of their snapshot (9.8).
     pub live: Signal<HashSet<String>>,
-    /// Per inline open (module key): the card height its `rox.fit` set
+    /// Per inline open (module key): the card height its `buwiz.fit` set
     /// (clamped); the declared height until then.
     pub fit: Signal<HashMap<String, f32>>,
     /// Per inline open (module key): the number of the open whose app
-    /// called `rox.ready()`, which ends its card's hold
+    /// called `buwiz.ready()`, which ends its card's hold
     /// (`mini_v1::settle`).
     pub ready: Signal<HashMap<String, u64>>,
-    /// Per inline open (module key): its footer buttons (`rox.actions`).
+    /// Per inline open (module key): its footer buttons (`buwiz.actions`).
     pub footer: Signal<HashMap<String, Footer>>,
-    /// Per inline open: its header status (`rox.meta`), with the number
+    /// Per inline open: its header status (`buwiz.meta`), with the number
     /// of the open that set it.
     pub meta: Signal<HashMap<String, (u64, CardMeta)>>,
-    /// Inline cards settled (`rox.settle`), by module key: the one line
+    /// Inline cards settled (`buwiz.settle`), by module key: the one line
     /// each shows instead of its app, for the rest of this run.
     pub settled: Signal<HashMap<String, String>>,
     /// Rox's records (attachments, pins), as last saved.
@@ -91,7 +91,7 @@ pub struct V1 {
     prewarm: RefCell<super::cache::Prewarm>,
     /// The opens running, with the fingerprint each loaded.
     running: RefCell<Vec<(u64, String, String)>>,
-    /// The document a `rox.preview` shows over the apps (7.10).
+    /// The document a `buwiz.preview` shows over the apps (7.10).
     pub preview: Signal<Option<super::bridge::Preview>>,
 }
 
@@ -143,7 +143,7 @@ impl V1 {
     }
 }
 
-/// An inline open's footer (`rox.actions`): its buttons, how a press
+/// An inline open's footer (`buwiz.actions`): its buttons, how a press
 /// reaches the app, and the number of the open that set them.
 #[derive(Clone)]
 pub struct Footer {
@@ -262,12 +262,11 @@ impl Store {
                 *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = id;
             })
         });
-        self.v1_refresh(true);
+        self.v1_refresh();
     }
 
-    /// Lists the v1 plugins again; `migrate` runs the one-time v0
-    /// migration once BIR's v1 plugin runs.
-    pub fn v1_refresh(&'static self, migrate: bool) {
+    /// Lists the v1 plugins again.
+    pub fn v1_refresh(&'static self) {
         Owner::detached().run(|| {
             spawn(async move {
                 let got = crate::vault::off_main(|| host_api::plugins(&broker())).await;
@@ -303,16 +302,6 @@ impl Store {
                 });
                 for key in reload {
                     self.v1_reload(&key);
-                }
-                let bir = list.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(links::BIR));
-                let runs = bir.is_some_and(|p| p.get("state").and_then(Value::as_str) == Some("running"));
-                if migrate && runs && self.v1.records.with_untracked(|r| r.migrated_at == 0) {
-                    let version = bir.and_then(|p| p.get("version")).and_then(Value::as_str).unwrap_or("1.0.0").to_owned();
-                    let done = crate::vault::off_main(move || migrate_now(&version, super::migrate::Mode::Apply)).await;
-                    if let Some(Ok(report)) = done {
-                        log::info!("mini v1: {report}");
-                    }
-                    self.v1.records.set(Records::load(&data_dir()));
                 }
             })
         });
@@ -413,11 +402,11 @@ impl Store {
                 self.reload_mini(&key);
             }
         }
-        self.v1_refresh(false);
+        self.v1_refresh();
     }
 
-    /// A question from the bridge (an app's `rox.open({url})` or
-    /// `rox.attach`), asked in the sheet; `answer` hears the person.
+    /// A question from the bridge (an app's `buwiz.open({url})` or
+    /// `buwiz.attach`), asked in the sheet; `answer` hears the person.
     pub fn v1_consent(&'static self, ask: super::bridge::Consent, answer: Answer) {
         let id = NEXT.fetch_add(1, Ordering::SeqCst);
         PENDING.lock().unwrap_or_else(|e| e.into_inner()).push((id, answer));
@@ -460,7 +449,7 @@ impl Store {
         }
     }
 
-    /// A `rox://app/` link of a v1 plugin (9.4): true when it was one
+    /// A `buwiz://app/` link of a v1 plugin (9.4): true when it was one
     /// (opened, asked about, or refused); false for a v0 link, which goes
     /// the v0 way. From outside Rox (`os`) it always asks (9.7).
     pub fn v1_link(&'static self, url: &str, os: bool) -> bool {
@@ -544,7 +533,7 @@ impl Store {
                 // a card at the end of the chat, as a tool result's is
                 let link = links::link_of(&card.key());
                 let id = self.add_local_link(crate::store::DriveLink {
-                    provider: "rox-app".to_owned(),
+                    provider: "buwiz-app".to_owned(),
                     id: link.clone(),
                     name: card.title.clone(),
                     link,
@@ -618,7 +607,7 @@ impl Store {
         }
     }
 
-    /// The inline open `key` settled (`rox.settle`): its card is `line`
+    /// The inline open `key` settled (`buwiz.settle`): its card is `line`
     /// from now on, and its app unmounts with its buttons and status.
     pub fn v1_settle(&'static self, key: &str, line: String) {
         let k = key.to_owned();
@@ -699,7 +688,7 @@ impl Store {
         }
     }
 
-    /// Shows `doc`, a `rox.preview` document, over the apps (one at a
+    /// Shows `doc`, a `buwiz.preview` document, over the apps (one at a
     /// time: a newer one replaces it).
     pub fn v1_preview(&'static self, doc: super::bridge::Preview) {
         self.v1.preview.set(Some(doc));
@@ -1215,7 +1204,7 @@ impl Store {
                     Some(Err(e)) => crate::toast::show(e.message),
                     None => {}
                 }
-                self.v1_refresh(false);
+                self.v1_refresh();
             })
         });
     }
@@ -1340,7 +1329,7 @@ impl Store {
                     .flatten();
                     if let Some(now) = now.filter(|x| !x.running) {
                         crate::routines::finish(key, crate::routines::v1_outcome(&now));
-                        return self.v1_refresh(false);
+                        return self.v1_refresh();
                     }
                 }
                 crate::routines::finish(key, ("Still running; its thread shows what it finds".to_owned(), false));
@@ -1353,7 +1342,7 @@ impl Store {
     pub fn v1_close_opens(&'static self, plugin: &str) {
         let prefix = format!("v1:{plugin}/");
         self.mini_full.update(|v| v.retain(|o| !o.key.starts_with(&prefix)));
-        let link = format!("rox://app/{plugin}/");
+        let link = format!("buwiz://app/{plugin}/");
         self.v1.shown.update(|s| s.retain(|id| !id.contains(&link)));
     }
 
@@ -1407,10 +1396,10 @@ impl Store {
     }
 }
 
-/// Whether a `rox://app/` link's first segment is a reverse-DNS plugin id
+/// Whether a `buwiz://app/` link's first segment is a reverse-DNS plugin id
 /// (a v1 link even when that plugin is not listed yet).
 fn url_names_plugin_id(url: &str) -> bool {
-    url.strip_prefix("rox://app/")
+    url.strip_prefix("buwiz://app/")
         .and_then(|r| r.split(['/', '?']).next())
         .is_some_and(super::perms::plugin_id_ok)
 }
@@ -1447,88 +1436,6 @@ pub fn commands(entries: &[PluginEntry]) -> Vec<tokens::Commands> {
             commands: p.commands.iter().filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_owned)).collect(),
         })
         .collect()
-}
-
-/// Runs the v0 migration against the configured data dirs and BIR's v1
-/// plugin through the broker (the dry run asks nothing).
-pub fn migrate_now(version: &str, mode: super::migrate::Mode) -> Result<super::migrate::Report, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let token = crate::client::host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
-    let broker_dir = token.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-    migrate_dirs(&data_dir(), &broker_dir, version, mode)
-}
-
-/// [`migrate_now`] over the given dirs (a rehearsal on a copy).
-pub fn migrate_dirs(
-    rox_dir: &std::path::Path,
-    broker_dir: &std::path::Path,
-    version: &str,
-    mode: super::migrate::Mode,
-) -> Result<super::migrate::Report, String> {
-    let b = broker();
-    let mut resolve = |scope: &str, value: &str| {
-        let ask = host_api::ResolveAsk {
-            plugin: links::BIR.to_owned(),
-            kind: "scope",
-            name: scope.to_owned(),
-            value: value.to_owned(),
-            complete: false,
-            context: json!({"attached": []}),
-        };
-        match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
-            Ok(tokens::Answer::Token { ticket, title }) => Ok((ticket, title)),
-            Ok(tokens::Answer::Error(m)) => Err(m),
-            Ok(_) => Err("it did not resolve to a token".to_owned()),
-            Err(e) => Err(e.code),
-        }
-    };
-    super::migrate::run(rox_dir, broker_dir, version, mode, &mut resolve)
-}
-
-/// `rox --mini-v1-migrate [--dry-run] [--rox-dir <dir>] [--broker-dir <dir>]
-/// [--version <BIR's v1 version>]`: runs the v0 migration (Q11) and prints
-/// its report; `None` when the arguments ask for something else (the app
-/// runs). The dirs default to Rox's (`ROX_DATA_DIR`) and the broker's (the
-/// host token's folder); point them at a copy to rehearse. A dry run asks
-/// the plugin nothing and changes nothing.
-pub fn migrate_cli(args: &[String]) -> Option<i32> {
-    if !args.iter().any(|a| a == "--mini-v1-migrate") {
-        return None;
-    }
-    let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
-    let mode = if args.iter().any(|a| a == "--dry-run") { super::migrate::Mode::DryRun } else { super::migrate::Mode::Apply };
-    let rox_dir = arg("--rox-dir").map(std::path::PathBuf::from).unwrap_or_else(data_dir);
-    let home = std::env::var("HOME").unwrap_or_default();
-    let token = crate::client::host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
-    let broker_dir = arg("--broker-dir")
-        .map(std::path::PathBuf::from)
-        .or_else(|| token.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_default();
-    let version = match (arg("--version"), mode) {
-        (Some(v), _) => v,
-        (None, super::migrate::Mode::DryRun) => "1.0.0".to_owned(),
-        (None, super::migrate::Mode::Apply) => {
-            let listed = host_api::plugins(&broker()).ok().unwrap_or_default();
-            match listed.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(links::BIR)) {
-                Some(p) => p.get("version").and_then(Value::as_str).unwrap_or("1.0.0").to_owned(),
-                None => {
-                    eprintln!("{} is not installed as a v1 plugin: nothing can issue tickets.", links::BIR);
-                    return Some(1);
-                }
-            }
-        }
-    };
-    println!("Buwiz Bot data dir: {}\nApp server data dir: {}", rox_dir.display(), broker_dir.display());
-    match migrate_dirs(&rox_dir, &broker_dir, &version, mode) {
-        Ok(report) => {
-            print!("{report}");
-            Some(0)
-        }
-        Err(e) => {
-            eprintln!("The migration stopped: {e}");
-            Some(1)
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,7 +1510,7 @@ fn open_button(label: String, on: impl Fn() + 'static) -> impl IntoElement {
         .on_press(on)
 }
 
-/// An answer's cards (9.6, 9.8), from the reply's `rox-app` links: one
+/// An answer's cards (9.6, 9.8), from the reply's `buwiz-app` links: one
 /// main card and up to two small ones, the rest collapsed. A
 /// first-party plugin's inline card mounts at once; any other shows its
 /// header until its chevron expands it (9.7). Once `user_after()` of the
@@ -1613,7 +1520,7 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
     let cards: Vec<(String, OpenCard)> = links
         .iter()
         .filter_map(|l| {
-            let c = OpenCard::from_link(&json!({"provider": "rox-app", "card": l.card.clone()?}))?;
+            let c = OpenCard::from_link(&json!({"provider": "buwiz-app", "card": l.card.clone()?}))?;
             Some((format!("{turn}:{}", l.id), c))
         })
         .collect();
@@ -1778,7 +1685,7 @@ pub fn pins_section() -> impl IntoElement {
     })
 }
 
-/// An answer's next steps (9.8, `_meta["rox/suggest"]`): chips under it;
+/// An answer's next steps (9.8, `_meta["buwiz/suggest"]`): chips under it;
 /// a tap sends the prompt as the person's message.
 pub fn suggest_chips(items: Vec<(String, String)>) -> impl IntoElement {
     view()
@@ -1837,14 +1744,14 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
 /// An inline app (6.5, 9.6) is one card. Its header carries the app's
 /// tile and title, Refresh, a chevron that shows or hides the app, and
 /// maximize (full screen); the app sits under it at its declared size,
-/// clamped to the range and the column, then follows its `rox.fit`. A card
+/// clamped to the range and the column, then follows its `buwiz.fit`. A card
 /// that does not mount at once (`auto` false: a third party's, 9.7, or an
 /// aged one) shows its header only, with the plugin's name, until the
 /// chevron opens it; opening it is the consent.
 ///
 /// The app may hand Rox its card's chrome (7.12 to 7.14): a status in the
-/// header (`rox.meta`), footer buttons under the app (`rox.actions`), and
-/// the one line the card settles to (`rox.settle`), which replaces the
+/// header (`buwiz.meta`), footer buttons under the app (`buwiz.actions`), and
+/// the one line the card settles to (`buwiz.settle`), which replaces the
 /// whole card and unmounts the app, as an answered approval card does.
 pub fn inline_card(card: OpenCard, id: String, live: bool, auto: bool, plugin: String) -> impl IntoElement {
     // Refresh (9.8): the same open without its snapshot reads live
@@ -1937,7 +1844,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
         }))
 }
 
-/// The status an inline app put in its card's header (`rox.meta`): dim
+/// The status an inline app put in its card's header (`buwiz.meta`): dim
 /// text, or a pill as a settled card's.
 fn card_meta(key: &str) -> impl IntoElement {
     let key = key.to_owned();
@@ -1951,7 +1858,7 @@ fn card_meta(key: &str) -> impl IntoElement {
     })
 }
 
-/// An inline app's footer buttons (`rox.actions`), as Rox's own cards
+/// An inline app's footer buttons (`buwiz.actions`), as Rox's own cards
 /// draw theirs: 28-point pills, right-aligned, the primary first. A
 /// disabled one is dimmed and does nothing; a press goes to the app.
 fn card_footer(key: &str) -> impl IntoElement {
@@ -2055,7 +1962,7 @@ pub fn error_overlay(key: &str) -> impl IntoElement {
     )
 }
 
-/// The preview a v1 app asked for (`rox.preview`, 7.10), over the
+/// The preview a v1 app asked for (`buwiz.preview`, 7.10), over the
 /// full-screen apps: a title bar with the document's title, Print (the
 /// print panel, which also saves a PDF) and Close, and the page. The page
 /// is the plugin's static HTML: its web view runs no script, has no base
@@ -2218,7 +2125,7 @@ mod tests {
 
     #[test]
     fn a_plugins_sign_in_card_reads_open_and_its_app() {
-        let link = json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "register", "title": "Buwiz Sign-in", "placement": "full"}});
+        let link = json!({"provider": "buwiz-app", "card": {"plugin": "app.buwiz.ebirforms", "app": "register", "title": "Buwiz Sign-in", "placement": "full"}});
         let card = OpenCard::from_link(&link).unwrap();
         assert_eq!(button_label(&card), "Open Buwiz Sign-in");
         let long = OpenCard { title: "BIR Form 2551Q · Q3 2026 · Galang Alejandro Pascua".into(), ..card.clone() };

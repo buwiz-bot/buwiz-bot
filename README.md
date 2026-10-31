@@ -111,7 +111,7 @@ debug assertions, which gpui-agent's guard reads as a release build.
 ## Dev app & links
 
 `app/bundle-dev.sh` creates `~/Applications/Rox.app` and registers it with
-LaunchServices. The bundle (`dev.goldcoders.rox`) declares the `rox://`
+LaunchServices. The bundle (`dev.goldcoders.rox`) declares the `buwiz://`
 URL scheme. Its executable `exec`s `app/target/debug/rox` with the
 gpui-agent variables above and `ROX_FPS=0`, so it picks up each cargo rebuild
 without re-bundling. Run the script again only if the bundle is deleted or
@@ -131,7 +131,7 @@ app's `Grok Shell.app/Contents/Resources/server/`.
 ```sh
 app/bundle-dev.sh                       # once
 open -a ~/Applications/Rox.app          # launch Buwiz Bot through the bundle
-open "rox://chat/t1?m=10"               # thread t1, turn 10
+open "buwiz://chat/t1?m=10"               # thread t1, turn 10
 ```
 
 ### Switching the live broker to Rox.app's
@@ -164,7 +164,7 @@ Links reach the running Buwiz Bot only when it was launched through the bundle. 
 bare `./target/debug/rox` is a different app to macOS, so a link would start
 a second copy. A link opened while Buwiz Bot is closed launches it and opens the
 link. The app receives links with nsh's `on_open_url` (registered in the
-`App` root, `src/lib.rs`), which hands `rox://chat/…` links to
+`App` root, `src/lib.rs`), which hands `buwiz://chat/…` links to
 `Store::open_link`.
 
 ## Build profile

@@ -96,7 +96,7 @@ pub fn auth_error(text: &str) -> bool {
             .any(|w| t.contains(w))
 }
 
-pub const MANIFEST_URI: &str = "rox://manifest";
+pub const MANIFEST_URI: &str = "buwiz://manifest";
 
 /// grammar.mjs's `isName`: `[A-Za-z0-9_-]+`.
 pub fn is_name(s: &str) -> bool {
@@ -119,7 +119,7 @@ pub struct McpHost {
     failed: Mutex<HashMap<String, RpcError>>,
     /// Each server's status as it changes (the line's `mcp` events).
     events: tokio::sync::broadcast::Sender<Value>,
-    /// Each connection's `rox://manifest`, read once (Node's rec.manifest).
+    /// Each connection's `buwiz://manifest`, read once (Node's rec.manifest).
     manifests: Mutex<HashMap<String, Value>>,
 }
 
@@ -365,7 +365,7 @@ impl McpHost {
         }
     }
 
-    /// mcp.mjs's `readManifest`: the server's `rox://manifest` (an object,
+    /// mcp.mjs's `readManifest`: the server's `buwiz://manifest` (an object,
     /// else `{}`), commands and scopes whose name breaks the grammar
     /// dropped with a warning; read once per connection.
     pub async fn manifest(&self, id: &str) -> Value {

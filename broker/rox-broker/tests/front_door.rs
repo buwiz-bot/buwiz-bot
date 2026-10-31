@@ -147,7 +147,7 @@ fn it_forwards_method_path_query_headers_and_raw_body() {
         b.port,
         "POST",
         "/echo/x?thread=t5&n=1",
-        &[("X-Rox-Host", "host-token"), ("X-Rox-Signature", "t=1,v1=ab"), ("Content-Type", "application/json")],
+        &[("X-Buwiz-Host", "host-token"), ("X-Buwiz-Signature", "t=1,v1=ab"), ("Content-Type", "application/json")],
         raw,
     )
     .unwrap();

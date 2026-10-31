@@ -2,8 +2,8 @@
 //! 10): their tools under their own names (`<short>_<tool>`, `[short] `
 //! descriptions capped at 1024), server instructions and scope hints, only
 //! from enabled, running, approved plugins; a routine's turn sees its own
-//! surface (5.9); a tool result's `rox/open` becomes a card on the reply
-//! and its `rox/suggest` the reply's next steps, never shown to the model.
+//! surface (5.9); a tool result's `buwiz/open` becomes a card on the reply
+//! and its `buwiz/suggest` the reply's next steps, never shown to the model.
 
 use std::sync::Arc;
 
@@ -55,9 +55,9 @@ fn in_surface(surface: Option<&Value>, plugin: &str, name: &str) -> bool {
         .any(|x| x.get("plugin").and_then(Value::as_str) == Some(plugin) && x.get("tools").and_then(Value::as_array).is_some_and(|t| t.iter().any(|n| n.as_str() == Some(name))))
 }
 
-/// 10.1: a tool whose `rox/audience` leaves out "agent" serves apps only.
+/// 10.1: a tool whose `buwiz/audience` leaves out "agent" serves apps only.
 fn for_agent(t: &Value) -> bool {
-    match t.pointer("/_meta/rox~1audience") {
+    match t.pointer("/_meta/buwiz~1audience") {
         Some(Value::Array(a)) => a.iter().any(|x| x.as_str() == Some("agent")),
         _ => true,
     }
@@ -142,17 +142,17 @@ fn note_card(run: &Run, row: &Row, open: &Value) {
     let card = match crate::helper::sessions::check_open(&row.manifest(), open) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("  v1 {}: rox/open card dropped: {}", row.id, js::slice_utf16(&e.message, 200));
+            eprintln!("  v1 {}: buwiz/open card dropped: {}", row.id, js::slice_utf16(&e.message, 200));
             return;
         }
     };
     let query = card.get("ticket").filter(|t| js::truthy(t)).map(|t| format!("?ticket={}", js::string_of(t))).unwrap_or_default();
-    let link = format!("rox://app/{}/{}{query}", js::string_of(&card["plugin"]), js::string_of(&card["app"]));
+    let link = format!("buwiz://app/{}/{}{query}", js::string_of(&card["plugin"]), js::string_of(&card["app"]));
     let action = if card.get("placement").and_then(Value::as_str) == Some("inline") { "show" } else { "open" };
     let mut st = run.state();
     st.v1_cards.push(card.clone());
     st.link_turn.get_or_insert_with(Default::default).links.push(json!({
-        "provider": "rox-app", "id": link, "name": card["title"], "link": link, "action": action, "kind": "app", "file_type": "Mini app", "card": card,
+        "provider": "buwiz-app", "id": link, "name": card["title"], "link": link, "action": action, "kind": "app", "file_type": "Mini app", "card": card,
     }));
 }
 
@@ -190,17 +190,17 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
     }
     caller.insert("ts".into(), json!(crate::hub::store::now_ms()));
     let args = if input.is_object() { input.clone() } else { json!({}) };
-    let r = match p.call_tool(&row.id, name, args, Some(json!({"rox/caller": Value::Object(caller)}))).await {
+    let r = match p.call_tool(&row.id, name, args, Some(json!({"buwiz/caller": Value::Object(caller)}))).await {
         Ok(r) => r,
         Err(e) => return Out { content: json!(format!("{name}: {}: {}", if e.code.is_empty() { "error" } else { &e.code }, js::slice_utf16(&e.message, 300))), is_error: Some(true) },
     };
     let failed = r.get("isError").is_some_and(js::truthy);
-    if let Some(open) = r.pointer("/_meta/rox~1open").filter(|o| js::truthy(o)) {
+    if let Some(open) = r.pointer("/_meta/buwiz~1open").filter(|o| js::truthy(o)) {
         if !failed {
             note_card(run, &row, open);
         }
     }
-    if let Some(suggest) = r.pointer("/_meta/rox~1suggest").filter(|o| js::truthy(o)) {
+    if let Some(suggest) = r.pointer("/_meta/buwiz~1suggest").filter(|o| js::truthy(o)) {
         if !failed {
             note_suggest(run.state().link_turn.get_or_insert_with(Default::default), suggest);
         }

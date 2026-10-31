@@ -55,35 +55,35 @@ const data = (r) => r.structuredContent ?? JSON.parse(r.content[0].text);
 
 // ── 17.4 ─────────────────────────────────────────────────────────────────
 
-test("RSV-01 rox.provision is the first request answered; other tools before it fail", async () => {
+test("RSV-01 buwiz.provision is the first request answered; other tools before it fail", async () => {
   const { b, plugins } = setup("rsv01");
   const c = await rawFixture(b);
 
-  await assert.rejects(c.callTool({ name: "fx_echo", arguments: {} }), /rox.provision must come first/);
+  await assert.rejects(c.callTool({ name: "fx_echo", arguments: {} }), /buwiz.provision must come first/);
   const k = generate();
-  const r = await c.callTool({ name: "rox.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  const r = await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
 
   assert.equal(data(r).ok, true);
   assert.equal(data(r).manifest_sha256, manifestHash(JSON.parse(readFileSync(b.manifestFile, "utf8"))));
   // idempotent for the same key
-  assert.equal(data(await c.callTool({ name: "rox.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } })).ok, true);
+  assert.equal(data(await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } })).ok, true);
   assert.equal(data(await c.callTool({ name: "fx_echo", arguments: { a: 1 } })).args.a, 1);
-  // a plugin that does not answer rox.provision is plugin_invalid
+  // a plugin that does not answer buwiz.provision is plugin_invalid
   assert.equal(await codeOf(installFixture(plugins, b, ["--misbehave=skip-provision"])), "plugin_invalid");
 });
 
-test("RSV-02 rox.session.open with an unknown app or a wrong perms_sha256 fails invalid_args", async () => {
+test("RSV-02 buwiz.session.open with an unknown app or a wrong perms_sha256 fails invalid_args", async () => {
   const { b, plugins, sessions } = setup("rsv02");
   const c = await rawFixture(b);
   const k = generate();
 
-  await c.callTool({ name: "rox.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
   const base = { open_id: "AAAAAAAAAAAAAAAAAAAAAA", ks_pub: generate().pub, not_after: Date.now() + 60_000 };
-  const unknown = await c.callTool({ name: "rox.session.open", arguments: { ...base, app: "nope", perms_sha256: permsDigest({}) } });
+  const unknown = await c.callTool({ name: "buwiz.session.open", arguments: { ...base, app: "nope", perms_sha256: permsDigest({}) } });
 
   assert.equal(unknown.isError, true);
   assert.equal(data(unknown).code, "invalid_args");
-  const wrong = await c.callTool({ name: "rox.session.open", arguments: { ...base, app: "card", perms_sha256: permsDigest({ tools: [] }) } });
+  const wrong = await c.callTool({ name: "buwiz.session.open", arguments: { ...base, app: "card", perms_sha256: permsDigest({ tools: [] }) } });
 
   assert.equal(data(wrong).code, "invalid_args");
   // the broker refuses both before relaying
@@ -139,7 +139,7 @@ test("RSV-03 the certificate verifies with the plugin public key; the seed is ne
   assert.equal(bad.plugins.runtime(FX).code, "plugin_bad_signature");
 });
 
-test("RSV-04 rox.ticket.resolve returns a title and no subject field", async () => {
+test("RSV-04 buwiz.ticket.resolve returns a title and no subject field", async () => {
   const { b, plugins, sessions } = setup("rsv04");
 
   await installFixture(plugins, b);
@@ -153,15 +153,15 @@ test("RSV-04 rox.ticket.resolve returns a title and no subject field", async () 
   assert.equal(await codeOf(sessions.ticketTitle({ plugin: FX, ticket: "acme-123" })), "invalid_args");
 });
 
-test("RSV-05 rox.session.close and rox.uninstall answer ok; an unknown rox.* answers -32601", async () => {
+test("RSV-05 buwiz.session.close and buwiz.uninstall answer ok; an unknown rox.* answers -32601", async () => {
   const { b } = setup("rsv05");
   const c = await rawFixture(b);
   const k = generate();
 
-  await c.callTool({ name: "rox.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
-  assert.deepEqual(data(await c.callTool({ name: "rox.session.close", arguments: { open_id: "x" } })), { ok: true });
-  assert.deepEqual(data(await c.callTool({ name: "rox.uninstall", arguments: {} })), { ok: true });
-  await assert.rejects(c.callTool({ name: "rox.revoke", arguments: {} }), (e) => e.code === -32601);
+  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  assert.deepEqual(data(await c.callTool({ name: "buwiz.session.close", arguments: { open_id: "x" } })), { ok: true });
+  assert.deepEqual(data(await c.callTool({ name: "buwiz.uninstall", arguments: {} })), { ok: true });
+  await assert.rejects(c.callTool({ name: "buwiz.revoke", arguments: {} }), (e) => e.code === -32601);
 });
 
 // ── install, 5.2 step 6 ──────────────────────────────────────────────────
@@ -172,7 +172,7 @@ test("MAN-09 a short that collides with an enabled plugin is refused", async () 
   await installFixture(plugins, b);
   const other = join(b.dir, "other.json");
 
-  writeFileSync(other, JSON.stringify(fixtureManifest(b.pub, (m) => (m.id = "dev.goldcoders.other"))));
+  writeFileSync(other, JSON.stringify(fixtureManifest(b.pub, (m) => (m.id = "app.buwiz.other"))));
   const spec = { command: process.execPath, args: [FIXTURE], env: { FX_MANIFEST: other } };
 
   await assert.rejects(plugins.inspect(spec), { code: "manifest_invalid", message: /short fx is already used/ });
@@ -198,7 +198,7 @@ test("install: the review lists every permission (13.1 step 3) and a changed man
     "Show print previews (static pages, no scripts)",
   ]);
   assert.deepEqual(i.review.apps.find((a) => a.id === "card").inline, { width: 480, height: 320 });
-  assert.deepEqual(i.review.routines, ["Routine 'Fixture digest' reads via dev.goldcoders.fixture: fx_search"]);
+  assert.deepEqual(i.review.routines, ["Routine 'Fixture digest' reads via app.buwiz.fixture: fx_search"]);
   assert.ok(i.review.lines.includes("Fixture 1.0.0 by Goldcoders"));
   // what is installed must be what was reviewed
   b.writeManifest((m) => (m.description = "changed after the review"));

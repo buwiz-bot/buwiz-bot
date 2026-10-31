@@ -317,7 +317,7 @@ pub async fn exec(run: &Run, name: &str, input: &Value) -> Option<Result<Out, St
             }
             // a server asking to show one of its mini apps: it opens full
             // screen and its card joins the reply
-            if let Some(open) = meta.as_ref().and_then(|m| m.get("rox/open")).filter(|o| o.get("uri").is_some_and(js::truthy)) {
+            if let Some(open) = meta.as_ref().and_then(|m| m.get("buwiz/open")).filter(|o| o.get("uri").is_some_and(js::truthy)) {
                 if out.is_error != Some(true) {
                     note_app_open(run, &server, open).await;
                 }
@@ -350,7 +350,7 @@ async fn note_app_open(run: &Run, server: &str, open: &Value) {
     let title = pick(open.get("title")).or_else(|| pick(res.as_ref().and_then(|r| r.get("title")))).or_else(|| pick(res.as_ref().and_then(|r| r.get("name")))).unwrap_or_else(|| app.clone());
     let token = open.get("token").and_then(Value::as_str).unwrap_or("").to_owned();
     let enc = crate::hub::library::botctx::encode_uri_component;
-    let link = format!("rox://app/{server}/{app}?props={}{}", enc(&js::stringify(&props)), if token.is_empty() { String::new() } else { format!("&token={}", enc(&token)) });
+    let link = format!("buwiz://app/{server}/{app}?props={}{}", enc(&js::stringify(&props)), if token.is_empty() { String::new() } else { format!("&token={}", enc(&token)) });
     let file_type = pick(res.as_ref().and_then(|r| r.get("description"))).unwrap_or_else(|| "Mini app".into());
     let mut card = json!({"provider": "mcp-app", "id": key, "name": title, "link": link, "action": "open", "kind": "app", "file_type": file_type});
     if !token.is_empty() {

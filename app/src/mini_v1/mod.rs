@@ -20,7 +20,7 @@
 //! draws the dialogs.
 //!
 //! A v1 app's module key is `v1:<plugin id>/<app id>`, with the open's
-//! `?ticket=` and `&props=` as in its `rox://app/` link ([`V1Key`]); v0's
+//! `?ticket=` and `&props=` as in its `buwiz://app/` link ([`V1Key`]); v0's
 //! `mcp:` and generated `R<n>` keys are untouched.
 
 pub mod bridge;
@@ -34,7 +34,6 @@ pub mod host_api;
 pub mod lifecycle;
 pub mod links;
 pub mod load;
-pub mod migrate;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod perms;
@@ -48,7 +47,7 @@ pub mod ui;
 use serde_json::{Value, json};
 
 /// The protocol version this host implements (spec 2.2).
-pub const PROTOCOL: &str = "1.1.0";
+pub const PROTOCOL: &str = "2.0.0";
 
 /// A bridge rejection (spec 14.1): what the app's promise rejects with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,9 +212,9 @@ mod tests {
 
     #[test]
     fn a_v1_key_carries_the_opens_ticket_and_props() {
-        let k = V1Key::parse("v1:dev.goldcoders.fixture/card").unwrap();
-        assert_eq!((k.plugin.as_str(), k.app.as_str(), k.ticket.clone()), ("dev.goldcoders.fixture", "card", None));
-        assert_eq!(k.to_key(), "v1:dev.goldcoders.fixture/card");
+        let k = V1Key::parse("v1:app.buwiz.fixture/card").unwrap();
+        assert_eq!((k.plugin.as_str(), k.app.as_str(), k.ticket.clone()), ("app.buwiz.fixture", "card", None));
+        assert_eq!(k.to_key(), "v1:app.buwiz.fixture/card");
         let mut k2 = k.clone();
         k2.ticket = Some("tkt_0123456789ABCDEFGHJKMNPQRS".to_owned());
         k2.props.insert("label".to_owned(), json!("a b&c"));
@@ -223,14 +222,14 @@ mod tests {
         assert_eq!(V1Key::parse(&text).unwrap(), k2);
         assert!(V1Key::parse("mcp:bir/forms").is_err());
         assert!(V1Key::parse("v1:bir/forms").is_err(), "a plugin id is reverse-DNS");
-        assert!(V1Key::parse("v1:dev.goldcoders.fixture/Card").is_err());
-        assert!(V1Key::parse("v1:dev.goldcoders.fixture/card?ticket=123").is_err());
-        assert!(V1Key::parse("v1:dev.goldcoders.fixture/card?props=%5B%5D").is_err());
+        assert!(V1Key::parse("v1:app.buwiz.fixture/Card").is_err());
+        assert!(V1Key::parse("v1:app.buwiz.fixture/card?ticket=123").is_err());
+        assert!(V1Key::parse("v1:app.buwiz.fixture/card?props=%5B%5D").is_err());
     }
 
     fn prep(js: &str) -> load::Prepared {
         load::Prepared {
-            key: V1Key::parse("v1:dev.goldcoders.prepfx/card").unwrap(),
+            key: V1Key::parse("v1:app.buwiz.prepfx/card").unwrap(),
             plugin: Default::default(),
             title: "Card".into(),
             fingerprint: String::new(),
@@ -244,7 +243,7 @@ mod tests {
     fn a_prepared_app_is_found_by_its_module_from_another_thread_and_after_a_newer_fetch() {
         // the store prepares on the engine thread; the component asks on
         // the main thread, maybe after another fetch of the same key
-        let key = "v1:dev.goldcoders.prepfx/card";
+        let key = "v1:app.buwiz.prepfx/card";
         std::thread::spawn(move || {
             keep_prepared(key, prep("js // open 1"));
             keep_prepared(key, prep("js // open 2"));

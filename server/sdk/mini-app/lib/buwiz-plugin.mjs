@@ -1,17 +1,17 @@
-// sdk/mini-app/lib/rox-plugin.mjs — the reserved half of a v1 plugin.
+// sdk/mini-app/lib/buwiz-plugin.mjs — the reserved half of a v1 plugin.
 //
 // Every Rox Mini App Protocol v1 plugin answers the same reserved tools
 // (spec 7.8) the same way; this module does it once so a plugin's own file
 // holds only its tools and apps. What it guarantees:
 //
-// - rox.provision is answered first; every other tool fails until it has
+// - buwiz.provision is answered first; every other tool fails until it has
 //   succeeded (P7). The plugin key is kept in memory only, never logged,
 //   written or echoed (4.3, P4).
-// - rox.session.open checks the app exists and the permissions digest
+// - buwiz.session.open checks the app exists and the permissions digest
 //   equals the manifest's, then signs the session certificate over JCS
 //   with the plugin key (4.4); not_after is at most 8 h ahead.
-// - rox.ticket.resolve answers a title, never the subject (P3).
-// - rox.uninstall forgets every ticket and session (9.5).
+// - buwiz.ticket.resolve answers a title, never the subject (P3).
+// - buwiz.uninstall forgets every ticket and session (9.5).
 // - Any other rox.* name is MCP error -32601 (7.9).
 // - The manifest and app sources are served as resources (5.1, 6.1); the
 //   manifest is re-read from disk on every request, so a re-signed file
@@ -82,13 +82,13 @@ export function ticketStore() {
  *   manifestFile  path of the signed manifest (read on every request)
  *   apps          {appId: path of the .tsx source}
  *   tools         [{name, description, inputSchema, annotations?, run(args, caller, extra)}]
- *                 `caller` is _meta["rox/caller"] (8.4): {origin, plugin, app?, open_id?, routine?, ts}
- *   ticketTitle   (subject) => the title rox.ticket.resolve shows
+ *                 `caller` is _meta["buwiz/caller"] (8.4): {origin, plugin, app?, open_id?, routine?, ts}
+ *   ticketTitle   (subject) => the title buwiz.ticket.resolve shows
  *   instructions  MCP server instructions (approved text, 10.2), optional
  *   name, version the MCP server identity
  */
 export async function startPlugin(opts) {
-  const { manifestFile, apps = {}, tools = [], ticketTitle = (s) => String(s), instructions, name = "rox-plugin", version = "1.0.0" } = opts;
+  const { manifestFile, apps = {}, tools = [], ticketTitle = (s) => String(s), instructions, name = "buwiz-plugin", version = "1.0.0" } = opts;
   const tickets = opts.tickets || ticketStore();
   const sessions = new Map(); // open_id → app id
   let key = null; // {seed, pub}: memory only
@@ -121,7 +121,7 @@ export async function startPlugin(opts) {
 
     if (!Number.isSafeInteger(args.not_after) || args.not_after > Date.now() + EIGHT_HOURS) return fail("invalid_args", "not_after must be within 8 h");
 
-    const cert = { v: 1, typ: "rox-session", plugin: m.id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub, perms_sha256: args.perms_sha256, not_after: args.not_after };
+    const cert = { v: 1, typ: "buwiz-session", plugin: m.id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub, perms_sha256: args.perms_sha256, not_after: args.not_after };
 
     sessions.set(args.open_id, app.id);
 
@@ -135,11 +135,11 @@ export async function startPlugin(opts) {
   }
 
   const reserved = {
-    "rox.provision": provision,
-    "rox.session.open": sessionOpen,
-    "rox.session.close": (args) => (sessions.delete(args?.open_id), ok({ ok: true })),
-    "rox.ticket.resolve": ticketResolve,
-    "rox.uninstall": () => (tickets.clear(), sessions.clear(), ok({ ok: true })),
+    "buwiz.provision": provision,
+    "buwiz.session.open": sessionOpen,
+    "buwiz.session.close": (args) => (sessions.delete(args?.open_id), ok({ ok: true })),
+    "buwiz.ticket.resolve": ticketResolve,
+    "buwiz.uninstall": () => (tickets.clear(), sessions.clear(), ok({ ok: true })),
   };
 
   const options = { capabilities: { tools: {}, resources: { listChanged: true } } };
@@ -158,24 +158,24 @@ export async function startPlugin(opts) {
     const { name: tool, arguments: args = {}, _meta: meta } = req.params;
 
     // provision first; no other rox.* tool works without a key either
-    if (tool === "rox.provision") return provision(args);
+    if (tool === "buwiz.provision") return provision(args);
 
     if (isV1("reservedTool", tool) && !Object.hasOwn(reserved, tool)) throw new McpError(ErrorCode.MethodNotFound, `${tool} is not a tool of this plugin`);
 
-    if (!key) throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
+    if (!key) throw new McpError(ErrorCode.InvalidRequest, "buwiz.provision must come first");
 
     if (Object.hasOwn(reserved, tool)) return reserved[tool](args);
     const t = tools.find((x) => x.name === tool);
 
     if (!t) throw new McpError(ErrorCode.InvalidParams, `no tool ${tool}`);
 
-    return t.run(isObject(args) ? args : {}, meta?.["rox/caller"] ?? null, extra);
+    return t.run(isObject(args) ? args : {}, meta?.["buwiz/caller"] ?? null, extra);
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, () => ({
     resources: [
       { uri: MANIFEST_URI, name: "manifest", mimeType: "application/json" },
-      ...Object.keys(apps).map((id) => ({ uri: `rox-app://${id}`, name: id, mimeType: APP_MIME })),
+      ...Object.keys(apps).map((id) => ({ uri: `buwiz-app://${id}`, name: id, mimeType: APP_MIME })),
     ],
   }));
 
@@ -183,7 +183,7 @@ export async function startPlugin(opts) {
     const { uri } = req.params;
 
     if (uri === MANIFEST_URI) return { contents: [{ uri, mimeType: "application/json", text: manifestText() }] };
-    const id = uri.startsWith("rox-app://") ? uri.slice(10) : "";
+    const id = uri.startsWith("buwiz-app://") ? uri.slice(12) : "";
 
     if (!Object.hasOwn(apps, id)) throw new McpError(ErrorCode.InvalidParams, `no resource ${uri}`);
 

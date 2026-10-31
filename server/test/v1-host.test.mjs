@@ -47,7 +47,7 @@ function req(method, path, { headers = {}, body } = {}) {
 }
 
 function host(method, path, obj, extra = {}) {
-  const headers = { "X-Rox-Host": token, ...extra };
+  const headers = { "X-Buwiz-Host": token, ...extra };
 
   if (obj === undefined) return req(method, path, { headers });
   headers["Content-Type"] = "application/json";
@@ -58,7 +58,7 @@ function host(method, path, obj, extra = {}) {
 before(async () => {
   child = spawn(...brokerCommand(), {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile },
+    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -76,14 +76,19 @@ after(async () => {
   await new Promise((r) => (child.exitCode !== null ? r() : child.once("exit", r)));
 });
 
+test("host token: X-Buwiz-Host carries it; the 1.x X-Rox-Host does not", async () => {
+  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Buwiz-Host": token } })).status, 200);
+  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Rox-Host": token } })).status, 401);
+});
+
 test("host token: 0600 file, required on every /v1/host route (401), guard still first", async () => {
   assert.equal(statSync(join(dataDir, "host-token")).mode & 0o777, 0o600);
   assert.match(token, /^[A-Za-z0-9_-]{43}$/);
   assert.equal((await req("GET", "/v1/host/plugins")).status, 401);
-  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Rox-Host": "x".repeat(43) } })).status, 401);
+  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Buwiz-Host": "x".repeat(43) } })).status, 401);
   assert.equal((await req("POST", "/v1/host/call", { headers: { "Content-Type": "application/json" }, body: "{}" })).status, 401);
   assert.equal((await host("GET", "/v1/host/plugins", undefined, { Origin: "https://evil.example" })).status, 403, "web origins are refused before the token");
-  assert.equal((await req("POST", "/v1/host/call", { headers: { "X-Rox-Host": token, "Content-Type": "text/plain" }, body: "{}" })).status, 415);
+  assert.equal((await req("POST", "/v1/host/call", { headers: { "X-Buwiz-Host": token, "Content-Type": "text/plain" }, body: "{}" })).status, 415);
   const ok = await host("GET", "/v1/host/plugins");
 
   assert.equal(ok.status, 200);
@@ -94,7 +99,7 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
 test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
   const second = spawn(...brokerCommand(), {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile },
+    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
     stdio: "ignore",
   });
 
@@ -157,7 +162,7 @@ test("Rox's path over HTTP: inspect, install, list, open, call, resolve, title, 
 test("events: disable and enable stream plugin state and generation", async () => {
   const seen = [];
 
-  const stream = httpRequest({ host: "127.0.0.1", port: PORT, path: "/v1/host/events", headers: { "X-Rox-Host": token } }, (res) => {
+  const stream = httpRequest({ host: "127.0.0.1", port: PORT, path: "/v1/host/events", headers: { "X-Buwiz-Host": token } }, (res) => {
     res.setEncoding("utf8");
     res.on("data", (d) => {
       for (const m of d.matchAll(/event: plugin\ndata: (.+)\n/g)) seen.push(JSON.parse(m[1]));

@@ -135,7 +135,7 @@ status() {
   echo "mode: $(mode)"
   if [ "$(mode)" = rox ]; then echo "binary: $(ps -o command= -p "$pid" | sed 's/ --port.*//')"; fi
   if [ -f "$GS/host-token" ] && [ -n "$pid" ]; then
-    curl -s -m 5 -H "X-Rox-Host: $(cat "$GS/host-token")" "$URL/v1/host/plugins" \
+    curl -s -m 5 -H "X-Buwiz-Host: $(cat "$GS/host-token")" "$URL/v1/host/plugins" \
       | python3 -c 'import json,sys
 for p in json.load(sys.stdin).get("plugins", []): print("plugin:", p.get("id"), p.get("version"), p.get("state"), "on" if p.get("enabled") else "off")' 2>/dev/null || echo "plugins: unreadable"
   fi

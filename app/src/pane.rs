@@ -441,7 +441,7 @@ fn pane_card() -> View {
 /// here, with the bot they belong to (not in Settings): each row runs,
 /// pauses or resumes its routine; Suggested offers the templates.
 fn details_tab() -> impl IntoElement {
-    store().v1_refresh(false);
+    store().v1_refresh();
     crate::routines::load_routines();
     crate::routines::load_templates();
     view()
@@ -2415,17 +2415,17 @@ mod tests {
 
     #[test]
     fn a_routine_thread_shows_its_own_routine_and_a_chat_its_routines() {
-        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+        let listed = vec![Listed::of(&serde_json::json!({"id": "app.buwiz.ebirforms", "title": "BIR", "routines": [
             {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true,
              "thread": "t2", "home": "t3", "last_run": 1793194720000u64, "last_items": 0}]}))];
         let at = |_: f64| "3:42 PM".to_owned();
         assert_eq!(routines_section(None, &listed, "Piccolo", at), RoutinesSection::List, "a chat lists its routines");
-        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
+        let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
         assert_eq!(
             routines_section(Some(open.clone()), &listed, "Piccolo", at),
             RoutinesSection::This(ThisRoutine {
                 name: "BIR payments".into(),
-                plugin: "dev.goldcoders.bir".into(),
+                plugin: "app.buwiz.ebirforms".into(),
                 id: "payments".into(),
                 instance: String::new(),
                 by: "BIR".into(),
@@ -2451,7 +2451,7 @@ mod tests {
 
     #[test]
     fn a_chat_lists_its_routines_paused_ones_too_and_no_other_chats() {
-        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+        let listed = vec![Listed::of(&serde_json::json!({"id": "app.buwiz.ebirforms", "title": "BIR", "routines": [
             {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true, "thread": "t2", "home": "t3"},
             {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": false, "available": false,
              "reason": "you have not approved what it reads", "thread": "t2", "home": "t4"},
@@ -2468,7 +2468,7 @@ mod tests {
         assert_eq!(
             got[0].kind,
             RoutineKind::Plugin {
-                plugin: "dev.goldcoders.bir".into(),
+                plugin: "app.buwiz.ebirforms".into(),
                 id: "payments".into(),
                 instance: String::new(),
                 home: "t3".into(),
@@ -2492,14 +2492,14 @@ mod tests {
                 kind: RoutineKind::Server { id: "r1".into() },
             }
         );
-        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/payments");
+        assert_eq!(got[0].key(), "v1:app.buwiz.ebirforms/payments");
         assert_eq!(got[2].key(), "v0:r1");
         assert!(chat_routines("", &listed, &server, "Buwiz Bot").is_empty(), "no chat open, none");
     }
 
     #[test]
     fn a_routines_instances_list_in_their_own_chats_with_params_and_trigger() {
-        let listed = vec![Listed::of(&serde_json::json!({"id": "dev.goldcoders.bir", "title": "BIR", "routines": [
+        let listed = vec![Listed::of(&serde_json::json!({"id": "app.buwiz.ebirforms", "title": "BIR", "routines": [
             {"id": "confirm", "name": "BIR confirmations", "every_s": 300, "enabled": true, "available": true, "thread": "t2",
              "params": {"type": "object", "properties": {"taxpayers": {"type": "array", "items": {"type": "string"}}}},
              "writes": ["bir_confirm_filing"],
@@ -2516,9 +2516,9 @@ mod tests {
         assert_eq!((got[1].status.as_str(), got[1].enabled), ("Waiting for your Enable", false));
         let RoutineKind::Plugin { instance, params, pending, trigger, .. } = &got[1].kind else { panic!() };
         assert_eq!((instance.as_str(), params.as_str(), *pending, trigger.as_str()), ("ri_b", r#"{"taxpayers":["tp_b"]}"#, true, "webhook"));
-        assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/ri_a", "a run is the instance's");
+        assert_eq!(got[0].key(), "v1:app.buwiz.ebirforms/ri_a", "a run is the instance's");
         // a routine thread's card is its instance's
-        let open = RoutineOf { plugin: "dev.goldcoders.bir".into(), id: "confirm".into(), instance: "ri_b".into(), name: "BIR confirmations · Taxpayer B".into(), thread: "t2".into() };
+        let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "confirm".into(), instance: "ri_b".into(), name: "BIR confirmations · Taxpayer B".into(), thread: "t2".into() };
         let RoutinesSection::This(r) = routines_section(Some(open), &listed, "Piccolo", |_| "3:42 PM".to_owned()) else { panic!() };
         assert_eq!((r.instance.as_str(), r.pending, r.enabled, r.status.as_str(), r.schedule.as_str()), ("ri_b", true, false, "Waiting for your Enable", "Runs on its webhook"));
     }

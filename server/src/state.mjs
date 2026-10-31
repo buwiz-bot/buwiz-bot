@@ -1,6 +1,7 @@
 // state.mjs — the server's shared state: sqlite db, thread store, job
 // registry, window/slot maps. Everything else imports singletons from here
 // so route handlers and tools see the same objects.
+import { migrateNames } from "./names-migration.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -230,6 +231,10 @@ for (const col of ["hidden INTEGER DEFAULT 0", "archived INTEGER DEFAULT 0"]) {
 // A v1 routine's own thread (v1/routine-threads.mjs): JSON {plugin, id,
 // name, thread} — `thread` is the chat it reports to. Never a sidebar row.
 try { db.exec("ALTER TABLE threads ADD COLUMN routine TEXT"); } catch {}
+
+// protocol 2.0: the rox names in stored chats, links and _meta become the
+// buwiz ones, once
+migrateNames(db);
 
 export const metaGet = (k) => db.prepare("SELECT v FROM meta WHERE k=?").get(k)?.v;
 export const metaSet = (k, v) =>
@@ -598,7 +603,7 @@ export function turnsJson(thread = activeThread()) {
       return name ? { ...f, name } : f;
     }),
     // Drive files the reply made or changed (drive.mjs), as chips; a
-    // server's mini app (`mcp-app`: a `rox/open` or an attachment's card)
+    // server's mini app (`mcp-app`: a `buwiz/open` or an attachment's card)
     // keeps its own type, and an attachment's shows its token's display name
     links: (t.links || []).map(({ account, ...l }) => ({
       ...l,

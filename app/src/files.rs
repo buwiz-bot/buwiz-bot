@@ -575,7 +575,7 @@ pub(crate) fn file_card(f: &Attach) -> impl IntoElement {
 pub(crate) fn link_card(l: &crate::store::DriveLink) -> impl IntoElement {
     let url = l.link.clone();
     let hov = signal(false);
-    // a server's mini app (`rox/open`): opens full screen, not in Drive
+    // a server's mini app (`buwiz/open`): opens full screen, not in Drive
     let app = (l.provider == "mcp-app").then(|| (l.id.clone(), l.name.clone()));
     let name = if l.name.is_empty() { format!("Untitled {}", l.file_type) } else { l.name.clone() };
     let kind = if l.file_type.is_empty() { "File" } else { l.file_type.as_str() };
@@ -1550,7 +1550,7 @@ fn web_page() -> Option<WebPage> {
     match f.kind.as_str() {
         "pdf" => Some(WebPage::Url(Store::file_raw_url(&f.path), false)),
         "html" if st.html_mode.get() != "source" => Some(if f.path.starts_with('/') {
-            // a file on this Mac (`rox://view`): its text, read here;
+            // a file on this Mac (`buwiz://view`): its text, read here;
             // WebKit shows nothing for a string under a `file://` base, so
             // it gets the server's (a print preview inlines its images)
             WebPage::Html(r.and_then(|r| r.text).unwrap_or_default())

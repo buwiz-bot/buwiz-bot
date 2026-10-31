@@ -1,4 +1,4 @@
-//! Verifying a plugin's `rox://manifest` (spec 5; `v1/manifest.mjs`).
+//! Verifying a plugin's `buwiz://manifest` (spec 5; `v1/manifest.mjs`).
 //!
 //! Nothing a plugin says is trusted until its manifest passes, in the
 //! spec's order (5.2): I-JSON parse, protocol and version, trust store,
@@ -18,9 +18,11 @@ use super::trust::Trust;
 use super::{canonicalize, ed_verify, get, is_v1, kind_of, safe_int, same, shown, signed_bytes, tpl, V1Error};
 use crate::js;
 
-pub const HOST_PROTOCOL: &str = "1.1.0";
+// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
+pub const HOST_PROTOCOL: &str = "2.0.0";
 pub const APP_MIME: &str = "text/x-nsh-tsx";
-pub const MANIFEST_URI: &str = "rox://manifest";
+pub const MANIFEST_URI: &str = "buwiz://manifest";
 
 /// Appendix A, the limits a manifest is held to.
 pub mod limits {
@@ -82,8 +84,9 @@ pub fn limits_json() -> Value {
     })
 }
 
-const RESERVED_ID_PREFIXES: &[&str] = &["dev.goldcoders.rox.", "rox."];
-const RESERVED_SHORTS: &[&str] = &["rox", "app", "chat", "mcp", "nsh", "all"];
+// the app's bundle id (com.buwiz.bot), itself and under it
+const RESERVED_ID_PREFIXES: &[&str] = &["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"];
+const RESERVED_SHORTS: &[&str] = &["buwiz", "app", "chat", "mcp", "nsh", "all"];
 const RESERVED_COMMANDS: &[&str] = &["status"];
 
 type Res<T = ()> = Result<T, V1Error>;
@@ -492,7 +495,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
         name(o.get("id"), "appId", &format!("{at}.id"))?;
         text(o.get("title"), &format!("{at}.title"), 1, Some(L::TITLE), true)?;
         text(o.get("description"), &format!("{at}.description"), 0, Some(L::DESCRIPTION), true)?;
-        let entry = format!("rox-app://{}", tpl(o.get("id")));
+        let entry = format!("buwiz-app://{}", tpl(o.get("id")));
         if o.get("entry").and_then(Value::as_str) != Some(entry.as_str()) {
             return Err(invalid(&format!("{at}.entry"), format!("must be {entry}")));
         }
@@ -528,7 +531,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
             if inl.contains_key("min_width") {
                 int(inl.get("min_width"), &format!("{at}.inline.min_width"), w.0 as f64, width)?;
             }
-            // rox.fit's range (6.5): min_height <= height <= max_height
+            // buwiz.fit's range (6.5): min_height <= height <= max_height
             if inl.contains_key("min_height") {
                 int(inl.get("min_height"), &format!("{at}.inline.min_height"), h.0 as f64, height)?;
             }
@@ -536,7 +539,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
                 int(inl.get("max_height"), &format!("{at}.inline.max_height"), height, h.1 as f64)?;
             }
             boolean(inl, "resizable", &format!("{at}.inline"))?;
-            // the card holds its placeholder until the app's rox.ready()
+            // the card holds its placeholder until the app's buwiz.ready()
             // (an optional addition under 1.0: older hosts ignore it)
             boolean(inl, "wait_ready", &format!("{at}.inline"))?;
         }
@@ -577,6 +580,9 @@ fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
         (parts.next().unwrap_or(f64::NAN), parts.next().unwrap_or(f64::NAN))
     };
     let ((maj, min), (hmaj, hmin)) = (two(protocol), two(host));
+    if maj < hmaj {
+        return Err(V1Error::new("protocol_unsupported", format!("the plugin implements protocol {protocol}: this plugin is built for an older protocol; update it")));
+    }
     if maj != hmaj || min > hmin {
         let n = js::number;
         return Err(V1Error::new(
@@ -1071,8 +1077,8 @@ mod tests {
         edit(&mut m);
         let m = super::super::signing::sign_manifest(&m, &rox_v1::keys::b64(&[3; 32]), &[]).unwrap();
         let trust = Trust::from_value(&json!({
-            "publishers": {"test-key": {"alg": "ed25519", "publisher": "dev.goldcoders", "public_key": key.public()}},
-            "approved_plugins": [{"id": "dev.goldcoders.fixture", "publisher_key_id": "test-key"}]
+            "publishers": {"test-key": {"alg": "ed25519", "publisher": "app.buwiz", "public_key": key.public()}},
+            "approved_plugins": [{"id": "app.buwiz.fixture", "publisher_key_id": "test-key"}]
         }));
         (js::stringify(&m), trust)
     }
@@ -1086,7 +1092,7 @@ mod tests {
     fn the_fixture_verifies_and_a_changed_byte_does_not() {
         let (text, trust) = signed(|_| {});
         let v = verify(&text, &trust, HOST_PROTOCOL).unwrap();
-        assert_eq!(v.manifest["id"], "dev.goldcoders.fixture");
+        assert_eq!(v.manifest["id"], "app.buwiz.fixture");
         assert_eq!(v.sha256.len(), 64);
         let e = verify(&text.replace("\"Fixture\"", "\"Fixturf\""), &trust, HOST_PROTOCOL).unwrap_err();
         assert_eq!(e.message, "signature: does not verify with the publisher key");

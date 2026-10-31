@@ -379,7 +379,7 @@ test("A2A-08 a card the recipient's hidden turn made waits in its own chat, and 
     const sent = agents.send(piccolo, { to: ["boss"], subject: "Allow sending", text: "Can you file it?", expects_reply: false });
     const t = agents.conversation(sent.conversation);
     const msg = t.turns.at(-1).message;
-    cardsToChat(boss, msg, t, { linkTurn: { links: [{ app: "dev.goldcoders.bir/card-quick", title: "Allow once?" }] } });
+    cardsToChat(boss, msg, t, { linkTurn: { links: [{ app: "app.buwiz.ebirforms/card-quick", title: "Allow once?" }] } });
     const chat = store.list.find((x) => x.id === boss.threadId);
     console.log(JSON.stringify({ card: chat.turns.at(-1), notice: t.turns.at(-1) }));
     process.exit(0);

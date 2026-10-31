@@ -37,8 +37,8 @@ createServer((req, res) => {
         method: req.method,
         url: req.url,
         host: req.headers.host,
-        rox_host: req.headers["x-rox-host"] || null,
-        signature: req.headers["x-rox-signature"] || null,
+        rox_host: req.headers["x-buwiz-host"] || null,
+        signature: req.headers["x-buwiz-signature"] || null,
         body: Buffer.concat(chunks).toString("utf8"),
       }));
     }

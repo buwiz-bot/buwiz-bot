@@ -1,12 +1,12 @@
-//! `rox://app/` links of v1 plugins (spec 9.4): which links are v1's, the
-//! limits (INV-07), the `rox://app/bir/...` alias for BIR's v1 plugin
+//! `buwiz://app/` links of v1 plugins (spec 9.4): which links are v1's, the
+//! limits (INV-07), the `buwiz://app/bir/...` alias for BIR's v1 plugin
 //! (16 item 1), a plugin that is not installed (13.6), and the notice an
 //! open shows when its ticket no longer resolves (INV-06).
 //!
 //! A link names the plugin by its full id. Until a plugin moves to v1 its
-//! v0 links (`rox://app/<server>/<app>`, a server's local name) go the v0
+//! v0 links (`buwiz://app/<server>/<app>`, a server's local name) go the v0
 //! way, unchanged: only a link naming a reverse-DNS plugin id, or `bir`
-//! once `dev.goldcoders.bir` is installed as a v1 plugin, is v1's.
+//! once `app.buwiz.ebirforms` is installed as a v1 plugin, is v1's.
 
 use super::{RoxError, V1Key, host_api, load::PluginEntry, perms};
 
@@ -14,13 +14,13 @@ use super::{RoxError, V1Key, host_api, load::PluginEntry, perms};
 pub const MAX_LINK: usize = 2048;
 /// The most `props` a link carries, encoded (9.4).
 pub const MAX_LINK_PROPS: usize = 1024;
-/// BIR's v1 plugin id, which `rox://app/bir/...` names for one minor
+/// BIR's v1 plugin id, which `buwiz://app/bir/...` names for one minor
 /// release (16 item 1).
-pub const BIR: &str = "dev.goldcoders.bir";
+pub const BIR: &str = "app.buwiz.ebirforms";
 /// What an open whose ticket does not resolve shows (9.4).
 pub const NO_LONGER_AVAILABLE: &str = "This item is no longer available";
 
-/// Where a `rox://app/` link goes.
+/// Where a `buwiz://app/` link goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Route {
     /// Not a v1 plugin's link: the v0 way, unchanged.
@@ -46,7 +46,7 @@ fn plugin_of(segment: &str, installed: &[PluginEntry]) -> Option<String> {
 
 /// Routes `url` among the v1 plugins `installed`.
 pub fn route(url: &str, installed: &[PluginEntry]) -> Route {
-    let Some(rest) = url.strip_prefix("rox://app/") else { return Route::NotV1 };
+    let Some(rest) = url.strip_prefix("buwiz://app/") else { return Route::NotV1 };
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let mut parts = path.trim_end_matches('/').splitn(2, '/');
     let (Some(first), Some(app)) = (parts.next(), parts.next()) else { return Route::NotV1 };
@@ -72,10 +72,10 @@ pub fn route(url: &str, installed: &[PluginEntry]) -> Route {
     }
 }
 
-/// `key`'s link: `rox://app/<plugin id>/<app id>[?ticket=][&props=]`.
+/// `key`'s link: `buwiz://app/<plugin id>/<app id>[?ticket=][&props=]`.
 pub fn link_of(key: &V1Key) -> String {
     let text = key.to_key();
-    format!("rox://app/{}", text.strip_prefix("v1:").unwrap_or(&text))
+    format!("buwiz://app/{}", text.strip_prefix("v1:").unwrap_or(&text))
 }
 
 /// "<plugin> is not installed" (the 13.6 card).
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn a_v1_link_names_its_plugin_app_ticket_and_props() {
         let installed = [entry(BIR, true)];
-        let url = format!("rox://app/dev.goldcoders.bir/forms?ticket={T}&props=%7B%22form%22%3A%221601C%22%7D");
+        let url = format!("buwiz://app/app.buwiz.ebirforms/forms?ticket={T}&props=%7B%22form%22%3A%221601C%22%7D");
         let Route::Open(k) = route(&url, &installed) else { panic!("{:?}", route(&url, &installed)) };
         assert_eq!((k.plugin.as_str(), k.app.as_str(), k.ticket.as_deref()), (BIR, "forms", Some(T)));
         assert_eq!(k.props["form"], "1601C");
@@ -125,17 +125,17 @@ mod tests {
 
     #[test]
     fn v0_links_stay_v0_for_v0_plugins() {
-        // no v1 BIR installed: `rox://app/bir/...` is v0's
-        assert_eq!(route("rox://app/bir/forms?token=%40bir%3Ataxprofile%3A123", &[]), Route::NotV1);
-        assert_eq!(route("rox://app/bir/forms", &[entry("dev.goldcoders.other", true)]), Route::NotV1);
-        assert_eq!(route("rox://chat/new", &[]), Route::NotV1);
-        assert_eq!(route("rox://app/bir", &[]), Route::NotV1);
+        // no v1 BIR installed: `buwiz://app/bir/...` is v0's
+        assert_eq!(route("buwiz://app/bir/forms?token=%40bir%3Ataxprofile%3A123", &[]), Route::NotV1);
+        assert_eq!(route("buwiz://app/bir/forms", &[entry("app.buwiz.other", true)]), Route::NotV1);
+        assert_eq!(route("buwiz://chat/new", &[]), Route::NotV1);
+        assert_eq!(route("buwiz://app/bir", &[]), Route::NotV1);
     }
 
     #[test]
     fn the_bir_alias_names_birs_v1_plugin_and_drops_v0_tokens() {
         let installed = [entry(BIR, true)];
-        let Route::Open(k) = route(&format!("rox://app/bir/forms?ticket={T}&token=%40bir%3Ataxprofile%3A123"), &installed) else {
+        let Route::Open(k) = route(&format!("buwiz://app/bir/forms?ticket={T}&token=%40bir%3Ataxprofile%3A123"), &installed) else {
             panic!()
         };
         assert_eq!((k.plugin.as_str(), k.ticket.as_deref()), (BIR, Some(T)));
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn inv_07_a_link_over_2048_characters_or_with_props_over_1024_bytes_is_refused() {
         let installed = [entry(BIR, true)];
-        let base = "rox://app/dev.goldcoders.bir/forms?props=";
+        let base = "buwiz://app/app.buwiz.ebirforms/forms?props=";
         // props that fit, link exactly at the limit: opens (the props are
         // checked against the app's schema when it is prepared)
         let props = format!("%7B%22a%22%3A%22{}%22%7D", "x".repeat(1024 - 22));
@@ -153,7 +153,7 @@ mod tests {
         assert!(matches!(route(&format!("{base}{props}"), &installed), Route::Open(_)));
         let over = format!("%7B%22a%22%3A%22{}%22%7D", "x".repeat(1024 - 21));
         assert!(matches!(route(&format!("{base}{over}"), &installed), Route::Refused(m) if m.contains("1024")));
-        let head = format!("rox://app/dev.goldcoders.bir/forms?ticket={T}&x=");
+        let head = format!("buwiz://app/app.buwiz.ebirforms/forms?ticket={T}&x=");
         let at_limit = format!("{head}{}", "y".repeat(2048 - head.len()));
         assert_eq!(at_limit.len(), 2048);
         assert!(matches!(route(&at_limit, &installed), Route::Open(_)));
@@ -161,16 +161,16 @@ mod tests {
         assert_eq!(long.len(), 2049);
         assert!(matches!(route(&long, &installed), Route::Refused(m) if m.contains("2048")));
         // a ticket outside the grammar or props that are no object
-        assert!(matches!(route("rox://app/dev.goldcoders.bir/forms?ticket=123456789", &installed), Route::Refused(_)));
-        assert!(matches!(route("rox://app/dev.goldcoders.bir/forms?props=%5B%5D", &installed), Route::Refused(_)));
+        assert!(matches!(route("buwiz://app/app.buwiz.ebirforms/forms?ticket=123456789", &installed), Route::Refused(_)));
+        assert!(matches!(route("buwiz://app/app.buwiz.ebirforms/forms?props=%5B%5D", &installed), Route::Refused(_)));
     }
 
     #[test]
     fn lcy_06_a_link_to_an_uninstalled_plugin_is_not_installed_and_nothing_else() {
-        let r = route("rox://app/dev.goldcoders.gone/forms", &[entry(BIR, true)]);
-        assert_eq!(r, Route::NotInstalled("dev.goldcoders.gone".to_owned()));
-        assert_eq!(not_installed("dev.goldcoders.gone"), "dev.goldcoders.gone is not installed");
-        assert_eq!(route("rox://app/dev.goldcoders.bir/forms", &[entry(BIR, false)]), Route::Disabled("BIR".to_owned()));
+        let r = route("buwiz://app/app.buwiz.gone/forms", &[entry(BIR, true)]);
+        assert_eq!(r, Route::NotInstalled("app.buwiz.gone".to_owned()));
+        assert_eq!(not_installed("app.buwiz.gone"), "app.buwiz.gone is not installed");
+        assert_eq!(route("buwiz://app/app.buwiz.ebirforms/forms", &[entry(BIR, false)]), Route::Disabled("BIR".to_owned()));
     }
 
     struct Titles;

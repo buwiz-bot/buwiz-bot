@@ -1,5 +1,5 @@
 // A stdio MCP server that ships what the /mcp routes serve: a mini app
-// resource, a `rox://manifest` with a command and an attachable scope, and
+// resource, a `buwiz://manifest` with a command and an attachable scope, and
 // the resolve tool both name. Newline-delimited JSON-RPC, no SDK. The
 // resolve tool echoes what it was given, so a test sees the route's
 // arguments (including `context.attached`). When FIXTURE_MARK names a file,
@@ -27,7 +27,7 @@ const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 function resolve(args) {
   if (args.complete) return { choices: [{ label: "One", value: "one" }] };
 
-  return { ok: true, open: "rox://app/apps/hello", title: `Item ${args.args}`, token: `@apps:item:${args.args}`, details: { got: args } };
+  return { ok: true, open: "buwiz://app/apps/hello", title: `Item ${args.args}`, token: `@apps:item:${args.args}`, details: { got: args } };
 }
 
 function answer(method, params) {
@@ -51,12 +51,12 @@ function answer(method, params) {
     case "resources/list":
       return {
         resources: [
-          { uri: "rox://manifest", name: "manifest", mimeType: "application/json" },
+          { uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" },
           { uri: "nsh://apps/hello", name: "hello", title: "Hello", description: "A tiny app", mimeType: "text/x-nsh-tsx" },
         ],
       };
     case "resources/read":
-      return params?.uri === "rox://manifest"
+      return params?.uri === "buwiz://manifest"
         ? { contents: [{ uri: params.uri, mimeType: "application/json", text: JSON.stringify(MANIFEST) }] }
         : { contents: [{ uri: params?.uri, mimeType: "text/x-nsh-tsx", text: APP }] };
     default:

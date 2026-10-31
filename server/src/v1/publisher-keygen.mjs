@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // v1/publisher-keygen.mjs — make a publisher signing key (spec 4.1, 4.2).
 //
-//   node src/v1/publisher-keygen.mjs gc-2026-01 [--publisher dev.goldcoders]
+//   node src/v1/publisher-keygen.mjs gc-2026-01 [--publisher app.buwiz]
 //   node src/v1/publisher-keygen.mjs gc-2026-01 --public   # the key the Keychain holds
 //
 // Generates an ed25519 key, stores the seed in the macOS login Keychain
@@ -28,7 +28,7 @@ function exists(keyId) {
 function cli(argv) {
   const keyId = argv[0] || "";
   const at = argv.indexOf("--publisher");
-  const publisher = at >= 0 ? argv[at + 1] : "dev.goldcoders";
+  const publisher = at >= 0 ? argv[at + 1] : "app.buwiz";
 
   if (!isV1("keyId", keyId)) throw new Error("usage: publisher-keygen.mjs <key_id> [--publisher <publisher id>]");
 

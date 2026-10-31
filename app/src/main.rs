@@ -139,11 +139,6 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
     jank_log::init();
-    // `rox --mini-v1-migrate [--dry-run] …`: the one-time v0 migration
-    // (spec Q11) from the command line, without the window
-    if let Some(code) = rox::mini_v1::ui::migrate_cli(&std::env::args().collect::<Vec<_>>()) {
-        std::process::exit(code);
-    }
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
     rox::broker::ensure_started();
