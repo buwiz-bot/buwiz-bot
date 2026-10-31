@@ -12,3 +12,6 @@ drafts/
 .stow-README.md
 GOAL.md
 SECURITY_MODEL.md
+
+# release builds (scripts/release/)
+/dist/
