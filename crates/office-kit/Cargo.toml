@@ -1,0 +1,40 @@
+[package]
+name = "buwiz-office-kit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The office views' shared kit: controls, drawing, fonts, the document worker and the host interface"
+# a member of the app's workspace (phase 1, in this repo): one lockfile and
+# target dir with the app
+workspace = "../../app"
+
+[lib]
+name = "buwiz_office_kit"
+path = "src/lib.rs"
+
+[features]
+# The headless test driver (`testing`), the fixtures' font measuring
+# (`fonts::canvas_width`), for the other crates' and the app's tests.
+testing = ["dep:nsh-engine"]
+
+[dependencies]
+nsh-core = { path = "../../nsh/crates/nsh-core" }
+nsh-base = { path = "../../nsh/crates/nsh-base" }
+nsh-engine = { path = "../../nsh/crates/nsh-engine", optional = true }
+log = "0.4"
+# the spreadsheet's display lists (`draw`)
+betteroffice-xlsx = { version = "0.5.1", default-features = false }
+xlsx-render = { package = "betteroffice-xlsx-render", version = "0.5.1" }
+
+[dev-dependencies]
+nsh-engine = { path = "../../nsh/crates/nsh-engine" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# the pasteboard (`clipboard`)
+nsh-platform-macos = { path = "../../nsh/crates/nsh-platform-macos", default-features = false }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# the bundled office fonts registered with CoreText, and the installed face
+# behind a family (`fonts`)
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits", "CTLine", "CTStringAttributes"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFAttributedString", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
