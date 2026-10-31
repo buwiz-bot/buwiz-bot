@@ -727,8 +727,8 @@ impl<'a> Projector<'a> {
         } else {
             f.insert("content".into(), json!([o]));
         }
-        set(&mut f, "fldLock", (p.get("fldLock") == Some(&Value::Bool(true))).then(|| json!(true)));
-        set(&mut f, "dirty", (p.get("dirty") == Some(&Value::Bool(true))).then(|| json!(true)));
+        set(&mut f, "fldLock", (p.get("fldLock") == Some(&Value::Bool(true))).then_some(json!(true)));
+        set(&mut f, "dirty", (p.get("dirty") == Some(&Value::Bool(true))).then_some(json!(true)));
         f.insert("fieldTree".into(), json!({ "version": 1, "displayMode": s("displayMode", "result") }));
         Value::Object(f)
     }
@@ -1454,9 +1454,7 @@ impl<'a> Projector<'a> {
                     if taken[x].len() < m + d {
                         taken[x].resize(m + d, false);
                     }
-                    for h in m..m + d {
-                        taken[x][h] = true;
-                    }
+                    taken[x][m..m + d].fill(true);
                 }
                 m += d;
                 width = width.max(m);
@@ -1532,7 +1530,7 @@ impl<'a> Projector<'a> {
         if let Some(t) = n.get("tblPr").and_then(obj) {
             d2.extend(t.clone());
         }
-        set(&mut d2, "columnWidths", (!grid.is_empty()).then(|| Value::Array(grid)));
+        set(&mut d2, "columnWidths", (!grid.is_empty()).then_some(Value::Array(grid)));
         let mut f = table_formatting(&d2);
         if !f.as_ref().is_some_and(|f| opt_truthy(f.get("borders")))
             && let Some(p) = outer_borders(&out_rows)
@@ -1771,13 +1769,11 @@ fn base_stories(package: &Value) -> HashMap<String, Vec<Value>> {
 fn base_paragraphs(stories: &HashMap<String, Vec<Value>>) -> HashMap<String, Value> {
     let mut n = HashMap::new();
     for (t, r) in stories {
-        let mut o = 0;
-        for i in r.iter().filter(|i| ty(i) == "paragraph") {
+        for (o, i) in r.iter().filter(|i| ty(i) == "paragraph").enumerate() {
             let key = match i["paraId"].as_str() {
                 Some(id) if !opt_truthy(i.get("repeatedParaId")) && !id.is_empty() => id.to_owned(),
                 _ => format!("{t}:p{o}"),
             };
-            o += 1;
             n.entry(key).or_insert_with(|| i.clone());
         }
     }
@@ -1942,8 +1938,11 @@ fn item_len(e: &Value) -> usize {
     }
 }
 
+/// An item split in two, either half possibly empty.
+type Halves = Option<(Option<Value>, Option<Value>)>;
+
 /// `se`: `e` split at `n` units.
-fn split_list(e: &[Value], n: usize, len: &dyn Fn(&Value) -> usize, split: &dyn Fn(&Value, usize) -> Option<(Option<Value>, Option<Value>)>) -> Option<(Vec<Value>, Vec<Value>)> {
+fn split_list(e: &[Value], n: usize, len: &dyn Fn(&Value) -> usize, split: &dyn Fn(&Value, usize) -> Halves) -> Option<(Vec<Value>, Vec<Value>)> {
     let (mut o, mut i) = (Vec::new(), Vec::new());
     let mut l = 0;
     for s in e {
@@ -1963,7 +1962,7 @@ fn split_list(e: &[Value], n: usize, len: &dyn Fn(&Value) -> usize, split: &dyn 
 }
 
 /// `Cn`.
-fn split_text(e: &Value, n: usize) -> Option<(Option<Value>, Option<Value>)> {
+fn split_text(e: &Value, n: usize) -> Halves {
     if !matches!(ty(e), "text" | "instrText") {
         return None;
     }
@@ -1989,7 +1988,7 @@ fn link_half(e: &Value, n: Vec<Value>) -> Option<Value> {
 }
 
 /// `pe`: an inline item split at `n` units.
-fn split_item(e: &Value, n: usize) -> Option<(Option<Value>, Option<Value>)> {
+fn split_item(e: &Value, n: usize) -> Halves {
     let half = |e: &Value, k: Vec<Value>| -> Option<Value> {
         (!k.is_empty()).then(|| {
             let mut h = e.clone();
