@@ -277,3 +277,89 @@ fn the_demo_breaks_its_lines_where_the_web_editor_does() {
     assert!(lines[i].ends_with("engine in your"), "{lines:?}");
     assert!(lines[i + 1].starts_with("browser"), "{lines:?}");
 }
+
+fn last_meta(w: &mut Word, cmd: Cmd) -> super::doc::Meta {
+    let (outs, _) = w.run(cmd);
+    meta(&outs).cloned().unwrap_or_else(|| panic!("no meta after the command: {} outs", outs.len()))
+}
+
+#[test]
+fn insert_puts_a_table_breaks_and_a_picture_at_the_caret() {
+    use super::doc::{Image, Insert};
+    let mut w = open(fixture::paragraphs(&["Hello world", "Second line"]));
+    let pages = meta(&w.run(Cmd::Move { to: Move::WordRight, extend: false }).0).unwrap().pages.len();
+    // mid-paragraph: the paragraph splits and the table goes between
+    let m = last_meta(&mut w, Cmd::Insert(Insert::Table { rows: 2, cols: 3 }));
+    assert_eq!(m.table, Some((2, 3)), "the caret is in the new table's first cell");
+    w.run(Cmd::Move { to: Move::DocEnd, extend: false });
+    let m = last_meta(&mut w, Cmd::Insert(Insert::PageBreak));
+    assert_eq!(m.table, None);
+    assert!(m.pages.len() > pages, "a page break adds a page: {} after {pages}", m.pages.len());
+    use base64::Engine as _;
+    let src = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(fixture::png()));
+    let (outs, changed) = w.run(Cmd::Insert(Insert::Image(Image { src: src.clone(), alt: "dot.png".into(), width: 40, height: 20 })));
+    assert!(changed);
+    let last = meta(&outs).unwrap().pages.len() - 1;
+    w.run(Cmd::View { pages: vec![last], zoom: 1.0 });
+    let page = w.page(last).unwrap();
+    let images: Vec<_> = page.primitives.iter().filter_map(|p| if let docx_layout::display_list::Primitive::Image(i) = p { Some(i) } else { None }).collect();
+    assert_eq!(images.len(), 1, "the picture is laid out");
+    assert_eq!((images[0].w.as_f64(), images[0].h.as_f64()), (Some(40.0), Some(20.0)));
+    assert!(images[0].rel_id.starts_with("data:") || !images[0].rel_id.is_empty(), "{}", &images[0].rel_id[..20.min(images[0].rel_id.len())]);
+}
+
+#[test]
+fn text_direction_sets_the_paragraphs_bidi() {
+    let mut w = open(fixture::paragraphs(&["Hello", "Second"]));
+    assert!(!last_meta(&mut w, Cmd::Move { to: Move::Right, extend: false }).bidi);
+    assert!(last_meta(&mut w, Cmd::Bidi(true)).bidi);
+    assert!(!last_meta(&mut w, Cmd::Bidi(false)).bidi);
+}
+
+#[test]
+fn page_setup_lays_the_pages_out_again_at_the_new_size_and_margins() {
+    use super::doc::PageSetup;
+    let mut w = open(fixture::document(2));
+    let m = last_meta(&mut w, Cmd::Move { to: Move::Right, extend: false });
+    assert_eq!(m.pages[0], (816.0, 1056.0));
+    let text_left = |w: &Word| w.page(0).unwrap().primitives.iter().filter_map(|p| if let docx_layout::display_list::Primitive::Text(t) = p { t.x.as_f64() } else { None }).fold(f64::MAX, f64::min);
+    let was = text_left(&w);
+    let before = m.setup.clone();
+    assert_eq!(before.orientation, "portrait");
+    // A4 landscape, half-inch margins
+    let s = PageSetup { width: 16838.0, height: 11906.0, orientation: "landscape".into(), top: 720.0, bottom: 720.0, left: 720.0, right: 720.0 };
+    let m = last_meta(&mut w, Cmd::PageSetup(s.clone()));
+    assert_eq!(m.setup, s);
+    let (pw, ph) = m.pages[0];
+    assert!((pw - 16838.0 / 15.0).abs() < 1.0 && (ph - 11906.0 / 15.0).abs() < 1.0, "{pw}x{ph}");
+    let left = text_left(&w);
+    assert!((was - left - 48.0).abs() < 2.0, "the text starts half an inch further left: {was} then {left}");
+}
+
+#[test]
+fn a_text_watermark_is_drawn_on_every_page() {
+    let mut w = open(fixture::document(2));
+    w.run(Cmd::Move { to: Move::Right, extend: false });
+    let wm = serde_json::json!({"kind": "text", "text": "DRAFT", "font": "Calibri", "color": "#C0C0C0", "semitransparent": true, "layout": "diagonal"});
+    let m = last_meta(&mut w, Cmd::Watermark(Some(wm.clone())));
+    assert_eq!(m.watermark, Some(wm));
+    assert!(w.page(0).unwrap().watermark_primitive_count.unwrap_or(0) > 0, "the first page has the watermark: {:?}", w.headers_footers_json());
+    last_meta(&mut w, Cmd::Watermark(None));
+    assert_eq!(w.page(0).unwrap().watermark_primitive_count.unwrap_or(0), 0);
+}
+
+#[test]
+fn a_next_page_section_break_starts_a_page_and_a_continuous_one_none() {
+    use super::doc::Insert;
+    let mut w = open(fixture::paragraphs(&["Hello world", "Second line"]));
+    let m = last_meta(&mut w, Cmd::Move { to: Move::WordRight, extend: false });
+    assert_eq!(m.pages.len(), 1);
+    let m = last_meta(&mut w, Cmd::Insert(Insert::SectionBreak("nextPage")));
+    assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
+    // a continuous one starts none
+    let m = last_meta(&mut w, Cmd::Move { to: Move::DocEnd, extend: false });
+    assert_eq!(m.pages.len(), 2);
+    w.run(Cmd::Move { to: Move::WordLeft, extend: false });
+    let m = last_meta(&mut w, Cmd::Insert(Insert::SectionBreak("continuous")));
+    assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
+}

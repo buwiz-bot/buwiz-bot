@@ -23,6 +23,11 @@ use super::layout::Layout;
 use super::save;
 use crate::office::session::Document;
 
+// the menu bar's commands (Insert, Format, Page Setup, Watermark)
+#[path = "commands.rs"]
+mod commands;
+pub(crate) use commands::{Image, Insert, PageSetup};
+
 /// Caret moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Move {
@@ -81,6 +86,14 @@ pub(crate) enum Cmd {
     SaveTo(PathBuf),
     /// The document as HTML, for printing.
     Print,
+    /// Insert's table, break or picture, at the caret.
+    Insert(Insert),
+    /// The selected paragraphs right-to-left (`true`) or left-to-right.
+    Bidi(bool),
+    /// Page Setup's size, orientation and margins, for the last section.
+    PageSetup(PageSetup),
+    /// The watermark (none: `None`), as the layout takes it.
+    Watermark(Option<serde_json::Value>),
 }
 
 /// The caret's and selection's boxes on their pages (page pixels).
@@ -115,6 +128,14 @@ pub(crate) struct Meta {
     pub found: (usize, usize),
     /// Tracked changes and comments: (author, kind, text).
     pub review: Vec<(String, String, String)>,
+    /// The caret's paragraph runs right to left.
+    pub bidi: bool,
+    /// The caret's table: rows and columns.
+    pub table: Option<(u32, u32)>,
+    /// The last section's page, as Page Setup shows it.
+    pub setup: PageSetup,
+    /// The watermark the Watermark dialog shows.
+    pub watermark: Option<serde_json::Value>,
 }
 
 pub(crate) enum Out {
@@ -167,6 +188,12 @@ pub(crate) struct Word {
     review: Option<Vec<(String, String, String)>>,
     /// The last formats read, kept while typing (typing continues them).
     formats: (bool, bool, bool, f32),
+    /// The caret's paragraph direction and table, read with the formats.
+    bidi: bool,
+    table: Option<(u32, u32)>,
+    /// The last section's page, read once and kept by Page Setup.
+    setup: Option<PageSetup>,
+    watermark: Option<serde_json::Value>,
 }
 
 fn ctx() -> EditCtx {
@@ -212,6 +239,10 @@ impl Word {
             patch: None,
             review: None,
             formats: (false, false, false, 11.0),
+            bidi: false,
+            table: None,
+            setup: None,
+            watermark: None,
         };
         // the caret starts in the first paragraph
         let first = w.index().paras.first().map(|p| spot(&p.story, p.start));
@@ -242,6 +273,8 @@ impl Word {
         let pages = self.layout.with_pages(|ps| ps.iter().map(|p| (p.width.as_f64().unwrap_or(816.0) as f32, p.height.as_f64().unwrap_or(1056.0) as f32)).collect()).unwrap_or_default();
         if !typing {
             self.formats = self.formats();
+            self.bidi = self.head_bidi();
+            self.table = self.head_table();
         }
         let (bold, italic, underline, size) = self.formats;
         if self.review.is_none() {
@@ -260,6 +293,10 @@ impl Word {
             size,
             found: (self.found.len(), if self.found.is_empty() { 0 } else { self.found_at + 1 }),
             review,
+            bidi: self.bidi,
+            table: self.table,
+            setup: self.setup(),
+            watermark: self.watermark.clone(),
         }
     }
 
@@ -1100,6 +1137,32 @@ impl Document for Word {
                 outs.push(Out::Print(save::html(self.layout.engine.doc(), &index)));
                 self.index = Some(index);
                 false
+            }
+            // a section break changes the sections the layout runs on
+            Cmd::Insert(what @ Insert::SectionBreak(_)) => {
+                self.complete_first(&mut outs);
+                let r = self.insert_block(what).and_then(|_| self.sections_from_doc());
+                let changed = self.relaid(&mut outs, r);
+                outs.push(self.caret(true));
+                changed
+            }
+            Cmd::Insert(what) => {
+                let r = self.insert_block(what);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Bidi(rtl) => {
+                let r = self.set_bidi(rtl).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::PageSetup(setup) => {
+                self.complete_first(&mut outs);
+                let r = self.page_setup(&setup);
+                self.relaid(&mut outs, r)
+            }
+            Cmd::Watermark(w) => {
+                self.complete_first(&mut outs);
+                self.set_watermark(w);
+                self.relaid(&mut outs, Ok(()))
             }
             Cmd::Copy { cut } => {
                 let (story, a, b) = self.range();
