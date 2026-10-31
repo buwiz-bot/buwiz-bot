@@ -14,6 +14,8 @@
 
 mod atlas_data;
 mod bodies;
+#[cfg(test)]
+mod brand;
 mod clips;
 mod paint;
 mod render;

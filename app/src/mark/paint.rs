@@ -385,8 +385,7 @@ pub(crate) fn gaze_advance(s: &mut GazeState, dt: f64) {
 }
 
 /// `paintRest(ctx, bytes, s, x, y, px, ink)` — one even-odd fill of the
-/// baked pose: bilinear in each hold layer's gaze grid, linear between
-/// layers (layer 0 is the rest frame).
+/// baked pose (`rest_rings`).
 pub(crate) fn paint_rest(
     p: Painter,
     bytes: &[u8],
@@ -396,6 +395,27 @@ pub(crate) fn paint_rest(
     px: f64,
     ink: &str,
 ) -> Painter {
+    let mut p = p.begin_path();
+    for ring in rest_rings(bytes, s, px) {
+        for (i, [ax, ay]) in ring.into_iter().enumerate() {
+            if i == 0 {
+                p = p.move_to((x + ax) as f32, (y + ay) as f32);
+            } else {
+                p = p.line_to((x + ax) as f32, (y + ay) as f32);
+            }
+        }
+        p = p.close_path();
+    }
+    p.global_alpha(1.0)
+        .fill_color(hsla_of(ink))
+        .fill_with(FillRule::EvenOdd)
+}
+
+/// The baked pose at gaze `s`, in a `px` square: its closed rings (the
+/// body, then each eye; even-odd cuts the eyes out), bilinear in each hold
+/// layer's gaze grid, linear between layers (layer 0 is the rest frame).
+/// `paint_rest` fills them; the brand exporter writes them as SVG.
+pub(crate) fn rest_rings(bytes: &[u8], s: &GazeState, px: f64) -> [Vec<[f64; 2]>; 3] {
     let layer = |index: i64| -> ([f64; 4], [f64; 4]) {
         if index < 0 {
             return ([0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
@@ -442,25 +462,14 @@ pub(crate) fn paint_rest(
         }
         (a + (b - a) * t) * k
     };
-    let mut p = p.begin_path();
-    for (from, count) in [
-        (0usize, REST_N),
-        (REST_N, REST_EN),
-        (REST_N + REST_EN, REST_EN),
-    ] {
-        for i in 0..count {
-            let j = (from + i) * 2;
-            if i == 0 {
-                p = p.move_to((x + at(j)) as f32, (y + at(j + 1)) as f32);
-            } else {
-                p = p.line_to((x + at(j)) as f32, (y + at(j + 1)) as f32);
-            }
-        }
-        p = p.close_path();
-    }
-    p.global_alpha(1.0)
-        .fill_color(hsla_of(ink))
-        .fill_with(FillRule::EvenOdd)
+    [(0usize, REST_N), (REST_N, REST_EN), (REST_N + REST_EN, REST_EN)].map(|(from, count)| {
+        (0..count)
+            .map(|i| {
+                let j = (from + i) * 2;
+                [at(j), at(j + 1)]
+            })
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------
