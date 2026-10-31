@@ -251,3 +251,29 @@ fn a_font_a_style_change_brings_in_gets_a_chain() {
     w.run(Cmd::Paste("ab\ncd".into()));
     assert!(!glyph_width_and_synthetic(&w, "cdlain").1);
 }
+
+/// The lines of page 0 as laid out: the glyph runs' text on each baseline.
+fn lines(w: &Word) -> Vec<String> {
+    use docx_layout::display_list::Primitive;
+    let page = w.page(0).unwrap();
+    let mut lines: Vec<(f64, String)> = Vec::new();
+    for p in &page.primitives {
+        let Primitive::GlyphRun(g) = p else { continue };
+        let Some(y) = g.glyphs.first().map(|gl| gl.y) else { continue };
+        match lines.last_mut() {
+            Some((at, text)) if (*at - y).abs() < 0.5 => *text += &g.text,
+            _ => lines.push((y, g.text.clone())),
+        }
+    }
+    lines.into_iter().map(|(_, t)| t.trim().to_owned()).collect()
+}
+
+#[test]
+fn the_demo_breaks_its_lines_where_the_web_editor_does() {
+    let w = open(include_bytes!("../../../../server/src/office/seeds/betteroffice-demo.docx").to_vec());
+    let lines = lines(&w);
+    // the subtitle in Calibri Light (Carlito's metrics), as the web lays it
+    let i = lines.iter().position(|l| l.starts_with("A faithful, open .docx editor")).unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(lines[i].ends_with("engine in your"), "{lines:?}");
+    assert!(lines[i + 1].starts_with("browser"), "{lines:?}");
+}

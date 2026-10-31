@@ -299,7 +299,7 @@ fn glyph_run(mut p: Painter, g: &GlyphRunPrimitive, cx: &mut Ctx) -> Painter {
         return p;
     }
     let (Some(c), kind) = ink(&g.color, &g.attrs) else { return p };
-    let face = cx.fonts.face(g.font_id).cloned().unwrap_or_else(|| Face { family: "Arial".into(), bold: false, italic: false });
+    let face = cx.fonts.face(g.font_id).cloned().unwrap_or_else(|| Fonts::resolve("Arial", false, false));
     let size = g.size as f32;
     p = cx.pen.font(p, &face.css(g.size));
     p = cx.pen.fill(p, c);
