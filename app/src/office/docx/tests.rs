@@ -276,6 +276,7 @@ fn the_demo_breaks_its_lines_where_the_web_editor_does() {
     let i = lines.iter().position(|l| l.starts_with("A faithful, open .docx editor")).unwrap_or_else(|| panic!("{lines:?}"));
     assert!(lines[i].ends_with("engine in your"), "{lines:?}");
     assert!(lines[i + 1].starts_with("browser"), "{lines:?}");
+}
 
 fn last_meta(w: &mut Word, cmd: Cmd) -> super::doc::Meta {
     let (outs, _) = w.run(cmd);
