@@ -70,7 +70,7 @@ pub fn grammar_ok(kind: &str, s: &str) -> bool {
         "tool" => ids::tool_ok(s),
         "propKey" => ids::prop_key_ok(s),
         "ticket" => ids::ticket_ok(s),
-        "reservedTool" => s.strip_prefix("rox.").is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')),
+        "reservedTool" => s.strip_prefix("buwiz.").is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')),
         // ^[a-z][a-z0-9-]{1,62}(\.[a-z0-9-]{1,62})*$
         "publisherId" => {
             let mut labels = s.split('.');
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn every_grammar_takes_its_good_value_and_refuses_its_bad_one() {
         for (kind, good, bad) in [
-            ("pluginId", "dev.goldcoders.bir", "dev.goldcoders"),
+            ("pluginId", "app.buwiz.ebirforms", "app.buwiz"),
             ("short", "bir", "b"),
             ("appId", "tax-profile", "Tax"),
             ("command", "taxform", "tax_form"),
@@ -214,8 +214,8 @@ mod tests {
             ("tool", "bir_resolve", "bir-resolve"),
             ("propKey", "ticket", "_x"),
             ("ticket", "tkt_0123456789ABCDEFGHJKMNPQRS", "tkt_0123456789ABCDEFGHIJKLMN"),
-            ("reservedTool", "rox.session.open", "rox_session"),
-            ("publisherId", "dev.goldcoders", "Dev"),
+            ("reservedTool", "buwiz.session.open", "rox_session"),
+            ("publisherId", "app.buwiz", "Dev"),
             ("keyId", "gc-2026-01", "-gc"),
         ] {
             assert!(grammar_ok(kind, good), "{kind} {good}");
@@ -224,7 +224,7 @@ mod tests {
         assert!(grammar_ok("publisherId", "ab.c"));
         assert!(!grammar_ok("publisherId", "a.cd"));
         assert!(grammar_ok("keyId", &"k".repeat(64)) && !grammar_ok("keyId", &"k".repeat(65)));
-        assert!(!grammar_ok("reservedTool", "rox."));
+        assert!(!grammar_ok("reservedTool", "buwiz.") && !grammar_ok("reservedTool", "rox.session.open"));
     }
 
     #[test]

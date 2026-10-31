@@ -179,7 +179,7 @@ mod tests {
         d
     }
 
-    const P: &str = "dev.goldcoders.cachefx";
+    const P: &str = "app.buwiz.cachefx";
 
     #[test]
     fn perf_01_a_hit_skips_the_compile_and_a_new_fingerprint_or_build_is_a_miss() {
@@ -241,7 +241,7 @@ mod tests {
         assert!(w.due(P, 3));
         assert!(!w.due(P, 3));
         assert!(w.due(P, 4), "a restart is a new generation");
-        assert!(w.due("dev.goldcoders.other", 3));
+        assert!(w.due("app.buwiz.other", 3));
         let apps = vec![
             json!({"id": "forms", "placement": ["full"], "fingerprint": "sha256:f"}),
             json!({"id": "deadlines", "placement": ["inline", "full"], "fingerprint": "sha256:d"}),

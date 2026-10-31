@@ -9,7 +9,7 @@
 #
 # The broker dir defaults to this repo's server/; a grok-shell checkout
 # (server/v1) still works. `--rust` runs the broker side through that
-# rox-broker, hosting the plugins and sessions itself (ROX_BROKER_CMD and
+# rox-broker, hosting the plugins and sessions itself (BUWIZ_BROKER_CMD and
 # ROX_BROKER_V1_HOST=1). CARGO_TARGET_DIR is honoured: set it to keep the
 # build out of app/target while Rox is running from there. TEST_PORT moves
 # the broker's test port off a running one.
@@ -17,14 +17,14 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${1:-}" = "--rust" ]; then
   [ -x "${2:-}" ] || { echo "usage: $0 [--rust <rox-broker>] [broker dir]" >&2; exit 2; }
-  ROX_BROKER_CMD="$2" ROX_BROKER_V1_HOST=1
-  export ROX_BROKER_CMD ROX_BROKER_V1_HOST
+  BUWIZ_BROKER_CMD="$2" ROX_BROKER_V1_HOST=1
+  export BUWIZ_BROKER_CMD ROX_BROKER_V1_HOST
   shift 2
 fi
 BROKER="${1:-$ROOT/server}"
 fail=0
 
-echo "== broker ($BROKER${ROX_BROKER_CMD:+, through $ROX_BROKER_CMD})"
+echo "== broker ($BROKER${BUWIZ_BROKER_CMD:+, through $BUWIZ_BROKER_CMD})"
 if [ -f "$BROKER/src/v1/plugins.mjs" ] || [ -f "$BROKER/server/v1/plugins.mjs" ]; then
   (cd "$BROKER" && npm run -s conformance) || fail=1
 else

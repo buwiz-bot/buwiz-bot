@@ -174,10 +174,10 @@ mod tests {
         h.insert("keep-alive", HeaderValue::from_static("timeout=5"));
         h.insert("transfer-encoding", HeaderValue::from_static("chunked"));
         h.insert("host", HeaderValue::from_static("127.0.0.1:8787"));
-        h.insert("x-rox-host", HeaderValue::from_static("token"));
-        h.insert("x-rox-signature", HeaderValue::from_static("t=1,v1=ab"));
+        h.insert("x-buwiz-host", HeaderValue::from_static("token"));
+        h.insert("x-buwiz-signature", HeaderValue::from_static("t=1,v1=ab"));
         strip_hop_by_hop(&mut h);
         let left: Vec<&str> = h.keys().map(|k| k.as_str()).collect();
-        assert_eq!(left, ["host", "x-rox-host", "x-rox-signature"]);
+        assert_eq!(left, ["host", "x-buwiz-host", "x-buwiz-signature"]);
     }
 }

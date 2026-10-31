@@ -50,7 +50,7 @@ export const V1 = Object.freeze({
   canonicalToken: "^@([a-z][a-z0-9]{1,15}):([a-z][a-z0-9-]{0,31}):(tkt_[0-9A-HJKMNP-TV-Z]{26})$",
   typedToken: "(?<![\\w@.])@([a-z][a-z0-9]{1,15}):([a-z][a-z0-9-]{0,31}):(\\S*)",
   slash: "^/(?:([a-z][a-z0-9]{1,15}):)?([a-z][a-z0-9-]{0,31})(?:\\s+(.*))?$",
-  reservedTool: "^rox\\.[a-z.]+$",
+  reservedTool: "^buwiz\\.[a-z.]+$",
   publisherId: "^[a-z][a-z0-9-]{1,62}(\\.[a-z0-9-]{1,62})*$",
   keyId: "^[a-z0-9][a-z0-9-]{0,63}$",
 });
@@ -58,8 +58,9 @@ export const V1 = Object.freeze({
 // Names no plugin may take: reserved id prefixes, shorts and the built-in
 // slash commands (3, 3.1).
 export const V1_RESERVED = Object.freeze({
-  idPrefixes: ["dev.goldcoders.rox.", "rox."],
-  shorts: ["rox", "app", "chat", "mcp", "nsh", "all"],
+  // the app's bundle id (com.buwiz.bot), itself and under it
+  idPrefixes: ["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"],
+  shorts: ["buwiz", "app", "chat", "mcp", "nsh", "all"],
   commands: ["status"],
 });
 

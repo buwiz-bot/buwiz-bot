@@ -687,7 +687,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
 
   // `routine`: the routine's id and instance, on a call to its own plugin (8.4)
   async function call(pluginId, tool, args, mark) {
-    const meta = { "rox/caller": { origin: "routine", plugin: pluginId, ...(mark || {}), ts: Date.now() } };
+    const meta = { "buwiz/caller": { origin: "routine", plugin: pluginId, ...(mark || {}), ts: Date.now() } };
     const r = await plugins.callTool(pluginId, tool, args, { meta });
 
     if (r.isError) throw new Error(`${tool}: ${firstText(r).slice(0, 300) || "failed"}`);

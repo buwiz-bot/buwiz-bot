@@ -22,8 +22,8 @@ use crate::hub::types::{BoxFuture, TurnCtx};
 use crate::v1::trust::Trust;
 use crate::v1::V1Error;
 
-const FX: &str = "dev.goldcoders.fixture";
-const GWS: &str = "dev.goldcoders.google-workspace";
+const FX: &str = "app.buwiz.fixture";
+const GWS: &str = "app.buwiz.google-workspace";
 const TKT: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
 
 fn tool(name: &str, desc: &str, extra: Value) -> Value {
@@ -68,7 +68,7 @@ impl Fake {
             FX,
             "fx",
             json!({
-                "id": FX, "short": "fx", "title": "Fixture", "publisher": {"id": "dev.goldcoders"},
+                "id": FX, "short": "fx", "title": "Fixture", "publisher": {"id": "app.buwiz"},
                 "apps": [{"id": "card", "title": "Card", "placement": ["inline"]}],
                 "scopes": [
                     {"name": "item", "attach": true, "description": "## Item by name", "hint": "## Items\nAn attached item scopes fx_search to it."},
@@ -81,8 +81,8 @@ impl Fake {
                 tool("fx_search", "Search items", json!({"annotations": {"readOnlyHint": true}})),
                 tool("fx_open", "Answer with a card", json!({})),
                 tool("fx_big", "A big answer", json!({})),
-                tool("fx_app_only", "For apps", json!({"_meta": {"rox/audience": ["app"]}})),
-                tool("rox.provision", "reserved", json!({})),
+                tool("fx_app_only", "For apps", json!({"_meta": {"buwiz/audience": ["app"]}})),
+                tool("buwiz.provision", "reserved", json!({})),
                 tool("mcp_shadow", "a v0 name", json!({})),
                 tool("other_name", "not its short", json!({})),
             ],
@@ -123,7 +123,7 @@ impl PluginView for Arc<Fake> {
     }
     fn call_tool(&self, id: &str, tool: &str, args: Value, meta: Option<Value>) -> BoxFuture<'static, Result<Value, V1Error>> {
         self.calls.lock().unwrap().push((tool.into(), args.clone(), meta.clone()));
-        let caller = meta.as_ref().and_then(|m| m.get("rox/caller")).cloned().unwrap_or(Value::Null);
+        let caller = meta.as_ref().and_then(|m| m.get("buwiz/caller")).cloned().unwrap_or(Value::Null);
         let text = |s: String| json!([{"type": "text", "text": s}]);
         let out = match tool {
             "fx_open" => {
@@ -137,9 +137,9 @@ impl PluginView for Arc<Fake> {
                 if let Some(t) = args.get("title") {
                     open["title"] = t.clone();
                 }
-                let mut meta = json!({"rox/open": open});
+                let mut meta = json!({"buwiz/open": open});
                 if let Some(s) = args.get("suggest") {
-                    meta["rox/suggest"] = s.clone();
+                    meta["buwiz/suggest"] = s.clone();
                 }
                 let failed = args.get("fail") == Some(&json!(true));
                 Ok(json!({"content": text(if failed { "failed".into() } else { "Here is the card.".into() }), "isError": failed, "_meta": meta}))
@@ -232,7 +232,7 @@ async fn rsv_06_reserved_names_are_absent_and_refused() {
     let ctx = with_plugins("rsv06", &fake);
     let run = run_in(&ctx, TurnCtx::default());
     assert!(!names(&run).await.iter().any(|n| n.starts_with("rox.")), "RSV-06");
-    assert_eq!(call(&run, "rox.provision", json!({})).await.is_error, Some(true), "RSV-06");
+    assert_eq!(call(&run, "buwiz.provision", json!({})).await.is_error, Some(true), "RSV-06");
 }
 
 #[tokio::test]
@@ -263,7 +263,7 @@ fn att_01_attachments_reach_the_model_as_canonical_tokens_of_approved_plugins() 
         {"token": format!("@fx:item:{TKT}"), "plugin": FX, "scope": "item", "title": "Acme"},
         {"token": "@fx:item:123-456-789", "plugin": FX, "scope": "item", "title": "raw id"},
         {"token": format!("@fx:note:{TKT}"), "plugin": FX, "scope": "note", "title": "not attachable"},
-        {"token": format!("@fx:item:{TKT}"), "plugin": "dev.goldcoders.other", "scope": "item", "title": "another plugin"}
+        {"token": format!("@fx:item:{TKT}"), "plugin": "app.buwiz.other", "scope": "item", "title": "another plugin"}
     ]);
     let text = v1::prompt_section(&fake, "hello", Some(&atts));
     assert!(text.contains(&format!("Attached: @fx:item:{TKT} (Acme): Fixture tools default to this item here")), "ATT-01: {text}");
@@ -297,7 +297,7 @@ fn agt_04_long_text_is_cut_at_a_word_with_the_marker_and_labelled() {
     let fake = Fake::new("Use fx_search for items.");
     let s = v1::prompt_section(&fake, "for @fx:item:acme please", None);
     assert!(s.contains("## Instructions from Fixture (approved)\n"), "AGT-04");
-    assert!(s.contains("## Scope: fx:item (approved plugin dev.goldcoders.fixture)\nItem by name\nItems\nAn attached item"), "AGT-04: {s}");
+    assert!(s.contains("## Scope: fx:item (approved plugin app.buwiz.fixture)\nItem by name\nItems\nAn attached item"), "AGT-04: {s}");
     assert!(!s.contains("fx:note"), "AGT-04: only the scopes in play");
     // server instructions over 4000 characters are capped with the marker
     let long = Fake::new(&vec!["rule"; 1000].join(" "));
@@ -338,7 +338,7 @@ async fn inv_09_an_open_on_an_error_is_ignored_on_a_good_one_a_card_never_an_ope
     assert_eq!(st.v1_cards[0]["app"], "card");
     let link = &st.link_turn.as_ref().unwrap().links[0];
     assert_eq!(link["action"], "show", "INV-09: inline is a Show button");
-    assert!(link["link"].as_str().unwrap().starts_with("rox://app/dev.goldcoders.fixture/card?ticket=tkt_"));
+    assert!(link["link"].as_str().unwrap().starts_with("buwiz://app/app.buwiz.fixture/card?ticket=tkt_"));
     drop(st);
     let other = run_in(&ctx, TurnCtx::default());
     call(&other, "fx_open", json!({"app": "elsewhere"})).await;

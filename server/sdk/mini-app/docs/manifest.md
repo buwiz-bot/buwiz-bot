@@ -1,8 +1,8 @@
 # The manifest
 
-`rox://manifest` is a UTF-8 JSON object, at most 256 KiB, listed in
+`buwiz://manifest` is a UTF-8 JSON object, at most 256 KiB, listed in
 `resources/list` and readable with `resources/read` (spec 5.1). Buwiz Bot reads
-it after `rox.provision` and again on every `resources/list_changed`. Every
+it after `buwiz.provision` and again on every `resources/list_changed`. Every
 read is verified in the order of spec 5.2: I-JSON parse (no duplicate keys),
 `protocol` and `version`, trust store, signature, then every grammar and limit
 below. Any failure makes the plugin unavailable with `manifest_invalid`.
@@ -15,14 +15,14 @@ refusal: objects that grant access fail closed (spec 2.2).
 
 | Field | Req | Rule |
 |---|---|---|
-| `protocol` | yes | Semver of the protocol you implement: `"1.0.0"`, or `"1.1.0"` when you use a 1.1 feature (a resolve `prompt`; `rox.actions`, `rox.meta`, `rox.settle`). A 1.1 host accepts `1.0.x` and `1.1.x` and refuses `1.2.x` and `2.x` (`protocol_unsupported`); a 1.0 host refuses `1.1.x`. |
-| `id` | yes | Reverse DNS, `^[a-z][a-z0-9-]{0,62}(\.[a-z][a-z0-9-]{0,62}){2,7}$`, at most 255 chars. Not `rox.` or `dev.goldcoders.rox.`. Must be on the trust store's approved list. |
-| `short` | yes | `^[a-z][a-z0-9]{1,15}$`. Not `rox`, `app`, `chat`, `mcp`, `nsh`, `all`. Unique among enabled plugins. Every tool name starts with `<short>_`. |
+| `protocol` | yes | Semver of the protocol you implement: `"2.0.0"`. A 2.0 host accepts `2.0.x` and refuses `2.1.x` and up (it needs a newer host) and every `1.x` (`protocol_unsupported`: "this plugin is built for an older protocol; update it"; 1.x used the rox names, see [migrating-to-buwiz-names.md](migrating-to-buwiz-names.md)). |
+| `id` | yes | Reverse DNS, `^[a-z][a-z0-9-]{0,62}(\.[a-z][a-z0-9-]{0,62}){2,7}$`, at most 255 chars. Not `buwiz.`, `com.buwiz.bot` or `com.buwiz.bot.*` (Buwiz Bot's own). Buwiz plugins are `app.buwiz.<name>`. Must be on the trust store's approved list. |
+| `short` | yes | `^[a-z][a-z0-9]{1,15}$`. Not `buwiz`, `app`, `chat`, `mcp`, `nsh`, `all`. Unique among enabled plugins. Every tool name starts with `<short>_`. |
 | `version` | yes | Semver, at most 32 chars. Raise it on every release: a manifest that changes under the same version is `manifest_changed`. |
 | `title` | yes | 1 to 60 chars. |
 | `description` | no | At most 300 chars. Never sent to the model. |
 | `icon` | no | Resource URI of a PNG or SVG, at most 64 KiB. |
-| `publisher` | yes | `{id, key_id, name}` (spec 5.4): `id` like `dev.goldcoders`; `key_id` `^[a-z0-9][a-z0-9-]{0,63}$`; `name` at most 80 chars. |
+| `publisher` | yes | `{id, key_id, name}` (spec 5.4): `id` like `app.buwiz`; `key_id` `^[a-z0-9][a-z0-9-]{0,63}$`; `name` at most 80 chars. |
 | `signature` | yes | `{"alg": "ed25519", "key_id": <publisher.key_id>, "value": <86 chars base64url>}` over the JCS bytes of the manifest without `signature` (spec 4.2). Written by `sign-manifest.mjs`; never by hand. |
 | `commands` | no | Slash commands, below. |
 | `scopes` | no | `@` scopes, below. |
@@ -60,7 +60,7 @@ refused at install otherwise). The install review shows each routine's writes
 ("Routine 'BIR payments' may change BIR data without asking:
 bir_record_payment"), and an update that adds one needs the user's consent.
 
-In the turn, a call to your plugin carries `_meta["rox/caller"]` with
+In the turn, a call to your plugin carries `_meta["buwiz/caller"]` with
 `origin: "agent"` and `routine: "<routine id>"`; the query call carries
 `origin: "routine"` and the same `routine`. Check `routine` in your own
 authorization too (spec P6): allow a write only for a routine that declares
@@ -69,34 +69,38 @@ when the email's text it passes says so).
 
 ## `apps[]` (spec 5.5)
 
+Each app is a TSX screen (`entry`, `mime`, `sdk`, `fingerprint`, all
+required) or a native screen (`native`), never both and never neither.
+
 | Field | Req | Rule |
 |---|---|---|
 | `id` | yes | `^[a-z][a-z0-9-]{0,47}$`, unique in the plugin. |
 | `title` | yes | 1 to 60 chars. Window and link title. |
 | `description` | yes | At most 300 chars. |
-| `entry` | yes | Exactly `rox-app://<id>`, and listed in `resources/list`. |
-| `mime` | yes | `text/x-nsh-tsx`. |
-| `sdk` | yes | `"1"`. |
-| `fingerprint` | yes | `sha256:` + lowercase hex SHA-256 of the source bytes as served (spec 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
-| `props` | no | JSON Schema subset for `rox.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top (spec 6.6). |
+| `entry` | TSX | Exactly `buwiz-app://<id>`, and listed in `resources/list`. |
+| `mime` | TSX | `text/x-nsh-tsx`. |
+| `sdk` | TSX | `"1"`. |
+| `native` | native | `{"screen": "<id>", "abi": 1}`: a screen built into Buwiz Bot (`screen` is 1 to 64 of `a-z`, `0-9`, `.`, `_`, `-`, e.g. `books.ledger`). Only for a first-party key (the trust store's `"first_party": true`, today `gc-2026-01`, publisher `app.buwiz`); any other key's manifest is refused. A native app has no `entry`, `mime`, `sdk` or `fingerprint`. This build verifies it and shows "this screen needs a newer Buwiz Bot" on open; the native loader comes next. |
+| `fingerprint` | TSX | `sha256:` + lowercase hex SHA-256 of the source bytes as served (spec 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
+| `props` | no | JSON Schema subset for `buwiz.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top (spec 6.6). |
 | `placement` | yes | `["full"]`, `["inline"]` or `["full","inline"]`. |
-| `inline` | if inline | `{width, height, min_width?, min_height?, max_height?, resizable?}` in pixels. `height` is the first frame; `min_height` (96..`height`, default 120) and `max_height` (`height`..800, default 640) bound what `rox.fit` sets ([bridge](bridge.md#inline-cards-that-fit-their-content-roxfit)). |
+| `inline` | if inline | `{width, height, min_width?, min_height?, max_height?, resizable?}` in pixels. `height` is the first frame; `min_height` (96..`height`, default 120) and `max_height` (`height`..800, default 640) bound what `buwiz.fit` sets ([bridge](bridge.md#inline-cards-that-fit-their-content-roxfit)). |
 | `permissions` | no | What the app may reach; absent means nothing. |
 
 ### `apps[].permissions` (spec 5.6)
 
 | Key | Grants | Rule |
 |---|---|---|
-| `tools` | `rox.call` | Your tool names, never `rox.*`. |
-| `open` | `rox.open` | `{apps: [ids of your apps], external: [https origins]}`. |
-| `attach` | `rox.attach` | Scope names whose scope has `attach: true`. |
-| `pick_file` | `rox.pickFile` | `{extensions: [".xlsx", …], max_bytes, multiple?}`. |
-| `storage` | `rox.storage` | `{quota_bytes?}`. |
-| `copy` | `rox.copy` | `true`. |
-| `preview` | `rox.preview` | `{max_bytes?}`: Buwiz Bot shows a document one of your `tools` makes (a print preview). `{}` allows the host's 8 MiB. |
+| `tools` | `buwiz.call` | Your tool names, never `buwiz.*`. |
+| `open` | `buwiz.open` | `{apps: [ids of your apps], external: [https origins]}`. |
+| `attach` | `buwiz.attach` | Scope names whose scope has `attach: true`. |
+| `pick_file` | `buwiz.pickFile` | `{extensions: [".xlsx", …], max_bytes, multiple?}`. |
+| `storage` | `buwiz.storage` | `{quota_bytes?}`. |
+| `copy` | `buwiz.copy` | `true`. |
+| `preview` | `buwiz.preview` | `{max_bytes?}`: Buwiz Bot shows a document one of your `tools` makes (a print preview). `{}` allows the host's 8 MiB. |
 
 The permissions digest is `sha256(JCS(permissions))` in lowercase hex, `{}`
-when absent. Your plugin compares it on every `rox.session.open`.
+when absent. Your plugin compares it on every `buwiz.session.open`.
 
 ## Limits
 

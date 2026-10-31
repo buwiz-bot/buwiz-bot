@@ -1,5 +1,5 @@
 //! Composer commands and `@` tokens. `/name args` runs a built-in, or a
-//! command an MCP server announces in its `rox://manifest` (`GET
+//! command an MCP server announces in its `buwiz://manifest` (`GET
 //! /mcp/manifest`): that server resolves it (`POST /mcp/resolve`) and Rox
 //! opens what it answers — it never reaches the model. `@server:scope:value`
 //! tokens complete as they're typed; a message of tokens alone opens them,
@@ -399,7 +399,7 @@ pub(crate) fn show_in_chats(tok: String, fallback: Option<(String, String)>) {
                         .map(|(thread, turn, title, bot, bot_name)| {
                             let bot = bots.iter().find(|b| !bot.is_empty() && b.id == bot).cloned();
                             let title = if title.is_empty() { "Chat".to_owned() } else { title };
-                            let link = if turn.is_empty() { format!("rox://chat/{thread}") } else { format!("rox://chat/{thread}?m={turn}") };
+                            let link = if turn.is_empty() { format!("buwiz://chat/{thread}") } else { format!("buwiz://chat/{thread}?m={turn}") };
                             PaletteItem {
                                 title: title.clone(),
                                 subtitle: match (&bot, bot_name.is_empty()) {

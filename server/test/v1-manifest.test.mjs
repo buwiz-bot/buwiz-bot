@@ -2,7 +2,7 @@
 // order, signature, protocol and version rules, every grammar of section 3
 // and every manifest limit of Appendix A at the limit and one over. Also
 // the JCS vectors shared with Rox and the ed25519 helpers. With
-// ROX_BROKER_CMD set, every manifest check also runs in rox-broker and must
+// BUWIZ_BROKER_CMD set, every manifest check also runs in rox-broker and must
 // answer as Node does (v1-rust.mjs), and its sign-manifest must write the
 // same bytes.
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { V1, isV1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
+import { V1, V1_RESERVED, isV1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
 import { b64u, fromB64u, generate, pubOf, sign, verify } from "../src/v1/ed.mjs";
 import { canonicalSigned, canonicalize, parseIJson, signedBytes } from "../src/v1/jcs.mjs";
 import { signManifest } from "../src/v1/sign-manifest.mjs";
@@ -19,7 +19,7 @@ import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, tempDir } from "./helpers.mjs";
 import { FX, fixtureManifest, publisher, writeTrust } from "./v1-helpers.mjs";
 
-const RUST = process.env.ROX_BROKER_CMD;
+const RUST = process.env.BUWIZ_BROKER_CMD;
 const { reviewOf, LIMITS, addedPermissions, checkTools, compareSemver, validateProps, verifyManifest } = await import(RUST ? "./v1-rust.mjs" : "../src/v1/manifest.mjs");
 
 const pub = publisher();
@@ -49,7 +49,7 @@ const reshort = (m, short) => {
   Object.assign(m, JSON.parse(text), { short });
 };
 
-const app = (id) => ({ id, title: id, description: "", entry: `rox-app://${id}`, mime: "text/x-nsh-tsx", sdk: "1", fingerprint: `sha256:${"0".repeat(64)}`, placement: ["full"] });
+const app = (id) => ({ id, title: id, description: "", entry: `buwiz-app://${id}`, mime: "text/x-nsh-tsx", sdk: "1", fingerprint: `sha256:${"0".repeat(64)}`, placement: ["full"] });
 
 // ── JCS and keys ─────────────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ test("MAN-02 a byte changed in the manifest fails verification (manifest_invalid
 
   assert.throws(() => verifyManifest(text, trust), { code: "manifest_invalid" });
   // another publisher key, an unapproved id, a missing signature
-  refused((x) => (x.id = "dev.goldcoders.unlisted"), "manifest_invalid", /approved/);
+  refused((x) => (x.id = "app.buwiz.unlisted"), "manifest_invalid", /approved/);
   assert.throws(() => check({ ...m, signature: undefined }), { code: "manifest_invalid" });
   const other = publisher(pub.keyId);
 
@@ -126,12 +126,37 @@ test("MAN-03 non-object JSON is refused, not turned into {}", () => {
     assert.throws(() => verifyManifest(text, trust), { code: "manifest_invalid" }, text);
 });
 
-test("MAN-04 protocol 2.x and 1.2.0 are refused by a 1.1 host; 1.0.1 and 1.1.0 are accepted", () => {
-  refused((m) => (m.protocol = "2.0.0"), "protocol_unsupported", /needs a Buwiz Bot/);
-  refused((m) => (m.protocol = "1.2.0"), "protocol_unsupported");
-  ok((m) => (m.protocol = "1.1.0"));
-  refused((m) => (m.protocol = "0.9.0"), "protocol_unsupported");
-  ok((m) => (m.protocol = "1.0.1"));
+test("MAN-21 an app is a TSX screen or a native one {screen, abi: 1}, never both or neither; native only from a first-party key", () => {
+  const native = (m) => {
+    const a = m.apps[0];
+
+    // another id: the signer fills in fingerprints for the fixture's own sources
+    a.id = "ledger";
+    for (const k of ["entry", "mime", "sdk", "fingerprint"]) delete a[k];
+    a.native = { screen: "fx.ledger", abi: 1 };
+  };
+  const first = loadTrust(writeTrust(join(dir, "trust-first.json"), [{ ...pub, firstParty: true }], [[FX, pub.keyId]]));
+  const firstOk = (edit) => assert.doesNotThrow(() => verifyManifest(JSON.stringify(signed(edit)), first));
+  const firstRefused = (edit, re) => assert.throws(() => verifyManifest(JSON.stringify(signed(edit)), first), (e) => e.code === "manifest_invalid" && re.test(e.message));
+
+  firstOk(native);
+  firstOk((m) => (native(m), (m.apps[0].native.screen = "books.ledger-2_x")));
+  // a third-party key: refused, whatever the shape
+  refused(native, "manifest_invalid", /^apps\[0\]\.native: native screens are for first-party plugins only/);
+  firstRefused((m) => (m.apps[0].native = { screen: "fx.board", abi: 1 }), /^apps\[0\]: is a TSX screen \(entry\) or a native screen \(native\), not both$/);
+  firstRefused((m) => delete m.apps[0].entry, /^apps\[0\]: needs entry \(a TSX screen\) or native \(a native screen\)$/);
+  firstRefused((m) => (native(m), (m.apps[0].native.screen = "Books")), /^apps\[0\]\.native\.screen:/);
+  firstRefused((m) => (native(m), (m.apps[0].native.abi = 2)), /^apps\[0\]\.native\.abi: must be 1$/);
+  firstRefused((m) => (native(m), (m.apps[0].native.loader = "x")), /^apps\[0\]\.native\.loader: is not a known key/);
+});
+
+test("MAN-04 a 2.0 host takes 2.0.x; 3.x and 2.1 need a newer host; 1.x (the rox names) is told to update", () => {
+  refused((m) => (m.protocol = "3.0.0"), "protocol_unsupported", /needs a Buwiz Bot/);
+  refused((m) => (m.protocol = "2.1.0"), "protocol_unsupported", /needs a Buwiz Bot that supports 2\.1/);
+  ok((m) => (m.protocol = "2.0.0"));
+  ok((m) => (m.protocol = "2.0.1"));
+  for (const old of ["1.0.0", "1.1.0", "0.9.0"])
+    refused((m) => (m.protocol = old), "protocol_unsupported", /^the plugin implements protocol \d\.\d\.\d: this plugin is built for an older protocol; update it$/);
   refused((m) => (m.protocol = "1.0"), "manifest_invalid");
   refused((m) => (m.version = "v1"), "manifest_invalid");
   assert.equal(compareSemver("1.0.0-alpha", "1.0.0"), -1);
@@ -153,7 +178,7 @@ test("MAN-06 an unknown key in permissions is refused; an unknown top-level key 
 });
 
 const GRAMMAR = {
-  pluginId: ["dev.goldcoders.bir", "dev.goldcoders"],
+  pluginId: ["app.buwiz.ebirforms", "app.buwiz"],
   short: ["bir", "b"],
   appId: ["tax-profile", "Tax"],
   command: ["taxform", "tax_form"],
@@ -163,8 +188,8 @@ const GRAMMAR = {
   propKey: ["ticket", "_x"],
   ticket: ["tkt_0123456789ABCDEFGHJKMNPQRS", "tkt_0123456789ABCDEFGHIJKLMN"],
   canonicalToken: ["@bir:taxprofile:tkt_0123456789ABCDEFGHJKMNPQRS", "@bir:taxprofile:123456789"],
-  reservedTool: ["rox.session.open", "rox_session"],
-  publisherId: ["dev.goldcoders", "Dev"],
+  reservedTool: ["buwiz.session.open", "rox_session"],
+  publisherId: ["app.buwiz", "Dev"],
   keyId: ["gc-2026-01", "-gc"],
 };
 
@@ -192,8 +217,15 @@ test("MAN-07 every grammar of section 3: one valid and one invalid value", () =>
   refused((m) => (m.publisher.id = "Goldcoders"), "manifest_invalid");
   refused((m) => (m.routines[0].reads[0].tools = ["search_mail!"]), "manifest_invalid");
   refused((m) => (m.short = "mcp"), "manifest_invalid", /reserved/);
-  refused((m) => (m.id = "rox.goldcoders.fixture"), "manifest_invalid");
-  refused((m) => (m.apps[0].permissions.tools.push("rox.provision")), "manifest_invalid", /reserved/);
+  refused((m) => (m.id = "buwiz.goldcoders.fixture"), "manifest_invalid");
+  refused((m) => reshort(m, "buwiz"), "manifest_invalid", /reserved/);
+  // the app's bundle id and the buwiz names are reserved; the rox ones are not any more
+  const reserved = (id) => V1_RESERVED.idPrefixes.some((p) => id.startsWith(p));
+
+  assert.ok(reserved("com.buwiz.bot") && reserved("com.buwiz.bot.forms") && reserved("buwiz.x.y"));
+  assert.ok(!reserved("app.buwiz.ebirforms") && !reserved("app.buwiz.books") && !reserved("rox.x.y"));
+  assert.ok(!isV1("reservedTool", "rox.provision"));
+  refused((m) => (m.apps[0].permissions.tools.push("buwiz.provision")), "manifest_invalid", /reserved/);
   // a canonical token is what the typed token becomes
   assert.deepEqual(v1Canonical("@fx:item:tkt_0123456789ABCDEFGHJKMNPQRS"), { short: "fx", scope: "item", ticket: "tkt_0123456789ABCDEFGHJKMNPQRS" });
 });
@@ -300,13 +332,13 @@ test("manifest: a props schema outside the subset and non-integer numbers are re
   const text = JSON.stringify(signed()).replace('"maximum":99', '"maximum":9.5');
 
   assert.throws(() => verifyManifest(text, trust), { code: "manifest_invalid", message: /integers only/ });
-  refused((m) => (m.apps[1].entry = "nsh://fx/card"), "manifest_invalid", /rox-app/);
+  refused((m) => (m.apps[1].entry = "nsh://fx/card"), "manifest_invalid", /buwiz-app/);
   refused((m) => (m.apps[0].permissions.attach = ["note"]), "manifest_invalid", /attach: true/);
   refused((m) => (m.apps[0].permissions.open.apps = ["elsewhere"]), "manifest_invalid");
   refused((m) => (m.apps[0].permissions.open.external = ["http://example.com"]), "manifest_invalid");
 });
 
-test("manifest: inline min_height and max_height bound rox.fit around the declared height", () => {
+test("manifest: inline min_height and max_height bound buwiz.fit around the declared height", () => {
   ok((m) => Object.assign(m.apps[1].inline, { min_height: 120, max_height: 640 }));
   // the declared height (the first frame) is within the range
   ok((m) => Object.assign(m.apps[1].inline, { min_height: m.apps[1].inline.height, max_height: m.apps[1].inline.height }));
@@ -329,7 +361,7 @@ test("MAN-10 a tool name that does not start with <short>_ is refused", () => {
   const m = check(signed()).manifest;
   const tools = ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_resolve", "fx_open", "fx_search"].map((name) => ({ name }));
 
-  assert.doesNotThrow(() => checkTools(m, [...tools, { name: "rox.provision" }]));
+  assert.doesNotThrow(() => checkTools(m, [...tools, { name: "buwiz.provision" }]));
   assert.throws(() => checkTools(m, [...tools, { name: "search" }]), { code: "manifest_invalid", message: /start with fx_/ });
   assert.throws(() => checkTools(m, tools.slice(1)), { code: "manifest_invalid", message: /fx_echo/ });
 });
@@ -361,7 +393,7 @@ test("MAN-14 routines[].params is a small JSON Schema of an instance's settings,
 test("MAN-13 routines[].writes names the plugin's own tools that change data, once each", () => {
   ok((m) => (m.routines[0].writes = ["fx_echo"]));
   refused((m) => (m.routines[0].writes = ["gws_send_mail"]), "manifest_invalid", /writes\[0\].*start with fx_/);
-  refused((m) => (m.routines[0].writes = ["rox.provision"]), "manifest_invalid", /reserved/);
+  refused((m) => (m.routines[0].writes = ["buwiz.provision"]), "manifest_invalid", /reserved/);
   refused((m) => (m.routines[0].writes = ["fx_echo", "fx_echo"]), "manifest_invalid", /listed twice/);
   refused((m) => (m.routines[0].writes = "fx_echo"), "manifest_invalid", /array/);
   // against the running plugin: a write it does not have, or a read-only tool
@@ -378,7 +410,7 @@ test("MAN-13 routines[].writes names the plugin's own tools that change data, on
 
 test("LCY-09 a routine's writes are on the install review, and an update that adds one needs consent", () => {
   const base = { title: "BIR", version: "2.6.0", publisher: { name: "Goldcoders" }, apps: [] };
-  const r = { id: "bir-payments", name: "BIR payments (MyEG and banks)", reads: [{ plugin: "dev.goldcoders.google-workspace", tools: ["gws_search_mail"] }] };
+  const r = { id: "bir-payments", name: "BIR payments (MyEG and banks)", reads: [{ plugin: "app.buwiz.google-workspace", tools: ["gws_search_mail"] }] };
   const next = { ...base, routines: [{ ...r, writes: ["bir_record_payment"] }] };
   const review = reviewOf(next, () => "Google Workspace");
 

@@ -1,5 +1,5 @@
 //! The host-internal API Rox calls (`/v1/host/*`, v1/routes.mjs; plan
-//! 5.5h). Every request carries `X-Rox-Host: <token>`; the token is 32
+//! 5.5h). Every request carries `X-Buwiz-Host: <token>`; the token is 32
 //! random bytes written to `<data dir>/host-token` (0600) when the hub
 //! starts, after the port is ours, and a request without it is answered
 //! 401 before anything else. The Origin and JSON guard has run already.
@@ -82,12 +82,12 @@ fn same(got: &[u8], want: &[u8]) -> bool {
 /// Whether `headers` carry this process's host token (constant time).
 pub fn authorized(headers: &HeaderMap) -> bool {
     let want = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
-    same(headers.get("x-rox-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
+    same(headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
 }
 
 fn authorized_by(rs: &Routines, headers: &HeaderMap) -> bool {
     let want = rs.token.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
-    same(headers.get("x-rox-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
+    same(headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
 }
 
 /// v1/routes.mjs's `STATUS`: a refusal's HTTP status.
@@ -152,7 +152,7 @@ pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
 
 async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if !authorized_by(&rs, &req.headers) {
-        return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Rox-Host is missing or wrong");
+        return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Buwiz-Host is missing or wrong");
     }
     let path = req.path().to_owned();
     if req.method == Method::GET && path == "/v1/host/plugins" {

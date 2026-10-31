@@ -47,7 +47,7 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
     }
 }
 
-/// The broker's host token (`X-Rox-Host`), read at each request: the
+/// The broker's host token (`X-Buwiz-Host`), read at each request: the
 /// broker makes a new one when it restarts. `None` when there is none.
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
@@ -73,7 +73,7 @@ fn req(method: &str, path: &str) -> HttpRequest {
     if is_host_route(path)
         && let Some(token) = host_token()
     {
-        r.headers.push(("X-Rox-Host".to_owned(), token));
+        r.headers.push(("X-Buwiz-Host".to_owned(), token));
     }
     r
 }

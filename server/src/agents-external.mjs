@@ -2,7 +2,7 @@
 // messaging.md §10). An endpoint belongs to one agent and is a participant
 // `ext:<id>` in its conversations:
 // - kind "hook": an incoming webhook, POST /v1/hooks/<id>/<secret> with
-//   `X-Rox-Signature: t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`;
+//   `X-Buwiz-Signature: t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`;
 //   what the agent sends back goes to its `url` when it has one (signed
 //   with `out_secret`, retried on 5xx for 24 h, dropped on 4xx), else it is
 //   held for nobody to read and dropped after 24 h.
@@ -25,7 +25,7 @@ const same = (a, b) => {
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
-/** `X-Rox-Signature` for `body` at unix second `t`. */
+/** `X-Buwiz-Signature` for `body` at unix second `t`. */
 export const signature = (secret, body, t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
 
 export class ExternalError extends Error {
@@ -110,7 +110,7 @@ export function createExternals({ db, agents, now = () => Date.now(), post = def
     const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(String(header || ""));
 
     if (!m || Math.abs(now() / 1000 - Number(m[1])) > SKEW_S || !same(signature(r.secret, raw, m[1]), `t=${m[1]},v1=${m[2]}`))
-      refuse(401, "bad_signature", "X-Rox-Signature is missing, wrong or older than 5 minutes");
+      refuse(401, "bad_signature", "X-Buwiz-Signature is missing, wrong or older than 5 minutes");
     const times = (hits.get(id) || []).filter((x) => x > now() - 3600_000);
 
     hits.set(id, times);
@@ -179,7 +179,7 @@ export function createExternals({ db, agents, now = () => Date.now(), post = def
     let status = 0;
 
     try {
-      status = await post(r.url, o.msg, { "content-type": "application/json", "x-rox-signature": signature(r.out_secret, o.msg, Math.floor(now() / 1000)) });
+      status = await post(r.url, o.msg, { "content-type": "application/json", "x-buwiz-signature": signature(r.out_secret, o.msg, Math.floor(now() / 1000)) });
     } catch {}
     const attempts = o.attempts + 1;
 

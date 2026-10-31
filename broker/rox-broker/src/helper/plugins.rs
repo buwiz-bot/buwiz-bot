@@ -2,8 +2,8 @@
 //! records, processes, restarts.
 //!
 //! A v1 plugin is a stdio MCP child this host owns. Every spawn runs the
-//! same gate: connect, `rox.provision` with the plugin key as the first
-//! request (7.8), read `rox://manifest`, verify it (5.2), check tools/list
+//! same gate: connect, `buwiz.provision` with the plugin key as the first
+//! request (7.8), read `buwiz://manifest`, verify it (5.2), check tools/list
 //! against it, and compare it with the install record (12.1). Only then is
 //! the plugin `running`, under a new generation. A crash restarts it with
 //! backoff 1-60 s; the seventh restart within 10 minutes leaves it `failed`
@@ -519,22 +519,22 @@ impl Host {
     }
 
     async fn gate(&self, conn: &Conn, seed: &str, known: &str) -> Result<(Value, String, Vec<Value>, String), Fail> {
-        // a first spawn learns the id rox.provision names from the manifest
+        // a first spawn learns the id buwiz.provision names from the manifest
         // (resources are readable before provision; only tools are gated)
         let id = if known.is_empty() { peek_id(conn).await } else { known.to_owned() };
         let public = rox_v1::keys::SessionKey::from_seed(seed).map(|k| k.public()).unwrap_or_default();
-        let args = json!({"protocol": "1.0.0", "plugin": id, "key": {"alg": "ed25519", "seed": seed}, "pub": public});
-        let prov = match self.reserved(conn, "rox.provision", args, self.timeouts.reserved).await {
+        let args = json!({"protocol": manifest::HOST_PROTOCOL, "plugin": id, "key": {"alg": "ed25519", "seed": seed}, "pub": public});
+        let prov = match self.reserved(conn, "buwiz.provision", args, self.timeouts.reserved).await {
             Ok(p) => p,
-            Err(e) => return refuse("plugin_invalid", format!("rox.provision failed: {}", js::slice_utf16(e.message(), 200))),
+            Err(e) => return refuse("plugin_invalid", format!("buwiz.provision failed: {}", js::slice_utf16(e.message(), 200))),
         };
         let sha_ok = get(&prov, "manifest_sha256").map(js::string_of).is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
         if get(&prov, "ok") != Some(&Value::Bool(true)) || !sha_ok {
-            return refuse("plugin_invalid", "rox.provision did not answer {ok: true, manifest_sha256}");
+            return refuse("plugin_invalid", "buwiz.provision did not answer {ok: true, manifest_sha256}");
         }
         let (manifest, sha256, tools, instructions) = self.read_verified(conn).await?;
         if get(&prov, "manifest_sha256").and_then(Value::as_str) != Some(sha256.as_str()) {
-            return refuse("manifest_invalid", "rox.provision reports a manifest other than the one the plugin serves");
+            return refuse("manifest_invalid", "buwiz.provision reports a manifest other than the one the plugin serves");
         }
         Ok((manifest, sha256, tools, instructions))
     }
@@ -543,7 +543,7 @@ impl Host {
         let listed = conn.request("resources/list", json!({}), mcp::DEFAULT_TIMEOUT).await?;
         let resources = get(&listed, "resources").and_then(Value::as_array).cloned().unwrap_or_default();
         if !resources.iter().any(|r| get(r, "uri").and_then(Value::as_str) == Some(MANIFEST_URI)) {
-            return refuse("manifest_invalid", "the plugin lists no rox://manifest");
+            return refuse("manifest_invalid", "the plugin lists no buwiz://manifest");
         }
         let read = conn.request("resources/read", json!({"uri": MANIFEST_URI}), mcp::DEFAULT_TIMEOUT).await?;
         let text = first_text(&read).unwrap_or_default();
@@ -962,7 +962,7 @@ impl Host {
         }))
     }
 
-    /// 13.6, broker side: rox.uninstall (best effort, 5 s), end the opens,
+    /// 13.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,
     /// stop, delete the key, remove the record.
     pub async fn uninstall(&self, id: &str) -> Res {
         let row = self.must_row(id)?;
@@ -983,7 +983,7 @@ impl Host {
             },
         };
         if let Some(conn) = &conn {
-            let _ = self.reserved(conn, "rox.uninstall", json!({}), self.timeouts.reserved).await;
+            let _ = self.reserved(conn, "buwiz.uninstall", json!({}), self.timeouts.reserved).await;
         }
         if let Some(t) = temp {
             t.close().await;

@@ -24,7 +24,7 @@ use crate::mini_v1::{
     session::tests::CertBroker,
 };
 
-const FIXTURE: &str = "dev.goldcoders.fixture";
+const FIXTURE: &str = "app.buwiz.fixture";
 const TICKET: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
 
 /// The fixture board's permissions (the fixture manifest's).
@@ -58,7 +58,7 @@ fn plugin(id: &str, perms: &Value) -> PluginEntry {
 fn app(script: &str) -> String {
     format!(
         r#"import {{ signal, Text }} from "nsh";
-import {{ rox }} from "rox";
+import {{ buwiz }} from "buwiz";
 export default function T() {{
   const out = signal("waiting");
   const show = (v) => out.set(typeof v === "string" ? v : JSON.stringify(v));
@@ -74,7 +74,7 @@ export default function T() {{
 /// which an app's source may not name (the source check refuses it), to
 /// show the engine's policy refuses what the bridge did not grant.
 fn probe(js: String) -> String {
-    js.replacen("const __roxBridge", "const probeHost = (n, d) => __roxHost.call(n, d);\nconst __roxBridge", 1)
+    js.replacen("const __buwizBridge", "const probeHost = (n, d) => __buwizHost.call(n, d);\nconst __buwizBridge", 1)
 }
 
 /// What the fake broker saw and how it answers.
@@ -305,20 +305,20 @@ fn app_07_ungranted_methods_are_absent() {
     let mut o = Open::start(
         json!({"tools": ["fx_echo"]}),
         r#"
-        const absent = ["open", "attach", "pickFile", "storage", "copy"].filter((k) => !(k in rox) && rox[k] === undefined);
+        const absent = ["open", "attach", "pickFile", "storage", "copy"].filter((k) => !(k in buwiz) && buwiz[k] === undefined);
         let reassigned = "kept";
-        try { globalThis.rox = {}; } catch (e) { reassigned = "refused"; }
-        try { rox.call = null; } catch (e) {}
+        try { globalThis.buwiz = {}; } catch (e) { reassigned = "refused"; }
+        try { buwiz.call = null; } catch (e) {}
         let added = "kept";
-        try { rox.open = () => 1; } catch (e) { added = "refused"; }
-        return [absent.join(","), typeof rox.call, typeof rox.ticket.title, Object.isFrozen(rox), globalThis.rox === rox, typeof rox.open, rox.app.app, rox.app.sdk].join(" ");
+        try { buwiz.open = () => 1; } catch (e) { added = "refused"; }
+        return [absent.join(","), typeof buwiz.call, typeof buwiz.ticket.title, Object.isFrozen(buwiz), globalThis.buwiz === buwiz, typeof buwiz.open, buwiz.app.app, buwiz.app.sdk].join(" ");
         "#,
     );
     assert_eq!(o.wait("open"), "open,attach,pickFile,storage,copy function function true true undefined board 1");
     // and at the host level: the channel handles only the granted names
     let p = &o.ctx.prepared;
-    assert_eq!(p.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
-    assert!(!p.permissions.policy().access().allows_host("rox.open"));
+    assert_eq!(p.permissions.methods(), ["buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta", "buwiz.call"]);
+    assert!(!p.permissions.policy().access().allows_host("buwiz.open"));
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn app_07_a_call_of_an_ungranted_host_name_fails_in_the_engine() {
         json!({"tools": ["fx_echo"]}),
         r#"
         const tries = [];
-        for (const name of ["rox.open", "rox.copy", "rox.storage.get", "rox.provision"]) {
+        for (const name of ["buwiz.open", "buwiz.copy", "buwiz.storage.get", "buwiz.provision"]) {
           try { await probeHost(name, {}); tries.push("ran"); } catch (e) { tries.push("refused"); }
         }
         return "host " + tries.join(",");
@@ -359,7 +359,7 @@ fn app_04_no_fetch_storage_or_network_globals() {
 fn brg_01_a_tool_not_in_permissions_is_denied_and_nothing_is_sent() {
     let mut o = Open::start(
         board_perms(),
-        r#"return await rox.call("fx_secret", {});"#,
+        r#"return await buwiz.call("fx_secret", {});"#,
     );
     assert_eq!(o.wait("threw"), "threw permission_denied: \"fx_secret\" is not in this app's tools");
     assert!(o.broker.calls.lock().unwrap().is_empty(), "sent: {:?}", o.broker.calls.lock().unwrap());
@@ -370,8 +370,8 @@ fn brg_03_a_call_goes_out_signed_by_the_opens_session_key() {
     let mut o = Open::start(
         board_perms(),
         r#"
-        const a = await rox.call("fx_echo", { code: "1601C", n: 2 });
-        const b = await rox.call("fx_text");
+        const a = await buwiz.call("fx_echo", { code: "1601C", n: 2 });
+        const b = await buwiz.call("fx_text");
         return "ok " + JSON.stringify(a) + " " + b;
         "#,
     );
@@ -396,9 +396,9 @@ fn rox_call_maps_tool_errors_big_results_and_bad_args() {
         r#"
         const out = [];
         for (const [tool, args] of [["fx_fail", {}], ["fx_big", {}], ["fx_echo", [1]], ["fx_echo", { s: "x".repeat(300000) }]]) {
-          try { await rox.call(tool, args); out.push("ok"); } catch (e) { out.push(e.code + (e instanceof RoxError ? "" : "?") + (e.retryable ? "!" : "")); }
+          try { await buwiz.call(tool, args); out.push("ok"); } catch (e) { out.push(e.code + (e instanceof BuwizError ? "" : "?") + (e.retryable ? "!" : "")); }
         }
-        try { await rox.call("fx_fail"); } catch (e) { out.push(e.message); }
+        try { await buwiz.call("fx_fail"); } catch (e) { out.push(e.message); }
         return "mapped " + out.join(",");
         "#,
     );
@@ -414,7 +414,7 @@ fn brg_12_the_ninth_call_waits_and_the_twenty_first_in_a_second_is_rate_limited(
         board_perms(),
         r#"
         const all = [];
-        for (let i = 0; i < 21; i++) all.push(rox.call("fx_count", { ms: 150 }));
+        for (let i = 0; i < 21; i++) all.push(buwiz.call("fx_count", { ms: 150 }));
         const done = await Promise.allSettled(all);
         const ok = done.filter((d) => d.status === "fulfilled").length;
         const limited = done.filter((d) => d.status === "rejected" && d.reason.code === "rate_limited" && d.reason.retryable).length;
@@ -429,7 +429,7 @@ fn brg_12_the_ninth_call_waits_and_the_twenty_first_in_a_second_is_rate_limited(
 #[test]
 fn brg_11_a_call_past_the_limit_rejects_timeout() {
     let limits = Limits { timeout: Duration::from_millis(300), ..Limits::default() };
-    let mut o = Open::start_with(FIXTURE, board_perms(), r#"return await rox.call("fx_slow", { ms: 1500 });"#, limits, |_| {});
+    let mut o = Open::start_with(FIXTURE, board_perms(), r#"return await buwiz.call("fx_slow", { ms: 1500 });"#, limits, |_| {});
     let shown = o.wait("threw");
     assert!(shown.starts_with("threw timeout: "), "{shown}");
 }
@@ -441,7 +441,7 @@ fn brg_13_open_url_is_https_to_listed_origins_and_asks_every_time() {
         r#"
         const out = [];
         for (const url of ["http://example.com/", "mailto:a@example.com", "file:///etc/passwd", "https://evil.example/x", "https://example.com/a?b=1"]) {
-          try { await rox.open({ url }); out.push("opened"); } catch (e) { out.push(e.code); }
+          try { await buwiz.open({ url }); out.push("opened"); } catch (e) { out.push(e.code); }
         }
         return "urls " + out.join(",");
         "#,
@@ -457,7 +457,7 @@ fn brg_13_open_url_is_https_to_listed_origins_and_asks_every_time() {
     let mut o = Open::start_with(
         FIXTURE,
         board_perms(),
-        r#"await rox.open({ url: "https://Example.com/a" }); await rox.open({ url: "https://example.com/b" }); return "opened";"#,
+        r#"await buwiz.open({ url: "https://Example.com/a" }); await buwiz.open({ url: "https://example.com/b" }); return "opened";"#,
         Limits::default(),
         |ui| ui.yes.store(true, Ordering::SeqCst),
     );
@@ -474,7 +474,7 @@ fn rox_open_app_pushes_declared_apps_without_asking() {
             r#"
         const out = [];
         for (const t of [{{ app: "card", props: {{ ticket: "{TICKET}" }}, ticket: "{TICKET}" }}, {{ app: "board" }}, {{ app: "card", props: {{}} }}, {{ app: "card", props: {{ ticket: "t" }}, ticket: "123" }}, {{ app: "card", url: "https://example.com" }}]) {{
-          try {{ await rox.open(t); out.push("pushed"); }} catch (e) {{ out.push(e.code); }}
+          try {{ await buwiz.open(t); out.push("pushed"); }} catch (e) {{ out.push(e.code); }}
         }}
         return "apps " + out.join(",");
         "#
@@ -500,9 +500,9 @@ fn brg_14_pick_file_returns_no_path_and_read_after_close_rejects_closed() {
         r#"
         const refused = [];
         for (const opts of [{ extensions: [".pdf"] }, { multiple: true }, { path: "/etc" }]) {
-          try { await rox.pickFile(opts); refused.push("picked"); } catch (e) { refused.push(e.code); }
+          try { await buwiz.pickFile(opts); refused.push("picked"); } catch (e) { refused.push(e.code); }
         }
-        const files = await rox.pickFile({ extensions: ["CSV"] });
+        const files = await buwiz.pickFile({ extensions: ["CSV"] });
         const f = files[0];
         const bytes = await f.read();
         const text = String.fromCharCode(...bytes);
@@ -539,7 +539,7 @@ fn brg_14_read_after_close_rejects_closed_in_the_app() {
         FIXTURE,
         board_perms(),
         r#"
-        const [f] = await rox.pickFile();
+        const [f] = await buwiz.pickFile();
         await f.read();
         for (let i = 0; i < 400; i++) {
           try { await f.read(); } catch (e) { return "after " + e.code; }
@@ -563,7 +563,7 @@ fn brg_14_read_after_close_rejects_closed_in_the_app() {
     let mut o = Open::start_with(
         FIXTURE,
         board_perms(),
-        r#"try { await rox.pickFile(); return "big picked"; } catch (e) { return "big " + e.code; }"#,
+        r#"try { await buwiz.pickFile(); return "big picked"; } catch (e) { return "big " + e.code; }"#,
         Limits::default(),
         move |ui| *ui.files.lock().unwrap() = vec![f3],
     );
@@ -576,7 +576,7 @@ fn brg_15_attach_without_consent_is_declined_and_changes_nothing() {
     let script = r#"
         const out = [];
         for (const [scope, value] of [["note", "x"], ["item", "123"]]) {
-          try { out.push(JSON.stringify(await rox.attach(scope, value))); } catch (e) { out.push(e.code); }
+          try { out.push(JSON.stringify(await buwiz.attach(scope, value))); } catch (e) { out.push(e.code); }
         }
         return "attach " + out.join(" ");
     "#;
@@ -595,7 +595,7 @@ fn brg_15_attach_without_consent_is_declined_and_changes_nothing() {
     let mut o = Open::start_with(
         FIXTURE,
         board_perms(),
-        r#"const a = await rox.attach("item", "123"); const b = await rox.attach("item", "123"); return "yes " + JSON.stringify(a, ["token", "title", "attached"]) + " " + b.attached;"#,
+        r#"const a = await buwiz.attach("item", "123"); const b = await buwiz.attach("item", "123"); return "yes " + JSON.stringify(a, ["token", "title", "attached"]) + " " + b.attached;"#,
         Limits::default(),
         |ui| {
             ui.chat.store(true, Ordering::SeqCst);
@@ -611,15 +611,15 @@ fn brg_16_storage_round_trips_through_the_bridge_within_its_limits() {
     let mut o = Open::start(
         board_perms(),
         r#"
-        await rox.storage.set("draft.1601C", "{\"a\":1}");
-        const got = await rox.storage.get("draft.1601C");
-        const none = await rox.storage.get("nope");
+        await buwiz.storage.set("draft.1601C", "{\"a\":1}");
+        const got = await buwiz.storage.get("draft.1601C");
+        const none = await buwiz.storage.get("nope");
         const out = [];
         for (const [k, v] of [["k".repeat(129), "v"], ["ok", "x".repeat(2000)], ["bad/key", "v"]]) {
-          try { await rox.storage.set(k, v); out.push("set"); } catch (e) { out.push(e.code); }
+          try { await buwiz.storage.set(k, v); out.push("set"); } catch (e) { out.push(e.code); }
         }
-        await rox.storage.remove("draft.1601C");
-        return "store " + got + " " + none + " " + out.join(",") + " " + JSON.stringify(await rox.storage.keys());
+        await buwiz.storage.remove("draft.1601C");
+        return "store " + got + " " + none + " " + out.join(",") + " " + JSON.stringify(await buwiz.storage.keys());
         "#,
     );
     assert_eq!(o.wait("store"), "store {\"a\":1} null invalid_args,quota_exceeded,invalid_args []");
@@ -633,11 +633,11 @@ fn copy_and_ticket_titles_go_through_the_host() {
         board_perms(),
         &format!(
             r#"
-        await rox.copy("BIR 1601C, 2026-09");
-        const t = await rox.ticket.title("{TICKET}");
-        const gone = await rox.ticket.title("tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+        await buwiz.copy("BIR 1601C, 2026-09");
+        const t = await buwiz.ticket.title("{TICKET}");
+        const gone = await buwiz.ticket.title("tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
         let bad = "";
-        try {{ await rox.ticket.title("123"); }} catch (e) {{ bad = e.code; }}
+        try {{ await buwiz.ticket.title("123"); }} catch (e) {{ bad = e.code; }}
         return "host " + t + " " + gone + " " + bad;
         "#
         ),
@@ -649,16 +649,16 @@ fn copy_and_ticket_titles_go_through_the_host() {
 #[test]
 fn the_viewport_is_a_signal_the_host_moves() {
     let source = r#"import { Text } from "nsh";
-import { rox } from "rox";
+import { buwiz } from "buwiz";
 export default function T() {
   let frozen = "no";
-  try { rox.viewport().width = 1; } catch (e) { frozen = "yes"; }
-  return <Text>{"size " + rox.viewport().width + "x" + rox.viewport().height + " " + rox.viewport().placement + " " + frozen}</Text>;
+  try { buwiz.viewport().width = 1; } catch (e) { frozen = "yes"; }
+  return <Text>{"size " + buwiz.viewport().width + "x" + buwiz.viewport().height + " " + buwiz.viewport().placement + " " + frozen}</Text>;
 }
 "#;
     let mut o = Open::start_source(FIXTURE, json!({}), source, Limits::default(), |_| {});
     assert_eq!(o.wait("size"), "size 800x600 full yes");
-    o.channel.send("rox.viewport", json!({"width": 480, "height": 320, "placement": "inline"})).unwrap();
+    o.channel.send("buwiz.viewport", json!({"width": 480, "height": 320, "placement": "inline"})).unwrap();
     assert_eq!(o.wait("size 480"), "size 480x320 inline yes");
 }
 
@@ -666,14 +666,14 @@ export default function T() {
 fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
     // the fixture board declares no inline range: 120 .. 640
     let script = r#"
-        rox.fit(284.2);
-        rox.fit(285);
-        rox.fit(20);
-        rox.fit(5000);
+        buwiz.fit(284.2);
+        buwiz.fit(285);
+        buwiz.fit(20);
+        buwiz.fit(5000);
         let bad = "";
-        try { rox.fit("tall"); } catch (e) { bad = e.code; }
-        try { rox.fit(-1); } catch (e) { bad += " " + e.code; }
-        return "fit " + typeof rox.fit + " " + bad;
+        try { buwiz.fit("tall"); } catch (e) { bad = e.code; }
+        try { buwiz.fit(-1); } catch (e) { bad += " " + e.code; }
+        return "fit " + typeof buwiz.fit + " " + bad;
     "#;
     let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
     assert_eq!(o.wait("fit"), "fit function invalid_args invalid_args");
@@ -683,7 +683,7 @@ fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
     }
     // 285 is within 2 points of 285 (284.2 rounds up): no change
     assert_eq!(*o.ui.fits.lock().unwrap(), [285.0, 120.0, 640.0]);
-    let mut full = Open::start(json!({}), r#"rox.fit(300); return "fit " + typeof rox.fit;"#);
+    let mut full = Open::start(json!({}), r#"buwiz.fit(300); return "fit " + typeof buwiz.fit;"#);
     assert_eq!(full.wait("fit"), "fit function");
     std::thread::sleep(Duration::from_millis(200));
     assert!(full.ui.fits.lock().unwrap().is_empty(), "a full-screen open's fit is ignored");
@@ -691,8 +691,8 @@ fn fit_sizes_an_inline_card_within_its_range_and_full_screen_ignores_it() {
 
 #[test]
 fn ready_reaches_an_inline_card_and_full_screen_ignores_it() {
-    // a post, granted to every app: apps feature-detect it (`rox.ready?.()`)
-    let script = r#"rox.ready(); rox.ready?.(); return "ready " + typeof rox.ready;"#;
+    // a post, granted to every app: apps feature-detect it (`buwiz.ready?.()`)
+    let script = r#"buwiz.ready(); buwiz.ready?.(); return "ready " + typeof buwiz.ready;"#;
     let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
     assert_eq!(o.wait("ready"), "ready function");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -710,10 +710,10 @@ fn ready_reaches_an_inline_card_and_full_screen_ignores_it() {
 fn brg_19_an_inline_card_takes_rox_drawn_actions_and_a_press_reaches_the_app() {
     let script = r#"
         const got = [];
-        const off = rox.onAction((id) => got.push("other " + id));
+        const off = buwiz.onAction((id) => got.push("other " + id));
         off();
-        rox.onAction((id) => got.push(id));
-        await rox.actions([
+        buwiz.onAction((id) => got.push(id));
+        await buwiz.actions([
           { id: "later", label: "Later" },
           { id: "pay", label: "Mark paid", primary: true },
           { id: "void", label: "Void", disabled: true },
@@ -726,12 +726,12 @@ fn brg_19_an_inline_card_takes_rox_drawn_actions_and_a_press_reaches_the_app() {
           [{ id: "a", label: "A", tone: "red" }],
           "pay",
         ]) {
-          try { await rox.actions(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
+          try { await buwiz.actions(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
         }
-        try { rox.onAction("pay"); } catch (e) { codes.push("on " + e.code); }
-        await rox.meta({ text: "Due in 3 days", pill: true });
-        try { await rox.meta({ text: "x".repeat(33) }); } catch (e) { codes.push("meta " + e.code); }
-        await rox.meta(null);
+        try { buwiz.onAction("pay"); } catch (e) { codes.push("on " + e.code); }
+        await buwiz.meta({ text: "Due in 3 days", pill: true });
+        try { await buwiz.meta({ text: "x".repeat(33) }); } catch (e) { codes.push("meta " + e.code); }
+        await buwiz.meta(null);
         for (let i = 0; i < 500 && !got.length; i++) await new Promise((r) => setTimeout(r, 10));
         await new Promise((r) => setTimeout(r, 50));
         return "pressed " + got.join(",") + " " + codes.join(" ");
@@ -766,9 +766,9 @@ fn brg_19_settle_collapses_an_inline_card_to_one_line_and_full_screen_ignores_th
     let script = r#"
         const codes = [];
         for (const bad of ["", "Paid\nThanks", "x".repeat(121), 5]) {
-          try { await rox.settle(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
+          try { await buwiz.settle(bad); codes.push("ok"); } catch (e) { codes.push(e.code); }
         }
-        await rox.settle("  Marked paid · ₱12,000  ");
+        await buwiz.settle("  Marked paid · ₱12,000  ");
         return "settled " + codes.join(" ");
     "#;
     let mut o = Open::start_placed("inline", FIXTURE, json!({}), &app(script), Limits::default(), |_| {});
@@ -778,12 +778,12 @@ fn brg_19_settle_collapses_an_inline_card_to_one_line_and_full_screen_ignores_th
     let mut full = Open::start(
         json!({}),
         r#"
-        await rox.actions([{ id: "pay", label: "Pay", primary: true }]);
-        await rox.meta({ text: "Paid" });
-        await rox.settle("Paid");
+        await buwiz.actions([{ id: "pay", label: "Pay", primary: true }]);
+        await buwiz.meta({ text: "Paid" });
+        await buwiz.settle("Paid");
         let bad = "";
-        try { await rox.actions([{ id: "a b", label: "A" }]); } catch (e) { bad = e.code; }
-        return "full " + [typeof rox.actions, typeof rox.onAction, typeof rox.settle, typeof rox.meta].join(",") + " " + bad;
+        try { await buwiz.actions([{ id: "a b", label: "A" }]); } catch (e) { bad = e.code; }
+        return "full " + [typeof buwiz.actions, typeof buwiz.onAction, typeof buwiz.settle, typeof buwiz.meta].join(",") + " " + bad;
         "#,
     );
     assert_eq!(full.wait("full"), "full function,function,function,function invalid_args");
@@ -819,14 +819,14 @@ fn fit_is_paced_and_the_last_height_still_lands() {
 
 #[test]
 fn a_plugin_restart_ends_the_session_and_calls_reject_plugin_restarted() {
-    let plugin = "dev.goldcoders.restartfixture";
+    let plugin = "app.buwiz.restartfixture";
     let mut o = Open::start_with(
         plugin,
         board_perms(),
         r#"
-        await rox.call("fx_echo", {});
+        await buwiz.call("fx_echo", {});
         for (let i = 0; i < 400; i++) {
-          try { await rox.call("fx_echo", {}); } catch (e) { return "ended " + e.code + " " + e.retryable; }
+          try { await buwiz.call("fx_echo", {}); } catch (e) { return "ended " + e.code + " " + e.retryable; }
           await new Promise((r) => setTimeout(r, 10));
         }
         return "ended never";
@@ -902,15 +902,15 @@ fn con_01_in_the_bridge_only_open_url_and_attach_ask() {
         &format!(
             r#"
         const out = [];
-        await rox.call("fx_echo", {{ a: 1 }}); out.push("call");
-        await rox.ticket.title("{TICKET}"); out.push("title");
-        await rox.open({{ app: "card", props: {{ ticket: "{TICKET}" }} }}); out.push("app");
-        await rox.pickFile({{}}); out.push("pick");
-        await rox.copy("x"); out.push("copy");
-        await rox.storage.set("k", "v"); out.push("storage");
+        await buwiz.call("fx_echo", {{ a: 1 }}); out.push("call");
+        await buwiz.ticket.title("{TICKET}"); out.push("title");
+        await buwiz.open({{ app: "card", props: {{ ticket: "{TICKET}" }} }}); out.push("app");
+        await buwiz.pickFile({{}}); out.push("pick");
+        await buwiz.copy("x"); out.push("copy");
+        await buwiz.storage.set("k", "v"); out.push("storage");
         const asked0 = "none";
-        await rox.open({{ url: "https://example.com/x" }}); out.push("url");
-        await rox.attach("item", "{TICKET}"); out.push("attach");
+        await buwiz.open({{ url: "https://example.com/x" }}); out.push("url");
+        await buwiz.attach("item", "{TICKET}"); out.push("attach");
         return "done " + out.join(",") + " " + asked0;
         "#
         ),
@@ -939,8 +939,8 @@ fn preview_is_absent_without_the_permission() {
         json!({"tools": ["fx_doc"]}),
         r#"
         let host = "ran";
-        try { await probeHost("rox.preview", {tool: "fx_doc"}); } catch (e) { host = "refused"; }
-        return "preview " + typeof rox.preview + " " + host;
+        try { await probeHost("buwiz.preview", {tool: "fx_doc"}); } catch (e) { host = "refused"; }
+        return "preview " + typeof buwiz.preview + " " + host;
         "#,
     );
     assert_eq!(o.wait("preview"), "preview undefined refused");
@@ -952,8 +952,8 @@ fn preview_shows_the_apps_own_tools_document_signed_for_preview() {
     let mut o = Open::start(
         json!({"tools": ["fx_doc"], "preview": {}}),
         r#"
-        const a = await rox.preview({tool: "fx_doc", args: {form: "2551Q"}});
-        await rox.preview({tool: "fx_doc", title: "  BIR Form 2551Q — Dela Cruz  "});
+        const a = await buwiz.preview({tool: "fx_doc", args: {form: "2551Q"}});
+        await buwiz.preview({tool: "fx_doc", title: "  BIR Form 2551Q — Dela Cruz  "});
         return "shown " + String(a);
         "#,
     );
@@ -987,7 +987,7 @@ fn preview_refuses_undeclared_tools_bad_args_and_results_without_a_document() {
           {tool: "fx_fail"},
           {tool: "fx_doc"},
         ]) {
-          try { await rox.preview(ask); codes.push("shown"); } catch (e) { codes.push(e.code); }
+          try { await buwiz.preview(ask); codes.push("shown"); } catch (e) { codes.push(e.code); }
         }
         return "codes " + codes.join(",");
         "#,

@@ -587,8 +587,8 @@ export default async function handle(req, res) {
   }
   // POST /mcp/open {url} — a mini app opening another, a new chat with a
   // draft, or a file in Rox's viewer: nsh has no open-URL API, so the
-  // server hands a `rox://app/…`, `rox://chat/new?draft=…` or
-  // `rox://view?path=<absolute path>` link to the system, which routes it
+  // server hands a `buwiz://app/…`, `buwiz://chat/new?draft=…` or
+  // `buwiz://view?path=<absolute path>` link to the system, which routes it
   // back to Rox (lib.rs on_open_url). Nothing else is opened.
   if (req.method === "POST" && req.url === "/mcp/open") {
     let body = "";
@@ -598,14 +598,14 @@ export default async function handle(req, res) {
       let url = "";
       try { url = String(JSON.parse(body || "{}").url || ""); } catch {}
       let view = null;
-      try { view = /^rox:\/\/view\?[^\s]*$/.test(url) ? new URL(url).searchParams.get("path") : null; } catch {}
-      if (!/^rox:\/\/app\/[a-z0-9-]+\/[A-Za-z0-9._-]+(\?[^\s]*)?$/.test(url) && !/^rox:\/\/chat\/new\?draft=[^\s]*$/.test(url) && !view?.startsWith("/")) {
+      try { view = /^buwiz:\/\/view\?[^\s]*$/.test(url) ? new URL(url).searchParams.get("path") : null; } catch {}
+      if (!/^buwiz:\/\/app\/[a-z0-9-]+\/[A-Za-z0-9._-]+(\?[^\s]*)?$/.test(url) && !/^buwiz:\/\/chat\/new\?draft=[^\s]*$/.test(url) && !view?.startsWith("/")) {
         res.statusCode = 400;
-        return res.end(JSON.stringify({ ok: false, error: "only rox://app/<server>/<app>, rox://chat/new?draft= and rox://view?path=<absolute path> links" }));
+        return res.end(JSON.stringify({ ok: false, error: "only buwiz://app/<server>/<app>, buwiz://chat/new?draft= and buwiz://view?path=<absolute path> links" }));
       }
       // an app link gets a one-time pass, so Rox opens it without asking
       // (open-pass.mjs); other links keep Rox's own rules
-      const target = url.startsWith("rox://app/") ? withPass(url) : url;
+      const target = url.startsWith("buwiz://app/") ? withPass(url) : url;
       execFile("open", [target], (e) => res.end(JSON.stringify(e ? { ok: false, error: String(e.message) } : { ok: true })));
     });
     return true;

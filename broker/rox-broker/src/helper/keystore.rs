@@ -5,7 +5,7 @@
 //! reached only through `/usr/bin/security` (rule R5): that tool already
 //! has access to Node's items, so a rebuilt rox-broker never prompts. A
 //! seed goes to `security -i` on stdin, never in argv, and is never
-//! logged. `ROX_KEYSTORE=file:<dir>` keeps one 0600 file per plugin
+//! logged. `BUWIZ_KEYSTORE=file:<dir>` keeps one 0600 file per plugin
 //! instead; the tests use it.
 
 use std::io::Write as _;
@@ -39,14 +39,14 @@ fn check_seed(seed: &str) -> Result<(), String> {
 }
 
 impl Keystore {
-    /// The keystore `ROX_KEYSTORE` names (`file:<dir>` or `keychain`); the
+    /// The keystore `BUWIZ_KEYSTORE` names (`file:<dir>` or `keychain`); the
     /// Keychain when it is empty.
     pub fn from_spec(spec: &str) -> Result<Keystore, String> {
         if let Some(dir) = spec.strip_prefix("file:") {
             return Ok(Keystore::File(PathBuf::from(dir)));
         }
         if !spec.is_empty() && spec != "keychain" {
-            return Err(format!("ROX_KEYSTORE must be file:<dir> or keychain, not {}", spec.chars().take(40).collect::<String>()));
+            return Err(format!("BUWIZ_KEYSTORE must be file:<dir> or keychain, not {}", spec.chars().take(40).collect::<String>()));
         }
         Ok(Keystore::Keychain)
     }

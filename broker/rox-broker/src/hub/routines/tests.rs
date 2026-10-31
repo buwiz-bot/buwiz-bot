@@ -36,8 +36,8 @@ use crate::hub::Hub;
 use crate::v1::trust::Trust;
 use crate::v1::V1Error;
 
-const FX: &str = "dev.goldcoders.fixture";
-const GWS: &str = "dev.goldcoders.google-workspace";
+const FX: &str = "app.buwiz.fixture";
+const GWS: &str = "app.buwiz.google-workspace";
 const START: f64 = 1_800_000_000_000.0;
 
 // ── the fixture and google-workspace plugins ─────────────────────────────
@@ -70,7 +70,7 @@ impl Fake {
             protocol: "1.0.0".into(),
             publisher_key_id: "k1".into(),
             plugin_pub: "pub".into(),
-            manifest: json!({"id": id, "short": short, "title": title, "publisher": {"id": "dev.goldcoders"}, "routines": routines}).to_string(),
+            manifest: json!({"id": id, "short": short, "title": title, "publisher": {"id": "app.buwiz"}, "routines": routines}).to_string(),
             manifest_sha256: "0".repeat(64),
             tools: json!(tools).to_string(),
             enabled: true,
@@ -408,17 +408,17 @@ async fn rtn_v1_routines_in_order() {
     v1.run_due(ctx).await;
     let q = w.fake.calls.lock().unwrap().iter().find(|c| c.1 == "fx_query").cloned().unwrap();
     assert_eq!(w.fake.calls_to("fx_query").len(), 1, "RTN-02");
-    let caller = &q.3.unwrap()["rox/caller"];
+    let caller = &q.3.unwrap()["buwiz/caller"];
     assert_eq!((caller["origin"].clone(), caller["plugin"].clone(), caller["routine"].clone()), (json!("routine"), json!(FX), json!("bir-mail")), "RTN-02 8.4: origin routine");
     assert_eq!(searches().iter().map(|a| a["query"].clone()).collect::<Vec<_>>(), [json!("from:bir.gov.ph")], "RTN-02: the search got the query string");
     assert_eq!(w.stub.count(), 1, "RTN-02: exactly one prompt run");
     let t = w.stub.all()[0].clone();
     assert_eq!(t.turn.thread, home.id, "RTN-02: the routine's own thread");
-    assert_eq!(t.turn.routine.as_deref(), Some("dev.goldcoders.fixture/bir-mail"));
+    assert_eq!(t.turn.routine.as_deref(), Some("app.buwiz.fixture/bir-mail"));
     assert_eq!(t.shown, "New item · Tax Return Receipt Confirmation");
     assert!(t.prompt.starts_with("(This routine runs on its own every 300s"), "{}", t.prompt);
-    assert!(t.prompt.contains("## Routine: BIR mail (approved plugin dev.goldcoders.fixture)\nRecord each BIR confirmation."), "RTN-02 10.2 label");
-    assert!(t.prompt.contains("New item from dev.goldcoders.google-workspace gws_search_mail:\n{\n \"id\": \"m1\",\n \"from\": \"BIR eFPS <efps@bir.gov.ph>\",\n \"subject\": \"Tax Return Receipt Confirmation\",\n \"date\": \"Mon, 26 Oct 2026 09:12:00 +0800\",\n \"snippet\": \"1701Q received. Reference 2026-ABC-123.\"\n}"), "RTN-02: {}", t.prompt);
+    assert!(t.prompt.contains("## Routine: BIR mail (approved plugin app.buwiz.fixture)\nRecord each BIR confirmation."), "RTN-02 10.2 label");
+    assert!(t.prompt.contains("New item from app.buwiz.google-workspace gws_search_mail:\n{\n \"id\": \"m1\",\n \"from\": \"BIR eFPS <efps@bir.gov.ph>\",\n \"subject\": \"Tax Return Receipt Confirmation\",\n \"date\": \"Mon, 26 Oct 2026 09:12:00 +0800\",\n \"snippet\": \"1701Q received. Reference 2026-ABC-123.\"\n}"), "RTN-02: {}", t.prompt);
     let reads = json!([{"plugin": GWS, "tools": ["gws_search_mail", "gws_read_mail"]}]);
     assert_eq!(t.turn.surface, Some(json!({"plugin": FX, "routine": "bir-mail", "instance": w.inst("bir-mail"), "params": {}, "reads": reads, "writes": []})), "RTN-02");
     let r = w.listed("bir-mail");
@@ -840,7 +840,7 @@ async fn ins_v1_instances_in_order() {
 fn req(method: Method, url: &str, token: Option<&str>, body: Option<Value>) -> HubRequest {
     let mut headers = HeaderMap::new();
     if let Some(t) = token {
-        headers.insert("x-rox-host", HeaderValue::from_str(t).unwrap());
+        headers.insert("x-buwiz-host", HeaderValue::from_str(t).unwrap());
     }
     if body.is_some() {
         headers.insert("content-type", HeaderValue::from_static("application/json"));
@@ -875,7 +875,7 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
     let refusal = |code: &str, message: &str, retryable: bool| json!({"ok": false, "code": code, "message": message, "retryable": retryable}).to_string();
 
     // RTH-01: 401, 405, 404, bodies
-    assert_eq!(text(hub.answer(req(Method::GET, "/v1/host/plugins", None, None)).await).await, (401, refusal("unauthorized", "X-Rox-Host is missing or wrong", false)));
+    assert_eq!(text(hub.answer(req(Method::GET, "/v1/host/plugins", None, None)).await).await, (401, refusal("unauthorized", "X-Buwiz-Host is missing or wrong", false)));
     assert_eq!(text(hub.answer(req(Method::GET, "/v1/host/plugins", Some(&"x".repeat(43)), None)).await).await.0, 401);
     assert_eq!(text(hub.answer(req(Method::GET, "/v1/host/call", tok, None)).await).await, (405, refusal("not_supported", "GET /v1/host/call", false)));
     assert_eq!(text(hub.answer(req(Method::PUT, "/v1/host/plugins", tok, None)).await).await, (405, refusal("not_supported", "PUT /v1/host/plugins", false)));

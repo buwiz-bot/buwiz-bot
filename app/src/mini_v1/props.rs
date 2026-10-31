@@ -1,4 +1,4 @@
-//! `rox.props` checked before an app mounts (spec 6.6): the limits on any
+//! `buwiz.props` checked before an app mounts (spec 6.6): the limits on any
 //! props object, then the app's `apps[].props` schema in the JSON Schema
 //! subset the manifest allows. Props that fail are not opened; the host
 //! adds nothing to them.

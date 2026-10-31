@@ -3,7 +3,7 @@
 //! `ext:<id>` in its conversations:
 //!
 //! - kind "hook": an incoming webhook, `POST /v1/hooks/<id>/<secret>` with
-//!   `X-Rox-Signature: t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`;
+//!   `X-Buwiz-Signature: t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`;
 //!   what the agent sends back goes to its `url` when it has one (signed
 //!   with `out_secret`, retried on 5xx for 24 h on the clock's timers,
 //!   dropped on 4xx with a notice), else it is held for nobody to read.
@@ -61,7 +61,7 @@ pub fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
     outer.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `X-Rox-Signature` for `body` at unix second `t` (as written).
+/// `X-Buwiz-Signature` for `body` at unix second `t` (as written).
 pub fn signature(secret: &str, body: &str, t: &str) -> String {
     format!("t={t},v1={}", hmac_hex(secret.as_bytes(), format!("{t}.{body}").as_bytes()))
 }
@@ -301,7 +301,7 @@ impl Externals {
         let signed = parse_signature(header.unwrap_or(""))
             .is_some_and(|(t, v1)| (now / 1000.0 - t.parse::<f64>().unwrap_or(f64::NAN)).abs() <= SKEW_S && same(&signature(&r.secret, raw, t), &format!("t={t},v1={v1}")));
         if !signed {
-            return refuse(401, "bad_signature", "X-Rox-Signature is missing, wrong or older than 5 minutes");
+            return refuse(401, "bad_signature", "X-Buwiz-Signature is missing, wrong or older than 5 minutes");
         }
         {
             let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
@@ -420,7 +420,7 @@ impl Externals {
                 return;
             }
             let t = ((self.now() / 1000.0).floor() as i64).to_string();
-            let headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("x-rox-signature".to_owned(), signature(r.out_secret.as_deref().unwrap_or(""), &o.msg, &t))];
+            let headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("x-buwiz-signature".to_owned(), signature(r.out_secret.as_deref().unwrap_or(""), &o.msg, &t))];
             let status = (self.post)(url, o.msg.clone(), headers).await.unwrap_or(0);
             let attempts = o.attempts + 1;
             if (200..300).contains(&status) {

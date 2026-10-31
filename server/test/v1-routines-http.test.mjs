@@ -66,14 +66,14 @@ const WATCH = {
 const WRITER = { id: "fx-writer", name: "Fixture writer", description: "Echoes what its webhook hands it.", every_s: 600, query: { tool: "fx_query", field: "query" }, prompt: "Echo each item.", writes: ["fx_echo"] };
 let manifest;
 
-const brokerEnv = () => ({ ...offlineEnv(stubLog), ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile });
+const brokerEnv = () => ({ ...offlineEnv(stubLog), BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile });
 let server;
 let token = "";
 let installed;
 
 const host = (method, path, obj, extra = {}) =>
   request(method, path, {
-    headers: { "X-Rox-Host": token, ...(obj === undefined ? {} : { "Content-Type": "application/json" }), ...extra },
+    headers: { "X-Buwiz-Host": token, ...(obj === undefined ? {} : { "Content-Type": "application/json" }), ...extra },
     body: obj === undefined ? undefined : typeof obj === "string" ? obj : JSON.stringify(obj),
   });
 const refusal = (code, message, retryable = false) => ({ ok: false, code, message, retryable });
@@ -86,7 +86,7 @@ const R = (path, body) => host("POST", `/v1/host/routines/${path}`, { plugin: FX
 /** /v1/host/events as a listener: {raw, events, close}. */
 function listen() {
   const out = { raw: "", events: [], status: 0, headers: {} };
-  const req = httpRequest({ host: "127.0.0.1", port: PORT, path: "/v1/host/events", headers: { "X-Rox-Host": token } }, (res) => {
+  const req = httpRequest({ host: "127.0.0.1", port: PORT, path: "/v1/host/events", headers: { "X-Buwiz-Host": token } }, (res) => {
     out.status = res.statusCode;
     out.headers = res.headers;
     res.setEncoding("utf8");
@@ -141,7 +141,7 @@ test("RTH-01 every /v1/host route's refusals: 401, 405, 404, a body that is no J
   const no = await request("GET", "/v1/host/plugins");
 
   assert.equal(no.status, 401);
-  assert.equal(no.text, JSON.stringify(refusal("unauthorized", "X-Rox-Host is missing or wrong")));
+  assert.equal(no.text, JSON.stringify(refusal("unauthorized", "X-Buwiz-Host is missing or wrong")));
   assert.match(no.headers["content-type"], /^application\/json/);
   const get = await host("GET", "/v1/host/call");
 
@@ -163,7 +163,7 @@ test("RTH-01 every /v1/host route's refusals: 401, 405, 404, a body that is no J
 
   assert.deepEqual([big.status, big.json], [400, body]);
   // an empty body is {}
-  const empty = await request("POST", "/v1/host/routines/approve", { headers: { "X-Rox-Host": token, "Content-Type": "application/json" } });
+  const empty = await request("POST", "/v1/host/routines/approve", { headers: { "X-Buwiz-Host": token, "Content-Type": "application/json" } });
 
   assert.deepEqual([empty.status, empty.json], [400, refusal("invalid_args", "send {plugin, routine}")]);
 
@@ -208,7 +208,7 @@ test("RTH-02 install, then GET /v1/host/plugins byte for byte with each routine'
         short: "fx",
         title: "Fixture",
         version: "1.0.0",
-        protocol: "1.0.0",
+        protocol: "2.0.0",
         publisher: manifest.publisher,
         state: "running",
         code: null,
@@ -606,7 +606,7 @@ test("RTH-12 the 5.5h session routes' refusals: open, close, call, resolve, tick
     return r.json;
   };
 
-  await is("sessions/open", { ...open, plugin: "dev.goldcoders.nope" }, 404, "not_found", "dev.goldcoders.nope is not installed");
+  await is("sessions/open", { ...open, plugin: "app.buwiz.nope" }, 404, "not_found", "app.buwiz.nope is not installed");
   await is("sessions/open", { ...open, app: "nope" }, 404, "not_found", `${FX} has no app nope`);
   await is("sessions/open", { ...open, perms_sha256: "0".repeat(64) }, 400, "invalid_args", "perms_sha256 is not the digest of the installed app's permissions");
   await is("sessions/open", { ...open, not_after: Date.now() - 1 }, 400, "invalid_args", "not_after must be in the next 8 hours (unix ms)");
@@ -628,7 +628,7 @@ test("RTH-12 the 5.5h session routes' refusals: open, close, call, resolve, tick
 
   assert.deepEqual([unknownTicket.status, unknownTicket.json], [200, { ok: true, valid: false }]);
   await is("apps/source", { plugin: FX, app: "nope" }, 404, "not_found", `${FX} has no app nope`);
-  await is("apps/source", { plugin: "dev.goldcoders.nope", app: "card" }, 404, "not_found", "dev.goldcoders.nope is not installed");
+  await is("apps/source", { plugin: "app.buwiz.nope", app: "card" }, 404, "not_found", "app.buwiz.nope is not installed");
   assert.deepEqual((await host("POST", "/v1/host/sessions/close", { open_id: open.open_id })).json, { ok: true });
   assert.deepEqual((await host("POST", "/v1/host/sessions/close", { open_id: open.open_id })).json, { ok: true }, "closing twice is fine");
   await is("call", envelope({ ...open, ks }, "fx_echo", {}), 400, "session_invalid", "no open with a valid certificate has this open_id");
@@ -667,12 +667,12 @@ test("RTH-14 a restart writes a new host-token (0600); the old one is refused; e
   fake = await startFakeOpencodex();
   await server.stop();
   // the next broker runs on the fake (MOCK off) for RTH-15
-  server = await startServer(dataDir, { env: { ...modelEnv(fake, stubLog), ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile } });
+  server = await startServer(dataDir, { env: { ...modelEnv(fake, stubLog), BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile } });
   token = readFileSync(join(dataDir, "host-token"), "utf8");
   assert.notEqual(token, old);
   assert.match(token, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(statSync(join(dataDir, "host-token")).mode & 0o777, 0o600);
-  assert.equal((await request("GET", "/v1/host/plugins", { headers: { "X-Rox-Host": old } })).status, 401);
+  assert.equal((await request("GET", "/v1/host/plugins", { headers: { "X-Buwiz-Host": old } })).status, 401);
   assert.equal((await host("GET", "/v1/host/plugins")).status, 200);
   assert.ok(await waitFor(async () => (await plugin())?.state === "running", 20000), "the plugin started again");
   const threads = (await request("GET", "/threads")).json.list;

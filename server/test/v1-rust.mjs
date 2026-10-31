@@ -1,4 +1,4 @@
-// v1/manifest.mjs's checks run in rox-broker too (ROX_BROKER_CMD set):
+// v1/manifest.mjs's checks run in rox-broker too (BUWIZ_BROKER_CMD set):
 // every call asks `rox-broker manifest <op>` and Node's module the same
 // question and asserts the same answer (the value, or the code and
 // message), then hands back rox-broker's. Importing this in place of
@@ -9,7 +9,7 @@ import { V1Error } from "../src/v1/errors.mjs";
 import { isString } from "../src/v1/jcs.mjs";
 import * as node from "../src/v1/manifest.mjs";
 
-const CMD = process.env.ROX_BROKER_CMD;
+const CMD = process.env.BUWIZ_BROKER_CMD;
 
 const rust = (op, input) => JSON.parse(execFileSync(CMD, ["manifest", op], { input: JSON.stringify(input), encoding: "utf8", maxBuffer: 16 << 20 }));
 

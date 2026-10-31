@@ -152,7 +152,7 @@ pub(crate) fn markdown(
             streaming: streaming.get(),
             ..MarkdownOptions::default()
         })
-        // `rox://chat/…` links open that chat (and turn) in Rox; the rest
+        // `buwiz://chat/…` links open that chat (and turn) in Rox; the rest
         // open outside it.
         .on_link_press(|e: &nsh_base::TextViewLinkPressEvent| store_open_link(&e.url))
         .selectable(true)

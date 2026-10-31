@@ -453,7 +453,7 @@ fn a2a_08_a_card_the_recipients_hidden_turn_made_waits_in_its_own_chat_and_the_c
     let sent = w.send("piccolo", json!({"to": ["boss"], "subject": "Allow sending", "text": "Can you file it?", "expects_reply": false})).unwrap();
     let t = w.conv(&sent["conversation"]);
     let msg = t.turns.last().unwrap().message.clone().unwrap();
-    let links = vec![json!({"app": "dev.goldcoders.bir/card-quick", "title": "Allow once?"})];
+    let links = vec![json!({"app": "app.buwiz.ebirforms/card-quick", "title": "Allow once?"})];
     w.ctx.store.write(|s| cards_to_chat(s, START, "boss", &msg, &t.id, &links)).unwrap();
     let card = w.chat("boss").last().cloned().unwrap();
     assert_eq!(card.role, "ai");

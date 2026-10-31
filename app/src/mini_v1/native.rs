@@ -6,7 +6,7 @@
 //!
 //! Consent and the chat an attachment goes to are part B's: until it sets
 //! them ([`set_consent`], [`set_chat`]), consent is declined and there is
-//! no chat, so `rox.open({url})` and `rox.attach` fail closed.
+//! no chat, so `buwiz.open({url})` and `buwiz.attach` fail closed.
 
 use std::{
     cell::RefCell,
@@ -301,7 +301,7 @@ impl V1Open {
     /// The channel's viewport event, once the bridge is up.
     pub fn viewport(&self, view: &AppView, viewport: Value) {
         if self.slot.ctx.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-            let _ = view.host().send("rox.viewport", viewport);
+            let _ = view.host().send("buwiz.viewport", viewport);
         }
     }
 }

@@ -12,7 +12,7 @@
 //!   what it adds and needs Approve; a lower version needs the explicit
 //!   "Install older version" (12.1).
 //! - Uninstall (13.6, LCY-06): opens close and sessions end, the broker
-//!   uninstalls (the plugin's `rox.uninstall`, its key, its record), then
+//!   uninstalls (the plugin's `buwiz.uninstall`, its key, its record), then
 //!   Rox removes the plugin's attachments, pins and library entries and
 //!   deletes its apps' storage.
 
@@ -534,7 +534,7 @@ mod tests {
     fn inspect_answer(update: Value) -> Value {
         json!({
             "ok": true,
-            "manifest": {"id": "dev.goldcoders.fixture", "version": "1.1.0"},
+            "manifest": {"id": "app.buwiz.fixture", "version": "1.1.0"},
             "manifest_sha256": "ab".repeat(32),
             "review": {
                 "title": "Fixture", "publisher": "Goldcoders", "version": "1.1.0", "description": "Every feature.",
@@ -552,7 +552,7 @@ mod tests {
                 ],
             },
             "update": update,
-            "warnings": ["/report is also a command of dev.goldcoders.acc; it will need /fx:report"],
+            "warnings": ["/report is also a command of app.buwiz.acc; it will need /fx:report"],
         })
     }
 
@@ -564,7 +564,7 @@ mod tests {
                 "/v1/host/plugins/install" => match &self.refuse {
                     Some(e) => Err(e.clone()),
                     None => {
-                        *self.installed.lock().unwrap() = Some("dev.goldcoders.fixture".into());
+                        *self.installed.lock().unwrap() = Some("app.buwiz.fixture".into());
                         Ok(json!({"ok": true}))
                     }
                 },
@@ -656,7 +656,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let (records_dir, plugins_dir) = (base.join("rox"), base.join("rox/plugins"));
         // its own id: ending its sessions must not touch other tests' opens
-        let id = "dev.goldcoders.uninstallfx";
+        let id = "app.buwiz.uninstallfx";
         let entry = PluginEntry::from_json(&json!({"id": id, "short": "fx", "title": "Fixture", "version": "1.0.0"})).unwrap();
         let mut r = Records::default();
         r.attach("th1", &format!("@fx:item:{T}"), "Item One", &entry);
@@ -675,7 +675,7 @@ mod tests {
         assert!(after.attachments.is_empty() && after.pins.is_empty());
         assert!(!plugins_dir.join(id).exists(), "its storage is deleted");
         // a later link shows "not installed" and does nothing else
-        assert_eq!(links::route(&format!("rox://app/{id}/board"), &[]), links::Route::NotInstalled(id.into()));
+        assert_eq!(links::route(&format!("buwiz://app/{id}/board"), &[]), links::Route::NotInstalled(id.into()));
         // a broker refusal removes nothing on Rox's side
         let mut r = Records::default();
         r.attach("th1", &format!("@fx:item:{T}"), "Item One", &entry);
@@ -710,28 +710,28 @@ mod tests {
     #[test]
     fn the_list_reads_state_version_publisher_tools_and_routines() {
         let l = Listed::of(&json!({
-            "id": "dev.goldcoders.bir", "short": "bir", "title": "BIR", "version": "1.0.0", "publisher": {"name": "Goldcoders", "key_id": "gc-2026-01"},
+            "id": "app.buwiz.ebirforms", "short": "bir", "title": "BIR", "version": "1.0.0", "publisher": {"name": "Goldcoders", "key_id": "gc-2026-01"},
             "state": "failed", "code": "plugin_bad_signature", "message": "bad", "enabled": true, "generation": 4,
             "tools": [{"name": "bir_resolve", "description": "Resolve", "disabled": false}, {"name": "bir_file", "disabled": true}],
             "routines": [{"id": "bir-payments", "name": "Payments", "approved": false, "enabled": false, "available": false,
-                "reason": "dev.goldcoders.gws is not installed", "reads_status": [{"plugin": "dev.goldcoders.gws", "tools": ["gws_search_mail"]}],
+                "reason": "app.buwiz.gws is not installed", "reads_status": [{"plugin": "app.buwiz.gws", "tools": ["gws_search_mail"]}],
                 "last_run": 1793194720000u64, "last_error": "bir_payment_search: offline"}],
             "apps": [{"id": "forms", "title": "BIR Forms", "placement": ["full", "inline"]}],
         }));
         assert_eq!((l.publisher.as_str(), l.state_label().as_str(), l.failed()), ("Goldcoders", "Failed", true));
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
-        assert_eq!(l.routines[0].reads, ["dev.goldcoders.gws: gws_search_mail"]);
+        assert_eq!(l.routines[0].reads, ["app.buwiz.gws: gws_search_mail"]);
         assert_eq!((l.routines[0].last_run, l.routines[0].last_error.as_str()), (1793194720000.0, "bir_payment_search: offline"));
         assert_eq!((l.routines[0].home.as_str(), l.routines[0].last_items), ("", None));
         assert_eq!(l.apps, ["BIR Forms · full screen, inline"]);
-        let p = log_file("dev.goldcoders.bir").unwrap();
-        assert!(p.ends_with("v1/logs/dev.goldcoders.bir.log"), "{}", p.display());
+        let p = log_file("app.buwiz.ebirforms").unwrap();
+        assert!(p.ends_with("v1/logs/app.buwiz.ebirforms.log"), "{}", p.display());
         assert_eq!(log_file("../x"), None);
     }
 
     #[test]
     fn a_routine_threads_quiet_line_says_when_it_checked_and_what_it_found() {
-        let l = Listed::of(&json!({"id": "dev.goldcoders.bir", "routines": [{"id": "bir-payments", "name": "Payments",
+        let l = Listed::of(&json!({"id": "app.buwiz.ebirforms", "routines": [{"id": "bir-payments", "name": "Payments",
             "every_s": 300, "enabled": true, "available": true, "thread": "t1", "home": "t9",
             "last_run": 1793194720000u64, "last_error": null, "last_items": 0}]}));
         let r = l.routines[0].clone();

@@ -1,7 +1,7 @@
 // rox-broker hosting the v1 plugins (ROX_BROKER_V1_HOST=1, the Rust broker
 // plan's D10): the plugin processes are rox-broker's, so a Node restart
 // leaves them running, and Node, back, sees them as they are and calls
-// them again. Runs only with ROX_BROKER_CMD (a rox-broker); port
+// them again. Runs only with BUWIZ_BROKER_CMD (a rox-broker); port
 // V1_TEST_PORT + 1.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -12,7 +12,7 @@ import { after, test } from "node:test";
 import { HUB, ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 import { FX, bed, fixtureSpec, until } from "./v1-helpers.mjs";
 
-const RUST = !!process.env.ROX_BROKER_CMD;
+const RUST = !!process.env.BUWIZ_BROKER_CMD;
 const PORT = Number(process.env.V1_TEST_PORT || 8799) + 1;
 let broker;
 
@@ -24,7 +24,7 @@ after(async () => {
 
 function req(method, path, token, obj) {
   return new Promise((resolve, reject) => {
-    const headers = { "X-Rox-Host": token, ...(obj ? { "Content-Type": "application/json" } : {}) };
+    const headers = { "X-Buwiz-Host": token, ...(obj ? { "Content-Type": "application/json" } : {}) };
     const r = httpRequest({ host: "127.0.0.1", port: PORT, method, path, headers }, (res) => {
       let text = "";
 
@@ -58,11 +58,11 @@ const alive = (pid) => {
   }
 };
 
-test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs ROX_BROKER_CMD") || (process.env.ROX_BROKER_NO_NODE === "1" && "Node-only: restarts the Node behind rox-broker; with ROX_BROKER_NO_NODE=1 there is none") }, async () => {
+test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs BUWIZ_BROKER_CMD") || (process.env.ROX_BROKER_NO_NODE === "1" && "Node-only: restarts the Node behind rox-broker; with ROX_BROKER_NO_NODE=1 there is none") }, async () => {
   const b = bed("line");
   const data = tempDir("v1-line-data");
   const [bin, args] = brokerCommand();
-  const env = { ...process.env, ROX_BROKER_V1_HOST: "1", MOCK: "1", GROK_ALLOWED_ORIGINS: "", ROX_KEYSTORE: `file:${b.keysDir}`, ROX_TRUST_FILE: b.trustFile };
+  const env = { ...process.env, ROX_BROKER_V1_HOST: "1", MOCK: "1", GROK_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile };
 
   let log = "";
 

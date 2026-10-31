@@ -1,12 +1,12 @@
 //! The link router's decisions (`Store::open_link`), as pure functions:
-//! which local files `rox://view` may show, and which outside URLs go to
+//! which local files `buwiz://view` may show, and which outside URLs go to
 //! the system without asking.
 //!
 //! Links reach the router from text Rox shows (model replies, MCP results,
 //! library items, plugin pages) and from other apps and web pages (`open
-//! rox://…`, `lib.rs`). Both are untrusted, so:
+//! buwiz://…`, `lib.rs`). Both are untrusted, so:
 //!
-//! - `rox://view?path=` shows only previews: a page, PDF, Markdown or
+//! - `buwiz://view?path=` shows only previews: a page, PDF, Markdown or
 //!   image inside a folder of the account's own temporary folder
 //!   ([`viewable`]), after the path is resolved (`..`, symlinks). Mini apps
 //!   write their print previews there (the BIR host:
@@ -19,12 +19,12 @@
 //!   says so in Rox.
 //! - A mini app opens unasked only when the person opens it in Rox (the
 //!   sidebar, a pin, the composer, a link card). Another app's or a web
-//!   page's `rox://app/` link, and a tool result's `rox/open`, wait on
+//!   page's `buwiz://app/` link, and a tool result's `buwiz/open`, wait on
 //!   Open in the sheet ([`app_opens_unasked`], [`AppAsk`]).
 
 use std::path::{Path, PathBuf};
 
-/// The folder whose previews `rox://view` shows: the account's own
+/// The folder whose previews `buwiz://view` shows: the account's own
 /// temporary folder (`$TMPDIR`, private to the account on macOS).
 pub(crate) fn view_root() -> PathBuf {
     std::env::temp_dir()
@@ -35,11 +35,11 @@ pub(crate) fn view_dir() -> PathBuf {
     view_root().join("rox-view")
 }
 
-/// The kinds of file `rox://view` shows: previews, not text a temporary
+/// The kinds of file `buwiz://view` shows: previews, not text a temporary
 /// folder may hold (settings, logs, tokens).
 const PREVIEWS: &[&str] = &["html", "htm", "pdf", "md", "markdown", "png", "jpg", "jpeg", "gif", "webp", "svg"];
 
-/// `path` resolved when it is a preview `rox://view` may show: a file of a
+/// `path` resolved when it is a preview `buwiz://view` may show: a file of a
 /// [`PREVIEWS`] kind inside a folder of `root` (files loose in `root` itself
 /// are other programs' state, like the gpui-agent token).
 pub(crate) fn viewable(path: &str, root: &Path) -> Option<PathBuf> {
@@ -96,7 +96,9 @@ pub(crate) fn outside(url: &str) -> Outside {
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
     match scheme.as_str() {
         "http" | "https" | "mailto" | "tel" => Outside::Open,
-        "rox" => Outside::Refuse,
+        // `buwiz:` is Buwiz Bot's own; `rox:` was, before protocol 2.0, and an
+        // old build may still claim it, so neither goes to the system
+        "buwiz" | "rox" => Outside::Refuse,
         _ => Outside::Ask,
     }
 }
@@ -107,17 +109,17 @@ pub enum LinkAsk {
     /// An outside URL of a scheme [`outside`] asks about.
     Open(String),
     /// A new chat with this draft, asked for by another app
-    /// (`rox://chat/new?draft=`).
+    /// (`buwiz://chat/new?draft=`).
     NewChat(String),
     /// A plugin's mini app, full screen, asked for from outside Rox.
     App(AppAsk),
     /// A v1 plugin's app asked for by a link from outside Rox (9.7): its
     /// module key and title.
     V1App { key: String, title: String },
-    /// A v1 app's `rox.open({url})`: "Open <URL> in your browser?"; `id`
+    /// A v1 app's `buwiz.open({url})`: "Open <URL> in your browser?"; `id`
     /// names the bridge's waiting answer.
     V1Url { url: String, app: String, id: u64 },
-    /// A v1 app's `rox.attach`: "Attach <title> to this chat?".
+    /// A v1 app's `buwiz.attach`: "Attach <title> to this chat?".
     V1Attach { title: String, app: String, id: u64 },
 }
 
@@ -126,10 +128,10 @@ pub enum LinkAsk {
 pub enum AppOpener {
     /// The person, in Rox: the sidebar, a pin, the composer, a link card.
     Rox,
-    /// Another app or a web page: a `rox://app/` link the system handed
+    /// Another app or a web page: a `buwiz://app/` link the system handed
     /// Rox (a mini app's `/mcp/open` comes this way too).
     Outside,
-    /// A tool's result (`_meta["rox/open"]`), during a reply.
+    /// A tool's result (`_meta["buwiz/open"]`), during a reply.
     ToolResult,
 }
 
@@ -305,8 +307,8 @@ mod tests {
             "javascript:alert(1)",
             "file:///etc/passwd",
             "data:text/html,x",
-            "rox://chat/",
-            "rox://unknown",
+            "buwiz://chat/",
+            "buwiz://unknown",
             "https://",
             "https://example.com/a b",
             "not a url",

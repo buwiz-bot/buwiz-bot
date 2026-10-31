@@ -17,7 +17,7 @@ use crate::v1::trust::Trust;
 use crate::v1::V1Error;
 
 /// 9.8: the first-party publisher.
-pub const FIRST_PARTY: &str = "dev.goldcoders";
+pub const FIRST_PARTY: &str = "app.buwiz";
 
 /// The plugin host as routines read it.
 pub trait PluginView: Send + Sync {

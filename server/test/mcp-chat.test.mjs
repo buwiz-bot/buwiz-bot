@@ -113,7 +113,7 @@ test("MCHAT-06 POST /mcp/attach resolves a token, stores it and posts its card; 
   assert.deepEqual(r.json, {
     ok: true,
     attachment: {
-      id: a.id, server: "apps", token: "@apps:item:42", scope: "item", title: "Item 42", resolved_title: "Item 42", open: "rox://app/apps/hello",
+      id: a.id, server: "apps", token: "@apps:item:42", scope: "item", title: "Item 42", resolved_title: "Item 42", open: "buwiz://app/apps/hello",
       key: "mcp:apps/hello", details: { got: { name: "item", args: "42", complete: false } }, thread, bot: null, turn: a.turn, created_at: a.created_at,
     },
     existing: false,
@@ -123,7 +123,7 @@ test("MCHAT-06 POST /mcp/attach resolves a token, stores it and posts its card; 
   assert.equal(card.id, a.turn);
   assert.deepEqual([card.role, card.text, card.label], ["ai", "", ""]);
   assert.deepEqual(card.links, [{
-    provider: "mcp-app", id: "mcp:apps/hello", name: "Item 42", link: "rox://app/apps/hello", action: "attached", kind: "app", file_type: "An item",
+    provider: "mcp-app", id: "mcp:apps/hello", name: "Item 42", link: "buwiz://app/apps/hello", action: "attached", kind: "app", file_type: "An item",
     token: "@apps:item:42", attachment: a.id, at: a.created_at, type: "An item",
   }]);
   const again = (await postJson("/mcp/attach", { token: "@apps:item:42", thread })).json;

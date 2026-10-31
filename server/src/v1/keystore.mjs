@@ -5,7 +5,7 @@
 // `dev.goldcoders.rox.plugin-key`, account = plugin id. The seed goes to
 // `security -i` on stdin, never in argv (argv is visible to every process
 // through ps). Reads use `find-generic-password -w`, whose output is the
-// seed and is never logged. `ROX_KEYSTORE=file:<dir>` keeps one 0600 file
+// seed and is never logged. `BUWIZ_KEYSTORE=file:<dir>` keeps one 0600 file
 // per plugin instead; every test uses it and never touches the Keychain.
 import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -87,11 +87,11 @@ function keychainStore() {
   };
 }
 
-/** The keystore ROX_KEYSTORE names (`file:<dir>`), else the Keychain. */
-export function keystore(spec = process.env.ROX_KEYSTORE || "") {
+/** The keystore BUWIZ_KEYSTORE names (`file:<dir>`), else the Keychain. */
+export function keystore(spec = process.env.BUWIZ_KEYSTORE || "") {
   if (spec.startsWith("file:")) return fileStore(spec.slice(5));
 
-  if (spec && spec !== "keychain") throw new Error(`ROX_KEYSTORE must be file:<dir> or keychain, not ${spec.slice(0, 40)}`);
+  if (spec && spec !== "keychain") throw new Error(`BUWIZ_KEYSTORE must be file:<dir> or keychain, not ${spec.slice(0, 40)}`);
 
   return keychainStore();
 }

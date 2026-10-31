@@ -55,9 +55,9 @@ pub fn app_key(server: &str, app: &str, props: &Value) -> String {
     format!("mcp:{server}/{app}{}", if n > 0 { format!("|{}", js::stringify(props)) } else { String::new() })
 }
 
-/// `rox://app/<server>/<app>?props=<JSON>` → the mini app's key, or "".
+/// `buwiz://app/<server>/<app>?props=<JSON>` → the mini app's key, or "".
 pub fn key_of_open(open: &str) -> Result<String, String> {
-    let Some(rest) = open.strip_prefix("rox://app/") else { return Ok(String::new()) };
+    let Some(rest) = open.strip_prefix("buwiz://app/") else { return Ok(String::new()) };
     let server: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
     if server.is_empty() || !rest[server.len()..].starts_with('/') {
         return Ok(String::new());
@@ -344,8 +344,8 @@ mod tests {
         assert_eq!(parse_token("@apps:item:a b"), None);
         assert_eq!(tokens_in("see @a:b:1 and @c:d:2."), vec![("a".into(), "b".into()), ("c".into(), "d".into())]);
         assert_eq!(tokens_in("@a:b:1,@c:d:2"), vec![("a".into(), "b".into())]);
-        assert_eq!(key_of_open("rox://app/apps/hello").unwrap(), "mcp:apps/hello");
-        assert_eq!(key_of_open("rox://app/apps/hello?props=%7B%22a%22%3A1%7D").unwrap(), "mcp:apps/hello|{\"a\":1}");
+        assert_eq!(key_of_open("buwiz://app/apps/hello").unwrap(), "mcp:apps/hello");
+        assert_eq!(key_of_open("buwiz://app/apps/hello?props=%7B%22a%22%3A1%7D").unwrap(), "mcp:apps/hello|{\"a\":1}");
         assert_eq!(key_of_open("https://x").unwrap(), "");
     }
 }

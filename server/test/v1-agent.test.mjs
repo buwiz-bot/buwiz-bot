@@ -19,9 +19,9 @@ process.env.GROK_DATA_DIR = dataDir;
 
 process.env.MOCK = "1";
 
-process.env.ROX_KEYSTORE = `file:${b.keysDir}`;
+process.env.BUWIZ_KEYSTORE = `file:${b.keysDir}`;
 
-process.env.ROX_TRUST_FILE = b.trustFile;
+process.env.BUWIZ_TRUST_FILE = b.trustFile;
 
 const { toolList, execTool } = await import("../src/tools.mjs");
 const { plugins, sessions } = await import("../src/v1/broker.mjs");
@@ -86,14 +86,14 @@ test("AGT-09 the agent runs and lists routines, only its chats' plugin routines;
 });
 
 test("RSV-06 reserved rox.* names are absent from the agent tool list", NODE_ONLY, async () => {
-  assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "rox.provision"), "the plugin lists them");
+  assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "buwiz.provision"), "the plugin lists them");
   assert.ok(!(await names()).some((n) => n.startsWith("rox.")));
-  const r = await execTool({ id: 2 }, null, { name: "rox.provision", input: {} });
+  const r = await execTool({ id: 2 }, null, { name: "buwiz.provision", input: {} });
 
   assert.equal(r.is_error, true);
 });
 
-test("AUD-01 a tool whose rox/audience leaves out the agent is off the model's surface and refuses agent calls", NODE_ONLY, async () => {
+test("AUD-01 a tool whose buwiz/audience leaves out the agent is off the model's surface and refuses agent calls", NODE_ONLY, async () => {
   assert.ok(plugins.runtime(FX).tools.some((t) => t.name === "fx_app_only"), "the plugin lists it");
   assert.ok(!(await names()).includes("fx_app_only"));
   const r = await execTool({ id: 3 }, null, { name: "fx_app_only", input: {} });
@@ -116,7 +116,7 @@ test("ATT-01 the chat's attachments reach the model as canonical tokens of appro
     { token: `@fx:item:${tkt}`, plugin: FX, scope: "item", title: "Acme" },
     { token: "@fx:item:123-456-789", plugin: FX, scope: "item", title: "raw id" },
     { token: `@fx:note:${tkt}`, plugin: FX, scope: "note", title: "not attachable" },
-    { token: `@fx:item:${tkt}`, plugin: "dev.goldcoders.other", scope: "item", title: "another plugin" },
+    { token: `@fx:item:${tkt}`, plugin: "app.buwiz.other", scope: "item", title: "another plugin" },
   ];
 
   const text = v1PromptSection(plugins, "hello", atts);
@@ -161,9 +161,9 @@ test("AGT-04 a hint over 1500 chars is truncated with the marker and labelled", 
   const s = v1PromptSection(plugins, "for @fx:item:acme please");
 
   assert.match(s, /## Instructions from Fixture \(approved\)\n/);
-  assert.match(s, /## Scope: fx:item \(approved plugin dev\.goldcoders\.fixture\)\nItem by name\nItems\nAn attached item/);
+  assert.match(s, /## Scope: fx:item \(approved plugin app\.buwiz\.fixture\)\nItem by name\nItems\nAn attached item/);
   assert.ok(!s.includes("fx:note"), "only the scopes in play");
-  assert.match(v1RoutinePrompt(plugins, FX, "fx-digest"), /^## Routine: Fixture digest \(approved plugin dev\.goldcoders\.fixture\)\n/);
+  assert.match(v1RoutinePrompt(plugins, FX, "fx-digest"), /^## Routine: Fixture digest \(approved plugin app\.buwiz\.fixture\)\n/);
 });
 
 test("AGT-04 server instructions over 4000 chars are capped with the marker", NODE_ONLY, async () => {
@@ -198,7 +198,7 @@ test("INV-01 a typed @short:scope:value parses; the canonical form carries the t
   assert.ok(!r.token.includes("acme"), "the typed value does not survive");
 });
 
-test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a card, never an open", NODE_ONLY, async () => {
+test("INV-09 _meta buwiz/open on an error result is ignored; on a good one it is a card, never an open", NODE_ONLY, async () => {
   const bad = { id: 4 };
   const r1 = await execTool(bad, null, { name: "fx_open", input: { fail: true } });
 
@@ -209,12 +209,12 @@ test("INV-09 _meta rox/open on an error result is ignored; on a good one it is a
   const r2 = await execTool(good, null, { name: "fx_open", input: {} });
 
   assert.equal(r2.content, "Here is the card.");
-  assert.ok(!r2.content.includes("rox/open"), "_meta never reaches the model");
+  assert.ok(!r2.content.includes("buwiz/open"), "_meta never reaches the model");
   assert.equal(good.openApp, undefined, "nothing auto-opens (9.7)");
   assert.equal(good.v1Cards.length, 1);
   assert.equal(good.v1Cards[0].app, "card");
   assert.equal(good.linkTurn.links[0].action, "show", "inline: a Show button");
-  assert.match(good.linkTurn.links[0].link, /^rox:\/\/app\/dev\.goldcoders\.fixture\/card\?ticket=tkt_/);
+  assert.match(good.linkTurn.links[0].link, /^buwiz:\/\/app\/app\.buwiz\.fixture\/card\?ticket=tkt_/);
   // a card naming an app the plugin does not have is dropped
   const other = { id: 6 };
 
@@ -254,7 +254,7 @@ test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off t
   ];
   const r = await execTool(job, null, { name: "fx_open", input: { suggest } });
 
-  assert.ok(!r.content.includes("rox/suggest") && !r.content.includes("File 0619E"), "never shown to the model");
+  assert.ok(!r.content.includes("buwiz/suggest") && !r.content.includes("File 0619E"), "never shown to the model");
   assert.deepEqual(job.linkTurn.suggest.map((s) => s.label), ["File 0619E October", "L".repeat(40), "Third"]);
   assert.equal(job.linkTurn.suggest[1].prompt.length, 200);
   const failed = { id: 44 };
@@ -263,10 +263,10 @@ test("CARD-02 next steps: at most 3, labels 40 and prompts 200 chars, kept off t
   assert.equal(failed.linkTurn, undefined);
 });
 
-test("CARD-03 the plugin list says which plugins are first-party (approved, publisher dev.goldcoders)", NODE_ONLY, () => {
+test("CARD-03 the plugin list says which plugins are first-party (approved, publisher app.buwiz)", NODE_ONLY, () => {
   const fx = plugins.list().find((p) => p.id === FX);
 
-  assert.equal(fx.publisher.id, "dev.goldcoders");
+  assert.equal(fx.publisher.id, "app.buwiz");
   assert.equal(fx.first_party, true);
 });
 
@@ -293,7 +293,7 @@ test("routines: reads go only to approved plugins' readOnlyHint tools", NODE_ONL
   const k3 = broker(b3);
 
   stops.push(() => k3.plugins.stopAll());
-  b3.writeManifest((m) => (m.routines[0].reads = [{ plugin: FX, tools: ["fx_echo"] }, { plugin: "dev.goldcoders.google-workspace", tools: ["gws_search_mail"] }]));
+  b3.writeManifest((m) => (m.routines[0].reads = [{ plugin: FX, tools: ["fx_echo"] }, { plugin: "app.buwiz.google-workspace", tools: ["gws_search_mail"] }]));
   await installFixture(k3.plugins, b3);
   const [echo, gws] = k3.plugins.list()[0].routines[0].reads_status;
 
