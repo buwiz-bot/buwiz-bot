@@ -18,7 +18,7 @@ use nsh_core::element::Root;
 use nsh_core::keymap::{KeyMatch, Keymap, Keystroke};
 use nsh_core::platform::{Idiom, Os};
 use nsh_core::prelude::*;
-use nsh_core::{ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, ROOT_ID};
+use nsh_core::{ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, ROOT_ID, TouchEvent, TouchPhase, TouchPoint};
 use nsh_engine::{App, Engine, EngineConfig, MountSink};
 
 use crate::live::store;
@@ -30,6 +30,18 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// The files the buttons open (`open 0`, `open 1`, …).
 static FILES: OnceLock<Vec<Attach>> = OnceLock::new();
+/// The menu row the `pick` button picks.
+static PICK: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// The open menu's row [`PICK`] names, picked; the menu closes.
+fn pick_row() {
+    let label = PICK.lock().unwrap().clone();
+    let item = store().ctx.get_untracked().and_then(|m| m.items.into_iter().find(|i| i.label == label));
+    store().ctx.set(None);
+    if let Some(i) = item {
+        crate::ctx::act(&i);
+    }
+}
 
 /// Whether this is the child that runs `name`'s body; the parent runs it
 /// there and passes on its result.
@@ -113,10 +125,60 @@ fn probe() -> String {
         sheet.shape.with_untracked(Option::is_some),
         sheet.shown.with_untracked(|s| s.is_some() as u8),
         o.state.get_untracked().dirty,
+    ) + &sheet_probe()
+}
+
+/// The spreadsheet's part of the probe: its revision and sheet, the
+/// active cell, the chart selected and the first chart's frame (sheet
+/// pixels), the nudge waiting, the note, the column widths and row
+/// heights (pixels), the drawn selection's width, and whether the total
+/// `$1,504,750.00` is drawn as a number or as `#####`.
+fn sheet_probe() -> String {
+    use crate::office::xlsx::grid;
+    use nsh_core::canvas::CanvasOp;
+    let u = &store().office.sheet;
+    let shape = u.shape.get_untracked();
+    let (srev, active, editable) = shape.as_ref().map_or((0, 0, false), |s| (s.0.rev, s.0.active, s.0.editable));
+    let a = u.sel.get_untracked().active;
+    let chart = u.chart.get_untracked().map_or("-".to_owned(), |c| c.id);
+    let (charts, cx, cy, total) = u.shown.with_untracked(|s| {
+        let Some(s) = s else { return (0, 0.0, 0.0, "-") };
+        let (cx, cy) = s.list.charts.first().map_or((0.0, 0.0), |c| (c.rect.x / s.scale + s.vp.x, c.rect.y / s.scale + s.vp.y));
+        let measure = nsh_core::element::text_measurer();
+        let d = crate::office::draw::drawing(&s.list, &crate::office::draw::Palette::light(), &|f, t| measure(f, t).0);
+        let texts: Vec<String> = d.ops.iter().filter_map(|op| if let CanvasOp::FillText { text, .. } = op { Some(text.to_string()) } else { None }).collect();
+        let total = if texts.iter().any(|t| t == "$1,504,750.00") {
+            "number"
+        } else if texts.iter().any(|t| !t.is_empty() && t.chars().all(|c| c == '#')) {
+            "hashes"
+        } else {
+            "-"
+        };
+        (s.list.charts.len(), cx, cy, total)
+    });
+    let nudge = u.nudge.get_untracked().map_or("-".to_owned(), |n| format!("{},{}", n.1, n.2));
+    let note = u.note.get_untracked().replace(' ', "_");
+    let (cols, rows) = shape.as_ref().map_or((String::new(), String::new()), |s| {
+        let g = &s.0.geometry;
+        let cols: Vec<String> = (0..10).map(|c| format!("{:.1}", g.col_x(c + 1) - g.col_x(c))).collect();
+        let rows: Vec<String> = (0..6).map(|r| format!("{:.1}", g.row_y(r + 1) - g.row_y(r))).collect();
+        (cols.join(","), rows.join(","))
+    });
+    let selw = grid::sel_range(u).map_or(0.0, |r| r.2 - r.0);
+    let resizing = u.resize.get_untracked().is_some() as u8;
+    format!(
+        " srev={srev} active={active} editable={editable} act={},{} chart={chart} charts={charts} chartx={cx} charty={cy} total={total} nudge={nudge} note={note} cols={cols} rows={rows} selw={selw} drag={} resizing={resizing} editing={} menu={}",
+        a.0,
+        a.1,
+        u.chart_drag.get_untracked().is_some() as u8,
+        u.editing.get_untracked().is_some() as u8,
+        store().ctx.get_untracked().is_some() as u8,
     )
 }
 
 thread_local! {
+    /// The touches' clock, in milliseconds.
+    static CLOCK: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
     /// The label of the switch the last `switch` press picked.
     static SWITCHED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
@@ -152,6 +214,7 @@ fn Viewer() -> impl IntoElement {
                 .children(files.into_iter().enumerate().map(|(i, f)| view().label(format!("open {i}")).w(px(40.0)).h_full().on_press(move || store().open_file(&f)).into_element()))
                 .child(view().label("save").w(px(40.0)).h_full().on_press(crate::office::save))
                 .child(view().label("switch").w(px(40.0)).h_full().on_press(switch))
+                .child(view().label("pick").w(px(40.0)).h_full().on_press(pick_row))
                 .child(text(move || shown.get()).text_size(px(8.0))),
         )
         .child(view().flex_1().child(crate::files::layer()))
@@ -272,7 +335,10 @@ impl Headless {
 
     /// The newest live view labelled `label`.
     pub(crate) fn view(&self, label: &str) -> NodeId {
-        self.labels.iter().rev().find(|(id, l)| l == label && self.live.contains(id)).map(|(id, _)| *id).unwrap_or_else(|| panic!("no view labelled {label:?}"))
+        self.labels.iter().rev().find(|(id, l)| l == label && self.live.contains(id)).map(|(id, _)| *id).unwrap_or_else(|| {
+            let live: Vec<&str> = self.labels.iter().filter(|(id, _)| self.live.contains(id)).map(|(_, l)| l.as_str()).collect();
+            panic!("no view labelled {label:?} in {live:?}")
+        })
     }
 
     pub(crate) fn send(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
@@ -281,8 +347,13 @@ impl Headless {
 
     /// A click at `(x, y)` in the view labelled `label` (`shift` held).
     pub(crate) fn press_at(&mut self, label: &str, x: f32, y: f32, shift: bool) {
+        self.click(label, x, y, shift, 1);
+    }
+
+    /// The `clicks`th click of a quick run (2: a double click).
+    pub(crate) fn click(&mut self, label: &str, x: f32, y: f32, shift: bool, clicks: u32) {
         let id = self.view(label);
-        let e = PressEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: nsh_core::keymap::Modifiers { shift, ..Default::default() }, clicks: 1 };
+        let e = PressEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: nsh_core::keymap::Modifiers { shift, ..Default::default() }, clicks };
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, EventPayload::Press(e));
         }
@@ -299,6 +370,61 @@ impl Headless {
         let e = MouseEvent::new(point(px(x), px(y)), point(px(x), px(y)), Default::default(), Some(MouseButton::Left));
         self.send(id, EventKind::MouseMove, EventPayload::Mouse(e));
         self.pump(Duration::from_millis(50));
+    }
+
+    /// The mouse over the view at `(x, y)`, no button down.
+    fn hover(&mut self, label: &str, x: f32, y: f32) {
+        let id = self.view(label);
+        let e = MouseEvent::new(point(px(x), px(y)), point(px(x), px(y)), Default::default(), None);
+        self.send(id, EventKind::MouseMove, EventPayload::Mouse(e));
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// The secondary button at `(x, y)` in the view.
+    fn right_click(&mut self, label: &str, x: f32, y: f32) {
+        let id = self.view(label);
+        let e = ContextMenuEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: Default::default() };
+        self.send(id, EventKind::ContextMenu, EventPayload::ContextMenu(e));
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// A finger (the mouse's button, for the touch responder) on the view
+    /// labelled `label` at `(x, y)` of the surface, in `phase`.
+    fn touch(&mut self, label: &str, phase: TouchPhase, x: f32, y: f32) {
+        let id = self.view(label);
+        let at = point(px(x), px(y));
+        let time = CLOCK.with(|c| {
+            c.set(c.get() + 16.0);
+            c.get()
+        });
+        let p = TouchPoint { id: 1, target: id, path: vec![id], page: at, location: at, changed: true };
+        let e = TouchEvent { phase, timestamp: time, points: vec![p], activated: None };
+        self.send(ROOT_ID, EventKind::Touch, EventPayload::Touch(Box::new(e)));
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// A drag on the view from `(x, y)` by `(dx, dy)`, in four steps, the
+    /// button released at the end (`lift`) or held.
+    fn touch_drag(&mut self, label: &str, (x, y): (f32, f32), (dx, dy): (f32, f32), lift: bool) {
+        self.touch(label, TouchPhase::Start, x, y);
+        for k in 1..=4 {
+            let t = k as f32 / 4.0;
+            self.touch(label, TouchPhase::Move, x + dx * t, y + dy * t);
+        }
+        if lift {
+            self.touch(label, TouchPhase::End, x + dx, y + dy);
+        }
+    }
+
+    fn has(&self, label: &str) -> bool {
+        self.labels.iter().any(|(id, l)| l == label && self.live.contains(id))
+    }
+
+    /// The row labelled `label` of the open menu, picked (on the engine's
+    /// thread, by the `pick` button).
+    fn pick(&mut self, label: &str) {
+        *PICK.lock().unwrap() = label.to_owned();
+        self.press("pick");
     }
 
     /// A key as the platform takes it: the keymap's binding fires.
@@ -604,4 +730,202 @@ fn each_change_of_the_word_field_inserts_only_what_is_new() {
     app.press("save");
     until(&mut app, "saved again", |p| p.get("dirty").map(String::as_str) == Some("false"));
     assert_eq!(saved(&a).0, vec!["Helloabxd", "Second"]);
+}
+
+/// The showcase-like workbook open, its editing engine in and its chart
+/// drawn.
+fn open_showcase(name: &str) -> (Headless, PathBuf) {
+    let d = dir(name);
+    let x = d.join("showcase.xlsx");
+    std::fs::write(&x, super::xlsx::fixture::showcase()).unwrap();
+    let mut app = start(vec![attach(&x, "spreadsheet")]);
+    app.press("open 0");
+    sheet_shows(&mut app, "the workbook");
+    until(&mut app, "the editing engine and the chart", |p| p.get("editable").map(String::as_str) == Some("true") && num(p, "charts") == 1.0);
+    (app, x)
+}
+
+fn word<'a>(p: &'a HashMap<String, String>, k: &str) -> &'a str {
+    p.get(k).map_or("", String::as_str)
+}
+
+/// The column widths (pixels) the probe lists.
+fn widths(p: &HashMap<String, String>, k: &str) -> Vec<f32> {
+    word(p, k).split(',').filter_map(|v| v.parse().ok()).collect()
+}
+
+/// A saved workbook read again: its first sheet.
+fn reopened(path: &Path) -> betteroffice_xlsx::Sheet {
+    let wb = betteroffice_xlsx::Workbook::open(&std::fs::read(path).unwrap()).unwrap();
+    wb.model().sheets[0].clone()
+}
+
+#[test]
+fn a_chart_is_selected_dragged_nudged_and_deselected_as_on_the_web() {
+    if !in_child("a_chart_is_selected_dragged_nudged_and_deselected_as_on_the_web") {
+        return;
+    }
+    use crate::office::xlsx::chart::{MOVING, REFUSED};
+    let (mut app, path) = open_showcase("chart");
+    // the frame is H2:O17: K9 is under it
+    let p = read(&app);
+    let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+    let x0 = num(&p, "chartx");
+    assert!(near(x0, 448.0) && near(num(&p, "charty"), 20.0), "{p:?}");
+    let k9 = (10.5 * 64.0, 8.5 * 20.0);
+    app.press_at("Cells", k9.0, k9.1, false);
+    let p = until(&mut app, "the chart selected", |p| word(p, "chart") != "-");
+    assert_eq!(word(&p, "act"), "0,0", "the cell under the chart is not selected: {p:?}");
+    // a drag moves the outline, the release the chart: a column right, a row down
+    // the chart's view, by what a screen reader reads of it
+    let label = app.labels.iter().rev().find(|(id, l)| l.starts_with("Revenue by region") && app.live.contains(id)).map(|(_, l)| l.clone()).expect("the chart's view");
+    let label = label.as_str();
+    let rev = num(&p, "srev");
+    app.touch_drag(label, k9, (64.0, 20.0), false);
+    until(&mut app, "the outline dragged", |p| word(p, "drag") == "1");
+    app.touch(label, TouchPhase::End, k9.0 + 64.0, k9.1 + 20.0);
+    let p = until(&mut app, "the chart moved", |p| near(num(p, "chartx"), x0 + 64.0) && near(num(p, "charty"), 40.0));
+    assert_eq!(num(&p, "srev"), rev + 1.0, "one move: {p:?}");
+    assert_eq!(word(&p, "drag"), "0");
+    // arrows nudge the outline at once, the chart in one move once they rest
+    let rev = num(&p, "srev");
+    for k in ["right", "right", "right", "shift+down"] {
+        app.key(k);
+    }
+    let p = read(&app);
+    assert_eq!(word(&p, "nudge"), "3,10", "{p:?}");
+    assert_eq!(num(&p, "srev"), rev, "nothing sent yet: {p:?}");
+    let p = until(&mut app, "the nudge sent", |p| near(num(p, "chartx"), x0 + 67.0) && near(num(p, "charty"), 50.0));
+    assert_eq!(num(&p, "srev"), rev + 1.0, "the nudges as one move: {p:?}");
+    assert_eq!(word(&p, "nudge"), "-");
+    // Escape drops a nudge not sent and deselects
+    app.key("right");
+    app.key("escape");
+    until(&mut app, "deselected", |p| word(p, "chart") == "-");
+    app.pump(Duration::from_millis(500));
+    let p = read(&app);
+    assert!(near(num(&p, "chartx"), x0 + 67.0) && num(&p, "srev") == rev + 1.0, "the nudge dropped: {p:?}");
+    // Delete does nothing to the chart or the cells under it
+    let on = (12.0 * 64.0, 9.5 * 20.0);
+    app.press_at("Cells", on.0, on.1, false);
+    until(&mut app, "selected again", |p| word(p, "chart") != "-");
+    app.key("delete");
+    app.key("backspace");
+    app.pump(Duration::from_millis(300));
+    let p = read(&app);
+    assert_eq!(num(&p, "srev"), rev + 1.0, "no edit: {p:?}");
+    assert_ne!(word(&p, "chart"), "-");
+    // the cell commands are refused with the web's texts
+    app.key("mod+c");
+    until(&mut app, "refused", |p| word(p, "note") == REFUSED.replace(' ', "_"));
+    app.touch_drag(label, on, (30.0, 0.0), false);
+    app.key("mod+v");
+    until(&mut app, "refused mid-drag", |p| word(p, "note") == MOVING.replace(' ', "_"));
+    // the drag lost: the chart stays
+    app.touch(label, TouchPhase::Cancel, on.0 + 30.0, on.1);
+    let p = until(&mut app, "the drag cancelled", |p| word(p, "drag") == "0");
+    assert!(near(num(&p, "chartx"), x0 + 67.0), "{p:?}");
+    // a double click does nothing, a right click opens no menu
+    app.click("Cells", on.0, on.1, false, 2);
+    app.right_click("Cells", on.0, on.1);
+    let p = read(&app);
+    assert_eq!((word(&p, "editing"), word(&p, "menu")), ("0", "0"), "{p:?}");
+    // a press on a cell goes back to the cells
+    app.press_at("Cells", 32.0, 50.0, false);
+    let p = until(&mut app, "a cell", |p| word(p, "chart") == "-");
+    assert_eq!(word(&p, "act"), "2,0");
+    // saved: the anchor moved a column and a row, then 3 and 10 pixels
+    app.press("save");
+    until(&mut app, "saved", |p| p.get("dirty").map(String::as_str) == Some("false"));
+    let sheet = reopened(&path);
+    let from = sheet.charts[0].anchor.from_cell().unwrap();
+    assert_eq!((from.row, from.col), (2, 8), "{from:?}");
+    assert!(from.col_off > 0 && from.row_off > 0, "{from:?}");
+}
+
+#[test]
+fn columns_and_rows_resize_autofit_hide_and_save_as_in_excel() {
+    if !in_child("columns_and_rows_resize_autofit_hide_and_save_as_in_excel") {
+        return;
+    }
+    let (mut app, path) = open_showcase("resize");
+    let p = until(&mut app, "the total drawn", |p| word(p, "total") != "-");
+    assert_eq!(word(&p, "total"), "hashes", "too wide for a default column: {p:?}");
+    let w = widths(&p, "cols");
+    let edge = |w: &[f32], c: usize| w[..=c].iter().sum::<f32>();
+    // C's right border, dragged 40 points: 104 pixels, 14.14 characters
+    app.hover("Column headers", edge(&w, 2), 10.0);
+    assert!(app.has("Resize column"));
+    app.touch_drag("Resize column", (edge(&w, 2), 10.0), (40.0, 0.0), false);
+    let p = until(&mut app, "the drag", |p| word(p, "resizing") == "1");
+    assert!(app.texts().contains(&"Width: 14.14 (104 pixels)"), "{:?}", app.texts());
+    let rev = num(&p, "srev");
+    app.touch("Resize column", TouchPhase::End, edge(&w, 2) + 40.0, 10.0);
+    let p = until(&mut app, "C wider", |p| widths(p, "cols")[2] > 100.0);
+    assert!((widths(&p, "cols")[2] - 104.0).abs() < 0.5, "{p:?}");
+    assert_eq!(num(&p, "srev"), rev + 1.0);
+    // B:D selected, D's border dragged: all three take the width
+    let w = widths(&p, "cols");
+    app.press_at("Column headers", edge(&w, 1) - 20.0, 10.0, false);
+    app.press_at("Column headers", edge(&w, 3) - 20.0, 10.0, true);
+    app.hover("Column headers", edge(&w, 3), 10.0);
+    let to = 80.0 - w[3];
+    app.touch_drag("Resize column", (edge(&w, 3), 10.0), (to, 0.0), true);
+    let p = until(&mut app, "B:D sized", |p| (1..=3).all(|c| (widths(p, "cols")[c] - 80.0).abs() < 0.5));
+    assert_eq!(num(&p, "srev"), rev + 2.0, "one step for three columns: {p:?}");
+    // a double click on C's border fits B:D to their text: the total shows
+    let w = widths(&p, "cols");
+    app.hover("Column headers", edge(&w, 2), 10.0);
+    app.click("Resize column", 4.0, 4.0, false, 2);
+    let p = until(&mut app, "the total fits", |p| word(p, "total") == "number");
+    assert_eq!(num(&p, "srev"), rev + 3.0, "{p:?}");
+    let fitted = widths(&p, "cols")[2];
+    // a row dragged taller, then fitted back to its automatic height
+    let rows = widths(&p, "rows");
+    let bottom = rows[..=2].iter().sum::<f32>();
+    app.hover("Row headers", 10.0, bottom);
+    assert!(app.has("Resize row"));
+    app.touch_drag("Resize row", (10.0, bottom), (0.0, 20.0), true);
+    until(&mut app, "row 3 taller", |p| (widths(p, "rows")[2] - 40.0).abs() < 0.5);
+    app.hover("Row headers", 10.0, bottom + 20.0);
+    app.click("Resize row", 4.0, 4.0, false, 2);
+    until(&mut app, "row 3 automatic", |p| (widths(p, "rows")[2] - rows[2]).abs() < 0.5);
+    // E hidden from its header's menu, then shown again
+    let p = read(&app);
+    let w = widths(&p, "cols");
+    app.right_click("Column headers", edge(&w, 4) - 20.0, 10.0);
+    app.pick("Hide");
+    until(&mut app, "E hidden", |p| widths(p, "cols")[4] == 0.0);
+    let p = read(&app);
+    let w = widths(&p, "cols");
+    app.press_at("Column headers", edge(&w, 3) - 20.0, 10.0, false);
+    app.press_at("Column headers", edge(&w, 5) - 20.0, 10.0, true);
+    app.right_click("Column headers", edge(&w, 3) - 20.0, 10.0);
+    app.pick("Unhide");
+    until(&mut app, "E shown", |p| widths(p, "cols")[4] > 60.0);
+    // saved and read again: the fitted width
+    app.press("save");
+    until(&mut app, "saved", |p| p.get("dirty").map(String::as_str) == Some("false"));
+    let sheet = reopened(&path);
+    let chars = *sheet.col_widths.get(&2).unwrap();
+    assert!((xlsx_render::geometry::col_chars_to_px(chars) - fitted).abs() < 0.5, "{chars} for {fitted}");
+    assert!(!sheet.col_hidden(4));
+}
+
+#[test]
+fn merged_cells_select_whole_and_a_link_opens_on_a_click() {
+    if !in_child("merged_cells_select_whole_and_a_link_opens_on_a_click") {
+        return;
+    }
+    let (mut app, _) = open_showcase("merged");
+    // the title is merged over A1:E1: a press on B1 selects all of it
+    let p = read(&app);
+    let w = widths(&p, "cols");
+    app.press_at("Cells", w[0] + 10.0, 10.0, false);
+    let p = until(&mut app, "B1", |p| word(p, "act") == "0,1");
+    assert!((num(&p, "selw") - w[..5].iter().sum::<f32>()).abs() < 0.5, "{p:?}");
+    // A11 links to Notes!B3: a plain click goes there
+    app.press_at("Cells", 10.0, 10.5 * 20.0, false);
+    let p = until(&mut app, "the link followed", |p| word(p, "active") == "1");
+    assert_eq!(word(&p, "act"), "2,1", "{p:?}");
 }

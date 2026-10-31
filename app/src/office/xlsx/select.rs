@@ -202,6 +202,24 @@ fn moved(from: (u32, u32), dir: Dir, step: Step, b: &Bounds) -> (u32, u32) {
     }
 }
 
+/// `range` grown over the merged ranges it touches until none sticks out
+/// of it, as the web editor draws a selection (`(row, col)` corners).
+pub(crate) fn expand(range: ((u32, u32), (u32, u32)), merges: &[((u32, u32), (u32, u32))]) -> ((u32, u32), (u32, u32)) {
+    let ((mut r0, mut c0), (mut r1, mut c1)) = range;
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for &((mr0, mc0), (mr1, mc1)) in merges {
+            let touches = mr0 <= r1 && mr1 >= r0 && mc0 <= c1 && mc1 >= c0;
+            if touches && (mr0 < r0 || mc0 < c0 || mr1 > r1 || mc1 > c1) {
+                (r0, c0, r1, c1) = (r0.min(mr0), c0.min(mc0), r1.max(mr1), c1.max(mc1));
+                grew = true;
+            }
+        }
+    }
+    ((r0, c0), (r1, c1))
+}
+
 /// Column `c`'s letters: A, Z, AA, XFD.
 pub(crate) fn col_name(c: u32) -> String {
     let mut n = c as u64 + 1;
@@ -318,6 +336,15 @@ mod tests {
         let cols = s.col(2, false).col(4, true);
         assert_eq!(address(&cols), "C:E");
         assert!(cols.contains((100, 3)) && !cols.contains((0, 5)));
+    }
+
+    #[test]
+    fn a_selection_grows_over_the_merges_it_touches() {
+        // A1:B2 merged, and C2:C4 reached only through B2's growth
+        let merges = [((0, 0), (1, 1)), ((1, 2), (3, 2)), ((8, 8), (9, 9))];
+        assert_eq!(expand(((1, 1), (1, 1)), &merges), ((0, 0), (1, 1)));
+        assert_eq!(expand(((0, 1), (0, 2)), &merges), ((0, 0), (3, 2)));
+        assert_eq!(expand(((5, 5), (5, 5)), &merges), ((5, 5), (5, 5)));
     }
 
     #[test]
