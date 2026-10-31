@@ -1,7 +1,10 @@
 //! The package side of a Word document: its pictures, its lists, a legacy
 //! `.doc` brought in through office_oxide, and the save.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+
+use serde_json::{Value, json};
 
 /// The package's parts (name, bytes).
 fn parts(source: &[u8]) -> Vec<(String, Vec<u8>)> {
@@ -145,301 +148,551 @@ pub(crate) fn num_id(v: &yrs::Any) -> Option<u32> {
     }
 }
 
-/// The document as edited, as `.docx` bytes.
+/// What the web editor keeps outside the engine and saves with it (its
+/// document state): whether a save wrote every part whole, which every
+/// later one then does, and the watermark the layout draws.
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    pub whole: bool,
+    /// The watermark set in the editor: `Some(None)` when it was removed.
+    pub watermark: Option<Option<Value>>,
+}
+
+/// Now, as the save stamps it (UTC, milliseconds).
+pub(crate) fn now() -> String {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let (secs, ms) = (t.as_secs() as i64, t.subsec_millis());
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // civil from days (Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// The document as edited, as `.docx` bytes: the web editor's save
+/// (`writeSessionSave` over `yrsToDocument`, `@betteroffice/docx` 0.4.3).
 ///
-/// The package is parsed again (with each paragraph's place in its part)
-/// and its body rebuilt from the engine's stories: a paragraph the engine
-/// kept unchanged stays as parsed, a changed or new one takes its text and
-/// run formats from the engine and its paragraph properties from the one
-/// it came from, a table keeps its structure with each cell rebuilt the
-/// same way. docx-parse's package writer then writes it, every part the
-/// body doesn't touch as it was, and unchanged paragraphs from their
-/// source XML.
-pub(crate) fn docx(source: &[u8], doc: &docx_edit::EditingDoc) -> Result<Vec<u8>, String> {
-    use serde_json::{Value, json};
+/// The package is parsed again and the engine's stories projected onto it
+/// ([`super::project`]), with what the editor keeps beside the stories: the
+/// final section's properties and the headers' metadata (the engine's part
+/// metadata and section margins), the watermark, and the comments. Its
+/// writer then keeps every unchanged part and paragraph as its source
+/// bytes; once the document's parts or the comments' ids changed, the web
+/// writes every part whole, from then on.
+pub(crate) fn docx(source: &[u8], doc: &docx_edit::EditingDoc, state: &mut State, now: &str) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
-    let options = docx_parse::S9ParseOptions { source_ordinals: true, ..Default::default() };
+    let digest = format!("{:x}", Sha256::digest(source));
+    let options = docx_parse::S9ParseOptions { source_ordinals: true, determinism_seed: Some(digest.clone()), ..Default::default() };
     let envelope = docx_parse::parse_docx_s9_wire(source, options).map_err(|e| e.to_string())?;
-    let package = envelope.document.package;
-    let mut document = serde_json::to_value(&package.document).map_err(|e| e.to_string())?;
-    // where each engine paragraph came from: its w:p ordinal in the main part
-    let mut sources: std::collections::HashMap<(String, String), u32> = Default::default();
-    for p in doc.paragraph_identities().paragraphs {
-        if let (docx_edit::ParagraphRef::Session { story, para_id }, Some(src)) = (&p.paragraph, &p.source)
-            && src.part_uri.trim_start_matches('/') == "word/document.xml"
-        {
-            sources.insert((story.clone(), para_id.clone()), src.paragraph_ordinal);
-        }
-    }
+    let original = serde_json::to_value(&envelope.document.package).map_err(|e| e.to_string())?;
+    let before = Keys::of(&original);
+    let mut package = original.clone();
+    document_state(doc, &mut package, state);
+    let (comments, session_ids) = comments(doc, &original);
+    package["document"]["comments"] = Value::Array(comments.clone());
+    // captured before the projection, as the web does
+    let identities = doc.paragraph_identities();
     let plan = doc.paragraph_save_plan();
-    let changed: std::collections::HashSet<u32> =
-        plan.spliced_parts.iter().chain(&plan.section_spliced_parts).filter(|p| p.part.trim_start_matches('/') == "word/document.xml").flat_map(|p| p.changed.iter().copied()).collect();
-    let content = document["content"].as_array().cloned().unwrap_or_default();
-    let ctx = Rebuild { doc, sources: &sources, changed: &changed };
-    document["content"] = Value::Array(ctx.story("body", &content)?);
-    // sections are carried by their paragraphs' section properties
-    if let Some(o) = document.as_object_mut() {
-        o.remove("sections");
-    }
-    let request = json!({
-        "determinism": { "seed": format!("{:x}", Sha256::digest(source)), "now": "1970-01-01T00:00:00.000Z" },
-        "document": document,
-        "headerEntries": package.header_entries.unwrap_or_default(),
-        "footerEntries": package.footer_entries.unwrap_or_default(),
-        "footnotes": package.footnotes.unwrap_or_default(),
-        "endnotes": package.endnotes.unwrap_or_default(),
-        "footnoteSeparators": package.footnote_separators.unwrap_or_default(),
-        "endnoteSeparators": package.endnote_separators.unwrap_or_default(),
-        "relationshipEntries": package.relationship_entries,
-        "numbering": package.numbering,
-        "options": { "updateModifiedDate": false },
+    let mut projected = super::project::Projector::new(doc, &package, &session_ids).package(&package)?;
+    let replies = reply_marks(&mut projected["document"]["content"], &comments);
+    let after = Keys::of(&projected);
+    let comments_changed = after.comments != before.comments;
+    let whole = state.whole || after.metadata != before.metadata || before.ids.iter().any(|i| !after.ids.contains(i));
+    state.whole = whole;
+    let body_part = identities.paragraphs.iter().find_map(|p| match (&p.paragraph, &p.source) {
+        (docx_edit::ParagraphRef::Session { story, .. }, Some(s)) if story == "body" => Some(s.part_uri.trim_start_matches('/').to_owned()),
+        _ => None,
     });
-    let request: docx_parse::serializer::S13SaveRequest = serde_json::from_value(request).map_err(|e| e.to_string())?;
-    docx_parse::serializer::write_docx_s13(request, source).map_err(|e| e.to_string())
-}
-
-struct Rebuild<'a> {
-    doc: &'a docx_edit::EditingDoc,
-    sources: &'a std::collections::HashMap<(String, String), u32>,
-    changed: &'a std::collections::HashSet<u32>,
-}
-
-/// The parsed paragraphs of `blocks` by their ordinal, tables' included.
-fn by_ordinal(blocks: &[serde_json::Value], out: &mut std::collections::HashMap<u64, serde_json::Value>) {
-    for b in blocks {
-        match b["type"].as_str() {
-            Some("paragraph") => {
-                if let Some(o) = b["sourceOrdinal"].as_u64() {
-                    out.insert(o, b.clone());
-                }
-            }
-            Some("table") => {
-                for row in b["rows"].as_array().into_iter().flatten() {
-                    for cell in row["cells"].as_array().into_iter().flatten() {
-                        by_ordinal(cell["content"].as_array().map(Vec::as_slice).unwrap_or(&[]), out);
-                    }
-                }
-            }
-            _ => {
-                if let Some(c) = b["content"].as_array() {
-                    by_ordinal(c, out);
-                }
-            }
+    let patched_kept = |part: &str| !whole && (!comments_changed || part != "word/comments.xml") && (!replies || body_part.as_deref().is_some_and(|b| b != part));
+    let spliced: Vec<&docx_edit::SplicedPart> = if whole { Vec::new() } else { plan.spliced_parts.iter().collect() };
+    drop_synthetic(&mut projected, &identities);
+    set_ordinals(&mut projected, &spliced);
+    let mut keys = Vec::new();
+    super::project::take_session_keys(&mut projected, &mut keys);
+    if let Some(d) = projected["document"].as_object_mut() {
+        // the writer reads sections from their paragraphs
+        d.remove("sections");
+    }
+    use docx_parse::serializer::paragraph_ids::{S13ParagraphId, S13ParagraphIds, S13PatchedPart, S13SpliceAnchor, S13SplicedPart};
+    let ids = S13ParagraphIds {
+        section_edits: None,
+        assignments: plan.assignments.iter().map(|(part, ordinal, para_id)| S13ParagraphId { part: part.clone(), ordinal: *ordinal, para_id: para_id.clone() }).collect(),
+        patched_parts: plan.patched_parts.iter().filter(|(part, _)| patched_kept(part)).map(|(part, para_ids)| S13PatchedPart { part: part.clone(), para_ids: para_ids.clone() }).collect(),
+        spliced_parts: spliced
+            .iter()
+            .map(|p| S13SplicedPart {
+                part: p.part.clone(),
+                sha256: p.sha256.clone(),
+                paragraphs: p.paragraphs.iter().map(|(o, _)| *o).collect(),
+                changed: p.changed.clone(),
+                inserted: p
+                    .inserted
+                    .iter()
+                    .map(|a| match a {
+                        docx_edit::SpliceAnchor::Before(o) => S13SpliceAnchor::Before(*o),
+                        docx_edit::SpliceAnchor::After(o) => S13SpliceAnchor::After(*o),
+                    })
+                    .collect(),
+                removed: p.removed.clone(),
+                paragraph_patches: p.paragraph_patches.clone(),
+                legacy_paragraphs: p.legacy_paragraphs.clone(),
+                table_patches: p.table_patches.clone(),
+            })
+            .collect(),
+    };
+    let request = json!({
+        "determinism": { "seed": digest, "now": now },
+        "document": projected["document"],
+        "headerEntries": projected["headerEntries"],
+        "footerEntries": projected["footerEntries"],
+        "footnotes": projected["footnotes"],
+        "endnotes": projected["endnotes"],
+        "footnoteSeparators": projected["footnoteSeparators"],
+        "endnoteSeparators": projected["endnoteSeparators"],
+        "relationshipEntries": projected["relationshipEntries"],
+        "options": { "updateModifiedDate": true },
+    });
+    let mut request = request;
+    if let Some(o) = request.as_object_mut() {
+        o.retain(|_, v| !v.is_null());
+        if !projected["numbering"].is_null() {
+            o.insert("numbering".into(), projected["numbering"].clone());
         }
+    }
+    let mut request: docx_parse::serializer::S13SaveRequest = serde_json::from_value(request).map_err(|e| format!("save request: {e}"))?;
+    request.paragraph_ids = Some(ids);
+    let bytes = docx_parse::serializer::write_docx_s13(request, source).map_err(|e| e.to_string())?;
+    record_saved(doc, &identities, &plan, &keys, &bytes);
+    Ok(bytes)
+}
+
+/// `editorSaveKeys`: what tells a save whether the document's parts or its
+/// comments changed.
+struct Keys {
+    metadata: String,
+    comments: String,
+    ids: Vec<String>,
+}
+
+impl Keys {
+    fn of(package: &Value) -> Keys {
+        use super::project::canon;
+        let without = |v: &Value, keys: &[&str]| {
+            let mut v = v.clone();
+            if let Some(o) = v.as_object_mut() {
+                for k in keys {
+                    o.remove(*k);
+                }
+            }
+            v
+        };
+        let entries = |k: &str| Value::Array(package[k].as_array().into_iter().flatten().map(|e| json!([e[0], without(&e[1], &["content"])])).collect());
+        let notes = |k: &str| Value::Array(package[k].as_array().into_iter().flatten().map(|n| without(n, &["content", "verbatimXml", "sourceOrdinal"])).collect());
+        let d = &package["document"];
+        let metadata = json!({
+            "finalSectionProperties": d["finalSectionProperties"],
+            "sections": d["sections"].as_array().map(|s| s.iter().map(|s| without(s, &["content"])).collect::<Vec<_>>()),
+            "headers": entries("headerEntries"),
+            "footers": entries("footerEntries"),
+            "footnotes": notes("footnotes"),
+            "endnotes": notes("endnotes"),
+            "relationships": package["relationshipEntries"],
+        });
+        let list = d["comments"].as_array().cloned().unwrap_or_default();
+        Keys { metadata: canon(&metadata), comments: canon(&Value::Array(list.clone())), ids: list.iter().map(|c| canon(&c["id"])).collect() }
     }
 }
 
-/// A yrs value as JSON.
-fn any_json(v: &yrs::Any) -> serde_json::Value {
-    let mut s = String::new();
-    v.to_json(&mut s);
-    serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)
+/// The document's state beside its stories, as the engine holds it: the
+/// final section's properties (its part metadata's and margin overrides,
+/// as Page Setup sets them), the headers' and footers' metadata, and the
+/// watermark set in the editor.
+fn document_state(doc: &docx_edit::EditingDoc, package: &mut Value, state: &State) {
+    let merge = |into: &mut Value, patch: &Value| {
+        if let Some(p) = patch.as_object() {
+            if !into.is_object() {
+                *into = json!({});
+            }
+            for (k, v) in p {
+                into[k] = v.clone();
+            }
+        }
+    };
+    let meta: Value = serde_json::from_str(&doc.part_metadata_json()).unwrap_or(Value::Null);
+    let margins: Value = serde_json::from_str(&doc.section_margins_json()).unwrap_or(Value::Null);
+    let fin = &mut package["document"]["finalSectionProperties"];
+    if let Some(p) = meta.pointer("/body/finalSectionProperties").filter(|p| p.is_object()) {
+        merge(fin, p);
+    }
+    if let Some(p) = margins.get("final") {
+        merge(fin, p);
+    }
+    for (entries, kind) in [("headerEntries", "headers"), ("footerEntries", "footers")] {
+        for m in meta[kind].as_array().into_iter().flatten() {
+            let Some(id) = m[0].as_str() else { continue };
+            let Some(entry) = package[entries].as_array_mut().and_then(|e| e.iter_mut().find(|e| e[0] == id)) else { continue };
+            for (k, v) in m[1].as_object().into_iter().flatten().filter(|(k, _)| *k != "content") {
+                entry[1][k] = v.clone();
+            }
+            if m[1].get("watermark").is_none()
+                && let Some(o) = entry[1].as_object_mut()
+            {
+                o.remove("watermark");
+            }
+        }
+    }
+    if let Some(w) = &state.watermark {
+        set_watermark(package, w.as_ref());
+    }
 }
 
-/// A text's attributes (the engine's marks) as the model's run formatting:
-/// the names that differ mapped, then only what the model reads kept.
-fn run_formatting(attrs: &std::collections::BTreeMap<String, yrs::Any>) -> Option<serde_json::Value> {
-    use serde_json::{Value, json};
-    let mut fmt = serde_json::Map::new();
-    for (k, v) in attrs {
-        let j = any_json(v);
-        if j.is_null() || j == Value::Bool(false) || k == "ins" || k == "del" || k.starts_with('_') {
-            continue;
+const HEADER_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
+
+/// `setDocumentWatermark`: the watermark on every header, the headers it
+/// needs made (a default one, and first and even ones where the sections
+/// use them); `None` takes it off.
+fn set_watermark(package: &mut Value, w: Option<&Value>) {
+    let headers = package["headerEntries"].as_array_mut();
+    let Some(w) = w else {
+        for e in headers.into_iter().flatten() {
+            if let Some(o) = e[1].as_object_mut() {
+                o.remove("watermark");
+            }
         }
-        match k.as_str() {
-            "fontSize" => {
-                if let Some(n) = j.get("size").and_then(Value::as_f64).or(j.as_f64()) {
-                    fmt.insert("fontSize".into(), json!(n));
-                }
-                if let Some(n) = j.get("sizeCs").and_then(Value::as_f64) {
-                    fmt.insert("fontSizeCs".into(), json!(n));
-                }
+        return;
+    };
+    let mut headers: Vec<Value> = headers.map(|h| h.clone()).unwrap_or_default();
+    for e in &mut headers {
+        e[1]["watermark"] = w.clone();
+    }
+    let d = &package["document"];
+    let props: Vec<&Value> = d["sections"].as_array().into_iter().flatten().map(|s| &s["properties"]).filter(|p| p.is_object()).chain(Some(&d["finalSectionProperties"]).filter(|p| p.is_object())).collect();
+    let kinds: Vec<String> = headers.iter().filter_map(|h| h[1]["hdrFtrType"].as_str().map(str::to_owned)).collect();
+    let none = headers.is_empty();
+    let first = props.iter().any(|p| super::project::truthy(&p["titlePg"])) && !kinds.iter().any(|k| k == "first");
+    let even = props.iter().any(|p| super::project::truthy(&p["evenAndOddHeaders"])) && !kinds.iter().any(|k| k == "even");
+    if !none && !first && !even {
+        package["headerEntries"] = Value::Array(headers);
+        return;
+    }
+    let mut rels: Vec<Value> = package["relationshipEntries"].as_array().cloned().unwrap_or_default();
+    let mut targets: HashSet<String> = rels.iter().filter_map(|r| r[1]["target"].as_str()).map(|t| t.trim_start_matches('/').trim_start_matches("word/").to_lowercase()).collect();
+    let mut made: HashMap<String, String> = HashMap::new();
+    let mut add = |kind: &str, rels: &mut Vec<Value>, headers: &mut Vec<Value>| -> String {
+        if let Some(id) = made.get(kind) {
+            return id.clone();
+        }
+        let mut o = 1;
+        while targets.contains(&format!("header{o}.xml")) {
+            o += 1;
+        }
+        let target = format!("header{o}.xml");
+        targets.insert(target.clone());
+        let cap = format!("{}{}", kind[..1].to_uppercase(), &kind[1..]);
+        let mut id = format!("rIdWmHdr{cap}");
+        let mut b = 1;
+        while rels.iter().any(|r| r[0] == id.as_str()) {
+            id = format!("rIdWmHdr{cap}{b}");
+            b += 1;
+        }
+        rels.push(json!([id, { "id": id, "type": HEADER_REL, "target": target }]));
+        headers.push(json!([id, { "type": "header", "hdrFtrType": kind, "content": [], "watermark": w }]));
+        made.insert(kind.to_owned(), id.clone());
+        id
+    };
+    let mut refs = |p: &mut Value, rels: &mut Vec<Value>, headers: &mut Vec<Value>| {
+        let mut with = |p: &mut Value, kind: &str, rels: &mut Vec<Value>, headers: &mut Vec<Value>| {
+            if !p.is_object() {
+                *p = json!({});
             }
-            "textColor" => {
-                fmt.insert("color".into(), j);
+            let list = p["headerReferences"].as_array().cloned().unwrap_or_default();
+            if list.iter().any(|r| r["type"] == kind) {
+                return;
             }
-            "superscript" => {
-                fmt.insert("vertAlign".into(), json!("superscript"));
-            }
-            "subscript" => {
-                fmt.insert("vertAlign".into(), json!("subscript"));
-            }
-            "underline" if j == Value::Bool(true) => {
-                fmt.insert("underline".into(), json!({ "style": "single" }));
-            }
-            _ => {
-                fmt.insert(k.clone(), j);
+            let id = add(kind, rels, headers);
+            let mut list = list;
+            list.push(json!({ "type": kind, "rId": id }));
+            p["headerReferences"] = Value::Array(list);
+        };
+        if none {
+            with(p, "default", rels, headers);
+        }
+        if first && super::project::truthy(&p["titlePg"]) {
+            with(p, "first", rels, headers);
+        }
+        if even && super::project::truthy(&p["evenAndOddHeaders"]) {
+            with(p, "even", rels, headers);
+        }
+    };
+    let mut fin = package["document"]["finalSectionProperties"].clone();
+    if fin.is_object() || none {
+        refs(&mut fin, &mut rels, &mut headers);
+    }
+    package["document"]["finalSectionProperties"] = fin;
+    if let Some(sections) = package["document"]["sections"].as_array_mut() {
+        for s in sections {
+            if s["properties"].is_object() {
+                refs(&mut s["properties"], &mut rels, &mut headers);
             }
         }
     }
-    // what the model can't read goes
-    let keys: Vec<String> = fmt.keys().cloned().collect();
-    for k in keys {
-        let one = json!({ k.clone(): fmt[&k].clone() });
-        if serde_json::from_value::<docx_parse::TextFormatting>(one).is_err() {
-            fmt.remove(&k);
-        }
-    }
-    (!fmt.is_empty()).then_some(Value::Object(fmt))
+    package["headerEntries"] = Value::Array(headers);
+    package["relationshipEntries"] = Value::Array(rels);
 }
 
-fn run_json(text: &str, attrs: &std::collections::BTreeMap<String, yrs::Any>) -> serde_json::Value {
-    use serde_json::json;
-    let mut run = json!({ "type": "run", "content": [{ "type": "text", "text": text, "preserveSpace": true }] });
-    if let Some(f) = run_formatting(attrs) {
-        run["formatting"] = f;
-    }
-    for (key, kind) in [("ins", "insertion"), ("del", "deletion")] {
-        if let Some(v @ yrs::Any::Map(_)) = attrs.get(key) {
-            let mut info = any_json(v);
-            if let Some(id) = info["id"].as_str().and_then(|i| i.rsplit(':').next()).and_then(|n| n.parse::<u64>().ok()) {
-                info["id"] = json!(id);
+/// The comments to save, as the web editor's comment list holds them, and
+/// the engine's id of each the model numbers differently.
+///
+/// The parsed comments take what the editor set on them (author, date,
+/// words, as the web's `Er` does; its resolved state and the comment it
+/// answers, as its sidebar does); a comment the engine no longer holds, or
+/// whose words have no place left (and its replies), goes, as the
+/// sidebar's delete and orphan sweep take it out; new ones follow,
+/// numbered after the last.
+fn comments(doc: &docx_edit::EditingDoc, original: &Value) -> (Vec<Value>, HashMap<i64, String>) {
+    use super::project::{any_value, jnum};
+    let source = original["document"]["comments"].as_array().cloned().unwrap_or_default();
+    let mut engine = doc.list_comments().unwrap_or_default();
+    let anchored = |id: &str| doc.resolve_comment(id).is_ok_and(|r| !r.is_empty());
+    // a parent with nothing anchored goes with its replies
+    let gone: HashSet<String> = engine.iter().filter(|c| c.parent_id.is_none() && !anchored(&c.id)).map(|c| c.id.clone()).collect();
+    engine.retain(|c| !gone.contains(&c.id) && !c.parent_id.as_ref().is_some_and(|p| gone.contains(p)));
+    let key = |id: &Value| id.as_f64().map(jnum).map(|v| v.to_string()).unwrap_or_default();
+    let mut used: HashSet<i64> = source.iter().filter_map(|c| c["id"].as_f64()).map(|n| n as i64).collect();
+    let mut next = used.iter().copied().max().unwrap_or(-1).max(-1) + 1;
+    let mut numbers: HashMap<String, i64> = HashMap::new();
+    let mut out: Vec<Value> = Vec::new();
+    let mut parents: Vec<(usize, Option<String>)> = Vec::new();
+    for c in &source {
+        let id = key(&c["id"]);
+        let Some(at) = engine.iter().position(|e| e.id == id) else { continue };
+        let u = engine.remove(at);
+        numbers.insert(u.id.clone(), c["id"].as_f64().unwrap_or(0.0) as i64);
+        let body = any_value(&u.body);
+        let mut c = c.clone();
+        if !u.author.is_empty() || !u.date.is_empty() || !body.is_null() {
+            if !u.author.is_empty() {
+                c["author"] = json!(u.author);
             }
-            if key == "del" {
-                run["content"][0]["type"] = json!("delText");
+            if !u.date.is_empty() {
+                c["date"] = json!(u.date);
             }
-            return json!({ "type": kind, "info": info, "content": [run] });
-        }
-    }
-    run
-}
-
-/// The runs of `p` (parsed) that hold something besides text: a picture, a
-/// note mark, a tab, a field — each item as a run of its own.
-fn atoms(p: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    fn walk(items: &[serde_json::Value], out: &mut Vec<serde_json::Value>) {
-        for item in items {
-            match item["type"].as_str() {
-                Some("run") => {
-                    for c in item["content"].as_array().into_iter().flatten() {
-                        if c["type"] != "text" && c["type"] != "delText" {
-                            let mut one = item.clone();
-                            one["content"] = serde_json::json!([c]);
-                            out.push(one);
-                        }
-                    }
-                }
-                _ => {
-                    if let Some(c) = item["content"].as_array() {
-                        walk(c, out);
-                    }
-                }
+            if !body.is_null() {
+                c["content"] = Value::Array(comment_content(&body));
             }
         }
+        if u.done {
+            c["done"] = json!(true);
+        }
+        parents.push((out.len(), u.parent_id.clone()));
+        out.push(c);
     }
-    walk(p["content"].as_array().map(Vec::as_slice).unwrap_or(&[]), &mut out);
-    out
+    let mut session_ids = HashMap::new();
+    for u in engine {
+        let mut n: i64 = u.id.parse().unwrap_or(-1);
+        if n < 0 || used.contains(&n) {
+            while used.contains(&next) {
+                next += 1;
+            }
+            n = next;
+        }
+        used.insert(n);
+        if n.to_string() != u.id {
+            session_ids.insert(n, u.id.clone());
+        }
+        numbers.insert(u.id.clone(), n);
+        let mut c = json!({ "id": n, "author": u.author, "content": comment_content(&any_value(&u.body)) });
+        if !u.date.is_empty() {
+            c["date"] = json!(u.date);
+        }
+        if u.done {
+            c["done"] = json!(true);
+        }
+        parents.push((out.len(), u.parent_id.clone()));
+        out.push(c);
+    }
+    for (at, parent) in parents {
+        if let Some(p) = parent.and_then(|p| numbers.get(&p).copied()) {
+            out[at]["parentId"] = json!(p);
+        }
+    }
+    (out, session_ids)
 }
 
-impl Rebuild<'_> {
-    /// `story`'s blocks, from the parsed `blocks` it was seeded from.
-    fn story(&self, story: &str, blocks: &[serde_json::Value]) -> Result<Vec<serde_json::Value>, String> {
-        use serde_json::{Value, json};
-        let segments = self.doc.story_segments(story).map_err(|e| e.to_string())?;
-        let mut parsed = std::collections::HashMap::new();
-        by_ordinal(blocks, &mut parsed);
-        let mut tables = blocks.iter().filter(|b| b["type"] == "table");
-        let mut out: Vec<Value> = Vec::new();
-        let mut runs: Vec<Value> = Vec::new();
-        let mut embeds: Vec<(String, usize)> = Vec::new();
-        let mut table_index = 0;
-        let mut last_para: Option<Value> = None;
-        for s in segments {
-            match s.content {
-                docx_edit::SegmentContent::Text(t) => runs.push(run_json(&t, &s.attributes)),
-                docx_edit::SegmentContent::OtherEmbed { kind, .. } if kind == "table" => {
-                    let Some(t) = tables.next() else { continue };
-                    let mut t = t.clone();
-                    for (r, row) in t["rows"].as_array_mut().into_iter().flatten().enumerate() {
-                        for (c, cell) in row["cells"].as_array_mut().into_iter().flatten().enumerate() {
-                            let id = format!("{story}:t{table_index}:r{r}c{c}");
-                            let content = cell["content"].as_array().cloned().unwrap_or_default();
-                            if let Ok(rebuilt) = self.story(&id, &content) {
-                                cell["content"] = Value::Array(rebuilt);
-                            }
-                        }
-                    }
-                    table_index += 1;
-                    out.push(t);
-                }
-                docx_edit::SegmentContent::OtherEmbed { kind, .. } => {
-                    embeds.push((kind, runs.len()));
-                    runs.push(Value::Null);
-                }
-                docx_edit::SegmentContent::Pilcrow(props) => {
-                    let ordinal = self.sources.get(&(story.to_owned(), props.para_id.clone())).copied();
-                    let source = ordinal.and_then(|o| parsed.get(&(o as u64)));
-                    let mut items = std::mem::take(&mut runs);
-                    let marks = std::mem::take(&mut embeds);
-                    if let (Some(src), Some(o)) = (source, ordinal)
-                        && !self.changed.contains(&o)
-                    {
-                        out.push(src.clone());
-                        last_para = Some(src.clone());
+/// `Ct`: a comment's words as paragraphs.
+fn comment_content(body: &Value) -> Vec<Value> {
+    if let Some(a) = body.as_array().filter(|a| !a.is_empty() && a.iter().all(|p| p["type"] == "paragraph")) {
+        return a.clone();
+    }
+    let text = body.as_str().unwrap_or("");
+    let content = if text.is_empty() { json!([]) } else { json!([{ "type": "run", "formatting": {}, "content": [{ "type": "text", "text": text }] }]) };
+    vec![json!({ "type": "paragraph", "formatting": {}, "content": content })]
+}
+
+/// `injectReplyRangeMarkers`: a reply with no range of its own marks its
+/// parent's words.
+fn reply_marks(content: &mut Value, comments: &[Value]) -> bool {
+    let has = |id: &Value| {
+        fn find(v: &Value, id: &Value) -> bool {
+            match v {
+                Value::Array(a) => a.iter().any(|v| find(v, id)),
+                Value::Object(o) => (o.get("type").and_then(Value::as_str) == Some("commentRangeStart") && o.get("id") == Some(id)) || o.values().any(|v| find(v, id)),
+                _ => false,
+            }
+        }
+        find(content, id)
+    };
+    let mut replies: HashMap<String, Vec<Value>> = HashMap::new();
+    for c in comments.iter().filter(|c| !c["parentId"].is_null() && !has(&c["id"])) {
+        replies.entry(c["parentId"].to_string()).or_default().push(c["id"].clone());
+    }
+    if replies.is_empty() {
+        return false;
+    }
+    fn walk(blocks: &mut Value, replies: &HashMap<String, Vec<Value>>, done: &mut bool) {
+        for l in blocks.as_array_mut().into_iter().flatten() {
+            match l["type"].as_str() {
+                Some("paragraph") => {
+                    let items = l["content"].as_array().cloned().unwrap_or_default();
+                    if !items.iter().any(|n| matches!(n["type"].as_str(), Some("commentRangeStart" | "commentRangeEnd"))) {
                         continue;
                     }
-                    // a changed or new paragraph: its properties from its source
-                    // (or the one before it), its content from the engine
-                    let mut p = source.cloned().or_else(|| last_para.clone()).unwrap_or_else(|| json!({ "type": "paragraph", "content": [] }));
-                    let from = source.map(atoms).unwrap_or_default();
-                    for (k, (kind, at)) in marks.iter().enumerate() {
-                        items[*at] = match kind.as_str() {
-                            "tab" => json!({ "type": "run", "content": [{ "type": "tab" }] }),
-                            "hardBreak" | "break" | "lineBreak" => json!({ "type": "run", "content": [{ "type": "break" }] }),
-                            _ => from.get(k).cloned().unwrap_or(Value::Null),
-                        };
-                    }
-                    items.retain(|i| !i.is_null());
-                    p["content"] = Value::Array(items);
-                    if let Some(o) = p.as_object_mut() {
-                        o.insert("paraId".to_owned(), json!(props.para_id));
-                        o.remove("sourceOrdinal");
-                        o.remove("textId");
-                    }
-                    // the list it is in
-                    let fmt = p["formatting"].as_object().cloned().unwrap_or_default();
-                    let mut fmt = Value::Object(fmt);
-                    match props.values.get("numPr") {
-                        Some(v) => fmt["numPr"] = any_json(v),
-                        None => {
-                            if let Some(o) = fmt.as_object_mut() {
-                                o.remove("numPr");
+                    let mut g = Vec::new();
+                    for n in items {
+                        let kind = n["type"].as_str().unwrap_or("").to_owned();
+                        let ids = replies.get(&n["id"].to_string()).cloned();
+                        g.push(n);
+                        if matches!(kind.as_str(), "commentRangeStart" | "commentRangeEnd")
+                            && let Some(ids) = ids
+                        {
+                            for d in ids {
+                                g.push(json!({ "type": kind, "id": d }));
+                                *done = true;
                             }
                         }
                     }
-                    // its style and alignment as the engine holds them
-                    for (key, model) in [("pStyle", "styleId"), ("alignment", "alignment")] {
-                        match props.values.get(key).map(any_json) {
-                            Some(Value::String(v)) if !v.is_empty() => fmt[model] = json!(v),
-                            _ => {
-                                if let Some(o) = fmt.as_object_mut() {
-                                    o.remove(model);
-                                }
-                            }
-                        }
-                    }
-                    if source.is_none()
-                        && let Some(o) = fmt.as_object_mut()
-                    {
-                        // a new paragraph doesn't start another section
-                        o.remove("sectionProperties");
-                    }
-                    p["formatting"] = fmt;
-                    if source.is_none()
-                        && let Some(o) = p.as_object_mut()
-                    {
-                        o.remove("sectionProperties");
-                    }
-                    last_para = Some(p.clone());
-                    out.push(p);
+                    l["content"] = Value::Array(g);
                 }
+                Some("table") => {
+                    for row in l["rows"].as_array_mut().into_iter().flatten() {
+                        for cell in row["cells"].as_array_mut().into_iter().flatten() {
+                            walk(&mut cell["content"], replies, done);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        Ok(out)
+    }
+    let mut done = false;
+    walk(content, &replies, &mut done);
+    done
+}
+
+/// `Be` over every story: each paragraph (in tables and block content
+/// controls too) through `f`, which may drop it.
+fn each_paragraph(package: &mut Value, f: &mut dyn FnMut(&mut Value) -> bool) {
+    fn blocks(v: &mut Value, f: &mut dyn FnMut(&mut Value) -> bool) {
+        let Some(list) = v.as_array_mut() else { return };
+        list.retain_mut(|b| match b["type"].as_str() {
+            Some("paragraph") => f(b),
+            Some("table") => {
+                for row in b["rows"].as_array_mut().into_iter().flatten() {
+                    for cell in row["cells"].as_array_mut().into_iter().flatten() {
+                        blocks(&mut cell["content"], f);
+                    }
+                }
+                true
+            }
+            Some("blockSdt") => {
+                blocks(&mut b["content"], f);
+                true
+            }
+            _ => true,
+        });
+    }
+    blocks(&mut package["document"]["content"], f);
+    for k in ["headerEntries", "footerEntries"] {
+        for e in package[k].as_array_mut().into_iter().flatten() {
+            blocks(&mut e[1]["content"], f);
+        }
+    }
+    for k in ["footnotes", "endnotes"] {
+        for n in package[k].as_array_mut().into_iter().flatten() {
+            blocks(&mut n["content"], f);
+        }
     }
 }
 
+fn session_key(p: &Value) -> Option<&str> {
+    p.get(super::project::SESSION_KEY).and_then(Value::as_str)
+}
+
+/// `Nr`: empty paragraphs the editor added on its own don't save.
+fn drop_synthetic(package: &mut Value, identities: &docx_edit::ParagraphIdentities) {
+    let synthetic: HashSet<&str> = identities
+        .paragraphs
+        .iter()
+        .filter(|p| p.origin == docx_edit::ParagraphOrigin::Synthetic)
+        .filter_map(|p| match &p.paragraph {
+            docx_edit::ParagraphRef::Session { para_id, .. } => Some(para_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    if synthetic.is_empty() {
+        return;
+    }
+    each_paragraph(package, &mut |p| !(p["content"].as_array().is_some_and(Vec::is_empty) && session_key(p).is_some_and(|k| synthetic.contains(k))));
+}
+
+/// `Br`: each paragraph a spliced part holds takes its source ordinal.
+fn set_ordinals(package: &mut Value, spliced: &[&docx_edit::SplicedPart]) {
+    let ordinals: HashMap<&str, u32> = spliced.iter().flat_map(|p| p.paragraphs.iter().map(|(o, k)| (k.as_str(), *o))).collect();
+    if ordinals.is_empty() {
+        return;
+    }
+    each_paragraph(package, &mut |p| {
+        if let Some(&o) = session_key(p).and_then(|k| ordinals.get(k)) {
+            p["sourceOrdinal"] = json!(o);
+        }
+        true
+    });
+}
+
+/// The paragraph ids the save wrote, recorded in the engine so the next
+/// save keeps them (the web's `recordSavedParagraphIds`).
+fn record_saved(doc: &docx_edit::EditingDoc, identities: &docx_edit::ParagraphIdentities, plan: &docx_edit::ParagraphSavePlan, keys: &[(String, Option<String>)], bytes: &[u8]) {
+    let Ok(written) = docx_parse::paragraph_identity::paragraph_ids_by_part(bytes) else { return };
+    let wrote = |part: &str, id: &str| written.get(part).is_some_and(|ids| ids.iter().any(|w| *w == id.to_uppercase()));
+    let mut saved = Vec::new();
+    for (key, para_id) in keys {
+        let Some(para_id) = para_id else { continue };
+        let persisted = identities.paragraphs.iter().find_map(|p| match &p.paragraph {
+            docx_edit::ParagraphRef::Session { para_id: s, .. } if s == key && p.ooxml_para_id.is_some() => p.source_story.as_ref(),
+            _ => None,
+        });
+        if let Some(story) = persisted
+            && wrote(&story.part_uri, para_id)
+        {
+            saved.push((key.clone(), para_id.clone()));
+        }
+    }
+    for (part, ordinal, para_id) in &plan.assignments {
+        if wrote(&format!("/{part}"), para_id) {
+            saved.push((format!("/{part}#{ordinal}"), para_id.clone()));
+        }
+    }
+    if !saved.is_empty() {
+        doc.record_saved_paragraph_ids(&saved);
+    }
+}
 /// The document as HTML, for the print panel (AppKit lays it out): its
 /// paragraphs with their bold, italic and underline, headings, and tables.
 pub(crate) fn html(doc: &docx_edit::EditingDoc, index: &super::index::Index) -> String {
