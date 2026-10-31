@@ -304,7 +304,7 @@ function routines(m) {
     const writes = list(r.writes, `${at}.writes`, LIMITS.writes);
 
     for (const [k, t] of writes.entries()) {
-      if (isV1("reservedTool", t)) throw invalid(`${at}.writes[${k}]`, `${t} is reserved for Rox`);
+      if (isV1("reservedTool", t)) throw invalid(`${at}.writes[${k}]`, `${t} is reserved for Buwiz Bot`);
       ownTool(t, m.short, `${at}.writes[${k}]`);
 
       if (writes.indexOf(t) !== k) throw invalid(`${at}.writes[${k}]`, `${t} is listed twice`);
@@ -319,7 +319,7 @@ function permissions(p, m, at) {
   onlyKeys(p, ["tools", "open", "attach", "pick_file", "storage", "copy", "preview"], at);
 
   for (const [i, t] of list(p.tools, `${at}.tools`, LIMITS.permTools).entries()) {
-    if (isV1("reservedTool", t)) throw invalid(`${at}.tools[${i}]`, `${t} is reserved for Rox`);
+    if (isV1("reservedTool", t)) throw invalid(`${at}.tools[${i}]`, `${t} is reserved for Buwiz Bot`);
     ownTool(t, m.short, `${at}.tools[${i}]`);
   }
 
@@ -434,7 +434,7 @@ function apps(m) {
 function fields(m) {
   name(m.id, "pluginId", "id");
 
-  if (V1_RESERVED.idPrefixes.some((p) => m.id.startsWith(p))) throw invalid("id", `${m.id} uses a prefix reserved for Rox`);
+  if (V1_RESERVED.idPrefixes.some((p) => m.id.startsWith(p))) throw invalid("id", `${m.id} uses a prefix reserved for Buwiz Bot`);
   name(m.short, "short", "short");
 
   if (V1_RESERVED.shorts.includes(m.short)) throw invalid("short", `${m.short} is reserved`);
@@ -455,7 +455,7 @@ function protocolOf(m, host) {
   const [hmaj, hmin] = host.split(".").map(Number);
 
   if (maj !== hmaj || min > hmin)
-    throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}; this Rox supports ${hmaj}.${hmin}, so it needs a Rox that supports ${maj}.${min}`);
+    throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}; this Buwiz Bot supports ${hmaj}.${hmin}, so it needs a Buwiz Bot that supports ${maj}.${min}`);
 
   if (!isSemver(m.version) || m.version.length > LIMITS.version) throw invalid("version", `must be semver, at most ${LIMITS.version} characters`);
 }

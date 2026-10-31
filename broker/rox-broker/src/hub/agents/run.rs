@@ -40,7 +40,7 @@ pub fn peer_prompt(msg: &Value, replying: bool) -> String {
     let from = msg.get("from");
     let f = |k: &str| js_str(from.and_then(|x| x.get(k)));
     let who = if from.and_then(|x| x.get("kind")).and_then(Value::as_str) == Some("external") {
-        format!("A message from outside Rox, {} (a webhook or a Claude Code session the user connected to you)", f("name"))
+        format!("A message from outside Buwiz Bot, {} (a webhook or a Claude Code session the user connected to you)", f("name"))
     } else {
         format!("A message from another agent, {} (agent {})", f("name"), f("id"))
     };
@@ -83,7 +83,7 @@ pub fn history_for(bot: &str, turns: &[Turn], msg: &Value) -> Vec<Value> {
         if from.and_then(|f| f.get("id")).and_then(Value::as_str) == Some(bot) {
             out.push(json!({"role": "ai", "text": m.get("text")}));
         } else {
-            let kind = if from.and_then(|f| f.get("kind")).and_then(Value::as_str) == Some("external") { "outside Rox" } else { "an agent" };
+            let kind = if from.and_then(|f| f.get("kind")).and_then(Value::as_str) == Some("external") { "outside Buwiz Bot" } else { "an agent" };
             out.push(json!({"role": "user", "text": format!("[{}, {kind}:]\n{}", js_str(from.and_then(|f| f.get("name"))), js_str(m.get("text")))}));
         }
     }

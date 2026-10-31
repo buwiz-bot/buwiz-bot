@@ -405,7 +405,7 @@ fn routines(m: &Map<String, Value>, short: &str) -> Res {
         let writes = list(o.get("writes"), &format!("{at}.writes"), L::WRITES, false)?;
         for (k, t) in writes.iter().enumerate() {
             if is_v1("reservedTool", Some(t)) {
-                return Err(invalid(&format!("{at}.writes[{k}]"), format!("{} is reserved for Rox", tpl(Some(t)))));
+                return Err(invalid(&format!("{at}.writes[{k}]"), format!("{} is reserved for Buwiz Bot", tpl(Some(t)))));
             }
             own_tool(Some(t), short, &format!("{at}.writes[{k}]"))?;
             if writes.iter().position(|w| same(Some(w), Some(t))) != Some(k) {
@@ -427,7 +427,7 @@ fn permissions(p: Option<&Value>, m: &Map<String, Value>, short: &str, at: &str)
     only_keys(o, &["tools", "open", "attach", "pick_file", "storage", "copy", "preview"], at)?;
     for (i, t) in list(o.get("tools"), &format!("{at}.tools"), L::PERM_TOOLS, false)?.iter().enumerate() {
         if is_v1("reservedTool", Some(t)) {
-            return Err(invalid(&format!("{at}.tools[{i}]"), format!("{} is reserved for Rox", tpl(Some(t)))));
+            return Err(invalid(&format!("{at}.tools[{i}]"), format!("{} is reserved for Buwiz Bot", tpl(Some(t)))));
         }
         own_tool(Some(t), short, &format!("{at}.tools[{i}]"))?;
     }
@@ -550,7 +550,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
 fn fields(m: &Map<String, Value>) -> Res {
     name(m.get("id"), "pluginId", "id")?;
     if let Some(id) = m.get("id").and_then(Value::as_str).filter(|id| RESERVED_ID_PREFIXES.iter().any(|p| id.starts_with(p))) {
-        return Err(invalid("id", format!("{id} uses a prefix reserved for Rox")));
+        return Err(invalid("id", format!("{id} uses a prefix reserved for Buwiz Bot")));
     }
     name(m.get("short"), "short", "short")?;
     if let Some(s) = m.get("short").and_then(Value::as_str).filter(|s| RESERVED_SHORTS.contains(s)) {
@@ -581,7 +581,7 @@ fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
         let n = js::number;
         return Err(V1Error::new(
             "protocol_unsupported",
-            format!("the plugin implements protocol {protocol}; this Rox supports {}.{}, so it needs a Rox that supports {}.{}", n(hmaj), n(hmin), n(maj), n(min)),
+            format!("the plugin implements protocol {protocol}; this Buwiz Bot supports {}.{}, so it needs a Buwiz Bot that supports {}.{}", n(hmaj), n(hmin), n(maj), n(min)),
         ));
     }
     let version_ok = m.get("version").and_then(Value::as_str).is_some_and(|v| semver(v).is_some() && v.encode_utf16().count() <= L::VERSION);

@@ -1,4 +1,4 @@
-# Rox
+# Buwiz Bot
 
 A native chat app in Rust on Native Shell (nsh). `app/` is the app,
 `server/` the broker it talks to (Node), `nsh/` the nsh fork it builds on
@@ -28,7 +28,7 @@ are lost at the next rebuild.
   copy over it keeps the old code signature and macOS kills the app at
   launch.
 - Drive the running app with `gpui-agent` (`README.md`), not OS clicks or
-  keystrokes. Rox's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)rox-agent-menu`,
+  keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)rox-agent-menu`,
   read by `app/src/hot.rs`) runs commands: `cmd <command-id>`.
 - Performance: the monitor (`dev.perf`) logs over-budget frames to
   `~/Library/Logs/Rox/jank.log`; the `/perf` skill reads it.

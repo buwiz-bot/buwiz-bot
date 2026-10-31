@@ -1,20 +1,20 @@
 # Make cards fast
 
 An answer card (spec 9.8) mounts under the assistant's reply the moment it
-arrives. Rox does most of the work to make that instant (spec 14.6, "Host
+arrives. Buwiz Bot does most of the work to make that instant (spec 14.6, "Host
 caching and prewarm"); this page is what your plugin should do so the rest is
 instant too.
 
-## What Rox does for you
+## What Buwiz Bot does for you
 
-- **Compiled cache.** Rox keeps each app's checked and compiled module in
+- **Compiled cache.** Buwiz Bot keeps each app's checked and compiled module in
   memory and on disk, keyed by your app's **signed manifest fingerprint** and
-  the Rox build. An open with a cached module skips the source fetch and the
+  the Buwiz Bot build. An open with a cached module skips the source fetch and the
   compile.
 - **Prewarm.** When your plugin starts at a new generation (install, update,
-  restart) and shortly after Rox starts, Rox compiles every app whose
+  restart) and shortly after Buwiz Bot starts, Buwiz Bot compiles every app whose
   `placement` includes `inline`, one at a time in the background.
-- **Session pre-open.** When an answer card arrives, Rox opens its session
+- **Session pre-open.** When an answer card arrives, Buwiz Bot opens its session
   while it prepares the module.
 
 You do nothing to get these. A new version with a changed app source has a new
@@ -24,7 +24,7 @@ fingerprint: its first open compiles again (or prewarm already did).
 
 1. **Render from the snapshot.** Put the data the answer was based on in
    `_meta["rox/open"].props.snapshot` (with `as_of`, unix ms) and draw it on the
-   first render. Call tools only when the person presses Refresh: Rox then
+   first render. Call tools only when the person presses Refresh: Buwiz Bot then
    mounts the card again without `snapshot` and `as_of`, and the card reads
    live. A card that calls three tools before it draws anything costs three
    round trips through the plugin on every open.
@@ -46,7 +46,7 @@ fingerprint: its first open compiles again (or prewarm already did).
 
 ## Reading the timing log
 
-Rox logs each open at info level (`RUST_LOG=info`):
+Buwiz Bot logs each open at info level (`RUST_LOG=info`):
 
 ```
 mini v1 timing: dev.goldcoders.bir/deadlines cache hit 0 ms (no fetch, no compile)
@@ -60,11 +60,11 @@ mini v1 timing: v1:dev.goldcoders.bir/deadlines?ticket=… view to first frame 9
 | `source fetch` | Reading the app's source from your plugin (a miss only) | Your server is slow to answer `resources/read`; keep the source in memory. |
 | `checks+compile` | The import check and the compile (a miss only) | The source is large; split it. |
 | `cache hit` | The cached module was used | — |
-| `session open` | The signed session (4.4); `pre-opened` when Rox opened it ahead | Your `rox.session.open` is slow; it must only sign. |
+| `session open` | The signed session (4.4); `pre-opened` when Buwiz Bot opened it ahead | Your `rox.session.open` is slow; it must only sign. |
 | `view to first frame` | From the view to the first laid-out frame: the session, engine start, module evaluation and the first layout | Top-level work in the module, or a first render that waits on tools. |
 | `prewarmed in` | A background compile after your plugin started | — |
 
-Measured in Rox's development build (BIR, October 2026): a cold open of the
+Measured in Buwiz Bot's development build (BIR, October 2026): a cold open of the
 Deadlines card took about 50 ms of host time (fetch 26, compile 5, session
 2, first frame 8); with the cache and a pre-opened session about 12 ms. What
 remains is your card's own tool calls: render from the snapshot.

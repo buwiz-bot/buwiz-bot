@@ -21,7 +21,7 @@ pub fn refusal(method: &Method, headers: &HeaderMap, allowed: &[String]) -> Opti
         let origin = String::from_utf8_lossy(origin.as_bytes());
         if !allowed.iter().any(|a| *a == origin) {
             let shown: String = origin.chars().take(100).collect();
-            return Some((StatusCode::FORBIDDEN, format!("requests from origin {shown} are refused: this server answers Rox and its apps, not web pages")));
+            return Some((StatusCode::FORBIDDEN, format!("requests from origin {shown} are refused: this server answers Buwiz Bot and its apps, not web pages")));
         }
     }
     let body_method = matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE);

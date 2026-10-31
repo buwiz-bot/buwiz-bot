@@ -256,7 +256,7 @@ const server = new Server({ name: "rox-fixture", version: "1.0.0" }, { capabilit
 
 server.setRequestHandler(ListToolsRequestSchema, () => ({
   tools: [
-    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Rox.", inputSchema: { type: "object" } })),
+    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));

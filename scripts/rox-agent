@@ -3,5 +3,5 @@
 # (app/bundle-dev.sh): the token goes through the environment, not argv.
 # GPUI_AGENT_ADDR picks another instance (default 127.0.0.1:17421).
 file="$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token"
-[ -r "$file" ] || { echo "rox-agent: no token at $file; launch Rox through ~/Applications/Rox.app" >&2; exit 1; }
+[ -r "$file" ] || { echo "rox-agent: no token at $file; launch Buwiz Bot through ~/Applications/Rox.app" >&2; exit 1; }
 GPUI_AGENT_TOKEN="$(cat "$file")" GPUI_AGENT_ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}" exec gpui-agent "$@"

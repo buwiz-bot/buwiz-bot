@@ -1163,7 +1163,7 @@ async fn rv0_templates_ticks_updates_and_the_backoff() {
         crate::js::stringify(&json!([
             {"server": "mailfx", "id": "bir-mail", "name": "BIR mail", "description": "Files BIR confirmations.", "every_s": 120, "needs": "gmail", "available": true, "needs_email": true},
             {"server": "mailfx", "id": "daily", "name": "Daily note", "description": "", "every_s": 60, "needs": null, "available": true},
-            {"server": "mailfx", "id": "cal", "name": "Calendar sync", "description": "", "every_s": 3600, "needs": "calendar", "available": false, "reason": "Rox can't provide \"calendar\" yet"},
+            {"server": "mailfx", "id": "cal", "name": "Calendar sync", "description": "", "every_s": 3600, "needs": "calendar", "available": false, "reason": "Buwiz Bot can't provide \"calendar\" yet"},
             {"server": "mailfx", "id": "noquery", "name": "No query", "description": "", "every_s": 3600, "needs": "gmail", "available": false, "reason": "The template names no query tool", "needs_email": true},
             {"server": "mailfx", "id": "idle", "name": "Idle", "description": "", "every_s": 3600, "needs": null, "available": false, "reason": "The template has nothing to do"},
         ])),
@@ -1176,10 +1176,10 @@ async fn rv0_templates_ticks_updates_and_the_backoff() {
     assert_eq!(refused(json!({"server": "mailfx", "id": "daily"})).await.error, "unknown chat ");
     assert_eq!(refused(json!({"server": "nope", "id": "daily", "thread": "t1"})).await.error, "no connected server nope");
     assert_eq!(refused(json!({"server": "mailfx", "id": "zzz", "thread": "t1"})).await.error, "mailfx has no routine template zzz");
-    assert_eq!(refused(json!({"server": "mailfx", "id": "cal", "thread": "t1"})).await.error, "Rox can't provide \"calendar\" yet");
+    assert_eq!(refused(json!({"server": "mailfx", "id": "cal", "thread": "t1"})).await.error, "Buwiz Bot can't provide \"calendar\" yet");
     assert_eq!(refused(json!({"server": "mailfx", "id": "bir-mail", "thread": "t1", "user_google_email": "bob"})).await.error, "bob isn't an email address");
     let need = refused(json!({"server": "mailfx", "id": "bir-mail", "thread": "t1"})).await;
-    assert_eq!((need.error.as_str(), need.need), ("Rox needs your Google address for Gmail searches", Some("user_google_email")), "RV0-03");
+    assert_eq!((need.error.as_str(), need.need), ("Buwiz Bot needs your Google address for Gmail searches", Some("user_google_email")), "RV0-03");
     assert!(v0.list(&ctx.db).is_empty(), "RV0-03: nothing was made");
     assert_eq!(super::templates::meta_get(&ctx.db, "google_email"), None, "RV0-03: a bad address is not kept");
 

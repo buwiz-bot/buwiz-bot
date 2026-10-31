@@ -25,7 +25,7 @@ pub(crate) enum AuthOutcome {
 
 pub(crate) trait OwnerGate: Send + Sync {
     /// Blocks until the sheet closes: never call it on the UI thread.
-    /// `reason` finishes "Rox is trying to …".
+    /// `reason` finishes "Buwiz Bot is trying to …".
     fn confirm(&self, reason: &str) -> AuthOutcome;
 }
 

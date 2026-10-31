@@ -4,9 +4,9 @@ Checked against Adaption's docs and live endpoints on 2026-10-25. Items marked *
 
 ## What it unlocks
 
-The Adaption plugin connects Rox to Adaption's MCP server for dataset management and fine-tuning workflows (import datasets, run evaluations/AutoScientist runs, export, models). Write tools launch jobs that **spend credits**.
+The Adaption plugin connects Buwiz Bot to Adaption's MCP server for dataset management and fine-tuning workflows (import datasets, run evaluations/AutoScientist runs, export, models). Write tools launch jobs that **spend credits**.
 
-Adaption has **no dynamic client registration**. Its OAuth page says clients identify themselves either with a Client ID Metadata Document (an HTTPS URL as `client_id`; Claude and ChatGPT use this) or a pre-registered client ("Adaption's own plugins use fixed client IDs"). The catalog's pinned id `adaption-cursor-plugin` is the vendor's own and will not accept Rox's callback. The docs do not say how a third party gets a pre-registered id.
+Adaption has **no dynamic client registration**. Its OAuth page says clients identify themselves either with a Client ID Metadata Document (an HTTPS URL as `client_id`; Claude and ChatGPT use this) or a pre-registered client ("Adaption's own plugins use fixed client IDs"). The catalog's pinned id `adaption-cursor-plugin` is the vendor's own and will not accept Buwiz Bot's callback. The docs do not say how a third party gets a pre-registered id.
 
 Endpoints (confirmed live):
 
@@ -27,27 +27,27 @@ Endpoints (confirmed live):
 
 - An Adaption account (https://adaptionlabs.ai).
 - Credits for any job-launching tool; pricing and free allowance **(unconfirmed)**, see the Adaption site.
-- For OAuth with Rox: either a CIMD hosted at an HTTPS URL you control, or Adaption registering a client for you. No waiting time is published.
+- For OAuth with Buwiz Bot: either a CIMD hosted at an HTTPS URL you control, or Adaption registering a client for you. No waiting time is published.
 
 ## Steps
 
 **Easiest: use an API key instead (see below).** It needs no registered client.
 
 **OAuth route (Client ID Metadata Document):**
-1. Host a JSON metadata document at a public HTTPS URL you control (for example GitHub Pages). The Adaption docs say only that it "serves the client's metadata, including its redirect URIs"; the full field list is not given by Adaption. Use the standard MCP CIMD fields: `client_id` (the document's own URL), `client_name` (`Rox`), `redirect_uris` (`["http://127.0.0.1:8787/oauth/callback/adaption"]`), `grant_types`, `response_types`, `token_endpoint_auth_method` (`none`). **(field set unconfirmed against Adaption)**
-2. Paste that URL into Rox's **Client ID** field. This works only if Rox sends the URL as `client_id` unchanged. **(unconfirmed; check Rox's plugin page)**
+1. Host a JSON metadata document at a public HTTPS URL you control (for example GitHub Pages). The Adaption docs say only that it "serves the client's metadata, including its redirect URIs"; the full field list is not given by Adaption. Use the standard MCP CIMD fields: `client_id` (the document's own URL), `client_name` (`Buwiz Bot`), `redirect_uris` (`["http://127.0.0.1:8787/oauth/callback/adaption"]`), `grant_types`, `response_types`, `token_endpoint_auth_method` (`none`). **(field set unconfirmed against Adaption)**
+2. Paste that URL into Buwiz Bot's **Client ID** field. This works only if Buwiz Bot sends the URL as `client_id` unchanged. **(unconfirmed; check Buwiz Bot's plugin page)**
 
-**OAuth route (pre-registered):** contact Adaption support (the docs site has a Support page) and ask for a public client named `Rox` with redirect URI `http://127.0.0.1:8787/oauth/callback/adaption` and scopes `adaption-mcp:read adaption-mcp:write`.
+**OAuth route (pre-registered):** contact Adaption support (the docs site has a Support page) and ask for a public client named `Buwiz Bot` with redirect URI `http://127.0.0.1:8787/oauth/callback/adaption` and scopes `adaption-mcp:read adaption-mcp:write`.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Adaption** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | your CIMD URL, or the id Adaption issues |
 | Client Secret | leave empty (public client) |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/adaption` (confirm in Rox's plugin page) |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/adaption` (confirm in Buwiz Bot's plugin page) |
 
 Then click **Authenticate**; in the browser choose the organization and click **Authorize** (labels from the plugin README).
 
@@ -59,11 +59,11 @@ The catalog requests none explicitly. The server advertises:
 
 ## Alternative: API key (documented by the vendor)
 
-The plugin README: create a key at https://adaptionlabs.ai/app/settings?tab=api_keys and configure the server as URL `https://api.prod.adaptionlabs.ai/api/v1/mcp` with header `Authorization: Bearer <key>`. Limits: it is a long-lived secret; Rox needs a custom-header option for this connector (unconfirmed that Rox has one). Not tied to a consent screen, so it carries your full account rights.
+The plugin README: create a key at https://adaptionlabs.ai/app/settings?tab=api_keys and configure the server as URL `https://api.prod.adaptionlabs.ai/api/v1/mcp` with header `Authorization: Bearer <key>`. Limits: it is a long-lived secret; Buwiz Bot needs a custom-header option for this connector (unconfirmed that Buwiz Bot has one). Not tied to a consent screen, so it carries your full account rights.
 
 ## Verification
 
-Ask Rox: "List my Adaption datasets" (read-only; needs only `adaption-mcp:read`). Do not start with a job-launching prompt.
+Ask Buwiz Bot: "List my Adaption datasets" (read-only; needs only `adaption-mcp:read`). Do not start with a job-launching prompt.
 
 ## Troubleshooting
 

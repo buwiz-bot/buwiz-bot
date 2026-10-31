@@ -208,7 +208,7 @@ pub fn templates_of(m: &Value) -> Vec<Template> {
 /// Why a template can't be enabled now ("" when it can), given the Gmail source.
 pub fn unavailable(t: &Template, source: Option<&Source>) -> String {
     match t.needs.as_deref() {
-        Some(n) if n != "gmail" => return format!("Rox can't provide \"{n}\" yet"),
+        Some(n) if n != "gmail" => return format!("Buwiz Bot can't provide \"{n}\" yet"),
         Some(_) if t.query.is_none() => return "The template names no query tool".to_owned(),
         Some(_) => {
             if let Some(Source::None(why)) = source {

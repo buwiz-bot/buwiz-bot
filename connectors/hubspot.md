@@ -4,9 +4,9 @@ Checked against HubSpot's docs and the live endpoints on 2026-10-25. HubSpot's M
 
 ## What it unlocks
 
-The HubSpot plugin connects Rox to HubSpot's remote CRM MCP server at `https://mcp.hubspot.com`. The assistant can search and update contacts, companies, deals, tickets and other CRM objects, plus activities (calls, emails, notes). Users, teams and marketing content are read-only; custom Sensitive Data properties are not reachable. Every action runs as the signed-in HubSpot user and respects that user's HubSpot permissions.
+The HubSpot plugin connects Buwiz Bot to HubSpot's remote CRM MCP server at `https://mcp.hubspot.com`. The assistant can search and update contacts, companies, deals, tickets and other CRM objects, plus activities (calls, emails, notes). Users, teams and marketing content are read-only; custom Sensitive Data properties are not reachable. Every action runs as the signed-in HubSpot user and respects that user's HubSpot permissions.
 
-HubSpot has no OAuth dynamic client registration (the metadata has no `registration_endpoint`), so you create your own **MCP connector** (HubSpot's name for an MCP auth app) and paste its Client ID and Client secret into Rox. It is a **confidential client**: the token endpoint accepts only `client_secret_post`, so Rox needs both values.
+HubSpot has no OAuth dynamic client registration (the metadata has no `registration_endpoint`), so you create your own **MCP connector** (HubSpot's name for an MCP auth app) and paste its Client ID and Client secret into Buwiz Bot. It is a **confidential client**: the token endpoint accepts only `client_secret_post`, so Buwiz Bot needs both values.
 
 Probed live on 2026-10-25:
 
@@ -36,28 +36,28 @@ Probed live on 2026-10-25:
 2. In the left sidebar open **MCP Connectors** (HubSpot's current doc). Third-party guides call it **MCP Auth Apps** and the button **Create MCP auth app**; plugin README says the same. Use whichever label you see.
 3. Click **Create MCP connector** (upper right).
 4. In the dialog enter:
-   - **Name:** `Rox`
+   - **Name:** `Buwiz Bot`
    - **Description:** optional.
-   - **Redirect URL:** `http://127.0.0.1:8787/oauth/callback/hubspot` (confirm in Rox's plugin page).
+   - **Redirect URL:** `http://127.0.0.1:8787/oauth/callback/hubspot` (confirm in Buwiz Bot's plugin page).
    - **Icon:** optional.
-   HubSpot lets you list several redirect URLs and uses the first as the default. HubSpot's docs do not say whether `http` or `127.0.0.1` is accepted; their only loopback example is `http://localhost:6274/oauth/callback/debug`, and the Cursor plugin registers `http://localhost:8787/callback`. If `127.0.0.1` is rejected, add `http://localhost:8787/oauth/callback/hubspot` instead and check whether Rox's plugin page can use it. **(unconfirmed)**
+   HubSpot lets you list several redirect URLs and uses the first as the default. HubSpot's docs do not say whether `http` or `127.0.0.1` is accepted; their only loopback example is `http://localhost:6274/oauth/callback/debug`, and the Cursor plugin registers `http://localhost:8787/callback`. If `127.0.0.1` is rejected, add `http://localhost:8787/oauth/callback/hubspot` instead and check whether Buwiz Bot's plugin page can use it. **(unconfirmed)**
 5. Click **Create**.
 6. On the connector's details page copy the **Client ID** and **Client secret**. One third-party guide says the secret is shown once and regenerating it breaks existing connections; copy it immediately. **(unconfirmed in HubSpot docs)** To change the redirect URL later, click **Edit info** (upper right).
 7. There is no scope field when creating the connector. Scopes come from the tools and the permissions each user grants at the consent screen. A third-party guide (Scalekit) shows a Scopes section in the app; HubSpot's own page says "You don't define scopes when creating the connector". Follow HubSpot; if you do see a Scopes field, add the CRM read/write scopes you want (for example `crm.objects.contacts.read`, `crm.objects.contacts.write`, `crm.objects.companies.read`, `crm.objects.deals.read`).
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> HubSpot** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | HubSpot Client ID | Client ID from the connector's details page |
 | HubSpot Client Secret | Client secret from the same page |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/hubspot` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/hubspot` |
 
 Then click **Authenticate**. HubSpot shows three steps: select the account, grant permissions, authorize.
 
-Leaving Client ID blank: the catalog marks both fields optional and says blank means "use Grok's HubSpot app where it is available". That is the vendor's own pre-registered app, tied to its own callback URLs, and the catalog's server entry carries no pinned client ID for Rox. Do not rely on blank; enter your own values. **(whether Rox ships any default app is unconfirmed)**
+Leaving Client ID blank: the catalog marks both fields optional and says blank means "use Grok's HubSpot app where it is available". That is the vendor's own pre-registered app, tied to its own callback URLs, and the catalog's server entry carries no pinned client ID for Buwiz Bot. Do not rely on blank; enter your own values. **(whether Buwiz Bot ships any default app is unconfirmed)**
 
 ## Scopes requested
 
@@ -69,13 +69,13 @@ None for this server. HubSpot's private-app access tokens and the old API keys a
 
 ## Verification
 
-1. After Authenticate, Rox's plugin page should show HubSpot as connected.
-2. Ask Rox: "Run get_user_details on HubSpot" (HubSpot's own verify step; it returns your user, account and tool access), then "List my 5 most recent HubSpot contacts".
+1. After Authenticate, Buwiz Bot's plugin page should show HubSpot as connected.
+2. Ask Buwiz Bot: "Run get_user_details on HubSpot" (HubSpot's own verify step; it returns your user, account and tool access), then "List my 5 most recent HubSpot contacts".
 3. In HubSpot, open the connector under Development and check it lists the install (**(unconfirmed)**).
 
 ## Troubleshooting
 
-- **Redirect URL mismatch / invalid redirect_uri:** the URL in Rox must match one on the connector exactly (scheme, host, port, path). Try `localhost` vs `127.0.0.1`; add both.
+- **Redirect URL mismatch / invalid redirect_uri:** the URL in Buwiz Bot must match one on the connector exactly (scheme, host, port, path). Try `localhost` vs `127.0.0.1`; add both.
 - **401 / invalid_client after consent:** wrong or regenerated secret. The token endpoint only takes `client_secret_post`, so a blank secret fails.
 - **Cursor-style "does not support dynamic client registration":** a third party reports this when a client has no Client ID set. Enter your own ID and secret.
 - **Missing tools or permission errors:** access follows your HubSpot user permissions; Sensitive Data blocks activity and conversation data; some tools need paid hubs.

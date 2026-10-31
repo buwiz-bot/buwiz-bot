@@ -181,7 +181,7 @@ test("RV0-02 GET /routines/templates lists a connected server's templates: clamp
     JSON.stringify([
       { server: SERVER, id: "bir-mail", name: "BIR mail", description: "Files BIR confirmations.", every_s: 120, needs: "gmail", available: true, needs_email: true },
       { server: SERVER, id: "daily", name: "Daily note", description: "", every_s: 60, needs: null, available: true },
-      { server: SERVER, id: "cal", name: "Calendar sync", description: "", every_s: 3600, needs: "calendar", available: false, reason: 'Rox can\'t provide "calendar" yet' },
+      { server: SERVER, id: "cal", name: "Calendar sync", description: "", every_s: 3600, needs: "calendar", available: false, reason: 'Buwiz Bot can\'t provide "calendar" yet' },
       { server: SERVER, id: "noquery", name: "No query", description: "", every_s: 3600, needs: "gmail", available: false, reason: "The template names no query tool", needs_email: true },
       { server: SERVER, id: "idle", name: "Idle", description: "", every_s: 3600, needs: null, available: false, reason: "The template has nothing to do" },
     ]),
@@ -203,11 +203,11 @@ test("RV0-03 POST /routine/from-template refusals are 400 {ok:false, error}; the
   assert.deepEqual(await refused({ server: SERVER, id: "daily" }), { ok: false, error: "unknown chat " });
   assert.deepEqual(await refused({ server: "nope", id: "daily", thread: chat }), { ok: false, error: "no connected server nope" });
   assert.deepEqual(await refused({ server: SERVER, id: "zzz", thread: chat }), { ok: false, error: `${SERVER} has no routine template zzz` });
-  assert.deepEqual(await refused({ server: SERVER, id: "cal", thread: chat }), { ok: false, error: 'Rox can\'t provide "calendar" yet' });
+  assert.deepEqual(await refused({ server: SERVER, id: "cal", thread: chat }), { ok: false, error: 'Buwiz Bot can\'t provide "calendar" yet' });
   assert.deepEqual(await refused({ server: SERVER, id: "bir-mail", thread: chat, user_google_email: "bob" }), { ok: false, error: "bob isn't an email address" });
   assert.deepEqual(await refused({ server: SERVER, id: "bir-mail", thread: chat }), {
     ok: false,
-    error: "Rox needs your Google address for Gmail searches",
+    error: "Buwiz Bot needs your Google address for Gmail searches",
     need: "user_google_email",
   });
   // a body that is not JSON

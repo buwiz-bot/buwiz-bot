@@ -2461,7 +2461,7 @@ mod tests {
             crate::routines::Routine::of(&serde_json::json!({"id": "r1", "name": "Calendar sync", "thread": "t2", "enabled": true, "botName": "Piccolo", "last_error": "offline"})),
             crate::routines::Routine::of(&serde_json::json!({"id": "r2", "name": "Not here", "thread": "t5", "enabled": true})),
         ];
-        let got = chat_routines("t2", &listed, &server, "Rox");
+        let got = chat_routines("t2", &listed, &server, "Buwiz Bot");
         assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR payments", "BIR confirmations", "Calendar sync"]);
         assert_eq!((got[0].status.as_str(), got[0].enabled), ("Waiting for its first run", true));
         assert_eq!(got[0].by, "BIR · every 5 min");
@@ -2494,7 +2494,7 @@ mod tests {
         );
         assert_eq!(got[0].key(), "v1:dev.goldcoders.bir/payments");
         assert_eq!(got[2].key(), "v0:r1");
-        assert!(chat_routines("", &listed, &server, "Rox").is_empty(), "no chat open, none");
+        assert!(chat_routines("", &listed, &server, "Buwiz Bot").is_empty(), "no chat open, none");
     }
 
     #[test]
@@ -2509,7 +2509,7 @@ mod tests {
                 {"instance": "ri_b", "summary": "Taxpayer B", "params": {"taxpayers": ["tp_b"]}, "trigger": "webhook", "every_s": 300,
                  "enabled": false, "pending": true, "available": true, "thread": "t2", "hook": false},
                 {"instance": "ri_c", "summary": "Other bot", "params": {}, "trigger": "schedule", "enabled": true, "available": true, "thread": "t9"}]}]}))];
-        let got = chat_routines("t2", &listed, &[], "Rox");
+        let got = chat_routines("t2", &listed, &[], "Buwiz Bot");
         assert_eq!(got.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["BIR confirmations · Taxpayer A", "BIR confirmations · Taxpayer B"]);
         assert_eq!(got[0].by, "BIR · every 10 min", "the instance's own interval");
         assert_eq!(got[1].by, "BIR · on its webhook");

@@ -769,7 +769,7 @@ pub fn adjust_servers(servers: Option<&Value>) -> Map<String, Value> {
     static PROXY: OnceLock<Regex> = OnceLock::new();
     let proxy = re(&PROXY, r"^https://api\.cursor\.com/rest-mcp/google-(drive|sheets|docs|slides)/mcp/?$");
     let hosted = [
-        ("https://api.cursor.com/", "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have"),
+        ("https://api.cursor.com/", "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have"),
         ("https://connectors-gateway.grok.com/", "Hosted by Grok's connector gateway — it needs a Grok account session"),
     ];
     let mut out = Map::new();
@@ -862,7 +862,7 @@ mod tests {
         let s = json!({ "d": { "url": "https://api.cursor.com/rest-mcp/google-drive/mcp", "type": "http" }, "c": { "url": "https://api.cursor.com/x" }, "k": { "command": "x" } });
         assert_eq!(
             Value::Object(adjust_servers(Some(&s))),
-            json!({ "d": { "url": "https://drivemcp.googleapis.com/mcp/v1", "type": "http" }, "c": { "url": "https://api.cursor.com/x", "unavailable": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have" }, "k": { "command": "x" } })
+            json!({ "d": { "url": "https://drivemcp.googleapis.com/mcp/v1", "type": "http" }, "c": { "url": "https://api.cursor.com/x", "unavailable": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have" }, "k": { "command": "x" } })
         );
     }
 }

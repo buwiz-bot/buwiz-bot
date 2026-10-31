@@ -1,6 +1,6 @@
 # The nsh fork
 
-Rox builds on its own copy of Native Shell. **`rox` = upstream `main` + our
+Buwiz Bot builds on its own copy of Native Shell. **`rox` = upstream `main` + our
 topics**, nothing else:
 
 | Where | What | Rule |
@@ -9,10 +9,10 @@ topics**, nothing else:
 | `hexuria/nsh` `main` | mirror of upstream `main` | only ever fast-forwarded (`scripts/nsh-fork sync`) |
 | `hexuria/nsh` `pr/<topic>` | one feature or one fix, cut from `main` | follows upstream's `AGENTS.md`; becomes one upstream PR |
 | `hexuria/nsh` `rox` | `main` + the active topics of `nsh-patches.toml` | rebuilt from scratch, never merged into |
-| `rox/nsh` (submodule) | a commit of `rox` | Rox's `Cargo.toml` takes nsh's crates from it by path |
-| tags `rox-YYYY-MM-DD` | every `rox` tip before a rebuild | keep old Rox commits buildable |
+| `rox/nsh` (submodule) | a commit of `rox` | Buwiz Bot's `Cargo.toml` takes nsh's crates from it by path |
+| tags `rox-YYYY-MM-DD` | every `rox` tip before a rebuild | keep old Buwiz Bot commits buildable |
 
-`nsh-patches.toml` is the registry: every topic Rox carries, its upstream PR
+`nsh-patches.toml` is the registry: every topic Buwiz Bot carries, its upstream PR
 and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 `hexuria/native-shell` is the fork's old name (a redirect): use
 `hexuria/nsh`.
@@ -22,15 +22,15 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 - Commit nsh changes on a topic branch. `main` holds upstream's commits
   only, and `rox` only what a rebuild puts there.
 - Change `rox` with `scripts/nsh-fork rebuild --push`: it tags the old tip
-  before it moves the branch, so every commit Rox recorded still fetches.
+  before it moves the branch, so every commit Buwiz Bot recorded still fetches.
 - One topic is one upstream PR: one area, its tests, upstream's commit
   style (`macos: Do the thing`), formatted with `cargo +nightly fmt --all`,
   passing the crate's tests. Write it as if it goes upstream tomorrow, even
   a fix we expect to carry: carried patches stay small that way.
 - Keep the fork's diff small: when upstream declines a feature, propose the
   hook it needs instead (a callback, an extension point) and move the
-  feature itself into Rox.
-- Rox depends on nsh by path through the submodule. Publish nothing of the
+  feature itself into Buwiz Bot.
+- Buwiz Bot depends on nsh by path through the submodule. Publish nothing of the
   fork to crates.io: renaming every crate (and the paths `nsh-macros`
   generates) would fork the ecosystem for an app nobody else builds on.
 
@@ -43,7 +43,7 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    `cargo +nightly fmt --all`.
 3. Add a `[[topic]]` to `nsh-patches.toml` (status `local`), push the
    branch to `origin`.
-4. Rebuild `rox` and update Rox (below). Done when Rox builds and runs on
+4. Rebuild `rox` and update Buwiz Bot (below). Done when Buwiz Bot builds and runs on
    the new `rox` and `scripts/nsh-fork status` flags nothing for the topic.
 
 ## Upstreaming a topic
@@ -73,21 +73,21 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    Merges are skipped: a topic that merges upstream `main` in carries its
    port in ordinary commits after the merge, and resolves the merge as
    the rebuild's picks do.
-4. Check `rox-new`: point the submodule at it, build Rox, launch it, then
+4. Check `rox-new`: point the submodule at it, build Buwiz Bot, launch it, then
    `scripts/nsh-fork rebuild --push`.
-5. Update Rox. Done when Rox is committed on the new `rox` commit and runs.
+5. Update Buwiz Bot. Done when Buwiz Bot is committed on the new `rox` commit and runs.
 
-## Updating Rox
+## Updating Buwiz Bot
 
 1. In `rox/nsh`: `git fetch origin && git switch rox && git reset --hard origin/rox`.
-2. Fix Rox for upstream's changes (`cd app && cargo build`), launch it and
+2. Fix Buwiz Bot for upstream's changes (`cd app && cargo build`), launch it and
    smoke-test chats, the palette, Settings, the file viewer and a live mini
    app.
-3. Commit in Rox: the code and the `nsh` submodule pointer together.
+3. Commit in Buwiz Bot: the code and the `nsh` submodule pointer together.
 
 Upstream moves fast and breaks before its first compatible release: 0.3
 moved `nsh_core::ui` to `nsh_core::element` / `nsh_core::prelude`, `input`
-to `nsh_base`, and every `nsh/<x>` submodule into `nsh` (no aliases). Rox
+to `nsh_base`, and every `nsh/<x>` submodule into `nsh` (no aliases). Buwiz Bot
 rewrites old imports in the mini apps it compiles (`mini::current_homes`);
 the server's prompts and the MCP mini apps should import from the new homes.
 
@@ -98,5 +98,5 @@ the server's prompts and the MCP mini apps should import from the new homes.
   keeps duplicates around once upstream takes a change in another form.
 - **The registry, not patch matching.** Upstream squash-merges PRs, so git
   cannot tell that a topic landed; the PR number in the registry can.
-- **Tags before every rebuild.** Rox's history records submodule commits;
+- **Tags before every rebuild.** Buwiz Bot's history records submodule commits;
   a rebuilt `rox` would orphan them without a tag.

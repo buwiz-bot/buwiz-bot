@@ -1190,7 +1190,7 @@ mod imp {
             let view = AppView::new(
                 mtm,
                 AppOptions {
-                    title: "Rox mini app".to_owned(),
+                    title: "Buwiz Bot mini app".to_owned(),
                     app_id: "dev.goldcoders.rox.mini".to_owned(),
                     size: (340, 200),
                     // `asset:/generated/assets/…` (generated images) are the

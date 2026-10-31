@@ -198,7 +198,7 @@
    "connector": "link",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -214,7 +214,7 @@
    "connector": "onedrive",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -230,7 +230,7 @@
    "connector": "outlook",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -238,7 +238,7 @@
    "connector": "outlook-calendar",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -254,7 +254,7 @@
    "connector": "power-bi",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -286,7 +286,7 @@
    "connector": "sharepoint",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {
@@ -318,7 +318,7 @@
    "connector": "teams",
    "kind": "hosted",
    "authorization_server": "api.cursor.com",
-   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have",
+   "reason": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have",
    "how_to_enable": "Not possible without that vendor's account gateway."
   },
   {

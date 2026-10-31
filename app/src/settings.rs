@@ -42,7 +42,7 @@ pub(crate) fn toggle() {
     st.key_record.set(None);
 }
 
-/// What the last change said ("⌘H moved from Hide Rox").
+/// What the last change said ("⌘H moved from Hide Buwiz Bot").
 fn note() -> Signal<String> {
     store().settings_note
 }

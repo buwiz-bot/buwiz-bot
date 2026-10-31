@@ -456,21 +456,21 @@ pub(crate) fn link_ask_layer() -> impl IntoElement {
         let (head, what, body, yes) = match ask {
             LinkAsk::Open(url) => (
                 "Open this link in another app?".to_owned(),
-                "A link in Rox wants to open outside it:",
+                "A link in Buwiz Bot wants to open outside it:",
                 url,
                 "Open",
             ),
             LinkAsk::NewChat(draft) => (
                 "Start a new chat?".to_owned(),
-                "Another app asked Rox to start a chat with this draft. Nothing is sent until you send it.",
+                "Another app asked Buwiz Bot to start a chat with this draft. Nothing is sent until you send it.",
                 if draft.trim().is_empty() { "(no draft)".to_owned() } else { draft },
                 "Start chat",
             ),
             LinkAsk::App(app) => (
                 store().mcp_manifest.with(|ms| crate::links::app_question(&app, ms)),
                 match app.from {
-                    crate::links::AppOpener::ToolResult => "A tool's result asked Rox to show this app full screen:",
-                    _ => "Another app or a web page asked Rox to show this app full screen:",
+                    crate::links::AppOpener::ToolResult => "A tool's result asked Buwiz Bot to show this app full screen:",
+                    _ => "Another app or a web page asked Buwiz Bot to show this app full screen:",
                 },
                 crate::links::app_subject(&app).unwrap_or(app.key.as_str()).to_owned(),
                 "Open",
@@ -478,7 +478,7 @@ pub(crate) fn link_ask_layer() -> impl IntoElement {
             // v1 plugins (spec 9.7): the questions the table fixes
             LinkAsk::V1App { key, title } => (
                 crate::mini_v1::consent::open_app_question(&title, "another app or a web page"),
-                "A link from outside Rox asked to open this app. Nothing opens unless you say so.",
+                "A link from outside Buwiz Bot asked to open this app. Nothing opens unless you say so.",
                 crate::mini_v1::links::link_of(&crate::mini_v1::V1Key::parse(&key).unwrap_or(crate::mini_v1::V1Key {
                     plugin: String::new(),
                     app: String::new(),

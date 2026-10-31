@@ -199,7 +199,7 @@ pub(crate) struct Word {
 }
 
 fn ctx() -> EditCtx {
-    EditCtx::local("Rox", "1970-01-01T00:00:00Z")
+    EditCtx::local("Buwiz Bot", "1970-01-01T00:00:00Z")
 }
 
 fn spot(story: &str, offset: u32) -> Spot {

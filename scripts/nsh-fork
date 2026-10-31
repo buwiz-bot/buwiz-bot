@@ -171,7 +171,7 @@ def rebuild(push):
     fmt = subprocess.run(["cargo", "+nightly", "fmt", "--all", "--", "--check"], cwd=WORKTREE, capture_output=True)
     print(f"rox-new: {count('upstream/main..rox-new')} commits; rustfmt {'clean' if fmt.returncode == 0 else 'NOT clean'}")
     if not push:
-        print(f"check it (cargo check / Rox build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
+        print(f"check it (cargo check / Buwiz Bot build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
         return
     old = git("rev-parse", "origin/rox")
     tag = base = "rox-" + datetime.date.today().isoformat()
@@ -185,7 +185,7 @@ def rebuild(push):
         git("tag", tag, old)
         git("push", "origin", tag)
     git("push", f"--force-with-lease=rox:{old}", "origin", "rox-new:rox")
-    print(f"rox moved; {old[:8]} kept as a tag. Point Rox's submodule at it (NSH-FORK.md, 'Updating Rox').")
+    print(f"rox moved; {old[:8]} kept as a tag. Point Buwiz Bot's submodule at it (NSH-FORK.md, 'Updating Buwiz Bot').")
 
 
 def rebase(topic, push, keep_local):

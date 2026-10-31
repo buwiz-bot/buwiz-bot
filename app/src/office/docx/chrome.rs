@@ -226,7 +226,7 @@ pub(crate) fn report_issue_url((w, h): (f32, f32)) -> String {
         "### Environment",
         "- URL: ",
         &format!("- Viewport: {} x {}", w.round(), h.round()),
-        "- User agent: Rox",
+        "- User agent: Buwiz Bot",
         "",
     ]
     .join("\n");

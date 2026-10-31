@@ -65,7 +65,7 @@ const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
 
-/// The app's display name: `APP_NAME` from the environment, else "Rox"
+/// The app's display name: `APP_NAME` from the environment, else "Buwiz Bot"
 /// (the window title, the top pill, the empty state, the composer's
 /// "Message …" outside an agent's chat).
 pub fn app_name() -> &'static str {
@@ -75,7 +75,7 @@ pub fn app_name() -> &'static str {
             .ok()
             .map(|n| n.trim().to_owned())
             .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "Rox".to_owned())
+            .unwrap_or_else(|| "Buwiz Bot".to_owned())
     })
 }
 

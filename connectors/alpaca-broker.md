@@ -6,7 +6,7 @@ One file covers both connector ids: `alpaca-broker` (live) and `alpaca-broker-sa
 
 ## What it unlocks
 
-Rox connects to Alpaca's hosted Broker API MCP (beta): account operations for a broker partner's end customers. Per Alpaca, sandbox is used for writes, account creation, orders and funding; production is read-only for now.
+Buwiz Bot connects to Alpaca's hosted Broker API MCP (beta): account operations for a broker partner's end customers. Per Alpaca, sandbox is used for writes, account creation, orders and funding; production is read-only for now.
 
 | Item | Live (`alpaca-broker`) | Sandbox (`alpaca-broker-sandbox`) |
 |---|---|---|
@@ -29,20 +29,20 @@ Probed live: `https://broker-api.alpaca.markets/.well-known/oauth-protected-reso
 - An individual (non-partner) trading account cannot use this plugin; use `alpaca-trading` (see `alpaca-trading.md`).
 - Cost and review time: **(unconfirmed)**, not stated in the docs.
 
-## Does Rox need its own app?
+## Does Buwiz Bot need its own app?
 
-Yes, in the sense that the pinned IDs are Cursor's and will not accept Rox's loopback callback. Each endpoint "uses its own OAuth client", and live and sandbox credentials are not interchangeable (per Alpaca's Broker MCP page). There is no self-service app page. Routes:
+Yes, in the sense that the pinned IDs are Cursor's and will not accept Buwiz Bot's loopback callback. Each endpoint "uses its own OAuth client", and live and sandbox credentials are not interchangeable (per Alpaca's Broker MCP page). There is no self-service app page. Routes:
 
 1. **CIMD (no Alpaca approval of the client itself):** Alpaca's authx accepts CIMD. Verified 2026-10-25 by read-only GETs: Claude Code's CIMD client with `resource=https://broker-api.alpaca.markets/mcp` on the live host and `resource=https://broker-api.sandbox.alpaca.markets/mcp` on the sandbox host both return 302 to `broker-app.alpaca.markets/authorize` (a login step). You still need to be a partner super user to complete consent.
-2. **Ask Alpaca to register Rox** as an OAuth client per environment (your CSM, or an issue on `https://github.com/alpacahq/agentic/issues`).
+2. **Ask Alpaca to register Buwiz Bot** as an OAuth client per environment (your CSM, or an issue on `https://github.com/alpacahq/agentic/issues`).
 
 CIMD steps: host one JSON file per environment at an https URL with a non-root path (the `client_id` in the file must equal the URL; use the sandbox one first):
 
 ```json
 {
-  "client_id": "https://YOURNAME.github.io/rox/alpaca-broker-sandbox-client.json",
-  "client_name": "Rox",
-  "client_uri": "https://YOURNAME.github.io/rox/",
+  "client_id": "https://YOURNAME.github.io/buwiz-bot/alpaca-broker-sandbox-client.json",
+  "client_name": "Buwiz Bot",
+  "client_uri": "https://YOURNAME.github.io/buwiz-bot/",
   "redirect_uris": ["http://127.0.0.1/oauth/callback/alpaca-broker-sandbox"],
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
@@ -50,15 +50,15 @@ CIMD steps: host one JSON file per environment at an https URL with a non-root p
 }
 ```
 
-For live make a second file with `.../alpaca-broker-client.json` and redirect `http://127.0.0.1/oauth/callback/alpaca-broker`. Callback URLs to confirm in Rox's plugin page (Rox's exact string is not final): `http://127.0.0.1:8787/oauth/callback/alpaca-broker` and `http://127.0.0.1:8787/oauth/callback/alpaca-broker-sandbox`. Loopback matching ignored the port in testing; the path must be listed. Whether Rox's Client ID field accepts an https URL: **(unconfirmed)**. Whether Alpaca will let a CIMD client through the final Broker Dashboard consent for a given partner: **(unconfirmed)**.
+For live make a second file with `.../alpaca-broker-client.json` and redirect `http://127.0.0.1/oauth/callback/alpaca-broker`. Callback URLs to confirm in Buwiz Bot's plugin page (Buwiz Bot's exact string is not final): `http://127.0.0.1:8787/oauth/callback/alpaca-broker` and `http://127.0.0.1:8787/oauth/callback/alpaca-broker-sandbox`. Loopback matching ignored the port in testing; the path must be listed. Whether Buwiz Bot's Client ID field accepts an https URL: **(unconfirmed)**. Whether Alpaca will let a CIMD client through the final Broker Dashboard consent for a given partner: **(unconfirmed)**.
 
-App name if a form asks: `Rox`. Client type: public (no secret).
+App name if a form asks: `Buwiz Bot`. Client type: public (no secret).
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Alpaca Broker API -> settings** (sandbox is its own entry):
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | the https URL of the matching JSON file (or the ID Alpaca issues) |
 | Client Secret | empty (public client) |
@@ -76,7 +76,7 @@ Alpaca states the connection is OAuth only and "never paste API keys or secrets 
 
 ## Verification
 
-Authorize sandbox first and ask Rox: "List the accounts in my Alpaca broker sandbox." Review/revoke authorizations under **Team Management** in the Broker Dashboard.
+Authorize sandbox first and ask Buwiz Bot: "List the accounts in my Alpaca broker sandbox." Review/revoke authorizations under **Team Management** in the Broker Dashboard.
 
 ## Troubleshooting
 

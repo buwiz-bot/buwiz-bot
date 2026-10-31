@@ -218,7 +218,7 @@ impl Bot {
 /// state.mjs `botDefaults`: (description, instructions).
 pub fn bot_defaults(name: &str) -> (String, String) {
     (
-        format!("{name} is a personal assistant bot in Grok Shell."),
+        format!("{name} is a personal assistant bot in Buwiz Bot."),
         format!("Stay in character as {name}. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous."),
     )
 }
