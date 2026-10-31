@@ -18,9 +18,9 @@ app is shared between manifests: `if (buwiz.copy) …`.
 | `buwiz.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
 | `buwiz.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
 | `buwiz.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
-| `buwiz.actions(list)`, `buwiz.onAction(handler)` | always (1.1) | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
-| `buwiz.meta({text, pill?})` | always (1.1) | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
-| `buwiz.settle(text)` | always (1.1) | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
+| `buwiz.actions(list)`, `buwiz.onAction(handler)` | always | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
+| `buwiz.meta({text, pill?})` | always | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
+| `buwiz.settle(text)` | always | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
 | `buwiz.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
 | `buwiz.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
 | `buwiz.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
@@ -122,7 +122,7 @@ second per open, the last always landing; `buwiz.fit` needs no permission
 
 ## Cards that look like Buwiz Bot's: `buwiz.actions`, `buwiz.meta`, `buwiz.settle`
 
-Protocol 1.1 (spec 7.12 to 7.14). An inline card can hand Buwiz Bot its chrome
+Spec 7.12 to 7.14. An inline card can hand Buwiz Bot its chrome
 instead of drawing it, so it looks like Buwiz Bot's own cards (an approval card's
 buttons, its settled line):
 
@@ -145,8 +145,7 @@ buttons, its settled line):
 A call outside these rules rejects `invalid_args` and changes nothing. Full
 screen, each call is checked the same way, then ignored: draw your own
 buttons there (`buwiz.viewport().placement` says which). They need no
-permission. Declare `"protocol": "2.0.0"` when you use them, and check for
-them (`if (buwiz.actions)`) if the app may run on a 1.0 Buwiz Bot.
+permission.
 
 ```tsx
 import { buwiz } from "buwiz";
@@ -199,14 +198,14 @@ answers `structuredContent` with one `result`:
 | `choices` | `choices: [{label, detail?, value}]`; `value` should be a ticket | 20 choices; label 80, detail 160 chars |
 | `open` | `app` (yours), `props?`, `ticket?`, `title`, `placement?` | title 60 chars; props validate; no other plugin's app |
 | `token` | `ticket`, `title` | title 60 chars; ticket `^tkt_[0-9A-HJKMNP-TV-Z]{26}$` |
-| `prompt` (1.1) | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
+| `prompt` | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
 | `error` | `message` | 200 chars |
 
 `prompt` is a starter flow: Buwiz Bot puts `text` in the message field for the
 user to edit and send (after their own draft and a blank line, if they typed
 one) and never sends it. Answer it for a command, for example a bare
 `/draft`, with the text as the user would type it (tokens and line breaks
-are kept). Declare `"protocol": "2.0.0"`: a 1.x Buwiz Bot cannot read it.
+are kept).
 
 ```js
 if (args.kind === "command" && !args.value) return ok({ result: "prompt", text: "Draft this month's update:\n- " });

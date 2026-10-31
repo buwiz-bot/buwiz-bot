@@ -280,13 +280,9 @@ function checkResolve(m, data) {
   return found;
 }
 
-// A raw `prompt` answer (9.2, protocol 1.1) held to its rules: a
-// command's only, non-blank text of at most PROMPT_MAX characters, from a
-// plugin that declares protocol 1.1 or later (a 1.0 host cannot read it).
+// A raw `prompt` answer (9.2) held to its rules: a command's only,
+// non-blank text of at most PROMPT_MAX characters.
 function checkPromptAnswer(m, kind, data) {
-  const [maj, min] = String(m.protocol).split(".").map(Number);
-
-  expect(maj > 1 || (maj === 1 && min >= 1), `the manifest declares protocol ${m.protocol}; a prompt answer needs 1.1.0 or later`);
   expect(kind === "command", "a prompt result answers a command, not a scope");
   expect(isString(data.text) && /[^ \t\r\n]/.test(data.text), "a prompt result needs text (not only spaces and line breaks)");
   expect([...data.text].length <= PROMPT_MAX, `a prompt's text is ${[...data.text].length} characters; at most ${PROMPT_MAX}`);

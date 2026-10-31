@@ -25,7 +25,7 @@ directory, where `npm run plugin-test` runs.
 
 4. **Write the resolve tool** for your commands and scopes: it answers
    `choices`, `open`, `token`, `prompt` (a command's starter text for the
-   message field; protocol 1.1) or `error`, with tickets from
+   message field) or `error`, with tickets from
    `tickets.issue(subject)` instead of raw identifiers
    ([docs/bridge.md](docs/bridge.md#resolve-tools)).
 
