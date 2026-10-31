@@ -2664,6 +2664,10 @@ pub(crate) fn viewer_actions() {
             (true, true) => "Open Documents in the Web Editor",
             (false, true) => "Open Documents Natively",
         };
+        // this file only, to compare the two views
+        if let Some(switch) = crate::office::switch_label(&f.path) {
+            items.push(CtxItem::row(switch, if word { "document" } else { "spreadsheet" }, "office-view", String::new()));
+        }
         items.push(CtxItem::row(label, if word { "document" } else { "spreadsheet" }, "office-native", String::new()));
     }
     if printable(&f).is_some() {

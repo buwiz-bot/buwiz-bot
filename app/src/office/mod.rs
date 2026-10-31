@@ -14,6 +14,8 @@
 pub(crate) mod docx;
 pub(crate) mod draw;
 pub(crate) mod session;
+#[cfg(test)]
+mod ui_tests;
 pub(crate) mod xlsx;
 
 use std::cell::RefCell;
@@ -40,6 +42,10 @@ pub(crate) struct Ui {
     pub is_word: Signal<bool>,
     /// Closing asked while the document holds edits.
     pub ask_close: Signal<bool>,
+    /// The viewer's switch: one file in the view the setting doesn't pick
+    /// (its viewer path, and whether it shows natively), until another
+    /// file opens.
+    pub forced: Signal<Option<(String, bool)>>,
 }
 
 impl Ui {
@@ -52,6 +58,7 @@ impl Ui {
             word: docx::WordUi::new(),
             is_word: signal(false),
             ask_close: signal(false),
+            forced: signal(None),
         }
     }
 }
@@ -119,7 +126,11 @@ fn file_of(f: &Attach) -> Option<(PathBuf, Sink, Option<PathBuf>)> {
 pub(crate) fn open(f: &Attach) -> bool {
     close();
     let u = ui();
-    if !u.native.get_untracked() || !native_ext(&f.path) {
+    // the switch holds for its own file: another one takes the setting
+    if u.forced.with_untracked(|o| o.as_ref().is_some_and(|(p, _)| *p != f.path)) {
+        u.forced.set(None);
+    }
+    if !natively(&f.path) || !native_ext(&f.path) {
         return false;
     }
     let Some((path, sink, files)) = file_of(f) else { return false };
@@ -139,6 +150,13 @@ pub(crate) fn open(f: &Attach) -> bool {
     let session = if word { Doc::Word(start(path, sink, generation, |o| docx::on_out(&ui().word, o))) } else { Doc::Sheet(start(path, sink, generation, |o| xlsx::on_out(&ui().sheet, o))) };
     OPEN.with_borrow_mut(|o| *o = Some(Open { key: f.path.clone(), session, files, generation }));
     true
+}
+
+/// Whether `path` opens natively: the viewer's switch for it, else the
+/// setting.
+fn natively(path: &str) -> bool {
+    let u = ui();
+    u.forced.with_untracked(|o| o.as_ref().filter(|(p, _)| p == path).map(|(_, on)| *on)).unwrap_or_else(|| u.native.get_untracked())
 }
 
 /// A session on `path`, its answers going to `out` while it is the open one.
@@ -362,6 +380,7 @@ pub(crate) fn toggle_native() {
     let u = ui();
     let on = !u.native.get_untracked();
     u.native.set(on);
+    u.forced.set(None);
     crate::client::post_bg("/state/rox-office".to_owned(), serde_json::json!({ "native": on }));
     // the open file switches views
     if let Some(f) = store().viewing.get_untracked()
@@ -371,4 +390,26 @@ pub(crate) fn toggle_native() {
             store().open_file(&f);
         }
     }
+}
+
+/// The viewer's "View in Web Editor" / "View Natively": the open Word or
+/// Excel file in the other view, this file only (the setting stays). The
+/// native document closes first, asking about its edits.
+pub(crate) fn switch_view() {
+    let Some(f) = store().viewing.get_untracked() else { return };
+    if !native_ext(&f.path) || !may_close() {
+        return;
+    }
+    let native = !ui().key.get_untracked().is_empty();
+    ui().forced.set(Some((f.path.clone(), !native)));
+    store().open_file(&f);
+}
+
+/// The switch's label for the open file, if it has one: the web editor
+/// renders on the server, so a file on this Mac has none.
+pub(crate) fn switch_label(path: &str) -> Option<&'static str> {
+    if !native_ext(path) || path.starts_with('/') {
+        return None;
+    }
+    Some(if ui().key.get_untracked().is_empty() { "View Natively" } else { "View in Web Editor" })
 }
