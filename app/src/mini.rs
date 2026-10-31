@@ -32,6 +32,12 @@ use crate::live::store;
 #[derive(Clone)]
 pub(crate) struct OutOfSight(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
 
+/// Whether the app placed under it owns the window's keys now
+/// (`keys::app_owns_keys`); provided by the full-screen layer. Without it
+/// (a card in the chat) the app comes after Rox's keys.
+#[derive(Clone)]
+pub(crate) struct OwnsKeys(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
+
 /// A turn card's live widget: `app` is the module name (`R<n>`); `h` the
 /// card body's height, or `<= 0` to fill its parent. The `source` prop
 /// updates as the store compiles. `design` is the size the app lays out
@@ -47,8 +53,11 @@ pub(crate) fn mini_app(
     let name = app.to_owned();
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
+    let owns = use_context::<OwnsKeys>();
     native("rox/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
+        .prop("host_keys", || serde_json::json!(crate::keys::host_keys()))
         .prop("design", move || match &design {
             Some(d) => {
                 let (w, h) = d();
@@ -363,6 +372,15 @@ pub(crate) fn step(d: i64) -> bool {
 /// (`rox/open`) or a `rox://app/…` link. The apps under the top one stay
 /// mounted, so ✕ comes back to them as they were.
 pub(crate) fn full_layer() -> impl IntoElement {
+    // the app took the keyboard from the message field (`keys_first`);
+    // the last one closed gives it back
+    let open = std::cell::Cell::new(false);
+    effect(move || {
+        let now = !store().mini_full.with(Vec::is_empty);
+        if open.replace(now) && !now {
+            crate::composer::focus();
+        }
+    });
     each(|| store().mini_full.get(), |o| o.n, |o, _| full_app(o.get_untracked()))
 }
 
@@ -379,6 +397,10 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
     // under another app of the stack, it holds
     provide_context(OutOfSight(std::rc::Rc::new(move || {
         store().mini_full.with(|v| v.last().map(|o| o.n)) != Some(n)
+    })));
+    // on top with nothing of Rox's over it, its keymap comes first
+    provide_context(OwnsKeys(std::rc::Rc::new(move || {
+        store().mini_full.with(|v| v.last().map(|o| o.n)) == Some(n) && crate::keys::app_owns_keys(&crate::keys::Shown::now())
     })));
     let k2 = key.clone();
     let k3 = key.clone();
@@ -646,8 +668,9 @@ mod imp {
     use std::rc::Rc;
 
     use nsh_core::JsonValue;
+    use nsh_core::keymap::Keystroke;
     use nsh_platform_macos::{
-        AppOptions, AppView, ComponentContext, NativeComponent,
+        AppOptions, AppView, ComponentContext, KeyPrecedence, NativeComponent,
         objc2::{
             DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
             rc::Retained,
@@ -694,6 +717,9 @@ mod imp {
         first_frame: RefCell<Option<(String, std::time::Instant)>>,
         /// The size last sent as a v1 app's `rox.viewport`.
         viewport: Cell<(f64, f64)>,
+        /// The element's `keys_first` prop: the app owns the window's
+        /// keys, and takes the keyboard when it comes into a window.
+        owns_keys: Cell<bool>,
         /// Hears the size a v1 app lays out at when it changes.
         on_viewport: RefCell<Option<Box<dyn Fn(serde_json::Value)>>>,
         /// An inline card's hold until its app's layout settles
@@ -733,6 +759,9 @@ mod imp {
                 self.sync_appearance();
                 self.watch_window();
                 self.check_window();
+                if self.ivars().owns_keys.get() {
+                    self.take_keyboard();
+                }
             }
 
             #[unsafe(method(roxWindowOcclusion:))]
@@ -940,6 +969,7 @@ mod imp {
                 first_frame: RefCell::new(None),
                 viewport: Cell::new((0.0, 0.0)),
                 on_viewport: RefCell::new(None),
+                owns_keys: Cell::new(false),
                 settle: RefCell::new(None),
             });
             // SAFETY: NSView's designated `init` on a fresh allocation.
@@ -955,6 +985,19 @@ mod imp {
             let held = self.ivars().held.get() || self.ivars().unseen.get();
             if let Some(app) = self.ivars().app.borrow().as_ref() {
                 app.set_paused(held);
+            }
+        }
+
+        /// Gives the app the keyboard unless it has it already: off the
+        /// message field under the full-screen app, so its editors get
+        /// typing and chords without a click first.
+        fn take_keyboard(&self) {
+            let Some(app) = self.ivars().app.borrow().clone() else { return };
+            let Some(window) = self.window() else { return };
+            let focused = window.firstResponder();
+            let inside = focused.as_deref().and_then(|r| r.downcast_ref::<NSView>()).is_some_and(|v| v.isDescendantOf(self));
+            if !inside {
+                app.focus();
             }
         }
 
@@ -1132,6 +1175,11 @@ mod imp {
         fit: Retained<FitView>,
         view: Rc<AppView>,
         last: Option<(String, String)>,
+        /// Where the app's keymap stands with Rox's (`keys_first` prop):
+        /// after it unless the app owns the keys.
+        keys: KeyPrecedence,
+        /// The keys Rox keeps while the app owns them (`host_keys` prop).
+        host_keys: Vec<Keystroke>,
         /// A v1 app's open: its session and bridge.
         v1: Option<crate::mini_v1::native::V1Open>,
     }
@@ -1168,10 +1216,13 @@ mod imp {
             );
             fit.addSubview(&app);
             *fit.ivars().app.borrow_mut() = Some(view.clone());
+            view.set_key_precedence(KeyPrecedence::Last);
             MiniApp {
                 fit,
                 view,
                 last: None,
+                keys: KeyPrecedence::Last,
+                host_keys: Vec::new(),
                 v1: None,
             }
         }
@@ -1182,10 +1233,15 @@ mod imp {
             self.view.view().removeFromSuperview();
             self.fit.addSubview(&view.view());
             *self.fit.ivars().app.borrow_mut() = Some(view.clone());
+            view.set_key_precedence(self.keys);
+            view.set_host_keys(self.host_keys.clone());
             self.view = view;
             let (w, h) = self.fit.ivars().design.get();
             self.set_design((w > 0.0 && h > 0.0).then_some((w, h)));
             self.fit.hold();
+            if self.keys == KeyPrecedence::First {
+                self.fit.take_keyboard();
+            }
         }
 
         /// Opens v1 app `module` (prepared by the store as `js`): a view of
@@ -1358,6 +1414,22 @@ mod imp {
                 {
                     s.ready();
                 }
+                return;
+            }
+            if name == "keys_first" {
+                let first = value.and_then(|v| v.as_bool()).unwrap_or(false);
+                self.keys = if first { KeyPrecedence::First } else { KeyPrecedence::Last };
+                self.view.set_key_precedence(self.keys);
+                self.fit.ivars().owns_keys.set(first);
+                if first {
+                    self.fit.take_keyboard();
+                }
+                return;
+            }
+            if name == "host_keys" {
+                let keys = value.and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or_default();
+                self.host_keys = keys.iter().filter_map(|k| Keystroke::parse_with(k.as_str()?, true).ok()).collect();
+                self.view.set_host_keys(self.host_keys.clone());
                 return;
             }
             if name == "paused" {
