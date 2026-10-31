@@ -4,6 +4,7 @@
   "publishers": {
     "gc-2026-01": {
       "publisher": "app.buwiz",
+      "first_party": true,
       "alg": "ed25519",
       "public_key": "wIldYnpGfRbuoSWqUNXzRBdNv-rHe1yv6LgSuExxoo4"
     }

@@ -417,6 +417,9 @@ export function createSessions(plugins) {
     const app = (plugins.manifestOf(row).apps || []).find((a) => a.id === b.app);
 
     if (!app) refuse("not_found", `${b.plugin} has no app ${String(b.app).slice(0, 60)}`);
+
+    // a native screen is the host's own code: there is no source to read
+    if (app.native) refuse("not_supported", `${app.id} is a native screen; it has no source`);
     const { contents = [] } = await plugins.readResource(b.plugin, app.entry);
 
     if (contents.length !== 1 || !isString(contents[0].text)) refuse("plugin_invalid", `${app.entry} must answer exactly one text content`);

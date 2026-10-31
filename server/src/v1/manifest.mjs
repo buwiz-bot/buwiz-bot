@@ -67,6 +67,7 @@ export const LIMITS = Object.freeze({
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 const FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
+const NATIVE_SCREEN = /^[a-z0-9._-]{1,64}$/;
 const SIG = /^[A-Za-z0-9_-]{86}$/;
 const EXTENSION = /^\.[a-z0-9]{1,16}$/;
 
@@ -389,13 +390,27 @@ function apps(m) {
     text(a.title, `${at}.title`, { min: 1, max: LIMITS.title });
     text(a.description, `${at}.description`, { max: LIMITS.description });
 
-    if (a.entry !== `buwiz-app://${a.id}`) throw invalid(`${at}.entry`, `must be buwiz-app://${a.id}`);
+    // a screen is TSX (entry, mime, sdk, fingerprint) or native (a host
+    // screen of a first-party plugin, verifyManifest), never both
+    if (a.native !== undefined) {
+      if (["entry", "mime", "sdk", "fingerprint"].some((k) => a[k] !== undefined)) throw invalid(at, "is a TSX screen (entry) or a native screen (native), not both");
+      obj(a.native, `${at}.native`);
+      onlyKeys(a.native, ["screen", "abi"], `${at}.native`);
 
-    if (a.mime !== APP_MIME) throw invalid(`${at}.mime`, `must be ${APP_MIME}`);
+      if (!isString(a.native.screen) || !NATIVE_SCREEN.test(a.native.screen)) throw invalid(`${at}.native.screen`, "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-'");
 
-    if (a.sdk !== "1") throw invalid(`${at}.sdk`, 'must be "1"');
+      if (a.native.abi !== 1) throw invalid(`${at}.native.abi`, "must be 1");
+    } else {
+      if (a.entry === undefined) throw invalid(at, "needs entry (a TSX screen) or native (a native screen)");
 
-    if (!isString(a.fingerprint) || !FINGERPRINT.test(a.fingerprint)) throw invalid(`${at}.fingerprint`, "must be sha256:<64 lowercase hex>");
+      if (a.entry !== `buwiz-app://${a.id}`) throw invalid(`${at}.entry`, `must be buwiz-app://${a.id}`);
+
+      if (a.mime !== APP_MIME) throw invalid(`${at}.mime`, `must be ${APP_MIME}`);
+
+      if (a.sdk !== "1") throw invalid(`${at}.sdk`, 'must be "1"');
+
+      if (!isString(a.fingerprint) || !FINGERPRINT.test(a.fingerprint)) throw invalid(`${at}.fingerprint`, "must be sha256:<64 lowercase hex>");
+    }
 
     if (a.props !== undefined) {
       schema(a.props, `${at}.props`, 1);
@@ -517,6 +532,10 @@ export function verifyManifest(textIn, trust, host = HOST_PROTOCOL) {
   if (m.needs !== undefined && !(Array.isArray(m.needs) && !m.needs.length))
     throw new V1Error("not_supported", "needs: shared services are not supported in v1 (5.3); it must be absent or []");
   fields(m);
+  const native = (m.apps || []).findIndex((a) => a.native !== undefined);
+
+  if (native >= 0 && !trust.publishers.get(m.publisher.key_id)?.first_party)
+    throw invalid(`apps[${native}].native`, "native screens are for first-party plugins only; ship the app as a TSX screen (entry)");
 
   return { manifest: m, sha256: manifestHash(m) };
 }

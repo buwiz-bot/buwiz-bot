@@ -62,6 +62,11 @@ pub mod say {
     pub fn unavailable(plugin_title: &str) -> String {
         format!("{plugin_title} is not running. Retry")
     }
+
+    /// A native screen (`apps[].native`) before this build can host it.
+    pub fn native(title: &str) -> String {
+        format!("{title}: this screen needs a newer Buwiz Bot.")
+    }
 }
 
 /// What a running app's error shows (6.7), from the engine's report: the
@@ -637,6 +642,11 @@ pub fn warm(broker: &dyn host_api::Broker, plugin: &PluginEntry, app: &str, root
     Ok(true)
 }
 
+/// The native screen an app entry names (`apps[].native.screen`), if it is one.
+pub fn native_screen(app: &Value) -> Option<&str> {
+    app.get("native")?.get("screen")?.as_str()
+}
+
 /// [`prepare`] for a plugin already listed.
 pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: PluginEntry) -> Result<Prepared, RoxError> {
     let app = plugin.app(&key.app).cloned().ok_or_else(|| {
@@ -645,6 +655,11 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
         return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
+    }
+    // `native: {screen, abi}` (protocol 2.0): a host-built screen, which a
+    // later build loads; this one says so instead of reading a source
+    if native_screen(&app).is_some() {
+        return Err(RoxError::new("not_supported", say::native(&title)));
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
@@ -810,7 +825,7 @@ mod tests {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
                     "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
-                    "protocol": "1.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
+                    "protocol": "2.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
                 }]})),
                 "/v1/host/apps/source" => {
                     Ok(serde_json::json!({"source": self.served, "fingerprint": self.listed["fingerprint"]}))
@@ -832,6 +847,19 @@ mod tests {
     }
 
     const KEY: &str = "v1:app.buwiz.fixture/card?props=%7B%22ticket%22%3A%22tkt_x%22%7D";
+
+    #[test]
+    fn a_native_screen_says_it_needs_a_newer_buwiz_bot() {
+        let native = serde_json::json!({
+            "id": "card", "title": "Fixture Card", "native": {"screen": "fx.card", "abi": 1}, "placement": ["full"],
+            "props": { "type": "object", "properties": { "ticket": { "type": "string" } }, "required": ["ticket"] },
+            "permissions": { "tools": ["fx_echo"] }
+        });
+        assert_eq!(native_screen(&native), Some("fx.card"));
+        assert_eq!(native_screen(&card(CARD)), None);
+        let e = prepare(&Serves { listed: native, served: String::new() }, KEY).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("not_supported", "Fixture Card: this screen needs a newer Buwiz Bot."));
+    }
 
     #[test]
     fn app_01_a_one_byte_change_refuses_the_app() {

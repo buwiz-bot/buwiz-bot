@@ -69,15 +69,19 @@ when the email's text it passes says so).
 
 ## `apps[]` (spec 5.5)
 
+Each app is a TSX screen (`entry`, `mime`, `sdk`, `fingerprint`, all
+required) or a native screen (`native`), never both and never neither.
+
 | Field | Req | Rule |
 |---|---|---|
 | `id` | yes | `^[a-z][a-z0-9-]{0,47}$`, unique in the plugin. |
 | `title` | yes | 1 to 60 chars. Window and link title. |
 | `description` | yes | At most 300 chars. |
-| `entry` | yes | Exactly `buwiz-app://<id>`, and listed in `resources/list`. |
-| `mime` | yes | `text/x-nsh-tsx`. |
-| `sdk` | yes | `"1"`. |
-| `fingerprint` | yes | `sha256:` + lowercase hex SHA-256 of the source bytes as served (spec 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
+| `entry` | TSX | Exactly `buwiz-app://<id>`, and listed in `resources/list`. |
+| `mime` | TSX | `text/x-nsh-tsx`. |
+| `sdk` | TSX | `"1"`. |
+| `native` | native | `{"screen": "<id>", "abi": 1}`: a screen built into Buwiz Bot (`screen` is 1 to 64 of `a-z`, `0-9`, `.`, `_`, `-`, e.g. `books.ledger`). Only for a first-party key (the trust store's `"first_party": true`, today `gc-2026-01`, publisher `app.buwiz`); any other key's manifest is refused. A native app has no `entry`, `mime`, `sdk` or `fingerprint`. This build verifies it and shows "this screen needs a newer Buwiz Bot" on open; the native loader comes next. |
+| `fingerprint` | TSX | `sha256:` + lowercase hex SHA-256 of the source bytes as served (spec 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
 | `props` | no | JSON Schema subset for `buwiz.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top (spec 6.6). |
 | `placement` | yes | `["full"]`, `["inline"]` or `["full","inline"]`. |
 | `inline` | if inline | `{width, height, min_width?, min_height?, max_height?, resizable?}` in pixels. `height` is the first frame; `min_height` (96..`height`, default 120) and `max_height` (`height`..800, default 640) bound what `buwiz.fit` sets ([bridge](bridge.md#inline-cards-that-fit-their-content-roxfit)). |

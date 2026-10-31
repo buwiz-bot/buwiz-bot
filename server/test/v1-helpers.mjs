@@ -35,7 +35,7 @@ export function publisher(keyId = `test-${random128().toLowerCase().replace(/[^a
 
 /** Writes a trust file trusting `pubs` and approving `[id, keyId]` pairs. */
 export function writeTrust(file, pubs, approved) {
-  const publishers = Object.fromEntries(pubs.map((p) => [p.keyId, { publisher: "app.buwiz", alg: "ed25519", public_key: p.pub }]));
+  const publishers = Object.fromEntries(pubs.map((p) => [p.keyId, { publisher: "app.buwiz", alg: "ed25519", public_key: p.pub, ...(p.firstParty ? { first_party: true } : {}) }]));
 
   writeFileSync(file, JSON.stringify({ v: 1, publishers, approved_plugins: approved.map(([id, key]) => ({ id, publisher_key_id: key })) }));
 
