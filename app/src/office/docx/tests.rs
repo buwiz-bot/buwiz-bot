@@ -217,6 +217,25 @@ fn a_title_word_made_bold_and_italic_keeps_its_selection_to_its_glyphs() {
 }
 
 #[test]
+fn typing_in_a_bold_italic_word_keeps_to_its_glyphs() {
+    let mut w = open(fixture::titled("Welcome to Rox", &["A first paragraph."]));
+    w.run(Cmd::Move { to: Move::DocStart, extend: false });
+    w.run(Cmd::Move { to: Move::WordRight, extend: true });
+    w.run(Cmd::Format(Fmt::Bold));
+    w.run(Cmd::Format(Fmt::Italic));
+    // inside the word: typing takes its face, whose chain came with the format
+    w.run(Cmd::Move { to: Move::Left, extend: false });
+    w.run(Cmd::Move { to: Move::Right, extend: false });
+    w.run(Cmd::Type("xy".into()));
+    w.run(Cmd::Move { to: Move::DocStart, extend: false });
+    let (outs, _) = w.run(Cmd::Move { to: Move::WordRight, extend: true });
+    let (glyphs, synthetic) = glyph_width_and_synthetic(&w, "Wxyelcome");
+    assert!(!synthetic);
+    assert!(glyphs > 0.0);
+    assert!((selection_width(&outs) - glyphs).abs() < 0.5);
+}
+
+#[test]
 fn a_font_a_style_change_brings_in_gets_a_chain() {
     let mut w = open(fixture::paragraphs(&["Plain words here", "Second line"]));
     assert!(!w.has_chain("courier new|0|0"));
