@@ -15,7 +15,7 @@ use super::save::{self, State};
 const NOW: &str = "2026-01-02T03:04:05.006Z";
 
 fn ctx() -> EditCtx {
-    EditCtx::local("Rox", "2026-01-01T00:00:00Z")
+    EditCtx::local("Buwiz Bot", "2026-01-01T00:00:00Z")
 }
 
 fn seeded(bytes: &[u8]) -> EngineSession {
