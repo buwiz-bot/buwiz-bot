@@ -184,6 +184,8 @@ pub(crate) fn cell_of(story: &str) -> Option<(String, u32, u32, u32)> {
     let (parent, rest) = story.rsplit_once(":t")?;
     let (table, cell) = rest.split_once(":r")?;
     let (row, col) = cell.split_once('c')?;
+    // a cell made in the editor carries its client after a `~`
+    let col = col.split_once('~').map_or(col, |(c, _)| c);
     Some((parent.to_owned(), table.parse().ok()?, row.parse().ok()?, col.parse().ok()?))
 }
 
@@ -194,6 +196,7 @@ mod tests {
     #[test]
     fn cell_stories_parse() {
         assert_eq!(cell_of("body:t0:r1c2"), Some(("body".to_owned(), 0, 1, 2)));
+        assert_eq!(cell_of("body:t0:r0c1~1381"), Some(("body".to_owned(), 0, 0, 1)));
         assert_eq!(cell_of("body"), None);
     }
 }
