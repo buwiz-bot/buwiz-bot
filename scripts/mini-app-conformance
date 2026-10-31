@@ -31,7 +31,7 @@ else
   echo "no broker v1 code in $BROKER (src/v1 or server/v1)"; fail=1
 fi
 
-echo "== Rox host"
+echo "== Buwiz Bot host"
 # Rox's own tests, and the protocol pieces it shares with the broker (rox-v1)
 out="$(cd "$ROOT/app" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p rox --lib -- --format terse 2>&1)" || fail=1
 shared="$(cd "$ROOT/broker" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p rox-v1 --lib -- --format terse 2>&1)" || fail=1
@@ -42,7 +42,7 @@ ids="$( { (cd "$ROOT/app" && cargo test -q -p rox --lib -- --list 2>/dev/null); 
   | sed -n 's/^\(.*\): test$/\1/p' \
   | grep -oiE '(^|::)(man|app|brg|rsv|inv|agt|lcy|con)_[0-9]{2}[a-z0-9_]*' | sed 's/^:://' | sort -u)"
 echo "$out" | grep -E '^test result|FAILED|panicked'
-echo "Rox tests by spec 17 ID:"
+echo "Buwiz Bot tests by spec 17 ID:"
 echo "$ids" | awk -F_ 'NF { id = toupper($1) "-" $2; $1 = ""; $2 = ""; sub(/^ +/, ""); print "  " id "  " $0 }'
 [ "$fail" = 0 ] && echo "conformance: pass" || echo "conformance: FAIL"
 exit "$fail"
