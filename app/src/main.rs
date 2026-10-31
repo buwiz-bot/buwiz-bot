@@ -126,7 +126,8 @@ mod jank_log {
 
 /// The root the runners mount: the same component every platform shows.
 pub fn app_root() -> nsh_core::element::Root {
-    nsh_core::element::Root::of::<rox::App>().app_id("dev.goldcoders.rox")
+    let root = nsh_core::element::Root::of::<rox::App>().app_id("dev.goldcoders.rox");
+    rox::fonts().into_iter().fold(root, |root, font| root.font(font))
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.

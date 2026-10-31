@@ -79,6 +79,12 @@ pub fn app_name() -> &'static str {
     })
 }
 
+/// The font files the root registers before it renders (`Root::font`):
+/// the office views' icon font, when the app bundle has it.
+pub fn fonts() -> Vec<Vec<u8>> {
+    office::ui::icons::font_data().into_iter().collect()
+}
+
 const BG: AdaptiveColor = tone(hsla(0.17, 0.10, 0.95, 1.0), hsla(0.60, 0.11, 0.07, 1.0));
 
 /// The app's UI set for nsh tooling (`nsh.json` `"rust"`).
