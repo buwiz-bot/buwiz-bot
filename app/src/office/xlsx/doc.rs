@@ -42,6 +42,30 @@ pub(crate) enum Cmd {
     /// Insert (`count` > 0) or delete rows or columns at `at`.
     Rows { sheet: usize, at: u32, count: i64 },
     Cols { sheet: usize, at: u32, count: i64 },
+    /// Slide chart frame `frame` by `dx`/`dy` sheet pixels (one undo step).
+    MoveChart { sheet: usize, frame: String, dx: f32, dy: f32 },
+    /// Sizes or hides columns (`cols`) or rows, one undo step for them all.
+    Dims { sheet: usize, cols: bool, dims: Vec<(u32, Dim)> },
+    /// What an autofit of these columns measures: [`Out::Fit`].
+    Fit { sheet: usize, cols: Vec<u32> },
+}
+
+/// A column's or row's change: a width in characters or a height in
+/// points (`None`: the default, or for a row its automatic height), or
+/// hidden / shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Dim {
+    Size(Option<f64>),
+    Hidden(bool),
+}
+
+/// A cell's shown text as the grid draws it: its CSS font, the text (a
+/// line of it) and its indent level.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FitText {
+    pub font: String,
+    pub text: String,
+    pub indent: u32,
 }
 
 /// The workbook's shape the UI lays out with.
@@ -64,11 +88,15 @@ pub(crate) struct Meta {
 
 pub(crate) enum Out {
     Meta(Meta),
-    List { rev: u64, sheet: usize, vp: Viewport, scale: f32, list: Arc<DisplayList> },
+    /// A drawn window, and the merged ranges in it (a selection grows
+    /// over them).
+    List { rev: u64, sheet: usize, vp: Viewport, scale: f32, list: Arc<DisplayList>, merges: Arc<Vec<Range>> },
     Cell { sheet: usize, cell: (u32, u32), input: String },
     Copied { tsv: String, html: String },
     /// A note for the person: an edit the engine refused, a save format.
     Note(String),
+    /// The texts of the columns asked to autofit, by column.
+    Fit { sheet: usize, cols: Vec<(u32, Vec<FitText>)> },
 }
 
 /// What the open's helper thread hands over, in order.
@@ -211,13 +239,58 @@ impl Book {
         match list {
             Ok(list) => {
                 let list = if scale == 1.0 { list } else { xlsx_render::scaled(list, scale) };
-                Some(Out::List { rev: self.rev, sheet, vp, scale, list: Arc::new(list) })
+                let merges = Arc::new(self.merges(sheet, &vp));
+                Some(Out::List { rev: self.rev, sheet, vp, scale, list: Arc::new(list), merges })
             }
             Err(e) => {
                 log::warn!("office: drawing {vp:?}: {e}");
                 None
             }
         }
+    }
+
+    /// The merged ranges `vp` shows, as the web editor takes them (at most
+    /// [`MAX_MERGES`]).
+    fn merges(&mut self, sheet: usize, vp: &Viewport) -> Vec<Range> {
+        let g = if sheet == self.active { self.geometry() } else { Arc::new(GridGeometry::new(&self.model().sheets[sheet], &self.model().styles)) };
+        let s = &self.model().sheets[sheet];
+        let mut all = xlsx_render::visible_merged_ranges_with_geometry(s, vp, &g, Some(betteroffice_xlsx::MAX_DISPLAY_CELLS));
+        all.truncate(MAX_MERGES);
+        all.into_iter().map(|m| ((m.start.row, m.start.col), (m.end.row, m.end.col))).collect()
+    }
+
+    /// The shown texts of columns `cols` (an autofit measures them): their
+    /// used cells, leaving out those merged across columns, as Excel does.
+    fn fit(&self, sheet: usize, cols: Vec<u32>) -> Out {
+        let model = self.model();
+        let Some(s) = model.sheets.get(sheet) else { return Out::Fit { sheet, cols: Vec::new() } };
+        let last = s.used_range().map_or(0, |r| r.end.row);
+        let merged = |at: CellRef| s.merges.iter().any(|m| m.start.col != m.end.col && m.contains(at));
+        let cols = cols
+            .into_iter()
+            .map(|c| {
+                let range = betteroffice_xlsx::CellRange::new(CellRef::new(0, c), CellRef::new(last, c));
+                let mut texts = Vec::new();
+                for (at, cell) in s.cells_in_range(range) {
+                    let text = xlsx_render::display_text(&model.styles, model.date_system, cell);
+                    if text.is_empty() || merged(at) {
+                        continue;
+                    }
+                    let style = cell.style.unwrap_or(0);
+                    let font = model.styles.font_for(style);
+                    let size = font.and_then(|f| f.size_pt).unwrap_or(11.0) as f32;
+                    let css = crate::office::draw::css_font(size, font.is_some_and(|f| f.bold), font.is_some_and(|f| f.italic), font.and_then(|f| f.name.as_deref()));
+                    // the renderer indents left- and right-aligned text only
+                    let a = model.styles.alignment_for(style);
+                    let indent = a.filter(|a| a.h.is_some_and(|h| matches!(h.as_sml(), "left" | "right"))).and_then(|a| a.indent).unwrap_or(0);
+                    for line in text.split('\n') {
+                        texts.push(FitText { font: css.clone(), text: line.to_owned(), indent });
+                    }
+                }
+                (c, texts)
+            })
+            .collect();
+        Out::Fit { sheet, cols }
     }
 
     /// A command that changes the workbook, on the full engine.
@@ -260,6 +333,23 @@ impl Book {
                 let sheet = SheetId(sheet as u32);
                 let op = if count > 0 { Op::InsertCols { sheet, at, count: count as u32 } } else { Op::DeleteCols { sheet, at, count: (-count) as u32 } };
                 wb.apply_ops(vec![op], calc()).map_err(|e| e.to_string())?.applied
+            }
+            Cmd::MoveChart { sheet, frame, dx, dy } => wb.move_chart(SheetId(sheet as u32), &frame, dx, dy, calc()).map_err(|e| e.to_string())?.applied,
+            Cmd::Dims { sheet, cols, dims } => {
+                let sheet = SheetId(sheet as u32);
+                let ops = dims
+                    .into_iter()
+                    .map(|(i, d)| match (cols, d) {
+                        (true, Dim::Size(width)) => Op::SetColWidth { sheet, col: i, width },
+                        (true, Dim::Hidden(hidden)) => Op::SetColVisibility { sheet, col: i, hidden },
+                        (false, Dim::Size(height)) => Op::SetRowHeight { sheet, row: i, height },
+                        (false, Dim::Hidden(hidden)) => Op::SetRowVisibility { sheet, row: i, hidden },
+                    })
+                    .collect::<Vec<_>>();
+                if ops.is_empty() {
+                    return Ok(false);
+                }
+                wb.apply_ops(ops, calc()).map_err(|e| e.to_string())?.applied
             }
             _ => false,
         };
@@ -316,6 +406,9 @@ fn escape_html(s: &str) -> String {
 /// How much of a worksheet's XML the first paint parses: a few
 /// screens of rows (the rest comes right after).
 const FIRST_PAINT_BYTES: usize = 256 * 1024;
+
+/// The merged ranges a drawn window carries, as the web editor caps them.
+const MAX_MERGES: usize = 1024;
 
 /// Parses an `.xlsx` package into its model and active sheet: the model
 /// alone (the package BetterOffice keeps for saving costs a third more,
@@ -414,6 +507,7 @@ impl Document for Book {
             Cmd::Sheet(_) => (Vec::new(), false),
             Cmd::Read { sheet, cell } => (vec![Out::Cell { sheet, cell, input: self.read(sheet, cell) }], false),
             Cmd::Copy { sheet, range } => (vec![self.copy(sheet, range)], false),
+            Cmd::Fit { sheet, cols } => (vec![self.fit(sheet, cols)], false),
             cmd => match &mut self.engine {
                 Engine::Quick { .. } => {
                     self.waiting.push(cmd);
@@ -630,6 +724,58 @@ mod tests {
         let outs = ready(&mut book);
         assert!(outs.iter().any(|o| matches!(o, Out::Meta(m) if m.used.0 == 20_000)));
         assert_eq!(value(book.model(), 19_999, 0), CellValue::Number { value: 19_999.0 });
+    }
+
+    /// The anchor's top left cell of the chart on sheet 0.
+    fn chart_from(model: &WorkbookModel) -> (u32, u32) {
+        let from = model.sheets[0].charts[0].anchor.from_cell().unwrap();
+        (from.row, from.col)
+    }
+
+    #[test]
+    fn charts_move_and_columns_resize_each_in_one_step_and_save() {
+        let mut book = Book::open(super::super::fixture::showcase(), Path::new("a.xlsx")).unwrap();
+        ready(&mut book);
+        let frame = book.model().sheets[0].charts[0].frame_id();
+        assert_eq!(chart_from(book.model()), (1, 7));
+        // past a column (64 pixels) right, a row (20) down
+        let (_, changed) = book.run(Cmd::MoveChart { sheet: 0, frame: frame.clone(), dx: 70.0, dy: 20.0 });
+        assert!(changed);
+        assert_eq!(chart_from(book.model()), (2, 8));
+        // three columns sized at once, one undo puts all back
+        book.run(Cmd::Dims { sheet: 0, cols: true, dims: (1..=3).map(|c| (c, Dim::Size(Some(14.0)))).collect() });
+        assert!((1..=3).all(|c| book.model().sheets[0].col_widths.get(&c) == Some(&14.0)));
+        book.run(Cmd::Undo);
+        assert!((1..=3).all(|c| !book.model().sheets[0].col_widths.contains_key(&c)));
+        book.run(Cmd::Redo);
+        // hidden and shown again
+        book.run(Cmd::Dims { sheet: 0, cols: true, dims: vec![(4, Dim::Hidden(true))] });
+        assert!(book.model().sheets[0].col_hidden(4));
+        book.run(Cmd::Dims { sheet: 0, cols: true, dims: vec![(4, Dim::Hidden(false))] });
+        assert!(!book.model().sheets[0].col_hidden(4));
+        // a row's automatic height back
+        book.run(Cmd::Dims { sheet: 0, cols: false, dims: vec![(2, Dim::Size(Some(30.0)))] });
+        book.run(Cmd::Dims { sheet: 0, cols: false, dims: vec![(2, Dim::Size(None))] });
+        assert!(!book.model().sheets[0].row_heights.contains_key(&2));
+        // saved and read again: the width and the anchor kept
+        let (bytes, _) = book.save(Path::new("a.xlsx")).unwrap();
+        let (model, _, _) = parse(&bytes, None).unwrap();
+        assert_eq!(model.sheets[0].col_widths.get(&2), Some(&14.0));
+        assert_eq!(chart_from(&model), (2, 8));
+        // an independent reader opens it
+        assert!(office_oxide::xlsx::XlsxDocument::from_reader(std::io::Cursor::new(bytes)).is_ok());
+    }
+
+    #[test]
+    fn an_autofit_measures_the_shown_text_in_its_font() {
+        let mut book = Book::open(super::super::fixture::showcase(), Path::new("a.xlsx")).unwrap();
+        ready(&mut book);
+        let Out::Fit { cols, .. } = book.fit(0, vec![0, 2]) else { panic!("fit") };
+        // the merged title is left out of A
+        assert!(cols[0].1.iter().all(|t| t.text != "Q3 Sales Dashboard"), "{:?}", cols[0]);
+        let total = cols[1].1.iter().find(|t| t.text.contains("1,504,750")).unwrap();
+        assert_eq!(total.text, "$1,504,750.00");
+        assert!(total.font.starts_with("bold "), "{}", total.font);
     }
 
     #[test]

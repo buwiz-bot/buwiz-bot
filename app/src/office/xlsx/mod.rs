@@ -5,10 +5,14 @@
 
 #[cfg(test)]
 mod bench;
+pub(crate) mod chart;
 pub(crate) mod convert;
 pub(crate) mod doc;
 pub(crate) mod edit;
+#[cfg(test)]
+pub(crate) mod fixture;
 pub(crate) mod grid;
+pub(crate) mod resize;
 pub(crate) mod select;
 
 use std::sync::Arc;
@@ -45,6 +49,8 @@ pub(crate) struct Shown {
     pub vp: Viewport,
     pub scale: f32,
     pub list: Arc<DisplayList>,
+    /// The merged ranges in the window.
+    pub merges: Arc<Vec<doc::Range>>,
 }
 
 impl PartialEq for Shown {
@@ -80,6 +86,14 @@ pub(crate) struct SheetUi {
     pub note: Signal<String>,
     /// The view last asked of the worker: (rev, sheet, window, scale).
     pub asked: std::cell::Cell<Option<(u64, usize, Viewport, f32)>>,
+    /// The chart selected instead of cells.
+    pub chart: Signal<Option<chart::Picked>>,
+    /// How far the selected chart's outline is dragged, in points.
+    pub chart_drag: Signal<Option<(f32, f32)>>,
+    /// The arrows' nudge not sent yet: (frame, dx, dy) in sheet pixels.
+    pub nudge: Signal<Option<(String, f32, f32)>>,
+    /// A column's or row's border being dragged.
+    pub resize: Signal<Option<resize::Drag>>,
 }
 
 impl SheetUi {
@@ -95,6 +109,10 @@ impl SheetUi {
             bar: signal((0, (0, 0), String::new())),
             note: signal(String::new()),
             asked: std::cell::Cell::new(None),
+            chart: signal(None),
+            chart_drag: signal(None),
+            nudge: signal(None),
+            resize: signal(None),
         }
     }
 
@@ -108,6 +126,10 @@ impl SheetUi {
         self.bar.set((0, (0, 0), String::new()));
         self.note.set(String::new());
         self.asked.set(None);
+        self.chart.set(None);
+        self.chart_drag.set(None);
+        self.nudge.set(None);
+        self.resize.set(None);
     }
 
     /// The file changed under it: the view is drawn again.
@@ -130,23 +152,28 @@ pub(crate) fn on_out(u: &SheetUi, o: Out) {
             let switched = old.is_some_and(|(a, _)| a != m.active);
             batch(|| {
                 if switched {
-                    u.sel.set(Sel::default());
+                    u.sel.set(edit::opened_at(m.active));
                     u.scroll.set((0.0, 0.0));
                     u.editing.set(None);
+                    u.chart.set(None);
+                    u.chart_drag.set(None);
+                    u.nudge.set(None);
                 }
                 u.shape.set(Some(Shape(Arc::new(m))));
             });
             edit::read_active();
         }
-        Out::List { rev, sheet, vp, scale, list } => {
+        Out::List { rev, sheet, vp, scale, list, merges } => {
             // a list older than what is shown is dropped (a burst of edits)
             if u.shown.with_untracked(|s| s.as_ref().is_some_and(|s| s.rev > rev)) {
                 return;
             }
-            u.shown.set(Some(Shown { rev, sheet, vp, scale, list }));
+            u.shown.set(Some(Shown { rev, sheet, vp, scale, list, merges }));
+            chart::listed(u);
         }
         Out::Cell { sheet, cell, input } => u.bar.set((sheet, cell, input)),
         Out::Copied { tsv, html } => edit::to_clipboard(&tsv, &html),
         Out::Note(n) => u.note.set(n),
+        Out::Fit { sheet, cols } => resize::fit(u, sheet, cols),
     }
 }
