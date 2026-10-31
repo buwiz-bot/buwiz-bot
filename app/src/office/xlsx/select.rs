@@ -202,9 +202,12 @@ fn moved(from: (u32, u32), dir: Dir, step: Step, b: &Bounds) -> (u32, u32) {
     }
 }
 
+/// A rectangle of cells: its `(row, col)` corners, inclusive.
+pub(crate) type Area = ((u32, u32), (u32, u32));
+
 /// `range` grown over the merged ranges it touches until none sticks out
-/// of it, as the web editor draws a selection (`(row, col)` corners).
-pub(crate) fn expand(range: ((u32, u32), (u32, u32)), merges: &[((u32, u32), (u32, u32))]) -> ((u32, u32), (u32, u32)) {
+/// of it, as the web editor draws a selection.
+pub(crate) fn expand(range: Area, merges: &[Area]) -> Area {
     let ((mut r0, mut c0), (mut r1, mut c1)) = range;
     let mut grew = true;
     while grew {
