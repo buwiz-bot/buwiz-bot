@@ -280,7 +280,7 @@ fn suggesting_tracks_typing_and_deleting() {
     w.run(Cmd::Move { to: Move::WordRight, extend: true });
     ok(&mut w, Cmd::Backspace);
     let xml = saved(&mut w);
-    assert!(xml.contains("<w:ins ") && xml.contains(r#"w:author="Rox""#), "{xml}");
+    assert!(xml.contains("<w:ins ") && xml.contains(r#"w:author="Buwiz Bot""#), "{xml}");
     assert!(xml.contains("<w:del ") && xml.contains("<w:delText"), "{xml}");
     // what Suggesting can't track is refused
     let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
