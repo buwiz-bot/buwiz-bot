@@ -819,7 +819,7 @@ impl ArtStorage {
             ("connector", "gdrive") => "Google Drive",
             ("connector", _) => "A connected app",
             ("agent", _) => "The agent's computer",
-            ("cloud", _) => "Rox Cloud",
+            ("cloud", _) => "Buwiz Bot Cloud",
             _ => "This Mac",
         }
     }
@@ -7167,7 +7167,7 @@ impl Store {
             }
             let Some(path) = crate::links::viewable(&path, &crate::links::view_root()) else {
                 log::warn!("rox: rox://view of a file that is no preview in {} refused", crate::links::view_root().display());
-                return crate::toast::show("Rox shows only previews from its temporary folder");
+                return crate::toast::show("Buwiz Bot shows only previews from its temporary folder");
             };
             let path = path.to_string_lossy().into_owned();
             let file = path.rsplit('/').next().unwrap_or_default().to_owned();

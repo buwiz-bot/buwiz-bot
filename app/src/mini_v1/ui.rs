@@ -1518,7 +1518,7 @@ pub fn migrate_cli(args: &[String]) -> Option<i32> {
             }
         }
     };
-    println!("Rox data dir: {}\nApp server data dir: {}", rox_dir.display(), broker_dir.display());
+    println!("Buwiz Bot data dir: {}\nApp server data dir: {}", rox_dir.display(), broker_dir.display());
     match migrate_dirs(&rox_dir, &broker_dir, &version, mode) {
         Ok(report) => {
             print!("{report}");

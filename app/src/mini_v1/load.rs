@@ -43,7 +43,7 @@ pub mod say {
     pub const FINGERPRINT: &str = "This app's code does not match its signed manifest. Update the plugin.";
 
     pub fn unsupported(title: &str, specifier: &str) -> String {
-        format!("{title} uses {specifier}, which this Rox version does not support.")
+        format!("{title} uses {specifier}, which this Buwiz Bot version does not support.")
     }
 
     pub fn too_long(title: &str) -> String {
@@ -644,7 +644,7 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     })?;
     let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
-        return Err(RoxError::new("not_supported", format!("{title} needs a newer Rox.")));
+        return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
@@ -752,7 +752,7 @@ mod tests {
         }
         let e = build("forms", "BIR Forms", "import { windowSize } from \"nsh/device\";\nexport default function F() { return null; }").unwrap_err();
         assert_eq!(e.code, "unsupported_import");
-        assert_eq!(e.message, "BIR Forms uses nsh/device, which this Rox version does not support.");
+        assert_eq!(e.message, "BIR Forms uses nsh/device, which this Buwiz Bot version does not support.");
     }
 
     #[test]

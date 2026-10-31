@@ -86,9 +86,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>dev.goldcoders.rox</string>
   <key>CFBundleName</key>
-  <string>Rox</string>
+  <string>Buwiz Bot</string>
   <key>CFBundleDisplayName</key>
-  <string>Rox</string>
+  <string>Buwiz Bot</string>
   <key>CFBundleExecutable</key>
   <string>rox</string>
   <key>CFBundlePackageType</key>

@@ -322,7 +322,7 @@ pub(crate) static COMMANDS: &[Command] = &[
     with_arg(cmd("chat.open_7", "Open sidebar chat 7", Scope::Global, &["mod+7"], open_slot), 7),
     with_arg(cmd("chat.open_8", "Open sidebar chat 8", Scope::Global, &["mod+8"], open_slot), 8),
     with_arg(cmd("chat.open_9", "Open sidebar chat 9", Scope::Global, &["mod+9"], open_slot), 9),
-    menu(cmd("app.hide", "Hide Rox", Scope::Global, &["mod+h"], |_| send_action("hide:")), "hide:", "mod+h"),
+    menu(cmd("app.hide", "Hide Buwiz Bot", Scope::Global, &["mod+h"], |_| send_action("hide:")), "hide:", "mod+h"),
     menu(
         cmd("app.hide_others", "Hide others", Scope::Global, &["mod+alt+h"], |_| send_action("hideOtherApplications:")),
         "hideOtherApplications:",

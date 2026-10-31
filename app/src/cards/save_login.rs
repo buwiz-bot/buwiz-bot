@@ -110,7 +110,7 @@ pub(crate) fn card(spec: impl Borrow<SaveLoginSpec>, key: impl AsRef<str>) -> im
         shell(&id)
             .label(format!("Save login for {}", spec.origin))
             .child(title(format!("Save login for {} as {}?", spec.origin, spec.username)))
-            .child(note("The password stays in the macOS Keychain. Rox never shows it again without Touch ID.".into()))
+            .child(note("The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID.".into()))
             .child(
                 view()
                     .flex_row()
