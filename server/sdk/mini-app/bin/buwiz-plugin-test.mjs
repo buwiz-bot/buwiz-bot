@@ -26,7 +26,12 @@
 // set, the run uses that trust store as it is, the way a broker does: the
 // key must be its key under that id, and the plugin must be on its
 // approved list (else MAN-01 fails with the broker's message). The output
-// says which it was.
+// says which it was. --first-party marks the run's own key first-party (a
+// first-party publisher's, which native screens need), for that run only.
+//
+// A native screen (`apps[].native`) is built into Buwiz Bot: it serves no
+// source, so its APP checks are the native ones (the screen id, an abi the
+// host runs, a first-party key) instead of the TSX source's.
 //
 // The checklist names the spec ID of each check and exits 1 when any
 // fails. --json prints the results as JSON instead.
@@ -39,7 +44,7 @@ import { isMain } from "../../../src/v1/cli.mjs";
 import { generate, pubOf, random128, sign, verify } from "../../../src/v1/ed.mjs";
 import { isObject, isString, parseIJson, signedBytes } from "../../../src/v1/jcs.mjs";
 import { keystore } from "../../../src/v1/keystore.mjs";
-import { MANIFEST_URI, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../src/v1/manifest.mjs";
+import { HOST_PROTOCOL, MANIFEST_URI, NATIVE_ABIS, NATIVE_SCREEN, checkTools, manifestHash, permsDigest, verifyManifest } from "../../../src/v1/manifest.mjs";
 import { createPlugins, resultData } from "../../../src/v1/plugins.mjs";
 import { MAX_PER_SECOND, PROMPT_MAX, checkOpen, createSessions, SOURCE_MAX } from "../../../src/v1/sessions.mjs";
 import { fingerprintOf, signManifest } from "../../../src/v1/sign-manifest.mjs";
@@ -48,7 +53,7 @@ import { newTicket } from "../lib/buwiz-plugin.mjs";
 
 const USAGE = `usage: buwiz-plugin-test --command <cmd> [--args <arg>]... [--env KEY=VAL]...
                        (--sign-with <key file> [--key-id <id>] | --manifest <signed.json> [--key-file <key file>])
-                       [--manifest-env NAME] [--json]
+                       [--manifest-env NAME] [--first-party] [--json]
        buwiz-plugin-test --keygen <key file>`;
 
 const ALLOWED_IMPORTS = ["nsh", "nsh/base", "buwiz"];
@@ -58,7 +63,7 @@ const CALL_MS = 10_000;
 // ── options ──────────────────────────────────────────────────────────────
 
 export function parseArgs(argv) {
-  const o = { command: "", args: [], env: {}, manifest: "", signWith: "", keyFile: "", keyId: "", manifestEnv: "BUWIZ_PLUGIN_MANIFEST", json: false, keygen: "" };
+  const o = { command: "", args: [], env: {}, manifest: "", signWith: "", keyFile: "", keyId: "", manifestEnv: "BUWIZ_PLUGIN_MANIFEST", json: false, firstParty: false, keygen: "" };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -86,6 +91,7 @@ export function parseArgs(argv) {
     else if (a === "--manifest-env") o.manifestEnv = next();
     else if (a === "--keygen") o.keygen = next();
     else if (a === "--json") o.json = true;
+    else if (a === "--first-party") o.firstParty = true;
     else if (a === "--help" || a === "-h") throw new Error(USAGE);
     else throw new Error(`unknown option ${a}\n${USAGE}`);
   }
@@ -176,7 +182,9 @@ async function served(spec) {
     if (!isObject(m)) throw new Error("the plugin's buwiz://manifest is not a JSON object");
     const sources = {};
 
+    // a native screen serves no source (and has no fingerprint)
     for (const a of Array.isArray(m.apps) ? m.apps : []) {
+      if (a.native !== undefined) continue;
       const r = await conn.client.readResource({ uri: a.entry });
 
       sources[a.id] = Buffer.from(r.contents?.[0]?.text ?? "", "utf8");
@@ -291,6 +299,8 @@ function checkPromptAnswer(m, kind, data) {
 // ── the run ──────────────────────────────────────────────────────────────
 
 export async function runPluginTest(o) {
+  // a real store says itself which keys are first-party
+  if (process.env.BUWIZ_TRUST_FILE && o.firstParty) throw new Error("--first-party marks this run's own trust; with BUWIZ_TRUST_FILE the store says which keys are first-party");
   const dir = mkdtempSync(join(tmpdir(), "buwiz-plugin-test-"));
   const { rows, run, skip } = checklist();
   const spec = { command: o.command, args: o.args, env: { ...o.env } };
@@ -320,7 +330,7 @@ export async function runPluginTest(o) {
       if (o.keyId) unsigned.publisher.key_id = o.keyId;
       writeFileSync(manifestFile, JSON.stringify(signManifest(unsigned, seed, got.sources), null, 2));
 
-      if (!store) writeTrust(trustFile, { [unsigned.publisher.key_id]: pubOf(seed) }, unsigned);
+      if (!store) writeTrust(trustFile, { [unsigned.publisher.key_id]: pubOf(seed) }, unsigned, o.firstParty);
       trustFrom = "the --sign-with key";
     } else {
       const signed = parseIJson(readFileSync(o.manifest, "utf8"));
@@ -329,7 +339,7 @@ export async function runPluginTest(o) {
 
       writeFileSync(manifestFile, readFileSync(o.manifest));
 
-      if (!store) writeTrust(trustFile, pubs, signed);
+      if (!store) writeTrust(trustFile, pubs, signed, o.firstParty);
       trustFrom = o.keyFile ? "--key-file" : "the shipped src/v1/trust.json";
     }
 
@@ -387,13 +397,14 @@ export async function runPluginTest(o) {
       });
     else skip("MAN-10", "tool names", "the manifest did not verify");
 
-    for (const a of m?.apps || []) await appChecks(raw, a, run);
+    for (const a of m?.apps || []) await (a.native !== undefined ? nativeChecks(m, a, trust(), run, skip) : appChecks(raw, a, run));
 
     // RSV-01: nothing before buwiz.provision; provision answers the manifest hash
     const key = generate();
 
     seeds.push(key.seed);
-    const provisionArgs = { protocol: "1.0.0", plugin: m?.id || "", key: { alg: "ed25519", seed: key.seed }, pub: key.pub };
+    // as the broker provisions (plugins.mjs): a plugin may check the host's protocol
+    const provisionArgs = { protocol: HOST_PROTOCOL, plugin: m?.id || "", key: { alg: "ed25519", seed: key.seed }, pub: key.pub };
 
     if (own.length)
       await run("RSV-01", `a tool before buwiz.provision fails (${own[0].name})`, async () => {
@@ -548,8 +559,8 @@ function trustOf(trustFile, store, keyFrom, manifestFile) {
   };
 }
 
-function writeTrust(file, pubs, m) {
-  const publishers = Object.fromEntries(Object.entries(pubs).map(([k, pub]) => [k, { publisher: String(m?.publisher?.id || ""), alg: "ed25519", public_key: pub }]));
+function writeTrust(file, pubs, m, firstParty = false) {
+  const publishers = Object.fromEntries(Object.entries(pubs).map(([k, pub]) => [k, { publisher: String(m?.publisher?.id || ""), alg: "ed25519", public_key: pub, ...(firstParty ? { first_party: true } : {}) }]));
 
   writeFileSync(file, JSON.stringify({ v: 1, publishers, approved_plugins: [{ id: String(m?.id || ""), publisher_key_id: String(m?.publisher?.key_id || "") }] }));
 }
@@ -599,6 +610,22 @@ async function appChecks(raw, a, run) {
   });
 }
 
+// APP-01..04 for a native screen: the host builds it, so there is no
+// source to check; what a host needs of the entry is checked instead.
+async function nativeChecks(m, a, trust, run, skip) {
+  await run("APP-01", `${a.id}: a native screen (no entry, mime, sdk or fingerprint) whose id ${JSON.stringify(a.native?.screen)} is 1 to 64 of a-z 0-9 . _ - (5.5)`, () => {
+    expect(["entry", "mime", "sdk", "fingerprint"].every((k) => a[k] === undefined), "a native screen serves no source");
+    expect(typeof a.native?.screen === "string" && NATIVE_SCREEN.test(a.native.screen), `the screen id ${JSON.stringify(a.native?.screen)} is not 1 to 64 of a-z 0-9 . _ -`);
+  });
+  await run("APP-02", `${a.id}: native.abi ${JSON.stringify(a.native?.abi)} is one this host runs (${NATIVE_ABIS.join(", ")})`, () => {
+    expect(NATIVE_ABIS.includes(a.native?.abi), `this host runs native abi ${NATIVE_ABIS.join(", ")}`);
+  });
+  await run("APP-03", `${a.id}: signed by a first-party publisher key (native screens are first-party only)`, () => {
+    expect(trust.publishers.get(m.publisher?.key_id)?.first_party === true, `key ${m.publisher?.key_id} is not first-party; run with --first-party, or use a store that marks it`);
+  });
+  skip("APP-04", `${a.id}: no network globals`, "a native screen has no TSX source; Buwiz Bot builds it");
+}
+
 // A fake Rox: a session key per open, envelopes signed as spec 8.1 says.
 async function openAs(sessions, m, app) {
   const ks = generate();
@@ -625,7 +652,7 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   };
 
   // fingerprints of what the running plugin serves (the broker's check)
-  for (const a of m.apps || [])
+  for (const a of (m.apps || []).filter((x) => x.native === undefined))
     await run("APP-01", `${a.id}: the broker's source check passes (fingerprint_mismatch otherwise)`, () => sessions.appSource({ plugin: m.id, app: a.id }).then(() => ""));
 
   // BRG-03, BRG-04, BRG-06: a session per app with tools, one signed call per tool
