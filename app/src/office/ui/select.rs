@@ -4,6 +4,7 @@
 //! −, the size, +, the size opening the preset list and taking a typed
 //! size.
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use nsh_base::{SelectGroup, SelectItem, SelectItemState};
@@ -80,11 +81,14 @@ pub(crate) struct Opt {
     /// list's "other" fonts).
     pub group: Option<SharedString>,
     pub preview: Preview,
+    /// A label row after a separator, not a choice (the line spacing
+    /// list's "Paragraph spacing", DR `ji` then `Zi`).
+    pub heading: bool,
 }
 
 impl Opt {
     pub(crate) fn new(value: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
-        Opt { value: value.into(), label: label.into(), group: None, preview: Preview::default() }
+        Opt { value: value.into(), label: label.into(), group: None, preview: Preview::default(), heading: false }
     }
 }
 
@@ -109,6 +113,8 @@ pub(crate) struct Dropdown {
     list_max_h: f32,
     item_pad: (f32, f32),
     radius: f32,
+    /// An icon in place of the chosen label (the line spacing trigger).
+    icon: Option<&'static str>,
     disabled: Rc<dyn Fn() -> bool>,
     on_change: Rc<dyn Fn(&str)>,
 }
@@ -124,6 +130,7 @@ pub(crate) fn dropdown_select(label: impl Into<SharedString>, options: Vec<Opt>)
         list_max_h: LIST_MAX_H,
         item_pad: (ITEM_PX, ITEM_PY),
         radius: TRIGGER_RADIUS,
+        icon: None,
         disabled: Rc::new(|| false),
         on_change: Rc::new(|_| {}),
     }
@@ -155,15 +162,21 @@ impl Dropdown {
         self.on_change = Rc::new(run);
         self
     }
+    /// The trigger shows `name` (20) instead of the chosen label, `h-8
+    /// gap-0.5 px-2` (DR `Cy`).
+    pub(crate) fn icon(mut self, name: &'static str) -> Self {
+        self.icon = Some(name);
+        self
+    }
 }
 
 impl IntoElement for Dropdown {
     fn into_element(self) -> AnyElement {
-        let Dropdown { label, options, value, width, compact, list_min_w, list_max_h, item_pad, radius, disabled, on_change } = self;
+        let Dropdown { label, options, value, width, compact, list_min_w, list_max_h, item_pad, radius, icon: glyph, disabled, on_change } = self;
         let items: Vec<SelectItem> = options
             .iter()
             .map(|o| {
-                let it = SelectItem::new(o.value.clone(), o.label.clone());
+                let it = SelectItem::new(o.value.clone(), o.label.clone()).disabled(o.heading);
                 match &o.group {
                     Some(g) => it.group(g.clone()),
                     None => it,
@@ -200,16 +213,18 @@ impl IntoElement for Dropdown {
             Width::Min(w) => trigger.min_w(px(w)),
             Width::Fixed(w) => trigger.w(px(w)),
         };
-        let trigger = trigger
-            .child(
+        let trigger = match glyph {
+            Some(name) => trigger.gap(px(2.0)).child(icon(name, 20.0, || p::TW_FOREGROUND)),
+            None => trigger.child(
                 text(shown)
                     .flex_shrink(1.0)
                     .number_of_lines(1)
                     .text_size(px(size))
                     .line_height(px(line))
                     .text_color(p::TW_FOREGROUND),
-            )
-            .child(mini_icon(CHEVRON_D, CHEVRON, p::TW_MUTED_FOREGROUND));
+            ),
+        }
+        .child(mini_icon(CHEVRON_D, CHEVRON, p::TW_MUTED_FOREGROUND));
         let row_opts = opts.clone();
         let value2 = value.clone();
         nsh_base::select()
@@ -229,10 +244,14 @@ impl IntoElement for Dropdown {
             })
             .trigger(trigger)
             .render_item(move |s: &SelectItemState| {
-                let preview = row_opts.iter().find(|o| o.value == s.value).map(|o| o.preview.clone()).unwrap_or_default();
+                let opt = row_opts.iter().find(|o| o.value == s.value);
+                if opt.is_some_and(|o| o.heading) {
+                    return header(&s.title, false);
+                }
+                let preview = opt.map(|o| o.preview.clone()).unwrap_or_default();
                 item_row(s, &preview, item_pad)
             })
-            .render_group(move |g: &SelectGroup| group_header(g, first_group.as_ref() == Some(&g.title)))
+            .render_group(move |g: &SelectGroup| header(&g.title, first_group.as_ref() == Some(&g.title)))
             .on_change(move |v: &Option<SharedString>| {
                 if let Some(v) = v {
                     on_change(v)
@@ -285,12 +304,12 @@ fn item_row(s: &SelectItemState, preview: &Preview, (px_, py_): (f32, f32)) -> A
 /// A section's label (DR `Zi`), after a separator (DR `ji`, `-mx-1 my-1
 /// h-px bg-muted`) unless it is the first; an untitled section has the
 /// separator only.
-fn group_header(g: &SelectGroup, first: bool) -> AnyElement {
+fn header(title: &SharedString, first: bool) -> AnyElement {
     view()
         .when(!first, |v| v.child(view().h(px(1.0)).mx(px(-4.0)).my(px(4.0)).bg(p::TW_MUTED)))
-        .when(!g.title.is_empty(), |v| {
+        .when(!title.is_empty(), |v| {
             v.child(
-                text(g.title.clone())
+                text(title.clone())
                     .px(px(8.0))
                     .py(px(6.0))
                     .text_size(px(LABEL_SIZE))
@@ -347,6 +366,7 @@ pub(crate) fn font_options(fonts: &[Font], document: &[&str]) -> Vec<Opt> {
             label: SharedString::from(d.to_string()),
             group: Some("Document fonts".into()),
             preview: Preview { family: Some(SharedString::from(d.to_string())), ..Preview::default() },
+            heading: false,
         });
     }
     for (cat, title) in [(Category::SansSerif, "Sans Serif"), (Category::Serif, "Serif"), (Category::Monospace, "Monospace"), (Category::Other, "")] {
@@ -356,6 +376,7 @@ pub(crate) fn font_options(fonts: &[Font], document: &[&str]) -> Vec<Opt> {
                 label: f.name.into(),
                 group: Some(title.into()),
                 preview: Preview { family: Some(f.family.into()), ..Preview::default() },
+                heading: false,
             });
         }
     }
@@ -369,25 +390,25 @@ pub(crate) fn font_family_select(document: &[&str]) -> Dropdown {
 }
 
 /// A paragraph style of the style list.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StyleOpt {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: Cow<'static, str>,
+    pub name: Cow<'static, str>,
     /// In half-points (`w:sz`), as the web's style table gives it.
     pub size: Option<f32>,
     pub bold: Option<bool>,
     pub italic: bool,
-    pub color: Option<&'static str>,
+    pub color: Option<Cow<'static, str>>,
 }
 
 /// The web's default styles (DR `Gl`, names from `styles.*`).
 pub(crate) const STYLES: [StyleOpt; 6] = [
-    StyleOpt { id: "Normal", name: "Normal text", size: Some(22.0), bold: None, italic: false, color: None },
-    StyleOpt { id: "Title", name: "Title", size: Some(52.0), bold: Some(true), italic: false, color: None },
-    StyleOpt { id: "Subtitle", name: "Subtitle", size: Some(30.0), bold: None, italic: false, color: Some("666666") },
-    StyleOpt { id: "Heading1", name: "Heading 1", size: Some(40.0), bold: Some(true), italic: false, color: None },
-    StyleOpt { id: "Heading2", name: "Heading 2", size: Some(32.0), bold: Some(true), italic: false, color: None },
-    StyleOpt { id: "Heading3", name: "Heading 3", size: Some(28.0), bold: Some(true), italic: false, color: None },
+    StyleOpt { id: Cow::Borrowed("Normal"), name: Cow::Borrowed("Normal text"), size: Some(22.0), bold: None, italic: false, color: None },
+    StyleOpt { id: Cow::Borrowed("Title"), name: Cow::Borrowed("Title"), size: Some(52.0), bold: Some(true), italic: false, color: None },
+    StyleOpt { id: Cow::Borrowed("Subtitle"), name: Cow::Borrowed("Subtitle"), size: Some(30.0), bold: None, italic: false, color: Some(Cow::Borrowed("666666")) },
+    StyleOpt { id: Cow::Borrowed("Heading1"), name: Cow::Borrowed("Heading 1"), size: Some(40.0), bold: Some(true), italic: false, color: None },
+    StyleOpt { id: Cow::Borrowed("Heading2"), name: Cow::Borrowed("Heading 2"), size: Some(32.0), bold: Some(true), italic: false, color: None },
+    StyleOpt { id: Cow::Borrowed("Heading3"), name: Cow::Borrowed("Heading 3"), size: Some(28.0), bold: Some(true), italic: false, color: None },
 ];
 
 /// How the style list previews a style (`getStylePreviewProps`,
@@ -395,7 +416,7 @@ pub(crate) const STYLES: [StyleOpt; 6] = [
 /// styles, else half the style's size within 11–20; bold for Title and
 /// Headings 1–3; Subtitle grey, the other headings `#4a6c8c`.
 pub(crate) fn style_preview(s: &StyleOpt) -> Preview {
-    let fixed = match s.id {
+    let fixed = match s.id.as_ref() {
         "Title" => Some(26.0),
         "Subtitle" | "Heading2" => Some(18.0),
         "Heading1" => Some(24.0),
@@ -406,8 +427,8 @@ pub(crate) fn style_preview(s: &StyleOpt) -> Preview {
         _ => None,
     };
     let size = fixed.unwrap_or_else(|| s.size.map_or(11.0, |z| z / 2.0).clamp(11.0, 20.0));
-    let bold = s.bold.unwrap_or(matches!(s.id, "Title" | "Heading1" | "Heading2" | "Heading3"));
-    let hex = s.color.or(if s.id == "Subtitle" { Some("666666") } else { None });
+    let bold = s.bold.unwrap_or(matches!(s.id.as_ref(), "Title" | "Heading1" | "Heading2" | "Heading3"));
+    let hex = s.color.as_deref().or(if s.id == "Subtitle" { Some("666666") } else { None });
     let color = match hex {
         Some(h) => Some(super::color::hex(h)),
         None if s.id.starts_with("Heading") => Some(super::color::hex("4a6c8c")),
@@ -419,7 +440,7 @@ pub(crate) fn style_preview(s: &StyleOpt) -> Preview {
 /// The style list (DR `sg`): 120 wide, its list at least 260 wide and up
 /// to 400 high, rows `py-2.5 px-3`.
 pub(crate) fn style_select(styles: &[StyleOpt]) -> Dropdown {
-    let opts = styles.iter().map(|s| Opt { preview: style_preview(s), ..Opt::new(s.id, s.name) }).collect();
+    let opts = styles.iter().map(|s| Opt { preview: style_preview(s), ..Opt::new(s.id.to_string(), s.name.to_string()) }).collect();
     dropdown_select("Select paragraph style", opts).width(Width::Fixed(120.0)).list(Some(260.0), 400.0).item_padding(12.0, 10.0)
 }
 
@@ -786,9 +807,9 @@ mod tests {
         let s = style_preview(&STYLES[2]);
         assert_eq!(s.size, Some(18.0));
         assert_eq!(s.color, Some(super::super::color::hex("666666")));
-        let h = style_preview(&StyleOpt { id: "Heading4", name: "Heading 4", size: None, bold: None, italic: false, color: None });
+        let h = style_preview(&StyleOpt { id: Cow::Borrowed("Heading4"), name: Cow::Borrowed("Heading 4"), size: None, bold: None, italic: false, color: None });
         assert_eq!((h.size, h.bold, h.color), (Some(14.0), false, Some(super::super::color::hex("4a6c8c"))));
-        let other = style_preview(&StyleOpt { id: "Quote", name: "Quote", size: Some(48.0), bold: None, italic: true, color: None });
+        let other = style_preview(&StyleOpt { id: Cow::Borrowed("Quote"), name: Cow::Borrowed("Quote"), size: Some(48.0), bold: None, italic: true, color: None });
         assert_eq!((other.size, other.italic), (Some(20.0), true));
         assert_eq!(zoom_label(1.25), "125%");
     }

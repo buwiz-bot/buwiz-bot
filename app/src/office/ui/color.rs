@@ -151,7 +151,7 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Mode::Text => "Font Color",
             Mode::Highlight => "Text Highlight Color",

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use docx_edit::{EditCtx, FormatPolicy, InlineFormatDelta, MergeDirection, Patch, Position, SimpleFormat, StoryRange, UndoSession};
+use docx_edit::{EditCtx, FormatPolicy, InlineFormatDelta, MergeDirection, Patch, Position, StoryRange, UndoSession};
 use docx_layout::display_list::{DisplayList, DisplayPage};
 use docx_layout::hit::{self, VerticalDirection};
 
@@ -27,6 +27,10 @@ use crate::office::session::Document;
 #[path = "commands.rs"]
 mod commands;
 pub(crate) use commands::{Image, Insert, PageSetup};
+// the formatting bar's commands and what it shows of the selection
+#[path = "format.rs"]
+pub(crate) mod format;
+pub(crate) use format::{CellInfo, EditMode, Formats, Link, Picture, StyleInfo, TableOp, TextColor};
 
 /// Caret moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,10 +55,20 @@ pub(crate) enum Fmt {
     Bold,
     Italic,
     Underline,
+    Strike,
+    Superscript,
+    Subscript,
     /// The font size up (`true`) or down a step.
     Size(bool),
     Bullets,
     Numbers,
+    /// A list's level in (`true`) or out, else the left indent by 720.
+    Indent(bool),
+    /// `"left"`, `"center"`, `"right"` or `"both"`.
+    Align(&'static str),
+    /// Line spacing in 240ths of a line (`lineRule` auto).
+    LineSpacing(u32),
+    Clear,
 }
 
 pub(crate) enum Cmd {
@@ -94,6 +108,23 @@ pub(crate) enum Cmd {
     PageSetup(PageSetup),
     /// The watermark (none: `None`), as the layout takes it.
     Watermark(Option<serde_json::Value>),
+    /// The paragraphs in a style (its id).
+    Style(String),
+    FontFamily(String),
+    /// Points.
+    FontSize(f32),
+    /// The text colour (`None`: automatic).
+    Color(Option<TextColor>),
+    /// The highlight, `RRGGBB` (`None`: no colour).
+    Highlight(Option<String>),
+    /// The Hyperlink dialog's link set on the selection (or the link the
+    /// caret is in, `edit`).
+    Link(Link),
+    /// The link at the caret, or over the selection, taken off.
+    Unlink,
+    Table(TableOp),
+    Picture(Picture),
+    Mode(EditMode),
 }
 
 /// The caret's and selection's boxes on their pages (page pixels).
@@ -105,6 +136,8 @@ pub(crate) struct Caret {
     pub sel: Vec<(usize, f32, f32, f32, f32)>,
     /// Find's other matches.
     pub found: Vec<(usize, f32, f32, f32, f32)>,
+    /// The selected picture's box (page, x, y, w, h).
+    pub picture: Option<(usize, f32, f32, f32, f32)>,
     /// The page to bring into view (the caret moved).
     pub reveal: Option<(usize, f32)>,
 }
@@ -119,11 +152,15 @@ pub(crate) struct Meta {
     pub partial: bool,
     pub can_undo: bool,
     pub can_redo: bool,
-    /// The selection's formats: bold, italic, underline, size (points).
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub size: f32,
+    /// The selection's formats, as the formatting bar shows them.
+    pub fmt: Formats,
+    /// The document's paragraph styles, as the style list offers them.
+    pub styles: Arc<Vec<StyleInfo>>,
+    /// The document's own fonts (its font table), for the font list.
+    pub fonts: Arc<Vec<String>>,
+    /// The caret's cell, as the table group reads it.
+    pub cell: Option<CellInfo>,
+    pub mode: EditMode,
     /// Find's matches and the current one (1-based; 0 none).
     pub found: (usize, usize),
     /// Tracked changes and comments: (author, kind, text).
@@ -187,7 +224,15 @@ pub(crate) struct Word {
     /// The review list, read again when changes may have come or gone.
     review: Option<Vec<(String, String, String)>>,
     /// The last formats read, kept while typing (typing continues them).
-    formats: (bool, bool, bool, f32),
+    formats: Formats,
+    /// Editing, Suggesting (every edit tracked) or Viewing (none).
+    mode: EditMode,
+    /// The whole of the caret's table is selected ("Select entire table").
+    whole_table: bool,
+    /// The package's styles, fonts and defaults, read once.
+    styles: Option<format::Styles>,
+    /// The border the Table group's borders take (`borderSpecRef`).
+    border: format::Border,
     /// The caret's paragraph direction and table, read with the formats.
     bidi: bool,
     table: Option<(u32, u32)>,
@@ -198,7 +243,7 @@ pub(crate) struct Word {
     pub(crate) saving: save::State,
 }
 
-fn ctx() -> EditCtx {
+fn local() -> EditCtx {
     EditCtx::local("Buwiz Bot", "1970-01-01T00:00:00Z")
 }
 
@@ -240,7 +285,11 @@ impl Word {
             target: None,
             patch: None,
             review: None,
-            formats: (false, false, false, 11.0),
+            formats: Formats::default(),
+            mode: EditMode::Editing,
+            whole_table: false,
+            styles: None,
+            border: format::Border::default(),
             bidi: false,
             table: None,
             setup: None,
@@ -279,7 +328,11 @@ impl Word {
             self.bidi = self.head_bidi();
             self.table = self.head_table();
         }
-        let (bold, italic, underline, size) = self.formats;
+        let (styles, fonts) = {
+            let s = self.styles();
+            (s.paragraph.clone(), s.fonts.clone())
+        };
+        let cell = self.cell_info();
         if self.review.is_none() {
             self.review = Some(self.review());
         }
@@ -290,10 +343,11 @@ impl Word {
             partial: !self.complete,
             can_undo: self.undo.can_undo(),
             can_redo: self.undo.can_redo(),
-            bold,
-            italic,
-            underline,
-            size,
+            fmt: self.formats.clone(),
+            styles,
+            fonts,
+            cell,
+            mode: self.mode,
             found: (self.found.len(), if self.found.is_empty() { 0 } else { self.found_at + 1 }),
             review,
             bidi: self.bidi,
@@ -328,42 +382,6 @@ impl Word {
         out
     }
 
-    /// Bold, italic, underline and size at the selection's start.
-    fn formats(&self) -> (bool, bool, bool, f32) {
-        let s = if self.anchor.offset <= self.head.offset { &self.anchor } else { &self.head };
-        let Ok(segments) = self.layout.engine.doc().story_segments(&s.story) else { return (false, false, false, 11.0) };
-        // the text a caret follows, as typing continues it; a selection's
-        // first character (the one before it is outside: ⌘B on a word
-        // left the B unlit)
-        let after = if self.collapsed() { s.offset.max(1) } else { s.offset + 1 };
-        let mut at = 0u32;
-        let mut attrs = None;
-        for seg in &segments {
-            let n = match &seg.content {
-                docx_edit::SegmentContent::Text(t) => t.encode_utf16().count() as u32,
-                _ => 1,
-            };
-            if at < after && after <= at + n {
-                attrs = Some(&seg.attributes);
-                break;
-            }
-            at += n;
-        }
-        let Some(a) = attrs else { return (false, false, false, 11.0) };
-        let on = |k: &str| matches!(a.get(k), Some(yrs::Any::Bool(true)));
-        let underline = a.get("underline").is_some_and(|v| !matches!(v, yrs::Any::Null | yrs::Any::Bool(false)));
-        // half-points
-        let size = match a.get("fontSize") {
-            Some(yrs::Any::Map(m)) => match m.get("size") {
-                Some(yrs::Any::Number(n)) => *n as f32 / 2.0,
-                Some(yrs::Any::BigInt(n)) => *n as f32 / 2.0,
-                _ => 11.0,
-            },
-            _ => 11.0,
-        };
-        (on("bold"), on("italic"), underline, size)
-    }
-
     /// Lays out again after an edit in `story` and redraws what changed;
     /// `fonts`: the edit may have brought in a font (plain typing takes the
     /// fonts of the text it lands in, so it skips the check, which reads
@@ -395,6 +413,10 @@ impl Word {
         }
         self.rev += 1;
         self.edited = true;
+        // a tracked deletion keeps its text: the index is read again
+        if self.mode == EditMode::Suggesting {
+            self.patch = None;
+        }
         let typed = self.patch.take();
         let patched = match (&typed, self.index.as_mut()) {
             (Some((at, removed, inserted)), Some(index)) => index.patch(at, *removed, inserted),
@@ -510,6 +532,9 @@ impl Word {
         let h = index.pm_of(&self.head);
         let found: Vec<(i64, i64)> = self.found.iter().filter_map(|(s, e)| Some((index.pm_of(s)?, index.pm_of(e)?))).collect();
         self.index = Some(index);
+        let cells = if self.whole_table { self.table_ranges() } else { Vec::new() };
+        let one = matches!((a, h), (Some(a), Some(h)) if a.abs_diff(h) == 1);
+        let picture = if one { a.zip(h).and_then(|(a, h)| self.picture_box(a.min(h))) } else { None };
         let mut c = Caret::default();
         let rect = |r: &hit::RangeRect| (r.page_index, r.x as f32, r.y as f32, r.width as f32, r.height as f32);
         self.list(|l| {
@@ -524,7 +549,11 @@ impl Word {
             for (s, e) in &found {
                 c.found.extend(hit::range_rects(l, *s, *e).iter().map(rect));
             }
+            for (s, e) in &cells {
+                c.sel.extend(hit::range_rects(l, *s, *e).iter().map(rect));
+            }
         });
+        c.picture = picture;
         if reveal {
             c.reveal = c.caret.map(|(p, _, y, _)| (p, y));
         }
@@ -557,7 +586,7 @@ impl Word {
         if a == b {
             return Ok(false);
         }
-        self.layout.engine.doc().delete_range(&ctx(), StoryRange::new(&story, a, b)).map_err(|e| e.to_string())?;
+        self.layout.engine.doc().delete_range(&self.ctx(), StoryRange::new(&story, a, b)).map_err(|e| e.to_string())?;
         self.set_caret(spot(&story, a));
         Ok(true)
     }
@@ -572,12 +601,12 @@ impl Word {
         let mut at = self.head.offset;
         for (i, line) in text.split('\n').enumerate() {
             if i > 0 {
-                doc.split_paragraph(&ctx(), Position::new(&story, at), None).map_err(|e| e.to_string())?;
+                doc.split_paragraph(&self.ctx(), Position::new(&story, at), None).map_err(|e| e.to_string())?;
                 at += 1;
             }
             let line = line.trim_end_matches('\r');
             if !line.is_empty() {
-                doc.insert_text(&ctx(), Position::new(&story, at), line, FormatPolicy::Inherit).map_err(|e| e.to_string())?;
+                doc.insert_text(&self.ctx(), Position::new(&story, at), line, FormatPolicy::Inherit).map_err(|e| e.to_string())?;
                 at += line.encode_utf16().count() as u32;
             }
         }
@@ -603,14 +632,14 @@ impl Word {
             let k = (off - p.start) as usize;
             // a surrogate pair goes whole
             let n = if k >= 2 && (0xDC00..0xE000).contains(&p.text[k - 1]) { 2 } else { 1 };
-            self.layout.engine.doc().delete_range(&ctx(), StoryRange::new(&p.story, off - n, off)).map_err(|e| e.to_string())?;
+            self.layout.engine.doc().delete_range(&self.ctx(), StoryRange::new(&p.story, off - n, off)).map_err(|e| e.to_string())?;
             self.set_caret(spot(&p.story, off - n));
             self.patch = Some((spot(&p.story, off - n), n, Vec::new()));
         } else if p.start > 0 {
             // joins the paragraph before, in the same story
             let before = self.index().paras.iter().rev().find(|q| q.story == p.story && q.start + q.len + 1 == p.start).cloned();
             if let Some(q) = before {
-                self.layout.engine.doc().merge_paragraphs(&ctx(), &p.para_id, MergeDirection::Backward).map_err(|e| e.to_string())?;
+                self.layout.engine.doc().merge_paragraphs(&self.ctx(), &p.para_id, MergeDirection::Backward).map_err(|e| e.to_string())?;
                 self.set_caret(spot(&q.story, q.start + q.len));
             }
         }
@@ -626,11 +655,11 @@ impl Word {
         if off < p.start + p.len {
             let k = (off - p.start) as usize;
             let n = if (0xD800..0xDC00).contains(&p.text[k]) { 2 } else { 1 };
-            self.layout.engine.doc().delete_range(&ctx(), StoryRange::new(&p.story, off, off + n)).map_err(|e| e.to_string())?;
+            self.layout.engine.doc().delete_range(&self.ctx(), StoryRange::new(&p.story, off, off + n)).map_err(|e| e.to_string())?;
         } else {
             let next = self.index().paras.iter().any(|q| q.story == p.story && q.start == p.start + p.len + 1);
             if next {
-                self.layout.engine.doc().merge_paragraphs(&ctx(), &p.para_id, MergeDirection::Forward).map_err(|e| e.to_string())?;
+                self.layout.engine.doc().merge_paragraphs(&self.ctx(), &p.para_id, MergeDirection::Forward).map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -652,93 +681,15 @@ impl Word {
         (a < b).then(|| (p.story.clone(), p.start + a as u32, p.start + b as u32))
     }
 
-    fn format(&mut self, f: Fmt) -> Result<(), String> {
-        let (story, a, b) = match self.range() {
-            (s, a, b) if a < b => (s, a, b),
-            _ => match self.word_at() {
-                Some(w) => w,
-                None => return Ok(()),
-            },
-        };
-        let doc = self.layout.engine.doc();
-        let range = StoryRange::new(&story, a, b);
-        match f {
-            Fmt::Bold => doc.toggle_format(&ctx(), range, SimpleFormat::Bold).map(drop),
-            Fmt::Italic => doc.toggle_format(&ctx(), range, SimpleFormat::Italic).map(drop),
-            Fmt::Underline => doc.toggle_format(&ctx(), range, SimpleFormat::Underline).map(drop),
-            Fmt::Size(up) => {
-                let size = self.formats().3;
-                let next = size_step(size, up);
-                let delta = InlineFormatDelta { font_size: Patch::Set(next as f64), ..Default::default() };
-                doc.format_range(&ctx(), range, &delta).map(drop)
-            }
-            Fmt::Bullets | Fmt::Numbers => return self.make_list(f == Fmt::Numbers),
-        }
-        .map_err(|e| e.to_string())
-    }
-
-    /// The selected paragraphs as a list (or out of one, when they are one
-    /// of this kind already).
-    fn make_list(&mut self, numbered: bool) -> Result<(), String> {
-        let (story, a, b) = self.range();
-        let selector = docx_edit::ParaSelector::Range(StoryRange::new(&story, a, b.max(a)));
-        let num = save::list_num(&self.source, numbered);
-        if num == 0 {
-            return Err(format!("This document defines no {} list to use.", if numbered { "numbered" } else { "bulleted" }));
-        }
-        let current = self.list_of_head();
-        let mut delta = docx_edit::ParaAttrDelta::default();
-        // the list's marker attributes, as a paragraph already in it has them
-        let donor = self.list_attrs(num);
-        if current == Some(num) {
-            delta.other.insert("numPr".to_owned(), None);
-            for k in donor.keys() {
-                delta.other.insert(k.clone(), None);
-            }
-        } else {
-            for (k, v) in donor {
-                delta.other.insert(k, Some(v));
-            }
-            delta.other.insert("numPr".to_owned(), Some(save::num_pr(num, 0)));
-        }
-        self.layout.engine.doc().set_paragraph_attrs(&ctx(), &selector, &delta).map(drop).map_err(|e| e.to_string())
-    }
-
-    /// The `list…` attributes of a paragraph in list `num` (none when no
-    /// paragraph is in it yet: the marker then comes with the next layout
-    /// of a saved file).
-    fn list_attrs(&self, num: u32) -> std::collections::BTreeMap<String, yrs::Any> {
-        let Ok(segments) = self.layout.engine.doc().story_segments("body") else { return Default::default() };
-        segments
-            .iter()
-            .find_map(|s| match &s.content {
-                docx_edit::SegmentContent::Pilcrow(props) if props.values.get("numPr").and_then(save::num_id) == Some(num) => {
-                    Some(props.values.iter().filter(|(k, _)| k.starts_with("list")).map(|(k, v)| (k.clone(), v.clone())).collect())
-                }
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
-    /// The list (`numId`) the head's paragraph is in.
-    fn list_of_head(&mut self) -> Option<u32> {
-        let (_, p) = self.head_para()?;
-        let segments = self.layout.engine.doc().story_segments(&p.story).ok()?;
-        segments.iter().find_map(|s| match &s.content {
-            docx_edit::SegmentContent::Pilcrow(props) if props.para_id == p.para_id => save::num_id(props.values.get("numPr")?),
-            _ => None,
-        })
-    }
-
     fn row(&mut self, at: Option<bool>) -> Result<String, String> {
         let story = self.head.story.clone();
         let Some((parent, table, row, col)) = cell_of(&story) else { return Err("The caret isn't in a table.".to_owned()) };
         let cell = docx_edit::CellLoc::new(&parent, table, row, col);
         let doc = self.layout.engine.doc();
         match at {
-            Some(after) => doc.insert_row(&ctx(), &cell, after).map(drop),
+            Some(after) => doc.insert_row(&self.ctx(), &cell, after).map(drop),
             None => {
-                let r = doc.delete_row(&ctx(), &docx_edit::TableRange::cell(cell)).map(drop);
+                let r = doc.delete_row(&self.ctx(), &docx_edit::TableRange::cell(cell)).map(drop);
                 // the caret's cell is gone: back to the table's story
                 self.set_caret(spot(&parent, 0));
                 r
@@ -749,6 +700,16 @@ impl Word {
     }
 
     fn click(&mut self, page: usize, x: f32, y: f32, extend: bool, clicks: u8) {
+        // a press on a picture selects it (the web's node selection)
+        if !extend
+            && let Some(pm) = self.picture_at(page, x, y)
+            && let Some(s) = self.index().spot_of_pm(pm)
+        {
+            self.goal_x = None;
+            self.anchor = s.clone();
+            self.head = spot(&s.story, s.offset + 1);
+            return;
+        }
         let Some(pm) = self.list(|l| hit::hit_test(l, page, x as f64, y as f64)).flatten() else { return };
         let Some(s) = self.index().spot_of_pm(pm) else { return };
         self.goal_x = None;
@@ -945,7 +906,7 @@ impl Word {
     pub(crate) fn set_family(&mut self, family: &str) -> Vec<Out> {
         let (story, a, b) = self.range();
         let delta = InlineFormatDelta { font_family: Patch::Set(docx_edit::FontFamilyPatch { ascii: family.to_owned(), h_ansi: None }), ..Default::default() };
-        self.layout.engine.doc().format_range(&ctx(), StoryRange::new(&story, a, b), &delta).unwrap();
+        self.layout.engine.doc().format_range(&self.ctx(), StoryRange::new(&story, a, b), &delta).unwrap();
         let mut outs = Vec::new();
         self.relayout(&story, &mut outs, true);
         outs.push(self.caret(false));
@@ -962,7 +923,7 @@ impl Word {
     pub(crate) fn echo_parts(&mut self) -> (f64, f64, f64, f64) {
         let t = std::time::Instant::now();
         let at = self.head.clone();
-        self.layout.engine.doc().insert_text(&ctx(), Position::new(&at.story, at.offset), "y", FormatPolicy::Inherit).unwrap();
+        self.layout.engine.doc().insert_text(&self.ctx(), Position::new(&at.story, at.offset), "y", FormatPolicy::Inherit).unwrap();
         let insert = t.elapsed().as_secs_f64() * 1e3;
         let t = std::time::Instant::now();
         assert!(!self.layout.fonts_grew().unwrap());
@@ -977,12 +938,6 @@ impl Word {
         self.index = Some(Index::build(self.layout.engine.doc()));
         (insert, fonts, layout, t.elapsed().as_secs_f64() * 1e3)
     }
-}
-
-/// Word's font size steps.
-fn size_step(size: f32, up: bool) -> f32 {
-    const STEPS: [f32; 16] = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0, 96.0, 144.0];
-    if up { STEPS.iter().copied().find(|s| *s > size + 0.01).unwrap_or(size + 12.0) } else { STEPS.iter().rev().copied().find(|s| *s < size - 0.01).unwrap_or((size - 1.0).max(1.0)) }
 }
 
 /// A comment's body (its paragraphs as JSON) as plain text.
@@ -1042,8 +997,86 @@ impl Document for Word {
                 }
             }
         };
+        // Viewing takes no edit; Suggesting none it can't track (the web's
+        // `viewing-mode` and `suggesting-unsupported` gates)
+        let reads = matches!(
+            cmd,
+            Cmd::View { .. } | Cmd::Click { .. } | Cmd::Move { .. } | Cmd::SelectAll | Cmd::Find { .. } | Cmd::Copy { cut: false } | Cmd::SaveTo(_) | Cmd::Print | Cmd::Mode(_) | Cmd::Table(TableOp::SelectTable)
+        );
+        if self.mode == EditMode::Viewing && !reads {
+            return (vec![Out::Note(format::VIEWING.to_owned())], false);
+        }
+        let tracked = match &cmd {
+            Cmd::Insert(_) | Cmd::PageSetup(_) | Cmd::Watermark(_) | Cmd::Picture(_) => false,
+            Cmd::Table(op) => matches!(op, TableOp::RowAbove | TableOp::RowBelow | TableOp::DeleteRow | TableOp::SelectTable),
+            _ => true,
+        };
+        if self.mode == EditMode::Suggesting && !tracked {
+            return (vec![Out::Note(format::NOT_SUGGESTED.to_owned())], false);
+        }
+        if !matches!(cmd, Cmd::View { .. } | Cmd::Table(_) | Cmd::Format(_) | Cmd::Copy { cut: false } | Cmd::Print | Cmd::SaveTo(_)) {
+            self.whole_table = false;
+        }
         let story = self.head.story.clone();
         let changed = match cmd {
+            Cmd::Mode(m) => {
+                self.mode = m;
+                outs.push(Out::Meta(self.meta()));
+                false
+            }
+            Cmd::Style(id) => {
+                let r = self.restyle(&id).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::FontFamily(name) => {
+                let delta = InlineFormatDelta { font_family: Patch::Set(docx_edit::FontFamilyPatch { ascii: name.clone(), h_ansi: Some(name) }), ..Default::default() };
+                let r = self.format_delta(delta).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::FontSize(points) => {
+                let delta = InlineFormatDelta { font_size: Patch::Set(f64::from(points)), ..Default::default() };
+                let r = self.format_delta(delta).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Color(c) => {
+                let color = match c {
+                    Some(TextColor::Rgb(h)) => Patch::Set(docx_edit::ColorPatch::Rgb(h)),
+                    Some(TextColor::Theme(t)) => Patch::Set(docx_edit::ColorPatch::Theme(t)),
+                    None => Patch::Clear,
+                };
+                let r = self.format_delta(InlineFormatDelta { color, ..Default::default() }).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Highlight(h) => {
+                let highlight = h.map_or(Patch::Clear, Patch::Set);
+                let r = self.format_delta(InlineFormatDelta { highlight, ..Default::default() }).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Link(l) => {
+                let r = self.set_link(&l).map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Unlink => {
+                let r = self.unlink().map(|_| story);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Table(TableOp::SelectTable) => {
+                let r = self.table_op(TableOp::SelectTable);
+                if let Err(e) = r {
+                    outs.push(Out::Note(e));
+                }
+                outs.push(self.caret(false));
+                outs.push(Out::Meta(self.meta()));
+                false
+            }
+            Cmd::Table(op) => {
+                let r = self.table_op(op);
+                edit(self, &mut outs, r)
+            }
+            Cmd::Picture(op) => {
+                let r = self.picture(op);
+                edit(self, &mut outs, r)
+            }
             Cmd::View { pages, zoom } => {
                 let zoomed = zoom != self.zoom;
                 self.want = pages;
@@ -1103,7 +1136,7 @@ impl Document for Word {
             Cmd::Tab => {
                 let r = self.delete_selection().and_then(|_| {
                     let at = self.head.clone();
-                    self.layout.engine.doc().insert_tab(&ctx(), Position::new(&at.story, at.offset)).map_err(|e| e.to_string())?;
+                    self.layout.engine.doc().insert_tab(&self.ctx(), Position::new(&at.story, at.offset)).map_err(|e| e.to_string())?;
                     self.set_caret(spot(&at.story, at.offset + 1));
                     Ok(story)
                 });

@@ -101,34 +101,6 @@ mod tests {
     }
 }
 
-/// The `numId` of a list whose first level is bullets (or numbers, when
-/// `numbered`), from the package's numbering part; 0 when it has none.
-pub(crate) fn list_num(source: &[u8], numbered: bool) -> u32 {
-    let parts = parts(source);
-    let Some((_, xml)) = parts.iter().find(|(n, _)| n == "word/numbering.xml") else { return 0 };
-    let xml = String::from_utf8_lossy(xml);
-    let attr = |tag: &str, name: &str| -> Option<String> {
-        let at = tag.find(&format!("{name}=\""))? + name.len() + 2;
-        Some(tag[at..].split('"').next()?.to_owned())
-    };
-    // abstract lists by their first level's format
-    let mut kinds = std::collections::HashMap::new();
-    for a in xml.split("<w:abstractNum ").skip(1) {
-        let Some(id) = attr(a, "w:abstractNumId") else { continue };
-        let lvl0 = a.split("<w:lvl ").nth(1).unwrap_or("");
-        let fmt = lvl0.split("<w:numFmt ").nth(1).and_then(|t| attr(t, "w:val")).unwrap_or_default();
-        kinds.insert(id, fmt);
-    }
-    for n in xml.split("<w:num ").skip(1) {
-        let (Some(num), Some(abs)) = (attr(n, "w:numId"), n.split("<w:abstractNumId ").nth(1).and_then(|t| attr(t, "w:val"))) else { continue };
-        let fmt = kinds.get(&abs).map(String::as_str).unwrap_or("");
-        if (fmt == "bullet") != numbered && !fmt.is_empty() && fmt != "none" {
-            return num.parse().unwrap_or(0);
-        }
-    }
-    0
-}
-
 /// A paragraph's list attribute: list `num` at level `lvl`.
 pub(crate) fn num_pr(num: u32, lvl: u32) -> yrs::Any {
     let mut m = std::collections::HashMap::new();

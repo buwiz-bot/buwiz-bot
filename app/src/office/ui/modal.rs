@@ -26,6 +26,13 @@ pub(crate) const BODY_PAD: (f32, f32) = (16.0, 20.0);
 /// `padding 6px 16px`, 13px, radius 4.
 pub(crate) const FOOTER_PAD: (f32, f32, f32) = (12.0, 20.0, 16.0);
 pub(crate) const BUTTON_PAD: (f32, f32) = (16.0, 6.0);
+/// The roomier shell (`HyperlinkDialog`'s `Z`, `ee`, `re`, `ae`, `C`): a
+/// header of `padding 16px 20px` with an 18px title and a ×, the body
+/// `padding 20px`, the footer 12 apart, buttons `padding 10px 20px` at
+/// 14px medium.
+pub(crate) const ROOMY_TITLE_SIZE: f32 = 18.0;
+pub(crate) const ROOMY_PAD: (f32, f32) = (16.0, 20.0);
+pub(crate) const ROOMY_BUTTON_PAD: (f32, f32) = (20.0, 10.0);
 
 /// The fields a dialog's Tab cycles through, in the order they joined.
 #[derive(Clone, Copy)]
@@ -50,6 +57,8 @@ pub(crate) struct Action {
     /// While it doesn't hold the button is dimmed and takes no press.
     pub enabled: Rc<dyn Fn() -> bool>,
     pub run: Rc<dyn Fn()>,
+    /// Red, at the footer's left (Remove Link).
+    pub danger: bool,
 }
 
 /// A dialog, shown while `open`.
@@ -64,6 +73,7 @@ pub(crate) struct Modal {
     on_cancel: Rc<dyn Fn()>,
     on_confirm: Rc<dyn Fn()>,
     at: Option<Signal<usize>>,
+    roomy: bool,
 }
 
 /// A dialog titled `title` (Page Setup's widths, 400–480, and body gap,
@@ -80,6 +90,7 @@ pub(crate) fn modal(open: Signal<bool>, title: impl Into<SharedString>) -> Modal
         on_cancel: Rc::new(|| {}),
         on_confirm: Rc::new(|| {}),
         at: None,
+        roomy: false,
     }
 }
 
@@ -100,13 +111,23 @@ impl Modal {
     }
     /// A footer button; `primary` is the filled one.
     pub(crate) fn action(mut self, label: impl Into<SharedString>, primary: bool, run: impl Fn() + 'static) -> Self {
-        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(|| true), run: Rc::new(run) });
+        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(|| true), run: Rc::new(run), danger: false });
+        self
+    }
+    /// A red button at the footer's left, while `shown` holds.
+    pub(crate) fn danger_when(mut self, label: impl Into<SharedString>, shown: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
+        self.actions.push(Action { label: label.into(), primary: false, enabled: Rc::new(shown), run: Rc::new(run), danger: true });
+        self
+    }
+    /// The roomier shell: a header with a ×, larger type and buttons.
+    pub(crate) fn roomy(mut self) -> Self {
+        self.roomy = true;
         self
     }
     /// A footer button enabled while `enabled` holds (Watermark's Apply
     /// without a picture: `opacity: .5`, disabled).
     pub(crate) fn action_when(mut self, label: impl Into<SharedString>, primary: bool, enabled: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
-        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(enabled), run: Rc::new(run) });
+        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(enabled), run: Rc::new(run), danger: false });
         self
     }
     /// Escape, a press outside the card (the dialog closes after it).
@@ -124,6 +145,42 @@ impl Modal {
         self.on_confirm = Rc::new(run);
         self
     }
+}
+
+/// A roomy footer's button (`se`, `pe`, `de`, `ce`): the link colour,
+/// the hover grey with an input border, red, or greyed while it can't be
+/// pressed.
+fn roomy_button(a: Action) -> AnyElement {
+    let run = a.run.clone();
+    let (on, on2, on3, on4) = (a.enabled.clone(), a.enabled.clone(), a.enabled.clone(), a.enabled.clone());
+    let (primary, danger) = (a.primary, a.danger);
+    text(a.label.clone())
+        .px(px(ROOMY_BUTTON_PAD.0))
+        .py(px(ROOMY_BUTTON_PAD.1))
+        .text_size(px(14.0))
+        .font_weight(FontWeight::MEDIUM)
+        .rounded(px(4.0))
+        .border(px(if primary || danger { 0.0 } else { 1.0 }))
+        .border_color(p::BORDER_INPUT)
+        .bg(move || match (primary, danger, on()) {
+            (true, _, false) => p::BORDER_INPUT,
+            (true, _, true) => p::LINK,
+            (_, true, _) => p::ERROR,
+            _ => p::BG_HOVER,
+        })
+        .text_color(move || match (primary || danger, on2()) {
+            (true, false) => p::TEXT_MUTED,
+            (true, true) => p::ON_PRIMARY,
+            _ => p::TEXT,
+        })
+        .label(a.label)
+        .when(danger, |v| v.opacity(move || if on3() { 1.0f32 } else { 0.0 }))
+        .on_press(move || {
+            if on4() {
+                run()
+            }
+        })
+        .into_element()
 }
 
 fn footer_button(a: Action) -> AnyElement {
@@ -152,7 +209,7 @@ fn footer_button(a: Action) -> AnyElement {
 
 impl IntoElement for Modal {
     fn into_element(self) -> AnyElement {
-        let Modal { open, title, min_w, max_w, gap, body, actions, on_cancel, on_confirm, at } = self;
+        let Modal { open, title, min_w, max_w, gap, body, actions, on_cancel, on_confirm, at, roomy } = self;
         let cancel: Rc<dyn Fn()> = Rc::new(move || {
             if open.get_untracked() {
                 open.set(false);
@@ -178,7 +235,7 @@ impl IntoElement for Modal {
                         trap.fields.with(|f| f[i].focus());
                     });
                 }
-                let (c1, c2) = (cancel.clone(), cancel.clone());
+                let (c1, c2, cancel) = (cancel.clone(), cancel.clone(), cancel.clone());
                 overlay()
                     .inset_0()
                     .items_center()
@@ -203,7 +260,20 @@ impl IntoElement for Modal {
                                 inset: false,
                             }])
                             .label(format!("{title} dialog"))
-                            .child(
+                            .child(if roomy {
+                                let c3 = cancel.clone();
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .py(px(ROOMY_PAD.0))
+                                    .px(px(ROOMY_PAD.1))
+                                    .border_b(px(1.0))
+                                    .border_color(p::BORDER)
+                                    .child(text(title.clone()).text_size(px(ROOMY_TITLE_SIZE)).font_weight(FontWeight::SEMIBOLD).text_color(p::TEXT))
+                                    .child(text("\u{d7}").px(px(8.0)).py(px(4.0)).text_size(px(20.0)).line_height(px(20.0)).text_color(p::TEXT_MUTED).label("Close dialog").on_press(move || c3()))
+                                    .into_element()
+                            } else {
                                 text(title.clone())
                                     .pt(px(TITLE_PAD.0))
                                     .px(px(TITLE_PAD.1))
@@ -212,10 +282,23 @@ impl IntoElement for Modal {
                                     .border_color(p::BORDER)
                                     .text_size(px(TITLE_SIZE))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p::TEXT),
-                            )
-                            .child(view().py(px(BODY_PAD.0)).px(px(BODY_PAD.1)).gap(px(gap)).child(body()))
-                            .child(
+                                    .text_color(p::TEXT)
+                                    .into_element()
+                            })
+                            .child(if roomy { view().p(px(ROOMY_PAD.1)).gap(px(gap)).child(body()) } else { view().py(px(BODY_PAD.0)).px(px(BODY_PAD.1)).gap(px(gap)).child(body()) })
+                            .child(if roomy {
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .py(px(ROOMY_PAD.0))
+                                    .px(px(ROOMY_PAD.1))
+                                    .border_t(px(1.0))
+                                    .border_color(p::BORDER)
+                                    .children(actions.iter().filter(|a| a.danger).cloned().map(roomy_button))
+                                    .child(view().flex_1())
+                                    .children(actions.iter().filter(|a| !a.danger).cloned().map(roomy_button))
+                            } else {
                                 view()
                                     .flex_row()
                                     .justify_end()
@@ -225,8 +308,8 @@ impl IntoElement for Modal {
                                     .pb(px(FOOTER_PAD.2))
                                     .border_t(px(1.0))
                                     .border_color(p::BORDER)
-                                    .children(actions.iter().cloned().map(footer_button)),
-                            ),
+                                    .children(actions.iter().cloned().map(footer_button))
+                            }),
                     )
             },
         )
