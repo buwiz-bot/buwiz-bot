@@ -11,6 +11,11 @@
 //! thread and must not block it: each moves its reply to a thread of its
 //! own (the broker, the file system) or to the person ([`HostUi`]).
 //!
+//! The handlers take their answer as a [`Reply`]: the channel's
+//! `HostReply` for a TSX app, the Rust bridge's for a first-party native
+//! screen (`mini_v1::screens`), so both get the same checks, limits and
+//! signing ([`wire`]).
+//!
 //! What needs the person goes through [`HostUi`]: consent (part B draws
 //! the dialogs; tests answer them), the full-screen stack `buwiz.open({app})`
 //! pushes on, the file dialog, the pasteboard, the chat an attachment goes
@@ -221,6 +226,34 @@ impl Fitter {
     }
 }
 
+/// How a call is answered, once, from any thread: the TSX channel's
+/// `HostReply`, or a native screen's answer.
+pub trait Reply: Send + 'static {
+    fn resolve(self: Box<Self>, value: Value);
+    fn reject(self: Box<Self>, e: RoxError);
+}
+
+impl Reply for HostReply {
+    fn resolve(self: Box<Self>, value: Value) {
+        HostReply::resolve(*self, value);
+    }
+
+    /// The shim parses the wire text back into a `BuwizError`.
+    fn reject(self: Box<Self>, e: RoxError) {
+        HostReply::reject(*self, e.to_wire());
+    }
+}
+
+/// A call's answer, of either side.
+pub type AnyReply = Box<dyn Reply>;
+
+/// A method's handler: its data, and its answer (`None` for a post).
+pub type Handler = Arc<dyn Fn(Value, Option<AnyReply>) + Send + Sync>;
+
+/// Sends an event to the app (`buwiz.viewport`, `buwiz.action`,
+/// `buwiz.session`).
+pub type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
 /// One open's bridge state, shared by its handlers.
 pub struct OpenContext {
     pub prepared: Arc<Prepared>,
@@ -288,38 +321,54 @@ pub fn params(prepared: &Prepared, viewport: Value) -> Map<String, Value> {
 pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     channel.set_params(params(&ctx.prepared, viewport));
-    install_fit(channel, ctx, inline);
-    install_ready(channel, ctx, inline);
-    install_card(channel, ctx, inline);
+    let ch = channel.clone();
+    let emit: Emit = Arc::new(move |name: &str, data: Value| {
+        let _ = ch.send(name, data);
+    });
+    for (method, handler) in wire(ctx, inline, emit) {
+        channel.handle(method, move |mut call: HostCall| {
+            let data = call.take_data();
+            handler(data, call.into_reply().map(|r| Box::new(r) as AnyReply));
+        });
+    }
+}
+
+/// The handlers of the open `ctx`, by method: one for each granted method
+/// and nothing else. Its events go out through `emit`, and the session's
+/// end is watched. A TSX app's channel ([`install`]) and a native screen's
+/// bridge both run these.
+pub fn wire(ctx: &Arc<OpenContext>, inline: bool, emit: Emit) -> Vec<(&'static str, Handler)> {
+    let mut out = vec![(perms::FIT, fit_handler(ctx, inline)), (perms::READY, ready_handler(ctx, inline))];
+    out.extend(card_handlers(ctx, inline, emit.clone()));
     let own = [perms::FIT, perms::READY, perms::ACTIONS, perms::SETTLE, perms::META];
     for method in ctx.prepared.permissions.methods().into_iter().filter(|m| !own.contains(m)) {
         let c = ctx.clone();
-        channel.handle(method, move |mut call: HostCall| {
-            let data = call.take_data();
+        let handler: Handler = Arc::new(move |data: Value, reply: Option<AnyReply>| {
             // a post has no answer to give: the bridge only takes calls
-            let Some(reply) = call.into_reply() else { return };
+            let Some(reply) = reply else { return };
             c.dispatch(method, data, reply);
         });
+        out.push((method, handler));
     }
-    let (ch, ui, key) = (channel.clone(), ctx.ui.clone(), ctx.prepared.key.clone());
+    let (ui, key) = (ctx.ui.clone(), ctx.prepared.key.clone());
     ctx.session.on_end(move |why| {
         if why == Ended::Restarted {
-            let _ = ch.send("buwiz.session", json!({"state": "reconnecting"}));
+            emit("buwiz.session", json!({"state": "reconnecting"}));
         }
         ui.session_ended(&key, why);
     });
+    out
 }
 
 /// `buwiz.fit({height})`, a post: an `inline` open's card takes the height,
 /// clamped to its manifest's `inline` range and paced by a [`Fitter`]; a
 /// full-screen open's is ignored. It needs no permission: it sizes only
 /// the app's own frame.
-fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+fn fit_handler(ctx: &Arc<OpenContext>, inline: bool) -> Handler {
     let app = ctx.prepared.plugin.app(&ctx.prepared.key.app).cloned().unwrap_or(Value::Null);
     let (ui, fitter) = (ctx.ui.clone(), Arc::new(Mutex::new(Fitter::default())));
-    channel.handle(perms::FIT, move |mut call: HostCall| {
-        let data = call.take_data();
-        if let Some(reply) = call.into_reply() {
+    Arc::new(move |data: Value, reply: Option<AnyReply>| {
+        if let Some(reply) = reply {
             reply.resolve(Value::Null);
         }
         let Some(h) = data.get("height").and_then(Value::as_f64).filter(|h| h.is_finite() && *h > 0.0) else { return };
@@ -347,23 +396,23 @@ fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
                 at = next;
             }
         });
-    });
+    })
 }
 
 /// `buwiz.ready()`, a post: an `inline` open's app has its data, so its
 /// card may show (`mini_v1::settle`); a full-screen open's is ignored.
 /// Like `buwiz.fit`, it needs no permission: it only ends the app's own
 /// card's hold.
-fn install_ready(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+fn ready_handler(ctx: &Arc<OpenContext>, inline: bool) -> Handler {
     let ui = ctx.ui.clone();
-    channel.handle(perms::READY, move |call: HostCall| {
-        if let Some(reply) = call.into_reply() {
+    Arc::new(move |_: Value, reply: Option<AnyReply>| {
+        if let Some(reply) = reply {
             reply.resolve(Value::Null);
         }
         if inline {
             ui.ready();
         }
-    });
+    })
 }
 
 /// `buwiz.actions(list)`, `buwiz.meta(meta)` and `buwiz.settle(text)` (7.12 to
@@ -373,22 +422,22 @@ fn install_ready(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
 /// then ignored. They need no permission: they change only the app's own
 /// card, and a press reaches only the app. A press is the `buwiz.action`
 /// event, `{id}`.
-fn install_card(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
+fn card_handlers(ctx: &Arc<OpenContext>, inline: bool, emit: Emit) -> Vec<(&'static str, Handler)> {
     let listed: Arc<Mutex<Vec<CardAction>>> = Arc::default();
     let press: Press = {
-        let (ch, listed, session) = (channel.clone(), listed.clone(), ctx.session.clone());
+        let (listed, session) = (listed.clone(), ctx.session.clone());
         Arc::new(move |id: &str| {
             let on = listed.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|a| a.id == id && !a.disabled);
             if on && session.check_live().is_ok() {
-                let _ = ch.send("buwiz.action", json!({"id": id}));
+                emit("buwiz.action", json!({"id": id}));
             }
         })
     };
+    let mut out = Vec::new();
     for method in [perms::ACTIONS, perms::SETTLE, perms::META] {
         let (ui, session, listed, press) = (ctx.ui.clone(), ctx.session.clone(), listed.clone(), press.clone());
-        channel.handle(method, move |mut call: HostCall| {
-            let data = call.take_data();
-            let Some(reply) = call.into_reply() else { return };
+        let handler: Handler = Arc::new(move |data: Value, reply: Option<AnyReply>| {
+            let Some(reply) = reply else { return };
             if let Err(e) = session.check_live() {
                 return reject(reply, e);
             }
@@ -413,14 +462,16 @@ fn install_card(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
             };
             answer(reply, r.map(|()| Value::Null));
         });
+        out.push((method, handler));
     }
+    out
 }
 
-fn reject(reply: HostReply, e: RoxError) {
-    reply.reject(e.to_wire());
+fn reject(reply: AnyReply, e: RoxError) {
+    reply.reject(e);
 }
 
-fn answer(reply: HostReply, r: Result<Value, RoxError>) {
+fn answer(reply: AnyReply, r: Result<Value, RoxError>) {
     match r {
         Ok(v) => reply.resolve(v),
         Err(e) => reject(reply, e),
@@ -442,7 +493,7 @@ fn text<'a>(data: &'a Value, k: &str) -> Option<&'a str> {
 
 impl OpenContext {
     /// Runs granted method `method`'s handler.
-    fn dispatch(self: &Arc<Self>, method: &'static str, data: Value, reply: HostReply) {
+    fn dispatch(self: &Arc<Self>, method: &'static str, data: Value, reply: AnyReply) {
         match method {
             perms::CALL => self.call(data, reply),
             perms::TICKET_TITLE => self.ticket_title(data, reply),
@@ -502,7 +553,7 @@ impl OpenContext {
 
     /// A reply that a timer rejects with `timeout` unless it is answered
     /// first: `(answer, done)`; `done` stops the timer.
-    fn timed(&self, reply: HostReply) -> (Arc<Mutex<Option<HostReply>>>, mpsc::Sender<()>) {
+    fn timed(&self, reply: AnyReply) -> (Arc<Mutex<Option<AnyReply>>>, mpsc::Sender<()>) {
         let slot = Arc::new(Mutex::new(Some(reply)));
         let (done, rx) = mpsc::channel::<()>();
         let (s, timeout) = (slot.clone(), self.limits.timeout);
@@ -520,7 +571,7 @@ impl OpenContext {
     /// timer) and answers `reply` with what `work` returns.
     fn gated(
         self: &Arc<Self>,
-        reply: HostReply,
+        reply: AnyReply,
         work: impl FnOnce(&OpenContext) -> Result<Value, RoxError> + Send + 'static,
     ) {
         if let Err(e) = self.admit() {
@@ -542,7 +593,7 @@ impl OpenContext {
     }
 
     /// `buwiz.call(tool, args)` (7.3).
-    fn call(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn call(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -575,7 +626,7 @@ impl OpenContext {
     }
 
     /// `buwiz.ticket.title(ticket)` (7.4), rate-limited as calls are.
-    fn ticket_title(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn ticket_title(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -590,7 +641,7 @@ impl OpenContext {
     }
 
     /// `buwiz.open({app, props?, ticket?})` or `buwiz.open({url})` (7.5).
-    fn open(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn open(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -631,7 +682,7 @@ impl OpenContext {
         Ok(())
     }
 
-    fn open_url(self: &Arc<Self>, grant: &perms::OpenGrant, data: &Value, reply: HostReply) {
+    fn open_url(self: &Arc<Self>, grant: &perms::OpenGrant, data: &Value, reply: AnyReply) {
         let url = text(data, "url").unwrap_or_default().to_owned();
         if url.len() > MAX_URL {
             return reject(reply, invalid("a URL is at most 2048 characters"));
@@ -660,7 +711,7 @@ impl OpenContext {
     }
 
     /// `buwiz.attach(scope, value)` (7.6): resolved by the plugin, then asked.
-    fn attach(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn attach(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -719,7 +770,7 @@ impl OpenContext {
     }
 
     /// `buwiz.pickFile(options)` and its files' `read()` (7.7).
-    fn pick(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn pick(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Some(id) = data.get("read") {
             return self.read_picked(id.as_str().unwrap_or_default().to_owned(), reply);
         }
@@ -759,7 +810,7 @@ impl OpenContext {
         Ok(Value::Array(out))
     }
 
-    fn read_picked(self: &Arc<Self>, id: String, reply: HostReply) {
+    fn read_picked(self: &Arc<Self>, id: String, reply: AnyReply) {
         if self.session.check_live().is_err() {
             return reject(reply, RoxError::new("closed", "the app was closed"));
         }
@@ -782,7 +833,7 @@ impl OpenContext {
     }
 
     /// `buwiz.copy(text)`.
-    fn copy(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn copy(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -799,7 +850,7 @@ impl OpenContext {
     /// called by the host as the app (signed, checked by the broker) with
     /// the preview's limit, answers with an HTML document; the person sees
     /// it over the app. The page never reaches the app.
-    fn preview(self: &Arc<Self>, data: Value, reply: HostReply) {
+    fn preview(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
@@ -845,7 +896,7 @@ impl OpenContext {
 
     /// `buwiz.storage.get|set|remove|keys` (11), on the open's storage
     /// thread, in order.
-    fn storage_named(self: &Arc<Self>, name: &'static str, data: Value, reply: HostReply) {
+    fn storage_named(self: &Arc<Self>, name: &'static str, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
