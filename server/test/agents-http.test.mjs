@@ -352,7 +352,7 @@ test("AGH-07 the bridge: 401 without its token, 404 for an unknown route, the ag
   const agents = await bridge("GET", "/v1/bridge/agents", bridgeEp.secret);
 
   // the bot's description: the store's default for a bot seeded without one (botDefaults)
-  assert.equal(agents.text, '{"ok":true,"agents":[{"id":"boss","name":"Boss","description":"Boss is a personal assistant bot in Grok Shell."}]}');
+  assert.equal(agents.text, '{"ok":true,"agents":[{"id":"boss","name":"Boss","description":"Boss is a personal assistant bot in Buwiz Bot."}]}');
   const empty = await bridge("POST", "/v1/bridge/send", bridgeEp.secret, { subject: "x" });
 
   assert.deepEqual([empty.status, empty.json], [400, refusal("invalid_args", "`text` is required")]);

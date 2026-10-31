@@ -268,7 +268,7 @@ const server = new Server({ name: "rox-google-workspace", version: "1.0.0" }, { 
 
 server.setRequestHandler(ListToolsRequestSchema, () => ({
   tools: [
-    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Rox.", inputSchema: { type: "object" } })),
+    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map(({ run: _run, ...t }) => t),
   ],
 }));

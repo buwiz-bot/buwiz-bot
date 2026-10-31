@@ -23,7 +23,7 @@ Shopify's consumer Shop MCP server: search and compare products across Shopify s
 | Resource scope | `personal_agent` (the server's `WWW-Authenticate: Bearer ... scope="personal_agent"` on a signed-in-only call) |
 | Server scopes list | `openid email profile agent:access personal_agent:orders pay:wallet:read pay:wallet:payment_request:approve pay:addresses:read orders favorites ...` (full list in the metadata) |
 
-Protocol note for the Rox developers: the server accepted only MCP protocol version `2026-07-28` in my probe (an `initialize` with `2025-06-18` returned error -32022 "Unsupported protocol version"), requires an `Mcp-Method` header, and wants `io.modelcontextprotocol/protocolVersion` and `clientCapabilities` in `_meta`. A Rox MCP client that cannot speak that revision will fail even before sign-in.
+Protocol note for the Buwiz Bot developers: the server accepted only MCP protocol version `2026-07-28` in my probe (an `initialize` with `2025-06-18` returned error -32022 "Unsupported protocol version"), requires an `Mcp-Method` header, and wants `io.modelcontextprotocol/protocolVersion` and `clientCapabilities` in `_meta`. A Buwiz Bot MCP client that cannot speak that revision will fail even before sign-in.
 
 ## Prerequisites
 
@@ -38,33 +38,33 @@ There is no confirmed path. What I found:
 1. **Shopify's documented route for a developer-registered Shop OAuth client** is the Dev Dashboard: sign in with a Partner account, create an app, then Versions -> Release -> Access -> "Select scopes" -> **Shop App**, add redirect URLs, Release; Client ID and Client secret appear on the app's Settings page (https://shopify.dev/docs/api/shop/guides/creating-a-client). Limits stated there: redirect URLs must be fully-qualified `https` URLs ("Only fully-qualified `https` URLs are supported"), and the only scope documented is `shop_app:oauth` (basic profile, for Sign in with Shop). **The agent scopes the Shop MCP server uses (`personal_agent`, `agent:access`, ...) are not documented as available to such clients.**
 2. A developer reported on 2026-10-24, using a Dev Dashboard client with `openid personal_agent` and resource `https://mcp.shop.com`, that Shop "redirects to my callback with `access_denied` before displaying a consent screen" and asked whether the client needs extra eligibility. No reply at the time I read it: https://community.shopify.dev/t/shop-mcp-oauth-returns-access-denied-before-showing-the-consent-screen/39005
 3. My own read-only check: an authorize request with an unregistered client ID returned HTTP 403 (Shop's "authorize failed" page), so unknown clients are refused rather than auto-registered.
-4. Rox's callback `http://127.0.0.1:8787/oauth/callback/shop` is `http`, which rule 1 excludes. Even with a valid client Rox would need an https relay, or Shopify would have to allow loopback. Unconfirmed whether Shopify makes an exception for native/loopback clients.
+4. Buwiz Bot's callback `http://127.0.0.1:8787/oauth/callback/shop` is `http`, which rule 1 excludes. Even with a valid client Buwiz Bot would need an https relay, or Shopify would have to allow loopback. Unconfirmed whether Shopify makes an exception for native/loopback clients.
 
-If you want to try anyway: create the Dev Dashboard app as in step 1 (app name `Rox`), add the callback, copy Client ID/Secret, and see whether accounts.shop.app accepts `personal_agent`. Expect the `access_denied` in step 2 and ask Shopify for agent-client enablement (the developer-forum thread above is the only public channel I found; a dedicated contact is **(unconfirmed)**). Whether the client ID can instead be a Client ID Metadata Document URL (CIMD, which the server advertises support for) is **(unconfirmed)**, and I did not test it.
+If you want to try anyway: create the Dev Dashboard app as in step 1 (app name `Buwiz Bot`), add the callback, copy Client ID/Secret, and see whether accounts.shop.app accepts `personal_agent`. Expect the `access_denied` in step 2 and ask Shopify for agent-client enablement (the developer-forum thread above is the only public channel I found; a dedicated contact is **(unconfirmed)**). Whether the client ID can instead be a Client ID Metadata Document URL (CIMD, which the server advertises support for) is **(unconfirmed)**, and I did not test it.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 **Connect apps -> Shop -> settings -> Authenticate** (only after a client exists)
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | the Shop/Dev Dashboard client ID that accounts.shop.app accepts (none confirmed) |
-| Client Secret | the Dev Dashboard Client secret if Rox's field requires it; a public client can use `none` |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/shop` (confirm in Rox's plugin page; Shopify requires https for Dev Dashboard clients) |
+| Client Secret | the Dev Dashboard Client secret if Buwiz Bot's field requires it; a public client can use `none` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/shop` (confirm in Buwiz Bot's plugin page; Shopify requires https for Dev Dashboard clients) |
 
-For anonymous use, leave the fields empty and do not click Authenticate, if Rox lets the plugin run without it **(unconfirmed)**.
+For anonymous use, leave the fields empty and do not click Authenticate, if Buwiz Bot lets the plugin run without it **(unconfirmed)**.
 
 ## Scopes requested
 
-The catalog entry pins no scopes and no client ID (the plugin has no `auth` block). The server's challenge asks for `personal_agent`. The forum reporter above requested `openid personal_agent`. Note that `personal_agent` appears in the MCP server's metadata but not in the authorization server's `scopes_supported` (which lists `agent:access`, `personal_agent:orders` and others), so the exact scope string Rox should send is **(unconfirmed)**.
+The catalog entry pins no scopes and no client ID (the plugin has no `auth` block). The server's challenge asks for `personal_agent`. The forum reporter above requested `openid personal_agent`. Note that `personal_agent` appears in the MCP server's metadata but not in the authorization server's `scopes_supported` (which lists `agent:access`, `personal_agent:orders` and others), so the exact scope string Buwiz Bot should send is **(unconfirmed)**.
 
 ## Alternative: token
 
-Shopify's `shop` CLI (https://github.com/Shopify/shop, `npm install --global @shopify/shop@latest`) signs in with the OAuth **device flow** (`shop account login`, approve at https://accounts.shop.app/device) using Shopify's own client, and its README says a backend that holds a Shop token for this resource "can hand it to the CLI as `SHOP_ACCESS_TOKEN`; the CLI sends it unchanged". That implies the server accepts `Authorization: Bearer <Shop token>`. Where the CLI stores its token, its lifetime, and whether it may be reused in another client are **(unconfirmed)**; reusing it may breach Shopify's terms for that client. It needs a custom-header option in Rox.
+Shopify's `shop` CLI (https://github.com/Shopify/shop, `npm install --global @shopify/shop@latest`) signs in with the OAuth **device flow** (`shop account login`, approve at https://accounts.shop.app/device) using Shopify's own client, and its README says a backend that holds a Shop token for this resource "can hand it to the CLI as `SHOP_ACCESS_TOKEN`; the CLI sends it unchanged". That implies the server accepts `Authorization: Bearer <Shop token>`. Where the CLI stores its token, its lifetime, and whether it may be reused in another client are **(unconfirmed)**; reusing it may breach Shopify's terms for that client. It needs a custom-header option in Buwiz Bot.
 
 ## Verification
 
-1. Without sign-in: ask Rox "Find three rain jackets under 100 USD that ship to the US." The answer should list products with store links.
+1. Without sign-in: ask Buwiz Bot "Find three rain jackets under 100 USD that ship to the US." The answer should list products with store links.
 2. After sign-in: "What is my Shop account's saved delivery address?" (calls `get_account`) or "Show my in-progress orders".
 3. Provider side: Shop app -> your profile/settings (connected apps/agents list; exact location **(unconfirmed)**).
 
@@ -72,9 +72,9 @@ Shopify's `shop` CLI (https://github.com/Shopify/shop, `npm install --global @sh
 
 - `access_denied` before any consent screen: the client is not enabled for agent scopes (the forum case above). Not fixable from your side.
 - HTTP 403 "authorize failed" page: unknown/unregistered client ID.
-- Redirect problems: Dev Dashboard accepts only `https` redirect URLs; Rox's loopback `http` URL will be refused or not saveable.
+- Redirect problems: Dev Dashboard accepts only `https` redirect URLs; Buwiz Bot's loopback `http` URL will be refused or not saveable.
 - `401` on `get_account`/orders while search works: expected when not signed in.
-- Errors about protocol version or `Mcp-Method`: the Rox MCP client revision (see Protocol note).
+- Errors about protocol version or `Mcp-Method`: the Buwiz Bot MCP client revision (see Protocol note).
 - Never approve a purchase you did not request; the assistant must show merchant, items and total first.
 
 ## Sources

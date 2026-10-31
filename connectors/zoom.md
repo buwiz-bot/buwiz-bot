@@ -4,9 +4,9 @@ Checked against Zoom's developer docs and live endpoints on 2026-10-25. Anything
 
 ## What it unlocks
 
-Rox connects to Zoom's hosted MCP server at `https://mcp.zoom.us/mcp/zoom/streamable`: search meetings and recordings, pull summaries and transcripts, meeting assets, create/update/delete meetings, and work with Zoom Docs, Hubs and Workflows.
+Buwiz Bot connects to Zoom's hosted MCP server at `https://mcp.zoom.us/mcp/zoom/streamable`: search meetings and recordings, pull summaries and transcripts, meeting assets, create/update/delete meetings, and work with Zoom Docs, Hubs and Workflows.
 
-Zoom does not support Dynamic Client Registration or Client ID Metadata Documents ("Zoom remote MCP servers only support manual client registration through app creation"), so you create a Zoom Marketplace app and paste its Client ID into Rox.
+Zoom does not support Dynamic Client Registration or Client ID Metadata Documents ("Zoom remote MCP servers only support manual client registration through app creation"), so you create a Zoom Marketplace app and paste its Client ID into Buwiz Bot.
 
 Endpoints (confirmed live via `https://zoom.us/.well-known/oauth-protected-resource/mcp/zoom/streamable` and `https://zoom.us/.well-known/oauth-authorization-server`):
 
@@ -31,23 +31,23 @@ Endpoints (confirmed live via `https://zoom.us/.well-known/oauth-protected-resou
 
 ## Steps
 
-1. Sign in to the Zoom App Marketplace (https://marketplace.zoom.us) and choose **Develop -> Build app**, then create a **General app**. Name it `Rox`.
+1. Sign in to the Zoom App Marketplace (https://marketplace.zoom.us) and choose **Develop -> Build app**, then create a **General app**. Name it `Buwiz Bot`.
 2. Choose how it is managed: **User-managed** (only your own data) or **Admin-managed** (account admins add it; can reach other users' data depending on scope). For personal use choose user-managed. The management option affects which scopes are available.
 3. Go to **Basic Information -> OAuth Information**:
-   - **OAuth Redirect URL (Required):** `http://127.0.0.1:8787/oauth/callback/zoom` (confirm in Rox's plugin page).
+   - **OAuth Redirect URL (Required):** `http://127.0.0.1:8787/oauth/callback/zoom` (confirm in Buwiz Bot's plugin page).
    - **OAuth Allow Lists (Required):** add the same URL (an entry may be a full callback URL or a base URL; Zoom says so).
    - Strict Mode URL (optional): if enabled, matching is character by character; leave on or off but the URL must be identical.
 4. **Use a public client.** Zoom's OAuth docs say loopback redirects are allowed only for PKCE-enabled/native clients, that you must use `127.0.0.1` ("Do not use `localhost`"), and that simple confidential clients must use HTTPS. Turn on the public client option for the app (the vendor's Cursor README calls it **Use Public Client OAuth**; the label is **unconfirmed** in Zoom's docs, which say "the public client option") and copy the **Public Client ID**. It has no secret.
 5. Under **Scopes** choose **Add scopes** and add the granular scopes you want (list below).
 6. Open **Local Test** and click **Add App Now**, then **Allow**, so your own account has the app installed (Zoom docs).
 7. Copy the **Client ID** (or Public Client ID) from **Basic Information -> App Credentials**.
-8. If you must use a confidential client instead: you need an HTTPS redirect URL that Zoom accepts, which Rox's loopback callback does not provide.
+8. If you must use a confidential client instead: you need an HTTPS redirect URL that Zoom accepts, which Buwiz Bot's loopback callback does not provide.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Zoom** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | the Public Client ID (preferred), or the Client ID if using a secret |
 | Client Secret | leave empty with a Public Client ID; otherwise the Client Secret |
@@ -69,7 +69,7 @@ None for this server. It answers "Access token is required"; static API keys are
 
 ## Verification
 
-1. Rox shows Zoom connected.
+1. Buwiz Bot shows Zoom connected.
 2. Ask: "Search my Zoom meetings from last week" or "Get the summary of my most recent meeting."
 3. In the Marketplace, check the app is installed under Manage -> Added Apps **(unconfirmed location)**.
 
@@ -77,7 +77,7 @@ None for this server. It answers "Access token is required"; static API keys are
 
 - **Invalid redirect / redirect URL not allowed**: the URL must be in both **OAuth Redirect URL** and **OAuth Allow Lists**, written with `127.0.0.1` not `localhost`; with Strict Mode it must be identical character by character.
 - **Redirect rejected on a confidential client**: loopback is allowed only for public/PKCE clients; switch to the Public Client ID.
-- **Token exchange 401 with Public Client ID**: Rox must send `client_id` + `code_verifier` without an `Authorization` header; if it always sends Basic auth with an empty secret, this may fail (public-client behaviour per Zoom's docs; Rox side **unconfirmed**).
+- **Token exchange 401 with Public Client ID**: Buwiz Bot must send `client_id` + `code_verifier` without an `Authorization` header; if it always sends Basic auth with an empty secret, this may fail (public-client behaviour per Zoom's docs; Buwiz Bot side **unconfirmed**).
 - **Missing tools / insufficient scope**: add the scope to the app, then re-authorize.
 - **App not installed**: finish Local Test -> Add App Now -> Allow.
 - **License errors**: your Zoom user lacks the product licence for that tool.

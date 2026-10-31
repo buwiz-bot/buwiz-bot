@@ -96,7 +96,7 @@ test("dynamic registration: sign-in end to end, the redirect on the broker's por
   const reg = JSON.parse(since(n, "/register")[0].body);
 
   assert.deepEqual(reg.redirect_uris, [callback("dcr")]);
-  assert.equal(reg.client_name, "Grok Shell");
+  assert.equal(reg.client_name, "Buwiz Bot");
   assert.equal(reg.token_endpoint_auth_method, "none");
   const a = authOf("dcr");
 

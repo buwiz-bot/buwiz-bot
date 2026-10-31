@@ -36,7 +36,7 @@ const bad = (r, error) => {
   assert.deepEqual(r.json, { ok: false, error });
 };
 const defaults = (name) => ({
-  description: `${name} is a personal assistant bot in Grok Shell.`,
+  description: `${name} is a personal assistant bot in Buwiz Bot.`,
   instructions: `Stay in character as ${name}. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.`,
 });
 const done = (id) => waitFor(async () => (await request("GET", `/status?id=${id}`)).json.done, 30000);

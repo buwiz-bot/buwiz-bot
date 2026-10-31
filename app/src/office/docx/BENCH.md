@@ -10,7 +10,7 @@ cargo test -p rox --lib office::docx::bench::typing_200 -- --ignored --nocapture
 cargo test -p rox --lib office::docx::bench::parts_200 -- --ignored --nocapture --exact
 ```
 
-Rox's dev profile builds every dependency at `opt-level = 3`, so the engine
+Buwiz Bot's dev profile builds every dependency at `opt-level = 3`, so the engine
 runs at release speed in these tests. The machine was shared with other
 builds while these ran: runs vary by 2–3×. The table gives the quietest
 run, the range of the others in brackets.
@@ -62,7 +62,7 @@ place, so a justified line's stretched spaces land where the layout put
 them.
 
 Handing a face over costs ~10 ms. CoreText's first lookup in a process
-costs about a second, but Rox has paid it long before a document opens.
+costs about a second, but Buwiz Bot has paid it long before a document opens.
 A wide fallback face (Arial Unicode MS) costs most of a second, so chains
 hold the face alone: text in a script the face lacks is measured with its
 missing glyphs while CoreText draws it from a fallback.

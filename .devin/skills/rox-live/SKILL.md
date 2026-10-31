@@ -1,11 +1,11 @@
 ---
 name: rox-live
-description: Work on the rox NSH+ra-jit app — edit patchable src/ code, run the macOS/iOS-simulator dev loops, or verify a live splice landed with state intact. Use when touching app/, running dev.sh/ios.sh, debugging a patch that didn't apply, or checking whether an edit spliced or relinked.
+description: Work on the Buwiz Bot NSH+ra-jit app (crate `rox`) — edit patchable src/ code, run the macOS/iOS-simulator dev loops, or verify a live splice landed with state intact. Use when touching app/, running dev.sh/ios.sh, debugging a patch that didn't apply, or checking whether an edit spliced or relinked.
 ---
 
-# rox — live Rust UI with NSH + ra-jit
+# Buwiz Bot — live Rust UI with NSH + ra-jit
 
-`app/` is the Rox chat shell (Grok Shell ported to Rust): `src/hot.rs` and
+`app/` is the Buwiz Bot chat shell (formerly Grok Shell, ported to Rust): `src/hot.rs` and
 the modules it pulls in are the patchable area; `src/live.rs` is the
 bridge (never edit while live — it is the dependency the store anchor
 lives in); `src/store.rs` holds the model as anchored signals.

@@ -166,7 +166,7 @@ function providerFor(row, { background = false } = {}) {
     },
     get clientMetadata() {
       return {
-        client_name: "Grok Shell",
+        client_name: "Buwiz Bot",
         redirect_uris: [this.redirectUrl],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],

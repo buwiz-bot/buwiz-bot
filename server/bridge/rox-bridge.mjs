@@ -20,13 +20,13 @@ const TOKEN = process.env.ROX_BRIDGE_TOKEN || "";
 const TOOLS = [
   {
     name: "rox_agents_list",
-    description: "The Rox agent this bridge talks with: id, name and what it is for.",
+    description: "The Buwiz Bot agent this bridge talks with: id, name and what it is for.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "rox_send",
     description:
-      "Send the Rox agent a message. Leave out `conversation` to start one (then `subject` is required). With expects_reply the agent works on it and answers; read the answer with rox_receive.",
+      "Send the Buwiz Bot agent a message. Leave out `conversation` to start one (then `subject` is required). With expects_reply the agent works on it and answers; read the answer with rox_receive.",
     inputSchema: {
       type: "object",
       properties: {
@@ -43,12 +43,12 @@ const TOOLS = [
   },
   {
     name: "rox_receive",
-    description: "Messages the Rox agent sent this bridge (its answers included), oldest first. wait_s (at most 30) waits for one when there is none yet.",
+    description: "Messages the Buwiz Bot agent sent this bridge (its answers included), oldest first. wait_s (at most 30) waits for one when there is none yet.",
     inputSchema: { type: "object", properties: { wait_s: { type: "integer" }, conversation: { type: "string" } } },
   },
   {
     name: "rox_conversations",
-    description: "This bridge's recent conversations with the Rox agent.",
+    description: "This bridge's recent conversations with the Buwiz Bot agent.",
     inputSchema: { type: "object", properties: { limit: { type: "integer" } } },
   },
 ];
@@ -81,7 +81,7 @@ async function call(name, args) {
 
     return { content: [{ type: "text", text: JSON.stringify(body) }] };
   } catch (e) {
-    return { content: [{ type: "text", text: `Rox is not reachable at ${BASE}: ${String(e?.message || e).slice(0, 200)}` }], isError: true };
+    return { content: [{ type: "text", text: `Buwiz Bot is not reachable at ${BASE}: ${String(e?.message || e).slice(0, 200)}` }], isError: true };
   }
 }
 

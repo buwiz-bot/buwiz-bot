@@ -1,13 +1,13 @@
 # The bridge: `rox` in an app
 
 An app imports the bridge with `import { rox } from "rox"` (it is also the
-global `rox`). Its methods are implemented by Rox; the app reaches nothing
+global `rox`). Its methods are implemented by Buwiz Bot; the app reaches nothing
 else: no `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage` or
-`sessionStorage`, and imports only from `nsh`, `nsh/base` and `rox` ([spec]
-6.3). The module's **default export** is the component Rox mounts.
+`sessionStorage`, and imports only from `nsh`, `nsh/base` and `rox` (spec
+6.3). The module's **default export** is the component Buwiz Bot mounts.
 
 A method whose permission the manifest does not grant is **absent**
-(`undefined`), not present and failing ([spec] 7.1, 6.4). Test for it if an
+(`undefined`), not present and failing (spec 7.1, 6.4). Test for it if an
 app is shared between manifests: `if (rox.copy) …`.
 
 ## Methods
@@ -17,8 +17,8 @@ app is shared between manifests: `if (rox.copy) …`.
 | `rox.props` | always | The open's props, validated against `apps[].props`; read-only | | 6.6 |
 | `rox.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
 | `rox.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
-| `rox.fit(height)` | always | Inline: Rox sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
-| `rox.actions(list)`, `rox.onAction(handler)` | always (1.1) | Inline: Rox draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
+| `rox.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
+| `rox.actions(list)`, `rox.onAction(handler)` | always (1.1) | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
 | `rox.meta({text, pill?})` | always (1.1) | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
 | `rox.settle(text)` | always (1.1) | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
 | `rox.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
@@ -32,7 +32,7 @@ app is shared between manifests: `if (rox.copy) …`.
 | `rox.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `rox.call`'s | 7.10 |
 
 Every rejection is a `RoxError {code, retryable, message, details?}`
-([spec] 14.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
+(spec 14.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
 `plugin_restarted`, `internal`. A tool result with `isError: true` rejects
 with `tool_error` and the first text content (at most 500 chars) as
 `message`, so put the user-facing sentence first.
@@ -55,7 +55,7 @@ export default function Status() {
 
 ## Print preview: `rox.preview`
 
-`rox.preview({tool, args?, title?})` asks Rox to call `tool` (one of the
+`rox.preview({tool, args?, title?})` asks Buwiz Bot to call `tool` (one of the
 app's own `permissions.tools`; another name rejects `not_declared`) with
 `args`, as the app, and show the document it returns full screen over the
 app: a title bar with `title` (else the result's `structuredContent.title`,
@@ -76,12 +76,12 @@ The tool returns the page as an MCP embedded resource:
 }
 ```
 
-Make the page **static**: Rox renders it with JavaScript off, no base URL
+Make the page **static**: Buwiz Bot renders it with JavaScript off, no base URL
 and a policy that loads nothing (no network, no files; inline `<style>` and
 `data:` images, fonts and objects, such as an embedded PDF, only), and it does not follow links or navigate.
 A result without a `text/html` resource rejects `tool_error`; `isError`
 rejects `tool_error` with its first text; a larger page `result_too_large`.
-Rox on other platforms rejects `not_supported`.
+Buwiz Bot on other platforms rejects `not_supported`.
 
 ```tsx
 if (rox.preview) await rox.preview({ tool: "acme_print_page", args: { ticket: rox.props.ticket } });
@@ -115,19 +115,19 @@ export default function Card() {
 
 A body that scrolls past `max_height` reports the column's height with the
 body's full height in place of the part the scroll shows (BIR's card kit
-does this). Rox ignores changes under 2 points and sends at most 8 heights a
+does this). Buwiz Bot ignores changes under 2 points and sends at most 8 heights a
 second per open, the last always landing; `rox.fit` needs no permission
 (it sizes only your own frame) and does nothing full screen. Check for it
-(`rox.fit &&`) if the app may run on an older Rox.
+(`rox.fit &&`) if the app may run on an older Buwiz Bot.
 
-## Cards that look like Rox's: `rox.actions`, `rox.meta`, `rox.settle`
+## Cards that look like Buwiz Bot's: `rox.actions`, `rox.meta`, `rox.settle`
 
-Protocol 1.1 ([spec] 7.12 to 7.14). An inline card can hand Rox its chrome
-instead of drawing it, so it looks like Rox's own cards (an approval card's
+Protocol 1.1 (spec 7.12 to 7.14). An inline card can hand Buwiz Bot its chrome
+instead of drawing it, so it looks like Buwiz Bot's own cards (an approval card's
 buttons, its settled line):
 
 - `rox.actions([{id, label, primary?, disabled?}])`: footer buttons under
-  the app, drawn by Rox as 28-point pills, right-aligned, the primary first.
+  the app, drawn by Buwiz Bot as 28-point pills, right-aligned, the primary first.
   At most 3; `id` 1 to 64 of `A-Z a-z 0-9 _ . : -`, unique; `label` one line
   of 1 to 24 characters; at most one `primary`. `[]` removes them; each call
   replaces the list. A press of an enabled button calls every
@@ -146,7 +146,7 @@ A call outside these rules rejects `invalid_args` and changes nothing. Full
 screen, each call is checked the same way, then ignored: draw your own
 buttons there (`rox.viewport().placement` says which). They need no
 permission. Declare `"protocol": "1.1.0"` when you use them, and check for
-them (`if (rox.actions)`) if the app may run on a 1.0 Rox.
+them (`if (rox.actions)`) if the app may run on a 1.0 Buwiz Bot.
 
 ```tsx
 import { rox } from "rox";
@@ -175,7 +175,7 @@ rox.meta({ text: "Due in 3 days", pill: true });
 ## What your tool receives
 
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
-`_meta["rox/caller"]` = `{origin, plugin, app, open_id, ts}` ([spec] 8.4).
+`_meta["rox/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 8.4).
 `origin` is `app` for bridge calls, `agent` for the model, `routine` for a
 routine's query and `resolve` for resolve tools. In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
@@ -185,12 +185,12 @@ your `run(args, caller)` as `caller`. Use it to authorize (see
 
 To offer the user an app from a tool result, add
 `_meta["rox/open"] = {app, props?, ticket?, title, placement?}` to the result
-([spec] 9.6). Rox shows a card with Open or Show; it never opens by itself.
+(spec 9.6). Buwiz Bot shows a card with Open or Show; it never opens by itself.
 It is ignored on `isError` results and never reaches the model.
 
 ## Resolve tools
 
-A command or scope names a resolve tool ([spec] 9.2). It receives
+A command or scope names a resolve tool (spec 9.2). It receives
 `{kind: "command" | "scope", name, value, complete, context: {attached}}` and
 answers `structuredContent` with one `result`:
 
@@ -202,23 +202,23 @@ answers `structuredContent` with one `result`:
 | `prompt` (1.1) | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
 | `error` | `message` | 200 chars |
 
-`prompt` is a starter flow: Rox puts `text` in the message field for the
+`prompt` is a starter flow: Buwiz Bot puts `text` in the message field for the
 user to edit and send (after their own draft and a blank line, if they typed
 one) and never sends it. Answer it for a command, for example a bare
 `/draft`, with the text as the user would type it (tokens and line breaks
-are kept). Declare `"protocol": "1.1.0"`: a 1.0 Rox cannot read it.
+are kept). Declare `"protocol": "1.1.0"`: a 1.0 Buwiz Bot cannot read it.
 
 ```js
 if (args.kind === "command" && !args.value) return ok({ result: "prompt", text: "Draft this month's update:\n- " });
 ```
 
 An attachable scope must answer `token` for a value it offered as a choice:
-`rox.attach` and the composer rely on it ([spec] 7.6, 9.3).
+`rox.attach` and the composer rely on it (spec 7.6, 9.3).
 
-## Reserved tools (Rox to your plugin)
+## Reserved tools (Buwiz Bot to your plugin)
 
 `lib/rox-plugin.mjs` implements these; you only need them if you write your
-own ([spec] 7.8, 7.9).
+own (spec 7.8, 7.9).
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -231,7 +231,7 @@ own ([spec] 7.8, 7.9).
 
 ## Theme
 
-Rox renders your app in Rox's own light or dark setting, not the OS's, and switches it live when the user changes it (spec 6.5). Give every color a `dark:` variant: `bg-white dark:bg-[#161616]`, `text-[#1c1c1c] dark:text-[#f5f5f5]`, `border-black/10 dark:border-white/10`. A color without one stays light in a dark Rox. The template shows the pattern.
+Buwiz Bot renders your app in Buwiz Bot's own light or dark setting, not the OS's, and switches it live when the user changes it (spec 6.5). Give every color a `dark:` variant: `bg-white dark:bg-[#161616]`, `text-[#1c1c1c] dark:text-[#f5f5f5]`, `border-black/10 dark:border-white/10`. A color without one stays light in a dark Buwiz Bot. The template shows the pattern.
 
 ## Limits
 
@@ -255,4 +255,5 @@ Rox renders your app in Rox's own light or dark setting, not the OS's, and switc
 | App source | 512 KiB |
 | App load / one JS call / heap / stack | 10 s / 2 s / 256 MB / 4 MB |
 
-[spec]: ../../../../rox/drafts/rox-mini-app-protocol-v1.md
+Section numbers such as spec 4.1 refer to the Mini App Protocol v1
+specification, which is private and not in this repo.

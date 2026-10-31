@@ -20,7 +20,7 @@ X's hosted Ads MCP server, built into the X API gateway. X's doc lists 74 tools:
 | Registration endpoint | none |
 | Resource `scopes_supported` | `ads.read ads.write media.write offline.access` |
 
-Observation for the Rox developers: an unauthenticated request to `https://ads-api.x.com/mcp` returned `401` with `application/problem+json` and no `WWW-Authenticate` header, so Rox must find the metadata by the RFC 9728 well-known path above rather than from a challenge header.
+Observation for the Buwiz Bot developers: an unauthenticated request to `https://ads-api.x.com/mcp` returned `401` with `application/problem+json` and no `WWW-Authenticate` header, so Buwiz Bot must find the metadata by the RFC 9728 well-known path above rather than from a challenge header.
 
 ## Prerequisites
 
@@ -33,11 +33,11 @@ Observation for the Rox developers: an unauthenticated request to `https://ads-a
 
 Use a dedicated app (recommended, see "Sharing the X app" below), or reuse the X app.
 
-1. https://console.x.com -> your app (or **Create App**, name `Rox Ads`).
+1. https://console.x.com -> your app (or **Create App**, name `Buwiz Bot Ads`).
 2. In the app's authentication settings (see x.md step 6) set:
-   - **Type of App:** Native App (public client, no secret). X's Ads MCP doc recommends this. A confidential type also works if Rox sends the secret with `client_secret_basic`.
+   - **Type of App:** Native App (public client, no secret). X's Ads MCP doc recommends this. A confidential type also works if Buwiz Bot sends the secret with `client_secret_basic`.
    - **App permissions:** Read and Write (X's Ads MCP doc). If the app is shared with the X plugin, keep the broader option from x.md.
-   - **Callback URI / Redirect URL:** `http://127.0.0.1:8787/oauth/callback/x-ads` (confirm in Rox's plugin page).
+   - **Callback URI / Redirect URL:** `http://127.0.0.1:8787/oauth/callback/x-ads` (confirm in Buwiz Bot's plugin page).
      - X validates redirect URIs exactly (scheme, host, port, path, no trailing slash). The X plugin's callback `http://127.0.0.1:8787/oauth/callback/x` does **not** match this one, so the `x-ads` URL must be registered even if the app already works for X. Use `127.0.0.1`, not `localhost`. Up to 10 callback URLs per app per x.md.
    - **Website URL:** `http://x.com` (the value X's doc uses).
 3. **Keys and tokens:** copy the **OAuth 2.0 Client ID**. X's doc warns it is the long string like `TzNHbE5X...6MTpjaQ`, **not** the numeric app ID.
@@ -47,17 +47,17 @@ Use a dedicated app (recommended, see "Sharing the X app" below), or reuse the X
 
 ### Sharing the X app: read this before reusing it
 
-X's Ads MCP doc: "X keeps a single live OAuth grant per (app, user): signing in from a second client revokes the first client's tokens. In practice, use one client per X app." Rox's `x` and `x-ads` connectors are two sign-ins by the same user against the same app, so connecting X Ads in a shared app will revoke the X plugin's tokens (and the reverse), forcing a re-authenticate each time you switch. Whether that applies when the scopes differ is **(unconfirmed)**, but X's wording does not exclude it. Create a separate app for X Ads. The Ads API access request is per app anyway, so a separate app also keeps the Ads enrollment off your main X app.
+X's Ads MCP doc: "X keeps a single live OAuth grant per (app, user): signing in from a second client revokes the first client's tokens. In practice, use one client per X app." Buwiz Bot's `x` and `x-ads` connectors are two sign-ins by the same user against the same app, so connecting X Ads in a shared app will revoke the X plugin's tokens (and the reverse), forcing a re-authenticate each time you switch. Whether that applies when the scopes differ is **(unconfirmed)**, but X's wording does not exclude it. Create a separate app for X Ads. The Ads API access request is per app anyway, so a separate app also keeps the Ads enrollment off your main X app.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 **Connect apps -> X Ads -> settings -> Authenticate**
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | OAuth 2.0 Client ID of the (Ads-approved) app |
 | Client Secret | leave empty for a Native App |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/x-ads` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/x-ads` |
 
 If the shared-app route is used, the X plugin's Client ID is the same value but its callback stays `.../oauth/callback/x`.
 
@@ -66,17 +66,17 @@ If the shared-app route is used, the X plugin's Client ID is the same value but 
 `ads.read ads.write media.write offline.access` (catalog `auth.scopes`; identical to the server's `scopes_supported`).
 
 - `ads.read`: read and analytics tools. `ads.write`: campaign and creative writes. `media.write`: media upload and media-library writes (optional for campaign work). `offline.access`: refresh token; without it tokens last about 2 hours with no refresh.
-- X's doc: for a read-only agent omit `ads.write`; write tools then fail with authorization errors. Rox's plugin requests the full set; narrowing needs a Rox option **(unconfirmed)**.
+- X's doc: for a read-only agent omit `ads.write`; write tools then fail with authorization errors. Buwiz Bot's plugin requests the full set; narrowing needs a Buwiz Bot option **(unconfirmed)**.
 
 ## Alternative: user access token
 
-X's Ads MCP page documents `Authorization: Bearer <user access token>`: mint a token once with the authorize URL and a `curl` to `https://api.x.com/2/oauth2/token` (their example uses `http://localhost:8080/callback` and `code_challenge_method=plain`), then refresh with `grant_type=refresh_token`. Access tokens last about 2 hours and refresh tokens rotate (save the newest). It still needs the approved app and an ads-enabled user. The app-only Bearer Token from x.md does not apply: X says authentication is "the user's own OAuth2 token". Requires a custom-header field in Rox **(unconfirmed)**; not recommended over OAuth.
+X's Ads MCP page documents `Authorization: Bearer <user access token>`: mint a token once with the authorize URL and a `curl` to `https://api.x.com/2/oauth2/token` (their example uses `http://localhost:8080/callback` and `code_challenge_method=plain`), then refresh with `grant_type=refresh_token`. Access tokens last about 2 hours and refresh tokens rotate (save the newest). It still needs the approved app and an ads-enabled user. The app-only Bearer Token from x.md does not apply: X says authentication is "the user's own OAuth2 token". Requires a custom-header field in Buwiz Bot **(unconfirmed)**; not recommended over OAuth.
 
 ## Verification
 
-1. Rox shows X Ads as connected.
+1. Buwiz Bot shows X Ads as connected.
 2. Ask: "List my X ads accounts." (read-only; fails with 403 if the app is not approved, or returns an empty list if the user has no ads account access).
-3. Then: "Show campaign performance for the last 7 days." For writes, test with "Create a paused campaign called Rox test" and delete it afterwards; do not activate it.
+3. Then: "Show campaign performance for the last 7 days." For writes, test with "Create a paused campaign called Buwiz Bot test" and delete it afterwards; do not activate it.
 4. In X's settings, the connected-apps list should show the app **(page address unconfirmed; look under Settings -> Security and account access -> Apps and sessions)**.
 
 ## Troubleshooting
@@ -86,7 +86,7 @@ X's Ads MCP page documents `Authorization: Bearer <user access token>`: mint a t
 - **401:** expired/invalid token or missing `offline.access`; re-authenticate.
 - **Empty account list:** the signed-in X user has no ads-account access; add them at ads.x.com (Account admin grants it), or sign in with the owner account.
 - **X plugin stops working after connecting X Ads (or the reverse):** the single-grant behaviour above. Use separate apps.
-- **`invalid_client` with a Web/Automated app:** Rox must send the secret as `client_secret_basic`; X rejects `client_secret_post`. Switch the app to Native App.
+- **`invalid_client` with a Web/Automated app:** Buwiz Bot must send the secret as `client_secret_basic`; X rejects `client_secret_post`. Switch the app to Native App.
 - **Scope refused:** app permissions too narrow; set Read and Write and re-authorize.
 - **Approval stuck beyond 3 business days:** use X's Ads API support page, https://developer.x.com/en/support/twitter-ads-api.html, or the Ads API access category of the X developer forum.
 
@@ -100,6 +100,6 @@ X's Ads MCP page documents `Authorization: Bearer <user access token>`: mint a t
 - https://docs.x.com/forms/ads-api-access.md (links to the form)
 - https://ads-api.x.com/.well-known/oauth-protected-resource/mcp (live)
 - https://api.x.com/.well-known/oauth-authorization-server (live)
-- https://github.com/cursor/plugins/tree/main/third_party/x-ads (catalog entry; its pinned client ID is Cursor's, not usable by Rox)
+- https://github.com/cursor/plugins/tree/main/third_party/x-ads (catalog entry; its pinned client ID is Cursor's, not usable by Buwiz Bot)
 - [x.md](x.md) in this folder
 - https://devcommunity.x.com/c/advertiser-api/access/36 (community reports on approval waits; anecdotal)

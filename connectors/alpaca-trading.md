@@ -6,7 +6,7 @@ This one file covers both connector ids: `alpaca-trading` (live) and `alpaca-tra
 
 ## What it unlocks
 
-Rox connects to Alpaca's hosted Trading + Market Data MCP servers: account, positions, orders, portfolio and market data. Live trading places real orders.
+Buwiz Bot connects to Alpaca's hosted Trading + Market Data MCP servers: account, positions, orders, portfolio and market data. Live trading places real orders.
 
 | Item | Value |
 |---|---|
@@ -24,7 +24,7 @@ Rox connects to Alpaca's hosted Trading + Market Data MCP servers: account, posi
 
 Probed at `https://api.alpaca.markets/.well-known/oauth-protected-resource/mcp` (and the paper host) and `https://authx.alpaca.markets/v1/.well-known/oauth-authorization-server`.
 
-## Does Rox need its own app? There is no self-service app page
+## Does Buwiz Bot need its own app? There is no self-service app page
 
 Alpaca has **no dashboard page where you create an OAuth app for the hosted MCP**. The pinned client ID `PCBXWA7PCN3S6662PZK44KLURJ` is Alpaca's own app for Cursor. Live probe: with that client ID, `redirect_uri=http://127.0.0.1:8787/...` returns HTTP 400, while `cursor://anysphere.cursor-mcp/oauth/callback` is accepted. The same ID is a different value for Codex (`PCIEJZTPCQEBUBAINMQOGDHF7I`); Claude Code uses no client ID at all.
 
@@ -34,8 +34,8 @@ The old **Alpaca Connect** OAuth apps (dashboard "Alpaca Connect" tab, `app.alpa
 
 So there are three routes:
 
-1. **CIMD (recommended, no waiting):** host a small JSON file and use its URL as the Client ID. Needs Rox's Client ID field to accept an https URL and send it unchanged **(unconfirmed: check Rox's plugin page; if it only takes opaque IDs, use route 2 or 3)**.
-2. **Ask Alpaca to register a client for Rox:** open an issue at `https://github.com/alpacahq/agentic/issues` (issue #5, "Client support request: Minara", is the template; it was still open with no reply when checked) or write to `support@alpaca.markets`. Ask for a public client (auth method `none`), PKCE S256, loopback redirect URIs for the four connector ids below. Approval time unknown **(unconfirmed)**.
+1. **CIMD (recommended, no waiting):** host a small JSON file and use its URL as the Client ID. Needs Buwiz Bot's Client ID field to accept an https URL and send it unchanged **(unconfirmed: check Buwiz Bot's plugin page; if it only takes opaque IDs, use route 2 or 3)**.
+2. **Ask Alpaca to register a client for Buwiz Bot:** open an issue at `https://github.com/alpacahq/agentic/issues` (issue #5, "Client support request: Minara", is the template; it was still open with no reply when checked) or write to `support@alpaca.markets`. Ask for a public client (auth method `none`), PKCE S256, loopback redirect URIs for the four connector ids below. Approval time unknown **(unconfirmed)**.
 3. **Skip the hosted server:** run Alpaca's local `alpaca-mcp-server` with API keys (see "Alternative"). That is a stdio server, not this connector.
 
 ## Prerequisites
@@ -46,14 +46,14 @@ So there are three routes:
 
 ## Steps (route 1, CIMD)
 
-1. Pick the URL where you will host the file, for example `https://YOURNAME.github.io/rox/alpaca-trading-client.json`.
-2. Create the file with this content (replace the URL in `client_id`; it must match where you host it). Loopback redirect URIs are matched without the port, so the portless form is the one Alpaca accepted in testing; the paths are examples of Rox's callback form and must match what Rox's plugin page shows:
+1. Pick the URL where you will host the file, for example `https://YOURNAME.github.io/buwiz-bot/alpaca-trading-client.json`.
+2. Create the file with this content (replace the URL in `client_id`; it must match where you host it). Loopback redirect URIs are matched without the port, so the portless form is the one Alpaca accepted in testing; the paths are examples of Buwiz Bot's callback form and must match what Buwiz Bot's plugin page shows:
 
    ```json
    {
-     "client_id": "https://YOURNAME.github.io/rox/alpaca-trading-client.json",
-     "client_name": "Rox",
-     "client_uri": "https://YOURNAME.github.io/rox/",
+     "client_id": "https://YOURNAME.github.io/buwiz-bot/alpaca-trading-client.json",
+     "client_name": "Buwiz Bot",
+     "client_uri": "https://YOURNAME.github.io/buwiz-bot/",
      "redirect_uris": [
        "http://127.0.0.1/oauth/callback/alpaca-trading",
        "http://127.0.0.1/oauth/callback/alpaca-trading-paper"
@@ -64,28 +64,28 @@ So there are three routes:
    }
    ```
 
-   Callback URL form per connector id (**confirm in Rox's plugin page**, Rox's exact string is not final): `http://127.0.0.1:8787/oauth/callback/alpaca-trading` and `http://127.0.0.1:8787/oauth/callback/alpaca-trading-paper`. If Rox's page shows a different path, use that path in the file.
+   Callback URL form per connector id (**confirm in Buwiz Bot's plugin page**, Buwiz Bot's exact string is not final): `http://127.0.0.1:8787/oauth/callback/alpaca-trading` and `http://127.0.0.1:8787/oauth/callback/alpaca-trading-paper`. If Buwiz Bot's page shows a different path, use that path in the file.
 3. Publish it and check that `curl -s <your URL>` returns the JSON.
-4. In Rox, paste the URL as Client ID (below) and click Authenticate. Sign in at Alpaca, pick the account, approve.
+4. In Buwiz Bot, paste the URL as Client ID (below) and click Authenticate. Sign in at Alpaca, pick the account, approve.
 5. Repeat Authenticate for the paper connector (same URL as Client ID).
 
-App name to use if a form ever asks: `Rox`. Client type: public (no secret).
+App name to use if a form ever asks: `Buwiz Bot`. Client type: public (no secret).
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Alpaca Trading API -> settings** (and the same for the paper entry):
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | route 1: the https URL of your JSON file; route 2: the ID Alpaca issues |
 | Client Secret | leave empty (public client) |
-| Callback URL (read-only, shown by Rox) | must equal `http://127.0.0.1:8787/oauth/callback/alpaca-trading` (paper: `.../alpaca-trading-paper`) |
+| Callback URL (read-only, shown by Buwiz Bot) | must equal `http://127.0.0.1:8787/oauth/callback/alpaca-trading` (paper: `.../alpaca-trading-paper`) |
 
 Then click **Authenticate**.
 
 ## Scopes requested
 
-None pinned in the catalog. Alpaca's server advertises none for the MCP resource; send no `scope`, or `openid offline_access` if Rox's flow wants a refresh token **(unconfirmed which Alpaca needs for refresh)**. Permission is whatever the account and consent screen grant, live or paper per the connector you authorize.
+None pinned in the catalog. Alpaca's server advertises none for the MCP resource; send no `scope`, or `openid offline_access` if Buwiz Bot's flow wants a refresh token **(unconfirmed which Alpaca needs for refresh)**. Permission is whatever the account and consent screen grant, live or paper per the connector you authorize.
 
 ## Alternative: API key
 
@@ -94,16 +94,16 @@ None pinned in the catalog. Alpaca's server advertises none for the MCP resource
 
 ## Verification
 
-1. After Authenticate, Rox shows the connector connected.
-2. Ask Rox: "On Alpaca paper, what is my account status and buying power?" then "Show my open positions."
+1. After Authenticate, Buwiz Bot shows the connector connected.
+2. Ask Buwiz Bot: "On Alpaca paper, what is my account status and buying power?" then "Show my open positions."
 3. For live, ask only read questions first; the live connector can place real orders.
 
 ## Troubleshooting
 
-- **400 `invalid_request` at authorize, before any login:** the `redirect_uri` is not registered for that client. With the pinned Cursor ID this is expected. With CIMD, the redirect path in your JSON must equal the path Rox sends.
+- **400 `invalid_request` at authorize, before any login:** the `redirect_uri` is not registered for that client. With the pinned Cursor ID this is expected. With CIMD, the redirect path in your JSON must equal the path Buwiz Bot sends.
 - **400 with `fields: code_challenge`:** the client did not send a valid S256 challenge (PKCE required).
 - **`invalid_target` / `invalid resource`:** the `resource` parameter must be one of the four MCP URLs exactly.
-- **CIMD not accepted by Rox:** Rox's Client ID field may reject URLs; fall back to route 2.
+- **CIMD not accepted by Buwiz Bot:** Buwiz Bot's Client ID field may reject URLs; fall back to route 2.
 - **Wrong environment:** paper and live are different MCP URLs; authorize each separately.
 - **http callback:** `127.0.0.1` over http worked in testing for CIMD clients. `localhost` also worked for Claude Code's document (listed by `http://localhost/callback`).
 

@@ -4,7 +4,7 @@ Checked against Bitrise's docs, the `bitrise-io/bitrise-mcp` repo and live endpo
 
 ## What it unlocks
 
-Rox connects to Bitrise's hosted MCP server to manage mobile CI/CD: apps, builds, artifacts, workspaces, team members.
+Buwiz Bot connects to Bitrise's hosted MCP server to manage mobile CI/CD: apps, builds, artifacts, workspaces, team members.
 
 | Item | Value |
 |---|---|
@@ -22,14 +22,14 @@ Rox connects to Bitrise's hosted MCP server to manage mobile CI/CD: apps, builds
 
 Probed at `https://mcp.bitrise.io/.well-known/oauth-protected-resource` and `https://oauth.bitrise.io/.well-known/oauth-authorization-server`.
 
-## Does Rox need its own app?
+## Does Buwiz Bot need its own app?
 
 Bitrise has **no developer page for creating an OAuth app** that I could find, and the catalog's "no dynamic client registration" is true. But the catalog entry pins no client ID at all: Bitrise's own docs show clients connecting with just the URL ("The server tells your client it's OAuth-protected, and your client handles authorization from there"). That works through CIMD. Verified 2026-10-25 by a read-only GET: Claude Code's CIMD client with redirect `http://localhost:33333/callback` is accepted and redirected to the WorkOS login.
 
 Two practical routes:
 
 1. **Personal access token (works today, documented, see below).** No app needed.
-2. **OAuth via CIMD:** host a small JSON file and use its URL as Rox's Client ID (needs Rox's Client ID field to accept an https URL **(unconfirmed)**).
+2. **OAuth via CIMD:** host a small JSON file and use its URL as Buwiz Bot's Client ID (needs Buwiz Bot's Client ID field to accept an https URL **(unconfirmed)**).
 
 ## Prerequisites
 
@@ -38,13 +38,13 @@ Two practical routes:
 
 ## Steps, route 2 (OAuth with your own CIMD client)
 
-1. Host this at an https URL with a non-root path, e.g. `https://YOURNAME.github.io/rox/bitrise-client.json` (the `client_id` must equal that URL):
+1. Host this at an https URL with a non-root path, e.g. `https://YOURNAME.github.io/buwiz-bot/bitrise-client.json` (the `client_id` must equal that URL):
 
    ```json
    {
-     "client_id": "https://YOURNAME.github.io/rox/bitrise-client.json",
-     "client_name": "Rox",
-     "client_uri": "https://YOURNAME.github.io/rox/",
+     "client_id": "https://YOURNAME.github.io/buwiz-bot/bitrise-client.json",
+     "client_name": "Buwiz Bot",
+     "client_uri": "https://YOURNAME.github.io/buwiz-bot/",
      "redirect_uris": ["http://127.0.0.1/oauth/callback/bitrise"],
      "grant_types": ["authorization_code", "refresh_token"],
      "response_types": ["code"],
@@ -52,16 +52,16 @@ Two practical routes:
    }
    ```
 
-   Callback URL to confirm in Rox's plugin page (Rox's exact string is not final): `http://127.0.0.1:8787/oauth/callback/bitrise`. Whether Bitrise matches a portless loopback entry against port 8787, and whether it needs the exact port listed, was tested only for `localhost` with Claude Code's document: **(unconfirmed for this path)**. If it fails, list `http://127.0.0.1:8787/oauth/callback/bitrise` explicitly.
-2. Paste the URL into Rox as Client ID, leave Client Secret empty, click Authenticate, sign in to Bitrise, approve the consent screen (it "names the application that's asking for access", so it will say Rox).
+   Callback URL to confirm in Buwiz Bot's plugin page (Buwiz Bot's exact string is not final): `http://127.0.0.1:8787/oauth/callback/bitrise`. Whether Bitrise matches a portless loopback entry against port 8787, and whether it needs the exact port listed, was tested only for `localhost` with Claude Code's document: **(unconfirmed for this path)**. If it fails, list `http://127.0.0.1:8787/oauth/callback/bitrise` explicitly.
+2. Paste the URL into Buwiz Bot as Client ID, leave Client Secret empty, click Authenticate, sign in to Bitrise, approve the consent screen (it "names the application that's asking for access", so it will say Buwiz Bot).
 
-App name if asked: `Rox`. Client type: public.
+App name if asked: `Buwiz Bot`. Client type: public.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Bitrise -> settings**:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | https URL of your CIMD JSON (route 2) |
 | Client Secret | empty |
@@ -77,11 +77,11 @@ Bitrise's docs: for clients without MCP OAuth, send the PAT as `Authorization: B
 
 Create the token (official path): Bitrise -> **Bitrise CI** -> profile image (upper right) -> **Account settings** -> **Security** tab -> **Personal access tokens** -> **Create token** -> enter a **Name**, choose expiry (6 months, 3 months, 1 month, 2 weeks, 1 day, 1 hour, or never) -> **Next** -> copy it (shown once).
 
-Limits: the token acts as you with your workspace access; scopes or workspace restriction are not documented **(unconfirmed)**; it expires per your choice and does not refresh. Rox needs a plugin setting for a custom `Authorization` header to use it **(unconfirmed that Rox has one)**; otherwise use route 2.
+Limits: the token acts as you with your workspace access; scopes or workspace restriction are not documented **(unconfirmed)**; it expires per your choice and does not refresh. Buwiz Bot needs a plugin setting for a custom `Authorization` header to use it **(unconfirmed that Buwiz Bot has one)**; otherwise use route 2.
 
 ## Verification
 
-Ask Rox: "List my Bitrise apps" then "Show my last failed build and why it failed." On Bitrise, Account settings -> Security lists tokens you created.
+Ask Buwiz Bot: "List my Bitrise apps" then "Show my last failed build and why it failed." On Bitrise, Account settings -> Security lists tokens you created.
 
 ## Troubleshooting
 

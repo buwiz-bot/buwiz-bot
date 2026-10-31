@@ -19,7 +19,7 @@ export const TOTAL = 4;
 export function peerPrompt(msg, { replying } = {}) {
   const who =
     msg.from.kind === "external"
-      ? `A message from outside Rox, ${msg.from.name} (a webhook or a Claude Code session the user connected to you)`
+      ? `A message from outside Buwiz Bot, ${msg.from.name} (a webhook or a Claude Code session the user connected to you)`
       : `A message from another agent, ${msg.from.name} (agent ${msg.from.id})`;
   const head = [
     `${who}, in your conversation "${msg.subject}".`,
@@ -52,7 +52,7 @@ export function historyFor(bot, t, msg) {
     out.push(
       u.message.from.id === bot.id
         ? { role: "ai", text: u.message.text }
-        : { role: "user", text: `[${u.message.from.name}, ${u.message.from.kind === "external" ? "outside Rox" : "an agent"}:]\n${u.message.text}` },
+        : { role: "user", text: `[${u.message.from.name}, ${u.message.from.kind === "external" ? "outside Buwiz Bot" : "an agent"}:]\n${u.message.text}` },
     );
   }
 

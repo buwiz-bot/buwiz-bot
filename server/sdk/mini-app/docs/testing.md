@@ -1,12 +1,12 @@
 # Testing a plugin: `npm run plugin-test`
 
 `sdk/mini-app/bin/rox-plugin-test.mjs` runs the plugin-side checks of
-[spec] 17 against one plugin and prints a checklist with the spec ID of each
+spec 17 against one plugin and prints a checklist with the spec ID of each
 check. It spawns your plugin the way the broker does and runs the broker's
 real v1 code in its own process (`src/v1/plugins.mjs`, `sessions.mjs`,
 `manifest.mjs`) on an in-memory database, a file keystore in a temp
 directory and a trust file written for the run. It opens no port, never
-reads Rox's or the broker's data directory and never touches the login
+reads Buwiz Bot's or the broker's data directory and never touches the login
 Keychain.
 
 ## Run it
@@ -43,7 +43,7 @@ Exit status: 0 when nothing failed, 1 when a check failed, 2 for a usage error.
 
 By default a run makes its own trust store: it trusts your key under the
 manifest's `publisher.key_id` and puts your plugin's id on the approved list,
-for that run only. That checks the protocol, not whether a given Rox would
+for that run only. That checks the protocol, not whether a given Buwiz Bot would
 accept the plugin.
 
 Set `ROX_TRUST_FILE` to a trust store (the format of `src/v1/trust.json`)
@@ -84,7 +84,7 @@ dev.goldcoders.books approved`.
 | BRG-03 | A session opens per app with tools and the broker verifies its certificate; one signed call per tool in `permissions.tools` reaches the plugin and is answered (an `isError` answer counts: the call went through). |
 | BRG-04 | The same envelope sent again is `replayed`. |
 | BRG-06 | An envelope signed by another key is `bad_signature`. |
-| INV-04 | Each scope's resolve, with `complete` true and false, answers a [spec] 9.2 shape within its caps (checked on the raw answer, before the broker would cap it); an attachable scope resolves a chosen completion to a token. |
+| INV-04 | Each scope's resolve, with `complete` true and false, answers a spec 9.2 shape within its caps (checked on the raw answer, before the broker would cap it); an attachable scope resolves a chosen completion to a token. |
 | INV-05 | Each command's resolve, for a bare command and for `sdk-probe`, answers a 9.2 shape; an `open` names one of this plugin's apps with valid props. |
 | INV-10 | Each `prompt` a resolve answers (protocol 1.1): a command's, not a scope's; text not only spaces and line breaks, at most 4000 characters; the manifest declares protocol 1.1.0 or later; the broker passes it unchanged. Listed only when a resolve answered `prompt`. |
 
@@ -93,8 +93,8 @@ bare command, where a starter flow answers) and `sdk-probe` to resolve
 tools. Keep side effects behind explicit arguments (P5) and these calls are
 harmless.
 
-Not checked here: everything only Rox can show (consent, the sandbox, storage,
-placement; [spec] 17.2 to 17.8 host rows), MAN-09 (it needs other installs),
+Not checked here: everything only Buwiz Bot can show (consent, the sandbox, storage,
+placement; spec 17.2 to 17.8 host rows), MAN-09 (it needs other installs),
 and the review items of [security.md](security.md).
 
 ## In the repo's suites
@@ -104,4 +104,5 @@ and against the fixture with `--misbehave=skip-provision`, `bad-cert` and
 `log-seed` to prove it catches a broken plugin. `npm run conformance` lists
 those as extension IDs SDK-01 onward, after the spec 17 checklist.
 
-[spec]: ../../../../rox/drafts/rox-mini-app-protocol-v1.md
+Section numbers such as spec 4.1 refer to the Mini App Protocol v1
+specification, which is private and not in this repo.

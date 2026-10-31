@@ -127,7 +127,7 @@ test("MAN-03 non-object JSON is refused, not turned into {}", () => {
 });
 
 test("MAN-04 protocol 2.x and 1.2.0 are refused by a 1.1 host; 1.0.1 and 1.1.0 are accepted", () => {
-  refused((m) => (m.protocol = "2.0.0"), "protocol_unsupported", /needs a Rox/);
+  refused((m) => (m.protocol = "2.0.0"), "protocol_unsupported", /needs a Buwiz Bot/);
   refused((m) => (m.protocol = "1.2.0"), "protocol_unsupported");
   ok((m) => (m.protocol = "1.1.0"));
   refused((m) => (m.protocol = "0.9.0"), "protocol_unsupported");

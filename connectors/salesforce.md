@@ -13,7 +13,7 @@ Salesforce Hosted MCP is Salesforce's first-party MCP service. Every call runs a
 | `salesforce` | Salesforce | SOQL/SOSL, object schemas, relationships, create/update/delete records. Servers: `sobject-all`, `sobject-reads` (read only), `sobject-mutations` (reads, create, update), `sobject-deletes`, or your own custom server | `${SALESFORCE_MCP_URL}` |
 | `salesforce-headless-360` | Salesforce (Headless 360, Beta) | Four tools (`discover`, `describe`, `dispatch`, `dispatch_readonly`): records, users, permission sets, Apex triggers, platform events/CDC, named credentials, Commerce orders. `dispatch` can change org configuration | `${SALESFORCE_MCP_URL}` |
 
-There is no shared app to borrow: you create your own **External Client App** (Connected Apps are not supported) and give Rox its Consumer Key (and Consumer Secret for headless-360).
+There is no shared app to borrow: you create your own **External Client App** (Connected Apps are not supported) and give Buwiz Bot its Consumer Key (and Consumer Secret for headless-360).
 
 Probed live on 2026-10-25:
 
@@ -31,7 +31,7 @@ Probed live on 2026-10-25:
 | Grant types | `authorization_code`, `refresh_token` |
 | `registration_endpoint` | `https://login.salesforce.com/services/oauth2/register` is advertised in `/.well-known/openid-configuration` |
 
-About that `registration_endpoint`: Salesforce's login hosts advertise one, but no Salesforce doc found says hosted MCP clients can self-register with it, and both Cursor plugins require a pre-created External Client App and its Consumer Key. I did not POST to it. Treat dynamic registration as **(unconfirmed, not usable by Rox's catalog flow)**; create the External Client App.
+About that `registration_endpoint`: Salesforce's login hosts advertise one, but no Salesforce doc found says hosted MCP clients can self-register with it, and both Cursor plugins require a pre-created External Client App and its Consumer Key. I did not POST to it. Treat dynamic registration as **(unconfirmed, not usable by Buwiz Bot's catalog flow)**; create the External Client App.
 
 ## Prerequisites
 
@@ -42,15 +42,15 @@ About that `registration_endpoint`: Salesforce's login hosts advertise one, but 
 
 ## Steps
 
-Callback URLs (confirm in Rox's plugin page):
+Callback URLs (confirm in Buwiz Bot's plugin page):
 
 - `salesforce`: `http://127.0.0.1:8787/oauth/callback/salesforce`
 - `salesforce-headless-360`: `http://127.0.0.1:8787/oauth/callback/salesforce-headless-360`
 
-Salesforce accepts plain-http loopback callbacks: the headless-360 plugin README lists both `http://localhost:8787/callback` and `http://127.0.0.1:8787/callback`. Add the `localhost` form too if Rox's page uses it.
+Salesforce accepts plain-http loopback callbacks: the headless-360 plugin README lists both `http://localhost:8787/callback` and `http://127.0.0.1:8787/callback`. Add the `localhost` form too if Buwiz Bot's page uses it.
 
 1. In Setup (Quick Find: **MCP Servers**) open **MCP Servers** (under **API Catalog**). Servers are off by default. Activate the one you want: `sobject-all` (or a narrower `sobject-reads` / `sobject-mutations` / `sobject-deletes`) for `salesforce`, `headless-360` for `salesforce-headless-360`. Copy its **Server URL**. If you cannot find it, one third party also mentions **Setup -> User Interface -> Enable MCP Service** **(unconfirmed)**.
-2. Setup -> **External Client App Manager** -> **New External Client App**. Fill in the basics. App name `Rox`, contact email yours.
+2. Setup -> **External Client App Manager** -> **New External Client App**. Fill in the basics. App name `Buwiz Bot`, contact email yours.
 3. Expand **API (Enable OAuth Settings)** and check **Enable OAuth**.
 4. **Callback URL:** the callback(s) above, one per line.
 5. **OAuth Scopes**, select exactly two (the picker shows descriptions, not values):
@@ -60,27 +60,27 @@ Salesforce accepts plain-http loopback callbacks: the headless-360 plugin README
 6. **Security** section:
    - Select **Issue JSON Web Token (JWT)-based access tokens for named users**. Required: without it tools fail with `JWT Token is required` / `Invalid token` even after a successful login.
    - **Require Proof Key for Code Exchange (PKCE)** on.
-   - For `salesforce` (no secret field in the plugin): leave **Require Secret for Web Server Flow** off, so Rox acts as a public client with PKCE.
-   - For `salesforce-headless-360`: keep **Require Secret for Web Server Flow** on; Rox needs the Consumer Secret.
+   - For `salesforce` (no secret field in the plugin): leave **Require Secret for Web Server Flow** off, so Buwiz Bot acts as a public client with PKCE.
+   - For `salesforce-headless-360`: keep **Require Secret for Web Server Flow** on; Buwiz Bot needs the Consumer Secret.
    - Do not enable **JWT Bearer Flow** (different feature, needs a certificate).
 7. Save. Open the app -> **Settings** -> **Consumer Key and Secret** (a third party calls the button **Manage Consumer Details**) and copy the **Consumer Key**; for headless-360 also the **Consumer Secret**. Wait up to 30 minutes.
 8. Optional hardening (third-party advice): require a permission set so only chosen users can authorize; set refresh tokens to expire (they never expire by default). Under policies, who may authorize (admin-approved users vs all users) is **(exact labels unconfirmed)**; if sign-in says the app is not approved, change the policy.
 
-One app or two: the `salesforce` plugin sends no secret, so it needs an app with the secret requirement off; `headless-360` needs the secret on (per the plugin README). Create two apps (`Rox` and `Rox Headless 360`) to follow both READMEs. Using one app with the secret requirement off for both is probably workable (Rox would send the secret to a server that does not require it) but is **(unconfirmed)**.
+One app or two: the `salesforce` plugin sends no secret, so it needs an app with the secret requirement off; `headless-360` needs the secret on (per the plugin README). Create two apps (`Buwiz Bot` and `Buwiz Bot Headless 360`) to follow both READMEs. Using one app with the secret requirement off for both is probably workable (Buwiz Bot would send the secret to a server that does not require it) but is **(unconfirmed)**.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 **Connect apps -> Salesforce** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Salesforce Consumer Key | Consumer Key of the app |
 | Salesforce MCP server URL | Server URL from Setup -> MCP Servers (see below) |
-| Callback URL (read-only, shown by Rox) | should equal `http://127.0.0.1:8787/oauth/callback/salesforce` |
+| Callback URL (read-only, shown by Buwiz Bot) | should equal `http://127.0.0.1:8787/oauth/callback/salesforce` |
 
 **Connect apps -> Salesforce (Headless 360, Beta)** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Salesforce Consumer Key | Consumer Key of the app |
 | Salesforce Consumer Secret | Consumer Secret of the same app |
@@ -98,7 +98,7 @@ Where to find `SALESFORCE_MCP_URL`: Setup -> MCP Servers -> your activated serve
 
 ## Scopes requested
 
-`mcp_api refresh_token` for both connectors (catalog `auth.scopes`; the server's metadata lists exactly these two). `refresh_token` is what keeps Rox signed in; without it you re-authenticate whenever the access token expires. You cannot restrict an app to one MCP server; pick the narrowest server URL instead.
+`mcp_api refresh_token` for both connectors (catalog `auth.scopes`; the server's metadata lists exactly these two). `refresh_token` is what keeps Buwiz Bot signed in; without it you re-authenticate whenever the access token expires. You cannot restrict an app to one MCP server; pick the narrowest server URL instead.
 
 ## Alternative: API key / token
 
@@ -106,21 +106,21 @@ None documented. The server answers unauthenticated calls with "JWT Token is req
 
 ## Verification
 
-1. After Authenticate, Rox shows the connector as connected.
-2. Ask Rox: "Using Salesforce, describe the Account object" and "List 5 most recently created Accounts". For headless-360: "Use Salesforce discover to find operations for creating a user" (read-only; do not run `dispatch` yet).
+1. After Authenticate, Buwiz Bot shows the connector as connected.
+2. Ask Buwiz Bot: "Using Salesforce, describe the Account object" and "List 5 most recently created Accounts". For headless-360: "Use Salesforce discover to find operations for creating a user" (read-only; do not run `dispatch` yet).
 3. In Salesforce: Setup -> OAuth Usage / connected sessions (or your user's **Connected Apps OAuth Usage**) should show the app. **(path unconfirmed)**
 
 ## Troubleshooting
 
 - **`invalid_client_id`:** the app has not propagated; wait up to 30 minutes, do not recreate it.
-- **`redirect_uri_mismatch`:** the callback in the app is not exactly Rox's. Add both `127.0.0.1` and `localhost` forms, no trailing slash.
+- **`redirect_uri_mismatch`:** the callback in the app is not exactly Buwiz Bot's. Add both `127.0.0.1` and `localhost` forms, no trailing slash.
 - **`invalid_scope`:** the app lacks **Access Salesforce hosted MCP servers** or **Perform requests at any time**.
 - **`invalid_client` / invalid client credentials (headless-360):** secret does not match the key; copy both again from the same app. For `salesforce`, this can mean the app still requires a secret; turn **Require Secret for Web Server Flow** off.
 - **`JWT Token is required` or `Invalid token` after login:** **Issue JSON Web Token (JWT)-based access tokens for named users** is off.
 - **404 from the server after sign-in:** the MCP server is not activated in Setup, or the URL's org type (production vs `/sandbox/`) does not match the org you logged into (sandbox login uses `test.salesforce.com`).
 - **Login page for a different org / My Domain:** sign in with the right org; if Salesforce redirects to a My Domain URL, that is fine.
 - **Access denied for objects/fields:** the signed-in user's profile/permission sets and field-level security apply.
-- **`dispatch` approvals (headless-360):** configure Rox to ask before running `dispatch`; try configuration changes in a sandbox first.
+- **`dispatch` approvals (headless-360):** configure Buwiz Bot to ask before running `dispatch`; try configuration changes in a sandbox first.
 
 ## Sources
 

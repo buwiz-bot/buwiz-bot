@@ -417,7 +417,7 @@ fn answer(status: u16, body: &[u8]) -> Result<Value, RoxError> {
         (_, Some(v)) if v.get("ok") == Some(&Value::Bool(false)) || (status >= 400 && v.get("code").is_some()) => {
             Err(RoxError::from_body(&v))
         }
-        (401, _) => Err(RoxError::new("internal", "the broker refused Rox's host token")),
+        (401, _) => Err(RoxError::new("internal", "the broker refused Buwiz Bot's host token")),
         (200..=299, Some(v)) => Ok(v),
         (s, _) => Err(RoxError::new("internal", format!("the broker answered {s}"))),
     }

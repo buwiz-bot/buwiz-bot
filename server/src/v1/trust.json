@@ -1,6 +1,6 @@
 {
   "v": 1,
-  "about": "Rox Mini App Protocol v1 trust store (spec 4.1). publishers: key_id -> {publisher, alg, public_key (base64url, 32 bytes)}. approved_plugins: the plugins v1 installs.",
+  "about": "Buwiz Bot's Mini App Protocol v1 trust store (spec 4.1). publishers: key_id -> {publisher, alg, public_key (base64url, 32 bytes)}. approved_plugins: the plugins v1 installs.",
   "publishers": {
     "gc-2026-01": {
       "publisher": "dev.goldcoders",
