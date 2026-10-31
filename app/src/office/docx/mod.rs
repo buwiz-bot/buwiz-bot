@@ -21,6 +21,9 @@ pub(crate) mod save;
 mod save_tests;
 #[cfg(test)]
 mod tests;
+pub(crate) mod toolbar;
+#[cfg(test)]
+mod toolbar_tests;
 pub(crate) mod view;
 
 use std::cell::RefCell;
@@ -72,6 +75,13 @@ pub(crate) struct WordUi {
     /// The Page Setup and Watermark dialogs show.
     pub setup_open: Signal<bool>,
     pub watermark_open: Signal<bool>,
+    /// The Hyperlink and Table Properties dialogs show.
+    pub link_open: Signal<bool>,
+    pub table_open: Signal<bool>,
+    /// A one-field prompt shows (the overflow menu's custom size or colour).
+    pub prompt: Signal<Option<dialogs::Prompt>>,
+    /// A dropdown of the formatting bar is open.
+    pub bar_open: Signal<bool>,
     /// The pages last asked of the worker: (first, last, zoom).
     pub asked: std::cell::Cell<Option<(usize, usize, f32, u64)>>,
 }
@@ -93,6 +103,10 @@ impl WordUi {
             menu_open: signal(false),
             setup_open: signal(false),
             watermark_open: signal(false),
+            link_open: signal(false),
+            table_open: signal(false),
+            prompt: signal(None),
+            bar_open: signal(false),
             asked: std::cell::Cell::new(None),
         }
     }
@@ -110,6 +124,9 @@ impl WordUi {
         self.note.set(String::new());
         self.setup_open.set(false);
         self.watermark_open.set(false);
+        self.link_open.set(false);
+        self.table_open.set(false);
+        self.prompt.set(None);
         self.asked.set(None);
     }
 
@@ -137,7 +154,7 @@ pub(crate) fn on_out(u: &WordUi, o: Out) {
     match o {
         Out::Meta(m) => {
             let new = u.meta.with_untracked(|old| old.rev != m.rev || old.pages.len() != m.pages.len());
-            u.meta.set(Arc::new(m));
+            u.meta.set(Arc::new(*m));
             if new {
                 view::ask_pages(u, true);
             }

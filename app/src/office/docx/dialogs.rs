@@ -1,6 +1,8 @@
-//! The dialogs the menus open, on the kit's modal shell with the web's
-//! fields and texts: Page Setup (`PageSetupDialog`) and Watermark
-//! (`WatermarkDialog`).
+//! The dialogs the menus and the formatting bar open, on the kit's modal
+//! shell with the web's fields and texts: Page Setup (`PageSetupDialog`),
+//! Watermark (`WatermarkDialog`), Hyperlink (`HyperlinkDialog`, the
+//! roomier shell), Table Properties (`TablePropertiesDialog`) and the
+//! formatting bar's one-field prompt (`fb`: a custom size or colour).
 //!
 //! Each holds its fields in signals made with the view; opening one fills
 //! them from what the worker last said (the page of the last section, the
@@ -13,10 +15,10 @@ use serde_json::{Value, json};
 
 use super::WordUi;
 use super::chrome::{data_url, image_size, pick_picture};
-use super::doc::{Cmd, PageSetup};
+use super::doc::{Cmd, EditMode, Link, PageSetup, TableOp};
 use super::view::{focus, send};
 use crate::live::store;
-use crate::office::ui::color::hex;
+use crate::office::ui::color::{Mode, Picked, hex};
 use crate::office::ui::field::{checkbox, form_row, number_field, radio, section_label, select_field, text_field};
 use crate::office::ui::modal::modal;
 use crate::office::ui::palette as p;
@@ -150,7 +152,396 @@ pub(crate) fn open_watermark() {
 
 /// The dialogs, shown while open.
 pub(crate) fn dialogs() -> impl IntoElement {
-    view().child(page_setup()).child(watermark())
+    view().child(page_setup()).child(watermark()).child(hyperlink()).child(table_properties()).child(prompt())
+}
+
+/// What the formatting bar's prompt asks for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Prompt {
+    /// Custom size… (`commands.customFontSize`).
+    Size,
+    /// Custom color… for a colour picker.
+    Color(Mode),
+}
+
+#[derive(Clone, Copy)]
+struct LinkForm {
+    url: Signal<String>,
+    text: Signal<String>,
+    tooltip: Signal<String>,
+    editing: Signal<bool>,
+    error: Signal<String>,
+    /// The URL field was left once: its error shows.
+    touched: Signal<bool>,
+}
+
+#[derive(Clone, Copy)]
+struct TableForm {
+    open: Signal<bool>,
+    kind: Signal<String>,
+    width: Signal<f64>,
+    align: Signal<String>,
+}
+
+thread_local! {
+    static LINK: Cell<Option<LinkForm>> = const { Cell::new(None) };
+    static TABLE: Cell<Option<TableForm>> = const { Cell::new(None) };
+}
+
+/// Whether a link address reads as one (`G`): `mailto:`/`tel:` with
+/// something after, `ftp://`, or a web address with a host (`https://`
+/// put before one without a scheme).
+pub(crate) fn valid_url(t: &str) -> bool {
+    let e = t.trim();
+    if e.is_empty() {
+        return false;
+    }
+    if e.starts_with("mailto:") || e.starts_with("tel:") {
+        return e.len() > 7;
+    }
+    if e.starts_with("ftp://") {
+        return e.len() > 6;
+    }
+    let rest = e.strip_prefix("https://").or_else(|| e.strip_prefix("http://")).unwrap_or(e);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let (host, port) = match host.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => (h, Some(p)),
+        _ => (host, None),
+    };
+    !host.is_empty() && !host.chars().any(|c| c.is_whitespace() || "<>\"^`{|}\\%".contains(c)) && port.is_none_or(|p| p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A link address as it is set (`M`): a scheme put before one without.
+pub(crate) fn normalize_url(t: &str) -> String {
+    let e = t.trim();
+    if ["mailto:", "tel:", "ftp://", "http://", "https://"].iter().any(|s| e.starts_with(s)) { e.to_owned() } else { format!("https://{e}") }
+}
+
+/// ⌘K and the bar's link button (`insertLink`): Edit Hyperlink for the
+/// link at the caret, else Insert Hyperlink with the selection's text.
+pub(crate) fn open_link() {
+    let Some(f) = LINK.with(Cell::get) else { return };
+    let m = ui().meta.get_untracked();
+    if m.mode == EditMode::Viewing {
+        return;
+    }
+    match &m.fmt.link {
+        Some((href, tip)) => {
+            f.url.set(href.clone());
+            f.text.set(if m.fmt.text.is_empty() { m.fmt.link_text.clone() } else { m.fmt.text.clone() });
+            f.tooltip.set(tip.clone().unwrap_or_default());
+            f.editing.set(true);
+        }
+        None => {
+            f.url.set(String::new());
+            f.text.set(m.fmt.text.clone());
+            f.tooltip.set(String::new());
+            f.editing.set(false);
+        }
+    }
+    f.error.set(String::new());
+    f.touched.set(false);
+    ui().link_open.set(true);
+}
+
+/// A field of the Hyperlink dialog (`E`, `b`): its 14px label, a
+/// `padding 10px 12px` input (red while its error shows), a hint or the
+/// error under it.
+fn link_field(label: &'static str, placeholder: &'static str, value: Signal<String>, below: impl Fn() -> (String, bool) + 'static, on_blur: impl Fn() + 'static, on_edit: impl Fn() + 'static) -> AnyElement {
+    let r = element_ref();
+    crate::office::ui::modal::join_trap(&r);
+    let below = std::rc::Rc::new(below);
+    let (b1, b2, b3) = (below.clone(), below.clone(), below);
+    view()
+        .mb(px(16.0))
+        .child(text(label).mb(px(6.0)).text_size(px(14.0)).font_weight(FontWeight::MEDIUM).text_color(p::TEXT))
+        .child(
+            nsh_base::input()
+                .element_ref(&r)
+                .label(label)
+                .placeholder(placeholder)
+                .placeholder_color(|| color(p::TEXT_PLACEHOLDER))
+                .value(move || value.get())
+                .on_change(move |v: &str| {
+                    value.set(v.to_owned());
+                    on_edit()
+                })
+                .on_blur(on_blur)
+                .w_full()
+                .px(px(12.0))
+                .py(px(10.0))
+                .border_1()
+                .border_color(move || if b1().1 { p::ERROR } else { p::BORDER_INPUT })
+                .rounded(px(4.0))
+                .text_size(px(14.0))
+                .text_color(p::TEXT),
+        )
+        .child(when(move || !b2().0.is_empty(), move || {
+            let b3 = b3.clone();
+            let b4 = b3.clone();
+            text(move || b3().0).mt(px(4.0)).text_size(px(12.0)).text_color(move || if b4().1 { p::ERROR } else { p::TEXT_MUTED })
+        }))
+        .into_element()
+}
+
+fn hyperlink() -> AnyElement {
+    let u = ui();
+    let f = LinkForm { url: signal(String::new()), text: signal(String::new()), tooltip: signal(String::new()), editing: signal(false), error: signal(String::new()), touched: signal(false) };
+    LINK.with(|l| l.set(Some(f)));
+    let validate = move || {
+        let url = f.url.get_untracked();
+        f.error.set(if !url.trim().is_empty() && !valid_url(&url) { "Please enter a valid URL".to_owned() } else { String::new() });
+    };
+    let submit = move || {
+        let url = f.url.get_untracked();
+        if url.trim().is_empty() {
+            f.error.set("URL is required".to_owned());
+            f.touched.set(true);
+            return;
+        }
+        if !valid_url(&url) {
+            f.error.set("Please enter a valid URL".to_owned());
+            f.touched.set(true);
+            return;
+        }
+        let opt = |s: String| Some(s.trim().to_owned()).filter(|t| !t.is_empty());
+        send(Cmd::Link(Link { href: normalize_url(&url), text: opt(f.text.get_untracked()), tooltip: opt(f.tooltip.get_untracked()), edit: f.editing.get_untracked() }));
+        u.link_open.set(false);
+        focus();
+    };
+    let ready = move || !f.url.get().trim().is_empty() && f.error.get().is_empty();
+    let title = move || if f.editing.get() { "Edit Hyperlink" } else { "Insert Hyperlink" };
+    dynamic(move || {
+        modal(u.link_open, title())
+            .roomy()
+            .width(400.0, 500.0)
+            .gap(0.0)
+            .body(move || {
+                view()
+                    .child(link_field(
+                        "URL",
+                        "https://example.com",
+                        f.url,
+                        move || {
+                            let e = f.error.get();
+                            if !e.is_empty() && f.touched.get() {
+                                (e, true)
+                            } else if e.is_empty() {
+                                ("Enter a web address, email (mailto:), or phone (tel:)".to_owned(), false)
+                            } else {
+                                (String::new(), false)
+                            }
+                        },
+                        move || {
+                            f.touched.set(true);
+                            validate()
+                        },
+                        move || {
+                            if f.touched.get_untracked() {
+                                f.error.set(String::new())
+                            }
+                        },
+                    ))
+                    .child(link_field("Display Text", "Text to display (optional)", f.text, || ("Leave empty to use the selected text".to_owned(), false), || {}, || {}))
+                    .child(link_field("Tooltip (optional)", "Text shown on hover", f.tooltip, || (String::new(), false), || {}, || {}))
+                    .into_element()
+            })
+            .danger_when("Remove Link", move || f.editing.get(), move || {
+                send(Cmd::Unlink);
+                u.link_open.set(false);
+                focus();
+            })
+            .action("Cancel", false, move || {
+                u.link_open.set(false);
+                focus();
+            })
+            .action_when(if f.editing.get_untracked() { "Update" } else { "Insert" }, true, ready, submit)
+            .on_confirm(submit)
+            .on_cancel(focus)
+            .into_element()
+    })
+}
+
+/// The table menu's "Table properties..." (`openTableProperties`).
+pub(crate) fn open_table_properties() {
+    let Some(t) = TABLE.with(Cell::get) else { return };
+    let cell = ui().meta.with_untracked(|m| m.cell.clone()).unwrap_or_default();
+    t.kind.set(cell.width_type.clone().unwrap_or_else(|| "auto".to_owned()));
+    t.width.set(cell.width.unwrap_or(0.0));
+    t.align.set(cell.justification.clone().unwrap_or_else(|| "left".to_owned()));
+    t.open.set(true);
+}
+
+fn table_properties() -> AnyElement {
+    let u = ui();
+    let t = TableForm { open: u.table_open, kind: signal("auto".to_owned()), width: signal(0.0), align: signal("left".to_owned()) };
+    TABLE.with(|c| c.set(Some(t)));
+    let apply = move || {
+        let kind = t.kind.get_untracked();
+        let width = (kind != "auto").then(|| t.width.get_untracked().round());
+        send(Cmd::Table(TableOp::Properties { width, width_type: kind, justification: t.align.get_untracked() }));
+        t.open.set(false);
+        focus();
+    };
+    let pair = |v: &[(&str, &str)]| v.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect::<Vec<_>>();
+    modal(t.open, "Table Properties")
+        .width(360.0, 440.0)
+        .gap(12.0)
+        .body(move || {
+            view()
+                .gap(px(12.0))
+                .child(form_row("Width type", select_field("Width type", pair(&[("auto", "Auto"), ("dxa", "Fixed (twips)"), ("pct", "Percentage")]), move || t.kind.get(), move |v| t.kind.set(v.to_owned()))))
+                .child(when(move || t.kind.get() != "auto", move || {
+                    form_row(
+                        "Width",
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(view().flex_1().child(number_field("Width", t.width, 0.0, 1e7)))
+                            .child(text(move || if t.kind.get() == "pct" { "(50ths of %)" } else { "tw" }).text_size(px(11.0)).text_color(p::TEXT_MUTED)),
+                    )
+                }))
+                .child(form_row("Alignment", select_field("Alignment", pair(&[("left", "Left"), ("center", "Center"), ("right", "Right")]), move || t.align.get(), move |v| t.align.set(v.to_owned()))))
+                .into_element()
+        })
+        .action("Cancel", false, move || {
+            t.open.set(false);
+            focus();
+        })
+        .action("Apply", true, apply)
+        .on_confirm(apply)
+        .on_cancel(focus)
+        .into_element()
+}
+
+/// The Image group's properties button: its dialog is to come.
+pub(crate) fn open_image_properties() {
+    super::note("Image Properties isn't available here yet.");
+}
+
+/// A prompt's check (`valid`): a size in points within 1–400, or six hex digits.
+pub(crate) fn prompt_valid(kind: Prompt, v: &str) -> bool {
+    let v = v.trim();
+    match kind {
+        Prompt::Size => {
+            let (a, b) = v.split_once('.').unwrap_or((v, "0"));
+            !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) && v.parse::<f32>().is_ok_and(|n| (1.0..=400.0).contains(&n))
+        }
+        Prompt::Color(_) => {
+            let h = v.strip_prefix('#').unwrap_or(v);
+            h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit())
+        }
+    }
+}
+
+/// The formatting bar's prompt (`fb`): a 320-wide card, its title, a
+/// labelled field, Cancel and Apply.
+fn prompt() -> AnyElement {
+    let u = ui();
+    let value = signal(String::new());
+    effect(move || {
+        let size = u.meta.with_untracked(|m| m.fmt.size);
+        match u.prompt.get() {
+            Some(Prompt::Size) => value.set(crate::office::ui::select::size_text(size)),
+            Some(Prompt::Color(_)) => value.set(String::new()),
+            None => {}
+        }
+    });
+    let close = move || {
+        u.prompt.set(None);
+        focus();
+    };
+    let apply = move || {
+        let Some(kind) = u.prompt.get_untracked() else { return };
+        let v = value.get_untracked();
+        if !prompt_valid(kind, &v) {
+            return;
+        }
+        u.prompt.set(None);
+        match kind {
+            Prompt::Size => send(Cmd::FontSize(v.trim().parse().unwrap_or(11.0))),
+            Prompt::Color(mode) => super::toolbar::pick_color(mode, Picked::Rgb(v.trim().trim_start_matches('#').to_uppercase())),
+        }
+        focus();
+    };
+    when(
+        move || u.prompt.with(Option::is_some),
+        move || {
+            let kind = u.prompt.get_untracked().unwrap_or(Prompt::Size);
+            let (title, label, placeholder) = match kind {
+                Prompt::Size => ("Font size", "Size in points", ""),
+                Prompt::Color(m) => (m.label(), "Hex color, such as FF0000", "FF0000"),
+            };
+            let ok = move || u.prompt.get().is_some_and(|k| prompt_valid(k, &value.get()));
+            let button = |label: &'static str, enabled: std::rc::Rc<dyn Fn() -> bool>, act: std::rc::Rc<dyn Fn()>| {
+                let e2 = enabled.clone();
+                text(label)
+                    .px(px(12.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(p::BORDER_INPUT)
+                    .bg(p::BG_HOVER)
+                    .text_size(px(13.0))
+                    .text_color(p::TEXT)
+                    .label(label)
+                    .opacity(move || if enabled() { 1.0f32 } else { 0.5 })
+                    .on_press(move || {
+                        if e2() {
+                            act()
+                        }
+                    })
+            };
+            overlay()
+                .inset_0()
+                .items_center()
+                .justify_center()
+                .label(title)
+                .on_cancel(close)
+                .child(view().absolute().inset_0().bg(p::OVERLAY).on_press(close))
+                .child(
+                    view()
+                        .w(px(320.0))
+                        .p(px(16.0))
+                        .rounded(px(8.0))
+                        .bg(p::SURFACE)
+                        .shadow([BoxShadow { offset_x: px(0.0), offset_y: px(8.0), blur: px(24.0), spread: px(0.0), color: color(p::SHADOW).into(), inset: false }])
+                        .label(format!("{title} prompt"))
+                        .child(text(title).mb(px(12.0)).text_size(px(15.0)).font_weight(FontWeight::SEMIBOLD).text_color(p::TEXT))
+                        .child(text(label).mb(px(4.0)).text_size(px(12.0)).text_color(p::TEXT))
+                        .child(
+                            nsh_base::input()
+                                .label(label)
+                                .auto_focus(true)
+                                .placeholder(placeholder)
+                                .value(move || value.get())
+                                .on_change(move |v: &str| value.set(v.to_owned()))
+                                .on_submit(move |_: &str| apply())
+                                .w_full()
+                                .px(px(8.0))
+                                .py(px(6.0))
+                                .border_1()
+                                .border_color(p::BORDER)
+                                .rounded(px(4.0))
+                                .bg(p::SURFACE)
+                                .text_size(px(13.0))
+                                .text_color(p::TEXT),
+                        )
+                        .child(
+                            view()
+                                .flex_row()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .mt(px(16.0))
+                                .child(button("Cancel", std::rc::Rc::new(|| true), std::rc::Rc::new(close)))
+                                .child(button("Apply", std::rc::Rc::new(ok), std::rc::Rc::new(apply))),
+                        ),
+                )
+        },
+    )
+    .into_element()
 }
 
 fn page_setup() -> AnyElement {
@@ -437,6 +828,16 @@ mod tests {
         assert_eq!(inches(1440.0), 1.0);
         assert_eq!(inches(1080.0), 0.75);
         assert_eq!(inches(1000.0), 0.69);
+    }
+
+    #[test]
+    fn link_addresses_check_and_normalize_as_the_webs() {
+        assert!(valid_url("example.com") && valid_url("https://example.com/a?b") && valid_url("mailto:a@b.c") && valid_url("tel:+15551234"));
+        assert!(!valid_url("") && !valid_url("mailto:") && !valid_url("exa mple.com") && !valid_url("https://"));
+        assert_eq!(normalize_url(" example.com "), "https://example.com");
+        assert_eq!(normalize_url("mailto:a@b.c"), "mailto:a@b.c");
+        assert!(prompt_valid(Prompt::Size, "13") && prompt_valid(Prompt::Size, "10.5") && !prompt_valid(Prompt::Size, "10.") && !prompt_valid(Prompt::Size, "500"));
+        assert!(prompt_valid(Prompt::Color(Mode::Text), "#ff0000") && !prompt_valid(Prompt::Color(Mode::Text), "red"));
     }
 
     #[test]

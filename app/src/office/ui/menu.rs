@@ -64,11 +64,13 @@ pub(crate) struct Item {
     /// Why it is disabled: its tooltip.
     pub description: Option<SharedString>,
     pub danger: bool,
+    /// A choice that is on (a radio or toggle row): a check at its right.
+    pub checked: bool,
     pub on_select: Rc<dyn Fn()>,
 }
 
 pub(crate) fn item(icon: Option<&'static str>, label: impl Into<SharedString>, on_select: impl Fn() + 'static) -> Item {
-    Item { icon, label: label.into(), shortcut: None, disabled: false, description: None, danger: false, on_select: Rc::new(on_select) }
+    Item { icon, label: label.into(), shortcut: None, disabled: false, description: None, danger: false, checked: false, on_select: Rc::new(on_select) }
 }
 
 impl Item {
@@ -84,6 +86,10 @@ impl Item {
     }
     pub(crate) fn danger(mut self) -> Self {
         self.danger = true;
+        self
+    }
+    pub(crate) fn checked(mut self, on: bool) -> Self {
+        self.checked = on;
         self
     }
 }
@@ -145,8 +151,9 @@ fn row(look: Look, it: &Item, hovered: Signal<bool>, chevron: bool, enter: impl 
         .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         .when_some(it.icon, |v, name| v.child(icon(name, look.icon, icon_ink)))
         .child(text(it.label.clone()).text_size(px(13.0)).text_color(ink).number_of_lines(1))
-        .when(it.shortcut.is_some() || chevron, |v| v.child(view().flex_1()))
+        .when(it.shortcut.is_some() || chevron || it.checked, |v| v.child(view().flex_1()))
         .when_some(it.shortcut.clone(), |v, s| v.child(text(s).text_size(px(12.0)).text_color(p::TEXT_MUTED)))
+        .when(it.checked, |v| v.child(icon("check", 16.0, || p::PRIMARY)))
         .when(chevron, |v| v.child(icon("keyboard_arrow_right", 16.0, || p::TEXT)))
         .when_some(it.description.clone(), |v, d| v.tooltip(plain_tip(d)))
 }

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use yrs::Any;
 
 use super::super::index::cell_of;
-use super::{Out, Word, ctx, spot};
+use super::{Out, Word, spot};
 
 /// What Insert puts at the caret.
 #[derive(Clone, Debug, PartialEq)]
@@ -134,7 +134,7 @@ impl Word {
         self.edited = true;
         self.index = None;
         self.review = None;
-        outs.push(Out::Meta(self.meta()));
+        outs.push(Out::Meta(Box::new(self.meta())));
         self.redraw(outs);
         outs.push(self.caret(false));
         true
@@ -147,7 +147,7 @@ impl Word {
         let at = self.head.offset;
         let Some((_, p)) = self.head_para() else { return Ok((self.head.story.clone(), at)) };
         if at > p.start {
-            self.layout.engine.doc().split_paragraph(&ctx(), Position::new(&p.story, at), None).map_err(|e| e.to_string())?;
+            self.layout.engine.doc().split_paragraph(&self.ctx(), Position::new(&p.story, at), None).map_err(|e| e.to_string())?;
             return Ok((p.story, at + 1));
         }
         Ok((p.story, at))
@@ -159,7 +159,7 @@ impl Word {
         match what {
             Insert::Table { rows, cols } => {
                 let (story, at) = self.block_at()?;
-                let receipt = self.layout.engine.doc().insert_table(&ctx(), Position::new(&story, at), rows, cols).map_err(doc_err)?;
+                let receipt = self.layout.engine.doc().insert_table(&self.ctx(), Position::new(&story, at), rows, cols).map_err(doc_err)?;
                 // the caret into the first cell
                 if let Some(first) = receipt.created_story_ids.first() {
                     self.set_caret(spot(first, 0));
@@ -168,7 +168,7 @@ impl Word {
             }
             Insert::PageBreak => {
                 let (story, at) = self.block_at()?;
-                self.layout.engine.doc().insert_embed(&ctx(), Position::new(&story, at), "pageBreak", Vec::new()).map_err(doc_err)?;
+                self.layout.engine.doc().insert_embed(&self.ctx(), Position::new(&story, at), "pageBreak", Vec::new()).map_err(doc_err)?;
                 self.set_caret(spot(&story, at + 1));
                 Ok(story)
             }
@@ -183,7 +183,7 @@ impl Word {
                 }
                 let at = self.head.offset;
                 let doc = self.layout.engine.doc();
-                doc.split_paragraph(&ctx(), Position::new(&p.story, at), None).map_err(doc_err)?;
+                doc.split_paragraph(&self.ctx(), Position::new(&p.story, at), None).map_err(doc_err)?;
                 let step = EditStep::new(EditOperation::InsertSectionBreakAfter { target: ParagraphTarget { story: p.story.clone(), para_id: p.para_id.clone() }, kind: kind.to_owned() });
                 let request = EditRequest { expect_version: doc.version(), source: EditSource::Host, history: EditHistory::Separate, steps: vec![step] };
                 match doc.apply_edits(&request, &self.undo) {
@@ -215,7 +215,7 @@ impl Word {
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v))
                 .collect();
-                self.layout.engine.doc().insert_embed(&ctx(), Position::new(&at.story, at.offset), "image", payload).map_err(doc_err)?;
+                self.layout.engine.doc().insert_embed(&self.ctx(), Position::new(&at.story, at.offset), "image", payload).map_err(doc_err)?;
                 self.set_caret(spot(&at.story, at.offset + 1));
                 Ok(at.story)
             }
@@ -237,7 +237,7 @@ impl Word {
         let (story, a, b) = self.range();
         let selector = ParaSelector::Range(StoryRange::new(&story, a, b.max(a)));
         let delta = ParaAttrDelta { bidi: Patch::Set(rtl), ..Default::default() };
-        self.layout.engine.doc().set_paragraph_attrs(&ctx(), &selector, &delta).map(drop).map_err(|e| e.to_string())
+        self.layout.engine.doc().set_paragraph_attrs(&self.ctx(), &selector, &delta).map(drop).map_err(|e| e.to_string())
     }
 
     /// Whether the caret's paragraph runs right to left.
@@ -276,7 +276,7 @@ impl Word {
     /// merged into the last section's properties.
     pub(super) fn page_setup(&mut self, setup: &PageSetup) -> Result<(), String> {
         let doc = self.layout.engine.doc();
-        doc.set_section_margins(&ctx(), "final", &setup.margins().to_string())?;
+        doc.set_section_margins(&self.ctx(), "final", &setup.margins().to_string())?;
         // the size and orientation in the final section's properties
         let mut meta: Value = serde_json::from_str(&doc.part_metadata_json()).unwrap_or_else(|_| json!({}));
         if !meta.is_object() {
@@ -291,7 +291,7 @@ impl Word {
         if let Some(s) = meta["body"]["sections"].as_array_mut().and_then(|s| s.last_mut()) {
             merge(&mut s["properties"], &setup.patch());
         }
-        doc.set_part_metadata(&ctx(), &meta.to_string(), &[])?;
+        doc.set_part_metadata(&self.ctx(), &meta.to_string(), &[])?;
         let patch = setup.patch();
         self.layout.edit_request(|base| {
             if let Some(s) = base.pointer_mut("/regions/sections").and_then(Value::as_array_mut).and_then(|s| s.last_mut()) {
@@ -327,7 +327,7 @@ impl Word {
                     };
                 }
             }
-            if let Err(e) = doc.set_part_metadata(&ctx(), &meta.to_string(), &[]) {
+            if let Err(e) = doc.set_part_metadata(&self.ctx(), &meta.to_string(), &[]) {
                 log::warn!("word: watermark in the headers: {e}");
             }
         }
