@@ -18,36 +18,36 @@ use super::palette as p;
 use super::{Panel, dropdown};
 
 /// The select's trigger (DR `ui`): `h-8 gap-1 rounded px-2 py-1 text-sm`.
-pub(crate) const TRIGGER_H: f32 = 32.0;
-pub(crate) const TRIGGER_PX: f32 = 8.0;
-pub(crate) const TRIGGER_RADIUS: f32 = 4.0;
+pub const TRIGGER_H: f32 = 32.0;
+pub const TRIGGER_PX: f32 = 8.0;
+pub const TRIGGER_RADIUS: f32 = 4.0;
 /// Its chevron (DR `VR`, `h-4 w-4`).
-pub(crate) const CHEVRON: f32 = 16.0;
+pub const CHEVRON: f32 = 16.0;
 /// `text-sm`: 14 on a 20 line.
-pub(crate) const TEXT_SM: f32 = 14.0;
-pub(crate) const LINE_SM: f32 = 20.0;
+pub const TEXT_SM: f32 = 14.0;
+pub const LINE_SM: f32 = 20.0;
 /// The list (DR `di`): `rounded-lg border shadow-lg max-h-72`, `p-1`
 /// inside, 4 below the trigger (`translate-y-1`).
-pub(crate) const LIST_RADIUS: f32 = 8.0;
-pub(crate) const LIST_PAD: f32 = 4.0;
-pub(crate) const LIST_MAX_H: f32 = 288.0;
+pub const LIST_RADIUS: f32 = 8.0;
+pub const LIST_PAD: f32 = 4.0;
+pub const LIST_MAX_H: f32 = 288.0;
 /// An item (DR `Qr`): `rounded px-2 py-1.5 text-sm`, its check `right-2`.
-pub(crate) const ITEM_PX: f32 = 8.0;
-pub(crate) const ITEM_PY: f32 = 6.0;
+pub const ITEM_PX: f32 = 8.0;
+pub const ITEM_PY: f32 = 6.0;
 /// A group's label (DR `Zi`): `px-2 py-1.5 text-xs font-medium`.
-pub(crate) const LABEL_SIZE: f32 = 12.0;
+pub const LABEL_SIZE: f32 = 12.0;
 /// The font size box (DR `yy`): the steppers `h-7 w-7`, the size `h-7
 /// w-10`; its list `maxHeight 240, minWidth 60`, rows `px-3 py-1.5`.
-pub(crate) const SIZE_W: f32 = 40.0;
-pub(crate) const SIZE_LIST_MAX_H: f32 = 240.0;
-pub(crate) const SIZE_LIST_MIN_W: f32 = 60.0;
+pub const SIZE_W: f32 = 40.0;
+pub const SIZE_LIST_MAX_H: f32 = 240.0;
+pub const SIZE_LIST_MIN_W: f32 = 60.0;
 
 /// The web's font size presets (DR `w1`) and limits (`T1`, `I1`).
-pub(crate) const FONT_SIZES: [f32; 14] = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0];
-pub(crate) const MIN_SIZE: f32 = 1.0;
-pub(crate) const MAX_SIZE: f32 = 400.0;
+pub const FONT_SIZES: [f32; 14] = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0];
+pub const MIN_SIZE: f32 = 1.0;
+pub const MAX_SIZE: f32 = 400.0;
 /// The zoom presets (DR `xR`), labelled `Math.round(z*100)+"%"`.
-pub(crate) const ZOOMS: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+pub const ZOOMS: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
 /// The select's chevron and the chosen item's check (heroicons, 20 box).
 const CHEVRON_D: &str = "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z";
@@ -64,7 +64,7 @@ fn mini_icon(d: &'static str, size: f32, ink: AdaptiveColor) -> AnyElement {
 /// How an option's row previews it: a font family (the font list), or a
 /// paragraph style's size, weight and colour (the style list).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Preview {
+pub struct Preview {
     pub family: Option<SharedString>,
     pub size: Option<f32>,
     pub bold: bool,
@@ -74,7 +74,7 @@ pub(crate) struct Preview {
 
 /// An option of a [`Dropdown`].
 #[derive(Clone, Debug)]
-pub(crate) struct Opt {
+pub struct Opt {
     pub value: SharedString,
     pub label: SharedString,
     /// Its section's title; `Some("")` a section with no title (the font
@@ -87,7 +87,7 @@ pub(crate) struct Opt {
 }
 
 impl Opt {
-    pub(crate) fn new(value: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+    pub fn new(value: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
         Opt { value: value.into(), label: label.into(), group: None, preview: Preview::default(), heading: false }
     }
 }
@@ -95,14 +95,14 @@ impl Opt {
 /// How wide the trigger is: at least (the font list's `minWidth`) or
 /// exactly (the style list's `width`).
 #[derive(Clone, Copy)]
-pub(crate) enum Width {
+pub enum Width {
     Min(f32),
     Fixed(f32),
 }
 
 /// A select styled as the web's: a borderless 32-point trigger with the
 /// chosen label and a chevron, the list in a rounded card below.
-pub(crate) struct Dropdown {
+pub struct Dropdown {
     label: SharedString,
     options: Vec<Opt>,
     value: Rc<dyn Fn() -> Option<SharedString>>,
@@ -119,7 +119,7 @@ pub(crate) struct Dropdown {
     on_change: Rc<dyn Fn(&str)>,
 }
 
-pub(crate) fn dropdown_select(label: impl Into<SharedString>, options: Vec<Opt>) -> Dropdown {
+pub fn dropdown_select(label: impl Into<SharedString>, options: Vec<Opt>) -> Dropdown {
     Dropdown {
         label: label.into(),
         options,
@@ -137,34 +137,34 @@ pub(crate) fn dropdown_select(label: impl Into<SharedString>, options: Vec<Opt>)
 }
 
 impl Dropdown {
-    pub(crate) fn value(mut self, v: impl Fn() -> Option<SharedString> + 'static) -> Self {
+    pub fn value(mut self, v: impl Fn() -> Option<SharedString> + 'static) -> Self {
         self.value = Rc::new(v);
         self
     }
-    pub(crate) fn width(mut self, w: Width) -> Self {
+    pub fn width(mut self, w: Width) -> Self {
         self.width = w;
         self
     }
-    pub(crate) fn list(mut self, min_w: Option<f32>, max_h: f32) -> Self {
+    pub fn list(mut self, min_w: Option<f32>, max_h: f32) -> Self {
         self.list_min_w = min_w;
         self.list_max_h = max_h;
         self
     }
-    pub(crate) fn item_padding(mut self, x: f32, y: f32) -> Self {
+    pub fn item_padding(mut self, x: f32, y: f32) -> Self {
         self.item_pad = (x, y);
         self
     }
-    pub(crate) fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
+    pub fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
         self.disabled = Rc::new(off);
         self
     }
-    pub(crate) fn on_change(mut self, run: impl Fn(&str) + 'static) -> Self {
+    pub fn on_change(mut self, run: impl Fn(&str) + 'static) -> Self {
         self.on_change = Rc::new(run);
         self
     }
     /// The trigger shows `name` (20) instead of the chosen label, `h-8
     /// gap-0.5 px-2` (DR `Cy`).
-    pub(crate) fn icon(mut self, name: &'static str) -> Self {
+    pub fn icon(mut self, name: &'static str) -> Self {
         self.icon = Some(name);
         self
     }
@@ -324,14 +324,14 @@ fn header(title: &SharedString, first: bool) -> AnyElement {
 /// A font of the font list (DR `dd`): its name, its CSS family and its
 /// section.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Font {
+pub struct Font {
     pub name: &'static str,
     pub family: &'static str,
     pub category: Category,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Category {
+pub enum Category {
     SansSerif,
     Serif,
     Monospace,
@@ -339,7 +339,7 @@ pub(crate) enum Category {
 }
 
 /// The web's twelve default fonts (DR `dd`).
-pub(crate) const FONTS: [Font; 12] = [
+pub const FONTS: [Font; 12] = [
     Font { name: "Arial", family: "Arial", category: Category::SansSerif },
     Font { name: "Calibri", family: "Calibri", category: Category::SansSerif },
     Font { name: "Helvetica", family: "Helvetica", category: Category::SansSerif },
@@ -357,7 +357,7 @@ pub(crate) const FONTS: [Font; 12] = [
 /// The font list's options (DR `rg`): the document's own fonts first
 /// ("Document fonts", those not in `fonts`), then Sans Serif, Serif,
 /// Monospace and the untitled rest, each previewed in its font.
-pub(crate) fn font_options(fonts: &[Font], document: &[&str]) -> Vec<Opt> {
+pub fn font_options(fonts: &[Font], document: &[&str]) -> Vec<Opt> {
     let mut out = Vec::new();
     let known = |n: &str| fonts.iter().any(|f| f.name.eq_ignore_ascii_case(n));
     for d in document.iter().filter(|d| !known(d)) {
@@ -385,13 +385,13 @@ pub(crate) fn font_options(fonts: &[Font], document: &[&str]) -> Vec<Opt> {
 
 /// The font list (DR `rg`): at least 60 wide in the toolbar (`width:
 /// 60`), its list up to 300 high.
-pub(crate) fn font_family_select(document: &[&str]) -> Dropdown {
+pub fn font_family_select(document: &[&str]) -> Dropdown {
     dropdown_select("Select font family", font_options(&FONTS, document)).width(Width::Min(60.0)).list(None, 300.0)
 }
 
 /// A paragraph style of the style list.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct StyleOpt {
+pub struct StyleOpt {
     pub id: Cow<'static, str>,
     pub name: Cow<'static, str>,
     /// In half-points (`w:sz`), as the web's style table gives it.
@@ -402,7 +402,7 @@ pub(crate) struct StyleOpt {
 }
 
 /// The web's default styles (DR `Gl`, names from `styles.*`).
-pub(crate) const STYLES: [StyleOpt; 6] = [
+pub const STYLES: [StyleOpt; 6] = [
     StyleOpt { id: Cow::Borrowed("Normal"), name: Cow::Borrowed("Normal text"), size: Some(22.0), bold: None, italic: false, color: None },
     StyleOpt { id: Cow::Borrowed("Title"), name: Cow::Borrowed("Title"), size: Some(52.0), bold: Some(true), italic: false, color: None },
     StyleOpt { id: Cow::Borrowed("Subtitle"), name: Cow::Borrowed("Subtitle"), size: Some(30.0), bold: None, italic: false, color: Some(Cow::Borrowed("666666")) },
@@ -415,7 +415,7 @@ pub(crate) const STYLES: [StyleOpt; 6] = [
 /// `@betteroffice/docx/utils/stylePreview`): fixed sizes for the built-in
 /// styles, else half the style's size within 11–20; bold for Title and
 /// Headings 1–3; Subtitle grey, the other headings `#4a6c8c`.
-pub(crate) fn style_preview(s: &StyleOpt) -> Preview {
+pub fn style_preview(s: &StyleOpt) -> Preview {
     let fixed = match s.id.as_ref() {
         "Title" => Some(26.0),
         "Subtitle" | "Heading2" => Some(18.0),
@@ -439,20 +439,20 @@ pub(crate) fn style_preview(s: &StyleOpt) -> Preview {
 
 /// The style list (DR `sg`): 120 wide, its list at least 260 wide and up
 /// to 400 high, rows `py-2.5 px-3`.
-pub(crate) fn style_select(styles: &[StyleOpt]) -> Dropdown {
+pub fn style_select(styles: &[StyleOpt]) -> Dropdown {
     let opts = styles.iter().map(|s| Opt { preview: style_preview(s), ..Opt::new(s.id.to_string(), s.name.to_string()) }).collect();
     dropdown_select("Select paragraph style", opts).width(Width::Fixed(120.0)).list(Some(260.0), 400.0).item_padding(12.0, 10.0)
 }
 
 /// A zoom's label (DR `Oy`): "125%".
-pub(crate) fn zoom_label(z: f32) -> String {
+pub fn zoom_label(z: f32) -> String {
     format!("{}%", (z * 100.0).round())
 }
 
 /// The zoom control (DR `Oy`, `compact`): −, the level select (`h-7
 /// min-w-[55px] text-xs rounded-none`), +; − and + step to the next
 /// preset, dimmed past the ends.
-pub(crate) fn zoom_control(value: impl Fn() -> f32 + 'static, on_change: impl Fn(f32) + 'static) -> AnyElement {
+pub fn zoom_control(value: impl Fn() -> f32 + 'static, on_change: impl Fn(f32) + 'static) -> AnyElement {
     let value = Rc::new(value);
     let on_change = Rc::new(on_change);
     let below = {
@@ -536,24 +536,24 @@ fn stepper(label: &'static str, name: &'static str, side: Side, off: impl Fn() -
 
 /// The next preset above `size`, else one more, at most `MAX_SIZE` (DR
 /// `fy`).
-pub(crate) fn size_up(size: f32) -> f32 {
+pub fn size_up(size: f32) -> f32 {
     FONT_SIZES.iter().copied().find(|s| *s > size).unwrap_or((size + 1.0).min(MAX_SIZE))
 }
 
 /// The preset below `size`, else one less, at least `MIN_SIZE` (DR `gy`).
-pub(crate) fn size_down(size: f32) -> f32 {
+pub fn size_down(size: f32) -> f32 {
     FONT_SIZES.iter().rev().copied().find(|s| *s < size).unwrap_or((size - 1.0).max(MIN_SIZE))
 }
 
 /// A typed size: a number within 1–400, to the nearest half point (DR
 /// `yy`'s commit); anything else is no size.
-pub(crate) fn typed_size(s: &str) -> Option<f32> {
+pub fn typed_size(s: &str) -> Option<f32> {
     let n: f32 = s.trim().parse().ok()?;
     (n.is_finite() && (MIN_SIZE..=MAX_SIZE).contains(&n)).then(|| (n * 2.0).round() / 2.0)
 }
 
 /// A size as the box shows it: "11", "10.5".
-pub(crate) fn size_text(s: f32) -> String {
+pub fn size_text(s: f32) -> String {
     if s.fract() == 0.0 { format!("{}", s as i64) } else { format!("{s}") }
 }
 
@@ -561,27 +561,27 @@ pub(crate) fn size_text(s: f32) -> String {
 /// a mixed selection (the box shows the placeholder, "11"). `custom`
 /// adds "Custom size…" under the presets (the web's overflow menu has it,
 /// `commands.customFontSize`; the toolbar box takes a typed size instead).
-pub(crate) struct FontSize {
+pub struct FontSize {
     value: Rc<dyn Fn() -> Option<f32>>,
     disabled: Rc<dyn Fn() -> bool>,
     on_change: Rc<dyn Fn(f32)>,
     custom: Option<Rc<dyn Fn()>>,
 }
 
-pub(crate) fn font_size(value: impl Fn() -> Option<f32> + 'static) -> FontSize {
+pub fn font_size(value: impl Fn() -> Option<f32> + 'static) -> FontSize {
     FontSize { value: Rc::new(value), disabled: Rc::new(|| false), on_change: Rc::new(|_| {}), custom: None }
 }
 
 impl FontSize {
-    pub(crate) fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
+    pub fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
         self.disabled = Rc::new(off);
         self
     }
-    pub(crate) fn on_change(mut self, run: impl Fn(f32) + 'static) -> Self {
+    pub fn on_change(mut self, run: impl Fn(f32) + 'static) -> Self {
         self.on_change = Rc::new(run);
         self
     }
-    pub(crate) fn custom(mut self, ask: impl Fn() + 'static) -> Self {
+    pub fn custom(mut self, ask: impl Fn() + 'static) -> Self {
         self.custom = Some(Rc::new(ask));
         self
     }

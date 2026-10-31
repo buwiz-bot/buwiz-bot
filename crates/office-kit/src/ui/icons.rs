@@ -21,13 +21,13 @@ use nsh_core::canvas::{CanvasTextBaseline, Path, svg_path};
 use nsh_core::prelude::*;
 
 /// The font's family name, as styles and canvas fonts name it.
-pub(crate) const FAMILY: &str = "Material Symbols Outlined";
+pub const FAMILY: &str = "Material Symbols Outlined";
 /// Its file in the bundle's `Resources/fonts/`.
-pub(crate) const FILE: &str = "MaterialSymbolsOutlined.ttf";
+pub const FILE: &str = "MaterialSymbolsOutlined.ttf";
 
 /// The codepoint of icon `name` in the font, U+0000 for a name it lacks
 /// (or one drawn from the web's path data, [`web_paths`]).
-pub(crate) fn sym(name: &str) -> char {
+pub fn sym(name: &str) -> char {
     match name {
         "add" => '\u{e145}',
         "add_comment" => '\u{e266}',
@@ -141,7 +141,7 @@ fn web_paths(name: &str) -> Option<&'static [(&'static str, bool)]> {
 }
 
 /// Whether there is an icon called `name`.
-pub(crate) fn has(name: &str) -> bool {
+pub fn has(name: &str) -> bool {
     sym(name) != '\0' || web_paths(name).is_some()
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn has(name: &str) -> bool {
 /// (`Contents/Resources/fonts/`), else in the dev bundle
 /// (`~/Applications/Rox.app`, for a bare `target/debug/rox`). `None`
 /// without either: the icons draw nothing.
-pub(crate) fn font_data() -> Option<Vec<u8>> {
+pub fn font_data() -> Option<Vec<u8>> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe()
         && let Some(contents) = exe.parent().and_then(|m| m.parent())
@@ -206,7 +206,7 @@ fn paint(shape: &Shape, size: f32, ink: Hsla) -> Painter {
 /// Icon `name`, `size` points square (the web's `<ze size>`), in the ink
 /// `ink` gives; `ink` runs inside the painter, so a hover or theme change
 /// repaints it.
-pub(crate) fn icon(name: &str, size: f32, ink: impl Fn() -> AdaptiveColor + 'static) -> AnyElement {
+pub fn icon(name: &str, size: f32, ink: impl Fn() -> AdaptiveColor + 'static) -> AnyElement {
     let shape = shape(name);
     canvas(move || paint(&shape, size, color(ink())))
         .size(px(size))

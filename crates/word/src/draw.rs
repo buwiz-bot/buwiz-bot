@@ -27,7 +27,7 @@ use super::fonts::{Face, Fonts};
 
 /// A picture on a page, in page pixels.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Picture {
+pub struct Picture {
     /// The relationship that names it, and the part that owns the id (the
     /// body's, or a header's or footer's).
     pub rel_id: String,
@@ -41,7 +41,7 @@ pub(crate) struct Picture {
 
 /// A page drawn: its canvas drawing and the pictures over it.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Drawn {
+pub struct Drawn {
     pub w: f32,
     pub h: f32,
     pub drawing: Drawing,
@@ -63,7 +63,7 @@ fn color(s: &str) -> Option<Hsla> {
 }
 
 /// An author's color: one of a few that read on white, by name.
-pub(crate) fn author_color(author: &str) -> Hsla {
+pub fn author_color(author: &str) -> Hsla {
     const COLORS: [&str; 8] = ["#c0392b", "#2471a3", "#1e8449", "#8e44ad", "#d35400", "#117a65", "#b7950b", "#a93226"];
     let h = author.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
     Hsla::from_str(COLORS[h as usize % COLORS.len()]).unwrap_or_default()
@@ -134,7 +134,7 @@ struct Ctx<'a> {
 }
 
 /// Draws `page` at `zoom` with `fonts` (the faces the layout measured with).
-pub(crate) fn page(page: &DisplayPage, fonts: &Fonts, zoom: f32) -> Drawn {
+pub fn page(page: &DisplayPage, fonts: &Fonts, zoom: f32) -> Drawn {
     let (w, h) = (num(&page.width), num(&page.height));
     let mut cx = Ctx { fonts, css: HashMap::new(), pen: Pen::default(), pictures: Vec::new(), part: None };
     let mut p = Painter::new().text_baseline(CanvasTextBaseline::Alphabetic).text_align(CanvasTextAlign::Left);

@@ -13,21 +13,21 @@ use super::palette as p;
 use super::{Panel, dropdown};
 
 /// The grid's default size (`gridRows = 6`, `gridColumns = 6`).
-pub(crate) const ROWS: u32 = 6;
-pub(crate) const COLS: u32 = 6;
+pub const ROWS: u32 = 6;
+pub const COLS: u32 = 6;
 /// A cell (`Bd = 18`, `Zh`): 1px `--doc-border` rim, radius 2; `qk = 2`
 /// between cells.
-pub(crate) const CELL: f32 = 18.0;
-pub(crate) const GAP: f32 = 2.0;
+pub const CELL: f32 = 18.0;
+pub const GAP: f32 = 2.0;
 
 /// The readout (`gc`'s `c`): "{cols} × {rows}", or "Select size" before
 /// the pointer is on a cell.
-pub(crate) fn readout(rows: u32, cols: u32) -> String {
+pub fn readout(rows: u32, cols: u32) -> String {
     if rows > 0 && cols > 0 { format!("{cols} \u{d7} {rows}") } else { "Select size".to_owned() }
 }
 
 /// The grid, `rows` × `cols`; `on_insert(rows, cols)` on a click.
-pub(crate) fn table_grid(rows: u32, cols: u32, on_insert: impl Fn(u32, u32) + 'static) -> AnyElement {
+pub fn table_grid(rows: u32, cols: u32, on_insert: impl Fn(u32, u32) + 'static) -> AnyElement {
     // the cell under the pointer, (0, 0) for none
     let at = signal((0u32, 0u32));
     let on_insert = Rc::new(on_insert);
@@ -84,7 +84,7 @@ pub(crate) fn table_grid(rows: u32, cols: u32, on_insert: impl Fn(u32, u32) + 's
 
 /// The toolbar's table button (DR `EE`): a toolbar button opening the
 /// grid in a card (radius 8, padding 8).
-pub(crate) fn insert_table_button(label: &'static str, on_insert: impl Fn(u32, u32) + 'static) -> AnyElement {
+pub fn insert_table_button(label: &'static str, on_insert: impl Fn(u32, u32) + 'static) -> AnyElement {
     let open = signal(false);
     let hovered = signal(false);
     let anchor = element_ref();

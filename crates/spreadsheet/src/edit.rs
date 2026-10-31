@@ -16,16 +16,14 @@ use super::doc::Cmd;
 use super::grid;
 use super::select::{self, Bounds, Dir, Sel, Step};
 use super::{Editing, SheetUi};
-use crate::live::store;
-use crate::office;
-use crate::theme;
+use buwiz_office_kit::host::{host, theme};
 
 fn ui() -> &'static SheetUi {
-    &store().office.sheet
+    crate::FORMAT.ui()
 }
 
 fn send(cmd: Cmd) {
-    office::with_session(|s| s.send(cmd));
+    crate::FORMAT.with_session(|s| s.send(cmd));
 }
 
 thread_local! {
@@ -34,28 +32,28 @@ thread_local! {
 }
 
 /// The keyboard to the sheet (the cell editor).
-pub(crate) fn focus() {
+pub fn focus() {
     if let Some(f) = FIELD.with(std::cell::Cell::get) {
         f.focus();
     }
 }
 
 /// Whether the sheet's keys apply: it shows and nothing is being edited.
-pub(crate) fn navigating() -> bool {
-    let st = store();
-    sheet_showing() && st.office.sheet.editing.with(Option::is_none) && st.office.sheet.chart.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
+pub fn navigating() -> bool {
+    let u = ui();
+    sheet_showing() && u.editing.with(Option::is_none) && u.chart.with(Option::is_none) && !host().ask_close().get() && !host().menu_open()
 }
 
 /// Whether a cell is being edited.
-pub(crate) fn editing() -> bool {
-    sheet_showing() && store().office.sheet.editing.with(Option::is_some)
+pub fn editing() -> bool {
+    sheet_showing() && ui().editing.with(Option::is_some)
 }
 
 /// A spreadsheet shows natively: not a Word document, whose keys
 /// (arrows, Shift-arrows, Backspace, ⌘Z…) the sheet's scope would take
 /// first.
-pub(crate) fn sheet_showing() -> bool {
-    office::showing() && !store().office.is_word.get()
+pub fn sheet_showing() -> bool {
+    host().showing() && !host().is_word().get()
 }
 
 /// What a move needs of the sheet: its used range, a page of rows, the
@@ -81,7 +79,7 @@ fn set_sel(sel: Sel) {
 }
 
 /// Asks what the formula bar shows for the active cell.
-pub(crate) fn read_active() {
+pub fn read_active() {
     let u = ui();
     let sheet = u.sheet();
     let cell = u.sel.get_untracked().active;
@@ -89,7 +87,7 @@ pub(crate) fn read_active() {
 }
 
 /// An arrow, ⌘-arrow or page key; with Shift it extends.
-pub(crate) fn nav(dir: Dir, step: Step, shift: bool) {
+pub fn nav(dir: Dir, step: Step, shift: bool) {
     let s = ui().sel.get_untracked();
     if let Some(next) = with_bounds(|b| s.step(dir, step, shift, b)) {
         set_sel(next);
@@ -97,14 +95,14 @@ pub(crate) fn nav(dir: Dir, step: Step, shift: bool) {
 }
 
 /// Tab, Shift-Tab, Enter, Shift-Enter: walk the range or move.
-pub(crate) fn walk(dir: Dir) {
+pub fn walk(dir: Dir) {
     let s = ui().sel.get_untracked();
     if let Some(next) = with_bounds(|b| s.walk(dir, b)) {
         set_sel(next);
     }
 }
 
-pub(crate) fn select_all() {
+pub fn select_all() {
     commit_editing();
     let u = ui();
     u.sel.set(u.sel.get_untracked().all());
@@ -112,7 +110,7 @@ pub(crate) fn select_all() {
 }
 
 /// A press on `cell` (Shift extends).
-pub(crate) fn press(cell: (u32, u32), shift: bool) {
+pub fn press(cell: (u32, u32), shift: bool) {
     let u = ui();
     super::chart::deselect();
     commit_editing();
@@ -122,7 +120,7 @@ pub(crate) fn press(cell: (u32, u32), shift: bool) {
 }
 
 /// The link of `cell`, if the list in view has one there.
-pub(crate) fn link_at((r, c): (u32, u32)) -> Option<betteroffice_xlsx::HyperlinkRegion> {
+pub fn link_at((r, c): (u32, u32)) -> Option<betteroffice_xlsx::HyperlinkRegion> {
     ui().shown.with_untracked(|s| s.as_ref()?.list.hyperlinks.iter().find(|h| (h.top..=h.bottom).contains(&r) && (h.left..=h.right).contains(&c)).cloned())
 }
 
@@ -134,10 +132,10 @@ thread_local! {
 /// A click on a link's cell, as the web editor takes it: a link out opens,
 /// a link into the workbook (`'Sheet 2'!B3`) goes to its cell. False when
 /// the cell has no link.
-pub(crate) fn follow_link(cell: (u32, u32)) -> bool {
+pub fn follow_link(cell: (u32, u32)) -> bool {
     let Some(h) = link_at(cell) else { return false };
     if let Some(url) = h.external_target {
-        store().open_link(&url);
+        host().open_link(&url);
         return true;
     }
     let Some(loc) = h.location else { return true };
@@ -168,7 +166,7 @@ pub(crate) fn follow_link(cell: (u32, u32)) -> bool {
 }
 
 /// Where a sheet just switched to opens: a link's cell, else A1.
-pub(crate) fn opened_at(sheet: usize) -> Sel {
+pub fn opened_at(sheet: usize) -> Sel {
     match GO_TO.with(std::cell::Cell::take) {
         Some((s, cell)) if s == sheet => Sel::at(cell),
         _ => Sel::default(),
@@ -177,7 +175,7 @@ pub(crate) fn opened_at(sheet: usize) -> Sel {
 
 /// Starts editing `cell`: with `typed` text replacing it, else its
 /// content as the formula bar has it.
-pub(crate) fn begin(cell: (u32, u32), typed: Option<String>) {
+pub fn begin(cell: (u32, u32), typed: Option<String>) {
     // (before the editing engine is ready an edit waits for it)
     let u = ui();
     if u.shape.with_untracked(Option::is_none) {
@@ -197,12 +195,12 @@ pub(crate) fn begin(cell: (u32, u32), typed: Option<String>) {
 }
 
 /// F2: edit the active cell in place.
-pub(crate) fn edit_active() {
+pub fn edit_active() {
     begin(ui().sel.get_untracked().active, None);
 }
 
 /// Sends the edit in progress (nothing when its text is unchanged).
-pub(crate) fn commit_editing() {
+pub fn commit_editing() {
     let u = ui();
     let Some(e) = u.editing.get_untracked() else { return };
     u.editing.set(None);
@@ -215,33 +213,33 @@ pub(crate) fn commit_editing() {
 }
 
 /// Enter, Tab and their Shift twins while editing: commit, then move.
-pub(crate) fn commit_and(dir: Dir) {
+pub fn commit_and(dir: Dir) {
     commit_editing();
     walk(dir);
     focus();
 }
 
 /// Escape while editing: the cell keeps what it had.
-pub(crate) fn cancel() {
+pub fn cancel() {
     ui().editing.set(None);
     focus();
 }
 
 /// Escape on the sheet: a range shrinks to its active cell, then the
 /// viewer closes (asking when there are edits).
-pub(crate) fn escape() {
+pub fn escape() {
     let u = ui();
     let s = u.sel.get_untracked();
     if !s.is_single() {
         u.sel.set(Sel::at(s.active));
         return;
     }
-    if office::may_close() {
-        store().viewing.set(None);
+    if host().may_close() {
+        host().close_viewer();
     }
 }
 
-pub(crate) fn copy(cut: bool) {
+pub fn copy(cut: bool) {
     let u = ui();
     let (sheet, range) = (u.sheet(), u.sel.get_untracked().range());
     send(Cmd::Copy { sheet, range });
@@ -251,11 +249,11 @@ pub(crate) fn copy(cut: bool) {
 }
 
 /// ⌘V: tab-separated text at the range's top left.
-pub(crate) fn paste() {
+pub fn paste() {
     let u = ui();
     let (sheet, (at, _)) = (u.sheet(), u.sel.get_untracked().range());
     let answer = clipboard_string();
-    crate::store::spawn_detached(async move {
+    buwiz_office_kit::spawn_detached(async move {
         let text = answer.await;
         let rows = select::paste_rows(&text);
         if rows.is_empty() {
@@ -268,44 +266,18 @@ pub(crate) fn paste() {
     });
 }
 
-pub(crate) fn clear() {
+pub fn clear() {
     let u = ui();
     send(Cmd::Clear { sheet: u.sheet(), range: u.sel.get_untracked().range() });
 }
 
-pub(crate) fn undo(redo: bool) {
+pub fn undo(redo: bool) {
     send(if redo { Cmd::Redo } else { Cmd::Undo });
 }
 
-/// The copied cells on the pasteboard as text and as an HTML table (a
-/// paste into Numbers, Pages or a mail keeps the grid).
-pub(crate) fn to_clipboard(tsv: &str, html: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        use nsh_platform_macos::objc2::{msg_send, rc::Retained, runtime::{AnyClass, AnyObject}};
-        use nsh_platform_macos::objc2_foundation::NSString;
-        let Some(class) = AnyClass::get(c"NSPasteboard") else { return };
-        let (text, html) = (NSString::from_str(tsv), NSString::from_str(html));
-        let (text_kind, html_kind) = (NSString::from_str("public.utf8-plain-text"), NSString::from_str("public.html"));
-        // SAFETY: NSPasteboard's documented methods with arguments of their
-        // types, on the main thread (the engine's).
-        unsafe {
-            let board: Retained<AnyObject> = msg_send![class, generalPasteboard];
-            let _: isize = msg_send![&*board, clearContents];
-            let _: bool = msg_send![&*board, setString: &*text, forType: &*text_kind];
-            let _: bool = msg_send![&*board, setString: &*html, forType: &*html_kind];
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = html;
-        set_clipboard(tsv.to_owned());
-    }
-}
-
 /// The right-click menu over `cell`.
-pub(crate) fn menu(cell: (u32, u32), x: f32, y: f32) {
-    use crate::store::CtxItem;
+pub fn menu(cell: (u32, u32), x: f32, y: f32) {
+    use buwiz_office_kit::host::MenuRow;
     let u = ui();
     super::chart::deselect();
     commit_editing();
@@ -317,26 +289,26 @@ pub(crate) fn menu(cell: (u32, u32), x: f32, y: f32) {
     let rows = if r1 > r0 { format!("Delete {} Rows", r1 - r0 + 1) } else { "Delete Row".to_owned() };
     let cols = if c1 > c0 { format!("Delete {} Columns", c1 - c0 + 1) } else { "Delete Column".to_owned() };
     let items = vec![
-        CtxItem::row("Cut", "copy", "sheet", "cut".into()),
-        CtxItem::row("Copy", "copy", "sheet", "copy".into()),
-        CtxItem::row("Paste", "copy", "sheet", "paste".into()),
-        CtxItem::separator(),
-        CtxItem::row("Insert Row Above", "plus", "sheet", "row-above".into()),
-        CtxItem::row("Insert Row Below", "plus", "sheet", "row-below".into()),
-        CtxItem::row("Insert Column Left", "plus", "sheet", "col-left".into()),
-        CtxItem::row("Insert Column Right", "plus", "sheet", "col-right".into()),
-        CtxItem::separator(),
-        CtxItem::row(&rows, "trash", "sheet", "delete-rows".into()),
-        CtxItem::row(&cols, "trash", "sheet", "delete-cols".into()),
-        CtxItem::row("Clear Contents", "close", "sheet", "clear".into()),
+        MenuRow::row("Cut", "copy", "sheet", "cut".into()),
+        MenuRow::row("Copy", "copy", "sheet", "copy".into()),
+        MenuRow::row("Paste", "copy", "sheet", "paste".into()),
+        MenuRow::separator(),
+        MenuRow::row("Insert Row Above", "plus", "sheet", "row-above".into()),
+        MenuRow::row("Insert Row Below", "plus", "sheet", "row-below".into()),
+        MenuRow::row("Insert Column Left", "plus", "sheet", "col-left".into()),
+        MenuRow::row("Insert Column Right", "plus", "sheet", "col-right".into()),
+        MenuRow::separator(),
+        MenuRow::row(&rows, "trash", "sheet", "delete-rows".into()),
+        MenuRow::row(&cols, "trash", "sheet", "delete-cols".into()),
+        MenuRow::row("Clear Contents", "close", "sheet", "clear".into()),
     ];
-    crate::ctx::open_at(x, y, items);
+    host().context_menu(x, y, items);
 }
 
 /// The right-click menu over a column's (`cols`) or row's header: what
 /// changes the whole columns or rows, Hide and Unhide among it.
-pub(crate) fn header_menu(cols: bool, i: u32, x: f32, y: f32) {
-    use crate::store::CtxItem;
+pub fn header_menu(cols: bool, i: u32, x: f32, y: f32) {
+    use buwiz_office_kit::host::MenuRow;
     let u = ui();
     super::chart::deselect();
     commit_editing();
@@ -351,31 +323,31 @@ pub(crate) fn header_menu(cols: bool, i: u32, x: f32, y: f32) {
     let items = if cols {
         let n = c1 - c0 + 1;
         vec![
-            CtxItem::row("Insert Column Left", "plus", "sheet", "col-left".into()),
-            CtxItem::row("Insert Column Right", "plus", "sheet", "col-right".into()),
-            CtxItem::row(&if n > 1 { format!("Delete {n} Columns") } else { "Delete Column".to_owned() }, "trash", "sheet", "delete-cols".into()),
-            CtxItem::row("Clear Contents", "close", "sheet", "clear".into()),
-            CtxItem::separator(),
-            CtxItem::row("Hide", "eyeOff", "sheet", "hide-cols".into()),
-            CtxItem::row("Unhide", "eye", "sheet", "unhide-cols".into()),
+            MenuRow::row("Insert Column Left", "plus", "sheet", "col-left".into()),
+            MenuRow::row("Insert Column Right", "plus", "sheet", "col-right".into()),
+            MenuRow::row(&if n > 1 { format!("Delete {n} Columns") } else { "Delete Column".to_owned() }, "trash", "sheet", "delete-cols".into()),
+            MenuRow::row("Clear Contents", "close", "sheet", "clear".into()),
+            MenuRow::separator(),
+            MenuRow::row("Hide", "eyeOff", "sheet", "hide-cols".into()),
+            MenuRow::row("Unhide", "eye", "sheet", "unhide-cols".into()),
         ]
     } else {
         let n = r1 - r0 + 1;
         vec![
-            CtxItem::row("Insert Row Above", "plus", "sheet", "row-above".into()),
-            CtxItem::row("Insert Row Below", "plus", "sheet", "row-below".into()),
-            CtxItem::row(&if n > 1 { format!("Delete {n} Rows") } else { "Delete Row".to_owned() }, "trash", "sheet", "delete-rows".into()),
-            CtxItem::row("Clear Contents", "close", "sheet", "clear".into()),
-            CtxItem::separator(),
-            CtxItem::row("Hide", "eyeOff", "sheet", "hide-rows".into()),
-            CtxItem::row("Unhide", "eye", "sheet", "unhide-rows".into()),
+            MenuRow::row("Insert Row Above", "plus", "sheet", "row-above".into()),
+            MenuRow::row("Insert Row Below", "plus", "sheet", "row-below".into()),
+            MenuRow::row(&if n > 1 { format!("Delete {n} Rows") } else { "Delete Row".to_owned() }, "trash", "sheet", "delete-rows".into()),
+            MenuRow::row("Clear Contents", "close", "sheet", "clear".into()),
+            MenuRow::separator(),
+            MenuRow::row("Hide", "eyeOff", "sheet", "hide-rows".into()),
+            MenuRow::row("Unhide", "eye", "sheet", "unhide-rows".into()),
         ]
     };
-    crate::ctx::open_at(x, y, items);
+    host().context_menu(x, y, items);
 }
 
 /// A row of the sheet's menu.
-pub(crate) fn action(what: &str) {
+pub fn action(what: &str) {
     let u = ui();
     let sheet = u.sheet();
     let ((r0, c0), (r1, c1)) = u.sel.get_untracked().range();
@@ -400,7 +372,7 @@ pub(crate) fn action(what: &str) {
 }
 
 /// The input over the active cell: invisible until something is typed.
-pub(crate) fn cell_editor(u: &'static SheetUi) -> impl IntoElement {
+pub fn cell_editor(u: &'static SheetUi) -> impl IntoElement {
     let field = element_ref();
     FIELD.with(|f| f.set(Some(field.clone())));
     let rect = move || -> (f32, f32, f32, f32) {
@@ -439,10 +411,10 @@ pub(crate) fn cell_editor(u: &'static SheetUi) -> impl IntoElement {
         .h(move || px(rect().3.max(18.0)))
         .px(px(3.0))
         .text_size(move || px(14.0 * z()))
-        .text_color(theme::TEXT)
-        .bg(theme::EDITOR)
+        .text_color(theme().text)
+        .bg(theme().editor)
         .border(px(2.0))
-        .border_color(theme::ACCENT)
+        .border_color(theme().accent)
         .opacity(move || if shown() { 1.0f32 } else { 0.0 })
         // unseen, presses go through to the grid (a double click edits)
         .pointer_events(move || if shown() { PointerEvents::Auto } else { PointerEvents::None })
@@ -457,17 +429,17 @@ fn formula_bar(u: &'static SheetUi) -> impl IntoElement {
         .h(px(32.0))
         .px_2()
         .gap_2()
-        .bg(theme::PANE)
+        .bg(theme().pane)
         .border_b(px(0.5))
-        .border_b_color(theme::BORDER_S)
+        .border_b_color(theme().border_s)
         .child(
             text(move || select::address(&u.sel.get()))
                 .w(px(96.0))
                 .number_of_lines(1)
                 .text_size(px(12.0))
-                .text_color(theme::MUTED),
+                .text_color(theme().muted),
         )
-        .child(text("ƒx").text_size(px(13.0)).text_color(theme::FAINT))
+        .child(text("ƒx").text_size(px(13.0)).text_color(theme().faint))
         .child(
             input()
                 .label("Formula bar")
@@ -476,9 +448,9 @@ fn formula_bar(u: &'static SheetUi) -> impl IntoElement {
                 .h(px(24.0))
                 .px_2()
                 .rounded(px(5.0))
-                .bg(theme::SUBTLE)
+                .bg(theme().subtle)
                 .text_size(px(13.0))
-                .text_color(theme::TEXT)
+                .text_color(theme().text)
                 .value(move || match u.editing.get() {
                     Some(e) => e.text,
                     None => {
@@ -532,8 +504,8 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
                                 .px(px(10.0))
                                 .rounded(px(6.0))
                                 .justify_center()
-                                .bg(if on { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
-                                .child(text(name.clone()).text_size(px(12.0)).text_color(if on { theme::TEXT } else { theme::MUTED }))
+                                .bg(if on { theme().active } else { AdaptiveColor::TRANSPARENT })
+                                .child(text(name.clone()).text_size(px(12.0)).text_color(if on { theme().text } else { theme().muted }))
                                 .on_press(move || {
                                     super::chart::deselect();
                                     commit_editing();
@@ -547,7 +519,7 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
             .into_element()
     });
     let status = move || {
-        let st = store().office.state.get();
+        let st = host().state().get();
         if !st.error.is_empty() {
             return st.error;
         }
@@ -570,7 +542,7 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
             .rounded(px(5.0))
             .items_center()
             .justify_center()
-            .child(text(label).text_size(px(13.0)).text_color(theme::MUTED))
+            .child(text(label).text_size(px(13.0)).text_color(theme().muted))
             .on_press(move || {
                 let u = ui();
                 let z = ((u.zoom.get_untracked() + d) * 10.0).round() / 10.0;
@@ -583,56 +555,18 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
         .h(px(32.0))
         .px_2()
         .gap_2()
-        .bg(theme::SUBTLE)
+        .bg(theme().subtle)
         .border_t(px(0.5))
-        .border_t_color(theme::BORDER_S)
+        .border_t_color(theme().border_s)
         .child(tabs)
-        .child(text(status).number_of_lines(1).text_size(px(12.0)).text_color(theme::MUTED))
+        .child(text(status).number_of_lines(1).text_size(px(12.0)).text_color(theme().muted))
         .child(zoom_btn("−", -0.1))
-        .child(text(move || format!("{}%", (u.zoom.get() * 100.0).round())).w(px(40.0)).text_center().text_size(px(12.0)).text_color(theme::MUTED))
+        .child(text(move || format!("{}%", (u.zoom.get() * 100.0).round())).w(px(40.0)).text_center().text_size(px(12.0)).text_color(theme().muted))
         .child(zoom_btn("+", 0.1))
 }
 
-/// A bar over the grid: the file changed outside Rox while it held
-/// edits, or closing asks what to do with them.
-pub(crate) fn prompts() -> impl IntoElement {
-    let button = |label: &'static str, primary: bool, on: fn()| {
-        view()
-            .label(label)
-            .h(px(26.0))
-            .px_3()
-            .rounded(px(6.0))
-            .justify_center()
-            .bg(if primary { theme::ACCENT } else { theme::HOVER })
-            .child(text(label).text_size(px(12.0)).text_color(if primary { theme::ON_FILL } else { theme::TEXT }))
-            .on_press(move || on())
-    };
-    dynamic(move || {
-        let st = store();
-        let conflict = st.office.state.with(|s| s.conflict);
-        let ask = st.office.ask_close.get();
-        if !conflict && !ask {
-            return view().into_element();
-        }
-        let name = st.viewing.get_untracked().map(|f| f.name).unwrap_or_default();
-        let row = view().flex_row().items_center().gap_2().px_3().py_2().bg(theme::ACCENT_TINT).border_b(px(0.5)).border_b_color(theme::BORDER_S);
-        if ask {
-            row.child(text(format!("Save the changes to {name}?")).flex_1().text_size(px(13.0)).text_color(theme::TEXT))
-                .child(button("Don't Save", false, || office::answer_close(Some(false))))
-                .child(button("Cancel", false, || office::answer_close(None)))
-                .child(button("Save", true, || office::answer_close(Some(true))))
-                .into_element()
-        } else {
-            row.child(text(format!("{name} changed outside Buwiz Bot while you were editing it.")).flex_1().text_size(px(13.0)).text_color(theme::TEXT))
-                .child(button("Keep Mine", false, || office::keep_mine()))
-                .child(button("Reload", true, || office::reload()))
-                .into_element()
-        }
-    })
-}
-
 /// The spreadsheet view: prompts, the formula bar, the grid, the tabs.
-pub(crate) fn sheet_view() -> impl IntoElement {
+pub fn sheet_view() -> impl IntoElement {
     let u = ui();
-    view().flex_1().child(prompts()).child(formula_bar(u)).child(grid::grid(u)).child(status_bar(u))
+    view().flex_1().child(buwiz_office_kit::prompts::prompts()).child(formula_bar(u)).child(grid::grid(u)).child(status_bar(u))
 }

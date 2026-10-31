@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 /// What an open document does on its worker. It is made and kept there
 /// (never sent across threads: Word's engine is single-threaded).
-pub(crate) trait Document: Sized + 'static {
+pub trait Document: Sized + 'static {
     /// The document's own commands (edits, reads, a viewport to draw).
     type Cmd: Send + 'static;
     /// What it answers them with.
@@ -46,7 +46,7 @@ pub(crate) trait Document: Sized + 'static {
 
 /// Where a save goes.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Sink {
+pub enum Sink {
     /// Written in place, atomically.
     File,
     /// A reply's file, which the broker keeps versions of: the UI uploads
@@ -56,7 +56,7 @@ pub(crate) enum Sink {
 
 /// The document's state the UI shows.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) struct State {
+pub struct State {
     /// Bumped by every change, a reload included.
     pub version: u64,
     /// It holds edits not saved.
@@ -71,7 +71,7 @@ pub(crate) struct State {
 }
 
 /// What the worker tells the UI.
-pub(crate) enum Event<O> {
+pub enum Event<O> {
     State(State),
     Out(O),
     /// The bytes to upload for a [`Sink::Broker`] save of `version`, as
@@ -95,7 +95,7 @@ enum Msg<C> {
 
 /// The UI's handle: commands go in, events come out of the receiver
 /// [`Session::open`] returns.
-pub(crate) struct Session<D: Document> {
+pub struct Session<D: Document> {
     tx: Sender<Msg<D::Cmd>>,
 }
 
@@ -123,7 +123,7 @@ fn stamp(path: &Path) -> Option<Stamp> {
 impl<D: Document> Session<D> {
     /// Opens `path` on a new worker; `emit` hears its events (from the
     /// worker thread).
-    pub(crate) fn open(path: PathBuf, sink: Sink, emit: impl Fn(Event<D::Out>) + Send + 'static) -> Self {
+    pub fn open(path: PathBuf, sink: Sink, emit: impl Fn(Event<D::Out>) + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("rox-office".to_owned())
@@ -132,24 +132,24 @@ impl<D: Document> Session<D> {
         Session { tx }
     }
 
-    pub(crate) fn send(&self, cmd: D::Cmd) {
+    pub fn send(&self, cmd: D::Cmd) {
         let _ = self.tx.send(Msg::Cmd(cmd));
     }
 
-    pub(crate) fn save(&self) {
+    pub fn save(&self) {
         let _ = self.tx.send(Msg::Save);
     }
 
     /// A [`Sink::Broker`] upload of `version` finished.
-    pub(crate) fn uploaded(&self, version: u64, ok: bool, error: String) {
+    pub fn uploaded(&self, version: u64, ok: bool, error: String) {
         let _ = self.tx.send(Msg::Uploaded { version, ok, error });
     }
 
-    pub(crate) fn reload(&self) {
+    pub fn reload(&self) {
         let _ = self.tx.send(Msg::Reload);
     }
 
-    pub(crate) fn keep_mine(&self) {
+    pub fn keep_mine(&self) {
         let _ = self.tx.send(Msg::KeepMine);
     }
 }
@@ -337,7 +337,7 @@ impl<D: Document, E: Fn(Event<D::Out>)> Worker<D, E> {
 
 /// Writes `bytes` to `path` through a temp file in the same folder and a
 /// rename, so the file is never half written.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

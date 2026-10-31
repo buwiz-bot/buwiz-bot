@@ -17,21 +17,20 @@ use super::WordUi;
 use super::chrome::{data_url, image_size, pick_picture};
 use super::doc::{Cmd, EditMode, Link, PageSetup, TableOp};
 use super::view::{focus, send};
-use crate::live::store;
-use crate::office::ui::color::{Mode, Picked, hex};
-use crate::office::ui::field::{checkbox, form_row, number_field, radio, section_label, select_field, text_field};
-use crate::office::ui::modal::modal;
-use crate::office::ui::palette as p;
+use buwiz_office_kit::ui::color::{Mode, Picked, hex};
+use buwiz_office_kit::ui::field::{checkbox, form_row, number_field, radio, section_label, select_field, text_field};
+use buwiz_office_kit::ui::modal::modal;
+use buwiz_office_kit::ui::palette as p;
 
 fn ui() -> &'static WordUi {
-    &store().office.word
+    crate::FORMAT.ui()
 }
 
 /// Twips in an inch (`TWIPS_PER_INCH`).
 const TWIPS: f64 = 1440.0;
 
 /// Page Setup's sizes (`E`): name, width and height in twips.
-pub(crate) const SIZES: [(&str, f64, f64); 7] = [
+pub const SIZES: [(&str, f64, f64); 7] = [
     ("Letter (8.5\" \u{d7} 11\")", 12240.0, 15840.0),
     ("A4 (8.27\" \u{d7} 11.69\")", 11906.0, 16838.0),
     ("Legal (8.5\" \u{d7} 14\")", 12240.0, 20160.0),
@@ -42,24 +41,24 @@ pub(crate) const SIZES: [(&str, f64, f64); 7] = [
 ];
 
 /// The size a page of `w` × `h` twips is (`J`: either way round, within 20).
-pub(crate) fn size_of(w: f64, h: f64) -> Option<usize> {
+pub fn size_of(w: f64, h: f64) -> Option<usize> {
     let (a, b) = (w.min(h), w.max(h));
     SIZES.iter().position(|(_, sw, sh)| (sw - a).abs() < 20.0 && (sh - b).abs() < 20.0)
 }
 
 /// Twips as the margin fields show them (`f`): inches to two places.
-pub(crate) fn inches(twips: f64) -> f64 {
+pub fn inches(twips: f64) -> f64 {
     (twips / TWIPS * 100.0).round() / 100.0
 }
 
 /// The watermark's text presets (`DEFAULT_WATERMARK_PRESETS`).
-pub(crate) const PRESETS: [&str; 6] = ["CONFIDENTIAL", "DRAFT", "DO NOT COPY", "SAMPLE", "URGENT", "ASAP"];
+pub const PRESETS: [&str; 6] = ["CONFIDENTIAL", "DRAFT", "DO NOT COPY", "SAMPLE", "URGENT", "ASAP"];
 /// Its fonts (`te`).
-pub(crate) const FONTS: [&str; 6] = ["Calibri", "Arial", "Times New Roman", "Georgia", "Verdana", "Courier New"];
+pub const FONTS: [&str; 6] = ["Calibri", "Arial", "Times New Roman", "Georgia", "Verdana", "Courier New"];
 
 /// A picture watermark's size (`pictureWatermarkDisplayEmu`): its longer
 /// side 3954780 EMU.
-pub(crate) fn picture_emu(w: f64, h: f64) -> Option<(f64, f64)> {
+pub fn picture_emu(w: f64, h: f64) -> Option<(f64, f64)> {
     if !(w > 0.0 && h > 0.0) {
         return None;
     }
@@ -105,7 +104,7 @@ thread_local! {
 }
 
 /// File › Page setup.
-pub(crate) fn open_page_setup() {
+pub fn open_page_setup() {
     let Some(s) = SETUP.with(Cell::get) else { return };
     let cur = ui().meta.with_untracked(|m| m.setup.clone());
     s.w.set(cur.width);
@@ -118,7 +117,7 @@ pub(crate) fn open_page_setup() {
 }
 
 /// Insert › Watermark.
-pub(crate) fn open_watermark() {
+pub fn open_watermark() {
     let Some(m) = MARK.with(Cell::get) else { return };
     let cur = ui().meta.with_untracked(|m| m.watermark.clone());
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
@@ -151,13 +150,13 @@ pub(crate) fn open_watermark() {
 }
 
 /// The dialogs, shown while open.
-pub(crate) fn dialogs() -> impl IntoElement {
+pub fn dialogs() -> impl IntoElement {
     view().child(page_setup()).child(watermark()).child(hyperlink()).child(table_properties()).child(prompt())
 }
 
 /// What the formatting bar's prompt asks for.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Prompt {
+pub enum Prompt {
     /// Custom size… (`commands.customFontSize`).
     Size,
     /// Custom color… for a colour picker.
@@ -191,7 +190,7 @@ thread_local! {
 /// Whether a link address reads as one (`G`): `mailto:`/`tel:` with
 /// something after, `ftp://`, or a web address with a host (`https://`
 /// put before one without a scheme).
-pub(crate) fn valid_url(t: &str) -> bool {
+pub fn valid_url(t: &str) -> bool {
     let e = t.trim();
     if e.is_empty() {
         return false;
@@ -213,14 +212,14 @@ pub(crate) fn valid_url(t: &str) -> bool {
 }
 
 /// A link address as it is set (`M`): a scheme put before one without.
-pub(crate) fn normalize_url(t: &str) -> String {
+pub fn normalize_url(t: &str) -> String {
     let e = t.trim();
     if ["mailto:", "tel:", "ftp://", "http://", "https://"].iter().any(|s| e.starts_with(s)) { e.to_owned() } else { format!("https://{e}") }
 }
 
 /// ⌘K and the bar's link button (`insertLink`): Edit Hyperlink for the
 /// link at the caret, else Insert Hyperlink with the selection's text.
-pub(crate) fn open_link() {
+pub fn open_link() {
     let Some(f) = LINK.with(Cell::get) else { return };
     let m = ui().meta.get_untracked();
     if m.mode == EditMode::Viewing {
@@ -250,7 +249,7 @@ pub(crate) fn open_link() {
 /// error under it.
 fn link_field(label: &'static str, placeholder: &'static str, value: Signal<String>, below: impl Fn() -> (String, bool) + 'static, on_blur: impl Fn() + 'static, on_edit: impl Fn() + 'static) -> AnyElement {
     let r = element_ref();
-    crate::office::ui::modal::join_trap(&r);
+    buwiz_office_kit::ui::modal::join_trap(&r);
     let below = std::rc::Rc::new(below);
     let (b1, b2, b3) = (below.clone(), below.clone(), below);
     view()
@@ -364,7 +363,7 @@ fn hyperlink() -> AnyElement {
 }
 
 /// The table menu's "Table properties..." (`openTableProperties`).
-pub(crate) fn open_table_properties() {
+pub fn open_table_properties() {
     let Some(t) = TABLE.with(Cell::get) else { return };
     let cell = ui().meta.with_untracked(|m| m.cell.clone()).unwrap_or_default();
     t.kind.set(cell.width_type.clone().unwrap_or_else(|| "auto".to_owned()));
@@ -417,12 +416,12 @@ fn table_properties() -> AnyElement {
 }
 
 /// The Image group's properties button: its dialog is to come.
-pub(crate) fn open_image_properties() {
+pub fn open_image_properties() {
     super::note("Image Properties isn't available here yet.");
 }
 
 /// A prompt's check (`valid`): a size in points within 1–400, or six hex digits.
-pub(crate) fn prompt_valid(kind: Prompt, v: &str) -> bool {
+pub fn prompt_valid(kind: Prompt, v: &str) -> bool {
     let v = v.trim();
     match kind {
         Prompt::Size => {
@@ -444,7 +443,7 @@ fn prompt() -> AnyElement {
     effect(move || {
         let size = u.meta.with_untracked(|m| m.fmt.size);
         match u.prompt.get() {
-            Some(Prompt::Size) => value.set(crate::office::ui::select::size_text(size)),
+            Some(Prompt::Size) => value.set(buwiz_office_kit::ui::select::size_text(size)),
             Some(Prompt::Color(_)) => value.set(String::new()),
             None => {}
         }

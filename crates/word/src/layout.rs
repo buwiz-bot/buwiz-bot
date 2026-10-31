@@ -20,7 +20,7 @@ const PREVIEW_BLOCKS: usize = 80;
 /// Every engine edits as this client (one local person).
 const CLIENT: u64 = 0x524f_5857;
 
-pub(crate) struct Layout {
+pub struct Layout {
     pub fonts: Fonts,
     pub engine: EngineSession,
     /// The region request, its fonts filled in, and as parsed (without them,
@@ -80,25 +80,25 @@ fn region_request(bytes: &[u8]) -> Result<(Value, Vec<Value>), String> {
 impl Layout {
     /// Seeds `bytes` (the whole document) and prepares its request; nothing
     /// is laid out yet.
-    pub(crate) fn open(bytes: &[u8]) -> Result<Layout, String> {
+    pub fn open(bytes: &[u8]) -> Result<Layout, String> {
         let (base, comments) = region_request(bytes)?;
         Layout::seeded(bytes, Fonts::new(), base, comments, None).map(|l| l.expect("a full seed"))
     }
 
     /// Seeds only the first blocks of `bytes`, enough for the first page:
     /// `None` for a document whose start doesn't lay out as its whole does.
-    pub(crate) fn preview(bytes: &[u8]) -> Result<Option<Layout>, String> {
+    pub fn preview(bytes: &[u8]) -> Result<Option<Layout>, String> {
         let (base, comments) = region_request(bytes)?;
         Layout::seeded(bytes, Fonts::new(), base, comments, Some(PREVIEW_BLOCKS))
     }
 
     /// A stand-in while a preview gives way to the whole document.
-    pub(crate) fn empty() -> Layout {
+    pub fn empty() -> Layout {
         Layout { fonts: Fonts::new(), engine: EngineSession::new(CLIENT), request: String::new(), base: Value::Null, base_json: String::new(), preview: false, provisional: false, comments: Vec::new(), epoch: 0 }
     }
 
     /// The whole document after a preview: the fonts and the request kept.
-    pub(crate) fn whole(self, bytes: &[u8]) -> Result<Layout, String> {
+    pub fn whole(self, bytes: &[u8]) -> Result<Layout, String> {
         Layout::seeded(bytes, self.fonts, self.base, self.comments, None).map(|l| l.expect("a full seed"))
     }
 
@@ -151,7 +151,7 @@ impl Layout {
     /// in (bold on a face the text had only upright, a new family), as the
     /// web editor asks before each relayout. Whether the request grew; the
     /// retained one would measure the new key's text one em a character.
-    pub(crate) fn fonts_grew(&mut self) -> Result<bool, String> {
+    pub fn fonts_grew(&mut self) -> Result<bool, String> {
         let needs = self.font_needs()?;
         if needs.iter().all(|n| self.fonts.has(&n.key, &n.scripts)) {
             return Ok(false);
@@ -162,7 +162,7 @@ impl Layout {
 
     /// Lays out again after an edit in `story` with the request as it is
     /// now (one [`Self::fonts_grew`] grew); display lists for `window`.
-    pub(crate) fn after_edit(&mut self, story: &str, window: std::ops::Range<usize>) -> Result<(), String> {
+    pub fn after_edit(&mut self, story: &str, window: std::ops::Range<usize>) -> Result<(), String> {
         let _scope = self.fonts.enter();
         self.engine.layout_document_with_regions_after_edit(&self.request, Some(story))?;
         self.engine.set_display_window(Some(window));
@@ -187,7 +187,7 @@ impl Layout {
 
     /// Lays out the first `pages` pages only (`provisional` until
     /// [`Self::full`]); their display lists are built.
-    pub(crate) fn first(&mut self, pages: usize) -> Result<(), String> {
+    pub fn first(&mut self, pages: usize) -> Result<(), String> {
         let _scope = self.fonts.enter();
         let out = self.engine.layout_document_with_regions_prefix_retained_json(&self.request, pages)?;
         self.provisional = out.contains("\"provisional\":true");
@@ -198,7 +198,7 @@ impl Layout {
     }
 
     /// Lays out the whole document; display lists are built for `window`.
-    pub(crate) fn full(&mut self, window: std::ops::Range<usize>) -> Result<(), String> {
+    pub fn full(&mut self, window: std::ops::Range<usize>) -> Result<(), String> {
         let _scope = self.fonts.enter();
         self.engine.layout_document_with_regions_retained(&self.request)?;
         self.provisional = false;
@@ -209,7 +209,7 @@ impl Layout {
     }
 
     /// Builds the display lists of `pages` not built yet.
-    pub(crate) fn build(&mut self, pages: &[usize]) -> Result<(), String> {
+    pub fn build(&mut self, pages: &[usize]) -> Result<(), String> {
         let _scope = self.fonts.enter();
         let f = self.engine.build_display_pages_frame(pages, self.epoch)?;
         self.took(&f);
@@ -217,35 +217,35 @@ impl Layout {
     }
 
     /// Notes the frame a build returned (an empty one was superseded).
-    pub(crate) fn took(&mut self, frame: &[u8]) {
+    pub fn took(&mut self, frame: &[u8]) {
         if let Some(e) = frame_epoch(frame) {
             self.epoch = e;
         }
     }
 
-    pub(crate) fn page_count(&self) -> usize {
+    pub fn page_count(&self) -> usize {
         self.engine.with_display_list(|l| l.pages.len()).unwrap_or(0)
     }
 
     /// Page `i` as built (`unbuilt` pages carry their size only).
-    pub(crate) fn page(&self, i: usize) -> Option<DisplayPage> {
+    pub fn page(&self, i: usize) -> Option<DisplayPage> {
         self.engine.with_display_list(|l| l.pages.get(i).cloned()).flatten()
     }
 
     /// Reads the display list in place.
-    pub(crate) fn with_pages<T>(&self, read: impl FnOnce(&[DisplayPage]) -> T) -> Option<T> {
+    pub fn with_pages<T>(&self, read: impl FnOnce(&[DisplayPage]) -> T) -> Option<T> {
         self.engine.with_display_list(|l| read(&l.pages))
     }
 
     /// The region request as built from the package (its sections, the
     /// watermark), without the fonts.
-    pub(crate) fn request_base(&self) -> &Value {
+    pub fn request_base(&self) -> &Value {
         &self.base
     }
 
     /// The region request changed by `edit` (Page Setup's section, the
     /// watermark), its fonts kept: the next [`Self::full`] lays out with it.
-    pub(crate) fn edit_request(&mut self, edit: impl FnOnce(&mut Value)) {
+    pub fn edit_request(&mut self, edit: impl FnOnce(&mut Value)) {
         edit(&mut self.base);
         self.base_json = self.base.to_string();
         self.fill_fonts(&[]);
@@ -254,6 +254,6 @@ impl Layout {
 
 /// Milliseconds since `t`.
 #[cfg(test)]
-pub(crate) fn ms(t: std::time::Instant) -> f64 {
+pub fn ms(t: std::time::Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }

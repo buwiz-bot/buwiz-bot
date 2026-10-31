@@ -13,19 +13,19 @@ use super::palette as p;
 
 /// A form row (`g`, `c`): the label 80 wide (13px muted), 12 before the
 /// field.
-pub(crate) const LABEL_W: f32 = 80.0;
-pub(crate) const ROW_GAP: f32 = 12.0;
+pub const LABEL_W: f32 = 80.0;
+pub const ROW_GAP: f32 = 12.0;
 /// A field (`y`): `padding 6px 8px`, 1px `--doc-border`, radius 4, 13px.
-pub(crate) const FIELD_PAD: (f32, f32) = (8.0, 6.0);
-pub(crate) const FIELD_RADIUS: f32 = 4.0;
-pub(crate) const FIELD_TEXT: f32 = 13.0;
+pub const FIELD_PAD: (f32, f32) = (8.0, 6.0);
+pub const FIELD_RADIUS: f32 = 4.0;
+pub const FIELD_TEXT: f32 = 13.0;
 /// A checkbox (`le`): 14 square, 6 before its 12px label.
-pub(crate) const CHECKBOX: f32 = 14.0;
+pub const CHECKBOX: f32 = 14.0;
 /// A tab (`H`): `padding 10px 16px`, 14px, a 2px underline.
-pub(crate) const TAB_PAD: (f32, f32) = (16.0, 10.0);
+pub const TAB_PAD: (f32, f32) = (16.0, 10.0);
 
 /// `label` then `field` in a row.
-pub(crate) fn form_row(label: impl Into<SharedString>, field: impl IntoElement) -> AnyElement {
+pub fn form_row(label: impl Into<SharedString>, field: impl IntoElement) -> AnyElement {
     view()
         .flex_row()
         .items_center()
@@ -36,7 +36,7 @@ pub(crate) fn form_row(label: impl Into<SharedString>, field: impl IntoElement) 
 }
 
 /// A section's label (`H`): 12px semibold muted capitals, 0.5 apart.
-pub(crate) fn section_label(t: &str) -> AnyElement {
+pub fn section_label(t: &str) -> AnyElement {
     text(t.to_uppercase())
         .text_size(px(12.0))
         .font_weight(FontWeight::SEMIBOLD)
@@ -58,7 +58,7 @@ fn field_look(i: nsh_core::element::Input) -> nsh_core::element::Input {
 }
 
 /// A text field holding `value`, labelled `label` for screen readers.
-pub(crate) fn text_field(label: impl Into<SharedString>, value: Signal<String>) -> AnyElement {
+pub fn text_field(label: impl Into<SharedString>, value: Signal<String>) -> AnyElement {
     let r = element_ref();
     join_trap(&r);
     field_look(nsh_base::input())
@@ -71,7 +71,7 @@ pub(crate) fn text_field(label: impl Into<SharedString>, value: Signal<String>) 
 
 /// A number field (`type="number"`): `value` follows what parses, kept in
 /// `min`–`max`; the text stays as typed.
-pub(crate) fn number_field(label: impl Into<SharedString>, value: Signal<f64>, min: f64, max: f64) -> AnyElement {
+pub fn number_field(label: impl Into<SharedString>, value: Signal<f64>, min: f64, max: f64) -> AnyElement {
     let r = element_ref();
     join_trap(&r);
     let typed = signal(fmt_number(value.get_untracked()));
@@ -90,12 +90,12 @@ pub(crate) fn number_field(label: impl Into<SharedString>, value: Signal<f64>, m
 }
 
 /// A number as a field shows it: "1", "0.75".
-pub(crate) fn fmt_number(n: f64) -> String {
+pub fn fmt_number(n: f64) -> String {
     if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
 /// What a number field's text holds, within `min`–`max`.
-pub(crate) fn parse_number(s: &str, min: f64, max: f64) -> Option<f64> {
+pub fn parse_number(s: &str, min: f64, max: f64) -> Option<f64> {
     let n: f64 = s.trim().parse().ok()?;
     n.is_finite().then(|| n.clamp(min, max))
 }
@@ -105,7 +105,7 @@ const CHECK_D: &str = "M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1
 /// A checkbox and its label (`z`: 12px muted, 6 apart). The web's is the
 /// browser's own control at 14 square; this draws macOS's: a rounded box,
 /// filled with the system blue and a white tick while on.
-pub(crate) fn checkbox(label: impl Into<SharedString>, on: Signal<bool>) -> AnyElement {
+pub fn checkbox(label: impl Into<SharedString>, on: Signal<bool>) -> AnyElement {
     let r = element_ref();
     join_trap(&r);
     let label: SharedString = label.into();
@@ -142,7 +142,7 @@ pub(crate) fn checkbox(label: impl Into<SharedString>, on: Signal<bool>) -> AnyE
 /// Tabs (`ne`): a row over a hairline, each tab muted with a clear
 /// underline, the chosen one `--doc-link` and medium with its underline
 /// in that colour; `current` is the chosen tab's index.
-pub(crate) fn tabs(names: Vec<&'static str>, current: Signal<usize>) -> AnyElement {
+pub fn tabs(names: Vec<&'static str>, current: Signal<usize>) -> AnyElement {
     view()
         .flex_row()
         .border_b(px(1.0))
@@ -176,7 +176,7 @@ pub(crate) fn tabs(names: Vec<&'static str>, current: Signal<usize>) -> AnyEleme
 /// A dialog's `<select>` (`PageSetupDialog`'s `N`, `WatermarkDialog`'s
 /// `g`): the field's box with the chosen option's text and a chevron, its
 /// options (value, text) listed under it.
-pub(crate) fn select_field(
+pub fn select_field(
     label: impl Into<SharedString>,
     options: Vec<(String, String)>,
     value: impl Fn() -> String + 'static,
@@ -241,7 +241,7 @@ const CHEVRON_D: &str = "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.
 /// A radio button and its label (`WatermarkDialog`'s `N`/`s`: 8 apart,
 /// the label 13px): macOS's, a ring, the system blue with a white dot
 /// while on.
-pub(crate) fn radio(label: impl Into<SharedString>, on: impl Fn() -> bool + 'static, choose: impl Fn() + 'static) -> AnyElement {
+pub fn radio(label: impl Into<SharedString>, on: impl Fn() -> bool + 'static, choose: impl Fn() + 'static) -> AnyElement {
     let r = element_ref();
     join_trap(&r);
     let label: SharedString = label.into();

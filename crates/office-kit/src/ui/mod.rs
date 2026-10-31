@@ -10,15 +10,15 @@
 //! the component it comes from (the minified names of
 //! `docx-react/dist/index.mjs`, "DR").
 
-pub(crate) mod button;
-pub(crate) mod color;
-pub(crate) mod field;
-pub(crate) mod icons;
-pub(crate) mod menu;
-pub(crate) mod modal;
-pub(crate) mod palette;
-pub(crate) mod select;
-pub(crate) mod table_grid;
+pub mod button;
+pub mod color;
+pub mod field;
+pub mod icons;
+pub mod menu;
+pub mod modal;
+pub mod palette;
+pub mod select;
+pub mod table_grid;
 #[cfg(test)]
 mod tests;
 
@@ -29,7 +29,7 @@ use palette as p;
 /// A chord as the web labels it (DR `$u`): on Apple keyboards ⌘, ⌥ and ⇧
 /// then the key, run together ("⌘⇧="); elsewhere "Ctrl+Alt+Shift+K". The
 /// chord is the web's registry form ("Mod+Shift+=", "Mod+B").
-pub(crate) fn shortcut_label(chord: &str, apple: bool) -> String {
+pub fn shortcut_label(chord: &str, apple: bool) -> String {
     // `Uu`: modifiers before the last "+", whose key may itself be "+"
     let (mods, key) = match chord.strip_suffix("++") {
         Some(rest) => (rest, "+"),
@@ -54,7 +54,7 @@ pub(crate) fn shortcut_label(chord: &str, apple: bool) -> String {
 }
 
 /// A control's tooltip (DR `op`): "Bold (⌘B)", or the label alone.
-pub(crate) fn tip_text(label: &str, chord: Option<&str>, apple: bool) -> String {
+pub fn tip_text(label: &str, chord: Option<&str>, apple: bool) -> String {
     match chord {
         Some(c) => format!("{label} ({})", shortcut_label(c, apple)),
         None => label.to_owned(),
@@ -64,7 +64,7 @@ pub(crate) fn tip_text(label: &str, chord: Option<&str>, apple: bool) -> String 
 /// The look of a dropdown panel (each web dropdown sets its own inline
 /// style): background, its 1px border, radius, padding and shadow.
 #[derive(Clone, Copy)]
-pub(crate) struct Panel {
+pub struct Panel {
     pub bg: AdaptiveColor,
     pub border: AdaptiveColor,
     pub radius: f32,
@@ -77,22 +77,22 @@ pub(crate) struct Panel {
 impl Panel {
     /// The menu bar's menus (DR `Ba`): `padding: 4px 0`, radius 6,
     /// `0 4px 12px`.
-    pub(crate) const MENU: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 6.0, pad_x: 0.0, pad_y: 4.0, shadow: (4.0, 12.0) };
+    pub const MENU: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 6.0, pad_x: 0.0, pad_y: 4.0, shadow: (4.0, 12.0) };
     /// A menu's submenu (DR `Wk`): padding 8.
-    pub(crate) const SUBMENU: Panel = Panel { pad_x: 8.0, pad_y: 8.0, ..Panel::MENU };
+    pub const SUBMENU: Panel = Panel { pad_x: 8.0, pad_y: 8.0, ..Panel::MENU };
     /// The toolbar's icon dropdowns (alignment, wrap, transform; DR `vc`):
     /// radius 8, padding 6, `0 4px 16px`.
-    pub(crate) const ICONS: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 8.0, pad_x: 6.0, pad_y: 6.0, shadow: (4.0, 16.0) };
+    pub const ICONS: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 8.0, pad_x: 6.0, pad_y: 6.0, shadow: (4.0, 16.0) };
     /// The Insert Table grid's (DR `EE`): radius 8, padding 8, `0 4px 12px`.
-    pub(crate) const GRID: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 8.0, pad_x: 8.0, pad_y: 8.0, shadow: (4.0, 12.0) };
+    pub const GRID: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 8.0, pad_x: 8.0, pad_y: 8.0, shadow: (4.0, 12.0) };
     /// The font size list (DR `yy`): radius 6, no padding.
-    pub(crate) const LIST: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 6.0, pad_x: 0.0, pad_y: 0.0, shadow: (4.0, 12.0) };
+    pub const LIST: Panel = Panel { bg: p::SURFACE, border: p::BORDER, radius: 6.0, pad_x: 0.0, pad_y: 0.0, shadow: (4.0, 12.0) };
     /// The colour picker's (DR `f1`): `--doc-border-dark`, padding 10,
     /// `0 4px 16px`.
-    pub(crate) const COLORS: Panel = Panel { bg: p::SURFACE, border: p::BORDER_DARK, radius: 6.0, pad_x: 10.0, pad_y: 10.0, shadow: (4.0, 16.0) };
+    pub const COLORS: Panel = Panel { bg: p::SURFACE, border: p::BORDER_DARK, radius: 6.0, pad_x: 10.0, pad_y: 10.0, shadow: (4.0, 16.0) };
 
     /// `view` with this look.
-    pub(crate) fn dress(self, view: View) -> View {
+    pub fn dress(self, view: View) -> View {
         view.bg(self.bg)
             .border_1()
             .border_color(self.border)
@@ -114,7 +114,7 @@ impl Panel {
 /// A dropdown under `anchor` while `open` (DR `xr`: 4 below the trigger,
 /// its left edge on the trigger's), labelled `label` for screen readers
 /// and tests: a press outside it and its trigger, or Escape, closes it.
-pub(crate) fn dropdown(
+pub fn dropdown(
     anchor: ElementRef,
     open: Signal<bool>,
     label: impl Into<SharedString>,

@@ -19,32 +19,32 @@ use super::WordUi;
 use super::dialogs;
 use super::doc::{Cmd, Image, Insert};
 use super::view::{focus, send};
-use crate::live::store;
-use crate::office::ui::color::hex;
-use crate::office::ui::menu::{BarMenu, Entry, bar_menu, item, menu_bar_in};
-use crate::office::ui::palette as p;
-use crate::office::ui::shortcut_label;
-use crate::office::ui::table_grid::{COLS, ROWS, table_grid};
+use buwiz_office_kit::host::host;
+use buwiz_office_kit::ui::color::hex;
+use buwiz_office_kit::ui::menu::{BarMenu, Entry, bar_menu, item, menu_bar_in};
+use buwiz_office_kit::ui::palette as p;
+use buwiz_office_kit::ui::shortcut_label;
+use buwiz_office_kit::ui::table_grid::{COLS, ROWS, table_grid};
 
 fn ui() -> &'static WordUi {
-    &store().office.word
+    crate::FORMAT.ui()
 }
 
 /// Insert › Table of contents, refused (`commands.reasons.tableOfContentsUnsupported`).
-pub(crate) const TOC_REFUSAL: &str = "Inserting a table of contents is not supported yet.";
+pub const TOC_REFUSAL: &str = "Inserting a table of contents is not supported yet.";
 /// Pictures wider than this come in at this width (`nd`, pixels).
 const MAX_IMAGE_W: u32 = 612;
 /// The kinds the picker offers (`accept="image/*"`, those Rox can read).
-pub(crate) const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
+pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
 
 /// The name the title bar shows (`Pte`): without `.docx`.
-pub(crate) fn doc_name(file: &str) -> String {
+pub fn doc_name(file: &str) -> String {
     let n = file.len();
     if n >= 5 && file.is_char_boundary(n - 5) && file[n - 5..].eq_ignore_ascii_case(".docx") { file[..n - 5].to_owned() } else { file.to_owned() }
 }
 
 /// The title bar (`flex items-stretch bg-doc-surface pt-2 pb-1`).
-pub(crate) fn title_bar() -> impl IntoElement {
+pub fn title_bar() -> impl IntoElement {
     let u = ui();
     view()
         .flex_row()
@@ -94,7 +94,7 @@ fn logo() -> AnyElement {
 /// focus:ring-1 focus:ring-ring`).
 fn name_field() -> AnyElement {
     let u = ui();
-    let name = move || store().viewing.get().map(|f| doc_name(&f.name)).unwrap_or_default();
+    let name = move || host().viewing_name().map(|n| doc_name(&n)).unwrap_or_default();
     let buf = signal(String::new());
     effect(move || buf.set(name()));
     let (hovered, focused) = (signal(false), signal(false));
@@ -108,7 +108,7 @@ fn name_field() -> AnyElement {
             // controlled field does
             buf.set(v.to_owned());
             let back = untracked(name);
-            crate::store::spawn_detached(async move { buf.set(back) });
+            buwiz_office_kit::spawn_detached(async move { buf.set(back) });
         })
         .on_submit(|_: &str| focus())
         .on_focus(move || {
@@ -156,24 +156,24 @@ fn menus() -> Vec<BarMenu> {
     vec![bar_menu("File", file_menu), bar_menu("Format", format_menu), bar_menu("Insert", insert_menu), bar_menu("Help", help_menu)]
 }
 
-pub(crate) fn file_menu() -> Vec<Entry> {
+pub fn file_menu() -> Vec<Entry> {
     vec![
-        Entry::Item(item(Some("file_download"), "Save", act(crate::files::viewer_save)).shortcut(shortcut_label("Mod+S", apple_keys()))),
+        Entry::Item(item(Some("file_download"), "Save", act(|| host().viewer_save())).shortcut(shortcut_label("Mod+S", apple_keys()))),
         Entry::Separator,
-        Entry::Item(item(Some("print"), "Print", crate::files::viewer_print)),
+        Entry::Item(item(Some("print"), "Print", || host().viewer_print())),
         Entry::Item(item(Some("settings"), "Page setup", dialogs::open_page_setup)),
     ]
 }
 
-pub(crate) fn format_menu() -> Vec<Entry> {
+pub fn format_menu() -> Vec<Entry> {
     vec![
         Entry::Item(item(Some("format_textdirection_l_to_r"), "Left-to-right text", act(|| send(Cmd::Bidi(false))))),
         Entry::Item(item(Some("format_textdirection_r_to_l"), "Right-to-left text", act(|| send(Cmd::Bidi(true))))),
     ]
 }
 
-pub(crate) fn insert_menu() -> Vec<Entry> {
-    let grid: crate::office::ui::menu::Content = Rc::new(|close: Rc<dyn Fn()>| {
+pub fn insert_menu() -> Vec<Entry> {
+    let grid: buwiz_office_kit::ui::menu::Content = Rc::new(|close: Rc<dyn Fn()>| {
         table_grid(ROWS, COLS, move |rows, cols| {
             close();
             insert(Insert::Table { rows, cols })
@@ -197,7 +197,7 @@ pub(crate) fn insert_menu() -> Vec<Entry> {
     ]
 }
 
-pub(crate) fn help_menu() -> Vec<Entry> {
+pub fn help_menu() -> Vec<Entry> {
     vec![Entry::Item(item(None, "Report issue", report_issue))]
 }
 
@@ -207,7 +207,7 @@ fn report_issue() {
     drop(open_url(report_issue_url(ui().area.get_untracked())));
 }
 
-pub(crate) fn report_issue_url((w, h): (f32, f32)) -> String {
+pub fn report_issue_url((w, h): (f32, f32)) -> String {
     let body = [
         "### What happened",
         "",
@@ -248,9 +248,9 @@ fn form_encode(s: &str) -> String {
 }
 
 /// Asks for a picture (`accept="image/*"`): `got` gets its bytes and name.
-pub(crate) fn pick_picture(got: impl FnOnce(Vec<u8>, String) + 'static) {
+pub fn pick_picture(got: impl FnOnce(Vec<u8>, String) + 'static) {
     let answer = pick_paths(OpenDialog::files().filter(FileFilter::new("Images", IMAGE_EXTS)));
-    crate::store::spawn_detached(async move {
+    buwiz_office_kit::spawn_detached(async move {
         match answer.await {
             Ok(Some(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return };
@@ -275,7 +275,7 @@ fn pick_image() {
 }
 
 /// A picture as Insert takes it, from its bytes.
-pub(crate) fn picture(bytes: &[u8], name: &str) -> Option<Image> {
+pub fn picture(bytes: &[u8], name: &str) -> Option<Image> {
     let (mut w, mut h) = image_size(bytes)?;
     if w > MAX_IMAGE_W {
         h = (f64::from(h) * (f64::from(MAX_IMAGE_W) / f64::from(w))).round() as u32;
@@ -285,7 +285,7 @@ pub(crate) fn picture(bytes: &[u8], name: &str) -> Option<Image> {
 }
 
 /// The bytes as a `data:` URL (`readAsDataURL`), typed by their content.
-pub(crate) fn data_url(bytes: &[u8], name: &Path) -> String {
+pub fn data_url(bytes: &[u8], name: &Path) -> String {
     use base64::Engine as _;
     let mime = if bytes.starts_with(b"\x89PNG") {
         "image/png"
@@ -308,7 +308,7 @@ pub(crate) fn data_url(bytes: &[u8], name: &Path) -> String {
 
 /// A picture's pixel size, read from its header (PNG, JPEG, GIF, BMP,
 /// WebP).
-pub(crate) fn image_size(b: &[u8]) -> Option<(u32, u32)> {
+pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
     let be32 = |i: usize| Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?));
     let le16 = |i: usize| Some(u32::from(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?)));
     let be16 = |i: usize| Some(u32::from(u16::from_be_bytes(b.get(i..i + 2)?.try_into().ok()?)));

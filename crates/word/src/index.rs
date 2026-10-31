@@ -12,7 +12,7 @@ use docx_edit::{EditingDoc, GeometryRead, SegmentContent};
 /// A paragraph: its story, its first unit there, its length in units, and
 /// the body position its content starts at.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Para {
+pub struct Para {
     pub story: String,
     pub para_id: String,
     pub start: u32,
@@ -24,19 +24,19 @@ pub(crate) struct Para {
 
 /// A place in a story.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Spot {
+pub struct Spot {
     pub story: String,
     pub offset: u32,
 }
 
 #[derive(Default)]
-pub(crate) struct Index {
+pub struct Index {
     /// In body order.
     pub paras: Vec<Para>,
 }
 
 impl Index {
-    pub(crate) fn build(doc: &EditingDoc) -> Index {
+    pub fn build(doc: &EditingDoc) -> Index {
         let GeometryRead::Value(outline) = doc.geometry_position_outline("body") else { return Index::default() };
         let mut paras = Vec::new();
         for (story, o) in &outline {
@@ -83,23 +83,23 @@ impl Index {
     }
 
     /// The paragraph a body position falls in (or the nearest before it).
-    pub(crate) fn para_at_pm(&self, pm: i64) -> Option<usize> {
+    pub fn para_at_pm(&self, pm: i64) -> Option<usize> {
         let i = self.paras.partition_point(|p| p.pm <= pm);
         if i == 0 { (!self.paras.is_empty()).then_some(0) } else { Some(i - 1) }
     }
 
-    pub(crate) fn spot_of_pm(&self, pm: i64) -> Option<Spot> {
+    pub fn spot_of_pm(&self, pm: i64) -> Option<Spot> {
         let p = &self.paras[self.para_at_pm(pm)?];
         let k = (pm - p.pm).clamp(0, p.len as i64) as u32;
         Some(Spot { story: p.story.clone(), offset: p.start + k })
     }
 
     /// The paragraph holding `s` (its end included).
-    pub(crate) fn para_of(&self, s: &Spot) -> Option<usize> {
+    pub fn para_of(&self, s: &Spot) -> Option<usize> {
         self.paras.iter().position(|p| p.story == s.story && s.offset >= p.start && s.offset <= p.start + p.len)
     }
 
-    pub(crate) fn pm_of(&self, s: &Spot) -> Option<i64> {
+    pub fn pm_of(&self, s: &Spot) -> Option<i64> {
         let p = &self.paras[self.para_of(s)?];
         Some(p.pm + (s.offset - p.start) as i64)
     }
@@ -107,7 +107,7 @@ impl Index {
     /// Takes a change inside one paragraph without a rebuild: at `at`,
     /// `removed` units out and `inserted` in (typing, a Backspace). False
     /// when `at` isn't inside a paragraph (the index is then rebuilt).
-    pub(crate) fn patch(&mut self, at: &Spot, removed: u32, inserted: &[u16]) -> bool {
+    pub fn patch(&mut self, at: &Spot, removed: u32, inserted: &[u16]) -> bool {
         let Some(i) = self.para_of(at) else { return false };
         let p = &mut self.paras[i];
         let k = (at.offset - p.start) as usize;
@@ -130,7 +130,7 @@ impl Index {
     }
 
     /// The text between two spots of one story (paragraph breaks as `\n`).
-    pub(crate) fn text_between(&self, a: &Spot, b: &Spot) -> String {
+    pub fn text_between(&self, a: &Spot, b: &Spot) -> String {
         let (a, b) = if a.offset <= b.offset { (a, b) } else { (b, a) };
         let mut out: Vec<u16> = Vec::new();
         let mut first = true;
@@ -150,7 +150,7 @@ impl Index {
     }
 
     /// Every match of `needle` (case-insensitive), as story ranges, in body order.
-    pub(crate) fn find(&self, needle: &str) -> Vec<(Spot, Spot)> {
+    pub fn find(&self, needle: &str) -> Vec<(Spot, Spot)> {
         let n: Vec<u16> = needle.to_lowercase().encode_utf16().collect();
         if n.is_empty() {
             return Vec::new();
@@ -180,7 +180,7 @@ impl Index {
 
 /// The table cell a cell story is (`body:t0:r1c2`): its parent story, the
 /// table's index there, its row and column.
-pub(crate) fn cell_of(story: &str) -> Option<(String, u32, u32, u32)> {
+pub fn cell_of(story: &str) -> Option<(String, u32, u32, u32)> {
     let (parent, rest) = story.rsplit_once(":t")?;
     let (table, cell) = rest.split_once(":r")?;
     let (row, col) = cell.split_once('c')?;

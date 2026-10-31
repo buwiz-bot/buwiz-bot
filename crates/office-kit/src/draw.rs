@@ -22,7 +22,7 @@ const AUTO_TEXT: &str = "#000000";
 
 /// The colors the default sheet takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Palette {
+pub struct Palette {
     pub dark: bool,
     pub bg: Hsla,
     pub grid: Hsla,
@@ -31,27 +31,27 @@ pub(crate) struct Palette {
 
 impl Palette {
     /// The document's own colors.
-    pub(crate) fn light() -> Self {
+    pub fn light() -> Self {
         Palette { dark: false, bg: hex(SHEET_BG), grid: hex(GRIDLINE), text: hex(AUTO_TEXT) }
     }
 
-    pub(crate) fn dark() -> Self {
+    pub fn dark() -> Self {
         Palette { dark: true, bg: hex("#1e1e1e"), grid: hex("#3a3a3a"), text: hex("#e8e8e8") }
     }
 }
 
 /// `#rrggbb` (or `#rrggbbaa`) as a color; black when unreadable.
-pub(crate) fn hex(s: &str) -> Hsla {
+pub fn hex(s: &str) -> Hsla {
     Hsla::from_str(s).unwrap_or_else(|_| Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
 }
 
 /// Measures `text` in a CSS `font` (the canvas's `measureText`).
-pub(crate) type Measure<'a> = &'a dyn Fn(&str, &str) -> f32;
+pub type Measure<'a> = &'a dyn Fn(&str, &str) -> f32;
 
 /// The CSS font of a cell's text: BetterOffice gives points. A family
 /// with a bundled metric-compatible face is drawn, and measured (the
 /// `#####` rule, autofit), in that face: Calibri as Carlito.
-pub(crate) fn css_font(size_pt: f32, bold: bool, italic: bool, family: Option<&str>) -> String {
+pub fn css_font(size_pt: f32, bold: bool, italic: bool, family: Option<&str>) -> String {
     let px = size_pt * 4.0 / 3.0;
     let family = family.filter(|f| !f.is_empty()).map(|f| format!("\"{}\"", super::fonts::canvas_family(f).replace('"', ""))).unwrap_or_else(|| "system-ui".to_owned());
     format!("{}{}{px}px {family}", if italic { "italic " } else { "" }, if bold { "bold " } else { "" })
@@ -128,7 +128,7 @@ impl Pen {
 }
 
 /// Draws `list` into `p` in `palette`, measuring text with `measure`.
-pub(crate) fn paint(mut p: Painter, list: &DisplayList, palette: &Palette, measure: Measure) -> Painter {
+pub fn paint(mut p: Painter, list: &DisplayList, palette: &Palette, measure: Measure) -> Painter {
     // what an author filled: text over it keeps its own color
     let mut filled: Vec<Rect> = Vec::new();
     let mut pen = Pen::default();
@@ -238,7 +238,7 @@ pub(crate) fn paint(mut p: Painter, list: &DisplayList, palette: &Palette, measu
 }
 
 /// A drawing of `list` (for tests and callers without a painter of their own).
-pub(crate) fn drawing(list: &DisplayList, palette: &Palette, measure: Measure) -> Drawing {
+pub fn drawing(list: &DisplayList, palette: &Palette, measure: Measure) -> Drawing {
     paint(Painter::new(), list, palette, measure).finish()
 }
 

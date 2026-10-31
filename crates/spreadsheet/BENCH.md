@@ -1,12 +1,12 @@
 # Office: the spreadsheet's numbers
 
 Generated workbooks (a quarter of the cells text, the rest numbers), on an
-Apple-silicon Mac, measured by `office/xlsx/bench.rs`:
+Apple-silicon Mac, measured by `src/bench.rs`:
 
 ```
-cargo test -p rox --lib office::xlsx::bench::open_100k -- --ignored --nocapture --exact
-cargo test -p rox --lib office::xlsx::bench::open_1m -- --ignored --nocapture --exact
-cargo test -p rox --lib office::xlsx::bench::edit_10k_formulas -- --ignored --nocapture --exact
+cargo test -p buwiz-spreadsheet --lib bench::open_100k -- --ignored --nocapture --exact
+cargo test -p buwiz-spreadsheet --lib bench::open_1m -- --ignored --nocapture --exact
+cargo test -p buwiz-spreadsheet --lib bench::edit_10k_formulas -- --ignored --nocapture --exact
 ```
 
 Buwiz Bot's dev profile builds every dependency at `opt-level = 3`, so the engine
@@ -37,7 +37,7 @@ the engine itself is not the limit for editing.
 ## What the view does with it
 
 The first paint does not wait for `Workbook::open`
-(`office/xlsx/doc.rs`): it parses the model only, and only the top 256 KB
+(`src/doc.rs`): it parses the model only, and only the top 256 KB
 of each worksheet's rows, draws, and then a helper thread parses the whole
 model (the view switches to it) and builds the editable `Workbook`. Edits
 made before that wait for it and apply in order. A canvas drawing sets the

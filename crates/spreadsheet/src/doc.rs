@@ -1,4 +1,4 @@
-//! The workbook on the office worker ([`super::super::session`]): opens
+//! The workbook on the office worker ([`buwiz_office_kit::session`]): opens
 //! fast for the first paint, edits through BetterOffice's `Workbook`.
 //!
 //! BetterOffice's `Workbook::open` builds a collaboration document of the
@@ -18,12 +18,12 @@ use betteroffice_xlsx::{
 };
 
 use super::convert;
-use crate::office::session::Document;
+use buwiz_office_kit::session::Document;
 
 /// A rectangle of cells, inclusive: `(row, col)` corners.
-pub(crate) type Range = ((u32, u32), (u32, u32));
+pub type Range = ((u32, u32), (u32, u32));
 
-pub(crate) enum Cmd {
+pub enum Cmd {
     /// Draw `vp` of sheet `sheet` at `scale` (the latest request wins).
     View { sheet: usize, vp: Viewport, scale: f32 },
     /// Show sheet `i` (it becomes the active sheet, saved with the file).
@@ -54,7 +54,7 @@ pub(crate) enum Cmd {
 /// points (`None`: the default, or for a row its automatic height), or
 /// hidden / shown.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Dim {
+pub enum Dim {
     Size(Option<f64>),
     Hidden(bool),
 }
@@ -62,7 +62,7 @@ pub(crate) enum Dim {
 /// A cell's shown text as the grid draws it: its CSS font, the text (a
 /// line of it) and its indent level.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FitText {
+pub struct FitText {
     pub font: String,
     pub text: String,
     pub indent: u32,
@@ -70,7 +70,7 @@ pub(crate) struct FitText {
 
 /// The workbook's shape the UI lays out with.
 #[derive(Clone)]
-pub(crate) struct Meta {
+pub struct Meta {
     /// Bumped by every change: lists drawn before it are stale.
     pub rev: u64,
     pub sheets: Vec<String>,
@@ -86,7 +86,7 @@ pub(crate) struct Meta {
     pub history: HistoryState,
 }
 
-pub(crate) enum Out {
+pub enum Out {
     Meta(Meta),
     /// A drawn window, and the merged ranges in it (a selection grows
     /// over them).
@@ -118,7 +118,7 @@ enum Engine {
     ReadOnly(Box<WorkbookModel>),
 }
 
-pub(crate) struct Book {
+pub struct Book {
     engine: Engine,
     active: usize,
     rev: u64,
@@ -279,7 +279,7 @@ impl Book {
                     let style = cell.style.unwrap_or(0);
                     let font = model.styles.font_for(style);
                     let size = font.and_then(|f| f.size_pt).unwrap_or(11.0) as f32;
-                    let css = crate::office::draw::css_font(size, font.is_some_and(|f| f.bold), font.is_some_and(|f| f.italic), font.and_then(|f| f.name.as_deref()));
+                    let css = buwiz_office_kit::draw::css_font(size, font.is_some_and(|f| f.bold), font.is_some_and(|f| f.italic), font.and_then(|f| f.name.as_deref()));
                     // the renderer indents left- and right-aligned text only
                     let a = model.styles.alignment_for(style);
                     let indent = a.filter(|a| a.h.is_some_and(|h| matches!(h.as_sml(), "left" | "right"))).and_then(|a| a.indent).unwrap_or(0);
@@ -626,7 +626,7 @@ mod tests {
         outs
     }
 
-    pub(crate) fn sample() -> Vec<u8> {
+    pub fn sample() -> Vec<u8> {
         let mut sheet = betteroffice_xlsx::Sheet::new("Data");
         for r in 0..5u32 {
             sheet.set_cell(CellRef::new(r, 0), betteroffice_xlsx::Cell { value: CellValue::Number { value: (r + 1) as f64 }, ..Default::default() });
@@ -785,17 +785,17 @@ mod tests {
     #[test]
     fn the_showcase_total_fits_its_column_in_calibris_metrics() {
         use nsh_core::canvas::CanvasOp;
-        let seed = include_bytes!("../../../../server/src/office/seeds/showcase.xlsx");
+        let seed = include_bytes!("../../../server/src/office/seeds/showcase.xlsx");
         let mut book = Book::open(seed.to_vec(), Path::new("showcase.xlsx")).unwrap();
         ready(&mut book);
         let Some(Out::List { list, .. }) = book.draw(0, Viewport { x: 0.0, y: 0.0, width: 800.0, height: 400.0 }, 1.0) else { panic!("a list") };
-        let measure = |font: &str, text: &str| crate::office::fonts::canvas_width(font, text);
-        let d = crate::office::draw::drawing(&list, &crate::office::draw::Palette::light(), &measure);
+        let measure = |font: &str, text: &str| buwiz_office_kit::fonts::canvas_width(font, text);
+        let d = buwiz_office_kit::draw::drawing(&list, &buwiz_office_kit::draw::Palette::light(), &measure);
         let texts: Vec<String> = d.ops.iter().filter_map(|op| if let CanvasOp::FillText { text, .. } = op { Some(text.to_string()) } else { None }).collect();
         assert!(texts.iter().any(|t| t == "$1,504,750.00"), "{texts:?}");
         assert!(!texts.iter().any(|t| !t.is_empty() && t.chars().all(|c| c == '#')), "{texts:?}");
         // about 87 pixels, against the 99 the column leaves its text
-        let w = measure(&crate::office::draw::css_font(11.0, true, false, Some("Calibri")), "$1,504,750.00");
+        let w = measure(&buwiz_office_kit::draw::css_font(11.0, true, false, Some("Calibri")), "$1,504,750.00");
         assert!(w > 80.0 && w < 95.0, "{w}");
     }
 

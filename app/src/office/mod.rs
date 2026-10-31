@@ -1,7 +1,7 @@
-//! Office files in native views: Excel (`xlsx/`) and Word (`docx/`),
-//! PowerPoint later. Each format is a [`session::Document`] on a worker
-//! thread, drawn from BetterOffice's display lists ([`draw`],
-//! `docx/draw.rs`).
+//! Office files in native views: Excel (`crates/spreadsheet`) and Word
+//! (`crates/word`), PowerPoint later. Each format is a
+//! [`session::Document`] on a worker thread, drawn from BetterOffice's
+//! display lists ([`draw`], Word's `draw.rs`).
 //!
 //! The viewer routes a file here by its extension while the
 //! `office.native` setting is on (the default; kept in `/state/rox-office`):
@@ -11,16 +11,16 @@
 //! go through `/file/write`, so they become versions as the web editor's
 //! did).
 
-pub(crate) mod docx;
-pub(crate) mod draw;
-pub(crate) mod fonts;
-pub(crate) mod session;
-// The shared controls, wired into the Word view's chrome next (B2, B3).
-#[allow(dead_code)]
-pub(crate) mod ui;
+// The views are library crates (`crates/`): this module routes a file to
+// them, owns the open document's lifetime and hosts them (`host`).
+#[cfg(test)]
+pub(crate) use buwiz_office_kit::draw;
+pub(crate) use buwiz_office_kit::{fonts, session, ui};
+pub(crate) use buwiz_spreadsheet as xlsx;
+pub(crate) use buwiz_word as docx;
+mod host;
 #[cfg(test)]
 mod ui_tests;
-pub(crate) mod xlsx;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -54,6 +54,8 @@ pub(crate) struct Ui {
 
 impl Ui {
     pub(crate) fn new() -> Ui {
+        // the views reach the app (and this state) from here on
+        host::install();
         Ui {
             native: signal(true),
             key: signal(String::new()),

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 /// A face of the manifest (`BUNDLED_FONTS`).
 #[derive(Debug, PartialEq)]
-pub(crate) struct BundledFace {
+pub struct BundledFace {
     /// Its family name, as CoreText registers it.
     pub family: &'static str,
     /// The Office family it is metric-compatible with.
@@ -153,7 +153,7 @@ const ALIASES: &[(&str, &str)] = &[
 
 /// `resolveMetricCompatFamily`: the bundled family laid out with
 /// `family`'s metrics.
-pub(crate) fn metric_compat_family(family: &str) -> Option<&'static str> {
+pub fn metric_compat_family(family: &str) -> Option<&'static str> {
     let key = family.trim().to_lowercase();
     let key = ALIASES.iter().find(|(from, _)| *from == key).map_or(key.as_str(), |(_, to)| to);
     // the JS map is filled in manifest order: the last face wins
@@ -162,7 +162,7 @@ pub(crate) fn metric_compat_family(family: &str) -> Option<&'static str> {
 
 /// `resolveMetricCompatFace`: the face of that family in the style, else
 /// its regular one.
-pub(crate) fn metric_compat_face(family: &str, bold: bool, italic: bool) -> Option<&'static BundledFace> {
+pub fn metric_compat_face(family: &str, bold: bool, italic: bool) -> Option<&'static BundledFace> {
     let family = metric_compat_family(family)?;
     let faces = || BUNDLED.iter().filter(move |face| face.family == family);
     faces().find(|face| face.bold == bold && face.italic == italic).or_else(|| faces().find(|face| !face.bold && !face.italic))
@@ -216,7 +216,7 @@ fn variant_of(family: &str, italic: bool, heavy: bool) -> Option<&'static Bundle
 /// `resolveLastResortFace`: the face that stands in for a family with no
 /// metric-compatible one (`word`: Arial is the sans fallback, as Word's;
 /// else Calibri, as PowerPoint's).
-pub(crate) fn last_resort_face(family: &str, bold: bool, italic: bool, word: bool) -> Option<&'static BundledFace> {
+pub fn last_resort_face(family: &str, bold: bool, italic: bool, word: bool) -> Option<&'static BundledFace> {
     if let Some(face) = variant_of(family, italic, false).or_else(|| variant_of(family, italic, true)) {
         return Some(face);
     }
@@ -242,7 +242,7 @@ pub(crate) fn last_resort_face(family: &str, bold: bool, italic: bool, word: boo
 /// The bundled faces a Word family measures with, in the web registry's
 /// order (`resolveChain`, after the document's embedded face): the
 /// metric-compatible face, then the last resort, each once.
-pub(crate) fn word_chain(family: &str, bold: bool, italic: bool) -> Vec<&'static BundledFace> {
+pub fn word_chain(family: &str, bold: bool, italic: bool) -> Vec<&'static BundledFace> {
     let mut chain: Vec<&'static BundledFace> = Vec::new();
     for face in [metric_compat_face(family, bold, italic), last_resort_face(family, bold, italic, true)].into_iter().flatten() {
         if !chain.contains(&face) {
@@ -254,21 +254,21 @@ pub(crate) fn word_chain(family: &str, bold: bool, italic: bool) -> Vec<&'static
 
 /// The face text in `script` falls back to (the web asks for the regular
 /// one, whatever the run's style).
-pub(crate) fn script_face(script: &str) -> Option<&'static BundledFace> {
+pub fn script_face(script: &str) -> Option<&'static BundledFace> {
     script_fallback_face(script, false, false)
 }
 
 /// The family the canvas draws `family` with: its bundled
 /// metric-compatible one (Calibri is drawn and measured as Carlito), else
 /// itself.
-pub(crate) fn canvas_family(family: &str) -> &str {
+pub fn canvas_family(family: &str) -> &str {
     metric_compat_family(family).unwrap_or(family)
 }
 
 /// The folder holding the font files: `ROX_OFFICE_FONTS`, the bundle's
 /// `Resources/fonts/office`, this checkout's node_modules (dev builds and
 /// tests), or the dev bundle's. `None` (logged once) when none has them.
-pub(crate) fn dir() -> Option<&'static Path> {
+pub fn dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
         let mut dirs: Vec<PathBuf> = Vec::new();
@@ -280,7 +280,7 @@ pub(crate) fn dir() -> Option<&'static Path> {
         {
             dirs.push(contents.join("Resources/fonts/office"));
         }
-        dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/node_modules/@betteroffice/fonts/assets"));
+        dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/node_modules/@betteroffice/fonts/assets"));
         if let Some(home) = std::env::var_os("HOME") {
             dirs.push(PathBuf::from(home).join("Applications/Rox.app/Contents/Resources/fonts/office"));
         }
@@ -297,7 +297,7 @@ pub(crate) fn dir() -> Option<&'static Path> {
 type Read = HashMap<&'static str, Option<Arc<[u8]>>>;
 
 /// The bytes of `face`'s file, read once; `None` when it isn't there.
-pub(crate) fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
+pub fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
     static READ: OnceLock<Mutex<Read>> = OnceLock::new();
     let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     read.entry(face.file).or_insert_with(|| std::fs::read(dir()?.join(face.file)).ok().map(Arc::from)).clone()
@@ -307,7 +307,7 @@ pub(crate) fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
 /// once (a later caller waits for the first). Before anything draws them:
 /// the canvas caches the font each family resolved to. About 1 ms a file
 /// once CoreText is warm.
-pub(crate) fn register() {
+pub fn register() {
     use objc2_core_foundation::{CFRetained, CFURL};
     use objc2_core_text::{CTFontManagerRegisterFontsForURL, CTFontManagerScope};
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -333,14 +333,80 @@ pub(crate) fn register() {
     });
 }
 
+/// A face the shaper holds, as the canvas names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Face {
+    /// The family the canvas names: a bundled one, or installed (a
+    /// stand-in's for a missing one).
+    pub family: String,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl Face {
+    /// The CSS font the canvas draws this face with at `px`.
+    pub fn css(&self, px: f64) -> String {
+        format!("{}{}{px}px \"{}\"", if self.italic { "italic " } else { "" }, if self.bold { "bold " } else { "" }, self.family)
+    }
+}
+
+/// `family` as nsh's canvas makes it (`nsh-platform-macos` `family_font`
+/// and `make_font`): `None` when it isn't installed.
+pub fn installed(family: &str, bold: bool, italic: bool) -> Option<objc2_core_foundation::CFRetained<objc2_core_text::CTFont>> {
+    use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
+    use objc2_core_text::{CTFont, CTFontDescriptor, CTFontSymbolicTraits, kCTFontFamilyNameAttribute, kCTFontTraitsAttribute, kCTFontWeightTrait};
+    let name = CFString::from_str(family);
+    // NSFontWeightBold and NSFontWeightRegular
+    let weight = CFNumber::new_f64(if bold { 0.4 } else { 0.0 });
+    // SAFETY: immutable CoreText constants; the values have the types
+    // CoreText documents for their keys.
+    let font = unsafe {
+        let traits = CFDictionary::<CFString, CFType>::from_slices(&[kCTFontWeightTrait], &[weight.as_ref()]);
+        let attributes = CFDictionary::<CFString, CFType>::from_slices(&[kCTFontFamilyNameAttribute, kCTFontTraitsAttribute], &[name.as_ref(), traits.as_ref()]);
+        let descriptor = CTFontDescriptor::with_attributes(attributes.as_opaque());
+        CTFont::with_font_descriptor(&descriptor, 12.0, std::ptr::null())
+    };
+    // SAFETY: a valid font.
+    if !unsafe { font.family_name() }.to_string().eq_ignore_ascii_case(family) {
+        return None;
+    }
+    if !italic {
+        return Some(font);
+    }
+    let it = CTFontSymbolicTraits::TraitItalic;
+    // SAFETY: a valid font; size 0 and a null matrix keep the font's.
+    Some(unsafe { font.copy_with_symbolic_traits(0.0, std::ptr::null(), it, it) }.unwrap_or(font))
+}
+
 /// The width the canvas measures `text` in CSS font `font` with, by the
 /// lookup nsh's macOS canvas makes (family and weight, italic by trait).
-#[cfg(test)]
-pub(crate) fn canvas_width(font: &str, text: &str) -> f32 {
+#[cfg(any(test, feature = "testing"))]
+pub fn canvas_width(font: &str, text: &str) -> f32 {
     register();
     let font = nsh_core::canvas::CanvasFont::parse(font).unwrap_or_default();
-    let face = super::docx::fonts::Face { family: font.family.as_deref().unwrap_or("Helvetica").to_owned(), bold: font.weight >= 600, italic: font.italic };
-    super::docx::fonts::coretext_width(&face, font.size.0 as f64, text) as f32
+    let face = Face { family: font.family.as_deref().unwrap_or("Helvetica").to_owned(), bold: font.weight >= 600, italic: font.italic };
+    coretext_width(&face, font.size.0 as f64, text) as f32
+}
+
+/// The width CoreText sets `text` in, in `face` at `px` (the canvas's
+/// `measureText`), for checking the shaper against it.
+#[cfg(any(test, feature = "testing"))]
+pub fn coretext_width(face: &Face, px: f64, text: &str) -> f64 {
+    use objc2_core_foundation::{CFAttributedString, CFMutableAttributedString, CFRange, CFString};
+    use objc2_core_text::{CTLine, kCTFontAttributeName};
+    register();
+    let Some(font) = installed(&face.family, face.bold, face.italic) else { return 0.0 };
+    // SAFETY: a valid font; size, null matrix and descriptor as documented.
+    let font = unsafe { font.copy_with_attributes(px, std::ptr::null(), None) };
+    let string = CFMutableAttributedString::new(None, 0).expect("attributed string");
+    // SAFETY: a valid mutable string; the font attribute takes a CTFont.
+    unsafe {
+        CFMutableAttributedString::replace_string(Some(&string), CFRange { location: 0, length: 0 }, Some(&CFString::from_str(text)));
+        let range = CFRange { location: 0, length: CFAttributedString::length(&string) };
+        CFMutableAttributedString::set_attribute(Some(&string), range, Some(kCTFontAttributeName), Some(font.as_ref()));
+        let line = CTLine::with_attributed_string(&string);
+        line.typographic_bounds(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+    }
 }
 
 #[cfg(test)]

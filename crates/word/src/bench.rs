@@ -1,6 +1,6 @@
-//! The numbers in `office/docx/BENCH.md`: a generated 200-page document
+//! The numbers in `BENCH.md`: a generated 200-page document
 //! through the view's own path. Ignored by default:
-//! `cargo test -p rox --lib office::docx::bench -- --ignored --nocapture`
+//! `cargo test -p buwiz-word --lib bench -- --ignored --nocapture`
 //! (dependencies build optimized even in dev builds, so the engine's
 //! numbers are release numbers).
 
@@ -238,7 +238,7 @@ fn typing_200() {
 
 fn typing(bytes: Vec<u8>, local: bool) {
     use super::doc::{Cmd, Move, Word};
-    use crate::office::session::Document;
+    use buwiz_office_kit::session::Document;
     let t = Instant::now();
     let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();
     let (outs, _) = w.tick();
