@@ -389,10 +389,12 @@ impl Review {
 }
 
 /// A plugin's command line as typed: leading `VAR=value` words are its
-/// environment, then the command and its arguments (no quoting).
+/// environment, then the command and its arguments. Words split as a shell
+/// splits them: `"…"` and `'…'` keep spaces (a path inside `Buwiz Bot.app`),
+/// and `\` escapes the next character. An unclosed quote is no command line.
 pub fn command_line(line: &str) -> Option<(Option<Value>, String, Vec<String>)> {
     let mut env = serde_json::Map::new();
-    let mut words = line.split_whitespace().peekable();
+    let mut words = shell_words(line)?.into_iter().peekable();
     while let Some(w) = words.peek() {
         let Some((k, v)) = w.split_once('=') else { break };
         let name_ok = !k.is_empty() && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
@@ -402,8 +404,73 @@ pub fn command_line(line: &str) -> Option<(Option<Value>, String, Vec<String>)> 
         env.insert(k.to_owned(), json!(v));
         words.next();
     }
-    let command = words.next()?.to_owned();
-    Some(((!env.is_empty()).then(|| Value::Object(env)), command, words.map(str::to_owned).collect()))
+    let command = words.next()?;
+    Some(((!env.is_empty()).then(|| Value::Object(env)), command, words.collect()))
+}
+
+/// `line` split into words: whitespace separates them outside quotes;
+/// `'…'` is literal, `"…"` takes `\"` and `\\`. Outside quotes `\` escapes
+/// only a space, a quote or `\` and is kept before anything else, so a
+/// Windows path (`C:\Program Files\…`, quoted) keeps its separators.
+/// `None` for an unclosed quote or a trailing `\`.
+fn shell_words(line: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\') => word.push(c),
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next()? {
+                    c @ (' ' | '\t' | '"' | '\'' | '\\') => word.push(c),
+                    c => {
+                        word.push('\\');
+                        word.push(c);
+                    }
+                }
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
 }
 
 /// `POST /v1/host/plugins/inspect` for `command args` with `env`: the
@@ -699,6 +766,28 @@ mod tests {
         let (env, cmd, args) = command_line("node a=b").unwrap();
         assert_eq!((env, cmd.as_str(), args), (None, "node", vec!["a=b".to_owned()]));
         assert!(command_line("  ").is_none());
+        // a path with a space (an app bundle, Program Files), quoted or
+        // escaped, stays one word on every platform's path style
+        let unix = "/opt/Buwiz Bot/bin/plugin";
+        let (_, cmd, args) = command_line(&format!("\"{unix}\" mcp")).unwrap();
+        assert_eq!((cmd.as_str(), args), (unix, vec!["mcp".to_owned()]));
+        let (_, cmd, _) = command_line(&format!("{} mcp", unix.replace(' ', "\\ "))).unwrap();
+        assert_eq!(cmd, unix);
+        let windows = r"C:\Program Files\Buwiz Bot\plugin.exe";
+        let (_, cmd, _) = command_line(&format!("\"{windows}\" mcp")).unwrap();
+        assert_eq!(cmd, windows);
+        // an unquoted Windows path keeps its separators
+        let (_, cmd, _) = command_line(r"C:\tools\plugin.exe mcp").unwrap();
+        assert_eq!(cmd, r"C:\tools\plugin.exe");
+        // an env value with spaces (a JSON upstream) in single quotes
+        let (env, cmd, _) = command_line(r#"GWS_UPSTREAM='{"command": "uvx"}' /bin/gws mcp"#).unwrap();
+        assert_eq!((env, cmd.as_str()), (Some(json!({"GWS_UPSTREAM": "{\"command\": \"uvx\"}"})), "/bin/gws"));
+        // double quotes take \" and \\; other escapes stay as typed
+        let (_, _, args) = command_line(r#"x "a \"b\" \\ \n""#).unwrap();
+        assert_eq!(args, vec![r#"a "b" \ \n"#.to_owned()]);
+        // an unclosed quote or a trailing backslash is not a command line
+        assert!(command_line("\"/bin/x mcp").is_none());
+        assert!(command_line("/bin/x \\").is_none());
         // the environment goes with the install of what was reviewed
         let b = Lifecycle::default();
         let r = inspect(&b, "node", &[], Some(json!({"HOME": "/tmp/h"}))).unwrap();
