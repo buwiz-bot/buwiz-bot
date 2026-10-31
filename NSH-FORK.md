@@ -49,7 +49,9 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 ## Upstreaming a topic
 
 1. `scripts/nsh-fork rebase pr/<topic> --push` so it applies to today's
-   upstream.
+   upstream. It starts from the fork's branch: to send fixes made on the
+   local branch (in the scratch worktree), commit them and run it again
+   with `--keep-local`.
 2. `gh pr create --repo longbridge/nsh --head hexuria:pr/<topic>` with
    upstream's PR template (`## Public API` for new API, before/after
    numbers for hot paths). A topic that depends on another goes up after it.
