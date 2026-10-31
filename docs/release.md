@@ -33,11 +33,11 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 - `CFBundleShortVersionString`: `app/Cargo.toml`'s `[package] version`.
   The tag must be `v` plus that version (CI checks). `CFBundleVersion` is
   the same, or `BUILD_NUMBER` (CI passes the run number).
-- `LSMinimumSystemVersion`: the highest `minos` among the bundled binaries
-  (11.0 today, rustc's default for arm64), or `MIN_MACOS`. That is the
-  oldest macOS the binaries load on, not the oldest anyone has tested:
-  set `MIN_MACOS` to the oldest version actually tried before a public
-  release.
+- `LSMinimumSystemVersion`: 13.0 (`MIN_MACOS`), as the filing app, until
+  older versions are tested. `build.sh` refuses a value below any bundled
+  binary's `minos` (11.0 today, rustc's default for arm64): the oldest
+  macOS the binaries load on at all.
+- `CFBundleURLTypes`: the `buwiz` scheme only.
 - `NSHumanReadableCopyright`: "Copyright © Goldcoders Corp".
 - `NSAppleEventsUsageDescription`: the broker drives Reminders and Finder
   through `osascript`; macOS shows this text when it asks.
@@ -67,10 +67,10 @@ Left out on purpose, after inspecting the bundle:
   the bundle JITs. nsh's QuickJS (`quickjs-jit`) is the interpreter (no
   `MAP_JIT` or executable mappings in it); WKWebView's JIT runs in
   WebKit's own processes, which carry Apple's entitlements; the bundled
-  broker runs with `--no-node`, so no Node is spawned. ra-jit-live
-  reserves its patch area with no access and only makes it executable
-  when a dev daemon sends a patch, which a release never gets (it fails
-  quietly under the hardened runtime).
+  broker runs with `--no-node`, so no Node is spawned. ra-jit-live (live
+  patching) is linked in but only started in dev builds
+  (`app/src/live.rs`), so a release reserves no patch area and writes no
+  `~/.cache/ra-jit`.
 - `cs.disable-library-validation`: only system libraries and frameworks
   are loaded (`dlopen` of AVFoundation and AVKit included).
 - No App Sandbox: the app runs local tools and reads the user's files.
@@ -88,7 +88,7 @@ scripts/release/dmg.sh -
 scripts/release/manifest.sh
 
 # a real release
-export DEVELOPER_ID_APPLICATION="Developer ID Application: Goldcoders Corp (TEAMID)"
+export DEVELOPER_ID_APPLICATION="Developer ID Application: Goldcoders Corp (5KZ8MD34QW)"  # confirm with owner
 export NOTARY_KEY_ID=... NOTARY_ISSUER_ID=... NOTARY_KEY_P8="$(base64 -i AuthKey_XXXX.p8)"
 scripts/release/sign.sh
 scripts/release/notarize.sh "dist/Buwiz Bot.app"
@@ -134,7 +134,7 @@ Repository secrets (Settings › Secrets and variables › Actions):
 | --- | --- |
 | `MACOS_CERT_P12` | The Developer ID Application certificate and its private key, exported as `.p12`, base64-encoded: `base64 -i cert.p12` |
 | `MACOS_CERT_PASSWORD` | The `.p12`'s export password |
-| `DEVELOPER_ID_APPLICATION` | Optional. The identity's full name, `Developer ID Application: Goldcoders Corp (TEAMID)`; the run fails if the `.p12` holds another |
+| `DEVELOPER_ID_APPLICATION` | Optional. The identity's full name, `Developer ID Application: Goldcoders Corp (5KZ8MD34QW)` (the filing app's team; confirm with owner); the run fails if the `.p12` holds another |
 | `NOTARY_KEY_ID` | The App Store Connect API key's Key ID |
 | `NOTARY_ISSUER_ID` | The API keys page's Issuer ID |
 | `NOTARY_KEY_P8` | The key's `AuthKey_<KeyID>.p8`, base64-encoded: `base64 -i AuthKey_XXXX.p8` |

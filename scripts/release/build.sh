@@ -26,8 +26,8 @@
 #   APP_ICON=<path>           AppIcon.icns, or a 1024x1024 PNG to make it
 #                             from (default app/resources/AppIcon.icns, else
 #                             app/resources/AppIcon.png)
-#   MIN_MACOS=<x.y>           LSMinimumSystemVersion (default: the highest
-#                             minos among the bundled binaries)
+#   MIN_MACOS=<x.y>           LSMinimumSystemVersion (default 13.0, as the
+#                             filing app; never below a bundled binary's minos)
 #   BUILD_NUMBER=<n>          CFBundleVersion (default: the version)
 set -euo pipefail
 
@@ -36,7 +36,7 @@ source "$(dirname "$0")/lib.sh"
 # The identity; keep in step with app/bundle-dev.sh.
 APP_NAME="Buwiz Bot"
 BUNDLE_ID="com.buwiz.bot"
-URL_SCHEMES=(buwiz rox)
+URL_SCHEMES=(buwiz)
 COPYRIGHT="Copyright © Goldcoders Corp"
 
 [ "$(uname -m)" = arm64 ] || die "release builds are Apple silicon only (arm64)"
@@ -174,8 +174,8 @@ else
 WARN
 fi
 
-# LSMinimumSystemVersion: no lower than any bundled binary's minos, which
-# is the oldest macOS the binaries load on at all.
+# LSMinimumSystemVersion: 13.0 until older versions are tested, and never
+# lower than any bundled binary's minos (the oldest macOS it loads on).
 minos_of() { vtool -show-build "$1" 2>/dev/null | awk '$1=="minos"{print $2; exit}'; }
 HIGHEST=0
 while IFS= read -r -d '' f; do
@@ -184,7 +184,7 @@ while IFS= read -r -d '' f; do
   [ -n "$v" ] || continue
   [ "$(printf '%s\n%s\n' "$HIGHEST" "$v" | sort -V | tail -1)" = "$v" ] && HIGHEST="$v"
 done < <(find "$APP" -type f -perm -u+x -print0)
-MIN="${MIN_MACOS:-$HIGHEST}"
+MIN="${MIN_MACOS:-13.0}"
 [ "$(printf '%s\n%s\n' "$MIN" "$HIGHEST" | sort -V | head -1)" = "$HIGHEST" ] \
   || die "MIN_MACOS=$MIN is below a bundled binary's minos ($HIGHEST)"
 
