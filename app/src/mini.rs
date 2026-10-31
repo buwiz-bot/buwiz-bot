@@ -32,6 +32,12 @@ use crate::live::store;
 #[derive(Clone)]
 pub(crate) struct OutOfSight(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
 
+/// Whether the app placed under it owns the window's keys now
+/// (`keys::app_owns_keys`); provided by the full-screen layer. Without it
+/// (a card in the chat) the app comes after Rox's keys.
+#[derive(Clone)]
+pub(crate) struct OwnsKeys(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
+
 /// A turn card's live widget: `app` is the module name (`R<n>`); `h` the
 /// card body's height, or `<= 0` to fill its parent. The `source` prop
 /// updates as the store compiles. `design` is the size the app lays out
@@ -47,8 +53,10 @@ pub(crate) fn mini_app(
     let name = app.to_owned();
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
+    let owns = use_context::<OwnsKeys>();
     native("rox/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
         .prop("design", move || match &design {
             Some(d) => {
                 let (w, h) = d();
@@ -380,6 +388,10 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
     provide_context(OutOfSight(std::rc::Rc::new(move || {
         store().mini_full.with(|v| v.last().map(|o| o.n)) != Some(n)
     })));
+    // on top with nothing of Rox's over it, its keymap comes first
+    provide_context(OwnsKeys(std::rc::Rc::new(move || {
+        store().mini_full.with(|v| v.last().map(|o| o.n)) == Some(n) && crate::keys::app_owns_keys(&crate::keys::Shown::now())
+    })));
     let k2 = key.clone();
     let k3 = key.clone();
     view()
@@ -647,7 +659,7 @@ mod imp {
 
     use nsh_core::JsonValue;
     use nsh_platform_macos::{
-        AppOptions, AppView, ComponentContext, NativeComponent,
+        AppOptions, AppView, ComponentContext, KeyPrecedence, NativeComponent,
         objc2::{
             DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
             rc::Retained,
@@ -1132,6 +1144,9 @@ mod imp {
         fit: Retained<FitView>,
         view: Rc<AppView>,
         last: Option<(String, String)>,
+        /// Where the app's keymap stands with Rox's (`keys_first` prop):
+        /// after it unless the app owns the keys.
+        keys: KeyPrecedence,
         /// A v1 app's open: its session and bridge.
         v1: Option<crate::mini_v1::native::V1Open>,
     }
@@ -1168,10 +1183,12 @@ mod imp {
             );
             fit.addSubview(&app);
             *fit.ivars().app.borrow_mut() = Some(view.clone());
+            view.set_key_precedence(KeyPrecedence::Last);
             MiniApp {
                 fit,
                 view,
                 last: None,
+                keys: KeyPrecedence::Last,
                 v1: None,
             }
         }
@@ -1182,6 +1199,7 @@ mod imp {
             self.view.view().removeFromSuperview();
             self.fit.addSubview(&view.view());
             *self.fit.ivars().app.borrow_mut() = Some(view.clone());
+            view.set_key_precedence(self.keys);
             self.view = view;
             let (w, h) = self.fit.ivars().design.get();
             self.set_design((w > 0.0 && h > 0.0).then_some((w, h)));
@@ -1358,6 +1376,12 @@ mod imp {
                 {
                     s.ready();
                 }
+                return;
+            }
+            if name == "keys_first" {
+                let first = value.and_then(|v| v.as_bool()).unwrap_or(false);
+                self.keys = if first { KeyPrecedence::First } else { KeyPrecedence::Last };
+                self.view.set_key_precedence(self.keys);
                 return;
             }
             if name == "paused" {

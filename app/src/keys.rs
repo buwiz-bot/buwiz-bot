@@ -96,37 +96,119 @@ impl Scope {
 
     /// Whether the scope is open (tracked: the bindings follow it).
     fn open(self) -> bool {
-        let st = store();
-        let viewing = || st.viewing.get();
+        self.open_in(&Shown::now())
+    }
+
+    /// Whether the scope is open with `s` on screen.
+    fn open_in(self, s: &Shown) -> bool {
         match self {
-            Scope::Recording => st.key_record.get().is_some(),
-            Scope::Menu => st.ctx.get().is_some(),
-            Scope::Palette => st.palette.get(),
-            Scope::SheetEdit => crate::office::xlsx::edit::editing(),
-            Scope::Sheet => crate::office::xlsx::edit::navigating(),
-            Scope::Doc => crate::office::docx::view::editing(),
-            Scope::ViewerTable => viewing().is_some_and(|v| v.kind == "table") && !crate::office::showing(),
-            Scope::Viewer => viewing().is_some(),
-            Scope::MiniApp => !st.mini_full.with(Vec::is_empty),
-            Scope::Lightbox => !st.light_items.get().is_empty(),
-            Scope::PluginsSearch => st.plugins_open.get() && st.drop_open(),
-            Scope::Plugins => st.plugins_open.get(),
-            Scope::Settings => st.settings_open.get(),
-            Scope::ComposerPopup => Scope::Chat.open() && !crate::slash::rows().is_empty(),
+            Scope::Recording => s.recording,
+            Scope::Menu => s.menu,
+            Scope::Palette => s.palette,
+            Scope::SheetEdit => s.sheet_edit,
+            Scope::Sheet => s.sheet,
+            Scope::Doc => s.doc,
+            Scope::ViewerTable => s.table && !s.office,
+            Scope::Viewer => s.viewer,
+            Scope::MiniApp => s.mini_full,
+            Scope::Lightbox => s.lightbox,
+            Scope::PluginsSearch => s.plugins && s.plugins_drop,
+            Scope::Plugins => s.plugins,
+            Scope::Settings => s.settings,
+            Scope::ComposerPopup => Scope::Chat.open_in(s) && s.popup,
             Scope::Chat => {
-                !st.palette.get()
-                    && viewing().is_none()
-                    && st.mini_full.with(Vec::is_empty)
-                    && st.light_items.get().is_empty()
-                    && !st.plugins_open.get()
-                    && !st.settings_open.get()
-                    && st.bot_details.get().is_none()
-                    && st.app_details.get().is_none()
-                    && !st.bot_modal.get()
+                !s.palette
+                    && !s.viewer
+                    && !s.mini_full
+                    && !s.lightbox
+                    && !s.plugins
+                    && !s.settings
+                    && !s.bot_details
+                    && !s.app_details
+                    && !s.bot_modal
             }
             Scope::Global => true,
         }
     }
+}
+
+/// What is on screen, as far as the keys care: what opens the scopes, and
+/// what else shows over the full-screen apps.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct Shown {
+    recording: bool,
+    menu: bool,
+    palette: bool,
+    sheet_edit: bool,
+    sheet: bool,
+    doc: bool,
+    /// The viewer shows a table…
+    table: bool,
+    /// …in a native Office view.
+    office: bool,
+    viewer: bool,
+    mini_full: bool,
+    lightbox: bool,
+    plugins: bool,
+    plugins_drop: bool,
+    settings: bool,
+    /// The composer's `/` and `@` popup has rows.
+    popup: bool,
+    bot_details: bool,
+    app_details: bool,
+    bot_modal: bool,
+    /// A layer over the full-screen apps that is no scope of its own: a v1
+    /// app's print preview, a group prompt, the color editor, a link's ask.
+    over_apps: bool,
+}
+
+impl Shown {
+    /// Now (tracked).
+    pub(crate) fn now() -> Shown {
+        let st = store();
+        let viewing = st.viewing.get();
+        let mut s = Shown {
+            recording: st.key_record.get().is_some(),
+            menu: st.ctx.get().is_some(),
+            palette: st.palette.get(),
+            sheet_edit: crate::office::xlsx::edit::editing(),
+            sheet: crate::office::xlsx::edit::navigating(),
+            doc: crate::office::docx::view::editing(),
+            table: viewing.as_ref().is_some_and(|v| v.kind == "table"),
+            office: crate::office::showing(),
+            viewer: viewing.is_some(),
+            mini_full: !st.mini_full.with(Vec::is_empty),
+            lightbox: !st.light_items.get().is_empty(),
+            plugins: st.plugins_open.get(),
+            plugins_drop: st.drop_open(),
+            settings: st.settings_open.get(),
+            popup: false,
+            bot_details: st.bot_details.get().is_some(),
+            app_details: st.app_details.get().is_some(),
+            bot_modal: st.bot_modal.get(),
+            over_apps: st.v1.preview.with(Option::is_some)
+                || st.group_prompt.get().is_some()
+                || st.color_edit.get().is_some()
+                || st.link_ask.get().is_some(),
+        };
+        // the popup's rows are read only while the chat is the open scope
+        s.popup = Scope::Chat.open_in(&s) && !crate::slash::rows().is_empty();
+        s
+    }
+
+    fn open(&self) -> Vec<Scope> {
+        ORDER.iter().copied().filter(|sc| sc.open_in(self)).collect()
+    }
+}
+
+/// Whether the full-screen app on top owns the keys: it fills the content
+/// area and nothing of Rox's is over it (the viewer, a modal, a menu, the
+/// palette). It then takes every chord its own keymap binds, before Rox's
+/// (`KeyPrecedence::First`); Rox keeps the chords it leaves. Any other
+/// hosted app — a card in the chat, a full-screen app under another or
+/// under the viewer — comes after Rox (`KeyPrecedence::Last`).
+pub(crate) fn app_owns_keys(s: &Shown) -> bool {
+    s.mini_full && !s.over_apps && !s.bot_details && s.open() == [Scope::MiniApp, Scope::Global]
 }
 
 /// A menu bar item that owns a command's default key until the user
@@ -732,13 +814,14 @@ pub(crate) fn conflicts(c: &Command, key: &str) -> Vec<&'static Command> {
         .collect()
 }
 
-/// The commands that own `k` in the open scopes, innermost first.
+/// The command that owns `k` in the open scopes, innermost first.
 fn owners(k: Keystroke, open: &[Scope]) -> Option<&'static Command> {
-    open.iter().find_map(|s| {
-        COMMANDS
-            .iter()
-            .find(|c| c.scope == *s && keys_of_untracked(c).iter().any(|ck| parse(ck) == Some(k)))
-    })
+    owner_in(k, open, keys_of_untracked)
+}
+
+/// [`owners`], the commands answering to `keys`.
+fn owner_in(k: Keystroke, open: &[Scope], keys: impl Fn(&Command) -> Vec<String>) -> Option<&'static Command> {
+    open.iter().find_map(|s| COMMANDS.iter().find(|c| c.scope == *s && keys(c).iter().any(|ck| parse(ck) == Some(k))))
 }
 
 fn keys_of_untracked(c: &Command) -> Vec<String> {
@@ -748,7 +831,7 @@ fn keys_of_untracked(c: &Command) -> Vec<String> {
 /// Mounts the bindings: rebuilt when the open scopes or the keymap
 /// change. Put once in the root.
 pub(crate) fn bindings() -> impl IntoElement {
-    let open = computed(|| ORDER.iter().copied().filter(|s| s.open()).collect::<Vec<Scope>>());
+    let open = computed(|| Shown::now().open());
     dynamic(move || {
         let open = open.get();
         let keymap = store().keymap.get();
@@ -1199,4 +1282,172 @@ pub fn register_keys(components: &nsh_platform_macos::Components) {
         "rox/keys",
         std::rc::Rc::new(|ctx| Box::new(imp::KeysHost::new(ctx)) as Box<dyn nsh_platform_macos::NativeComponent>),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMMANDS, Command, Scope, Shown, app_owns_keys, owner_in, parse};
+
+    /// Who takes a chord: a command of Rox's, the hosted app, or nobody.
+    #[derive(Debug, PartialEq)]
+    enum Taker {
+        Rox(&'static str),
+        App,
+        Nobody,
+    }
+
+    fn defaults(c: &Command) -> Vec<String> {
+        c.keys.iter().map(|k| (*k).to_owned()).collect()
+    }
+
+    /// How `chord` goes with `s` on screen and a hosted app up whose own
+    /// keymap binds `app` (its focus in it, or nowhere): the full-screen
+    /// app that owns the keys takes the chords it binds first
+    /// (`KeyPrecedence::First`, nsh's monitors skip them on Rox's root);
+    /// any other comes after Rox (`Last`): Rox's innermost open scope
+    /// binding the chord takes it, and the app gets what Rox leaves.
+    fn dispatch(s: &Shown, chord: &str, app: &[&str]) -> Taker {
+        let k = parse(chord).expect("a keystroke");
+        let app_binds = app.iter().any(|a| parse(a) == Some(k));
+        if app_owns_keys(s) && app_binds {
+            return Taker::App;
+        }
+        match owner_in(k, &s.open(), defaults) {
+            Some(c) => Taker::Rox(c.id),
+            None if app_binds => Taker::App,
+            None => Taker::Nobody,
+        }
+    }
+
+    fn word() -> Shown {
+        Shown { viewer: true, office: true, doc: true, ..Shown::default() }
+    }
+
+    fn sheet() -> Shown {
+        Shown { viewer: true, table: true, office: true, sheet: true, ..Shown::default() }
+    }
+
+    fn full_app() -> Shown {
+        Shown { mini_full: true, ..Shown::default() }
+    }
+
+    /// The chat, no modal over it: an inline card's keys come after Rox's.
+    fn chat() -> Shown {
+        Shown::default()
+    }
+
+    #[test]
+    fn word_view_bolds_on_cmd_b() {
+        assert_eq!(dispatch(&word(), "mod+b", &[]), Taker::Rox("doc.bold"));
+    }
+
+    #[test]
+    fn spreadsheet_leaves_cmd_b_to_the_sidebar_as_it_binds_no_bold() {
+        // the native sheet has no formatting commands: ⌘B is not one of
+        // its chords, so the global one keeps working
+        assert!(!COMMANDS.iter().any(|c| matches!(c.scope, Scope::Sheet | Scope::SheetEdit) && c.keys.contains(&"mod+b")));
+        assert_eq!(dispatch(&sheet(), "mod+b", &[]), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&sheet(), "mod+c", &[]), Taker::Rox("sheet.copy"));
+    }
+
+    #[test]
+    fn full_screen_app_that_binds_cmd_b_gets_it() {
+        assert!(app_owns_keys(&full_app()));
+        assert_eq!(dispatch(&full_app(), "mod+b", &["mod+b"]), Taker::App);
+    }
+
+    #[test]
+    fn chat_with_an_inline_card_toggles_the_sidebar_on_cmd_b() {
+        assert!(!app_owns_keys(&chat()));
+        assert_eq!(dispatch(&chat(), "mod+b", &["mod+b"]), Taker::Rox("sidebar.toggle"));
+        // a chord Rox leaves still reaches the card
+        assert_eq!(dispatch(&chat(), "left", &["left"]), Taker::App);
+    }
+
+    #[test]
+    fn a_global_chord_no_surface_binds_still_works_with_one_open() {
+        for s in [word(), sheet(), full_app()] {
+            assert_eq!(dispatch(&s, "mod+,", &["mod+b"]), Taker::Rox("settings.open"), "{s:?}");
+        }
+        // the app's ⌘B takes nothing else of the global map
+        assert_eq!(dispatch(&full_app(), "mod+k", &["mod+b"]), Taker::Rox("palette.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+b", &[]), Taker::Rox("sidebar.toggle"));
+    }
+
+    #[test]
+    fn the_app_owns_the_keys_only_with_nothing_of_roxs_over_it() {
+        let over = [
+            Shown { viewer: true, ..full_app() },
+            Shown { menu: true, ..full_app() },
+            Shown { palette: true, ..full_app() },
+            Shown { settings: true, ..full_app() },
+            Shown { plugins: true, ..full_app() },
+            Shown { lightbox: true, ..full_app() },
+            Shown { bot_details: true, ..full_app() },
+            Shown { over_apps: true, ..full_app() },
+            Shown { recording: true, ..full_app() },
+        ];
+        for s in over {
+            assert!(!app_owns_keys(&s), "{s:?}");
+        }
+        // the Word view opened over the app takes its ⌘B
+        let doc_over_app = Shown { mini_full: true, ..word() };
+        assert_eq!(dispatch(&doc_over_app, "mod+b", &["mod+b"]), Taker::Rox("doc.bold"));
+    }
+
+    /// The scope a surface opens, and what is on screen with it open.
+    fn surfaces() -> Vec<(Scope, Shown)> {
+        vec![
+            (Scope::SheetEdit, Shown { sheet_edit: true, sheet: false, ..sheet() }),
+            (Scope::Sheet, sheet()),
+            (Scope::Doc, word()),
+            (Scope::ViewerTable, Shown { viewer: true, table: true, ..Shown::default() }),
+            (Scope::Viewer, Shown { viewer: true, ..Shown::default() }),
+            (Scope::MiniApp, full_app()),
+        ]
+    }
+
+    /// Every chord a surface's scope binds that the global map binds too,
+    /// with the global command and the surface's.
+    fn collisions() -> Vec<(Scope, String, &'static str, &'static str)> {
+        let mut out = Vec::new();
+        for (scope, _) in surfaces() {
+            for c in COMMANDS.iter().filter(|c| c.scope == scope) {
+                for key in c.keys {
+                    let k = parse(key).unwrap();
+                    if let Some(g) = COMMANDS.iter().find(|g| g.scope == Scope::Global && g.keys.iter().any(|gk| parse(gk) == Some(k))) {
+                        out.push((scope, k.to_string(), g.id, c.id));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_collision_goes_to_the_open_surface() {
+        let table = collisions();
+        assert!(!table.is_empty());
+        for (scope, key, global, mine) in &table {
+            let (_, s) = surfaces().into_iter().find(|(sc, _)| sc == scope).unwrap();
+            assert_eq!(dispatch(&s, key, &[]), Taker::Rox(mine), "{} {key}: not {global}", scope.title());
+            println!("| {} | `{key}` | {global} | {mine} |", scope.title());
+        }
+    }
+
+    #[test]
+    fn a_full_screen_app_takes_any_global_chord_it_binds() {
+        // Hide, Hide Others, Minimize stay the menu's (nsh refuses to bind
+        // a reserved key), as do the ones nsh/keymap can't bind
+        for g in COMMANDS.iter().filter(|c| c.scope == Scope::Global && c.menu.is_none()) {
+            for key in g.keys {
+                let k = parse(key).unwrap();
+                if k.reserved(nsh_core::platform::Os::MacOs).is_some() {
+                    continue;
+                }
+                assert_eq!(dispatch(&full_app(), key, &[key]), Taker::App, "{key} ({})", g.id);
+                assert_eq!(dispatch(&chat(), key, &[key]), Taker::Rox(g.id), "{key} in the chat");
+            }
+        }
+    }
 }
