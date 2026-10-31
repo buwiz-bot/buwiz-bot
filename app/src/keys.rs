@@ -203,12 +203,29 @@ impl Shown {
 
 /// Whether the full-screen app on top owns the keys: it fills the content
 /// area and nothing of Rox's is over it (the viewer, a modal, a menu, the
-/// palette). It then takes every chord its own keymap binds, before Rox's
-/// (`KeyPrecedence::First`); Rox keeps the chords it leaves. Any other
-/// hosted app — a card in the chat, a full-screen app under another or
-/// under the viewer — comes after Rox (`KeyPrecedence::Last`).
+/// palette). It then takes every chord its own keymap binds, and every
+/// chord while one of its text fields or editors has the focus (⌘B bolds
+/// there), before Rox's (`KeyPrecedence::First`) — but [`HOST_KEYS`]; Rox
+/// keeps the chords it leaves. Any other hosted app — a card in the chat,
+/// a full-screen app under another or under the viewer — comes after Rox
+/// (`KeyPrecedence::Last`).
 pub(crate) fn app_owns_keys(s: &Shown) -> bool {
     s.mini_full && !s.over_apps && !s.bot_details && s.open() == [Scope::MiniApp, Scope::Global]
+}
+
+/// The commands whose keys stay Rox's while a full-screen app owns the
+/// keys: the palette, Settings, and the keyboard's ways out of the app
+/// (close it, back).
+pub(crate) const HOST_KEYS: [&str; 4] = ["palette.toggle", "settings.open", "mini.close", "history.back"];
+
+/// [`HOST_KEYS`]' keystrokes now (tracked: the user may move them).
+pub(crate) fn host_keys() -> Vec<String> {
+    host_keys_in(keys_of).iter().map(Keystroke::to_string).collect()
+}
+
+/// [`HOST_KEYS`]' keystrokes, the commands answering to `keys`.
+fn host_keys_in(keys: impl Fn(&Command) -> Vec<String>) -> Vec<Keystroke> {
+    COMMANDS.iter().filter(|c| HOST_KEYS.contains(&c.id)).flat_map(&keys).filter_map(|k| parse(&k)).collect()
 }
 
 /// A menu bar item that owns a command's default key until the user
@@ -1286,7 +1303,7 @@ pub fn register_keys(components: &nsh_platform_macos::Components) {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMANDS, Command, Scope, Shown, app_owns_keys, owner_in, parse};
+    use super::{COMMANDS, Command, HOST_KEYS, Scope, Shown, app_owns_keys, host_keys_in, owner_in, parse};
 
     /// Who takes a chord: a command of Rox's, the hosted app, or nobody.
     #[derive(Debug, PartialEq)]
@@ -1301,15 +1318,18 @@ mod tests {
     }
 
     /// How `chord` goes with `s` on screen and a hosted app up whose own
-    /// keymap binds `app` (its focus in it, or nowhere): the full-screen
-    /// app that owns the keys takes the chords it binds first
-    /// (`KeyPrecedence::First`, nsh's monitors skip them on Rox's root);
-    /// any other comes after Rox (`Last`): Rox's innermost open scope
-    /// binding the chord takes it, and the app gets what Rox leaves.
-    fn dispatch(s: &Shown, chord: &str, app: &[&str]) -> Taker {
+    /// keymap binds `app`, `edits` when one of its text fields or editors
+    /// has the focus: the full-screen app that owns the keys takes the
+    /// chords it binds, and any chord while it edits, first
+    /// (`KeyPrecedence::First`: nsh's monitor skips them on Rox's root) —
+    /// but the host keys; any other comes after Rox (`Last`): Rox's
+    /// innermost open scope binding the chord takes it, and the app gets
+    /// what Rox leaves.
+    fn dispatch(s: &Shown, chord: &str, app: &[&str], edits: bool) -> Taker {
         let k = parse(chord).expect("a keystroke");
         let app_binds = app.iter().any(|a| parse(a) == Some(k));
-        if app_owns_keys(s) && app_binds {
+        let host = host_keys_in(defaults).contains(&k);
+        if app_owns_keys(s) && !host && (app_binds || edits) {
             return Taker::App;
         }
         match owner_in(k, &s.open(), defaults) {
@@ -1338,7 +1358,7 @@ mod tests {
 
     #[test]
     fn word_view_bolds_on_cmd_b() {
-        assert_eq!(dispatch(&word(), "mod+b", &[]), Taker::Rox("doc.bold"));
+        assert_eq!(dispatch(&word(), "mod+b", &[], false), Taker::Rox("doc.bold"));
     }
 
     #[test]
@@ -1346,32 +1366,32 @@ mod tests {
         // the native sheet has no formatting commands: ⌘B is not one of
         // its chords, so the global one keeps working
         assert!(!COMMANDS.iter().any(|c| matches!(c.scope, Scope::Sheet | Scope::SheetEdit) && c.keys.contains(&"mod+b")));
-        assert_eq!(dispatch(&sheet(), "mod+b", &[]), Taker::Rox("sidebar.toggle"));
-        assert_eq!(dispatch(&sheet(), "mod+c", &[]), Taker::Rox("sheet.copy"));
+        assert_eq!(dispatch(&sheet(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&sheet(), "mod+c", &[], false), Taker::Rox("sheet.copy"));
     }
 
     #[test]
     fn full_screen_app_that_binds_cmd_b_gets_it() {
         assert!(app_owns_keys(&full_app()));
-        assert_eq!(dispatch(&full_app(), "mod+b", &["mod+b"]), Taker::App);
+        assert_eq!(dispatch(&full_app(), "mod+b", &["mod+b"], false), Taker::App);
     }
 
     #[test]
     fn chat_with_an_inline_card_toggles_the_sidebar_on_cmd_b() {
         assert!(!app_owns_keys(&chat()));
-        assert_eq!(dispatch(&chat(), "mod+b", &["mod+b"]), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&chat(), "mod+b", &["mod+b"], false), Taker::Rox("sidebar.toggle"));
         // a chord Rox leaves still reaches the card
-        assert_eq!(dispatch(&chat(), "left", &["left"]), Taker::App);
+        assert_eq!(dispatch(&chat(), "left", &["left"], false), Taker::App);
     }
 
     #[test]
     fn a_global_chord_no_surface_binds_still_works_with_one_open() {
         for s in [word(), sheet(), full_app()] {
-            assert_eq!(dispatch(&s, "mod+,", &["mod+b"]), Taker::Rox("settings.open"), "{s:?}");
+            assert_eq!(dispatch(&s, "mod+,", &["mod+b"], false), Taker::Rox("settings.open"), "{s:?}");
         }
         // the app's ⌘B takes nothing else of the global map
-        assert_eq!(dispatch(&full_app(), "mod+k", &["mod+b"]), Taker::Rox("palette.toggle"));
-        assert_eq!(dispatch(&full_app(), "mod+b", &[]), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+k", &["mod+b"], false), Taker::Rox("palette.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
     }
 
     #[test]
@@ -1392,7 +1412,7 @@ mod tests {
         }
         // the Word view opened over the app takes its ⌘B
         let doc_over_app = Shown { mini_full: true, ..word() };
-        assert_eq!(dispatch(&doc_over_app, "mod+b", &["mod+b"]), Taker::Rox("doc.bold"));
+        assert_eq!(dispatch(&doc_over_app, "mod+b", &["mod+b"], false), Taker::Rox("doc.bold"));
     }
 
     /// The scope a surface opens, and what is on screen with it open.
@@ -1430,13 +1450,13 @@ mod tests {
         assert!(!table.is_empty());
         for (scope, key, global, mine) in &table {
             let (_, s) = surfaces().into_iter().find(|(sc, _)| sc == scope).unwrap();
-            assert_eq!(dispatch(&s, key, &[]), Taker::Rox(mine), "{} {key}: not {global}", scope.title());
+            assert_eq!(dispatch(&s, key, &[], false), Taker::Rox(mine), "{} {key}: not {global}", scope.title());
             println!("| {} | `{key}` | {global} | {mine} |", scope.title());
         }
     }
 
     #[test]
-    fn a_full_screen_app_takes_any_global_chord_it_binds() {
+    fn a_full_screen_app_takes_any_global_chord_it_binds_but_the_host_keys() {
         // Hide, Hide Others, Minimize stay the menu's (nsh refuses to bind
         // a reserved key), as do the ones nsh/keymap can't bind
         for g in COMMANDS.iter().filter(|c| c.scope == Scope::Global && c.menu.is_none()) {
@@ -1445,9 +1465,38 @@ mod tests {
                 if k.reserved(nsh_core::platform::Os::MacOs).is_some() {
                     continue;
                 }
-                assert_eq!(dispatch(&full_app(), key, &[key]), Taker::App, "{key} ({})", g.id);
-                assert_eq!(dispatch(&chat(), key, &[key]), Taker::Rox(g.id), "{key} in the chat");
+                let want = if HOST_KEYS.contains(&g.id) { Taker::Rox(g.id) } else { Taker::App };
+                assert_eq!(dispatch(&full_app(), key, &[key], false), want, "{key} ({})", g.id);
+                assert_eq!(dispatch(&chat(), key, &[key], false), Taker::Rox(g.id), "{key} in the chat");
             }
         }
+    }
+
+    /// A rich text editor (nsh-base's `RichEditor`) binds every Command
+    /// chord while it has the focus; a plain field binds none.
+    const EDITOR: &[&str] = &["mod+b", "mod+i", "mod+u", "mod+z", "mod+k", "mod+,", "mod+w", "mod+["];
+
+    #[test]
+    fn a_full_screen_apps_focused_editor_gets_bold_italic_underline_undo() {
+        for chord in ["mod+b", "mod+i", "mod+u", "mod+z"] {
+            assert_eq!(dispatch(&full_app(), chord, EDITOR, true), Taker::App, "{chord}");
+            assert_eq!(dispatch(&full_app(), chord, &[], true), Taker::App, "{chord} in a plain field");
+        }
+        // the focus off its editors: ⌘B is the sidebar's again
+        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
+    }
+
+    #[test]
+    fn host_keys_reach_rox_with_the_apps_editor_focused() {
+        for (chord, id) in [("mod+k", "palette.toggle"), ("mod+,", "settings.open"), ("mod+w", "mini.close"), ("mod+[", "history.back")] {
+            assert_eq!(dispatch(&full_app(), chord, EDITOR, true), Taker::Rox(id), "{chord}");
+        }
+        assert_eq!(host_keys_in(defaults).len(), HOST_KEYS.len());
+    }
+
+    #[test]
+    fn an_inline_cards_focused_editor_leaves_cmd_b_to_the_sidebar() {
+        assert_eq!(dispatch(&chat(), "mod+b", EDITOR, true), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&chat(), "mod+i", EDITOR, true), Taker::App, "a chord Rox leaves");
     }
 }
