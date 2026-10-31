@@ -1300,7 +1300,14 @@ mod imp {
                 let _ = channel.send("buwiz.viewport", v);
             }));
             let viewport = self.fit.viewport();
-            self.v1 = Some(crate::mini_v1::native::start(prepared, &self.view, module.to_owned(), viewport));
+            let native = prepared.native.is_some();
+            let open = crate::mini_v1::native::start(prepared, &self.view, module.to_owned(), viewport);
+            // a native screen's bridge is no channel: its viewport goes
+            // through the open
+            if native {
+                *self.fit.ivars().on_viewport.borrow_mut() = Some(Box::new(open.viewport_sink()));
+            }
+            self.v1 = Some(open);
         }
 
         /// Lays the app out at `w×h` and scales it into the frame; `None`
