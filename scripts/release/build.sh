@@ -33,13 +33,23 @@ set -euo pipefail
 
 source "$(dirname "$0")/lib.sh"
 
-# The identity; keep in step with app/bundle-dev.sh.
-APP_NAME="Buwiz Bot"
-BUNDLE_ID="com.buwiz.bot"
-URL_SCHEMES=(buwiz)
-# the bundle's executable; the cargo binary (BIN_NAME, below) is copied in
-# under this name
-EXECUTABLE="buwiz-bot"
+# The identity, from the Info.plist app/bundle-dev.sh writes, so the two
+# bundles can't drift: name, bundle id, URL schemes and the executable's
+# name (the cargo binary, BIN_NAME below, is copied in under it).
+DEV_PLIST="$(mktemp)"
+awk '/<<PLIST$/{f=1; next} /^PLIST$/{f=0} f' "$ROOT/app/bundle-dev.sh" > "$DEV_PLIST"
+plutil -lint -s "$DEV_PLIST" || die "no Info.plist found in app/bundle-dev.sh"
+APP_NAME="$(plist_get "$DEV_PLIST" CFBundleName)"
+BUNDLE_ID="$(plist_get "$DEV_PLIST" CFBundleIdentifier)"
+EXECUTABLE="$(plist_get "$DEV_PLIST" CFBundleExecutable)"
+URL_SCHEMES=()
+for i in 0 1 2 3; do
+  s="$(plist_get "$DEV_PLIST" "CFBundleURLTypes.0.CFBundleURLSchemes.$i")"
+  [ -n "$s" ] && URL_SCHEMES+=("$s")
+done
+rm -f "$DEV_PLIST"
+[ -n "$APP_NAME" ] && [ -n "$BUNDLE_ID" ] && [ -n "$EXECUTABLE" ] && [ "${#URL_SCHEMES[@]}" -gt 0 ] \
+  || die "app/bundle-dev.sh's Info.plist lacks a name, bundle id, executable or URL scheme"
 COPYRIGHT="Copyright © Goldcoders Corp"
 
 [ "$(uname -m)" = arm64 ] || die "release builds are Apple silicon only (arm64)"
