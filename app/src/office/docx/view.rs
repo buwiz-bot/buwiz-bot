@@ -30,13 +30,53 @@ fn ui() -> &'static WordUi {
     &store().office.word
 }
 
+/// A command from the view. One that moves the caret or edits other than
+/// by typing starts the hidden field afresh: what it held is behind the
+/// caret no more.
 fn send(cmd: Cmd) {
+    if !matches!(cmd, Cmd::View { .. } | Cmd::Type(_) | Cmd::Print | Cmd::SaveTo(_) | Cmd::Copy { cut: false }) {
+        empty_field();
+    }
+    post(cmd);
+}
+
+fn post(cmd: Cmd) {
     office::with_word(|s| s.send(cmd));
+}
+
+/// The hidden field typing goes into: its value, and the text it has
+/// given the document since it was last emptied. A change carries the
+/// field's whole text, earlier characters again when keys come faster
+/// than it is emptied (key repeat, an input method, a paste, the test
+/// agent): only what differs from what was given goes on.
+#[derive(Default)]
+struct Field {
+    value: Option<Signal<String>>,
+    given: String,
 }
 
 thread_local! {
     static FIELD: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
     static SCROLLER: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
+    static TYPED: std::cell::RefCell<Field> = std::cell::RefCell::new(Field::default());
+}
+
+/// Empties the field and what it has given, together.
+fn empty_field() {
+    let value = TYPED.with_borrow_mut(|t| {
+        t.given.clear();
+        t.value
+    });
+    if let Some(v) = value {
+        v.try_set(String::new());
+    }
+}
+
+/// From `given` to `now`: the characters to delete back, then the text to
+/// type.
+fn delta(given: &str, now: &str) -> (usize, String) {
+    let same = given.chars().zip(now.chars()).take_while(|(a, b)| a == b).count();
+    (given.chars().count() - same, now.chars().skip(same).collect())
 }
 
 /// Whether the document's keys apply: it shows, and no menu, prompt or
@@ -226,19 +266,23 @@ fn typing() -> impl IntoElement {
     let field = element_ref();
     FIELD.with(|f| f.set(Some(field.clone())));
     let buf = signal(String::new());
+    TYPED.with_borrow_mut(|t| *t = Field { value: Some(buf), given: String::new() });
     input()
         .element_ref(&field)
         .label("Document")
         .auto_focus(true)
         .value(move || buf.get())
         .on_change(move |v: &str| {
-            if v.is_empty() {
-                return;
-            }
+            let given = TYPED.with_borrow_mut(|t| std::mem::replace(&mut t.given, v.to_owned()));
+            // the value follows the field, so emptying it is a change
             buf.set(v.to_owned());
-            send(Cmd::Type(v.to_owned()));
-            // emptied again once this change is through
-            crate::store::spawn_detached(async move { buf.set(String::new()) });
+            let (back, new) = delta(&given, v);
+            for _ in 0..back {
+                post(Cmd::Backspace);
+            }
+            if !new.is_empty() {
+                post(Cmd::Type(new));
+            }
         })
         .absolute()
         .left(px(0.0))
@@ -380,6 +424,7 @@ fn pages() -> impl IntoElement {
         })
         .child(
             view()
+                .label("Document pages")
                 .w(move || px(width()))
                 .h(move || px(total()))
                 .on_press_down(move |e: &PressEvent| {
@@ -645,6 +690,15 @@ pub(crate) fn word_view() -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_gives_only_what_differs() {
+        assert_eq!(delta("", "a"), (0, "a".to_owned()));
+        assert_eq!(delta("ab", "abc"), (0, "c".to_owned()));
+        assert_eq!(delta("abc", "abd"), (1, "d".to_owned()));
+        assert_eq!(delta("abc", "a"), (2, String::new()));
+        assert_eq!(delta("née", "née"), (0, String::new()));
+    }
 
     #[test]
     fn pages_stack_with_gaps() {

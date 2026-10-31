@@ -82,7 +82,8 @@ fn bold_on_a_selection_saves_as_bold() {
     w.run(Cmd::Move { to: Move::WordRight, extend: false });
     w.run(Cmd::Move { to: Move::WordRight, extend: true });
     let (outs, _) = w.run(Cmd::Format(Fmt::Bold));
-    assert!(meta(&outs).is_some());
+    // the toolbar's B lights for the bold selection
+    assert!(meta(&outs).unwrap().bold);
     let (bytes, _) = w.save(Path::new("a.docx")).unwrap();
     let parts = ooxml_opc::unzip_parts(&bytes).unwrap();
     let xml = String::from_utf8_lossy(&parts.iter().find(|(n, _)| n == "word/document.xml").unwrap().1).into_owned();
