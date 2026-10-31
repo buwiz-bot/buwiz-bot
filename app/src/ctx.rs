@@ -205,7 +205,6 @@ fn run(it: &CtxItem) {
                 st.viewing.set(None);
             }
         }
-        "office-native" => crate::office::toggle_native(),
         "office-view" => crate::office::switch_view(),
         "sheet" => crate::office::xlsx::edit::action(arg),
         "lib-hide" => st.archive_library_item(arg, true),

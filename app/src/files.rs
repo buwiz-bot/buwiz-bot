@@ -2655,20 +2655,12 @@ pub(crate) fn viewer_actions() {
     if untracked(crate::office::showing) {
         items.push(CtxItem::row("Save", "download", "viewer-save", String::new()));
     }
-    // the native spreadsheet or the web editor (`office.native`)
-    if crate::office::native_ext(&f.path) {
-        let word = crate::office::is_word(&f.path);
-        let label = match (store().office.native.get_untracked(), word) {
-            (true, false) => "Open Spreadsheets in the Web Editor",
-            (false, false) => "Open Spreadsheets Natively",
-            (true, true) => "Open Documents in the Web Editor",
-            (false, true) => "Open Documents Natively",
-        };
-        // this file only, to compare the two views
-        if let Some(switch) = crate::office::switch_label(&f.path) {
-            items.push(CtxItem::row(switch, if word { "document" } else { "spreadsheet" }, "office-view", String::new()));
-        }
-        items.push(CtxItem::row(label, if word { "document" } else { "spreadsheet" }, "office-native", String::new()));
+    // this file in the other view (native or the web editor), to compare them
+    if crate::office::native_ext(&f.path)
+        && let Some(switch) = crate::office::switch_label(&f.path)
+    {
+        let icon = if crate::office::is_word(&f.path) { "document" } else { "spreadsheet" };
+        items.push(CtxItem::row(switch, icon, "office-view", String::new()));
     }
     if printable(&f).is_some() {
         items.push(CtxItem::row("Print…", "document", "viewer-print", String::new()));

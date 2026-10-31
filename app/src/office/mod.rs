@@ -375,23 +375,6 @@ pub(crate) fn track() {
     });
 }
 
-/// The ⌘K switch: Office files in the native views or the web editor.
-pub(crate) fn toggle_native() {
-    let u = ui();
-    let on = !u.native.get_untracked();
-    u.native.set(on);
-    u.forced.set(None);
-    crate::client::post_bg("/state/rox-office".to_owned(), serde_json::json!({ "native": on }));
-    // the open file switches views
-    if let Some(f) = store().viewing.get_untracked()
-        && (native_ext(&f.path) && (on || showing()))
-    {
-        if may_close() {
-            store().open_file(&f);
-        }
-    }
-}
-
 /// The viewer's "View in Web Editor" / "View Natively": the open Word or
 /// Excel file in the other view, this file only (the setting stays). The
 /// native document closes first, asking about its edits.
