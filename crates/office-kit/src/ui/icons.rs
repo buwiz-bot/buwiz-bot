@@ -15,8 +15,6 @@
 //! and `select_all` is the web's `border_all` glyph (`cD` maps both to
 //! one component).
 
-use std::path::PathBuf;
-
 use nsh_core::canvas::{CanvasTextBaseline, Path, svg_path};
 use nsh_core::prelude::*;
 
@@ -147,18 +145,10 @@ pub fn has(name: &str) -> bool {
 
 /// The font file's bytes: in the app bundle beside the executable
 /// (`Contents/Resources/fonts/`), else in the dev bundle
-/// (`~/Applications/Rox.app`, for a bare `target/debug/rox`). `None`
-/// without either: the icons draw nothing.
+/// (`~/Applications/Buwiz Bot.app`, then `Rox.app`, for a bare
+/// `target/debug/rox`). `None` without either: the icons draw nothing.
 pub fn font_data() -> Option<Vec<u8>> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(contents) = exe.parent().and_then(|m| m.parent())
-    {
-        dirs.push(contents.join("Resources/fonts"));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Applications/Rox.app/Contents/Resources/fonts"));
-    }
+    let dirs = crate::bundle::resources("fonts");
     let found = dirs.iter().find_map(|d| std::fs::read(d.join(FILE)).ok());
     if found.is_none() {
         log::warn!("no {FILE} in {dirs:?}: the office icons draw nothing (app/bundle-dev.sh copies it)");

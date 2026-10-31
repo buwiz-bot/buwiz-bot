@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Creates ~/Applications/Rox.app: a dev bundle whose executable execs this
-# checkout's debug build (cargo rebuilds are picked up without re-bundling)
-# and which declares the `buwiz://` URL scheme, then registers it with
-# LaunchServices so `open "buwiz://chat/<thread>?m=<turn>"` reaches Rox.
-# Launch Rox through it (`open -a ~/Applications/Rox.app`) so links go to the
-# running copy instead of starting a second one; copy a fresh build in first
-# (`cp target/debug/rox ~/Applications/Rox.app/Contents/MacOS/rox-bin`).
+# Creates ~/Applications/Buwiz Bot.app (com.buwiz.bot): a dev bundle whose
+# executable execs this checkout's debug build (cargo rebuilds are picked up
+# without re-bundling) and which declares the `buwiz://` URL scheme, then
+# registers it with LaunchServices so `open "buwiz://chat/<thread>?m=<turn>"`
+# reaches it. Rox.app, the bundle before the rename, is unregistered (not
+# deleted: that is yours to do), so links stop going to it. Launch the app
+# through the bundle (`open -a ~/Applications/Buwiz\ Bot.app`) so links go to
+# the running copy instead of starting a second one; copy a fresh build in
+# first (`rm`, then
+# `cp target/debug/rox ~/Applications/Buwiz\ Bot.app/Contents/MacOS/buwiz-bot-bin`).
 #
 # It also packages the broker Rox starts when none answers (plan 7.2) into
 # Contents/Resources/broker/: rox-broker (a release build with
@@ -17,8 +20,9 @@
 # and rox-gws, the Google Workspace plugin (broker/rox-gws), with its signed
 # manifest beside it as rox-gws.manifest.json when there is one
 # (broker/rox-gws/manifest.signed.json; scripts/gws-install-wizard makes it).
-#   ROX_APP=<dir>/Rox.app   bundle elsewhere (a dry run); it is not
-#                           registered with LaunchServices
+#   ROX_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
+#                           registered with LaunchServices, and Rox.app is
+#                           left registered
 #   BUWIZ_BROKER_BIN=<path>   the rox-broker to package
 #   ROX_GWS_BIN=<path>      the rox-gws to package
 #   ROX_GWS_MANIFEST=<path> its signed manifest
@@ -28,13 +32,15 @@
 #                           server/src/office/editor/dist; built by
 #                           `npm run build:office-editor` in server/)
 #   MATERIAL_SYMBOLS_TTF=<path>  the office views' icon font to package
-#                           (default: fetched once into ~/Library/Caches/Rox)
+#                           (default: fetched once into ~/Library/Caches/Buwiz Bot,
+#                           or the copy Rox fetched into ~/Library/Caches/Rox)
 #   OFFICE_FONTS=<dir>      the @betteroffice/fonts package whose faces the
 #                           Word and sheet views draw with (default
 #                           server/node_modules/@betteroffice/fonts)
 set -euo pipefail
 
-DEFAULT_APP="$HOME/Applications/Rox.app"
+DEFAULT_APP="$HOME/Applications/Buwiz Bot.app"
+OLD_APP="$HOME/Applications/Rox.app"
 APP="${ROX_APP:-$DEFAULT_APP}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN=/Volumes/goldcoders/Projects/rox/app/target/debug/rox
@@ -49,7 +55,12 @@ mkdir -p "$APP/Contents/MacOS"
 # and checked against its hash.
 SYMBOLS_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v382/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
 SYMBOLS_SHA256=69b4db8f8971c5206adb2d3891787c33eee828271fa56209e05ee0e3202729dd
-SYMBOLS="${MATERIAL_SYMBOLS_TTF:-$HOME/Library/Caches/Rox/fonts/MaterialSymbolsOutlined-v382.ttf}"
+SYMBOLS="${MATERIAL_SYMBOLS_TTF:-$HOME/Library/Caches/Buwiz Bot/fonts/MaterialSymbolsOutlined-v382.ttf}"
+OLD_SYMBOLS="$HOME/Library/Caches/Rox/fonts/MaterialSymbolsOutlined-v382.ttf"
+# the copy Rox fetched serves until Buwiz Bot has its own
+if [ ! -f "$SYMBOLS" ] && [ -z "${MATERIAL_SYMBOLS_TTF:-}" ] && [ -f "$OLD_SYMBOLS" ]; then
+  SYMBOLS="$OLD_SYMBOLS"
+fi
 if [ ! -f "$SYMBOLS" ] && [ -z "${MATERIAL_SYMBOLS_TTF:-}" ]; then
   mkdir -p "$(dirname "$SYMBOLS")"
   curl -fsSL -o "$SYMBOLS.part" "$SYMBOLS_URL" && mv "$SYMBOLS.part" "$SYMBOLS" || rm -f "$SYMBOLS.part"
@@ -84,13 +95,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>dev.goldcoders.rox</string>
+  <string>com.buwiz.bot</string>
   <key>CFBundleName</key>
   <string>Buwiz Bot</string>
   <key>CFBundleDisplayName</key>
   <string>Buwiz Bot</string>
   <key>CFBundleExecutable</key>
-  <string>rox</string>
+  <string>buwiz-bot</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
@@ -103,7 +114,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>dev.goldcoders.rox</string>
+      <string>com.buwiz.bot</string>
       <key>CFBundleURLSchemes</key>
       <array>
         <string>buwiz</string>
@@ -114,10 +125,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cat > "$APP/Contents/MacOS/rox" <<SH
+cat > "$APP/Contents/MacOS/buwiz-bot" <<SH
 #!/bin/sh
 # Dev launcher: the checkout's debug build, with local automation on. A
-# copy inside the bundle (rox-bin, refreshed by whoever relaunches) is
+# copy inside the bundle (buwiz-bot-bin, refreshed by whoever relaunches) is
 # preferred: started by LaunchServices, loading the binary straight off the
 # external volume waits on a files-and-folders permission.
 # A new automation token every launch, readable only by this user (the
@@ -127,11 +138,11 @@ TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token"
 export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 ROX_FPS=0
 GPUI_AGENT_TOKEN="\$(cat "\$TOKEN_FILE")"
 export GPUI_AGENT_TOKEN
-BIN="\$(dirname "\$0")/rox-bin"
+BIN="\$(dirname "\$0")/buwiz-bot-bin"
 [ -x "\$BIN" ] || BIN="$BIN"
 exec "\$BIN" "\$@"
 SH
-chmod +x "$APP/Contents/MacOS/rox"
+chmod +x "$APP/Contents/MacOS/buwiz-bot"
 
 # The broker and its static files: the office viewer and editor pages, the
 # editor's bundle and seed files, the plugin catalog and icons, the trust
@@ -184,8 +195,13 @@ cp -R "$SERVER/src/plugins" "$B/server/plugins"
 cp "$SERVER/src/v1/trust.json" "$B/server/trust.json"
 cp -R "$SERVER/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
 
-# only the real bundle answers buwiz:// links
+# only the real bundle answers buwiz:// links; Rox.app (rox://, withdrawn)
+# is unregistered so nothing opens it any more
 if [ "$APP" = "$DEFAULT_APP" ]; then
   "$LSREGISTER" -f "$APP"
+  if [ -d "$OLD_APP" ]; then
+    "$LSREGISTER" -u "$OLD_APP" || true
+    echo "unregistered $OLD_APP: it is no longer used, and you can delete it (it is not deleted for you)"
+  fi
 fi
 echo "bundled $APP -> $BIN (broker: $B; nsh: $NSH_BIN)"

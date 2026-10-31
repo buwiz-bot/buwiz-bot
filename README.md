@@ -5,7 +5,8 @@ ported from TSX to Rust. The UI is NSH (`nsh/`, AppKit backend); live
 patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
 (`blaze/`); the backend is the unchanged app server.
 
-- Bundle id: `dev.goldcoders.rox`
+- Bundle id: `com.buwiz.bot` (`dev.goldcoders.rox` before the rename; see
+  [Identity and data](#identity-and-data))
 - App crate: `app/` (`rox`)
 
 ## Prerequisites
@@ -94,7 +95,7 @@ of the desktop port.
 ## Driving the UI programmatically (gpui-agent)
 
 ```sh
-open -a ~/Applications/Rox.app        # the dev bundle (app/bundle-dev.sh) turns automation on
+open -a ~/Applications/Buwiz\ Bot.app  # the dev bundle (app/bundle-dev.sh) turns automation on
 scripts/rox-agent snapshot            # click, type, screenshot, invoke …
 ```
 
@@ -110,9 +111,11 @@ debug assertions, which gpui-agent's guard reads as a release build.
 
 ## Dev app & links
 
-`app/bundle-dev.sh` creates `~/Applications/Rox.app` and registers it with
-LaunchServices. The bundle (`dev.goldcoders.rox`) declares the `buwiz://`
-URL scheme. Its executable `exec`s `app/target/debug/rox` with the
+`app/bundle-dev.sh` creates `~/Applications/Buwiz Bot.app` and registers it
+with LaunchServices. The bundle (`com.buwiz.bot`) declares the `buwiz://`
+URL scheme. Its executable (`buwiz-bot`)
+`exec`s `Contents/MacOS/buwiz-bot-bin` when there is one, else
+`app/target/debug/rox`, with the
 gpui-agent variables above and `ROX_FPS=0`, so it picks up each cargo rebuild
 without re-bundling. Run the script again only if the bundle is deleted or
 its Info.plist changes, or to repackage the broker: it also puts
@@ -120,7 +123,7 @@ its Info.plist changes, or to repackage the broker: it also puts
 `Contents/Resources/broker/`. At launch, when nothing answers on
 `127.0.0.1:8787` and it is no test instance (`ROX_BACKEND`,
 `ROX_BACKGROUND=1` or `ROX_DATA_DIR` set), Buwiz Bot starts that broker detached,
-logging to `~/Library/Logs/Rox/broker.log` (`app/src/broker.rs`).
+logging to `~/Library/Logs/Buwiz Bot/broker.log` (`app/src/broker.rs`).
 
 The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
 from Buwiz Bot: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
@@ -130,29 +133,50 @@ app's `Grok Shell.app/Contents/Resources/server/`.
 
 ```sh
 app/bundle-dev.sh                       # once
-open -a ~/Applications/Rox.app          # launch Buwiz Bot through the bundle
-open "buwiz://chat/t1?m=10"               # thread t1, turn 10
+open -a ~/Applications/Buwiz\ Bot.app   # launch Buwiz Bot through the bundle
+open "buwiz://chat/t1?m=10"             # thread t1, turn 10
 ```
 
-### Switching the live broker to Rox.app's
+### Identity and data
+
+Buwiz Bot was Rox (`dev.goldcoders.rox`, `~/Applications/Rox.app`, whose
+releases were withdrawn). What a Rox install kept is moved over once, and
+nothing of Rox's is kept for compatibility:
+
+- Data: `~/Library/Application Support/Buwiz Bot` (`ROX_DATA_DIR`
+  overrides). On the first launch, when it is missing and Rox's `…/Rox`
+  exists, Rox's folder is renamed to it (copied, then removed, when the
+  rename fails) and `.migrated-from-rox` is written in it. When both exist
+  neither is touched (`app/src/identity.rs`).
+- Keychain: `com.buwiz.bot.site-login` and `com.buwiz.bot.plugin-key`. The
+  secrets under Rox's `dev.goldcoders.rox.*` services are moved once (read,
+  written to the new service, deleted from the old); a marker says it is
+  done (`.keychain-moved-from-rox` in the data dir,
+  `.plugin-keys-moved-from-rox` beside the broker's `app.db`).
+- Logs: `~/Library/Logs/Buwiz Bot`; caches: `~/Library/Caches/Buwiz Bot`
+  (the icon font Rox cached in `…/Rox` is used until then).
+- `bundle-dev.sh` unregisters `~/Applications/Rox.app` from LaunchServices;
+  delete it yourself.
+
+### Switching the live broker to Buwiz Bot.app's
 
 `scripts/broker-live use-rox` stops whatever broker holds port 8787 and
-starts Rox.app's own `rox-broker` with the same command line Buwiz Bot uses.
+starts Buwiz Bot.app's own `rox-broker` with the same command line Buwiz Bot uses.
 Buwiz Bot then finds it answering, and later launches start the same broker if
 it is not running.
 
-1. `app/bundle-dev.sh`, then `ls ~/Applications/Rox.app/Contents/Resources/broker/{rox-broker,bin/nsh,bin/nsh-macos-host}`.
+1. `app/bundle-dev.sh`, then `ls ~/Applications/Buwiz\ Bot.app/Contents/Resources/broker/{rox-broker,bin/nsh,bin/nsh-macos-host}`.
 2. `scripts/broker-live backup`. Check that it prints a
    `backups/<time>/` dir holding `app.db`, `server/` and `rox-broker/`.
 3. `scripts/broker-live use-rox`. Check that it ends with
-   `Rox.app's rox-broker on 8787`. If the broker doesn't come up, the
+   `Buwiz Bot.app's rox-broker on 8787`. If the broker doesn't come up, the
    script starts Node again and exits 1.
 4. `scripts/broker-live status`. Check:
    - `health: 200` and `mode: rox`;
    - every `plugin:` line is running;
    - every `routine:` line ran again with no `error:`;
    - `keychain dialog: none`.
-   Then build a widget in Buwiz Bot, and watch `~/Library/Logs/Rox/broker.log`.
+   Then build a widget in Buwiz Bot, and watch `~/Library/Logs/Buwiz\ Bot/broker.log`.
 
 Rollback: `scripts/broker-live use-node` brings back the Node broker, and
 `use-rust` brings back the rox-broker in `Grok Shell.app` with Node behind
@@ -204,7 +228,7 @@ nsh itself, delete the block. For a fair comparison with other apps, use
 - **Jank log** — while the monitor runs, every frame over budget and every
   engine wake-up over 16 ms logs one `nsh::jank` line naming what it did
   (apply / tick / input time, the mount items by kind, the triggering
-  event). Buwiz Bot appends them to `~/Library/Logs/Rox/jank.log`
+  event). Buwiz Bot appends them to `~/Library/Logs/Buwiz Bot/jank.log`
   (`ROX_JANK_LOG` overrides) and to stderr.
 - **Clear** — `⌘⇧K` (Window ▸ Clear Performance Monitor) forgets the
   readings and empties the jank log: reproduce, then read what that did.

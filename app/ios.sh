@@ -14,8 +14,10 @@ set -e
 cd "$(dirname "$0")"
 
 TARGET=aarch64-apple-ios-sim
-APP="Rox"
-ID=dev.goldcoders.rox
+APP="Buwiz Bot"
+# the executable: no space, as in the macOS dev bundle
+EXE=buwiz-bot
+ID=com.buwiz.bot
 BUNDLE="target/ios-sim/$APP.app"
 
 if ! cargo ra-jit build --target "$TARGET" 2>&1 | tee /tmp/rajit-ios.log | grep -q "Finished"; then
@@ -25,13 +27,13 @@ BIN="target/$TARGET/debug/rox"
 
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE"
-cp "$BIN" "$BUNDLE/$APP"
+cp "$BIN" "$BUNDLE/$EXE"
 cat > "$BUNDLE/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>$APP</string>
+    <key>CFBundleExecutable</key><string>$EXE</string>
     <key>CFBundleIdentifier</key><string>$ID</string>
     <key>CFBundleName</key><string>$APP</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -49,7 +51,7 @@ cat > "$BUNDLE/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-codesign --force --sign - "$BUNDLE/$APP" 2>/dev/null || true
+codesign --force --sign - "$BUNDLE/$EXE" 2>/dev/null || true
 
 NAME="${1:-iPhone 17 Pro}"
 DEVICE="$(xcrun simctl list devices available | grep "$NAME" | head -1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')"
