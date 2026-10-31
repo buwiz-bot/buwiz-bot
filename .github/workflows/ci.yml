@@ -19,7 +19,7 @@ env:
 jobs:
   app:
     name: App and office crates (cargo test)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
 
   broker:
     name: Broker (cargo test)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

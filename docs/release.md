@@ -111,7 +111,7 @@ scripts/release/manifest.sh
 ## CI
 
 `.github/workflows/release.yml` runs on a `v*` tag and on
-`workflow_dispatch`, on `macos-14` (Apple silicon). It checks the tag
+`workflow_dispatch`, on `macos-15` (Apple silicon). It checks the tag
 against the version, builds the office editor and the bundle, imports the
 certificate into a temporary keychain, signs, notarizes and staples the
 app, makes, signs, notarizes and staples the dmg, runs the Gatekeeper
