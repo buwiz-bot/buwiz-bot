@@ -27,25 +27,11 @@ rox-v1 = { path = "../broker/rox-v1" }
 rusqlite = "0.32"
 # ```mermaid fences: Pele (the Mermaid renderer) ported to Rust, drawn natively.
 pele = { git = "https://github.com/hexuria/pele-rs", rev = "9af923e41c031b8c7644940685afc201df4f340f" }
-# Office files in native views (`office/`): BetterOffice's engines, the
-# ones the broker's office tools use, and their parse/render layers for a
-# first paint before the full workbook is built; office_oxide reads legacy
-# `.xls`.
-betteroffice-xlsx = { version = "0.5.1", default-features = false }
-xlsx-parse = { package = "betteroffice-xlsx-parse", version = "0.5.1" }
-xlsx-render = { package = "betteroffice-xlsx-render", version = "0.5.1" }
-ooxml-opc = { package = "betteroffice-opc", version = "0.5.1" }
-ooxml-drawingml = { package = "betteroffice-drawingml", version = "0.5.1", features = ["chart"] }
-office_oxide = { version = "0.1.16", default-features = false }
-# Word (`office/docx/`): the parsed package saves through the facade; the
-# editing engine (`docx-edit`'s `EngineSession`) holds the text, lays it
-# out (`docx-layout`) and builds the pages' display lists.
-betteroffice-docx = { version = "0.5.1", default-features = false }
-docx-edit = { package = "betteroffice-docx-edit", version = "0.5.1" }
-docx-layout = { package = "betteroffice-docx-layout", version = "0.5.1" }
-docx-parse = { package = "betteroffice-docx-parse", version = "0.5.1" }
-# the engine's story attributes are yrs values
-yrs = "0.27"
+# Office files in native views (`office/` routes them): the shared kit,
+# Word and the spreadsheet, as library crates (`crates/`).
+buwiz-office-kit = { path = "../crates/office-kit" }
+buwiz-word = { path = "../crates/word" }
+buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 # the office worker's events reach the UI task through a tokio channel
 # (nsh's tasks run inside a tokio context)
 tokio = { version = "1", features = ["sync"] }
@@ -53,8 +39,15 @@ tokio = { version = "1", features = ["sync"] }
 [dev-dependencies]
 # pele::corpus: the port's test inputs, to check the drawing of every one.
 pele = { git = "https://github.com/hexuria/pele-rs", rev = "9af923e41c031b8c7644940685afc201df4f340f", features = ["corpus"] }
-# Word's test documents carry a picture made in code.
-png = "0.17"
+# The office crates' headless driver and test documents, and the engines
+# that read the saved files back (`office/ui_tests.rs`).
+buwiz-office-kit = { path = "../crates/office-kit", features = ["testing"] }
+buwiz-word = { path = "../crates/word", features = ["testing"] }
+buwiz-spreadsheet = { path = "../crates/spreadsheet", features = ["testing"] }
+betteroffice-xlsx = { version = "0.5.1", default-features = false }
+betteroffice-docx = { version = "0.5.1", default-features = false }
+xlsx-render = { package = "betteroffice-xlsx-render", version = "0.5.1" }
+ooxml-opc = { package = "betteroffice-opc", version = "0.5.1" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
@@ -67,16 +60,13 @@ security-framework = "3.7"
 # pasteboard, the full-screen stack).
 dispatch2 = "0.3"
 
-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-# Word's fonts: the installed face behind a family, as the canvas draws it,
-# handed to the layout's shaper (`office/docx/fonts.rs`); the bundled office
-# fonts registered with CoreText (`office/fonts.rs`).
-objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits", "CTLine", "CTStringAttributes"] }
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFAttributedString", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
-
 [target.'cfg(target_os = "ios")'.dependencies]
 nsh-platform-ios = { path = "../nsh/crates/nsh-platform-ios", default-features = false }
 nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }
+
+# The office crates build with the app: one lockfile and target dir.
+[workspace]
+members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet"]
 
 # A binary per supported host target; the library is what the iOS runner and
 # nsh's generated workspace link.
