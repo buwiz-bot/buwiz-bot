@@ -167,6 +167,8 @@ struct Worker<D: Document, E> {
 
 impl<D: Document, E: Fn(Event<D::Out>)> Worker<D, E> {
     fn run(path: PathBuf, sink: Sink, rx: Receiver<Msg<D::Cmd>>, emit: E) {
+        // what it draws names the bundled fonts: registered first
+        super::fonts::register();
         let mut w: Worker<D, E> = Worker { doc: None, state: State { path: path.clone(), ..State::default() }, sink, known: None, saving: None, emit };
         w.load(false);
         let mut last_watch = std::time::Instant::now();

@@ -48,10 +48,12 @@ pub(crate) fn hex(s: &str) -> Hsla {
 /// Measures `text` in a CSS `font` (the canvas's `measureText`).
 pub(crate) type Measure<'a> = &'a dyn Fn(&str, &str) -> f32;
 
-/// The CSS font of a cell's text: BetterOffice gives points.
+/// The CSS font of a cell's text: BetterOffice gives points. A family
+/// with a bundled metric-compatible face is drawn, and measured (the
+/// `#####` rule, autofit), in that face: Calibri as Carlito.
 pub(crate) fn css_font(size_pt: f32, bold: bool, italic: bool, family: Option<&str>) -> String {
     let px = size_pt * 4.0 / 3.0;
-    let family = family.filter(|f| !f.is_empty()).map(|f| format!("\"{}\"", f.replace('"', ""))).unwrap_or_else(|| "system-ui".to_owned());
+    let family = family.filter(|f| !f.is_empty()).map(|f| format!("\"{}\"", super::fonts::canvas_family(f).replace('"', ""))).unwrap_or_else(|| "system-ui".to_owned());
     format!("{}{}{px}px {family}", if italic { "italic " } else { "" }, if bold { "bold " } else { "" })
 }
 
@@ -399,7 +401,8 @@ mod tests {
         // the font, color and alignment are set once for both
         assert_eq!(d.ops.iter().filter(|op| matches!(op, CanvasOp::Font(_))).count(), 1);
         assert_eq!(d.ops.iter().filter(|op| matches!(op, CanvasOp::TextAlign(_))).count(), 1);
-        assert!(d.ops.iter().any(|op| matches!(op, CanvasOp::Font(f) if f.weight == 700 && f.family.as_deref() == Some("Calibri"))));
+        // Calibri drawn as its bundled stand-in
+        assert!(d.ops.iter().any(|op| matches!(op, CanvasOp::Font(f) if f.weight == 700 && f.family.as_deref() == Some("Carlito"))));
     }
 
     #[test]
