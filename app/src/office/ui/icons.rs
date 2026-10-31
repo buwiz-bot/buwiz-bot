@@ -151,10 +151,10 @@ pub(crate) fn has(name: &str) -> bool {
 /// without either: the icons draw nothing.
 pub(crate) fn font_data() -> Option<Vec<u8>> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|m| m.parent()) {
-            dirs.push(contents.join("Resources/fonts"));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(contents) = exe.parent().and_then(|m| m.parent())
+    {
+        dirs.push(contents.join("Resources/fonts"));
     }
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(PathBuf::from(home).join("Applications/Rox.app/Contents/Resources/fonts"));

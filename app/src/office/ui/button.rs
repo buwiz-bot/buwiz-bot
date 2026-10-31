@@ -59,7 +59,7 @@ pub(crate) fn tooltip_of(text_: impl Into<SharedString>) -> nsh_base::TooltipEle
                         .text_size(px(12.0))
                         .line_height(px(16.0))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(AdaptiveColor { light: white().into(), dark: p::TW_FOREGROUND.dark }),
+                        .text_color(AdaptiveColor { light: white(), dark: p::TW_FOREGROUND.dark }),
                 ),
         )
 }
@@ -380,6 +380,6 @@ fn choice(c: Choice, labels: bool, on: impl Fn(&str) -> bool + 'static, pick: im
     v = if labels { v.w_full().gap(px(10.0)).px(px(10.0)) } else { v.w(px(CHOICE)).justify_center() };
     let ink2 = ink.clone();
     v.child(icon(c.icon, TOOLBAR_ICON, ink))
-        .when(labels, |v| v.child(text(c.label.clone()).flex_1().text_size(px(13.0)).text_color(move || ink2())))
+        .when(labels, |v| v.child(text(c.label.clone()).flex_1().text_size(px(13.0)).text_color(ink2)))
         .into_element()
 }

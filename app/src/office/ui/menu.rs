@@ -88,6 +88,9 @@ impl Item {
     }
 }
 
+/// Content built with the menu's close (a grid closes it as it inserts).
+pub(crate) type Content = Rc<dyn Fn(Rc<dyn Fn()>) -> AnyElement>;
+
 /// What a menu shows. A content row's builder gets the menu's close.
 #[derive(Clone)]
 pub(crate) enum Entry {
@@ -99,9 +102,9 @@ pub(crate) enum Entry {
     Submenu { icon: Option<&'static str>, label: SharedString, entries: Vec<Entry> },
     /// A row whose submenu is `content` (Insert › Table's grid); disabled
     /// with its reason when `disabled` is `Some`.
-    Content { icon: Option<&'static str>, label: SharedString, disabled: Option<SharedString>, content: Rc<dyn Fn(Rc<dyn Fn()>) -> AnyElement> },
+    Content { icon: Option<&'static str>, label: SharedString, disabled: Option<SharedString>, content: Content },
     /// Content in place of a row (`customContent`).
-    Custom(Rc<dyn Fn(Rc<dyn Fn()>) -> AnyElement>),
+    Custom(Content),
 }
 
 /// The menu's separator (DR `_k`, `os`): 1px `--doc-border`, `margin 4px

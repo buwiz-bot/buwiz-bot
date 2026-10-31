@@ -9,6 +9,9 @@
 //! (see `theme.rs`). Tokens the light block leaves out take the value the
 //! web falls back to (`--doc-page-bg` white, `--doc-caret` black).
 
+// `--border`'s 31.8% saturation reads to clippy as 1/π.
+#![allow(clippy::approx_constant)]
+
 use nsh_core::prelude::*;
 
 use crate::theme::{hsla, tone};

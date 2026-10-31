@@ -221,7 +221,7 @@ pub(crate) struct ColorButton {
     mode: Mode,
     split: bool,
     current: Rc<dyn Fn() -> Option<String>>,
-    scheme: Rc<dyn Fn(&str) -> Option<String>>,
+    scheme: Scheme,
     disabled: Rc<dyn Fn() -> bool>,
     on_pick: Rc<dyn Fn(Picked)>,
 }
@@ -411,7 +411,7 @@ fn heading(t: &'static str) -> AnyElement {
     text(t).text_size(px(11.0)).font_weight(FontWeight::MEDIUM).text_color(p::TEXT_MUTED).mb(px(4.0)).into_element()
 }
 
-fn panel(mode: Mode, current: Rc<dyn Fn() -> Option<String>>, scheme: Rc<dyn Fn(&str) -> Option<String>>, pick: Rc<dyn Fn(Picked)>) -> AnyElement {
+fn panel(mode: Mode, current: Rc<dyn Fn() -> Option<String>>, scheme: Scheme, pick: Rc<dyn Fn(Picked)>) -> AnyElement {
     let draft = signal(current().filter(|h| h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit())).map(|h| h.to_uppercase()).unwrap_or_default());
     let valid = move || {
         let d = draft.get();
@@ -540,6 +540,8 @@ fn clear_row(mode: Mode, run: impl Fn() + 'static) -> AnyElement {
 }
 
 type Cell = (String, String, Option<Swatch>);
+/// A document theme's slot colours (`colorScheme`).
+type Scheme = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// A grid of swatches, ten to a row (`S1`, `P1`): 1px `--doc-border-input`
 /// rims; under the pointer 1.15× with a `--doc-text` rim; the chosen one
