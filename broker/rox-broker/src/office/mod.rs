@@ -370,7 +370,7 @@ mod tests {
         let mut s = Server::new(&dir, false).unwrap();
         let doc = ok(&mut s, "office_open", json!({"path": "betteroffice-demo.docx"}))["document"].clone();
         let g = ok(&mut s, "office_grep", json!({"document": doc, "query": "Welcome"}));
-        let p = ok(&mut s, "office_propose", json!({"document": doc, "author": "Rox", "edits": [{"match": g["matches"][0]["match"], "newText": "Hello"}]}));
+        let p = ok(&mut s, "office_propose", json!({"document": doc, "author": "Buwiz Bot", "edits": [{"match": g["matches"][0]["match"], "newText": "Hello"}]}));
         ok(&mut s, "office_accept", json!({"document": doc, "proposal": p["id"]}));
         assert_eq!(ok(&mut s, "office_export", json!({"document": doc, "path": "out.docx"}))["path"], "out.docx");
         let out = ok(&mut s, "office_open", json!({"path": "out.docx"}))["document"].clone();
@@ -388,7 +388,7 @@ mod tests {
         let mut s = Server::new(&dir, false).unwrap();
         let book = ok(&mut s, "office_open", json!({"path": "showcase.xlsx"}))["document"].clone();
         let cells = ok(&mut s, "office_cells", json!({"document": book, "sheet": "sheet:0", "range": "A1"}));
-        let p = ok(&mut s, "office_propose_cells", json!({"document": book, "author": "Rox", "edits": [{"cell": cells["cells"][0]["cell"], "input": "Q4"}]}));
+        let p = ok(&mut s, "office_propose_cells", json!({"document": book, "author": "Buwiz Bot", "edits": [{"cell": cells["cells"][0]["cell"], "input": "Q4"}]}));
         ok(&mut s, "office_accept", json!({"document": book, "proposal": p["id"]}));
         ok(&mut s, "office_export", json!({"document": book, "path": "out.xlsx"}));
         let r = s.call("office_render", &json!({"document": book}));
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(ok(&mut s, "office_cells", json!({"document": out, "sheet": "sheet:0", "range": "A1"}))["cells"][0]["displayText"], "Q4");
         let deck = ok(&mut s, "office_open", json!({"path": "presentation.pptx"}))["document"].clone();
         let g = ok(&mut s, "office_grep", json!({"document": deck, "query": "WASM"}));
-        let p = ok(&mut s, "office_propose", json!({"document": deck, "author": "Rox", "edits": [{"match": g["matches"][0]["match"], "newText": "Native"}]}));
+        let p = ok(&mut s, "office_propose", json!({"document": deck, "author": "Buwiz Bot", "edits": [{"match": g["matches"][0]["match"], "newText": "Native"}]}));
         ok(&mut s, "office_accept", json!({"document": deck, "proposal": p["id"]}));
         ok(&mut s, "office_export", json!({"document": deck, "path": "out.pptx"}));
         let out = ok(&mut s, "office_open", json!({"path": "out.pptx"}))["document"].clone();

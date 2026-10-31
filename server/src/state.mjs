@@ -252,7 +252,7 @@ export const slugFile = (s) => {
 // Defaults a new bot starts with — hidden from the user, rewritten by the
 // bot itself (bot_profile_update) when asked.
 export const botDefaults = (name) => ({
-  description: `${name} is a personal assistant bot in Grok Shell.`,
+  description: `${name} is a personal assistant bot in Buwiz Bot.`,
   instructions:
     `Stay in character as ${name}. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.`,
 });

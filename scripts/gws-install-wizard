@@ -49,7 +49,7 @@ echo "signed: $SIGNED"
 
 step "3/4 Bundle $APP"
 echo "Runs app/bundle-dev.sh with this build: rox-gws and its signed manifest go to $(dirname "$GWS")/."
-echo "Quit Rox first; it starts nothing."
+echo "Quit Buwiz Bot first; it starts nothing."
 if ask "Bundle now?"; then
   ROX_APP="$APP" ROX_BROKER_BIN="$TARGET/rox-broker" ROX_GWS_BIN="$TARGET/rox-gws" ROX_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
 fi
@@ -57,7 +57,7 @@ fi
 
 step "4/4 Update the plugin in Connect Apps"
 cat <<TEXT
-Start Rox, open Connect Apps → Add, and type one line: the environment as
+Start Buwiz Bot, open Connect Apps → Add, and type one line: the environment as
 VAR=value words (no spaces inside a value; GWS_UPSTREAM is compact JSON),
 then the command and its argument:
 

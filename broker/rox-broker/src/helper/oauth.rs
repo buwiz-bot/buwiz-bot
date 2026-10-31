@@ -153,7 +153,7 @@ impl Provider<'_> {
 
     fn client_metadata(&self) -> Map<String, Value> {
         let mut m = Map::new();
-        m.insert("client_name".into(), json!("Grok Shell"));
+        m.insert("client_name".into(), json!("Buwiz Bot"));
         m.insert("redirect_uris".into(), json!([self.redirect_url()]));
         m.insert("grant_types".into(), json!(["authorization_code", "refresh_token"]));
         m.insert("response_types".into(), json!(["code"]));

@@ -183,7 +183,7 @@ export async function resolveEntry(entry, { files, read }) {
 // reached without those accounts.
 const GOOGLE_PROXY = /^https:\/\/api\.cursor\.com\/rest-mcp\/google-(drive|sheets|docs|slides)\/mcp\/?$/;
 const HOSTED = [
-  [/^https:\/\/api\.cursor\.com\//, "Hosted by Cursor — it signs in through a Cursor account, which Grok Shell doesn't have"],
+  [/^https:\/\/api\.cursor\.com\//, "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have"],
   [/^https:\/\/connectors-gateway\.grok\.com\//, "Hosted by Grok's connector gateway — it needs a Grok account session"],
 ];
 export function adjustServers(servers) {
