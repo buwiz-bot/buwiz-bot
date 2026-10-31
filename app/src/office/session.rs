@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime};
 
-/// What an open document does on its worker.
-pub(crate) trait Document: Sized + Send + 'static {
+/// What an open document does on its worker. It is made and kept there
+/// (never sent across threads: Word's engine is single-threaded).
+pub(crate) trait Document: Sized + 'static {
     /// The document's own commands (edits, reads, a viewport to draw).
     type Cmd: Send + 'static;
     /// What it answers them with.
