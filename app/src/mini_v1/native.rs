@@ -32,10 +32,11 @@ use serde_json::Value;
 
 use super::{
     RoxError, V1Key,
-    bridge::{self, Consent, HostUi, OpenContext, PickRequest, Press},
+    bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     host_api, load,
     load::Prepared,
+    screens,
     session::{self, Ended, Session},
 };
 
@@ -282,6 +283,10 @@ pub struct V1Open {
 struct Slot {
     closed: AtomicBool,
     ctx: Mutex<Option<Arc<OpenContext>>>,
+    /// A native screen's viewport: the latest one, and where it goes once
+    /// the screen's bridge is up.
+    viewport: Mutex<Option<Value>>,
+    emit: Mutex<Option<Emit>>,
 }
 
 impl V1Open {
@@ -298,10 +303,16 @@ impl V1Open {
         self.n
     }
 
-    /// The channel's viewport event, once the bridge is up.
-    pub fn viewport(&self, view: &AppView, viewport: Value) {
-        if self.slot.ctx.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-            let _ = view.host().send("buwiz.viewport", viewport);
+    /// Where a native screen's viewport changes go (a TSX app's go to its
+    /// channel): to its bridge once it is up, the first one meanwhile.
+    pub fn viewport_sink(&self) -> impl Fn(Value) + 'static {
+        let slot = self.slot.clone();
+        move |v: Value| {
+            let emit = slot.emit.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match emit {
+                Some(emit) => emit("buwiz.viewport", v),
+                None => *slot.viewport.lock().unwrap_or_else(|e| e.into_inner()) = Some(v),
+            }
         }
     }
 }
@@ -376,15 +387,49 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
             }
             *held = Some(ctx.clone());
         }
-        bridge::install(&channel, &ctx, viewport);
-        let (js, policy) = (prepared.js.clone(), prepared.permissions.policy());
+        let app = match &prepared.native {
+            None => {
+                bridge::install(&channel, &ctx, viewport);
+                let bundle = nsh_engine::Bundle::source(prepared.js.clone()).with_policy(prepared.permissions.policy());
+                nsh_platform_macos::App::Js(bundle)
+            }
+            Some(_) => {
+                // a screen's failure shows the banner a TSX app's uncaught
+                // error does (6.7)
+                let (k, title) = (key.clone(), prepared.title.clone());
+                let fail = Arc::new(move |message: &str| {
+                    log::warn!("mini v1: {k}: the native screen failed: {message}");
+                    let (k, text) = (k.clone(), load::say::runtime(&title, message));
+                    super::to_store(move |st| st.v1_error(&k, text));
+                });
+                let viewport = s.viewport.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or(viewport);
+                match screens::mount(&ctx, viewport, fail) {
+                    Ok(m) => {
+                        *s.emit.lock().unwrap_or_else(|e| e.into_inner()) = Some(m.emit);
+                        nsh_platform_macos::App::Rust(m.root)
+                    }
+                    Err(e) => {
+                        log::warn!("mini v1: {} {}: {e}", p.plugin.id, p.key.app);
+                        ctx.close();
+                        let text = e.message;
+                        on_main(move || {
+                            VIEWS.with_borrow_mut(|v| v.remove(&id));
+                        });
+                        return super::to_store(move |st| st.mini_err(&key).set(text));
+                    }
+                }
+            }
+        };
         let fingerprint = prepared.fingerprint.clone();
         super::to_store(move |st| st.v1_running(id, &key, &fingerprint));
+        let t_load = std::time::Instant::now();
+        let kind = if prepared.native.is_some() { "native" } else { "tsx" };
+        let (pid, aid) = (prepared.plugin.id.clone(), prepared.key.app.clone());
         on_main(move || {
             let view = VIEWS.with_borrow_mut(|v| v.remove(&id)).and_then(|w| w.upgrade());
             if let Some(view) = view {
-                let bundle = nsh_engine::Bundle::source(js).with_policy(policy);
-                view.load(nsh_platform_macos::App::Js(bundle));
+                view.load(app);
+                log::info!("mini v1 timing: {pid}/{aid} {kind} load {} ms", t_load.elapsed().as_millis());
             }
         });
     });

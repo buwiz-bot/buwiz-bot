@@ -34,6 +34,7 @@ npm run plugin-test -- --command node --args sdk/mini-app/hello-world/server.mjs
 | `--manifest <file>` | A manifest you signed. Trusted with `--key-file`, else with the shipped `src/v1/trust.json` (see [Trust](#trust)). |
 | `--key-file <key file>` | With `--manifest`: the key it was signed with. |
 | `--manifest-env NAME` | The variable that tells the plugin where its signed manifest is (default `BUWIZ_PLUGIN_MANIFEST`, which the template reads). |
+| `--first-party` | Mark this run's own trusted key first-party, as a first-party publisher's is: what a manifest with native screens (`apps[].native`) needs. Not with `BUWIZ_TRUST_FILE`, whose store says it. |
 | `--json` | Print `{plugin, trust, rows: [{id, what, status, note}], ok}` instead of the checklist. |
 | `--keygen <file>` | Write a new test key (0600) and print its public key. |
 
@@ -53,6 +54,13 @@ store's key under the manifest's key id, and the plugin's id must be on its
 broker's own message (`… is not a trusted publisher key`, `… is not on the
 approved list for key …`). Use a test key id of your own (`--key-id`) in a
 store of your own; never put a test key under a release key id.
+
+Native screens (`apps[].native`) are built into Buwiz Bot and are for
+first-party plugins only. Run such a plugin with `--first-party` to trust
+your key as a first-party one for that run. A native screen serves no
+source, so its APP rows check it instead: APP-01 that it is native only and
+its screen id is 1 to 64 of `a-z 0-9 . _ -`, APP-02 that its `abi` is one
+the host runs, APP-03 that the key is first-party; APP-04 is skipped.
 
 The checklist's third line says which it was, for example
 `trust: BUWIZ_TRUST_FILE /tmp/trust.json: key books-test-01 trusted,
