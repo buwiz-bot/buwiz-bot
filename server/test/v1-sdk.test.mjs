@@ -366,3 +366,49 @@ test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blan
   assert.ok(old.res, old.stderr);
   assert.ok(failed(old.res).some((f) => f.includes("this plugin is built for an older protocol; update it")), failed(old.res).join("\n"));
 });
+
+test("SDK-14 the runner provisions as the broker does, with the host's protocol: a plugin that checks it passes RSV-01..05", async () => {
+  const { code, res, stderr } = await runner(fixture("--misbehave=strict-host"));
+
+  assert.ok(res, stderr);
+  assert.deepEqual(failed(res), []);
+  assert.equal(code, 0);
+
+  for (const id of ["RSV-01", "RSV-02", "RSV-03", "RSV-05", "LCY-01"]) assert.ok(ids(res, "pass").has(id), `${id} passed`);
+});
+
+test("SDK-15 a native-only plugin conforms under --first-party: native APP checks, no TSX source read", async () => {
+  const dir = tempDir("sdk-native");
+  const m = JSON.parse(readFileSync(join(SDK, "template", "manifest.json"), "utf8"));
+  const [app] = m.apps;
+
+  for (const k of ["entry", "mime", "sdk", "fingerprint"]) delete app[k];
+  app.native = { screen: "hello.home", abi: 1 };
+  const file = join(dir, "manifest.json");
+
+  writeFileSync(file, JSON.stringify(m));
+  const args = ["--command", process.execPath, "--args", TEMPLATE, "--env", `BUWIZ_PLUGIN_MANIFEST=${file}`, "--sign-with", KEY];
+  // first-party for this run: it conforms, APP-04 (the TSX source's) n/a
+  const first = await runner([...args, "--first-party"]);
+
+  assert.ok(first.res, first.stderr);
+  assert.deepEqual(failed(first.res), []);
+  assert.equal(first.code, 0);
+
+  for (const id of ["APP-01", "APP-02", "APP-03"]) assert.ok(first.res.rows.some((r) => r.id === id && r.status === "pass" && r.what.startsWith("hello: ")), `${id} passed for the native screen`);
+  assert.deepEqual([...ids(first.res, "skip")], ["APP-04"]);
+  assert.ok(!first.res.rows.some((r) => /source check|text\/x-nsh-tsx/.test(r.what)), "no TSX source check ran");
+  // without it the run's key is not first-party: refused as a broker refuses it
+  const not = await runner(args);
+
+  assert.equal(not.code, 1);
+  assert.ok(failed(not.res).some((f) => /native screens are for first-party plugins only/.test(f)), failed(not.res).join("\n"));
+  // a real store says itself which keys are first-party
+  const store = join(dir, "trust.json");
+
+  writeFileSync(store, JSON.stringify({ v: 1, publishers: {}, approved_plugins: [] }));
+  const both = await runner([...args, "--first-party"], { BUWIZ_TRUST_FILE: store });
+
+  assert.equal(both.code, 2);
+  assert.match(both.stderr, /--first-party marks this run's own trust/);
+});

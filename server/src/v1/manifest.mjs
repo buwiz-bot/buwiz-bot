@@ -67,7 +67,9 @@ export const LIMITS = Object.freeze({
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 const FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
-const NATIVE_SCREEN = /^[a-z0-9._-]{1,64}$/;
+export const NATIVE_SCREEN = /^[a-z0-9._-]{1,64}$/;
+/** The native screen ABIs this host runs (`apps[].native.abi`). */
+export const NATIVE_ABIS = [1];
 const SIG = /^[A-Za-z0-9_-]{86}$/;
 const EXTENSION = /^\.[a-z0-9]{1,16}$/;
 
@@ -399,7 +401,7 @@ function apps(m) {
 
       if (!isString(a.native.screen) || !NATIVE_SCREEN.test(a.native.screen)) throw invalid(`${at}.native.screen`, "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-'");
 
-      if (a.native.abi !== 1) throw invalid(`${at}.native.abi`, "must be 1");
+      if (!NATIVE_ABIS.includes(a.native.abi)) throw invalid(`${at}.native.abi`, `must be ${NATIVE_ABIS.join(" or ")}`);
     } else {
       if (a.entry === undefined) throw invalid(at, "needs entry (a TSX screen) or native (a native screen)");
 
