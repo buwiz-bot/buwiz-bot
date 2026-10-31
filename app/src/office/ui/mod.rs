@@ -12,9 +12,15 @@
 
 pub(crate) mod button;
 pub(crate) mod color;
+pub(crate) mod field;
 pub(crate) mod icons;
+pub(crate) mod menu;
+pub(crate) mod modal;
 pub(crate) mod palette;
 pub(crate) mod select;
+pub(crate) mod table_grid;
+#[cfg(test)]
+mod tests;
 
 use nsh_core::prelude::*;
 
