@@ -1101,8 +1101,13 @@ mod tests {
 
     #[test]
     fn refusals_name_the_field_and_carry_the_spec_code() {
-        assert_eq!(refused(|m| m["protocol"] = json!("2.0.0")).code, "protocol_unsupported");
-        assert_eq!(refused(|m| m["protocol"] = json!("1.2.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("3.0.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("2.1.0")).code, "protocol_unsupported");
+        // a 1.x plugin speaks the rox names: told to update
+        let old = refused(|m| m["protocol"] = json!("1.1.0"));
+        assert_eq!((old.code.as_str(), old.message.as_str()), ("protocol_unsupported", "the plugin implements protocol 1.1.0: this plugin is built for an older protocol; update it"));
+        assert_eq!(refused(|m| m["short"] = json!("buwiz")).message, "short: buwiz is reserved");
+        assert!(RESERVED_ID_PREFIXES.iter().any(|p| "com.buwiz.bot.x".starts_with(p)) && !RESERVED_ID_PREFIXES.iter().any(|p| "app.buwiz.ebirforms".starts_with(p)));
         assert_eq!(refused(|m| m["needs"] = json!(["gmail"])).code, "not_supported");
         assert_eq!(refused(|m| m["commands"][0]["name"] = json!("status")).message, "commands[0].name: /status is a built-in command");
         assert_eq!(
