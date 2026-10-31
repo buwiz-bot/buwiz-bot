@@ -635,7 +635,10 @@ fn border_width() -> AnyElement {
 
 /// A row of three square buttons in the table menu (vertical alignment,
 /// table alignment: `32×28`, 1px border, radius 4, 4 apart, `4px 14px`).
-fn button_row(buttons: Vec<(&'static str, &'static str, bool, Option<&'static str>, Rc<dyn Fn()>)>) -> AnyElement {
+/// A square button of a row: icon, title, on, why it's refused, its command.
+type Square = (&'static str, &'static str, bool, Option<&'static str>, Rc<dyn Fn()>);
+
+fn button_row(buttons: Vec<Square>) -> AnyElement {
     view()
         .flex_row()
         .gap(px(4.0))
@@ -951,22 +954,8 @@ pub(crate) fn toolbar() -> impl IntoElement {
             view()
                 .flex_shrink_0()
                 .child(trigger("more_vert", "More actions", more_open, false, || false).element_ref(&more))
-                .child(menu_popup(more, more_open, "More actions menu", Look::BAR, 4.0, move || entries()))
+                .child(menu_popup(more, more_open, "More actions menu", Look::BAR, 4.0, entries))
         }))
-}
-
-/// The More menu's rows now (the tests' view of it).
-#[cfg(test)]
-pub(crate) fn listed(entries: &[Entry]) -> Vec<String> {
-    entries
-        .iter()
-        .filter_map(|e| match e {
-            Entry::Item(i) => Some(i.label.to_string()),
-            Entry::Heading(h) => Some(format!("# {h}")),
-            Entry::Submenu { label, .. } => Some(format!("{label} ▸")),
-            _ => None,
-        })
-        .collect()
 }
 
 #[cfg(test)]

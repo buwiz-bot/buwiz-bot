@@ -154,7 +154,7 @@ pub(crate) fn on_out(u: &WordUi, o: Out) {
     match o {
         Out::Meta(m) => {
             let new = u.meta.with_untracked(|old| old.rev != m.rev || old.pages.len() != m.pages.len());
-            u.meta.set(Arc::new(m));
+            u.meta.set(Arc::new(*m));
             if new {
                 view::ask_pages(u, true);
             }

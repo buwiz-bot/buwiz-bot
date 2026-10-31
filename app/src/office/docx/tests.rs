@@ -17,7 +17,7 @@ fn open(bytes: Vec<u8>) -> Word {
 }
 
 fn meta(outs: &[Out]) -> Option<&super::doc::Meta> {
-    outs.iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(m) } else { None })
+    outs.iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(&**m) } else { None })
 }
 
 #[test]

@@ -480,6 +480,70 @@ impl Headless {
         self.pump(Duration::from_millis(50));
     }
 
+    /// The newest live view labelled `label` inside the one labelled `root`.
+    pub(crate) fn view_in(&self, root: &str, label: &str) -> NodeId {
+        let root = self.view(root);
+        let inside = |mut id: NodeId| {
+            while let Some(p) = self.parents.get(&id) {
+                if *p == root {
+                    return true;
+                }
+                id = *p;
+            }
+            false
+        };
+        self.labels.iter().rev().find(|(id, l)| l == label && self.live.contains(id) && inside(*id)).map(|(id, _)| *id).unwrap_or_else(|| panic!("no {label:?} in {root:?}"))
+    }
+
+    /// The pointer onto the view labelled `label` inside `root`.
+    pub(crate) fn hover_in(&mut self, root: &str, label: &str) {
+        let id = self.view_in(root, label);
+        let e = MouseEvent::new(point(px(2.0), px(2.0)), point(px(2.0), px(2.0)), Default::default(), None);
+        self.send(id, EventKind::MouseEnter, EventPayload::Mouse(e));
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// The labels inside `root` from left to right (a row's controls in
+    /// their order): by their left edge in the window, a container before
+    /// what it holds.
+    pub(crate) fn labels_by_x(&self, root: &str) -> Vec<String> {
+        let root_id = self.view(root);
+        let x = |mut id: NodeId| {
+            let mut x = 0.0;
+            while id != root_id {
+                x += self.frames.get(&id).map_or(0.0, |f| f.origin.x.0);
+                match self.parents.get(&id) {
+                    Some(p) => id = *p,
+                    None => break,
+                }
+            }
+            x
+        };
+        let depth = |mut id: NodeId| {
+            let mut d = 0;
+            while let Some(p) = self.parents.get(&id) {
+                d += 1;
+                id = *p;
+            }
+            d
+        };
+        let names = self.labels_in(root);
+        // each view once: where it came, and its label now
+        let mut order: Vec<NodeId> = Vec::new();
+        let mut now: HashMap<NodeId, String> = HashMap::new();
+        for (id, l) in &self.labels {
+            if self.live.contains(id) && names.contains(l) {
+                if !now.contains_key(id) {
+                    order.push(*id);
+                }
+                now.insert(*id, l.clone());
+            }
+        }
+        let mut ids: Vec<(f32, usize, usize, String)> = order.iter().enumerate().map(|(i, id)| (x(*id), depth(*id), i, now[id].clone())).collect();
+        ids.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        ids.into_iter().map(|(_, _, _, l)| l).collect()
+    }
+
     /// The window at `w` × `h`.
     pub(crate) fn resize(&mut self, w: f32, h: f32) {
         self.engine.control().resize(Size::new(px(w), px(h)));
@@ -1233,7 +1297,7 @@ fn the_formatting_bar_lists_the_webs_controls_in_order() {
         return;
     }
     let (app, _) = open_word_at("bar-order", "a.docx", 1700.0);
-    let labels = app.labels_in("Formatting toolbar");
+    let labels = app.labels_by_x("Formatting toolbar");
     let groups = ["History", "Zoom", "Styles", "Font", "Text formatting", "Script", "Alignment", "List formatting", "Image", "Table"];
     let shown: Vec<&String> = labels.iter().filter(|l| groups.contains(&l.as_str())).collect();
     assert_eq!(shown, groups, "every group's place, the Image and Table ones kept for their turn");
@@ -1399,7 +1463,8 @@ fn the_table_group_shows_in_a_table_and_its_commands_work() {
     let (mut app, _) = open_word_at("bar-table", "a.docx", 1700.0);
     assert!(!app.has("More table options"));
     app.press("Insert");
-    app.hover("Table", true);
+    app.hover_in("Insert menu", "Table");
+    app.hover("row 2 column 2", true);
     app.press("row 2 column 2");
     until(&mut app, "in the new table", |p| is(p, "cell", "2x2"));
     for c in ["Borders", "Border Color", "Border width", "Cell Fill Color", "More table options"] {
@@ -1437,9 +1502,11 @@ fn the_table_group_shows_in_a_table_and_its_commands_work() {
     app.press("More table options");
     app.press("Select entire table");
     until(&mut app, "the whole table", |p| is(p, "cell", "3x3+"));
+    let rev = num(&read(&app), "rev");
     app.press("More table options");
     app.press("Merge cells");
-    until(&mut app, "one cell", |p| is(p, "cell", "1x1"));
+    // one cell over the grid: the selection is the caret's cell again
+    until(&mut app, "merged", |p| num(p, "rev") > rev && is(p, "cell", "3x3"));
     app.press("More table options");
     app.press("Delete table");
     until(&mut app, "no table", |p| is(p, "cell", "-"));
@@ -1491,8 +1558,9 @@ fn suggesting_tracks_edits_and_viewing_blocks_typing() {
     app.press("Suggesting");
     until(&mut app, "suggesting", |p| is(p, "mode", "Suggesting"));
     app.type_text("Document", "!");
-    app.key("alt+shift+left");
-    app.key("alt+shift+left");
+    // a word of what was there deleted (deleting one's own suggestion takes it back)
+    app.key("mod+up");
+    app.key("alt+shift+right");
     app.key("backspace");
     app.press("save");
     until(&mut app, "saved", |p| is(p, "dirty", "false"));
