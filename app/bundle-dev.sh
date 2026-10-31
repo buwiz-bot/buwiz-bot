@@ -27,6 +27,8 @@
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
 #                           server/src/office/editor/dist; built by
 #                           `npm run build:office-editor` in server/)
+#   MATERIAL_SYMBOLS_TTF=<path>  the office views' icon font to package
+#                           (default: fetched once into ~/Library/Caches/Rox)
 set -euo pipefail
 
 DEFAULT_APP="$HOME/Applications/Rox.app"
@@ -36,6 +38,26 @@ BIN=/Volumes/goldcoders/Projects/rox/app/target/debug/rox
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 mkdir -p "$APP/Contents/MacOS"
+
+# The office views' icon font (app/src/office/ui/icons.rs): Material
+# Symbols Outlined, Google Fonts' static instance (weight 400, grade 0,
+# optical size 24, unfilled; Apache-2.0), with its licence, in
+# Contents/Resources/fonts/. Not in git: fetched once by its pinned URL
+# and checked against its hash.
+SYMBOLS_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v382/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
+SYMBOLS_SHA256=69b4db8f8971c5206adb2d3891787c33eee828271fa56209e05ee0e3202729dd
+SYMBOLS="${MATERIAL_SYMBOLS_TTF:-$HOME/Library/Caches/Rox/fonts/MaterialSymbolsOutlined-v382.ttf}"
+if [ ! -f "$SYMBOLS" ] && [ -z "${MATERIAL_SYMBOLS_TTF:-}" ]; then
+  mkdir -p "$(dirname "$SYMBOLS")"
+  curl -fsSL -o "$SYMBOLS.part" "$SYMBOLS_URL" && mv "$SYMBOLS.part" "$SYMBOLS" || rm -f "$SYMBOLS.part"
+fi
+if [ ! -f "$SYMBOLS" ] || [ "$(shasum -a 256 "$SYMBOLS" | cut -d' ' -f1)" != "$SYMBOLS_SHA256" ]; then
+  echo "no Material Symbols Outlined font (sha256 $SYMBOLS_SHA256) at $SYMBOLS: download $SYMBOLS_URL there, or set MATERIAL_SYMBOLS_TTF to a copy; the office views' icons need it" >&2
+  exit 1
+fi
+mkdir -p "$APP/Contents/Resources/fonts"
+cp "$SYMBOLS" "$APP/Contents/Resources/fonts/MaterialSymbolsOutlined.ttf"
+cp "$ROOT/app/fonts/MaterialSymbolsOutlined-LICENSE" "$APP/Contents/Resources/fonts/MaterialSymbolsOutlined-LICENSE"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
