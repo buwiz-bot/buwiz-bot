@@ -25,7 +25,7 @@ const CTX_PAD: f32 = 5.0;
 /// Run an item's verb — `onSelect` in the TSX menus. Detached from the
 /// menu: closing it disposes the row's owner, which cancelled any task a
 /// verb spawned there (Delete never reached the server).
-fn act(it: &CtxItem) {
+pub(crate) fn act(it: &CtxItem) {
     let it = it.clone();
     store().ctx.set(None);
     Owner::detached().run(move || run(&it));
@@ -206,6 +206,7 @@ fn run(it: &CtxItem) {
             }
         }
         "office-native" => crate::office::toggle_native(),
+        "office-view" => crate::office::switch_view(),
         "sheet" => crate::office::xlsx::edit::action(arg),
         "lib-hide" => st.archive_library_item(arg, true),
         "lib-unhide" => st.archive_library_item(arg, false),
