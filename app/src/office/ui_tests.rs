@@ -43,11 +43,19 @@ fn in_child(name: &str) -> bool {
         // nothing reaches a server: no network (the stub answers 404) and
         // an origin nothing listens on
         .env("ROX_BACKEND", "http://127.0.0.1:1")
+        // a reply's files: under the token's folder
+        .env("ROX_HOST_TOKEN_FILE", broker_dir(name).join("token"))
         .output()
         .expect("run the test's child");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && log.contains("1 passed"), "{name} failed in its child:\n{log}");
     false
+}
+
+/// The broker's data folder a test's child takes (its files are in
+/// `generated/files`).
+fn broker_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("rox-office-ui-broker-{name}"))
 }
 
 fn dir(name: &str) -> PathBuf {
@@ -93,7 +101,9 @@ fn probe() -> String {
     let (cp, cx, cy) = c.caret.map_or((-1, 0.0, 0.0), |(p, x, y, _)| (p as i64, x, y));
     let sheet = &o.sheet;
     format!(
-        "probe key={} pages={} drawn={drawn} size={} rev={} bold={} caret={cp} cx={cx} cy={cy} sel={} left={left} shape={} cells={} dirty={}",
+        "probe viewing={} switch={} key={} pages={} drawn={drawn} size={} rev={} bold={} caret={cp} cx={cx} cy={cy} sel={} left={left} shape={} cells={} dirty={}",
+        if store().viewing.get_untracked().is_some() { "open" } else { "-" },
+        SWITCHED.with_borrow(|s| s.replace(' ', "_")),
         if o.key.get_untracked().is_empty() { "-" } else { "open" },
         m.pages.len(),
         m.size,
@@ -104,6 +114,22 @@ fn probe() -> String {
         sheet.shown.with_untracked(|s| s.is_some() as u8),
         o.state.get_untracked().dirty,
     )
+}
+
+thread_local! {
+    /// The label of the switch the last `switch` press picked.
+    static SWITCHED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The viewer's File actions menu (⌘K), and its view switch picked.
+fn switch() {
+    crate::files::viewer_actions();
+    let item = store().ctx.get_untracked().and_then(|m| m.items.into_iter().find(|i| i.act == "office-view"));
+    SWITCHED.with_borrow_mut(|s| *s = item.as_ref().map(|i| i.label.clone()).unwrap_or_default());
+    match item {
+        Some(i) => crate::ctx::act(&i),
+        None => store().ctx.set(None),
+    }
 }
 
 #[component]
@@ -124,6 +150,7 @@ fn Viewer() -> impl IntoElement {
                 .h(px(24.0))
                 .children(files.into_iter().enumerate().map(|(i, f)| view().label(format!("open {i}")).w(px(40.0)).h_full().on_press(move || store().open_file(&f)).into_element()))
                 .child(view().label("save").w(px(40.0)).h_full().on_press(crate::office::save))
+                .child(view().label("switch").w(px(40.0)).h_full().on_press(switch))
                 .child(text(move || shown.get()).text_size(px(8.0))),
         )
         .child(view().flex_1().child(crate::files::layer()))
@@ -411,4 +438,41 @@ fn the_word_view_takes_clicks_drags_keys_and_typing() {
     until(&mut app, "the caret at the line's start", |p| num(p, "sel") == 0.0 && num(p, "cx") < 150.0);
     app.drag_to("Document pages", left + 300.0, 16.0 + 104.0);
     until(&mut app, "the dragged selection", |p| num(p, "sel") > 0.0);
+}
+
+/// The viewer's switch, from `state` (native or web) to the other.
+fn flip(app: &mut Headless, label: &str, to_native: bool) {
+    app.press("switch");
+    let want = if to_native { "open" } else { "-" };
+    let p = until(app, label, |p| p.get("key").map(String::as_str) == Some(want));
+    assert_eq!(p.get("switch").map(String::as_str), Some(label.replace(' ', "_").as_str()), "{p:?}");
+    assert_eq!(p.get("viewing").map(String::as_str), Some("open"), "the viewer stays on the file: {p:?}");
+}
+
+#[test]
+fn the_viewer_switches_one_file_between_its_views() {
+    if !in_child("the_viewer_switches_one_file_between_its_views") {
+        return;
+    }
+    let files = broker_dir("the_viewer_switches_one_file_between_its_views").join("generated/files/files/m1");
+    let _ = std::fs::remove_dir_all(&files);
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("a.docx"), super::docx::fixture::document(2)).unwrap();
+    std::fs::write(files.join("c.xlsx"), workbook()).unwrap();
+    let reply = |name: &str, variant: &str| Attach { path: format!("files/m1/{name}"), ..attach(Path::new(name), variant) };
+    let mut app = start(vec![reply("a.docx", "docx"), reply("c.xlsx", "spreadsheet")]);
+    app.press("open 0");
+    word_shows(&mut app, "the document");
+    flip(&mut app, "View in Web Editor", false);
+    flip(&mut app, "View Natively", true);
+    word_shows(&mut app, "the document back natively");
+    // the web editor for this file only: another opens natively, as set
+    flip(&mut app, "View in Web Editor", false);
+    app.press("open 1");
+    sheet_shows(&mut app, "the next file, natively");
+    flip(&mut app, "View in Web Editor", false);
+    flip(&mut app, "View Natively", true);
+    sheet_shows(&mut app, "the spreadsheet back natively");
+    app.press("open 0");
+    word_shows(&mut app, "the document again, natively");
 }
