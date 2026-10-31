@@ -81,8 +81,8 @@ package (`save.rs`).
 |---|---|---|---|
 | first page drawn (`Word::open` + first tick: parse, preview seed, prefix layout, list, drawing) | < 200 ms | 110–178 ms [≤255] | 75–82 ms [≤232] |
 | the whole document after that (second tick) | | 434–930 ms | 420–465 ms |
-| typing echo (key, relayout from its paragraph, pages in view listed and drawn) | < 16 ms | 153–163 ms [≤279] | 94–98 ms [≤163] |
-| of which the engine's relayout and lists | | 105 ms | 47 ms |
+| typing echo (key, relayout from its paragraph, pages in view listed and drawn) | < 16 ms | 113–118 ms [≤193] | 59–68 ms [≤140] |
+| of which the engine's relayout and lists | | 66 ms | 19 ms |
 
 - **First page.** The first tick seeds a preview of the first blocks,
   lays out a one-page prefix and draws it; the second seeds the whole
@@ -99,3 +99,34 @@ package (`save.rs`).
   the document has footnotes (notes take the engine off its resident
   path). The view's own share (the index, the caret, the drawing of the
   edited page) is a few ms.
+
+## Fonts an edit brings in
+
+The request's font chains were filled once, at open, from the keys the
+text needed then. Bold or italic on a face the text had only upright
+(`calibri light|1|1` in a Title) made a key with no chain: the engine
+measured that text one em a character and listed it as plain text, so the
+selection (built from the measured width) ran far past the drawn glyphs.
+Each edit now asks the engine for its font requirements first, as the web
+editor does before every relayout, and lays out with a grown request when
+a key is new (`layout.rs` `fonts_grew`). The check reads every story:
+40–45 ms on 200 pages. Plain typing (a key, Backspace, Delete, a one-line
+paste) takes the fonts of the text it lands in, so it skips the check; a
+format, Enter, a paste of lines, a row, undo and redo run it.
+
+## Local lowering (`EngineSession::set_local_lowering`)
+
+Off by default in docx-edit 0.5.1: an eligible resident text edit
+re-lowers only its paragraph. `typing_200` with it off and on, three runs
+each (a shared machine; the "on" runs came second):
+
+| typing echo, median [p90] | with footnotes | without |
+|---|---|---|
+| off | 116.4 [128], 112.9 [148], 117.9 [141] ms | 68.4 [93], 60.5 [70], 58.7 [69] ms |
+| on | 138.0 [180], 120.2 [134], 235.0 [407] ms | 104.7 [303], 68.7 [82], 91.5 [118] ms |
+| engine relayout + lists, off / on | 66–67 / 63–81 ms | 19–28 / 14–29 ms |
+
+No run was faster with it on, so it stays off. Edits made through
+`EditingDoc` don't reach the engine's resident text path
+(`edit_resident_text` is `pub(crate)`), which is the one local lowering
+serves.
