@@ -28,6 +28,7 @@ DMG="$OUT/$NAME"
 mkdir -p "$OUT"
 
 STAGE="$(mktemp -d)"
+chmod 755 "$STAGE"  # the volume root keeps it: mktemp makes 0700
 trap 'rm -rf "$STAGE"' EXIT
 # ditto keeps the signatures, extended attributes and the stapled ticket
 ditto "$APP" "$STAGE/$(basename "$APP")"
