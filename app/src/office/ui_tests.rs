@@ -140,7 +140,8 @@ fn Viewer() -> impl IntoElement {
     });
     crate::office::track();
     let shown = signal(String::new());
-    let _ = set_interval(Duration::from_millis(20), move || shown.set(probe()));
+    // the task runs while the root lives
+    drop(set_interval(Duration::from_millis(20), move || shown.set(probe())));
     let files = FILES.get().cloned().unwrap_or_default();
     view()
         .size_full()
@@ -199,11 +200,7 @@ impl Headless {
                     self.live.remove(id);
                     self.texts.remove(id);
                 }
-                MountItem::AccessibilityLabel { id, label } => {
-                    if let Some(l) = label {
-                        self.labels.push((*id, l.to_string()));
-                    }
-                }
+                MountItem::AccessibilityLabel { id, label: Some(l) } => self.labels.push((*id, l.to_string())),
                 MountItem::ViewProps { id, props } => {
                     if let Some(l) = props.accessibility.label.as_deref() {
                         self.labels.push((*id, l.to_owned()));
@@ -250,7 +247,7 @@ impl Headless {
         let id = self.view(label);
         let e = PressEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: nsh_core::keymap::Modifiers { shift, ..Default::default() }, clicks: 1 };
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
-            self.send(id, kind, EventPayload::Press(e.clone()));
+            self.send(id, kind, EventPayload::Press(e));
         }
         self.pump(Duration::from_millis(50));
     }
