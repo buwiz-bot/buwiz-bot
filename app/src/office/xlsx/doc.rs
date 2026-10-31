@@ -778,6 +778,27 @@ mod tests {
         assert!(total.font.starts_with("bold "), "{}", total.font);
     }
 
+    /// showcase.xlsx's total, C9 (bold Calibri 11, `$1,504,750.00`), in
+    /// its column as the file sets it (14 characters, 103 pixels), measured
+    /// as the canvas measures it: in Carlito, Calibri's metrics, it fits
+    /// and isn't `#####`.
+    #[test]
+    fn the_showcase_total_fits_its_column_in_calibris_metrics() {
+        use nsh_core::canvas::CanvasOp;
+        let seed = include_bytes!("../../../../server/src/office/seeds/showcase.xlsx");
+        let mut book = Book::open(seed.to_vec(), Path::new("showcase.xlsx")).unwrap();
+        ready(&mut book);
+        let Some(Out::List { list, .. }) = book.draw(0, Viewport { x: 0.0, y: 0.0, width: 800.0, height: 400.0 }, 1.0) else { panic!("a list") };
+        let measure = |font: &str, text: &str| crate::office::fonts::canvas_width(font, text);
+        let d = crate::office::draw::drawing(&list, &crate::office::draw::Palette::light(), &measure);
+        let texts: Vec<String> = d.ops.iter().filter_map(|op| if let CanvasOp::FillText { text, .. } = op { Some(text.to_string()) } else { None }).collect();
+        assert!(texts.iter().any(|t| t == "$1,504,750.00"), "{texts:?}");
+        assert!(!texts.iter().any(|t| !t.is_empty() && t.chars().all(|c| c == '#')), "{texts:?}");
+        // about 87 pixels, against the 99 the column leaves its text
+        let w = measure(&crate::office::draw::css_font(11.0, true, false, Some("Calibri")), "$1,504,750.00");
+        assert!(w > 80.0 && w < 95.0, "{w}");
+    }
+
     #[test]
     fn reads_the_active_tab() {
         assert_eq!(active_tab(r#"<bookViews><workbookView xWindow="0" activeTab="2"/></bookViews>"#), Some(2));
