@@ -15,6 +15,9 @@ use crate::js;
 pub struct Publisher {
     pub publisher: String,
     pub public_key: String,
+    /// The store marks the key first-party (`"first_party": true`): its
+    /// plugins may ship native screens.
+    pub first_party: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -33,7 +36,8 @@ impl Trust {
             if p.is_object() && get(p, "alg") == Some(&Value::from("ed25519")) && from_b64u(get(p, "public_key"), 32).is_some() {
                 let publisher = get(p, "publisher").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default();
                 let public_key = get(p, "public_key").and_then(Value::as_str).unwrap_or_default().to_owned();
-                publishers.insert(key_id.clone(), Publisher { publisher, public_key });
+                let first_party = get(p, "first_party") == Some(&Value::Bool(true));
+                publishers.insert(key_id.clone(), Publisher { publisher, public_key, first_party });
             }
         }
         let approved = get(raw, "approved_plugins")

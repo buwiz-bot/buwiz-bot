@@ -507,6 +507,10 @@ impl Sessions {
         let Some(app) = get(&m, "apps").and_then(Value::as_array).into_iter().flatten().find(|a| same(get(a, "id"), get(b, "app"))).cloned() else {
             return V1Error::err("not_found", format!("{} has no app {}", tpl(get(b, "plugin")), js::slice_utf16(&tpl(get(b, "app")), 60)));
         };
+        // a native screen is the host's own code: there is no source to read
+        if get(&app, "native").is_some_and(js::truthy) {
+            return V1Error::err("not_supported", format!("{} is a native screen; it has no source", tpl(get(&app, "id"))));
+        }
         let entry = tpl(get(&app, "entry"));
         let read = self.host.read_resource(&row.id, &entry).await?;
         let contents = get(&read, "contents").and_then(Value::as_array).cloned().unwrap_or_default();

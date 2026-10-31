@@ -126,6 +126,30 @@ test("MAN-03 non-object JSON is refused, not turned into {}", () => {
     assert.throws(() => verifyManifest(text, trust), { code: "manifest_invalid" }, text);
 });
 
+test("MAN-21 an app is a TSX screen or a native one {screen, abi: 1}, never both or neither; native only from a first-party key", () => {
+  const native = (m) => {
+    const a = m.apps[0];
+
+    // another id: the signer fills in fingerprints for the fixture's own sources
+    a.id = "ledger";
+    for (const k of ["entry", "mime", "sdk", "fingerprint"]) delete a[k];
+    a.native = { screen: "fx.ledger", abi: 1 };
+  };
+  const first = loadTrust(writeTrust(join(dir, "trust-first.json"), [{ ...pub, firstParty: true }], [[FX, pub.keyId]]));
+  const firstOk = (edit) => assert.doesNotThrow(() => verifyManifest(JSON.stringify(signed(edit)), first));
+  const firstRefused = (edit, re) => assert.throws(() => verifyManifest(JSON.stringify(signed(edit)), first), (e) => e.code === "manifest_invalid" && re.test(e.message));
+
+  firstOk(native);
+  firstOk((m) => (native(m), (m.apps[0].native.screen = "books.ledger-2_x")));
+  // a third-party key: refused, whatever the shape
+  refused(native, "manifest_invalid", /^apps\[0\]\.native: native screens are for first-party plugins only/);
+  firstRefused((m) => (m.apps[0].native = { screen: "fx.board", abi: 1 }), /^apps\[0\]: is a TSX screen \(entry\) or a native screen \(native\), not both$/);
+  firstRefused((m) => delete m.apps[0].entry, /^apps\[0\]: needs entry \(a TSX screen\) or native \(a native screen\)$/);
+  firstRefused((m) => (native(m), (m.apps[0].native.screen = "Books")), /^apps\[0\]\.native\.screen:/);
+  firstRefused((m) => (native(m), (m.apps[0].native.abi = 2)), /^apps\[0\]\.native\.abi: must be 1$/);
+  firstRefused((m) => (native(m), (m.apps[0].native.loader = "x")), /^apps\[0\]\.native\.loader: is not a known key/);
+});
+
 test("MAN-04 a 2.0 host takes 2.0.x; 3.x and 2.1 need a newer host; 1.x (the rox names) is told to update", () => {
   refused((m) => (m.protocol = "3.0.0"), "protocol_unsupported", /needs a Buwiz Bot/);
   refused((m) => (m.protocol = "2.1.0"), "protocol_unsupported", /needs a Buwiz Bot that supports 2\.1/);

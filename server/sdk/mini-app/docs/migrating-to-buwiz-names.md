@@ -11,7 +11,11 @@ names below and a manifest re-signed under them.
 
 | Old (1.x, refused) | New (2.0) | Where |
 |---|---|---|
-| `"protocol": "1.x.y"` | `"protocol": "2.0.0"` | manifest |
+| `"protocol": "1.x.y"` | `"protocol": "2.0.0"` (the host accepts exactly 2.0) | manifest |
+| `dev.goldcoders.bir` | `app.buwiz.ebirforms` | plugin id (manifest `id`, trust store) |
+| `dev.goldcoders.books` | `app.buwiz.books` | plugin id |
+| `dev.goldcoders.google-workspace` | `app.buwiz.google-workspace` | the bundled plugin's id |
+| `publisher.id: "dev.goldcoders"` | `publisher.id: "app.buwiz"`, `key_id: "gc-2026-01"` (same key) | manifest `publisher` |
 | `rox.provision` | `buwiz.provision` | reserved tool your plugin answers (first) |
 | `rox.session.open` | `buwiz.session.open` | reserved tool |
 | `rox.session.close` | `buwiz.session.close` | reserved tool |
@@ -37,6 +41,12 @@ names below and a manifest re-signed under them.
 | `lib/rox-plugin.mjs` | `lib/buwiz-plugin.mjs` | SDK |
 | `bin/rox-plugin-test.mjs` | `bin/buwiz-plugin-test.mjs` (`npm run plugin-test`) | SDK |
 | plugin ids `rox.*`, `dev.goldcoders.rox.*` reserved | `buwiz.*`, `com.buwiz.bot`, `com.buwiz.bot.*` reserved; short `buwiz` reserved | manifest `id`, `short` |
+
+New in 2.0: an app may be a native screen instead of TSX,
+`"native": {"screen": "<id>", "abi": 1}` with no `entry`, `mime`, `sdk` or
+`fingerprint`, for first-party plugins only (key `gc-2026-01`, publisher
+`app.buwiz`). This build verifies such apps; opening one says "this screen
+needs a newer Buwiz Bot" until the native loader ships.
 
 Unchanged: `src/v1/sign-manifest.mjs`, the JCS rules, the key format,
 every other manifest field and limit, and the meaning of each reserved

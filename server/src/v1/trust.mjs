@@ -14,7 +14,7 @@ import { fromB64u } from "./ed.mjs";
 
 export const TRUST_FILE = () => process.env.BUWIZ_TRUST_FILE || join(dirname(fileURLToPath(import.meta.url)), "trust.json");
 
-/** {publishers: Map key_id -> {publisher, public_key}, approved: [{id,
+/** {publishers: Map key_id -> {publisher, public_key, first_party}, approved: [{id,
  *  publisher_key_id}]}. A missing or broken file trusts nothing. */
 export function loadTrust(file = TRUST_FILE()) {
   let raw = {};
@@ -28,7 +28,7 @@ export function loadTrust(file = TRUST_FILE()) {
   const publishers = new Map();
 
   for (const [keyId, p] of Object.entries(isObject(raw.publishers) ? raw.publishers : {}))
-    if (isObject(p) && p.alg === "ed25519" && fromB64u(p.public_key, 32)) publishers.set(keyId, { publisher: String(p.publisher || ""), public_key: p.public_key });
+    if (isObject(p) && p.alg === "ed25519" && fromB64u(p.public_key, 32)) publishers.set(keyId, { publisher: String(p.publisher || ""), public_key: p.public_key, first_party: p.first_party === true });
 
   const approved = (Array.isArray(raw.approved_plugins) ? raw.approved_plugins : []).flatMap((a) =>
     isObject(a) && isString(a.id) && isString(a.publisher_key_id) ? [{ id: a.id, publisher_key_id: a.publisher_key_id }] : []);
