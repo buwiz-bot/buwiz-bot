@@ -30,6 +30,12 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 
 ### Info.plist
 
+The name, bundle id, executable name and URL schemes come from the
+Info.plist `app/bundle-dev.sh` writes (`Buwiz Bot`, `com.buwiz.bot`,
+`buwiz-bot`, `buwiz`), so the release and dev bundles agree. In the
+release bundle `MacOS/buwiz-bot` is the app itself (the cargo `rox`
+binary), not the dev launcher. On top of those:
+
 - `CFBundleShortVersionString`: `app/Cargo.toml`'s `[package] version`.
   The tag must be `v` plus that version (CI checks). `CFBundleVersion` is
   the same, or `BUILD_NUMBER` (CI passes the run number).
@@ -151,6 +157,15 @@ Getting them:
 - **API key.** App Store Connect › Users and Access › Integrations › App
   Store Connect API › Team Keys › +, access *Developer*. Download the
   `.p8` (once only); note its Key ID and the Issuer ID above the list.
+
+## Known limitation: spaces in plugin command paths
+
+The app installs as `/Applications/Buwiz Bot.app`, so its bundled tools
+(`Contents/Resources/broker/bin/rox-gws`, `nsh`, ...) have a space in
+their paths. Connect Apps splits a plugin's command at spaces, so a
+plugin command naming one of them breaks until that is fixed (a fix is
+coming separately). Check Google Workspace provisioning on an installed
+release before announcing it.
 
 ## Checking a release
 
