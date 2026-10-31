@@ -37,7 +37,7 @@ struct Trap {
 /// Joins `field` to the Tab order of the dialog around it, if any.
 pub(crate) fn join_trap(field: &ElementRef) {
     if let Some(t) = use_context::<Trap>() {
-        let f = field.clone();
+        let f = *field;
         t.fields.with(|v| v.push(f));
     }
 }

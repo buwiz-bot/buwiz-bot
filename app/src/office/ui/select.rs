@@ -626,7 +626,7 @@ impl IntoElement for FontSize {
             let shown = shown2.clone();
             let off = off.clone();
             let (shown_t, off_t) = (shown.clone(), off.clone());
-            text(move || shown_t())
+            text(shown_t)
                 .w(px(SIZE_W))
                 .h(px(BUTTON))
                 .text_size(px(TEXT_SM))
