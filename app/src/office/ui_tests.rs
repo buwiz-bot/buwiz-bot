@@ -373,7 +373,7 @@ impl Headless {
     }
 
     /// The mouse over the view at `(x, y)`, no button down.
-    fn hover(&mut self, label: &str, x: f32, y: f32) {
+    fn hover_at(&mut self, label: &str, x: f32, y: f32) {
         let id = self.view(label);
         let e = MouseEvent::new(point(px(x), px(y)), point(px(x), px(y)), Default::default(), None);
         self.send(id, EventKind::MouseMove, EventPayload::Mouse(e));
@@ -414,10 +414,6 @@ impl Headless {
         if lift {
             self.touch(label, TouchPhase::End, x + dx, y + dy);
         }
-    }
-
-    fn has(&self, label: &str) -> bool {
-        self.labels.iter().any(|(id, l)| l == label && self.live.contains(id))
     }
 
     /// The row labelled `label` of the open menu, picked (on the engine's
@@ -854,7 +850,7 @@ fn columns_and_rows_resize_autofit_hide_and_save_as_in_excel() {
     let w = widths(&p, "cols");
     let edge = |w: &[f32], c: usize| w[..=c].iter().sum::<f32>();
     // C's right border, dragged 40 points: 104 pixels, 14.14 characters
-    app.hover("Column headers", edge(&w, 2), 10.0);
+    app.hover_at("Column headers", edge(&w, 2), 10.0);
     assert!(app.has("Resize column"));
     app.touch_drag("Resize column", (edge(&w, 2), 10.0), (40.0, 0.0), false);
     let p = until(&mut app, "the drag", |p| word(p, "resizing") == "1");
@@ -868,14 +864,14 @@ fn columns_and_rows_resize_autofit_hide_and_save_as_in_excel() {
     let w = widths(&p, "cols");
     app.press_at("Column headers", edge(&w, 1) - 20.0, 10.0, false);
     app.press_at("Column headers", edge(&w, 3) - 20.0, 10.0, true);
-    app.hover("Column headers", edge(&w, 3), 10.0);
+    app.hover_at("Column headers", edge(&w, 3), 10.0);
     let to = 80.0 - w[3];
     app.touch_drag("Resize column", (edge(&w, 3), 10.0), (to, 0.0), true);
     let p = until(&mut app, "B:D sized", |p| (1..=3).all(|c| (widths(p, "cols")[c] - 80.0).abs() < 0.5));
     assert_eq!(num(&p, "srev"), rev + 2.0, "one step for three columns: {p:?}");
     // a double click on C's border fits B:D to their text: the total shows
     let w = widths(&p, "cols");
-    app.hover("Column headers", edge(&w, 2), 10.0);
+    app.hover_at("Column headers", edge(&w, 2), 10.0);
     app.click("Resize column", 4.0, 4.0, false, 2);
     let p = until(&mut app, "the total fits", |p| word(p, "total") == "number");
     assert_eq!(num(&p, "srev"), rev + 3.0, "{p:?}");
@@ -883,11 +879,11 @@ fn columns_and_rows_resize_autofit_hide_and_save_as_in_excel() {
     // a row dragged taller, then fitted back to its automatic height
     let rows = widths(&p, "rows");
     let bottom = rows[..=2].iter().sum::<f32>();
-    app.hover("Row headers", 10.0, bottom);
+    app.hover_at("Row headers", 10.0, bottom);
     assert!(app.has("Resize row"));
     app.touch_drag("Resize row", (10.0, bottom), (0.0, 20.0), true);
     until(&mut app, "row 3 taller", |p| (widths(p, "rows")[2] - 40.0).abs() < 0.5);
-    app.hover("Row headers", 10.0, bottom + 20.0);
+    app.hover_at("Row headers", 10.0, bottom + 20.0);
     app.click("Resize row", 4.0, 4.0, false, 2);
     until(&mut app, "row 3 automatic", |p| (widths(p, "rows")[2] - rows[2]).abs() < 0.5);
     // E hidden from its header's menu, then shown again
