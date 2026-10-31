@@ -12,7 +12,7 @@ use docx_edit::EngineSession;
 use docx_layout::display_list::DisplayPage;
 use serde_json::{Value, json};
 
-use super::fonts::Fonts;
+use super::fonts::{Fonts, Need};
 
 /// How many body blocks a preview seeds: a first page's worth and more.
 const PREVIEW_BLOCKS: usize = 80;
@@ -117,22 +117,23 @@ impl Layout {
         }
         let base_json = base.to_string();
         let mut layout = Layout { fonts, engine, request: String::new(), base, base_json, preview: preview.is_some(), provisional: false, comments, epoch: 0 };
-        let needs = layout.font_keys()?;
+        let needs = layout.font_needs()?;
         layout.fill_fonts(&needs);
         Ok(Some(layout))
     }
 
-    /// The `family|bold|italic` key of every font the text needs now.
-    fn font_keys(&self) -> Result<Vec<String>, String> {
+    /// The font every run of the text needs now: its `family|bold|italic`
+    /// key and the scripts it wants fallbacks for.
+    fn font_needs(&self) -> Result<Vec<Need>, String> {
         let _scope = self.fonts.enter();
         let needs: Vec<Value> = serde_json::from_str(&self.engine.layout_font_requirements_json(&self.base_json)?).map_err(|e| e.to_string())?;
-        Ok(needs.iter().filter_map(|n| n["key"].as_str().map(str::to_owned)).collect())
+        Ok(needs.iter().filter_map(Need::of_json).collect())
     }
 
-    /// The request with a chain for each of `keys` (and every one before).
-    fn fill_fonts(&mut self, keys: &[String]) {
-        for key in keys {
-            self.fonts.chain(key);
+    /// The request with a chain for each of `needs` (and every one before).
+    fn fill_fonts(&mut self, needs: &[Need]) {
+        for need in needs {
+            self.fonts.need(need);
         }
         // the defaults' own chain, for text that names no font
         self.fonts.chain("calibri|0|0");
@@ -151,11 +152,11 @@ impl Layout {
     /// web editor asks before each relayout. Whether the request grew; the
     /// retained one would measure the new key's text one em a character.
     pub(crate) fn fonts_grew(&mut self) -> Result<bool, String> {
-        let keys = self.font_keys()?;
-        if keys.iter().all(|k| self.fonts.has(k)) {
+        let needs = self.font_needs()?;
+        if needs.iter().all(|n| self.fonts.has(&n.key, &n.scripts)) {
             return Ok(false);
         }
-        self.fill_fonts(&keys);
+        self.fill_fonts(&needs);
         Ok(true)
     }
 
