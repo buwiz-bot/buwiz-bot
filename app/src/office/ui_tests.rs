@@ -114,7 +114,7 @@ fn probe() -> String {
     let table = m.table.map_or("-".to_owned(), |(r, c)| format!("{r}x{c}"));
     let wm = m.watermark.as_ref().and_then(|v| v.get("text").or(v.get("kind"))).and_then(|v| v.as_str()).unwrap_or("-").replace(' ', "_");
     let pics = w.pages.borrow().iter().filter_map(|s| s.try_get().flatten()).map(|s| s.drawn.pictures.len()).sum::<usize>();
-    let word = format!(" bidi={} table={table} wm={wm} pw={pw} ph={ph} mtop={} dialog={} pics={pics}", m.bidi, m.setup.top, (w.setup_open.get_untracked() || w.watermark_open.get_untracked()) as u8);
+    let word = format!(" bidi={} table={table} wm={wm} pw={pw} ph={ph} mtop={} dialog={} pics={pics}", m.bidi, m.setup.top, (w.setup_open.get_untracked() || w.watermark_open.get_untracked()) as u8) + &fmt_probe();
     let (cp, cx, cy) = c.caret.map_or((-1, 0.0, 0.0), |(p, x, y, _)| (p as i64, x, y));
     let sheet = &o.sheet;
     format!(
@@ -123,15 +123,51 @@ fn probe() -> String {
         SWITCHED.with_borrow(|s| s.replace(' ', "_")),
         if o.key.get_untracked().is_empty() { "-" } else { "open" },
         m.pages.len(),
-        m.size,
+        m.fmt.size,
         m.rev,
-        m.bold,
+        m.fmt.bold,
         c.sel.len(),
         sheet.shape.with_untracked(Option::is_some),
         sheet.shown.with_untracked(|s| s.is_some() as u8),
         o.state.get_untracked().dirty,
     ) + &word
         + &sheet_probe()
+}
+
+/// The formatting bar's part of the probe: what the worker said of the
+/// selection, the mode, the zoom and the panels.
+fn fmt_probe() -> String {
+    let w = &store().office.word;
+    let m = w.meta.get_untracked();
+    let f = &m.fmt;
+    let o = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into()).replace(' ', "_");
+    let cell = m.cell.as_ref().map_or("-".to_owned(), |c| format!("{}x{}{}", c.rows, c.cols, if c.multi { "+" } else { "" }));
+    let fill = m.cell.as_ref().and_then(|c| c.fill.clone());
+    let picture = w.caret.get_untracked().picture.is_some() as u8;
+    let (picx, picy) = w.pages.borrow().first().and_then(|s| s.try_get().flatten()).and_then(|s| s.drawn.pictures.first().map(|p| (p.x, p.y))).unwrap_or_default();
+    format!(
+        " style={} family={} italic={} underline={} strike={} sup={} sub={} color={} hl={} align={} list={} ls={} indent={} link={} image={} cell={cell} fill={} mode={:?} review={} zoom={} picture={picture} picx={picx} picy={picy} linkdlg={}",
+        f.style,
+        f.family.replace(' ', "_"),
+        f.italic,
+        f.underline,
+        f.strike,
+        f.superscript,
+        f.subscript,
+        o(&f.color),
+        o(&f.highlight),
+        f.align,
+        f.list.map_or("-".to_owned(), |(n, l)| format!("{n}.{l}")),
+        f.line_spacing.unwrap_or(0.0),
+        f.indent_left,
+        o(&f.link.as_ref().map(|l| l.0.clone())),
+        o(&f.image),
+        o(&fill),
+        m.mode,
+        w.review.get_untracked(),
+        w.zoom.get_untracked(),
+        w.link_open.get_untracked() as u8,
+    )
 }
 
 /// The spreadsheet's part of the probe: its revision and sheet, the
@@ -442,6 +478,12 @@ impl Headless {
         let KeyMatch::Fire(id) = found else { panic!("nothing binds {keys}") };
         self.send(ROOT_ID, EventKind::KeyCommand, EventPayload::Value(PayloadValue::Number(f64::from(id))));
         self.pump(Duration::from_millis(50));
+    }
+
+    /// The window at `w` × `h`.
+    pub(crate) fn resize(&mut self, w: f32, h: f32) {
+        self.engine.control().resize(Size::new(px(w), px(h)));
+        self.pump(Duration::from_millis(100));
     }
 
     /// Characters typed into the input labelled `label`, one edit each.
@@ -1151,4 +1193,352 @@ fn merged_cells_select_whole_and_a_link_opens_on_a_click() {
     app.press_at("Cells", 10.0, 10.5 * 20.0, false);
     let p = until(&mut app, "the link followed", |p| word(p, "active") == "1");
     assert_eq!(word(&p, "act"), "2,1", "{p:?}");
+}
+
+// ---- the formatting bar ----
+
+/// [`open_word`] in a window `w` wide.
+fn open_word_at(test: &str, name: &str, w: f32) -> (Headless, PathBuf) {
+    let d = dir(test);
+    let a = d.join(name);
+    std::fs::write(&a, super::docx::fixture::paragraphs(&["Hello world", "Second line"])).unwrap();
+    let mut app = start(vec![attach(&a, "docx")]);
+    app.resize(w, 900.0);
+    app.press("open 0");
+    let p = word_shows(&mut app, "the document");
+    app.press_at("Document pages", num(&p, "left") + 700.0, 24.0 + 104.0, false);
+    until(&mut app, "the caret at the line's end", |p| num(p, "caret") == 0.0 && num(p, "cx") > 150.0);
+    (app, a)
+}
+
+/// A lit toggle's fill (`--doc-toggle-active-bg`), light.
+fn lit() -> nsh_core::Color {
+    nsh_core::Color::from(super::ui::palette::TOGGLE_ACTIVE_BG.light)
+}
+
+/// `want` in `have`, in order (other labels between).
+fn in_order(have: &[String], want: &[&str]) {
+    let mut at = 0;
+    for w in want {
+        match have[at..].iter().position(|h| h == w) {
+            Some(i) => at += i + 1,
+            None => panic!("{w:?} after {:?} in {have:?}", have.get(at.saturating_sub(1))),
+        }
+    }
+}
+
+#[test]
+fn the_formatting_bar_lists_the_webs_controls_in_order() {
+    if !in_child("the_formatting_bar_lists_the_webs_controls_in_order") {
+        return;
+    }
+    let (app, _) = open_word_at("bar-order", "a.docx", 1700.0);
+    let labels = app.labels_in("Formatting toolbar");
+    let groups = ["History", "Zoom", "Styles", "Font", "Text formatting", "Script", "Alignment", "List formatting", "Image", "Table"];
+    let shown: Vec<&String> = labels.iter().filter(|l| groups.contains(&l.as_str())).collect();
+    assert_eq!(shown, groups, "every group's place, the Image and Table ones kept for their turn");
+    in_order(
+        &labels,
+        &[
+            "History", "Undo", "Redo", "Zoom", "Zoom out", "Zoom level", "Zoom in", "Styles", "Select paragraph style", "Font", "Select font family", "Decrease font size", "Select font size", "Increase font size",
+            "Text formatting", "Bold", "Italic", "Underline", "Strikethrough", "Font Color", "Text Highlight Color", "Insert link", "Script", "Superscript", "Subscript", "Alignment", "Align Left (Ctrl+L)",
+            "List formatting", "Bullet List", "Numbered List", "Decrease Indent", "Increase Indent", "Line spacing", "Image", "Table", "Clear formatting", "Separator", "Comments & Changes", "Separator", "Editing",
+        ],
+    );
+    // the contextual groups have no controls out of their context
+    for c in ["Text wrapping", "Transform", "Image properties", "Borders", "More table options"] {
+        assert!(!app.has(c), "{c} out of its context");
+    }
+    assert!(!app.has("More actions"), "all fit");
+    // no glyph buttons of the old bar
+    assert!(!app.has("Find") && !app.has("Tracked changes and comments"));
+    // undo is off with nothing to undo; the editing mode's label shows on a wide window
+    assert!((app.style("Undo").opacity - 0.3).abs() < 1e-6);
+    assert!(app.texts().contains(&"Editing"));
+}
+
+#[test]
+fn the_bars_controls_format_the_selection_and_light() {
+    if !in_child("the_bars_controls_format_the_selection_and_light") {
+        return;
+    }
+    let (mut app, a) = open_word_at("bar-format", "a.docx", 1700.0);
+    app.key("alt+shift+left");
+    until(&mut app, "\"world\" selected", |p| num(p, "sel") > 0.0);
+    for (button, key) in [("Bold", "bold"), ("Italic", "italic"), ("Underline", "underline"), ("Strikethrough", "strike"), ("Superscript", "sup")] {
+        app.press(button);
+        until(&mut app, button, |p| is(p, key, "true"));
+        // lit: the toggle's active fill
+        assert_eq!(app.style(button).background_color, lit(), "{button} lit");
+    }
+    app.press("Subscript");
+    until(&mut app, "subscript, not superscript", |p| is(p, "sub", "true") && is(p, "sup", "false"));
+    app.press("Font Color choices");
+    app.press("Red");
+    until(&mut app, "red", |p| is(p, "color", "FF0000"));
+    app.press("Text Highlight Color");
+    until(&mut app, "yellow", |p| is(p, "hl", "FFFF00"));
+    app.press("Select font family");
+    app.press("Georgia");
+    until(&mut app, "Georgia", |p| is(p, "family", "Georgia"));
+    app.press("Increase font size");
+    until(&mut app, "12", |p| num(p, "size") == 12.0);
+    app.press("Select font size");
+    app.press("24");
+    until(&mut app, "24", |p| num(p, "size") == 24.0);
+    app.press("Clear formatting");
+    until(&mut app, "cleared", |p| is(p, "bold", "false") && is(p, "italic", "false") && is(p, "color", "-") && num(p, "size") == 11.0);
+    // the paragraph: a style, each alignment, lists, line spacing
+    app.press("Select paragraph style");
+    app.press("Heading 1");
+    until(&mut app, "Heading 1", |p| is(p, "style", "Heading1"));
+    for (row, align) in [("Center", "center"), ("Align Right", "right"), ("Justify", "both"), ("Align Left", "left")] {
+        let trigger = app.labels_in("Alignment").into_iter().find(|l| l.contains("(Ctrl+")).unwrap();
+        app.press(&trigger);
+        app.press(row);
+        until(&mut app, row, |p| is(p, "align", align));
+    }
+    app.press("Bullet List");
+    until(&mut app, "bullets", |p| is(p, "list", "1.0"));
+    assert_eq!(app.style("Bullet List").background_color, lit(), "bullets lit");
+    app.press("Increase Indent");
+    until(&mut app, "a level in", |p| is(p, "list", "1.1"));
+    app.press("Decrease Indent");
+    until(&mut app, "a level out", |p| is(p, "list", "1.0"));
+    app.press("Numbered List");
+    until(&mut app, "numbers", |p| is(p, "list", "2.0"));
+    app.press("Line spacing");
+    app.press("1.5");
+    until(&mut app, "1.5 lines", |p| num(p, "ls") == 360.0);
+    // the zoom presets, and its steps
+    app.press("Zoom level");
+    app.press("150%");
+    until(&mut app, "150%", |p| num(p, "zoom") == 1.5);
+    app.press("Zoom in");
+    until(&mut app, "200%", |p| num(p, "zoom") == 2.0);
+    app.press("Zoom out");
+    until(&mut app, "back to 150%", |p| num(p, "zoom") == 1.5);
+    app.press("save");
+    until(&mut app, "saved", |p| is(p, "dirty", "false"));
+    let (_, xml) = saved(&a);
+    for want in [r#"<w:pStyle w:val="Heading1"/>"#, r#"<w:numId w:val="2"/>"#, r#"w:line="360""#, r#"<w:jc w:val="left"/>"#] {
+        assert!(xml.contains(want), "{want} in {xml}");
+    }
+}
+
+#[test]
+fn the_webs_chords_align_script_and_link() {
+    if !in_child("the_webs_chords_align_script_and_link") {
+        return;
+    }
+    let (mut app, _) = open_word_at("bar-keys", "a.docx", 1700.0);
+    for (k, align) in [("mod+e", "center"), ("mod+r", "right"), ("mod+j", "both"), ("mod+l", "left")] {
+        app.key(k);
+        until(&mut app, k, |p| is(p, "align", align));
+    }
+    app.key("alt+shift+left");
+    app.key("mod+=");
+    until(&mut app, "subscript", |p| is(p, "sub", "true"));
+    app.key("mod+shift+=");
+    until(&mut app, "superscript", |p| is(p, "sup", "true") && is(p, "sub", "false"));
+    app.key("mod+b");
+    until(&mut app, "bold still", |p| is(p, "bold", "true"));
+    app.key("mod+k");
+    until(&mut app, "the link dialog", |p| is(p, "linkdlg", "1"));
+    assert!(app.has("Insert Hyperlink dialog"));
+}
+
+#[test]
+fn a_link_inserts_and_edits_through_its_dialog() {
+    if !in_child("a_link_inserts_and_edits_through_its_dialog") {
+        return;
+    }
+    let (mut app, a) = open_word_at("bar-link", "a.docx", 1700.0);
+    app.key("alt+shift+left");
+    until(&mut app, "\"world\" selected", |p| num(p, "sel") > 0.0);
+    app.press("Insert link");
+    assert!(app.has("Insert Hyperlink dialog") && app.has("Close dialog"));
+    for t in ["URL", "Display Text", "Tooltip (optional)", "Enter a web address, email (mailto:), or phone (tel:)", "Leave empty to use the selected text", "Cancel", "Insert"] {
+        assert!(app.texts().contains(&t), "{t} in {:?}", app.texts());
+    }
+    assert_eq!(app.value("Display Text"), "world");
+    assert!(!app.has("Remove Link") || (app.style("Remove Link").opacity).abs() < 1e-6, "no Remove Link for a new link");
+    app.change("URL", "example.com");
+    app.press("Insert");
+    until(&mut app, "the link", |p| is(p, "link", "https://example.com") && is(p, "linkdlg", "0"));
+    // the caret in the link: Edit Hyperlink, with the link's address
+    app.key("left");
+    app.key("mod+k");
+    assert!(app.has("Edit Hyperlink dialog"));
+    assert_eq!(app.value("URL"), "https://example.com");
+    assert!(app.texts().contains(&"Update") && app.texts().contains(&"Remove Link"));
+    // an address that doesn't read as one is not taken
+    app.change("URL", "exa mple");
+    app.press("Update");
+    assert!(app.texts().contains(&"Please enter a valid URL"), "{:?}", app.texts());
+    app.change("URL", "https://example.org");
+    app.press("Update");
+    until(&mut app, "the link edited", |p| is(p, "link", "https://example.org") && is(p, "linkdlg", "0"));
+    app.press("save");
+    until(&mut app, "saved", |p| is(p, "dirty", "false"));
+    let bytes = std::fs::read(&a).unwrap();
+    let parts = ooxml_opc::unzip_parts(&bytes).unwrap();
+    let rels = String::from_utf8_lossy(&parts.iter().find(|(n, _)| n == "word/_rels/document.xml.rels").unwrap().1).into_owned();
+    assert!(rels.contains("https://example.org"), "{rels}");
+    // Remove Link takes it off
+    app.key("mod+k");
+    app.press("Remove Link");
+    until(&mut app, "no link", |p| is(p, "link", "-"));
+}
+
+#[test]
+fn the_table_group_shows_in_a_table_and_its_commands_work() {
+    if !in_child("the_table_group_shows_in_a_table_and_its_commands_work") {
+        return;
+    }
+    let (mut app, _) = open_word_at("bar-table", "a.docx", 1700.0);
+    assert!(!app.has("More table options"));
+    app.press("Insert");
+    app.hover("Table", true);
+    app.press("row 2 column 2");
+    until(&mut app, "in the new table", |p| is(p, "cell", "2x2"));
+    for c in ["Borders", "Border Color", "Border width", "Cell Fill Color", "More table options"] {
+        assert!(app.has(c), "{c} in the table group");
+    }
+    app.press("More table options");
+    let rows = app.labels_in("More table options menu");
+    in_order(
+        &rows,
+        &[
+            "Insert row above", "Insert row below", "Insert column left", "Insert column right", "Merge cells", "Split cell", "Select entire table", "Delete row", "Delete column", "Delete table", "Top", "Middle", "Bottom",
+            "Align table left", "Align table center", "Align table right", "Toggle header row", "Distribute columns evenly", "Auto-fit to contents", "Toggle no-wrap", "Table properties...",
+        ],
+    );
+    app.press("Insert row below");
+    until(&mut app, "a row more", |p| is(p, "cell", "3x2"));
+    app.press("More table options");
+    app.press("Insert column right");
+    until(&mut app, "a column more", |p| is(p, "cell", "3x3"));
+    // the refused rows: greyed, and a press does nothing
+    app.press("More table options");
+    app.press("Toggle header row");
+    assert!(app.has("More table options menu"), "the refused row keeps the menu");
+    app.cancel("More table options menu");
+    app.press("Cell Fill Color");
+    until(&mut app, "the cell filled", |p| is(p, "fill", "FFFF00"));
+    let rev = num(&read(&app), "rev");
+    app.press("Borders");
+    app.press("All borders");
+    until(&mut app, "borders", |p| num(p, "rev") > rev);
+    let rev = num(&read(&app), "rev");
+    app.press("Border width");
+    app.press("1.5 pt");
+    until(&mut app, "a wider border", |p| num(p, "rev") > rev);
+    app.press("More table options");
+    app.press("Select entire table");
+    until(&mut app, "the whole table", |p| is(p, "cell", "3x3+"));
+    app.press("More table options");
+    app.press("Merge cells");
+    until(&mut app, "one cell", |p| is(p, "cell", "1x1"));
+    app.press("More table options");
+    app.press("Delete table");
+    until(&mut app, "no table", |p| is(p, "cell", "-"));
+    assert!(!app.has("More table options"));
+}
+
+#[test]
+fn the_image_group_shows_on_a_selected_picture() {
+    if !in_child("the_image_group_shows_on_a_selected_picture") {
+        return;
+    }
+    let (mut app, a) = open_word_at("bar-image", "a.docx", 1700.0);
+    let png = a.with_file_name("dot.png");
+    std::fs::write(&png, super::docx::fixture::png()).unwrap();
+    app.press("Insert");
+    app.press("Image");
+    app.pick_file(&png);
+    let p = until(&mut app, "the picture on the page", |p| is(p, "pics", "1"));
+    assert!(!app.has("Text wrapping"));
+    // a click on it selects it, outlined
+    app.press_at("Document pages", num(&p, "left") + num(&p, "picx") + 1.0, 24.0 + num(&p, "picy") + 1.0, false);
+    until(&mut app, "the picture selected", |p| is(p, "image", "inline") && is(p, "picture", "1"));
+    for c in ["Text wrapping", "Transform", "Image properties"] {
+        assert!(app.has(c), "{c} in the image group");
+    }
+    app.press("Text wrapping");
+    app.press("Square Left");
+    until(&mut app, "wrapped", |p| is(p, "image", "wrapRight"));
+    let rev = num(&read(&app), "rev");
+    app.press("Transform");
+    app.press("Rotate clockwise");
+    until(&mut app, "turned", |p| num(p, "rev") > rev);
+    // a caret in the text: the group goes
+    app.key("mod+down");
+    until(&mut app, "no picture", |p| is(p, "image", "-"));
+    assert!(!app.has("Text wrapping"));
+}
+
+#[test]
+fn suggesting_tracks_edits_and_viewing_blocks_typing() {
+    if !in_child("suggesting_tracks_edits_and_viewing_blocks_typing") {
+        return;
+    }
+    let (mut app, a) = open_word_at("bar-modes", "a.docx", 1700.0);
+    app.press("Editing");
+    for row in ["Editing", "Suggesting", "Viewing", "Edit document directly", "Edits become suggestions", "Read-only, no edits"] {
+        assert!(app.texts().contains(&row), "{row} in {:?}", app.texts());
+    }
+    app.press("Suggesting");
+    until(&mut app, "suggesting", |p| is(p, "mode", "Suggesting"));
+    app.type_text("Document", "!");
+    app.key("alt+shift+left");
+    app.key("alt+shift+left");
+    app.key("backspace");
+    app.press("save");
+    until(&mut app, "saved", |p| is(p, "dirty", "false"));
+    let (_, xml) = saved(&a);
+    assert!(xml.contains("<w:ins ") && xml.contains("<w:del "), "{xml}");
+    app.press("Suggesting");
+    app.press("Viewing");
+    let p = until(&mut app, "viewing", |p| is(p, "mode", "Viewing"));
+    // the bar's commands are off, and typing goes nowhere
+    assert!((app.style("Bold").opacity - 0.3).abs() < 1e-6);
+    app.type_text("Document", "x");
+    app.key("enter");
+    app.pump(Duration::from_millis(200));
+    let after = read(&app);
+    assert_eq!((num(&after, "rev"), after.get("dirty").cloned()), (num(&p, "rev"), Some("false".to_owned())), "nothing typed in");
+}
+
+#[test]
+fn the_bar_overflows_into_more_actions_at_a_narrow_width() {
+    if !in_child("the_bar_overflows_into_more_actions_at_a_narrow_width") {
+        return;
+    }
+    let (mut app, _) = open_word_at("bar-overflow", "a.docx", 1700.0);
+    assert!(!app.has("More actions"));
+    app.resize(760.0, 900.0);
+    let end = Instant::now() + WAIT;
+    while !app.has("More actions") {
+        assert!(Instant::now() < end, "no More menu at 760");
+        app.pump(Duration::from_millis(50));
+    }
+    // the first parts stay; the last went, whole, into the menu
+    assert!(app.has("Undo") && app.has("Select paragraph style"));
+    assert!(!app.has("Comments & Changes") && !app.has("Bullet List"));
+    app.press("More actions");
+    let rows = app.labels_in("More actions menu");
+    in_order(&rows, &["Bullet List", "Numbered List", "Decrease Indent", "Increase Indent", "Line spacing", "Clear formatting", "Comments & Changes", "Editing mode"]);
+    assert!(app.texts().contains(&"List formatting"), "the group's heading");
+    assert!(!rows.iter().any(|r| r == "Undo"), "{rows:?}");
+    app.press("Bullet List");
+    until(&mut app, "bullets from the menu", |p| is(p, "list", "1.0"));
+    // wide again: everything back on the bar
+    app.resize(1700.0, 900.0);
+    let end = Instant::now() + WAIT;
+    while app.has("More actions") {
+        assert!(Instant::now() < end, "the More menu stays at 1700");
+        app.pump(Duration::from_millis(50));
+    }
+    assert!(app.has("Comments & Changes"));
 }
