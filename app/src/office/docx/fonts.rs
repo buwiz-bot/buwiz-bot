@@ -194,6 +194,11 @@ impl Fonts {
         chain
     }
 
+    /// Whether a chain was handed out for `key`.
+    pub(crate) fn has(&self, key: &str) -> bool {
+        self.chains.contains_key(key)
+    }
+
     /// Every chain handed out, as the layout's `fontChains` takes them.
     pub(crate) fn chains_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.chains).unwrap_or_default()
