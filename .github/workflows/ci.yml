@@ -1,6 +1,7 @@
 name: CI
 
-# The app's and the broker's tests on Apple silicon, for every PR.
+# The app's, the office crates' and the broker's tests on Apple silicon,
+# for every PR.
 on:
   pull_request:
   workflow_dispatch:
@@ -17,20 +18,30 @@ env:
 
 jobs:
   app:
-    name: App (cargo test -p rox)
+    name: App and office crates (cargo test)
     runs-on: macos-14
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # the office crates' tests draw and measure with @betteroffice/fonts,
+      # which they find in server/node_modules
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: npm ci (server)
+        working-directory: server
+        run: npm ci
       # rustup installs app/rust-toolchain.toml's 1.99.0 on first use
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app
       - name: Test
         working-directory: app
-        run: cargo test --locked -p rox
+        run: cargo test --locked -p rox -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet
 
   broker:
     name: Broker (cargo test)
