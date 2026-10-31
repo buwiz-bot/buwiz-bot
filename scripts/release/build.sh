@@ -37,11 +37,14 @@ source "$(dirname "$0")/lib.sh"
 APP_NAME="Buwiz Bot"
 BUNDLE_ID="com.buwiz.bot"
 URL_SCHEMES=(buwiz)
+# the bundle's executable; the cargo binary (BIN_NAME, below) is copied in
+# under this name
+EXECUTABLE="buwiz-bot"
 COPYRIGHT="Copyright © Goldcoders Corp"
 
 [ "$(uname -m)" = arm64 ] || die "release builds are Apple silicon only (arm64)"
 
-# The version and the binary's name, from app/Cargo.toml: the [package]
+# The version and the cargo binary's name, from app/Cargo.toml: the [package]
 # name is the binary's unless a [[bin]] names it.
 VERSION="$(awk -F'"' '/^\[/{s=$0} s=="[package]" && /^version *=/{print $2; exit}' "$ROOT/app/Cargo.toml")"
 BIN_NAME="$(awk -F'"' '/^\[/{s=$0} s=="[[bin]]" && /^name *=/{print $2; exit}' "$ROOT/app/Cargo.toml")"
@@ -70,7 +73,12 @@ DIST="${OFFICE_DIST:-$SERVER/src/office/editor/dist}"
 # The office views' icon font, pinned by hash as in bundle-dev.sh.
 SYMBOLS_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v382/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
 SYMBOLS_SHA256=69b4db8f8971c5206adb2d3891787c33eee828271fa56209e05ee0e3202729dd
-SYMBOLS="${MATERIAL_SYMBOLS_TTF:-$HOME/Library/Caches/Rox/fonts/MaterialSymbolsOutlined-v382.ttf}"
+SYMBOLS="${MATERIAL_SYMBOLS_TTF:-$HOME/Library/Caches/$APP_NAME/fonts/MaterialSymbolsOutlined-v382.ttf}"
+OLD_SYMBOLS="$HOME/Library/Caches/Rox/fonts/MaterialSymbolsOutlined-v382.ttf"
+# the copy Rox fetched serves until Buwiz Bot has its own
+if [ ! -f "$SYMBOLS" ] && [ -z "${MATERIAL_SYMBOLS_TTF:-}" ] && [ -f "$OLD_SYMBOLS" ]; then
+  SYMBOLS="$OLD_SYMBOLS"
+fi
 if [ ! -f "$SYMBOLS" ] && [ -z "${MATERIAL_SYMBOLS_TTF:-}" ]; then
   mkdir -p "$(dirname "$SYMBOLS")"
   curl -fsSL -o "$SYMBOLS.part" "$SYMBOLS_URL" && mv "$SYMBOLS.part" "$SYMBOLS" || rm -f "$SYMBOLS.part"
@@ -112,7 +120,7 @@ APP="$OUT/$APP_NAME.app"
 C="$APP/Contents"
 rm -rf "$APP"
 mkdir -p "$C/MacOS" "$C/Resources/fonts/office/LICENSES"
-cp "$ROX_BIN" "$C/MacOS/$BIN_NAME"
+cp "$ROX_BIN" "$C/MacOS/$EXECUTABLE"
 
 cp "$SYMBOLS" "$C/Resources/fonts/MaterialSymbolsOutlined.ttf"
 cp "$ROOT/app/fonts/MaterialSymbolsOutlined-LICENSE" "$C/Resources/fonts/MaterialSymbolsOutlined-LICENSE"
@@ -198,7 +206,7 @@ cat > "$C/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
-  <key>CFBundleExecutable</key><string>$BIN_NAME</string>
+  <key>CFBundleExecutable</key><string>$EXECUTABLE</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
