@@ -292,6 +292,10 @@ impl Word {
     fn formats(&self) -> (bool, bool, bool, f32) {
         let s = if self.anchor.offset <= self.head.offset { &self.anchor } else { &self.head };
         let Ok(segments) = self.layout.engine.doc().story_segments(&s.story) else { return (false, false, false, 11.0) };
+        // the text a caret follows, as typing continues it; a selection's
+        // first character (the one before it is outside: ⌘B on a word
+        // left the B unlit)
+        let after = if self.collapsed() { s.offset.max(1) } else { s.offset + 1 };
         let mut at = 0u32;
         let mut attrs = None;
         for seg in &segments {
@@ -299,8 +303,7 @@ impl Word {
                 docx_edit::SegmentContent::Text(t) => t.encode_utf16().count() as u32,
                 _ => 1,
             };
-            // the text the caret follows, as typing continues it
-            if at < s.offset.max(1) && s.offset.max(1) <= at + n {
+            if at < after && after <= at + n {
                 attrs = Some(&seg.attributes);
                 break;
             }

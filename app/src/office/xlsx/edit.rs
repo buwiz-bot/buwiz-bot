@@ -43,12 +43,19 @@ pub(crate) fn focus() {
 /// Whether the sheet's keys apply: it shows and nothing is being edited.
 pub(crate) fn navigating() -> bool {
     let st = store();
-    office::showing() && st.office.sheet.editing.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
+    sheet_showing() && st.office.sheet.editing.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
 }
 
 /// Whether a cell is being edited.
 pub(crate) fn editing() -> bool {
-    office::showing() && store().office.sheet.editing.with(Option::is_some)
+    sheet_showing() && store().office.sheet.editing.with(Option::is_some)
+}
+
+/// A spreadsheet shows natively: not a Word document, whose keys
+/// (arrows, Shift-arrows, Backspace, ⌘Z…) the sheet's scope would take
+/// first.
+fn sheet_showing() -> bool {
+    office::showing() && !store().office.is_word.get()
 }
 
 /// What a move needs of the sheet: its used range, a page of rows, the

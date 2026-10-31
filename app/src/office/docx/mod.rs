@@ -103,11 +103,15 @@ impl WordUi {
         self.asked.set(None);
     }
 
-    /// Page `i`'s signal (made on first use).
+    /// Page `i`'s signal (made on first use). It lives as long as the
+    /// store, whoever asks first: made under a page's canvas binding it
+    /// went with that binding's next run or with the view, and the next
+    /// read or write (the worker's page, the next open's `reset`)
+    /// panicked, leaving the document blank.
     pub(crate) fn page(&self, i: usize) -> Signal<Option<Shown>> {
         let mut pages = self.pages.borrow_mut();
         while pages.len() <= i {
-            pages.push(signal(None));
+            pages.push(Owner::detached().run(|| signal(None)));
         }
         pages[i]
     }

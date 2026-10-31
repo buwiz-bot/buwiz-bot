@@ -380,6 +380,7 @@ fn pages() -> impl IntoElement {
         })
         .child(
             view()
+                .label("Document pages")
                 .w(move || px(width()))
                 .h(move || px(total()))
                 .on_press_down(move |e: &PressEvent| {

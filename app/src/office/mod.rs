@@ -14,6 +14,8 @@
 pub(crate) mod docx;
 pub(crate) mod draw;
 pub(crate) mod session;
+#[cfg(test)]
+mod ui_tests;
 pub(crate) mod xlsx;
 
 use std::cell::RefCell;
