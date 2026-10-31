@@ -24,10 +24,13 @@ use super::{
     load::say,
 };
 
+/// A screens crate's `screens()`.
+type Screens = fn() -> &'static [ScreenDef];
+
 /// The screens crates compiled in: each plugin's id and its crate's
 /// `screens()`. None yet: the first lands with its plugin's screens crate
 /// (pinned by git rev).
-const COMPILED: &[(&str, fn() -> &'static [ScreenDef])] = &[];
+const COMPILED: &[(&str, Screens)] = &[];
 
 /// Native screens by plugin.
 #[derive(Default)]
