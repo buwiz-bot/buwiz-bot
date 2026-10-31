@@ -286,6 +286,20 @@ impl Headless {
     }
 }
 
+impl Headless {
+    /// The input labelled `label` reports `value` as its whole text (one
+    /// edit), whatever it held: as a platform does when keys come faster
+    /// than the app answers, or an input method or autocorrect replaces
+    /// what was typed.
+    fn change(&mut self, label: &str, value: &str) {
+        let id = self.view(label);
+        let count = self.inputs.get(&id).map_or(0, |i| i.1) + 1;
+        self.inputs.insert(id, (value.to_owned(), count));
+        self.send(id, EventKind::ChangeText, EventPayload::Text { text: value.to_owned(), count });
+        self.pump(Duration::from_millis(50));
+    }
+}
+
 fn read(app: &Headless) -> HashMap<String, String> {
     parse(app.texts().into_iter().find(|t| t.starts_with("probe ")).unwrap_or_default())
 }
@@ -472,4 +486,38 @@ fn the_viewer_switches_one_file_between_its_views() {
     sheet_shows(&mut app, "the spreadsheet back natively");
     app.press("open 0");
     word_shows(&mut app, "the document again, natively");
+}
+
+#[test]
+fn each_change_of_the_word_field_inserts_only_what_is_new() {
+    if !in_child("each_change_of_the_word_field_inserts_only_what_is_new") {
+        return;
+    }
+    let d = dir("field");
+    let a = d.join("a.docx");
+    std::fs::write(&a, super::docx::fixture::paragraphs(&["Hello", "Second"])).unwrap();
+    let mut app = start(vec![attach(&a, "docx")]);
+    app.press("open 0");
+    let p = word_shows(&mut app, "the document");
+    let left = num(&p, "left");
+    app.press_at("Document pages", left + 700.0, 16.0 + 104.0, false);
+    until(&mut app, "the caret at the line's end", |p| num(p, "caret") == 0.0 && num(p, "cx") > 120.0);
+    // the field never emptied between them: each change carries the last
+    for v in ["a", "ab", "abc"] {
+        app.change("Document", v);
+    }
+    // a replaced character (autocorrect, an input method's commit)
+    app.change("Document", "abd");
+    until(&mut app, "the typing laid out", |p| p.get("dirty").map(String::as_str) == Some("true"));
+    app.press("save");
+    until(&mut app, "saved", |p| p.get("dirty").map(String::as_str) == Some("false"));
+    assert_eq!(saved(&a).0, vec!["Helloabd", "Second"]);
+    // a key that moves the caret starts the field afresh: what it held is
+    // not typed again
+    app.key("left");
+    app.change("Document", "x");
+    until(&mut app, "the next typing", |p| p.get("dirty").map(String::as_str) == Some("true"));
+    app.press("save");
+    until(&mut app, "saved again", |p| p.get("dirty").map(String::as_str) == Some("false"));
+    assert_eq!(saved(&a).0, vec!["Helloabxd", "Second"]);
 }
