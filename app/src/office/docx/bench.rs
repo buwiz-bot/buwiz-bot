@@ -228,13 +228,15 @@ fn parts_200() {
 #[ignore = "bench: run with --ignored --nocapture"]
 fn typing_200() {
     fonts::Fonts::resolve("Arial", false, false);
-    println!("-- with footnotes");
-    typing(fixture::document(200));
-    println!("-- without footnotes");
-    typing(fixture::document_without_notes(200));
+    for local in [false, true] {
+        println!("-- with footnotes, local lowering {local}");
+        typing(fixture::document(200), local);
+        println!("-- without footnotes, local lowering {local}");
+        typing(fixture::document_without_notes(200), local);
+    }
 }
 
-fn typing(bytes: Vec<u8>) {
+fn typing(bytes: Vec<u8>, local: bool) {
     use super::doc::{Cmd, Move, Word};
     use crate::office::session::Document;
     let t = Instant::now();
@@ -244,6 +246,7 @@ fn typing(bytes: Vec<u8>) {
     let t = Instant::now();
     w.tick();
     println!("second tick (the whole document) {:.1} ms", ms(t));
+    w.set_local_lowering(local);
     // to page 100's start, as a scroll and a click would
     w.run(Cmd::View { pages: vec![99, 100, 101], zoom: 1.0 });
     w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
@@ -260,8 +263,8 @@ fn typing(bytes: Vec<u8>) {
     }
     v.sort_by(f64::total_cmp);
     println!("typing echo: median {:.1} / p90 {:.1} / max {:.1} ms", v[v.len() / 2], v[v.len() * 9 / 10], v[v.len() - 1]);
-    let mut parts: Vec<(f64, f64, f64)> = (0..10).map(|_| w.echo_parts()).collect();
-    parts.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut parts: Vec<(f64, f64, f64, f64)> = (0..10).map(|_| w.echo_parts()).collect();
+    parts.sort_by(|a, b| a.2.total_cmp(&b.2));
     let m = parts[5];
-    println!("of which (median): insert {:.2} ms, engine relayout + lists {:.1} ms, index {:.1} ms", m.0, m.1, m.2);
+    println!("of which (median): insert {:.2} ms, font check (skipped for plain typing) {:.1} ms, engine relayout + lists {:.1} ms, index {:.1} ms", m.0, m.1, m.2, m.3);
 }
