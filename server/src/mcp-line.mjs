@@ -36,7 +36,7 @@ function note(id, st) {
 async function post(path, body) {
   const res = await fetch(`${LINE.base}/v1/line/${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-rox-line": LINE.token },
+    headers: { "content-type": "application/json", "x-buwiz-line": LINE.token },
     body: JSON.stringify(body),
   });
   const out = await res.json();
@@ -56,7 +56,7 @@ export function stopLineEvents() {
 async function listen() {
   while (!listening.signal.aborted) {
     try {
-      const res = await fetch(`${LINE.base}/v1/line/events`, { headers: { "x-rox-line": LINE.token }, signal: listening.signal });
+      const res = await fetch(`${LINE.base}/v1/line/events`, { headers: { "x-buwiz-line": LINE.token }, signal: listening.signal });
       const decoder = new TextDecoder();
       let buf = "";
 

@@ -67,7 +67,7 @@ impl Config {
         self.node_script.parent().filter(|p| !p.as_os_str().is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
     }
 
-    /// The trust store Node reads (v1/trust.mjs): `ROX_TRUST_FILE`, else
+    /// The trust store Node reads (v1/trust.mjs): `BUWIZ_TRUST_FILE`, else
     /// `trust.json` in the server dir (a bundle), else `v1/trust.json`
     /// (a checkout).
     pub fn trust_file(&self, env: Option<&str>) -> PathBuf {

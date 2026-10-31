@@ -3,8 +3,8 @@
 //
 // A v1 plugin is a stdio MCP child the broker owns, apart from the v0
 // mcp_servers (mcp.mjs), which keep working as they do. Every spawn runs
-// the same gate: connect, `rox.provision` with the plugin key as the first
-// request (7.8), read `rox://manifest`, verify it (5.2), check tools/list
+// the same gate: connect, `buwiz.provision` with the plugin key as the first
+// request (7.8), read `buwiz://manifest`, verify it (5.2), check tools/list
 // against it, and compare it with the install record (12.1). Only then is
 // the plugin `running`, under a new generation. A crash restarts it with
 // backoff 1-60 s; the seventh restart within 10 minutes leaves it
@@ -23,13 +23,13 @@ import { generate, pubOf } from "./ed.mjs";
 import { V1Error, refuse } from "./errors.mjs";
 import { isObject, isString, kindOf } from "./jcs.mjs";
 import {
-  MANIFEST_URI, addedPermissions, checkTools, compareSemver, permsDigest, reviewOf, verifyManifest,
+  HOST_PROTOCOL, MANIFEST_URI, addedPermissions, checkTools, compareSemver, permsDigest, reviewOf, verifyManifest,
 } from "./manifest.mjs";
 import { isApproved, loadTrust } from "./trust.mjs";
 
 // 9.8: the first-party publisher, whose approved plugins' answer cards
 // mount at once
-export const FIRST_PARTY = "dev.goldcoders";
+export const FIRST_PARTY = "app.buwiz";
 
 export const BACKOFF_S = [1, 2, 4, 8, 16, 32, 60];
 export const RESTART_WINDOW_MS = 10 * 60 * 1000;
@@ -189,21 +189,21 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     const conn = await connect(spec, seed, known || "inspect", hooks);
 
     try {
-      // a first spawn learns the id rox.provision names from the manifest
+      // a first spawn learns the id buwiz.provision names from the manifest
       // (resources are readable before provision; only tools are gated)
       const id = known || (await peekId(conn));
       let prov;
 
       try {
-        prov = await reserved(conn, "rox.provision", { protocol: "1.0.0", plugin: id, key: { alg: "ed25519", seed }, pub: pubOf(seed) });
+        prov = await reserved(conn, "buwiz.provision", { protocol: HOST_PROTOCOL, plugin: id, key: { alg: "ed25519", seed }, pub: pubOf(seed) });
       } catch (e) {
-        throw new V1Error("plugin_invalid", `rox.provision failed: ${String(e?.message || e).slice(0, 200)}`);
+        throw new V1Error("plugin_invalid", `buwiz.provision failed: ${String(e?.message || e).slice(0, 200)}`);
       }
 
-      if (prov?.ok !== true || !/^[0-9a-f]{64}$/.test(String(prov.manifest_sha256))) refuse("plugin_invalid", "rox.provision did not answer {ok: true, manifest_sha256}");
+      if (prov?.ok !== true || !/^[0-9a-f]{64}$/.test(String(prov.manifest_sha256))) refuse("plugin_invalid", "buwiz.provision did not answer {ok: true, manifest_sha256}");
       const v = await readVerified(conn);
 
-      if (prov.manifest_sha256 !== v.sha256) refuse("manifest_invalid", "rox.provision reports a manifest other than the one the plugin serves");
+      if (prov.manifest_sha256 !== v.sha256) refuse("manifest_invalid", "buwiz.provision reports a manifest other than the one the plugin serves");
 
       if (conn.leaked) refuse("plugin_invalid", "the plugin wrote its key to stderr (4.3)");
 
@@ -228,7 +228,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
   async function readVerified(conn) {
     const { resources = [] } = await conn.client.listResources();
 
-    if (!resources.some((r) => r.uri === MANIFEST_URI)) refuse("manifest_invalid", "the plugin lists no rox://manifest");
+    if (!resources.some((r) => r.uri === MANIFEST_URI)) refuse("manifest_invalid", "the plugin lists no buwiz://manifest");
     const { contents = [] } = await conn.client.readResource({ uri: MANIFEST_URI });
     const text = contents.find((c) => isString(c.text))?.text;
     const { manifest, sha256 } = verifyManifest(text, trust());
@@ -583,7 +583,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     return { ok: rt.state === "running", state: rt.state, code: rt.code, message: rt.message, generation: rt.generation };
   }
 
-  /** 13.6, broker side: rox.uninstall (best effort, 5 s), end the opens,
+  /** 13.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,
    *  stop, delete the key, remove the record. */
   async function uninstall(id) {
     const row = mustRow(id);
@@ -598,7 +598,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       temp = !!conn;
     }
 
-    if (conn) await reserved(conn, "rox.uninstall", {}, T.reserved).catch(() => {});
+    if (conn) await reserved(conn, "buwiz.uninstall", {}, T.reserved).catch(() => {});
 
     if (temp) await conn.transport.close().catch(() => {});
     await Promise.all(closers.map((f) => f(id, { stop: true })));

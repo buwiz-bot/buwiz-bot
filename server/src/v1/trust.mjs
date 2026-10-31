@@ -2,7 +2,7 @@
 // manifests and which plugins may be installed.
 //
 // Rox ships src/v1/trust.json (trust.json beside the bundled server);
-// ROX_TRUST_FILE points at another file (every test run writes its own,
+// BUWIZ_TRUST_FILE points at another file (every test run writes its own,
 // with a key it generated). The file is read on every use, so an edit
 // takes effect at the next verification and at the next look at the agent
 // surface (approved-plugin text, 10.2).
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { isObject, isString, parseIJson } from "./jcs.mjs";
 import { fromB64u } from "./ed.mjs";
 
-export const TRUST_FILE = () => process.env.ROX_TRUST_FILE || join(dirname(fileURLToPath(import.meta.url)), "trust.json");
+export const TRUST_FILE = () => process.env.BUWIZ_TRUST_FILE || join(dirname(fileURLToPath(import.meta.url)), "trust.json");
 
 /** {publishers: Map key_id -> {publisher, public_key}, approved: [{id,
  *  publisher_key_id}]}. A missing or broken file trusts nothing. */

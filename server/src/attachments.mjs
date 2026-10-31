@@ -4,7 +4,7 @@
 //   attachments(id, server, token, scope, title, open, key, details, thread,
 //               bot, turn, created_at)
 // `turn` is the id of the card message posted for it (an `mcp-app` link,
-// the card `rox/open` replies carry), `key` the mini app its `open` link
+// the card `buwiz/open` replies carry), `key` the mini app its `open` link
 // names (`mcp:<server>/<app>|<props>`, as pins store it). A rename is a
 // display name per token (attachment_names), shared by every attachment
 // and pin of it. While a chat has attachments, every resolve made for it
@@ -21,9 +21,9 @@ const botOf = (threadId) => threadBot(threadId) || null;
 const serverRow = (id) => db.prepare("SELECT * FROM mcp_servers WHERE id=? AND enabled=1").get(String(id || ""));
 const scopesOf = (m) => (Array.isArray(m?.scopes) ? m.scopes.filter((x) => x && typeof x.name === "string") : []);
 
-// `rox://app/<server>/<app>?props=<JSON>` → the mini app's key, or "".
+// `buwiz://app/<server>/<app>?props=<JSON>` → the mini app's key, or "".
 function keyOfOpen(open) {
-  const m = String(open || "").match(/^rox:\/\/app\/([a-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\?props=([^&\s]*))?/);
+  const m = String(open || "").match(/^buwiz:\/\/app\/([a-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\?props=([^&\s]*))?/);
   if (!m) return "";
   const props = m[3] ? parseJson(decodeURIComponent(m[3]), {}) : {};
   return appKey(m[1], m[2], props && typeof props === "object" ? props : {});
@@ -138,7 +138,7 @@ export async function attach({ server, token, thread, bot }) {
     turn: uuidv7(),
     created_at: Date.now(),
   };
-  // the card: its own message, the link card a `rox/open` reply carries
+  // the card: its own message, the link card a `buwiz/open` reply carries
   t.turns.push({
     id: a.turn,
     role: "ai",

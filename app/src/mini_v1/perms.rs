@@ -24,7 +24,7 @@ pub const MAX_PICK_BYTES: u64 = 52_428_800;
 pub const MAX_QUOTA: u64 = 10_485_760;
 /// 1 MiB.
 pub const DEFAULT_QUOTA: u64 = 1_048_576;
-/// 8 MiB: the largest `rox.preview` document, and its default.
+/// 8 MiB: the largest `buwiz.preview` document, and its default.
 pub const MAX_PREVIEW: u64 = 8_388_608;
 
 /// What one app may reach.
@@ -37,7 +37,7 @@ pub struct Permissions {
     /// `quota_bytes`, when storage is granted.
     pub storage: Option<u64>,
     pub copy: bool,
-    /// `max_bytes` of a `rox.preview` document, when previews are granted.
+    /// `max_bytes` of a `buwiz.preview` document, when previews are granted.
     pub preview: Option<u64>,
 }
 
@@ -57,26 +57,26 @@ pub struct PickGrant {
 }
 
 /// The bridge's method names, as the shim and the policy know them.
-pub const CALL: &str = "rox.call";
-pub const OPEN: &str = "rox.open";
-pub const ATTACH: &str = "rox.attach";
-pub const PICK: &str = "rox.pickFile";
-pub const COPY: &str = "rox.copy";
-pub const PREVIEW: &str = "rox.preview";
-pub const TICKET_TITLE: &str = "rox.ticket.title";
+pub const CALL: &str = "buwiz.call";
+pub const OPEN: &str = "buwiz.open";
+pub const ATTACH: &str = "buwiz.attach";
+pub const PICK: &str = "buwiz.pickFile";
+pub const COPY: &str = "buwiz.copy";
+pub const PREVIEW: &str = "buwiz.preview";
+pub const TICKET_TITLE: &str = "buwiz.ticket.title";
 /// An inline app's content height (a post; 6.5, 7.11).
-pub const FIT: &str = "rox.fit";
+pub const FIT: &str = "buwiz.fit";
 /// An inline app's data is in: its card may show (a post; an optional
-/// addition under 1.0 that apps feature-detect, `rox.ready?.()`).
-pub const READY: &str = "rox.ready";
+/// addition under 1.0 that apps feature-detect, `buwiz.ready?.()`).
+pub const READY: &str = "buwiz.ready";
 /// An inline card's chrome, drawn by Rox (7.12 to 7.14, protocol 1.1):
 /// its footer buttons, the outcome it settles to, its header status.
-pub const ACTIONS: &str = "rox.actions";
-pub const SETTLE: &str = "rox.settle";
-pub const META: &str = "rox.meta";
+pub const ACTIONS: &str = "buwiz.actions";
+pub const SETTLE: &str = "buwiz.settle";
+pub const META: &str = "buwiz.meta";
 /// The methods every app has, whatever it is granted.
 pub const ALWAYS: [&str; 6] = [TICKET_TITLE, FIT, READY, ACTIONS, SETTLE, META];
-pub const STORAGE: [&str; 4] = ["rox.storage.get", "rox.storage.set", "rox.storage.remove", "rox.storage.keys"];
+pub const STORAGE: [&str; 4] = ["buwiz.storage.get", "buwiz.storage.set", "buwiz.storage.remove", "buwiz.storage.keys"];
 
 impl Permissions {
     /// Parses `apps[].permissions` (absent: nothing).
@@ -271,7 +271,7 @@ mod tests {
             json!({"pick_file": {"max_bytes": 52428801}}),
             json!({"open": {"external": ["http://example.com"]}}),
             json!({"open": {"external": ["https://example.com/path"]}}),
-            json!({"tools": ["rox.provision"]}),
+            json!({"tools": ["buwiz.provision"]}),
             json!({"copy": "yes"}),
             json!({"preview": true}),
             json!({"preview": {"scripts": true}}),
@@ -285,12 +285,12 @@ mod tests {
     #[test]
     fn app_07_policy_grants_host_for_granted_methods_only() {
         let p = Permissions::parse(Some(&json!({"tools": ["fx_echo"]}))).unwrap();
-        assert_eq!(p.methods(), ["rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
+        assert_eq!(p.methods(), ["buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta", "buwiz.call"]);
         let access = p.policy().access();
-        for always in ["rox.call", "rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta"] {
+        for always in ["buwiz.call", "buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta"] {
             assert!(access.allows_host(always), "{always}");
         }
-        for absent in ["rox.open", "rox.attach", "rox.pickFile", "rox.copy", "rox.preview", "rox.storage.get", "anything"] {
+        for absent in ["buwiz.open", "buwiz.attach", "buwiz.pickFile", "buwiz.copy", "buwiz.preview", "buwiz.storage.get", "anything"] {
             assert!(!access.allows_host(absent), "{absent}");
         }
         assert!(!access.allows_http("GET", "http://127.0.0.1:8787/v1/host/call"));
@@ -307,7 +307,7 @@ mod tests {
         assert!(p.policy().harden);
         let all = Permissions::parse(Some(&fixture_board())).unwrap();
         assert_eq!(all.methods().len(), 16);
-        assert!(all.policy().access().allows_host("rox.preview"));
+        assert!(all.policy().access().allows_host("buwiz.preview"));
         // a preview is the host's own web view, not one the app gets
         assert!(!all.policy().access().allows_webviews());
         // copy granted is the bridge's pasteboard write, not nsh's clipboard
@@ -316,10 +316,10 @@ mod tests {
 
     #[test]
     fn grammars_take_the_specs_examples() {
-        assert!(plugin_id_ok("dev.goldcoders.bir"));
+        assert!(plugin_id_ok("app.buwiz.ebirforms"));
         assert!(!plugin_id_ok("bir") && !plugin_id_ok("dev.Goldcoders.bir") && !plugin_id_ok("dev..bir"));
         assert!(app_id_ok("tax-profile") && !app_id_ok("Tax") && !app_id_ok(&"a".repeat(49)));
-        assert!(tool_ok("bir_form_open") && !tool_ok("rox.provision"));
+        assert!(tool_ok("bir_form_open") && !tool_ok("buwiz.provision"));
         assert!(short_ok("bir") && !short_ok("b") && !short_ok("bir-x"));
         assert!(ticket_ok("tkt_0123456789ABCDEFGHJKMNPQRS"));
         assert!(!ticket_ok("tkt_0123456789ABCDEFGHIJKLMNOP"), "I, L, O and U are not Crockford");

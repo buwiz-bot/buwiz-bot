@@ -1,20 +1,20 @@
 //! v1 app cards in a chat (spec 6.5, 9.6, Q9).
 //!
-//! A tool result's `_meta["rox/open"]` reaches Rox as a card on the reply
-//! (the broker adds it to the turn's `links`, provider `rox-app`, with the
+//! A tool result's `_meta["buwiz/open"]` reaches Rox as a card on the reply
+//! (the broker adds it to the turn's `links`, provider `buwiz-app`, with the
 //! checked open under `card`). A full app's card has the title and
 //! **Open**; an inline app is one card whose header's chevron expands it.
 //! Nothing opens or mounts until it is pressed (INV-08, 9.7). An inline
 //! app is sized from its manifest's `inline`, clamped to 240–960 × 96–800
 //! and to the chat column, under its header with Open (full screen). Its height is the first frame's: the app's
-//! `rox.fit` moves it to its content's within `inline.min_height` ..
+//! `buwiz.fit` moves it to its content's within `inline.min_height` ..
 //! `inline.max_height` ([`fit_height`]). A user's own command, token or pin mounts an
 //! inline app at once (Q9); a tool result or link waits for the chevron.
 //!
 //! An inline app may hand Rox its card's chrome (7.12 to 7.14, protocol
-//! 1.1): footer buttons Rox draws in its own style (`rox.actions`,
-//! [`parse_actions`]), a short status in the header (`rox.meta`,
-//! [`parse_meta`]), and the one line the card settles to (`rox.settle`,
+//! 1.1): footer buttons Rox draws in its own style (`buwiz.actions`,
+//! [`parse_actions`]), a short status in the header (`buwiz.meta`,
+//! [`parse_meta`]), and the one line the card settles to (`buwiz.settle`,
 //! [`parse_settle`]).
 
 use serde_json::{Map, Value};
@@ -24,7 +24,7 @@ use super::{RoxError, V1Key, perms};
 /// Inline width and height ranges (5.5, Appendix A).
 pub const WIDTH: (f32, f32) = (240.0, 960.0);
 pub const HEIGHT: (f32, f32) = (96.0, 800.0);
-/// The heights `rox.fit` moves an inline card within when the manifest
+/// The heights `buwiz.fit` moves an inline card within when the manifest
 /// gives no `inline.min_height` / `max_height` (6.5).
 pub const FIT: (f32, f32) = (120.0, 640.0);
 
@@ -74,11 +74,11 @@ pub struct OpenCard {
 }
 
 impl OpenCard {
-    /// The card a turn's link carries (`provider: "rox-app"`, its checked
+    /// The card a turn's link carries (`provider: "buwiz-app"`, its checked
     /// open under `card`); `None` for any other link, or a card that
     /// breaks the grammars (dropped, as the broker drops a bad one).
     pub fn from_link(link: &Value) -> Option<OpenCard> {
-        if link.get("provider").and_then(Value::as_str) != Some("rox-app") {
+        if link.get("provider").and_then(Value::as_str) != Some("buwiz-app") {
             return None;
         }
         let c = link.get("card")?;
@@ -228,7 +228,7 @@ pub enum Opener {
     Pin,
     /// A tool result's card.
     ToolResult,
-    /// A `rox://app/` link.
+    /// A `buwiz://app/` link.
     Link,
 }
 
@@ -260,7 +260,7 @@ pub fn inline_size(app: &Value, column: f32) -> (f32, f32) {
     (if column > 0.0 { w.min(column) } else { w }, h)
 }
 
-/// The heights an inline app's `rox.fit` may set: its manifest's
+/// The heights an inline app's `buwiz.fit` may set: its manifest's
 /// `inline.min_height` and `max_height` ([`FIT`] when absent), each in the
 /// spec's range; a maximum under the minimum is the minimum.
 pub fn fit_range(app: &Value) -> (f32, f32) {
@@ -272,31 +272,31 @@ pub fn fit_range(app: &Value) -> (f32, f32) {
     (lo, dim("max_height", FIT.1).max(lo))
 }
 
-/// Whether an inline app's card waits for its `rox.ready()` before it
+/// Whether an inline app's card waits for its `buwiz.ready()` before it
 /// shows (`inline.wait_ready`, an optional addition apps feature-detect;
 /// `mini_v1::settle`).
 pub fn wait_ready(app: &Value) -> bool {
     app.get("inline").and_then(|i| i.get("wait_ready")).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// The card height `rox.fit(height)` sets: `height` in [`fit_range`].
+/// The card height `buwiz.fit(height)` sets: `height` in [`fit_range`].
 pub fn fit_height(app: &Value, height: f32) -> f32 {
     let (lo, hi) = fit_range(app);
     height.clamp(lo, hi)
 }
 
-/// The most footer buttons an inline card has (`rox.actions`, 7.12).
+/// The most footer buttons an inline card has (`buwiz.actions`, 7.12).
 pub const MAX_ACTIONS: usize = 3;
 /// The longest action id; ids are `[A-Za-z0-9_.:-]`.
 pub const MAX_ACTION_ID: usize = 64;
 /// The longest button label, in characters (after trimming).
 pub const MAX_LABEL: usize = 24;
-/// The longest status `rox.meta` shows in the header.
+/// The longest status `buwiz.meta` shows in the header.
 pub const MAX_META: usize = 32;
-/// The longest line `rox.settle` leaves.
+/// The longest line `buwiz.settle` leaves.
 pub const MAX_SETTLE: usize = 120;
 
-/// One footer button of an inline card (`rox.actions`).
+/// One footer button of an inline card (`buwiz.actions`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardAction {
     pub id: String,
@@ -305,7 +305,7 @@ pub struct CardAction {
     pub disabled: bool,
 }
 
-/// The status in an inline card's header (`rox.meta`): plain dim text,
+/// The status in an inline card's header (`buwiz.meta`): plain dim text,
 /// or a pill.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardMeta {
@@ -342,12 +342,12 @@ fn flag(o: &Map<String, Value>, k: &str) -> Result<bool, RoxError> {
     }
 }
 
-/// `rox.actions(list)` checked (7.12): a list of at most [`MAX_ACTIONS`]
+/// `buwiz.actions(list)` checked (7.12): a list of at most [`MAX_ACTIONS`]
 /// `{id, label, primary?, disabled?}` and no other key; ids unique, of
 /// `[A-Za-z0-9_.:-]`, at most [`MAX_ACTION_ID`]; labels one line, at most
 /// [`MAX_LABEL`] characters; at most one primary. `[]` clears the footer.
 pub fn parse_actions(v: Option<&Value>) -> Result<Vec<CardAction>, RoxError> {
-    let list = v.and_then(Value::as_array).ok_or_else(|| invalid("rox.actions takes a list"))?;
+    let list = v.and_then(Value::as_array).ok_or_else(|| invalid("buwiz.actions takes a list"))?;
     if list.len() > MAX_ACTIONS {
         return Err(invalid(format!("a card has at most {MAX_ACTIONS} actions")));
     }
@@ -385,21 +385,21 @@ pub fn footer_order(actions: &[CardAction]) -> Vec<&CardAction> {
     actions.iter().filter(|a| a.primary).chain(actions.iter().filter(|a| !a.primary)).collect()
 }
 
-/// `rox.meta({text, pill?})` checked (7.13): `text` one line of at most
+/// `buwiz.meta({text, pill?})` checked (7.13): `text` one line of at most
 /// [`MAX_META`] characters, `pill` a boolean; `null` clears it.
 pub fn parse_meta(v: Option<&Value>) -> Result<Option<CardMeta>, RoxError> {
     let o = match v {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::Object(o)) => o,
-        Some(_) => return Err(invalid("rox.meta takes {text, pill?} or null")),
+        Some(_) => return Err(invalid("buwiz.meta takes {text, pill?} or null")),
     };
     if let Some(k) = o.keys().find(|k| !["text", "pill"].contains(&k.as_str())) {
-        return Err(invalid(format!("rox.meta does not take {k}")));
+        return Err(invalid(format!("buwiz.meta does not take {k}")));
     }
     Ok(Some(CardMeta { text: one_line(o.get("text"), "the status", MAX_META)?, pill: flag(o, "pill")? }))
 }
 
-/// `rox.settle(text)` checked (7.14): one line of at most [`MAX_SETTLE`]
+/// `buwiz.settle(text)` checked (7.14): one line of at most [`MAX_SETTLE`]
 /// characters, trimmed.
 pub fn parse_settle(v: Option<&Value>) -> Result<String, RoxError> {
     one_line(v, "the outcome", MAX_SETTLE)
@@ -415,20 +415,20 @@ mod tests {
 
     fn link(card: Value) -> Value {
         json!({
-            "provider": "rox-app", "id": "rox://app/dev.goldcoders.bir/forms", "name": "BIR Forms",
-            "link": "rox://app/dev.goldcoders.bir/forms", "action": "open", "kind": "app", "type": "Mini app", "card": card,
+            "provider": "buwiz-app", "id": "buwiz://app/app.buwiz.ebirforms/forms", "name": "BIR Forms",
+            "link": "buwiz://app/app.buwiz.ebirforms/forms", "action": "open", "kind": "app", "type": "Mini app", "card": card,
         })
     }
 
     #[test]
     fn inv_08_a_tool_result_card_offers_open_or_expand_and_never_opens_by_itself() {
         let full = OpenCard::from_link(&link(json!({
-            "plugin": "dev.goldcoders.bir", "app": "forms", "props": {"form": "1601C"}, "ticket": T, "title": "BIR Forms", "placement": "full",
+            "plugin": "app.buwiz.ebirforms", "app": "forms", "props": {"form": "1601C"}, "ticket": T, "title": "BIR Forms", "placement": "full",
         })))
         .unwrap();
         assert_eq!(full.placement, Placement::Full);
-        assert_eq!(full.key().to_key(), format!("v1:dev.goldcoders.bir/forms?ticket={T}&props=%7B%22form%22%3A%221601C%22%7D"));
-        let inline = OpenCard::from_link(&link(json!({"plugin": "dev.goldcoders.bir", "app": "calendar", "title": "Calendar", "placement": "inline"}))).unwrap();
+        assert_eq!(full.key().to_key(), format!("v1:app.buwiz.ebirforms/forms?ticket={T}&props=%7B%22form%22%3A%221601C%22%7D"));
+        let inline = OpenCard::from_link(&link(json!({"plugin": "app.buwiz.ebirforms", "app": "calendar", "title": "Calendar", "placement": "inline"}))).unwrap();
         assert_eq!(inline.placement, Placement::Inline);
         // tool results and links wait for the press; the person's own
         // commands and pins do not
@@ -437,13 +437,13 @@ mod tests {
         assert!(mounts_at_once(Opener::User));
         assert!(mounts_at_once(Opener::Pin));
         // other links are no cards; bad cards are dropped
-        assert_eq!(OpenCard::from_link(&json!({"provider": "gdrive", "card": {"plugin": "dev.goldcoders.bir", "app": "forms"}})), None);
+        assert_eq!(OpenCard::from_link(&json!({"provider": "gdrive", "card": {"plugin": "app.buwiz.ebirforms", "app": "forms"}})), None);
         assert_eq!(OpenCard::from_link(&link(json!({"plugin": "bir", "app": "forms"}))), None);
-        assert_eq!(OpenCard::from_link(&link(json!({"plugin": "dev.goldcoders.bir", "app": "forms", "ticket": "123"}))), None);
+        assert_eq!(OpenCard::from_link(&link(json!({"plugin": "app.buwiz.ebirforms", "app": "forms", "ticket": "123"}))), None);
     }
 
     fn card(size: Size) -> OpenCard {
-        OpenCard { plugin: "dev.goldcoders.bir".into(), app: "deadlines".into(), title: "T".into(), placement: Placement::Inline, ticket: None, props: Map::new(), size }
+        OpenCard { plugin: "app.buwiz.ebirforms".into(), app: "deadlines".into(), title: "T".into(), placement: Placement::Inline, ticket: None, props: Map::new(), size }
     }
 
     #[test]
@@ -452,7 +452,7 @@ mod tests {
         let cards: Vec<OpenCard> = [Small, Main, Small, Main, Small, Small].into_iter().map(card).collect();
         assert_eq!(arrange(&cards), [Slot::Small, Slot::Main, Slot::Small, Slot::Link, Slot::Link, Slot::Link]);
         assert!(arrange(&[]).is_empty());
-        let size = |s: Value| OpenCard::from_link(&json!({"provider": "rox-app", "card": {"plugin": "dev.goldcoders.bir", "app": "deadlines", "size": s}})).unwrap().size;
+        let size = |s: Value| OpenCard::from_link(&json!({"provider": "buwiz-app", "card": {"plugin": "app.buwiz.ebirforms", "app": "deadlines", "size": s}})).unwrap().size;
         assert_eq!(size(json!("small")), Small);
         assert_eq!(size(json!("main")), Main);
         assert_eq!(size(Value::Null), Main);
@@ -460,8 +460,8 @@ mod tests {
 
     #[test]
     fn card_03_a_snapshot_shows_as_of_and_refresh_reads_live() {
-        let snap = OpenCard::from_link(&json!({"provider": "rox-app", "card": {
-            "plugin": "dev.goldcoders.bir", "app": "deadlines", "ticket": T,
+        let snap = OpenCard::from_link(&json!({"provider": "buwiz-app", "card": {
+            "plugin": "app.buwiz.ebirforms", "app": "deadlines", "ticket": T,
             "props": {"ticket": T, "snapshot": {"due": 2}, "as_of": 1_793_200_000_000_i64},
         }}))
         .unwrap();
@@ -565,7 +565,7 @@ mod tests {
             (json!([{"id": "a", "label": "A", "color": "red"}]), "an action does not take color"),
             (json!([{"id": "a", "label": "A", "primary": "yes"}]), "primary is a boolean"),
             (json!(["a"]), "an action is {id, label, primary?, disabled?}"),
-            (json!({"id": "a"}), "rox.actions takes a list"),
+            (json!({"id": "a"}), "buwiz.actions takes a list"),
         ] {
             let e = refused(v);
             assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", why));
@@ -583,9 +583,9 @@ mod tests {
             (json!({"text": "x".repeat(MAX_META + 1)}), "the status is at most 32 characters"),
             (json!({"text": ""}), "the status is empty"),
             (json!({"text": "a\tb"}), "the status is one line"),
-            (json!({"text": "Paid", "tone": "green"}), "rox.meta does not take tone"),
+            (json!({"text": "Paid", "tone": "green"}), "buwiz.meta does not take tone"),
             (json!({"text": "Paid", "pill": 1}), "pill is a boolean"),
-            (json!("Paid"), "rox.meta takes {text, pill?} or null"),
+            (json!("Paid"), "buwiz.meta takes {text, pill?} or null"),
         ] {
             assert_eq!(parse_meta(Some(&v)).unwrap_err().message, why);
         }

@@ -1018,7 +1018,7 @@ impl V1 {
         self.running.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
 
-    /// A call to a plugin from a run: `rox/caller` names the routine on a
+    /// A call to a plugin from a run: `buwiz/caller` names the routine on a
     /// call to its own plugin (8.4); the result's structuredContent.
     async fn call(&self, plugin: &str, tool: &str, args: Value, mark: Option<Value>) -> Result<Value, String> {
         let mut caller = Map::new();
@@ -1029,7 +1029,7 @@ impl V1 {
         }
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
         caller.insert("ts".into(), json!(ts));
-        let r = self.plugins.call_tool(plugin, tool, args, Some(json!({"rox/caller": caller}))).await.map_err(|e| e.message)?;
+        let r = self.plugins.call_tool(plugin, tool, args, Some(json!({"buwiz/caller": caller}))).await.map_err(|e| e.message)?;
         if r.get("isError").is_some_and(js::truthy) {
             let t = js::slice_utf16(&first_text(&r), 300);
             return Err(format!("{tool}: {}", if t.is_empty() { "failed".to_owned() } else { t }));

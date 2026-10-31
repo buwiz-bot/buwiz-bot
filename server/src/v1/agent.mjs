@@ -6,7 +6,7 @@
 // Plugin text is capped at a word boundary with a visible marker and has
 // heading markers removed, so it cannot pose as the host's own sections;
 // the host writes the labelled headers itself. A tool result's `_meta`
-// never reaches the model; a `rox/open` in it becomes a card on the job
+// never reaches the model; a `buwiz/open` in it becomes a card on the job
 // that Rox renders with an Open (or Show) button, and nothing opens by
 // itself (9.7).
 import { V1, isV1, v1Canonical } from "../grammar.mjs";
@@ -44,10 +44,10 @@ function contributing(plugins) {
 // otherwise.
 const inSurface = (surface, plugin, name) => !surface || plugin === surface.plugin || (surface.reads || []).some((x) => x.plugin === plugin && x.tools.includes(name));
 
-// 10.1: a tool marked `_meta["rox/audience"]` without "agent" serves apps
+// 10.1: a tool marked `_meta["buwiz/audience"]` without "agent" serves apps
 // only (through the bridge); the model never sees or calls it
 const forAgent = (t) => {
-  const audience = t._meta?.["rox/audience"];
+  const audience = t._meta?.["buwiz/audience"];
 
   return !Array.isArray(audience) || audience.includes("agent");
 };
@@ -85,19 +85,19 @@ function noteCard(job, plugins, row, open) {
   try {
     card = checkOpen(plugins.manifestOf(row), open);
   } catch (e) {
-    console.error(`  v1 ${row.id}: rox/open card dropped: ${String(e?.message || e).slice(0, 200)}`);
+    console.error(`  v1 ${row.id}: buwiz/open card dropped: ${String(e?.message || e).slice(0, 200)}`);
 
     return;
   }
 
   const query = card.ticket ? `?ticket=${card.ticket}` : "";
-  const link = `rox://app/${card.plugin}/${card.app}${query}`;
+  const link = `buwiz://app/${card.plugin}/${card.app}${query}`;
 
   job.v1Cards ||= [];
   job.v1Cards.push(card);
   job.linkTurn ||= { links: [] };
   job.linkTurn.links.push({
-    provider: "rox-app", id: link, name: card.title, link, action: card.placement === "inline" ? "show" : "open", kind: "app", file_type: "Mini app", card,
+    provider: "buwiz-app", id: link, name: card.title, link, action: card.placement === "inline" ? "show" : "open", kind: "app", file_type: "Mini app", card,
   });
 }
 
@@ -107,7 +107,7 @@ export const SUGGEST_PROMPT = 200;
 
 const capChars = (s, n) => [...String(s)].slice(0, n).join("");
 
-/** 9.8: a tool result's next steps `_meta["rox/suggest"]` (an approved
+/** 9.8: a tool result's next steps `_meta["buwiz/suggest"]` (an approved
  *  plugin's: only those reach this), kept on the job for Rox: at most 3
  *  per answer, labels 40 and prompts 200 characters; anything else in
  *  them is dropped. */
@@ -128,7 +128,7 @@ const readOnly = (plugins, plugin, name) => plugins.runtime(plugin).tools.some((
 
 /** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}.
  *  In a routine's turn a call to its own plugin names the routine
- *  (`rox/caller.routine`), and a tool of it that changes data runs only
+ *  (`buwiz/caller.routine`), and a tool of it that changes data runs only
  *  when the routine lists it in `writes` (5.9). */
 export async function v1AgentCall(plugins, job, name, input) {
   const surface = job?.v1Surface;
@@ -144,15 +144,15 @@ export async function v1AgentCall(plugins, job, name, input) {
   let r;
 
   try {
-    r = await plugins.callTool(plugin, name, isObject(input) ? input : {}, { meta: { "rox/caller": caller } });
+    r = await plugins.callTool(plugin, name, isObject(input) ? input : {}, { meta: { "buwiz/caller": caller } });
   } catch (e) {
     return { content: `${name}: ${e.code || "error"}: ${String(e.message || e).slice(0, 300)}`, is_error: true };
   }
 
-  const open = r._meta?.["rox/open"];
+  const open = r._meta?.["buwiz/open"];
 
   if (open && !r.isError && job) noteCard(job, plugins, row, open);
-  const suggest = r._meta?.["rox/suggest"];
+  const suggest = r._meta?.["buwiz/suggest"];
 
   if (suggest && !r.isError && job) noteSuggest(job, suggest);
 

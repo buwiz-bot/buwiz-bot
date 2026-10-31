@@ -73,7 +73,7 @@ mod tests {
         let key = rox_v1::keys::b64(&[7; 32]);
         let raw = json!({
             "publishers": {
-                "k1": {"alg": "ed25519", "publisher": "dev.goldcoders", "public_key": key},
+                "k1": {"alg": "ed25519", "publisher": "app.buwiz", "public_key": key},
                 "k2": {"alg": "rsa", "public_key": key},
                 "k3": {"alg": "ed25519", "public_key": "short"},
                 "k4": {"alg": "ed25519", "public_key": key, "publisher": 0}
@@ -82,7 +82,7 @@ mod tests {
         });
         let t = Trust::from_value(&raw);
         assert_eq!(t.publishers.len(), 2);
-        assert_eq!(t.publishers["k1"].publisher, "dev.goldcoders");
+        assert_eq!(t.publishers["k1"].publisher, "app.buwiz");
         assert_eq!(t.publishers["k4"].publisher, "");
         assert!(t.is_approved("dev.a.b", "k1") && !t.is_approved("dev.a.b", "k2"));
         assert_eq!(t.approved.len(), 1);

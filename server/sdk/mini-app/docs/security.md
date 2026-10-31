@@ -21,7 +21,7 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
   ```
 
 - [ ] **P2 Tickets are random; the subject map stays with you.** Use
-  `tickets.issue(subject)` from `lib/rox-plugin.mjs` (130 random bits,
+  `tickets.issue(subject)` from `lib/buwiz-plugin.mjs` (130 random bits,
   `tkt_` + 26 Crockford base32). Never encode a TIN, an account number or a
   row id into a ticket, a link or props (spec 6.6, 9.4).
 
@@ -30,7 +30,7 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
   return ok({ result: "token", ticket: t, title: taxpayer.name });
   ```
 
-- [ ] **P3 `rox.ticket.resolve` returns a title only.** `startPlugin` answers
+- [ ] **P3 `buwiz.ticket.resolve` returns a title only.** `startPlugin` answers
   `{valid, title}` with your `ticketTitle(subject)`; return a display name,
   not the identifier.
 
@@ -38,7 +38,7 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
   startPlugin({ /* … */ ticketTitle: (s) => s.displayName });
   ```
 
-- [ ] **P4 Never log the plugin key, a subject or `rox.provision`'s content.**
+- [ ] **P4 Never log the plugin key, a subject or `buwiz.provision`'s content.**
   The broker scans your stderr for the seed and stops a plugin that prints it
   (spec 4.3). Log tool names and outcomes, not arguments.
 
@@ -64,7 +64,7 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
   if (["resolve", "routine"].includes(caller?.origin)) return fail("permission_denied", "Read-only here.");
   ```
 
-- [ ] **P7 `rox.provision` first; refuse every other tool before it.**
+- [ ] **P7 `buwiz.provision` first; refuse every other tool before it.**
   `startPlugin` does this; a hand-written plugin must too (spec 7.8).
 
 - [ ] **P8 Mark read-only tools `readOnlyHint: true`, and only those.** A
@@ -84,7 +84,7 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
 
 ## Also
 
-- Tickets in props, links and `_meta["rox/open"]`, never raw identifiers
+- Tickets in props, links and `_meta["buwiz/open"]`, never raw identifiers
   (spec 6.6, 9.4).
 - `fail(code, message)`: the message is what the user may see; keep it short
   and free of subject data.

@@ -102,9 +102,9 @@ enum Hold {
 }
 
 /// A v1 app inline in a chat (spec 6.5): `w×h`, its viewport saying
-/// `inline`. `h` is read live (the app's `rox.fit` moves it): the view
+/// `inline`. `h` is read live (the app's `buwiz.fit` moves it): the view
 /// resizes in place, and the app lays out at the new size. `h` is also
-/// the height the card keeps while its app is held (its last `rox.fit`,
+/// the height the card keeps while its app is held (its last `buwiz.fit`,
 /// else the manifest's): the app stays hidden until its layout settles,
 /// with `title`'s placeholder over it past 100 ms, then shows. An app
 /// that `wait_ready`s loads its data after it draws: its placeholder is
@@ -130,7 +130,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
             })
         })
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
-        // the open whose app called `rox.ready()`
+        // the open whose app called `buwiz.ready()`
         .prop("ready", move || store().v1.ready.with(|r| r.get(&name3).map_or(JsonValue::Null, |n| (*n).into())))
         .on_native_event(move |e: &NativeEvent| match (&*e.name, hold.get_untracked()) {
             ("placeholder", Hold::Quiet) => hold.set(Hold::Placeholder),
@@ -369,7 +369,7 @@ pub(crate) fn step(d: i64) -> bool {
 /// The mini apps an MCP server ships, full screen over the window
 /// (`store.mini_full`), each over the one it was opened from: a title bar
 /// and the app filling the rest. A server opens one from a tool result
-/// (`rox/open`) or a `rox://app/…` link. The apps under the top one stay
+/// (`buwiz/open`) or a `buwiz://app/…` link. The apps under the top one stay
 /// mounted, so ✕ comes back to them as they were.
 pub(crate) fn full_layer() -> impl IntoElement {
     // the app took the keyboard from the message field (`keys_first`);
@@ -534,7 +534,7 @@ fn attach_button(key: &str, n: u64, token: &str) -> impl IntoElement {
 
 /// The full-screen app's Pin: its groups to put it in or take it out of,
 /// or a new one (a group per client, say). A pin keeps the app's module
-/// name — its `rox://app/` link — and its title; the sidebar opens it
+/// name — its `buwiz://app/` link — and its title; the sidebar opens it
 /// from there.
 fn pin_button(key: &str, n: u64) -> impl IntoElement {
     use crate::theme::tc;
@@ -707,7 +707,7 @@ mod imp {
         watching: Cell<usize>,
         app: RefCell<Option<Rc<AppView>>>,
         /// The element's `placement` prop (`full` or `inline`), for a v1
-        /// app's `rox.viewport`.
+        /// app's `buwiz.viewport`.
         placement: RefCell<String>,
         /// Rox's theme (`theme` prop): the app follows it
         /// (`mini_appearance`).
@@ -715,7 +715,7 @@ mod imp {
         /// A v1 open waiting for its first frame: its module and when its
         /// load began (the timing log, 14.6).
         first_frame: RefCell<Option<(String, std::time::Instant)>>,
-        /// The size last sent as a v1 app's `rox.viewport`.
+        /// The size last sent as a v1 app's `buwiz.viewport`.
         viewport: Cell<(f64, f64)>,
         /// The element's `keys_first` prop: the app owns the window's
         /// keys, and takes the keyboard when it comes into a window.
@@ -1095,7 +1095,7 @@ mod imp {
         }
 
         /// The size the app lays out at, and its placement, as a v1 app's
-        /// `rox.viewport` says it.
+        /// `buwiz.viewport` says it.
         fn viewport(&self) -> serde_json::Value {
             let (w, h) = self.ivars().design.get();
             let (w, h) = if w > 0.0 && h > 0.0 { (w, h) } else { (self.frame().size.width, self.frame().size.height) };
@@ -1297,7 +1297,7 @@ mod imp {
             });
             let channel = self.view.host();
             *self.fit.ivars().on_viewport.borrow_mut() = Some(Box::new(move |v| {
-                let _ = channel.send("rox.viewport", v);
+                let _ = channel.send("buwiz.viewport", v);
             }));
             let viewport = self.fit.viewport();
             self.v1 = Some(crate::mini_v1::native::start(prepared, &self.view, module.to_owned(), viewport));
@@ -1407,7 +1407,7 @@ mod imp {
                 return;
             }
             if name == "ready" {
-                // `rox.ready()` of this card's open, not of one before it
+                // `buwiz.ready()` of this card's open, not of one before it
                 let n = value.and_then(|v| v.as_u64());
                 if n.is_some() && n == self.v1.as_ref().map(|o| o.n())
                     && let Some(s) = self.fit.ivars().settle.borrow_mut().as_mut()
@@ -1688,7 +1688,7 @@ export default function R() {
         assert!(super::widget_policy().harden);
 
         // a v1 app never runs on this policy: it gets its own (mini_v1)
-        for module in ["file:/x", "", "v1:dev.goldcoders.fixture/board"] {
+        for module in ["file:/x", "", "v1:app.buwiz.fixture/board"] {
             let policy = super::mini_bundle(module, String::new()).policy;
             assert_eq!(
                 policy.declared,

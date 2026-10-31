@@ -1,7 +1,7 @@
 // v1/errors.mjs — the spec's error codes (14.1) as one error type.
 //
 // Every refusal the broker hands Rox is {ok:false, code, message,
-// retryable} with a code from the spec, so Rox can map it to a RoxError
+// retryable} with a code from the spec, so Rox can map it to a BuwizError
 // or a plugin state without parsing messages. Whether a code is retryable
 // is the spec's table, not the thrower's choice.
 

@@ -1,5 +1,5 @@
 // A tiny stdio MCP server for the tests: newline-delimited JSON-RPC, no
-// SDK, no network. Tools `echo` and `secret`; a `rox://manifest` resource
+// SDK, no network. Tools `echo` and `secret`; a `buwiz://manifest` resource
 // that mixes valid and invalid command and scope names. When FIXTURE_MARK
 // names a file, each start appends its pid there, so a test can tell
 // whether the server was ever spawned. FIXTURE_TOOLS=<n> adds n more tools
@@ -38,7 +38,7 @@ function answer(method, params) {
     case "tools/call":
       return { content: [{ type: "text", text: JSON.stringify({ tool: params?.name, args: params?.arguments ?? {} }) }] };
     case "resources/list":
-      return { resources: [{ uri: "rox://manifest", name: "manifest", mimeType: "application/json" }] };
+      return { resources: [{ uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" }] };
     case "resources/read":
       return { contents: [{ uri: params?.uri, mimeType: "application/json", text: JSON.stringify(MANIFEST) }] };
     default:

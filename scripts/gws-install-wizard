@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Moves the Google Workspace plugin (dev.goldcoders.google-workspace) to
+# Moves the Google Workspace plugin (app.buwiz.google-workspace) to
 # its Rust binary, rox-gws 1.1.0, step by step; each step asks first.
 #
 #   1. builds rox-gws and rox-broker (release, RUSTC_WRAPPER= empty);
@@ -51,7 +51,7 @@ step "3/4 Bundle $APP"
 echo "Runs app/bundle-dev.sh with this build: rox-gws and its signed manifest go to $(dirname "$GWS")/."
 echo "Quit Buwiz Bot first; it starts nothing."
 if ask "Bundle now?"; then
-  ROX_APP="$APP" ROX_BROKER_BIN="$TARGET/rox-broker" ROX_GWS_BIN="$TARGET/rox-gws" ROX_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
+  ROX_APP="$APP" BUWIZ_BROKER_BIN="$TARGET/rox-broker" ROX_GWS_BIN="$TARGET/rox-gws" ROX_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
 fi
 [ -x "$GWS" ] || { echo "no $GWS: bundle first" >&2; exit 1; }
 
@@ -66,7 +66,7 @@ then the command and its argument:
 GWS_UPSTREAM and GWS_USER_EMAIL keep the values the plugin runs with now.
 They are in the broker's database, which this wizard does not open:
   <data dir>/generated/app.db, table v1_plugins, row id
-  'dev.goldcoders.google-workspace', column env (a JSON object)
+  'app.buwiz.google-workspace', column env (a JSON object)
 where <data dir> is the broker's (~/Library/Application Support/Grok Shell
 on this Mac). They hold your OAuth client settings: copy them yourself,
 and don't paste them into chats or logs. Pin the upstream while you are

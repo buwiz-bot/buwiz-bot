@@ -13,11 +13,11 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const PORT = Number(process.env.TEST_PORT || 8797);
 export const FIXTURE = join(ROOT, "test", "fixtures", "mcp-server.mjs");
 
-/** The broker the HTTP tests start: `ROX_BROKER_CMD` (a command line,
+/** The broker the HTTP tests start: `BUWIZ_BROKER_CMD` (a command line,
  *  relative paths from server/) when set, else Node as it ships. The tests
  *  are the contract, whichever broker answers (the Rust broker plan, R4). */
 export function brokerCommand() {
-  const cmd = (process.env.ROX_BROKER_CMD || "").trim();
+  const cmd = (process.env.BUWIZ_BROKER_CMD || "").trim();
 
   if (!cmd) return [process.execPath, [join(ROOT, "src", "app-server.mjs")]];
   const [bin, ...args] = cmd.split(/\s+/);
@@ -30,7 +30,7 @@ export function brokerCommand() {
  *  only its office role. A case that tests Node's own brain is skipped
  *  then (`{ skip: HUB && "Node-only: …" }`), as a Rust-only case is
  *  skipped on plain Node. */
-export const HUB = !!(process.env.ROX_BROKER_CMD || "").trim() && process.env.ROX_BROKER_HUB === "1";
+export const HUB = !!(process.env.BUWIZ_BROKER_CMD || "").trim() && process.env.ROX_BROKER_HUB === "1";
 
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
 

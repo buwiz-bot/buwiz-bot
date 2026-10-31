@@ -67,7 +67,7 @@ async fn main() {
         None
     } else {
         let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
-        let trust = config.trust_file(std::env::var("ROX_TRUST_FILE").ok().as_deref());
+        let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
         match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
@@ -101,7 +101,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("ROX_TRUST_FILE").ok().as_deref()), false) {
+            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false) {
                 Ok(host) => {
                     ctx.sessions = Some(rox_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -180,7 +180,7 @@ async fn main() {
 }
 
 /// `rox-broker keystore-check <plugin id> [--data DIR]`: whether the
-/// keystore (`ROX_KEYSTORE`, else the Keychain) holds the plugin's key, and
+/// keystore (`BUWIZ_KEYSTORE`, else the Keychain) holds the plugin's key, and
 /// whether its public half is the one `v1_plugins` recorded. Prints the
 /// public key only, never the seed.
 fn keystore_check(args: &[String]) -> i32 {
@@ -197,7 +197,7 @@ fn keystore_check(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let store = match Keystore::from_spec(&std::env::var("ROX_KEYSTORE").unwrap_or_default()) {
+    let store = match Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default()) {
         Ok(store) => store,
         Err(e) => {
             eprintln!("rox-broker: {e}");
@@ -260,9 +260,9 @@ fn manifest_op(args: &[String]) -> i32 {
     }
 }
 
-/// The v1 plugin host on `db`, its keystore from `ROX_KEYSTORE`.
+/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`.
 fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool) -> Result<Arc<Host>, String> {
-    let keys = rox_broker::helper::keystore::Keystore::from_spec(&std::env::var("ROX_KEYSTORE").unwrap_or_default())?;
+    let keys = rox_broker::helper::keystore::Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default())?;
     let mut timeouts = Timeouts::default();
     // ROX_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
     if let Some(ms) = std::env::var("ROX_V1_CALL_TIMEOUT_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|ms| *ms > 0) {
@@ -275,7 +275,7 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
 /// `rox-broker helper --db FILE [--log-dir DIR] [--port P]`: the v1
 /// plugin host alone, its line on 127.0.0.1 (port 0 picks one; the first
 /// line of stdout names it). `ROX_LINE_TOKEN` is the line's token,
-/// `ROX_TRUST_FILE` the trust store, `ROX_V1_MANUAL_CLOCK=1` a clock the
+/// `BUWIZ_TRUST_FILE` the trust store, `ROX_V1_MANUAL_CLOCK=1` a clock the
 /// line moves (tests).
 async fn helper(args: &[String]) -> i32 {
     let usage = "usage: rox-broker helper --db FILE [--log-dir DIR] [--port P]";
@@ -296,7 +296,7 @@ async fn helper(args: &[String]) -> i32 {
         eprintln!("{usage} (with ROX_LINE_TOKEN set)");
         return 2;
     };
-    let trust = std::env::var("ROX_TRUST_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| "src/v1/trust.json".into());
+    let trust = std::env::var("BUWIZ_TRUST_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| "src/v1/trust.json".into());
     let host = match plugin_host(&db, log_dir, trust, std::env::var("ROX_V1_MANUAL_CLOCK").as_deref() == Ok("1")) {
         Ok(h) => h,
         Err(e) => {

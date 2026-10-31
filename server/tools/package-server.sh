@@ -15,11 +15,11 @@ mkdir -p "$R/server"
 # file's code-signature cache, and macOS kills every later start (SIGKILL)
 rm -f "$R/server/node"
 cp "$(node -p 'process.execPath')" "$R/server/node"
-# the front door (broker/rox-broker), when one is built: ROX_BROKER_BIN
+# the front door (broker/rox-broker), when one is built: BUWIZ_BROKER_BIN
 # names it. `scripts/broker-live use-rust` starts it with this node behind.
-if [ -n "${ROX_BROKER_BIN:-}" ]; then
+if [ -n "${BUWIZ_BROKER_BIN:-}" ]; then
   rm -f "$R/server/rox-broker"
-  cp "$ROX_BROKER_BIN" "$R/server/rox-broker"
+  cp "$BUWIZ_BROKER_BIN" "$R/server/rox-broker"
 fi
 # Server as a single file: @anthropic-ai/sdk and our own modules inlined;
 # node:* builtins stay external. Dynamic ./office and widget imports are

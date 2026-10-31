@@ -2,7 +2,7 @@
 // a free port, with createLinePlugins() and createLineSessions() over its
 // line. For tests that want rox-broker hosting the plugins under an
 // in-process broker (test/v1-helpers.mjs, and a plugin's own broker tests,
-// such as BIR's v1-tests, through ROX_BROKER_DIR).
+// such as BIR's v1-tests, through BUWIZ_BROKER_DIR).
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { random128 } from "./ed.mjs";
@@ -12,14 +12,14 @@ import { createLineSessions } from "./sessions-line.mjs";
 import { loadTrust } from "./trust.mjs";
 
 /** `cmd` is a rox-broker binary; `db` the app.db file the two share;
- *  `keystore` as ROX_KEYSTORE takes it (`file:<dir>` for tests). A fake
+ *  `keystore` as BUWIZ_KEYSTORE takes it (`file:<dir>` for tests). A fake
  *  `clock` gives rox-broker a manual one. → {plugins, sessions, db};
  *  `plugins.stopAll()` also stops the helper. */
 export function lineHost({ cmd, db: file, logDir, trustFile, keystore, clock = systemClock, timeouts = {}, env = {} }) {
   const db = new DatabaseSync(file, { timeout: 5000 });
   const token = random128();
   const childEnv = {
-    ...process.env, ...env, ROX_LINE_TOKEN: token, ROX_TRUST_FILE: trustFile, ROX_KEYSTORE: keystore,
+    ...process.env, ...env, ROX_LINE_TOKEN: token, BUWIZ_TRUST_FILE: trustFile, BUWIZ_KEYSTORE: keystore,
     ...(clock !== systemClock ? { ROX_V1_MANUAL_CLOCK: "1" } : {}),
     ...(timeouts.call ? { ROX_V1_CALL_TIMEOUT_MS: String(timeouts.call) } : {}),
   };

@@ -1,7 +1,7 @@
 // Rox reloads a plugin's cards on its `plugin` events (spec 13.7), so the
 // broker announces one only when the plugin's state changes: never for a
 // session opening, calling or closing (EVT-01). On Node's plugin host and,
-// with ROX_BROKER_CMD, through the line to rox-broker, whose session
+// with BUWIZ_BROKER_CMD, through the line to rox-broker, whose session
 // answers carry the plugin's runtime snapshot.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";

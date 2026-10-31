@@ -31,7 +31,7 @@ const { db } = await import("../src/state.mjs");
 
 // rox-broker hosting MCP answers these routes itself, and flags a remote
 // server's sign-in from any call (Node did only in the model's calls)
-const MCP_IN_RUST = !!process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
+const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
 
 let server;
 let fx;
@@ -51,7 +51,7 @@ function addRow(id, fields) {
 
 function addAttachment(id, server, token, threadId) {
   db.prepare("INSERT INTO attachments(id,server,token,scope,title,open,key,details,thread,bot,turn,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(
-    id, server, token, "item", `Item ${id}`, "rox://app/apps/hello", "", null, threadId, null, `turn-${id}`, Date.now(),
+    id, server, token, "item", `Item ${id}`, "buwiz://app/apps/hello", "", null, threadId, null, `turn-${id}`, Date.now(),
   );
 }
 
@@ -151,15 +151,15 @@ test("/mcp/open hands only Rox links to the system; an app link carries a one-ti
 
   assert.equal(bad.status, 400);
   assert.equal(bad.json.ok, false);
-  assert.equal((await postJson("/mcp/open", { url: "rox://view?path=relative/x" })).status, 400);
-  assert.deepEqual((await postJson("/mcp/open", { url: "rox://chat/new?draft=hi" })).json, { ok: true });
-  assert.deepEqual((await postJson("/mcp/open", { url: "rox://view?path=/tmp/x.pdf" })).json, { ok: true });
-  assert.deepEqual((await postJson("/mcp/open", { url: "rox://app/apps/hello?x=1" })).json, { ok: true });
+  assert.equal((await postJson("/mcp/open", { url: "buwiz://view?path=relative/x" })).status, 400);
+  assert.deepEqual((await postJson("/mcp/open", { url: "buwiz://chat/new?draft=hi" })).json, { ok: true });
+  assert.deepEqual((await postJson("/mcp/open", { url: "buwiz://view?path=/tmp/x.pdf" })).json, { ok: true });
+  assert.deepEqual((await postJson("/mcp/open", { url: "buwiz://app/apps/hello?x=1" })).json, { ok: true });
   const handed = tabs();
 
   assert.equal(handed.length, 3);
-  assert.deepEqual(handed.slice(0, 2), ["rox://chat/new?draft=hi", "rox://view?path=/tmp/x.pdf"]);
-  const pass = /^rox:\/\/app\/apps\/hello\?x=1&rox_pass=([A-Za-z0-9_-]{22})$/.exec(handed[2])?.[1];
+  assert.deepEqual(handed.slice(0, 2), ["buwiz://chat/new?draft=hi", "buwiz://view?path=/tmp/x.pdf"]);
+  const pass = /^buwiz:\/\/app\/apps\/hello\?x=1&buwiz_pass=([A-Za-z0-9_-]{22})$/.exec(handed[2])?.[1];
 
   assert.ok(pass, handed[2]);
   assert.deepEqual((await postJson("/mcp/open/pass", { pass })).json, { ok: true });
@@ -206,5 +206,5 @@ test("a remote server whose call fails as signed out shows needs-auth", { skip: 
 
   assert.equal(s.status, "needs-auth");
   assert.equal(s.err, "Sign-in expired or was rejected");
-  assert.deepEqual(tabs().filter((t) => !t.startsWith("rox://")), [], "no browser");
+  assert.deepEqual(tabs().filter((t) => !t.startsWith("buwiz://")), [], "no browser");
 });

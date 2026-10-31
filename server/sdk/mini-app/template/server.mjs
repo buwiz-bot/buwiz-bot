@@ -4,14 +4,14 @@
 // Copy this directory, rename the id and short in manifest.json, and
 // replace the tools and the app (README.md, steps 1-10). The reserved
 // tools of spec 7.8 (provision first, the key in memory only, session
-// certificates, ticket titles, uninstall, -32601 for unknown rox.*) live
-// in ../lib/rox-plugin.mjs; this file holds only what is yours.
+// certificates, ticket titles, uninstall, -32601 for unknown buwiz.*) live
+// in ../lib/buwiz-plugin.mjs; this file holds only what is yours.
 //
-// The signed manifest is read from ROX_PLUGIN_MANIFEST, else manifest.json
+// The signed manifest is read from BUWIZ_PLUGIN_MANIFEST, else manifest.json
 // beside this file. App sources sit beside it too.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, ok, startPlugin, ticketStore } from "../lib/rox-plugin.mjs";
+import { fail, ok, startPlugin, ticketStore } from "../lib/buwiz-plugin.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const tickets = ticketStore();
@@ -54,7 +54,7 @@ function greet(args) {
 
 await startPlugin({
   name: "hello",
-  manifestFile: process.env.ROX_PLUGIN_MANIFEST || join(HERE, "manifest.json"),
+  manifestFile: process.env.BUWIZ_PLUGIN_MANIFEST || join(HERE, "manifest.json"),
   apps: { hello: join(HERE, "hello.tsx") },
   tickets,
   ticketTitle: (name) => name,

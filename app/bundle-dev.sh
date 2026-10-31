@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Creates ~/Applications/Rox.app: a dev bundle whose executable execs this
 # checkout's debug build (cargo rebuilds are picked up without re-bundling)
-# and which declares the `rox://` URL scheme, then registers it with
-# LaunchServices so `open "rox://chat/<thread>?m=<turn>"` reaches Rox.
+# and which declares the `buwiz://` URL scheme, then registers it with
+# LaunchServices so `open "buwiz://chat/<thread>?m=<turn>"` reaches Rox.
 # Launch Rox through it (`open -a ~/Applications/Rox.app`) so links go to the
 # running copy instead of starting a second one; copy a fresh build in first
 # (`cp target/debug/rox ~/Applications/Rox.app/Contents/MacOS/rox-bin`).
 #
 # It also packages the broker Rox starts when none answers (plan 7.2) into
 # Contents/Resources/broker/: rox-broker (a release build with
-# RUSTC_WRAPPER= unless ROX_BROKER_BIN names one) and the static files it
+# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one) and the static files it
 # serves, `server/` being its --assets and `node_modules/` beside it, and
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
 # launched Rox has no nsh on PATH), release builds of this checkout's nsh
@@ -19,7 +19,7 @@
 # (broker/rox-gws/manifest.signed.json; scripts/gws-install-wizard makes it).
 #   ROX_APP=<dir>/Rox.app   bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices
-#   ROX_BROKER_BIN=<path>   the rox-broker to package
+#   BUWIZ_BROKER_BIN=<path>   the rox-broker to package
 #   ROX_GWS_BIN=<path>      the rox-gws to package
 #   ROX_GWS_MANIFEST=<path> its signed manifest
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
@@ -106,7 +106,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <string>dev.goldcoders.rox</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <string>rox</string>
+        <string>buwiz</string>
       </array>
     </dict>
   </array>
@@ -140,13 +140,13 @@ chmod +x "$APP/Contents/MacOS/rox"
 SERVER="$ROOT/server"
 B="$APP/Contents/Resources/broker"
 BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
-if [ -z "${ROX_BROKER_BIN:-}" ] || [ -z "${ROX_GWS_BIN:-}" ]; then
+if [ -z "${BUWIZ_BROKER_BIN:-}" ] || [ -z "${ROX_GWS_BIN:-}" ]; then
   PKGS=()
-  [ -n "${ROX_BROKER_BIN:-}" ] || PKGS+=(-p rox-broker)
+  [ -n "${BUWIZ_BROKER_BIN:-}" ] || PKGS+=(-p rox-broker)
   [ -n "${ROX_GWS_BIN:-}" ] || PKGS+=(-p rox-gws)
   (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release "${PKGS[@]}")
 fi
-ROX_BROKER_BIN="${ROX_BROKER_BIN:-$BROKER_TARGET/rox-broker}"
+BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/rox-broker}"
 ROX_GWS_BIN="${ROX_GWS_BIN:-$BROKER_TARGET/rox-gws}"
 GWS_MANIFEST="${ROX_GWS_MANIFEST:-$ROOT/broker/rox-gws/manifest.signed.json}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
@@ -161,7 +161,7 @@ fi
 # rm first: a copy over a binary keeps its old code signature
 rm -rf "$B"
 mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules"
-cp "$ROX_BROKER_BIN" "$B/rox-broker"
+cp "$BUWIZ_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$ROX_GWS_BIN" "$B/bin/rox-gws"
@@ -184,7 +184,7 @@ cp -R "$SERVER/src/plugins" "$B/server/plugins"
 cp "$SERVER/src/v1/trust.json" "$B/server/trust.json"
 cp -R "$SERVER/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
 
-# only the real bundle answers rox:// links
+# only the real bundle answers buwiz:// links
 if [ "$APP" = "$DEFAULT_APP" ]; then
   "$LSREGISTER" -f "$APP"
 fi

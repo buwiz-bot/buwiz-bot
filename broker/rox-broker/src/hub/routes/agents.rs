@@ -62,7 +62,7 @@ fn refusal(code: &str, message: impl Into<String>) -> HubResponse {
 /// refusal as a V1Error (`agentsCall`, `externalCall`).
 fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> HubResponse {
     if !authorized(&req.headers) {
-        return types::json(StatusCode::UNAUTHORIZED, &V1Error::new("unauthorized", "X-Rox-Host is missing or wrong").body());
+        return types::json(StatusCode::UNAUTHORIZED, &V1Error::new("unauthorized", "X-Buwiz-Host is missing or wrong").body());
     }
     let Some(b) = read_body(&req.body) else { return refusal("invalid_args", "the body must be a JSON object (at most 2 MiB)") };
     let a = &hub.agents;
@@ -162,7 +162,7 @@ fn hook(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (Ok(id), Ok(secret)) = (js::decode_uri_component(&req.params[0]), js::decode_uri_component(&req.params[1])) else {
         return types::json(StatusCode::INTERNAL_SERVER_ERROR, &json!({"ok": false, "code": "internal", "message": "URI malformed", "retryable": false}));
     };
-    let header = req.headers.get("x-rox-signature").map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
+    let header = req.headers.get("x-buwiz-signature").map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
     match hub.externals.incoming(&hub, &ctx, &id, &secret, &raw, header.as_deref()) {
         Ok(answer) => {
             let mut o = Map::new();

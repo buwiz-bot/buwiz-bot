@@ -1,4 +1,4 @@
-// v1/manifest.mjs — verifying a plugin's `rox://manifest` (spec 5).
+// v1/manifest.mjs — verifying a plugin's `buwiz://manifest` (spec 5).
 //
 // The broker trusts nothing a plugin says until its manifest passes, in
 // the spec's order (5.2): I-JSON parse, protocol and version, trust store,
@@ -18,9 +18,11 @@ import { isApproved } from "./trust.mjs";
 import { V1Error } from "./errors.mjs";
 import { schemaProblem } from "./params.mjs";
 
-export const HOST_PROTOCOL = "1.1.0";
+// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
+export const HOST_PROTOCOL = "2.0.0";
 export const APP_MIME = "text/x-nsh-tsx";
-export const MANIFEST_URI = "rox://manifest";
+export const MANIFEST_URI = "buwiz://manifest";
 
 // Appendix A, the limits a manifest is held to.
 export const LIMITS = Object.freeze({
@@ -387,7 +389,7 @@ function apps(m) {
     text(a.title, `${at}.title`, { min: 1, max: LIMITS.title });
     text(a.description, `${at}.description`, { max: LIMITS.description });
 
-    if (a.entry !== `rox-app://${a.id}`) throw invalid(`${at}.entry`, `must be rox-app://${a.id}`);
+    if (a.entry !== `buwiz-app://${a.id}`) throw invalid(`${at}.entry`, `must be buwiz-app://${a.id}`);
 
     if (a.mime !== APP_MIME) throw invalid(`${at}.mime`, `must be ${APP_MIME}`);
 
@@ -413,14 +415,14 @@ function apps(m) {
 
       if (a.inline.min_width !== undefined) int(a.inline.min_width, `${at}.inline.min_width`, LIMITS.inlineWidth[0], a.inline.width);
 
-      // rox.fit's range (6.5): min_height <= height <= max_height
+      // buwiz.fit's range (6.5): min_height <= height <= max_height
       if (a.inline.min_height !== undefined) int(a.inline.min_height, `${at}.inline.min_height`, LIMITS.inlineHeight[0], a.inline.height);
 
       if (a.inline.max_height !== undefined) int(a.inline.max_height, `${at}.inline.max_height`, a.inline.height, LIMITS.inlineHeight[1]);
 
       if (a.inline.resizable !== undefined && kindOf(a.inline.resizable) !== "boolean") throw invalid(`${at}.inline.resizable`, "must be a boolean");
 
-      // the card holds its placeholder until the app's rox.ready() (an
+      // the card holds its placeholder until the app's buwiz.ready() (an
       // optional addition under 1.0: older hosts ignore it)
       if (a.inline.wait_ready !== undefined && kindOf(a.inline.wait_ready) !== "boolean") throw invalid(`${at}.inline.wait_ready`, "must be a boolean");
     }
@@ -453,6 +455,8 @@ function protocolOf(m, host) {
   if (!isSemver(m.protocol)) throw invalid("protocol", "must be a semver string");
   const [maj, min] = m.protocol.split(".").map(Number);
   const [hmaj, hmin] = host.split(".").map(Number);
+
+  if (maj < hmaj) throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}: this plugin is built for an older protocol; update it`);
 
   if (maj !== hmaj || min > hmin)
     throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}; this Buwiz Bot supports ${hmaj}.${hmin}, so it needs a Buwiz Bot that supports ${maj}.${min}`);

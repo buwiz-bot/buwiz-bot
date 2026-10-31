@@ -2,14 +2,14 @@
 // ROX_BROKER_HUB=1 with ROX_BROKER_NO_NODE=1 starts no Node child, and
 // answers what Node would have: /health, /, the CORS preflight, the 404 of a
 // route nobody has. The preflight case is pinned on Node too (it ignores
-// both variables); the rest needs rox-broker (ROX_BROKER_CMD).
+// both variables); the rest needs rox-broker (BUWIZ_BROKER_CMD).
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { after, before, test } from "node:test";
 import { PORT, brokerCommand, request, serverEnv, startServer, tempDir } from "./helpers.mjs";
 
-const RUST = !!(process.env.ROX_BROKER_CMD || "").trim();
-const RUST_ONLY = { skip: !RUST && "rox-broker only (ROX_BROKER_CMD)" };
+const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
+const RUST_ONLY = { skip: !RUST && "rox-broker only (BUWIZ_BROKER_CMD)" };
 const DATA = tempDir("no-node");
 let server;
 

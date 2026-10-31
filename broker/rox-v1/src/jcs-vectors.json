@@ -87,8 +87,8 @@
     },
     {
       "name": "a signed envelope",
-      "input": "{\"v\":1,\"typ\":\"rox-call\",\"plugin\":\"dev.goldcoders.bir\",\"app\":\"forms\",\"open_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"tool\":\"bir_form_validate\",\"args\":{\"period\":\"2026-09\",\"code\":\"1601C\"},\"ts\":1793000000000,\"nonce\":\"BBBBBBBBBBBBBBBBBBBBBB\"}",
-      "jcs": "{\"app\":\"forms\",\"args\":{\"code\":\"1601C\",\"period\":\"2026-09\"},\"nonce\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"open_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"plugin\":\"dev.goldcoders.bir\",\"tool\":\"bir_form_validate\",\"ts\":1793000000000,\"typ\":\"rox-call\",\"v\":1}",
+      "input": "{\"v\":1,\"typ\":\"buwiz-call\",\"plugin\":\"app.buwiz.ebirforms\",\"app\":\"forms\",\"open_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"tool\":\"bir_form_validate\",\"args\":{\"period\":\"2026-09\",\"code\":\"1601C\"},\"ts\":1793000000000,\"nonce\":\"BBBBBBBBBBBBBBBBBBBBBB\"}",
+      "jcs": "{\"app\":\"forms\",\"args\":{\"code\":\"1601C\",\"period\":\"2026-09\"},\"nonce\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"open_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"plugin\":\"app.buwiz.ebirforms\",\"tool\":\"bir_form_validate\",\"ts\":1793000000000,\"typ\":\"buwiz-call\",\"v\":1}",
       "signable": true
     },
     {

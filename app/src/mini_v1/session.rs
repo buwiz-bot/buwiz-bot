@@ -4,7 +4,7 @@
 //! plugin signs a certificate over the key and the permissions digest),
 //! and checks that certificate itself before the app gets any method: the
 //! signature with the plugin's public key, and that every field is the one
-//! asked for. Each `rox.call` is then an envelope signed here; the key
+//! asked for. Each `buwiz.call` is then an envelope signed here; the key
 //! never leaves this module.
 //!
 //! A session ends at the earliest of close, `not_after`, and a new
@@ -121,7 +121,7 @@ impl Session {
         self.sign(tool, args, None)
     }
 
-    /// [`Session::sign_call`] for `rox.preview`: the envelope says
+    /// [`Session::sign_call`] for `buwiz.preview`: the envelope says
     /// `"purpose": "preview"`, which the broker takes only from an app
     /// granted `preview`, and answers with the larger document limit.
     pub fn sign_preview(&self, tool: &str, args: &Value) -> Result<(Value, String), RoxError> {
@@ -131,7 +131,7 @@ impl Session {
     fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>) -> Result<(Value, String), RoxError> {
         self.check_live()?;
         let mut envelope = json!({
-            "v": 1, "typ": "rox-call",
+            "v": 1, "typ": "buwiz-call",
             "plugin": self.plugin, "app": self.app, "open_id": self.open_id,
             "tool": tool, "args": args,
             "ts": now_ms(), "nonce": keys::random_id(),
@@ -266,7 +266,7 @@ pub fn verify_cert(answer: &Value, ask: &host_api::SessionAsk, now: i64) -> Resu
     let sig = text(answer, "cert_sig").ok_or_else(|| bad("is not signed"))?;
     keys::verify(&plugin_pub, cert, &sig).map_err(|_| bad("does not verify with the plugin's key"))?;
     let expected = [
-        ("typ", "rox-session"),
+        ("typ", "buwiz-session"),
         ("plugin", &ask.plugin),
         ("app", &ask.app),
         ("open_id", &ask.open_id),
@@ -405,7 +405,7 @@ pub(crate) mod tests {
             assert_eq!(route, "/v1/host/sessions/open");
             let b = body.unwrap();
             let mut cert = json!({
-                "v": 1, "typ": "rox-session", "plugin": b["plugin"], "app": b["app"],
+                "v": 1, "typ": "buwiz-session", "plugin": b["plugin"], "app": b["app"],
                 "open_id": b["open_id"], "ks_pub": b["ks_pub"], "perms_sha256": b["perms_sha256"],
                 "not_after": b["not_after"],
             });
@@ -420,13 +420,13 @@ pub(crate) mod tests {
 
     fn open_with(tamper: fn(&mut Value, &mut Value)) -> Result<Arc<Session>, RoxError> {
         let b = CertBroker { plugin_key: keys::SessionKey::generate(), tamper };
-        Session::open(&b, "dev.goldcoders.fixture", "card", Some(&json!({"tools": ["fx_echo"]})), None)
+        Session::open(&b, "app.buwiz.fixture", "card", Some(&json!({"tools": ["fx_echo"]})), None)
     }
 
     #[test]
     fn a_session_opens_on_a_certificate_that_verifies() {
         let s = open_with(|_, _| {}).unwrap();
-        assert_eq!((s.plugin.as_str(), s.app.as_str()), ("dev.goldcoders.fixture", "card"));
+        assert_eq!((s.plugin.as_str(), s.app.as_str()), ("app.buwiz.fixture", "card"));
         assert_eq!(s.open_id.len(), 22);
         assert!(s.not_after > now_ms() && s.not_after <= now_ms() + MAX_LIFETIME_MS);
         s.check_live().unwrap();
@@ -446,13 +446,13 @@ pub(crate) mod tests {
                 }
             }),
             ("another app", |c, _| if c.is_object() { c["app"] = json!("board") }),
-            ("another plugin", |c, _| if c.is_object() { c["plugin"] = json!("dev.goldcoders.bir") }),
+            ("another plugin", |c, _| if c.is_object() { c["plugin"] = json!("app.buwiz.ebirforms") }),
             ("another open", |c, _| if c.is_object() { c["open_id"] = json!(keys::random_id()) }),
             ("another session key", |c, _| if c.is_object() { c["ks_pub"] = json!(keys::SessionKey::generate().public()) }),
             ("another digest", |c, _| if c.is_object() { c["perms_sha256"] = json!(keys::perms_sha256(None).unwrap()) }),
             ("expired", |c, _| if c.is_object() { c["not_after"] = json!(now_ms() - 1) }),
             ("over 8 hours", |c, _| if c.is_object() { c["not_after"] = json!(now_ms() + MAX_LIFETIME_MS + 120_000) }),
-            ("wrong type", |c, _| if c.is_object() { c["typ"] = json!("rox-call") }),
+            ("wrong type", |c, _| if c.is_object() { c["typ"] = json!("buwiz-call") }),
             ("other permissions held", |_, a| if a.is_object() { a["permissions"] = json!({"tools": ["fx_fail"]}) }),
         ];
         for (name, tamper) in cases {
@@ -466,7 +466,7 @@ pub(crate) mod tests {
                 Err(RoxError::new("plugin_unavailable", "not running"))
             }
         }
-        let e = Session::open(&Refuses, "dev.goldcoders.fixture", "card", None, None).err().unwrap();
+        let e = Session::open(&Refuses, "app.buwiz.fixture", "card", None, None).err().unwrap();
         assert_eq!(e.code, "plugin_unavailable");
     }
 
@@ -476,7 +476,7 @@ pub(crate) mod tests {
         let args = json!({"period": "2026-09", "code": "1601C"});
         let (env, sig) = s.sign_call("fx_echo", &args).unwrap();
         assert_eq!(env["v"], 1);
-        assert_eq!(env["typ"], "rox-call");
+        assert_eq!(env["typ"], "buwiz-call");
         assert_eq!(env["open_id"], s.open_id.as_str());
         assert_eq!(env["args"], args);
         let ts = env["ts"].as_i64().unwrap();
@@ -485,7 +485,7 @@ pub(crate) mod tests {
         // an independent check: the canonical bytes written out by hand,
         // verified with ed25519-dalek directly (not through keys::verify)
         let by_hand = format!(
-            r#"{{"app":"card","args":{{"code":"1601C","period":"2026-09"}},"nonce":"{}","open_id":"{}","plugin":"dev.goldcoders.fixture","tool":"fx_echo","ts":{ts},"typ":"rox-call","v":1}}"#,
+            r#"{{"app":"card","args":{{"code":"1601C","period":"2026-09"}},"nonce":"{}","open_id":"{}","plugin":"app.buwiz.fixture","tool":"fx_echo","ts":{ts},"typ":"buwiz-call","v":1}}"#,
             env["nonce"].as_str().unwrap(),
             s.open_id
         );
@@ -524,7 +524,7 @@ pub(crate) mod tests {
     #[test]
     fn perf_04_a_preopened_session_is_used_once_or_dropped_after_a_minute() {
         let b = Arc::new(Counting { inner: CertBroker::honest(), opened: 0.into(), closed: 0.into() });
-        let (p, perms) = ("dev.goldcoders.poolfx", Some(json!({"tools": ["fx_echo"]})));
+        let (p, perms) = ("app.buwiz.poolfx", Some(json!({"tools": ["fx_echo"]})));
         preopen(&*b, p, "card", perms.as_ref(), None).unwrap();
         preopen(&*b, p, "card", perms.as_ref(), None).unwrap();
         assert_eq!(b.opened.load(std::sync::atomic::Ordering::SeqCst), 1, "one waiting session per app");
@@ -548,14 +548,14 @@ pub(crate) mod tests {
     #[test]
     fn a_new_plugin_generation_ends_its_sessions() {
         let b = CertBroker::honest();
-        let plugin = "dev.goldcoders.genfixture";
+        let plugin = "app.buwiz.genfixture";
         let s = Session::open(&b, plugin, "card", None, Some(3)).unwrap();
         let heard = Arc::new(Mutex::new(Vec::new()));
         let h = heard.clone();
         s.on_end(move |why| h.lock().unwrap().push(why));
         // the same generation (or another plugin's change) ends nothing
         assert_eq!(on_plugin_event(&json!({"id": plugin, "generation": 3, "state": "running"})), 0);
-        assert_eq!(on_plugin_event(&json!({"id": "dev.goldcoders.other", "generation": 9})), 0);
+        assert_eq!(on_plugin_event(&json!({"id": "app.buwiz.other", "generation": 9})), 0);
         s.check_live().unwrap();
         assert_eq!(on_plugin_event(&json!({"id": plugin, "generation": 4, "state": "running"})), 1);
         assert_eq!(s.check_live().unwrap_err().code, "plugin_restarted");

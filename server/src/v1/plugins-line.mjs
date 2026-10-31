@@ -88,7 +88,7 @@ export function createLinePlugins({ base, token, db, clock = systemClock, trust 
   const address = Promise.resolve(base);
 
   async function request(path, init = {}) {
-    return fetch(`${await address}/v1/line/${path}`, { ...init, headers: { "content-type": "application/json", "x-rox-line": token, ...init.headers } });
+    return fetch(`${await address}/v1/line/${path}`, { ...init, headers: { "content-type": "application/json", "x-buwiz-line": token, ...init.headers } });
   }
 
   async function post(path, body = {}) {
