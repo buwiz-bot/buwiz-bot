@@ -208,3 +208,10 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "stacked on pr/macos-jank-paint-time: the jank line names the Core Animation commit's time"
+
+[[topic]]
+branch = "pr/macos-hosted-keys"
+kind = "feature"
+pr = 0
+status = "local"
+note = "AppView::set_key_precedence: a full-screen mini app's keymap ahead of Rox's, inline cards' after it"
