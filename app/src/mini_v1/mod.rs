@@ -208,7 +208,7 @@ pub fn run_store_jobs(store: &'static crate::store::Store) {
     }
 }
 
-/// Rox's data directory for plugins: `<ROX_DATA_DIR or ~/Library/Application Support/Rox>/plugins`.
+/// Rox's data directory for plugins: `<ROX_DATA_DIR or ~/Library/Application Support/Buwiz Bot>/plugins`.
 pub fn plugins_dir() -> std::path::PathBuf {
     crate::vault::data_dir().join("plugins")
 }

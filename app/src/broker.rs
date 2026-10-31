@@ -4,7 +4,7 @@
 //! carries (`Contents/Resources/broker/`, put there by `bundle-dev.sh`):
 //! the hub on, hosting the v1 plugins and MCP servers, no Node, on the
 //! data dir the broker uses today. It runs detached, in its own process
-//! group, so it outlives Rox; its log is `~/Library/Logs/Rox/broker.log`.
+//! group, so it outlives Rox; its log is `~/Library/Logs/Buwiz Bot/broker.log`.
 //!
 //! Never started:
 //! - when something answers already (the owner's broker, run today by
@@ -181,7 +181,7 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
         "PORT",
         "ROX_PUBLIC_PORT",
     ];
-    let log = home.join("Library/Logs/Rox/broker.log");
+    let log = crate::identity::logs_dir(home).join("broker.log");
     Launch { program: broker.to_owned(), args, env, env_remove, data, log }
 }
 
@@ -411,7 +411,7 @@ mod tests {
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
         assert_eq!(l.data, PathBuf::from(data));
-        assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Rox/broker.log"));
+        assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Buwiz Bot/broker.log"));
     }
 
     #[test]

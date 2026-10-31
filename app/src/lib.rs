@@ -26,6 +26,7 @@ mod files;
 mod history;
 mod hot;
 mod icons;
+pub mod identity;
 pub mod keys;
 mod links;
 pub mod live;

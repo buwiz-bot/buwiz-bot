@@ -1191,7 +1191,7 @@ mod imp {
                 mtm,
                 AppOptions {
                     title: "Buwiz Bot mini app".to_owned(),
-                    app_id: "dev.goldcoders.rox.mini".to_owned(),
+                    app_id: crate::identity::MINI_APP_ID.to_owned(),
                     size: (340, 200),
                     // `asset:/generated/assets/…` (generated images) are the
                     // server's files, served under /asset/.
@@ -1264,7 +1264,7 @@ mod imp {
                 mtm,
                 AppOptions {
                     title: prepared.title.clone(),
-                    app_id: "dev.goldcoders.rox.mini.v1".to_owned(),
+                    app_id: crate::identity::MINI_V1_APP_ID.to_owned(),
                     size: (340, 200),
                     // the spec's budgets (14.2): load 10 s, a JS call 2 s,
                     // heap 256 MB, stack 4 MB

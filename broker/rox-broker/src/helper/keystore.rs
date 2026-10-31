@@ -1,12 +1,14 @@
 //! Where plugin private keys live (spec 4.3; server/src/v1/keystore.mjs).
 //!
 //! One ed25519 seed per installed plugin. Default: the macOS login
-//! Keychain, service `dev.goldcoders.rox.plugin-key`, account = plugin id,
+//! Keychain, service `com.buwiz.bot.plugin-key`, account = plugin id,
 //! reached only through `/usr/bin/security` (rule R5): that tool already
 //! has access to Node's items, so a rebuilt rox-broker never prompts. A
 //! seed goes to `security -i` on stdin, never in argv, and is never
-//! logged. `BUWIZ_KEYSTORE=file:<dir>` keeps one 0600 file per plugin
-//! instead; the tests use it.
+//! logged. Keys Rox saved under `dev.goldcoders.rox.plugin-key` are moved
+//! over once ([`Keystore::move_from_rox`]). `BUWIZ_KEYSTORE=file:<dir>` keeps
+//! one 0600 file per plugin instead; the tests use it, or a keychain file
+//! of their own.
 
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -17,8 +19,63 @@ use std::time::{Duration, Instant};
 use rox_v1::ids::plugin_id_ok;
 use rox_v1::keys::SessionKey;
 
-pub const KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";
+pub const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.plugin-key";
+/// Rox's service, before the rename: its keys are moved over once.
+pub const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";
 const SECURITY: &str = "/usr/bin/security";
+
+/// The Keychain items under `service`, in `keychain`: a keychain file (no
+/// spaces), or the user's search list when `None` (tests give their own).
+struct Items<'a> {
+    service: &'a str,
+    keychain: Option<&'a str>,
+}
+
+const ITEMS: Items<'static> = Items { service: KEYCHAIN_SERVICE, keychain: None };
+
+impl Items<'_> {
+    fn put(&self, id: &str, seed: &str) -> Result<(), String> {
+        // ids and seeds hold no spaces or quotes (grammar, base64url), so
+        // the line needs no quoting
+        let kc = self.keychain.map(|k| format!(" {k}")).unwrap_or_default();
+        security_stdin(&format!("add-generic-password -U -s {} -a {id} -w {seed}{kc}", self.service))
+    }
+
+    fn get(&self, id: &str) -> Option<String> {
+        let mut args = vec!["find-generic-password", "-s", self.service, "-a", id, "-w"];
+        args.extend(self.keychain);
+        security(&args).map(|out| out.trim().to_owned())
+    }
+
+    /// Whether the item went (or was not there).
+    fn remove(&self, id: &str) -> bool {
+        let mut args = vec!["delete-generic-password", "-s", self.service, "-a", id];
+        args.extend(self.keychain);
+        security(&args).is_some() || self.get(id).is_none()
+    }
+
+    /// The keys of `ids` moved here from `old`: each read, written here
+    /// unless one is here already (the newer), and deleted from `old`.
+    /// → how many moved; the first failure stops it.
+    fn move_from(&self, old: &Items<'_>, ids: &[String]) -> Result<usize, String> {
+        let mut moved = 0;
+        for id in ids {
+            let Some(seed) = old.get(id) else { continue };
+            if self.get(id).is_none() {
+                check_seed(&seed).map_err(|e| format!("{id}: {e}"))?;
+                self.put(id, &seed)?;
+                if self.get(id).as_deref() != Some(seed.as_str()) {
+                    return Err(format!("{id}: the copy under {} reads back differently", self.service));
+                }
+                moved += 1;
+            }
+            if !old.remove(id) {
+                return Err(format!("{id}: not deleted from {}", old.service));
+            }
+        }
+        Ok(moved)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keystore {
@@ -72,9 +129,7 @@ impl Keystore {
                 f.write_all(seed.as_bytes()).map_err(|e| e.to_string())?;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
             }
-            // ids and seeds hold no spaces or quotes (grammar, base64url), so
-            // the line needs no quoting
-            Keystore::Keychain => security_stdin(&format!("add-generic-password -U -s {KEYCHAIN_SERVICE} -a {id} -w {seed}")),
+            Keystore::Keychain => ITEMS.put(id, seed),
         }
     }
 
@@ -83,7 +138,7 @@ impl Keystore {
         check_id(id)?;
         Ok(match self {
             Keystore::File(dir) => std::fs::read_to_string(dir.join(format!("{id}.key"))).ok().map(|s| s.trim().to_owned()),
-            Keystore::Keychain => security(&["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", id, "-w"]).map(|out| out.trim().to_owned()),
+            Keystore::Keychain => ITEMS.get(id),
         })
     }
 
@@ -95,12 +150,29 @@ impl Keystore {
                 _ => Ok(()),
             },
             Keystore::Keychain => {
-                security(&["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", id]);
+                ITEMS.remove(id);
                 Ok(())
             }
         }
     }
+
+    /// Moves the keys of `ids` (the installed plugins) from Rox's service
+    /// to ours, once: `marker` (a file beside the database, which the Node
+    /// broker shares) says it is done, and a failure writes none, so the
+    /// next start tries again. A file store has nothing to move.
+    pub fn move_from_rox(&self, ids: &[String], marker: &std::path::Path) -> Result<usize, String> {
+        if *self != Keystore::Keychain || marker.exists() {
+            return Ok(0);
+        }
+        let ids: Vec<String> = ids.iter().filter(|id| plugin_id_ok(id)).cloned().collect();
+        let n = ITEMS.move_from(&Items { service: OLD_KEYCHAIN_SERVICE, keychain: None }, &ids)?;
+        std::fs::write(marker, format!("{{\"moved\":{n}}}\n")).map_err(|e| e.to_string())?;
+        Ok(n)
+    }
 }
+
+/// [`Keystore::move_from_rox`]'s marker, beside the plugins' database.
+pub const MOVED_MARKER: &str = ".plugin-keys-moved-from-rox";
 
 /// `security -i` with one command on stdin (it has no quit command: the
 /// session ends with stdin). Fails on a non-zero exit or any stderr.
@@ -180,6 +252,54 @@ mod tests {
         ks.remove(ID).unwrap();
         ks.remove(ID).unwrap();
         assert_eq!(ks.get(ID).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A keychain file of the test's own (never the login keychain, never
+    /// on the search list) and test service names.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rox_keys_move_to_the_new_service_once() {
+        let dir = std::env::temp_dir().join(format!("rox-keystore-kc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kc = dir.join("test.keychain-db");
+        let kc = kc.to_str().unwrap();
+        assert!(!kc.contains(' '));
+        let run = |args: &[&str]| assert!(Command::new(SECURITY).args(args).stdout(Stdio::null()).status().unwrap().success(), "security {args:?}");
+        run(&["create-keychain", "-p", "test", kc]);
+        run(&["unlock-keychain", "-p", "test", kc]);
+        let (new, old) = (format!("com.buwiz.bot.test-plugin-key.{}", std::process::id()), format!("dev.goldcoders.rox.test-plugin-key.{}", std::process::id()));
+        let (new, old) = (Items { service: &new, keychain: Some(kc) }, Items { service: &old, keychain: Some(kc) });
+        const OTHER: &str = "dev.example.other";
+        const NEWER: &str = "dev.example.newer";
+        old.put(ID, &seed()).unwrap();
+        old.put(OTHER, &seed()).unwrap();
+        old.put(NEWER, &seed()).unwrap();
+        let newer = rox_v1::keys::b64(&[7; 32]);
+        new.put(NEWER, &newer).unwrap();
+        let ids = [ID.to_owned(), NEWER.to_owned(), "dev.example.none".to_owned()];
+        assert_eq!(new.move_from(&old, &ids).unwrap(), 1);
+        assert_eq!(new.get(ID), Some(seed()));
+        assert_eq!(new.get(NEWER), Some(newer), "a key under the new service already is the newer one");
+        assert_eq!((old.get(ID), old.get(NEWER)), (None, None), "deleted from the old service");
+        assert_eq!(old.get(OTHER), Some(seed()), "only the given plugins are touched");
+        assert_eq!(new.move_from(&old, &ids).unwrap(), 0, "nothing left to move");
+        run(&["delete-keychain", kc]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_store_moves_nothing_and_the_marker_stops_a_second_move() {
+        let dir = std::env::temp_dir().join(format!("rox-keystore-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(MOVED_MARKER);
+        assert_eq!(Keystore::File(dir.clone()).move_from_rox(&[ID.to_owned()], &marker).unwrap(), 0);
+        assert!(!marker.exists(), "a file store writes no marker");
+        std::fs::write(&marker, "{}").unwrap();
+        // with the marker the Keychain is not even asked
+        assert_eq!(Keystore::Keychain.move_from_rox(&[ID.to_owned()], &marker).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,0 +1,186 @@
+name: Release
+
+# A v* tag builds, signs, notarizes and packs Buwiz Bot, and keeps the dmg,
+# its checksum and latest.json as workflow artifacts. Nothing is uploaded
+# to R2 or to a GitHub release: docs/release.md has the publish commands.
+# workflow_dispatch runs the same steps; without the signing secrets it is
+# an ad-hoc dry run (an unsigned, unnotarized dmg).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# never cancel a run that may be signing or notarizing
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS arm64 dmg
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Version and signing inputs
+        id: inputs
+        shell: bash
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          VERSION="$(awk -F'"' '/^\[/{s=$0} s=="[package]" && /^version *=/{print $2; exit}' app/Cargo.toml)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "tag $GITHUB_REF_NAME does not match app/Cargo.toml's version $VERSION" >&2
+            exit 1
+          fi
+          missing=""
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_KEY_P8; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "a tagged release needs every signing secret; missing:$missing" >&2
+            exit 1
+          else
+            echo "::warning::missing$missing: this run is an ad-hoc dry run (not signed with Developer ID, not notarized)"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Office editor and fonts (server/)
+        working-directory: server
+        run: |
+          npm ci
+          npm run build:office-editor
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app
+            broker
+            nsh
+
+      - name: Build the release bundle
+        shell: bash
+        env:
+          GWS_MANIFEST_JSON: ${{ secrets.GWS_MANIFEST_JSON }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ -n "$GWS_MANIFEST_JSON" ]; then
+            printf '%s' "$GWS_MANIFEST_JSON" > "$RUNNER_TEMP/rox-gws.manifest.json"
+            export ROX_GWS_MANIFEST="$RUNNER_TEMP/rox-gws.manifest.json"
+          else
+            echo "::warning::GWS_MANIFEST_JSON unset: this build can't provision Google Workspace"
+          fi
+          scripts/release/build.sh
+
+      - name: Import the Developer ID certificate into a temporary keychain
+        if: steps.inputs.outputs.signed == 'true'
+        shell: bash
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          (umask 077 && printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12")
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -f pkcs12 -k "$KEYCHAIN" \
+            -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          IDS="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep '"Developer ID Application:' || true)"
+          if [ "$(printf '%s\n' "$IDS" | grep -c .)" -ne 1 ]; then
+            echo "expected exactly one Developer ID Application identity in MACOS_CERT_P12:" >&2
+            printf '%s\n' "$IDS" >&2
+            exit 1
+          fi
+          NAME="$(printf '%s\n' "$IDS" | sed -E 's/.*"(.*)".*/\1/')"
+          if [ -n "$DEVELOPER_ID_APPLICATION" ] && [ "$NAME" != "$DEVELOPER_ID_APPLICATION" ]; then
+            echo "the certificate is \"$NAME\", not DEVELOPER_ID_APPLICATION \"$DEVELOPER_ID_APPLICATION\"" >&2
+            exit 1
+          fi
+          echo "DEVELOPER_ID_APPLICATION=$NAME" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Sign, notarize and staple the app
+        if: steps.inputs.outputs.signed == 'true'
+        shell: bash
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          REQUIRE_NOTARIZATION: '1'
+        run: |
+          scripts/release/sign.sh
+          scripts/release/notarize.sh dist/*.app
+
+      - name: Sign ad hoc (dry run)
+        if: steps.inputs.outputs.signed != 'true'
+        run: scripts/release/sign.sh -
+
+      - name: Make, sign, notarize and staple the dmg
+        shell: bash
+        env:
+          SIGNED: ${{ steps.inputs.outputs.signed }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          REQUIRE_NOTARIZATION: '1'
+        run: |
+          if [ "$SIGNED" = true ]; then
+            scripts/release/dmg.sh
+          else
+            scripts/release/dmg.sh -
+          fi
+
+      - name: Gatekeeper check
+        if: steps.inputs.outputs.signed == 'true'
+        shell: bash
+        run: |
+          spctl -a -vvv -t exec dist/*.app
+          spctl -a -vvv -t open --context context:primary-signature dist/*.dmg
+          xcrun stapler validate dist/*.dmg
+
+      - name: latest.json
+        run: scripts/release/manifest.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buwiz-bot-${{ steps.inputs.outputs.version }}-macos-arm64${{ steps.inputs.outputs.signed != 'true' && '-unsigned' || '' }}
+          if-no-files-found: error
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+            dist/latest.json
+
+      - name: Remove the signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/rox-gws.manifest.json"
