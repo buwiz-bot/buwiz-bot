@@ -187,3 +187,24 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "stacked on pr/perf-jank-log: the jank line names text and canvas drawing time"
+
+[[topic]]
+branch = "pr/macos-revisit-cache"
+kind = "fix"
+pr = 0
+status = "local"
+note = "stacked on pr/macos-draw-ahead: views put off out of sight keep their rectangle in their scroll view; a frame no longer walks each one's ancestors"
+
+[[topic]]
+branch = "pr/macos-pace-mounts"
+kind = "fix"
+pr = 0
+status = "local"
+note = "stacked on pr/macos-revisit-cache: a batch making hundreds of views out of sight is applied over frames, what shows at once"
+
+[[topic]]
+branch = "pr/macos-jank-commit-time"
+kind = "feature"
+pr = 0
+status = "local"
+note = "stacked on pr/macos-jank-paint-time: the jank line names the Core Animation commit's time"

@@ -1169,10 +1169,12 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
         .child(bar_slot(
             true,
             move || bar_opacity() > 0.5 || store().ctx_open_for(i, "msg"),
-            vec![
-                act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
-                turn_more(i).into_element(),
-            ],
+            move || {
+                vec![
+                    act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
+                    turn_more(i).into_element(),
+                ]
+            },
         ))
 }
 
@@ -1184,13 +1186,10 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
 pub(crate) fn reaction_badge(i: i64, slot: String, right: bool) -> impl IntoElement {
     dynamic(move || {
         let r = store().reaction_of(i, &slot);
-        if r.is_empty() {
-            // Absolute as the badge is: a column's `gap` skips both, so a
-            // reaction coming or going moves nothing.
-            view().absolute().into_element()
-        } else {
-            tapback_in(i, slot.clone(), r, right).into_element()
-        }
+        // No reaction, no view: an empty absolute one stood in each
+        // bubble and card. Absolute as the badge is, a column's `gap`
+        // skips it, so a reaction coming or going moves nothing.
+        (!r.is_empty()).then(|| tapback_in(i, slot.clone(), r, right))
     })
 }
 
@@ -1397,15 +1396,13 @@ fn agent_row(t: Turn) -> impl IntoElement {
                     .is_some_and(|a| a.i == i && a.slot == "msg")
                 || store().ctx_open_for(i, "msg")
         };
-        bar_slot(
-            false,
-            shown,
+        bar_slot(false, shown, move || {
             vec![
                 react_act(i, "msg".to_owned()).into_element(),
                 act("↩", "reply", move || store().reply_to_turn(i)).into_element(),
                 turn_more(i).into_element(),
-            ],
-        )
+            ]
+        })
         .into_element()
     };
     view()
@@ -1537,20 +1534,35 @@ pub(crate) fn highlight_ring(i: i64, radius: f32) -> impl IntoElement {
 /// A one-line bubble's height (7 + 22 + 7): no bubble is narrower.
 const BUBBLE_MIN: f32 = 36.0;
 
-/// A message's hover bar: always mounted at its height (rows keep their
-/// size), made invisible while not `shown` — a hover only flips a style.
-/// Building its buttons on hover put views in and out of the window on
-/// every enter and leave, 8–13 ms a frame for 5–14 views; a style flip
-/// costs well under one. The bar is the slot itself and each button a
-/// single text, so it adds 2–3 views to a row.
-fn bar_slot(right: bool, shown: impl Fn() -> bool + 'static, acts: Vec<AnyElement>) -> View {
+/// A message's hover bar: always at its height (rows keep their size),
+/// made invisible while not `shown` — a hover only flips a style.
+/// Building its buttons on every hover put views in and out of the window
+/// on each enter and leave, 8–13 ms a frame for 5–14 views; a style flip
+/// costs well under one. The buttons (each a single text) come the first
+/// time the bar shows and stay: a reply's dozens of cards no longer mount
+/// three views each that nobody hovered.
+fn bar_slot(right: bool, shown: impl Fn() -> bool + 'static, acts: impl Fn() -> Vec<AnyElement> + 'static) -> View {
+    let shown = std::rc::Rc::new(shown);
+    let first = shown.clone();
     view()
         .flex_row()
         .when(right, |v| v.justify_end())
         .gap(px(2.0))
         .h(px(ACT))
         .style_when(move || !shown(), |s| s.invisible())
-        .children(acts)
+        .child(when(armed(move || first()), acts))
+}
+
+/// `shown`, until it first holds; then true for good (it stops reading
+/// `shown`).
+fn armed(shown: impl Fn() -> bool + 'static) -> Memo<bool> {
+    let held = std::cell::Cell::new(false);
+    computed(move || {
+        if !held.get() && shown() {
+            held.set(true);
+        }
+        held.get()
+    })
 }
 
 /// `Act` (shell.tsx:94) — a bare 24pt text glyph; the hovered one gets a
@@ -1780,7 +1792,18 @@ fn artifact(
     // `"art:" + (f?.path || "gallery")` (shell.tsx:339) — each artifact's
     // bar owns its own pill slot.
     let slot = format!("art:{}", f.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| "gallery".to_owned()));
-    let slot2 = slot.clone();
+    let shown = {
+        let slot = slot.clone();
+        std::rc::Rc::new(move || {
+            store()
+                .pill
+                .get()
+                .as_ref()
+                .is_some_and(|a| a.i == i && a.slot == slot)
+                || store().ctx_open_for(i, &slot)
+                || (hov.get() && !store().chat_scrolling.get())
+        })
+    };
     // The file itself goes along with a reply on it (App.tsx:580).
     let reply_file = f.as_ref().map(|f| f.path.clone()).filter(|p| !p.is_empty());
     let reply_label = f
@@ -1797,46 +1820,45 @@ fn artifact(
             }
         })
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        // The bar's room under the card (its height and the column's
+        // gap): the bar itself mounts the first time it shows, over that
+        // room, so a card nobody hovered has no bar views at all.
+        .pb(px(ACT + 4.0))
         .child(node)
         // This artifact's own reaction (`slot`), not the message's: a
         // reply's files each take theirs.
         .child(reaction_badge(i, slot.clone(), true))
         // The bar is the pill's anchor; shown while hovered, or its pill
         // open.
-        .child(
+        .child(when(armed({ let s = shown.clone(); move || s() }), move || {
+            let (slot, items, reply_label, reply_file) = (slot.clone(), items.clone(), reply_label.clone(), reply_file.clone());
+            let shown = shown.clone();
             // On the left: the artifact's tapback sits at its top-right,
             // and a bar under that corner ran into the next one's.
-            bar_slot(
-                false,
-                move || {
-                    store()
-                        .pill
-                        .get()
-                        .as_ref()
-                        .is_some_and(|a| a.i == i && a.slot == slot2)
-                        || store().ctx_open_for(i, &slot2)
-                        || (hov.get() && !store().chat_scrolling.get())
-                },
-                vec![
-                    react_act(i, slot.clone()).into_element(),
-                    act("↩", "reply", move || {
-                        let st = store();
-                        let name = st
-                            .active_bot_untracked()
-                            .map(|b| b.name)
-                            .unwrap_or_default();
-                        st.reply_to.set(Some(crate::store::ReplyTo {
-                            i,
-                            name,
-                            text: reply_label.clone(),
-                            files: reply_file.iter().cloned().collect(),
-                        }));
-                    })
-                    .into_element(),
-                    more_act(i, slot, move || items.clone()).into_element(),
-                ],
-            ),
-        )
+            view()
+                .absolute()
+                .left(px(0.0))
+                .bottom(px(0.0))
+                .flex_row()
+                .gap(px(2.0))
+                .h(px(ACT))
+                .style_when(move || !shown(), |s| s.invisible())
+                .child(react_act(i, slot.clone()))
+                .child(act("↩", "reply", move || {
+                    let st = store();
+                    let name = st
+                        .active_bot_untracked()
+                        .map(|b| b.name)
+                        .unwrap_or_default();
+                    st.reply_to.set(Some(crate::store::ReplyTo {
+                        i,
+                        name,
+                        text: reply_label.clone(),
+                        files: reply_file.iter().cloned().collect(),
+                    }));
+                }))
+                .child(more_act(i, slot, move || items.clone()))
+        }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2041,6 +2063,163 @@ pub(crate) fn pill_layer() -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::{in_view, nearest, row_waits};
+
+    /// Native views per transcript row, as the engine mounts them headless:
+    /// the 24-file `/mock files` reply, a plain reply, a user message and
+    /// one card of each kind (`cargo test -p rox views_per_row --
+    /// --nocapture` prints them).
+    mod views {
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use nsh_core::element::Root;
+        use nsh_core::prelude::*;
+        use nsh_core::{ApproxTextEngine, MountBatch, MountItem, NodeId};
+        use nsh_engine::{App, Engine, EngineConfig, MountSink};
+
+        use crate::store::{Attach, Turn};
+
+        struct Sink(mpsc::Sender<MountBatch>);
+
+        impl MountSink for Sink {
+            fn submit(&self, batch: MountBatch) {
+                let _ = self.0.send(batch);
+            }
+        }
+
+        fn file(name: &str, kind: &str, variant: &str) -> Attach {
+            let ext = name.rsplit('.').next().unwrap_or("").to_owned();
+            Attach {
+                kind: kind.to_owned(),
+                path: format!("files/m1/{name}"),
+                name: name.to_owned(),
+                ext,
+                size: if name == "missing.png" { 0.0 } else { 18_432.0 },
+                variant: variant.to_owned(),
+                duration: if kind == "audio" || kind == "video" { 12.0 } else { 0.0 },
+                peaks: if kind == "audio" { (0..48).map(|i| (i % 7) as f64 / 7.0).collect() } else { Vec::new() },
+                width: if kind == "image" { 640.0 } else { 0.0 },
+                height: if kind == "image" { 480.0 } else { 0.0 },
+                animated: name.ends_with(".gif"),
+                ..Attach::default()
+            }
+        }
+
+        /// The `/mock files` reply's files: one of each kind the viewer
+        /// handles (`slash_mock.rs`), 24 in all.
+        fn mock_files() -> Vec<Attach> {
+            let mut files = Vec::new();
+            for n in ["photo.png", "missing.png", "shot.jpg", "logo.svg", "spin.gif", "pic.webp"] {
+                files.push(file(n, "image", "media"));
+            }
+            for n in ["demo.mov", "replay.mov"] {
+                files.push(file(n, "video", "video"));
+            }
+            for n in ["tone.m4a", "tone.wav", "tone.aiff"] {
+                files.push(file(n, "audio", "audio"));
+            }
+            for (n, v) in [
+                ("report.pdf", "pdf"),
+                ("notes.md", "generic"),
+                ("page.html", "generic"),
+                ("readme.txt", "generic"),
+                ("data.json", "json"),
+                ("table.csv", "spreadsheet"),
+                ("main.rs", "generic"),
+                ("App.tsx", "generic"),
+                ("card.vcf", "unknown"),
+                ("letter.docx", "docx"),
+                ("sheet.xlsx", "spreadsheet"),
+                ("deck.pptx", "ppt"),
+                ("config.yaml", "generic"),
+            ] {
+                files.push(file(n, "file", v));
+            }
+            files
+        }
+
+        fn agent(i: i64, text: &str, files: Vec<Attach>) -> Turn {
+            Turn { i, id: format!("t{i}"), role: "assistant".to_owned(), text: text.to_owned(), files, ..Turn::default() }
+        }
+
+        fn cases() -> Vec<(&'static str, Turn)> {
+            let mock = "Here are 24 sample files — one of each kind the viewer handles.\n\n```mermaid\nflowchart LR\n  A[You ask] --> B[Kiffy makes the file] --> C[You click to view]\n```";
+            vec![
+                ("mock files reply (24 files)", agent(1, mock, mock_files())),
+                ("plain reply (2 paragraphs)", agent(2, "Sure, here it is.\n\nA second paragraph with **bold** text.", Vec::new())),
+                ("user message", Turn { i: 3, id: "t3".to_owned(), role: "user".to_owned(), text: "Show me the files".to_owned(), ..Turn::default() }),
+                ("reply with one file card", agent(4, "", vec![file("report.pdf", "file", "pdf")])),
+                ("reply with one spreadsheet card", agent(5, "", vec![file("sheet.xlsx", "file", "spreadsheet")])),
+                ("reply with one audio card", agent(6, "", vec![file("tone.m4a", "audio", "audio")])),
+                ("reply with two videos", agent(7, "", vec![file("demo.mov", "video", "video"), file("replay.mov", "video", "video")])),
+            ]
+        }
+
+        #[component]
+        fn Rows() -> impl IntoElement {
+            view().children(cases().into_iter().map(|(name, t)| {
+                view().label(format!("case:{name}")).child(super::super::turn_row(t, "c1")).into_element()
+            }))
+        }
+
+        /// Each case's views: its row's, the case's own wrapper left out.
+        fn count() -> Vec<(String, usize)> {
+            let (tx, rx) = mpsc::channel();
+            let mut config = EngineConfig::new(App::Rust(Root::new::<Rows>(|| ())));
+            config.viewport = Size::new(px(900.0), px(4000.0));
+            let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
+            let (mut children, mut labels, mut live): (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>) =
+                Default::default();
+            // Until nothing comes for a while: a diagram lays out in a task.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while let Ok(batch) = rx.recv_timeout(Duration::from_millis(600)) {
+                for item in &batch.items {
+                    match item {
+                        MountItem::Create { id, .. } => {
+                            live.insert(*id);
+                        }
+                        MountItem::Delete { id } => {
+                            live.remove(id);
+                        }
+                        MountItem::Insert { parent, child, .. } => {
+                            for c in children.values_mut() {
+                                c.retain(|x| x != child);
+                            }
+                            children.entry(*parent).or_default().push(*child);
+                        }
+                        MountItem::AccessibilityLabel { id, label } => {
+                            if let Some(name) = label.as_deref().and_then(|l| l.strip_prefix("case:")) {
+                                labels.push((*id, name.to_owned()));
+                            }
+                        }
+                        MountItem::ViewProps { id, props } => {
+                            if let Some(name) = props.accessibility.label.as_deref().and_then(|l| l.strip_prefix("case:")) {
+                                labels.push((*id, name.to_owned()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if Instant::now() > deadline {
+                    break;
+                }
+            }
+            fn under(id: NodeId, children: &HashMap<NodeId, Vec<NodeId>>, live: &std::collections::HashSet<NodeId>) -> usize {
+                children.get(&id).map_or(0, |c| c.iter().filter(|c| live.contains(c)).map(|c| 1 + under(*c, children, live)).sum())
+            }
+            labels.into_iter().map(|(id, name)| (name, under(id, &children, &live))).collect()
+        }
+
+        #[test]
+        fn views_per_row() {
+            let counts = count();
+            for (name, n) in &counts {
+                println!("{n:>4} views  {name}");
+            }
+            assert_eq!(counts.len(), cases().len(), "every case mounted");
+        }
+    }
 
     #[test]
     fn rows_in_or_next_to_view_mount_with_their_bind() {
