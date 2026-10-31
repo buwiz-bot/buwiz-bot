@@ -1,17 +1,17 @@
 # The manifest
 
 `rox://manifest` is a UTF-8 JSON object, at most 256 KiB, listed in
-`resources/list` and readable with `resources/read` ([spec] 5.1). Rox reads
+`resources/list` and readable with `resources/read` (spec 5.1). Buwiz Bot reads
 it after `rox.provision` and again on every `resources/list_changed`. Every
-read is verified in the order of [spec] 5.2: I-JSON parse (no duplicate keys),
+read is verified in the order of spec 5.2: I-JSON parse (no duplicate keys),
 `protocol` and `version`, trust store, signature, then every grammar and limit
 below. Any failure makes the plugin unavailable with `manifest_invalid`.
 
 Unknown **top-level** fields are ignored. Unknown keys inside `permissions`,
 `routines[]` entries, `query`, `reads[]` entries, `open` or `pick_file` are a
-refusal: objects that grant access fail closed ([spec] 2.2).
+refusal: objects that grant access fail closed (spec 2.2).
 
-## Top level ([spec] 5.3)
+## Top level (spec 5.3)
 
 | Field | Req | Rule |
 |---|---|---|
@@ -22,28 +22,28 @@ refusal: objects that grant access fail closed ([spec] 2.2).
 | `title` | yes | 1 to 60 chars. |
 | `description` | no | At most 300 chars. Never sent to the model. |
 | `icon` | no | Resource URI of a PNG or SVG, at most 64 KiB. |
-| `publisher` | yes | `{id, key_id, name}` ([spec] 5.4): `id` like `dev.goldcoders`; `key_id` `^[a-z0-9][a-z0-9-]{0,63}$`; `name` at most 80 chars. |
-| `signature` | yes | `{"alg": "ed25519", "key_id": <publisher.key_id>, "value": <86 chars base64url>}` over the JCS bytes of the manifest without `signature` ([spec] 4.2). Written by `sign-manifest.mjs`; never by hand. |
+| `publisher` | yes | `{id, key_id, name}` (spec 5.4): `id` like `dev.goldcoders`; `key_id` `^[a-z0-9][a-z0-9-]{0,63}$`; `name` at most 80 chars. |
+| `signature` | yes | `{"alg": "ed25519", "key_id": <publisher.key_id>, "value": <86 chars base64url>}` over the JCS bytes of the manifest without `signature` (spec 4.2). Written by `sign-manifest.mjs`; never by hand. |
 | `commands` | no | Slash commands, below. |
 | `scopes` | no | `@` scopes, below. |
 | `routines` | no | Timed agent runs, below. |
 | `apps` | no | Apps, below. |
 | `needs` | no | Reserved. Absent or `[]`; anything else is `not_supported`. |
 
-## `commands[]` ([spec] 5.7)
+## `commands[]` (spec 5.7)
 
 `name` (`^[a-z][a-z0-9-]{0,31}$`, not `status`), `description` (shown in the
 popup, approved text), `args` (hint such as `[tin]`, optional), `resolve` (one
 of your tools, see [bridge.md](bridge.md#resolve-tools)).
 
-## `scopes[]` ([spec] 5.8)
+## `scopes[]` (spec 5.8)
 
 `name` (`^[a-z][a-z0-9-]{0,31}$`), `description` (its first word, lower-cased,
 is the noun "this <noun>" in the agent's text), `resolve`, `attach` (bool,
 default false: whether tokens may be attached to a chat), `hint` (text added
 to the system prompt when the scope is in play; approved plugins only).
 
-## `routines[]` ([spec] 5.9)
+## `routines[]` (spec 5.9)
 
 `id` (`^[a-z][a-z0-9-]{0,47}$`), `name`, `description`, `every_s`, `query`
 `{tool, field, args?}` (your own tool; `structuredContent[field]` is the
@@ -63,11 +63,11 @@ bir_record_payment"), and an update that adds one needs the user's consent.
 In the turn, a call to your plugin carries `_meta["rox/caller"]` with
 `origin: "agent"` and `routine: "<routine id>"`; the query call carries
 `origin: "routine"` and the same `routine`. Check `routine` in your own
-authorization too ([spec] P6): allow a write only for a routine that declares
+authorization too (spec P6): allow a write only for a routine that declares
 it, and only on evidence the routine was given (BIR records a payment only
 when the email's text it passes says so).
 
-## `apps[]` ([spec] 5.5)
+## `apps[]` (spec 5.5)
 
 | Field | Req | Rule |
 |---|---|---|
@@ -77,13 +77,13 @@ when the email's text it passes says so).
 | `entry` | yes | Exactly `rox-app://<id>`, and listed in `resources/list`. |
 | `mime` | yes | `text/x-nsh-tsx`. |
 | `sdk` | yes | `"1"`. |
-| `fingerprint` | yes | `sha256:` + lowercase hex SHA-256 of the source bytes as served ([spec] 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
-| `props` | no | JSON Schema subset for `rox.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top ([spec] 6.6). |
+| `fingerprint` | yes | `sha256:` + lowercase hex SHA-256 of the source bytes as served (spec 6.2). `sign-manifest.mjs --app <id>=<file>` fills it. |
+| `props` | no | JSON Schema subset for `rox.props`: `type`, `properties`, `required`, `items`, `enum`, `maxLength`, `minimum`, `maximum`; `type` must be `object` at the top (spec 6.6). |
 | `placement` | yes | `["full"]`, `["inline"]` or `["full","inline"]`. |
 | `inline` | if inline | `{width, height, min_width?, min_height?, max_height?, resizable?}` in pixels. `height` is the first frame; `min_height` (96..`height`, default 120) and `max_height` (`height`..800, default 640) bound what `rox.fit` sets ([bridge](bridge.md#inline-cards-that-fit-their-content-roxfit)). |
 | `permissions` | no | What the app may reach; absent means nothing. |
 
-### `apps[].permissions` ([spec] 5.6)
+### `apps[].permissions` (spec 5.6)
 
 | Key | Grants | Rule |
 |---|---|---|
@@ -93,7 +93,7 @@ when the email's text it passes says so).
 | `pick_file` | `rox.pickFile` | `{extensions: [".xlsx", …], max_bytes, multiple?}`. |
 | `storage` | `rox.storage` | `{quota_bytes?}`. |
 | `copy` | `rox.copy` | `true`. |
-| `preview` | `rox.preview` | `{max_bytes?}`: Rox shows a document one of your `tools` makes (a print preview). `{}` allows the host's 8 MiB. |
+| `preview` | `rox.preview` | `{max_bytes?}`: Buwiz Bot shows a document one of your `tools` makes (a print preview). `{}` allows the host's 8 MiB. |
 
 The permissions digest is `sha256(JCS(permissions))` in lowercase hex, `{}`
 when absent. Your plugin compares it on every `rox.session.open`.
@@ -148,4 +148,5 @@ These are the limits the broker enforces (`LIMITS` in
 Limits outside the manifest (bridge calls, results, storage, timeouts) are
 in [bridge.md](bridge.md#limits).
 
-[spec]: ../../../../rox/drafts/rox-mini-app-protocol-v1.md
+Section numbers such as spec 4.1 refer to the Mini App Protocol v1
+specification, which is private and not in this repo.

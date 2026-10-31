@@ -185,7 +185,7 @@ def rebuild(push):
         git("tag", tag, old)
         git("push", "origin", tag)
     git("push", f"--force-with-lease=rox:{old}", "origin", "rox-new:rox")
-    print(f"rox moved; {old[:8]} kept as a tag. Point Rox's submodule at it (NSH-FORK.md, 'Updating Rox').")
+    print(f"rox moved; {old[:8]} kept as a tag. Point Buwiz Bot's submodule at it (NSH-FORK.md, 'Updating Buwiz Bot').")
 
 
 def rebase(topic, push, keep_local):

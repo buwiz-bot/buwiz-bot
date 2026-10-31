@@ -1,4 +1,4 @@
-# The nsh changes Rox carries: one entry per topic branch on hexuria/nsh.
+# The nsh changes Buwiz Bot carries: one entry per topic branch on hexuria/nsh.
 # `rox` = `main` + every topic whose status is local, open or rox-only, in
 # this order. How to use it: NSH-FORK.md. `scripts/nsh-fork status` checks it.
 #
@@ -32,7 +32,7 @@ branch = "pr/perf-jank-log"
 kind = "feature"
 pr = 0
 status = "local"
-note = "Rox's /perf skill reads the jank log"
+note = "Buwiz Bot's /perf skill reads the jank log"
 
 [[topic]]
 branch = "pr/core-pace-component-lists"
@@ -113,14 +113,14 @@ branch = "pr/sandbox-desktop-homedir"
 kind = "fix"
 pr = 0
 status = "local"
-note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Rox's mini apps)"
+note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Buwiz Bot's mini apps)"
 
 [[topic]]
 branch = "pr/appview-error-hook"
 kind = "feature"
 pr = 0
 status = "local"
-note = "AppView::set_error_handler: Rox shows a v1 mini app's load, uncaught and budget errors (Mini App Protocol 6.7)"
+note = "AppView::set_error_handler: Buwiz Bot shows a v1 mini app's load, uncaught and budget errors (Mini App Protocol 6.7)"
 
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
@@ -152,14 +152,14 @@ branch = "pr/gpui-wheel-passthrough"
 kind = "fix"
 pr = 0
 status = "parked"
-note = "GPUI backend only; Rox runs on AppKit (pr/macos-embedded-scroll is its counterpart). Kept for upstream"
+note = "GPUI backend only; Buwiz Bot runs on AppKit (pr/macos-embedded-scroll is its counterpart). Kept for upstream"
 
 [[topic]]
 branch = "pr/gpui-launch-without-activation"
 kind = "feature"
 pr = 0
 status = "parked"
-note = "GPUI backend only; Rox runs on AppKit (pr/macos-launch-without-activation is its counterpart). Kept for upstream"
+note = "GPUI backend only; Buwiz Bot runs on AppKit (pr/macos-launch-without-activation is its counterpart). Kept for upstream"
 
 [[topic]]
 branch = "pr/macos-launch-without-activation"
@@ -214,4 +214,4 @@ branch = "pr/macos-hosted-keys"
 kind = "feature"
 pr = 0
 status = "local"
-note = "AppView::set_key_precedence: a full-screen mini app's keymap ahead of Rox's, inline cards' after it"
+note = "AppView::set_key_precedence: a full-screen mini app's keymap ahead of Buwiz Bot's, inline cards' after it"

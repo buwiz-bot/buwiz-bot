@@ -1,9 +1,9 @@
-# Rox
+# Buwiz Bot
 
-A native macOS chat client — the Grok Shell desktop app ported from TSX to
-Rust. The UI is NSH (`nsh/`, AppKit backend); live patching is ra-jit, from
-[blaze](https://github.com/indexable-inc/blaze) (`blaze/`); the backend is the
-unchanged Grok app server.
+A native macOS chat client — the desktop app formerly called Grok Shell,
+ported from TSX to Rust. The UI is NSH (`nsh/`, AppKit backend); live
+patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
+(`blaze/`); the backend is the unchanged app server.
 
 - Bundle id: `dev.goldcoders.rox`
 - App crate: `app/` (`rox`)
@@ -15,7 +15,7 @@ unchanged Grok app server.
 - **ra-jit** ([blaze](https://github.com/indexable-inc/blaze)) on `PATH`:
   `cargo-ra-jit`, `ra-jit`, `ra-jit-rustc`, `ra-jit-rustc-first`. Install it
   from the `blaze/` submodule, which is on the fork's `rox` branch (blaze
-  `main` plus Rox's patches). Blaze builds with its own pinned nightly,
+  `main` plus Buwiz Bot's patches). Blaze builds with its own pinned nightly,
   whatever `app/rust-toolchain.toml` says:
 
   ```sh
@@ -119,26 +119,26 @@ its Info.plist changes, or to repackage the broker: it also puts
 `rox-broker` and the static files it serves into
 `Contents/Resources/broker/`. At launch, when nothing answers on
 `127.0.0.1:8787` and it is no test instance (`ROX_BACKEND`,
-`ROX_BACKGROUND=1` or `ROX_DATA_DIR` set), Rox starts that broker detached,
+`ROX_BACKGROUND=1` or `ROX_DATA_DIR` set), Buwiz Bot starts that broker detached,
 logging to `~/Library/Logs/Rox/broker.log` (`app/src/broker.rs`).
 
 The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
-from Rox: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
+from Buwiz Bot: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
 `Contents/Resources/broker/bin/`, from `NSH_BIN`/`NSH_HOST_BIN`, else the
-nsh submodule's release build (`nsh/target/release`), else Grok Shell.app's
-`Resources/server/`.
+nsh submodule's release build (`nsh/target/release`), else the old Grok Shell
+app's `Grok Shell.app/Contents/Resources/server/`.
 
 ```sh
 app/bundle-dev.sh                       # once
-open -a ~/Applications/Rox.app          # launch Rox through the bundle
+open -a ~/Applications/Rox.app          # launch Buwiz Bot through the bundle
 open "rox://chat/t1?m=10"               # thread t1, turn 10
 ```
 
 ### Switching the live broker to Rox.app's
 
 `scripts/broker-live use-rox` stops whatever broker holds port 8787 and
-starts Rox.app's own `rox-broker` with the same command line Rox uses.
-Rox then finds it answering, and later launches start the same broker if
+starts Rox.app's own `rox-broker` with the same command line Buwiz Bot uses.
+Buwiz Bot then finds it answering, and later launches start the same broker if
 it is not running.
 
 1. `app/bundle-dev.sh`, then `ls ~/Applications/Rox.app/Contents/Resources/broker/{rox-broker,bin/nsh,bin/nsh-macos-host}`.
@@ -152,17 +152,17 @@ it is not running.
    - every `plugin:` line is running;
    - every `routine:` line ran again with no `error:`;
    - `keychain dialog: none`.
-   Then build a widget in Rox, and watch `~/Library/Logs/Rox/broker.log`.
+   Then build a widget in Buwiz Bot, and watch `~/Library/Logs/Rox/broker.log`.
 
 Rollback: `scripts/broker-live use-node` brings back the Node broker, and
-`use-rust` brings back Grok Shell.app's rox-broker with Node behind it. Both
-need Grok Shell.app's `Resources/server/` (`RES`). After either, run
+`use-rust` brings back the rox-broker in `Grok Shell.app` with Node behind
+it. Both need `Grok Shell.app`'s `Resources/server/` (`RES`). After either, run
 `status` again and check that `mode:` reads `node` or `rust`, then make the
 same checks as in step 4.
 
-Links reach the running Rox only when it was launched through the bundle. A
+Links reach the running Buwiz Bot only when it was launched through the bundle. A
 bare `./target/debug/rox` is a different app to macOS, so a link would start
-a second copy. A link opened while Rox is closed launches it and opens the
+a second copy. A link opened while Buwiz Bot is closed launches it and opens the
 link. The app receives links with nsh's `on_open_url` (registered in the
 `App` root, `src/lib.rs`), which hands `rox://chat/…` links to
 `Store::open_link`.
@@ -204,7 +204,7 @@ nsh itself, delete the block. For a fair comparison with other apps, use
 - **Jank log** — while the monitor runs, every frame over budget and every
   engine wake-up over 16 ms logs one `nsh::jank` line naming what it did
   (apply / tick / input time, the mount items by kind, the triggering
-  event). Rox appends them to `~/Library/Logs/Rox/jank.log`
+  event). Buwiz Bot appends them to `~/Library/Logs/Rox/jank.log`
   (`ROX_JANK_LOG` overrides) and to stderr.
 - **Clear** — `⌘⇧K` (Window ▸ Clear Performance Monitor) forgets the
   readings and empties the jank log: reproduce, then read what that did.
@@ -216,7 +216,7 @@ nsh itself, delete the block. For a fair comparison with other apps, use
 
 ```` ```mermaid ```` fences render natively: Pele ported to Rust
 ([hexuria/pele-rs](https://github.com/hexuria/pele-rs), MIT) lays the
-diagram out, and nsh's canvas draws the scene in Rox's palette
+diagram out, and nsh's canvas draws the scene in Buwiz Bot's palette
 (`app/src/mermaid/`) — no Node, no web view. A diagram Pele does not draw
 shows Pele's message and line in its place.
 
@@ -229,8 +229,8 @@ cd app && cargo build --target aarch64-apple-darwin
 ## Layout
 
 ```
-app/           the Rox application (dev.sh / ios.sh / ios-dev.sh inside)
-server/        the broker Rox talks to (Node): chats, models, routines, plugins, agent messaging
+app/           the Buwiz Bot application (dev.sh / ios.sh / ios-dev.sh inside)
+server/        the broker Buwiz Bot talks to (Node): chats, models, routines, plugins, agent messaging
 app/src/hot.rs the patchable UI root
 app/src/live.rs the ra-jit bridge — store anchor; don't edit while live
 app/src/store.rs the model, as anchored signals

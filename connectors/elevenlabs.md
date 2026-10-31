@@ -4,7 +4,7 @@ Checked against ElevenLabs' docs, the `elevenlabs/plugin` repo and live endpoint
 
 ## What it unlocks
 
-Rox connects to ElevenLabs' hosted MCP server: create, update, list, duplicate and delete voice agents; review conversations and tests; manage branches; generate speech (returned as a short-lived download link). Per the plugin README, also images and video (scopes below).
+Buwiz Bot connects to ElevenLabs' hosted MCP server: create, update, list, duplicate and delete voice agents; review conversations and tests; manage branches; generate speech (returned as a short-lived download link). Per the plugin README, also images and video (scopes below).
 
 | Item | Value |
 |---|---|
@@ -22,11 +22,11 @@ Rox connects to ElevenLabs' hosted MCP server: create, update, list, duplicate a
 
 Probed: `https://api.us.elevenlabs.io/.well-known/oauth-protected-resource[/v1/mcp]` and `/.well-known/oauth-authorization-server`.
 
-## Does Rox need its own app? Probably not, if Rox can use CIMD
+## Does Buwiz Bot need its own app? Probably not, if Buwiz Bot can use CIMD
 
-The pinned client ID `0d057191-f2bd-4516-89f8-997e7bfe6bc6` is the plugin's pre-registered client for Cursor and will not carry Rox's callback **(unconfirmed by probe: the authorize page is a browser app that validates the client after load)**. But ElevenLabs states in its hosted-MCP docs: "No client registration is needed for clients that support hosted client metadata (CIMD)", and Claude's custom connector uses "Anthropic's hosted client metadata". There is no developer page to create an OAuth app that I could find.
+The pinned client ID `0d057191-f2bd-4516-89f8-997e7bfe6bc6` is the plugin's pre-registered client for Cursor and will not carry Buwiz Bot's callback **(unconfirmed by probe: the authorize page is a browser app that validates the client after load)**. But ElevenLabs states in its hosted-MCP docs: "No client registration is needed for clients that support hosted client metadata (CIMD)", and Claude's custom connector uses "Anthropic's hosted client metadata". There is no developer page to create an OAuth app that I could find.
 
-So: host a small JSON file and use its https URL as Rox's Client ID (needs Rox's field to accept an https URL **(unconfirmed)**). Whether ElevenLabs accepts http loopback `127.0.0.1:8787` redirects in a CIMD document is **(unconfirmed)**; it was not testable without signing in.
+So: host a small JSON file and use its https URL as Buwiz Bot's Client ID (needs Buwiz Bot's field to accept an https URL **(unconfirmed)**). Whether ElevenLabs accepts http loopback `127.0.0.1:8787` redirects in a CIMD document is **(unconfirmed)**; it was not testable without signing in.
 
 ## Prerequisites
 
@@ -36,13 +36,13 @@ So: host a small JSON file and use its https URL as Rox's Client ID (needs Rox's
 
 ## Steps
 
-1. Host this at an https URL with a non-root path, e.g. `https://YOURNAME.github.io/rox/elevenlabs-client.json` (the `client_id` must equal the URL):
+1. Host this at an https URL with a non-root path, e.g. `https://YOURNAME.github.io/buwiz-bot/elevenlabs-client.json` (the `client_id` must equal the URL):
 
    ```json
    {
-     "client_id": "https://YOURNAME.github.io/rox/elevenlabs-client.json",
-     "client_name": "Rox",
-     "client_uri": "https://YOURNAME.github.io/rox/",
+     "client_id": "https://YOURNAME.github.io/buwiz-bot/elevenlabs-client.json",
+     "client_name": "Buwiz Bot",
+     "client_uri": "https://YOURNAME.github.io/buwiz-bot/",
      "redirect_uris": ["http://127.0.0.1/oauth/callback/elevenlabs"],
      "grant_types": ["authorization_code", "refresh_token"],
      "response_types": ["code"],
@@ -50,17 +50,17 @@ So: host a small JSON file and use its https URL as Rox's Client ID (needs Rox's
    }
    ```
 
-   Callback URL to confirm in Rox's plugin page (Rox's exact string is not final): `http://127.0.0.1:8787/oauth/callback/elevenlabs`. If ElevenLabs rejects the portless form, list `http://127.0.0.1:8787/oauth/callback/elevenlabs` explicitly.
-2. In Rox, paste the URL as Client ID, leave the secret empty, click **Authenticate**.
+   Callback URL to confirm in Buwiz Bot's plugin page (Buwiz Bot's exact string is not final): `http://127.0.0.1:8787/oauth/callback/elevenlabs`. If ElevenLabs rejects the portless form, list `http://127.0.0.1:8787/oauth/callback/elevenlabs` explicitly.
+2. In Buwiz Bot, paste the URL as Client ID, leave the secret empty, click **Authenticate**.
 3. In the ElevenLabs browser page: sign in (for a residency region, use that region's account and its MCP URL), choose the workspace, review the permissions, click **Authorize**.
 
-App name: `Rox`. Client type: public.
+App name: `Buwiz Bot`. Client type: public.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> ElevenLabs -> settings**:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | https URL of your CIMD JSON |
 | Client Secret | empty |
@@ -76,7 +76,7 @@ ElevenLabs' hosted-MCP page says authentication uses OAuth and "No API keys are 
 
 ## Verification
 
-Ask Rox: "List my ElevenLabs agents." Then "Generate a short sample of my agent's voice saying hello" (this bills your account). In ElevenLabs you can revoke the connection from account settings **(exact location unconfirmed)**.
+Ask Buwiz Bot: "List my ElevenLabs agents." Then "Generate a short sample of my agent's voice saying hello" (this bills your account). In ElevenLabs you can revoke the connection from account settings **(exact location unconfirmed)**.
 
 ## Troubleshooting
 

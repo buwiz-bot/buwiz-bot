@@ -9,7 +9,7 @@ cargo test -p rox --lib office::xlsx::bench::open_1m -- --ignored --nocapture --
 cargo test -p rox --lib office::xlsx::bench::edit_10k_formulas -- --ignored --nocapture --exact
 ```
 
-Rox's dev profile builds every dependency at `opt-level = 3`, so the engine
+Buwiz Bot's dev profile builds every dependency at `opt-level = 3`, so the engine
 runs at release speed in these tests. A window is 60 rows × 40 columns.
 The drawing step uses a stand-in text measurer; on screen the platform
 measures.
