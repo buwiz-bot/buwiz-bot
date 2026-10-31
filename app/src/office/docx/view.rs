@@ -96,6 +96,10 @@ pub(crate) fn editing() -> bool {
         && !w.menu_open.get()
         && !w.setup_open.get()
         && !w.watermark_open.get()
+        && !w.link_open.get()
+        && !w.table_open.get()
+        && w.prompt.with(Option::is_none)
+        && !w.bar_open.get()
         && !st.office.ask_close.get()
         && st.ctx.get().is_none()
 }
@@ -254,10 +258,10 @@ fn close_find() {
     focus();
 }
 
-pub(crate) fn zoom_by(d: f32) {
+/// The zoom control's level.
+pub(crate) fn set_zoom(z: f32) {
     let u = ui();
-    let z = ((u.zoom.get_untracked() + d) * 10.0).round() / 10.0;
-    u.zoom.set(z.clamp(0.5, 3.0));
+    u.zoom.set(z);
     ask_pages(u, true);
 }
 
@@ -281,6 +285,11 @@ fn typing() -> impl IntoElement {
         .auto_focus(true)
         .value(move || buf.get())
         .on_change(move |v: &str| {
+            // Viewing takes no typing: the field gives nothing and empties
+            if ui().meta.with_untracked(|m| m.mode == super::doc::EditMode::Viewing) {
+                empty_field();
+                return;
+            }
             let given = TYPED.with_borrow_mut(|t| std::mem::replace(&mut t.given, v.to_owned()));
             // the value follows the field, so emptying it is a change
             buf.set(v.to_owned());
@@ -361,9 +370,14 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
         for (_, x, y, w, h) in c.sel.iter().filter(|r| r.0 == page) {
             layer = layer.child(view().absolute().left(px(x * z)).top(px(y * z)).w(px(w * z)).h(px(h * z)).bg(theme::ACCENT_TINT));
         }
+        // the selected picture: the web's 2px primary outline
+        if let Some((_, x, y, w, h)) = c.picture.filter(|r| r.0 == page) {
+            layer = layer.child(view().absolute().left(px(x * z - 1.0)).top(px(y * z - 1.0)).w(px(w * z + 2.0)).h(px(h * z + 2.0)).border(px(2.0)).border_color(p::PRIMARY).label("Selected picture"));
+        }
         if let Some((p, x, y, h)) = c.caret
             && p == page
             && c.sel.is_empty()
+            && c.picture.is_none()
         {
             layer = layer.child(view().absolute().left(px(x * z - 0.75)).top(px(y * z)).w(px(1.5)).h(px(h * z)).bg(theme::ACCENT));
         }
@@ -482,6 +496,7 @@ fn review() -> impl IntoElement {
     })
 }
 
+/// The find bar's buttons.
 fn tool(label: &'static str, title: &'static str, on: impl Fn() + 'static, active: impl Fn() -> bool + 'static) -> View {
     view()
         .label(title)
@@ -497,35 +512,6 @@ fn tool(label: &'static str, title: &'static str, on: impl Fn() + 'static, activ
             on();
             focus();
         })
-}
-
-fn toolbar() -> impl IntoElement {
-    let u = ui();
-    let m = move || u.meta.get();
-    view()
-        .flex_row()
-        .items_center()
-        .h(px(34.0))
-        .px_2()
-        .gap_1()
-        .bg(theme::PANE)
-        .border_b(px(0.5))
-        .border_b_color(theme::BORDER_S)
-        .child(tool("B", "Bold", || format(Fmt::Bold), move || m().bold))
-        .child(tool("I", "Italic", || format(Fmt::Italic), move || m().italic))
-        .child(tool("U", "Underline", || format(Fmt::Underline), move || m().underline))
-        .child(tool("A−", "Smaller", || format(Fmt::Size(false)), || false))
-        .child(text(move || format!("{}", m().size)).w(px(30.0)).text_center().text_size(px(12.0)).text_color(theme::MUTED))
-        .child(tool("A+", "Bigger", || format(Fmt::Size(true)), || false))
-        .child(view().w(px(8.0)))
-        .child(tool("•", "Bulleted list", || format(Fmt::Bullets), || false))
-        .child(tool("1.", "Numbered list", || format(Fmt::Numbers), || false))
-        .child(view().w(px(8.0)))
-        .child(tool("↶", "Undo", || key("undo"), || false).opacity(move || if m().can_undo { 1.0f32 } else { 0.4 }))
-        .child(tool("↷", "Redo", || key("redo"), || false).opacity(move || if m().can_redo { 1.0f32 } else { 0.4 }))
-        .child(view().flex_1())
-        .child(tool("Find", "Find", find, move || u.find.with(Option::is_some)))
-        .child(tool("Review", "Tracked changes and comments", move || u.review.update(|r| *r = !*r), move || u.review.get()))
 }
 
 fn find_bar() -> impl IntoElement {
@@ -591,7 +577,7 @@ pub(crate) fn word_view() -> impl IntoElement {
         .flex_1()
         .child(office::xlsx::edit::prompts())
         .child(super::chrome::title_bar())
-        .child(toolbar())
+        .child(super::toolbar::toolbar())
         .child(find_bar())
         .child(
             view()

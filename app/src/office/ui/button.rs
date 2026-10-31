@@ -242,6 +242,12 @@ pub(crate) struct IconDropdown {
     choices: Vec<Choice>,
     current: Rc<dyn Fn() -> Option<&'static str>>,
     labels: bool,
+    /// Choices to a row (the borders menu's 4-column grid); all in one
+    /// row when 0.
+    columns: usize,
+    /// The trigger is named for the current choice (the alignment
+    /// trigger's `aria-label`, "Align Left (Ctrl+L)").
+    titled: bool,
     disabled: Flag,
     on_select: Rc<dyn Fn(&'static str)>,
 }
@@ -252,6 +258,8 @@ pub(crate) fn icon_dropdown(label: impl Into<SharedString>, choices: Vec<Choice>
         choices,
         current: Rc::new(|| None),
         labels: false,
+        columns: 0,
+        titled: false,
         disabled: Rc::new(|| false),
         on_select: Rc::new(|_| {}),
     }
@@ -267,6 +275,18 @@ impl IconDropdown {
     /// The choices in a column with their labels (`showLabels`).
     pub(crate) fn labels(mut self) -> Self {
         self.labels = true;
+        self
+    }
+
+    /// The trigger named for the current choice, with its shortcut.
+    pub(crate) fn titled(mut self) -> Self {
+        self.titled = true;
+        self
+    }
+
+    /// The choices in rows of `n` (`gridTemplateColumns: repeat(n, 1fr)`, 2 apart).
+    pub(crate) fn columns(mut self, n: usize) -> Self {
+        self.columns = n;
         self
     }
 
@@ -286,7 +306,20 @@ impl IntoElement for IconDropdown {
         let open = signal(false);
         let hovered = signal(false);
         let anchor = element_ref();
-        let IconDropdown { label, choices, current, labels, disabled, on_select } = self;
+        let IconDropdown { label, choices, current, labels, columns, titled, disabled, on_select } = self;
+        let name = {
+            let (choices, current, label) = (choices.clone(), current.clone(), label.clone());
+            move || -> SharedString {
+                if !titled {
+                    return label.clone();
+                }
+                let c = current().and_then(|v| choices.iter().find(|c| c.value == v)).or(choices.first());
+                c.map_or_else(|| label.clone(), |c| match c.shortcut {
+                    Some(s) => format!("{} ({s})", c.label).into(),
+                    None => c.label.clone(),
+                })
+            }
+        };
         let first = choices.first().map_or("", |c| c.icon);
         let shown = {
             let (choices, current) = (choices.clone(), current.clone());
@@ -303,7 +336,7 @@ impl IntoElement for IconDropdown {
             .items_center()
             .justify_center()
             .element_ref(&anchor)
-            .label(label.clone())
+            .label(name)
             // open: `bg-muted`; hover: `hover:bg-muted/80` (after
             // `hover:bg-accent` in the stylesheet)
             .bg(move || {
@@ -330,15 +363,18 @@ impl IntoElement for IconDropdown {
             let current = current.clone();
             let on_select = on_select.clone();
             let mut col = view();
-            col = if labels { col.gap(px(1.0)).min_w(px(200.0)) } else { col.flex_row().gap(px(2.0)) };
-            col.children(choices.iter().cloned().map(|c| {
+            let make = |c: Choice| {
                 let (current, on_select) = (current.clone(), on_select.clone());
                 choice(c, labels, move |v| current() == Some(v), move |v| {
                     open.set(false);
                     on_select(v)
                 })
-            }))
-            .into_element()
+            };
+            if columns > 0 {
+                return col.gap(px(2.0)).children(choices.chunks(columns).map(|row| view().flex_row().gap(px(2.0)).children(row.iter().cloned().map(make)).into_element())).into_element();
+            }
+            col = if labels { col.gap(px(1.0)).min_w(px(200.0)) } else { col.flex_row().gap(px(2.0)) };
+            col.children(choices.iter().cloned().map(make)).into_element()
         });
         view().child(trigger).child(menu).into_element()
     }

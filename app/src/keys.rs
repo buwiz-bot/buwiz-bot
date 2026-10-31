@@ -530,8 +530,14 @@ pub(crate) static COMMANDS: &[Command] = &[
     always(cmd("doc.bullets", "Bulleted list", Scope::Doc, &["mod+shift+8"], |_| doc_format(Fmt::Bullets))),
     always(cmd("doc.numbers", "Numbered list", Scope::Doc, &["mod+shift+7"], |_| doc_format(Fmt::Numbers))),
     always(cmd("doc.find", "Find", Scope::Doc, &["mod+f"], |_| crate::office::docx::view::find())),
-    always(cmd("doc.zoom_in", "Zoom in", Scope::Doc, &["mod+="], |_| crate::office::docx::view::zoom_by(0.1))),
-    always(cmd("doc.zoom_out", "Zoom out", Scope::Doc, &["mod+-"], |_| crate::office::docx::view::zoom_by(-0.1))),
+    // the web editor's own chords (`uo`); it has none for zoom
+    always(cmd("doc.link", "Insert link", Scope::Doc, &["mod+k"], |_| crate::office::docx::dialogs::open_link())),
+    always(cmd("doc.align_left", "Align left", Scope::Doc, &["mod+l"], |_| doc_format(Fmt::Align("left")))),
+    always(cmd("doc.align_center", "Center", Scope::Doc, &["mod+e"], |_| doc_format(Fmt::Align("center")))),
+    always(cmd("doc.align_right", "Align right", Scope::Doc, &["mod+r"], |_| doc_format(Fmt::Align("right")))),
+    always(cmd("doc.justify", "Justify", Scope::Doc, &["mod+j"], |_| doc_format(Fmt::Align("both")))),
+    always(cmd("doc.subscript", "Subscript", Scope::Doc, &["mod+="], |_| doc_format(Fmt::Subscript))),
+    always(cmd("doc.superscript", "Superscript", Scope::Doc, &["mod+shift+="], |_| doc_format(Fmt::Superscript))),
     always(cmd("doc.escape", "Close", Scope::Doc, &["escape"], |_| crate::office::docx::view::escape())),
     // ——— Lightbox ———
     repeating(cmd("light.prev", "Previous image", Scope::Lightbox, &["left"], |_| store().light_step(-1))),
