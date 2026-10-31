@@ -623,7 +623,7 @@ pub(crate) fn prompts() -> impl IntoElement {
                 .child(button("Save", true, || office::answer_close(Some(true))))
                 .into_element()
         } else {
-            row.child(text(format!("{name} changed outside Rox while you were editing it.")).flex_1().text_size(px(13.0)).text_color(theme::TEXT))
+            row.child(text(format!("{name} changed outside Buwiz Bot while you were editing it.")).flex_1().text_size(px(13.0)).text_color(theme::TEXT))
                 .child(button("Keep Mine", false, || office::keep_mine()))
                 .child(button("Reload", true, || office::reload()))
                 .into_element()

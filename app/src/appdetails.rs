@@ -734,7 +734,7 @@ fn mcp_fields() -> impl IntoElement {
             ),
         ))
         .child(
-            text("Renames it in Rox only; the app keeps its own name.")
+            text("Renames it in Buwiz Bot only; the app keeps its own name.")
                 .pl(px(94.0))
                 .text_size(px(12.0))
                 .text_color(theme::MUTED),

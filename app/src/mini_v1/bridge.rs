@@ -61,7 +61,7 @@ pub trait HostUi: Send + Sync {
     /// refuse `not_supported`.
     fn preview(&self, doc: Preview) -> Result<(), RoxError> {
         let _ = doc;
-        Err(RoxError::new("not_supported", "this Rox shows no print previews"))
+        Err(RoxError::new("not_supported", "this Buwiz Bot shows no print previews"))
     }
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
