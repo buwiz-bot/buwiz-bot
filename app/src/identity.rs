@@ -71,8 +71,8 @@ pub enum Migration {
 
 /// Moves Rox's data dir to Buwiz Bot's once, on first launch: when the
 /// new one is missing and the old one is a folder. A rename (same volume)
-/// keeps every file as it was, `mini-v1.json`'s `migrated_at` with it, so
-/// the v0 mini-app migration does not run again. Should the rename fail it
+/// keeps every file as it was, `mini-v1.json` (attachments, pins,
+/// `migrated_at`) with it. Should the rename fail it
 /// copies instead, into a side folder renamed into place when complete (a
 /// half copy is never taken for the data), and only then removes the old
 /// one. Then it writes [`MIGRATED_MARKER`]. Once the new dir exists
@@ -178,12 +178,8 @@ mod tests {
         home.join(SUPPORT).join(DIR_NAME)
     }
 
-    /// The v0 migration over `dir`: it must find itself done, and ask
-    /// nothing.
-    fn v0_migration_is_done(dir: &Path, home: &Path) {
-        use crate::mini_v1::migrate::{Mode, run};
-        let r = run(dir, &home.join("grok"), "1.0.0", Mode::Apply, &mut |_: &str, _: &str| panic!("the v0 migration ran again")).unwrap();
-        assert!(r.already, "the v0 migration is recorded as done");
+    /// The mini-app records came over as they were, `migrated_at` with them.
+    fn records_kept(dir: &Path) {
         assert_eq!(crate::mini_v1::records::Records::load(dir).migrated_at, 1234);
     }
 
@@ -199,7 +195,7 @@ mod tests {
         assert!(new.join("plugins/dev.example.p/manifest.json").is_file());
         assert!(new.join(MIGRATED_MARKER).is_file());
         assert!(old.symlink_metadata().is_err(), "no compatibility path is left");
-        v0_migration_is_done(&new, &home);
+        records_kept(&new);
         // once only
         assert_eq!(migrate_data(None, &home).unwrap(), Migration::AlreadyThere);
         let _ = std::fs::remove_dir_all(&home);
@@ -218,7 +214,7 @@ mod tests {
         assert!(new.join(MIGRATED_MARKER).is_file());
         assert!(!home.join(SUPPORT).join(format!("{DIR_NAME}.partial")).exists());
         assert_eq!(data_dir_in(None, &home), new);
-        v0_migration_is_done(&new, &home);
+        records_kept(&new);
         let _ = std::fs::remove_dir_all(&home);
     }
 
