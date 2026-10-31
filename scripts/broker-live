@@ -3,7 +3,7 @@
 #
 #   scripts/broker-live status     health, who answers the port, plugins, last routine runs
 #   scripts/broker-live backup     app.db (sqlite .backup), the bundle's server/ and
-#                                  Rox.app's broker/ (as rox-broker/) into
+#                                  Buwiz Bot.app's broker/ (as rox-broker/) into
 #                                  <data dir>/backups/<UTC time>/
 #   scripts/broker-live start|stop|restart
 #   scripts/broker-live use-node   the Node broker on the port (the rollback)
@@ -12,7 +12,7 @@
 #                                  (ROX_BROKER_V1_HOST=0 leaves them to Node), from
 #                                  phase 4 the MCP servers (ROX_BROKER_MCP_HOST=0
 #                                  leaves them to Node)
-#   scripts/broker-live use-rox    Rox.app's own rox-broker (phase 7), started as Rox
+#   scripts/broker-live use-rox    Buwiz Bot.app's own rox-broker (phase 7), started as Rox
 #                                  starts it: hub, v1 and MCP hosts, no Node; Rox
 #                                  then finds it answering
 #   --port N (any position)        the same as PORT=N
@@ -20,8 +20,8 @@
 # GS: the data dir (default ~/Library/Application Support/Grok Shell).
 # RES: the app bundle's Resources dir holding server/ (default: the Grok
 # Shell.app built in a grok-shell checkout beside this repo).
-# ROX_APP: the Rox.app use-rox starts from (default ~/Applications/Rox.app).
-# ROX_LOG: use-rox's log (default ~/Library/Logs/Rox/broker.log, Rox's).
+# ROX_APP: the Buwiz Bot.app use-rox starts from (default ~/Applications/Buwiz Bot.app).
+# ROX_LOG: use-rox's log (default ~/Library/Logs/Buwiz Bot/broker.log, the app's).
 # PORT: default 8787.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,9 +35,9 @@ done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 GS="${GS:-$HOME/Library/Application Support/Grok Shell}"
 RES="${RES:-$ROOT/../grok-shell/dist/Grok Shell.app/Contents/Resources}"
-ROX_APP="${ROX_APP:-$HOME/Applications/Rox.app}"
+ROX_APP="${ROX_APP:-$HOME/Applications/Buwiz Bot.app}"
 RB="$ROX_APP/Contents/Resources/broker"
-ROX_LOG="${ROX_LOG:-$HOME/Library/Logs/Rox/broker.log}"
+ROX_LOG="${ROX_LOG:-$HOME/Library/Logs/Buwiz Bot/broker.log}"
 PORT="${PORT:-8787}"
 URL="http://127.0.0.1:$PORT"
 DB="$GS/generated/app.db"
@@ -89,7 +89,7 @@ start_rust() {
   wait_health && echo "rox-broker on $PORT"
 }
 
-# What Rox.app's broker needs; prints what is missing.
+# What Buwiz Bot.app's broker needs; prints what is missing.
 rox_missing() {
   local f
   for f in rox-broker bin/nsh bin/nsh-macos-host; do [ -x "$RB/$f" ] || echo "$RB/$f"; done
@@ -101,7 +101,7 @@ rox_missing() {
 # variables; cwd /, its own process group (Rox's start), stdin closed.
 start_rox() {
   [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
-  [ -z "$(rox_missing)" ] || { echo "Rox.app's broker is incomplete: $(rox_missing | tr '\n' ' ')" >&2; return 1; }
+  [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete: $(rox_missing | tr '\n' ' ')" >&2; return 1; }
   mkdir -p "$(dirname "$ROX_LOG")" "$GS"
   (cd / && exec env -u GPUI_AGENT -u GPUI_AGENT_TOKEN -u GPUI_AGENT_ADDR -u GPUI_AGENT_ALLOW_RELEASE \
     -u PORT -u ROX_PUBLIC_PORT ROX_BROKER_HUB=1 ROX_BROKER_V1_HOST=1 ROX_BROKER_MCP_HOST=1 \
@@ -109,10 +109,10 @@ start_rox() {
     nohup /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "$ARGV[0]: $!\n"' \
     "$RB/rox-broker" --port "$PORT" --data "$GS" --assets "$RB/server" --no-node \
     >>"$ROX_LOG" 2>&1 </dev/null &)
-  wait_health && echo "Rox.app's rox-broker on $PORT (log $ROX_LOG)"
+  wait_health && echo "Buwiz Bot.app's rox-broker on $PORT (log $ROX_LOG)"
 }
 
-# Which broker holds the port: rox (Rox.app's, no Node), rust (rox-broker
+# Which broker holds the port: rox (Buwiz Bot.app's, no Node), rust (rox-broker
 # with Node behind it), node, or none.
 mode() {
   local pid cmd
@@ -182,8 +182,8 @@ case "${1:-}" in
     [ -x "$RES/server/rox-broker" ] || { echo "no $RES/server/rox-broker yet (phase 1 packages it): nothing changed" >&2; exit 1; }
     stop && start_rust || { echo "rox-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
   use-rox)
-    # nothing stops before Rox.app's broker is complete
-    [ -z "$(rox_missing)" ] || { echo "Rox.app's broker is incomplete (run app/bundle-dev.sh): $(rox_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
-    stop && start_rox || { echo "Rox.app's rox-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
+    # nothing stops before Buwiz Bot.app's broker is complete
+    [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete (run app/bundle-dev.sh): $(rox_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
+    stop && start_rox || { echo "Buwiz Bot.app's rox-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
   *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -267,7 +267,8 @@ pub fn canvas_family(family: &str) -> &str {
 
 /// The folder holding the font files: `ROX_OFFICE_FONTS`, the bundle's
 /// `Resources/fonts/office`, this checkout's node_modules (dev builds and
-/// tests), or the dev bundle's. `None` (logged once) when none has them.
+/// tests), or the dev bundle's (Buwiz Bot.app's, then Rox.app's). `None`
+/// (logged once) when none has them.
 pub fn dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -275,14 +276,12 @@ pub fn dir() -> Option<&'static Path> {
         if let Some(d) = std::env::var_os("ROX_OFFICE_FONTS") {
             dirs.push(d.into());
         }
-        if let Ok(exe) = std::env::current_exe()
-            && let Some(contents) = exe.parent().and_then(|m| m.parent())
-        {
-            dirs.push(contents.join("Resources/fonts/office"));
+        if let Ok(exe) = std::env::current_exe() {
+            dirs.extend(crate::bundle::exe_resources(&exe, "fonts/office"));
         }
         dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/node_modules/@betteroffice/fonts/assets"));
         if let Some(home) = std::env::var_os("HOME") {
-            dirs.push(PathBuf::from(home).join("Applications/Rox.app/Contents/Resources/fonts/office"));
+            dirs.extend(crate::bundle::installed_resources(Path::new(&home), "fonts/office"));
         }
         let found = dirs.iter().find(|d| d.join(BUNDLED[0].file).is_file()).cloned();
         if found.is_none() {

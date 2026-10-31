@@ -1,6 +1,6 @@
 {
   "name": "Buwiz Bot",
-  "id": "dev.goldcoders.rox",
+  "id": "com.buwiz.bot",
   "appearance": "system",
   "rust": ".",
   "root": "App"
