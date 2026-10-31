@@ -112,6 +112,18 @@ pub(crate) fn reviewed() -> Vec<u8> {
     package(&body, 0, &comments, "")
 }
 
+/// Two pictures in one paragraph between words, then a paragraph holding
+/// only a page break, then one line.
+pub(crate) fn pictures_and_break() -> Vec<u8> {
+    let body = [
+        format!(r#"<w:p w14:paraId="00000301">{}{}{}{}</w:p>"#, r("Before "), picture(1), picture(2).replace(r#"cx="1828800""#, r#"cx="2743200""#).replace(r#"name="Picture 2""#, r#"name="Picture 2" descr="Second""#), r(" after")),
+        r#"<w:p w14:paraId="00000302"><w:r><w:br w:type="page"/></w:r></w:p>"#.to_owned(),
+        p(0x303, "", &r("Last line")),
+    ]
+    .concat();
+    package(&body, 0, "", "")
+}
+
 /// A one-paragraph-per-line document.
 pub(crate) fn paragraphs(lines: &[&str]) -> Vec<u8> {
     let body: String = lines.iter().enumerate().map(|(i, l)| p(0x200 + i as u32, "", &r(l))).collect();

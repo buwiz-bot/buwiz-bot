@@ -15,7 +15,10 @@ pub(crate) mod fixture;
 pub(crate) mod fonts;
 pub(crate) mod index;
 pub(crate) mod layout;
+pub(crate) mod project;
 pub(crate) mod save;
+#[cfg(test)]
+mod save_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) mod view;

@@ -194,6 +194,8 @@ pub(crate) struct Word {
     /// The last section's page, read once and kept by Page Setup.
     setup: Option<PageSetup>,
     watermark: Option<serde_json::Value>,
+    /// What the save keeps beside the engine.
+    pub(crate) saving: save::State,
 }
 
 fn ctx() -> EditCtx {
@@ -243,6 +245,7 @@ impl Word {
             table: None,
             setup: None,
             watermark: None,
+            saving: Default::default(),
         };
         // the caret starts in the first paragraph
         let first = w.index().paras.first().map(|p| spot(&p.story, p.start));
@@ -1161,6 +1164,8 @@ impl Document for Word {
             }
             Cmd::Watermark(w) => {
                 self.complete_first(&mut outs);
+                // saved as the web's setDocumentWatermark, new headers and all
+                self.saving.watermark = Some(w.clone());
                 self.set_watermark(w);
                 self.relaid(&mut outs, Ok(()))
             }
@@ -1199,7 +1204,7 @@ impl Document for Word {
     }
 
     fn save(&mut self, path: &Path) -> Result<(Vec<u8>, PathBuf), String> {
-        let bytes = if self.edited || self.legacy { save::docx(&self.source, self.layout.engine.doc())? } else { self.source.clone() };
+        let bytes = if self.edited || self.legacy { save::docx(&self.source, self.layout.engine.doc(), &mut self.saving, &save::now())? } else { self.source.clone() };
         let to = match &self.target {
             Some(t) => t.clone(),
             None if self.legacy => path.with_extension("docx"),
