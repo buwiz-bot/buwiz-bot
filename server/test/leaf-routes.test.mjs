@@ -1,6 +1,6 @@
 // The leaf routes the Rust broker answers itself (plan phase 2): /state,
 // /prefs, /keymap, /data/timeclock, the skills list. Run against Node they
-// pin down what the Rust side must match; with ROX_BROKER_CMD naming
+// pin down what the Rust side must match; with BUWIZ_BROKER_CMD naming
 // rox-broker, they check that it does.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";

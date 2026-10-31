@@ -106,23 +106,23 @@ pub fn App() -> impl IntoElement {
     let note = signal(String::new());
     live::install(remount, note);
     live::init();
-    // `rox://chat/<thread>[?m=<turn>]` / `rox://chat/new?draft=<text>` /
-    // `rox://plugin/<name>` (the plugin page's Share link) /
-    // `rox://app/<server>/<app>` / `rox://view?path=<file>` (a mini app's
+    // `buwiz://chat/<thread>[?m=<turn>]` / `buwiz://chat/new?draft=<text>` /
+    // `buwiz://plugin/<name>` (the plugin page's Share link) /
+    // `buwiz://app/<server>/<app>` / `buwiz://view?path=<file>` (a mini app's
     // print preview, `links::viewable` only) opened from another app
     // or a mini app (the dev bundle declares the scheme): the root never
     // remounts, so this handler lives as long as the app. `open_os_link`
     // makes nothing until the person acts in Rox (a new chat or a mini app
     // asks first).
     // Other URLs are ignored here — the router would hand them to the
-    // system, which for `rox://` sends them straight back.
+    // system, which for `buwiz://` sends them straight back.
     links::make_view_dir();
     on_open_url(|url| {
-        let thread = url.strip_prefix("rox://chat/").map(|r| r.split('?').next().unwrap_or(""));
+        let thread = url.strip_prefix("buwiz://chat/").map(|r| r.split('?').next().unwrap_or(""));
         if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
-            || url.starts_with("rox://plugin/")
-            || url.starts_with("rox://app/")
-            || url.starts_with("rox://view")
+            || url.starts_with("buwiz://plugin/")
+            || url.starts_with("buwiz://app/")
+            || url.starts_with("buwiz://view")
         {
             live::store().open_os_link(url);
         } else {

@@ -3,7 +3,7 @@
 //! account, or which of several accounts to use. The bot never guesses
 //! the account: the person picks one ("Remember for <bot>" keeps it as the
 //! bot's pin), and the message goes again. Install and Add account open
-//! Connect Apps on the plugin (`rox://plugin/<name>`).
+//! Connect Apps on the plugin (`buwiz://plugin/<name>`).
 
 use nsh_core::prelude::*;
 use serde_json::Value;
@@ -178,7 +178,7 @@ fn need_row(need: &PluginNeed, key: &str, turn: i64, bot: &str, open: bool) -> i
     let open_plugins = move |label: &'static str| {
         let plugin = plugin.clone();
         view().flex_row().child(super::btn(Btn::Primary, label, move || {
-            store().open_link(&format!("rox://plugin/{plugin}"))
+            store().open_link(&format!("buwiz://plugin/{plugin}"))
         }))
     };
     match &need.kind {

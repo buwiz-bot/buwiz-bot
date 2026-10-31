@@ -1,5 +1,5 @@
 // v1/broker.mjs — the server's one v1 broker: plugins and sessions on the
-// server's sqlite db, keys in the keystore ROX_KEYSTORE names (the login
+// server's sqlite db, keys in the keystore BUWIZ_KEYSTORE names (the login
 // Keychain by default), plugin logs under <data dir>/v1/logs, and the v1
 // routine runner, whose turns run the way v0's do (backgroundTurn), in
 // the routine's own thread (routine-threads.mjs). Importing it spawns nothing; app-server starts the

@@ -1,7 +1,7 @@
 // The brain's MCP servers (Rust broker plan 4.4): the tools the agent sees
 // (toolList), its tool calls (execTool), a routine's check, and a remote
 // server whose answer reads as signed out, in this process on a temp data
-// dir. With ROX_BROKER_CMD and ROX_BROKER_MCP_HOST=1 the same modules reach
+// dir. With BUWIZ_BROKER_CMD and ROX_BROKER_MCP_HOST=1 the same modules reach
 // the servers through `rox-broker helper` over the line, as the live
 // broker hands Node its line (ROX_V1_LINE, ROX_LINE_HOSTS=mcp), and the
 // servers run under rox-broker, not this process.
@@ -21,7 +21,7 @@ const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
 const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
 // (not under the hub, where every case here is skipped: no helper to start)
-const RUST = !HUB && process.env.ROX_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1" ? process.env.ROX_BROKER_CMD.trim().split(/\s+/)[0] : "";
+const RUST = !HUB && process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1" ? process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/)[0] : "";
 
 process.env.GROK_DATA_DIR = dataDir;
 process.env.MOCK = "1";

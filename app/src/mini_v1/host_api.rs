@@ -1,5 +1,5 @@
 //! The broker's host-internal API (`/v1/host/*`, design §4) as typed
-//! functions. Every request carries the host token (`X-Rox-Host`); every
+//! functions. Every request carries the host token (`X-Buwiz-Host`); every
 //! refusal comes back as the spec's [`RoxError`].
 //!
 //! The bridge's handlers run on the engine thread and hand their work to
@@ -27,7 +27,7 @@ pub trait Broker: Send + Sync {
 
 /// The bridge's call limit (spec 7.3), also the HTTP read timeout of a call.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// `rox.session.open` and the relay around it (5 s at the plugin, 14.2).
+/// `buwiz.session.open` and the relay around it (5 s at the plugin, 14.2).
 const SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Resolve tools, ticket titles and app source (14.2).
 const SHORT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -297,7 +297,7 @@ impl HttpBroker {
             "{method} {route} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: {accept}\r\n"
         );
         if let Some(token) = crate::client::host_token() {
-            head.push_str(&format!("X-Rox-Host: {token}\r\n"));
+            head.push_str(&format!("X-Buwiz-Host: {token}\r\n"));
         }
         if method != "GET" {
             head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));

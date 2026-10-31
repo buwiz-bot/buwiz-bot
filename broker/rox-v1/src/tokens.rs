@@ -440,13 +440,13 @@ mod tests {
     #[test]
     fn inv_03_a_unique_name_is_unqualified_and_an_ambiguous_one_needs_its_short() {
         let ps = vec![
-            cmds("dev.goldcoders.bir", "bir", true, &["taxform", "taxprofile", "report"]),
-            cmds("dev.goldcoders.acc", "acc", true, &["report", "ledger"]),
-            cmds("dev.goldcoders.off", "off", false, &["ledger", "status"]),
+            cmds("app.buwiz.ebirforms", "bir", true, &["taxform", "taxprofile", "report"]),
+            cmds("app.buwiz.acc", "acc", true, &["report", "ledger"]),
+            cmds("app.buwiz.off", "off", false, &["ledger", "status"]),
         ];
         let go = |t: &str| route(&slash(t).unwrap(), &ps);
-        let bir = Route::Plugin { plugin: "dev.goldcoders.bir".into(), short: "bir".into() };
-        let acc = Route::Plugin { plugin: "dev.goldcoders.acc".into(), short: "acc".into() };
+        let bir = Route::Plugin { plugin: "app.buwiz.ebirforms".into(), short: "bir".into() };
+        let acc = Route::Plugin { plugin: "app.buwiz.acc".into(), short: "acc".into() };
         assert_eq!(go("/taxform 123"), bir);
         // a disabled plugin's command is no candidate
         assert_eq!(go("/ledger"), acc);
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn inv_02_typed_tins_resolve_to_tickets_and_the_message_keeps_only_tickets() {
-        let plugin_of = |s: &str| (s == "bir").then(|| "dev.goldcoders.bir".to_owned());
+        let plugin_of = |s: &str| (s == "bir").then(|| "app.buwiz.ebirforms".to_owned());
         let mut asked = Vec::new();
         let mut resolve = |p: &str, scope: &str, value: &str| {
             asked.push((p.to_owned(), scope.to_owned(), value.to_owned()));
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(r.unresolved, [("@bir:taxprofile:000".to_owned(), "No taxpayer 000".to_owned())]);
         // a ticket already canonical, and another server's token, are not asked about
         assert_eq!(asked.len(), 3);
-        assert!(asked.iter().all(|a| a.0 == "dev.goldcoders.bir"));
+        assert!(asked.iter().all(|a| a.0 == "app.buwiz.ebirforms"));
     }
 
     #[test]
@@ -532,7 +532,7 @@ mod tests {
     fn resolve_answers_are_read_strictly() {
         assert_eq!(answer(&json!({"result": "token", "ticket": T1, "title": "X"})), Answer::Token { ticket: T1.into(), title: "X".into() });
         assert!(matches!(answer(&json!({"result": "token", "ticket": "123"})), Answer::Error(_)));
-        assert!(matches!(answer(&json!({"ok": true, "open": "rox://app/bir/forms"})), Answer::Error(_)), "v0's shape");
+        assert!(matches!(answer(&json!({"ok": true, "open": "buwiz://app/bir/forms"})), Answer::Error(_)), "v0's shape");
         match answer(&json!({"result": "open", "app": "forms", "title": "T".repeat(90), "placement": "inline"})) {
             Answer::Open { app, title, placement, .. } => {
                 assert_eq!((app.as_str(), title.len(), placement.as_deref()), ("forms", 60, Some("inline")))

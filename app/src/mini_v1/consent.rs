@@ -9,14 +9,14 @@
 /// What wants to open or attach (a row of 9.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// A `rox://app/...` link from the operating system or a web page.
+    /// A `buwiz://app/...` link from the operating system or a web page.
     OsLink,
-    /// A tool result's `_meta["rox/open"]` with placement full.
+    /// A tool result's `_meta["buwiz/open"]` with placement full.
     ToolResultFull,
-    /// A tool result's `_meta["rox/open"]` with placement inline.
+    /// A tool result's `_meta["buwiz/open"]` with placement inline.
     ToolResultInline,
     /// The same from an approved first-party plugin (publisher
-    /// `dev.goldcoders`): an answer card, mounted at once (9.8).
+    /// `app.buwiz`): an answer card, mounted at once (9.8).
     FirstPartyAnswerCard,
     /// A click on an attachment or a pin (the person placed it).
     AttachmentOrPin,
@@ -24,18 +24,18 @@ pub enum Trigger {
     UserTyped,
     /// A resolve `open` from an agent or a routine: as a tool result.
     AgentResolveOpen { inline: bool },
-    /// An app's `rox.open({app})` (same plugin).
+    /// An app's `buwiz.open({app})` (same plugin).
     AppOpenApp,
-    /// An app's `rox.open({url})`.
+    /// An app's `buwiz.open({url})`.
     AppOpenUrl,
     /// An `https` URL in a resolve or tool result.
     PluginHttpsUrl,
     /// Another scheme in plugin output (`http`, `mailto`, `tel`, `file`,
-    /// `rox://` other than `app`).
+    /// `buwiz://` other than `app`).
     PluginOtherScheme,
-    /// An app's `rox.attach`.
+    /// An app's `buwiz.attach`.
     AppAttach,
-    /// An app's `rox.pickFile`.
+    /// An app's `buwiz.pickFile`.
     AppPickFile,
 }
 
@@ -82,7 +82,7 @@ pub fn plugin_url(url: &str) -> Trigger {
     let lower = url.trim().to_ascii_lowercase();
     if lower.starts_with("https://") && super::perms::https_origin(url.trim()).is_some() {
         Trigger::PluginHttpsUrl
-    } else if lower.starts_with("rox://app/") {
+    } else if lower.starts_with("buwiz://app/") {
         Trigger::ToolResultFull
     } else {
         Trigger::PluginOtherScheme
@@ -197,11 +197,11 @@ mod tests {
 
     #[test]
     fn con_01_other_schemes_from_plugin_output_are_refused() {
-        for url in ["http://example.com", "mailto:a@b.c", "tel:+63", "file:///etc/hosts", "rox://chat/new?draft=x", "rox://view?path=/x", "javascript:x", "https://", "https://a@b.c/"] {
+        for url in ["http://example.com", "mailto:a@b.c", "tel:+63", "file:///etc/hosts", "buwiz://chat/new?draft=x", "buwiz://view?path=/x", "javascript:x", "https://", "https://a@b.c/"] {
             assert_eq!(ask(plugin_url(url)), Ask::Refuse, "{url}");
         }
         // a v1 app link in plugin output is a tool result's open: a card
-        assert_eq!(ask(plugin_url("rox://app/dev.goldcoders.bir/forms")), Ask::OpenCard);
+        assert_eq!(ask(plugin_url("buwiz://app/app.buwiz.ebirforms/forms")), Ask::OpenCard);
         assert_eq!(with(Ask::Refuse), [Trigger::PluginOtherScheme]);
     }
 

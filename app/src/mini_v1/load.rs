@@ -24,8 +24,8 @@ pub const SDK1_NSH: &[&str] = &[
     "Overlay", "JSX", "Signal", "Accessor", "YNode",
 ];
 
-/// What `rox` exports: the bridge and its error class.
-const ROX_EXPORTS: &[&str] = &["rox", "RoxError"];
+/// What `buwiz` exports: the bridge and its error class.
+const BUWIZ_EXPORTS: &[&str] = &["buwiz", "BuwizError"];
 
 /// The shim prepended to every v1 app.
 pub const SHIM: &str = include_str!("shim.js");
@@ -61,6 +61,11 @@ pub mod say {
 
     pub fn unavailable(plugin_title: &str) -> String {
         format!("{plugin_title} is not running. Retry")
+    }
+
+    /// A native screen (`apps[].native`) before this build can host it.
+    pub fn native(title: &str) -> String {
+        format!("{title}: this screen needs a newer Buwiz Bot.")
     }
 }
 
@@ -337,7 +342,7 @@ pub fn check_source_imports(source: &str) -> Result<(), String> {
     let toks = tokens(source);
     // the shim's bindings share the app's module scope: the app may not
     // name them (its `nsh` host binding above all)
-    if let Some(t) = toks.iter().find(|t| t.kind == Kind::Ident && t.text.starts_with("__rox")) {
+    if let Some(t) = toks.iter().find(|t| t.kind == Kind::Ident && t.text.starts_with("__buwiz")) {
         return Err(t.text.clone());
     }
     for imp in imports(source, &toks)? {
@@ -361,11 +366,11 @@ fn check_import(imp: &Import, compiled: bool) -> Result<(), String> {
             }
             Ok(())
         }
-        "rox" if !imp.export => {
-            let Some(names) = names(&imp.clause) else { return Err("rox's namespace".to_owned()) };
+        "buwiz" if !imp.export => {
+            let Some(names) = names(&imp.clause) else { return Err("buwiz's namespace".to_owned()) };
             for (imported, _, type_only) in names {
-                if !type_only && imported != "default" && !ROX_EXPORTS.contains(&imported.as_str()) {
-                    return Err(format!("{imported} from rox"));
+                if !type_only && imported != "default" && !BUWIZ_EXPORTS.contains(&imported.as_str()) {
+                    return Err(format!("{imported} from buwiz"));
                 }
             }
             Ok(())
@@ -374,16 +379,16 @@ fn check_import(imp: &Import, compiled: bool) -> Result<(), String> {
     }
 }
 
-/// The compiled module with its `rox` imports bound to the globals the shim
+/// The compiled module with its `buwiz` imports bound to the globals the shim
 /// sets, after checking its imports again: the offending specifier, or
 /// `import()`.
-fn bind_rox_imports(js: &str) -> Result<String, String> {
+fn bind_buwiz_imports(js: &str) -> Result<String, String> {
     let toks = tokens(js);
     let mut out = String::with_capacity(js.len());
     let mut at = 0;
     for imp in imports(js, &toks)? {
         check_import(&imp, true)?;
-        if imp.spec != "rox" {
+        if imp.spec != "buwiz" {
             continue;
         }
         let mut bind = String::new();
@@ -391,7 +396,7 @@ fn bind_rox_imports(js: &str) -> Result<String, String> {
             if type_only {
                 continue;
             }
-            let global = if imported == "RoxError" { "RoxError" } else { "rox" };
+            let global = if imported == "BuwizError" { "BuwizError" } else { "buwiz" };
             bind.push_str(&format!("const {local} = globalThis.{global};"));
         }
         out.push_str(&js[at..imp.start]);
@@ -425,8 +430,8 @@ fn mount_target(js: &str) -> Result<(String, String, bool), String> {
             }
             // an anonymous default: give it a name
             let (start, end) = (t.start, toks[i + 1].end);
-            let js = format!("{}const __roxDefault ={}", &js[..start], &js[end..]);
-            return Ok((js, "__roxDefault".to_owned(), false));
+            let js = format!("{}const __buwizDefault ={}", &js[..start], &js[end..]);
+            return Ok((js, "__buwizDefault".to_owned(), false));
         }
         if at(1) == "{" {
             // `export { X as default }`
@@ -466,7 +471,7 @@ fn compile_error(error: &str) -> (String, Option<usize>) {
 }
 
 /// `source` (the app's, checked) as the module the engine runs: compiled,
-/// its `rox` imports bound, the shim in front, its default export mounted.
+/// its `buwiz` imports bound, the shim in front, its default export mounted.
 /// `title` names it in errors.
 pub fn build(app_id: &str, title: &str, source: &str) -> Result<String, RoxError> {
     if let Err(spec) = check_source_imports(source) {
@@ -479,13 +484,13 @@ pub fn build(app_id: &str, title: &str, source: &str) -> Result<String, RoxError
         let (first, line) = compile_error(&e);
         RoxError::new("compile_error", say::compile(title, &first, line))
     })?;
-    let js = bind_rox_imports(&js).map_err(|spec| RoxError::new("unsupported_import", say::unsupported(title, &spec)))?;
+    let js = bind_buwiz_imports(&js).map_err(|spec| RoxError::new("unsupported_import", say::unsupported(title, &spec)))?;
     let (js, target, deprecated) =
         mount_target(&js).map_err(|e| RoxError::new("compile_error", say::compile(title, &e, None)))?;
     if deprecated {
         log::warn!("mini v1: {app_id} has no default export; mounting its R binding (deprecated, v0 only)");
     }
-    Ok(format!("{SHIM}\n{js}\nimport {{ mount as __roxMount }} from \"nsh\";\n__roxMount({target});\n"))
+    Ok(format!("{SHIM}\n{js}\nimport {{ mount as __buwizMount }} from \"nsh\";\n__buwizMount({target});\n"))
 }
 
 /// A v1 plugin as the broker lists it (`GET /v1/host/plugins`).
@@ -553,7 +558,7 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// `rox.app` (7.2).
+    /// `buwiz.app` (7.2).
     pub fn app_info(&self) -> Value {
         serde_json::json!({
             "plugin": self.plugin.id, "app": self.key.app, "version": self.plugin.version,
@@ -637,6 +642,11 @@ pub fn warm(broker: &dyn host_api::Broker, plugin: &PluginEntry, app: &str, root
     Ok(true)
 }
 
+/// The native screen an app entry names (`apps[].native.screen`), if it is one.
+pub fn native_screen(app: &Value) -> Option<&str> {
+    app.get("native")?.get("screen")?.as_str()
+}
+
 /// [`prepare`] for a plugin already listed.
 pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: PluginEntry) -> Result<Prepared, RoxError> {
     let app = plugin.app(&key.app).cloned().ok_or_else(|| {
@@ -645,6 +655,11 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
         return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
+    }
+    // `native: {screen, abi}` (protocol 2.0): a host-built screen, which a
+    // later build loads; this one says so instead of reading a source
+    if native_screen(&app).is_some() {
+        return Err(RoxError::new("not_supported", say::native(&title)));
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
@@ -678,7 +693,7 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     Ok(Prepared { key, plugin, title, fingerprint: actual, permissions_json, permissions, js })
 }
 
-/// The open's ticket (a link's or pin's `?ticket=`) as `rox.props.ticket`
+/// The open's ticket (a link's or pin's `?ticket=`) as `buwiz.props.ticket`
 /// when the app's props schema declares `ticket` and the props carry none
 /// (spec 6.6): a link or pin that names only a ticket opens its subject.
 fn ticket_prop(key: &mut V1Key, schema: Option<&Value>) {
@@ -688,7 +703,7 @@ fn ticket_prop(key: &mut V1Key, schema: Option<&Value>) {
     }
 }
 
-/// `props` as the open's `rox.props`.
+/// `props` as the open's `buwiz.props`.
 pub fn props_value(props: &Map<String, Value>) -> Value {
     Value::Object(props.clone())
 }
@@ -698,14 +713,14 @@ mod tests {
     #[test]
     fn app_05_a_ticket_only_open_gives_the_app_its_ticket_when_its_props_declare_one() {
         let with = serde_json::json!({ "type": "object", "properties": { "ticket": { "type": "string" } } });
-        let mut key = V1Key::parse("v1:dev.goldcoders.bir/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
+        let mut key = V1Key::parse("v1:app.buwiz.ebirforms/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
         super::ticket_prop(&mut key, Some(&with));
         assert_eq!(key.props.get("ticket").and_then(Value::as_str), Some("tkt_0123456789ABCDEFGHJKMNPQRS"));
         // props that name a ticket keep theirs; an app without one gets none
-        let mut own = V1Key::parse("v1:dev.goldcoders.bir/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS&props=%7B%22ticket%22%3A%22tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ%22%7D").unwrap();
+        let mut own = V1Key::parse("v1:app.buwiz.ebirforms/tax-profile?ticket=tkt_0123456789ABCDEFGHJKMNPQRS&props=%7B%22ticket%22%3A%22tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ%22%7D").unwrap();
         super::ticket_prop(&mut own, Some(&with));
         assert_eq!(own.props.get("ticket").and_then(Value::as_str), Some("tkt_ZZZZZZZZZZZZZZZZZZZZZZZZZZ"));
-        let mut none = V1Key::parse("v1:dev.goldcoders.fixture/board?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
+        let mut none = V1Key::parse("v1:app.buwiz.fixture/board?ticket=tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
         super::ticket_prop(&mut none, None);
         assert!(none.props.is_empty());
     }
@@ -718,10 +733,10 @@ mod tests {
         let ok = [
             "import { signal, Text, View } from \"nsh\";",
             "import { Button, Input } from 'nsh/base';",
-            "import { rox } from \"rox\";",
+            "import { buwiz } from \"buwiz\";",
             "import type { Foo, Bar } from \"nsh\";",
             "import { type ViewStyle, signal as s } from \"nsh\";",
-            "import rox, { RoxError } from \"rox\";",
+            "import buwiz, { BuwizError } from \"buwiz\";",
             "const s = \"import x from 'nsh/device'\"; // import { host } from \"nsh\"",
             "/* import fs from \"fs\" */ const t = `import(${1})`;",
         ];
@@ -741,11 +756,11 @@ mod tests {
             ("export { host } from \"nsh\";", "host from nsh"),
             ("export * from \"nsh/device\";", "nsh/device"),
             ("const m = await import(\"nsh\");", "import()"),
-            ("__roxHost.call(\"rox.open\", {});", "__roxHost"),
-            ("const h = __roxBridge;", "__roxBridge"),
+            ("__buwizHost.call(\"buwiz.open\", {});", "__buwizHost"),
+            ("const h = __buwizBridge;", "__buwizBridge"),
             ("const t = `${import(\"nsh\")}`;", "import()"),
             ("import { x } from \"nsh:rt\";", "nsh:rt"),
-            ("import { fetchy } from \"rox\";", "fetchy from rox"),
+            ("import { fetchy } from \"buwiz\";", "fetchy from buwiz"),
         ];
         for (src, spec) in refused {
             assert_eq!(check_source_imports(src), Err(spec.to_owned()), "{src}");
@@ -758,24 +773,27 @@ mod tests {
     #[test]
     fn app_02_the_default_export_mounts_and_r_is_a_deprecated_fallback() {
         let named = build("card", "Card", "import { Text } from \"nsh\";\nexport default function Card() { return <Text>hi</Text>; }").unwrap();
-        assert!(named.ends_with("__roxMount(Card);\n"), "{named}");
+        assert!(named.ends_with("__buwizMount(Card);\n"), "{named}");
         assert!(named.starts_with(SHIM), "the shim comes first");
         let anon = build("card", "Card", "import { Text } from \"nsh\";\nexport default () => <Text>hi</Text>;").unwrap();
-        assert!(anon.contains("const __roxDefault ="), "{anon}");
-        assert!(anon.ends_with("__roxMount(__roxDefault);\n"), "{anon}");
+        assert!(anon.contains("const __buwizDefault ="), "{anon}");
+        assert!(anon.ends_with("__buwizMount(__buwizDefault);\n"), "{anon}");
         let listed = build("card", "Card", "import { Text } from \"nsh\";\nfunction Card() { return <Text>hi</Text>; }\nexport { Card as default };").unwrap();
-        assert!(listed.ends_with("__roxMount(Card);\n"), "{listed}");
+        assert!(listed.ends_with("__buwizMount(Card);\n"), "{listed}");
         let v0 = build("card", "Card", "import { Text } from \"nsh\";\nfunction R() { return <Text>hi</Text>; }").unwrap();
-        assert!(v0.ends_with("__roxMount(R);\n"), "{v0}");
+        assert!(v0.ends_with("__buwizMount(R);\n"), "{v0}");
         let none = build("card", "Card", "import { Text } from \"nsh\";\nfunction Card() { return <Text>hi</Text>; }").unwrap_err();
         assert_eq!(none.message, "Could not open Card: it has no default export.");
     }
 
     #[test]
-    fn rox_imports_bind_the_shims_globals() {
-        let js = build("card", "Card", "import { rox, RoxError as E } from \"rox\";\nimport { Text } from \"nsh\";\nexport default function Card() { return <Text>{rox.app.app + String(E)}</Text>; }").unwrap();
-        assert!(js.contains("const rox = globalThis.rox;const E = globalThis.RoxError;"), "{js}");
-        assert!(!js.contains("from \"rox\""), "{js}");
+    fn buwiz_imports_bind_the_shims_globals() {
+        let js = build("card", "Card", "import { buwiz, BuwizError as E } from \"buwiz\";\nimport { Text } from \"nsh\";\nexport default function Card() { return <Text>{buwiz.app.app + String(E)}</Text>; }").unwrap();
+        assert!(js.contains("const buwiz = globalThis.buwiz;const E = globalThis.BuwizError;"), "{js}");
+        assert!(!js.contains("from \"buwiz\""), "{js}");
+        // the old module is gone (protocol 2.0)
+        assert_eq!(check_source_imports("import { rox } from \"rox\";"), Err("rox".to_owned()));
+        assert_eq!(check_source_imports("import { RoxError } from \"buwiz\";"), Err("RoxError from buwiz".to_owned()));
     }
 
     #[test]
@@ -806,8 +824,8 @@ mod tests {
         fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
-                    "id": "dev.goldcoders.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
-                    "protocol": "1.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
+                    "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
+                    "protocol": "2.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
                 }]})),
                 "/v1/host/apps/source" => {
                     Ok(serde_json::json!({"source": self.served, "fingerprint": self.listed["fingerprint"]}))
@@ -817,26 +835,39 @@ mod tests {
         }
     }
 
-    const CARD: &str = "import { Text } from \"nsh/base\";\nimport { rox } from \"rox\";\nexport default function Card() { return <Text>{String(rox.props.ticket)}</Text>; }\n";
+    const CARD: &str = "import { Text } from \"nsh/base\";\nimport { buwiz } from \"buwiz\";\nexport default function Card() { return <Text>{String(buwiz.props.ticket)}</Text>; }\n";
 
     fn card(source: &str) -> Value {
         serde_json::json!({
-            "id": "card", "title": "Fixture Card", "entry": "rox-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
+            "id": "card", "title": "Fixture Card", "entry": "buwiz-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
             "fingerprint": fingerprint(source), "placement": ["full", "inline"],
             "props": { "type": "object", "properties": { "ticket": { "type": "string" } }, "required": ["ticket"] },
             "permissions": { "tools": ["fx_echo"] }
         })
     }
 
-    const KEY: &str = "v1:dev.goldcoders.fixture/card?props=%7B%22ticket%22%3A%22tkt_x%22%7D";
+    const KEY: &str = "v1:app.buwiz.fixture/card?props=%7B%22ticket%22%3A%22tkt_x%22%7D";
+
+    #[test]
+    fn a_native_screen_says_it_needs_a_newer_buwiz_bot() {
+        let native = serde_json::json!({
+            "id": "card", "title": "Fixture Card", "native": {"screen": "fx.card", "abi": 1}, "placement": ["full"],
+            "props": { "type": "object", "properties": { "ticket": { "type": "string" } }, "required": ["ticket"] },
+            "permissions": { "tools": ["fx_echo"] }
+        });
+        assert_eq!(native_screen(&native), Some("fx.card"));
+        assert_eq!(native_screen(&card(CARD)), None);
+        let e = prepare(&Serves { listed: native, served: String::new() }, KEY).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("not_supported", "Fixture Card: this screen needs a newer Buwiz Bot."));
+    }
 
     #[test]
     fn app_01_a_one_byte_change_refuses_the_app() {
         let ok = prepare(&Serves { listed: card(CARD), served: CARD.to_owned() }, KEY).unwrap();
         assert_eq!(ok.title, "Fixture Card");
         assert_eq!(ok.fingerprint, fingerprint(CARD));
-        assert_eq!(ok.permissions.methods(), ["rox.ticket.title", "rox.fit", "rox.ready", "rox.actions", "rox.settle", "rox.meta", "rox.call"]);
-        assert!(ok.js.starts_with(SHIM) && ok.js.ends_with("__roxMount(Card);\n"));
+        assert_eq!(ok.permissions.methods(), ["buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta", "buwiz.call"]);
+        assert!(ok.js.starts_with(SHIM) && ok.js.ends_with("__buwizMount(Card);\n"));
         assert_eq!(ok.app_info()["sdk"], "1");
         let changed = CARD.replacen("Card", "Cart", 1);
         let e = prepare(&Serves { listed: card(CARD), served: changed }, KEY).unwrap_err();
@@ -861,14 +892,14 @@ mod tests {
     fn app_05_an_invalid_prop_set_does_not_open_the_app() {
         let b = Serves { listed: card(CARD), served: CARD.to_owned() };
         for key in [
-            "v1:dev.goldcoders.fixture/card",
-            "v1:dev.goldcoders.fixture/card?props=%7B%22ticket%22%3A1%7D",
-            "v1:dev.goldcoders.fixture/card?props=%7B%22bad-key%22%3A%22x%22%2C%22ticket%22%3A%22t%22%7D",
+            "v1:app.buwiz.fixture/card",
+            "v1:app.buwiz.fixture/card?props=%7B%22ticket%22%3A1%7D",
+            "v1:app.buwiz.fixture/card?props=%7B%22bad-key%22%3A%22x%22%2C%22ticket%22%3A%22t%22%7D",
         ] {
             assert_eq!(prepare(&b, key).unwrap_err().code, "invalid_args", "{key}");
         }
-        assert_eq!(prepare(&b, "v1:dev.goldcoders.fixture/nope").unwrap_err().code, "not_found");
-        assert_eq!(prepare(&b, "v1:dev.goldcoders.other/card").unwrap_err().code, "not_found");
+        assert_eq!(prepare(&b, "v1:app.buwiz.fixture/nope").unwrap_err().code, "not_found");
+        assert_eq!(prepare(&b, "v1:app.buwiz.other/card").unwrap_err().code, "not_found");
     }
 
     #[test]

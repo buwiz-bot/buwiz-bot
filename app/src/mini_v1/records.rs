@@ -121,6 +121,23 @@ pub fn file(dir: &Path) -> PathBuf {
     dir.join("mini-v1.json")
 }
 
+/// The rox names a stored record may hold, and their buwiz ones
+/// (protocol 2.0; the broker's app.db gets the same rewrite).
+const RENAMES: [(&str, &str); 7] = [
+    ("rox-app://", "buwiz-app://"),
+    ("rox://", "buwiz://"),
+    ("\"rox-app\"", "\"buwiz-app\""),
+    ("\"rox/open\"", "\"buwiz/open\""),
+    ("\"rox/suggest\"", "\"buwiz/suggest\""),
+    ("\"rox/audience\"", "\"buwiz/audience\""),
+    ("\"rox/caller\"", "\"buwiz/caller\""),
+];
+
+/// `text` with every rox name of [`RENAMES`] spelled the buwiz way.
+pub fn buwiz_names(text: &str) -> String {
+    RENAMES.iter().fold(text.to_owned(), |t, (a, b)| t.replace(a, b))
+}
+
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned()
 }
@@ -129,7 +146,22 @@ impl Records {
     /// The records in `dir`; none yet (or unreadable) is empty.
     pub fn load(dir: &Path) -> Records {
         let Ok(text) = std::fs::read_to_string(file(dir)) else { return Records::default() };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        // protocol 2.0: a file from before it names links and providers
+        // the rox way; rewritten once, and saved with the marker
+        let marked = serde_json::from_str::<Value>(&text).is_ok_and(|v| v.get("names").and_then(Value::as_str) == Some("buwiz"));
+        let renamed = buwiz_names(&text);
+        if !marked && serde_json::from_str::<Value>(&renamed).is_ok() {
+            let records = Records::parse(&renamed, dir);
+            if let Err(e) = records.save(dir) {
+                log::warn!("mini v1: could not rewrite {} with the buwiz names: {e}", file(dir).display());
+            }
+            return records;
+        }
+        Records::parse(&text, dir)
+    }
+
+    fn parse(text: &str, dir: &Path) -> Records {
+        let Ok(v) = serde_json::from_str::<Value>(text) else {
             log::warn!("mini v1: {} is not JSON; starting empty", file(dir).display());
             return Records::default();
         };
@@ -207,6 +239,7 @@ impl Records {
             })).collect::<Vec<_>>(),
             "opened": self.opened.iter().map(|(k, f)| (k.clone(), json!(f))).collect::<serde_json::Map<_, _>>(),
             "migrated_at": self.migrated_at,
+            "names": "buwiz",
             "sent": self.sent.iter().map(|m| json!({
                 "thread": m.thread, "text": m.text,
                 "tokens": m.tokens.iter().map(|(t, ti)| json!({"token": t, "title": ti})).collect::<Vec<_>>(),
@@ -390,25 +423,25 @@ mod tests {
     #[test]
     fn agt_06_attachments_store_canonical_tokens_and_a_major_change_keeps_them_from_the_model() {
         let mut r = Records::default();
-        let v1 = plugin("dev.goldcoders.bir", "1.4.0", true);
+        let v1 = plugin("app.buwiz.ebirforms", "1.4.0", true);
         let tok = format!("@bir:taxprofile:{T}");
         assert!(!r.attach("th1", "@bir:taxprofile:123456789", "Jane", &v1), "a typed token is not stored");
         assert!(r.attach("th1", &tok, "Dela Cruz Jane", &v1));
         assert!(!r.attach("th1", &tok, "Dela Cruz Jane", &v1), "attached twice: the existing one");
         let a = &r.attachments[0];
         assert_eq!((a.token.as_str(), a.plugin.as_str(), a.major, a.scope.as_str(), a.title.as_str(), a.thread.as_str()),
-            (tok.as_str(), "dev.goldcoders.bir", 1, "taxprofile", "Dela Cruz Jane", "th1"));
+            (tok.as_str(), "app.buwiz.ebirforms", 1, "taxprofile", "Dela Cruz Jane", "th1"));
         // same major: sent
-        assert_eq!(r.model_tokens("th1", &[plugin("dev.goldcoders.bir", "1.9.3", true)]).len(), 1);
+        assert_eq!(r.model_tokens("th1", &[plugin("app.buwiz.ebirforms", "1.9.3", true)]).len(), 1);
         assert!(r.model_tokens("th2", &[v1.clone()]).is_empty());
         // a new major: needs update, kept, not sent
-        let v2 = plugin("dev.goldcoders.bir", "2.0.0", true);
+        let v2 = plugin("app.buwiz.ebirforms", "2.0.0", true);
         assert_eq!(status(a, &[v2.clone()]), Status::NeedsUpdate);
         assert_eq!(status(a, &[v2.clone()]).label(), "needs update");
         assert!(r.model_tokens("th1", &[v2]).is_empty());
         assert_eq!(r.attachments.len(), 1, "the ticket is kept");
         // disabled or gone: not sent either
-        assert_eq!(status(a, &[plugin("dev.goldcoders.bir", "1.4.0", false)]), Status::Disabled("BIR".into()));
+        assert_eq!(status(a, &[plugin("app.buwiz.ebirforms", "1.4.0", false)]), Status::Disabled("BIR".into()));
         assert_eq!(status(a, &[]), Status::NotInstalled);
         assert!(r.model_tokens("th1", &[]).is_empty());
         // detach removes only the attachment
@@ -419,7 +452,7 @@ mod tests {
     #[test]
     fn pins_keep_plugin_app_ticket_and_placement() {
         let mut r = Records::default();
-        let pin = Pin { plugin: "dev.goldcoders.bir".into(), app: "forms".into(), ticket: Some(T.into()), placement: "full".into(), title: "Forms".into(), needs_update: false };
+        let pin = Pin { plugin: "app.buwiz.ebirforms".into(), app: "forms".into(), ticket: Some(T.into()), placement: "full".into(), title: "Forms".into(), needs_update: false };
         assert!(r.pin(pin.clone()));
         assert!(!r.pin(pin.clone()));
         let dir = temp("pins");
@@ -427,7 +460,7 @@ mod tests {
         let back = Records::load(&dir);
         assert_eq!(back.pins, [pin]);
         assert!(!back.to_json().to_string().contains("fingerprint"));
-        r.unpin("dev.goldcoders.bir", "forms", Some(T));
+        r.unpin("app.buwiz.ebirforms", "forms", Some(T));
         assert!(r.pins.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -435,17 +468,17 @@ mod tests {
     #[test]
     fn lcy_04_the_last_opened_fingerprint_says_when_an_app_changed() {
         let mut r = Records::default();
-        assert_eq!(r.opened("dev.goldcoders.bir", "forms", "sha256:aa"), None);
-        assert_eq!(r.opened("dev.goldcoders.bir", "forms", "sha256:aa"), None);
-        assert_eq!(r.opened("dev.goldcoders.bir", "forms", "sha256:bb").as_deref(), Some("sha256:aa"));
-        assert_eq!(r.opened("dev.goldcoders.bir", "calendar", "sha256:bb"), None);
+        assert_eq!(r.opened("app.buwiz.ebirforms", "forms", "sha256:aa"), None);
+        assert_eq!(r.opened("app.buwiz.ebirforms", "forms", "sha256:aa"), None);
+        assert_eq!(r.opened("app.buwiz.ebirforms", "forms", "sha256:bb").as_deref(), Some("sha256:aa"));
+        assert_eq!(r.opened("app.buwiz.ebirforms", "calendar", "sha256:bb"), None);
     }
 
     #[test]
     fn lcy_06_uninstall_removes_the_plugins_attachments_pins_and_fingerprints() {
         let mut r = Records::default();
-        let bir = plugin("dev.goldcoders.bir", "1.0.0", true);
-        let other = PluginEntry { id: "dev.goldcoders.other".into(), short: "oth".into(), ..bir.clone() };
+        let bir = plugin("app.buwiz.ebirforms", "1.0.0", true);
+        let other = PluginEntry { id: "app.buwiz.other".into(), short: "oth".into(), ..bir.clone() };
         r.attach("th1", &format!("@bir:taxprofile:{T}"), "Jane", &bir);
         r.attach("th2", &format!("@bir:branchcode:{T}"), "Branch", &bir);
         r.attach("th1", &format!("@oth:item:{T}"), "Item", &other);
@@ -462,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_plugins_page_says_it_was_updated_for_a_day_after_its_version_changes() {
-        const BIR: &str = "dev.goldcoders.bir";
+        const BIR: &str = "app.buwiz.ebirforms";
         let at = |v: &str| vec![(BIR.to_owned(), v.to_owned())];
         let t0 = 1_800_000_000_000;
         let mut r = Records::default();
@@ -479,7 +512,7 @@ mod tests {
         assert_eq!(r.updated(BIR, t1).as_deref(), Some("Updated to v1.2.3"));
         assert!(!r.saw_versions(&at("1.2.3"), t1 + 60_000), "listing it again keeps the time it changed");
         assert_eq!(r.updated(BIR, t1 + UPDATED_FOR_MS - 1).as_deref(), Some("Updated to v1.2.3"));
-        assert_eq!(r.updated("dev.goldcoders.other", t1), None);
+        assert_eq!(r.updated("app.buwiz.other", t1), None);
         // a restart keeps it: neither lost nor announced again
         let dir = temp("versions");
         r.save(&dir).unwrap();
@@ -489,6 +522,27 @@ mod tests {
         assert_eq!(back.updated(BIR, t1 + 120_000).as_deref(), Some("Updated to v1.2.3"));
         // 24 hours on: gone
         assert_eq!(back.updated(BIR, t1 + UPDATED_FOR_MS), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_from_before_protocol_2_gets_the_buwiz_names_once() {
+        let dir = temp("names");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = r#"{"attachments": [], "pins": [], "opened": {}, "migrated_at": 7,
+          "sent": [{"thread": "th1", "text": "see rox://app/app.buwiz.ebirforms/forms and rox://chat/t1?m=2", "tokens": []}]}"#;
+        std::fs::write(file(&dir), old).unwrap();
+        let r = Records::load(&dir);
+        assert_eq!(r.sent[0].text, "see buwiz://app/app.buwiz.ebirforms/forms and buwiz://chat/t1?m=2");
+        assert_eq!(r.migrated_at, 7);
+        let on_disk = std::fs::read_to_string(file(&dir)).unwrap();
+        assert!(on_disk.contains(r#""names": "buwiz""#) && !on_disk.contains("rox://"), "{on_disk}");
+        // marked: a later load changes nothing, even text that looks old
+        let mut v: Value = serde_json::from_str(&on_disk).unwrap();
+        v["sent"][0]["text"] = json!("rox://kept as typed");
+        std::fs::write(file(&dir), v.to_string()).unwrap();
+        assert_eq!(Records::load(&dir).sent[0].text, "rox://kept as typed");
+        assert_eq!(buwiz_names(r#"{"provider":"rox-app","entry":"rox-app://card","_meta":{"rox/caller":1}}"#), r#"{"provider":"buwiz-app","entry":"buwiz-app://card","_meta":{"buwiz/caller":1}}"#);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -511,7 +565,7 @@ mod tests {
     fn records_round_trip_and_a_broken_file_starts_empty() {
         let dir = temp("round");
         let mut r = Records { migrated_at: 5, ..Default::default() };
-        r.attach("th", &format!("@bir:taxprofile:{T}"), "Jane", &plugin("dev.goldcoders.bir", "1.0.0", true));
+        r.attach("th", &format!("@bir:taxprofile:{T}"), "Jane", &plugin("app.buwiz.ebirforms", "1.0.0", true));
         r.opened("p.q.r", "a", "sha256:x");
         r.saw_versions(&[("p.q.r".into(), "1.0.0".into())], 5);
         r.saw_versions(&[("p.q.r".into(), "1.1.0".into())], 9);

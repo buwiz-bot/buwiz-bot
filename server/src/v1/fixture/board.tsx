@@ -1,11 +1,11 @@
 // The fixture's full-screen app: every bridge method the manifest grants.
 import { signal, Text, View } from "nsh";
-import { rox } from "rox";
+import { buwiz } from "buwiz";
 
 export default function Board() {
   const echoed = signal("");
 
-  rox.call("fx_echo", { from: "board" }).then((r) => echoed.set(JSON.stringify(r)));
+  buwiz.call("fx_echo", { from: "board" }).then((r) => echoed.set(JSON.stringify(r)));
 
   return (
     <View>

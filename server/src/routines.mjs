@@ -290,7 +290,7 @@ export async function runRoutine(id) {
 }
 
 // ————— templates servers announce —————
-// A connected server's `rox://manifest` may carry `routines`: [{id, name,
+// A connected server's `buwiz://manifest` may carry `routines`: [{id, name,
 // description, every_s, needs, query:{tool, field, args?}, prompt}] (other
 // fields ignored). `needs: "gmail"` makes the check a Gmail search through
 // whichever connected server has a search tool below; `query` is a cheap

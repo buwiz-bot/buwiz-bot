@@ -1891,7 +1891,7 @@ fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
     }
 }
 
-/// A group's mini app (a pinned `rox://app/` link): its tile, its title
+/// A group's mini app (a pinned `buwiz://app/` link): its tile, its title
 /// and its server; a press opens it full screen.
 fn group_app_row(gid: String, key: String, title: String) -> impl IntoElement {
     let hovered = signal(false);

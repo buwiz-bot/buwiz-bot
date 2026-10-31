@@ -19,8 +19,8 @@ import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 
 export const FIXTURE_DIR = join(ROOT, "src", "v1", "fixture");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
-export const FX = "dev.goldcoders.fixture";
-export const GWS = "dev.goldcoders.google-workspace";
+export const FX = "app.buwiz.fixture";
+export const GWS = "app.buwiz.google-workspace";
 export const GWS_DIR = join(ROOT, "src", "v1", "plugins", "google-workspace");
 export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
 /** The gws plugin under test: `GWS_CMD` names a rox-gws binary (broker/
@@ -35,7 +35,7 @@ export function publisher(keyId = `test-${random128().toLowerCase().replace(/[^a
 
 /** Writes a trust file trusting `pubs` and approving `[id, keyId]` pairs. */
 export function writeTrust(file, pubs, approved) {
-  const publishers = Object.fromEntries(pubs.map((p) => [p.keyId, { publisher: "dev.goldcoders", alg: "ed25519", public_key: p.pub }]));
+  const publishers = Object.fromEntries(pubs.map((p) => [p.keyId, { publisher: "app.buwiz", alg: "ed25519", public_key: p.pub, ...(p.firstParty ? { first_party: true } : {}) }]));
 
   writeFileSync(file, JSON.stringify({ v: 1, publishers, approved_plugins: approved.map(([id, key]) => ({ id, publisher_key_id: key })) }));
 
@@ -62,7 +62,7 @@ export function fixtureManifest(pub, edit = () => {}) {
 export function bed(label) {
   const dir = tempDir(`v1-${label}`);
   const pub = publisher();
-  const trustFile = writeTrust(join(dir, "trust.json"), [pub], [[FX, pub.keyId], ["dev.goldcoders.other", pub.keyId], [GWS, pub.keyId]]);
+  const trustFile = writeTrust(join(dir, "trust.json"), [pub], [[FX, pub.keyId], ["app.buwiz.other", pub.keyId], [GWS, pub.keyId]]);
   const manifestFile = join(dir, "manifest.json");
 
   const writeManifest = (edit) => {
@@ -79,12 +79,12 @@ export function bed(label) {
 }
 
 /** An in-process broker for bed `b`: {plugins, sessions, db}. With
- *  ROX_BROKER_CMD set, its plugins run in `rox-broker helper` and are
+ *  BUWIZ_BROKER_CMD set, its plugins run in `rox-broker helper` and are
  *  reached over the line (plugins-line.mjs, sessions-line.mjs), as the
  *  Rust broker plan has them from 3.4; `db` is then the app.db the two
  *  share. */
 export function broker(b, { clock = systemClock, timeouts = {}, db } = {}) {
-  if (process.env.ROX_BROKER_CMD) return lineBroker(b, { clock, timeouts });
+  if (process.env.BUWIZ_BROKER_CMD) return lineBroker(b, { clock, timeouts });
   db ??= new DatabaseSync(":memory:");
   const plugins = createPlugins({ db, keys: keystore(`file:${b.keysDir}`), clock, logDir: join(b.dir, "logs"), trust: () => loadTrust(b.trustFile), timeouts });
 
@@ -191,7 +191,7 @@ export async function openApp(sessions, manifest, app, { notAfter = Date.now() +
 /** A signed call envelope of `open` (8.1); `over` replaces fields,
  *  `signer` signs instead of the open's session key. */
 export function envelope(open, tool, args = {}, over = {}, signer = open.ks.seed) {
-  const env = { v: 1, typ: "rox-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128(), ...over };
+  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128(), ...over };
 
   return { envelope: env, sig: sign(signer, signedBytes(env)) };
 }

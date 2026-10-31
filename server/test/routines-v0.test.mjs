@@ -45,7 +45,7 @@ const MOCK_REPLY = "_(mock reply — no model configured)_";
 const SERVER = "mailfx";
 let server;
 
-// A stdio MCP server whose tools, results and rox://manifest come from
+// A stdio MCP server whose tools, results and buwiz://manifest come from
 // STATE (read on every call, so a test can change what the tools answer),
 // each tools/call logged to CALLS. tool: {name, inputSchema, text? |
 // structured?, sleep?}.
@@ -58,7 +58,7 @@ async function answer(method, params) {
   if (method === "initialize") return { protocolVersion: params?.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: "stub", version: "0.0.0" } };
   if (method === "ping") return {};
   if (method === "tools/list") return { tools: st().tools.map(({ name, inputSchema }) => ({ name, description: name, inputSchema })) };
-  if (method === "resources/list") return { resources: [{ uri: "rox://manifest", name: "manifest", mimeType: "application/json" }] };
+  if (method === "resources/list") return { resources: [{ uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" }] };
   if (method === "resources/read") return { contents: [{ uri: params.uri, mimeType: "application/json", text: JSON.stringify(st().manifest) }] };
   if (method === "tools/call") {
     const t = st().tools.find((x) => x.name === params.name);

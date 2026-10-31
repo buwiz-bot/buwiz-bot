@@ -3266,7 +3266,7 @@ fn private_skill_editor() -> impl IntoElement {
 /// Connect Apps' v1 plugins: each with its state, version and publisher;
 /// Add… inspects a plugin's command and shows its review.
 fn v1_section() -> impl IntoElement {
-    store().v1_refresh(false);
+    store().v1_refresh();
     view()
         .pb(px(14.0))
         .child(

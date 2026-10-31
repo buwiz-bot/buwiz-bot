@@ -121,7 +121,7 @@ fn hub_on_answers_unported_hub_routes_501_and_node_never_sees_them() {
     }
     // the host routes and the routine webhooks are answered (5.5h): the
     // token first, an unknown hook not found
-    let unauthorized = r#"{"ok":false,"code":"unauthorized","message":"X-Rox-Host is missing or wrong","retryable":false}"#;
+    let unauthorized = r#"{"ok":false,"code":"unauthorized","message":"X-Buwiz-Host is missing or wrong","retryable":false}"#;
     for (method, path, body) in [("POST", "/v1/host/plugins/acme/enable", "{}"), ("GET", "/v1/host/plugins", "")] {
         assert_eq!(request(b.port, method, path, body.as_bytes()).unwrap(), (401, unauthorized.to_owned()), "{method} {path}");
     }

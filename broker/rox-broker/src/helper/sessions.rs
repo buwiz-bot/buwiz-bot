@@ -1,12 +1,12 @@
 //! App opens and the calls they make (spec 4.4, 7.3, 8, 9.2;
 //! `v1/sessions.mjs`).
 //!
-//! Rox opens an app by asking for a session: `rox.session.open` goes to
+//! Rox opens an app by asking for a session: `buwiz.session.open` goes to
 //! the plugin, its certificate is verified with the plugin key from the
 //! install record and kept. From then on every bridge call arrives as
 //! Rox's signed envelope and passes the nine checks of 8.2, in the spec's
 //! order, before anything reaches the plugin; the plugin then sees
-//! `_meta["rox/caller"]` (8.4). Ticket titles, resolve tools and app
+//! `_meta["buwiz/caller"]` (8.4). Ticket titles, resolve tools and app
 //! sources are here too: they share the validation of plugin answers.
 //! A plugin's opens end when it is disabled, uninstalled or updated
 //! ([`Host::on_close`]).
@@ -212,10 +212,10 @@ impl Sessions {
             "app": get(b, "app"), "open_id": get(b, "open_id"), "ks_pub": get(b, "ks_pub"),
             "perms_sha256": get(b, "perms_sha256"), "not_after": get(b, "not_after"),
         });
-        let res = self.host.call_reserved(&plugin, "rox.session.open", req).await?;
+        let res = self.host.call_reserved(&plugin, "buwiz.session.open", req).await?;
         if res.is_null() {
-            self.host.fail(&plugin, "plugin_invalid", "the plugin does not implement rox.session.open").await?;
-            return V1Error::err("plugin_invalid", "the plugin does not implement rox.session.open");
+            self.host.fail(&plugin, "plugin_invalid", "the plugin does not implement buwiz.session.open").await?;
+            return V1Error::err("plugin_invalid", "the plugin does not implement buwiz.session.open");
         }
         let cert = get(&res, "cert").cloned().unwrap_or(Value::Null);
         let sig = get(&res, "cert_sig").cloned().unwrap_or(Value::Null);
@@ -248,7 +248,7 @@ impl Sessions {
         let id = get(b, "open_id").and_then(Value::as_str).unwrap_or_default();
         let Some(s) = self.lock().remove(id) else { return Ok(json!({"ok": true})) };
         if self.host.runtime_of(&s.plugin).0 == "running" {
-            let _ = self.host.call_reserved(&s.plugin, "rox.session.close", json!({"open_id": id})).await;
+            let _ = self.host.call_reserved(&s.plugin, "buwiz.session.close", json!({"open_id": id})).await;
         }
         Ok(json!({"ok": true}))
     }
@@ -288,7 +288,7 @@ impl Sessions {
         // 2
         let c = &cert;
         let names = get(envelope, "v") == Some(&json!(1))
-            && get(envelope, "typ") == Some(&json!("rox-call"))
+            && get(envelope, "typ") == Some(&json!("buwiz-call"))
             && same(get(envelope, "plugin"), get(c, "plugin"))
             && same(get(envelope, "app"), get(c, "app"))
             && same(get(envelope, "open_id"), get(c, "open_id"));
@@ -382,7 +382,7 @@ impl Sessions {
         }
         let (plugin, app, perms, slots, queued) = self.check(envelope, sig)?;
         let args = get(envelope, "args").filter(|a| !a.is_null()).cloned().unwrap_or(json!({}));
-        // rox.preview: Rox calls the app's own tool for a document; only an
+        // buwiz.preview: Rox calls the app's own tool for a document; only an
         // app with permissions.preview gets the larger result limit
         let preview = get(envelope, "purpose").is_some();
         if preview && get(envelope, "purpose") != Some(&json!("preview")) {
@@ -414,7 +414,7 @@ impl Sessions {
         let permit = slots.acquire_owned().await;
         queued.fetch_sub(1, Ordering::SeqCst);
         let caller = json!({"origin": "app", "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
-        let r = self.host.call_tool(&plugin, &tool, &args, Some(&json!({"rox/caller": caller})), None).await;
+        let r = self.host.call_tool(&plugin, &tool, &args, Some(&json!({"buwiz/caller": caller})), None).await;
         drop(permit);
         let r = r?;
         if get(&r, "isError").is_some_and(js::truthy) {
@@ -445,7 +445,7 @@ impl Sessions {
             return V1Error::err("invalid_args", "ticket breaks the ticket grammar");
         }
         let row = self.running(get(b, "plugin"))?;
-        let res = self.host.call_reserved(&row.id, "rox.ticket.resolve", json!({"ticket": get(b, "ticket")})).await?;
+        let res = self.host.call_reserved(&row.id, "buwiz.ticket.resolve", json!({"ticket": get(b, "ticket")})).await?;
         if res.is_null() {
             return V1Error::err("not_supported", format!("{} does not resolve tickets", tpl(get(b, "plugin"))));
         }
@@ -487,7 +487,7 @@ impl Sessions {
             Some(v) => js::string_of(v),
         };
         let input = json!({"kind": kind, "name": get(b, "name"), "value": value, "complete": get(b, "complete") == Some(&json!(true)), "context": {"attached": attached}});
-        let meta = json!({"rox/caller": {"origin": "resolve", "plugin": get(b, "plugin"), "ts": self.now() as i64}});
+        let meta = json!({"buwiz/caller": {"origin": "resolve", "plugin": get(b, "plugin"), "ts": self.now() as i64}});
         let r = self.host.call_tool(&row.id, &resolver, &input, Some(&meta), Some(self.host.timeouts.resolve)).await?;
         if get(&r, "isError").is_some_and(js::truthy) {
             let text = first_text(&r);
@@ -507,6 +507,10 @@ impl Sessions {
         let Some(app) = get(&m, "apps").and_then(Value::as_array).into_iter().flatten().find(|a| same(get(a, "id"), get(b, "app"))).cloned() else {
             return V1Error::err("not_found", format!("{} has no app {}", tpl(get(b, "plugin")), js::slice_utf16(&tpl(get(b, "app")), 60)));
         };
+        // a native screen is the host's own code: there is no source to read
+        if get(&app, "native").is_some_and(js::truthy) {
+            return V1Error::err("not_supported", format!("{} is a native screen; it has no source", tpl(get(&app, "id"))));
+        }
         let entry = tpl(get(&app, "entry"));
         let read = self.host.read_resource(&row.id, &entry).await?;
         let contents = get(&read, "contents").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -534,7 +538,7 @@ impl Sessions {
 fn cert_matches(cert: &Value, b: &Value) -> bool {
     cert.is_object()
         && get(cert, "v") == Some(&json!(1))
-        && get(cert, "typ") == Some(&json!("rox-session"))
+        && get(cert, "typ") == Some(&json!("buwiz-session"))
         && ["plugin", "app", "open_id", "ks_pub", "perms_sha256", "not_after"].iter().all(|k| same(get(cert, k), get(b, k)))
 }
 

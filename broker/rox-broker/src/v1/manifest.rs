@@ -1,4 +1,4 @@
-//! Verifying a plugin's `rox://manifest` (spec 5; `v1/manifest.mjs`).
+//! Verifying a plugin's `buwiz://manifest` (spec 5; `v1/manifest.mjs`).
 //!
 //! Nothing a plugin says is trusted until its manifest passes, in the
 //! spec's order (5.2): I-JSON parse, protocol and version, trust store,
@@ -18,9 +18,11 @@ use super::trust::Trust;
 use super::{canonicalize, ed_verify, get, is_v1, kind_of, safe_int, same, shown, signed_bytes, tpl, V1Error};
 use crate::js;
 
-pub const HOST_PROTOCOL: &str = "1.1.0";
+// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
+pub const HOST_PROTOCOL: &str = "2.0.0";
 pub const APP_MIME: &str = "text/x-nsh-tsx";
-pub const MANIFEST_URI: &str = "rox://manifest";
+pub const MANIFEST_URI: &str = "buwiz://manifest";
 
 /// Appendix A, the limits a manifest is held to.
 pub mod limits {
@@ -82,8 +84,9 @@ pub fn limits_json() -> Value {
     })
 }
 
-const RESERVED_ID_PREFIXES: &[&str] = &["dev.goldcoders.rox.", "rox."];
-const RESERVED_SHORTS: &[&str] = &["rox", "app", "chat", "mcp", "nsh", "all"];
+// the app's bundle id (com.buwiz.bot), itself and under it
+const RESERVED_ID_PREFIXES: &[&str] = &["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"];
+const RESERVED_SHORTS: &[&str] = &["buwiz", "app", "chat", "mcp", "nsh", "all"];
 const RESERVED_COMMANDS: &[&str] = &["status"];
 
 type Res<T = ()> = Result<T, V1Error>;
@@ -492,20 +495,41 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
         name(o.get("id"), "appId", &format!("{at}.id"))?;
         text(o.get("title"), &format!("{at}.title"), 1, Some(L::TITLE), true)?;
         text(o.get("description"), &format!("{at}.description"), 0, Some(L::DESCRIPTION), true)?;
-        let entry = format!("rox-app://{}", tpl(o.get("id")));
-        if o.get("entry").and_then(Value::as_str) != Some(entry.as_str()) {
-            return Err(invalid(&format!("{at}.entry"), format!("must be {entry}")));
-        }
-        if o.get("mime").and_then(Value::as_str) != Some(APP_MIME) {
-            return Err(invalid(&format!("{at}.mime"), format!("must be {APP_MIME}")));
-        }
-        if o.get("sdk").and_then(Value::as_str) != Some("1") {
-            return Err(invalid(&format!("{at}.sdk"), "must be \"1\""));
-        }
-        // ^sha256:[0-9a-f]{64}$
-        let fp_ok = o.get("fingerprint").and_then(Value::as_str).and_then(|f| f.strip_prefix("sha256:")).is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
-        if !fp_ok {
-            return Err(invalid(&format!("{at}.fingerprint"), "must be sha256:<64 lowercase hex>"));
+        // a screen is TSX (entry, mime, sdk, fingerprint) or native (a host
+        // screen of a first-party plugin, `verify`), never both
+        if o.contains_key("native") {
+            if ["entry", "mime", "sdk", "fingerprint"].iter().any(|k| o.contains_key(*k)) {
+                return Err(invalid(&at, "is a TSX screen (entry) or a native screen (native), not both"));
+            }
+            let n = obj(o.get("native"), &format!("{at}.native"))?;
+            only_keys(n, &["screen", "abi"], &format!("{at}.native"))?;
+            // ^[a-z0-9._-]{1,64}$
+            let screen_ok = n.get("screen").and_then(Value::as_str).is_some_and(|s| (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b)));
+            if !screen_ok {
+                return Err(invalid(&format!("{at}.native.screen"), "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-'"));
+            }
+            if safe_int(n.get("abi")) != Some(1.0) {
+                return Err(invalid(&format!("{at}.native.abi"), "must be 1"));
+            }
+        } else {
+            if !o.contains_key("entry") {
+                return Err(invalid(&at, "needs entry (a TSX screen) or native (a native screen)"));
+            }
+            let entry = format!("buwiz-app://{}", tpl(o.get("id")));
+            if o.get("entry").and_then(Value::as_str) != Some(entry.as_str()) {
+                return Err(invalid(&format!("{at}.entry"), format!("must be {entry}")));
+            }
+            if o.get("mime").and_then(Value::as_str) != Some(APP_MIME) {
+                return Err(invalid(&format!("{at}.mime"), format!("must be {APP_MIME}")));
+            }
+            if o.get("sdk").and_then(Value::as_str) != Some("1") {
+                return Err(invalid(&format!("{at}.sdk"), "must be \"1\""));
+            }
+            // ^sha256:[0-9a-f]{64}$
+            let fp_ok = o.get("fingerprint").and_then(Value::as_str).and_then(|f| f.strip_prefix("sha256:")).is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+            if !fp_ok {
+                return Err(invalid(&format!("{at}.fingerprint"), "must be sha256:<64 lowercase hex>"));
+            }
         }
         if o.contains_key("props") {
             schema(o.get("props"), &format!("{at}.props"), 1)?;
@@ -528,7 +552,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
             if inl.contains_key("min_width") {
                 int(inl.get("min_width"), &format!("{at}.inline.min_width"), w.0 as f64, width)?;
             }
-            // rox.fit's range (6.5): min_height <= height <= max_height
+            // buwiz.fit's range (6.5): min_height <= height <= max_height
             if inl.contains_key("min_height") {
                 int(inl.get("min_height"), &format!("{at}.inline.min_height"), h.0 as f64, height)?;
             }
@@ -536,7 +560,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
                 int(inl.get("max_height"), &format!("{at}.inline.max_height"), height, h.1 as f64)?;
             }
             boolean(inl, "resizable", &format!("{at}.inline"))?;
-            // the card holds its placeholder until the app's rox.ready()
+            // the card holds its placeholder until the app's buwiz.ready()
             // (an optional addition under 1.0: older hosts ignore it)
             boolean(inl, "wait_ready", &format!("{at}.inline"))?;
         }
@@ -577,6 +601,9 @@ fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
         (parts.next().unwrap_or(f64::NAN), parts.next().unwrap_or(f64::NAN))
     };
     let ((maj, min), (hmaj, hmin)) = (two(protocol), two(host));
+    if maj < hmaj {
+        return Err(V1Error::new("protocol_unsupported", format!("the plugin implements protocol {protocol}: this plugin is built for an older protocol; update it")));
+    }
     if maj != hmaj || min > hmin {
         let n = js::number;
         return Err(V1Error::new(
@@ -647,6 +674,13 @@ pub fn verify(text: &str, trust: &Trust, host: &str) -> Res<Verified> {
         Some(_) => return Err(V1Error::new("not_supported", "needs: shared services are not supported in v1 (5.3); it must be absent or []")),
     }
     fields(o)?;
+    let apps = o.get("apps").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if let Some(i) = apps.iter().position(|a| get(a, "native").is_some()) {
+        let key = o.get("publisher").and_then(|p| get(p, "key_id")).and_then(Value::as_str).unwrap_or_default();
+        if !trust.publishers.get(key).is_some_and(|p| p.first_party) {
+            return Err(invalid(&format!("apps[{i}].native"), "native screens are for first-party plugins only; ship the app as a TSX screen (entry)"));
+        }
+    }
     let sha256 = manifest_hash(&m).map_err(|e| invalid("manifest", e))?;
     Ok(Verified { manifest: m, sha256 })
 }
@@ -1071,8 +1105,8 @@ mod tests {
         edit(&mut m);
         let m = super::super::signing::sign_manifest(&m, &rox_v1::keys::b64(&[3; 32]), &[]).unwrap();
         let trust = Trust::from_value(&json!({
-            "publishers": {"test-key": {"alg": "ed25519", "publisher": "dev.goldcoders", "public_key": key.public()}},
-            "approved_plugins": [{"id": "dev.goldcoders.fixture", "publisher_key_id": "test-key"}]
+            "publishers": {"test-key": {"alg": "ed25519", "publisher": "app.buwiz", "public_key": key.public()}},
+            "approved_plugins": [{"id": "app.buwiz.fixture", "publisher_key_id": "test-key"}]
         }));
         (js::stringify(&m), trust)
     }
@@ -1086,7 +1120,7 @@ mod tests {
     fn the_fixture_verifies_and_a_changed_byte_does_not() {
         let (text, trust) = signed(|_| {});
         let v = verify(&text, &trust, HOST_PROTOCOL).unwrap();
-        assert_eq!(v.manifest["id"], "dev.goldcoders.fixture");
+        assert_eq!(v.manifest["id"], "app.buwiz.fixture");
         assert_eq!(v.sha256.len(), 64);
         let e = verify(&text.replace("\"Fixture\"", "\"Fixturf\""), &trust, HOST_PROTOCOL).unwrap_err();
         assert_eq!(e.message, "signature: does not verify with the publisher key");
@@ -1095,8 +1129,13 @@ mod tests {
 
     #[test]
     fn refusals_name_the_field_and_carry_the_spec_code() {
-        assert_eq!(refused(|m| m["protocol"] = json!("2.0.0")).code, "protocol_unsupported");
-        assert_eq!(refused(|m| m["protocol"] = json!("1.2.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("3.0.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("2.1.0")).code, "protocol_unsupported");
+        // a 1.x plugin speaks the rox names: told to update
+        let old = refused(|m| m["protocol"] = json!("1.1.0"));
+        assert_eq!((old.code.as_str(), old.message.as_str()), ("protocol_unsupported", "the plugin implements protocol 1.1.0: this plugin is built for an older protocol; update it"));
+        assert_eq!(refused(|m| m["short"] = json!("buwiz")).message, "short: buwiz is reserved");
+        assert!(RESERVED_ID_PREFIXES.iter().any(|p| "com.buwiz.bot.x".starts_with(p)) && !RESERVED_ID_PREFIXES.iter().any(|p| "app.buwiz.ebirforms".starts_with(p)));
         assert_eq!(refused(|m| m["needs"] = json!(["gmail"])).code, "not_supported");
         assert_eq!(refused(|m| m["commands"][0]["name"] = json!("status")).message, "commands[0].name: /status is a built-in command");
         assert_eq!(
@@ -1106,6 +1145,33 @@ mod tests {
         assert_eq!(refused(|m| m["apps"][0]["permissions"]["open"]["external"] = json!(["https://example.com/"])).code, "manifest_invalid");
         assert_eq!(refused(|m| m["apps"][1]["inline"]["width"] = json!(961)).message, "apps[1].inline.width: must be 240 to 960");
         assert_eq!(refused(|m| m["apps"][1]["inline"]["wait_ready"] = json!("yes")).message, "apps[1].inline.wait_ready: must be a boolean");
+    }
+
+    #[test]
+    fn an_app_is_tsx_or_native_and_native_needs_a_first_party_key() {
+        fn native(m: &mut Value) {
+            let a = &mut m["apps"][0];
+            a["id"] = json!("ledger");
+            for k in ["entry", "mime", "sdk", "fingerprint"] {
+                a.as_object_mut().unwrap().remove(k);
+            }
+            a["native"] = json!({"screen": "fx.ledger", "abi": 1});
+        }
+        let (text, mut trust) = signed(native);
+        assert_eq!(verify(&text, &trust, HOST_PROTOCOL).unwrap_err().message, "apps[0].native: native screens are for first-party plugins only; ship the app as a TSX screen (entry)");
+        trust.publishers.get_mut("test-key").unwrap().first_party = true;
+        assert!(verify(&text, &trust, HOST_PROTOCOL).is_ok());
+        let first = |edit: fn(&mut Value)| {
+            let (text, mut trust) = signed(edit);
+            trust.publishers.get_mut("test-key").unwrap().first_party = true;
+            verify(&text, &trust, HOST_PROTOCOL).unwrap_err().message
+        };
+        assert_eq!(first(|m| m["apps"][0]["native"] = json!({"screen": "fx.board", "abi": 1})), "apps[0]: is a TSX screen (entry) or a native screen (native), not both");
+        assert_eq!(first(|m| drop(m["apps"][0].as_object_mut().unwrap().remove("entry"))), "apps[0]: needs entry (a TSX screen) or native (a native screen)");
+        assert_eq!(first(|m| {
+            native(m);
+            m["apps"][0]["native"]["abi"] = json!(2);
+        }), "apps[0].native.abi: must be 1");
     }
 
     #[test]

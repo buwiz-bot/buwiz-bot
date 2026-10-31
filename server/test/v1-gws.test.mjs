@@ -17,7 +17,7 @@ import { GWS, GWS_CMD, GWS_DIR, bed, broker, codeOf, gwsSpec, installGws, upstre
 
 const b = bed("gws");
 const { plugins } = broker(b);
-const meta = { "rox/caller": { origin: "agent", plugin: GWS, ts: Date.now() } };
+const meta = { "buwiz/caller": { origin: "agent", plugin: GWS, ts: Date.now() } };
 const call = (name, args) => plugins.callTool(GWS, name, args, { meta });
 const clients = [];
 
@@ -38,7 +38,7 @@ after(async () => {
 });
 
 // A raw MCP client on the plugin, without the broker (the P7 and
-// misconfiguration tests); `provisioned` sends rox.provision first.
+// misconfiguration tests); `provisioned` sends buwiz.provision first.
 async function raw(env = {}, provisioned = true) {
   const spec = gwsSpec(b, env);
   const client = new Client({ name: "gws-test", version: "1.0.0" });
@@ -49,7 +49,7 @@ async function raw(env = {}, provisioned = true) {
   if (provisioned) {
     const k = generate();
 
-    await client.callTool({ name: "rox.provision", arguments: { protocol: "1.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+    await client.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
   }
 
   return client;
@@ -151,24 +151,24 @@ test("GWS-05 the upstream signs in on ports past v0's: WORKSPACE_MCP_PORT moves 
   assert.equal(await portFor({ WORKSPACE_MCP_PORT: "8791", GOOGLE_OAUTH_REDIRECT_URI: "http://localhost:8791/oauth2callback" }), "8791");
 });
 
-test("RSV-01 gws: rox.provision comes first; other tools before it fail", async () => {
+test("RSV-01 gws: buwiz.provision comes first; other tools before it fail", async () => {
   const c = await raw({}, false);
 
-  await assert.rejects(c.callTool({ name: "gws_search_mail", arguments: { query: "x" } }), /rox\.provision must come first/);
+  await assert.rejects(c.callTool({ name: "gws_search_mail", arguments: { query: "x" } }), /buwiz\.provision must come first/);
 });
 
-test("RSV-02 gws: rox.session.open fails invalid_args (the plugin has no apps)", async () => {
-  assert.equal(await codeOf(plugins.callReserved(GWS, "rox.session.open", { app: "inbox", open_id: "x", ks_pub: "x", perms_sha256: "0".repeat(64), not_after: Date.now() + 1000 })), "invalid_args");
+test("RSV-02 gws: buwiz.session.open fails invalid_args (the plugin has no apps)", async () => {
+  assert.equal(await codeOf(plugins.callReserved(GWS, "buwiz.session.open", { app: "inbox", open_id: "x", ks_pub: "x", perms_sha256: "0".repeat(64), not_after: Date.now() + 1000 })), "invalid_args");
 });
 
-test("RSV-04 gws: rox.ticket.resolve answers valid:false and no subject", async () => {
-  assert.deepEqual(await plugins.callReserved(GWS, "rox.ticket.resolve", { ticket: "tkt_00000000000000000000000000" }), { valid: false });
+test("RSV-04 gws: buwiz.ticket.resolve answers valid:false and no subject", async () => {
+  assert.deepEqual(await plugins.callReserved(GWS, "buwiz.ticket.resolve", { ticket: "tkt_00000000000000000000000000" }), { valid: false });
 });
 
-test("RSV-05 gws: rox.session.close and rox.uninstall answer ok; unknown rox.* is -32601", async () => {
-  assert.deepEqual(await plugins.callReserved(GWS, "rox.session.close", { open_id: "x" }), { ok: true });
-  assert.deepEqual(await plugins.callReserved(GWS, "rox.uninstall", {}), { ok: true });
-  assert.equal(await plugins.callReserved(GWS, "rox.frobnicate", {}), null);
+test("RSV-05 gws: buwiz.session.close and buwiz.uninstall answer ok; unknown rox.* is -32601", async () => {
+  assert.deepEqual(await plugins.callReserved(GWS, "buwiz.session.close", { open_id: "x" }), { ok: true });
+  assert.deepEqual(await plugins.callReserved(GWS, "buwiz.uninstall", {}), { ok: true });
+  assert.equal(await plugins.callReserved(GWS, "buwiz.frobnicate", {}), null);
 });
 
 // The raw lines a plugin writes for `messages` (each request waits for its
@@ -222,21 +222,21 @@ test("GWS-06 rox-gws answers as server.mjs does, byte for byte", { skip: !GWS_CM
       req("ping"),
       req("tools/list"),
       req("resources/list"),
-      req("resources/read", { uri: "rox://manifest" }),
-      req("resources/read", { uri: "rox://other" }),
+      req("resources/read", { uri: "buwiz://manifest" }),
+      req("resources/read", { uri: "buwiz://other" }),
       req("prompts/list"),
       call("gws_search_mail", { query: "x" }),
-      call("rox.frobnicate", {}),
-      call("rox.session.open", { app: "inbox" }),
-      call("rox.session.open", { app: [1, null, "z"] }),
-      call("rox.session.open", { app: "x".repeat(100) }),
-      call("rox.ticket.resolve", { ticket: "t" }),
-      req("tools/call", { name: "rox.session.close" }),
-      call("rox.uninstall", {}),
-      call("rox.provision", { key: { alg: "ed25519", seed: k.seed }, pub: other.pub }),
-      call("rox.provision", { key: { alg: "ed25519", seed: "bad" }, pub: "x" }),
-      call("rox.provision", { protocol: "1.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub }),
-      call("rox.provision", { key: { alg: "ed25519", seed: other.seed }, pub: other.pub }),
+      call("buwiz.frobnicate", {}),
+      call("buwiz.session.open", { app: "inbox" }),
+      call("buwiz.session.open", { app: [1, null, "z"] }),
+      call("buwiz.session.open", { app: "x".repeat(100) }),
+      call("buwiz.ticket.resolve", { ticket: "t" }),
+      req("tools/call", { name: "buwiz.session.close" }),
+      call("buwiz.uninstall", {}),
+      call("buwiz.provision", { key: { alg: "ed25519", seed: k.seed }, pub: other.pub }),
+      call("buwiz.provision", { key: { alg: "ed25519", seed: "bad" }, pub: "x" }),
+      call("buwiz.provision", { protocol: "2.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub }),
+      call("buwiz.provision", { key: { alg: "ed25519", seed: other.seed }, pub: other.pub }),
       call("nope_tool", {}),
       call("gws_search_mail", { query: "  " }),
       call("gws_search_mail", { query: "nothing" }),
@@ -256,7 +256,7 @@ test("GWS-06 rox-gws answers as server.mjs does, byte for byte", { skip: !GWS_CM
       { id: "s1", method: "ping" },
     ];
   };
-  const misconfigured = (env, calls) => [{ env, calls: () => [session()[0], call("rox.provision", { key: { alg: "ed25519", seed: k.seed }, pub: k.pub }), ...calls] }];
+  const misconfigured = (env, calls) => [{ env, calls: () => [session()[0], call("buwiz.provision", { key: { alg: "ed25519", seed: k.seed }, pub: k.pub }), ...calls] }];
   const upstream = JSON.parse(gwsSpec(b).env.GWS_UPSTREAM);
   const runs = [
     { env: {}, calls: session },

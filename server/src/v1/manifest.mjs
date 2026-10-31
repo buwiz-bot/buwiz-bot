@@ -1,4 +1,4 @@
-// v1/manifest.mjs — verifying a plugin's `rox://manifest` (spec 5).
+// v1/manifest.mjs — verifying a plugin's `buwiz://manifest` (spec 5).
 //
 // The broker trusts nothing a plugin says until its manifest passes, in
 // the spec's order (5.2): I-JSON parse, protocol and version, trust store,
@@ -18,9 +18,11 @@ import { isApproved } from "./trust.mjs";
 import { V1Error } from "./errors.mjs";
 import { schemaProblem } from "./params.mjs";
 
-export const HOST_PROTOCOL = "1.1.0";
+// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
+export const HOST_PROTOCOL = "2.0.0";
 export const APP_MIME = "text/x-nsh-tsx";
-export const MANIFEST_URI = "rox://manifest";
+export const MANIFEST_URI = "buwiz://manifest";
 
 // Appendix A, the limits a manifest is held to.
 export const LIMITS = Object.freeze({
@@ -65,6 +67,7 @@ export const LIMITS = Object.freeze({
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 const FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
+const NATIVE_SCREEN = /^[a-z0-9._-]{1,64}$/;
 const SIG = /^[A-Za-z0-9_-]{86}$/;
 const EXTENSION = /^\.[a-z0-9]{1,16}$/;
 
@@ -387,13 +390,27 @@ function apps(m) {
     text(a.title, `${at}.title`, { min: 1, max: LIMITS.title });
     text(a.description, `${at}.description`, { max: LIMITS.description });
 
-    if (a.entry !== `rox-app://${a.id}`) throw invalid(`${at}.entry`, `must be rox-app://${a.id}`);
+    // a screen is TSX (entry, mime, sdk, fingerprint) or native (a host
+    // screen of a first-party plugin, verifyManifest), never both
+    if (a.native !== undefined) {
+      if (["entry", "mime", "sdk", "fingerprint"].some((k) => a[k] !== undefined)) throw invalid(at, "is a TSX screen (entry) or a native screen (native), not both");
+      obj(a.native, `${at}.native`);
+      onlyKeys(a.native, ["screen", "abi"], `${at}.native`);
 
-    if (a.mime !== APP_MIME) throw invalid(`${at}.mime`, `must be ${APP_MIME}`);
+      if (!isString(a.native.screen) || !NATIVE_SCREEN.test(a.native.screen)) throw invalid(`${at}.native.screen`, "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-'");
 
-    if (a.sdk !== "1") throw invalid(`${at}.sdk`, 'must be "1"');
+      if (a.native.abi !== 1) throw invalid(`${at}.native.abi`, "must be 1");
+    } else {
+      if (a.entry === undefined) throw invalid(at, "needs entry (a TSX screen) or native (a native screen)");
 
-    if (!isString(a.fingerprint) || !FINGERPRINT.test(a.fingerprint)) throw invalid(`${at}.fingerprint`, "must be sha256:<64 lowercase hex>");
+      if (a.entry !== `buwiz-app://${a.id}`) throw invalid(`${at}.entry`, `must be buwiz-app://${a.id}`);
+
+      if (a.mime !== APP_MIME) throw invalid(`${at}.mime`, `must be ${APP_MIME}`);
+
+      if (a.sdk !== "1") throw invalid(`${at}.sdk`, 'must be "1"');
+
+      if (!isString(a.fingerprint) || !FINGERPRINT.test(a.fingerprint)) throw invalid(`${at}.fingerprint`, "must be sha256:<64 lowercase hex>");
+    }
 
     if (a.props !== undefined) {
       schema(a.props, `${at}.props`, 1);
@@ -413,14 +430,14 @@ function apps(m) {
 
       if (a.inline.min_width !== undefined) int(a.inline.min_width, `${at}.inline.min_width`, LIMITS.inlineWidth[0], a.inline.width);
 
-      // rox.fit's range (6.5): min_height <= height <= max_height
+      // buwiz.fit's range (6.5): min_height <= height <= max_height
       if (a.inline.min_height !== undefined) int(a.inline.min_height, `${at}.inline.min_height`, LIMITS.inlineHeight[0], a.inline.height);
 
       if (a.inline.max_height !== undefined) int(a.inline.max_height, `${at}.inline.max_height`, a.inline.height, LIMITS.inlineHeight[1]);
 
       if (a.inline.resizable !== undefined && kindOf(a.inline.resizable) !== "boolean") throw invalid(`${at}.inline.resizable`, "must be a boolean");
 
-      // the card holds its placeholder until the app's rox.ready() (an
+      // the card holds its placeholder until the app's buwiz.ready() (an
       // optional addition under 1.0: older hosts ignore it)
       if (a.inline.wait_ready !== undefined && kindOf(a.inline.wait_ready) !== "boolean") throw invalid(`${at}.inline.wait_ready`, "must be a boolean");
     }
@@ -453,6 +470,8 @@ function protocolOf(m, host) {
   if (!isSemver(m.protocol)) throw invalid("protocol", "must be a semver string");
   const [maj, min] = m.protocol.split(".").map(Number);
   const [hmaj, hmin] = host.split(".").map(Number);
+
+  if (maj < hmaj) throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}: this plugin is built for an older protocol; update it`);
 
   if (maj !== hmaj || min > hmin)
     throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}; this Buwiz Bot supports ${hmaj}.${hmin}, so it needs a Buwiz Bot that supports ${maj}.${min}`);
@@ -513,6 +532,10 @@ export function verifyManifest(textIn, trust, host = HOST_PROTOCOL) {
   if (m.needs !== undefined && !(Array.isArray(m.needs) && !m.needs.length))
     throw new V1Error("not_supported", "needs: shared services are not supported in v1 (5.3); it must be absent or []");
   fields(m);
+  const native = (m.apps || []).findIndex((a) => a.native !== undefined);
+
+  if (native >= 0 && !trust.publishers.get(m.publisher.key_id)?.first_party)
+    throw invalid(`apps[${native}].native`, "native screens are for first-party plugins only; ship the app as a TSX screen (entry)");
 
   return { manifest: m, sha256: manifestHash(m) };
 }

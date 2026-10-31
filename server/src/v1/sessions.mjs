@@ -1,11 +1,11 @@
 // v1/sessions.mjs — app opens and the calls they make (spec 4.4, 7.3, 8, 9.2).
 //
 // Rox opens an app by asking the broker for a session: the broker relays
-// `rox.session.open` to the plugin, verifies the certificate with the
+// `buwiz.session.open` to the plugin, verifies the certificate with the
 // plugin key from the install record, and keeps it. From then on every
 // bridge call arrives as Rox's signed envelope and passes the nine checks
 // of 8.2, in the spec's order, before anything reaches the plugin; the
-// plugin then sees `_meta["rox/caller"]` (8.4). The broker is the gate for
+// plugin then sees `_meta["buwiz/caller"]` (8.4). The broker is the gate for
 // calls, so a check failing here means nothing is sent. Ticket titles,
 // resolve tools and app sources go through the same module because they
 // share its validation of plugin answers.
@@ -25,7 +25,7 @@ export const MAX_INFLIGHT = 8;
 export const MAX_PER_SECOND = 20;
 export const ARGS_MAX = 256 * 1024;
 export const RESULT_MAX = 1024 * 1024;
-// a rox.preview call's result (the document); permissions.preview.max_bytes may lower it
+// a buwiz.preview call's result (the document); permissions.preview.max_bytes may lower it
 export const PREVIEW_MAX = LIMITS.previewMaxBytes;
 export const SOURCE_MAX = 512 * 1024;
 // a resolve `prompt` answer's text (9.2, 1.1), in characters
@@ -58,7 +58,7 @@ export function stripMeta(r) {
   return out;
 }
 
-/** An open request a plugin made (resolve `open`, `_meta["rox/open"]`)
+/** An open request a plugin made (resolve `open`, `_meta["buwiz/open"]`)
  *  checked against its own manifest `m`: the app is one of its apps (no
  *  other plugin's), props validate (6.6), the ticket follows the grammar.
  *  → the normalized open; throws V1Error. */
@@ -127,7 +127,7 @@ export function createSessions(plugins) {
   }
 
   function certMatches(cert, b) {
-    return isObject(cert) && cert.v === 1 && cert.typ === "rox-session" && cert.plugin === b.plugin && cert.app === b.app && cert.open_id === b.open_id
+    return isObject(cert) && cert.v === 1 && cert.typ === "buwiz-session" && cert.plugin === b.plugin && cert.app === b.app && cert.open_id === b.open_id
       && cert.ks_pub === b.ks_pub && cert.perms_sha256 === b.perms_sha256 && cert.not_after === b.not_after;
   }
 
@@ -146,11 +146,11 @@ export function createSessions(plugins) {
 
     if (permsDigest(app.permissions) !== b.perms_sha256) refuse("invalid_args", "perms_sha256 is not the digest of the installed app's permissions");
     const generation = rt.generation;
-    const res = await plugins.callReserved(b.plugin, "rox.session.open", { app: b.app, open_id: b.open_id, ks_pub: b.ks_pub, perms_sha256: b.perms_sha256, not_after: b.not_after });
+    const res = await plugins.callReserved(b.plugin, "buwiz.session.open", { app: b.app, open_id: b.open_id, ks_pub: b.ks_pub, perms_sha256: b.perms_sha256, not_after: b.not_after });
 
     if (res === null) {
-      await plugins.fail(b.plugin, "plugin_invalid", "the plugin does not implement rox.session.open");
-      refuse("plugin_invalid", "the plugin does not implement rox.session.open");
+      await plugins.fail(b.plugin, "plugin_invalid", "the plugin does not implement buwiz.session.open");
+      refuse("plugin_invalid", "the plugin does not implement buwiz.session.open");
     }
 
     let good = false;
@@ -179,7 +179,7 @@ export function createSessions(plugins) {
     if (!s) return { ok: true };
     opens.delete(s.open_id);
 
-    if (plugins.runtime(s.plugin).state === "running") await plugins.callReserved(s.plugin, "rox.session.close", { open_id: s.open_id }).catch(() => {});
+    if (plugins.runtime(s.plugin).state === "running") await plugins.callReserved(s.plugin, "buwiz.session.close", { open_id: s.open_id }).catch(() => {});
 
     return { ok: true };
   }
@@ -218,7 +218,7 @@ export function createSessions(plugins) {
     }
 
     // 2
-    if (envelope.v !== 1 || envelope.typ !== "rox-call" || envelope.plugin !== s.cert.plugin || envelope.app !== s.cert.app || envelope.open_id !== s.cert.open_id)
+    if (envelope.v !== 1 || envelope.typ !== "buwiz-call" || envelope.plugin !== s.cert.plugin || envelope.app !== s.cert.app || envelope.open_id !== s.cert.open_id)
       refuse("session_invalid", "the envelope names another plugin, app or open");
 
     // 3
@@ -288,7 +288,7 @@ export function createSessions(plugins) {
 
     const { s, rt, perms } = check(envelope, sig);
     const args = envelope.args ?? {};
-    // rox.preview: Rox calls the app's own tool for a document; only an app
+    // buwiz.preview: Rox calls the app's own tool for a document; only an app
     // with permissions.preview gets the larger result limit
     const preview = envelope.purpose !== undefined;
 
@@ -309,7 +309,7 @@ export function createSessions(plugins) {
     try {
       const caller = { origin: "app", plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
 
-      r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "rox/caller": caller } });
+      r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "buwiz/caller": caller } });
     } finally {
       release(s);
     }
@@ -337,7 +337,7 @@ export function createSessions(plugins) {
   async function ticketTitle(b) {
     if (!isV1("ticket", b?.ticket)) refuse("invalid_args", "ticket breaks the ticket grammar");
     running(b.plugin);
-    const res = await plugins.callReserved(b.plugin, "rox.ticket.resolve", { ticket: b.ticket });
+    const res = await plugins.callReserved(b.plugin, "buwiz.ticket.resolve", { ticket: b.ticket });
 
     if (res === null) refuse("not_supported", `${b.plugin} does not resolve tickets`);
 
@@ -402,7 +402,7 @@ export function createSessions(plugins) {
     const input = { kind: b.kind, name: b.name, value: String(b.value ?? ""), complete: b.complete === true, context: { attached } };
 
     const r = await plugins.callTool(b.plugin, entry.resolve, input, {
-      meta: { "rox/caller": { origin: "resolve", plugin: b.plugin, ts: plugins.clock.now() } },
+      meta: { "buwiz/caller": { origin: "resolve", plugin: b.plugin, ts: plugins.clock.now() } },
       timeout: plugins.timeouts.resolve,
     });
 
@@ -417,6 +417,9 @@ export function createSessions(plugins) {
     const app = (plugins.manifestOf(row).apps || []).find((a) => a.id === b.app);
 
     if (!app) refuse("not_found", `${b.plugin} has no app ${String(b.app).slice(0, 60)}`);
+
+    // a native screen is the host's own code: there is no source to read
+    if (app.native) refuse("not_supported", `${app.id} is a native screen; it has no source`);
     const { contents = [] } = await plugins.readResource(b.plugin, app.entry);
 
     if (contents.length !== 1 || !isString(contents[0].text)) refuse("plugin_invalid", `${app.entry} must answer exactly one text content`);

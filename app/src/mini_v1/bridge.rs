@@ -12,10 +12,10 @@
 //! own (the broker, the file system) or to the person ([`HostUi`]).
 //!
 //! What needs the person goes through [`HostUi`]: consent (part B draws
-//! the dialogs; tests answer them), the full-screen stack `rox.open({app})`
+//! the dialogs; tests answer them), the full-screen stack `buwiz.open({app})`
 //! pushes on, the file dialog, the pasteboard, the chat an attachment goes
-//! to, the document view `rox.preview` shows, and an inline card's
-//! chrome (`rox.actions`, `rox.settle`, `rox.meta`).
+//! to, the document view `buwiz.preview` shows, and an inline card's
+//! chrome (`buwiz.actions`, `buwiz.settle`, `buwiz.meta`).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -41,7 +41,7 @@ use super::{
 pub trait HostUi: Send + Sync {
     /// Asks the person (spec 9.7); `answer(true)` goes ahead. Any thread.
     fn consent(&self, ask: Consent, answer: Box<dyn FnOnce(bool) + Send>);
-    /// Pushes `target` on the full-screen stack (`rox.open({app})`: the
+    /// Pushes `target` on the full-screen stack (`buwiz.open({app})`: the
     /// person is in the plugin already, so no consent).
     fn open_app(&self, target: V1Key);
     /// Opens an https URL the person agreed to.
@@ -66,33 +66,33 @@ pub trait HostUi: Send + Sync {
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
     fn session_ended(&self, key: &V1Key, why: Ended);
-    /// Sets the inline open's card to `height` (`rox.fit`, already
+    /// Sets the inline open's card to `height` (`buwiz.fit`, already
     /// clamped and paced: [`Fitter`]). Hosts without inline cards ignore
     /// it.
     fn fit(&self, height: f32) {
         let _ = height;
     }
-    /// The inline open's app has its data (`rox.ready`): its card may
+    /// The inline open's app has its data (`buwiz.ready`): its card may
     /// show. Hosts without inline cards ignore it.
     fn ready(&self) {}
-    /// Sets the inline open's footer buttons (`rox.actions`, checked;
+    /// Sets the inline open's footer buttons (`buwiz.actions`, checked;
     /// empty clears them); `press(id)` sends a press back to the app.
     /// Hosts without inline cards ignore them.
     fn actions(&self, actions: Vec<CardAction>, press: Press) {
         let _ = (actions, press);
     }
-    /// Sets the inline open's header status (`rox.meta`; `None` clears it).
+    /// Sets the inline open's header status (`buwiz.meta`; `None` clears it).
     fn meta(&self, meta: Option<CardMeta>) {
         let _ = meta;
     }
     /// The inline open's card collapses to `line` and its app unmounts
-    /// (`rox.settle`).
+    /// (`buwiz.settle`).
     fn settle(&self, line: String) {
         let _ = line;
     }
 }
 
-/// Sends a press of the footer button `id` to the app (`rox.action`):
+/// Sends a press of the footer button `id` to the app (`buwiz.action`):
 /// only a button the app lists now, not disabled, while the open lives.
 pub type Press = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -115,7 +115,7 @@ pub struct PickRequest {
     pub max_bytes: u64,
 }
 
-/// A document `rox.preview` shows: its title and the page, sealed
+/// A document `buwiz.preview` shows: its title and the page, sealed
 /// ([`seal`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
@@ -128,7 +128,7 @@ pub struct Preview {
 pub struct Limits {
     pub max_args: usize,
     pub max_result: usize,
-    /// A `rox.preview` document's HTML (the app's `preview.max_bytes` may
+    /// A `buwiz.preview` document's HTML (the app's `preview.max_bytes` may
     /// lower it).
     pub max_preview: usize,
     pub in_flight: usize,
@@ -149,9 +149,9 @@ impl Default for Limits {
     }
 }
 
-/// The most text `rox.copy` takes.
+/// The most text `buwiz.copy` takes.
 const MAX_COPY: usize = 1024 * 1024;
-/// The longest URL `rox.open` takes (Appendix A).
+/// The longest URL `buwiz.open` takes (Appendix A).
 const MAX_URL: usize = 2048;
 /// The longest title a preview shows.
 const MAX_TITLE: usize = 120;
@@ -171,14 +171,14 @@ struct Gate {
     recent: VecDeque<Instant>,
 }
 
-/// `rox.fit`'s pacing (6.5, 7.11): a height within [`FIT_STEP`] of the
+/// `buwiz.fit`'s pacing (6.5, 7.11): a height within [`FIT_STEP`] of the
 /// one set changes nothing, and at most [`FIT_PER_SECOND`] go out a
 /// second; past that the latest waits for the next free slot, so the card
 /// still ends at the app's last height.
 pub const FIT_STEP: f32 = 2.0;
 pub const FIT_PER_SECOND: usize = 8;
 
-/// One inline open's `rox.fit` heights: the one set, when the recent ones
+/// One inline open's `buwiz.fit` heights: the one set, when the recent ones
 /// went out, and the one waiting past the limit.
 #[derive(Debug, Default)]
 pub struct Fitter {
@@ -272,7 +272,7 @@ impl OpenContext {
     }
 }
 
-/// `host.params` of an open: `rox.props`, `rox.app`, the granted methods
+/// `host.params` of an open: `buwiz.props`, `buwiz.app`, the granted methods
 /// and the first viewport.
 pub fn params(prepared: &Prepared, viewport: Value) -> Map<String, Value> {
     let mut p = Map::new();
@@ -304,13 +304,13 @@ pub fn install(channel: &HostChannel, ctx: &Arc<OpenContext>, viewport: Value) {
     let (ch, ui, key) = (channel.clone(), ctx.ui.clone(), ctx.prepared.key.clone());
     ctx.session.on_end(move |why| {
         if why == Ended::Restarted {
-            let _ = ch.send("rox.session", json!({"state": "reconnecting"}));
+            let _ = ch.send("buwiz.session", json!({"state": "reconnecting"}));
         }
         ui.session_ended(&key, why);
     });
 }
 
-/// `rox.fit({height})`, a post: an `inline` open's card takes the height,
+/// `buwiz.fit({height})`, a post: an `inline` open's card takes the height,
 /// clamped to its manifest's `inline` range and paced by a [`Fitter`]; a
 /// full-screen open's is ignored. It needs no permission: it sizes only
 /// the app's own frame.
@@ -350,9 +350,9 @@ fn install_fit(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
     });
 }
 
-/// `rox.ready()`, a post: an `inline` open's app has its data, so its
+/// `buwiz.ready()`, a post: an `inline` open's app has its data, so its
 /// card may show (`mini_v1::settle`); a full-screen open's is ignored.
-/// Like `rox.fit`, it needs no permission: it only ends the app's own
+/// Like `buwiz.fit`, it needs no permission: it only ends the app's own
 /// card's hold.
 fn install_ready(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
     let ui = ctx.ui.clone();
@@ -366,12 +366,12 @@ fn install_ready(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
     });
 }
 
-/// `rox.actions(list)`, `rox.meta(meta)` and `rox.settle(text)` (7.12 to
+/// `buwiz.actions(list)`, `buwiz.meta(meta)` and `buwiz.settle(text)` (7.12 to
 /// 7.14): an inline card's footer buttons, header status and the line it
 /// settles to, drawn by Rox in its own style. Each is checked whatever the
 /// placement (a bad one rejects `invalid_args`); a full-screen open's are
 /// then ignored. They need no permission: they change only the app's own
-/// card, and a press reaches only the app. A press is the `rox.action`
+/// card, and a press reaches only the app. A press is the `buwiz.action`
 /// event, `{id}`.
 fn install_card(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
     let listed: Arc<Mutex<Vec<CardAction>>> = Arc::default();
@@ -380,7 +380,7 @@ fn install_card(channel: &HostChannel, ctx: &Arc<OpenContext>, inline: bool) {
         Arc::new(move |id: &str| {
             let on = listed.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|a| a.id == id && !a.disabled);
             if on && session.check_live().is_ok() {
-                let _ = ch.send("rox.action", json!({"id": id}));
+                let _ = ch.send("buwiz.action", json!({"id": id}));
             }
         })
     };
@@ -541,7 +541,7 @@ impl OpenContext {
         }));
     }
 
-    /// `rox.call(tool, args)` (7.3).
+    /// `buwiz.call(tool, args)` (7.3).
     fn call(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
@@ -574,7 +574,7 @@ impl OpenContext {
         });
     }
 
-    /// `rox.ticket.title(ticket)` (7.4), rate-limited as calls are.
+    /// `buwiz.ticket.title(ticket)` (7.4), rate-limited as calls are.
     fn ticket_title(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
@@ -589,7 +589,7 @@ impl OpenContext {
         });
     }
 
-    /// `rox.open({app, props?, ticket?})` or `rox.open({url})` (7.5).
+    /// `buwiz.open({app, props?, ticket?})` or `buwiz.open({url})` (7.5).
     fn open(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
@@ -598,15 +598,15 @@ impl OpenContext {
         let r = match (data.get("app"), data.get("url")) {
             (Some(_), None) => self.open_app(&grant, &data),
             (None, Some(_)) => return self.open_url(&grant, &data, reply),
-            _ => Err(invalid("rox.open takes {app} or {url}")),
+            _ => Err(invalid("buwiz.open takes {app} or {url}")),
         };
         answer(reply, r.map(|()| Value::Null));
     }
 
     fn open_app(&self, grant: &perms::OpenGrant, data: &Value) -> Result<(), RoxError> {
-        let o = data.as_object().ok_or_else(|| invalid("rox.open takes an object"))?;
+        let o = data.as_object().ok_or_else(|| invalid("buwiz.open takes an object"))?;
         if let Some(k) = o.keys().find(|k| !["app", "props", "ticket"].contains(&k.as_str())) {
-            return Err(invalid(&format!("rox.open does not take {k}")));
+            return Err(invalid(&format!("buwiz.open does not take {k}")));
         }
         let app = text(data, "app").ok_or_else(|| invalid("app is a string"))?;
         if !grant.apps.iter().any(|a| a == app) {
@@ -659,7 +659,7 @@ impl OpenContext {
         );
     }
 
-    /// `rox.attach(scope, value)` (7.6): resolved by the plugin, then asked.
+    /// `buwiz.attach(scope, value)` (7.6): resolved by the plugin, then asked.
     fn attach(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
@@ -718,7 +718,7 @@ impl OpenContext {
         }
     }
 
-    /// `rox.pickFile(options)` and its files' `read()` (7.7).
+    /// `buwiz.pickFile(options)` and its files' `read()` (7.7).
     fn pick(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Some(id) = data.get("read") {
             return self.read_picked(id.as_str().unwrap_or_default().to_owned(), reply);
@@ -781,7 +781,7 @@ impl OpenContext {
         });
     }
 
-    /// `rox.copy(text)`.
+    /// `buwiz.copy(text)`.
     fn copy(self: &Arc<Self>, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
@@ -795,7 +795,7 @@ impl OpenContext {
         }
     }
 
-    /// `rox.preview({tool, args?, title?})` (7.10): the app's own tool,
+    /// `buwiz.preview({tool, args?, title?})` (7.10): the app's own tool,
     /// called by the host as the app (signed, checked by the broker) with
     /// the preview's limit, answers with an HTML document; the person sees
     /// it over the app. The page never reaches the app.
@@ -803,9 +803,9 @@ impl OpenContext {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
-        let Some(o) = data.as_object() else { return reject(reply, invalid("rox.preview takes {tool, args?, title?}")) };
+        let Some(o) = data.as_object() else { return reject(reply, invalid("buwiz.preview takes {tool, args?, title?}")) };
         if let Some(k) = o.keys().find(|k| !["tool", "args", "title"].contains(&k.as_str())) {
-            return reject(reply, invalid(&format!("rox.preview does not take {k}")));
+            return reject(reply, invalid(&format!("buwiz.preview does not take {k}")));
         }
         let Some(tool) = text(&data, "tool").map(str::to_owned) else { return reject(reply, invalid("tool is a string")) };
         if !self.prepared.permissions.tools.contains(&tool) {
@@ -843,7 +843,7 @@ impl OpenContext {
         });
     }
 
-    /// `rox.storage.get|set|remove|keys` (11), on the open's storage
+    /// `buwiz.storage.get|set|remove|keys` (11), on the open's storage
     /// thread, in order.
     fn storage_named(self: &Arc<Self>, name: &'static str, data: Value, reply: HostReply) {
         if let Err(e) = self.session.check_live() {
@@ -855,12 +855,12 @@ impl OpenContext {
         let job: Box<dyn FnOnce() + Send> = Box::new(move || {
             let key = text(&data, "key").unwrap_or_default();
             let r = match name {
-                "rox.storage.get" => store.get(key).map(|v| v.map_or(Value::Null, Value::String)),
-                "rox.storage.set" => match data.get("value").and_then(Value::as_str) {
+                "buwiz.storage.get" => store.get(key).map(|v| v.map_or(Value::Null, Value::String)),
+                "buwiz.storage.set" => match data.get("value").and_then(Value::as_str) {
                     Some(v) => store.set(key, v).map(|()| Value::Null),
                     None => Err(invalid("values are strings")),
                 },
-                "rox.storage.remove" => store.remove(key).map(|()| Value::Null),
+                "buwiz.storage.remove" => store.remove(key).map(|()| Value::Null),
                 _ => store.keys().map(|k| json!(k)),
             };
             answer(reply, r);
@@ -932,7 +932,7 @@ fn mime(name: &str) -> &'static str {
     }
 }
 
-/// What `rox.call` resolves to from a tool result (7.3): its
+/// What `buwiz.call` resolves to from a tool result (7.3): its
 /// `structuredContent`, else its text joined with `\n`; `isError` rejects
 /// `tool_error` with its first text; over the limit, `result_too_large`.
 pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
@@ -958,14 +958,14 @@ pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
     Ok(Value::String(texts().collect::<Vec<_>>().join("\n")))
 }
 
-/// The document in a `rox.preview` tool result (7.10): the first embedded
+/// The document in a `buwiz.preview` tool result (7.10): the first embedded
 /// resource `{type: "resource", resource: {mimeType: "text/html", text}}`,
 /// and the title in `structuredContent.title`, if any. `isError` rejects
 /// `tool_error`; no HTML, `tool_error`; HTML over `max` bytes,
 /// `result_too_large`.
 pub fn preview_document(result: Value, max: usize) -> Result<(String, Option<String>), RoxError> {
     if result.get("isError") == Some(&Value::Bool(true)) {
-        // rejects tool_error with its first text, as rox.call does
+        // rejects tool_error with its first text, as buwiz.call does
         tool_result(result.clone(), usize::MAX)?;
     }
     let is_html = |m: &str| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/html");

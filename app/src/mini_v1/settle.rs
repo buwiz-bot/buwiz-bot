@@ -9,7 +9,7 @@
 //! Settled is the layout's signature (every visible frame's origin and
 //! size, hashed) unchanged for [`STABLE_TICKS`] ticks [`TICK`] apart; an
 //! app whose manifest asks `inline.wait_ready` also waits for its
-//! `rox.ready()`. Neither may hold a card for long: a wall-clock cap from
+//! `buwiz.ready()`. Neither may hold a card for long: a wall-clock cap from
 //! the mount ([`CAP`], [`CAP_READY`]) reveals it whatever it does.
 //!
 //! The decisions are pure (modelled on the bridge's `Fitter`); `mini.rs`
@@ -28,7 +28,7 @@ pub const SHOW_AFTER: Duration = Duration::from_millis(100);
 pub const MIN_SHOWN: Duration = Duration::from_millis(250);
 /// The longest hold, from the mount.
 pub const CAP: Duration = Duration::from_millis(1500);
-/// The longest hold of an app that waits for its `rox.ready()`.
+/// The longest hold of an app that waits for its `buwiz.ready()`.
 pub const CAP_READY: Duration = Duration::from_millis(3000);
 /// The placeholder's fade out, in ms.
 pub const FADE_MS: f32 = 175.0;
@@ -95,7 +95,7 @@ impl Settle {
         self.stable = 0;
     }
 
-    /// The app called `rox.ready()`: its data is in. What it draws with it
+    /// The app called `buwiz.ready()`: its data is in. What it draws with it
     /// comes in the next frames, so the layout counts as stable only from
     /// here.
     pub fn ready(&mut self) {

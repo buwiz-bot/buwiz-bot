@@ -31,7 +31,7 @@ test("BRG-01 a tool outside permissions.tools is permission_denied and nothing i
   const before = (await stats()).calls.fx_secret || 0;
 
   assert.equal(await codeOf(call(board, "fx_secret")), "permission_denied");
-  assert.equal(await codeOf(call(board, "rox.provision")), "permission_denied");
+  assert.equal(await codeOf(call(board, "buwiz.provision")), "permission_denied");
   const card = await openApp(sessions, m, "card");
 
   assert.equal(await codeOf(call(card, "fx_slow", { ms: 1 })), "permission_denied", "board's tools are not card's");
@@ -45,7 +45,7 @@ test("BRG-02 a tool the user disabled is refused on the app path (disabled)", as
   assert.equal((await call(board, "fx_echo")).ok, true);
 });
 
-test("BRG-03 a validly signed call with a fresh nonce succeeds; the plugin sees rox/caller", async () => {
+test("BRG-03 a validly signed call with a fresh nonce succeeds; the plugin sees buwiz/caller", async () => {
   const r = await call(board, "fx_echo", { code: "1601C", n: 2 });
 
   assert.equal(r.ok, true);
@@ -86,7 +86,7 @@ test("BRG-07 a call without a registered session is session_invalid", async () =
 
   assert.equal(await codeOf(call(ghost, "fx_echo")), "session_invalid");
   assert.equal(await codeOf(call(board, "fx_echo", {}, { app: "card" })), "session_invalid", "another app than the certificate's");
-  assert.equal(await codeOf(call(board, "fx_echo", {}, { typ: "rox-session" })), "session_invalid");
+  assert.equal(await codeOf(call(board, "fx_echo", {}, { typ: "buwiz-session" })), "session_invalid");
   const short = await openApp(sessions, m, "board", { notAfter: Date.now() + 300 });
 
   await new Promise((r) => setTimeout(r, 350));
@@ -111,7 +111,7 @@ test("BRG-10 a 2 MiB result rejects result_too_large; just under 1 MiB passes", 
   assert.equal(await codeOf(call(board, "fx_echo", { x: "y".repeat(256 * 1024) })), "invalid_args", "args over 256 KiB");
 });
 
-test("rox.preview: only a preview call of an app with permissions.preview gets its larger limit (max_bytes)", async () => {
+test("buwiz.preview: only a preview call of an app with permissions.preview gets its larger limit (max_bytes)", async () => {
   const doc = (bytes) => ({ bytes, as: "resource" });
   const pv = { purpose: "preview" };
 

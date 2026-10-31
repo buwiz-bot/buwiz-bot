@@ -15,6 +15,9 @@ use crate::js;
 pub struct Publisher {
     pub publisher: String,
     pub public_key: String,
+    /// The store marks the key first-party (`"first_party": true`): its
+    /// plugins may ship native screens.
+    pub first_party: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -33,7 +36,8 @@ impl Trust {
             if p.is_object() && get(p, "alg") == Some(&Value::from("ed25519")) && from_b64u(get(p, "public_key"), 32).is_some() {
                 let publisher = get(p, "publisher").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default();
                 let public_key = get(p, "public_key").and_then(Value::as_str).unwrap_or_default().to_owned();
-                publishers.insert(key_id.clone(), Publisher { publisher, public_key });
+                let first_party = get(p, "first_party") == Some(&Value::Bool(true));
+                publishers.insert(key_id.clone(), Publisher { publisher, public_key, first_party });
             }
         }
         let approved = get(raw, "approved_plugins")
@@ -73,7 +77,7 @@ mod tests {
         let key = rox_v1::keys::b64(&[7; 32]);
         let raw = json!({
             "publishers": {
-                "k1": {"alg": "ed25519", "publisher": "dev.goldcoders", "public_key": key},
+                "k1": {"alg": "ed25519", "publisher": "app.buwiz", "public_key": key},
                 "k2": {"alg": "rsa", "public_key": key},
                 "k3": {"alg": "ed25519", "public_key": "short"},
                 "k4": {"alg": "ed25519", "public_key": key, "publisher": 0}
@@ -82,7 +86,7 @@ mod tests {
         });
         let t = Trust::from_value(&raw);
         assert_eq!(t.publishers.len(), 2);
-        assert_eq!(t.publishers["k1"].publisher, "dev.goldcoders");
+        assert_eq!(t.publishers["k1"].publisher, "app.buwiz");
         assert_eq!(t.publishers["k4"].publisher, "");
         assert!(t.is_approved("dev.a.b", "k1") && !t.is_approved("dev.a.b", "k2"));
         assert_eq!(t.approved.len(), 1);

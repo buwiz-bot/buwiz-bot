@@ -442,7 +442,7 @@ export async function callTool(row, toolName, input) {
   // enrolled every call fails, so drop the server's tools until Reconnect.
   if (row.url && result.isError && /Developer Preview Program/i.test(parts.join("\n").slice(0, 2000)))
     rec.unavailable = `Google only serves this to projects in the Google Workspace Developer Preview Program — enroll at https://developers.google.com/workspace/preview, then Reconnect.`;
-  // `meta` is the result's `_meta` (a server's `rox/open` request); the
+  // `meta` is the result's `_meta` (a server's `buwiz/open` request); the
   // caller strips it before the result goes back to the model.
   return { content: parts.join("\n") || "(empty)", is_error: !!result.isError, meta: result._meta };
 }
@@ -469,12 +469,12 @@ export async function listApps(row) {
   return (await listResources(row)).filter((r) => r.mimeType === APP_MIME);
 }
 
-// The commands and `@` scopes a server announces: its `rox://manifest`
+// The commands and `@` scopes a server announces: its `buwiz://manifest`
 // resource (JSON, every field optional), read once per connection; {} when
 // it ships none or it doesn't parse. Commands and scopes whose name breaks
 // the grammar (grammar.mjs) are dropped with a warning: no `@` token or
 // `/` command could name them.
-export const MANIFEST_URI = "rox://manifest";
+export const MANIFEST_URI = "buwiz://manifest";
 export async function readManifest(row) {
   const rec = await ensureClient(row);
   if (!(await listResources(row)).some((r) => r.uri === MANIFEST_URI)) return {};

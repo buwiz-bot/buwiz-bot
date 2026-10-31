@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn brg_16_storage_limits_quota_and_isolation() {
         let root = scratch_root("storage");
-        let a = AppStorage::new(&root, "dev.goldcoders.fixture", "board", 300);
+        let a = AppStorage::new(&root, "app.buwiz.fixture", "board", 300);
         a.set("k.1:x-y_z", "v").unwrap();
         assert_eq!(a.get("k.1:x-y_z").unwrap().as_deref(), Some("v"));
         assert_eq!(a.get("missing").unwrap(), None);
@@ -172,21 +172,21 @@ mod tests {
             assert_eq!(a.set(&bad, "v").unwrap_err().code, "invalid_args", "{bad:?}");
         }
         // a value over 64 KiB is refused, at any quota
-        let big = AppStorage::new(&root, "dev.goldcoders.fixture", "big", 10 << 20);
+        let big = AppStorage::new(&root, "app.buwiz.fixture", "big", 10 << 20);
         big.set("v", &"x".repeat(MAX_VALUE)).unwrap();
         assert_eq!(big.set("v", &"x".repeat(MAX_VALUE + 1)).unwrap_err().code, "quota_exceeded");
         // the quota counts keys and values; a refused set keeps the store
         assert_eq!(a.set("fill", &"x".repeat(300)).unwrap_err().code, "quota_exceeded");
         assert_eq!(a.keys().unwrap(), ["k.1:x-y_z"]);
         // two apps (and two plugins' apps of one id) don't see each other's keys
-        let b = AppStorage::new(&root, "dev.goldcoders.fixture", "card", 300);
-        let c = AppStorage::new(&root, "dev.goldcoders.other", "board", 300);
+        let b = AppStorage::new(&root, "app.buwiz.fixture", "card", 300);
+        let c = AppStorage::new(&root, "app.buwiz.other", "board", 300);
         assert_eq!(b.get("k.1:x-y_z").unwrap(), None);
         assert_eq!(c.get("k.1:x-y_z").unwrap(), None);
         assert!(b.keys().unwrap().is_empty() && c.keys().unwrap().is_empty());
-        assert!(root.join("dev.goldcoders.fixture/apps/board/storage.json").is_file());
+        assert!(root.join("app.buwiz.fixture/apps/board/storage.json").is_file());
         // uninstall deletes the plugin's stores only
-        delete_plugin(&root, "dev.goldcoders.fixture").unwrap();
+        delete_plugin(&root, "app.buwiz.fixture").unwrap();
         assert!(a.keys().unwrap().is_empty());
         c.set("x", "1").unwrap();
         assert!(delete_plugin(&root, "..").is_err());
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn brg_16_a_store_lists_at_most_1000_keys() {
         let root = scratch_root("keys");
-        let s = AppStorage::new(&root, "dev.goldcoders.fixture", "board", 1 << 20);
+        let s = AppStorage::new(&root, "app.buwiz.fixture", "board", 1 << 20);
         let all: BTreeMap<String, String> = (0..MAX_KEYS).map(|i| (format!("k{i}"), String::new())).collect();
         s.write(&all).unwrap();
         assert_eq!(s.set("one-more", "").unwrap_err().code, "quota_exceeded");

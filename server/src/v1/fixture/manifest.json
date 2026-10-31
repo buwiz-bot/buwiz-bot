@@ -1,11 +1,11 @@
 {
-  "protocol": "1.0.0",
-  "id": "dev.goldcoders.fixture",
+  "protocol": "2.0.0",
+  "id": "app.buwiz.fixture",
   "short": "fx",
   "version": "1.0.0",
   "title": "Fixture",
   "description": "The conformance fixture: every Mini App Protocol v1 feature, nothing else.",
-  "publisher": { "id": "dev.goldcoders", "key_id": "gc-2026-01", "name": "Goldcoders" },
+  "publisher": { "id": "app.buwiz", "key_id": "gc-2026-01", "name": "Goldcoders" },
   "commands": [
     { "name": "board", "args": "[card|foreign|bad-props]", "description": "Open the fixture board", "resolve": "fx_resolve" }
   ],
@@ -20,13 +20,13 @@
       "every_s": 300,
       "query": { "tool": "fx_search", "field": "query" },
       "prompt": "Summarise the new fixture items in one line each.",
-      "reads": [ { "plugin": "dev.goldcoders.fixture", "tools": ["fx_search"] } ]
+      "reads": [ { "plugin": "app.buwiz.fixture", "tools": ["fx_search"] } ]
     }
   ],
   "apps": [
     {
       "id": "board", "title": "Fixture Board", "description": "Calls every fixture tool.",
-      "entry": "rox-app://board", "mime": "text/x-nsh-tsx", "sdk": "1",
+      "entry": "buwiz-app://board", "mime": "text/x-nsh-tsx", "sdk": "1",
       "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "props": { "type": "object", "properties": { "ticket": { "type": "string", "maxLength": 30 }, "page": { "type": "integer", "minimum": 1, "maximum": 99 } } },
       "placement": ["full"],
@@ -42,7 +42,7 @@
     },
     {
       "id": "card", "title": "Fixture Card", "description": "A card that also fits inline.",
-      "entry": "rox-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
+      "entry": "buwiz-app://card", "mime": "text/x-nsh-tsx", "sdk": "1",
       "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "props": { "type": "object", "properties": { "ticket": { "type": "string" }, "label": { "type": "string", "maxLength": 60 } }, "required": ["ticket"] },
       "placement": ["full", "inline"],

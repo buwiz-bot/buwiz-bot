@@ -1,37 +1,37 @@
-# The bridge: `rox` in an app
+# The bridge: `buwiz` in an app
 
-An app imports the bridge with `import { rox } from "rox"` (it is also the
-global `rox`). Its methods are implemented by Buwiz Bot; the app reaches nothing
+An app imports the bridge with `import { buwiz } from "buwiz"` (it is also the
+global `buwiz`). Its methods are implemented by Buwiz Bot; the app reaches nothing
 else: no `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage` or
-`sessionStorage`, and imports only from `nsh`, `nsh/base` and `rox` (spec
+`sessionStorage`, and imports only from `nsh`, `nsh/base` and `buwiz` (spec
 6.3). The module's **default export** is the component Buwiz Bot mounts.
 
 A method whose permission the manifest does not grant is **absent**
 (`undefined`), not present and failing (spec 7.1, 6.4). Test for it if an
-app is shared between manifests: `if (rox.copy) …`.
+app is shared between manifests: `if (buwiz.copy) …`.
 
 ## Methods
 
 | Member | Permission | Returns | Rejects with | Spec |
 |---|---|---|---|---|
-| `rox.props` | always | The open's props, validated against `apps[].props`; read-only | | 6.6 |
-| `rox.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
-| `rox.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
-| `rox.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
-| `rox.actions(list)`, `rox.onAction(handler)` | always (1.1) | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
-| `rox.meta({text, pill?})` | always (1.1) | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
-| `rox.settle(text)` | always (1.1) | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
-| `rox.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
-| `rox.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
-| `rox.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
-| `rox.open({url})` | `open.external` | Opens an `https` URL of a listed origin after the user agrees | `permission_denied`, `consent_declined`, `not_supported` | 7.5 |
-| `rox.attach(scope, value)` | `attach` | `{token, title, attached}` after "Attach … to this chat?" | `permission_denied`, `consent_declined`, `no_chat` | 7.6 |
-| `rox.pickFile({extensions?, multiple?})` | `pick_file` | `[{name, size, type, read()}]`, never a path; `[]` on cancel | `permission_denied`, `quota_exceeded`, `closed` (from `read()` after close) | 7.7 |
-| `rox.storage.get/set/remove/keys` | `storage` | Strings; private to this app | `quota_exceeded`, `invalid_args` | 11 |
-| `rox.copy(text)` | `copy` | Copies to the clipboard | | 5.6 |
-| `rox.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `rox.call`'s | 7.10 |
+| `buwiz.props` | always | The open's props, validated against `apps[].props`; read-only | | 6.6 |
+| `buwiz.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
+| `buwiz.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
+| `buwiz.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
+| `buwiz.actions(list)`, `buwiz.onAction(handler)` | always | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
+| `buwiz.meta({text, pill?})` | always | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
+| `buwiz.settle(text)` | always | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
+| `buwiz.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
+| `buwiz.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
+| `buwiz.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
+| `buwiz.open({url})` | `open.external` | Opens an `https` URL of a listed origin after the user agrees | `permission_denied`, `consent_declined`, `not_supported` | 7.5 |
+| `buwiz.attach(scope, value)` | `attach` | `{token, title, attached}` after "Attach … to this chat?" | `permission_denied`, `consent_declined`, `no_chat` | 7.6 |
+| `buwiz.pickFile({extensions?, multiple?})` | `pick_file` | `[{name, size, type, read()}]`, never a path; `[]` on cancel | `permission_denied`, `quota_exceeded`, `closed` (from `read()` after close) | 7.7 |
+| `buwiz.storage.get/set/remove/keys` | `storage` | Strings; private to this app | `quota_exceeded`, `invalid_args` | 11 |
+| `buwiz.copy(text)` | `copy` | Copies to the clipboard | | 5.6 |
+| `buwiz.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `buwiz.call`'s | 7.10 |
 
-Every rejection is a `RoxError {code, retryable, message, details?}`
+Every rejection is a `BuwizError {code, retryable, message, details?}`
 (spec 14.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
 `plugin_restarted`, `internal`. A tool result with `isError: true` rejects
 with `tool_error` and the first text content (at most 500 chars) as
@@ -39,12 +39,12 @@ with `tool_error` and the first text content (at most 500 chars) as
 
 ```tsx
 import { signal, Text } from "nsh";
-import { rox } from "rox";
+import { buwiz } from "buwiz";
 
 export default function Status() {
   const line = signal("…");
 
-  rox.call("hello_greet", { ticket: rox.props.ticket }).then(
+  buwiz.call("hello_greet", { ticket: buwiz.props.ticket }).then(
     (r) => line.set(String(r.greeting)),
     (e) => line.set(e.retryable ? "Busy, try again" : `Could not load (${e.code})`),
   );
@@ -53,16 +53,16 @@ export default function Status() {
 }
 ```
 
-## Print preview: `rox.preview`
+## Print preview: `buwiz.preview`
 
-`rox.preview({tool, args?, title?})` asks Buwiz Bot to call `tool` (one of the
+`buwiz.preview({tool, args?, title?})` asks Buwiz Bot to call `tool` (one of the
 app's own `permissions.tools`; another name rejects `not_declared`) with
 `args`, as the app, and show the document it returns full screen over the
 app: a title bar with `title` (else the result's `structuredContent.title`,
 else the app's title), **Print** (the macOS print panel, which also saves a
 PDF) and **Close**. The document never passes through the app, so it may
-be larger than a `rox.call` result: up to `permissions.preview.max_bytes`
-(8 MiB at most). The call is signed and checked like `rox.call`; its
+be larger than a `buwiz.call` result: up to `permissions.preview.max_bytes`
+(8 MiB at most). The call is signed and checked like `buwiz.call`; its
 envelope carries `"purpose": "preview"`, which the broker accepts only from
 an app with `preview`.
 
@@ -84,13 +84,13 @@ rejects `tool_error` with its first text; a larger page `result_too_large`.
 Buwiz Bot on other platforms rejects `not_supported`.
 
 ```tsx
-if (rox.preview) await rox.preview({ tool: "acme_print_page", args: { ticket: rox.props.ticket } });
+if (buwiz.preview) await buwiz.preview({ tool: "acme_print_page", args: { ticket: buwiz.props.ticket } });
 ```
 
-## Inline cards that fit their content: `rox.fit`
+## Inline cards that fit their content: `buwiz.fit`
 
 An inline app's card starts at `inline.height` and then takes whatever height
-the app reports with `rox.fit(height)`, clamped to `inline.min_height` ..
+the app reports with `buwiz.fit(height)`, clamped to `inline.min_height` ..
 `inline.max_height` ([manifest](manifest.md); default 120 .. 640). Report
 what the content needs, not the frame you were given (an app that reports
 its frame never grows), and report again when it changes: a status line, an
@@ -99,12 +99,12 @@ Keep a `Scroll` only for content that can outgrow `max_height` (a list).
 
 ```tsx
 import { View, Scroll } from "nsh";
-import { rox } from "rox";
+import { buwiz } from "buwiz";
 
 let sent = 0;
 const fit = (e: any) => {
   const h = Math.ceil(e.bounds.size.height);
-  if (Math.abs(h - sent) >= 1 && rox.fit) rox.fit((sent = h));
+  if (Math.abs(h - sent) >= 1 && buwiz.fit) buwiz.fit((sent = h));
 };
 
 export default function Card() {
@@ -116,66 +116,65 @@ export default function Card() {
 A body that scrolls past `max_height` reports the column's height with the
 body's full height in place of the part the scroll shows (BIR's card kit
 does this). Buwiz Bot ignores changes under 2 points and sends at most 8 heights a
-second per open, the last always landing; `rox.fit` needs no permission
+second per open, the last always landing; `buwiz.fit` needs no permission
 (it sizes only your own frame) and does nothing full screen. Check for it
-(`rox.fit &&`) if the app may run on an older Buwiz Bot.
+(`buwiz.fit &&`) if the app may run on an older Buwiz Bot.
 
-## Cards that look like Buwiz Bot's: `rox.actions`, `rox.meta`, `rox.settle`
+## Cards that look like Buwiz Bot's: `buwiz.actions`, `buwiz.meta`, `buwiz.settle`
 
-Protocol 1.1 (spec 7.12 to 7.14). An inline card can hand Buwiz Bot its chrome
+Spec 7.12 to 7.14. An inline card can hand Buwiz Bot its chrome
 instead of drawing it, so it looks like Buwiz Bot's own cards (an approval card's
 buttons, its settled line):
 
-- `rox.actions([{id, label, primary?, disabled?}])`: footer buttons under
+- `buwiz.actions([{id, label, primary?, disabled?}])`: footer buttons under
   the app, drawn by Buwiz Bot as 28-point pills, right-aligned, the primary first.
   At most 3; `id` 1 to 64 of `A-Z a-z 0-9 _ . : -`, unique; `label` one line
   of 1 to 24 characters; at most one `primary`. `[]` removes them; each call
   replaces the list. A press of an enabled button calls every
-  `rox.onAction(handler)` with its `id` (`onAction` returns a function that
+  `buwiz.onAction(handler)` with its `id` (`onAction` returns a function that
   removes the handler). The press does nothing else: do the work with your
-  own tools (`rox.call`), and update the buttons (`disabled: true` while it
+  own tools (`buwiz.call`), and update the buttons (`disabled: true` while it
   runs).
-- `rox.meta({text, pill?})`: a status after the card's title, one line of
+- `buwiz.meta({text, pill?})`: a status after the card's title, one line of
   at most 32 characters, as dim text or (`pill: true`) a pill. `null`
   removes it.
-- `rox.settle(text)`: when the card is done, it collapses to one line of at
+- `buwiz.settle(text)`: when the card is done, it collapses to one line of at
   most 120 characters ("Marked paid · ₱12,000") and your app unmounts (its
   session closes). There is no undo.
 
 A call outside these rules rejects `invalid_args` and changes nothing. Full
 screen, each call is checked the same way, then ignored: draw your own
-buttons there (`rox.viewport().placement` says which). They need no
-permission. Declare `"protocol": "1.1.0"` when you use them, and check for
-them (`if (rox.actions)`) if the app may run on a 1.0 Buwiz Bot.
+buttons there (`buwiz.viewport().placement` says which). They need no
+permission.
 
 ```tsx
-import { rox } from "rox";
+import { buwiz } from "buwiz";
 
 const busy = (b: boolean) =>
-  rox.actions([
+  buwiz.actions([
     { id: "pay", label: "Mark paid", primary: true, disabled: b },
     { id: "later", label: "Later", disabled: b },
   ]);
 
-rox.onAction(async (id) => {
-  if (id === "later") return rox.settle("Snoozed until tomorrow");
+buwiz.onAction(async (id) => {
+  if (id === "later") return buwiz.settle("Snoozed until tomorrow");
   await busy(true);
   try {
-    await rox.call("acme_mark_paid", { ticket: rox.props.ticket });
-    await rox.settle("Marked paid");
+    await buwiz.call("acme_mark_paid", { ticket: buwiz.props.ticket });
+    await buwiz.settle("Marked paid");
   } catch (e) {
-    await rox.meta({ text: "Could not mark it paid", pill: true });
+    await buwiz.meta({ text: "Could not mark it paid", pill: true });
     await busy(false);
   }
 });
 busy(false);
-rox.meta({ text: "Due in 3 days", pill: true });
+buwiz.meta({ text: "Due in 3 days", pill: true });
 ```
 
 ## What your tool receives
 
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
-`_meta["rox/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 8.4).
+`_meta["buwiz/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 8.4).
 `origin` is `app` for bridge calls, `agent` for the model, `routine` for a
 routine's query and `resolve` for resolve tools. In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
@@ -184,7 +183,7 @@ your `run(args, caller)` as `caller`. Use it to authorize (see
 [security.md](security.md)).
 
 To offer the user an app from a tool result, add
-`_meta["rox/open"] = {app, props?, ticket?, title, placement?}` to the result
+`_meta["buwiz/open"] = {app, props?, ticket?, title, placement?}` to the result
 (spec 9.6). Buwiz Bot shows a card with Open or Show; it never opens by itself.
 It is ignored on `isError` results and never reaches the model.
 
@@ -199,35 +198,35 @@ answers `structuredContent` with one `result`:
 | `choices` | `choices: [{label, detail?, value}]`; `value` should be a ticket | 20 choices; label 80, detail 160 chars |
 | `open` | `app` (yours), `props?`, `ticket?`, `title`, `placement?` | title 60 chars; props validate; no other plugin's app |
 | `token` | `ticket`, `title` | title 60 chars; ticket `^tkt_[0-9A-HJKMNP-TV-Z]{26}$` |
-| `prompt` (1.1) | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
+| `prompt` | `text` | commands only; at most 4000 chars, not only spaces and line breaks; refused (`plugin_invalid`), not cut |
 | `error` | `message` | 200 chars |
 
 `prompt` is a starter flow: Buwiz Bot puts `text` in the message field for the
 user to edit and send (after their own draft and a blank line, if they typed
 one) and never sends it. Answer it for a command, for example a bare
 `/draft`, with the text as the user would type it (tokens and line breaks
-are kept). Declare `"protocol": "1.1.0"`: a 1.0 Buwiz Bot cannot read it.
+are kept).
 
 ```js
 if (args.kind === "command" && !args.value) return ok({ result: "prompt", text: "Draft this month's update:\n- " });
 ```
 
 An attachable scope must answer `token` for a value it offered as a choice:
-`rox.attach` and the composer rely on it (spec 7.6, 9.3).
+`buwiz.attach` and the composer rely on it (spec 7.6, 9.3).
 
 ## Reserved tools (Buwiz Bot to your plugin)
 
-`lib/rox-plugin.mjs` implements these; you only need them if you write your
+`lib/buwiz-plugin.mjs` implements these; you only need them if you write your
 own (spec 7.8, 7.9).
 
 | Tool | Input | Answer |
 |---|---|---|
-| `rox.provision` | `{protocol, plugin, key: {alg, seed}, pub}` | `{ok: true, manifest_sha256}`; idempotent for the same key; first, before any other tool |
-| `rox.session.open` | `{app, open_id, ks_pub, perms_sha256, not_after}` | `{cert, cert_sig}`; `invalid_args` for an unknown app, a wrong digest or `not_after` past 8 h |
-| `rox.session.close` | `{open_id}` | `{ok: true}` |
-| `rox.ticket.resolve` | `{ticket}` | `{valid: true, title}` or `{valid: false}`: never the subject |
-| `rox.uninstall` | `{}` | `{ok: true}` after deleting tickets and subjects |
-| any other `rox.*` | | MCP error `-32601` |
+| `buwiz.provision` | `{protocol, plugin, key: {alg, seed}, pub}` | `{ok: true, manifest_sha256}`; idempotent for the same key; first, before any other tool |
+| `buwiz.session.open` | `{app, open_id, ks_pub, perms_sha256, not_after}` | `{cert, cert_sig}`; `invalid_args` for an unknown app, a wrong digest or `not_after` past 8 h |
+| `buwiz.session.close` | `{open_id}` | `{ok: true}` |
+| `buwiz.ticket.resolve` | `{ticket}` | `{valid: true, title}` or `{valid: false}`: never the subject |
+| `buwiz.uninstall` | `{}` | `{ok: true}` after deleting tickets and subjects |
+| any other `buwiz.*` | | MCP error `-32601` |
 
 ## Theme
 
@@ -237,18 +236,18 @@ Buwiz Bot renders your app in Buwiz Bot's own light or dark setting, not the OS'
 
 | Item | Limit |
 |---|---|
-| `rox.call` args | 256 KiB serialized |
-| `rox.call` result | 1 MiB (structured plus text and embedded resources) |
-| `rox.preview` document | `permissions.preview.max_bytes`, at most 8 MiB |
+| `buwiz.call` args | 256 KiB serialized |
+| `buwiz.call` result | 1 MiB (structured plus text and embedded resources) |
+| `buwiz.preview` document | `permissions.preview.max_bytes`, at most 8 MiB |
 | Calls in flight per open | 8 (the ninth waits) |
 | New calls per second per open | 20 (more: `rate_limited`) |
-| `rox.fit` heights per second per open | 8 (the last waits for a slot; under 2 points ignored) |
-| `rox.actions` | 3 buttons; id 64 chars `[A-Za-z0-9_.:-]`; label 24 chars, one line; one primary |
-| `rox.meta` / `rox.settle` | 32 / 120 chars, one line |
+| `buwiz.fit` heights per second per open | 8 (the last waits for a slot; under 2 points ignored) |
+| `buwiz.actions` | 3 buttons; id 64 chars `[A-Za-z0-9_.:-]`; label 24 chars, one line; one primary |
+| `buwiz.meta` / `buwiz.settle` | 32 / 120 chars, one line |
 | Resolve `prompt` text | 4000 chars, commands only |
 | Bridge call timeout | 30 s (host), 120 s (broker to plugin) |
 | Resolve timeout | 10 s |
-| `rox.provision`, `rox.session.open`, `rox.uninstall` | 5 s each |
+| `buwiz.provision`, `buwiz.session.open`, `buwiz.uninstall` | 5 s each |
 | Session certificate | 8 h at most |
 | Storage key / value / keys | 128 chars `^[A-Za-z0-9._:-]+$` / 64 KiB / 1000 |
 | Link | 2048 chars; props in a link 1024 bytes |

@@ -45,5 +45,5 @@ are lost at the next rebuild.
   another port when one is taken.
 - Package it into an app bundle with
   `server/tools/package-server.sh <Resources dir>`.
-- A plugin's `ROX_BROKER_DIR` is this `server/` directory (BIR's manifest
+- A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest
   signing and broker tests read `src/v1/` from it).

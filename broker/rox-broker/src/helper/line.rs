@@ -2,7 +2,7 @@
 //! the Rox-facing routes, the plugin list, routines and sessions and calls
 //! here for everything that touches a plugin process
 //! (`server/src/v1/plugins-line.mjs`). Every request carries
-//! `X-Rox-Line: <token>`; the token is made by whoever starts this host and
+//! `X-Buwiz-Line: <token>`; the token is made by whoever starts this host and
 //! handed to Node in its environment. Bodies are JSON; refusals are the
 //! spec's `{ok: false, code, message, retryable}`.
 //!
@@ -72,7 +72,7 @@ impl Line {
     }
 
     fn authorized(&self, req: &Request<Incoming>) -> bool {
-        let got = req.headers().get("x-rox-line").map(|v| v.as_bytes()).unwrap_or_default();
+        let got = req.headers().get("x-buwiz-line").map(|v| v.as_bytes()).unwrap_or_default();
         let want = self.token.as_bytes();
         // constant time over the token's length
         !want.is_empty() && got.len() == want.len() && got.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
@@ -80,7 +80,7 @@ impl Line {
 
     pub async fn serve(&self, req: Request<Incoming>) -> Response<Body> {
         if !self.authorized(&req) {
-            return answer(StatusCode::UNAUTHORIZED, &V1Error::new("unauthorized", "X-Rox-Line is missing or wrong").body());
+            return answer(StatusCode::UNAUTHORIZED, &V1Error::new("unauthorized", "X-Buwiz-Line is missing or wrong").body());
         }
         let path = req.uri().path().strip_prefix("/v1/line/").unwrap_or("").to_owned();
         if req.method() == Method::GET && path == "events" {

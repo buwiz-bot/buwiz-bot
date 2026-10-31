@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // v1/fixture/server.mjs — the conformance fixture plugin (stdio MCP).
 //
-// Plugin id dev.goldcoders.fixture, short `fx`. It implements every
+// Plugin id app.buwiz.fixture, short `fx`. It implements every
 // reserved tool of spec 7.8 the way a conforming plugin must (the key in
 // memory only, provision first, certificates over JCS, tickets with a
 // subject map that never leaves the process), plus tools that exercise the
-// broker: fx_echo (echoes args and `_meta["rox/caller"]`), fx_slow, fx_fail,
+// broker: fx_echo (echoes args and `_meta["buwiz/caller"]`), fx_slow, fx_fail,
 // fx_big, fx_resolve, fx_open, fx_search (readOnlyHint), fx_query (a
 // routine's search text), fx_secret (in no app's permissions), fx_stats
 // (what it was asked, and each tool's last caller origin) and fx_reload
@@ -14,7 +14,8 @@
 // The manifest is read from FX_MANIFEST on every request (tests sign one
 // per run and may change it); the app sources sit beside this file.
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
-// tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>.
+// tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
+// old-cert (a protocol 1.x `rox-session` certificate).
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -77,7 +78,7 @@ const fail = (code, message) => ({ isError: true, content: [{ type: "text", text
 
 // ── reserved tools (7.8) ─────────────────────────────────────────────────
 function provision(args) {
-  if (misbehave("skip-provision")) throw new McpError(ErrorCode.MethodNotFound, "rox.provision is not implemented");
+  if (misbehave("skip-provision")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.provision is not implemented");
 
   if (args?.key?.alg !== "ed25519" || pubOf(args.key.seed) !== args.pub) return fail("invalid_args", "the key and pub do not match");
 
@@ -101,7 +102,7 @@ function sessionOpen(args) {
   if (!Number.isSafeInteger(args.not_after) || args.not_after > Date.now() + EIGHT_HOURS) return fail("invalid_args", "not_after must be within 8 h");
 
   const cert = {
-    v: 1, typ: "rox-session", plugin: manifest().id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub,
+    v: 1, typ: misbehave("old-cert") ? "rox-session" : "buwiz-session", plugin: manifest().id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub,
     perms_sha256: misbehave("wrong-perms") ? sha256hex("not the permissions") : args.perms_sha256, not_after: args.not_after,
   };
 
@@ -128,11 +129,11 @@ function uninstall() {
 }
 
 const RESERVED = {
-  "rox.provision": provision,
-  "rox.session.open": sessionOpen,
-  "rox.session.close": (args) => (sessions.delete(args?.open_id), ok({ ok: true })),
-  "rox.ticket.resolve": ticketResolve,
-  "rox.uninstall": uninstall,
+  "buwiz.provision": provision,
+  "buwiz.session.open": sessionOpen,
+  "buwiz.session.close": (args) => (sessions.delete(args?.open_id), ok({ ok: true })),
+  "buwiz.ticket.resolve": ticketResolve,
+  "buwiz.uninstall": uninstall,
 };
 
 // ── the fixture's own tools ──────────────────────────────────────────────
@@ -148,7 +149,7 @@ const sleep = (ms, signal) =>
   });
 
 function resolveCommand(value) {
-  if (value === "foreign") return { result: "open", plugin: "dev.goldcoders.other", app: "elsewhere", title: "Elsewhere" };
+  if (value === "foreign") return { result: "open", plugin: "app.buwiz.other", app: "elsewhere", title: "Elsewhere" };
 
   if (value === "card") return { result: "open", app: "card", props: { ticket: ticketFor("card") }, ticket: ticketFor("card"), title: "Fixture Card", placement: "inline" };
 
@@ -189,7 +190,7 @@ function resolveScope(args) {
 }
 
 const TOOLS = [
-  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: (args, meta) => ok({ args, caller: meta?.["rox/caller"] ?? null }) },
+  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: (args, meta) => ok({ args, caller: meta?.["buwiz/caller"] ?? null }) },
   {
     name: "fx_slow", description: "Sleep for ms milliseconds, then answer.", inputSchema: { type: "object", properties: { ms: { type: "integer" } } },
     run: async (args, _meta, extra) => (await sleep(Number(args.ms) || 0, extra.signal), ok({ slept: Number(args.ms) || 0 })),
@@ -225,7 +226,7 @@ const TOOLS = [
       if (args.size) open.size = args.size;
       const result = {
         content: [{ type: "text", text: args.fail ? "fx_open failed" : "Here is the card." }],
-        _meta: { "rox/open": open, ...(args.suggest ? { "rox/suggest": args.suggest } : {}) },
+        _meta: { "buwiz/open": open, ...(args.suggest ? { "buwiz/suggest": args.suggest } : {}) },
       };
 
       if (args.fail) result.isError = true;
@@ -242,7 +243,7 @@ const TOOLS = [
     run: (args) => ok({ query: isString(args.q) ? args.q : "from:fixture" }),
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
-  { name: "fx_app_only", description: "A tool for apps only (10.1 audience).", inputSchema: { type: "object" }, meta: { "rox/audience": ["app"] }, run: () => ok({ app: true }) },
+  { name: "fx_app_only", description: "A tool for apps only (10.1 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
   { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
@@ -269,13 +270,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   if (isV1("reservedTool", name)) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
 
   // P7: nothing before a successful provision
-  if (!key && !misbehave("skip-provision")) throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
+  if (!key && !misbehave("skip-provision")) throw new McpError(ErrorCode.InvalidRequest, "buwiz.provision must come first");
 
   const tool = TOOLS.find((t) => t.name === name);
 
   if (!tool) throw new McpError(ErrorCode.InvalidParams, `no tool ${name}`);
   calls[name] = (calls[name] || 0) + 1;
-  origins[name] = meta?.["rox/caller"]?.origin ?? null;
+  origins[name] = meta?.["buwiz/caller"]?.origin ?? null;
   served++;
 
   if (crashAfter && served > crashAfter) process.exit(3);
@@ -287,16 +288,16 @@ const APPS = { board: "board.tsx", card: "card.tsx" };
 
 server.setRequestHandler(ListResourcesRequestSchema, () => ({
   resources: [
-    { uri: "rox://manifest", name: "manifest", mimeType: "application/json" },
-    ...Object.keys(APPS).map((id) => ({ uri: `rox-app://${id}`, name: id, mimeType: "text/x-nsh-tsx" })),
+    { uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" },
+    ...Object.keys(APPS).map((id) => ({ uri: `buwiz-app://${id}`, name: id, mimeType: "text/x-nsh-tsx" })),
   ],
 }));
 
 server.setRequestHandler(ReadResourceRequestSchema, (req) => {
   const { uri } = req.params;
 
-  if (uri === "rox://manifest") return { contents: [{ uri, mimeType: "application/json", text: readFileSync(MANIFEST, "utf8") }] };
-  const id = uri.startsWith("rox-app://") ? uri.slice(10) : "";
+  if (uri === "buwiz://manifest") return { contents: [{ uri, mimeType: "application/json", text: readFileSync(MANIFEST, "utf8") }] };
+  const id = uri.startsWith("buwiz-app://") ? uri.slice(12) : "";
   const file = process.env[`FX_APP_${id.toUpperCase()}`] || (APPS[id] && join(HERE, APPS[id]));
 
   if (!file) throw new McpError(ErrorCode.InvalidParams, `no resource ${uri}`);
