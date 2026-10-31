@@ -87,13 +87,13 @@ fn body(pages: usize, with_notes: bool) -> (String, usize) {
 /// with a footnote), a three-item list, and a table or a picture.
 pub(crate) fn document(pages: usize) -> Vec<u8> {
     let (body, notes) = body(pages, true);
-    package(&body, notes, "")
+    package(&body, notes, "", "")
 }
 
 /// [`document`] without footnotes.
 pub(crate) fn document_without_notes(pages: usize) -> Vec<u8> {
     let (body, notes) = body(pages, false);
-    package(&body, notes, "")
+    package(&body, notes, "", "")
 }
 
 /// A short document with a comment, a tracked insertion and a tracked
@@ -109,21 +109,29 @@ pub(crate) fn reviewed() -> Vec<u8> {
         r#"<w:comments {W}><w:comment w:id="0" w:author="Ada" w:date="2026-01-01T00:00:00Z" w:initials="A">{}</w:comment></w:comments>"#,
         p(0x99, "", &r("Check these words."))
     );
-    package(&body, 0, &comments)
+    package(&body, 0, &comments, "")
 }
 
 /// A one-paragraph-per-line document.
 pub(crate) fn paragraphs(lines: &[&str]) -> Vec<u8> {
     let body: String = lines.iter().enumerate().map(|(i, l)| p(0x200 + i as u32, "", &r(l))).collect();
-    package(&body, 0, "")
+    package(&body, 0, "", "")
 }
 
-fn package(body: &str, notes: usize, comments: &str) -> Vec<u8> {
+/// A title (Title: Calibri Light 28) over one paragraph per line.
+pub(crate) fn titled(title: &str, lines: &[&str]) -> Vec<u8> {
+    let mut body = p(0x1ff, r#"<w:pStyle w:val="Title"/>"#, &r(title));
+    body.extend(lines.iter().enumerate().map(|(i, l)| p(0x200 + i as u32, "", &r(l))));
+    let title = r#"<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light" w:cs="Calibri Light"/><w:sz w:val="56"/></w:rPr></w:style>"#;
+    package(&body, 0, "", title)
+}
+
+fn package(body: &str, notes: usize, comments: &str, styles: &str) -> Vec<u8> {
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
     );
     let styles = format!(
-        r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="264" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="Normal"/><w:rPr><w:sz w:val="18"/></w:rPr></w:style></w:styles>"#
+        r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="264" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="Normal"/><w:rPr><w:sz w:val="18"/></w:rPr></w:style>{styles}</w:styles>"#
     );
     let numbering = format!(
         r#"<w:numbering {W}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>"#

@@ -23,9 +23,11 @@ const CLIENT: u64 = 0x524f_5857;
 pub(crate) struct Layout {
     pub fonts: Fonts,
     pub engine: EngineSession,
-    /// The region request, its fonts filled in, and as parsed (without them).
+    /// The region request, its fonts filled in, and as parsed (without them,
+    /// and as JSON: what the font requirements are asked with).
     request: String,
     base: Value,
+    base_json: String,
     /// Seeded with the first blocks only (a quick first page, display only).
     pub preview: bool,
     /// Only the first pages are laid out (a quick first paint).
@@ -92,7 +94,7 @@ impl Layout {
 
     /// A stand-in while a preview gives way to the whole document.
     pub(crate) fn empty() -> Layout {
-        Layout { fonts: Fonts::new(), engine: EngineSession::new(CLIENT), request: String::new(), base: Value::Null, preview: false, provisional: false, comments: Vec::new(), epoch: 0 }
+        Layout { fonts: Fonts::new(), engine: EngineSession::new(CLIENT), request: String::new(), base: Value::Null, base_json: String::new(), preview: false, provisional: false, comments: Vec::new(), epoch: 0 }
     }
 
     /// The whole document after a preview: the fonts and the request kept.
@@ -113,31 +115,59 @@ impl Layout {
                 None => docx_edit::seed_from_docx(engine.doc(), bytes)?,
             }
         }
-        let mut layout = Layout { fonts, engine, request: String::new(), base: base.clone(), preview: preview.is_some(), provisional: false, comments, epoch: 0 };
-        layout.request = layout.fill_fonts(base)?;
+        let base_json = base.to_string();
+        let mut layout = Layout { fonts, engine, request: String::new(), base, base_json, preview: preview.is_some(), provisional: false, comments, epoch: 0 };
+        let needs = layout.font_keys()?;
+        layout.fill_fonts(&needs);
         Ok(Some(layout))
     }
 
-    /// `request` with a chain for every font its text needs.
-    fn fill_fonts(&mut self, mut request: Value) -> Result<String, String> {
-        let needs: Vec<Value> = {
-            let _scope = self.fonts.enter();
-            serde_json::from_str(&self.engine.layout_font_requirements_json(&request.to_string())?).map_err(|e| e.to_string())?
-        };
-        for n in &needs {
-            if let Some(key) = n["key"].as_str() {
-                self.fonts.chain(key);
-            }
+    /// The `family|bold|italic` key of every font the text needs now.
+    fn font_keys(&self) -> Result<Vec<String>, String> {
+        let _scope = self.fonts.enter();
+        let needs: Vec<Value> = serde_json::from_str(&self.engine.layout_font_requirements_json(&self.base_json)?).map_err(|e| e.to_string())?;
+        Ok(needs.iter().filter_map(|n| n["key"].as_str().map(str::to_owned)).collect())
+    }
+
+    /// The request with a chain for each of `keys` (and every one before).
+    fn fill_fonts(&mut self, keys: &[String]) {
+        for key in keys {
+            self.fonts.chain(key);
         }
         // the defaults' own chain, for text that names no font
         self.fonts.chain("calibri|0|0");
+        let mut request = self.base.clone();
         request["measurement"] = json!({
             "fontChains": self.fonts.chains_json(),
             "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
             "compat": {"noLeading": false, "doNotExpandShiftReturn": false},
             "authoritativeShaping": true,
         });
-        Ok(request.to_string())
+        self.request = request.to_string();
+    }
+
+    /// After an edit, before it is laid out: chains for the fonts it brought
+    /// in (bold on a face the text had only upright, a new family), as the
+    /// web editor asks before each relayout. Whether the request grew; the
+    /// retained one would measure the new key's text one em a character.
+    pub(crate) fn fonts_grew(&mut self) -> Result<bool, String> {
+        let keys = self.font_keys()?;
+        if keys.iter().all(|k| self.fonts.has(k)) {
+            return Ok(false);
+        }
+        self.fill_fonts(&keys);
+        Ok(true)
+    }
+
+    /// Lays out again after an edit in `story` with the request as it is
+    /// now (one [`Self::fonts_grew`] grew); display lists for `window`.
+    pub(crate) fn after_edit(&mut self, story: &str, window: std::ops::Range<usize>) -> Result<(), String> {
+        let _scope = self.fonts.enter();
+        self.engine.layout_document_with_regions_after_edit(&self.request, Some(story))?;
+        self.engine.set_display_window(Some(window));
+        let f = self.engine.build_display_list_frame(&self.extras(), self.epoch)?;
+        self.took(&f);
+        Ok(())
     }
 
     /// The display builder's extras: the same chains.

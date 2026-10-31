@@ -324,16 +324,30 @@ impl Word {
         (on("bold"), on("italic"), underline, size)
     }
 
-    /// Lays out again after an edit in `story` and redraws what changed.
-    fn relayout(&mut self, story: &str, outs: &mut Vec<Out>) {
+    /// Lays out again after an edit in `story` and redraws what changed;
+    /// `fonts`: the edit may have brought in a font (plain typing takes the
+    /// fonts of the text it lands in, so it skips the check, which reads
+    /// every story: ~40 ms on 200 pages).
+    fn relayout(&mut self, story: &str, outs: &mut Vec<Out>, fonts: bool) {
         if !self.complete {
             self.finish(outs);
         }
-        let _scope = self.layout.fonts.enter();
-        let frame = self.layout.engine.apply_and_layout(story, self.layout.epoch);
-        drop(_scope);
-        match frame {
-            Ok(f) => self.layout.took(&f),
+        let grew = fonts
+            && self.layout.fonts_grew().unwrap_or_else(|e| {
+                log::warn!("word: fonts: {e}");
+                false
+            });
+        let laid = if grew {
+            let window = self.window();
+            self.layout.after_edit(story, window)
+        } else {
+            let _scope = self.layout.fonts.enter();
+            let frame = self.layout.engine.apply_and_layout(story, self.layout.epoch);
+            drop(_scope);
+            frame.map(|f| self.layout.took(&f))
+        };
+        match laid {
+            Ok(()) => {}
             Err(e) => {
                 log::warn!("word: relayout: {e}");
                 outs.push(Out::Note(format!("Couldn't lay the page out again: {e}")));
@@ -877,12 +891,42 @@ impl Word {
         self.index().paras == fresh.paras
     }
 
-    /// The engine's part of a key's echo, and the index's, in ms.
-    pub(crate) fn echo_parts(&mut self) -> (f64, f64, f64) {
+    /// Page `i`'s display list as laid out now.
+    pub(crate) fn page(&self, i: usize) -> Option<DisplayPage> {
+        self.layout.page(i)
+    }
+
+    /// Whether the layout holds a chain for the `family|bold|italic` key.
+    pub(crate) fn has_chain(&self, key: &str) -> bool {
+        self.layout.fonts.chains_json().get(key).is_some()
+    }
+
+    /// Sets the selection's font family, as a font picker would.
+    pub(crate) fn set_family(&mut self, family: &str) -> Vec<Out> {
+        let (story, a, b) = self.range();
+        let delta = InlineFormatDelta { font_family: Patch::Set(docx_edit::FontFamilyPatch { ascii: family.to_owned(), h_ansi: None }), ..Default::default() };
+        self.layout.engine.doc().format_range(&ctx(), StoryRange::new(&story, a, b), &delta).unwrap();
+        let mut outs = Vec::new();
+        self.relayout(&story, &mut outs, true);
+        outs.push(self.caret(false));
+        outs
+    }
+
+    /// Lets the engine re-lower only a typed-in paragraph (off by default).
+    pub(crate) fn set_local_lowering(&self, on: bool) {
+        self.layout.engine.set_local_lowering(on);
+    }
+
+    /// The engine's part of a key's echo (the insert, the font preflight,
+    /// the relayout and lists), and the index's, in ms.
+    pub(crate) fn echo_parts(&mut self) -> (f64, f64, f64, f64) {
         let t = std::time::Instant::now();
         let at = self.head.clone();
         self.layout.engine.doc().insert_text(&ctx(), Position::new(&at.story, at.offset), "y", FormatPolicy::Inherit).unwrap();
         let insert = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        assert!(!self.layout.fonts_grew().unwrap());
+        let fonts = t.elapsed().as_secs_f64() * 1e3;
         let t = std::time::Instant::now();
         let _scope = self.layout.fonts.enter();
         let f = self.layout.engine.apply_and_layout(&at.story, self.layout.epoch).unwrap();
@@ -891,7 +935,7 @@ impl Word {
         let layout = t.elapsed().as_secs_f64() * 1e3;
         let t = std::time::Instant::now();
         self.index = Some(Index::build(self.layout.engine.doc()));
-        (insert, layout, t.elapsed().as_secs_f64() * 1e3)
+        (insert, fonts, layout, t.elapsed().as_secs_f64() * 1e3)
     }
 }
 
@@ -938,10 +982,15 @@ impl Document for Word {
 
     fn run(&mut self, cmd: Cmd) -> (Vec<Out>, bool) {
         let mut outs = Vec::new();
+        let plain = match &cmd {
+            Cmd::Type(_) | Cmd::Backspace | Cmd::Delete => true,
+            Cmd::Paste(t) => !t.contains('\n'),
+            _ => false,
+        };
         let edit = |w: &mut Word, outs: &mut Vec<Out>, r: Result<String, String>| -> bool {
             match r {
                 Ok(story) => {
-                    w.relayout(&story, outs);
+                    w.relayout(&story, outs, !plain);
                     outs.push(w.caret(true));
                     true
                 }
