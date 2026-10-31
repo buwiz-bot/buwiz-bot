@@ -12,7 +12,7 @@ use nsh_platform_macos as platform;
 /// The process logger: `env_logger` as before, plus every `nsh::jank`
 /// line (a frame over budget, a slow engine wake-up, and what each did —
 /// logged while the performance monitor runs, ⌘⇧F) appended to
-/// `~/Library/Logs/Rox/jank.log` (`ROX_JANK_LOG` overrides). The monitor's
+/// `~/Library/Logs/Buwiz Bot/jank.log` (`ROX_JANK_LOG` overrides). The monitor's
 /// Clear (⌘⇧K) logs `nsh_engine::perf::RESET_MARK`, which empties the file:
 /// what is in it is what happened since the last clear.
 #[cfg(target_os = "macos")]
@@ -37,7 +37,7 @@ mod jank_log {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var_os("HOME").unwrap_or_default();
-                std::path::Path::new(&home).join("Library/Logs/Rox/jank.log")
+                rox::identity::logs_dir(std::path::Path::new(&home)).join("jank.log")
             });
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -126,7 +126,7 @@ mod jank_log {
 
 /// The root the runners mount: the same component every platform shows.
 pub fn app_root() -> nsh_core::element::Root {
-    let root = nsh_core::element::Root::of::<rox::App>().app_id("dev.goldcoders.rox");
+    let root = nsh_core::element::Root::of::<rox::App>().app_id(rox::identity::APP_ID);
     rox::fonts().into_iter().fold(root, |root, font| root.font(font))
 }
 
@@ -139,13 +139,19 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
     jank_log::init();
+    // Rox's data dir becomes Buwiz Bot's, once, before anything opens it
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    match rox::identity::migrate_data(std::env::var_os("ROX_DATA_DIR").as_deref(), &home) {
+        Ok(done) => log::info!("rox: data dir migration: {done:?}"),
+        Err(e) => log::error!("rox: Rox's data dir was not moved (it is used where it is): {e}"),
+    }
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
     rox::broker::ensure_started();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: rox::app_name().to_owned(),
-        app_id: "dev.goldcoders.rox".to_owned(),
+        app_id: rox::identity::APP_ID.to_owned(),
         size: (1100, 760),
         // `ROX_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
         // costs, CPU/GPU/memory) at the window's top right.

@@ -3,8 +3,9 @@
 //! - Metadata (id, origin, username, label, kind, notes, timestamps) is a
 //!   sqlite `site_logins` table in Rox's own data dir ([`data_dir`],
 //!   `logins.db`). Rox kept nothing on disk before but its logs
-//!   (`~/Library/Logs/Rox`), so the dir is the matching
-//!   `~/Library/Application Support/Rox`.
+//!   (`~/Library/Logs/Buwiz Bot`), so the dir is the matching
+//!   `~/Library/Application Support/Buwiz Bot` (Rox's `…/Rox` before the
+//!   rename, moved over by [`crate::identity::migrate_data`]).
 //! - The secret is a Keychain generic password, service
 //!   [`KEYCHAIN_SERVICE`], account = row id ([`keychain`]). Never a column,
 //!   never a file, never a log line.
@@ -37,7 +38,13 @@ pub(crate) use page::settings_page;
 use touch_id::{AuthOutcome, OwnerGate};
 
 /// Keychain service; the account is the `site_logins` row id.
-pub(crate) const KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.site-login";
+pub(crate) const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.site-login";
+/// Rox's: its items are moved over once ([`move_rox_secrets`]).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.site-login";
+/// Written in the data dir once Rox's secrets were moved.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const KEYCHAIN_MARKER: &str = ".keychain-moved-from-rox";
 
 /// The three kinds of row.
 pub(crate) const KIND_PASSWORD: &str = "password";
@@ -110,13 +117,10 @@ pub(crate) struct Vault {
     pending: Mutex<HashMap<String, PendingSave>>,
 }
 
-/// `ROX_DATA_DIR`, else `~/Library/Application Support/Rox`.
+/// `ROX_DATA_DIR`, else `~/Library/Application Support/Buwiz Bot`
+/// ([`crate::identity::data_dir`]).
 pub(crate) fn data_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("ROX_DATA_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d);
-    }
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Application Support/Rox")
+    crate::identity::data_dir()
 }
 
 /// The app's vault: the table in [`data_dir`], the Keychain, the real
@@ -143,6 +147,26 @@ fn new_id() -> String {
     format!("sl_{:x}{:016x}", now_ms(), h.finish())
 }
 
+/// Moves the secrets of the rows in `c` from Rox's Keychain service to
+/// ours, once: [`KEYCHAIN_MARKER`] in `dir` says it is done; a failure
+/// writes none, so the next launch tries again. macOS may ask once for
+/// each item, which Rox's binary saved.
+#[cfg(target_os = "macos")]
+fn move_rox_secrets(dir: &std::path::Path, c: &Connection) {
+    let marker = dir.join(KEYCHAIN_MARKER);
+    if marker.exists() {
+        return;
+    }
+    let accounts: Vec<String> = db::list(c).unwrap_or_default().iter().flat_map(|r| [r.id.clone(), code_account(&r.id)]).collect();
+    match keychain::move_secrets(&keychain::Keychain(OLD_KEYCHAIN_SERVICE), &keychain::Keychain(KEYCHAIN_SERVICE), &accounts) {
+        Ok(n) => {
+            log::info!("rox: {n} saved login secret(s) moved to {KEYCHAIN_SERVICE}");
+            let _ = std::fs::write(&marker, format!("{{\"moved\":{n}}}\n"));
+        }
+        Err(e) => log::warn!("rox: saved login secrets not moved from {OLD_KEYCHAIN_SERVICE} yet: {e}"),
+    }
+}
+
 /// The title a row gets when the person gave none.
 pub(crate) fn default_label(username: &str, origin: &str) -> String {
     format!("{username} on {origin}")
@@ -160,6 +184,10 @@ impl Vault {
             .map_err(|e| e.to_string())
             .and_then(|()| Connection::open(dir.join("logins.db")).map_err(|e| e.to_string()))
             .and_then(|c| db::migrate(&c).map(|()| c).map_err(|e| e.to_string()));
+        #[cfg(target_os = "macos")]
+        if let Ok(c) = &conn {
+            move_rox_secrets(&dir, c);
+        }
         let (db, open_error) = match conn {
             Ok(c) => (Some(c), None),
             Err(e) => {

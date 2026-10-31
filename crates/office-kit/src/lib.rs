@@ -6,6 +6,7 @@
 //! ([`host`]). Word (`buwiz-word`) and the spreadsheet
 //! (`buwiz-spreadsheet`) are built on it.
 
+pub mod bundle;
 pub mod clipboard;
 pub mod draw;
 pub mod fonts;
