@@ -49,7 +49,7 @@ pub(crate) fn hex(s: &str) -> Hsla {
 pub(crate) type Measure<'a> = &'a dyn Fn(&str, &str) -> f32;
 
 /// The CSS font of a cell's text: BetterOffice gives points.
-fn css_font(size_pt: f32, bold: bool, italic: bool, family: Option<&str>) -> String {
+pub(crate) fn css_font(size_pt: f32, bold: bool, italic: bool, family: Option<&str>) -> String {
     let px = size_pt * 4.0 / 3.0;
     let family = family.filter(|f| !f.is_empty()).map(|f| format!("\"{}\"", f.replace('"', ""))).unwrap_or_else(|| "system-ui".to_owned());
     format!("{}{}{px}px {family}", if italic { "italic " } else { "" }, if bold { "bold " } else { "" })

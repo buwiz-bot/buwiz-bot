@@ -43,7 +43,7 @@ pub(crate) fn focus() {
 /// Whether the sheet's keys apply: it shows and nothing is being edited.
 pub(crate) fn navigating() -> bool {
     let st = store();
-    sheet_showing() && st.office.sheet.editing.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
+    sheet_showing() && st.office.sheet.editing.with(Option::is_none) && st.office.sheet.chart.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
 }
 
 /// Whether a cell is being edited.
@@ -54,7 +54,7 @@ pub(crate) fn editing() -> bool {
 /// A spreadsheet shows natively: not a Word document, whose keys
 /// (arrows, Shift-arrows, Backspace, ⌘Z…) the sheet's scope would take
 /// first.
-fn sheet_showing() -> bool {
+pub(crate) fn sheet_showing() -> bool {
     office::showing() && !store().office.is_word.get()
 }
 
@@ -111,24 +111,68 @@ pub(crate) fn select_all() {
     focus();
 }
 
-/// A press on `cell` (Shift extends; ⌘ opens its link).
-pub(crate) fn press(cell: (u32, u32), shift: bool, cmd: bool) {
+/// A press on `cell` (Shift extends).
+pub(crate) fn press(cell: (u32, u32), shift: bool) {
     let u = ui();
+    super::chart::deselect();
     commit_editing();
-    if cmd && let Some(url) = link_at(cell) {
-        store().open_link(&url);
-        return;
-    }
     u.sel.set(u.sel.get_untracked().press(cell, shift));
     read_active();
     focus();
 }
 
 /// The link of `cell`, if the list in view has one there.
-fn link_at((r, c): (u32, u32)) -> Option<String> {
-    ui().shown.with_untracked(|s| {
-        s.as_ref()?.list.hyperlinks.iter().find(|h| (h.top..=h.bottom).contains(&r) && (h.left..=h.right).contains(&c)).and_then(|h| h.external_target.clone())
-    })
+pub(crate) fn link_at((r, c): (u32, u32)) -> Option<betteroffice_xlsx::HyperlinkRegion> {
+    ui().shown.with_untracked(|s| s.as_ref()?.list.hyperlinks.iter().find(|h| (h.top..=h.bottom).contains(&r) && (h.left..=h.right).contains(&c)).cloned())
+}
+
+thread_local! {
+    /// The cell a link to another sheet goes to, once that sheet shows.
+    static GO_TO: std::cell::Cell<Option<(usize, (u32, u32))>> = const { std::cell::Cell::new(None) };
+}
+
+/// A click on a link's cell, as the web editor takes it: a link out opens,
+/// a link into the workbook (`'Sheet 2'!B3`) goes to its cell. False when
+/// the cell has no link.
+pub(crate) fn follow_link(cell: (u32, u32)) -> bool {
+    let Some(h) = link_at(cell) else { return false };
+    if let Some(url) = h.external_target {
+        store().open_link(&url);
+        return true;
+    }
+    let Some(loc) = h.location else { return true };
+    let loc = loc.trim_start_matches('#');
+    let (name, addr) = match loc.rsplit_once('!') {
+        Some((n, a)) => (Some(n.trim_matches('\'').replace("''", "'")), a),
+        None => (None, loc),
+    };
+    let addr = addr.split(':').next().unwrap_or_default().replace('$', "");
+    let Ok(at) = betteroffice_xlsx::CellRef::parse_a1(&addr) else { return true };
+    let to = (at.row.min(select::LAST_ROW), at.col.min(select::LAST_COL));
+    let u = ui();
+    let Some(shape) = u.shape.get_untracked() else { return true };
+    let sheet = match name {
+        Some(n) => match shape.0.sheets.iter().position(|s| s.eq_ignore_ascii_case(&n)) {
+            Some(i) => i,
+            None => return true,
+        },
+        None => shape.0.active,
+    };
+    if sheet == shape.0.active {
+        set_sel(Sel::at(to));
+    } else {
+        GO_TO.with(|g| g.set(Some((sheet, to))));
+        send(Cmd::Sheet(sheet));
+    }
+    true
+}
+
+/// Where a sheet just switched to opens: a link's cell, else A1.
+pub(crate) fn opened_at(sheet: usize) -> Sel {
+    match GO_TO.with(std::cell::Cell::take) {
+        Some((s, cell)) if s == sheet => Sel::at(cell),
+        _ => Sel::default(),
+    }
 }
 
 /// Starts editing `cell`: with `typed` text replacing it, else its
@@ -263,6 +307,7 @@ pub(crate) fn to_clipboard(tsv: &str, html: &str) {
 pub(crate) fn menu(cell: (u32, u32), x: f32, y: f32) {
     use crate::store::CtxItem;
     let u = ui();
+    super::chart::deselect();
     commit_editing();
     if !u.sel.get_untracked().contains(cell) {
         u.sel.set(Sel::at(cell));
@@ -288,6 +333,47 @@ pub(crate) fn menu(cell: (u32, u32), x: f32, y: f32) {
     crate::ctx::open_at(x, y, items);
 }
 
+/// The right-click menu over a column's (`cols`) or row's header: what
+/// changes the whole columns or rows, Hide and Unhide among it.
+pub(crate) fn header_menu(cols: bool, i: u32, x: f32, y: f32) {
+    use crate::store::CtxItem;
+    let u = ui();
+    super::chart::deselect();
+    commit_editing();
+    let s = u.sel.get_untracked();
+    let ((r0, c0), (r1, c1)) = s.range();
+    let whole = if cols { r0 == 0 && r1 == select::LAST_ROW && (c0..=c1).contains(&i) } else { c0 == 0 && c1 == select::LAST_COL && (r0..=r1).contains(&i) };
+    if !whole {
+        u.sel.set(if cols { s.col(i, false) } else { s.row(i, false) });
+        read_active();
+    }
+    let ((r0, c0), (r1, c1)) = u.sel.get_untracked().range();
+    let items = if cols {
+        let n = c1 - c0 + 1;
+        vec![
+            CtxItem::row("Insert Column Left", "plus", "sheet", "col-left".into()),
+            CtxItem::row("Insert Column Right", "plus", "sheet", "col-right".into()),
+            CtxItem::row(&if n > 1 { format!("Delete {n} Columns") } else { "Delete Column".to_owned() }, "trash", "sheet", "delete-cols".into()),
+            CtxItem::row("Clear Contents", "close", "sheet", "clear".into()),
+            CtxItem::separator(),
+            CtxItem::row("Hide", "eyeOff", "sheet", "hide-cols".into()),
+            CtxItem::row("Unhide", "eye", "sheet", "unhide-cols".into()),
+        ]
+    } else {
+        let n = r1 - r0 + 1;
+        vec![
+            CtxItem::row("Insert Row Above", "plus", "sheet", "row-above".into()),
+            CtxItem::row("Insert Row Below", "plus", "sheet", "row-below".into()),
+            CtxItem::row(&if n > 1 { format!("Delete {n} Rows") } else { "Delete Row".to_owned() }, "trash", "sheet", "delete-rows".into()),
+            CtxItem::row("Clear Contents", "close", "sheet", "clear".into()),
+            CtxItem::separator(),
+            CtxItem::row("Hide", "eyeOff", "sheet", "hide-rows".into()),
+            CtxItem::row("Unhide", "eye", "sheet", "unhide-rows".into()),
+        ]
+    };
+    crate::ctx::open_at(x, y, items);
+}
+
 /// A row of the sheet's menu.
 pub(crate) fn action(what: &str) {
     let u = ui();
@@ -304,6 +390,10 @@ pub(crate) fn action(what: &str) {
         "col-right" => send(Cmd::Cols { sheet, at: c1 + 1, count: 1 }),
         "delete-rows" => send(Cmd::Rows { sheet, at: r0, count: -((r1 - r0 + 1) as i64) }),
         "delete-cols" => send(Cmd::Cols { sheet, at: c0, count: -((c1 - c0 + 1) as i64) }),
+        "hide-cols" => super::resize::hide(true, true),
+        "unhide-cols" => super::resize::hide(true, false),
+        "hide-rows" => super::resize::hide(false, true),
+        "unhide-rows" => super::resize::hide(false, false),
         _ => {}
     }
     focus();
@@ -324,6 +414,8 @@ pub(crate) fn cell_editor(u: &'static SheetUi) -> impl IntoElement {
         .element_ref(&field)
         .label("Cell")
         .auto_focus(true)
+        // a selected chart takes no typing (the web's grid has the keys)
+        .readonly(move || u.chart.with(Option::is_some))
         .value(move || u.editing.with(|e| e.as_ref().map(|e| e.text.clone()).unwrap_or_default()))
         .on_change(move |v: &str| match u.editing.get_untracked() {
             Some(_) => u.editing.update(|e| {
@@ -379,6 +471,7 @@ fn formula_bar(u: &'static SheetUi) -> impl IntoElement {
         .child(
             input()
                 .label("Formula bar")
+                .readonly(move || u.chart.with(Option::is_some))
                 .flex_1()
                 .h(px(24.0))
                 .px_2()
@@ -442,6 +535,7 @@ fn status_bar(u: &'static SheetUi) -> impl IntoElement {
                                 .bg(if on { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
                                 .child(text(name.clone()).text_size(px(12.0)).text_color(if on { theme::TEXT } else { theme::MUTED }))
                                 .on_press(move || {
+                                    super::chart::deselect();
                                     commit_editing();
                                     send(Cmd::Sheet(i));
                                 })
