@@ -29,6 +29,9 @@
 #                           `npm run build:office-editor` in server/)
 #   MATERIAL_SYMBOLS_TTF=<path>  the office views' icon font to package
 #                           (default: fetched once into ~/Library/Caches/Rox)
+#   OFFICE_FONTS=<dir>      the @betteroffice/fonts package whose faces the
+#                           Word and sheet views draw with (default
+#                           server/node_modules/@betteroffice/fonts)
 set -euo pipefail
 
 DEFAULT_APP="$HOME/Applications/Rox.app"
@@ -58,6 +61,22 @@ fi
 mkdir -p "$APP/Contents/Resources/fonts"
 cp "$SYMBOLS" "$APP/Contents/Resources/fonts/MaterialSymbolsOutlined.ttf"
 cp "$ROOT/app/fonts/MaterialSymbolsOutlined-LICENSE" "$APP/Contents/Resources/fonts/MaterialSymbolsOutlined-LICENSE"
+
+# The Word and sheet views' fonts (app/src/office/fonts.rs): every face of
+# @betteroffice/fonts (OFL; Carlito for Calibri, Liberation for Arial, ...),
+# the ones the web editor measures with, with their licences, in
+# Contents/Resources/fonts/office/. Not in git: from server/'s node_modules
+# (npm ci).
+OFFICE_FONTS="${OFFICE_FONTS:-$ROOT/server/node_modules/@betteroffice/fonts}"
+if [ ! -f "$OFFICE_FONTS/assets/Carlito-Regular.ttf" ]; then
+  echo "no @betteroffice/fonts at $OFFICE_FONTS: run npm ci in server/ (or set OFFICE_FONTS to the package); the Word and sheet views' fonts need it" >&2
+  exit 1
+fi
+rm -rf "$APP/Contents/Resources/fonts/office"
+mkdir -p "$APP/Contents/Resources/fonts/office/LICENSES"
+cp "$OFFICE_FONTS"/assets/*.ttf "$APP/Contents/Resources/fonts/office/"
+cp "$OFFICE_FONTS"/LICENSES/* "$APP/Contents/Resources/fonts/office/LICENSES/"
+cp "$OFFICE_FONTS/LICENSE" "$APP/Contents/Resources/fonts/office/LICENSE"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

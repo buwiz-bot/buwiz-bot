@@ -80,8 +80,12 @@ pub fn app_name() -> &'static str {
 }
 
 /// The font files the root registers before it renders (`Root::font`):
-/// the office views' icon font, when the app bundle has it.
+/// the office views' icon font, when the app bundle has it. The office
+/// documents' bundled fonts (`office::fonts`) start registering with
+/// CoreText here too, straight from their files, off the main thread (a
+/// document's worker waits for them before it opens one).
 pub fn fonts() -> Vec<Vec<u8>> {
+    std::thread::spawn(office::fonts::register);
     office::ui::icons::font_data().into_iter().collect()
 }
 
