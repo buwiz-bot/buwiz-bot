@@ -134,7 +134,7 @@ impl Word {
         self.edited = true;
         self.index = None;
         self.review = None;
-        outs.push(Out::Meta(self.meta()));
+        outs.push(Out::Meta(Box::new(self.meta())));
         self.redraw(outs);
         outs.push(self.caret(false));
         true

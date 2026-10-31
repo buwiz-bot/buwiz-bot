@@ -176,7 +176,7 @@ pub(crate) struct Meta {
 }
 
 pub(crate) enum Out {
-    Meta(Meta),
+    Meta(Box<Meta>),
     /// Page `index` drawn for layout `rev` at the zoom it was asked at.
     Page { index: usize, rev: u64, zoom: f32, drawn: Arc<Drawn> },
     Caret(Caret),
@@ -432,7 +432,7 @@ impl Word {
             self.found = self.index().find(&q);
             self.found_at = self.found_at.min(self.found.len().saturating_sub(1));
         }
-        outs.push(Out::Meta(self.meta_with(patched)));
+        outs.push(Out::Meta(Box::new(self.meta_with(patched))));
         self.redraw(outs);
     }
 
@@ -461,7 +461,7 @@ impl Word {
         self.rev += 1;
         self.index = None;
         self.review = None;
-        outs.push(Out::Meta(self.meta()));
+        outs.push(Out::Meta(Box::new(self.meta())));
         self.redraw(outs);
     }
 
@@ -1021,7 +1021,7 @@ impl Document for Word {
         let changed = match cmd {
             Cmd::Mode(m) => {
                 self.mode = m;
-                outs.push(Out::Meta(self.meta()));
+                outs.push(Out::Meta(Box::new(self.meta())));
                 false
             }
             Cmd::Style(id) => {
@@ -1066,7 +1066,7 @@ impl Document for Word {
                     outs.push(Out::Note(e));
                 }
                 outs.push(self.caret(false));
-                outs.push(Out::Meta(self.meta()));
+                outs.push(Out::Meta(Box::new(self.meta())));
                 false
             }
             Cmd::Table(op) => {
@@ -1090,7 +1090,7 @@ impl Document for Word {
             Cmd::Click { page, x, y, extend, clicks } => {
                 self.click(page, x, y, extend, clicks);
                 outs.push(self.caret(false));
-                outs.push(Out::Meta(self.meta()));
+                outs.push(Out::Meta(Box::new(self.meta())));
                 false
             }
             Cmd::Move { to, extend } => {
@@ -1099,7 +1099,7 @@ impl Document for Word {
                 }
                 self.step(to, extend);
                 outs.push(self.caret(true));
-                outs.push(Out::Meta(self.meta()));
+                outs.push(Out::Meta(Box::new(self.meta())));
                 false
             }
             Cmd::SelectAll => {
@@ -1161,7 +1161,7 @@ impl Document for Word {
             Cmd::Find { query, back } => {
                 self.find(query, back);
                 outs.push(self.caret(true));
-                outs.push(Out::Meta(self.meta()));
+                outs.push(Out::Meta(Box::new(self.meta())));
                 false
             }
             Cmd::SaveTo(path) => {
@@ -1222,7 +1222,7 @@ impl Document for Word {
         if !self.meta_sent {
             // the first page, then the rest on the next tick
             self.meta_sent = true;
-            outs.push(Out::Meta(self.meta()));
+            outs.push(Out::Meta(Box::new(self.meta())));
             self.redraw(&mut outs);
             outs.push(self.caret(false));
         } else if !self.complete {

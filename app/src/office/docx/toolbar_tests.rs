@@ -22,13 +22,13 @@ fn ok(w: &mut Word, cmd: Cmd) -> Meta {
     if let Some(n) = outs.iter().find_map(|o| if let Out::Note(n) = o { Some(n) } else { None }) {
         panic!("a note: {n}");
     }
-    outs.into_iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(m) } else { None }).unwrap_or_else(|| meta(w))
+    outs.into_iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(*m) } else { None }).unwrap_or_else(|| meta(w))
 }
 
 /// The meta as it is now (a caret move reads it again).
 fn meta(w: &mut Word) -> Meta {
     let (outs, _) = w.run(Cmd::Find { query: String::new(), back: false });
-    outs.into_iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(m) } else { None }).unwrap()
+    outs.into_iter().rev().find_map(|o| if let Out::Meta(m) = o { Some(*m) } else { None }).unwrap()
 }
 
 /// The saved document part.
@@ -57,7 +57,8 @@ fn word_selected(lines: &[&str]) -> Word {
 #[test]
 fn each_toggle_sets_its_mark_and_lights() {
     let mut w = word_selected(&["make this bold"]);
-    let marks: [(Fmt, fn(&Meta) -> bool); 5] = [(Fmt::Bold, |m| m.fmt.bold), (Fmt::Italic, |m| m.fmt.italic), (Fmt::Underline, |m| m.fmt.underline), (Fmt::Strike, |m| m.fmt.strike), (Fmt::Superscript, |m| m.fmt.superscript)];
+    type Lit = fn(&Meta) -> bool;
+    let marks: [(Fmt, Lit); 5] = [(Fmt::Bold, |m| m.fmt.bold), (Fmt::Italic, |m| m.fmt.italic), (Fmt::Underline, |m| m.fmt.underline), (Fmt::Strike, |m| m.fmt.strike), (Fmt::Superscript, |m| m.fmt.superscript)];
     for (f, on) in marks {
         assert!(!on(&meta(&mut w)), "{f:?} off first");
         assert!(on(&ok(&mut w, Cmd::Format(f))), "{f:?} lit");
@@ -136,7 +137,7 @@ fn a_link_inserts_edits_and_comes_off() {
     let rels = part(&bytes, "word/_rels/document.xml.rels");
     assert!(rels.contains("https://example.org") && !rels.contains("https://example.com"), "{rels}");
     let d = betteroffice_docx::Document::open(&bytes).unwrap();
-    assert_eq!(betteroffice_docx::get_paragraph_text(&d.paragraphs()[0]), "Visit the site today");
+    assert_eq!(betteroffice_docx::get_paragraph_text(d.paragraphs()[0]), "Visit the site today");
     w.run(Cmd::Move { to: Move::Left, extend: false });
     let m = ok(&mut w, Cmd::Unlink);
     assert!(m.fmt.link.is_none());
