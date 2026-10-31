@@ -492,7 +492,7 @@ fn a_split_cell_saves() {
     doc.split_cell_grid(&ctx(), &cell(0, 0, 0), None, Some(2)).unwrap();
     let t = table_xml(&body(&saved(&source, &engine)), 0);
     assert!(!t.contains("<w:gridSpan"), "{t}");
-    assert_eq!(count(&t.split("</w:tr>").next().unwrap().to_owned(), "<w:tc>"), 3, "{t}");
+    assert_eq!(count(t.split("</w:tr>").next().unwrap(), "<w:tc>"), 3, "{t}");
 }
 
 #[test]
@@ -505,4 +505,86 @@ fn headers_footers_and_notes_save_their_edits() {
     let notes = part(&bytes, "word/footnotes.xml");
     assert!(notes.contains("Edited"), "{notes}");
     assert!(notes.contains("<w:footnoteRef/>"), "the note's own mark is kept: {notes}");
+}
+
+// ---- through Word's own commands ----
+
+use super::doc::{Cmd, Insert, Move, PageSetup, Word};
+use crate::office::session::Document;
+
+fn word(bytes: Vec<u8>) -> Word {
+    let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();
+    w.tick();
+    w.tick();
+    w
+}
+
+fn save_word(w: &mut Word) -> Vec<u8> {
+    w.edited = true;
+    let (bytes, _) = w.save(std::path::Path::new("a.docx")).unwrap();
+    docx_parse::parse_docx_s9_wire(&bytes, Default::default()).expect("docx-parse reads the save");
+    office_oxide::Document::from_reader(Cursor::new(bytes.clone()), office_oxide::DocumentFormat::Docx).expect("office_oxide reads the save");
+    bytes
+}
+
+#[test]
+fn words_section_breaks_save() {
+    let mut w = word(fixture::paragraphs(&["Hello world", "Second line"]));
+    w.run(Cmd::Move { to: Move::WordRight, extend: false });
+    w.run(Cmd::Insert(Insert::SectionBreak("nextPage")));
+    w.run(Cmd::Move { to: Move::DocEnd, extend: false });
+    w.run(Cmd::Move { to: Move::WordLeft, extend: false });
+    w.run(Cmd::Insert(Insert::SectionBreak("continuous")));
+    let xml = body(&save_word(&mut w));
+    // two sections closed by paragraphs, and the body's own
+    assert_eq!(count(&xml, "<w:pPr><w:sectPr>"), 2, "{xml}");
+    // a section's type is how it starts: the second on a new page, the last continuing
+    let second = &xml[xml.find("<w:pPr><w:sectPr>").unwrap() + 1..];
+    let second = &second[second.find("<w:pPr><w:sectPr>").unwrap()..];
+    assert!(second.split("</w:sectPr>").next().unwrap().contains(r#"<w:type w:val="nextPage"/>"#), "{xml}");
+    let last = &xml[xml.rfind("<w:sectPr").unwrap()..];
+    assert!(last.contains(r#"<w:type w:val="continuous"/>"#), "{last}");
+    assert!(paragraph_with(&xml, "Hello").contains("<w:sectPr>"));
+}
+
+#[test]
+fn words_page_setup_saves() {
+    let mut w = word(fixture::document(1));
+    w.run(Cmd::Move { to: Move::Right, extend: false });
+    let s = PageSetup { width: 16838.0, height: 11906.0, orientation: "landscape".into(), top: 720.0, bottom: 720.0, left: 720.0, right: 720.0 };
+    w.run(Cmd::PageSetup(s));
+    let xml = body(&save_word(&mut w));
+    let sect = &xml[xml.rfind("<w:sectPr").unwrap()..];
+    assert!(sect.contains(r#"<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>"#), "{sect}");
+    assert!(sect.contains(r#"w:top="720""#) && sect.contains(r#"w:left="720""#) && sect.contains(r#"w:right="720""#) && sect.contains(r#"w:bottom="720""#), "{sect}");
+}
+
+#[test]
+fn words_watermarks_save_text_and_picture() {
+    use base64::Engine as _;
+    let mut w = word(fixture::document(1));
+    w.run(Cmd::Move { to: Move::Right, extend: false });
+    let text = json!({ "kind": "text", "text": "DRAFT", "font": "Calibri", "color": "#C0C0C0", "semitransparent": true, "layout": "diagonal" });
+    w.run(Cmd::Watermark(Some(text)));
+    let bytes = save_word(&mut w);
+    assert!(headers(&bytes).iter().any(|h| h.contains("DRAFT") && h.contains("PowerPlusWaterMarkObject")), "{:?}", headers(&bytes));
+    let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(fixture::png()));
+    w.run(Cmd::Watermark(Some(json!({ "kind": "picture", "dataUrl": url, "contentType": "image/png", "scale": 1.0, "washout": true }))));
+    let bytes = save_word(&mut w);
+    let hs = headers(&bytes);
+    assert!(hs.iter().any(|h| h.contains("<v:imagedata")) && !hs.iter().any(|h| h.contains("DRAFT")), "{hs:?}");
+    w.run(Cmd::Watermark(None));
+    let hs = headers(&save_word(&mut w));
+    assert!(!hs.iter().any(|h| h.contains("<v:imagedata") || h.contains("DRAFT")), "{hs:?}");
+}
+
+#[test]
+fn words_table_mid_paragraph_saves_between_the_halves() {
+    let mut w = word(fixture::paragraphs(&["Hello world", "Second line"]));
+    w.run(Cmd::Move { to: Move::WordRight, extend: false });
+    w.run(Cmd::Insert(Insert::Table { rows: 2, cols: 3 }));
+    let xml = body(&save_word(&mut w));
+    let (l, t, r) = (xml.find("Hello").unwrap(), xml.find("<w:tbl>").unwrap(), xml.find("world").unwrap());
+    assert!(l < t && t < r, "{xml}");
+    assert_eq!(count(&table_xml(&xml, 0), "<w:gridCol "), 3);
 }
