@@ -256,6 +256,7 @@ impl Open {
             permissions: Permissions::parse(Some(&perms)).unwrap(),
             permissions_json: Some(perms.clone()),
             js: probe(load::build("board", "Fixture Board", &source).expect("the test app compiles")),
+            native: None,
         });
         let session = Session::open(&CertBroker::honest(), plugin_id, "board", Some(&perms), Some(1)).unwrap();
         let broker = Arc::new(FakeBroker::default());
@@ -1031,3 +1032,6 @@ fn a_sealed_page_carries_the_no_load_policy_after_its_doctype() {
     assert_eq!(seal("\u{feff}\n <!DOCTYPE html><p>"), format!("\u{feff}\n <!DOCTYPE html>{head}<p>"));
     assert_eq!(seal("<html><p>x</p>"), format!("{head}<html><p>x</p>"));
 }
+
+#[path = "bridge_native_tests.rs"]
+mod native;

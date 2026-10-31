@@ -15,7 +15,8 @@
 // per run and may change it); the app sources sit beside this file.
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
 // tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
-// old-cert (a protocol 1.x `rox-session` certificate).
+// old-cert (a protocol 1.x `rox-session` certificate). strict-host breaks
+// none: it refuses to be provisioned by a host older than protocol 2.0.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -79,6 +80,8 @@ const fail = (code, message) => ({ isError: true, content: [{ type: "text", text
 // ── reserved tools (7.8) ─────────────────────────────────────────────────
 function provision(args) {
   if (misbehave("skip-provision")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.provision is not implemented");
+
+  if (misbehave("strict-host") && !/^2\.0\.\d+$/.test(String(args?.protocol))) return fail("protocol_unsupported", `this plugin needs a protocol 2.0 host, not ${args?.protocol}`);
 
   if (args?.key?.alg !== "ed25519" || pubOf(args.key.seed) !== args.pub) return fail("invalid_args", "the key and pub do not match");
 
