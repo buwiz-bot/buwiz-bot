@@ -269,7 +269,15 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
         timeouts.call = Duration::from_millis(ms);
     }
     let clock = if manual_clock { Clock::manual() } else { Clock::system() };
-    Host::new(Options { db: db.to_path_buf(), keys, trust_file, log_dir, clock, timeouts })
+    let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts })?;
+    // Rox's plugin keys, under the new Keychain service before any plugin starts
+    let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
+    match keys.move_from_rox(&ids, &db.with_file_name(rox_broker::helper::keystore::MOVED_MARKER)) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("  keystore: {n} plugin key(s) moved from {}", rox_broker::helper::keystore::OLD_KEYCHAIN_SERVICE),
+        Err(e) => eprintln!("  keystore: plugin keys not moved from {} yet: {e}", rox_broker::helper::keystore::OLD_KEYCHAIN_SERVICE),
+    }
+    Ok(host)
 }
 
 /// `rox-broker helper --db FILE [--log-dir DIR] [--port P]`: the v1

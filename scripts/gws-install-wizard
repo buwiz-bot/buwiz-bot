@@ -5,18 +5,18 @@
 #   1. builds rox-gws and rox-broker (release, RUSTC_WRAPPER= empty);
 #   2. signs the manifest with the publisher key gc-2026-01 from the login
 #      Keychain (macOS asks you) into broker/rox-gws/manifest.signed.json;
-#   3. bundles Rox.app (app/bundle-dev.sh), which ships rox-gws and that
+#   3. bundles Buwiz Bot.app (app/bundle-dev.sh), which ships rox-gws and that
 #      manifest in Contents/Resources/broker/bin/;
 #   4. tells you what to type in Connect Apps to update the plugin.
 #
 # It reads no tokens, secrets or install records, and prints none: the
 # plugin's current environment stays where it is, and step 4 says where.
-#   ROX_APP=<dir>/Rox.app   the bundle (default ~/Applications/Rox.app)
+#   ROX_APP=<dir>/Buwiz Bot.app  the bundle (default ~/Applications/Buwiz Bot.app)
 #   CARGO_TARGET_DIR        honoured, as by bundle-dev.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${ROX_APP:-$HOME/Applications/Rox.app}"
+APP="${ROX_APP:-$HOME/Applications/Buwiz Bot.app}"
 TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
 SIGNED="$ROOT/broker/rox-gws/manifest.signed.json"
 GWS="$APP/Contents/Resources/broker/bin/rox-gws"
@@ -56,6 +56,10 @@ fi
 [ -x "$GWS" ] || { echo "no $GWS: bundle first" >&2; exit 1; }
 
 step "4/4 Update the plugin in Connect Apps"
+case "$GWS" in *" "*)
+  echo "warning: $GWS holds a space, and Connect Apps splits the line at spaces (no quoting):"
+  echo "bundle to a path without one (ROX_APP=<dir>/BuwizBot.app), or keep the plugin on the path it runs from now" ;;
+esac
 cat <<TEXT
 Start Buwiz Bot, open Connect Apps → Add, and type one line: the environment as
 VAR=value words (no spaces inside a value; GWS_UPSTREAM is compact JSON),

@@ -24,14 +24,14 @@ are lost at the next rebuild.
 - Build with `cd app && cargo build -p rox`. Format by hand: rustfmt on the
   app crate rewrites dozens of untouched files.
 - Install a build into the dev bundle by removing the old binary first
-  (`rm` then `cp` to `~/Applications/Rox.app/Contents/MacOS/rox-bin`): a
+  (`rm` then `cp` to `~/Applications/Buwiz Bot.app/Contents/MacOS/buwiz-bot-bin`): a
   copy over it keeps the old code signature and macOS kills the app at
   launch.
 - Drive the running app with `gpui-agent` (`README.md`), not OS clicks or
   keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)rox-agent-menu`,
   read by `app/src/hot.rs`) runs commands: `cmd <command-id>`.
 - Performance: the monitor (`dev.perf`) logs over-budget frames to
-  `~/Library/Logs/Rox/jank.log`; the `/perf` skill reads it.
+  `~/Library/Logs/Buwiz Bot/jank.log`; the `/perf` skill reads it.
 - A build that ignores a source change came from a rustc-wrapper cache:
   rebuild with `RUSTC_WRAPPER=` set empty, and check the version a binary
   reports before you install it.
