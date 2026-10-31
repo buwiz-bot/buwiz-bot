@@ -18,7 +18,7 @@ use super::palette as p;
 use super::select::{STYLES, font_family_select, font_size, style_select, zoom_control};
 use super::table_grid::{insert_table_button, table_grid};
 use super::{shortcut_label, tip_text};
-use crate::office::ui_tests::{Headless, num, read, start_root, until};
+use crate::testing::{Headless, num, read, start_root, until};
 
 #[derive(Clone, Copy)]
 struct Probe {

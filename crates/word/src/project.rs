@@ -17,11 +17,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
-pub(crate) type Obj = Map<String, Value>;
+pub type Obj = Map<String, Value>;
 
 /// The key a rebuilt paragraph carries its engine paragraph in (the web
 /// keeps it in a WeakMap); taken out before the model is written.
-pub(crate) const SESSION_KEY: &str = "\u{0}session";
+pub const SESSION_KEY: &str = "\u{0}session";
 
 // ---- JavaScript's view of JSON values ----
 
@@ -38,7 +38,7 @@ fn st(v: &Value) -> Option<&str> {
 }
 
 /// `v` in a JavaScript condition.
-pub(crate) fn truthy(v: &Value) -> bool {
+pub fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -112,7 +112,7 @@ fn set(o: &mut Obj, k: &str, v: Option<Value>) {
 }
 
 /// A number as JSON, whole numbers as integers (as `JSON.stringify` writes them).
-pub(crate) fn jnum(n: f64) -> Value {
+pub fn jnum(n: f64) -> Value {
     if !n.is_finite() {
         return Value::Null;
     }
@@ -165,7 +165,7 @@ fn emu(px: f64) -> Value {
 }
 
 /// A stable string for a value: keys sorted, `undefined` members dropped.
-pub(crate) fn canon(v: &Value) -> String {
+pub fn canon(v: &Value) -> String {
     match v {
         Value::Array(a) => format!("[{}]", a.iter().map(canon).collect::<Vec<_>>().join(",")),
         Value::Object(o) => {
@@ -196,7 +196,7 @@ fn u16split(s: &str, n: usize) -> (String, String) {
 }
 
 /// A yrs value as JSON (numbers as `jnum` writes them).
-pub(crate) fn any_value(v: &yrs::Any) -> Value {
+pub fn any_value(v: &yrs::Any) -> Value {
     use yrs::Any;
     match v {
         Any::Null | Any::Undefined => Value::Null,
@@ -210,7 +210,7 @@ pub(crate) fn any_value(v: &yrs::Any) -> Value {
     }
 }
 
-pub(crate) fn attrs_obj(a: &std::collections::BTreeMap<String, yrs::Any>) -> Obj {
+pub fn attrs_obj(a: &std::collections::BTreeMap<String, yrs::Any>) -> Obj {
     a.iter().map(|(k, v)| (k.clone(), any_value(v))).collect()
 }
 
@@ -243,7 +243,7 @@ fn arr(v: &Value) -> &[Value] {
 // ---- units: a story's segments with tabs split out ----
 
 #[derive(Clone, Debug)]
-pub(crate) enum Unit {
+pub enum Unit {
     Text { text: String, attrs: Obj },
     Embed { kind: String, payload: Obj, attrs: Obj },
 }
@@ -579,7 +579,7 @@ fn has_sdt_revision(t: &Value) -> bool {
 }
 
 /// The projection of one session onto the document it was opened from.
-pub(crate) struct Projector<'a> {
+pub struct Projector<'a> {
     doc: &'a docx_edit::EditingDoc,
     story_ids: HashSet<String>,
     base_stories: HashMap<String, Vec<Value>>,
@@ -596,7 +596,7 @@ impl<'a> Projector<'a> {
     /// `package` is the parsed package (the web's `document.package`) with
     /// the comments to save; `session_ids` the engine's ids of comments the
     /// model numbers differently.
-    pub(crate) fn new(doc: &'a docx_edit::EditingDoc, package: &Value, session_ids: &HashMap<i64, String>) -> Projector<'a> {
+    pub fn new(doc: &'a docx_edit::EditingDoc, package: &Value, session_ids: &HashMap<i64, String>) -> Projector<'a> {
         let story_ids = doc.list_stories().stories.into_iter().map(|s| s.story).collect();
         let base_stories = base_stories(package);
         let base_paragraphs = base_paragraphs(&base_stories);
@@ -625,7 +625,7 @@ impl<'a> Projector<'a> {
     }
 
     /// `_n`: the package with every story the session holds projected.
-    pub(crate) fn package(&self, package: &Value) -> Result<Value, String> {
+    pub fn package(&self, package: &Value) -> Result<Value, String> {
         let mut out = package.clone();
         if self.story_ids.contains("body") {
             out["document"]["content"] = Value::Array(self.story("body"));
@@ -1556,7 +1556,7 @@ impl<'a> Projector<'a> {
     /// doesn't hold was added in the editor, and saves as a paragraph of
     /// its own holding the break (as the web saves an opaque page break).
     /// The web drops both kinds.
-    pub(crate) fn story(&self, n: &str) -> Vec<Value> {
+    pub fn story(&self, n: &str) -> Vec<Value> {
         let t = self.base_stories.get(n);
         let r: &[(f64, u32, u32)] = self.comments.get(n).map(Vec::as_slice).unwrap_or(&[]);
         let a = self.doc.story_paragraph_ids(n).unwrap_or_default();
@@ -1719,7 +1719,7 @@ fn nested_story(s: &str) -> bool {
                 return true;
             }
         }
-        crate::office::docx::index::cell_of(s).is_some()
+        crate::index::cell_of(s).is_some()
     };
     tail(s)
 }
@@ -2851,7 +2851,7 @@ fn apply_control_value(e: &Value, n: &Value) -> Result<(Value, Vec<Value>), Stri
 
 /// Every paragraph's session key out of `v`, as `(key, paraId)`; the keys
 /// are taken out.
-pub(crate) fn take_session_keys(v: &mut Value, out: &mut Vec<(String, Option<String>)>) {
+pub fn take_session_keys(v: &mut Value, out: &mut Vec<(String, Option<String>)>) {
     match v {
         Value::Array(a) => a.iter_mut().for_each(|v| take_session_keys(v, out)),
         Value::Object(o) => {

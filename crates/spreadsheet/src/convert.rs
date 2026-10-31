@@ -8,7 +8,7 @@ use betteroffice_xlsx::{
 
 /// RFC 4180 rows: quoted fields may hold the separator, quotes (doubled)
 /// and line breaks; `\r\n` and `\n` both end a record.
-pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
+pub fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut rows = Vec::new();
     let mut row = Vec::new();
@@ -59,7 +59,7 @@ pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
 /// A delimited field as a cell value: plain decimal numbers become
 /// numbers; anything else (leading zeros, `1,234`, dates, `TRUE`) stays
 /// the text it was, so saving writes back what was read.
-pub(crate) fn field_value(s: &str) -> CellValue {
+pub fn field_value(s: &str) -> CellValue {
     if s.is_empty() {
         return CellValue::Empty;
     }
@@ -75,7 +75,7 @@ pub(crate) fn field_value(s: &str) -> CellValue {
 
 /// A number as a delimited file writes it: the shortest text that reads
 /// back as the same value.
-pub(crate) fn number_text(v: f64) -> String {
+pub fn number_text(v: f64) -> String {
     if v == 0.0 {
         return "0".to_owned();
     }
@@ -91,7 +91,7 @@ pub(crate) fn number_text(v: f64) -> String {
 }
 
 /// One sheet named `name` from delimited rows.
-pub(crate) fn delimited_model(rows: &[Vec<String>], name: &str) -> WorkbookModel {
+pub fn delimited_model(rows: &[Vec<String>], name: &str) -> WorkbookModel {
     let mut sheet = Sheet::new(name);
     for (r, row) in rows.iter().enumerate() {
         for (c, field) in row.iter().enumerate() {
@@ -126,7 +126,7 @@ fn quote(field: &str, sep: char) -> String {
 
 /// The first sheet of `model` as a delimited file (`\n` line ends, the
 /// last line ended too), from A1 to the used range's corner.
-pub(crate) fn write_delimited(model: &WorkbookModel, sep: char) -> String {
+pub fn write_delimited(model: &WorkbookModel, sep: char) -> String {
     let Some(sheet) = model.sheets.first() else { return String::new() };
     let Some(used) = sheet.used_range() else { return String::new() };
     let mut out = String::new();
@@ -147,7 +147,7 @@ pub(crate) fn write_delimited(model: &WorkbookModel, sep: char) -> String {
 /// A legacy `.xls` workbook as `.xlsx` bytes: its sheets' values, dates
 /// kept as dates. Formulas, styles and charts are not carried over
 /// (office_oxide reads values).
-pub(crate) fn xls_to_xlsx(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub fn xls_to_xlsx(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let doc = office_oxide::xls::XlsDocument::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("Couldn't read the .xls file: {e}"))?;
     let mut model = WorkbookModel::default();
     let mut dates: Vec<Vec<CellInput>> = Vec::new();
@@ -198,7 +198,7 @@ fn is_iso_date(s: &str) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
@@ -245,7 +245,7 @@ pub(crate) mod tests {
     /// A legacy `.xls`: a compound file holding a BIFF8 `Workbook` stream
     /// with one sheet of `cells` (numbers, and text through the shared
     /// string table).
-    pub(crate) fn xls(sheet: &str, cells: &[(u16, u16, Result<f64, &str>)]) -> Vec<u8> {
+    pub fn xls(sheet: &str, cells: &[(u16, u16, Result<f64, &str>)]) -> Vec<u8> {
         fn rec(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
             out.extend(kind.to_le_bytes());
             out.extend((data.len() as u16).to_le_bytes());

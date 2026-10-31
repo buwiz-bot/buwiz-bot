@@ -21,7 +21,7 @@ use super::{Fmt, Word, local, spot};
 
 /// The editing mode dropdown's modes (`ks`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum EditMode {
+pub enum EditMode {
     #[default]
     Editing,
     Suggesting,
@@ -30,22 +30,22 @@ pub(crate) enum EditMode {
 
 /// The reasons the web gives for a command it won't run
 /// (`commands.reasons.*`).
-pub(crate) const VIEWING: &str = "Switch to Editing or Suggesting to make changes.";
-pub(crate) const NOT_SUGGESTED: &str = "This change can't be recorded as a suggestion.";
-pub(crate) const UNSUPPORTED: &str = "This action is not supported yet.";
+pub const VIEWING: &str = "Switch to Editing or Suggesting to make changes.";
+pub const NOT_SUGGESTED: &str = "This change can't be recorded as a suggestion.";
+pub const UNSUPPORTED: &str = "This action is not supported yet.";
 
 /// A text colour as the colour picker gives it (`uE`): an `RRGGBB`, or a
 /// theme slot (the engine keeps the slot; a tint or shade goes with it no
 /// further, as the web's `formatRange` takes it).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TextColor {
+pub enum TextColor {
     Rgb(String),
     Theme(String),
 }
 
 /// The Hyperlink dialog's submit (`setHyperlink`).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Link {
+pub struct Link {
     pub href: String,
     pub text: Option<String>,
     pub tooltip: Option<String>,
@@ -55,7 +55,7 @@ pub(crate) struct Link {
 
 /// The Image group's commands on the selected picture.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Picture {
+pub enum Picture {
     /// A text wrapping choice (`M1`: `inline`, `wrapRight`, `wrapLeft`,
     /// `behind`, `inFront`).
     Wrap(&'static str),
@@ -65,7 +65,7 @@ pub(crate) enum Picture {
 
 /// The Table group's commands (`handleTableAction`).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TableOp {
+pub enum TableOp {
     RowAbove,
     RowBelow,
     ColumnLeft,
@@ -92,7 +92,7 @@ pub(crate) enum TableOp {
 
 /// The selection as the formatting bar shows it.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Formats {
+pub struct Formats {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -150,7 +150,7 @@ impl Default for Formats {
 
 /// The caret's table cell, as the Table group gates its commands.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct CellInfo {
+pub struct CellInfo {
     pub rows: u32,
     pub cols: u32,
     /// More than one cell selected ("Select entire table").
@@ -166,7 +166,7 @@ pub(crate) struct CellInfo {
 
 /// A paragraph style the style list offers (`resolveParagraphStyleOptions`).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct StyleInfo {
+pub struct StyleInfo {
     pub id: String,
     pub name: String,
     /// Half-points.
@@ -178,7 +178,7 @@ pub(crate) struct StyleInfo {
 
 /// What the package says once: its styles (for the list and for
 /// restyling), its fonts and the run defaults.
-pub(crate) struct Styles {
+pub struct Styles {
     pub paragraph: Arc<Vec<StyleInfo>>,
     pub fonts: Arc<Vec<String>>,
     pub family: String,
@@ -187,7 +187,7 @@ pub(crate) struct Styles {
 }
 
 /// Word's highlight names (`w:highlight`) as `RRGGBB` (`resolveHighlightColor`).
-pub(crate) fn highlight_hex(name: &str) -> Option<&'static str> {
+pub fn highlight_hex(name: &str) -> Option<&'static str> {
     Some(match name {
         "yellow" => "FFFF00",
         "green" => "00FF00",
@@ -257,7 +257,7 @@ fn on_off(rpr: &str, el: &str) -> Option<bool> {
 
 impl Styles {
     /// From the package's `styles.xml`, `fontTable.xml` and theme.
-    pub(crate) fn read(source: &[u8]) -> Styles {
+    pub fn read(source: &[u8]) -> Styles {
         let parts = ooxml_opc::unzip_parts(source).unwrap_or_default();
         let part = |name: &str| parts.iter().find(|(n, _)| n == name).map(|(_, b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
         let xml = part("word/styles.xml");
@@ -310,7 +310,7 @@ impl Styles {
 
 /// `resolveImageLayoutAttrs`: a wrap target's attributes over a picture's
 /// (a `None` value removes the attribute).
-pub(crate) fn wrap_attrs(target: &str, attrs: &BTreeMap<String, Any>) -> Vec<(&'static str, Option<Any>)> {
+pub fn wrap_attrs(target: &str, attrs: &BTreeMap<String, Any>) -> Vec<(&'static str, Option<Any>)> {
     let position = || {
         let p = attrs.get("position");
         if field(p, "horizontal").is_some() && field(p, "vertical").is_some() {
@@ -349,7 +349,7 @@ pub(crate) fn wrap_attrs(target: &str, attrs: &BTreeMap<String, Any>) -> Vec<(&'
 }
 
 /// The wrap menu's value for a picture (`A1`).
-pub(crate) fn wrap_of(attrs: &BTreeMap<String, Any>) -> String {
+pub fn wrap_of(attrs: &BTreeMap<String, Any>) -> String {
     let (mode, float) = (s_of(attrs.get("displayMode")), s_of(attrs.get("cssFloat")));
     match (mode.as_deref(), float.as_deref()) {
         (Some("float"), Some("left")) => "wrapRight".to_owned(),
@@ -373,7 +373,7 @@ fn layout_target(value: &str) -> Option<&'static str> {
 
 /// A picture's CSS transform after a turn or flip (`Pg`); `None` when it
 /// comes back to none.
-pub(crate) fn transformed(current: &str, action: &str) -> Option<String> {
+pub fn transformed(current: &str, action: &str) -> Option<String> {
     let mut deg = current
         .split("rotate(")
         .nth(1)
@@ -389,7 +389,7 @@ pub(crate) fn transformed(current: &str, action: &str) -> Option<String> {
     }
     let mut out = Vec::new();
     if deg != 0.0 {
-        out.push(format!("rotate({}deg)", crate::office::ui::field::fmt_number(deg)));
+        out.push(format!("rotate({}deg)", buwiz_office_kit::ui::field::fmt_number(deg)));
     }
     if fx {
         out.push("scaleX(-1)".to_owned());
@@ -402,7 +402,7 @@ pub(crate) fn transformed(current: &str, action: &str) -> Option<String> {
 
 /// A cell border (`borderSpecRef`): style, eighths of a point, colour.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Border {
+pub struct Border {
     pub size: u32,
     pub color: String,
 }
@@ -425,7 +425,7 @@ impl Border {
 
 /// The sides a borders choice sets, and the border each gets (the
 /// handler's `d`, all six; `borderNone` is `none` at 0 in black).
-pub(crate) fn border_sides(choice: &str, current: &Border) -> HashMap<String, Any> {
+pub fn border_sides(choice: &str, current: &Border) -> HashMap<String, Any> {
     let all = ["top", "bottom", "left", "right", "insideH", "insideV"];
     let sides: Vec<&str> = match choice {
         "all" | "none" => all.to_vec(),
@@ -512,7 +512,7 @@ impl Word {
                     "background2" => "lt2".to_owned(),
                     s => s.to_owned(),
                 };
-                crate::office::ui::color::THEME.iter().find(|(k, _)| *k == slot).map(|(_, h)| (*h).to_owned())
+                buwiz_office_kit::ui::color::THEME.iter().find(|(k, _)| *k == slot).map(|(_, h)| (*h).to_owned())
             });
             f.highlight = s_of(field(a.get("highlight"), "color")).map(|c| highlight_hex(&c).map_or(c.trim_start_matches('#').to_uppercase(), str::to_owned));
             let link = a.get("hyperlink");
@@ -590,7 +590,7 @@ impl Word {
             Fmt::Clear => doc.clear_formatting(&ctx, range.clone()).map(drop),
             Fmt::Size(up) => {
                 let size = self.formats().size;
-                let next = if up { crate::office::ui::select::size_up(size) } else { crate::office::ui::select::size_down(size) };
+                let next = if up { buwiz_office_kit::ui::select::size_up(size) } else { buwiz_office_kit::ui::select::size_down(size) };
                 let delta = InlineFormatDelta { font_size: Patch::Set(f64::from(next)), ..Default::default() };
                 self.layout.engine.doc().format_range(&ctx, range, &delta).map(drop)
             }

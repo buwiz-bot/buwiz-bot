@@ -2,12 +2,12 @@
 
 A generated 200-page document (each page a heading, three paragraphs with
 bold runs and one footnote, a three-item list, and a 3×3 table or a
-picture; Arial), on an Apple-silicon Mac, measured by `office/docx/bench.rs`:
+picture; Arial), on an Apple-silicon Mac, measured by `src/bench.rs`:
 
 ```
-cargo test -p rox --lib office::docx::bench::pages_200 -- --ignored --nocapture --exact
-cargo test -p rox --lib office::docx::bench::typing_200 -- --ignored --nocapture --exact
-cargo test -p rox --lib office::docx::bench::parts_200 -- --ignored --nocapture --exact
+cargo test -p buwiz-word --lib bench::pages_200 -- --ignored --nocapture --exact
+cargo test -p buwiz-word --lib bench::typing_200 -- --ignored --nocapture --exact
+cargo test -p buwiz-word --lib bench::parts_200 -- --ignored --nocapture --exact
 ```
 
 Buwiz Bot's dev profile builds every dependency at `opt-level = 3`, so the engine

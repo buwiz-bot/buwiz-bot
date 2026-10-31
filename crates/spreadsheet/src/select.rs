@@ -3,11 +3,11 @@
 //! workbook): what it needs of the sheet comes in as [`Bounds`].
 
 /// The last row and column a sheet has (Excel's 1,048,576 × 16,384).
-pub(crate) const LAST_ROW: u32 = 1_048_575;
-pub(crate) const LAST_COL: u32 = 16_383;
+pub const LAST_ROW: u32 = 1_048_575;
+pub const LAST_COL: u32 = 16_383;
 
 /// What a move needs of the sheet.
-pub(crate) struct Bounds<'a> {
+pub struct Bounds<'a> {
     /// One past the last used row and column (⌘-arrows stop there).
     pub used: (u32, u32),
     /// Rows a page key moves.
@@ -18,7 +18,7 @@ pub(crate) struct Bounds<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Dir {
+pub enum Dir {
     Up,
     Down,
     Left,
@@ -38,7 +38,7 @@ impl Dir {
 
 /// How far a key moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Step {
+pub enum Step {
     /// One cell (an arrow).
     Cell,
     /// To the edge of the data (⌘-arrow).
@@ -51,7 +51,7 @@ pub(crate) enum Step {
 /// (the active cell, unless Tab or Enter walk inside the range), `focus`
 /// the end a Shift-move or a drag moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Sel {
+pub struct Sel {
     pub anchor: (u32, u32),
     pub focus: (u32, u32),
     pub active: (u32, u32),
@@ -65,54 +65,54 @@ impl Default for Sel {
 
 impl Sel {
     /// One cell.
-    pub(crate) fn at(cell: (u32, u32)) -> Sel {
+    pub fn at(cell: (u32, u32)) -> Sel {
         Sel { anchor: cell, focus: cell, active: cell }
     }
 
     /// The range, top-left and bottom-right.
-    pub(crate) fn range(&self) -> ((u32, u32), (u32, u32)) {
+    pub fn range(&self) -> ((u32, u32), (u32, u32)) {
         let (a, f) = (self.anchor, self.focus);
         ((a.0.min(f.0), a.1.min(f.1)), (a.0.max(f.0), a.1.max(f.1)))
     }
 
-    pub(crate) fn is_single(&self) -> bool {
+    pub fn is_single(&self) -> bool {
         self.anchor == self.focus
     }
 
-    pub(crate) fn contains(&self, cell: (u32, u32)) -> bool {
+    pub fn contains(&self, cell: (u32, u32)) -> bool {
         let ((r0, c0), (r1, c1)) = self.range();
         (r0..=r1).contains(&cell.0) && (c0..=c1).contains(&cell.1)
     }
 
     /// A press on `cell`: Shift extends from the anchor.
-    pub(crate) fn press(&self, cell: (u32, u32), shift: bool) -> Sel {
+    pub fn press(&self, cell: (u32, u32), shift: bool) -> Sel {
         if shift { Sel { focus: cell, ..*self } } else { Sel::at(cell) }
     }
 
     /// A drag reaching `cell`.
-    pub(crate) fn drag(&self, cell: (u32, u32)) -> Sel {
+    pub fn drag(&self, cell: (u32, u32)) -> Sel {
         Sel { focus: cell, ..*self }
     }
 
     /// ⌘A: the whole sheet, the active cell kept.
-    pub(crate) fn all(&self) -> Sel {
+    pub fn all(&self) -> Sel {
         Sel { anchor: (0, 0), focus: (LAST_ROW, LAST_COL), active: self.active }
     }
 
     /// A whole row or column (a press on its header); Shift extends.
-    pub(crate) fn row(&self, r: u32, shift: bool) -> Sel {
+    pub fn row(&self, r: u32, shift: bool) -> Sel {
         let anchor = if shift { (self.anchor.0, 0) } else { (r, 0) };
         Sel { anchor, focus: (r, LAST_COL), active: if shift { self.active } else { (r, 0) } }
     }
 
-    pub(crate) fn col(&self, c: u32, shift: bool) -> Sel {
+    pub fn col(&self, c: u32, shift: bool) -> Sel {
         let anchor = if shift { (0, self.anchor.1) } else { (0, c) };
         Sel { anchor, focus: (LAST_ROW, c), active: if shift { self.active } else { (0, c) } }
     }
 
     /// An arrow (with ⌘ for `Step::Edge`, a page key for `Step::Page`):
     /// moves the active cell, or with Shift the range's moving end.
-    pub(crate) fn step(&self, dir: Dir, step: Step, shift: bool, b: &Bounds) -> Sel {
+    pub fn step(&self, dir: Dir, step: Step, shift: bool, b: &Bounds) -> Sel {
         let from = if shift { self.focus } else { self.active };
         let to = moved(from, dir, step, b);
         if shift { Sel { focus: to, ..*self } } else { Sel::at(to) }
@@ -121,7 +121,7 @@ impl Sel {
     /// Tab (`Right`, Shift-Tab `Left`) and Enter (`Down`, Shift-Enter
     /// `Up`): inside a range they walk its cells and wrap, keeping it;
     /// otherwise they move one cell.
-    pub(crate) fn walk(&self, dir: Dir, b: &Bounds) -> Sel {
+    pub fn walk(&self, dir: Dir, b: &Bounds) -> Sel {
         if self.is_single() {
             return Sel::at(moved(self.active, dir, Step::Cell, b));
         }
@@ -203,11 +203,11 @@ fn moved(from: (u32, u32), dir: Dir, step: Step, b: &Bounds) -> (u32, u32) {
 }
 
 /// A rectangle of cells: its `(row, col)` corners, inclusive.
-pub(crate) type Area = ((u32, u32), (u32, u32));
+pub type Area = ((u32, u32), (u32, u32));
 
 /// `range` grown over the merged ranges it touches until none sticks out
 /// of it, as the web editor draws a selection.
-pub(crate) fn expand(range: Area, merges: &[Area]) -> Area {
+pub fn expand(range: Area, merges: &[Area]) -> Area {
     let ((mut r0, mut c0), (mut r1, mut c1)) = range;
     let mut grew = true;
     while grew {
@@ -224,7 +224,7 @@ pub(crate) fn expand(range: Area, merges: &[Area]) -> Area {
 }
 
 /// Column `c`'s letters: A, Z, AA, XFD.
-pub(crate) fn col_name(c: u32) -> String {
+pub fn col_name(c: u32) -> String {
     let mut n = c as u64 + 1;
     let mut s = Vec::new();
     while n > 0 {
@@ -237,7 +237,7 @@ pub(crate) fn col_name(c: u32) -> String {
 }
 
 /// A cell's address (`B7`) or a range's (`A1:C3`).
-pub(crate) fn address(sel: &Sel) -> String {
+pub fn address(sel: &Sel) -> String {
     let ((r0, c0), (r1, c1)) = sel.range();
     let a = |r: u32, c: u32| format!("{}{}", col_name(c), r + 1);
     if sel.is_single() {
@@ -253,7 +253,7 @@ pub(crate) fn address(sel: &Sel) -> String {
 
 /// Pasted text as rows of cells: tab-separated, quoted fields as Excel
 /// writes them; a trailing line break makes no extra row.
-pub(crate) fn paste_rows(text: &str) -> Vec<Vec<String>> {
+pub fn paste_rows(text: &str) -> Vec<Vec<String>> {
     let mut rows = super::convert::parse_delimited(text, '\t');
     if rows.last().is_some_and(|r| r.len() == 1 && r[0].is_empty()) {
         rows.pop();

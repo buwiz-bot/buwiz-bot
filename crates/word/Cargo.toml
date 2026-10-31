@@ -1,0 +1,48 @@
+[package]
+name = "buwiz-word"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Word view: .docx (and legacy .doc) opened, edited and saved natively"
+workspace = "../../app"
+
+[lib]
+name = "buwiz_word"
+path = "src/lib.rs"
+
+[features]
+# The test documents (`fixture`), for the app's tests.
+testing = ["dep:png"]
+
+[dependencies]
+buwiz-office-kit = { path = "../office-kit" }
+nsh-core = { path = "../../nsh/crates/nsh-core" }
+nsh-base = { path = "../../nsh/crates/nsh-base" }
+log = "0.4"
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+# The parsed package saves through the facade; the editing engine
+# (`docx-edit`'s `EngineSession`) holds the text, lays it out
+# (`docx-layout`) and builds the pages' display lists. office_oxide reads
+# legacy `.doc`.
+betteroffice-docx = { version = "0.5.1", default-features = false }
+docx-edit = { package = "betteroffice-docx-edit", version = "0.5.1" }
+docx-layout = { package = "betteroffice-docx-layout", version = "0.5.1" }
+docx-parse = { package = "betteroffice-docx-parse", version = "0.5.1" }
+ooxml-opc = { package = "betteroffice-opc", version = "0.5.1" }
+office_oxide = { version = "0.1.16", default-features = false }
+# the engine's story attributes are yrs values
+yrs = "0.27"
+# the test documents carry a picture made in code (`testing`)
+png = { version = "0.17", optional = true }
+
+[dev-dependencies]
+buwiz-office-kit = { path = "../office-kit", features = ["testing"] }
+png = "0.17"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# the installed face behind a family, as the canvas draws it, handed to
+# the layout's shaper (`fonts`)
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits", "CTLine", "CTStringAttributes"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFAttributedString", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString", "CFURL"] }

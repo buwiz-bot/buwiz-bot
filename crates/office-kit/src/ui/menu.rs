@@ -20,7 +20,7 @@ use super::Panel;
 
 /// How a menu's rows look.
 #[derive(Clone, Copy)]
-pub(crate) struct Look {
+pub struct Look {
     pub panel: Panel,
     pub min_w: f32,
     pub gap: f32,
@@ -34,10 +34,10 @@ pub(crate) struct Look {
 impl Look {
     /// The menu bar's menus (DR `Ba`, rows `qh`/`Nk`): min width 200; rows
     /// `gap 8, padding 6px 12px`, 13px, icons 18.
-    pub(crate) const BAR: Look = Look { panel: Panel::MENU, min_w: 200.0, gap: 8.0, pad: (12.0, 6.0), icon: 18.0, dim: true };
+    pub const BAR: Look = Look { panel: Panel::MENU, min_w: 200.0, gap: 8.0, pad: (12.0, 6.0), icon: 18.0, dim: true };
     /// The table menu (rows `Z1`): radius 8, `0 4px 16px`, min width 200;
     /// rows `gap 10, padding 7px 14px`, icons 16.
-    pub(crate) const TABLE: Look = Look {
+    pub const TABLE: Look = Look {
         panel: Panel { radius: 8.0, shadow: (4.0, 16.0), ..Panel::MENU },
         min_w: 200.0,
         gap: 10.0,
@@ -49,14 +49,14 @@ impl Look {
 
 /// The menu bar's trigger (DR `zh`): `padding 2px 8px`, radius 4, 13px on
 /// a 28 line; `--doc-bg-hover` while its menu is open (`Yk`).
-pub(crate) const TRIGGER_H: f32 = 28.0;
-pub(crate) const TRIGGER_PX: f32 = 8.0;
+pub const TRIGGER_H: f32 = 28.0;
+pub const TRIGGER_PX: f32 = 8.0;
 /// A submenu's list (DR `Gk`): min width 220.
-pub(crate) const SUBMENU_MIN_W: f32 = 220.0;
+pub const SUBMENU_MIN_W: f32 = 220.0;
 
 /// A menu row.
 #[derive(Clone)]
-pub(crate) struct Item {
+pub struct Item {
     pub icon: Option<&'static str>,
     pub label: SharedString,
     pub shortcut: Option<SharedString>,
@@ -69,37 +69,37 @@ pub(crate) struct Item {
     pub on_select: Rc<dyn Fn()>,
 }
 
-pub(crate) fn item(icon: Option<&'static str>, label: impl Into<SharedString>, on_select: impl Fn() + 'static) -> Item {
+pub fn item(icon: Option<&'static str>, label: impl Into<SharedString>, on_select: impl Fn() + 'static) -> Item {
     Item { icon, label: label.into(), shortcut: None, disabled: false, description: None, danger: false, checked: false, on_select: Rc::new(on_select) }
 }
 
 impl Item {
-    pub(crate) fn shortcut(mut self, s: impl Into<SharedString>) -> Self {
+    pub fn shortcut(mut self, s: impl Into<SharedString>) -> Self {
         self.shortcut = Some(s.into());
         self
     }
     /// Disabled, with the reason shown over it.
-    pub(crate) fn disabled(mut self, why: Option<&str>) -> Self {
+    pub fn disabled(mut self, why: Option<&str>) -> Self {
         self.disabled = true;
         self.description = why.map(|w| SharedString::from(w.to_owned()));
         self
     }
-    pub(crate) fn danger(mut self) -> Self {
+    pub fn danger(mut self) -> Self {
         self.danger = true;
         self
     }
-    pub(crate) fn checked(mut self, on: bool) -> Self {
+    pub fn checked(mut self, on: bool) -> Self {
         self.checked = on;
         self
     }
 }
 
 /// Content built with the menu's close (a grid closes it as it inserts).
-pub(crate) type Content = Rc<dyn Fn(Rc<dyn Fn()>) -> AnyElement>;
+pub type Content = Rc<dyn Fn(Rc<dyn Fn()>) -> AnyElement>;
 
 /// What a menu shows. A content row's builder gets the menu's close.
 #[derive(Clone)]
-pub(crate) enum Entry {
+pub enum Entry {
     Item(Item),
     Separator,
     /// A section label (the table menu's `Ly`: `6px 14px 2px`, 11px).
@@ -159,7 +159,7 @@ fn row(look: Look, it: &Item, hovered: Signal<bool>, chevron: bool, enter: impl 
 }
 
 /// A menu's rows, in `look`; `close` closes the whole menu.
-pub(crate) fn menu_list(look: Look, entries: Vec<Entry>, close: Rc<dyn Fn()>) -> AnyElement {
+pub fn menu_list(look: Look, entries: Vec<Entry>, close: Rc<dyn Fn()>) -> AnyElement {
     // the submenu open in this list (one at a time): the row's index
     let sub = signal(None::<usize>);
     view()
@@ -236,7 +236,7 @@ fn submenu_row(look: Look, it: Item, i: usize, sub: Signal<Option<usize>>, conte
 
 /// A menu at `anchor` while `open` (`offset` below it, its left edge on
 /// the anchor's), its rows built as it opens.
-pub(crate) fn menu_popup(
+pub fn menu_popup(
     anchor: ElementRef,
     open: Signal<bool>,
     label: impl Into<SharedString>,
@@ -264,24 +264,24 @@ pub(crate) fn menu_popup(
 }
 
 /// A menu of the menu bar.
-pub(crate) struct BarMenu {
+pub struct BarMenu {
     pub label: SharedString,
     pub entries: Rc<dyn Fn() -> Vec<Entry>>,
 }
 
-pub(crate) fn bar_menu(label: impl Into<SharedString>, entries: impl Fn() -> Vec<Entry> + 'static) -> BarMenu {
+pub fn bar_menu(label: impl Into<SharedString>, entries: impl Fn() -> Vec<Entry> + 'static) -> BarMenu {
     BarMenu { label: label.into(), entries: Rc::new(entries) }
 }
 
 /// The menu bar (DR `qd`, `role="menubar"`): each menu's trigger, its
 /// menu 2 below it (DR `Ba`: `top: rect.bottom + 2`).
-pub(crate) fn menu_bar(menus: Vec<BarMenu>) -> AnyElement {
+pub fn menu_bar(menus: Vec<BarMenu>) -> AnyElement {
     menu_bar_in(menus, signal(false))
 }
 
 /// [`menu_bar`], `any` holding while one of its menus is open (a view's
 /// keys stand back for it).
-pub(crate) fn menu_bar_in(menus: Vec<BarMenu>, any: Signal<bool>) -> AnyElement {
+pub fn menu_bar_in(menus: Vec<BarMenu>, any: Signal<bool>) -> AnyElement {
     let opens: Vec<Signal<bool>> = menus.iter().map(|_| signal(false)).collect();
     let all = opens.clone();
     effect(move || any.set(all.iter().any(|o| o.get())));

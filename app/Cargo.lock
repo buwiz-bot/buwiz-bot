@@ -596,6 +596,61 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "buwiz-office-kit"
+version = "0.1.0"
+dependencies = [
+ "betteroffice-xlsx",
+ "betteroffice-xlsx-render",
+ "log",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "nsh-platform-macos",
+ "objc2-core-foundation",
+ "objc2-core-text",
+]
+
+[[package]]
+name = "buwiz-spreadsheet"
+version = "0.1.0"
+dependencies = [
+ "betteroffice-drawingml",
+ "betteroffice-opc",
+ "betteroffice-xlsx",
+ "betteroffice-xlsx-parse",
+ "betteroffice-xlsx-render",
+ "buwiz-office-kit",
+ "log",
+ "nsh-base",
+ "nsh-core",
+ "office_oxide",
+ "serde_json",
+]
+
+[[package]]
+name = "buwiz-word"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "betteroffice-docx",
+ "betteroffice-docx-edit",
+ "betteroffice-docx-layout",
+ "betteroffice-docx-parse",
+ "betteroffice-opc",
+ "buwiz-office-kit",
+ "log",
+ "nsh-base",
+ "nsh-core",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "office_oxide",
+ "png",
+ "serde_json",
+ "sha2 0.10.9",
+ "yrs",
+]
+
+[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4156,14 +4211,12 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "betteroffice-docx",
- "betteroffice-docx-edit",
- "betteroffice-docx-layout",
- "betteroffice-docx-parse",
- "betteroffice-drawingml",
  "betteroffice-opc",
  "betteroffice-xlsx",
- "betteroffice-xlsx-parse",
  "betteroffice-xlsx-render",
+ "buwiz-office-kit",
+ "buwiz-spreadsheet",
+ "buwiz-word",
  "dispatch2",
  "ed25519-dalek 2.2.0",
  "env_logger",
@@ -4177,11 +4230,7 @@ dependencies = [
  "nsh-platform-ios",
  "nsh-platform-macos",
  "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-text",
- "office_oxide",
  "pele",
- "png",
  "ra-jit-live",
  "rox-v1",
  "rusqlite",
@@ -4190,7 +4239,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
- "yrs",
 ]
 
 [[package]]

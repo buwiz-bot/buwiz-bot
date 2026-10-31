@@ -12,37 +12,37 @@ use super::palette as p;
 use super::{Panel, dropdown, tip_text};
 
 /// A toolbar button's box: `size: "icon-sm"` → `h-7 w-7` (DR `Jk`).
-pub(crate) const BUTTON: f32 = 28.0;
+pub const BUTTON: f32 = 28.0;
 /// Its corners: the button's `rounded-md`, `calc(var(--radius) - 2px)`
 /// with `--radius: 0.5rem`.
-pub(crate) const BUTTON_RADIUS: f32 = 6.0;
+pub const BUTTON_RADIUS: f32 = 6.0;
 /// The toolbar's icons (DR `Ky = 18`).
-pub(crate) const TOOLBAR_ICON: f32 = 18.0;
+pub const TOOLBAR_ICON: f32 = 18.0;
 /// A dropdown trigger's icon (DR `k1 = 20`, `za = 20`) and its ▾ (14,
 /// pulled 4 left by `-ml-1`).
-pub(crate) const TRIGGER_ICON: f32 = 20.0;
-pub(crate) const CARET: f32 = 14.0;
+pub const TRIGGER_ICON: f32 = 20.0;
+pub const CARET: f32 = 14.0;
 /// A disabled button's `opacity-30`.
-pub(crate) const DISABLED_OPACITY: f32 = 0.3;
+pub const DISABLED_OPACITY: f32 = 0.3;
 /// The separator (DR `xc`): `w-px h-6 mx-1.5`.
-pub(crate) const SEPARATOR_H: f32 = 24.0;
-pub(crate) const SEPARATOR_MX: f32 = 6.0;
+pub const SEPARATOR_H: f32 = 24.0;
+pub const SEPARATOR_MX: f32 = 6.0;
 /// A group (DR `Cr`): `gap-px px-1.5`, a `border-r` in `border/50`
 /// (`first:pl-0`, `last:border-r-0`).
-pub(crate) const GROUP_GAP: f32 = 1.0;
-pub(crate) const GROUP_PX: f32 = 6.0;
+pub const GROUP_GAP: f32 = 1.0;
+pub const GROUP_PX: f32 = 6.0;
 /// The icon dropdown's choices (DR `vc`): 32 square, radius 4, gap 2 in
 /// a row; with labels a column (gap 1, min width 200, `0 10px`, 13px).
-pub(crate) const CHOICE: f32 = 32.0;
+pub const CHOICE: f32 = 32.0;
 /// The tooltip (DR `vr`): 8 below the control, after 400 ms; `px-2 py-1
 /// text-xs font-medium rounded-md shadow-lg`.
-pub(crate) const TIP_OFFSET: f32 = 8.0;
-pub(crate) const TIP_DELAY_MS: f64 = 400.0;
+pub const TIP_OFFSET: f32 = 8.0;
+pub const TIP_DELAY_MS: f64 = 400.0;
 
 /// The web's tooltip bubble around `text`: white on the foreground ink in
 /// light mode, the foreground on `muted` in dark (`dark:bg-muted
 /// dark:text-foreground`).
-pub(crate) fn tooltip_of(text_: impl Into<SharedString>) -> nsh_base::TooltipElement {
+pub fn tooltip_of(text_: impl Into<SharedString>) -> nsh_base::TooltipElement {
     nsh_base::tooltip()
         .placement(Placement::Bottom)
         .offset(px(TIP_OFFSET))
@@ -67,7 +67,7 @@ pub(crate) fn tooltip_of(text_: impl Into<SharedString>) -> nsh_base::TooltipEle
 /// A choice's tooltip: the web gives choices a `title`, which the
 /// browser shows as the system's plain tooltip (a small light box, the
 /// core's default hint placement above the control).
-pub(crate) fn plain_tip(text_: impl Into<SharedString>) -> AnyElement {
+pub fn plain_tip(text_: impl Into<SharedString>) -> AnyElement {
     view()
         .px(px(4.0))
         .py(px(2.0))
@@ -81,7 +81,7 @@ pub(crate) fn plain_tip(text_: impl Into<SharedString>) -> AnyElement {
 
 /// Tailwind's `shadow-lg`: `0 10px 15px -3px` and `0 4px 6px -4px`, both
 /// black at 10%.
-pub(crate) fn shadow_lg() -> Vec<BoxShadow> {
+pub fn shadow_lg() -> Vec<BoxShadow> {
     let c = hsla(0.0, 0.0, 0.0, 0.1);
     vec![
         BoxShadow { offset_x: px(0.0), offset_y: px(10.0), blur: px(15.0), spread: px(-3.0), color: c.into(), inset: false },
@@ -95,7 +95,7 @@ type Flag = Rc<dyn Fn() -> bool>;
 /// screen readers and as its tooltip with the shortcut ("Bold (⌘B)").
 /// With [`IconButton::active`] it is a toggle (`aria-pressed`), filled
 /// while on (`--doc-toggle-active-bg`).
-pub(crate) struct IconButton {
+pub struct IconButton {
     icon: &'static str,
     label: SharedString,
     shortcut: Option<&'static str>,
@@ -104,29 +104,29 @@ pub(crate) struct IconButton {
     on_press: Rc<dyn Fn()>,
 }
 
-pub(crate) fn icon_button(icon: &'static str, label: impl Into<SharedString>) -> IconButton {
+pub fn icon_button(icon: &'static str, label: impl Into<SharedString>) -> IconButton {
     IconButton { icon, label: label.into(), shortcut: None, active: None, disabled: Rc::new(|| false), on_press: Rc::new(|| {}) }
 }
 
 impl IconButton {
     /// Its chord, in the web's form ("Mod+B"), shown in the tooltip.
-    pub(crate) fn shortcut(mut self, chord: &'static str) -> Self {
+    pub fn shortcut(mut self, chord: &'static str) -> Self {
         self.shortcut = Some(chord);
         self
     }
 
     /// A toggle, on while `on` holds.
-    pub(crate) fn active(mut self, on: impl Fn() -> bool + 'static) -> Self {
+    pub fn active(mut self, on: impl Fn() -> bool + 'static) -> Self {
         self.active = Some(Rc::new(on));
         self
     }
 
-    pub(crate) fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
+    pub fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
         self.disabled = Rc::new(off);
         self
     }
 
-    pub(crate) fn on_press(mut self, run: impl Fn() + 'static) -> Self {
+    pub fn on_press(mut self, run: impl Fn() + 'static) -> Self {
         self.on_press = Rc::new(run);
         self
     }
@@ -186,7 +186,7 @@ impl IntoElement for IconButton {
 
 /// The separator between toolbar parts (DR `xc`): 1×24 in `bg-border`,
 /// 6 either side.
-pub(crate) fn separator() -> AnyElement {
+pub fn separator() -> AnyElement {
     view()
         .w(px(1.0))
         .h(px(SEPARATOR_H))
@@ -200,7 +200,7 @@ pub(crate) fn separator() -> AnyElement {
 /// Toolbar groups in a row (DR `Cr`, `role="group"`): each `(label,
 /// controls)` with 1 between its controls, 6 either side and a hairline
 /// on its right, but the first starts flush and the last has no line.
-pub(crate) fn groups(groups: Vec<(&'static str, Vec<AnyElement>)>) -> AnyElement {
+pub fn groups(groups: Vec<(&'static str, Vec<AnyElement>)>) -> AnyElement {
     let n = groups.len();
     view()
         .flex_row()
@@ -225,7 +225,7 @@ pub(crate) fn groups(groups: Vec<(&'static str, Vec<AnyElement>)>) -> AnyElement
 
 /// One choice of an [`IconDropdown`].
 #[derive(Clone)]
-pub(crate) struct Choice {
+pub struct Choice {
     pub value: &'static str,
     pub icon: &'static str,
     pub label: SharedString,
@@ -237,7 +237,7 @@ pub(crate) struct Choice {
 /// A trigger showing the current choice's icon and a ▾, which opens the
 /// choices (DR `vc`, the alignment dropdown `$h`'s sibling): a row of
 /// 32-point icon buttons, or a column with their labels.
-pub(crate) struct IconDropdown {
+pub struct IconDropdown {
     label: SharedString,
     choices: Vec<Choice>,
     current: Rc<dyn Fn() -> Option<&'static str>>,
@@ -252,7 +252,7 @@ pub(crate) struct IconDropdown {
     on_select: Rc<dyn Fn(&'static str)>,
 }
 
-pub(crate) fn icon_dropdown(label: impl Into<SharedString>, choices: Vec<Choice>) -> IconDropdown {
+pub fn icon_dropdown(label: impl Into<SharedString>, choices: Vec<Choice>) -> IconDropdown {
     IconDropdown {
         label: label.into(),
         choices,
@@ -267,35 +267,35 @@ pub(crate) fn icon_dropdown(label: impl Into<SharedString>, choices: Vec<Choice>
 
 impl IconDropdown {
     /// The choice that is on (its icon is the trigger's; else the first's).
-    pub(crate) fn current(mut self, value: impl Fn() -> Option<&'static str> + 'static) -> Self {
+    pub fn current(mut self, value: impl Fn() -> Option<&'static str> + 'static) -> Self {
         self.current = Rc::new(value);
         self
     }
 
     /// The choices in a column with their labels (`showLabels`).
-    pub(crate) fn labels(mut self) -> Self {
+    pub fn labels(mut self) -> Self {
         self.labels = true;
         self
     }
 
     /// The trigger named for the current choice, with its shortcut.
-    pub(crate) fn titled(mut self) -> Self {
+    pub fn titled(mut self) -> Self {
         self.titled = true;
         self
     }
 
     /// The choices in rows of `n` (`gridTemplateColumns: repeat(n, 1fr)`, 2 apart).
-    pub(crate) fn columns(mut self, n: usize) -> Self {
+    pub fn columns(mut self, n: usize) -> Self {
         self.columns = n;
         self
     }
 
-    pub(crate) fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
+    pub fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
         self.disabled = Rc::new(off);
         self
     }
 
-    pub(crate) fn on_select(mut self, run: impl Fn(&'static str) + 'static) -> Self {
+    pub fn on_select(mut self, run: impl Fn(&'static str) + 'static) -> Self {
         self.on_select = Rc::new(run);
         self
     }

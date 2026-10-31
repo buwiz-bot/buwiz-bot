@@ -20,12 +20,12 @@ use nsh_core::prelude::*;
 
 use super::select::{self, LAST_COL, LAST_ROW};
 use super::{Shape, SheetUi, chart, edit, resize};
-use crate::office::draw::{self, Palette};
-use crate::theme;
+use buwiz_office_kit::draw::{self, Palette};
+use buwiz_office_kit::host::theme;
 
 /// The row headers' width and the column headers' height, in points.
-pub(crate) const ROW_HEAD: f32 = 46.0;
-pub(crate) const COL_HEAD: f32 = 22.0;
+pub const ROW_HEAD: f32 = 46.0;
+pub const COL_HEAD: f32 = 22.0;
 /// The sheet pixels drawn past each edge of the view.
 const MARGIN: f32 = 320.0;
 /// Platforms keep scroll offsets in 32-bit floats: past this the content
@@ -35,7 +35,7 @@ const MAX_EXTENT: f32 = 3_000_000.0;
 /// Where the panes are: the zoom, the frozen panes' size on screen, and
 /// the body's scroll in sheet pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Frame {
+pub struct Frame {
     pub zoom: f32,
     /// The frozen columns' width and rows' height, in sheet pixels.
     pub fw: f32,
@@ -44,28 +44,28 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    pub(crate) fn of(g: &GridGeometry, frozen: (u32, u32), scroll: (f32, f32), zoom: f32) -> Frame {
+    pub fn of(g: &GridGeometry, frozen: (u32, u32), scroll: (f32, f32), zoom: f32) -> Frame {
         Frame { zoom, fw: g.col_x(frozen.1), fh: g.row_y(frozen.0), scroll }
     }
 
     /// A point of the cells area (points) in sheet pixels.
-    pub(crate) fn to_sheet(&self, x: f32, y: f32) -> (f32, f32) {
+    pub fn to_sheet(&self, x: f32, y: f32) -> (f32, f32) {
         let (sx, sy) = (x / self.zoom, y / self.zoom);
         (if sx < self.fw { sx } else { sx + self.scroll.0 }, if sy < self.fh { sy } else { sy + self.scroll.1 })
     }
 
     /// A sheet x on screen (frozen columns stay put; the body scrolls).
-    pub(crate) fn screen_x(&self, x: f32) -> f32 {
+    pub fn screen_x(&self, x: f32) -> f32 {
         (if x < self.fw { x } else { x - self.scroll.0 }) * self.zoom
     }
 
-    pub(crate) fn screen_y(&self, y: f32) -> f32 {
+    pub fn screen_y(&self, y: f32) -> f32 {
         (if y < self.fh { y } else { y - self.scroll.1 }) * self.zoom
     }
 
     /// The body window in view for a cells area `w`×`h` points: its
     /// sheet pixels, from the first unfrozen cell's edge.
-    pub(crate) fn body(&self, w: f32, h: f32) -> (f32, f32, f32, f32) {
+    pub fn body(&self, w: f32, h: f32) -> (f32, f32, f32, f32) {
         let x0 = self.fw + self.scroll.0;
         let y0 = self.fh + self.scroll.1;
         (x0, y0, (w / self.zoom - self.fw).max(0.0), (h / self.zoom - self.fh).max(0.0))
@@ -75,27 +75,27 @@ impl Frame {
 /// The window to draw for an area `w`×`h`: the view and [`MARGIN`]
 /// around it (the scroll offsets of BetterOffice's viewport count from
 /// the first unfrozen cell).
-pub(crate) fn window(f: &Frame, w: f32, h: f32) -> Viewport {
+pub fn window(f: &Frame, w: f32, h: f32) -> Viewport {
     let x = (f.scroll.0 - MARGIN).max(0.0);
     let y = (f.scroll.1 - MARGIN).max(0.0);
     Viewport { x, y, width: w / f.zoom + MARGIN * 2.0, height: h / f.zoom + MARGIN * 2.0 }
 }
 
 /// Whether `vp` (drawn) still covers the view.
-pub(crate) fn covers(vp: &Viewport, f: &Frame, w: f32, h: f32) -> bool {
+pub fn covers(vp: &Viewport, f: &Frame, w: f32, h: f32) -> bool {
     let (bw, bh) = ((w / f.zoom - f.fw).max(0.0), (h / f.zoom - f.fh).max(0.0));
     let (body_w, body_h) = (vp.width - f.fw, vp.height - f.fh);
     f.scroll.0 >= vp.x && f.scroll.1 >= vp.y && f.scroll.0 + bw <= vp.x + body_w && f.scroll.1 + bh <= vp.y + body_h
 }
 
 /// The cell under a point of the cells area.
-pub(crate) fn cell_at(g: &GridGeometry, f: &Frame, x: f32, y: f32) -> (u32, u32) {
+pub fn cell_at(g: &GridGeometry, f: &Frame, x: f32, y: f32) -> (u32, u32) {
     let (sx, sy) = f.to_sheet(x, y);
     (g.row_at_y(sy).min(LAST_ROW), g.col_at_x(sx).min(LAST_COL))
 }
 
 /// A cell's rect on screen (points in the cells area).
-pub(crate) fn cell_rect(g: &GridGeometry, f: &Frame, (r, c): (u32, u32)) -> (f32, f32, f32, f32) {
+pub fn cell_rect(g: &GridGeometry, f: &Frame, (r, c): (u32, u32)) -> (f32, f32, f32, f32) {
     let (x0, x1) = (f.screen_x(g.col_x(c)), f.screen_x(g.col_x(c + 1)));
     let (y0, y1) = (f.screen_y(g.row_y(r)), f.screen_y(g.row_y(r + 1)));
     (x0, y0, x1 - x0, y1 - y0)
@@ -103,7 +103,7 @@ pub(crate) fn cell_rect(g: &GridGeometry, f: &Frame, (r, c): (u32, u32)) -> (f32
 
 /// The scroll that brings `cell` into a `w`×`h` view (unchanged when it
 /// shows, or sits in a frozen pane).
-pub(crate) fn reveal(g: &GridGeometry, f: &Frame, (r, c): (u32, u32), w: f32, h: f32) -> (f32, f32) {
+pub fn reveal(g: &GridGeometry, f: &Frame, (r, c): (u32, u32), w: f32, h: f32) -> (f32, f32) {
     let (bx, by, bw, bh) = f.body(w, h);
     let mut s = f.scroll;
     let (x0, x1) = (g.col_x(c), g.col_x(c + 1));
@@ -138,7 +138,7 @@ fn content(shape: &Shape, f: &Frame, w: f32, h: f32) -> (f32, f32) {
 }
 
 /// The frame now (tracked).
-pub(crate) fn frame(u: &SheetUi) -> Option<(Shape, Frame)> {
+pub fn frame(u: &SheetUi) -> Option<(Shape, Frame)> {
     let shape = u.shape.get()?;
     let f = Frame::of(&shape.0.geometry, shape.0.frozen, u.scroll.get(), u.zoom.get());
     Some((shape, f))
@@ -162,7 +162,7 @@ fn want(u: &SheetUi) {
     }
     let vp = window(&f, w, h);
     u.asked.set(Some((rev, sheet, vp, f.zoom)));
-    crate::office::with_session(|s| s.send(super::doc::Cmd::View { sheet, vp, scale: f.zoom }));
+    crate::FORMAT.with_session(|s| s.send(super::doc::Cmd::View { sheet, vp, scale: f.zoom }));
 }
 
 thread_local! {
@@ -171,7 +171,7 @@ thread_local! {
 }
 
 /// Scrolls the view so the active cell shows.
-pub(crate) fn reveal_active(u: &SheetUi) {
+pub fn reveal_active(u: &SheetUi) {
     let Some((shape, f)) = untracked(|| frame(u)) else { return };
     let (w, h) = u.area.get_untracked();
     let s = reveal(&shape.0.geometry, &f, u.sel.get_untracked().focus, w, h);
@@ -256,8 +256,8 @@ struct SelRects {
 }
 
 /// The selection's drawn range in the cells area: (x0, y0, x1, y1).
-#[cfg(test)]
-pub(crate) fn sel_range(u: &SheetUi) -> Option<(f32, f32, f32, f32)> {
+#[cfg(any(test, feature = "testing"))]
+pub fn sel_range(u: &SheetUi) -> Option<(f32, f32, f32, f32)> {
     sel_rects(u).map(|r| r.range)
 }
 
@@ -317,7 +317,7 @@ fn selection(u: &'static SheetUi) -> impl IntoElement {
             .h(move || px(d().3.max(0.0)))
     };
     let tint = move || {
-        let mut t = color(theme::ACCENT);
+        let mut t = color(theme().accent);
         t.a = 0.12;
         t
     };
@@ -336,7 +336,7 @@ fn selection(u: &'static SheetUi) -> impl IntoElement {
             })),
         )
         .border(px(2.0))
-        .border_color(theme::ACCENT),
+        .border_color(theme().accent),
     )
 }
 
@@ -425,7 +425,7 @@ fn objects(u: &'static SheetUi) -> impl IntoElement {
 
 /// A tip as the pointer rests: a small dark label.
 fn tip_view(t: String) -> AnyElement {
-    view().px(px(6.0)).py(px(3.0)).rounded(px(4.0)).bg(theme::TEXT).child(text(t).text_size(px(11.0)).text_color(theme::PANE)).into_element()
+    view().px(px(6.0)).py(px(3.0)).rounded(px(4.0)).bg(theme().text).child(text(t).text_size(px(11.0)).text_color(theme().pane)).into_element()
 }
 
 /// The column letters (`cols`) or row numbers along the cells, the
@@ -438,7 +438,7 @@ fn headers(u: &'static SheetUi, cols: bool) -> CanvasView {
         let (w, h) = u.area.get();
         let sel = u.sel.get();
         let ((r0, c0), (r1, c1)) = sel.range();
-        let (text_c, line_c, on_c) = (color(theme::MUTED), color(theme::BORDER_S), color(theme::ACCENT));
+        let (text_c, line_c, on_c) = (color(theme().muted), color(theme().border_s), color(theme().accent));
         let mut on_bg = on_c;
         on_bg.a = 0.14;
         let font = format!("{}px system-ui", (11.0 * f.zoom.clamp(0.8, 1.4)).round());
@@ -684,8 +684,8 @@ fn resize_guide(u: &'static SheetUi) -> impl IntoElement {
     });
     let cols = move || at.with(|a| a.as_ref().is_none_or(|a| a.0));
     let pos = move || at.with(|a| a.as_ref().map_or(-10.0, |a| a.1));
-    let down = view().absolute().pointer_events(PointerEvents::None).bg(theme::ACCENT).top(px(0.0)).bottom(px(0.0)).w(px(1.0)).left(move || px(pos() - 0.5)).opacity(move || if cols() { 1.0f32 } else { 0.0 });
-    let across = view().absolute().pointer_events(PointerEvents::None).bg(theme::ACCENT).left(px(0.0)).right(px(0.0)).h(px(1.0)).top(move || px(pos() - 0.5)).opacity(move || if cols() { 0.0f32 } else { 1.0 });
+    let down = view().absolute().pointer_events(PointerEvents::None).bg(theme().accent).top(px(0.0)).bottom(px(0.0)).w(px(1.0)).left(move || px(pos() - 0.5)).opacity(move || if cols() { 1.0f32 } else { 0.0 });
+    let across = view().absolute().pointer_events(PointerEvents::None).bg(theme().accent).left(px(0.0)).right(px(0.0)).h(px(1.0)).top(move || px(pos() - 0.5)).opacity(move || if cols() { 0.0f32 } else { 1.0 });
     let tip = view()
         .absolute()
         .pointer_events(PointerEvents::None)
@@ -706,7 +706,7 @@ fn resize_guide(u: &'static SheetUi) -> impl IntoElement {
 }
 
 /// The grid: headers, cells, the selection, the editor over the cell.
-pub(crate) fn grid(u: &'static SheetUi) -> impl IntoElement {
+pub fn grid(u: &'static SheetUi) -> impl IntoElement {
     // the worker draws what comes into view
     effect(move || {
         u.shape.with(|_| ());
@@ -716,10 +716,10 @@ pub(crate) fn grid(u: &'static SheetUi) -> impl IntoElement {
         u.shown.with(|_| ());
         want(u);
     });
-    let corner_bg = theme::SUBTLE;
+    let corner_bg = theme().subtle;
     view()
         .flex_1()
-        .bg(theme::PANE)
+        .bg(theme().pane)
         // column letters
         .child(
             view()
@@ -727,14 +727,14 @@ pub(crate) fn grid(u: &'static SheetUi) -> impl IntoElement {
                 .flex_row()
                 .bg(corner_bg)
                 .border_b(px(0.5))
-                .border_b_color(theme::BORDER_S)
+                .border_b_color(theme().border_s)
                 .child(
                     view()
                         .label("Select all")
                         .w(px(ROW_HEAD))
                         .h_full()
                         .border_r(px(0.5))
-                        .border_r_color(theme::BORDER_S)
+                        .border_r_color(theme().border_s)
                         .on_press(move || edit::select_all()),
                 )
                 .child(view().flex_1().h_full().overflow_hidden().child(headers(u, true).absolute().size_full()))
@@ -752,7 +752,7 @@ pub(crate) fn grid(u: &'static SheetUi) -> impl IntoElement {
                         .overflow_hidden()
                         .bg(corner_bg)
                         .border_r(px(0.5))
-                        .border_r_color(theme::BORDER_S)
+                        .border_r_color(theme().border_s)
                         .child(headers(u, false).absolute().size_full())
                         .child(header_hits(u, false)),
                 )

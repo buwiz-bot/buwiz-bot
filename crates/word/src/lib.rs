@@ -3,28 +3,32 @@
 //! [`layout`]); pages are drawn there from its display lists ([`draw`])
 //! with the faces it measured with ([`fonts`]), and this side shows them
 //! ([`view`]): what the view needs is kept in [`WordUi`].
+//!
+//! The app hosts it (`buwiz_office_kit::host`): it keeps the [`WordUi`] in
+//! its store and holds the open document's session, both given here
+//! through [`FORMAT`] at startup.
 
 #[cfg(test)]
 mod bench;
-pub(crate) mod chrome;
-pub(crate) mod dialogs;
-pub(crate) mod doc;
-pub(crate) mod draw;
-#[cfg(test)]
-pub(crate) mod fixture;
-pub(crate) mod fonts;
-pub(crate) mod index;
-pub(crate) mod layout;
-pub(crate) mod project;
-pub(crate) mod save;
+pub mod chrome;
+pub mod dialogs;
+pub mod doc;
+pub mod draw;
+#[cfg(any(test, feature = "testing"))]
+pub mod fixture;
+pub mod fonts;
+pub mod index;
+pub mod layout;
+pub mod project;
+pub mod save;
 #[cfg(test)]
 mod save_tests;
 #[cfg(test)]
 mod tests;
-pub(crate) mod toolbar;
+pub mod toolbar;
 #[cfg(test)]
 mod toolbar_tests;
-pub(crate) mod view;
+pub mod view;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,13 +36,17 @@ use std::sync::Arc;
 
 use nsh_core::prelude::*;
 
-use crate::live::store;
-use doc::{Caret, Meta, Out};
+use buwiz_office_kit::host::{Format, host};
+use doc::{Caret, Meta, Out, Word};
 use draw::Drawn;
+
+/// The app's hooks: the view's state in its store, the open document's
+/// session.
+pub static FORMAT: Format<WordUi, Word> = Format::new();
 
 /// A page drawn: for which layout and zoom.
 #[derive(Clone)]
-pub(crate) struct Shown {
+pub struct Shown {
     pub rev: u64,
     pub zoom: f32,
     pub drawn: Arc<Drawn>,
@@ -50,7 +58,7 @@ impl PartialEq for Shown {
     }
 }
 
-pub(crate) struct WordUi {
+pub struct WordUi {
     pub meta: Signal<Arc<Meta>>,
     /// Each page's drawing, a signal per page: a page redrawn wakes only
     /// its own canvas.
@@ -87,7 +95,8 @@ pub(crate) struct WordUi {
 }
 
 impl WordUi {
-    pub(crate) fn new() -> WordUi {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WordUi {
         WordUi {
             meta: signal(Arc::new(Meta::default())),
             pages: RefCell::new(Vec::new()),
@@ -112,7 +121,7 @@ impl WordUi {
     }
 
     /// A new file: nothing from the last one.
-    pub(crate) fn reset(&self) {
+    pub fn reset(&self) {
         self.meta.set(Arc::new(Meta::default()));
         for p in self.pages.borrow().iter() {
             p.set(None);
@@ -131,7 +140,7 @@ impl WordUi {
     }
 
     /// The file changed under it: the pages are drawn again.
-    pub(crate) fn reloaded(&self) {
+    pub fn reloaded(&self) {
         self.asked.set(None);
     }
 
@@ -140,7 +149,7 @@ impl WordUi {
     /// went with that binding's next run or with the view, and the next
     /// read or write (the worker's page, the next open's `reset`)
     /// panicked, leaving the document blank.
-    pub(crate) fn page(&self, i: usize) -> Signal<Option<Shown>> {
+    pub fn page(&self, i: usize) -> Signal<Option<Shown>> {
         let mut pages = self.pages.borrow_mut();
         while pages.len() <= i {
             pages.push(Owner::detached().run(|| signal(None)));
@@ -150,7 +159,7 @@ impl WordUi {
 }
 
 /// An answer from the worker.
-pub(crate) fn on_out(u: &WordUi, o: Out) {
+pub fn on_out(u: &WordUi, o: Out) {
     match o {
         Out::Meta(m) => {
             let new = u.meta.with_untracked(|old| old.rev != m.rev || old.pages.len() != m.pages.len());
@@ -194,10 +203,10 @@ pub(crate) fn on_out(u: &WordUi, o: Out) {
             }
             u.media.set(Arc::new(m));
         }
-        Out::Copied(text) => crate::office::xlsx::edit::to_clipboard(&text, &html_escape(&text)),
+        Out::Copied(text) => buwiz_office_kit::clipboard::to_clipboard(&text, &html_escape(&text)),
         Out::Print(html) => {
-            let title = store().viewing.get_untracked().map(|f| f.name).unwrap_or_default();
-            crate::keys::print("html", html, &title);
+            let title = untracked(|| host().viewing_name()).unwrap_or_default();
+            host().print("html", html, &title);
         }
         Out::Note(n) => note(n),
     }
@@ -205,12 +214,12 @@ pub(crate) fn on_out(u: &WordUi, o: Out) {
 
 /// What the worker or a command couldn't do, as a toast (the web's
 /// `sonner` toasts; there is no status bar).
-pub(crate) fn note(n: impl Into<String>) {
+pub fn note(n: impl Into<String>) {
     let n = n.into();
     if !n.is_empty() {
-        crate::toast::show(n.clone());
+        host().toast(n.clone());
     }
-    store().office.word.note.set(n);
+    FORMAT.ui().note.set(n);
 }
 
 /// Plain text as an HTML fragment (the pasteboard's rich kind).

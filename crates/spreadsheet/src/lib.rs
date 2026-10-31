@@ -2,36 +2,45 @@
 //! workbook lives on the office worker ([`doc`]); this side keeps what the
 //! view needs — the shape of the sheet, the display list in view, the
 //! selection and the cell being edited — in [`SheetUi`].
+//!
+//! The app hosts it (`buwiz_office_kit::host`): it keeps the [`SheetUi`]
+//! in its store and holds the open workbook's session, both given here
+//! through [`FORMAT`] at startup.
 
 #[cfg(test)]
 mod bench;
-pub(crate) mod chart;
-pub(crate) mod convert;
-pub(crate) mod doc;
-pub(crate) mod edit;
-#[cfg(test)]
-pub(crate) mod fixture;
-pub(crate) mod grid;
-pub(crate) mod resize;
-pub(crate) mod select;
+pub mod chart;
+pub mod convert;
+pub mod doc;
+pub mod edit;
+#[cfg(any(test, feature = "testing"))]
+pub mod fixture;
+pub mod grid;
+pub mod resize;
+pub mod select;
 
 use std::sync::Arc;
 
 use betteroffice_xlsx::{DisplayList, Viewport};
 use nsh_core::prelude::*;
 
-use doc::{Meta, Out};
+use buwiz_office_kit::host::Format;
+use doc::{Book, Meta, Out};
 use select::Sel;
 
+/// The app's hooks: the view's state in its store, the open workbook's
+/// session.
+pub static FORMAT: Format<SheetUi, Book> = Format::new();
+
 /// A path's extension, lowercased.
-pub(crate) fn ext(path: &std::path::Path) -> String {
+pub fn ext(path: &std::path::Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
 /// [`Meta`] as a signal holds it: a new revision, sheet or engine state
 /// is a change.
 #[derive(Clone)]
-pub(crate) struct Shape(pub Arc<Meta>);
+pub struct Shape(pub Arc<Meta>);
 
 impl PartialEq for Shape {
     fn eq(&self, o: &Self) -> bool {
@@ -43,7 +52,7 @@ impl PartialEq for Shape {
 /// A display list in hand: the sheet window it covers (`vp`, sheet
 /// pixels) at `scale`.
 #[derive(Clone)]
-pub(crate) struct Shown {
+pub struct Shown {
     pub rev: u64,
     pub sheet: usize,
     pub vp: Viewport,
@@ -61,7 +70,7 @@ impl PartialEq for Shown {
 
 /// The cell being edited and its text so far.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Editing {
+pub struct Editing {
     pub sheet: usize,
     pub cell: (u32, u32),
     pub text: String,
@@ -70,7 +79,7 @@ pub(crate) struct Editing {
     pub replace: bool,
 }
 
-pub(crate) struct SheetUi {
+pub struct SheetUi {
     pub shape: Signal<Option<Shape>>,
     pub shown: Signal<Option<Shown>>,
     pub sel: Signal<Sel>,
@@ -97,7 +106,8 @@ pub(crate) struct SheetUi {
 }
 
 impl SheetUi {
-    pub(crate) fn new() -> SheetUi {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> SheetUi {
         SheetUi {
             shape: signal(None),
             shown: signal(None),
@@ -117,7 +127,7 @@ impl SheetUi {
     }
 
     /// A new file: nothing from the last one.
-    pub(crate) fn reset(&self) {
+    pub fn reset(&self) {
         self.shape.set(None);
         self.shown.set(None);
         self.sel.set(Sel::default());
@@ -133,19 +143,19 @@ impl SheetUi {
     }
 
     /// The file changed under it: the view is drawn again.
-    pub(crate) fn reloaded(&self) {
+    pub fn reloaded(&self) {
         self.editing.set(None);
         self.asked.set(None);
     }
 
     /// The active sheet (0 before the shape comes).
-    pub(crate) fn sheet(&self) -> usize {
+    pub fn sheet(&self) -> usize {
         self.shape.with_untracked(|s| s.as_ref().map_or(0, |s| s.0.active))
     }
 }
 
 /// An answer from the worker.
-pub(crate) fn on_out(u: &SheetUi, o: Out) {
+pub fn on_out(u: &SheetUi, o: Out) {
     match o {
         Out::Meta(m) => {
             let old = u.shape.with_untracked(|s| s.as_ref().map(|s| (s.0.active, s.0.rev)));
@@ -172,7 +182,7 @@ pub(crate) fn on_out(u: &SheetUi, o: Out) {
             chart::listed(u);
         }
         Out::Cell { sheet, cell, input } => u.bar.set((sheet, cell, input)),
-        Out::Copied { tsv, html } => edit::to_clipboard(&tsv, &html),
+        Out::Copied { tsv, html } => buwiz_office_kit::clipboard::to_clipboard(&tsv, &html),
         Out::Note(n) => u.note.set(n),
         Out::Fit { sheet, cols } => resize::fit(u, sheet, cols),
     }

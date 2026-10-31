@@ -1,4 +1,4 @@
-//! The Word document on the office worker ([`crate::office::session`]):
+//! The Word document on the office worker ([`buwiz_office_kit::session`]):
 //! BetterOffice's editing engine, its pages drawn for the view, the caret
 //! and the selection, and every edit.
 //!
@@ -21,20 +21,20 @@ use super::draw::{self, Drawn};
 use super::index::{Index, Spot, cell_of};
 use super::layout::Layout;
 use super::save;
-use crate::office::session::Document;
+use buwiz_office_kit::session::Document;
 
 // the menu bar's commands (Insert, Format, Page Setup, Watermark)
 #[path = "commands.rs"]
 mod commands;
-pub(crate) use commands::{Image, Insert, PageSetup};
+pub use commands::{Image, Insert, PageSetup};
 // the formatting bar's commands and what it shows of the selection
 #[path = "format.rs"]
-pub(crate) mod format;
-pub(crate) use format::{CellInfo, EditMode, Formats, Link, Picture, StyleInfo, TableOp, TextColor};
+pub mod format;
+pub use format::{CellInfo, EditMode, Formats, Link, Picture, StyleInfo, TableOp, TextColor};
 
 /// Caret moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Move {
+pub enum Move {
     Left,
     Right,
     WordLeft,
@@ -51,7 +51,7 @@ pub(crate) enum Move {
 
 /// Inline and paragraph formats.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Fmt {
+pub enum Fmt {
     Bold,
     Italic,
     Underline,
@@ -71,7 +71,7 @@ pub(crate) enum Fmt {
     Clear,
 }
 
-pub(crate) enum Cmd {
+pub enum Cmd {
     /// The pages in and near view at `zoom`: drawn when not yet drawn for
     /// this layout and zoom.
     View { pages: Vec<usize>, zoom: f32 },
@@ -129,7 +129,7 @@ pub(crate) enum Cmd {
 
 /// The caret's and selection's boxes on their pages (page pixels).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Caret {
+pub struct Caret {
     /// (page, x, y, height)
     pub caret: Option<(usize, f32, f32, f32)>,
     /// (page, x, y, w, h)
@@ -143,7 +143,7 @@ pub(crate) struct Caret {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Meta {
+pub struct Meta {
     /// Bumped by every relayout: pages drawn before it may be stale.
     pub rev: u64,
     /// Page sizes, page pixels.
@@ -175,7 +175,7 @@ pub(crate) struct Meta {
     pub watermark: Option<serde_json::Value>,
 }
 
-pub(crate) enum Out {
+pub enum Out {
     Meta(Box<Meta>),
     /// Page `index` drawn for layout `rev` at the zoom it was asked at.
     Page { index: usize, rev: u64, zoom: f32, drawn: Arc<Drawn> },
@@ -188,7 +188,7 @@ pub(crate) enum Out {
     Note(String),
 }
 
-pub(crate) struct Word {
+pub struct Word {
     layout: Layout,
     undo: UndoSession,
     /// The `.docx` the document came from (a `.doc` converted).
@@ -215,7 +215,7 @@ pub(crate) struct Word {
     /// The whole document laid out (after the first page).
     complete: bool,
     /// Edits since the open or the last save (the engine's own history can't tell).
-    pub(crate) edited: bool,
+    pub edited: bool,
     /// Where the next save goes, when not the file itself.
     target: Option<PathBuf>,
     /// A change inside one paragraph the index can take as it is: at,
@@ -240,7 +240,7 @@ pub(crate) struct Word {
     setup: Option<PageSetup>,
     watermark: Option<serde_json::Value>,
     /// What the save keeps beside the engine.
-    pub(crate) saving: save::State,
+    pub saving: save::State,
 }
 
 fn local() -> EditCtx {
@@ -252,7 +252,7 @@ fn spot(story: &str, offset: u32) -> Spot {
 }
 
 impl Word {
-    pub(crate) fn from_docx(bytes: Vec<u8>, legacy: bool) -> Result<Word, String> {
+    pub fn from_docx(bytes: Vec<u8>, legacy: bool) -> Result<Word, String> {
         // the first page from the first blocks; the whole document next tick
         let mut layout = match Layout::preview(&bytes)? {
             Some(l) => l,
@@ -887,23 +887,23 @@ impl Word {
 #[cfg(test)]
 impl Word {
     /// Whether the index as patched by the last edits is the one a rebuild makes.
-    pub(crate) fn index_is_fresh(&mut self) -> bool {
+    pub fn index_is_fresh(&mut self) -> bool {
         let fresh = Index::build(self.layout.engine.doc());
         self.index().paras == fresh.paras
     }
 
     /// Page `i`'s display list as laid out now.
-    pub(crate) fn page(&self, i: usize) -> Option<DisplayPage> {
+    pub fn page(&self, i: usize) -> Option<DisplayPage> {
         self.layout.page(i)
     }
 
     /// Whether the layout holds a chain for the `family|bold|italic` key.
-    pub(crate) fn has_chain(&self, key: &str) -> bool {
+    pub fn has_chain(&self, key: &str) -> bool {
         self.layout.fonts.chains_json().get(key).is_some()
     }
 
     /// Sets the selection's font family, as a font picker would.
-    pub(crate) fn set_family(&mut self, family: &str) -> Vec<Out> {
+    pub fn set_family(&mut self, family: &str) -> Vec<Out> {
         let (story, a, b) = self.range();
         let delta = InlineFormatDelta { font_family: Patch::Set(docx_edit::FontFamilyPatch { ascii: family.to_owned(), h_ansi: None }), ..Default::default() };
         self.layout.engine.doc().format_range(&self.ctx(), StoryRange::new(&story, a, b), &delta).unwrap();
@@ -914,13 +914,13 @@ impl Word {
     }
 
     /// Lets the engine re-lower only a typed-in paragraph (off by default).
-    pub(crate) fn set_local_lowering(&self, on: bool) {
+    pub fn set_local_lowering(&self, on: bool) {
         self.layout.engine.set_local_lowering(on);
     }
 
     /// The engine's part of a key's echo (the insert, the font preflight,
     /// the relayout and lists), and the index's, in ms.
-    pub(crate) fn echo_parts(&mut self) -> (f64, f64, f64, f64) {
+    pub fn echo_parts(&mut self) -> (f64, f64, f64, f64) {
         let t = std::time::Instant::now();
         let at = self.head.clone();
         self.layout.engine.doc().insert_text(&self.ctx(), Position::new(&at.story, at.offset), "y", FormatPolicy::Inherit).unwrap();

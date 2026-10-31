@@ -18,19 +18,19 @@ use super::{Panel, dropdown};
 /// The split button (DR `v1`, `x1`, `C1`, `ay`): 32 high with 2 between
 /// its parts; the colour part 28 wide (icon 18 over a 16×4 bar), the ▾
 /// part 18; dimmed to .38 while disabled.
-pub(crate) const SPLIT_H: f32 = 32.0;
-pub(crate) const APPLY_W: f32 = 28.0;
-pub(crate) const ARROW_W: f32 = 18.0;
-pub(crate) const BAR: (f32, f32) = (16.0, 4.0);
-pub(crate) const DISABLED_OPACITY: f32 = 0.38;
+pub const SPLIT_H: f32 = 32.0;
+pub const APPLY_W: f32 = 28.0;
+pub const ARROW_W: f32 = 18.0;
+pub const BAR: (f32, f32) = (16.0, 4.0);
+pub const DISABLED_OPACITY: f32 = 0.38;
 /// The single button (DR `m1`, `splitButton: false`): 40×32.
-pub(crate) const SINGLE_W: f32 = 40.0;
+pub const SINGLE_W: f32 = 40.0;
 /// A swatch (DR `yc`, `d1`, `bc`): 18 square, 2 apart, ten to a row.
-pub(crate) const SWATCH: f32 = 18.0;
-pub(crate) const SWATCH_GAP: f32 = 2.0;
+pub const SWATCH: f32 = 18.0;
+pub const SWATCH_GAP: f32 = 2.0;
 
 /// A colour as `RRGGBB` (with or without `#`); black when unreadable.
-pub(crate) fn hex(h: &str) -> Hsla {
+pub fn hex(h: &str) -> Hsla {
     let h = h.trim_start_matches('#');
     Hsla::from_str(&format!("#{h}")).unwrap_or(Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
 }
@@ -61,7 +61,7 @@ fn darken(h: &str, keep: f32) -> String {
 }
 
 /// The default Office theme (docx core `s`), the slots the grid shows.
-pub(crate) const THEME: [(&str, &str); 10] = [
+pub const THEME: [(&str, &str); 10] = [
     ("lt1", "FFFFFF"),
     ("dk1", "000000"),
     ("lt2", "E7E6E6"),
@@ -77,7 +77,7 @@ pub(crate) const THEME: [(&str, &str); 10] = [
 const SLOT_NAMES: [&str; 10] = ["Background 1", "Text 1", "Background 2", "Text 2", "Accent 1", "Accent 2", "Accent 3", "Accent 4", "Accent 5", "Accent 6"];
 
 /// The standard colours (DR `Qd`, names from `colorPicker.colors`).
-pub(crate) const STANDARD: [(&str, &str); 10] = [
+pub const STANDARD: [(&str, &str); 10] = [
     ("Dark Red", "C00000"),
     ("Red", "FF0000"),
     ("Orange", "FFC000"),
@@ -93,7 +93,7 @@ pub(crate) const STANDARD: [(&str, &str); 10] = [
 /// A theme colour's cell: its hex, its slot and the tint or shade it
 /// carries into the document (`w:themeTint` / `w:themeShade`).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Swatch {
+pub struct Swatch {
     pub hex: String,
     pub label: String,
     pub slot: &'static str,
@@ -104,7 +104,7 @@ pub(crate) struct Swatch {
 /// The theme grid (docx core `generateThemeTintShadeMatrix`): six rows of
 /// the ten slots, the colour itself, then lighter 80/60/40% and darker
 /// 25/50%. `scheme` gives a document's own slot colours.
-pub(crate) fn theme_matrix(scheme: &dyn Fn(&str) -> Option<String>) -> Vec<Vec<Swatch>> {
+pub fn theme_matrix(scheme: &dyn Fn(&str) -> Option<String>) -> Vec<Vec<Swatch>> {
     // (kind, value, hex value, label suffix): docx core `V`
     let rows: [(u8, f32, Option<&'static str>, &str); 6] = [
         (0, 0.0, None, ""),
@@ -142,7 +142,7 @@ pub(crate) fn theme_matrix(scheme: &dyn Fn(&str) -> Option<String>) -> Vec<Vec<S
 /// What the colour dropdown is for: its label, icon, clear row and the
 /// colour its bar starts with (DR `qs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub enum Mode {
     Text,
     Highlight,
     Border,
@@ -151,7 +151,7 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Mode::Text => "Font Color",
             Mode::Highlight => "Text Highlight Color",
@@ -188,7 +188,7 @@ impl Mode {
 
 /// A choice from the dropdown.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Picked {
+pub enum Picked {
     /// Automatic, or No Color.
     Clear,
     /// A theme cell (a highlight takes its hex only).
@@ -217,7 +217,7 @@ fn near_white(h: &str) -> bool {
 
 /// The colour dropdown. `current` is the selection's colour as `RRGGBB`
 /// (its swatch shows chosen); `on_pick` gets each choice.
-pub(crate) struct ColorButton {
+pub struct ColorButton {
     mode: Mode,
     split: bool,
     current: Rc<dyn Fn() -> Option<String>>,
@@ -226,30 +226,30 @@ pub(crate) struct ColorButton {
     on_pick: Rc<dyn Fn(Picked)>,
 }
 
-pub(crate) fn color_button(mode: Mode) -> ColorButton {
+pub fn color_button(mode: Mode) -> ColorButton {
     ColorButton { mode, split: true, current: Rc::new(|| None), scheme: Rc::new(|_| None), disabled: Rc::new(|| false), on_pick: Rc::new(|_| {}) }
 }
 
 impl ColorButton {
     /// One button opening the panel (`splitButton: false`).
-    pub(crate) fn single(mut self) -> Self {
+    pub fn single(mut self) -> Self {
         self.split = false;
         self
     }
-    pub(crate) fn current(mut self, hex: impl Fn() -> Option<String> + 'static) -> Self {
+    pub fn current(mut self, hex: impl Fn() -> Option<String> + 'static) -> Self {
         self.current = Rc::new(hex);
         self
     }
     /// The document theme's slot colours (`colorScheme`).
-    pub(crate) fn scheme(mut self, slot: impl Fn(&str) -> Option<String> + 'static) -> Self {
+    pub fn scheme(mut self, slot: impl Fn(&str) -> Option<String> + 'static) -> Self {
         self.scheme = Rc::new(slot);
         self
     }
-    pub(crate) fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
+    pub fn disabled(mut self, off: impl Fn() -> bool + 'static) -> Self {
         self.disabled = Rc::new(off);
         self
     }
-    pub(crate) fn on_pick(mut self, run: impl Fn(Picked) + 'static) -> Self {
+    pub fn on_pick(mut self, run: impl Fn(Picked) + 'static) -> Self {
         self.on_pick = Rc::new(run);
         self
     }

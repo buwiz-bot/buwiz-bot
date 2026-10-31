@@ -510,7 +510,7 @@ fn headers_footers_and_notes_save_their_edits() {
 // ---- through Word's own commands ----
 
 use super::doc::{Cmd, Insert, Move, PageSetup, Word};
-use crate::office::session::Document;
+use buwiz_office_kit::session::Document;
 
 fn word(bytes: Vec<u8>) -> Word {
     let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();

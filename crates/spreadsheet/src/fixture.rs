@@ -11,7 +11,7 @@ const CHART: &str = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/
 /// The regions and their revenue (their sum is the total's cached value).
 const REGIONS: [(&str, u32); 5] = [("North", 412_300), ("South", 398_150), ("East", 365_400), ("West", 228_900), ("Online", 100_000)];
 
-pub(crate) fn showcase() -> Vec<u8> {
+pub fn showcase() -> Vec<u8> {
     let mut rows = String::from(r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Q3 Sales Dashboard</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>Region</t></is></c><c r="C3" t="inlineStr"><is><t>Revenue</t></is></c></row>"#);
     for (i, (name, v)) in REGIONS.iter().enumerate() {
         let r = i + 4;

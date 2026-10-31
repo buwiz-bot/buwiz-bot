@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::doc::{Cmd, EditMode, Fmt, Insert, Link, Meta, Move, Out, Picture, TableOp, TextColor, Word};
 use super::fixture;
-use crate::office::session::Document;
+use buwiz_office_kit::session::Document;
 
 fn open(bytes: Vec<u8>) -> Word {
     let mut w = Word::open(bytes, Path::new("a.docx")).unwrap();

@@ -4,7 +4,7 @@
 //! bytes it is given) while the page canvas draws with CoreText. Text lines
 //! up only when both read the same face, so a family the document asks for
 //! takes the chain the web editor's registry gives it: BetterOffice's
-//! bundled faces ([`crate::office::fonts`]: Carlito for Calibri, Liberation
+//! bundled faces ([`buwiz_office_kit::fonts`]: Carlito for Calibri, Liberation
 //! Sans for Arial and for any family with no face of its own), their files
 //! handed to the shaper and registered with CoreText, which draws them by
 //! name. A face standing in for another family is measured through a view
@@ -18,30 +18,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use objc2_core_foundation::{CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType};
-use objc2_core_text::{
-    CTFont, CTFontDescriptor, CTFontSymbolicTraits, CTFontTableOptions, kCTFontFamilyNameAttribute, kCTFontTraitsAttribute,
-    kCTFontWeightTrait,
-};
+use objc2_core_foundation::{CFData, CFRetained};
+use objc2_core_text::{CTFont, CTFontTableOptions};
 
-use crate::office;
-
-/// A face the shaper holds, as the canvas names it.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Face {
-    /// The family the canvas names: a bundled one, or installed (a
-    /// stand-in's for a missing one).
-    pub family: String,
-    pub bold: bool,
-    pub italic: bool,
-}
-
-impl Face {
-    /// The CSS font the canvas draws this face with at `px`.
-    pub(crate) fn css(&self, px: f64) -> String {
-        format!("{}{}{px}px \"{}\"", if self.italic { "italic " } else { "" }, if self.bold { "bold " } else { "" }, self.family)
-    }
-}
+use buwiz_office_kit as office;
+pub use buwiz_office_kit::fonts::Face;
+use buwiz_office_kit::fonts::installed;
+#[cfg(test)]
+pub use buwiz_office_kit::fonts::coretext_width;
 
 /// The installed family that stands in for `family` (lowercase) when it is
 /// missing: metric-near where one ships with macOS.
@@ -53,32 +37,6 @@ fn stand_in(family: &str) -> &'static str {
         f if f.contains("serif") && !f.contains("sans") => "Times New Roman",
         _ => "Arial",
     }
-}
-
-/// `family` as nsh's canvas makes it (`nsh-platform-macos` `family_font`
-/// and `make_font`): `None` when it isn't installed.
-fn installed(family: &str, bold: bool, italic: bool) -> Option<CFRetained<CTFont>> {
-    let name = CFString::from_str(family);
-    // NSFontWeightBold and NSFontWeightRegular
-    let weight = CFNumber::new_f64(if bold { 0.4 } else { 0.0 });
-    // SAFETY: immutable CoreText constants; the values have the types
-    // CoreText documents for their keys.
-    let font = unsafe {
-        let traits = CFDictionary::<CFString, CFType>::from_slices(&[kCTFontWeightTrait], &[weight.as_ref()]);
-        let attributes = CFDictionary::<CFString, CFType>::from_slices(&[kCTFontFamilyNameAttribute, kCTFontTraitsAttribute], &[name.as_ref(), traits.as_ref()]);
-        let descriptor = CTFontDescriptor::with_attributes(attributes.as_opaque());
-        CTFont::with_font_descriptor(&descriptor, 12.0, std::ptr::null())
-    };
-    // SAFETY: a valid font.
-    if !unsafe { font.family_name() }.to_string().eq_ignore_ascii_case(family) {
-        return None;
-    }
-    if !italic {
-        return Some(font);
-    }
-    let it = CTFontSymbolicTraits::TraitItalic;
-    // SAFETY: a valid font; size 0 and a null matrix keep the font's.
-    Some(unsafe { font.copy_with_symbolic_traits(0.0, std::ptr::null(), it, it) }.unwrap_or(font))
 }
 
 /// The face's tables as one sfnt (a face of a collection too: the shaper
@@ -133,7 +91,7 @@ fn sfnt(font: &CTFont) -> Option<Vec<u8>> {
 
 /// What the layout says a run of text needs (`layout_font_requirements_json`).
 #[derive(Debug)]
-pub(crate) struct Need {
+pub struct Need {
     pub key: String,
     pub family: String,
     pub bold: bool,
@@ -144,7 +102,7 @@ pub(crate) struct Need {
 
 impl Need {
     /// A requirement as the layout lists it (`None` without a key).
-    pub(crate) fn of_json(v: &serde_json::Value) -> Option<Need> {
+    pub fn of_json(v: &serde_json::Value) -> Option<Need> {
         let key = v["key"].as_str()?;
         let mut need = Need::of_key(key);
         if let Some(family) = v["family"].as_str() {
@@ -155,7 +113,7 @@ impl Need {
     }
 
     /// The need of a `family|bold|italic` key alone.
-    pub(crate) fn of_key(key: &str) -> Need {
+    pub fn of_key(key: &str) -> Need {
         let mut parts = key.rsplitn(3, '|');
         let italic = parts.next() == Some("1");
         let bold = parts.next() == Some("1");
@@ -165,7 +123,7 @@ impl Need {
 }
 
 /// The faces one document's layout measures with, in its own store.
-pub(crate) struct Fonts {
+pub struct Fonts {
     store: docx_layout::MeasureFonts,
     /// By font id (a substitute's view draws as its face).
     faces: HashMap<u32, Face>,
@@ -181,7 +139,8 @@ pub(crate) struct Fonts {
 }
 
 impl Fonts {
-    pub(crate) fn new() -> Fonts {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Fonts {
         Fonts {
             store: docx_layout::MeasureFonts::default(),
             faces: HashMap::new(),
@@ -195,18 +154,18 @@ impl Fonts {
 
     /// Makes this document's store the one the layout reads until the
     /// scope drops (every layout and display-list call runs in one).
-    pub(crate) fn enter(&self) -> docx_layout::MeasureFontsScope {
+    pub fn enter(&self) -> docx_layout::MeasureFontsScope {
         self.store.enter()
     }
 
     /// The face behind font id `id`.
-    pub(crate) fn face(&self, id: u32) -> Option<&Face> {
+    pub fn face(&self, id: u32) -> Option<&Face> {
         self.faces.get(&id)
     }
 
     /// The face the canvas draws `family` with: the first of its bundled
     /// chain, else the installed family or a stand-in for a missing one.
-    pub(crate) fn resolve(family: &str, bold: bool, italic: bool) -> Face {
+    pub fn resolve(family: &str, bold: bool, italic: bool) -> Face {
         let wanted = family.trim().trim_matches(['"', '\'']);
         if office::fonts::dir().is_some()
             && let Some(face) = office::fonts::word_chain(wanted, bold, italic).first()
@@ -280,7 +239,7 @@ impl Fonts {
     /// metric-compatible face and the last resort, each as a view for the
     /// family asked for, then the fallbacks for its scripts. (The web puts
     /// a face the document embeds first; Rox doesn't read those yet.)
-    pub(crate) fn need(&mut self, need: &Need) -> Vec<u32> {
+    pub fn need(&mut self, need: &Need) -> Vec<u32> {
         if self.has(&need.key, &need.scripts) {
             return self.chains[&need.key].clone();
         }
@@ -319,39 +278,18 @@ impl Fonts {
     }
 
     /// The chain for the layout's `family|bold|italic` key, scripts aside.
-    pub(crate) fn chain(&mut self, key: &str) -> Vec<u32> {
+    pub fn chain(&mut self, key: &str) -> Vec<u32> {
         self.need(&Need::of_key(key))
     }
 
     /// Whether a chain was handed out for `key`, with fallbacks for `scripts`.
-    pub(crate) fn has(&self, key: &str, scripts: &[String]) -> bool {
+    pub fn has(&self, key: &str, scripts: &[String]) -> bool {
         self.chains.contains_key(key) && scripts.iter().all(|s| self.scripts.get(key).is_some_and(|seen| seen.contains(s)))
     }
 
     /// Every chain handed out, as the layout's `fontChains` takes them.
-    pub(crate) fn chains_json(&self) -> serde_json::Value {
+    pub fn chains_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.chains).unwrap_or_default()
-    }
-}
-
-/// The width CoreText sets `text` in, in `face` at `px` (the canvas's
-/// `measureText`), for checking the shaper against it.
-#[cfg(test)]
-pub(crate) fn coretext_width(face: &Face, px: f64, text: &str) -> f64 {
-    use objc2_core_foundation::{CFAttributedString, CFMutableAttributedString, CFRange};
-    use objc2_core_text::{CTLine, kCTFontAttributeName};
-    office::fonts::register();
-    let Some(font) = installed(&face.family, face.bold, face.italic) else { return 0.0 };
-    // SAFETY: a valid font; size, null matrix and descriptor as documented.
-    let font = unsafe { font.copy_with_attributes(px, std::ptr::null(), None) };
-    let string = CFMutableAttributedString::new(None, 0).expect("attributed string");
-    // SAFETY: a valid mutable string; the font attribute takes a CTFont.
-    unsafe {
-        CFMutableAttributedString::replace_string(Some(&string), CFRange { location: 0, length: 0 }, Some(&CFString::from_str(text)));
-        let range = CFRange { location: 0, length: CFAttributedString::length(&string) };
-        CFMutableAttributedString::set_attribute(Some(&string), range, Some(kCTFontAttributeName), Some(font.as_ref()));
-        let line = CTLine::with_attributed_string(&string);
-        line.typographic_bounds(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
     }
 }
 

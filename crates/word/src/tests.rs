@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::doc::{Cmd, Fmt, Move, Out, Word};
 use super::fixture;
-use crate::office::session::Document;
+use buwiz_office_kit::session::Document;
 
 fn open(bytes: Vec<u8>) -> Word {
     let mut w = Word::open(bytes, Path::new("a.docx")).unwrap();
@@ -270,7 +270,7 @@ fn lines(w: &Word) -> Vec<String> {
 
 #[test]
 fn the_demo_breaks_its_lines_where_the_web_editor_does() {
-    let w = open(include_bytes!("../../../../server/src/office/seeds/betteroffice-demo.docx").to_vec());
+    let w = open(include_bytes!("../../../server/src/office/seeds/betteroffice-demo.docx").to_vec());
     let lines = lines(&w);
     // the subtitle in Calibri Light (Carlito's metrics), as the web lays it
     let i = lines.iter().position(|l| l.starts_with("A faithful, open .docx editor")).unwrap_or_else(|| panic!("{lines:?}"));

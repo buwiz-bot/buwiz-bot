@@ -1,7 +1,7 @@
-//! The numbers in `office/BENCH.md`: generated workbooks through the
+//! The numbers in `BENCH.md`: generated workbooks through the
 //! sheet's own path (open, first paint, the full engine, scrolled
 //! windows, edits on 10k formulas). Ignored by default:
-//! `cargo test -p rox --lib office::xlsx::bench -- --ignored --nocapture`
+//! `cargo test -p buwiz-spreadsheet --lib bench -- --ignored --nocapture`
 //! (dependencies build optimized even in dev builds, so the engine's
 //! numbers are release numbers).
 
@@ -11,8 +11,8 @@ use std::time::Instant;
 use betteroffice_xlsx::{Cell, CellRef, CellValue, Sheet, Viewport, Workbook, WorkbookModel};
 
 use super::doc::{Book, Cmd, Out};
-use crate::office::draw::{self, Palette};
-use crate::office::session::Document;
+use buwiz_office_kit::draw::{self, Palette};
+use buwiz_office_kit::session::Document;
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3

@@ -19,26 +19,25 @@ use nsh_core::prelude::*;
 
 use super::WordUi;
 use super::doc::{Cmd, Fmt, Move};
-use crate::live::store;
-use crate::office;
-use crate::office::ui::palette as p;
-use crate::theme;
+use buwiz_office_kit::host::host;
+use buwiz_office_kit::ui::palette as p;
+use buwiz_office_kit::host::theme;
 
 /// Space between pages (`CANVAS_PAGE_GAP_PX`) and around them
 /// (`CANVAS_PAGES_PADDING_PX`), points.
 const GAP: f32 = 16.0;
-pub(crate) const PAD: f32 = 24.0;
+pub const PAD: f32 = 24.0;
 /// How far past the view pages are kept drawn, in view heights.
 const AHEAD: f32 = 1.0;
 
 fn ui() -> &'static WordUi {
-    &store().office.word
+    crate::FORMAT.ui()
 }
 
 /// A command from the view. One that moves the caret or edits other than
 /// by typing starts the hidden field afresh: what it held is behind the
 /// caret no more.
-pub(crate) fn send(cmd: Cmd) {
+pub fn send(cmd: Cmd) {
     if !matches!(cmd, Cmd::View { .. } | Cmd::Type(_) | Cmd::Print | Cmd::SaveTo(_) | Cmd::Copy { cut: false }) {
         empty_field();
     }
@@ -46,7 +45,7 @@ pub(crate) fn send(cmd: Cmd) {
 }
 
 fn post(cmd: Cmd) {
-    office::with_word(|s| s.send(cmd));
+    crate::FORMAT.with_session(|s| s.send(cmd));
 }
 
 /// The hidden field typing goes into: its value, and the text it has
@@ -86,11 +85,10 @@ fn delta(given: &str, now: &str) -> (usize, String) {
 
 /// Whether the document's keys apply: it shows, and no menu, dialog,
 /// prompt, find bar or the name field has the keyboard.
-pub(crate) fn editing() -> bool {
-    let st = store();
-    let w = &st.office.word;
-    office::showing()
-        && st.office.is_word.get()
+pub fn editing() -> bool {
+    let w = ui();
+    host().showing()
+        && host().is_word().get()
         && w.find.with(Option::is_none)
         && !w.naming.get()
         && !w.menu_open.get()
@@ -100,12 +98,12 @@ pub(crate) fn editing() -> bool {
         && !w.table_open.get()
         && w.prompt.with(Option::is_none)
         && !w.bar_open.get()
-        && !st.office.ask_close.get()
-        && st.ctx.get().is_none()
+        && !host().ask_close().get()
+        && !host().menu_open()
 }
 
 /// The keyboard back to the page.
-pub(crate) fn focus() {
+pub fn focus() {
     if let Some(f) = FIELD.with(std::cell::Cell::get) {
         f.focus();
     }
@@ -126,7 +124,7 @@ fn tops(pages: &[(f32, f32)], zoom: f32) -> (Vec<f32>, f32) {
 }
 
 /// A page's left edge in the pages' width: centred, at least the padding in.
-pub(crate) fn page_left(area_w: f32, page_w: f32) -> f32 {
+pub fn page_left(area_w: f32, page_w: f32) -> f32 {
     ((area_w - page_w) / 2.0).max(PAD)
 }
 
@@ -148,7 +146,7 @@ fn near(u: &WordUi) -> Option<(usize, usize)> {
 
 /// Asks the worker for the pages near the view (`again`: whatever was
 /// asked before, after a relayout).
-pub(crate) fn ask_pages(u: &WordUi, again: bool) {
+pub fn ask_pages(u: &WordUi, again: bool) {
     let Some((first, last)) = near(u) else { return };
     let z = u.zoom.get_untracked();
     let rev = u.meta.with_untracked(|m| m.rev);
@@ -160,7 +158,7 @@ pub(crate) fn ask_pages(u: &WordUi, again: bool) {
 }
 
 /// Scrolls page `page`'s `y` (page pixels) into view, if it is out.
-pub(crate) fn reveal(u: &WordUi, page: usize, y: f32) {
+pub fn reveal(u: &WordUi, page: usize, y: f32) {
     let meta = u.meta.get_untracked();
     let z = u.zoom.get_untracked();
     let (tops, _) = tops(&meta.pages, z);
@@ -180,11 +178,11 @@ pub(crate) fn reveal(u: &WordUi, page: usize, y: f32) {
 }
 
 /// A key's move.
-pub(crate) fn step(to: Move, extend: bool) {
+pub fn step(to: Move, extend: bool) {
     send(Cmd::Move { to, extend });
 }
 
-pub(crate) fn key(cmd: &str) {
+pub fn key(cmd: &str) {
     send(match cmd {
         "backspace" => Cmd::Backspace,
         "delete" => Cmd::Delete,
@@ -200,17 +198,17 @@ pub(crate) fn key(cmd: &str) {
     });
 }
 
-pub(crate) fn format(f: Fmt) {
+pub fn format(f: Fmt) {
     send(Cmd::Format(f));
 }
 
-pub(crate) fn copy(cut: bool) {
+pub fn copy(cut: bool) {
     send(Cmd::Copy { cut });
 }
 
-pub(crate) fn paste() {
+pub fn paste() {
     let answer = clipboard_string();
-    crate::store::spawn_detached(async move {
+    buwiz_office_kit::spawn_detached(async move {
         let text = answer.await;
         if !text.is_empty() {
             send(Cmd::Paste(text));
@@ -219,23 +217,23 @@ pub(crate) fn paste() {
 }
 
 /// ⌘P: the document as it is now, to the print panel.
-pub(crate) fn print() {
+pub fn print() {
     send(Cmd::Print);
 }
 
 /// ⌘S on a `.doc` on this Mac: where to write the `.docx` first.
-pub(crate) fn save_legacy(path: std::path::PathBuf) {
+pub fn save_legacy(path: std::path::PathBuf) {
     let name = path.with_extension("docx").file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut dialog = nsh_core::file_dialog::SaveDialog::new().file_name(name).filter(nsh_core::file_dialog::FileFilter::new("Word Document", ["docx"]));
     if let Some(dir) = path.parent() {
         dialog = dialog.directory(dir);
     }
     let answer = pick_save_path(dialog);
-    crate::store::spawn_detached(async move {
+    buwiz_office_kit::spawn_detached(async move {
         match answer.await {
             Ok(Some(to)) => {
                 send(Cmd::SaveTo(to.with_extension("docx")));
-                office::save();
+                host().save();
             }
             Ok(None) => {}
             Err(e) => ui().note.set(format!("Couldn't choose where to save: {e}")),
@@ -244,7 +242,7 @@ pub(crate) fn save_legacy(path: std::path::PathBuf) {
 }
 
 /// ⌘F: the find bar (again: the next match).
-pub(crate) fn find() {
+pub fn find() {
     let u = ui();
     if u.find.with_untracked(Option::is_none) {
         u.find.set(Some(String::new()));
@@ -259,17 +257,17 @@ fn close_find() {
 }
 
 /// The zoom control's level.
-pub(crate) fn set_zoom(z: f32) {
+pub fn set_zoom(z: f32) {
     let u = ui();
     u.zoom.set(z);
     ask_pages(u, true);
 }
 
 /// Escape: closes the viewer (asking about edits).
-pub(crate) fn escape() {
-    if office::may_close() {
-        office::close();
-        store().viewing.set(None);
+pub fn escape() {
+    if host().may_close() {
+        host().close();
+        host().close_viewer();
     }
 }
 
@@ -368,7 +366,7 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
             layer = layer.child(view().absolute().left(px(x * z)).top(px(y * z)).w(px(w * z)).h(px(h * z)).bg(found_tint));
         }
         for (_, x, y, w, h) in c.sel.iter().filter(|r| r.0 == page) {
-            layer = layer.child(view().absolute().left(px(x * z)).top(px(y * z)).w(px(w * z)).h(px(h * z)).bg(theme::ACCENT_TINT));
+            layer = layer.child(view().absolute().left(px(x * z)).top(px(y * z)).w(px(w * z)).h(px(h * z)).bg(theme().accent_tint));
         }
         // the selected picture: the web's 2px primary outline
         if let Some((_, x, y, w, h)) = c.picture.filter(|r| r.0 == page) {
@@ -379,7 +377,7 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
             && c.sel.is_empty()
             && c.picture.is_none()
         {
-            layer = layer.child(view().absolute().left(px(x * z - 0.75)).top(px(y * z)).w(px(1.5)).h(px(h * z)).bg(theme::ACCENT));
+            layer = layer.child(view().absolute().left(px(x * z - 0.75)).top(px(y * z)).w(px(1.5)).h(px(h * z)).bg(theme().accent));
         }
         layer.into_element()
     });
@@ -476,7 +474,7 @@ fn review() -> impl IntoElement {
         let meta = u.meta.get();
         let mut list = view().gap_2().p_2();
         if meta.review.is_empty() {
-            list = list.child(text("No tracked changes or comments").text_size(px(12.0)).text_color(theme::MUTED));
+            list = list.child(text("No tracked changes or comments").text_size(px(12.0)).text_color(theme().muted));
         }
         for (author, kind, body) in meta.review.iter() {
             let c = super::draw::author_color(author);
@@ -485,14 +483,14 @@ fn review() -> impl IntoElement {
                     .gap_1()
                     .p_2()
                     .rounded(px(6.0))
-                    .bg(theme::CARD)
+                    .bg(theme().card)
                     .border_l(px(3.0))
                     .border_l_color(c)
                     .child(text(format!("{author} · {kind}")).text_size(px(11.0)).text_color(c))
-                    .child(text(body.clone()).number_of_lines(4).text_size(px(12.0)).text_color(theme::TEXT)),
+                    .child(text(body.clone()).number_of_lines(4).text_size(px(12.0)).text_color(theme().text)),
             );
         }
-        scroll().w(px(240.0)).bg(theme::PANE).border_l(px(0.5)).border_l_color(theme::BORDER_S).child(list).into_element()
+        scroll().w(px(240.0)).bg(theme().pane).border_l(px(0.5)).border_l_color(theme().border_s).child(list).into_element()
     })
 }
 
@@ -506,8 +504,8 @@ fn tool(label: &'static str, title: &'static str, on: impl Fn() + 'static, activ
         .rounded(px(5.0))
         .items_center()
         .justify_center()
-        .bg(move || if active() { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
-        .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
+        .bg(move || if active() { theme().active } else { AdaptiveColor::TRANSPARENT })
+        .child(text(label).text_size(px(13.0)).text_color(theme().text))
         .on_press(move || {
             on();
             focus();
@@ -527,9 +525,9 @@ fn find_bar() -> impl IntoElement {
                 .h(px(34.0))
                 .px_2()
                 .gap_2()
-                .bg(theme::PANE)
+                .bg(theme().pane)
                 .border_b(px(0.5))
-                .border_b_color(theme::BORDER_S)
+                .border_b_color(theme().border_s)
                 .child(
                     input()
                         .label("Find")
@@ -538,9 +536,9 @@ fn find_bar() -> impl IntoElement {
                         .h(px(24.0))
                         .px_2()
                         .rounded(px(5.0))
-                        .bg(theme::SUBTLE)
+                        .bg(theme().subtle)
                         .text_size(px(13.0))
-                        .text_color(theme::TEXT)
+                        .text_color(theme().text)
                         .placeholder("Find in document")
                         .value(query)
                         .on_change(move |v: &str| {
@@ -560,7 +558,7 @@ fn find_bar() -> impl IntoElement {
                     (n, at) => format!("{at} of {n}"),
                 })
                 .text_size(px(12.0))
-                .text_color(theme::MUTED))
+                .text_color(theme().muted))
                 .child(tool("‹", "Previous match", move || send(Cmd::Find { query: query(), back: true }), || false))
                 .child(tool("›", "Next match", move || send(Cmd::Find { query: query(), back: false }), || false))
                 .child(view().flex_1())
@@ -571,11 +569,11 @@ fn find_bar() -> impl IntoElement {
 }
 
 /// The Word view.
-pub(crate) fn word_view() -> impl IntoElement {
+pub fn word_view() -> impl IntoElement {
     let u = ui();
     view()
         .flex_1()
-        .child(office::xlsx::edit::prompts())
+        .child(buwiz_office_kit::prompts::prompts())
         .child(super::chrome::title_bar())
         .child(super::toolbar::toolbar())
         .child(find_bar())

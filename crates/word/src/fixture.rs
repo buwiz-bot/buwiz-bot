@@ -6,7 +6,7 @@ use std::fmt::Write;
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture""#;
 
 /// A 4×2 PNG: red, green, blue and white columns over black.
-pub(crate) fn png() -> Vec<u8> {
+pub fn png() -> Vec<u8> {
     let mut out = Vec::new();
     let mut e = png::Encoder::new(&mut out, 4, 2);
     e.set_color(png::ColorType::Rgb);
@@ -85,20 +85,20 @@ fn body(pages: usize, with_notes: bool) -> (String, usize) {
 
 /// A document of about `pages` pages: each a heading, three paragraphs (one
 /// with a footnote), a three-item list, and a table or a picture.
-pub(crate) fn document(pages: usize) -> Vec<u8> {
+pub fn document(pages: usize) -> Vec<u8> {
     let (body, notes) = body(pages, true);
     package(&body, notes, "", "")
 }
 
 /// [`document`] without footnotes.
-pub(crate) fn document_without_notes(pages: usize) -> Vec<u8> {
+pub fn document_without_notes(pages: usize) -> Vec<u8> {
     let (body, notes) = body(pages, false);
     package(&body, notes, "", "")
 }
 
 /// A short document with a comment, a tracked insertion and a tracked
 /// deletion by two authors.
-pub(crate) fn reviewed() -> Vec<u8> {
+pub fn reviewed() -> Vec<u8> {
     let body = [
         p(0x11, "", &format!(r#"{}<w:commentRangeStart w:id="0"/>{}<w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r>"#, r("Plain text, "), r("commented words"))),
         p(0x12, "", &format!(r#"{}<w:ins w:id="1" w:author="Ada" w:date="2026-01-01T00:00:00Z">{}</w:ins>{}"#, r("Before "), r("inserted"), r(" after."))),
@@ -114,7 +114,7 @@ pub(crate) fn reviewed() -> Vec<u8> {
 
 /// Two pictures in one paragraph between words, then a paragraph holding
 /// only a page break, then one line.
-pub(crate) fn pictures_and_break() -> Vec<u8> {
+pub fn pictures_and_break() -> Vec<u8> {
     let body = [
         format!(r#"<w:p w14:paraId="00000301">{}{}{}{}</w:p>"#, r("Before "), picture(1), picture(2).replace(r#"cx="1828800""#, r#"cx="2743200""#).replace(r#"name="Picture 2""#, r#"name="Picture 2" descr="Second""#), r(" after")),
         r#"<w:p w14:paraId="00000302"><w:r><w:br w:type="page"/></w:r></w:p>"#.to_owned(),
@@ -125,13 +125,13 @@ pub(crate) fn pictures_and_break() -> Vec<u8> {
 }
 
 /// A one-paragraph-per-line document.
-pub(crate) fn paragraphs(lines: &[&str]) -> Vec<u8> {
+pub fn paragraphs(lines: &[&str]) -> Vec<u8> {
     let body: String = lines.iter().enumerate().map(|(i, l)| p(0x200 + i as u32, "", &r(l))).collect();
     package(&body, 0, "", "")
 }
 
 /// A title (Title: Calibri Light 28) over one paragraph per line.
-pub(crate) fn titled(title: &str, lines: &[&str]) -> Vec<u8> {
+pub fn titled(title: &str, lines: &[&str]) -> Vec<u8> {
     let mut body = p(0x1ff, r#"<w:pStyle w:val="Title"/>"#, &r(title));
     body.extend(lines.iter().enumerate().map(|(i, l)| p(0x200 + i as u32, "", &r(l))));
     let title = r#"<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light" w:cs="Calibri Light"/><w:sz w:val="56"/></w:rPr></w:style>"#;

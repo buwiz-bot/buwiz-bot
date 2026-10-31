@@ -22,7 +22,7 @@ fn relationships(xml: &str) -> Vec<(String, String)> {
 
 /// The parts pictures can come from: media and the relationships of the
 /// story parts.
-pub(crate) fn media(source: &[u8]) -> Vec<(String, Vec<u8>)> {
+pub fn media(source: &[u8]) -> Vec<(String, Vec<u8>)> {
     parts(source).into_iter().filter(|(n, _)| n.starts_with("word/")).filter(|(n, _)| n.ends_with(".rels") || !n.ends_with(".xml")).collect()
 }
 
@@ -46,7 +46,7 @@ fn resolve(target: &str) -> String {
 
 /// The bytes of the picture `rel_id` names in `part` (`None`: the body; a
 /// header's or footer's relationship id; `notes:footnote`), or a `data:` URL's.
-pub(crate) fn picture(_source: &[u8], media: &[(String, Vec<u8>)], part: Option<&str>, rel_id: &str) -> Option<Vec<u8>> {
+pub fn picture(_source: &[u8], media: &[(String, Vec<u8>)], part: Option<&str>, rel_id: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
     if let Some(data) = rel_id.strip_prefix("data:") {
         let (_, b64) = data.split_once(";base64,")?;
@@ -72,7 +72,7 @@ pub(crate) fn picture(_source: &[u8], media: &[(String, Vec<u8>)], part: Option<
 
 /// A legacy `.doc` as a `.docx` (office_oxide reads its text, tables and
 /// headings; character formats beyond those are lost).
-pub(crate) fn doc_to_docx(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub fn doc_to_docx(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let doc = office_oxide::Document::from_reader(Cursor::new(bytes.to_vec()), office_oxide::DocumentFormat::Doc).map_err(|e| format!("Couldn't read the .doc file: {e}"))?;
     let ir = doc.to_ir();
     let mut out = Cursor::new(Vec::new());
@@ -102,7 +102,7 @@ mod tests {
 }
 
 /// A paragraph's list attribute: list `num` at level `lvl`.
-pub(crate) fn num_pr(num: u32, lvl: u32) -> yrs::Any {
+pub fn num_pr(num: u32, lvl: u32) -> yrs::Any {
     let mut m = std::collections::HashMap::new();
     m.insert("numId".to_owned(), yrs::Any::Number(num as f64));
     m.insert("ilvl".to_owned(), yrs::Any::Number(lvl as f64));
@@ -110,7 +110,7 @@ pub(crate) fn num_pr(num: u32, lvl: u32) -> yrs::Any {
 }
 
 /// The list a paragraph's list attribute names.
-pub(crate) fn num_id(v: &yrs::Any) -> Option<u32> {
+pub fn num_id(v: &yrs::Any) -> Option<u32> {
     let yrs::Any::Map(m) = v else { return None };
     match m.get("numId")? {
         yrs::Any::Number(n) => Some(*n as u32),
@@ -124,14 +124,14 @@ pub(crate) fn num_id(v: &yrs::Any) -> Option<u32> {
 /// document state): whether a save wrote every part whole, which every
 /// later one then does, and the watermark the layout draws.
 #[derive(Debug, Default)]
-pub(crate) struct State {
+pub struct State {
     pub whole: bool,
     /// The watermark set in the editor: `Some(None)` when it was removed.
     pub watermark: Option<Option<Value>>,
 }
 
 /// Now, as the save stamps it (UTC, milliseconds).
-pub(crate) fn now() -> String {
+pub fn now() -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let (secs, ms) = (t.as_secs() as i64, t.subsec_millis());
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
@@ -158,7 +158,7 @@ pub(crate) fn now() -> String {
 /// writer then keeps every unchanged part and paragraph as its source
 /// bytes; once the document's parts or the comments' ids changed, the web
 /// writes every part whole, from then on.
-pub(crate) fn docx(source: &[u8], doc: &docx_edit::EditingDoc, state: &mut State, now: &str) -> Result<Vec<u8>, String> {
+pub fn docx(source: &[u8], doc: &docx_edit::EditingDoc, state: &mut State, now: &str) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(source));
     let options = docx_parse::S9ParseOptions { source_ordinals: true, determinism_seed: Some(digest.clone()), ..Default::default() };
@@ -667,7 +667,7 @@ fn record_saved(doc: &docx_edit::EditingDoc, identities: &docx_edit::ParagraphId
 }
 /// The document as HTML, for the print panel (AppKit lays it out): its
 /// paragraphs with their bold, italic and underline, headings, and tables.
-pub(crate) fn html(doc: &docx_edit::EditingDoc, index: &super::index::Index) -> String {
+pub fn html(doc: &docx_edit::EditingDoc, index: &super::index::Index) -> String {
     fn esc(s: &str) -> String {
         s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     }

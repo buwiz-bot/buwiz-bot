@@ -14,17 +14,16 @@ use super::WordUi;
 use super::dialogs::{self, Prompt};
 use super::doc::{Cmd, EditMode, Fmt, Meta, Picture, TableOp, TextColor};
 use super::view::{focus, key, send, set_zoom};
-use crate::live::store;
-use crate::office::ui::button::{BUTTON, BUTTON_RADIUS, Choice, DISABLED_OPACITY, GROUP_GAP, GROUP_PX, icon_button, icon_dropdown, separator, tooltip_of};
-use crate::office::ui::color::{Mode, Picked, STANDARD, color_button, theme_matrix};
-use crate::office::ui::icons::icon;
-use crate::office::ui::menu::{Entry, Item, Look, item, menu_popup};
-use crate::office::ui::palette as p;
-use crate::office::ui::select::{FONT_SIZES, Opt, STYLES, StyleOpt, Width, ZOOMS, dropdown_select, font_family_select, font_size, style_preview, zoom_control, zoom_label};
-use crate::office::ui::{Panel, dropdown, shortcut_label};
+use buwiz_office_kit::ui::button::{BUTTON, BUTTON_RADIUS, Choice, DISABLED_OPACITY, GROUP_GAP, GROUP_PX, icon_button, icon_dropdown, separator, tooltip_of};
+use buwiz_office_kit::ui::color::{Mode, Picked, STANDARD, color_button, theme_matrix};
+use buwiz_office_kit::ui::icons::icon;
+use buwiz_office_kit::ui::menu::{Entry, Item, Look, item, menu_popup};
+use buwiz_office_kit::ui::palette as p;
+use buwiz_office_kit::ui::select::{FONT_SIZES, Opt, STYLES, StyleOpt, Width, ZOOMS, dropdown_select, font_family_select, font_size, style_preview, zoom_control, zoom_label};
+use buwiz_office_kit::ui::{Panel, dropdown, shortcut_label};
 
 fn ui() -> &'static WordUi {
-    &store().office.word
+    crate::FORMAT.ui()
 }
 
 fn meta() -> std::sync::Arc<Meta> {
@@ -115,7 +114,7 @@ const ALIGNS: [(&str, &str, &str, &str); 4] = [
 ];
 
 /// The line spacing presets (`F1`): 240ths of a line.
-pub(crate) const SPACINGS: [(u32, &str); 4] = [(240, "Single"), (276, "1.15"), (360, "1.5"), (480, "Double")];
+pub const SPACINGS: [(u32, &str); 4] = [(240, "Single"), (276, "1.15"), (360, "1.5"), (480, "Double")];
 
 /// The wrap menu (`M1`) and the overflow's (`TR`).
 const WRAPS: [(&str, &str, &str); 5] = [
@@ -142,9 +141,9 @@ const BORDERS: [(&str, &str, &str); 8] = [
     ("none", "border_clear", "No borders"),
 ];
 /// The border widths (`W1`): eighths of a point, label, line thickness.
-pub(crate) const WIDTHS: [(u32, &str, f32); 5] = [(4, "0.5 pt", 0.5), (8, "1 pt", 1.0), (12, "1.5 pt", 1.5), (16, "2 pt", 2.0), (24, "3 pt", 3.0)];
+pub const WIDTHS: [(u32, &str, f32); 5] = [(4, "0.5 pt", 0.5), (8, "1 pt", 1.0), (12, "1.5 pt", 1.5), (16, "2 pt", 2.0), (24, "3 pt", 3.0)];
 /// The editing modes (`ks`): value, icon, label, description.
-pub(crate) const MODES: [(EditMode, &str, &str, &str); 3] = [
+pub const MODES: [(EditMode, &str, &str, &str); 3] = [
     (EditMode::Editing, "edit_note", "Editing", "Edit document directly"),
     (EditMode::Suggesting, "rate_review", "Suggesting", "Edits become suggestions"),
     (EditMode::Viewing, "visibility", "Viewing", "Read-only, no edits"),
@@ -165,7 +164,7 @@ fn styles(m: &Meta) -> Vec<StyleOpt> {
         .collect()
 }
 
-pub(crate) fn pick_color(mode: Mode, picked: Picked) {
+pub fn pick_color(mode: Mode, picked: Picked) {
     match mode {
         Mode::Text => run(Cmd::Color(match picked {
             Picked::Clear => None,
@@ -358,7 +357,7 @@ fn parts() -> Vec<Part> {
                 vec![
                     submenu(
                         "Font",
-                        crate::office::ui::select::FONTS
+                        buwiz_office_kit::ui::select::FONTS
                             .iter()
                             .map(|f| pick(f.name, f.name.to_lowercase() == fam, gate(), move || run(Cmd::FontFamily(f.name.to_owned()))))
                             .collect(),
@@ -519,7 +518,7 @@ fn parts() -> Vec<Part> {
     ]
 }
 
-pub(crate) fn set_mode(m: EditMode) {
+pub fn set_mode(m: EditMode) {
     run(Cmd::Mode(m));
 }
 
@@ -664,7 +663,7 @@ fn button_row(buttons: Vec<Square>) -> AnyElement {
                         act()
                     }
                 })
-                .tooltip(crate::office::ui::button::plain_tip(refused.unwrap_or(title)))
+                .tooltip(buwiz_office_kit::ui::button::plain_tip(refused.unwrap_or(title)))
                 .child(icon(name, 16.0, move || if on { p::PRIMARY } else { p::TEXT }))
                 .into_element()
         }))
@@ -702,7 +701,7 @@ fn table_menu() -> AnyElement {
             };
             let refused = |icon: &'static str, label: &'static str| Entry::Item(item(Some(icon), label, || {}).disabled(Some(super::doc::format::UNSUPPORTED)));
             let just = cell.justification.clone().unwrap_or_else(|| "left".to_owned());
-            let vertical: super::super::ui::menu::Content = Rc::new(|_close: Rc<dyn Fn()>| {
+            let vertical: buwiz_office_kit::ui::menu::Content = Rc::new(|_close: Rc<dyn Fn()>| {
                 let none: Rc<dyn Fn()> = Rc::new(|| {});
                 button_row(vec![
                     ("vertical_align_top", "Top", false, Some(super::doc::format::UNSUPPORTED), none.clone()),
@@ -710,7 +709,7 @@ fn table_menu() -> AnyElement {
                     ("vertical_align_bottom", "Bottom", false, Some(super::doc::format::UNSUPPORTED), none),
                 ])
             });
-            let aligns: super::super::ui::menu::Content = Rc::new(move |close: Rc<dyn Fn()>| {
+            let aligns: buwiz_office_kit::ui::menu::Content = Rc::new(move |close: Rc<dyn Fn()>| {
                 let b = |j: &'static str, name: &'static str, title: &'static str| {
                     let close = close.clone();
                     let act: Rc<dyn Fn()> = Rc::new(move || {
@@ -841,7 +840,7 @@ const MORE_W: f32 = BUTTON;
 
 /// Where the parts overflow (`ub`): all fit, or from the first that
 /// doesn't fit beside the More button on, every part goes.
-pub(crate) fn first_hidden(widths: &[f32], room: f32) -> usize {
+pub fn first_hidden(widths: &[f32], room: f32) -> usize {
     let total: f32 = widths.iter().sum();
     if total <= room + 0.5 {
         return widths.len();
@@ -860,7 +859,7 @@ pub(crate) fn first_hidden(widths: &[f32], room: f32) -> usize {
 
 /// The formatting bar (`bb`: `flex items-center px-2 py-1 bg-muted
 /// rounded-full min-h-[36px] mx-2 mb-1`).
-pub(crate) fn toolbar() -> impl IntoElement {
+pub fn toolbar() -> impl IntoElement {
     let u = ui();
     let parts = Rc::new(parts());
     let n = parts.len();

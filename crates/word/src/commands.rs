@@ -18,7 +18,7 @@ use super::{Out, Word, spot};
 
 /// What Insert puts at the caret.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Insert {
+pub enum Insert {
     Table { rows: u32, cols: u32 },
     PageBreak,
     /// `"nextPage"` or `"continuous"`.
@@ -29,7 +29,7 @@ pub(crate) enum Insert {
 /// A picture as the web inserts it (`handleImageFileChange`): its `data:`
 /// URL, the file's name as its alt text, and its size in pixels.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Image {
+pub struct Image {
     pub src: String,
     pub alt: String,
     pub width: u32,
@@ -38,7 +38,7 @@ pub(crate) struct Image {
 
 /// A section's page in twips, as Page Setup edits it.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PageSetup {
+pub struct PageSetup {
     pub width: f64,
     pub height: f64,
     /// `"portrait"` or `"landscape"`.
@@ -60,7 +60,7 @@ impl Default for PageSetup {
 impl PageSetup {
     /// Read from section properties as the dialog reads them: a missing or
     /// zero size is Letter's, the orientation follows the size when unset.
-    pub(crate) fn of(props: &Value) -> PageSetup {
+    pub fn of(props: &Value) -> PageSetup {
         let d = PageSetup::default();
         let n = |k: &str| props.get(k).and_then(Value::as_f64);
         let width = n("pageWidth").filter(|v| *v != 0.0).unwrap_or(d.width);
@@ -338,12 +338,12 @@ impl Word {
 #[cfg(test)]
 impl Word {
     /// The request's sections.
-    pub(crate) fn request_sections(&self) -> String {
+    pub fn request_sections(&self) -> String {
         self.layout.request_base()["regions"]["sections"].to_string()
     }
 
     /// The retained layout's headers and footers (and watermark), as JSON.
-    pub(crate) fn headers_footers_json(&self) -> Option<String> {
+    pub fn headers_footers_json(&self) -> Option<String> {
         self.layout.engine.retained_headers_footers_json().ok().flatten()
     }
 }

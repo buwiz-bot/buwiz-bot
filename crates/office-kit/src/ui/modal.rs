@@ -15,24 +15,24 @@ use super::palette as p;
 
 /// The card (`Q`): radius 8, `0 4px 20px var(--doc-shadow)`, 20 from the
 /// window's edges; each dialog sets its min and max width.
-pub(crate) const RADIUS: f32 = 8.0;
-pub(crate) const MARGIN: f32 = 20.0;
+pub const RADIUS: f32 = 8.0;
+pub const MARGIN: f32 = 20.0;
 /// The title (`V`): `padding 16px 20px 12px`, 16px semibold.
-pub(crate) const TITLE_PAD: (f32, f32, f32) = (16.0, 20.0, 12.0);
-pub(crate) const TITLE_SIZE: f32 = 16.0;
+pub const TITLE_PAD: (f32, f32, f32) = (16.0, 20.0, 12.0);
+pub const TITLE_SIZE: f32 = 16.0;
 /// The body (`X`): `padding 16px 20px`, a column.
-pub(crate) const BODY_PAD: (f32, f32) = (16.0, 20.0);
+pub const BODY_PAD: (f32, f32) = (16.0, 20.0);
 /// The buttons (`Y`, `A`): `padding 12px 20px 16px`, 8 apart; each
 /// `padding 6px 16px`, 13px, radius 4.
-pub(crate) const FOOTER_PAD: (f32, f32, f32) = (12.0, 20.0, 16.0);
-pub(crate) const BUTTON_PAD: (f32, f32) = (16.0, 6.0);
+pub const FOOTER_PAD: (f32, f32, f32) = (12.0, 20.0, 16.0);
+pub const BUTTON_PAD: (f32, f32) = (16.0, 6.0);
 /// The roomier shell (`HyperlinkDialog`'s `Z`, `ee`, `re`, `ae`, `C`): a
 /// header of `padding 16px 20px` with an 18px title and a ×, the body
 /// `padding 20px`, the footer 12 apart, buttons `padding 10px 20px` at
 /// 14px medium.
-pub(crate) const ROOMY_TITLE_SIZE: f32 = 18.0;
-pub(crate) const ROOMY_PAD: (f32, f32) = (16.0, 20.0);
-pub(crate) const ROOMY_BUTTON_PAD: (f32, f32) = (20.0, 10.0);
+pub const ROOMY_TITLE_SIZE: f32 = 18.0;
+pub const ROOMY_PAD: (f32, f32) = (16.0, 20.0);
+pub const ROOMY_BUTTON_PAD: (f32, f32) = (20.0, 10.0);
 
 /// The fields a dialog's Tab cycles through, in the order they joined.
 #[derive(Clone, Copy)]
@@ -42,7 +42,7 @@ struct Trap {
 }
 
 /// Joins `field` to the Tab order of the dialog around it, if any.
-pub(crate) fn join_trap(field: &ElementRef) {
+pub fn join_trap(field: &ElementRef) {
     if let Some(t) = use_context::<Trap>() {
         let f = *field;
         t.fields.with(|v| v.push(f));
@@ -51,7 +51,7 @@ pub(crate) fn join_trap(field: &ElementRef) {
 
 /// A footer button.
 #[derive(Clone)]
-pub(crate) struct Action {
+pub struct Action {
     pub label: SharedString,
     pub primary: bool,
     /// While it doesn't hold the button is dimmed and takes no press.
@@ -62,7 +62,7 @@ pub(crate) struct Action {
 }
 
 /// A dialog, shown while `open`.
-pub(crate) struct Modal {
+pub struct Modal {
     open: Signal<bool>,
     title: SharedString,
     min_w: f32,
@@ -78,7 +78,7 @@ pub(crate) struct Modal {
 
 /// A dialog titled `title` (Page Setup's widths, 400–480, and body gap,
 /// 14, until set).
-pub(crate) fn modal(open: Signal<bool>, title: impl Into<SharedString>) -> Modal {
+pub fn modal(open: Signal<bool>, title: impl Into<SharedString>) -> Modal {
     Modal {
         open,
         title: title.into(),
@@ -95,53 +95,53 @@ pub(crate) fn modal(open: Signal<bool>, title: impl Into<SharedString>) -> Modal
 }
 
 impl Modal {
-    pub(crate) fn width(mut self, min: f32, max: f32) -> Self {
+    pub fn width(mut self, min: f32, max: f32) -> Self {
         self.min_w = min;
         self.max_w = max;
         self
     }
     /// The space between the body's rows (12, 14 or 16 by dialog).
-    pub(crate) fn gap(mut self, gap: f32) -> Self {
+    pub fn gap(mut self, gap: f32) -> Self {
         self.gap = gap;
         self
     }
-    pub(crate) fn body(mut self, body: impl Fn() -> AnyElement + 'static) -> Self {
+    pub fn body(mut self, body: impl Fn() -> AnyElement + 'static) -> Self {
         self.body = Rc::new(body);
         self
     }
     /// A footer button; `primary` is the filled one.
-    pub(crate) fn action(mut self, label: impl Into<SharedString>, primary: bool, run: impl Fn() + 'static) -> Self {
+    pub fn action(mut self, label: impl Into<SharedString>, primary: bool, run: impl Fn() + 'static) -> Self {
         self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(|| true), run: Rc::new(run), danger: false });
         self
     }
     /// A red button at the footer's left, while `shown` holds.
-    pub(crate) fn danger_when(mut self, label: impl Into<SharedString>, shown: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
+    pub fn danger_when(mut self, label: impl Into<SharedString>, shown: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
         self.actions.push(Action { label: label.into(), primary: false, enabled: Rc::new(shown), run: Rc::new(run), danger: true });
         self
     }
     /// The roomier shell: a header with a ×, larger type and buttons.
-    pub(crate) fn roomy(mut self) -> Self {
+    pub fn roomy(mut self) -> Self {
         self.roomy = true;
         self
     }
     /// A footer button enabled while `enabled` holds (Watermark's Apply
     /// without a picture: `opacity: .5`, disabled).
-    pub(crate) fn action_when(mut self, label: impl Into<SharedString>, primary: bool, enabled: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
+    pub fn action_when(mut self, label: impl Into<SharedString>, primary: bool, enabled: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
         self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(enabled), run: Rc::new(run), danger: false });
         self
     }
     /// Escape, a press outside the card (the dialog closes after it).
-    pub(crate) fn on_cancel(mut self, run: impl Fn() + 'static) -> Self {
+    pub fn on_cancel(mut self, run: impl Fn() + 'static) -> Self {
         self.on_cancel = Rc::new(run);
         self
     }
     /// The field Tab is on, kept in `at` (its index in the Tab order).
-    pub(crate) fn tab_index(mut self, at: Signal<usize>) -> Self {
+    pub fn tab_index(mut self, at: Signal<usize>) -> Self {
         self.at = Some(at);
         self
     }
     /// Return (the dialog stays open unless it closes it).
-    pub(crate) fn on_confirm(mut self, run: impl Fn() + 'static) -> Self {
+    pub fn on_confirm(mut self, run: impl Fn() + 'static) -> Self {
         self.on_confirm = Rc::new(run);
         self
     }

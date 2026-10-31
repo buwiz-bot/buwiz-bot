@@ -14,8 +14,6 @@ use nsh_core::prelude::*;
 use super::doc::Cmd;
 use super::grid::{self, Frame};
 use super::{SheetUi, Shown, edit};
-use crate::live::store;
-use crate::office;
 
 /// The web's nudge: a pixel, ten with Shift, sent this long after the
 /// last key.
@@ -25,23 +23,23 @@ const NUDGE_DELAY: Duration = Duration::from_millis(250);
 
 /// The web's refusals (`commands.reasons.unsupportedSelection` and
 /// `gestureActive`).
-pub(crate) const REFUSED: &str = "Not available while a chart is selected.";
-pub(crate) const MOVING: &str = "Finish moving the chart first.";
+pub const REFUSED: &str = "Not available while a chart is selected.";
+pub const MOVING: &str = "Finish moving the chart first.";
 
 /// The selected chart: its frame (`ChartRegion::id`) and whether its
 /// anchor can move (an absolute one cannot).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Picked {
+pub struct Picked {
     pub id: String,
     pub movable: bool,
 }
 
 fn ui() -> &'static SheetUi {
-    &store().office.sheet
+    crate::FORMAT.ui()
 }
 
 fn send(cmd: Cmd) {
-    office::with_session(|s| s.send(cmd));
+    crate::FORMAT.with_session(|s| s.send(cmd));
 }
 
 thread_local! {
@@ -51,7 +49,7 @@ thread_local! {
 }
 
 /// A chart is selected (tracked): the `$chart` keys apply.
-pub(crate) fn selected() -> bool {
+pub fn selected() -> bool {
     edit::sheet_showing() && ui().chart.with(Option::is_some)
 }
 
@@ -78,7 +76,7 @@ fn area_rect(s: &Shown, f: &Frame, r: &Rect, clip: &Rect) -> (f32, f32, f32, f32
 }
 
 /// The chart under a point of the cells area: the topmost, as painted.
-pub(crate) fn at(u: &SheetUi, x: f32, y: f32) -> Option<ChartRegion> {
+pub fn at(u: &SheetUi, x: f32, y: f32) -> Option<ChartRegion> {
     let (_, f) = untracked(|| grid::frame(u))?;
     u.shown.with_untracked(|s| {
         let s = s.as_ref()?;
@@ -89,7 +87,7 @@ pub(crate) fn at(u: &SheetUi, x: f32, y: f32) -> Option<ChartRegion> {
 
 /// Where a chart's hit area (its visible part) is in the cells area
 /// (tracked).
-pub(crate) fn hit_rect(u: &SheetUi, id: &str) -> Option<(f32, f32, f32, f32)> {
+pub fn hit_rect(u: &SheetUi, id: &str) -> Option<(f32, f32, f32, f32)> {
     let (_, f) = grid::frame(u)?;
     u.shown.with(|s| {
         let s = s.as_ref()?;
@@ -100,7 +98,7 @@ pub(crate) fn hit_rect(u: &SheetUi, id: &str) -> Option<(f32, f32, f32, f32)> {
 
 /// Where the selected chart's outline goes (tracked): its whole frame,
 /// moved by a drag in progress or the nudge not sent yet.
-pub(crate) fn outline(u: &SheetUi) -> Option<(f32, f32, f32, f32)> {
+pub fn outline(u: &SheetUi) -> Option<(f32, f32, f32, f32)> {
     let id = u.chart.with(|c| c.as_ref().map(|c| c.id.clone()))?;
     let (_, f) = grid::frame(u)?;
     let (x, y, w, h) = u.shown.with(|s| {
@@ -115,7 +113,7 @@ pub(crate) fn outline(u: &SheetUi) -> Option<(f32, f32, f32, f32)> {
 
 /// A press on `region`: it is selected (the edit in progress is entered,
 /// a nudge of another chart sent).
-pub(crate) fn press(region: &ChartRegion) {
+pub fn press(region: &ChartRegion) {
     let u = ui();
     edit::commit_editing();
     flush();
@@ -128,7 +126,7 @@ pub(crate) fn press(region: &ChartRegion) {
 }
 
 /// Back to the cells: the nudge is sent, the chart no longer selected.
-pub(crate) fn deselect() {
+pub fn deselect() {
     let u = ui();
     if u.chart.with_untracked(Option::is_none) {
         return;
@@ -147,7 +145,7 @@ fn movable() -> Option<String> {
 }
 
 /// The chart `id` dragged `by` points so far: its outline follows.
-pub(crate) fn drag(id: &str, by: (f32, f32)) {
+pub fn drag(id: &str, by: (f32, f32)) {
     if movable().as_deref() == Some(id) {
         ui().chart_drag.set(Some(by));
     }
@@ -155,7 +153,7 @@ pub(crate) fn drag(id: &str, by: (f32, f32)) {
 
 /// The drag of `id` released `by` points away: the chart moves there (by
 /// that in sheet pixels; nothing for no move).
-pub(crate) fn drop_at(id: &str, by: (f32, f32)) {
+pub fn drop_at(id: &str, by: (f32, f32)) {
     let u = ui();
     u.chart_drag.set(None);
     if movable().as_deref() != Some(id) {
@@ -166,7 +164,7 @@ pub(crate) fn drop_at(id: &str, by: (f32, f32)) {
 }
 
 /// The drag lost (the system took the pointer): the chart stays.
-pub(crate) fn cancel_drag() {
+pub fn cancel_drag() {
     ui().chart_drag.set(None);
 }
 
@@ -179,7 +177,7 @@ fn move_by(id: &str, dx: f32, dy: f32) {
 }
 
 /// An arrow: the outline moves now, the chart once the keys rest.
-pub(crate) fn nudge(dx: f32, dy: f32, shift: bool) {
+pub fn nudge(dx: f32, dy: f32, shift: bool) {
     let Some(id) = movable() else { return };
     let u = ui();
     let step = if shift { NUDGE_SHIFT } else { NUDGE };
@@ -201,7 +199,7 @@ pub(crate) fn nudge(dx: f32, dy: f32, shift: bool) {
 }
 
 /// Sends the nudge not sent yet.
-pub(crate) fn flush() {
+pub fn flush() {
     let u = ui();
     let Some((id, dx, dy)) = u.nudge.get_untracked() else { return };
     u.nudge.set(None);
@@ -209,7 +207,7 @@ pub(crate) fn flush() {
 }
 
 /// Escape: the unsent nudge is dropped, the chart deselected.
-pub(crate) fn escape() {
+pub fn escape() {
     let u = ui();
     NUDGES.with(|c| c.set(c.get() + 1));
     batch(|| {
@@ -222,7 +220,7 @@ pub(crate) fn escape() {
 
 /// A cell command while a chart is selected: refused with the web's
 /// text. False when no chart is selected (the command goes on).
-pub(crate) fn refused() -> bool {
+pub fn refused() -> bool {
     let u = ui();
     if u.chart.with_untracked(Option::is_none) {
         return false;
@@ -234,7 +232,7 @@ pub(crate) fn refused() -> bool {
 
 /// ⌘Z / ⇧⌘Z with a chart selected: as the web's command gate, refused
 /// during a drag, else after the nudge is sent.
-pub(crate) fn undo(redo: bool) {
+pub fn undo(redo: bool) {
     let u = ui();
     if u.chart_drag.with_untracked(Option::is_some) {
         u.note.set(MOVING.to_owned());
@@ -246,7 +244,7 @@ pub(crate) fn undo(redo: bool) {
 
 /// A new list came: a selected chart it no longer shows is deselected,
 /// as the web does when the frame loses it.
-pub(crate) fn listed(u: &SheetUi) {
+pub fn listed(u: &SheetUi) {
     let Some(id) = u.chart.with_untracked(|c| c.as_ref().map(|c| c.id.clone())) else { return };
     let there = u.shown.with_untracked(|s| s.as_ref().is_some_and(|s| s.list.charts.iter().any(|c| c.id == id)));
     if !there {
