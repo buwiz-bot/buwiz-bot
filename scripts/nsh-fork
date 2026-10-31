@@ -8,8 +8,9 @@
   scripts/nsh-fork sync              fast-forward the fork's main to upstream main (never anything else)
   scripts/nsh-fork rebuild [--push]  rox-new = upstream main + active topics, in a scratch worktree;
                                      --push tags the old rox tip (rox-YYYY-MM-DD) and moves rox to it
-  scripts/nsh-fork rebase TOPIC [--push]
-                                     TOPIC onto upstream main (--push: force-with-lease to the fork)
+  scripts/nsh-fork rebase TOPIC [--keep-local] [--push]
+                                     TOPIC onto upstream main (--push: force-with-lease to the fork;
+                                     --keep-local: start from the local branch, with its fixes, not the fork's)
 
 Conflict resolutions are recorded (git rerere): resolve once in the worktree it names,
 `git cherry-pick --continue` / `git rebase --continue`, then run the command again.
@@ -187,15 +188,25 @@ def rebuild(push):
     print(f"rox moved; {old[:8]} kept as a tag. Point Rox's submodule at it (NSH-FORK.md, 'Updating Rox').")
 
 
-def rebase(topic, push):
+def rebase(topic, push, keep_local):
     fetch()
     r = ref(topic)
     if r is None:
         raise SystemExit(f"{topic}: no such branch")
+    local = git("rev-parse", "-q", "--verify", f"refs/heads/{topic}", check=False)
+    if keep_local:
+        if not local:
+            raise SystemExit(f"{topic}: no local branch to keep")
+        r = topic
+    elif local and subprocess.run(["git", "merge-base", "--is-ancestor", local, r], cwd=NSH).returncode != 0:
+        # The rebase restarts the branch from the fork's tip: say what that drops.
+        print(f"{topic}: the local branch ({local[:8]}) has commits the fork's lacks; they are left out "
+              "(--keep-local rebases them instead)", file=sys.stderr)
     worktree(r)
     git("checkout", "-q", "-B", topic, r, cwd=WORKTREE)
     if subprocess.run(["git", "rebase", "upstream/main"], cwd=WORKTREE, capture_output=True).returncode != 0:
-        raise SystemExit(f"conflict rebasing {topic} in {WORKTREE}: resolve, `git rebase --continue`, push by hand")
+        raise SystemExit(f"conflict rebasing {topic} in {WORKTREE}: resolve, `git rebase --continue`, "
+                         "then run this again with --keep-local")
     print(f"{topic}: {count(f'upstream/main..{topic}')} commits on upstream main")
     if push:
         git("push", f"--force-with-lease={topic}", "origin", f"{topic}:{topic}", cwd=WORKTREE)
@@ -207,7 +218,8 @@ def main(argv):
         return
     cmd, rest = argv[0], argv[1:]
     push = "--push" in rest
-    args = [a for a in rest if a != "--push"]
+    keep_local = "--keep-local" in rest
+    args = [a for a in rest if a not in ("--push", "--keep-local")]
     if cmd == "status":
         status()
     elif cmd == "sync":
@@ -215,7 +227,7 @@ def main(argv):
     elif cmd == "rebuild":
         rebuild(push)
     elif cmd == "rebase" and args:
-        rebase(args[0], push)
+        rebase(args[0], push, keep_local)
     else:
         raise SystemExit(__doc__)
 
