@@ -117,7 +117,10 @@ pub fn install(remount: Signal<u64>, note: Signal<String>) {
     // `declined` or `off` (no ra-jit daemon: a plain `cargo run`) — the
     // pill shows the state as a dot and the message on hover.
     LIVE.with(|live| {
-        if live.borrow().is_none() {
+        // Release builds never take patches (ra-jit builds are dev
+        // builds), so they don't start it: no ~/.cache/ra-jit, no reserved
+        // patch room in a hardened-runtime app.
+        if live.borrow().is_none() && cfg!(debug_assertions) {
             *live.borrow_mut() = ra_jit_live::Live::start().ok();
         }
         note.set(if live.borrow().is_some() {
