@@ -265,7 +265,6 @@ fn item_row(s: &SelectItemState, preview: &Preview, (px_, py_): (f32, f32)) -> A
         .rounded(px(4.0))
         .px(px(px_))
         .py(px(py_))
-        .label(s.title.clone())
         .bg(if s.highlighted { p::TW_MUTED } else { AdaptiveColor::TRANSPARENT })
         .opacity(if s.disabled { 0.5 } else { 1.0 })
         .child(t)

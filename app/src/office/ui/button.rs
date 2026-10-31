@@ -193,6 +193,7 @@ pub(crate) fn separator() -> AnyElement {
         .mx(px(SEPARATOR_MX))
         .flex_shrink_0()
         .bg(p::TW_BORDER)
+        .label("Separator")
         .into_element()
 }
 
@@ -204,6 +205,7 @@ pub(crate) fn groups(groups: Vec<(&'static str, Vec<AnyElement>)>) -> AnyElement
     view()
         .flex_row()
         .items_center()
+        .label("Toolbar groups")
         .children(groups.into_iter().enumerate().map(|(i, (label, controls))| {
             view()
                 .flex_row()

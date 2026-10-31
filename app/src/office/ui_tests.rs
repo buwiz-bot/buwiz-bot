@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use nsh_core::element::Root;
 use nsh_core::keymap::{KeyMatch, Keymap, Keystroke};
-use nsh_core::platform::Os;
+use nsh_core::platform::{Idiom, Os};
 use nsh_core::prelude::*;
 use nsh_core::{ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, ROOT_ID};
 use nsh_engine::{App, Engine, EngineConfig, MountSink};
@@ -167,8 +167,8 @@ impl MountSink for Sink {
 }
 
 /// The engine and what its batches mounted: the views alive, their
-/// labels and texts, the inputs' values and the keymap.
-struct Headless {
+/// labels, texts, frames and styles, the inputs' values and the keymap.
+pub(crate) struct Headless {
     engine: Engine,
     rx: mpsc::Receiver<MountBatch>,
     live: HashSet<NodeId>,
@@ -176,15 +176,43 @@ struct Headless {
     texts: HashMap<NodeId, String>,
     inputs: HashMap<NodeId, (String, u32)>,
     keymap: Option<std::sync::Arc<Keymap>>,
+    pub(crate) frames: HashMap<NodeId, Bounds<Points>>,
+    pub(crate) styles: HashMap<NodeId, nsh_core::ViewStyle>,
+    pub(crate) parents: HashMap<NodeId, NodeId>,
 }
 
 fn start(files: Vec<Attach>) -> Headless {
     let _ = FILES.set(files);
-    let (tx, rx) = mpsc::channel();
     let mut config = EngineConfig::new(App::Rust(Root::new::<Viewer>(|| ())));
     config.viewport = Size::new(px(1200.0), px(900.0));
+    run(config)
+}
+
+/// An engine on `root` as a Mac desktop shows it (the office controls'
+/// tests: popups as popups, not sheets).
+pub(crate) fn start_root(root: Root) -> Headless {
+    let mut config = EngineConfig::new(App::Rust(root));
+    config.viewport = Size::new(px(1200.0), px(900.0));
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    run(config)
+}
+
+fn run(config: EngineConfig) -> Headless {
+    let (tx, rx) = mpsc::channel();
     let engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
-    let mut app = Headless { engine, rx, live: HashSet::new(), labels: Vec::new(), texts: HashMap::new(), inputs: HashMap::new(), keymap: None };
+    let mut app = Headless {
+        engine,
+        rx,
+        live: HashSet::new(),
+        labels: Vec::new(),
+        texts: HashMap::new(),
+        inputs: HashMap::new(),
+        keymap: None,
+        frames: HashMap::new(),
+        styles: HashMap::new(),
+        parents: HashMap::new(),
+    };
     until(&mut app, "the first render", |_| true);
     app
 }
@@ -216,34 +244,43 @@ impl Headless {
                     self.inputs.entry(*id).or_default().0 = text.clone();
                 }
                 MountItem::Keymap(k) => self.keymap = Some(k.clone()),
+                MountItem::Frame { id, frame } => {
+                    self.frames.insert(*id, *frame);
+                }
+                MountItem::ViewStyle { id, style } => {
+                    self.styles.insert(*id, (**style).clone());
+                }
+                MountItem::Insert { parent, child, .. } => {
+                    self.parents.insert(*child, *parent);
+                }
                 _ => {}
             }
         }
     }
 
     /// Applies what comes for `time`.
-    fn pump(&mut self, time: Duration) {
+    pub(crate) fn pump(&mut self, time: Duration) {
         let end = Instant::now() + time;
         while let Ok(b) = self.rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
             self.apply(&b);
         }
     }
 
-    fn texts(&self) -> Vec<&str> {
+    pub(crate) fn texts(&self) -> Vec<&str> {
         self.texts.iter().filter(|(id, _)| self.live.contains(id)).map(|(_, t)| t.as_str()).collect()
     }
 
     /// The newest live view labelled `label`.
-    fn view(&self, label: &str) -> NodeId {
+    pub(crate) fn view(&self, label: &str) -> NodeId {
         self.labels.iter().rev().find(|(id, l)| l == label && self.live.contains(id)).map(|(id, _)| *id).unwrap_or_else(|| panic!("no view labelled {label:?}"))
     }
 
-    fn send(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
+    pub(crate) fn send(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
         self.engine.control().dispatch_event(id, kind, payload);
     }
 
     /// A click at `(x, y)` in the view labelled `label` (`shift` held).
-    fn press_at(&mut self, label: &str, x: f32, y: f32, shift: bool) {
+    pub(crate) fn press_at(&mut self, label: &str, x: f32, y: f32, shift: bool) {
         let id = self.view(label);
         let e = PressEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: nsh_core::keymap::Modifiers { shift, ..Default::default() }, clicks: 1 };
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
@@ -252,7 +289,7 @@ impl Headless {
         self.pump(Duration::from_millis(50));
     }
 
-    fn press(&mut self, label: &str) {
+    pub(crate) fn press(&mut self, label: &str) {
         self.press_at(label, 2.0, 2.0, false);
     }
 
@@ -265,7 +302,7 @@ impl Headless {
     }
 
     /// A key as the platform takes it: the keymap's binding fires.
-    fn key(&mut self, keys: &str) {
+    pub(crate) fn key(&mut self, keys: &str) {
         let stroke = Keystroke::parse(keys, Os::MacOs).unwrap();
         let found = self.keymap.as_ref().map_or(KeyMatch::None, |k| k.find(stroke, true, false));
         let KeyMatch::Fire(id) = found else { panic!("nothing binds {keys}") };
@@ -274,7 +311,7 @@ impl Headless {
     }
 
     /// Characters typed into the input labelled `label`, one edit each.
-    fn type_text(&mut self, label: &str, text: &str) {
+    pub(crate) fn type_text(&mut self, label: &str, text: &str) {
         let id = self.view(label);
         for c in text.chars() {
             let (mut value, count) = self.inputs.get(&id).cloned().unwrap_or_default();
@@ -287,11 +324,58 @@ impl Headless {
 }
 
 impl Headless {
+    /// Whether a view labelled `label` is mounted.
+    pub(crate) fn has(&self, label: &str) -> bool {
+        self.labels.iter().any(|(id, l)| l == label && self.live.contains(id))
+    }
+
+    /// The pointer onto (`true`) or off the view labelled `label`.
+    pub(crate) fn hover(&mut self, label: &str, inside: bool) {
+        let id = self.view(label);
+        let e = MouseEvent::new(point(px(2.0), px(2.0)), point(px(2.0), px(2.0)), Default::default(), None);
+        self.send(id, if inside { EventKind::MouseEnter } else { EventKind::MouseLeave }, EventPayload::Mouse(e));
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// Escape (or back) as the platform gives it to the overlay labelled
+    /// `label`, the top one.
+    pub(crate) fn cancel(&mut self, label: &str) {
+        let id = self.view(label);
+        self.send(id, EventKind::Cancel, EventPayload::None);
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// Return in the input labelled `label`.
+    pub(crate) fn submit(&mut self, label: &str) {
+        let id = self.view(label);
+        let (text, count) = self.inputs.get(&id).cloned().unwrap_or_default();
+        self.send(id, EventKind::SubmitEditing, EventPayload::Text { text, count });
+        self.pump(Duration::from_millis(50));
+    }
+
+    /// The frame of the view labelled `label`, in its parent.
+    pub(crate) fn frame(&self, label: &str) -> Bounds<Points> {
+        let id = self.view(label);
+        *self.frames.get(&id).unwrap_or_else(|| panic!("no frame for {label:?}"))
+    }
+
+    /// The style last sent for the view labelled `label`.
+    pub(crate) fn style(&self, label: &str) -> nsh_core::ViewStyle {
+        let id = self.view(label);
+        self.styles.get(&id).cloned().unwrap_or_else(|| panic!("no style for {label:?}"))
+    }
+
+    /// The view labelled `label`'s parent's frame.
+    pub(crate) fn parent_frame(&self, label: &str) -> Bounds<Points> {
+        let id = self.view(label);
+        self.parents.get(&id).and_then(|p| self.frames.get(p)).copied().unwrap_or_else(|| panic!("no parent frame for {label:?}"))
+    }
+
     /// The input labelled `label` reports `value` as its whole text (one
     /// edit), whatever it held: as a platform does when keys come faster
     /// than the app answers, or an input method or autocorrect replaces
     /// what was typed.
-    fn change(&mut self, label: &str, value: &str) {
+    pub(crate) fn change(&mut self, label: &str, value: &str) {
         let id = self.view(label);
         let count = self.inputs.get(&id).map_or(0, |i| i.1) + 1;
         self.inputs.insert(id, (value.to_owned(), count));
@@ -300,7 +384,7 @@ impl Headless {
     }
 }
 
-fn read(app: &Headless) -> HashMap<String, String> {
+pub(crate) fn read(app: &Headless) -> HashMap<String, String> {
     parse(app.texts().into_iter().find(|t| t.starts_with("probe ")).unwrap_or_default())
 }
 
@@ -308,12 +392,12 @@ fn parse(s: &str) -> HashMap<String, String> {
     s.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_owned(), v.to_owned())).collect()
 }
 
-fn num(p: &HashMap<String, String>, k: &str) -> f32 {
+pub(crate) fn num(p: &HashMap<String, String>, k: &str) -> f32 {
     p.get(k).and_then(|v| v.parse().ok()).unwrap_or(0.0)
 }
 
 /// Waits for the probe to satisfy `ok`.
-fn until(app: &mut Headless, what: &str, ok: impl Fn(&HashMap<String, String>) -> bool) -> HashMap<String, String> {
+pub(crate) fn until(app: &mut Headless, what: &str, ok: impl Fn(&HashMap<String, String>) -> bool) -> HashMap<String, String> {
     let end = Instant::now() + WAIT;
     loop {
         let p = read(app);
