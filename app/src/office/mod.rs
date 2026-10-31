@@ -14,6 +14,9 @@
 pub(crate) mod docx;
 pub(crate) mod draw;
 pub(crate) mod session;
+// The shared controls, wired into the Word view's chrome next (B2, B3).
+#[allow(dead_code)]
+pub(crate) mod ui;
 #[cfg(test)]
 mod ui_tests;
 pub(crate) mod xlsx;
