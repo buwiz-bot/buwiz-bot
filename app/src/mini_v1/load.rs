@@ -63,9 +63,14 @@ pub mod say {
         format!("{plugin_title} is not running. Retry")
     }
 
-    /// A native screen (`apps[].native`) before this build can host it.
+    /// A native screen (`apps[].native`) this build has no screen for.
     pub fn native(title: &str) -> String {
         format!("{title}: this screen needs a newer Buwiz Bot.")
+    }
+
+    /// A native screen of a plugin that is not first-party.
+    pub fn native_first_party(title: &str) -> String {
+        format!("Could not open {title}: native screens are for first-party plugins only.")
     }
 }
 
@@ -554,7 +559,19 @@ pub struct Prepared {
     /// what the certificate covers).
     pub permissions_json: Option<Value>,
     pub permissions: Permissions,
+    /// The compiled module; for a native screen, a marker naming it (the
+    /// component finds its open by it, as by a module).
     pub js: String,
+    /// A first-party app's native screen (`apps[].native`): mounted from
+    /// the screens compiled in, with nothing fetched or compiled.
+    pub native: Option<NativeScreen>,
+}
+
+/// The native screen an app entry names (`apps[].native: {screen, abi}`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeScreen {
+    pub screen: String,
+    pub abi: u32,
 }
 
 impl Prepared {
@@ -603,6 +620,10 @@ pub fn prepare_cached(
     cache_root: Option<&std::path::Path>,
 ) -> Result<Prepared, RoxError> {
     let Some(root) = cache_root else { return prepare_with(broker, key, plugin) };
+    // a native screen has no module to cache
+    if plugin.app(&key.app).is_some_and(|a| a.get("native").is_some()) {
+        return prepare_with(broker, key, plugin);
+    }
     let t0 = std::time::Instant::now();
     let app = plugin.app(&key.app).cloned();
     let declared = app.as_ref().and_then(|a| a.get("fingerprint")).and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -615,7 +636,7 @@ pub fn prepare_cached(
         ticket_prop(&mut key, app.get("props"));
         super::props::validate(&key.props, app.get("props"))?;
         log::info!("mini v1 timing: {}/{} cache hit {} ms (no fetch, no compile)", plugin.id, key.app, t0.elapsed().as_millis());
-        return Ok(Prepared { key, plugin, title, fingerprint: declared, permissions_json, permissions, js });
+        return Ok(Prepared { key, plugin, title, fingerprint: declared, permissions_json, permissions, js, native: None });
     }
     let p = prepare_with(broker, key, plugin)?;
     super::cache::put(root, &p.plugin.id, &p.key.app, &p.fingerprint, &super::cache::build_id(), &p.js);
@@ -656,10 +677,10 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
         return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
     }
-    // `native: {screen, abi}` (protocol 2.0): a host-built screen, which a
-    // later build loads; this one says so instead of reading a source
-    if native_screen(&app).is_some() {
-        return Err(RoxError::new("not_supported", say::native(&title)));
+    // `native: {screen, abi}` (protocol 2.0): a screen compiled into this
+    // build, for a first-party plugin only (the broker refuses others too)
+    if app.get("native").is_some() {
+        return prepare_native(key, plugin, &app, title);
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
@@ -690,7 +711,34 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
         (t_compile - t_fetch).as_millis(),
         t_compile.elapsed().as_millis()
     );
-    Ok(Prepared { key, plugin, title, fingerprint: actual, permissions_json, permissions, js })
+    Ok(Prepared { key, plugin, title, fingerprint: actual, permissions_json, permissions, js, native: None })
+}
+
+/// [`prepare_with`] for a native screen: its permissions and props checked
+/// as a TSX app's, the screen found among those compiled in. A screen this
+/// build lacks (another id, or an abi it was not built with) says it needs
+/// a newer Buwiz Bot.
+fn prepare_native(mut key: V1Key, plugin: PluginEntry, app: &Value, title: String) -> Result<Prepared, RoxError> {
+    let t0 = std::time::Instant::now();
+    if !plugin.first_party {
+        return Err(RoxError::new("permission_denied", say::native_first_party(&title)));
+    }
+    let native = app.get("native");
+    let screen = native_screen(app).unwrap_or_default().to_owned();
+    let abi = native.and_then(|n| n.get("abi")).and_then(Value::as_u64).and_then(|a| u32::try_from(a).ok()).unwrap_or(0);
+    if super::screens::find(&plugin.id, &screen, abi).is_none() {
+        log::info!("mini v1: {}/{}: no native screen {screen:?} of abi {abi} in this build", plugin.id, key.app);
+        return Err(RoxError::new("not_supported", say::native(&title)));
+    }
+    let permissions_json = app.get("permissions").cloned();
+    let permissions = Permissions::parse(permissions_json.as_ref())
+        .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+    ticket_prop(&mut key, app.get("props"));
+    super::props::validate(&key.props, app.get("props"))?;
+    log::info!("mini v1 timing: {}/{} native screen {screen} found {} ms (no fetch, no compile)", plugin.id, key.app, t0.elapsed().as_millis());
+    let fingerprint = format!("native:{screen}@{abi}");
+    let js = format!("// {fingerprint}");
+    Ok(Prepared { key, plugin, title, fingerprint, permissions_json, permissions, js, native: Some(NativeScreen { screen, abi }) })
 }
 
 /// The open's ticket (a link's or pin's `?ticket=`) as `buwiz.props.ticket`
@@ -848,17 +896,61 @@ mod tests {
 
     const KEY: &str = "v1:app.buwiz.fixture/card?props=%7B%22ticket%22%3A%22tkt_x%22%7D";
 
-    #[test]
-    fn a_native_screen_says_it_needs_a_newer_buwiz_bot() {
-        let native = serde_json::json!({
-            "id": "card", "title": "Fixture Card", "native": {"screen": "fx.card", "abi": 1}, "placement": ["full"],
+    /// A broker listing a plugin whose one app is `listed`, first-party
+    /// or not, that serves no source.
+    struct ListsNative {
+        listed: Value,
+        first_party: bool,
+    }
+
+    impl host_api::Broker for ListsNative {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+            match route {
+                "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
+                    "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0", "protocol": "2.0.0",
+                    "enabled": true, "generation": 1, "first_party": self.first_party, "apps": [self.listed],
+                }]})),
+                _ => Err(RoxError::new("not_found", format!("{route}: a native screen fetches nothing"))),
+            }
+        }
+    }
+
+    fn native_app(screen: &str, abi: u64) -> Value {
+        serde_json::json!({
+            "id": "card", "title": "Fixture Card", "native": {"screen": screen, "abi": abi}, "placement": ["full", "inline"],
             "props": { "type": "object", "properties": { "ticket": { "type": "string" } }, "required": ["ticket"] },
             "permissions": { "tools": ["fx_echo"] }
-        });
-        assert_eq!(native_screen(&native), Some("fx.card"));
+        })
+    }
+
+    #[test]
+    fn a_native_screen_this_build_lacks_says_it_needs_a_newer_buwiz_bot() {
+        super::super::test_screens::register();
+        assert_eq!(native_screen(&native_app("fx.card", 1)), Some("fx.card"));
         assert_eq!(native_screen(&card(CARD)), None);
-        let e = prepare(&Serves { listed: native, served: String::new() }, KEY).unwrap_err();
-        assert_eq!((e.code.as_str(), e.message.as_str()), ("not_supported", "Fixture Card: this screen needs a newer Buwiz Bot."));
+        for (screen, abi) in [("fx.card", 1), ("fx.board", 2)] {
+            let e = prepare(&ListsNative { listed: native_app(screen, abi), first_party: true }, KEY).unwrap_err();
+            assert_eq!((e.code.as_str(), e.message.as_str()), ("not_supported", "Fixture Card: this screen needs a newer Buwiz Bot."));
+        }
+    }
+
+    #[test]
+    fn a_first_party_native_screen_prepares_with_nothing_fetched_or_compiled() {
+        super::super::test_screens::register();
+        let root = std::env::temp_dir().join(format!("rox-native-prep-{}", std::process::id()));
+        // with the module cache too: there is nothing to cache
+        let p = prepare_in(&ListsNative { listed: native_app("fx.board", 1), first_party: true }, KEY, Some(&root)).unwrap();
+        assert_eq!(p.native, Some(NativeScreen { screen: "fx.board".to_owned(), abi: 1 }));
+        assert_eq!((p.title.as_str(), p.fingerprint.as_str(), p.js.as_str()), ("Fixture Card", "native:fx.board@1", "// native:fx.board@1"));
+        assert_eq!(p.permissions.methods(), ["buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta", "buwiz.call"]);
+        assert_eq!(p.key.props.get("ticket").and_then(Value::as_str), Some("tkt_x"));
+        assert!(!root.exists(), "nothing cached");
+        // the props are checked as a TSX app's
+        let e = prepare(&ListsNative { listed: native_app("fx.board", 1), first_party: true }, "v1:app.buwiz.fixture/card").unwrap_err();
+        assert_eq!(e.code, "invalid_args");
+        // and only a first-party plugin may have one
+        let e = prepare(&ListsNative { listed: native_app("fx.board", 1), first_party: false }, KEY).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("permission_denied", "Could not open Fixture Card: native screens are for first-party plugins only."));
     }
 
     #[test]

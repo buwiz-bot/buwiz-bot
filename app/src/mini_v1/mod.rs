@@ -14,6 +14,10 @@
 //!    app's permissions grant, and a policy granting exactly those names
 //!    and nothing else (no network, files, clipboard, window).
 //!
+//! A first-party plugin's app may be a native screen instead
+//! (`apps[].native`, [`screens`]): steps 1 and 3 find it among the screens
+//! compiled in and give it a Rust bridge on the same handlers.
+//!
 //! The person-facing parts (consent dialogs, the full-screen stack, the
 //! file dialog, the pasteboard, the chat an attachment goes to) are behind
 //! [`bridge::HostUi`], so the bridge runs headless in tests and part B
@@ -39,9 +43,12 @@ pub mod native;
 pub mod perms;
 pub mod props;
 pub mod records;
+pub mod screens;
 pub mod session;
 pub mod settle;
 pub mod storage;
+#[cfg(test)]
+pub mod test_screens;
 pub mod ui;
 
 use serde_json::{Value, json};
@@ -236,6 +243,7 @@ mod tests {
             permissions_json: None,
             permissions: Default::default(),
             js: js.into(),
+            native: None,
         }
     }
 
