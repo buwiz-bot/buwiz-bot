@@ -35,6 +35,9 @@ buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 # the office worker's events reach the UI task through a tokio channel
 # (nsh's tasks run inside a tokio context)
 tokio = { version = "1", features = ["sync"] }
+# First-party mini apps' native screens: the screen definition and the
+# bridge a screen gets (moves to the SDK repo, buwiz-app/buwiz-sdk).
+buwiz-app = { path = "../crates/app" }
 
 [dev-dependencies]
 # pele::corpus: the port's test inputs, to check the drawing of every one.
@@ -66,7 +69,7 @@ nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }
 
 # The office crates build with the app: one lockfile and target dir.
 [workspace]
-members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet"]
+members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet", "../crates/app"]
 
 # A binary per supported host target; the library is what the iOS runner and
 # nsh's generated workspace link.
