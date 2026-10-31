@@ -118,9 +118,11 @@ There is no upload step yet. To publish, download the artifact and run
 the commands `manifest.sh` prints (dmg and sidecar first, `latest.json`
 last).
 
-`.github/workflows/ci.yml` runs `cargo test -p rox` (app) and the broker
-workspace's `cargo test` (with `server/`'s `npm ci`, which its diff tests
-use) on every PR.
+`.github/workflows/ci.yml` runs, on every PR, `cargo test -p rox -p
+buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet` (the app workspace;
+the office crates take their fonts from `server/`'s `npm ci`) and the
+broker workspace's `cargo test` (whose diff tests run `server/`'s Node
+code).
 
 GitHub Actions has been blocked on billing on these accounts before; a red
 or never-started run may be that and not the code. The scripts run the
