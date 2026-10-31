@@ -329,11 +329,21 @@ impl Word {
         if !self.complete {
             self.finish(outs);
         }
-        let _scope = self.layout.fonts.enter();
-        let frame = self.layout.engine.apply_and_layout(story, self.layout.epoch);
-        drop(_scope);
-        match frame {
-            Ok(f) => self.layout.took(&f),
+        let grew = self.layout.fonts_grew().unwrap_or_else(|e| {
+            log::warn!("word: fonts: {e}");
+            false
+        });
+        let laid = if grew {
+            let window = self.window();
+            self.layout.after_edit(story, window)
+        } else {
+            let _scope = self.layout.fonts.enter();
+            let frame = self.layout.engine.apply_and_layout(story, self.layout.epoch);
+            drop(_scope);
+            frame.map(|f| self.layout.took(&f))
+        };
+        match laid {
+            Ok(()) => {}
             Err(e) => {
                 log::warn!("word: relayout: {e}");
                 outs.push(Out::Note(format!("Couldn't lay the page out again: {e}")));
@@ -875,6 +885,27 @@ impl Word {
     pub(crate) fn index_is_fresh(&mut self) -> bool {
         let fresh = Index::build(self.layout.engine.doc());
         self.index().paras == fresh.paras
+    }
+
+    /// Page `i`'s display list as laid out now.
+    pub(crate) fn page(&self, i: usize) -> Option<DisplayPage> {
+        self.layout.page(i)
+    }
+
+    /// Whether the layout holds a chain for the `family|bold|italic` key.
+    pub(crate) fn has_chain(&self, key: &str) -> bool {
+        self.layout.fonts.chains_json().get(key).is_some()
+    }
+
+    /// Sets the selection's font family, as a font picker would.
+    pub(crate) fn set_family(&mut self, family: &str) -> Vec<Out> {
+        let (story, a, b) = self.range();
+        let delta = InlineFormatDelta { font_family: Patch::Set(docx_edit::FontFamilyPatch { ascii: family.to_owned(), h_ansi: None }), ..Default::default() };
+        self.layout.engine.doc().format_range(&ctx(), StoryRange::new(&story, a, b), &delta).unwrap();
+        let mut outs = Vec::new();
+        self.relayout(&story, &mut outs);
+        outs.push(self.caret(false));
+        outs
     }
 
     /// The engine's part of a key's echo, and the index's, in ms.

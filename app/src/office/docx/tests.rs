@@ -163,3 +163,72 @@ fn typing_patches_the_index_as_a_rebuild_would() {
     w.run(Cmd::Backspace);
     assert!(w.index_is_fresh(), "after Backspace");
 }
+
+/// The glyph advances of `word` on page 0 (its first place there, in
+/// runs one after another), and whether any text on the page fell back to
+/// a synthetic width (a run whose font has no chain is listed as text, one
+/// em per character).
+fn glyph_width_and_synthetic(w: &Word, word: &str) -> (f64, bool) {
+    use docx_layout::display_list::Primitive;
+    let page = w.page(0).unwrap();
+    let runs: Vec<_> = page.primitives.iter().filter_map(|p| if let Primitive::GlyphRun(g) = p { Some(g) } else { None }).collect();
+    let width = (0..runs.len())
+        .find_map(|i| {
+            let (mut text, mut width) = (String::new(), 0.0);
+            for g in &runs[i..] {
+                text += &g.text;
+                width += g.glyphs.iter().map(|x| x.advance).sum::<f64>();
+                if !word.starts_with(text.as_str()) {
+                    return None;
+                }
+                if text == word {
+                    return Some(width);
+                }
+            }
+            None
+        })
+        .unwrap_or(0.0);
+    (width, page.primitives.iter().any(|p| matches!(p, Primitive::Text(_))))
+}
+
+fn selection_width(outs: &[Out]) -> f64 {
+    caret_of(outs).unwrap().sel.iter().map(|r| r.3 as f64).sum()
+}
+
+#[test]
+fn a_title_word_made_bold_and_italic_keeps_its_selection_to_its_glyphs() {
+    let mut w = open(fixture::titled("Welcome to Rox", &["A first paragraph."]));
+    w.run(Cmd::Move { to: Move::DocStart, extend: false });
+    w.run(Cmd::Move { to: Move::WordRight, extend: true });
+    for f in [Fmt::Bold, Fmt::Italic] {
+        let (outs, _) = w.run(Cmd::Format(f));
+        let (glyphs, synthetic) = glyph_width_and_synthetic(&w, "Welcome");
+        assert!(!synthetic, "after {f:?}: no run is measured without its font");
+        assert!(glyphs > 0.0, "after {f:?}: the word is a glyph run");
+        let sel = selection_width(&outs);
+        assert!((sel - glyphs).abs() < 0.5, "after {f:?}: selection {sel} px, glyphs {glyphs} px");
+    }
+    assert!(w.has_chain("calibri light|1|1"));
+    // undo and redo lay out with the chains too
+    for cmd in [Cmd::Undo, Cmd::Redo] {
+        w.run(cmd);
+        assert!(!glyph_width_and_synthetic(&w, "Welcome").1);
+    }
+}
+
+#[test]
+fn a_font_a_style_change_brings_in_gets_a_chain() {
+    let mut w = open(fixture::paragraphs(&["Plain words here", "Second line"]));
+    assert!(!w.has_chain("courier new|0|0"));
+    w.run(Cmd::Move { to: Move::WordRight, extend: true });
+    let outs = w.set_family("Courier New");
+    assert!(w.has_chain("courier new|0|0"));
+    let (glyphs, synthetic) = glyph_width_and_synthetic(&w, "Plain");
+    assert!(!synthetic);
+    assert!((selection_width(&outs) - glyphs).abs() < 0.5);
+    // pasted text takes the font where it lands, measured with its chain
+    w.run(Cmd::Move { to: Move::DocStart, extend: false });
+    w.run(Cmd::Move { to: Move::Right, extend: false });
+    w.run(Cmd::Paste("ab\ncd".into()));
+    assert!(!glyph_width_and_synthetic(&w, "cdlain").1);
+}
