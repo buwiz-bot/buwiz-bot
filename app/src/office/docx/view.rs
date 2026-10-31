@@ -1,5 +1,7 @@
-//! The Word view: a toolbar, the pages, a thumbnail strip, the review list
-//! and the status bar.
+//! The Word view: the web editor's title bar and menus ([`super::chrome`]),
+//! a toolbar, the pages and the review list. Its dialogs are
+//! [`super::dialogs`]. Like the web there is no status bar: notes are
+//! toasts.
 //!
 //! The pages are a scroll of canvases, one per page near the view (`each`
 //! keyed by page: a page that stays keeps its canvas). The worker draws a
@@ -19,10 +21,13 @@ use super::WordUi;
 use super::doc::{Cmd, Fmt, Move};
 use crate::live::store;
 use crate::office;
+use crate::office::ui::palette as p;
 use crate::theme;
 
-/// Space around and between pages, points.
+/// Space between pages (`CANVAS_PAGE_GAP_PX`) and around them
+/// (`CANVAS_PAGES_PADDING_PX`), points.
 const GAP: f32 = 16.0;
+pub(crate) const PAD: f32 = 24.0;
 /// How far past the view pages are kept drawn, in view heights.
 const AHEAD: f32 = 1.0;
 
@@ -33,7 +38,7 @@ fn ui() -> &'static WordUi {
 /// A command from the view. One that moves the caret or edits other than
 /// by typing starts the hidden field afresh: what it held is behind the
 /// caret no more.
-fn send(cmd: Cmd) {
+pub(crate) fn send(cmd: Cmd) {
     if !matches!(cmd, Cmd::View { .. } | Cmd::Type(_) | Cmd::Print | Cmd::SaveTo(_) | Cmd::Copy { cut: false }) {
         empty_field();
     }
@@ -79,11 +84,20 @@ fn delta(given: &str, now: &str) -> (usize, String) {
     (given.chars().count() - same, now.chars().skip(same).collect())
 }
 
-/// Whether the document's keys apply: it shows, and no menu, prompt or
-/// find bar has the keyboard.
+/// Whether the document's keys apply: it shows, and no menu, dialog,
+/// prompt, find bar or the name field has the keyboard.
 pub(crate) fn editing() -> bool {
     let st = store();
-    office::showing() && st.office.is_word.get() && st.office.word.find.with(Option::is_none) && !st.office.ask_close.get() && st.ctx.get().is_none()
+    let w = &st.office.word;
+    office::showing()
+        && st.office.is_word.get()
+        && w.find.with(Option::is_none)
+        && !w.naming.get()
+        && !w.menu_open.get()
+        && !w.setup_open.get()
+        && !w.watermark_open.get()
+        && !st.office.ask_close.get()
+        && st.ctx.get().is_none()
 }
 
 /// The keyboard back to the page.
@@ -95,13 +109,21 @@ pub(crate) fn focus() {
 
 /// Each page's top, and the whole height, at `zoom` (points).
 fn tops(pages: &[(f32, f32)], zoom: f32) -> (Vec<f32>, f32) {
-    let mut y = GAP;
+    let mut y = PAD;
     let mut out = Vec::with_capacity(pages.len());
-    for (_, h) in pages {
+    for (i, (_, h)) in pages.iter().enumerate() {
+        if i > 0 {
+            y += GAP;
+        }
         out.push(y);
-        y += h * zoom + GAP;
+        y += h * zoom;
     }
-    (out, y)
+    (out, y + PAD)
+}
+
+/// A page's left edge in the pages' width: centred, at least the padding in.
+pub(crate) fn page_left(area_w: f32, page_w: f32) -> f32 {
+    ((area_w - page_w) / 2.0).max(PAD)
 }
 
 /// The pages near the view: first and last.
@@ -146,20 +168,6 @@ pub(crate) fn reveal(u: &WordUi, page: usize, y: f32) {
         return;
     }
     let to = (at - h / 3.0).max(0.0);
-    if let Some(r) = SCROLLER.with(std::cell::Cell::get) {
-        r.scroll_to(point(px(0.0), px(to)), false);
-    }
-    u.scroll.set(to);
-    ask_pages(u, false);
-}
-
-/// Scrolls to the top of page `page`.
-fn go_to_page(page: usize) {
-    let u = ui();
-    let meta = u.meta.get_untracked();
-    let (tops, _) = tops(&meta.pages, u.zoom.get_untracked());
-    let Some(top) = tops.get(page) else { return };
-    let to = (top - GAP).max(0.0);
     if let Some(r) = SCROLLER.with(std::cell::Cell::get) {
         r.scroll_to(point(px(0.0), px(to)), false);
     }
@@ -304,7 +312,7 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
         let z = u.zoom.get();
         u.meta.with(|m| tops(&m.pages, z).0.get(i.get()).copied().unwrap_or(0.0))
     };
-    let left = move || ((u.area.get().0 - size().0) / 2.0).max(GAP);
+    let left = move || page_left(u.area.get().0, size().0);
     let z = move || u.zoom.get();
     // the canvas: drawn once per layout and zoom (the worker's drawing)
     let page_canvas = canvas(move || match shown() {
@@ -323,7 +331,8 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
         let scale = s.zoom;
         let mut layer = view().absolute().size_full().pointer_events(PointerEvents::None);
         for p in &s.drawn.pictures {
-            let Some(uri) = media.get(&(p.part.clone(), p.rel_id.clone())).cloned() else { continue };
+            // a picture put in here carries its own `data:` URL
+            let Some(uri) = media.get(&(p.part.clone(), p.rel_id.clone())).cloned().or_else(|| p.rel_id.starts_with("data:").then(|| p.rel_id.clone())) else { continue };
             layer = layer.child(
                 image(uri)
                     .object_fit(ResizeMode::Stretch)
@@ -360,21 +369,19 @@ fn page_view(i: ReadSignal<usize>) -> impl IntoElement {
         }
         layer.into_element()
     });
+    // the web's canvas page: white, `0 1px 3px var(--doc-shadow)`
+    let shadow = BoxShadow { offset_x: px(0.0), offset_y: px(1.0), blur: px(3.0), spread: px(0.0), color: color(p::SHADOW).into(), inset: false };
     view()
         .absolute()
         .left(move || px(left()))
         .top(move || px(top()))
         .w(move || px(size().0))
         .h(move || px(size().1))
-        // a page not drawn yet shows blank
+        .label(format!("Page {}", i.get_untracked() + 1))
         .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 })
-        .border(px(0.5))
-        .border_color(theme::BORDER_S)
-        .overflow_hidden()
+        .shadow(vec![shadow])
         .pointer_events(PointerEvents::None)
-        .child(page_canvas)
-        .child(pictures)
-        .child(marks)
+        .child(view().size_full().overflow_hidden().child(page_canvas).child(pictures).child(marks))
 }
 
 /// The page under a point of the pages' content: (page, x, y) in page pixels.
@@ -385,7 +392,7 @@ fn page_at(x: f32, y: f32) -> Option<(usize, f32, f32)> {
     let (tops, _) = tops(&meta.pages, z);
     let i = tops.iter().rposition(|t| *t <= y + GAP / 2.0)?;
     let (w, h) = meta.pages[i];
-    let left = ((u.area.get_untracked().0 - w * z) / 2.0).max(GAP);
+    let left = page_left(u.area.get_untracked().0, w * z);
     Some((i, ((x - left) / z).clamp(0.0, w), ((y - tops[i]) / z).clamp(0.0, h)))
 }
 
@@ -400,7 +407,7 @@ fn pages() -> impl IntoElement {
     let width = move || {
         let z = u.zoom.get();
         let widest = u.meta.with(|m| m.pages.iter().map(|p| p.0).fold(0.0f32, f32::max));
-        (widest * z + 2.0 * GAP).max(u.area.get().0)
+        (widest * z + 2.0 * PAD).max(u.area.get().0)
     };
     // the pages near the view, by index: one that stays keeps its views
     let visible = move || -> Vec<usize> {
@@ -413,7 +420,7 @@ fn pages() -> impl IntoElement {
     scroll()
         .element_ref(&scroller)
         .flex_1()
-        .bg(theme::SUBTLE)
+        .bg(p::BG)
         .on_layout(move |b: &Bounds<Points>| {
             u.area.set((b.size.width.0, b.size.height.0));
             ask_pages(u, false);
@@ -446,45 +453,6 @@ fn pages() -> impl IntoElement {
                 })
                 .child(each(visible, |i: &usize| *i, |i, _| page_view(i))),
         )
-}
-
-/// The thumbnail strip: each page small, from its drawing when it has one.
-fn thumbs() -> impl IntoElement {
-    let u = ui();
-    const W: f32 = 96.0;
-    let count = move || u.meta.with(|m| m.pages.len());
-    let thumb = move |at: nsh_core::element::Position| {
-        let i = at.index();
-        let size = move || u.meta.with(|m| m.pages.get(i).map_or((W, W * 1.3), |p| (W, W * p.1 / p.0.max(1.0))));
-        view()
-            .items_center()
-            .py(px(6.0))
-            .child(
-                view()
-                    .w(move || px(size().0))
-                    .h(move || px(size().1))
-                    .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 })
-                    .border(px(0.5))
-                    .border_color(theme::BORDER_S)
-                    .overflow_hidden()
-                    .child(canvas(move || {
-                        let Some(s) = u.page(i).get() else { return Painter::new() };
-                        let k = W / s.drawn.w.max(1.0);
-                        let mut d = Painter::new().scale(k, k).finish();
-                        d.ops.extend(s.drawn.drawing.ops.iter().cloned());
-                        Painter::from(d)
-                    })
-                    .size_full()),
-            )
-            .child(text(format!("{}", i + 1)).text_size(px(11.0)).text_color(theme::MUTED))
-            .on_press(move || go_to_page(i))
-    };
-    view()
-        .w(px(W + 24.0))
-        .bg(theme::PANE)
-        .border_r(px(0.5))
-        .border_r_color(theme::BORDER_S)
-        .child(virtual_list(count, thumb).flex_1())
 }
 
 /// The review list: tracked changes and comments, in their author's color.
@@ -543,8 +511,6 @@ fn toolbar() -> impl IntoElement {
         .bg(theme::PANE)
         .border_b(px(0.5))
         .border_b_color(theme::BORDER_S)
-        .child(tool("☰", "Pages", move || u.thumbs.update(|t| *t = !*t), move || u.thumbs.get()))
-        .child(view().w(px(8.0)))
         .child(tool("B", "Bold", || format(Fmt::Bold), move || m().bold))
         .child(tool("I", "Italic", || format(Fmt::Italic), move || m().italic))
         .child(tool("U", "Underline", || format(Fmt::Underline), move || m().underline))
@@ -618,73 +584,23 @@ fn find_bar() -> impl IntoElement {
     )
 }
 
-fn status_bar() -> impl IntoElement {
-    let u = ui();
-    let status = move || {
-        let st = store().office.state.get();
-        if !st.error.is_empty() {
-            return st.error;
-        }
-        let note = u.note.get();
-        if !note.is_empty() {
-            return note;
-        }
-        if st.saving {
-            return "Saving…".to_owned();
-        }
-        if u.meta.with(|m| m.partial) {
-            return "Laying out…".to_owned();
-        }
-        if st.dirty { "Edited".to_owned() } else { String::new() }
-    };
-    let page = move || {
-        let n = u.meta.with(|m| m.pages.len());
-        let at = u.caret.with(|c| c.caret.map(|c| c.0)).unwrap_or(0);
-        if n == 0 { String::new() } else { format!("Page {} of {n}", at + 1) }
-    };
-    let zoom_btn = |label: &'static str, d: f32| {
-        view()
-            .label(if d > 0.0 { "Zoom in" } else { "Zoom out" })
-            .size(px(22.0))
-            .rounded(px(5.0))
-            .items_center()
-            .justify_center()
-            .child(text(label).text_size(px(13.0)).text_color(theme::MUTED))
-            .on_press(move || zoom_by(d))
-    };
-    view()
-        .flex_row()
-        .items_center()
-        .h(px(30.0))
-        .px_2()
-        .gap_2()
-        .bg(theme::SUBTLE)
-        .border_t(px(0.5))
-        .border_t_color(theme::BORDER_S)
-        .child(text(page).text_size(px(12.0)).text_color(theme::MUTED))
-        .child(text(status).flex_1().number_of_lines(1).text_size(px(12.0)).text_color(theme::MUTED))
-        .child(zoom_btn("−", -0.1))
-        .child(text(move || format!("{}%", (u.zoom.get() * 100.0).round())).w(px(40.0)).text_center().text_size(px(12.0)).text_color(theme::MUTED))
-        .child(zoom_btn("+", 0.1))
-}
-
 /// The Word view.
 pub(crate) fn word_view() -> impl IntoElement {
     let u = ui();
     view()
         .flex_1()
         .child(office::xlsx::edit::prompts())
+        .child(super::chrome::title_bar())
         .child(toolbar())
         .child(find_bar())
         .child(
             view()
                 .flex_1()
                 .flex_row()
-                .child(when(move || u.thumbs.get(), thumbs))
                 .child(view().flex_1().child(pages()).child(typing()))
                 .child(when(move || u.review.get(), review)),
         )
-        .child(status_bar())
+        .child(super::dialogs::dialogs())
 }
 
 #[cfg(test)]
@@ -702,8 +618,11 @@ mod tests {
 
     #[test]
     fn pages_stack_with_gaps() {
+        // 24 around the pages, 16 between them, as the web's canvas pages
         let (t, total) = tops(&[(816.0, 1056.0), (816.0, 1056.0)], 0.5);
-        assert_eq!(t, vec![GAP, GAP + 528.0 + GAP]);
-        assert_eq!(total, GAP + 2.0 * (528.0 + GAP));
+        assert_eq!(t, vec![24.0, 24.0 + 528.0 + 16.0]);
+        assert_eq!(total, 24.0 + 528.0 + 16.0 + 528.0 + 24.0);
+        assert_eq!(page_left(1000.0, 816.0), 92.0);
+        assert_eq!(page_left(800.0, 816.0), 24.0);
     }
 }

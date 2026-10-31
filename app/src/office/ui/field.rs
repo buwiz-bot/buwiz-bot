@@ -3,7 +3,9 @@
 //! checkbox (`FindReplaceDialog`'s `le`/`z`) and tabs (`HyperlinkDialog`'s
 //! `ne`/`H`/`F`). Fields inside a [`super::modal`] join its Tab order.
 
+use nsh_base::{SelectItem, SelectItemState};
 use nsh_core::canvas::{FillRule, svg_path};
+use nsh_core::element::StyleRefinement;
 use nsh_core::prelude::*;
 
 use super::modal::join_trap;
@@ -168,6 +170,104 @@ pub(crate) fn tabs(names: Vec<&'static str>, current: Signal<usize>) -> AnyEleme
             })
             .into_element()
         }))
+        .into_element()
+}
+
+/// A dialog's `<select>` (`PageSetupDialog`'s `N`, `WatermarkDialog`'s
+/// `g`): the field's box with the chosen option's text and a chevron, its
+/// options (value, text) listed under it.
+pub(crate) fn select_field(
+    label: impl Into<SharedString>,
+    options: Vec<(String, String)>,
+    value: impl Fn() -> String + 'static,
+    on_change: impl Fn(&str) + 'static,
+) -> AnyElement {
+    let label: SharedString = label.into();
+    let value = std::rc::Rc::new(value);
+    let opts = std::rc::Rc::new(options);
+    let items: Vec<SelectItem> = opts.iter().map(|(v, t)| SelectItem::new(SharedString::from(v.clone()), SharedString::from(t.clone()))).collect();
+    let shown = {
+        let (opts, value) = (opts.clone(), value.clone());
+        move || {
+            let v = value();
+            opts.iter().find(|(o, _)| *o == v).map(|(_, t)| t.clone()).unwrap_or_default()
+        }
+    };
+    let chevron = svg_path(CHEVRON_D);
+    let trigger = view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .w_full()
+        .px(px(FIELD_PAD.0))
+        .py(px(FIELD_PAD.1))
+        .border_1()
+        .border_color(p::BORDER)
+        .rounded(px(FIELD_RADIUS))
+        .label(label.clone())
+        .child(text(shown).flex_shrink(1.0).number_of_lines(1).text_size(px(FIELD_TEXT)).text_color(p::TEXT))
+        .child(canvas(move || Painter::new().scale(0.7, 0.7).fill_color(color(p::TEXT_MUTED)).fill_path(&chevron, FillRule::EvenOdd)).size(px(14.0)).flex_shrink_0());
+    let value2 = value.clone();
+    nsh_base::select()
+        .items(items)
+        .value(move || nsh_base::SelectValue::Controlled(Some(SharedString::from(value2()))))
+        .accessibility_label(label)
+        .placement(Placement::Bottom)
+        .align(Align::Start)
+        .offset(px(2.0))
+        .popup_style(|s: StyleRefinement| s.bg(p::SURFACE).border_1().border_color(p::BORDER_DARK).rounded(px(FIELD_RADIUS)).p(px(4.0)).min_w(px(160.0)))
+        .trigger(trigger)
+        .render_item(|s: &SelectItemState| {
+            text(s.title.clone())
+                .w_full()
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(3.0))
+                .text_size(px(FIELD_TEXT))
+                .text_color(if s.highlighted { p::ON_PRIMARY } else { p::TEXT })
+                .bg(if s.highlighted { p::PRIMARY } else { AdaptiveColor::TRANSPARENT })
+                .into_element()
+        })
+        .on_change(move |v: &Option<SharedString>| {
+            if let Some(v) = v {
+                on_change(v)
+            }
+        })
+        .into_element()
+}
+
+const CHEVRON_D: &str = "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z";
+
+/// A radio button and its label (`WatermarkDialog`'s `N`/`s`: 8 apart,
+/// the label 13px): macOS's, a ring, the system blue with a white dot
+/// while on.
+pub(crate) fn radio(label: impl Into<SharedString>, on: impl Fn() -> bool + 'static, choose: impl Fn() + 'static) -> AnyElement {
+    let r = element_ref();
+    join_trap(&r);
+    let label: SharedString = label.into();
+    let on = std::rc::Rc::new(on);
+    let (on1, on2, on3) = (on.clone(), on.clone(), on);
+    let blue = AdaptiveColor { light: hsla(0.5817, 1.0, 0.5, 1.0), dark: hsla(0.5817, 1.0, 0.52, 1.0) };
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .element_ref(&r)
+        .label(label.clone())
+        .role(AccessibilityRole::Radio)
+        .on_press(choose)
+        .child(
+            view()
+                .size(px(CHECKBOX))
+                .rounded(px(CHECKBOX / 2.0))
+                .border(move || px(if on1() { 0.0 } else { 1.0 }))
+                .border_color(AdaptiveColor { light: hsla(0.0, 0.0, 0.0, 0.25), dark: hsla(0.0, 0.0, 1.0, 0.3) })
+                .bg(move || if on2() { blue } else { p::SURFACE })
+                .items_center()
+                .justify_center()
+                .child(view().size(px(6.0)).rounded(px(3.0)).bg(move || if on3() { AdaptiveColor { light: white(), dark: white() } } else { AdaptiveColor::TRANSPARENT })),
+        )
+        .child(text(label).text_size(px(13.0)).text_color(p::TEXT))
         .into_element()
 }
 

@@ -269,12 +269,20 @@ pub(crate) fn bar_menu(label: impl Into<SharedString>, entries: impl Fn() -> Vec
 /// The menu bar (DR `qd`, `role="menubar"`): each menu's trigger, its
 /// menu 2 below it (DR `Ba`: `top: rect.bottom + 2`).
 pub(crate) fn menu_bar(menus: Vec<BarMenu>) -> AnyElement {
+    menu_bar_in(menus, signal(false))
+}
+
+/// [`menu_bar`], `any` holding while one of its menus is open (a view's
+/// keys stand back for it).
+pub(crate) fn menu_bar_in(menus: Vec<BarMenu>, any: Signal<bool>) -> AnyElement {
+    let opens: Vec<Signal<bool>> = menus.iter().map(|_| signal(false)).collect();
+    let all = opens.clone();
+    effect(move || any.set(all.iter().any(|o| o.get())));
     view()
         .flex_row()
         .items_center()
         .label("Menu bar")
-        .children(menus.into_iter().map(|m| {
-            let open = signal(false);
+        .children(menus.into_iter().zip(opens).map(|(m, open)| {
             let anchor = element_ref();
             let entries = m.entries.clone();
             view()

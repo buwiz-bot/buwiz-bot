@@ -47,6 +47,8 @@ pub(crate) fn join_trap(field: &ElementRef) {
 pub(crate) struct Action {
     pub label: SharedString,
     pub primary: bool,
+    /// While it doesn't hold the button is dimmed and takes no press.
+    pub enabled: Rc<dyn Fn() -> bool>,
     pub run: Rc<dyn Fn()>,
 }
 
@@ -98,7 +100,13 @@ impl Modal {
     }
     /// A footer button; `primary` is the filled one.
     pub(crate) fn action(mut self, label: impl Into<SharedString>, primary: bool, run: impl Fn() + 'static) -> Self {
-        self.actions.push(Action { label: label.into(), primary, run: Rc::new(run) });
+        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(|| true), run: Rc::new(run) });
+        self
+    }
+    /// A footer button enabled while `enabled` holds (Watermark's Apply
+    /// without a picture: `opacity: .5`, disabled).
+    pub(crate) fn action_when(mut self, label: impl Into<SharedString>, primary: bool, enabled: impl Fn() -> bool + 'static, run: impl Fn() + 'static) -> Self {
+        self.actions.push(Action { label: label.into(), primary, enabled: Rc::new(enabled), run: Rc::new(run) });
         self
     }
     /// Escape, a press outside the card (the dialog closes after it).
@@ -120,6 +128,7 @@ impl Modal {
 
 fn footer_button(a: Action) -> AnyElement {
     let run = a.run.clone();
+    let (on, on2) = (a.enabled.clone(), a.enabled.clone());
     text(a.label.clone())
         .px(px(BUTTON_PAD.0))
         .py(px(BUTTON_PAD.1))
@@ -132,7 +141,12 @@ fn footer_button(a: Action) -> AnyElement {
         .bg(if a.primary { p::PRIMARY } else { AdaptiveColor::TRANSPARENT })
         .text_color(if a.primary { p::ON_PRIMARY } else { p::TEXT })
         .label(a.label)
-        .on_press(move || run())
+        .opacity(move || if on() { 1.0f32 } else { 0.5 })
+        .on_press(move || {
+            if on2() {
+                run()
+            }
+        })
         .into_element()
 }
 

@@ -171,9 +171,18 @@ impl Layout {
         Ok(())
     }
 
-    /// The display builder's extras: the same chains.
+    /// The display builder's extras: the same chains, and the watermark
+    /// the layout placed (its `headersFooters`), which the builder draws
+    /// only from here.
     fn extras(&self) -> String {
-        json!({ "fontChains": self.fonts.chains_json() }).to_string()
+        let mut extras = json!({ "fontChains": self.fonts.chains_json() });
+        if self.base.pointer("/regions/watermark").is_some()
+            && let Ok(Some(hf)) = self.engine.retained_headers_footers_json()
+            && let Ok(hf) = serde_json::from_str::<Value>(&hf)
+        {
+            extras["headersFooters"] = hf;
+        }
+        extras.to_string()
     }
 
     /// Lays out the first `pages` pages only (`provisional` until
@@ -226,6 +235,20 @@ impl Layout {
     /// Reads the display list in place.
     pub(crate) fn with_pages<T>(&self, read: impl FnOnce(&[DisplayPage]) -> T) -> Option<T> {
         self.engine.with_display_list(|l| read(&l.pages))
+    }
+
+    /// The region request as built from the package (its sections, the
+    /// watermark), without the fonts.
+    pub(crate) fn request_base(&self) -> &Value {
+        &self.base
+    }
+
+    /// The region request changed by `edit` (Page Setup's section, the
+    /// watermark), its fonts kept: the next [`Self::full`] lays out with it.
+    pub(crate) fn edit_request(&mut self, edit: impl FnOnce(&mut Value)) {
+        edit(&mut self.base);
+        self.base_json = self.base.to_string();
+        self.fill_fonts(&[]);
     }
 }
 

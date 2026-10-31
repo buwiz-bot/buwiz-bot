@@ -6,6 +6,8 @@
 
 #[cfg(test)]
 mod bench;
+pub(crate) mod chrome;
+pub(crate) mod dialogs;
 pub(crate) mod doc;
 pub(crate) mod draw;
 #[cfg(test)]
@@ -55,13 +57,18 @@ pub(crate) struct WordUi {
     pub area: Signal<(f32, f32)>,
     /// Pictures as `data:` URIs, by (part, relationship id).
     pub media: Signal<Arc<HashMap<(Option<String>, String), String>>>,
-    /// The thumbnail strip shows.
-    pub thumbs: Signal<bool>,
     /// The find bar: `Some(query)` while open.
     pub find: Signal<Option<String>>,
     /// The review list (tracked changes and comments) shows.
     pub review: Signal<bool>,
     pub note: Signal<String>,
+    /// The document name's field has the keyboard.
+    pub naming: Signal<bool>,
+    /// A menu of the menu bar is open.
+    pub menu_open: Signal<bool>,
+    /// The Page Setup and Watermark dialogs show.
+    pub setup_open: Signal<bool>,
+    pub watermark_open: Signal<bool>,
     /// The pages last asked of the worker: (first, last, zoom).
     pub asked: std::cell::Cell<Option<(usize, usize, f32, u64)>>,
 }
@@ -76,10 +83,13 @@ impl WordUi {
             scroll: signal(0.0),
             area: signal((0.0, 0.0)),
             media: signal(Arc::new(HashMap::new())),
-            thumbs: signal(false),
             find: signal(None),
             review: signal(false),
             note: signal(String::new()),
+            naming: signal(false),
+            menu_open: signal(false),
+            setup_open: signal(false),
+            watermark_open: signal(false),
             asked: std::cell::Cell::new(None),
         }
     }
@@ -95,6 +105,8 @@ impl WordUi {
         self.media.set(Arc::new(HashMap::new()));
         self.find.set(None);
         self.note.set(String::new());
+        self.setup_open.set(false);
+        self.watermark_open.set(false);
         self.asked.set(None);
     }
 
@@ -167,8 +179,18 @@ pub(crate) fn on_out(u: &WordUi, o: Out) {
             let title = store().viewing.get_untracked().map(|f| f.name).unwrap_or_default();
             crate::keys::print("html", html, &title);
         }
-        Out::Note(n) => u.note.set(n),
+        Out::Note(n) => note(n),
     }
+}
+
+/// What the worker or a command couldn't do, as a toast (the web's
+/// `sonner` toasts; there is no status bar).
+pub(crate) fn note(n: impl Into<String>) {
+    let n = n.into();
+    if !n.is_empty() {
+        crate::toast::show(n.clone());
+    }
+    store().office.word.note.set(n);
 }
 
 /// Plain text as an HTML fragment (the pasteboard's rich kind).

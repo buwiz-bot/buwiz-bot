@@ -109,7 +109,12 @@ fn probe() -> String {
     let c = w.caret.get_untracked();
     let drawn = w.pages.borrow().first().and_then(|s| s.try_get()).flatten().map_or(0, |s| s.drawn.drawing.ops.len());
     let z = w.zoom.get_untracked();
-    let left = m.pages.first().map_or(0.0, |p| ((w.area.get_untracked().0 - p.0 * z) / 2.0).max(16.0));
+    let left = m.pages.first().map_or(0.0, |p| super::docx::view::page_left(w.area.get_untracked().0, p.0 * z));
+    let (pw, ph) = m.pages.first().copied().unwrap_or_default();
+    let table = m.table.map_or("-".to_owned(), |(r, c)| format!("{r}x{c}"));
+    let wm = m.watermark.as_ref().and_then(|v| v.get("text").or(v.get("kind"))).and_then(|v| v.as_str()).unwrap_or("-").replace(' ', "_");
+    let pics = w.pages.borrow().iter().filter_map(|s| s.try_get().flatten()).map(|s| s.drawn.pictures.len()).sum::<usize>();
+    let word = format!(" bidi={} table={table} wm={wm} pw={pw} ph={ph} mtop={} dialog={} pics={pics}", m.bidi, m.setup.top, (w.setup_open.get_untracked() || w.watermark_open.get_untracked()) as u8);
     let (cp, cx, cy) = c.caret.map_or((-1, 0.0, 0.0), |(p, x, y, _)| (p as i64, x, y));
     let sheet = &o.sheet;
     format!(
@@ -125,7 +130,8 @@ fn probe() -> String {
         sheet.shape.with_untracked(Option::is_some),
         sheet.shown.with_untracked(|s| s.is_some() as u8),
         o.state.get_untracked().dirty,
-    ) + &sheet_probe()
+    ) + &word
+        + &sheet_probe()
 }
 
 /// The spreadsheet's part of the probe: its revision and sheet, the
@@ -242,12 +248,16 @@ pub(crate) struct Headless {
     pub(crate) frames: HashMap<NodeId, Bounds<Points>>,
     pub(crate) styles: HashMap<NodeId, nsh_core::ViewStyle>,
     pub(crate) parents: HashMap<NodeId, NodeId>,
+    /// The file requests (open dialogs) not answered yet.
+    files: Vec<u32>,
 }
 
 fn start(files: Vec<Attach>) -> Headless {
     let _ = FILES.set(files);
     let mut config = EngineConfig::new(App::Rust(Root::new::<Viewer>(|| ())));
     config.viewport = Size::new(px(1200.0), px(900.0));
+    // open dialogs come to the driver, which answers them
+    config.environment.file_requests = true;
     run(config)
 }
 
@@ -275,6 +285,7 @@ fn run(config: EngineConfig) -> Headless {
         frames: HashMap::new(),
         styles: HashMap::new(),
         parents: HashMap::new(),
+        files: Vec::new(),
     };
     until(&mut app, "the first render", |_| true);
     app
@@ -316,6 +327,7 @@ impl Headless {
                 MountItem::Insert { parent, child, .. } => {
                     self.parents.insert(*child, *parent);
                 }
+                MountItem::Command { command: nsh_core::Command::FileRequest { id, .. }, .. } => self.files.push(*id),
                 _ => {}
             }
         }
@@ -493,6 +505,36 @@ impl Headless {
         self.parents.get(&id).and_then(|p| self.frames.get(p)).copied().unwrap_or_else(|| panic!("no parent frame for {label:?}"))
     }
 
+    /// The last open dialog answered with `path` picked.
+    pub(crate) fn pick_file(&mut self, path: &Path) {
+        let id = self.files.pop().expect("an open dialog is up");
+        self.send(ROOT_ID, EventKind::FileRequest, EventPayload::file_answer(id, vec![path.to_owned()]));
+        self.pump(Duration::from_millis(100));
+    }
+
+    /// The text of the input labelled `label`, as last sent.
+    pub(crate) fn value(&self, label: &str) -> String {
+        let id = self.view(label);
+        self.inputs.get(&id).map(|i| i.0.clone()).unwrap_or_default()
+    }
+
+    /// The labels of the live views inside the one labelled `root`, in the
+    /// order they came.
+    pub(crate) fn labels_in(&self, root: &str) -> Vec<String> {
+        let root = self.view(root);
+        let inside = |mut id: NodeId| {
+            while let Some(p) = self.parents.get(&id) {
+                if *p == root {
+                    return true;
+                }
+                id = *p;
+            }
+            false
+        };
+        let mut seen = HashSet::new();
+        self.labels.iter().filter(|(id, _)| self.live.contains(id) && inside(*id) && seen.insert(*id)).map(|(_, l)| l.clone()).collect()
+    }
+
     /// The input labelled `label` reports `value` as its whole text (one
     /// edit), whatever it held: as a platform does when keys come faster
     /// than the app answers, or an input method or autocorrect replaces
@@ -532,11 +574,11 @@ pub(crate) fn until(app: &mut Headless, what: &str, ok: impl Fn(&HashMap<String,
 }
 
 /// A Word document shows: laid out, its first page drawn, the font size
-/// read and the status bar's page count up.
+/// read and its first page's view up.
 fn word_shows(app: &mut Headless, what: &str) -> HashMap<String, String> {
     let p = until(app, what, |p| num(p, "pages") > 0.0 && num(p, "drawn") > 0.0 && num(p, "size") > 0.0);
-    // the status bar's count
-    assert!(app.texts().iter().any(|t| t.starts_with("Page 1 of ")), "{what}: no page count in {:?}", app.texts());
+    app.pump(Duration::from_millis(50));
+    assert!(app.has("Page 1"), "{what}: no first page");
     p
 }
 
@@ -624,8 +666,8 @@ fn the_word_view_takes_clicks_drags_keys_and_typing() {
     let p = word_shows(&mut app, "the document");
     let (left, rev) = (num(&p, "left"), num(&p, "rev"));
     // a click right of the first line's end (the page's top margin is an
-    // inch; pages start 16 points down) puts the caret at its end
-    app.press_at("Document pages", left + 700.0, 16.0 + 104.0, false);
+    // inch; pages start 24 points down) puts the caret at its end
+    app.press_at("Document pages", left + 700.0, 24.0 + 104.0, false);
     let p = until(&mut app, "the click's caret", |p| num(p, "caret") == 0.0 && num(p, "cx") > 150.0 && num(p, "sel") == 0.0);
     let end_x = num(&p, "cx");
     // typing goes into the hidden field and on to the document, which lays
@@ -651,10 +693,195 @@ fn the_word_view_takes_clicks_drags_keys_and_typing() {
     assert_eq!(texts, vec!["Hello world!", "Thir", "Second line"]);
     assert!(xml.contains("<w:b/>"), "{xml}");
     // a drag across the first line selects it
-    app.press_at("Document pages", left + 100.0, 16.0 + 104.0, false);
+    app.press_at("Document pages", left + 100.0, 24.0 + 104.0, false);
     until(&mut app, "the caret at the line's start", |p| num(p, "sel") == 0.0 && num(p, "cx") < 150.0);
-    app.drag_to("Document pages", left + 300.0, 16.0 + 104.0);
+    app.drag_to("Document pages", left + 300.0, 24.0 + 104.0);
     until(&mut app, "the dragged selection", |p| num(p, "sel") > 0.0);
+}
+
+/// A document of two paragraphs open as `name`, its caret at the end of
+/// the first line.
+fn open_word(test: &str, name: &str) -> (Headless, PathBuf) {
+    let d = dir(test);
+    let a = d.join(name);
+    std::fs::write(&a, super::docx::fixture::paragraphs(&["Hello world", "Second line"])).unwrap();
+    let mut app = start(vec![attach(&a, "docx")]);
+    app.press("open 0");
+    let p = word_shows(&mut app, "the document");
+    app.press_at("Document pages", num(&p, "left") + 700.0, 24.0 + 104.0, false);
+    until(&mut app, "the caret at the line's end", |p| num(p, "caret") == 0.0 && num(p, "cx") > 150.0);
+    (app, a)
+}
+
+fn is(p: &HashMap<String, String>, k: &str, v: &str) -> bool {
+    p.get(k).map(String::as_str) == Some(v)
+}
+
+/// The menu bar's menu `name` opened: its rows' labels, in order.
+fn menu_rows(app: &mut Headless, name: &str) -> Vec<String> {
+    app.press(name);
+    app.labels_in(&format!("{name} menu"))
+}
+
+#[test]
+fn the_title_bar_names_the_document_and_each_menu_lists_the_webs_items() {
+    if !in_child("the_title_bar_names_the_document_and_each_menu_lists_the_webs_items") {
+        return;
+    }
+    let (mut app, _) = open_word("title", "Quarterly report.docx");
+    // the name without `.docx`; nothing takes a new one, so it springs back
+    assert!(app.has("Document icon"));
+    assert_eq!(app.value("Document name"), "Quarterly report");
+    app.change("Document name", "Other");
+    app.pump(Duration::from_millis(100));
+    assert_eq!(app.value("Document name"), "Quarterly report");
+    // the first page: 24 down, at least 24 in, centred
+    let page = app.frame("Page 1");
+    let p = read(&app);
+    assert_eq!(page.origin.y.0, 24.0);
+    assert_eq!(page.origin.x.0, num(&p, "left"));
+    assert!(num(&p, "left") >= 24.0);
+    assert!(!app.texts().iter().any(|t| t.starts_with("Page 1 of")), "no status bar");
+    // File: Save (⌘S), Print, Page setup; no Open
+    assert_eq!(menu_rows(&mut app, "File"), ["Save", "Print", "Page setup"]);
+    assert!(app.texts().contains(&"\u{2318}S"), "{:?}", app.texts());
+    app.cancel("File menu");
+    assert_eq!(menu_rows(&mut app, "Format"), ["Left-to-right text", "Right-to-left text"]);
+    app.cancel("Format menu");
+    assert_eq!(menu_rows(&mut app, "Insert"), ["Image", "Table", "Break", "Table of contents", "Watermark"]);
+    app.hover("Break", true);
+    assert_eq!(app.labels_in("Break submenu"), ["Page break", "Section break (next page)", "Section break (continuous)"]);
+    // Table of contents is refused, as the web refuses it: dimmed, its
+    // reason its tooltip (`chrome`'s tests), and a press does nothing
+    assert!((app.style("Table of contents").opacity - 0.4).abs() < 1e-6);
+    app.press("Table of contents");
+    assert!(app.has("Insert menu"));
+    app.cancel("Insert menu");
+    assert_eq!(menu_rows(&mut app, "Help"), ["Report issue"]);
+    app.cancel("Help menu");
+}
+
+#[test]
+fn insert_puts_the_grids_table_and_each_break_at_the_caret() {
+    if !in_child("insert_puts_the_grids_table_and_each_break_at_the_caret") {
+        return;
+    }
+    let (mut app, _) = open_word("insert", "a.docx");
+    let pages = num(&read(&app), "pages");
+    app.press("Insert");
+    app.hover("Table", true);
+    app.hover("row 2 column 3", true);
+    assert!(app.texts().contains(&"3 \u{d7} 2"), "{:?}", app.texts());
+    app.press("row 2 column 3");
+    until(&mut app, "two rows of three at the caret", |p| is(p, "table", "2x3"));
+    assert!(!app.has("Insert menu"));
+    app.key("mod+down");
+    until(&mut app, "out of the table", |p| is(p, "table", "-"));
+    let n = num(&read(&app), "pages");
+    assert_eq!(n, pages);
+    // in the last line, after "Second": each break where the caret is
+    app.key("alt+left");
+    for (row, want) in [("Section break (next page)", n + 1.0), ("Section break (continuous)", n + 1.0), ("Page break", n + 2.0)] {
+        let rev = num(&read(&app), "rev");
+        app.press("Insert");
+        app.hover("Break", true);
+        app.press(row);
+        until(&mut app, row, |p| num(p, "rev") > rev && num(p, "pages") == want);
+    }
+}
+
+#[test]
+fn format_sets_the_paragraphs_direction() {
+    if !in_child("format_sets_the_paragraphs_direction") {
+        return;
+    }
+    let (mut app, _) = open_word("bidi", "a.docx");
+    assert!(is(&read(&app), "bidi", "false"));
+    app.press("Format");
+    app.press("Right-to-left text");
+    until(&mut app, "right to left", |p| is(p, "bidi", "true"));
+    app.press("Format");
+    app.press("Left-to-right text");
+    until(&mut app, "left to right", |p| is(p, "bidi", "false"));
+}
+
+#[test]
+fn page_setup_validates_and_lays_the_pages_out_at_its_size_and_margins() {
+    if !in_child("page_setup_validates_and_lays_the_pages_out_at_its_size_and_margins") {
+        return;
+    }
+    let (mut app, _) = open_word("setup", "a.docx");
+    assert!(is(&read(&app), "pw", "816") && is(&read(&app), "mtop", "1440"));
+    app.press("File");
+    app.press("Page setup");
+    assert!(app.has("Page Setup dialog"));
+    for t in ["PAGE SIZE", "MARGINS", "Letter (8.5\" \u{d7} 11\")", "Portrait"] {
+        assert!(app.texts().contains(&t), "{t} in {:?}", app.texts());
+    }
+    assert_eq!(app.value("Top"), "1");
+    // a dialog has the keyboard: the page's keys stand back
+    assert!(is(&read(&app), "dialog", "1"));
+    app.press("Size");
+    app.press("A4 (8.27\" \u{d7} 11.69\")");
+    app.press("Orientation");
+    app.press("Landscape");
+    // what doesn't read as a number is not taken; what does is, in inches
+    app.change("Top", "abc");
+    app.change("Top", "0.5");
+    app.press("Apply");
+    let p = until(&mut app, "A4 landscape, a half-inch top", |p| is(p, "dialog", "0") && is(p, "mtop", "720") && (num(p, "pw") - 16838.0 / 15.0).abs() < 1.0);
+    assert!((num(&p, "ph") - 11906.0 / 15.0).abs() < 1.0, "{p:?}");
+    // opened again it shows what it set; Escape leaves it
+    app.press("File");
+    app.press("Page setup");
+    assert!(app.texts().contains(&"A4 (8.27\" \u{d7} 11.69\")") && app.texts().contains(&"Landscape"), "{:?}", app.texts());
+    assert_eq!(app.value("Top"), "0.5");
+    app.cancel("Page Setup");
+    until(&mut app, "closed", |p| is(p, "dialog", "0"));
+}
+
+#[test]
+fn the_watermark_dialog_sets_a_text_watermark_and_takes_it_away() {
+    if !in_child("the_watermark_dialog_sets_a_text_watermark_and_takes_it_away") {
+        return;
+    }
+    let (mut app, _) = open_word("watermark", "a.docx");
+    app.press("Insert");
+    app.press("Watermark");
+    assert!(app.has("Watermark dialog") && app.has("No watermark"));
+    // a picture watermark needs its picture: Apply stays dimmed
+    app.press("Picture watermark");
+    assert!(app.has("Select Picture..."));
+    assert!((app.style("Apply").opacity - 0.5).abs() < 1e-6);
+    app.press("Apply");
+    assert!(app.has("Watermark dialog"));
+    app.press("Text watermark");
+    assert_eq!(app.value("Text"), "CONFIDENTIAL");
+    app.press("Preset");
+    app.press("DRAFT");
+    assert_eq!(app.value("Text"), "DRAFT");
+    app.press("Apply");
+    until(&mut app, "the DRAFT watermark", |p| is(p, "wm", "DRAFT") && is(p, "dialog", "0"));
+    app.press("Insert");
+    app.press("Watermark");
+    app.press("No watermark");
+    app.press("Apply");
+    until(&mut app, "no watermark", |p| is(p, "wm", "-"));
+}
+
+#[test]
+fn insert_image_puts_the_picked_picture_at_the_caret() {
+    if !in_child("insert_image_puts_the_picked_picture_at_the_caret") {
+        return;
+    }
+    let (mut app, a) = open_word("image", "a.docx");
+    let png = a.with_file_name("dot.png");
+    std::fs::write(&png, super::docx::fixture::png()).unwrap();
+    assert!(is(&read(&app), "pics", "0"));
+    app.press("Insert");
+    app.press("Image");
+    app.pick_file(&png);
+    until(&mut app, "the picture on the page", |p| is(p, "pics", "1"));
 }
 
 /// The viewer's switch, from `state` (native or web) to the other.
@@ -706,7 +933,7 @@ fn each_change_of_the_word_field_inserts_only_what_is_new() {
     app.press("open 0");
     let p = word_shows(&mut app, "the document");
     let left = num(&p, "left");
-    app.press_at("Document pages", left + 700.0, 16.0 + 104.0, false);
+    app.press_at("Document pages", left + 700.0, 24.0 + 104.0, false);
     until(&mut app, "the caret at the line's end", |p| num(p, "caret") == 0.0 && num(p, "cx") > 120.0);
     // the field never emptied between them: each change carries the last
     for v in ["a", "ab", "abc"] {
