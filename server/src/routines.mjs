@@ -378,7 +378,7 @@ function templatesOf(m) {
 }
 // Why a template can't be enabled now ("" when it can), given the Gmail source.
 function unavailable(tpl, gmail) {
-  if (tpl.needs && tpl.needs !== "gmail") return `Rox can't provide "${tpl.needs}" yet`;
+  if (tpl.needs && tpl.needs !== "gmail") return `Buwiz Bot can't provide "${tpl.needs}" yet`;
   if (tpl.needs === "gmail" && !tpl.query) return "The template names no query tool";
   if (tpl.needs === "gmail" && !gmail.row) return gmail.reason;
   if (!tpl.needs && !tpl.prompt.trim()) return "The template has nothing to do";
@@ -434,7 +434,7 @@ export async function routineFromTemplate({ server, id, thread, user_google_emai
     const a = gmail.adapter;
     const email = a.email && a.schema?.properties?.[a.email] ? googleEmail(gmail.row) : "";
     if (needsEmail(gmail)) {
-      const e = new Error("Rox needs your Google address for Gmail searches");
+      const e = new Error("Buwiz Bot needs your Google address for Gmail searches");
       e.need = "user_google_email";
       throw e;
     }

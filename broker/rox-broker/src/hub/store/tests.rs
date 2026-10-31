@@ -195,7 +195,7 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     let (turns, threads) = rust_reads(&hub(&dir));
     assert_eq!(turns, node_turns);
     assert_eq!(threads, node_threads);
-    assert!(node_threads.contains("\"description\":\"Bob is a personal assistant bot in Grok Shell.\""));
+    assert!(node_threads.contains("\"description\":\"Bob is a personal assistant bot in Buwiz Bot.\""));
     assert_eq!(db_diff(&twin, &dir), "", "Node's persist() writes what Rust wrote, the placeholder's gap closed");
     for d in [dir, twin] {
         let _ = std::fs::remove_dir_all(d);

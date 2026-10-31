@@ -631,7 +631,7 @@ impl V0 {
         let (mut check, mut prompt) = (Value::Null, tpl_.prompt.clone());
         if let Some(Source::Found(grow, a)) = &source {
             if templates::needs_email(db, host, source.as_ref()) {
-                return Err(Fail { error: "Rox needs your Google address for Gmail searches".to_owned(), need: Some("user_google_email") });
+                return Err(Fail { error: "Buwiz Bot needs your Google address for Gmail searches".to_owned(), need: Some("user_google_email") });
             }
             (check, prompt) = templates::gmail_check(db, host, self.mcp.as_ref(), &row.id, &tpl_, grow, a).await;
         }

@@ -100,10 +100,10 @@ test("STORE-01 a Node-seeded store with every turn kind, meta field and bot fiel
   });
   assert.deepEqual(ann.memories.map((m) => [m.text, m.at]), [["likes tea", 1700000000000]]);
   // a NULL description reads as the defaults
-  assert.equal(bob.description, "Bob is a personal assistant bot in Grok Shell.");
+  assert.equal(bob.description, "Bob is a personal assistant bot in Buwiz Bot.");
   assert.deepEqual(bob.helper, { parent: "ann", task: "sort" });
   // the start's persist() wrote the defaults it loaded
-  assert.equal(dbRows(dir, "SELECT description FROM bots WHERE id='bob'")[0].description, "Bob is a personal assistant bot in Grok Shell.");
+  assert.equal(dbRows(dir, "SELECT description FROM bots WHERE id='bob'")[0].description, "Bob is a personal assistant bot in Buwiz Bot.");
   const t1 = JSON.parse(first[`/turns?thread=${seeded.t1}`]).turns;
 
   assert.deepEqual(t1[0].reply, { i: 0, text: "quoted", files: ["m1/a.txt"] });

@@ -363,7 +363,7 @@ test("LOOP-15 a bot's thread gets BOT_TOOLS and AGENT_TOOLS after ROUTINE_TOOLS,
   assert.equal(JSON.stringify(mine.body.tools.slice(at + DEFS.BOT_TOOLS.length, at + DEFS.BOT_TOOLS.length + DEFS.AGENT_TOOLS.length)), JSON.stringify(DEFS.AGENT_TOOLS));
   assert.ok(!names(theirs).some((n) => DEFS.BOT_TOOLS.some((t) => t.name === n) || DEFS.AGENT_TOOLS.some((t) => t.name === n)));
   assert.ok(mine.body.system.endsWith(
-    "\n\n## Who you are\nYou are Ada. Ada is a personal assistant bot in Grok Shell.\n\nInstructions:\nStay in character as Ada. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.\n\nYour profile and memories are yours to maintain: memory_add / memory_list / memory_remove, bot_profile_update, integrations_list.",
+    "\n\n## Who you are\nYou are Ada. Ada is a personal assistant bot in Buwiz Bot.\n\nInstructions:\nStay in character as Ada. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.\n\nYour profile and memories are yours to maintain: memory_add / memory_list / memory_remove, bot_profile_update, integrations_list.",
   ));
   assert.equal(mine.body.system.slice(0, theirs.body.system.length), theirs.body.system);
   assert.equal((await turnsOf(bot.threadId)).at(-1).label, "Ada");

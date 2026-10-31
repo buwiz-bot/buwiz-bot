@@ -149,7 +149,7 @@ export async function startPlugin(opts) {
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
     tools: [
-      ...Object.keys(reserved).map((n) => ({ name: n, description: "Reserved for Rox.", inputSchema: { type: "object" } })),
+      ...Object.keys(reserved).map((n) => ({ name: n, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
       ...tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema || { type: "object" }, annotations: t.annotations })),
     ],
   }));
