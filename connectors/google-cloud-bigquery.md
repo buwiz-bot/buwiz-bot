@@ -31,14 +31,14 @@ Google's hosted BigQuery MCP server. Tools (from a live unauthenticated `tools/l
 
 - The MCP server itself: Google's page describes no MCP-specific price and says the server has no quotas of its own beyond the underlying BigQuery API quotas.
 - Queries are billed by BigQuery. Default is **on-demand: you pay per TiB of data scanned, and the first 1 TiB of query data processed per month is free** (BigQuery pricing page). Capacity (slot-hour) pricing is the alternative if the project has reservations. Per-TiB price depends on region; read https://cloud.google.com/bigquery/pricing for your region rather than trusting a number here.
-- The tool argument `projectId` is documented as "Project that will be used for query execution and billing". The assistant chooses it per call, so any project your account can run jobs in can be billed. Tell Rox which project to use.
+- The tool argument `projectId` is documented as "Project that will be used for query execution and billing". The assistant chooses it per call, so any project your account can run jobs in can be billed. Tell Buwiz Bot which project to use.
 - Storage and egress of anything you create are charged separately.
 - **No billing account needed to try it:** Google says the steps work without billing through the BigQuery sandbox. Sandbox limits (sandbox page): 10 GiB lifetime storage, the 1 TiB/month free query allowance, tables/views/partitions expire after 60 days, no DML, no streaming inserts. If the project has a billing account, the sandbox is not used.
 - Protect yourself: ask for a dry run first (`execute_sql_readonly` has a `dryRun` argument that returns bytes that would be processed), set a per-project or per-user query quota (**IAM & Admin -> Quotas**, "Query usage per day"), or set a budget alert (**Billing -> Budgets & alerts**). Exact quota names are **(unconfirmed)**; search the Quotas page for "Query usage".
 
 ## Steps
 
-1. Do google.md steps 1, 3 and 4 (project, consent screen with test user, **Desktop app** client named `Rox desktop`). Skip the Workspace API list in step 2.
+1. Do google.md steps 1, 3 and 4 (project, consent screen with test user, **Desktop app** client named `Buwiz Bot desktop`). Skip the Workspace API list in step 2.
 2. Enable the BigQuery API: **APIs & Services -> Library -> BigQuery API -> Enable**, or:
    ```
    gcloud services enable bigquery.googleapis.com --project=PROJECT_ID
@@ -47,17 +47,17 @@ Google's hosted BigQuery MCP server. Tools (from a live unauthenticated `tools/l
 4. Grant the three IAM roles above: **IAM & Admin -> IAM -> Grant access** (principal = the Google account you will sign in with).
 5. Reuse the Desktop client's Client ID and Client secret. If you already set up another Google plugin, use the same pair.
 
-Redirect URI: a Desktop client needs no redirect registration; Rox's loopback `http://127.0.0.1:8787/oauth/callback/google-cloud-bigquery` (confirm in Rox's plugin page) is accepted as in google.md. Google's MCP guide says "Custom redirect URIs aren't supported" for web clients, so do not create a Web application client; if you must, google.md's fallback applies and must use the exact callback string.
+Redirect URI: a Desktop client needs no redirect registration; Buwiz Bot's loopback `http://127.0.0.1:8787/oauth/callback/google-cloud-bigquery` (confirm in Buwiz Bot's plugin page) is accepted as in google.md. Google's MCP guide says "Custom redirect URIs aren't supported" for web clients, so do not create a Web application client; if you must, google.md's fallback applies and must use the exact callback string.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 **Connect apps -> Google Cloud BigQuery -> settings -> Authenticate**
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | the Desktop app client ID (`....apps.googleusercontent.com`) |
 | Client secret | the Desktop app client secret |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/google-cloud-bigquery` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/google-cloud-bigquery` |
 
 Sign in, accept the "Google hasn't verified this app" warning (Advanced -> Continue) and tick the permission.
 
@@ -67,12 +67,12 @@ Sign in, accept the "Google hasn't verified this app" warning (Advanced -> Conti
 
 ## Alternative: bearer token
 
-Google's authentication page documents an `Authorization: Bearer <token>` header with `x-goog-user-project: PROJECT_ID`, using `gcloud auth print-access-token`. Tokens last 1 hour by default (up to 12 with `--lifetime`) and must be re-minted by hand. API keys do **not** work: Google says standard API keys only suit services that do not require a principal, and BigQuery does. Only usable if Rox's plugin page offers a custom header field (unconfirmed); OAuth is the intended path.
+Google's authentication page documents an `Authorization: Bearer <token>` header with `x-goog-user-project: PROJECT_ID`, using `gcloud auth print-access-token`. Tokens last 1 hour by default (up to 12 with `--lifetime`) and must be re-minted by hand. API keys do **not** work: Google says standard API keys only suit services that do not require a principal, and BigQuery does. Only usable if Buwiz Bot's plugin page offers a custom header field (unconfirmed); OAuth is the intended path.
 
 ## Verification
 
-- Ask Rox: "List the datasets in project PROJECT_ID" (metadata only), then "Dry-run a query that counts the rows of `bigquery-public-data.samples.shakespeare`, billed to project PROJECT_ID, and tell me the bytes it would process", then ask it to run the query. Replace `PROJECT_ID` with the project that should be billed. The small public dataset is only for testing; the query is billed (or counts against the free 1 TiB) in that project.
-- Provider side: Cloud console -> BigQuery -> **Personal history / Project history** shows the jobs; https://myaccount.google.com/permissions shows `Rox` with BigQuery access.
+- Ask Buwiz Bot: "List the datasets in project PROJECT_ID" (metadata only), then "Dry-run a query that counts the rows of `bigquery-public-data.samples.shakespeare`, billed to project PROJECT_ID, and tell me the bytes it would process", then ask it to run the query. Replace `PROJECT_ID` with the project that should be billed. The small public dataset is only for testing; the query is billed (or counts against the free 1 TiB) in that project.
+- Provider side: Cloud console -> BigQuery -> **Personal history / Project history** shows the jobs; https://myaccount.google.com/permissions shows `Buwiz Bot` with BigQuery access.
 
 ## Troubleshooting
 

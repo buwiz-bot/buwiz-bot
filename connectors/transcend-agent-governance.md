@@ -2,13 +2,13 @@
 
 Checked against the plugin repo and live endpoints on 2026-10-25. Transcend publishes no public docs for the Agent Governance gateway; items marked **(unconfirmed)** must be answered by Transcend.
 
-Connector id: use the full id `transcend-agent-governance`. The entry in `needs-oauth-app.json` truncates the callback to `.../oauth/callback/transcend-agent-governan`; that is a truncation, so the callback to register is `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` (confirm in Rox's plugin page).
+Connector id: use the full id `transcend-agent-governance`. The entry in `needs-oauth-app.json` truncates the callback to `.../oauth/callback/transcend-agent-governan`; that is a truncation, so the callback to register is `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` (confirm in Buwiz Bot's plugin page).
 
 ## What it unlocks
 
 Policy-enforced MCP tool access through your organization's Transcend "Agent Governance" gateway (Rails Agent Controls): the gateway aggregates MCP servers your admins assign, enforces policy on each call and writes an audit trail. First sign-in auto-registers a "connected agent" with **no** MCP servers; an administrator must assign servers/policy before any tools appear.
 
-The pinned client `myelin_cursor_plugin` is a public PKCE client Transcend allowlisted for Cursor. Its redirect allowlist (per the plugin README) is `http://localhost:8787/callback`, Cursor deep-link and web callbacks; host must be `localhost`, not `127.0.0.1`. Rox's callback is not on that list, so it will be rejected.
+The pinned client `myelin_cursor_plugin` is a public PKCE client Transcend allowlisted for Cursor. Its redirect allowlist (per the plugin README) is `http://localhost:8787/callback`, Cursor deep-link and web callbacks; host must be `localhost`, not `127.0.0.1`. Buwiz Bot's callback is not on that list, so it will be rejected.
 
 Endpoints (confirmed live for the plugin's default dev gateway; your organization's gateway host will differ):
 
@@ -36,20 +36,20 @@ The `*.myelin-internal.com` default looks like Transcend's internal dev environm
 
 No self-service developer console is documented. Ask Transcend (plugin author contact in the repo manifest: `support@transcend.io`; or your Agent Governance admin) to:
 
-1. Register a **public** OAuth client for Rox on your environment's authorization server: name `Rox`, PKCE S256, token auth method `none`, scopes `mcp offline_access`, redirect URI `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance`. Note their allowlist insists on `localhost` for Cursor; ask whether `127.0.0.1` is permitted **(unconfirmed)**.
-2. Or, alternatively, use a Client ID Metadata Document: the server advertises support, so you could host a JSON document at an HTTPS URL listing that redirect URI and use the URL as Client ID. Needs Rox to pass a URL through as `client_id` and Transcend to allow loopback redirects. **(unconfirmed)**
-3. After first sign-in ask the admin to assign MCP servers/policy to the new connected agent (named like `Cursor - <user>` for Cursor; Rox's name will differ).
+1. Register a **public** OAuth client for Buwiz Bot on your environment's authorization server: name `Buwiz Bot`, PKCE S256, token auth method `none`, scopes `mcp offline_access`, redirect URI `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance`. Note their allowlist insists on `localhost` for Cursor; ask whether `127.0.0.1` is permitted **(unconfirmed)**.
+2. Or, alternatively, use a Client ID Metadata Document: the server advertises support, so you could host a JSON document at an HTTPS URL listing that redirect URI and use the URL as Client ID. Needs Buwiz Bot to pass a URL through as `client_id` and Transcend to allow loopback redirects. **(unconfirmed)**
+3. After first sign-in ask the admin to assign MCP servers/policy to the new connected agent (named like `Cursor - <user>` for Cursor; Buwiz Bot's name will differ).
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Transcend Rails Agent Controls** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Gateway base URL (`GATEWAY_BASE_URL`) | your gateway origin, e.g. `https://mcp.<your-env>`; no `/mcp/...` suffix |
-| Client ID | the id Transcend registers for Rox (not `myelin_cursor_plugin`) |
+| Client ID | the id Transcend registers for Buwiz Bot (not `myelin_cursor_plugin`) |
 | Client Secret | none (public client) |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` |
 
 Then click **Authenticate**; pick your organization at consent.
 
@@ -59,15 +59,15 @@ Then click **Authenticate**; pick your organization at consent.
 
 ## Alternative: bound API key (operator fallback)
 
-The plugin README describes a static `Authorization` header with a dashboard-minted **bound API key** for automation, preferring it over a ~1h machine JWT that cannot be refreshed. Limits: documented only as an operator fallback outside the plugin; where in the dashboard to mint it is **(unconfirmed)**; needs a custom-header option in Rox; no per-user consent. Ask your admin.
+The plugin README describes a static `Authorization` header with a dashboard-minted **bound API key** for automation, preferring it over a ~1h machine JWT that cannot be refreshed. Limits: documented only as an operator fallback outside the plugin; where in the dashboard to mint it is **(unconfirmed)**; needs a custom-header option in Buwiz Bot; no per-user consent. Ask your admin.
 
 ## Verification
 
-After sign-in ask Rox: "List the tools available from the governed gateway." Tools are named `{slug}__{tool}`. An empty list means an admin has not assigned servers yet. Provider side: the dashboard shows a connected agent for your user; policy decisions are logged (for example `mcp.authz.allowed`).
+After sign-in ask Buwiz Bot: "List the tools available from the governed gateway." Tools are named `{slug}__{tool}`. An empty list means an admin has not assigned servers yet. Provider side: the dashboard shows a connected agent for your user; policy decisions are logged (for example `mcp.authz.allowed`).
 
 ## Troubleshooting
 
-- **Redirect URI mismatch**: Rox's callback is not on the client's allowlist; ask Transcend to add it (and check `127.0.0.1` vs `localhost`).
+- **Redirect URI mismatch**: Buwiz Bot's callback is not on the client's allowlist; ask Transcend to add it (and check `127.0.0.1` vs `localhost`).
 - **Discovery errors**: the gateway URL must be the origin only, not the dashboard origin; it must serve protected-resource metadata. A 401 with `TOKEN_INVALID` on the bare `/mcp/agent` URL is expected without a token.
 - **Connected but no tools**: no MCP servers/policy assigned to your agent.
 - **Wrong organization**: re-run Authenticate and choose the correct org at consent.

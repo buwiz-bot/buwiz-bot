@@ -1,8 +1,9 @@
-# Rox mini app kit: start here
+# Buwiz Bot mini app kit: start here
 
-Build a first-party plugin for the Rox Mini App Protocol v1: an MCP server
-that ships apps into Rox. Read [docs/overview.md](docs/overview.md) first (one
-page), then follow these ten steps. Paths are from rox's `server/` directory, where `npm run plugin-test` runs.
+Build a first-party plugin for the Mini App Protocol v1: an MCP server that
+ships apps into Buwiz Bot. Read [docs/overview.md](docs/overview.md) first
+(one page), then follow these ten steps. Paths are from this repo's `server/`
+directory, where `npm run plugin-test` runs.
 
 1. **Copy the template** next to it, so its one import
    (`../lib/rox-plugin.mjs`) still resolves:
@@ -95,5 +96,5 @@ page), then follow these ten steps. Paths are from rox's `server/` directory, wh
 
 11. **Make cards fast** ([docs/performance.md](docs/performance.md)): render
     answer cards from their snapshot props, keep module top levels empty and
-    sources small, declare the inline size, and read Rox's `mini v1 timing:`
+    sources small, declare the inline size, and read Buwiz Bot's `mini v1 timing:`
     log to see where an open's time goes.

@@ -4,9 +4,9 @@ Checked against Adapter's live endpoints and the plugin repo on 2026-10-25. Adap
 
 ## What it unlocks
 
-The Adapter plugin connects Rox to Adapter "Mind", a memory/knowledge layer for your Adapter workspace: recall context before working, save decisions and results back (`ask`, `search_knowledge`, `remember` and similar tools, per the plugin README).
+The Adapter plugin connects Buwiz Bot to Adapter "Mind", a memory/knowledge layer for your Adapter workspace: recall context before working, save decisions and results back (`ask`, `search_knowledge`, `remember` and similar tools, per the plugin README).
 
-Adapter has **no OAuth dynamic client registration** (no `registration_endpoint`). The catalog pins the vendor's own client id `cursor`; that id is registered for Cursor's callback only and will not accept Rox's callback (a live GET to the authorize endpoint with an unregistered client answers `unknown client_id or unregistered redirect_uri`). So you need Adapter to register a client for Rox, or a Client ID Metadata Document route (below).
+Adapter has **no OAuth dynamic client registration** (no `registration_endpoint`). The catalog pins the vendor's own client id `cursor`; that id is registered for Cursor's callback only and will not accept Buwiz Bot's callback (a live GET to the authorize endpoint with an unregistered client answers `unknown client_id or unregistered redirect_uri`). So you need Adapter to register a client for Buwiz Bot, or a Client ID Metadata Document route (below).
 
 Endpoints (confirmed live):
 
@@ -32,25 +32,25 @@ Endpoints (confirmed live):
 
 There is no confirmed self-service path. Two routes, in order of preference:
 
-**Route A: ask Adapter to register a client (works with any Rox build).**
+**Route A: ask Adapter to register a client (works with any Buwiz Bot build).**
 1. Contact Adapter (use the support/contact option in your Adapter account or on adapter.com; no support address is published in the sources we found).
 2. Ask for a **public** OAuth client (PKCE, token auth method `none`) for the MCP resource `https://api.adapter.com/v1/mcp/mind/http`, with:
-   - App name: `Rox`
-   - Redirect URI: `http://127.0.0.1:8787/oauth/callback/adapter` (confirm in Rox's plugin page)
+   - App name: `Buwiz Bot`
+   - Redirect URI: `http://127.0.0.1:8787/oauth/callback/adapter` (confirm in Buwiz Bot's plugin page)
    - Scopes: `mcp:read mcp:write offline_access`
 3. Ask whether `http://127.0.0.1` loopback redirects are accepted. Adaption's server (a different vendor) ignores the port for loopback; Adapter's behavior is **(unconfirmed)**.
 
-**Route B: Client ID Metadata Document (CIMD).** The server advertises `client_id_metadata_document_supported: true`. In CIMD the `client_id` is an HTTPS URL of a JSON document you host that lists your redirect URIs. This only works if Rox accepts a URL as Client ID and Adapter accepts a loopback `http` redirect in the document. Both **(unconfirmed)**; the required document fields are not published by Adapter (see the MCP spec for the standard format).
+**Route B: Client ID Metadata Document (CIMD).** The server advertises `client_id_metadata_document_supported: true`. In CIMD the `client_id` is an HTTPS URL of a JSON document you host that lists your redirect URIs. This only works if Buwiz Bot accepts a URL as Client ID and Adapter accepts a loopback `http` redirect in the document. Both **(unconfirmed)**; the required document fields are not published by Adapter (see the MCP spec for the standard format).
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
 Open **Connect apps -> Adapter** -> settings:
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | the id Adapter issues (Route A), or your CIMD URL (Route B) |
 | Client Secret | leave empty for a public client |
-| Callback URL (shown by Rox, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/adapter` |
+| Callback URL (shown by Buwiz Bot, read-only) | should equal `http://127.0.0.1:8787/oauth/callback/adapter` |
 
 Then click **Authenticate**. The browser opens Adapter's consent page.
 
@@ -58,7 +58,7 @@ Then click **Authenticate**. The browser opens Adapter's consent page.
 
 `mcp:read mcp:write offline_access`
 
-The server also advertises `mcp:feedback`, which the plugin does not request. `offline_access` gives Rox a refresh token.
+The server also advertises `mcp:feedback`, which the plugin does not request. `offline_access` gives Buwiz Bot a refresh token.
 
 ## Alternative: API key / token
 
@@ -66,14 +66,14 @@ None offered. The plugin README states "there is no API key to manage". The Open
 
 ## Verification
 
-1. After Authenticate, Rox should show Adapter as connected.
-2. Ask Rox: "Search my Adapter knowledge for <a topic you know you saved>" (read-only), then "Remember: Rox connector test" and check it appears in Adapter.
+1. After Authenticate, Buwiz Bot should show Adapter as connected.
+2. Ask Buwiz Bot: "Search my Adapter knowledge for <a topic you know you saved>" (read-only), then "Remember: Buwiz Bot connector test" and check it appears in Adapter.
 
 ## Troubleshooting
 
-- **`unknown client_id or unregistered redirect_uri`** at the authorize step: the client id is not registered for Rox's callback, which is what happens with the pinned id `cursor`. Get a registered client (Route A).
-- **`validation_error` mentioning `resource`**: the client must send the RFC 8707 `resource` parameter set to the MCP URL; Adapter's authorize endpoint requires it. This is a Rox-side requirement.
-- **Redirect mismatch**: use `127.0.0.1`, not `localhost`, and copy the callback exactly as Rox shows it.
+- **`unknown client_id or unregistered redirect_uri`** at the authorize step: the client id is not registered for Buwiz Bot's callback, which is what happens with the pinned id `cursor`. Get a registered client (Route A).
+- **`validation_error` mentioning `resource`**: the client must send the RFC 8707 `resource` parameter set to the MCP URL; Adapter's authorize endpoint requires it. This is a Buwiz Bot-side requirement.
+- **Redirect mismatch**: use `127.0.0.1`, not `localhost`, and copy the callback exactly as Buwiz Bot shows it.
 - **401 after sign-in**: the token has expired and no refresh token was issued; check that `offline_access` was granted.
 
 ## Sources

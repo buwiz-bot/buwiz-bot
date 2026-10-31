@@ -6,11 +6,11 @@ Checked against OneSignal's docs and live endpoints on 2026-10-25. Items marked 
 
 OneSignal's authorization server **supports OAuth dynamic client registration**. Its metadata at `https://api.onesignal.com/.well-known/oauth-authorization-server` lists `registration_endpoint: https://api.onesignal.com/oauth/register`, and OneSignal's docs say "OneSignal registers your client automatically, so filling these fields [Client ID / Client Secret] causes the connection to fail." The catalog's pinned id `1fa917d8-...` is the vendor's own for Cursor and is not needed.
 
-`needs-oauth-app.json` lists OneSignal as needing an app ("no OAuth metadata found"). Likely cause: the path-specific protected-resource document `https://api.onesignal.com/.well-known/oauth-protected-resource/mcp/oauth` reports `"resource":"https://api.onesignal.com"` (not the full MCP URL) and the unauthenticated MCP response carries no `WWW-Authenticate` header, so a strict discovery client may reject it. The root document `/.well-known/oauth-protected-resource` and the authorization-server metadata are fine. Rox should leave the Client ID empty and let registration run; if Rox's discovery rejects the resource mismatch, that is a Rox-side fix, not something you can solve at OneSignal.
+`needs-oauth-app.json` lists OneSignal as needing an app ("no OAuth metadata found"). Likely cause: the path-specific protected-resource document `https://api.onesignal.com/.well-known/oauth-protected-resource/mcp/oauth` reports `"resource":"https://api.onesignal.com"` (not the full MCP URL) and the unauthenticated MCP response carries no `WWW-Authenticate` header, so a strict discovery client may reject it. The root document `/.well-known/oauth-protected-resource` and the authorization-server metadata are fine. Buwiz Bot should leave the Client ID empty and let registration run; if Buwiz Bot's discovery rejects the resource mismatch, that is a Buwiz Bot-side fix, not something you can solve at OneSignal.
 
 ## What it unlocks
 
-The plugin connects Rox to OneSignal's hosted MCP server: apps, messages, segments, templates, Journeys, delivery debugging and (with approval) sends. OneSignal describes it as in **open beta**: "app access may require enablement before non-utility tools are available."
+The plugin connects Buwiz Bot to OneSignal's hosted MCP server: apps, messages, segments, templates, Journeys, delivery debugging and (with approval) sends. OneSignal describes it as in **open beta**: "app access may require enablement before non-utility tools are available."
 
 | Item | Value |
 |---|---|
@@ -32,18 +32,18 @@ The plugin connects Rox to OneSignal's hosted MCP server: apps, messages, segmen
 ## Steps
 
 1. Nothing to create at OneSignal.
-2. In Rox open **Connect apps -> OneSignal** and click **Authenticate** with Client ID and Client Secret **empty**.
+2. In Buwiz Bot open **Connect apps -> OneSignal** and click **Authenticate** with Client ID and Client Secret **empty**.
 3. Sign in to OneSignal in the browser and approve access for your account.
 
 Whether OneSignal's registration accepts the redirect URI `http://127.0.0.1:8787/oauth/callback/onesignal` (an `http` loopback address) is **(unconfirmed)**: we did not POST to the registration endpoint. If registration is rejected, report it to OneSignal.
 
-## What to paste into Rox
+## What to paste into Buwiz Bot
 
-| Rox field | Value |
+| Buwiz Bot field | Value |
 |---|---|
 | Client ID | leave empty |
 | Client Secret | leave empty |
-| Callback URL (shown by Rox, read-only) | `http://127.0.0.1:8787/oauth/callback/onesignal` (confirm in Rox's plugin page); registered automatically |
+| Callback URL (shown by Buwiz Bot, read-only) | `http://127.0.0.1:8787/oauth/callback/onesignal` (confirm in Buwiz Bot's plugin page); registered automatically |
 
 ## Scopes requested by the plugin
 
@@ -55,7 +55,7 @@ None for this endpoint. OneSignal's MCP docs say all supported connections use O
 
 ## Verification
 
-Ask Rox: "Run onesignal_health" or "Show onesignal_config" (read-only utility tools the plugin recommends first). Provider side: Settings > Account settings > Connected apps (`dashboard.onesignal.com/settings/connected-apps`) lists the client; revoking there revokes its tokens.
+Ask Buwiz Bot: "Run onesignal_health" or "Show onesignal_config" (read-only utility tools the plugin recommends first). Provider side: Settings > Account settings > Connected apps (`dashboard.onesignal.com/settings/connected-apps`) lists the client; revoking there revokes its tokens.
 
 ## Troubleshooting
 

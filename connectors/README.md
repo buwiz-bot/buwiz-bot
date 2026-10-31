@@ -1,17 +1,17 @@
-# Rox connector setup guides
+# Buwiz Bot connector setup guides
 
 Step-by-step guides for plugins whose sign-in cannot self-register (no OAuth dynamic client registration), so you must create your own developer app, API key or token on the provider's site first. Written 2026-10-25 from `grok-shell/server/plugins/needs-oauth-app.json` (probed 2026-10-25) plus per-provider research. Every guide marks what could not be confirmed as **(unconfirmed)**. Nothing here was created or submitted on any provider; all credentials are still to do.
 
-Status for every row: **needs setup**. "Callback" in each guide is `http://127.0.0.1:8787/oauth/callback/<connector id>` unless the provider forces otherwise; confirm the exact string on Rox's plugin page.
+Status for every row: **needs setup**. "Callback" in each guide is `http://127.0.0.1:8787/oauth/callback/<connector id>` unless the provider forces otherwise; confirm the exact string on Buwiz Bot's plugin page.
 
-## How to enable in Rox once you have credentials
+## How to enable in Buwiz Bot once you have credentials
 
 1. Open **Connect apps** and find the plugin.
 2. Open the plugin's settings and paste the credentials the guide lists (Client ID, and Client Secret when the guide says so). Google plugins share one Desktop-app client, so enter it once.
 3. Click **Authenticate** and approve in the browser window that opens.
 4. Plugins hidden from the catalog (the ones in `needs-oauth-app.json`) are shown again by starting the server with `ROX_SHOW_OAUTH_APP_PLUGINS=1` (also accepts `true` / `yes`). Already-installed plugins stay visible without it. (Flag read from `grok-shell/server/plugins.mjs`.)
 
-Plugins that need an API key / token instead of OAuth credentials depend on Rox letting you send a custom `Authorization` header; none of the guides could confirm that field exists.
+Plugins that need an API key / token instead of OAuth credentials depend on Buwiz Bot letting you send a custom `Authorization` header; none of the guides could confirm that field exists.
 
 ## Index
 
@@ -58,6 +58,6 @@ Hosted behind another vendor's account gateway, per `needs-oauth-app.json`: `fin
 
 ## Cross-cutting findings
 
-- Several providers (Alpaca, Bitrise, MongoDB, ElevenLabs, Adapter, Adaption, Allo, Transcend) advertise Client ID Metadata Document (CIMD) support. If Rox gains CIMD support, most manual registration steps for them go away.
+- Several providers (Alpaca, Bitrise, MongoDB, ElevenLabs, Adapter, Adaption, Allo, Transcend) advertise Client ID Metadata Document (CIMD) support. If Buwiz Bot gains CIMD support, most manual registration steps for them go away.
 - Slack, HubSpot, Docusign, Databricks and AtScale loopback `http://127.0.0.1` redirects were not confirmed; their guides say to try and what to register as a fallback.
-- Catalog entries that pin another vendor's client ID (`cursor`, `anysphere-cursor`, ...) will not accept Rox's callback; that is why the guides ask for your own.
+- Catalog entries that pin another vendor's client ID (`cursor`, `anysphere-cursor`, ...) will not accept Buwiz Bot's callback; that is why the guides ask for your own.
