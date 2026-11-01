@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Signs the release bundle with the hardened runtime, inside out: every
-# loose Mach-O (the broker, nsh, nsh-macos-host, rox-gws, anything under
+# loose Mach-O (the broker, nsh, nsh-macos-host, buwiz-gws, anything under
 # Resources/), deepest first; then any nested bundle (frameworks, plugins,
 # helper apps), deepest first; then the app. Only the app's executable and
 # rox-broker get app.entitlements; the rest are signed with none.
