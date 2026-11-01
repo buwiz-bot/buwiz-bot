@@ -23,7 +23,7 @@ BUNDLE="target/ios-sim/$APP.app"
 if ! cargo ra-jit build --target "$TARGET" 2>&1 | tee /tmp/rajit-ios.log | grep -q "Finished"; then
     cat /tmp/rajit-ios.log
 fi
-BIN="target/$TARGET/debug/rox"
+BIN="target/$TARGET/debug/buwiz-bot"
 
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE"

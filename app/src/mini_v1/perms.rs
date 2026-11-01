@@ -228,8 +228,8 @@ pub fn https_origin(url: &str) -> Option<String> {
     ok.then(|| format!("https://{}", auth.to_ascii_lowercase()))
 }
 
-// The spec's grammars (section 3), shared with the broker (rox-v1).
-pub use rox_v1::ids::{app_id_ok, plugin_id_ok, prop_key_ok, scope_ok, short_ok, ticket_ok, tool_ok};
+// The spec's grammars (section 3), shared with the broker (buwiz-protocol).
+pub use buwiz_protocol::ids::{app_id_ok, plugin_id_ok, prop_key_ok, scope_ok, short_ok, ticket_ok, tool_ok};
 
 /// A file extension: `.` and 1 to 15 letters or digits.
 fn extension_ok(s: &str) -> bool {

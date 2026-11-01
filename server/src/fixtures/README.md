@@ -94,7 +94,7 @@ def fib(n):
 ```
 
 ```bash
-cargo build --target aarch64-apple-darwin && ./target/debug/rox
+cargo build --target aarch64-apple-darwin && ./target/debug/buwiz-bot
 ```
 
 ```json

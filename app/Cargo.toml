@@ -1,5 +1,5 @@
 [package]
-name = "rox"
+name = "buwiz-bot"
 version = "0.1.0"
 license = "Apache-2.0"
 edition = "2024"
@@ -22,7 +22,7 @@ sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
 # the protocol pieces shared with the broker (JCS, keys, ids, tokens)
-rox-v1 = { path = "../broker/rox-v1" }
+buwiz-protocol = { path = "../broker/buwiz-protocol" }
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
@@ -77,13 +77,13 @@ members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet"]
 # A binary per supported host target; the library is what the iOS runner and
 # nsh's generated workspace link.
 [lib]
-name = "rox"
+name = "buwiz_bot"
 path = "src/lib.rs"
 
-# Dependencies at full speed in dev builds — only `rox` itself stays a
+# Dependencies at full speed in dev builds — only `buwiz-bot` itself stays a
 # debug build (ra-jit patches it). nsh's own workspace sets these per hot
 # crate (QuickJS, taffy, objc2, …), but profiles only apply from the root
-# manifest, so rox ran them unoptimized. `debug-assertions = false` also
+# manifest, so the app ran them unoptimized. `debug-assertions = false` also
 # turns off objc2's per-message signature verification, which took about
 # two thirds of the main thread while switching chats.
 [profile.dev.package."*"]

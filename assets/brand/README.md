@@ -14,5 +14,5 @@ To see the app's drawing of every shape without running the app, render
 the offscreen preview from `app/`:
 
 ```sh
-MASCOT_PREVIEW_DIR=<dir> cargo test -p rox --lib mascot::tests::preview -- --ignored
+MASCOT_PREVIEW_DIR=<dir> cargo test -p buwiz-bot --lib mascot::tests::preview -- --ignored
 ```

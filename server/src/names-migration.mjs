@@ -8,7 +8,7 @@
 // `meta` makes it run once; the rewrite is idempotent anyway (no old name
 // survives it). v1_plugins keeps its records as installed: a 1.x plugin's
 // signed manifest is not ours to change, and it is refused until it ships
-// the new names. rox-broker's hub runs the same rewrite (hub/store/schema.rs).
+// the new names. buwiz-broker's hub runs the same rewrite (hub/store/schema.rs).
 export const MARKER = "names_buwiz";
 
 export const RENAMES = Object.freeze([

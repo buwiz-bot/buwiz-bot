@@ -1,6 +1,6 @@
 // The tools that call the broker itself (launch_app, promote_app,
 // demote_app, query_source) reach this broker's front door, PUBLIC_PORT
-// (BUWIZ_PUBLIC_PORT behind rox-broker, else PORT), never a fixed 8787: a
+// (BUWIZ_PUBLIC_PORT behind buwiz-broker, else PORT), never a fixed 8787: a
 // test or rehearsal broker must not touch the live one (plan D34). In this
 // process on a temp data dir; a stub on TEST_PORT stands in for the front
 // door and records what reaches it.

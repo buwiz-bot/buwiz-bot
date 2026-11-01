@@ -1,7 +1,7 @@
-// rox-broker hosting the v1 plugins (BUWIZ_BROKER_V1_HOST=1, the Rust broker
-// plan's D10): the plugin processes are rox-broker's, so a Node restart
+// buwiz-broker hosting the v1 plugins (BUWIZ_BROKER_V1_HOST=1, the Rust broker
+// plan's D10): the plugin processes are buwiz-broker's, so a Node restart
 // leaves them running, and Node, back, sees them as they are and calls
-// them again. Runs only with BUWIZ_BROKER_CMD (a rox-broker); port
+// them again. Runs only with BUWIZ_BROKER_CMD (a buwiz-broker); port
 // V1_TEST_PORT + 1.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -58,7 +58,7 @@ const alive = (pid) => {
   }
 };
 
-test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs BUWIZ_BROKER_CMD") || (env("BUWIZ_BROKER_NO_NODE") === "1" && "Node-only: restarts the Node behind rox-broker; with BUWIZ_BROKER_NO_NODE=1 there is none") }, async () => {
+test("a Node restart leaves buwiz-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs BUWIZ_BROKER_CMD") || (env("BUWIZ_BROKER_NO_NODE") === "1" && "Node-only: restarts the Node behind buwiz-broker; with BUWIZ_BROKER_NO_NODE=1 there is none") }, async () => {
   const b = bed("line");
   const data = tempDir("v1-line-data");
   const [bin, args] = brokerCommand();
@@ -81,10 +81,10 @@ test("a Node restart leaves rox-broker's plugin running; Node, back, lists it an
   const plugin = children(broker.pid).find((p) => commandOf(p).includes("fixture/server.mjs"));
   const node = children(broker.pid).find((p) => commandOf(p).includes("app-server.mjs"));
 
-  assert.ok(plugin && node, "the plugin and Node are both rox-broker's children");
+  assert.ok(plugin && node, "the plugin and Node are both buwiz-broker's children");
   process.kill(node, "SIGKILL");
   // Node writes a new host token at each start; with the hub on (D30) the
-  // token is rox-broker's, written once, and Node comes back in its office role
+  // token is buwiz-broker's, written once, and Node comes back in its office role
   const isNode = (p) => {
     try {
       return commandOf(p).includes("app-server.mjs");
@@ -106,7 +106,7 @@ test("a Node restart leaves rox-broker's plugin running; Node, back, lists it an
   const r = await req("POST", "/v1/host/resolve", token, { plugin: FX, kind: "scope", name: "item", value: "acme-1" });
 
   assert.equal(r.json.result, "token");
-  // stopping rox-broker stops its plugins
+  // stopping buwiz-broker stops its plugins
   broker.kill("SIGTERM");
   await new Promise((done) => broker.once("exit", done));
   await until(() => !alive(plugin), 10000, "the plugin to stop");
