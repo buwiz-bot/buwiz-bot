@@ -345,13 +345,12 @@ impl Inner {
             self.live_until = now + Duration::from_millis(400);
             self.last_emphasis = emphasized;
         }
-        if let Some(gaze) = &props.gaze {
-            if gaze.ver() != self.last_gaze_ver {
+        if let Some(gaze) = &props.gaze
+            && gaze.ver() != self.last_gaze_ver {
                 let target = gaze.target().or(props.gaze_at);
                 self.mark.set_gaze(target);
                 gaze_set(&mut self.gs, target);
                 self.last_gaze_ver = gaze.ver();
-            }
         }
         if let Some(pokes) = &props.pokes {
             for (kind, turns) in pokes.drain() {
@@ -417,10 +416,9 @@ impl Inner {
         };
         let playing = self.mark.is_playing();
         let now = Instant::now();
-        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until {
-            if let Some(bytes) = mark::rest_bytes(&props.shape) {
+        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until
+            && let Some(bytes) = mark::rest_bytes(&props.shape) {
                 return mark::paint_rest(p, &bytes, &self.gs, x, y, extent, &ink_paint);
-            }
         }
         let frame = self.mark.frame();
         let tree = mark::uh(
@@ -577,7 +575,6 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
                 morph_shape: p.morph_shape,
                 seed: p.seed,
                 gaze_at: p.gaze_at,
-                ..Default::default()
             }))
         })
 }
@@ -626,9 +623,9 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
                 })),
         )
         .children((0..3usize).map(|i| {
-            let zp = z_phase.clone();
-            let zp2 = z_phase.clone();
-            let zp3 = z_phase.clone();
+            let zp = z_phase;
+            let zp2 = z_phase;
+            let zp3 = z_phase;
             text("z")
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -648,72 +645,4 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
                 .scale(move || 0.6 + 0.4 * zp3(i))
                 .into_element()
         }))
-}
-
-/// `dot` — a static mark (no clock): the rest pose, painted once, for
-/// lists where an animating canvas would be wasted.
-pub(crate) fn dot(shape: &str, color: &str, size: f32) -> impl IntoElement {
-    let box_ = size as f64 * 0.82;
-    let extent = (box_ * (0.92 / 0.6) * 100.0).round() / 100.0;
-    let canvas_size = size as f64 * 1.5;
-    let offset = -size * 0.25;
-    let x = (canvas_size - extent) / 2.0;
-    let ink = mark::ink_of(color, false);
-    let tab = mark::shared_tables();
-    let mut mark = mark::Mark::new(&tab, Some(mark::yn(shape)), 1.0, false, false, 1);
-    mark.rest();
-    let frame = mark.frame();
-    let tree = mark::uh(
-        &frame,
-        &PaintOpts {
-            ink: [0.0, 0.0, 0.0],
-            spot: [0.0, 0.0, 0.0],
-            cutout: true,
-            ink_paint: Some(ink.clone()),
-            spot_paint: None,
-        },
-        extent,
-        "m",
-        &UhSize {
-            display_size: Some(box_),
-            extent,
-        },
-        &tab,
-    );
-    let bytes = mark::rest_bytes(shape);
-    view().size(px(size)).child(
-        canvas(move || {
-            let p = Painter::new();
-            if let Some(b) = &bytes {
-                mark::paint_rest(p, b, &GazeState::default(), x, x, extent, &ink)
-            } else {
-                mark::paint_tree(p, &tree, x, x, extent)
-            }
-        })
-        .size(px(canvas_size as f32))
-        .absolute()
-        .left(px(offset))
-        .top(px(offset)),
-    )
-}
-
-/// `blob` — the live animated mark (what `bot_blob` draws, with plain args).
-pub(crate) fn blob(shape: &str, color: &str, size: f32, state: &'static str) -> impl IntoElement {
-    bot_blob(BotBlobProps {
-        shape: shape.to_owned(),
-        color: color.to_owned(),
-        size,
-        state,
-        ..Default::default()
-    })
-}
-
-/// A small colored dot (run status: running / ok / failed).
-pub(crate) fn status_dot(kind: &'static str) -> impl IntoElement {
-    let color = match kind {
-        "running" => theme::RUNNING,
-        "ok" => theme::UP,
-        _ => theme::DOWN,
-    };
-    view().size(px(8.0)).rounded(px(4.0)).bg(color)
 }

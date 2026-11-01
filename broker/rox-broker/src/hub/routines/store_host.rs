@@ -57,6 +57,42 @@ impl StoreHost {
     }
 }
 
+/// Pending notices of `kind` whose `id` is `id` take `state`, in `chat`
+/// or (`None`) every chat, as `settle_consent` settles consent cards; how
+/// many changed.
+pub fn settle_notices(ctx: &HubCtx, chat: Option<&str>, kind: &str, id: &str, state: &str) -> usize {
+    let r = ctx.store.write(|s| {
+        let mut changed = 0;
+        let chats: Vec<String> = match chat {
+            Some(c) => vec![c.to_owned()],
+            None => s.list.iter().map(|t| t.id.clone()).collect(),
+        };
+        for c in chats {
+            let Some(t) = s.thread_mut(&c) else { continue };
+            for u in &mut t.turns {
+                let Some(n) = u.notice.as_mut() else { continue };
+                if n.get("kind") == Some(&json!(kind)) && n.get("id") == Some(&json!(id)) && n.get("state") == Some(&json!("pending")) {
+                    n["state"] = json!(state);
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    });
+    match r {
+        Ok(n) => {
+            if n > 0 {
+                ctx.store.write_index();
+            }
+            n
+        }
+        Err(e) => {
+            eprintln!("rox-broker: notices: the store's write: {e}");
+            0
+        }
+    }
+}
+
 impl RoutineHost for StoreHost {
     fn thread(&self, key: &str) -> Option<Thread> {
         self.ctx()?.store.read(|s| s.thread(key).map(Self::view))

@@ -774,7 +774,6 @@ mod tests {
     }
 
     use super::*;
-    use crate::mini_v1::host_api::Broker as _;
 
     #[test]
     fn app_03_imports_outside_the_table_are_unsupported() {

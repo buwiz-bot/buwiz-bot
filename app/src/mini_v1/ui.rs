@@ -1350,6 +1350,11 @@ impl Store {
     /// then the plugin's attachments, pins (and their sidebar items) and
     /// storage go.
     pub fn v1_uninstall(&'static self, plugin: &str) {
+        self.v1_uninstall_then(plugin, || {});
+    }
+
+    /// [`Self::v1_uninstall`], then `after` once it is done.
+    fn v1_uninstall_then(&'static self, plugin: &str, after: impl FnOnce() + 'static) {
         let p = plugin.to_owned();
         self.v1_close_opens(plugin);
         let prefix = format!("v1:{plugin}/");
@@ -1375,8 +1380,97 @@ impl Store {
                     "Uninstalled. Removed {} attachment(s) and {} pin(s).",
                     removed.attachments, removed.pins
                 ));
+                after();
             },
         );
+    }
+
+    // ————— App install and uninstall cards in a chat —————
+
+    /// Card `i` of chat `chat`'s local state, changed by `f`.
+    pub fn app_card<T>(&'static self, chat: &str, i: i64, f: impl FnOnce(&mut crate::store::AppCard) -> T) -> T {
+        let mut out = None;
+        self.app_cards.update(|l| {
+            let at = match l.iter().position(|c| c.chat == chat && c.i == i) {
+                Some(at) => at,
+                None => {
+                    l.push(crate::store::AppCard { chat: chat.to_owned(), i, ..Default::default() });
+                    l.len() - 1
+                }
+            };
+            out = Some(f(&mut l[at]));
+        });
+        out.expect("updated")
+    }
+
+    /// What is typed into card `i`'s fields, taken out of the store.
+    fn app_take_typed(&'static self, chat: &str, i: i64) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        self.app_typed.update(|l| {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(l).into_iter().partition(|(c, at, _, _)| c == chat && *at == i);
+            *l = rest;
+            out = mine.into_iter().map(|(_, _, k, v)| (k, v)).collect();
+        });
+        out
+    }
+
+    /// An install card's main button: installs what it reviewed with the
+    /// values typed into it (or the settings of the plugin chosen), off
+    /// the main thread; the typed values go with the call and nowhere else.
+    pub fn app_install(&'static self, chat: &str, i: i64, n: &crate::store::AppInstallNotice) {
+        let (chat, n) = (chat.to_owned(), n.clone());
+        let Some(picked) = self.app_card(&chat, i, |c| (!c.busy).then(|| {
+            c.start();
+            c.picked.clone()
+        })) else {
+            return;
+        };
+        let typed = self.app_take_typed(&chat, i);
+        let body = n.install_body(&typed, n.settings_from(picked.as_deref()));
+        drop(typed);
+        Owner::detached().run(|| {
+            spawn(async move {
+                let r = crate::vault::off_main(move || connect::install_with(&broker(), body)).await;
+                let r = match r {
+                    Some(Ok(connect::Installed::Done)) => Ok("installed"),
+                    Some(Ok(connect::Installed::NeedsApproval(_))) => {
+                        Err("This update adds permissions; ask for the install again to review them".to_owned())
+                    }
+                    Some(Ok(connect::Installed::NeedsDowngrade)) => {
+                        Err(format!("This is older than the installed {}; ask for the install again to review it", n.title))
+                    }
+                    Some(Err(e)) => Err(e.message),
+                    None => Err("The install did not finish".to_owned()),
+                };
+                self.app_card(&chat, i, |c| c.finish(r));
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// An app card's other answers: Not now (`declined`), Cancel
+    /// (`cancelled`), or Uninstall (`uninstalled`, after the uninstall
+    /// Connect Apps runs); the broker's notice is settled with it.
+    pub fn app_answer(&'static self, chat: &str, i: i64, kind: &'static str, id: &str, state: &'static str) {
+        let (chat, plugin, id) = (chat.to_owned(), id.to_owned(), id.to_owned());
+        let settle = move || {
+            drop(self.app_take_typed(&chat, i));
+            self.app_card(&chat, i, |c| c.finish(Ok(state)));
+            let (chat, id) = (chat.clone(), id.clone());
+            Owner::detached().run(|| {
+                spawn(async move {
+                    let r = crate::vault::off_main(move || host_api::settle_notice(&broker(), &chat, kind, &id, state)).await;
+                    if let Some(Err(e)) = r {
+                        log::warn!("app notice settle: {}", e.message);
+                    }
+                })
+            });
+        };
+        if state == "uninstalled" {
+            self.v1_uninstall_then(&plugin, settle);
+        } else {
+            settle();
+        }
     }
 
     /// Open logs of a plugin (14.5): its log file in the Finder.
@@ -1527,7 +1621,7 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
     let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
     // a fresh answer's cards that mount at once: their sessions open now,
     // alongside their modules (14.6)
-    if !cards::aged(untracked(|| user_after())) {
+    if !cards::aged(untracked(&user_after)) {
         for ((_, c), slot) in cards.iter().zip(&slots) {
             let first_party = store().v1.entry(&c.plugin).is_some_and(|p| p.first_party);
             if *slot != cards::Slot::Link && c.placement == Placement::Inline && first_party {
@@ -1975,7 +2069,7 @@ pub fn preview_layer() -> impl IntoElement {
         || {
             let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
             let page = element_ref();
-            let stop = page.clone();
+            let stop = page;
             // a string loaded with no base URL is about:blank
             let own = |url: &str| url.is_empty() || url.starts_with("about:");
             view()
