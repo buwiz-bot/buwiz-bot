@@ -43,6 +43,7 @@ mod settings;
 mod settings_computer;
 mod slash;
 mod plugins;
+mod plugin_review;
 mod routines;
 mod sidebar;
 mod statusfx;

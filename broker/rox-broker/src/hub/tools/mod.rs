@@ -18,6 +18,7 @@ pub mod builtin;
 pub mod defs;
 pub mod drive;
 pub mod mcp;
+pub mod miniapps;
 pub mod office;
 pub mod v1;
 
@@ -85,6 +86,8 @@ pub struct RunState {
     pub cards: u64,
     pub v1_cards: Vec<Value>,
     pub drive_seen: Vec<(String, Value)>,
+    /// the calls the reply's turn keeps (`agent/tool_log.rs`)
+    pub tool_log: Vec<Value>,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -164,6 +167,10 @@ pub async fn tool_list(run: &Run) -> Vec<Value> {
         out.push(json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3}));
     }
     out.extend(defs::tools().iter().cloned());
+    // the mini app tools are Rust's own (not in defs.json)
+    if run.ctx.plugins.is_some() {
+        out.extend(miniapps::defs());
+    }
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());
     out.extend(agent.iter().cloned());
@@ -213,6 +220,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "app_details_update" => return artifact::app_details_update(run, input).await,
         "launch_app" | "close_app" | "promote_app" | "demote_app" | "set_version" | "view_code" => return artifact::artifact_tool(run, name, input).await,
         "mcp_install" | "mcp_uninstall" | "mcp_enable" | "mcp_disable" | "mcp_list" => return mcp::admin(run, name, input).await,
+        _ if miniapps::NAMES.contains(&name) && run.turn.surface.is_none() && ctx.plugins.is_some() => return miniapps::tool(run, name, input).await,
         _ => {}
     }
     if name.starts_with("office_") {

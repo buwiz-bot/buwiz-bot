@@ -52,7 +52,11 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let path = host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
+    token_in(&host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home))
+}
+
+/// The token in `path`, trimmed; `None` when the file is missing or empty.
+pub(crate) fn token_in(path: &std::path::Path) -> Option<String> {
     let token = std::fs::read_to_string(path).ok()?;
     Some(token.trim().to_owned()).filter(|t| !t.is_empty())
 }
@@ -110,13 +114,14 @@ pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json:
     serde_json::from_str(&res.text()).ok()
 }
 
-/// DELETE `path`.
-pub async fn del(path: &str) -> Option<serde_json::Value> {
-    let res = fetch(req("DELETE", path)).await.ok()?;
-    if !res.ok() {
-        return None;
-    }
-    serde_json::from_str(&res.text()).ok()
+/// [`post_any`] with the status: `(status, JSON body or null)`; `None`
+/// only when the broker can't be reached.
+pub async fn post_status(path: &str, body: serde_json::Value) -> Option<(u16, serde_json::Value)> {
+    let mut r = req("POST", path);
+    r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+    r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
+    let res = fetch(r).await.ok()?;
+    Some((res.head.status, serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null)))
 }
 
 /// Fire-and-forget POST used by mutations (rename, delete, react…).
@@ -199,5 +204,18 @@ mod tests {
         assert!(super::is_host_route("/v1/host/plugins"));
         assert!(!super::is_host_route("/v1/hostx"));
         assert!(!super::is_host_route("/mcp/call"));
+    }
+
+    #[test]
+    fn a_missing_or_empty_token_file_is_no_token() {
+        let dir = std::env::temp_dir().join(format!("rox-host-token-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("host-token");
+        assert_eq!(super::token_in(&file), None);
+        std::fs::write(&file, " \n").unwrap();
+        assert_eq!(super::token_in(&file), None);
+        std::fs::write(&file, "tok\n").unwrap();
+        assert_eq!(super::token_in(&file).as_deref(), Some("tok"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

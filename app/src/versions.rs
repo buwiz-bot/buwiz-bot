@@ -67,7 +67,7 @@ pub(crate) fn layer() -> impl IntoElement {
         };
         let win = window();
         let mut versions = p.versions.clone();
-        versions.sort_by(|a, b| b.v.cmp(&a.v));
+        versions.sort_by_key(|a| std::cmp::Reverse(a.v));
         let rows = versions.len() as f32;
         let h = (44.0 + rows * 46.0 + 34.0).min(360.0);
         // Under the chip, right edge on the chip's when it would overflow;

@@ -8,7 +8,9 @@
 //! The servers themselves are McpHost's (helper/mcp_servers.rs); its status
 //! is what `/mcp/servers` shows and Node mirrors. `/mcp/open` hands only
 //! Rox links to the system (`open`, from PATH), an app link with a one-time
-//! pass that `/mcp/open/pass` redeems (open-pass.mjs).
+//! pass that `/mcp/open/pass` redeems (open-pass.mjs). `/oauth/callback/`
+//! also finishes a mini app account's sign-in (2.1 §4) when the plugin
+//! host started it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,6 +25,7 @@ use serde_json::{json, Value};
 
 use super::{parse_body, respond, Answer};
 use crate::helper::mcp_servers::McpHost;
+use crate::helper::plugins::Host;
 use crate::js;
 use crate::proxy::Body;
 
@@ -49,6 +52,7 @@ pub struct McpRoutes {
     mcp: Arc<McpHost>,
     allowed: Vec<String>,
     passes: Mutex<HashMap<String, Instant>>,
+    plugins: Option<Arc<Host>>,
 }
 
 /// A body field as JS's `String(x || "")`.
@@ -134,7 +138,13 @@ fn app_of(uri: &str) -> String {
 
 impl McpRoutes {
     pub fn new(mcp: Arc<McpHost>, allowed: Vec<String>) -> Self {
-        Self { mcp, allowed, passes: Mutex::new(HashMap::new()) }
+        Self { mcp, allowed, passes: Mutex::new(HashMap::new()), plugins: None }
+    }
+
+    /// The plugin host whose account sign-ins come back here.
+    pub fn with_plugins(mut self, host: Arc<Host>) -> Self {
+        self.plugins = Some(host);
+        self
     }
 
     pub async fn serve(&self, req: Request<Incoming>) -> Response<Body> {
@@ -516,6 +526,19 @@ impl McpRoutes {
         let raw = path.strip_prefix("/oauth/callback/").unwrap_or_default();
         let id = url::form_urlencoded::parse(format!("x={}", raw.replace('+', "%2B")).as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default();
         let param = |k: &str| url::form_urlencoded::parse(q.as_bytes()).find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+        if let Some(host) = self.plugins.as_ref().filter(|h| h.account_pending(&id)) {
+            let (result, why) = host.account_callback(&id, param("code").as_deref(), param("state").as_deref(), param("error").as_deref()).await;
+            return match result {
+                "connected" => html(200, "Signed in"),
+                "refused" => html(400, "Authentication failed"),
+                _ => {
+                    if !why.is_empty() {
+                        eprintln!("  v1 {id}: sign-in failed: {}", js::slice_utf16(&why, 200));
+                    }
+                    html(200, "Sign-in failed")
+                }
+            };
+        }
         let r = self.mcp.auth_finish(&id, param("code").as_deref(), param("state").as_deref(), param("error").as_deref()).await;
         match r.get("result").and_then(Value::as_str) {
             Some("connected") => html(200, "Connected"),

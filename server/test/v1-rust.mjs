@@ -46,8 +46,9 @@ assert.deepEqual(rust("limits", {}).value, JSON.parse(JSON.stringify(node.LIMITS
 
 export const { LIMITS } = node;
 
+// the host protocol is Node's (rox-broker's may be newer: 2.1 packages)
 export const verifyManifest = (text, trust, host) =>
-  both("verify", { text: String(text ?? ""), trust: trustJson(trust), ...(host ? { host } : {}) }, () => node.verifyManifest(text, trust, host));
+  both("verify", { text: String(text ?? ""), trust: trustJson(trust), host: host || node.HOST_PROTOCOL }, () => node.verifyManifest(text, trust, host));
 
 export const checkTools = (m, tools) => both("tools", { manifest: m, tools }, () => node.checkTools(m, tools));
 

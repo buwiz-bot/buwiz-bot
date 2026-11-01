@@ -18,7 +18,7 @@ pub fn prompts() -> impl IntoElement {
             .justify_center()
             .bg(if primary { theme().accent } else { theme().hover })
             .child(text(label).text_size(px(12.0)).text_color(if primary { theme().on_fill } else { theme().text }))
-            .on_press(move || on())
+            .on_press(on)
     };
     dynamic(move || {
         let h = host();
