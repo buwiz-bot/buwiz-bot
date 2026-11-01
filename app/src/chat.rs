@@ -2,6 +2,7 @@
 //! open thread's turns — user bubbles on the right, agent markdown on the
 //! left, reply quotes, reactions, and generated-app cards.
 
+use nsh_base::input;
 use nsh_core::prelude::*;
 use nsh_core::{TouchEvent, TouchPhase};
 
@@ -636,6 +637,10 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         agents_notice_row(n).into_element()
     } else if let Some(c) = t.consent.clone() {
         consent_row(c).into_element()
+    } else if let Some(n) = t.app_install.clone() {
+        app_install_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.app_uninstall.clone() {
+        app_uninstall_row(n, chat.to_owned(), t.i).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -1035,6 +1040,185 @@ fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
                             .label(no)
                             .on_press(move || answer(&c3, "declined")),
                     ),
+            )
+            .into_element()
+    }))
+}
+
+/// A small button of an app card: `primary` filled, else bare;
+/// `label` is what gpui-agent finds it by.
+fn app_card_btn(caption: &str, label: String, primary: bool, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    text(caption.to_owned())
+        .text_size(px(12.0))
+        .font_weight(if primary { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+        .text_color(move || if primary || hov.get() { theme::TEXT } else { theme::MUTED })
+        .px_3()
+        .py(px(5.0))
+        .rounded(px(8.0))
+        .bg(move || match (primary, hov.get()) {
+            (true, true) => theme::ACTIVE,
+            (true, false) => theme::HOVER,
+            (false, _) => AdaptiveColor::TRANSPARENT,
+        })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .label(label)
+        .on_press(on)
+}
+
+/// An app card's frame (the routine consent card's).
+fn app_card_frame(label: String) -> View {
+    view()
+        .max_w(px(560.0))
+        .gap(px(8.0))
+        .px_3()
+        .py(px(10.0))
+        .rounded(px(12.0))
+        .bg(theme::SUBTLE)
+        .border(px(0.5))
+        .border_color(theme::BORDER_S)
+        .label(label)
+}
+
+fn app_quiet_line(line: String) -> AnyElement {
+    text(line).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1).into_element()
+}
+
+/// A mini app the agent found (`app_install`): what it is and where it
+/// comes from, Connect Apps' review, a field per setting it needs (or the
+/// settings of an installed plugin that has them), then Install (the
+/// review's action) or Not now; once answered, a quiet line.
+fn app_install_row(n: crate::store::AppInstallNotice, chat: String, i: i64) -> impl IntoElement {
+    let (c1, n1) = (chat.clone(), n.clone());
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        let n = n1.clone();
+        if let Some(done) = n.answered(local.local()) {
+            return app_quiet_line(format!("{} {} · {done}", n.title, n.version));
+        }
+        let from = n.settings_from(local.picked.as_deref()).map(str::to_owned);
+        let action = n.review.action();
+        let mut c = app_card_frame(format!("Install {}?", n.title))
+            .child(
+                text(format!("{} {}", n.title, n.version))
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::TEXT),
+            )
+            .child(text(format!("By {} · {}", n.publisher, n.source)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(2))
+            .child(crate::plugins::review_details(&n.review));
+        if !n.needs_env.is_empty() {
+            for (id, title) in n.env_from.iter() {
+                let on = from.as_deref() == Some(id.as_str());
+                let (ch, pick) = (chat.clone(), id.clone());
+                c = c.child(app_choice(format!("Use the settings of {title} ({id})"), on, move || {
+                    let pick = pick.clone();
+                    store().app_card(&ch, i, |c| c.picked = Some(pick));
+                }));
+            }
+            if !n.env_from.is_empty() {
+                let ch = chat.clone();
+                c = c.child(app_choice("Enter the settings here".to_owned(), from.is_none(), move || {
+                    store().app_card(&ch, i, |c| c.picked = Some(String::new()));
+                }));
+            }
+            if from.is_none() {
+                for e in &n.needs_env {
+                    c = c.child(app_env_field(chat.clone(), i, e.clone()));
+                }
+            }
+        }
+        let (ch1, ch2, n2, n3) = (chat.clone(), chat.clone(), n.clone(), n.clone());
+        let mut buttons = view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(app_card_btn(action, format!("{action} {}", n.title), true, move || store().app_install(&ch1, i, &n2)))
+            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                store().app_answer(&ch2, i, "app_install", &n3.id, "declined")
+            }));
+        if local.busy {
+            buttons = buttons.child(text("Installing…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        c = c.child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
+}
+
+/// One choice of where an install's settings come from: a dot, then
+/// what it is.
+fn app_choice(caption: String, on: bool, pick: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .label(caption.clone())
+        .on_press(pick)
+        .child(text(if on { "●" } else { "○" }).text_size(px(12.0)).text_color(if on { theme::TEXT } else { theme::MUTED }))
+        .child(text(caption).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(2).flex_shrink(1.0))
+}
+
+/// A setting the app needs, typed here (masked when secret): kept in
+/// memory until Install sends it; `label` is its key.
+fn app_env_field(chat: String, i: i64, e: crate::store::NeedsEnv) -> impl IntoElement {
+    let (c1, c2, k1, k2) = (chat.clone(), chat, e.key.clone(), e.key.clone());
+    view()
+        .gap(px(4.0))
+        .child(text(if e.label.is_empty() { e.key.clone() } else { format!("{} ({})", e.label, e.key) }).text_size(px(12.0)).text_color(theme::MUTED))
+        .child(
+            view().h(px(32.0)).rounded(px(8.0)).bg(theme::HOVER).px(px(10.0)).justify_center().child(
+                input()
+                    .label(e.key.clone())
+                    .value(move || {
+                        store().app_typed.with(|l| {
+                            l.iter().find(|(c, at, k, _)| *c == c1 && *at == i && *k == k1).map(|x| x.3.clone()).unwrap_or_default()
+                        })
+                    })
+                    .masked(e.secret)
+                    .auto_correct(false)
+                    .text_size(px(13.0))
+                    .text_color(theme::TEXT)
+                    .h(px(32.0))
+                    .on_change(move |t: &str| {
+                        let (ch, k, t) = (c2.clone(), k2.clone(), t.to_owned());
+                        store().app_typed.update(|l| match l.iter_mut().find(|(c, at, key, _)| *c == ch && *at == i && *key == k) {
+                            Some(x) => x.3 = t,
+                            None => l.push((ch, i, k, t)),
+                        });
+                    }),
+            ),
+        )
+}
+
+/// A mini app the agent would remove (`app_uninstall`): its question,
+/// Uninstall (what Connect Apps' Uninstall does) or Cancel; once
+/// answered, a quiet line.
+fn app_uninstall_row(n: crate::store::AppUninstallNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let local = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).map(|c| c.state.clone())).filter(|s| !s.is_empty());
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = local();
+        if let Some(done) = n.answered(local.as_deref()) {
+            return app_quiet_line(format!("{} · {done}", n.title));
+        }
+        let (ch1, ch2, id1, id2) = (chat.clone(), chat.clone(), n.id.clone(), n.id.clone());
+        app_card_frame(format!("Uninstall {}?", n.title))
+            .child(text(n.text.clone()).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(app_card_btn("Uninstall", format!("Uninstall {}", n.title), true, move || {
+                        store().app_answer(&ch1, i, "app_uninstall", &id1, "uninstalled")
+                    }))
+                    .child(app_card_btn("Cancel", "Cancel".to_owned(), false, move || {
+                        store().app_answer(&ch2, i, "app_uninstall", &id2, "cancelled")
+                    })),
             )
             .into_element()
     }))

@@ -140,6 +140,13 @@ pub fn install(
     post(b, "/v1/host/plugins/install", body, Duration::from_secs(30))
 }
 
+/// `POST /v1/host/notices/settle`: the user's answer to chat `chat`'s
+/// pending `kind` notices about plugin `id` (`declined`, `uninstalled`,
+/// `cancelled`).
+pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &str) -> Result<(), RoxError> {
+    post(b, "/v1/host/notices/settle", json!({"chat": chat, "kind": kind, "id": id, "state": state}), SHORT_TIMEOUT).map(drop)
+}
+
 /// What the broker does to an installed plugin (13.4 to 13.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginAction {

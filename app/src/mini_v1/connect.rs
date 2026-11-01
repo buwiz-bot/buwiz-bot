@@ -494,6 +494,11 @@ pub enum Installed {
 /// [`Review::action`]: that press is the approval of its added
 /// permissions or of its older version, and nothing else is approved.
 pub fn install(b: &dyn Broker, review: &Review) -> Result<Installed, RoxError> {
+    install_with(b, install_body(review))
+}
+
+/// The install route's body for what `review` showed.
+pub fn install_body(review: &Review) -> Value {
     let mut body = json!({"command": review.command, "args": review.args, "manifest_sha256": review.manifest_sha256});
     if let Some(env) = &review.env {
         body["env"] = env.clone();
@@ -504,6 +509,34 @@ pub fn install(b: &dyn Broker, review: &Review) -> Result<Installed, RoxError> {
     if review.downgrade {
         body["allow_downgrade"] = json!(true);
     }
+    body
+}
+
+/// A chat install card's body: what `review` showed, with the values typed
+/// into its fields over its env (empty ones left out) or, with `env_from`
+/// (an installed plugin, and the keys to take), those keys copied by the
+/// broker from that plugin's settings instead.
+pub fn chat_install_body(review: &Review, typed: &[(String, String)], env_from: Option<(&str, &[String])>) -> Value {
+    let mut body = install_body(review);
+    if let Some((from, keys)) = env_from {
+        body["env_from"] = json!(from);
+        body["env_from_keys"] = json!(keys);
+        return body;
+    }
+    let typed: Vec<_> = typed.iter().filter(|(_, v)| !v.is_empty()).collect();
+    if !typed.is_empty() {
+        if !body.get("env").is_some_and(Value::is_object) {
+            body["env"] = json!({});
+        }
+        for (k, v) in typed {
+            body["env"][k.as_str()] = json!(v);
+        }
+    }
+    body
+}
+
+/// `POST /v1/host/plugins/install` with `body` (see [`install`]).
+pub fn install_with(b: &dyn Broker, body: Value) -> Result<Installed, RoxError> {
     match b.request("POST", "/v1/host/plugins/install", Some(body), Duration::from_secs(30)) {
         Ok(_) => Ok(Installed::Done),
         Err(e) => match refusal_reason(&e) {
@@ -756,6 +789,31 @@ mod tests {
         assert!(uninstall(&Refuses, id, &records_dir, &plugins_dir, &|_| {}).is_err());
         assert_eq!(Records::load(&records_dir).attachments.len(), 1);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_chat_cards_install_sends_its_body_and_its_answer_settles_the_notice() {
+        let r = Review::of(&inspect_answer(Value::Null), "/apps/fx", &["mcp".to_owned()]);
+        let typed = [("FX_KEY".to_owned(), "s3cret".to_owned())];
+        let b = Lifecycle::default();
+        assert_eq!(install_with(&b, chat_install_body(&r, &typed, None)).unwrap(), Installed::Done);
+        let sent = b.routes.lock().unwrap()[0].clone();
+        assert_eq!(sent.0, "POST /v1/host/plugins/install");
+        assert_eq!(sent.1, json!({"command": "/apps/fx", "args": ["mcp"], "manifest_sha256": "ab".repeat(32), "env": {"FX_KEY": "s3cret"}}));
+        let keys = ["FX_KEY".to_owned()];
+        let b = Lifecycle::default();
+        install_with(&b, chat_install_body(&r, &typed, Some(("dev.fx", &keys)))).unwrap();
+        let sent = b.routes.lock().unwrap()[0].1.clone();
+        assert_eq!((sent["env_from"].clone(), sent["env_from_keys"].clone(), sent.get("env")), (json!("dev.fx"), json!(["FX_KEY"]), None));
+        // a refusal is the card's error
+        let b = Lifecycle { refuse: Some(RoxError::new("invalid_args", "manifest changed")), ..Default::default() };
+        assert_eq!(install_with(&b, chat_install_body(&r, &[], None)).unwrap_err().message, "manifest changed");
+        let b = Lifecycle::default();
+        host_api::settle_notice(&b, "c1", "app_install", "app.buwiz.fixture", "declined").unwrap();
+        assert_eq!(
+            b.routes.lock().unwrap()[0],
+            ("POST /v1/host/notices/settle".to_owned(), json!({"chat": "c1", "kind": "app_install", "id": "app.buwiz.fixture", "state": "declined"}))
+        );
     }
 
     #[test]
