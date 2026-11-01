@@ -67,18 +67,58 @@ const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
 
-/// The app's display name: `APP_NAME` from the environment, else "Buwiz Bot"
-/// (the window title, the top pill, the empty state, the composer's
-/// "Message …" outside an agent's chat).
+/// The app's display name (the window title, the top pill, the empty
+/// state, the composer's "Message …" outside an agent's chat), so a test
+/// or dev instance never passes for the real app: see [`pick_app_name`].
 pub fn app_name() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NAME.get_or_init(|| {
-        std::env::var("APP_NAME")
-            .ok()
-            .map(|n| n.trim().to_owned())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "Buwiz Bot".to_owned())
+        let env = std::env::var("APP_NAME").ok();
+        let bundle = main_bundle_name();
+        pick_app_name(
+            env.as_deref(),
+            bundle.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
+            env!("CARGO_PKG_VERSION"),
+        )
     })
+}
+
+/// The name [`app_name`] shows: `APP_NAME` from the environment; else the
+/// name of the app bundle the binary runs in (`bundle`: its id and
+/// display name), when it is one of Buwiz Bot's (`com.buwiz.bot`, or a
+/// `dev.buwiz.bot.*` test bundle of `scripts/test-rox`); else, a build run
+/// outside any of them (`cargo run`, a worktree's binary), "Buwiz Bot
+/// dev-v<version>".
+pub fn pick_app_name(env: Option<&str>, bundle: Option<(&str, &str)>, version: &str) -> String {
+    if let Some(n) = env.map(str::trim).filter(|n| !n.is_empty()) {
+        return n.to_owned();
+    }
+    match bundle {
+        Some((id, name)) if (id == identity::APP_ID || id.starts_with("dev.buwiz.bot.")) && !name.trim().is_empty() => {
+            name.trim().to_owned()
+        }
+        _ => format!("Buwiz Bot dev-v{version}"),
+    }
+}
+
+/// The main bundle's id and `CFBundleDisplayName` (else `CFBundleName`),
+/// when the binary runs from inside an app bundle.
+#[cfg(target_os = "macos")]
+fn main_bundle_name() -> Option<(String, String)> {
+    use nsh_platform_macos::objc2_foundation::{NSBundle, NSString, ns_string};
+    let bundle = NSBundle::mainBundle();
+    let id = bundle.bundleIdentifier()?.to_string();
+    let name = [ns_string!("CFBundleDisplayName"), ns_string!("CFBundleName")].into_iter().find_map(|key| {
+        bundle.objectForInfoDictionaryKey(key)?.downcast::<NSString>().ok().map(|s| s.to_string())
+    })?;
+    Some((id, name))
+}
+
+/// Elsewhere (iOS, packaged by `ios.sh` as com.buwiz.bot) there are no
+/// test or dev instances to tell apart: the app's own name.
+#[cfg(not(target_os = "macos"))]
+fn main_bundle_name() -> Option<(String, String)> {
+    Some((identity::APP_ID.to_owned(), "Buwiz Bot".to_owned()))
 }
 
 /// The font files the root registers before it renders (`Root::font`):
@@ -152,4 +192,34 @@ pub fn App() -> impl IntoElement {
         .child(keys::bindings())
         // A..Z on the newest open choice card
         .child(keys::choice_keys())
+}
+
+#[cfg(test)]
+mod app_name_tests {
+    use super::pick_app_name;
+
+    #[test]
+    fn the_installed_bundle_is_buwiz_bot() {
+        assert_eq!(pick_app_name(None, Some(("com.buwiz.bot", "Buwiz Bot")), "0.1.0"), "Buwiz Bot");
+    }
+
+    #[test]
+    fn a_test_bundle_shows_its_own_name() {
+        let got = pick_app_name(None, Some(("dev.buwiz.bot.test-books", "Buwiz Bot test-books")), "0.1.0");
+        assert_eq!(got, "Buwiz Bot test-books");
+    }
+
+    #[test]
+    fn a_build_outside_buwiz_bots_bundles_is_a_dev_build() {
+        assert_eq!(pick_app_name(None, None, "0.1.0"), "Buwiz Bot dev-v0.1.0");
+        // another app's bundle (nsh's NshDev host) names no Buwiz Bot
+        assert_eq!(pick_app_name(None, Some(("com.longbridge.nsh.host", "NshDev")), "0.2.0"), "Buwiz Bot dev-v0.2.0");
+        assert_eq!(pick_app_name(None, Some(("com.buwiz.bot", "  ")), "0.1.0"), "Buwiz Bot dev-v0.1.0");
+    }
+
+    #[test]
+    fn app_name_from_the_environment_wins() {
+        assert_eq!(pick_app_name(Some(" Ada "), Some(("com.buwiz.bot", "Buwiz Bot")), "0.1.0"), "Ada");
+        assert_eq!(pick_app_name(Some(""), None, "0.1.0"), "Buwiz Bot dev-v0.1.0");
+    }
 }
