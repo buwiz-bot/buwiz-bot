@@ -1295,7 +1295,7 @@ impl RoxGroup {
 pub enum GroupRow {
     Bot(RoxBot),
     Chat(ThreadMeta),
-    Artifact(RoxApp),
+    Artifact(Box<RoxApp>),
     /// A server's mini app: its module name and title.
     App(String, String),
 }
@@ -2834,7 +2834,7 @@ impl Store {
                     .cloned()
                     .map(GroupRow::Chat),
                 "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
-                _ => it.artifact.clone().map(GroupRow::Artifact),
+                _ => it.artifact.clone().map(|a| GroupRow::Artifact(Box::new(a))),
             })
             .collect()
     }

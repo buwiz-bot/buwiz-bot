@@ -464,7 +464,7 @@ fn details_tab() -> impl IntoElement {
             let listed = store().v1.listed.get();
             match routines_section(store().active_routine(), &listed, &bot, crate::store::checked_at) {
                 RoutinesSection::This(r) => {
-                    view().child(pane_label("This routine".into())).child(this_routine(r)).into_element()
+                    view().child(pane_label("This routine".into())).child(this_routine(*r)).into_element()
                 }
                 RoutinesSection::List => view()
                     .child(pane_label("Routines".into()))
@@ -789,7 +789,7 @@ fn participant_row(id: String, name: String) -> AnyElement {
 /// that routine (`This`); elsewhere the chat's routines (`List`).
 #[derive(Debug, Clone, PartialEq)]
 enum RoutinesSection {
-    This(ThisRoutine),
+    This(Box<ThisRoutine>),
     List,
 }
 
@@ -847,7 +847,7 @@ fn routines_section(
         out.enabled = x.enabled;
         out.pending = pending;
     }
-    RoutinesSection::This(out)
+    RoutinesSection::This(Box::new(out))
 }
 
 /// A small text action on a routine (Run now, Pause, Open, Delete).
@@ -2419,7 +2419,7 @@ mod tests {
         let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
         assert_eq!(
             routines_section(Some(open.clone()), &listed, "Piccolo", at),
-            RoutinesSection::This(ThisRoutine {
+            RoutinesSection::This(Box::new(ThisRoutine {
                 name: "BIR payments".into(),
                 plugin: "app.buwiz.ebirforms".into(),
                 id: "payments".into(),
@@ -2432,7 +2432,7 @@ mod tests {
                 pending: false,
                 chat: "t2".into(),
                 go: "Go to Piccolo chat".into(),
-            })
+            }))
         );
         // a failure reads as one; before the plugins are listed, the name
         // and the way back still show
