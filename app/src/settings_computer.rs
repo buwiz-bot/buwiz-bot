@@ -219,18 +219,7 @@ fn draft(kind: &str) -> Signal<String> {
 fn reload() {
     let u = ui();
     Owner::detached().run(|| {
-        spawn(async move {
-            match reach(transport::read_policy().await) {
-                Ok(body) => {
-                    u.policy.set(Some(Policy::parse(&body)));
-                    u.policy_reach.set(Reach::Live);
-                }
-                Err(r) => {
-                    u.policy.set(None);
-                    u.policy_reach.set(r);
-                }
-            }
-        });
+        spawn(async move { apply_policy(transport::read_policy().await) });
         spawn(async move {
             match reach(transport::read_host_settings().await) {
                 Ok(body) => {
@@ -246,6 +235,22 @@ fn reload() {
     });
 }
 
+/// The listing just read decides what the page shows: live controls over
+/// it, or nothing and the reason, whether the read followed a write or not.
+fn apply_policy(reply: Option<(u16, Value)>) {
+    let u = ui();
+    match reach(reply) {
+        Ok(body) => {
+            u.policy.set(Some(Policy::parse(&body)));
+            u.policy_reach.set(Reach::Live);
+        }
+        Err(r) => {
+            u.policy.set(None);
+            u.policy_reach.set(r);
+        }
+    }
+}
+
 /// A write, then the policy read again: the server's listing is the truth
 /// (an add it refused is not in it).
 fn write_policy(req: impl Future<Output = Option<(u16, Value)>> + 'static) {
@@ -257,15 +262,10 @@ fn write_policy(req: impl Future<Output = Option<(u16, Value)>> + 'static) {
     u.note.set(String::new());
     Owner::detached().run(|| {
         spawn(async move {
-            match reach(req.await) {
-                Ok(_) => {}
-                Err(Reach::Failed(why)) => u.note.set(why),
-                Err(r) => u.policy_reach.set(r),
+            if let Err(Reach::Failed(why)) = reach(req.await) {
+                u.note.set(why);
             }
-            match reach(transport::read_policy().await) {
-                Ok(body) => u.policy.set(Some(Policy::parse(&body))),
-                Err(r) => u.policy_reach.set(r),
-            }
+            apply_policy(transport::read_policy().await);
             u.busy.set(false);
         });
     });
