@@ -264,6 +264,9 @@ pub struct Account {
     /// `none`, `connected` or `expired`.
     pub state: String,
     pub required: bool,
+    /// What Setup lacks before it can sign in ("Add your Google client in
+    /// Setup"); "" when nothing.
+    pub setup: String,
 }
 
 impl Account {
@@ -276,6 +279,7 @@ impl Account {
             subject: s(v, "subject"),
             state: Some(s(v, "state")).filter(|l| !l.is_empty()).unwrap_or_else(|| "none".to_owned()),
             required: v.get("required").and_then(Value::as_bool).unwrap_or(false),
+            setup: s(v, "setup"),
         }
     }
 
@@ -382,7 +386,7 @@ impl Listed {
                     format!("{} · {}", s(a, "title"), places.join(", "))
                 })
                 .collect(),
-            accounts: list(v, "accounts").iter().map(Account::of).filter(|a| !a.account.is_empty()).collect(),
+            accounts: list(v, "accounts").iter().map(Account::of).filter(|a| !a.account.is_empty() && a.state != "removed").collect(),
             skills: list(v, "skills")
                 .iter()
                 .map(|k| Skill { name: s(k, "name"), description: s(k, "description") })
@@ -1002,12 +1006,15 @@ mod tests {
             "accounts": [
                 {"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": "uriah@example.com", "state": "connected", "required": true},
                 {"account": "google", "label": "work", "provider": "google", "title": "Google account", "subject": null, "state": "expired", "required": true},
-                {"account": "drive", "label": "default", "provider": "oauth:https://auth.example.com", "title": "Drive", "subject": null, "state": "none", "required": false},
+                {"account": "drive", "label": "default", "provider": "oauth:https://auth.example.com", "title": "Drive", "subject": null, "state": "none", "required": false,
+                    "setup": "Add your Google client in Setup"},
+                {"account": "google", "label": "old", "provider": "google", "title": "Google account", "state": "removed"},
                 {"label": "no account id"},
             ],
             "skills": [{"name": "triage-inbox", "description": "Sort the inbox"}, {"description": "no name"}],
         }));
-        assert_eq!(l.accounts.len(), 3, "a row without an account id is dropped");
+        assert_eq!(l.accounts.len(), 3, "a removed row and one without an account id are dropped");
+        assert_eq!((l.accounts[0].setup.as_str(), l.accounts[2].setup.as_str()), ("", "Add your Google client in Setup"));
         let a = &l.accounts[0];
         assert_eq!((a.subject.as_str(), a.status(), a.name(), a.required), ("uriah@example.com", "Connected", "Google account".to_owned(), true));
         let w = &l.accounts[1];
@@ -1045,11 +1052,23 @@ mod tests {
         );
         // nothing reaches the broker for a bad plugin, account or label
         let b = Lifecycle::default();
-        for (p, a, l) in [("../x", "google", "default"), ("app.buwiz.gws", "Google", "default"), ("app.buwiz.gws", "g/../x", "default"), ("app.buwiz.gws", "google", "  ")] {
+        for (p, a, l) in [
+            ("../x", "google", "default"),
+            ("app.buwiz.gws", "Google", "default"),
+            ("app.buwiz.gws", "g/../x", "default"),
+            ("app.buwiz.gws", "google", "  "),
+            ("app.buwiz.gws", "google", "work email"),
+            ("app.buwiz.gws", "google", "-work"),
+            ("app.buwiz.gws", "google", "a/b"),
+        ] {
             assert!(account_action(&b, p, a, l, AccountAction::SignIn).is_err(), "{p} {a} {l:?}");
         }
         assert!(account_action(&b, "app.buwiz.gws", "google", &"x".repeat(61), AccountAction::SignIn).is_err());
         assert!(b.routes().is_empty());
+        for ok in ["default", "work", "uriah@example.com", "a.b_c+d-e", "W2"] {
+            assert!(host_api::account_label_ok(ok), "{ok}");
+        }
+        assert!(host_api::account_label_ok(&"x".repeat(60)) && !host_api::account_label_ok("é"));
         assert!(host_api::account_id_ok("google") && host_api::account_id_ok("g-2") && !host_api::account_id_ok("2g") && !host_api::account_id_ok(&"a".repeat(33)));
     }
 

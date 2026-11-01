@@ -170,6 +170,8 @@ pub struct AppInstallNotice {
     /// Installed plugins whose settings have every `needs_env` key:
     /// (id, title).
     pub env_from: Vec<(String, String)>,
+    /// A 2.1 package's install folder, sent back with Install ("" for 2.0).
+    pub package: String,
     /// A 2.1 package's skills (names) and accounts; empty for 2.0.
     pub skills: Vec<String>,
     pub accounts: Vec<InstallAccount>,
@@ -218,6 +220,7 @@ impl AppInstallNotice {
                 .filter(|e| !e.key.is_empty())
                 .collect(),
             env_from: list(v, "env_from").iter().map(|e| (s(e, "id"), s(e, "title"))).filter(|(i, _)| !i.is_empty()).collect(),
+            package: s(v, "package"),
             skills: list(v, "skills").iter().filter_map(|k| k.as_str().map(str::to_owned)).filter(|k| !k.is_empty()).collect(),
             accounts: list(v, "accounts")
                 .iter()
@@ -283,7 +286,11 @@ impl AppInstallNotice {
     /// every `needs_env` key from the installed plugin `from`.
     pub fn install_body(&self, typed: &[(String, String)], from: Option<&str>) -> serde_json::Value {
         let keys: Vec<String> = self.needs_env.iter().map(|e| e.key.clone()).collect();
-        crate::mini_v1::connect::chat_install_body(&self.review, typed, from.map(|f| (f, keys.as_slice())))
+        let mut body = crate::mini_v1::connect::chat_install_body(&self.review, typed, from.map(|f| (f, keys.as_slice())));
+        if !self.package.is_empty() {
+            body["package"] = serde_json::json!(self.package);
+        }
+        body
     }
 }
 
@@ -336,11 +343,12 @@ pub struct AccountRequiredNotice {
 
 impl AccountRequiredNotice {
     fn of(v: &serde_json::Value, text: String) -> Option<Self> {
-        if !v.is_object() || s(v, "kind") != "account_required" || s(v, "plugin").is_empty() || s(v, "account").is_empty() {
+        let plugin = Some(s(v, "plugin")).filter(|p| !p.is_empty()).unwrap_or_else(|| s(v, "id"));
+        if !v.is_object() || s(v, "kind") != "account_required" || plugin.is_empty() || s(v, "account").is_empty() {
             return None;
         }
         Some(Self {
-            plugin: s(v, "plugin"),
+            plugin,
             title: s(v, "title"),
             account: s(v, "account"),
             label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| s(v, "account")),
@@ -7886,6 +7894,13 @@ mod tests {
         assert_eq!(n.skills_line().as_deref(), Some("Skills: triage-inbox, draft-reply"));
         assert_eq!(n.accounts_line().as_deref(), Some("Accounts: Google account (sign in after install), Drive (optional)"));
         assert_eq!(n.accounts[1].provider, "oauth:https://auth.example.com");
+        // a 2.1 install sends its package folder back; a 2.0 one sends none
+        assert!(old.install_body(&[], None).get("package").is_none());
+        let p = Turn::of(&install_notice(serde_json::json!({"package": "/data/v1/apps/app.buwiz.google-workspace/1.2.0"}))).app_install.unwrap();
+        let b = p.install_body(&[], None);
+        assert_eq!((b["package"].clone(), b["command"].clone()), (serde_json::json!("/data/v1/apps/app.buwiz.google-workspace/1.2.0"), serde_json::json!("/apps/buwiz-gws")));
+        let p2 = Turn::of(&install_notice(serde_json::json!({"package": "/pkg", "env_from": [{"id": "x.y.z", "title": "Z"}]}))).app_install.unwrap();
+        assert_eq!(p2.install_body(&[], p2.settings_from(None))["package"], "/pkg", "with settings copied too");
     }
 
     #[test]
@@ -7907,6 +7922,8 @@ mod tests {
         for bad in [serde_json::json!({"kind": "account_required", "account": "google"}), serde_json::json!({"kind": "account_required", "plugin": "x.y.z"})] {
             assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": bad})).account_required.is_none());
         }
+        let by_id = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "id": "x.y.z", "account": "google"}}));
+        assert_eq!(by_id.account_required.unwrap().plugin, "x.y.z", "the plugin from its id");
         let no_label = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google"}}));
         assert_eq!(no_label.account_required.unwrap().question(), "Sign in to google");
     }
