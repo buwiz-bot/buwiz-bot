@@ -3609,16 +3609,31 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     if !a.subject.is_empty() {
         who = who.child(text(a.subject.clone()).number_of_lines(1).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()));
     }
+    // the setup a sign-in still lacks (no shared Google client), and a
+    // refused sign-in's reason; the shared client is set in a Google
+    // plugin's Setup, so there is no Setup button here
+    let setup = if a.connected() { String::new() } else { a.setup.clone() };
+    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().unwrap_or_default() };
+    let err = if err == setup { String::new() } else { err };
     view()
-        .flex_row()
-        .items_center()
-        .gap(px(10.0))
         .px(px(14.0))
         .py(px(10.0))
         .label(name)
-        .child(plug_tile(&provider_name(&a.provider), 20.0))
-        .child(who)
-        .child(right)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(plug_tile(&provider_name(&a.provider), 20.0))
+                .child(who)
+                .child(right),
+        )
+        .when(!setup.is_empty(), |v| {
+            v.child(text(setup.clone()).number_of_lines(2).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()).pt(px(4.0)))
+        })
+        .when(!err.is_empty(), |v| {
+            v.child(text(err.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
+        })
         .into_element()
 }
 
@@ -3652,17 +3667,27 @@ fn v1_add_account(plugin: &str, rows: &[crate::mini_v1::connect::Account]) -> An
             .into_element();
     }
     let err = st.acct_err.get();
+    let add_key = key;
     let (p, acc) = (plugin.to_owned(), a.account.clone());
     let go = std::rc::Rc::new(move || {
         let v = store().acct_add_val.get_untracked().trim().to_owned();
         if v.is_empty() {
             return;
         }
+        if !crate::mini_v1::host_api::account_label_ok(&v) {
+            return store().acct_err.set(crate::mini_v1::host_api::LABEL_RULE.to_owned());
+        }
         if taken.contains(&v) {
             return store().acct_err.set(format!("{v} is already an account here"));
         }
         store().acct_add.set(String::new());
-        store().v1_account(&p, &acc, &v, crate::mini_v1::host_api::AccountAction::SignIn)
+        // a refusal opens the form again with its reason
+        let (k, v2) = (add_key.clone(), v.clone());
+        store().v1_signin(&p, &acc, &v, move |e| {
+            store().acct_add_val.set(v2);
+            store().acct_err.set(crate::mini_v1::ui::signin_error(&e));
+            store().acct_add.set(k);
+        })
     });
     let go2 = go.clone();
     view()
