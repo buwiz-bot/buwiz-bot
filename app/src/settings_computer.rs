@@ -193,6 +193,9 @@ struct Ui {
     /// icon rail can be the first surface that wants it, before this page
     /// is ever opened.
     host_asked: Signal<bool>,
+    /// A host read in flight: one request at a time, so a broker that is
+    /// down is not asked once per frame.
+    host_loading: Signal<bool>,
     /// What the last refused write said.
     note: Signal<String>,
 }
@@ -208,6 +211,7 @@ fn ui() -> Ui {
             draft_deny: signal(String::new()),
             busy: signal(false),
             host_asked: signal(false),
+            host_loading: signal(false),
             note: signal(String::new()),
         });
         Box::leak(Box::new(ui)) as *const Ui as usize
@@ -229,9 +233,17 @@ fn reload() {
     load_host(u);
 }
 
-/// `GET /ag-ui/host-settings` into the page's signals.
+/// `GET /ag-ui/host-settings` into the page's signals. A read that never
+/// reached the broker (it was down, or the request failed) leaves the
+/// record unasked, so the next surface that wants it asks again; a
+/// broker that answered that it has no such route (404/501) has said all
+/// it will say.
 fn load_host(u: Ui) {
+    if u.host_loading.get_untracked() {
+        return;
+    }
     u.host_asked.set(true);
+    u.host_loading.set(true);
     Owner::detached().run(|| {
         spawn(async move {
             match reach(transport::read_host_settings().await) {
@@ -240,10 +252,14 @@ fn load_host(u: Ui) {
                     u.host_reach.set(Reach::Live);
                 }
                 Err(r) => {
+                    if !matches!(r, Reach::NotPorted) {
+                        u.host_asked.set(false);
+                    }
                     u.host.set(None);
                     u.host_reach.set(r);
                 }
             }
+            u.host_loading.set(false);
         });
     });
 }
@@ -256,10 +272,11 @@ pub(crate) fn host_egress_tunnel() -> (bool, bool) {
     (u.host_reach.get().live(), u.host.get().is_some_and(|h| h.egress_tunnel_enabled))
 }
 
-/// Reads the host record if nothing has asked for it yet.
+/// Reads the host record if nothing has asked for it yet (or the last
+/// try never reached the broker), one request at a time.
 pub(crate) fn ensure_host_settings() {
     let u = ui();
-    if !u.host_asked.get_untracked() {
+    if !u.host_asked.get_untracked() && !u.host_loading.get_untracked() {
         load_host(u);
     }
 }
