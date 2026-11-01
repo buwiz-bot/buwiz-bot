@@ -178,7 +178,7 @@ pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: boo
     post(b, &format!("/v1/host/plugins/{plugin}/tools"), json!({"tool": tool, "disabled": disabled}), SHORT_TIMEOUT)
 }
 
-/// What the person does to one of a 2.1 package's accounts (spec 2.1 §4).
+/// What the person does to one of a package's accounts (§20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountAction {
     /// The broker opens the system browser; the list then says the state.

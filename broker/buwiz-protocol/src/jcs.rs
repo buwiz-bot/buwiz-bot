@@ -186,13 +186,6 @@ mod tests {
     /// The vectors grok-shell's `server/v1/jcs.mjs` is tested against.
     const VECTORS: &str = include_str!("jcs-vectors.json");
 
-    /// The copy at the crate's old path (`broker/rox-v1/`), kept for one
-    /// release for other repos' tests that read it there.
-    #[test]
-    fn the_old_paths_copy_is_the_same() {
-        assert_eq!(include_str!("../../rox-v1/src/jcs-vectors.json"), VECTORS, "copy src/jcs-vectors.json to broker/rox-v1/src/");
-    }
-
     #[test]
     fn jcs_matches_the_shared_vectors() {
         let all: serde_json::Value = serde_json::from_str(VECTORS).unwrap();

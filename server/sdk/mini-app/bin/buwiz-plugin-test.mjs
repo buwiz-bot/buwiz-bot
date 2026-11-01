@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // sdk/mini-app/bin/buwiz-plugin-test.mjs — the plugin-side conformance checks
-// of the Rox Mini App Protocol v1 (spec 17), run against one plugin.
+// of the Buwiz Mini App Protocol 1.0 (spec 17), run against one plugin.
 //
 //   npm run plugin-test -- --command node --args sdk/mini-app/template/server.mjs \
 //       --sign-with ~/.config/rox/test.key
@@ -457,7 +457,7 @@ export async function runPluginTest(o) {
       });
     } else skip("RSV-03", "session certificates", "the plugin has no apps");
 
-    await run("RSV-05", "buwiz.session.close answers ok: true; an unknown rox.* answers -32601 (7.9)", async () => {
+    await run("RSV-05", "buwiz.session.close answers ok: true; an unknown buwiz.* answers -32601 (10.1)", async () => {
       const closed = resultData(await callRaw(raw, "buwiz.session.close", { open_id: raw.openId || random128() }));
 
       expect(closed?.ok === true, `buwiz.session.close answered ${JSON.stringify(closed)?.slice(0, 80)}`);
@@ -801,7 +801,7 @@ export function format(res, o) {
   const n = (s) => res.rows.filter((r) => r.status === s).length;
 
   return [
-    `Rox Mini App Protocol v1, plugin checks: ${head}`,
+    `Buwiz Mini App Protocol 1.0, plugin checks: ${head}`,
     `  ${[o.command, ...o.args].join(" ")}`,
     `  ${trustLine(res.trust, res.plugin?.id)}`,
     ...res.rows.toSorted((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1)).map((r) => `  ${mark[r.status]} ${r.id} ${word[r.status]}  ${r.what}${r.note ? `\n        ${r.note}` : ""}`),

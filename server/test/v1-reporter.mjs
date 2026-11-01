@@ -35,7 +35,7 @@ export default async function* checklist(source) {
   const ext = all.filter((id) => !SPEC.has(id.slice(0, 3)));
   const kinds = [...new Set(ext.map((id) => id.split("-")[0]))].map((k) => `${k} ${EXTENSIONS[k] || ""}`.trim()).join("; ");
 
-  yield `\nRox Mini App Protocol v1, spec 17 (broker side): ${spec.length} IDs\n${spec.map(line).join("\n")}\n`;
+  yield `\nBuwiz Mini App Protocol 1.0, spec 17 (broker side): ${spec.length} IDs\n${spec.map(line).join("\n")}\n`;
 
   if (ext.length) yield `\nExtensions (not in spec 17; ${kinds}): ${ext.length} IDs\n${ext.map(line).join("\n")}\n`;
 }

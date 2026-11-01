@@ -209,7 +209,7 @@ test("AGH-03 hook refusals: secret, signature, staleness, replay, size, JSON, ve
 
   await is(await hook(ci, body, { secret: "not-the-secret" }), 401, "bad_signature", bad);
   await is(await hook(ci, body, { sig: null }), 401, "bad_signature", bad);
-  // protocol 2.0: the 1.x header name signs nothing
+  // the buwiz names (protocol 1.0): Rox's header name signs nothing
   await is(await hook(ci, body, { header: "X-Rox-Signature" }), 401, "bad_signature", bad);
   await is(await hook(ci, body, { sig: "t=1,v1=zz" }), 401, "bad_signature", bad);
   await is(await hook(ci, body, { t: now() - 301 }), 401, "bad_signature", bad);
@@ -301,7 +301,7 @@ test("AGH-06 the outbox: a reply POSTed signed; 5xx kept queued and sent again; 
   assert.equal(first.headers["content-type"], "application/json");
   const [, t, v1] = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(first.headers["x-buwiz-signature"]);
 
-  assert.equal(first.headers["x-rox-signature"], undefined, "only the 2.0 header goes out");
+  assert.equal(first.headers["x-rox-signature"], undefined, "only the buwiz header goes out");
 
   assert.equal(signature(later.out_secret, first.body, t), `t=${t},v1=${v1}`);
   assert.deepEqual([msg.in_reply_to, msg.text, msg.from.id, msg.to], ["msg_later00000001", MOCK_REPLY, "boss", [{ kind: "external", id: `ext:${later.id}`, name: "Later" }]]);

@@ -102,7 +102,7 @@ const TRIED: &[&str] = &[
 ];
 
 /// Creates what is missing; never drops or changes what is there, but
-/// for protocol 2.0's one-time rename ([`migrate_names`]).
+/// for the buwiz names' one-time rename ([`migrate_names`]).
 pub fn ensure(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(CREATE).map_err(|e| e.to_string())?;
     for sql in TRIED {
@@ -126,7 +126,7 @@ pub const RENAMES: [(&str, &str); 7] = [
     ("\"rox/caller\"", "\"buwiz/caller\""),
 ];
 
-/// Protocol 2.0 routes and reads only the buwiz names: every text column
+/// Protocol 1.0 routes and reads only the buwiz names: every text column
 /// of every table (keys, `meta` and the v1 install records excepted) is
 /// rewritten once, as Node's names-migration.mjs does. Rows changed; 0
 /// when the marker is there. Idempotent: no old name survives it.
@@ -170,7 +170,7 @@ pub fn migrate_names(conn: &Connection) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    /// A store written before protocol 2.0: rox links in a chat, a card
+    /// A store written before the buwiz names: rox links in a chat, a card
     /// link, stored _meta, an attachment's open, a /state/rox-* key.
     fn old_store() -> Connection {
         let c = Connection::open_in_memory().unwrap();

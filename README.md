@@ -196,8 +196,7 @@ nothing of Rox's is kept for compatibility:
   `broker/buwiz-protocol` (`rox-v1`). For one release the dev bundle keeps
   `Resources/broker/rox-broker` as a link to `buwiz-broker` (an app binary
   built before looks for it), the app and `scripts/broker-live` take a
-  broker by either name, and `broker/rox-v1/src/jcs-vectors.json` stays as
-  a copy for other repos' tests. The broker's subcommands keep their names.
+  broker by either name. The broker's subcommands keep their names.
 
 ### Switching the live broker to Buwiz Bot.app's
 

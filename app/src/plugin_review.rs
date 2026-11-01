@@ -1,5 +1,6 @@
-//! A plain plugin's review before it installs (extension format 2.1 §2.2,
-//! D2): Connect Apps' Add asks the broker to stage the plugin
+//! A plain plugin's review before it installs (every install shows a
+//! review; a plain plugin's says it is unsigned): Connect Apps' Add asks
+//! the broker to stage the plugin
 //! (`POST /plugins/inspect {name}`), shows what it would add, and only
 //! Install sends `POST /plugins/install {name, staging, approve: true,
 //! values?}`. The broker refuses an install without both.
@@ -196,7 +197,7 @@ pub fn install_body(review: &PlainReview, values: &BTreeMap<String, String>) -> 
 pub enum Inspected {
     Review(Box<PlainReview>),
     /// The broker has no `/plugins/inspect` (the Node rollback): Add
-    /// installs in one step, as before 2.1.
+    /// installs in one step, as before the review.
     NoReview,
 }
 
@@ -344,7 +345,7 @@ mod tests {
         let b = Fake { node: true, ..Default::default() };
         assert_eq!(now(inspect(b.inspect(), "demo")), Ok(Inspected::NoReview));
         assert_eq!(*b.sent.lock().unwrap(), [("/plugins/inspect".to_owned(), json!({"name": "demo"}))]);
-        // the one-step bodies the app sent before 2.1
+        // the one-step bodies the app sent before the review
         assert_eq!(legacy_install_body("demo", None), json!({"name": "demo"}));
         let vals = BTreeMap::from([("DEMO_API_KEY".to_owned(), "k-1".to_owned())]);
         assert_eq!(legacy_install_body("demo", Some(&vals)), json!({"name": "demo", "values": {"DEMO_API_KEY": "k-1"}}));
