@@ -176,6 +176,21 @@ decision. The table lives in `broker/rox-v1/src/env.rs` and
 `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR` make an app a test
 instance, and so does any of them by its old name.
 
+The broker's data folder on the owner's Mac moved too:
+
+| Old | New |
+|---|---|
+| `~/Library/Application Support/Grok Shell` | `~/Library/Application Support/Buwiz Broker` |
+
+It moves once, by a rename, before a broker starts on it (Buwiz Bot before
+it starts its bundled broker, or a `rox-broker` given the owner's folder),
+after a backup of `generated/app.db` into
+`Grok Shell/backups/<UTC time>-pre-move/`; `.moved-from-grok-shell` in the
+new folder says it was done. Nothing moves while a broker answers on 8787.
+Until it moves, readers (the host token, `scripts/broker-live`,
+`scripts/live-copy`) use `Grok Shell`. A plugin or test that names the data
+dir by `BUWIZ_BROKER_DATA_DIR` (or `GROK_DATA_DIR`) is not affected.
+
 | Old (still works) | New |
 |---|---|
 | `scripts/test-rox` | `scripts/buwiz-test` (the old one runs it) |

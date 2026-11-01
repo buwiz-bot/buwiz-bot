@@ -18,7 +18,10 @@
 #                                  name, still works)
 #   --port N (any position)        the same as PORT=N
 #
-# GS: the data dir (default ~/Library/Application Support/Grok Shell).
+# GS: the data dir (default ~/Library/Application Support/Buwiz Broker, or
+# Grok Shell, its old name, while that one was not moved yet; a rox-broker
+# from this repo moves it once, after a backup, when it starts on it and no
+# other broker answers on 8787).
 # RES: the app bundle's Resources dir holding server/ (default: the Grok
 # Shell.app built in a grok-shell checkout beside this repo).
 # BUWIZ_APP: the Buwiz Bot.app use-bundled starts from (default ~/Applications/Buwiz Bot.app).
@@ -48,7 +51,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
-GS="${GS:-$HOME/Library/Application Support/Grok Shell}"
+if [ -z "${GS:-}" ]; then
+  GS="$HOME/Library/Application Support/Buwiz Broker"
+  OLD_GS="$HOME/Library/Application Support/Grok Shell"
+  if [ ! -e "$GS" ] && [ -d "$OLD_GS" ]; then GS="$OLD_GS"; fi
+fi
 RES="${RES:-$ROOT/../grok-shell/dist/Grok Shell.app/Contents/Resources}"
 BUWIZ_APP="${BUWIZ_APP:-$HOME/Applications/Buwiz Bot.app}"
 RB="$BUWIZ_APP/Contents/Resources/broker"
@@ -205,5 +212,5 @@ case "${1:-}" in
     # nothing stops before Buwiz Bot.app's broker is complete
     [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete (run app/bundle-dev.sh): $(rox_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
     stop && start_rox || { echo "Buwiz Bot.app's rox-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
-  *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
