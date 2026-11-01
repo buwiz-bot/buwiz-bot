@@ -7,7 +7,7 @@ use std::cell::Cell;
 use nsh_core::canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline};
 use nsh_core::prelude::*;
 
-use crate::mark;
+use crate::mascot;
 use crate::theme;
 
 /// `STATUS_LABEL` from `app/statusfx.tsx` — a run state's display string.
@@ -135,24 +135,20 @@ pub(crate) fn shimmer_at(
 }
 
 // ---------------------------------------------------------------------------
-// `morphKind`/`FxOverlay`/`StatusAvatar`/`StatusFx` — statusfx.tsx's canvas
-// parts (the ambient `drawFx` around the mark, and the poked status blob).
+// `FxOverlay`/`StatusAvatar`/`StatusFx` — the canvas parts: the ambient
+// effect around the avatar, and the clickable status avatar.
 // ---------------------------------------------------------------------------
 
-/// `morphKind(state)` — a run state's ambient-fx kind (`"none"` when not
-/// morph-backed).
+/// A run state's ambient effect kind (`"none"` when the state has none).
 pub(crate) fn morph_kind(state: &str) -> &'static str {
-    mark::STATES
-        .iter()
-        .find(|(n, _)| *n == state)
-        .and_then(|(_, d)| d.morph)
-        .and_then(mark::vx)
-        .unwrap_or("none")
+    mascot::aura_of(state).map_or("none", |aura| aura.name())
 }
 
-/// `FxOverlay({fx,size,ink})` — `drawFx`'s ambient ring around the mark on
-/// a `size*1.5` canvas overhanging the cell by `size*0.25`. `state` is the
-/// run-state signal; `morphKind` decides what (if anything) is drawn.
+/// `FxOverlay({fx,size,ink})` — the state's ambient effect around the
+/// avatar on a `size*1.5` canvas overhanging the cell by `size*0.25`.
+/// `state` is the run-state signal; `morph_kind` decides what (if
+/// anything) is drawn. Reduced motion draws the effect's first frame and
+/// doesn't run the clock.
 pub(crate) fn fx_overlay(
     state: std::rc::Rc<dyn Fn() -> String>,
     size: f32,
@@ -172,19 +168,12 @@ pub(crate) fn fx_overlay_fn(
     let offset = -size * 0.25;
     // `startFx` — the store's shared ~30fps overlay clock, read only
     // while an effect plays.
+    let ink = ink.parse::<Hsla>().unwrap_or(theme::FAINT.dark);
     canvas(move || {
-        let fx = morph_kind(&state());
         let mut p = Painter::new();
-        if fx != "none" {
-            let t = crate::live::store().tick();
-            p = mark::draw_fx(
-                p,
-                fx,
-                canvas_size as f64,
-                canvas_size as f64,
-                t,
-                &ink,
-            );
+        if let Some(aura) = mascot::aura_of(&state()) {
+            let t = if reduce_motion() { 0.0 } else { crate::live::store().tick() };
+            p = mascot::draw_aura(p, aura, canvas_size, canvas_size, t, ink);
         }
         p
     })
@@ -195,8 +184,8 @@ pub(crate) fn fx_overlay_fn(
     .size(px(canvas_size))
 }
 
-/// `StatusAvatar` — the status row's mark: it always plays the run state,
-/// and a click pokes it through `UN` (spin → bounce → nod). `state` is the
+/// `StatusAvatar` — the status row's avatar: it always plays the run
+/// state, and each click plays the next gesture (spin → bounce → nod). `state` is the
 /// run-state source (`agent().state`), read inside the mark's paint;
 /// `emph_src` is the `emphasized` prop read (`emphBot() !== ""`).
 pub(crate) fn status_avatar(
@@ -226,7 +215,7 @@ pub(crate) fn status_avatar(
         .on_press(move || {
             let i = index.get();
             index.set(i + 1);
-            pokes2.fire(mark::UN[i % mark::UN.len()], None);
+            pokes2.fire(mascot::Gesture::ALL[i % mascot::Gesture::ALL.len()], None);
         })
         .label("Agent activity mark")
 }
