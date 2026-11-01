@@ -12,7 +12,8 @@
 //! runs them through the SDK's schemas, so callers see what they saw before.
 //!
 //! rox-broker hosts v1 plugins and v0 MCP servers with it (`helper::mcp`);
-//! rox-gws reaches its upstream Google Workspace server with it.
+//! buwiz-gws (buwiz-app/google-workspace) keeps a copy, `src/mcp.rs`, for
+//! its upstream Google Workspace server: change the two together.
 
 use std::collections::HashMap;
 use std::process::Stdio;

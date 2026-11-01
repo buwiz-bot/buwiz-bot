@@ -17,15 +17,17 @@
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
 # launched Rox has no nsh on PATH), release builds of this checkout's nsh
 # submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/);
-# and rox-gws, the Google Workspace plugin (broker/rox-gws), with its signed
-# manifest beside it as rox-gws.manifest.json when there is one
-# (broker/rox-gws/manifest.signed.json; scripts/gws-install-wizard makes it).
+# and buwiz-gws, the Google Workspace plugin (buwiz-app/google-workspace at
+# the commit plugins/google-workspace/rev pins, built by scripts/gws-build),
+# with its signed manifest beside it as buwiz-gws.manifest.json when there
+# is one (plugins/google-workspace/manifest.signed.json;
+# scripts/gws-install-wizard makes it).
 #   ROX_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices, and Rox.app is
 #                           left registered
 #   BUWIZ_BROKER_BIN=<path>   the rox-broker to package
-#   ROX_GWS_BIN=<path>      the rox-gws to package
-#   ROX_GWS_MANIFEST=<path> its signed manifest
+#   BUWIZ_GWS_BIN=<path>    the buwiz-gws to package
+#   BUWIZ_GWS_MANIFEST=<path>  its signed manifest
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
 #                           package (both, or neither)
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
@@ -151,15 +153,12 @@ chmod +x "$APP/Contents/MacOS/buwiz-bot"
 SERVER="$ROOT/server"
 B="$APP/Contents/Resources/broker"
 BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
-if [ -z "${BUWIZ_BROKER_BIN:-}" ] || [ -z "${ROX_GWS_BIN:-}" ]; then
-  PKGS=()
-  [ -n "${BUWIZ_BROKER_BIN:-}" ] || PKGS+=(-p rox-broker)
-  [ -n "${ROX_GWS_BIN:-}" ] || PKGS+=(-p rox-gws)
-  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release "${PKGS[@]}")
+if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
+  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-broker)
 fi
 BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/rox-broker}"
-ROX_GWS_BIN="${ROX_GWS_BIN:-$BROKER_TARGET/rox-gws}"
-GWS_MANIFEST="${ROX_GWS_MANIFEST:-$ROOT/broker/rox-gws/manifest.signed.json}"
+BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$("$ROOT/scripts/gws-build")}"
+GWS_MANIFEST="${BUWIZ_GWS_MANIFEST:-$ROOT/plugins/google-workspace/manifest.signed.json}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
   (cd "$ROOT/nsh" && RUSTC_WRAPPER= cargo build --release -p nsh-cli -p nsh-macos-host)
   NSH_BIN="${CARGO_TARGET_DIR:-$ROOT/nsh/target}/release/nsh"
@@ -175,11 +174,11 @@ mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules"
 cp "$BUWIZ_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
-cp "$ROX_GWS_BIN" "$B/bin/rox-gws"
+cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"
 if [ -f "$GWS_MANIFEST" ]; then
-  cp "$GWS_MANIFEST" "$B/bin/rox-gws.manifest.json"
+  cp "$GWS_MANIFEST" "$B/bin/buwiz-gws.manifest.json"
 else
-  echo "warning: no signed rox-gws manifest at $GWS_MANIFEST (scripts/gws-install-wizard signs one, or set ROX_GWS_MANIFEST); Google Workspace won't provision without GWS_MANIFEST" >&2
+  echo "warning: no signed buwiz-gws manifest at $GWS_MANIFEST (scripts/gws-install-wizard signs one, or set BUWIZ_GWS_MANIFEST); Google Workspace won't provision without GWS_MANIFEST" >&2
 fi
 cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
 cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
