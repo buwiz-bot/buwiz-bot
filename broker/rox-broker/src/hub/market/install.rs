@@ -75,8 +75,10 @@ pub struct Fetched {
 }
 
 /// `fetchPlugin(e)`: the plugin's directory (and catalog skills living
-/// elsewhere in the repo) checked out into `plugins/<key>`.
-pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
+/// elsewhere in the repo) checked out into `<base>/<key>` (a review's
+/// staging folder; install moves it to `plugins/<key>`). The recorded
+/// paths are relative to that folder, as they will be to `plugins/`.
+pub async fn fetch_plugin(m: &Market, e: &Value, base: &Path) -> Result<Fetched, String> {
     let hint = e.get("install").filter(|h| js::truthy(h)).cloned().unwrap_or(json!({}));
     let display = super::string(e.get("displayName"));
     if truthy(hint.get("unavailable")) {
@@ -100,7 +102,7 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
     }
     let path = path.unwrap_or_default();
     let key = super::string(e.get("key"));
-    let dest = m.plugins.join(&key);
+    let dest = base.join(&key);
     let _ = std::fs::remove_dir_all(&dest);
     std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     // small plugin dirs come over whole; a big repo's root only brings its
@@ -182,9 +184,10 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
     })
 }
 
-/// `installLegacy(p)`: a vendored plugin's own dir, else a clone of its
-/// repo at its pinned sha into `plugins/<name>`.
-pub async fn install_legacy(m: &Market, p: &Value) -> Result<PathBuf, String> {
+/// `installLegacy(p)`: a vendored plugin's own dir, the clone already in
+/// `plugins/<name>`, else a clone of its repo at its pinned sha into
+/// `<base>/<name>` (a review's staging folder).
+pub async fn install_legacy(m: &Market, p: &Value, base: &Path) -> Result<PathBuf, String> {
     let name = super::string(p.get("name"));
     let src = p.get("source");
     let path = at(src, "path");
@@ -196,7 +199,8 @@ pub async fn install_legacy(m: &Market, p: &Value) -> Result<PathBuf, String> {
         }
         return Ok(root);
     }
-    let dir = m.plugins.join(&name);
+    let installed = m.plugins.join(&name);
+    let dir = if installed.join(".git").exists() { installed } else { base.join(&name) };
     if !dir.join(".git").exists() {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(dir.parent().unwrap_or(&dir));
@@ -244,6 +248,12 @@ fn read_head(p: &Path) -> Option<String> {
 /// `pluginInventory(key, root)`.
 pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Value {
     let meta = m.installed_meta(ctx, key).unwrap_or(json!({}));
+    inventory_at(&m.plugins, root, meta.get("skills"), m.server_configs(ctx, key))
+}
+
+/// What the plugin at `root` ships: `skills` are the recorded `{name, file}`
+/// (files relative to `base`), else its `skills/` folder.
+pub fn inventory_at(base: &Path, root: &Path, skills: Option<&Value>, servers: Map<String, Value>) -> Value {
     let list_dir = |sub: &str, md: bool| -> Vec<Value> {
         let base = root.join(sub);
         let Ok(list) = crate::hub::pipeline::versions::read_dir_sorted(&base) else { return Vec::new() };
@@ -256,7 +266,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
             })
             .collect()
     };
-    let skills = match meta.get("skills") {
+    let skills = match skills {
         Some(Value::Array(list)) if !list.is_empty() => {
             let mut seen: Vec<String> = Vec::new();
             list.iter()
@@ -268,7 +278,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
                     }
                 })
                 .map(|s| {
-                    let file = m.plugins.join(super::string(s.get("file")));
+                    let file = base.join(super::string(s.get("file")));
                     let mut o = Map::new();
                     if let Some(n) = s.get("name") {
                         o.insert("name".into(), n.clone());
@@ -299,7 +309,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
         "agents": list_dir("agents", true),
         "hooks": root.join("hooks/hooks.json").exists(),
         "lsp": root.join(".lsp.json").exists(),
-        "servers": Value::Object(m.server_configs(ctx, key)),
+        "servers": Value::Object(servers),
         "manifest": { "author": author, "version": super::or(manifest.get("version"), Value::Null), "license": super::or(manifest.get("license"), Value::Null) },
     })
 }
