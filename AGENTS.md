@@ -53,6 +53,9 @@ are lost at the next rebuild.
 - Test with `cd server && npm test` (after `npm ci`). Each test starts its
   own broker on `TEST_PORT` (8797 by default) with a temp data dir; pick
   another port when one is taken.
+- The owner's broker data is `~/Library/Application Support/Buwiz Broker`
+  (`Grok Shell` before; it moves once, `broker/rox-v1/src/broker_dir.rs`).
+  Never point a test or bench at it: give it its own data dir.
 - Package it into an app bundle with
   `server/tools/package-server.sh <Resources dir>`.
 - A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest

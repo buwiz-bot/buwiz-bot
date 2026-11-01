@@ -166,6 +166,20 @@ nothing of Rox's is kept for compatibility:
   written to the new service, deleted from the old); a marker says it is
   done (`.keychain-moved-from-rox` in the data dir,
   `.plugin-keys-moved-from-rox` beside the broker's `app.db`).
+- Broker data: `~/Library/Application Support/Buwiz Broker`, called
+  `Grok Shell` before. It moves once, by a rename, just before a broker
+  starts on it: Buwiz Bot moves it before it starts its bundled broker,
+  and a `rox-broker` started on the owner's folder by either name
+  (`scripts/broker-live`) moves it after binding its port. First the
+  database is backed up (`VACUUM INTO`) to
+  `Grok Shell/backups/<UTC time>-pre-move/app.db`, then the folder is
+  renamed and `.moved-from-grok-shell` is written in it. Nothing moves
+  while a broker answers on 8787, when `Buwiz Broker` exists already (the
+  old folder is then left alone), or for any other data dir (tests,
+  benches). A rename that fails is not replaced by a copy: `Grok Shell`
+  stays in use and the move is tried at the next start. Until it moves,
+  the host token, `scripts/broker-live` and `scripts/live-copy` read
+  `Grok Shell` (`broker/rox-v1/src/broker_dir.rs`).
 - Logs: `~/Library/Logs/Buwiz Bot`; caches: `~/Library/Caches/Buwiz Bot`
   (the icon font Rox cached in `…/Rox` is used until then).
 - `bundle-dev.sh` unregisters `~/Applications/Rox.app` from LaunchServices;

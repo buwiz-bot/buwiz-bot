@@ -3,7 +3,9 @@
 //! ([`client::DEFAULT_GEN`]), Rox runs the `rox-broker` its own bundle
 //! carries (`Contents/Resources/broker/`, put there by `bundle-dev.sh`):
 //! the hub on, hosting the v1 plugins and MCP servers, no Node, on the
-//! data dir the broker uses today. It runs detached, in its own process
+//! owner's broker folder (`~/Library/Application Support/Buwiz Broker`,
+//! moved there from `Grok Shell` once, just before this start:
+//! [`move_data_dir`]). It runs detached, in its own process
 //! group, so it outlives Rox; its log is `~/Library/Logs/Buwiz Bot/broker.log`.
 //!
 //! Never started:
@@ -155,13 +157,38 @@ pub struct Launch {
     pub log: PathBuf,
 }
 
-/// The data dir the broker uses today.
+/// The broker's data dir: `Buwiz Broker`, else `Grok Shell` while it was
+/// not moved yet (`rox_v1::broker_dir::dir_in`).
 pub fn data_dir(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/Grok Shell")
+    rox_v1::broker_dir::dir_in(home)
+}
+
+/// Moves the broker's folder from `Grok Shell` to `Buwiz Broker` once,
+/// after a backup of its database (`rox_v1::broker_dir::move_once`, the
+/// one the broker runs too). Called only when this app is about to start
+/// the broker: nothing answered on the owner's port, and `busy` asks once
+/// more. A move that can't run leaves `Grok Shell` in use ([`data_dir`])
+/// and is tried at the next start.
+pub fn move_data_dir(home: &Path, busy: &dyn Fn() -> bool) -> rox_v1::broker_dir::Move {
+    use rox_v1::broker_dir::{Move, DIR_NAME, OLD_DIR_NAME};
+    let m = rox_v1::broker_dir::move_once(home, busy, &backup_db);
+    match &m {
+        Move::Nothing | Move::AlreadyThere => {}
+        Move::Moved { backup } => log::info!("broker: moved {OLD_DIR_NAME} to {DIR_NAME} (database backup: {backup:?})"),
+        other => log::warn!("broker: {OLD_DIR_NAME} not moved to {DIR_NAME} this time ({other:?}); using it"),
+    }
+    m
+}
+
+/// A consistent copy of the database `from` in the new file `to`
+/// (`VACUUM INTO`: one read transaction).
+fn backup_db(from: &Path, to: &Path) -> Result<(), String> {
+    let db = rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
+    db.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// The command line for `broker` (the bundle's `rox-broker`): the default
-/// origin's port, today's data dir, the static files beside it
+/// origin's port, the data dir ([`data_dir`]), the static files beside it
 /// (`broker/server`), no Node; the hub on, hosting v1 plugins and MCP.
 /// `nsh` and `nsh-macos-host` are the bundle's (`broker/bin/`, as Grok
 /// Shell.app set them): a Finder-launched Rox has no nsh on PATH. The
@@ -267,6 +294,9 @@ fn run() -> Decision {
         return decision;
     };
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    // nothing answers and this app holds the start lock: no broker uses the
+    // folder, so it can move before the broker opens it
+    move_data_dir(&home, &|| probe(addr) != Answer::Nothing);
     let l = launch(&broker, &home, addr.port());
     match spawn(&l) {
         Ok(pid) => log::info!("broker: started {} (pid {pid}), log {}", l.program.display(), l.log.display()),
@@ -410,10 +440,10 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_runs_the_hub_without_node_on_todays_data_dir() {
+    fn the_command_line_runs_the_hub_without_node_on_the_owners_data_dir() {
         let b = Path::new("/A/Rox.app/Contents/Resources/broker/rox-broker");
         let l = launch(b, Path::new("/Users/u"), 8787);
-        let data = "/Users/u/Library/Application Support/Grok Shell";
+        let data = "/Users/u/Library/Application Support/Buwiz Broker";
         assert_eq!(l.program, PathBuf::from(b));
         let args: Vec<&str> = l.args.iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(
@@ -442,7 +472,7 @@ mod tests {
                 ("GROK_DATA_DIR", data),
                 ("NSH", "/A/Rox.app/Contents/Resources/broker/bin/nsh"),
                 ("NSH_HOST", "/A/Rox.app/Contents/Resources/broker/bin/nsh-macos-host"),
-                ("NSH_CHUNK_DIR", "/Users/u/Library/Application Support/Grok Shell/chunks")
+                ("NSH_CHUNK_DIR", "/Users/u/Library/Application Support/Buwiz Broker/chunks")
             ]
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
@@ -470,5 +500,46 @@ mod tests {
         drop(first);
         assert!(try_lock(&path).unwrap().is_some(), "free again once dropped");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A temp home with a `Grok Shell` holding a WAL database.
+    fn home_with_grok_shell(name: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("rox-broker-move-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let old = rox_v1::broker_dir::old_dir(&home);
+        std::fs::create_dir_all(old.join("generated")).unwrap();
+        let db = rusqlite::Connection::open(old.join("generated/app.db")).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES (7);").unwrap();
+        home
+    }
+
+    /// Before its start the app moves the folder, after a backup, and
+    /// launches the broker on the new one.
+    #[test]
+    fn the_start_moves_grok_shell_to_buwiz_broker_after_a_backup() {
+        use rox_v1::broker_dir::{new_dir, old_dir, Move, MOVED_MARKER};
+        let home = home_with_grok_shell("start");
+        assert_eq!(data_dir(&home), old_dir(&home), "read from the old one until it moves");
+        let Move::Moved { backup: Some(backup) } = move_data_dir(&home, &|| false) else { panic!("not moved") };
+        let new = new_dir(&home);
+        assert!(!old_dir(&home).exists() && new.join(MOVED_MARKER).is_file());
+        let copy = rusqlite::Connection::open(backup.join("app.db")).unwrap();
+        assert_eq!(copy.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
+        let l = launch(Path::new("/A/Rox.app/Contents/Resources/broker/rox-broker"), &home, 8787);
+        assert_eq!(l.data, new);
+        assert!(l.args.contains(&new.clone().into_os_string()));
+        assert_eq!(move_data_dir(&home, &|| false), Move::AlreadyThere, "once");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A broker answering by then: no move, the old folder is launched on.
+    #[test]
+    fn a_broker_answering_at_the_last_probe_keeps_grok_shell() {
+        use rox_v1::broker_dir::{new_dir, old_dir, Move};
+        let home = home_with_grok_shell("busy");
+        assert_eq!(move_data_dir(&home, &|| true), Move::Busy);
+        assert!(!new_dir(&home).exists());
+        assert_eq!(launch(Path::new("/A/Rox.app/Contents/Resources/broker/rox-broker"), &home, 8787).data, old_dir(&home));
+        let _ = std::fs::remove_dir_all(home);
     }
 }
