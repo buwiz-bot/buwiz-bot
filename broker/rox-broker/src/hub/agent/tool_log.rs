@@ -84,8 +84,9 @@ fn patterns() -> &'static [(Regex, &'static str)] {
     static P: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     P.get_or_init(|| {
         [
-            // a signed ticket (`tkt_` + a 26-char ULID) under any key, or in text
-            (r"\btkt_[0-9A-HJKMNP-TV-Z]{26}\b", "[redacted]"),
+            // a signed ticket (`tkt_` + 16 or more letters and digits: a ULID
+            // today, any later form too) under any key, or in text
+            (r"\btkt_[0-9A-Za-z]{16,}\b", "[redacted]"),
             (r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", "[redacted]"),
             (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", "${1} [redacted]"),
             // a TIN: 9 digits and a 3-5 digit branch, dashed or not
@@ -278,9 +279,9 @@ mod tests {
         let est = entry("ebirforms_penalty_estimate", &json!({"form": t2, "period": "2026-Q3"}), &ok(&format!("Estimate for {t2}: 1,500.00")));
         assert_eq!(est["input"], json!(r#"{"form":"[redacted]","period":"2026-Q3"}"#));
         assert_eq!(est["result"], json!("Estimate for [redacted]: 1,500.00"));
-        // not a ULID (I, O are outside its alphabet): left as it is
-        let other = entry("x", &json!({"form": t1}), &ok("tkt_short"));
-        assert_eq!((other["input"].clone(), other["result"].clone()), (json!(format!(r#"{{"form":"{t1}"}}"#)), json!("tkt_short")));
+        // any letters, lowercase too, are redacted; a short `tkt_` word is kept
+        let other = entry("x", &json!({"form": t1, "low": t2.to_lowercase()}), &ok("tkt_short"));
+        assert_eq!((other["input"].clone(), other["result"].clone()), (json!(r#"{"form":"[redacted]","low":"[redacted]"}"#), json!("tkt_short")));
     }
 
     #[test]
