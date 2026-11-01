@@ -1,6 +1,7 @@
 [package]
 name = "rox-v1"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 description = "Mini App Protocol v1 pieces shared by the Buwiz Bot app and rox-broker: JCS, ed25519 keys, id grammars, tokens"
 publish = false
