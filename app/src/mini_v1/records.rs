@@ -433,11 +433,11 @@ mod tests {
             (tok.as_str(), "app.buwiz.ebirforms", 1, "taxprofile", "Dela Cruz Jane", "th1"));
         // same major: sent
         assert_eq!(r.model_tokens("th1", &[plugin("app.buwiz.ebirforms", "1.9.3", true)]).len(), 1);
-        assert!(r.model_tokens("th2", &[v1.clone()]).is_empty());
+        assert!(r.model_tokens("th2", std::slice::from_ref(&v1)).is_empty());
         // a new major: needs update, kept, not sent
         let v2 = plugin("app.buwiz.ebirforms", "2.0.0", true);
-        assert_eq!(status(a, &[v2.clone()]), Status::NeedsUpdate);
-        assert_eq!(status(a, &[v2.clone()]).label(), "needs update");
+        assert_eq!(status(a, std::slice::from_ref(&v2)), Status::NeedsUpdate);
+        assert_eq!(status(a, std::slice::from_ref(&v2)).label(), "needs update");
         assert!(r.model_tokens("th1", &[v2]).is_empty());
         assert_eq!(r.attachments.len(), 1, "the ticket is kept");
         // disabled or gone: not sent either

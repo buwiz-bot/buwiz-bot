@@ -8,6 +8,7 @@
 pub mod catalog;
 pub mod install;
 pub mod resolve;
+pub mod review;
 pub mod skills;
 
 use std::path::{Path, PathBuf};

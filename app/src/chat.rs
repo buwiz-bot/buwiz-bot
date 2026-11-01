@@ -2,6 +2,7 @@
 //! open thread's turns — user bubbles on the right, agent markdown on the
 //! left, reply quotes, reactions, and generated-app cards.
 
+use nsh_base::input;
 use nsh_core::prelude::*;
 use nsh_core::{TouchEvent, TouchPhase};
 
@@ -179,7 +180,6 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     let left = std::rc::Rc::new(std::cell::Cell::new(None::<(i64, bool)>));
     let first = std::rc::Rc::new(std::cell::Cell::new(true));
     {
-        let list = list.clone();
         let last_scroll = last_scroll.clone();
         effect(move || {
             let on = active.get();
@@ -193,9 +193,9 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                     fade.value(MotionChannel::Opacity).set(0.0);
                     return;
                 }
-                st.chat_list.replace(Some(list.clone()));
+                st.chat_list.replace(Some(list));
                 if first.replace(false) {
-                    open_at(opening, list.clone(), shown, fade);
+                    open_at(opening, list, shown, fade);
                     return;
                 }
                 // Shown again: where it was, unless a link names a turn.
@@ -225,7 +225,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         .bind_motion(&fade)
         // Hidden chats take no input.
         .pointer_events(move || if active.get() { PointerEvents::Auto } else { PointerEvents::None })
-        .child(new_messages_pill(list.clone()))
+        .child(new_messages_pill(list))
         .child({
         let cell_chat = mine.clone();
         virtual_list(
@@ -370,7 +370,6 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         .on_scroll({
             let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let mine = mine.clone();
-            let list = list.clone();
             let first_row = first_row.clone();
             let last_row = last_row.clone();
             let view_h = view_h.clone();
@@ -398,7 +397,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                 epoch.set(e);
                 let epoch = epoch.clone();
                 let (mine, list, first_row, last_scroll) =
-                    (mine.clone(), list.clone(), first_row.clone(), last_scroll.clone());
+                    (mine.clone(), list, first_row.clone(), last_scroll.clone());
                 let last_row = last_row.clone();
                 let view_h = view_h.clone();
                 spawn(async move {
@@ -526,7 +525,7 @@ fn new_messages_pill(list: ElementRef) -> impl IntoElement {
     when(
         || store().new_below.get().is_some(),
         move || {
-            let list = list.clone();
+            let list = list;
             view()
                 .absolute()
                 .left(px(0.0))
@@ -636,6 +635,12 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         agents_notice_row(n).into_element()
     } else if let Some(c) = t.consent.clone() {
         consent_row(c).into_element()
+    } else if let Some(n) = t.app_install.clone() {
+        app_install_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.app_uninstall.clone() {
+        app_uninstall_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.account_required.clone() {
+        account_required_row(n, chat.to_owned(), t.i).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -971,8 +976,7 @@ fn notice_row(n: RoutineNotice) -> impl IntoElement {
 fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
     let inst = c.instance.clone();
     let answered = move || {
-        let local = store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()));
-        local
+        store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()))
     };
     let (yes_hov, no_hov) = (signal(false), signal(false));
     let (c1, c2, c3) = (c.clone(), c.clone(), c.clone());
@@ -1040,6 +1044,223 @@ fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
     }))
 }
 
+/// A small button of an app card: `primary` filled, else bare;
+/// `label` is what gpui-agent finds it by.
+fn app_card_btn(caption: &str, label: String, primary: bool, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    text(caption.to_owned())
+        .text_size(px(12.0))
+        .font_weight(if primary { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+        .text_color(move || if primary || hov.get() { theme::TEXT } else { theme::MUTED })
+        .px_3()
+        .py(px(5.0))
+        .rounded(px(8.0))
+        .bg(move || match (primary, hov.get()) {
+            (true, true) => theme::ACTIVE,
+            (true, false) => theme::HOVER,
+            (false, _) => AdaptiveColor::TRANSPARENT,
+        })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .label(label)
+        .on_press(on)
+}
+
+/// An app card's frame (the routine consent card's).
+fn app_card_frame(label: String) -> View {
+    view()
+        .max_w(px(560.0))
+        .gap(px(8.0))
+        .px_3()
+        .py(px(10.0))
+        .rounded(px(12.0))
+        .bg(theme::SUBTLE)
+        .border(px(0.5))
+        .border_color(theme::BORDER_S)
+        .label(label)
+}
+
+fn app_quiet_line(line: String) -> AnyElement {
+    text(line).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(1).into_element()
+}
+
+/// A mini app the agent found (`app_install`): what it is and where it
+/// comes from, Connect Apps' review, a field per setting it needs (or the
+/// settings of an installed plugin that has them), then Install (the
+/// review's action) or Not now; once answered, a quiet line.
+fn app_install_row(n: crate::store::AppInstallNotice, chat: String, i: i64) -> impl IntoElement {
+    let (c1, n1) = (chat.clone(), n.clone());
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        let n = n1.clone();
+        if let Some(done) = n.answered(local.local()) {
+            return app_quiet_line(format!("{} {} · {done}", n.title, n.version));
+        }
+        let from = n.settings_from(local.picked.as_deref()).map(str::to_owned);
+        let action = n.review.action();
+        let mut c = app_card_frame(format!("Install {}?", n.title))
+            .child(
+                text(format!("{} {}", n.title, n.version))
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::TEXT),
+            )
+            .child(text(format!("By {} · {}", n.publisher, n.source)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(2))
+            .child(crate::plugins::review_details(&n.review));
+        for line in [n.skills_line(), n.accounts_line()].into_iter().flatten() {
+            c = c.child(text(line).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(3));
+        }
+        if !n.needs_env.is_empty() {
+            for (id, title) in n.env_from.iter() {
+                let on = from.as_deref() == Some(id.as_str());
+                let (ch, pick) = (chat.clone(), id.clone());
+                c = c.child(app_choice(format!("Use the settings of {title} ({id})"), on, move || {
+                    let pick = pick.clone();
+                    store().app_card(&ch, i, |c| c.picked = Some(pick));
+                }));
+            }
+            if !n.env_from.is_empty() {
+                let ch = chat.clone();
+                c = c.child(app_choice("Enter the settings here".to_owned(), from.is_none(), move || {
+                    store().app_card(&ch, i, |c| c.picked = Some(String::new()));
+                }));
+            }
+            if from.is_none() {
+                for e in &n.needs_env {
+                    c = c.child(app_env_field(chat.clone(), i, e.clone()));
+                }
+            }
+        }
+        let (ch1, ch2, n2, n3) = (chat.clone(), chat.clone(), n.clone(), n.clone());
+        let mut buttons = view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(app_card_btn(action, format!("{action} {}", n.title), true, move || store().app_install(&ch1, i, &n2)))
+            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                store().app_answer(&ch2, i, "app_install", &n3.id, "declined")
+            }));
+        if local.busy {
+            buttons = buttons.child(text("Installing…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        c = c.child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
+}
+
+/// One choice of where an install's settings come from: a dot, then
+/// what it is.
+fn app_choice(caption: String, on: bool, pick: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .label(caption.clone())
+        .on_press(pick)
+        .child(text(if on { "●" } else { "○" }).text_size(px(12.0)).text_color(if on { theme::TEXT } else { theme::MUTED }))
+        .child(text(caption).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(2).flex_shrink(1.0))
+}
+
+/// A setting the app needs, typed here (masked when secret): kept in
+/// memory until Install sends it; `label` is its key.
+fn app_env_field(chat: String, i: i64, e: crate::store::NeedsEnv) -> impl IntoElement {
+    let (c1, c2, k1, k2) = (chat.clone(), chat, e.key.clone(), e.key.clone());
+    view()
+        .gap(px(4.0))
+        .child(text(if e.label.is_empty() { e.key.clone() } else { format!("{} ({})", e.label, e.key) }).text_size(px(12.0)).text_color(theme::MUTED))
+        .child(
+            view().h(px(32.0)).rounded(px(8.0)).bg(theme::HOVER).px(px(10.0)).justify_center().child(
+                input()
+                    .label(e.key.clone())
+                    .value(move || {
+                        store().app_typed.with(|l| {
+                            l.iter().find(|(c, at, k, _)| *c == c1 && *at == i && *k == k1).map(|x| x.3.clone()).unwrap_or_default()
+                        })
+                    })
+                    .masked(e.secret)
+                    .auto_correct(false)
+                    .text_size(px(13.0))
+                    .text_color(theme::TEXT)
+                    .h(px(32.0))
+                    .on_change(move |t: &str| {
+                        let (ch, k, t) = (c2.clone(), k2.clone(), t.to_owned());
+                        store().app_typed.update(|l| match l.iter_mut().find(|(c, at, key, _)| *c == ch && *at == i && *key == k) {
+                            Some(x) => x.3 = t,
+                            None => l.push((ch, i, k, t)),
+                        });
+                    }),
+            ),
+        )
+}
+
+/// A mini app the agent would remove (`app_uninstall`): its question,
+/// Uninstall (what Connect Apps' Uninstall does) or Cancel; once
+/// answered, a quiet line.
+fn app_uninstall_row(n: crate::store::AppUninstallNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let local = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).map(|c| c.state.clone())).filter(|s| !s.is_empty());
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = local();
+        if let Some(done) = n.answered(local.as_deref()) {
+            return app_quiet_line(format!("{} · {done}", n.title));
+        }
+        let (ch1, ch2, id1, id2) = (chat.clone(), chat.clone(), n.id.clone(), n.id.clone());
+        app_card_frame(format!("Uninstall {}?", n.title))
+            .child(text(n.text.clone()).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(app_card_btn("Uninstall", format!("Uninstall {}", n.title), true, move || {
+                        store().app_answer(&ch1, i, "app_uninstall", &id1, "uninstalled")
+                    }))
+                    .child(app_card_btn("Cancel", "Cancel".to_owned(), false, move || {
+                        store().app_answer(&ch2, i, "app_uninstall", &id2, "cancelled")
+                    })),
+            )
+            .into_element()
+    }))
+}
+
+/// A tool that needs a missing account (`account_required`): Sign in
+/// (the broker opens the browser) or Not now; once the plugin list has the
+/// account connected, the quiet line "<label> · Connected".
+fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned());
+        let connected = listed.as_ref().is_some_and(|p| p.account_connected(&n.account));
+        if let Some(done) = n.answered(local.local(), connected) {
+            return app_quiet_line(done);
+        }
+        let label = listed.as_ref().map(|p| p.signin_label(&n.account)).unwrap_or_else(|| "default".to_owned());
+        let signing = store().v1.signing.with(|s| s.contains(&crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label)));
+        let (ch1, ch2, n1, n2) = (chat.clone(), chat.clone(), n.clone(), n.clone());
+        let mut buttons = view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
+            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
+            }));
+        if signing {
+            buttons = buttons.child(text("Waiting for the sign-in in your browser…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
+}
+
 /// An item's instruction in a routine's thread: what the routine gave the
 /// bot, captioned "Instruction from <routine>" — the user never typed it,
 /// so it is no bubble of theirs.
@@ -1093,7 +1314,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
     // shell.tsx:425 — the row's `hover` gates the action bar; during a
     // scroll `chatScrolling` skips the writes (every write is a commit).
     let hov = signal(false);
-    let hov2 = hov.clone();
+    let hov2 = hov;
     let bar_opacity = move || {
         if hov.get() && !store().chat_scrolling.get() {
             1.0f32
@@ -1371,7 +1592,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
     // shell.tsx:254 `hov` — gates the action bar's opacity; the writes are
     // skipped while `chatScrolling` (every write is a commit).
     let hov = signal(false);
-    let hov2 = hov.clone();
+    let hov2 = hov;
     let bar_opacity = move || {
         if hov.get() && !store().chat_scrolling.get() {
             1.0f32
@@ -1888,7 +2109,7 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
     // a 1.25 scale pop (120ms).
     let dot = move |e: &'static str| {
         let h = signal(false);
-        let (h1, h2, h3) = (h.clone(), h.clone(), h.clone());
+        let (h1, h2, h3) = (h, h, h);
         let e2 = e.to_owned();
         let cur = current.clone();
         let cur2 = current.clone();
@@ -1918,8 +2139,8 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
             .child(text(e).text_size(px(17.0)))
     };
     let plus_hov = signal(false);
-    let (ph1, ph2) = (plus_hov.clone(), plus_hov.clone());
-    let (grid_bg, grid_open, grid_when) = (grid.clone(), grid.clone(), grid.clone());
+    let (ph1, ph2) = (plus_hov, plus_hov);
+    let (grid_bg, grid_open, grid_when) = (grid, grid, grid);
     view()
         .gap(px(2.0))
         .px(px(6.0))
@@ -1974,7 +2195,7 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
                                     .iter()
                                     .map(|e| {
                                         let h = signal(false);
-                                        let (h1, h2) = (h.clone(), h.clone());
+                                        let (h1, h2) = (h, h);
                                         let e2 = e.to_owned();
                                         let cur = current_grid.clone();
                                         let cur2 = current_grid.clone();
@@ -2169,7 +2390,8 @@ mod tests {
             let mut config = EngineConfig::new(App::Rust(Root::new::<Rows>(|| ())));
             config.viewport = Size::new(px(900.0), px(4000.0));
             let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
-            let (mut children, mut labels, mut live): (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>) =
+            type NodeState = (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>);
+            let (mut children, mut labels, mut live): NodeState =
                 Default::default();
             // Until nothing comes for a while: a diagram lays out in a task.
             let deadline = Instant::now() + Duration::from_secs(10);

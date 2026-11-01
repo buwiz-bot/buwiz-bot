@@ -416,7 +416,7 @@ pub(crate) fn close_x(what: &'static str, on: impl Fn() + 'static) -> impl IntoE
         .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(text("✕").text_size(px(12.0)).text_color(theme::MUTED))
 }
 
@@ -446,7 +446,7 @@ pub(crate) fn btn(kind: Btn, label: &str, on: impl Fn() + 'static) -> impl IntoE
         .bg(move || if hov.get() { bg_hov } else { bg })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(text(label.to_owned()).number_of_lines(1).text_size(px(12.5)).line_height(px(16.0)).text_color(ink))
 }
 

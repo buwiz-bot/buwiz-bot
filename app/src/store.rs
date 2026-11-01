@@ -146,6 +146,277 @@ impl ConsentNotice {
     }
 }
 
+/// An environment value a mini app asks for at install (`needs_env`).
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct NeedsEnv {
+    pub key: String,
+    pub label: String,
+    pub secret: bool,
+}
+
+/// A `notice` turn the broker's `app_install` tool posted: a mini app,
+/// downloaded and inspected, waiting for the user's Install.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AppInstallNotice {
+    pub id: String,
+    pub title: String,
+    pub version: String,
+    pub publisher: String,
+    pub source: String,
+    /// What Install installs: the command, args, env and manifest hash,
+    /// with inspect's review and update.
+    pub review: crate::mini_v1::connect::Review,
+    pub needs_env: Vec<NeedsEnv>,
+    /// Installed plugins whose settings have every `needs_env` key:
+    /// (id, title).
+    pub env_from: Vec<(String, String)>,
+    /// A 2.1 package's install folder, sent back with Install ("" for 2.0).
+    pub package: String,
+    /// A 2.1 package's skills (names) and accounts; empty for 2.0.
+    pub skills: Vec<String>,
+    pub accounts: Vec<InstallAccount>,
+    pub text: String,
+    /// `pending`, `installed` or `declined`.
+    pub state: String,
+}
+
+/// An account a 2.1 package declares, as its install card names it.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct InstallAccount {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+    pub required: bool,
+}
+
+fn notice_state(v: &serde_json::Value) -> String {
+    Some(s(v, "state")).filter(|x| !x.is_empty()).unwrap_or_else(|| "pending".to_owned())
+}
+
+impl AppInstallNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "app_install" || s(v, "id").is_empty() {
+            return None;
+        }
+        let args: Vec<String> = list(v, "args").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+        let inspect = serde_json::json!({
+            "review": v.get("review").cloned().unwrap_or_default(),
+            "update": v.get("update").cloned().unwrap_or_default(),
+            "manifest": {"id": s(v, "id")},
+            "manifest_sha256": s(v, "manifest_sha256"),
+        });
+        let mut review = crate::mini_v1::connect::Review::of(&inspect, &s(v, "command"), &args);
+        review.env = v.get("env").filter(|e| e.is_object()).cloned();
+        Some(Self {
+            id: s(v, "id"),
+            title: s(v, "title"),
+            version: s(v, "version"),
+            publisher: s(v, "publisher"),
+            source: s(v, "source"),
+            review,
+            needs_env: list(v, "needs_env")
+                .iter()
+                .map(|e| NeedsEnv { key: s(e, "key"), label: s(e, "label"), secret: e.get("secret").and_then(|x| x.as_bool()).unwrap_or(false) })
+                .filter(|e| !e.key.is_empty())
+                .collect(),
+            env_from: list(v, "env_from").iter().map(|e| (s(e, "id"), s(e, "title"))).filter(|(i, _)| !i.is_empty()).collect(),
+            package: s(v, "package"),
+            skills: list(v, "skills").iter().filter_map(|k| k.as_str().map(str::to_owned)).filter(|k| !k.is_empty()).collect(),
+            accounts: list(v, "accounts")
+                .iter()
+                .map(|a| InstallAccount {
+                    id: s(a, "id"),
+                    provider: s(a, "provider"),
+                    label: s(a, "label"),
+                    required: a.get("required").and_then(|x| x.as_bool()).unwrap_or(false),
+                })
+                .filter(|a| !a.id.is_empty())
+                .collect(),
+            text,
+            state: notice_state(v),
+        })
+    }
+
+    /// Its state as the card shows it, the user's answer here (`local`)
+    /// over the one the chat last loaded: None while it still asks.
+    pub fn answered(&self, local: Option<&str>) -> Option<&'static str> {
+        match local.unwrap_or(&self.state) {
+            "installed" => Some("Installed"),
+            "declined" => Some("Not installed"),
+            _ => None,
+        }
+    }
+
+    /// "Skills: a, b" (None without skills).
+    pub fn skills_line(&self) -> Option<String> {
+        (!self.skills.is_empty()).then(|| format!("Skills: {}", self.skills.join(", ")))
+    }
+
+    /// "Accounts: Google account (sign in after install)": a required one
+    /// is offered after the install, the rest are optional.
+    pub fn accounts_line(&self) -> Option<String> {
+        if self.accounts.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = self
+            .accounts
+            .iter()
+            .map(|a| {
+                let name = if a.label.is_empty() { &a.id } else { &a.label };
+                format!("{name} ({})", if a.required { "sign in after install" } else { "optional" })
+            })
+            .collect();
+        Some(format!("Accounts: {}", names.join(", ")))
+    }
+
+    /// The installed plugin whose settings Install copies: `picked` is
+    /// the user's choice (None: not chosen, so the first offered; "": the
+    /// fields typed here). Only offered when it asks for settings at all.
+    pub fn settings_from(&self, picked: Option<&str>) -> Option<&str> {
+        if self.needs_env.is_empty() {
+            return None;
+        }
+        match picked {
+            None => self.env_from.first().map(|(i, _)| i.as_str()),
+            Some(p) => self.env_from.iter().find(|(i, _)| i == p).map(|(i, _)| i.as_str()),
+        }
+    }
+
+    /// The install route's body: `typed` (key, value) for its fields, or
+    /// every `needs_env` key from the installed plugin `from`.
+    pub fn install_body(&self, typed: &[(String, String)], from: Option<&str>) -> serde_json::Value {
+        let keys: Vec<String> = self.needs_env.iter().map(|e| e.key.clone()).collect();
+        let mut body = crate::mini_v1::connect::chat_install_body(&self.review, typed, from.map(|f| (f, keys.as_slice())));
+        if !self.package.is_empty() {
+            body["package"] = serde_json::json!(self.package);
+        }
+        body
+    }
+}
+
+/// A `notice` turn the broker's `app_uninstall` tool posted: Uninstall
+/// waits for the user's click.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AppUninstallNotice {
+    pub id: String,
+    pub title: String,
+    pub version: String,
+    pub text: String,
+    /// `pending`, `uninstalled` or `cancelled`.
+    pub state: String,
+}
+
+impl AppUninstallNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "app_uninstall" || s(v, "id").is_empty() {
+            return None;
+        }
+        Some(Self { id: s(v, "id"), title: s(v, "title"), version: s(v, "version"), text, state: notice_state(v) })
+    }
+
+    /// As [`AppInstallNotice::answered`].
+    pub fn answered(&self, local: Option<&str>) -> Option<&'static str> {
+        match local.unwrap_or(&self.state) {
+            "uninstalled" => Some("Uninstalled"),
+            "cancelled" => Some("Not uninstalled"),
+            _ => None,
+        }
+    }
+}
+
+/// A `notice` turn the broker posts when a tool needs a missing account
+/// (`account_required`): Sign in or Not now; once that account is
+/// connected, a quiet line.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AccountRequiredNotice {
+    pub plugin: String,
+    /// The plugin's title.
+    pub title: String,
+    pub account: String,
+    /// The manifest's account label ("Google account").
+    pub label: String,
+    pub provider: String,
+    pub text: String,
+    /// `pending` or `declined`.
+    pub state: String,
+}
+
+impl AccountRequiredNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        let plugin = Some(s(v, "plugin")).filter(|p| !p.is_empty()).unwrap_or_else(|| s(v, "id"));
+        if !v.is_object() || s(v, "kind") != "account_required" || plugin.is_empty() || s(v, "account").is_empty() {
+            return None;
+        }
+        Some(Self {
+            plugin,
+            title: s(v, "title"),
+            account: s(v, "account"),
+            label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| s(v, "account")),
+            provider: s(v, "provider"),
+            text,
+            state: notice_state(v),
+        })
+    }
+
+    /// "Sign in to Google account to use Google Workspace".
+    pub fn question(&self) -> String {
+        if self.title.is_empty() {
+            format!("Sign in to {}", self.label)
+        } else {
+            format!("Sign in to {} to use {}", self.label, self.title)
+        }
+    }
+
+    /// The quiet line it becomes, None while it asks: `connected` is the
+    /// plugin list's word on that account, `local` the answer here.
+    pub fn answered(&self, local: Option<&str>, connected: bool) -> Option<String> {
+        if connected {
+            return Some(format!("{} · Connected", self.label));
+        }
+        match local.unwrap_or(&self.state) {
+            "declined" => Some(format!("{} · Not signed in", self.label)),
+            _ => None,
+        }
+    }
+}
+
+/// An app install or uninstall card's answer and Install's progress here,
+/// before the chat reloads (chat, turn).
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AppCard {
+    pub chat: String,
+    pub i: i64,
+    /// "" while it asks, else the state it was answered with.
+    pub state: String,
+    pub busy: bool,
+    pub error: String,
+    /// The settings choice ([`AppInstallNotice::settings_from`]).
+    pub picked: Option<String>,
+}
+
+impl AppCard {
+    /// The answer to show (None while it asks).
+    pub fn local(&self) -> Option<&str> {
+        Some(self.state.as_str()).filter(|x| !x.is_empty())
+    }
+
+    /// Install pressed: busy, the last error gone.
+    pub fn start(&mut self) {
+        self.busy = true;
+        self.error.clear();
+    }
+
+    /// The call came back: answered with `state`, or `error` under the
+    /// buttons with the card kept.
+    pub fn finish(&mut self, r: Result<&str, String>) {
+        self.busy = false;
+        match r {
+            Ok(state) => self.state = state.to_owned(),
+            Err(e) => self.error = e,
+        }
+    }
+}
+
 /// The `bot` field of a `/threads` row — the persona behind the chat.
 #[derive(Clone, PartialEq, Default)]
 pub struct ThreadBot {
@@ -596,7 +867,7 @@ pub struct Turn {
     /// Interactive cards (approvals, choices, forms, plugin needs) under
     /// the reply, in document order: the optional `cards` array of raw wire
     /// objects (`cards::Card::from_wire`), or the dev hook's local turn.
-    pub cards: Vec<crate::cards::TurnCard>,
+    pub(crate) cards: Vec<crate::cards::TurnCard>,
     /// The v1 attachments that went to the model with this user message
     /// (`v1Attachments`, spec 10.3): (canonical token, title).
     pub v1_attachments: Vec<(String, String)>,
@@ -606,6 +877,12 @@ pub struct Turn {
     pub notice: Option<RoutineNotice>,
     /// A `notice` turn asking to switch on a routine (a card with Enable).
     pub consent: Option<ConsentNotice>,
+    /// A `notice` turn offering a mini app (a card with Install).
+    pub app_install: Option<AppInstallNotice>,
+    /// A `notice` turn asking to uninstall a mini app.
+    pub app_uninstall: Option<AppUninstallNotice>,
+    /// A `notice` turn asking to sign in to a mini app's account.
+    pub account_required: Option<AccountRequiredNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -1295,7 +1572,7 @@ impl RoxGroup {
 pub enum GroupRow {
     Bot(RoxBot),
     Chat(ThreadMeta),
-    Artifact(RoxApp),
+    Artifact(Box<RoxApp>),
     /// A server's mini app: its module name and title.
     App(String, String),
 }
@@ -1713,6 +1990,9 @@ impl Turn {
                 .collect(),
             notice: (s(v, "role") == "notice").then(|| v.get("notice").and_then(RoutineNotice::of)).flatten(),
             consent: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ConsentNotice::of(n, s(v, "text")))).flatten(),
+            app_install: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppInstallNotice::of(n, s(v, "text")))).flatten(),
+            app_uninstall: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppUninstallNotice::of(n, s(v, "text")))).flatten(),
+            account_required: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AccountRequiredNotice::of(n, s(v, "text")))).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -1818,7 +2098,7 @@ pub struct Store {
     /// Each interactive card's state by its key (`cards::CardState`): no
     /// entry is still open. Kept while Rox runs; a form's typed values are
     /// never here.
-    pub card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
+    pub(crate) card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
     /// A choice card's picks by card key (field id → option).
     pub card_picks: Signal<std::collections::HashMap<String, BTreeMap<String, String>>>,
     /// Plugin-needs cards whose "Remember for <bot>" is on.
@@ -1978,6 +2258,11 @@ pub struct Store {
     /// Consent cards answered here, before the chat reloads: (instance,
     /// "enabled" | "declined").
     pub routine_consented: Signal<Vec<(String, String)>>,
+    /// App install and uninstall cards answered or in progress here.
+    pub app_cards: Signal<Vec<AppCard>>,
+    /// What is typed into their fields: (chat, turn, key, value), in
+    /// memory only, taken out when Install sends it.
+    pub app_typed: Signal<Vec<(String, i64, String, String)>>,
     /// The templates connected servers suggest (`GET /routines/templates`);
     /// the one whose Enable is asking for the Google address (server, id),
     /// and what's typed there.
@@ -2148,6 +2433,10 @@ pub struct Store {
     /// The Setup page's draft values (field key → text) and its error.
     pub setup_vals: Signal<BTreeMap<String, String>>,
     pub setup_err: Signal<String>,
+    /// A catalog plugin's review before it installs (2.1 §2.2): what
+    /// `/plugins/inspect` staged, and the review page's error.
+    pub plain_review: Signal<Option<crate::plugin_review::PlainReview>>,
+    pub plain_review_err: Signal<String>,
     /// `pluginCat`/`pluginQuery` — the market's category pill + search.
     pub plugin_cat: Signal<String>,
     pub plugin_query: Signal<String>,
@@ -2327,6 +2616,8 @@ impl Store {
             routine_hook: signal(None),
             routine_edit: signal(None),
             routine_consented: signal(Vec::new()),
+            app_cards: signal(Vec::new()),
+            app_typed: signal(Vec::new()),
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
@@ -2405,6 +2696,8 @@ impl Store {
             plugins_rev: signal(String::new()),
             setup_vals: signal(BTreeMap::new()),
             setup_err: signal(String::new()),
+            plain_review: signal(None),
+            plain_review_err: signal(String::new()),
             plugin_query: signal(String::new()),
             drop_sel: signal(0),
             drop_hidden: signal(false),
@@ -2496,14 +2789,13 @@ impl Store {
         });
         self.fetch_groups();
         spawn(async move {
-            if let Some(v) = client::get("/state/rox-reactions").await {
-                if let Some(m) = v.get("state").and_then(|s| s.as_object()) {
+            if let Some(v) = client::get("/state/rox-reactions").await
+                && let Some(m) = v.get("state").and_then(|s| s.as_object()) {
                     self.art_reactions.set(
                         m.iter()
                             .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
                             .collect(),
                     );
-                }
             }
         });
         spawn(async move {
@@ -2516,14 +2808,13 @@ impl Store {
                 }
             }
             // Drafts before the chats: opening the active one restores its.
-            if let Some(v) = client::get("/state/rox-drafts").await {
-                if let Some(m) = v.get("state").and_then(|st| st.get("drafts")).and_then(|d| d.as_object()) {
+            if let Some(v) = client::get("/state/rox-drafts").await
+                && let Some(m) = v.get("state").and_then(|st| st.get("drafts")).and_then(|d| d.as_object()) {
                     *self.drafts.borrow_mut() = m
                         .iter()
                         .map(|(k, d)| (k.clone(), Draft::from_json(d)))
                         .filter(|(_, d)| !d.is_empty())
                         .collect();
-                }
             }
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
@@ -2836,7 +3127,7 @@ impl Store {
                     .cloned()
                     .map(GroupRow::Chat),
                 "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
-                _ => it.artifact.clone().map(GroupRow::Artifact),
+                _ => it.artifact.clone().map(|a| GroupRow::Artifact(Box::new(a))),
             })
             .collect()
     }
@@ -3044,10 +3335,9 @@ impl Store {
         {
             return r.state.clone();
         }
-        if let Some(st) = self.settled.get().as_ref() {
-            if st.bot == id {
+        if let Some(st) = self.settled.get().as_ref()
+            && st.bot == id {
                 return st.state.clone();
-            }
         }
         "idle".to_owned()
     }
@@ -3195,13 +3485,13 @@ impl Store {
                 .filter(|it| it.kind == "bot")
                 .filter_map(|it| vis.iter().find(|b| b.id == it.id).copied())
                 .collect();
-            items.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+            items.sort_by_key(|a| std::cmp::Reverse(count_of(&a.thread_id)));
             for b in items {
                 push(&b.thread_id);
             }
         }
         let mut un: Vec<&RoxBot> = vis.iter().filter(|b| !grouped(&b.id)).copied().collect();
-        un.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+        un.sort_by_key(|a| std::cmp::Reverse(count_of(&a.thread_id)));
         for b in un {
             push(&b.thread_id);
         }
@@ -3516,8 +3806,8 @@ impl Store {
                     .iter()
                     .map(|e| Kv(s(e, "key"), s(e, "value")))
                     .collect();
-                if rows.is_empty() {
-                    if let Some(obj) = v.get("state").and_then(|o| o.as_object()) {
+                if rows.is_empty()
+                    && let Some(obj) = v.get("state").and_then(|o| o.as_object()) {
                         rows = obj
                             .iter()
                             .take(10)
@@ -3530,7 +3820,6 @@ impl Store {
                                 Kv(k.clone(), v)
                             })
                             .collect();
-                    }
                 }
                 self.detail.set(rows);
             }
@@ -3634,10 +3923,9 @@ impl Store {
             let _ = client::post("/app/version", serde_json::json!({"name": app, "v": v})).await;
             self.refresh_thread_apps();
             self.refresh_threads();
-            if let Some(i) = self.app_details.get_untracked().filter(|i| i.name == app_name(&app)) {
-                if let Some(v) = client::get(&details_url(&i.name, &i.kind)).await {
+            if let Some(i) = self.app_details.get_untracked().filter(|i| i.name == app_name(&app))
+                && let Some(v) = client::get(&details_url(&i.name, &i.kind)).await {
                     self.app_details.set(Some(AppInfo::from_json(&v)));
-                }
             }
         });
     }
@@ -3787,10 +4075,9 @@ impl Store {
         self.ad_busy.set(String::new());
         match v {
             Some(v) if self::b(&v, "ok") => {
-                if let Some(cur) = self.app_details.get_untracked() {
-                    if cur.name == s(&v, "name") {
+                if let Some(cur) = self.app_details.get_untracked()
+                    && cur.name == s(&v, "name") {
                         self.app_details.set(Some(AppInfo::from_json(&v)));
-                    }
                 }
                 self.refresh_thread_apps();
                 // the chat's cards show the edited titles and file names
@@ -4629,12 +4916,41 @@ impl Store {
         }
     }
 
-    /// `installPlugin` (App.tsx:1407). A plugin with setup fields opens
-    /// its Setup page first (Grok Bot's "needs a few values" form).
+    /// `installPlugin` (App.tsx:1407), behind 2.1's review (D2): the
+    /// broker stages the plugin and the review page shows what it adds;
+    /// nothing installs until its Install.
     pub fn install_plugin(&'static self, name: &str) {
         if !self.plugin_busy.get_untracked().is_empty() {
             return;
         }
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        spawn(async move {
+            let r = crate::plugin_review::inspect(client::post_status, &name).await;
+            match r {
+                Ok(crate::plugin_review::Inspected::Review(r)) => {
+                    self.plugin_busy.set(String::new());
+                    self.plain_review_err.set(String::new());
+                    self.plain_review.set(Some(*r));
+                    self.push_nav("review", &name, "");
+                }
+                // the Node rollback has no review: Add installs as before
+                Ok(crate::plugin_review::Inspected::NoReview) => {
+                    self.plain_review.set(None);
+                    self.plugin_busy.set(String::new());
+                    self.install_unreviewed(&name);
+                }
+                Err(e) => {
+                    self.plugin_busy.set(String::new());
+                    crate::toast::show(e);
+                }
+            }
+        });
+    }
+
+    /// The one-step Add of the Node rollback (before 2.1): a plugin with
+    /// setup fields opens its Setup page first.
+    fn install_unreviewed(&'static self, name: &str) {
         let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
         if needs_setup {
             self.open_setup(name, "install");
@@ -4643,12 +4959,54 @@ impl Store {
         let name = name.to_owned();
         self.plugin_busy.set(name.clone());
         spawn(async move {
-            let _ = client::post("/plugins/install", serde_json::json!({"name": name})).await;
+            let _ = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, None)).await;
             self.fetch_plugins();
             self.fetch_mcp();
             self.fetch_plugin_detail(&name);
             self.plugin_busy.set(String::new());
         });
+    }
+
+    /// The review's Install: a plugin with setup values opens its Setup
+    /// page first (Grok Bot's "needs a few values" form), which installs.
+    pub fn install_reviewed(&'static self) {
+        let Some(r) = self.plain_review.get_untracked() else { return };
+        if !self.plugin_busy.get_untracked().is_empty() {
+            return;
+        }
+        let needs_setup = r.setup || self.plugins.get_untracked().iter().any(|p| p.name == r.name && p.setup);
+        if needs_setup {
+            self.open_setup(&r.name, "install");
+            return;
+        }
+        self.plugin_busy.set(r.name.clone());
+        spawn(async move {
+            let done = crate::plugin_review::install(client::post_any, &r, &BTreeMap::new()).await;
+            self.plugin_busy.set(String::new());
+            match done {
+                Ok(()) => self.reviewed_installed(&r.name),
+                Err(e) => self.plain_review_err.set(e),
+            }
+        });
+    }
+
+    /// The review's Cancel: nothing installs (the staged copy expires).
+    pub fn cancel_review(&'static self) {
+        self.plain_review.set(None);
+        self.plain_review_err.set(String::new());
+        self.pop_nav();
+    }
+
+    /// After a reviewed install: the lists refetched, and the Setup and
+    /// review pages closed.
+    fn reviewed_installed(&'static self, name: &str) {
+        self.plain_review.set(None);
+        self.fetch_plugins();
+        self.fetch_mcp();
+        self.fetch_plugin_detail(name);
+        while matches!(self.plugin_nav.get_untracked().last().map(|n| n.page.clone()).as_deref(), Some("setup" | "review")) {
+            self.pop_nav();
+        }
     }
 
     /// Push the Setup page (`mode` = "install" | "edit") with a fresh
@@ -4696,13 +5054,35 @@ impl Store {
         self.plugin_busy.set(name.clone());
         self.setup_err.set(String::new());
         spawn(async move {
+            if install {
+                // installs only what the review staged (D2)
+                let review = self.plain_review.get_untracked().filter(|r| r.name == name);
+                let Some(r) = review else {
+                    // no review: the Node rollback's one-step install
+                    let r = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, Some(&vals))).await;
+                    self.plugin_busy.set(String::new());
+                    match r {
+                        Some(v) if self::b(&v, "ok") => {
+                            self.fetch_plugins();
+                            self.fetch_mcp();
+                            self.fetch_plugin_detail(&name);
+                            self.pop_nav();
+                        }
+                        _ => self.setup_err.set("Couldn't add the plugin. Check the values and try again.".into()),
+                    }
+                    return;
+                };
+                let done = crate::plugin_review::install(client::post_any, &r, &vals).await;
+                self.plugin_busy.set(String::new());
+                match done {
+                    Ok(()) => self.reviewed_installed(&name),
+                    Err(e) => self.setup_err.set(e),
+                }
+                return;
+            }
             let values: serde_json::Map<String, serde_json::Value> =
                 vals.into_iter().map(|(k, v)| (k, serde_json::json!(v))).collect();
-            let r = if install {
-                client::post("/plugins/install", serde_json::json!({"name": name, "values": values})).await
-            } else {
-                client::post("/plugins/settings", serde_json::json!({"plugin": name, "values": values})).await
-            };
+            let r = client::post("/plugins/settings", serde_json::json!({"plugin": name, "values": values})).await;
             self.plugin_busy.set(String::new());
             match r {
                 Some(v) if self::b(&v, "ok") => {
@@ -4711,11 +5091,7 @@ impl Store {
                     self.fetch_plugin_detail(&name);
                     self.pop_nav();
                 }
-                _ => self.setup_err.set(if install {
-                    "Couldn't add the plugin. Check the values and try again.".into()
-                } else {
-                    "Couldn't save the values.".into()
-                }),
+                _ => self.setup_err.set("Couldn't save the values.".into()),
             }
         });
     }
@@ -5029,7 +5405,7 @@ impl Store {
     pub fn crop_zoom(&'static self, d: f64) {
         let c = self.draft_crop.get_untracked();
         self.draft_crop
-            .set(Self::clamp_crop(Crop { s: (c.s + d).max(1.0).min(3.0), ..c }));
+            .set(Self::clamp_crop(Crop { s: (c.s + d).clamp(1.0, 3.0), ..c }));
     }
     pub fn crop_drag(&'static self, from: Crop, dx: f64, dy: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
@@ -5040,7 +5416,7 @@ impl Store {
     }
     pub fn crop_scale(&'static self, from: Crop, dx: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
-            s: (from.s + (dx / 236.0) * 2.0).max(1.0).min(3.0),
+            s: (from.s + (dx / 236.0) * 2.0).clamp(1.0, 3.0),
             ..from
         }));
     }
@@ -5319,7 +5695,7 @@ impl Store {
     }
 
     /// The dev hook's cards as a local reply at the end of the open chat.
-    pub fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
+    pub(crate) fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
         let chat = self.active_id.get_untracked();
         if chat.is_empty() {
             crate::toast::show("Open a chat first");
@@ -5501,11 +5877,10 @@ impl Store {
             while queue.len() > 3 {
                 queue.pop_front();
             }
-            if shown.is_none() || shown_at.elapsed() >= HOLD {
-                if let Some(next) = queue.pop_front() {
+            if (shown.is_none() || shown_at.elapsed() >= HOLD)
+                && let Some(next) = queue.pop_front() {
                     shown = Some(next);
                     shown_at = std::time::Instant::now();
-                }
             }
             if let Some((state, label)) = shown.clone() {
                 let mins = shown_at.elapsed().as_secs() / 60;
@@ -5523,7 +5898,7 @@ impl Store {
             }
             // The reply streams into the transcript; the chat list less often.
             self.refresh_turns();
-            if tick % 4 == 0 {
+            if tick.is_multiple_of(4) {
                 self.refresh_threads();
             }
             tick += 1;
@@ -5774,12 +6149,12 @@ impl Store {
     pub fn file_raw_url(path: &str) -> String {
         // a file on this Mac outside the server's (`buwiz://view`'s)
         if path.starts_with('/') {
-            let enc = path.split('/').map(|p| crate::client::urlenc(p)).collect::<Vec<_>>().join("/");
+            let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
             return format!("file://{enc}");
         }
         let enc = path
             .split('/')
-            .map(|p| crate::client::urlenc(p))
+            .map(crate::client::urlenc)
             .collect::<Vec<_>>()
             .join("/");
         format!("{}/file/raw/{enc}", crate::client::backend())
@@ -6139,7 +6514,7 @@ impl Store {
     /// `closeP` — the pill's owner, a scroll tick or `reset_fresh` closes
     /// it. `i = -1` closes unconditionally.
     pub fn close_pill(&'static self, i: i64) {
-        if i < 0 || self.pill.get_untracked().as_ref().map_or(false, |a| a.i == i) {
+        if i < 0 || self.pill.get_untracked().as_ref().is_some_and(|a| a.i == i) {
             self.pill.set(None);
         }
     }
@@ -7024,7 +7399,7 @@ impl Store {
                 let hit = self.turns.with_untracked(|t| {
                     t.iter().position(|t| turn_is(t, &key)).map(|p| (p, t[p].i))
                 });
-                let list = self.chat_list.borrow().clone();
+                let list = *self.chat_list.borrow();
                 if let (Some((pos, i)), Some(list)) = (hit, list) {
                     list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
                     self.flash(i);
@@ -7549,6 +7924,158 @@ mod tests {
         let done = super::ConsentNotice { state: "declined".into(), ..c };
         assert_eq!(done.answered(None), Some("Not enabled"));
         assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "routine_consent"}})).consent.is_none(), "no instance, no card");
+    }
+
+    fn install_notice(extra: serde_json::Value) -> serde_json::Value {
+        let mut n = serde_json::json!({
+            "kind": "app_install", "id": "app.buwiz.google-workspace", "title": "Google Workspace", "version": "1.1.0",
+            "publisher": "Buwiz", "source": "https://github.com/buwiz-app/google-workspace/releases/tag/v1.1.0",
+            "command": "/apps/buwiz-gws", "args": ["mcp"], "env": {"GWS_MANIFEST": "/apps/manifest.signed.json"},
+            "manifest_sha256": "ab".repeat(32),
+            "review": {"title": "Google Workspace", "publisher": "Buwiz", "version": "1.1.0", "lines": ["Google Workspace 1.1.0 by Buwiz", "  Can call 4 tools"]},
+            "update": null,
+            "needs_env": [{"key": "GWS_UPSTREAM", "label": "workspace-mcp settings (JSON)", "secret": true},
+                {"key": "GWS_USER_EMAIL", "label": "Google address to read", "secret": false}],
+            "env_from": [],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            n[k] = v.clone();
+        }
+        serde_json::json!({"role": "notice", "text": "Install Google Workspace 1.1.0 from …?", "notice": n})
+    }
+
+    #[test]
+    fn app_install_and_uninstall_notices_are_cards_until_answered() {
+        use super::Turn;
+        let t = Turn::of(&install_notice(serde_json::json!({})));
+        assert!(t.consent.is_none() && t.notice.is_none() && t.app_uninstall.is_none());
+        let n = t.app_install.expect("an install card");
+        assert_eq!((n.title.as_str(), n.version.as_str(), n.publisher.as_str(), n.state.as_str()), ("Google Workspace", "1.1.0", "Buwiz", "pending"));
+        assert_eq!(n.review.lines.len(), 2);
+        assert_eq!((n.review.command.as_str(), n.review.args.as_slice(), n.review.id.as_str()), ("/apps/buwiz-gws", &["mcp".to_owned()][..], "app.buwiz.google-workspace"));
+        assert_eq!(n.review.action(), "Install");
+        assert_eq!(n.needs_env.iter().map(|e| (e.key.as_str(), e.secret)).collect::<Vec<_>>(), [("GWS_UPSTREAM", true), ("GWS_USER_EMAIL", false)]);
+        assert_eq!(n.answered(None), None, "it still asks");
+        assert_eq!(n.answered(Some("installed")), Some("Installed"));
+        assert_eq!(n.answered(Some("declined")), Some("Not installed"));
+        assert_eq!(super::AppInstallNotice { state: "installed".into(), ..n.clone() }.answered(None), Some("Installed"), "settled by the broker");
+        let mut gone = install_notice(serde_json::json!({}));
+        gone["notice"].as_object_mut().unwrap().remove("id");
+        assert!(Turn::of(&gone).app_install.is_none(), "no id, no card");
+
+        let u = Turn::of(&serde_json::json!({"role": "notice", "text": "Uninstall Google Workspace? It removes its pins, attachments and data.",
+            "notice": {"kind": "app_uninstall", "id": "app.buwiz.google-workspace", "title": "Google Workspace", "version": "1.1.0"}}));
+        let u = u.app_uninstall.expect("an uninstall card");
+        assert_eq!((u.state.as_str(), u.title.as_str()), ("pending", "Google Workspace"), "no state is pending");
+        assert!(u.text.starts_with("Uninstall Google Workspace?"));
+        assert_eq!((u.answered(None), u.answered(Some("uninstalled")), u.answered(Some("cancelled"))), (None, Some("Uninstalled"), Some("Not uninstalled")));
+        assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "app_uninstall", "title": "X"}})).app_uninstall.is_none());
+        // a user turn carrying one is no card
+        assert!(Turn::of(&serde_json::json!({"role": "user", "notice": install_notice(serde_json::json!({}))["notice"]})).app_install.is_none());
+    }
+
+    #[test]
+    fn a_2_1_install_card_names_its_skills_and_accounts() {
+        use super::Turn;
+        let old = Turn::of(&install_notice(serde_json::json!({}))).app_install.unwrap();
+        assert_eq!((old.skills_line(), old.accounts_line()), (None, None), "a 2.0 notice has neither");
+        let n = Turn::of(&install_notice(serde_json::json!({
+            "skills": ["triage-inbox", "draft-reply"],
+            "accounts": [{"id": "google", "provider": "google", "label": "Google account", "required": true},
+                {"id": "drive", "provider": "oauth:https://auth.example.com", "label": "Drive", "required": false}],
+        })))
+        .app_install
+        .unwrap();
+        assert_eq!(n.skills_line().as_deref(), Some("Skills: triage-inbox, draft-reply"));
+        assert_eq!(n.accounts_line().as_deref(), Some("Accounts: Google account (sign in after install), Drive (optional)"));
+        assert_eq!(n.accounts[1].provider, "oauth:https://auth.example.com");
+        // a 2.1 install sends its package folder back; a 2.0 one sends none
+        assert!(old.install_body(&[], None).get("package").is_none());
+        let p = Turn::of(&install_notice(serde_json::json!({"package": "/data/v1/apps/app.buwiz.google-workspace/1.2.0"}))).app_install.unwrap();
+        let b = p.install_body(&[], None);
+        assert_eq!((b["package"].clone(), b["command"].clone()), (serde_json::json!("/data/v1/apps/app.buwiz.google-workspace/1.2.0"), serde_json::json!("/apps/buwiz-gws")));
+        let p2 = Turn::of(&install_notice(serde_json::json!({"package": "/pkg", "env_from": [{"id": "x.y.z", "title": "Z"}]}))).app_install.unwrap();
+        assert_eq!(p2.install_body(&[], p2.settings_from(None))["package"], "/pkg", "with settings copied too");
+    }
+
+    #[test]
+    fn an_account_required_notice_asks_until_declined_or_connected() {
+        use super::Turn;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Sign in to Google account",
+            "notice": {"kind": "account_required", "plugin": "app.buwiz.google-workspace", "title": "Google Workspace",
+                "account": "google", "label": "Google account", "provider": "google", "state": "pending"}}));
+        assert!(t.app_install.is_none() && t.consent.is_none() && t.notice.is_none());
+        let n = t.account_required.expect("a sign-in card");
+        assert_eq!((n.plugin.as_str(), n.account.as_str(), n.provider.as_str()), ("app.buwiz.google-workspace", "google", "google"));
+        assert_eq!(n.question(), "Sign in to Google account to use Google Workspace");
+        assert_eq!(n.answered(None, false), None, "it asks");
+        assert_eq!(n.answered(Some("declined"), false).as_deref(), Some("Google account · Not signed in"), "Not now, before the chat reloads");
+        assert_eq!(n.answered(None, true).as_deref(), Some("Google account · Connected"), "signed in from the card or the page");
+        assert_eq!(n.answered(Some("declined"), true).as_deref(), Some("Google account · Connected"));
+        let settled = super::AccountRequiredNotice { state: "declined".into(), ..n.clone() };
+        assert_eq!(settled.answered(None, false).as_deref(), Some("Google account · Not signed in"));
+        for bad in [serde_json::json!({"kind": "account_required", "account": "google"}), serde_json::json!({"kind": "account_required", "plugin": "x.y.z"})] {
+            assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": bad})).account_required.is_none());
+        }
+        let by_id = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "id": "x.y.z", "account": "google"}}));
+        assert_eq!(by_id.account_required.unwrap().plugin, "x.y.z", "the plugin from its id");
+        let no_label = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google"}}));
+        assert_eq!(no_label.account_required.unwrap().question(), "Sign in to google");
+    }
+
+    #[test]
+    fn an_app_cards_answer_and_error_are_local_until_the_chat_reloads() {
+        let mut c = super::AppCard { chat: "c1".into(), i: 4, ..Default::default() };
+        assert_eq!(c.local(), None);
+        c.start();
+        assert!(c.busy);
+        c.finish(Err("no build for linux-riscv64".into()));
+        assert_eq!((c.busy, c.local(), c.error.as_str()), (false, None, "no build for linux-riscv64"), "the card stays with the error");
+        c.start();
+        assert!(c.error.is_empty(), "a new press clears it");
+        c.finish(Ok("installed"));
+        assert_eq!(c.local(), Some("installed"));
+    }
+
+    #[test]
+    fn install_sends_what_was_reviewed_with_the_settings() {
+        use super::Turn;
+        let n = Turn::of(&install_notice(serde_json::json!({}))).app_install.unwrap();
+        let typed = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        // plain
+        let b = n.install_body(&[], n.settings_from(None));
+        assert_eq!(b, serde_json::json!({"command": "/apps/buwiz-gws", "args": ["mcp"], "env": {"GWS_MANIFEST": "/apps/manifest.signed.json"}, "manifest_sha256": "ab".repeat(32)}));
+        // typed values go over its env; empty ones are left out
+        let b = n.install_body(&typed(&[("GWS_UPSTREAM", "{\"a\":1}"), ("GWS_USER_EMAIL", "")]), None);
+        assert_eq!(b["env"], serde_json::json!({"GWS_MANIFEST": "/apps/manifest.signed.json", "GWS_UPSTREAM": "{\"a\":1}"}));
+        assert!(b.get("env_from").is_none());
+        // the settings of an installed plugin: offered first, every key, nothing typed
+        let n2 = Turn::of(&install_notice(serde_json::json!({"env_from": [{"id": "dev.goldcoders.google-workspace", "title": "Google Workspace"}]}))).app_install.unwrap();
+        assert_eq!(n2.settings_from(None), Some("dev.goldcoders.google-workspace"), "on by default");
+        assert_eq!(n2.settings_from(Some("")), None, "typed here instead");
+        assert_eq!(n2.settings_from(Some("other.plugin")), None);
+        let b = n2.install_body(&typed(&[("GWS_UPSTREAM", "secret")]), n2.settings_from(None));
+        assert_eq!(b["env_from"], "dev.goldcoders.google-workspace");
+        assert_eq!(b["env_from_keys"], serde_json::json!(["GWS_UPSTREAM", "GWS_USER_EMAIL"]));
+        assert_eq!(b["env"], serde_json::json!({"GWS_MANIFEST": "/apps/manifest.signed.json"}), "no typed value with env_from");
+        assert!(!b.to_string().contains("secret"));
+        // no settings needed: no choice
+        let n3 = Turn::of(&install_notice(serde_json::json!({"needs_env": [], "env_from": [{"id": "x.y.z", "title": "Z"}]}))).app_install.unwrap();
+        assert_eq!(n3.settings_from(None), None);
+        // an update adding permissions: Approve and update approves them
+        let wider = Turn::of(&install_notice(serde_json::json!({"update": {"from_version": "1.0.0", "to_version": "1.1.0", "downgrade": false, "added_permissions": ["Can call gws_send"]}})))
+            .app_install
+            .unwrap();
+        assert_eq!(wider.review.action(), "Approve and update");
+        let b = wider.install_body(&[], None);
+        assert_eq!((b["approve_permissions"].clone(), b.get("allow_downgrade")), (serde_json::json!(true), None));
+        // an older version: Install older version allows the downgrade
+        let older = Turn::of(&install_notice(serde_json::json!({"update": {"from_version": "1.2.0", "to_version": "1.1.0", "downgrade": true, "added_permissions": []}})))
+            .app_install
+            .unwrap();
+        assert_eq!(older.review.action(), "Install older version");
+        let b = older.install_body(&[], None);
+        assert_eq!((b["allow_downgrade"].clone(), b.get("approve_permissions")), (serde_json::json!(true), None));
     }
 
     #[test]

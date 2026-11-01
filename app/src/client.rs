@@ -110,13 +110,14 @@ pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json:
     serde_json::from_str(&res.text()).ok()
 }
 
-/// DELETE `path`.
-pub async fn del(path: &str) -> Option<serde_json::Value> {
-    let res = fetch(req("DELETE", path)).await.ok()?;
-    if !res.ok() {
-        return None;
-    }
-    serde_json::from_str(&res.text()).ok()
+/// [`post_any`] with the status: `(status, JSON body or null)`; `None`
+/// only when the broker can't be reached.
+pub async fn post_status(path: &str, body: serde_json::Value) -> Option<(u16, serde_json::Value)> {
+    let mut r = req("POST", path);
+    r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+    r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
+    let res = fetch(r).await.ok()?;
+    Some((res.head.status, serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null)))
 }
 
 /// Fire-and-forget POST used by mutations (rename, delete, react…).
