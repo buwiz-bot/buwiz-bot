@@ -535,3 +535,38 @@ async fn magt_04_a_remote_answer_that_reads_signed_out_marks_it_and_the_next_cal
     let _ = fx.kill();
     let _ = fx.wait();
 }
+
+#[tokio::test]
+async fn agt_ceiling_a_switched_off_shell_run_is_neither_offered_nor_runnable() {
+    use crate::hub::store::{Bot, Ceiling};
+    let fake = Fake::new("");
+    let ctx = with_plugins("ceiling", &fake);
+    ctx.store
+        .write(|s| {
+            let mut ann = Bot::new("ann", "Ann", "star", "#FF309B", None);
+            ann.tools = Ceiling { rows: vec![json!({"name": "shell_run", "kind": "builtin", "enabled": false}), json!({"name": "fetch_url", "kind": "builtin", "enabled": true})], version: 1 };
+            s.bots.push(ann);
+            s.bots.push(Bot::new("bob", "Bob", "blob", "#1084FE", None));
+        })
+        .unwrap();
+    // bob's ceiling is untouched: everything is offered and runs
+    let bob = run_in(&ctx, TurnCtx { acting_bot: Some("bob".into()), ..TurnCtx::default() });
+    let all = names(&bob).await;
+    assert!(all.contains(&"shell_run".to_owned()) && all.contains(&"fetch_url".to_owned()));
+    assert_eq!(super::ceiling::refusal(&ctx, &bob.turn, "shell_run"), None);
+    // ann's switches shell_run off: not offered, and a call is refused as
+    // a result the model reads, before builtin::shell_run is reached
+    let ann = run_in(&ctx, TurnCtx { acting_bot: Some("ann".into()), ..TurnCtx::default() });
+    let offered = names(&ann).await;
+    assert!(!offered.contains(&"shell_run".to_owned()), "a switched-off tool is not offered: {offered:?}");
+    assert!(offered.contains(&"fetch_url".to_owned()));
+    assert!(!offered.contains(&"generate_image".to_owned()), "a built-in without a row is off once rows exist");
+    assert!(offered.contains(&"fx_echo".to_owned()), "a v1 plugin's tool has no row and is left alone");
+    let why = super::ceiling::refusal(&ctx, &ann.turn, "shell_run").expect("refused");
+    assert!(why.starts_with("tool refused: `shell_run` is switched off"), "{why}");
+    assert_eq!(super::ceiling::refusal(&ctx, &ann.turn, "fetch_url"), None);
+    assert!(super::ceiling::refusal(&ctx, &ann.turn, "mcp_acme_echo").is_some(), "an MCP tool of a server without a row is refused");
+    // the global skills switch still narrows under the ceiling
+    let r = call(&ann, "fetch_url", json!({})).await;
+    assert_ne!(r.content, json!("tool refused"), "an allowed tool still dispatches");
+}
