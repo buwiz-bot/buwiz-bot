@@ -148,7 +148,12 @@ pub type Deferred = Value;
 pub async fn surface(run: &Run) -> (Vec<Value>, Vec<Deferred>) {
     let ctx = &run.ctx;
     let bot = ctx.store.read(|s| botctx::bot_of(s, &run.turn).map(|b| b.id.clone())).unwrap_or_default();
-    let servers = if run.turn.surface.is_some() { Vec::new() } else { rows(ctx, "WHERE enabled=1 AND (bot IS NULL OR bot=?)", &[&bot]) };
+    let mut servers = if run.turn.surface.is_some() { Vec::new() } else { rows(ctx, "WHERE enabled=1 AND (bot IS NULL OR bot=?)", &[&bot]) };
+    // the bot's ceiling narrows the global switch: a server it switched off
+    // is neither callable nor left to load
+    if let Some(c) = super::ceiling::of_turn(ctx, &run.turn) {
+        servers.retain(|r| c.allows(&s(r, "id")));
+    }
     let loaded = loaded_for(&run.thread_id());
     let (mut defs, mut deferred) = (Vec::new(), Vec::new());
     for r in &servers {
@@ -219,6 +224,9 @@ pub async fn app_tools_load(run: &Run, input: &Value) -> Out {
     let ctx = &run.ctx;
     let id = input.get("app").filter(|a| !a.is_null()).map(js::string_of).unwrap_or_default();
     let server = row(ctx, "WHERE id=? AND enabled=1", &[&id]);
+    if server.is_some() && super::ceiling::of_turn(ctx, &run.turn).is_some_and(|c| !c.allows(&id)) {
+        return Out::err(super::ceiling::refusal_text(&format!("app `{id}`")));
+    }
     let plugins = super::v1::view(ctx);
     if server.is_none() {
         if let Some(p) = plugins.rows().into_iter().find(|r| r.short == id && r.enabled) {

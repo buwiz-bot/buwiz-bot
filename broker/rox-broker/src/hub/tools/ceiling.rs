@@ -31,6 +31,22 @@ pub struct Known {
     pub description: String,
     pub label: Option<String>,
     pub connector: Option<String>,
+    /// The global switch (`/mcp/tools/state`, `/skills/state`): off here
+    /// stays off whatever the ceiling says. Built-ins have none.
+    pub on: bool,
+}
+
+/// A skill's row name. Skill ids and MCP server ids are both slugs of a
+/// name, so a skill and a server called "github" would otherwise share
+/// one row and one switch.
+pub fn skill_row(id: &str) -> String {
+    format!("skill:{id}")
+}
+
+/// What the model reads when the ceiling refuses `what` (fail closed,
+/// `opengrok-policy`: a refusal is a result, not a panic).
+pub fn refusal_text(what: &str) -> String {
+    format!("tool refused: {what} is switched off in this Bot's tool ceiling. Carry on without it, or ask the person to switch it on in the Bot's Tools.")
 }
 
 /// Every row a bot's ceiling can switch, in the order the card shows
@@ -49,6 +65,7 @@ pub fn known(ctx: &HubCtx, bot: &Bot) -> Vec<Known> {
             description: t.get("description").map(js::string_of).unwrap_or_default(),
             label: None,
             connector: None,
+            on: true,
         })
         .collect();
     for r in mcp::rows(ctx, "WHERE bot IS NULL OR bot=? ORDER BY rowid", &[&bot.id]) {
@@ -58,18 +75,19 @@ pub fn known(ctx: &HubCtx, bot: &Bot) -> Vec<Known> {
         }
         let name = r.get("name").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_else(|| id.clone());
         let connector = r.get("transport").filter(|v| js::truthy(v)).map(js::string_of);
-        out.push(Known { name: id, kind: KIND_PLUGIN, description: String::new(), label: Some(name), connector });
+        let on = r.get("enabled").is_none_or(js::truthy);
+        out.push(Known { name: id, kind: KIND_PLUGIN, description: String::new(), label: Some(name), connector, on });
     }
     let skills = ctx.db.with(|db| {
-        let mut st = db.prepare("SELECT id, name, description FROM skills ORDER BY created_at")?;
-        let r = st.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))?;
+        let mut st = db.prepare("SELECT id, name, description, enabled FROM skills ORDER BY created_at")?;
+        let r = st.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<i64>>(3)?)))?;
         r.collect::<rusqlite::Result<Vec<_>>>()
     });
-    for (id, name, description) in skills.unwrap_or_default() {
+    for (id, name, description, enabled) in skills.unwrap_or_default() {
         if id.is_empty() {
             continue;
         }
-        out.push(Known { name: id, kind: KIND_SKILL, description: description.unwrap_or_default(), label: name, connector: None });
+        out.push(Known { name: skill_row(&id), kind: KIND_SKILL, description: description.unwrap_or_default(), label: name, connector: None, on: enabled != Some(0) });
     }
     out
 }
@@ -90,6 +108,9 @@ pub fn rows(ctx: &HubCtx, bot: &Bot) -> Vec<Value> {
             }
             if let Some(cn) = &k.connector {
                 row["connector"] = json!(cn);
+            }
+            if !k.on {
+                row["available"] = json!(false);
             }
             if let Some(stored) = c.row(&k.name).and_then(Value::as_object) {
                 for (key, v) in stored {
@@ -178,6 +199,12 @@ pub fn row_for(name: &str) -> Option<String> {
     mcp::parse_mcp_name(name).map(|(server, _)| server)
 }
 
+/// Whether `ceiling` lets the bot load the app `id` offers to load
+/// (`app_tools_load`): an MCP server by its row; a v1 plugin has none.
+pub fn offers_app(ctx: &HubCtx, ceiling: &Ceiling, id: &str) -> bool {
+    mcp::rows(ctx, "WHERE id=?", &[&id]).is_empty() || ceiling.allows(id)
+}
+
 /// Whether `ceiling` offers a tool named `name` to the model.
 pub fn offers(ceiling: &Ceiling, name: &str) -> bool {
     match row_for(name) {
@@ -204,7 +231,7 @@ pub fn refusal(ctx: &HubCtx, turn: &TurnCtx, name: &str) -> Option<String> {
         Some(row) if row != name => format!("the server `{row}` ({name})"),
         _ => format!("`{name}`"),
     };
-    Some(format!("tool refused: {what} is switched off in this Bot's tool ceiling. Carry on without it, or ask the person to switch it on in the Bot's Tools."))
+    Some(refusal_text(&what))
 }
 
 #[cfg(test)]

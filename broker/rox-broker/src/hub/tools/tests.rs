@@ -566,7 +566,14 @@ async fn agt_ceiling_a_switched_off_shell_run_is_neither_offered_nor_runnable() 
     assert!(why.starts_with("tool refused: `shell_run` is switched off"), "{why}");
     assert_eq!(super::ceiling::refusal(&ctx, &ann.turn, "fetch_url"), None);
     assert!(super::ceiling::refusal(&ctx, &ann.turn, "mcp_acme_echo").is_some(), "an MCP tool of a server without a row is refused");
-    // the global skills switch still narrows under the ceiling
     let r = call(&ann, "fetch_url", json!({})).await;
     assert_ne!(r.content, json!("tool refused"), "an allowed tool still dispatches");
+    // a server the ceiling switched off cannot be started through the loader either
+    ctx.db.with(|c| c.execute("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at) VALUES('acme','Acme','','[]','{}',1,1)", [])).unwrap();
+    let c = super::ceiling::of_turn(&ctx, &ann.turn).unwrap();
+    assert!(!super::ceiling::offers_app(&ctx, &c, "acme") && super::ceiling::offers_app(&ctx, &c, "fx"), "a v1 plugin has no row");
+    let r = super::mcp::app_tools_load(&ann, &json!({"app": "acme"})).await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(r.content.as_str().unwrap_or_default().starts_with("tool refused: app `acme` is switched off"), "{:?}", r.content);
+    assert!(!names(&ann).await.iter().any(|n| n.starts_with("mcp_acme_")), "its tools are not surfaced");
 }

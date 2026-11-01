@@ -179,7 +179,7 @@ pub fn private_skills_inject_under(ctx: &HubCtx, ceiling: Option<&Ceiling>) -> S
         r.collect::<rusqlite::Result<Vec<_>>>()
     });
     let Ok(rows) = rows else { return String::new() };
-    let rows: Vec<(Value, Value, Value)> = rows.into_iter().filter(|(_, _, _, id)| ceiling.is_none_or(|c| c.allows(id))).map(|(n, d, b, _)| (n, d, b)).collect();
+    let rows: Vec<(Value, Value, Value)> = rows.into_iter().filter(|(_, _, _, id)| ceiling.is_none_or(|c| c.allows(&crate::hub::tools::ceiling::skill_row(id)))).map(|(n, d, b, _)| (n, d, b)).collect();
     if rows.is_empty() {
         return String::new();
     }
