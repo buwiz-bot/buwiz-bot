@@ -3,8 +3,8 @@ target/
 *.log
 .DS_Store
 .env
-# the owner's signed rox-gws manifest (scripts/gws-install-wizard), a release artifact
-broker/rox-gws/manifest.signed.json
+# the owner's signed buwiz-gws manifest (scripts/gws-install-wizard), a release artifact
+plugins/google-workspace/manifest.signed.json
 
 # Private, managed by stow (hexuria/rox-stow)
 .stow/
