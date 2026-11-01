@@ -49,6 +49,11 @@ pub(crate) enum UserFormReply {
 pub(crate) async fn call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
     let url = format!("{}{path}", client::backend());
     let mut r = HttpRequest::new(method, url);
+    if client::is_host_route(path)
+        && let Some(token) = client::host_token()
+    {
+        r.headers.push(("X-Buwiz-Host".to_owned(), token));
+    }
     if let Some(body) = body {
         r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
         r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
