@@ -556,7 +556,9 @@ pub(crate) fn pane() -> impl IntoElement {
     });
     view().test_id("computer-pane").child(dynamic(|| {
         let Some(b) = store().active_bot() else {
-            return view().into_element();
+            // a plain chat: the app's own (asleep) computer, as before
+            let name = crate::app_name().to_owned();
+            return screen_tile(&name, "blob", &Computer::default(), &Pane::default()).into_element();
         };
         let p = pane_signal().get();
         if p.bot != b.id {
