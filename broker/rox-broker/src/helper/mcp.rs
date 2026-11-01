@@ -1,5 +1,5 @@
 //! The stdio MCP client the helper hosts plugins and servers with: the
-//! `rox-mcp` crate, which rox-gws shares for its upstream.
+//! `rox-mcp` crate (buwiz-gws in buwiz-app/google-workspace keeps a copy).
 
 pub use rox_mcp::*;
 

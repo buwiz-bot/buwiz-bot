@@ -87,8 +87,8 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           if [ -n "$GWS_MANIFEST_JSON" ]; then
-            printf '%s' "$GWS_MANIFEST_JSON" > "$RUNNER_TEMP/rox-gws.manifest.json"
-            export ROX_GWS_MANIFEST="$RUNNER_TEMP/rox-gws.manifest.json"
+            printf '%s' "$GWS_MANIFEST_JSON" > "$RUNNER_TEMP/buwiz-gws.manifest.json"
+            export BUWIZ_GWS_MANIFEST="$RUNNER_TEMP/buwiz-gws.manifest.json"
           else
             echo "::warning::GWS_MANIFEST_JSON unset: this build can't provision Google Workspace"
           fi
@@ -183,4 +183,4 @@ jobs:
         shell: bash
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/rox-gws.manifest.json"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/buwiz-gws.manifest.json"
