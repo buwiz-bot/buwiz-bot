@@ -59,8 +59,8 @@ pub(crate) fn pane() -> impl IntoElement {
         )
 }
 
-/// `avatarEditing`'s floating editor card — mounted at the root layers so
-/// its scrim covers the whole window (App.tsx:3163).
+// `avatarEditing`'s floating editor card — mounted at the root layers so
+// its scrim covers the whole window (App.tsx:3163).
 
 /// `pane top` — the window-drag strip's right side: the theme toggle and
 /// the close button, both 36pt circles (App.tsx:2474).
@@ -471,7 +471,7 @@ fn details_tab() -> impl IntoElement {
             let listed = store().v1.listed.get();
             match routines_section(store().active_routine(), &listed, &bot, crate::store::checked_at) {
                 RoutinesSection::This(r) => {
-                    view().child(pane_label("This routine".into())).child(this_routine(r)).into_element()
+                    view().child(pane_label("This routine".into())).child(this_routine(*r)).into_element()
                 }
                 RoutinesSection::List => view()
                     .child(pane_label("Routines".into()))
@@ -901,7 +901,7 @@ fn participant_row(id: String, name: String) -> AnyElement {
 /// that routine (`This`); elsewhere the chat's routines (`List`).
 #[derive(Debug, Clone, PartialEq)]
 enum RoutinesSection {
-    This(ThisRoutine),
+    This(Box<ThisRoutine>),
     List,
 }
 
@@ -959,7 +959,7 @@ fn routines_section(
         out.enabled = x.enabled;
         out.pending = pending;
     }
-    RoutinesSection::This(out)
+    RoutinesSection::This(Box::new(out))
 }
 
 /// A small text action on a routine (Run now, Pause, Open, Delete).
@@ -1482,9 +1482,9 @@ fn lib_chip(kind: &'static str, label: &'static str, n: usize, on: bool) -> impl
 fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
     let a0 = a.get();
     let n_chip = a0.app.clone();
-    let a_ctx = a.clone();
+    let a_ctx = a;
     let focus = a0.app.clone();
-    let press = a.clone();
+    let press = a;
     view()
         .child(
             view()
@@ -1512,7 +1512,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 // The square tile: an app's icon, an image's thumbnail, a
                 // file's set icon or its type tile.
                 .child({
-                    let a = a.clone();
                     dynamic(move || crate::appdetails::artifact_tile(&a.get(), 28.0).into_element())
                 })
                 .child(
@@ -1520,7 +1519,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .flex_1()
                         .child(
                             text({
-                                let a = a.clone();
                                 move || a.get().title
                             })
                             .text_size(px(13.0))
@@ -1529,7 +1527,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         )
                         .child(
                             text({
-                                let a = a.clone();
                                 move || subtitle(&a.get())
                             })
                             .text_size(px(12.0))
@@ -1539,11 +1536,10 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 )
                 .child(when(
                     {
-                        let a = a.clone();
                         move || a.get().v > 0
                     },
                     move || {
-                        let a2 = a.clone();
+                        let a2 = a;
                         crate::versions::version_chip(n_chip.clone(), move || {
                             let a = a2.get();
                             (a.v, a.versions)
@@ -2077,7 +2073,7 @@ fn bot_tab() -> impl IntoElement {
                                 // the env memo when the theme flips.
                                 .bg(move || {
                                     Hsla::from_str(&crate::mark::ink_of(c, !dark()))
-                                        .unwrap_or_else(|_| theme::TEXT.dark)
+                                        .unwrap_or(theme::TEXT.dark)
                                 }),
                         )
                         .into_element()
@@ -2504,7 +2500,7 @@ mod tests {
         let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
         assert_eq!(
             routines_section(Some(open.clone()), &listed, "Piccolo", at),
-            RoutinesSection::This(ThisRoutine {
+            RoutinesSection::This(Box::new(ThisRoutine {
                 name: "BIR payments".into(),
                 plugin: "app.buwiz.ebirforms".into(),
                 id: "payments".into(),
@@ -2517,7 +2513,7 @@ mod tests {
                 pending: false,
                 chat: "t2".into(),
                 go: "Go to Piccolo chat".into(),
-            })
+            }))
         );
         // a failure reads as one; before the plugins are listed, the name
         // and the way back still show
