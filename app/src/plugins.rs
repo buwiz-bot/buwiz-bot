@@ -232,7 +232,10 @@ fn modal() -> impl IntoElement {
                                                             when(|| store().plugin_page() == "v1plugin", v1_plugin_page)
                                                                 .otherwise(|| {
                                                                     when(|| store().plugin_page() == "v1install", v1_install_page)
-                                                                        .otherwise(skill_page)
+                                                                        .otherwise(|| {
+                                                                            when(|| store().plugin_page() == "review", plain_review_page)
+                                                                                .otherwise(skill_page)
+                                                                        })
                                                                 })
                                                         })
                                                 })
@@ -3775,6 +3778,49 @@ pub(crate) fn review_details(r: &crate::mini_v1::connect::Review) -> View {
         v = v.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
     }
     v
+}
+
+/// A catalog plugin's review before it installs (2.1 §2.2, D2): who
+/// publishes it, that it's unsigned, its servers (command or URL, the
+/// environment's names), its skills and what it lists but never runs;
+/// Cancel changes nothing, Install installs what was reviewed.
+fn plain_review_page() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(back_bar(None, "Review plugin"))
+        .child(scroll().flex_1().child(dynamic(|| {
+            let Some(r) = store().plain_review.get() else {
+                return pane().into_element();
+            };
+            let head = if r.version.is_empty() { r.title.clone() } else { format!("{} {}", r.title, r.version) };
+            let mut page = pane()
+                .gap(px(10.0))
+                .child(text(head).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT));
+            let by = r.byline();
+            if !by.is_empty() {
+                page = page.child(text(by).text_size(px(13.0)).text_color(ink3()));
+            }
+            if !r.description.is_empty() {
+                page = page.child(text(r.description.clone()).text_size(px(13.0)).text_color(ink2()));
+            }
+            page = page.child(review_details(&r.details()));
+            let err = store().plain_review_err.get();
+            if !err.is_empty() {
+                page = page.child(text(err).text_size(px(12.0)).text_color(danger_ink()));
+            }
+            page.child(
+                view()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(sm_btn(Btn::Ghost, || "Cancel".to_owned(), || store().cancel_review()))
+                    .child(sm_btn(
+                        Btn::Primary,
+                        || if store().plugin_busy.get().is_empty() { "Install".to_owned() } else { "Installing…".to_owned() },
+                        || store().install_reviewed(),
+                    )),
+            )
+            .into_element()
+        })))
 }
 
 /// Add a v1 plugin: its command line, then the review (13.1 step 3) with

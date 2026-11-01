@@ -2433,6 +2433,10 @@ pub struct Store {
     /// The Setup page's draft values (field key → text) and its error.
     pub setup_vals: Signal<BTreeMap<String, String>>,
     pub setup_err: Signal<String>,
+    /// A catalog plugin's review before it installs (2.1 §2.2): what
+    /// `/plugins/inspect` staged, and the review page's error.
+    pub plain_review: Signal<Option<crate::plugin_review::PlainReview>>,
+    pub plain_review_err: Signal<String>,
     /// `pluginCat`/`pluginQuery` — the market's category pill + search.
     pub plugin_cat: Signal<String>,
     pub plugin_query: Signal<String>,
@@ -2692,6 +2696,8 @@ impl Store {
             plugins_rev: signal(String::new()),
             setup_vals: signal(BTreeMap::new()),
             setup_err: signal(String::new()),
+            plain_review: signal(None),
+            plain_review_err: signal(String::new()),
             plugin_query: signal(String::new()),
             drop_sel: signal(0),
             drop_hidden: signal(false),
@@ -4910,12 +4916,41 @@ impl Store {
         }
     }
 
-    /// `installPlugin` (App.tsx:1407). A plugin with setup fields opens
-    /// its Setup page first (Grok Bot's "needs a few values" form).
+    /// `installPlugin` (App.tsx:1407), behind 2.1's review (D2): the
+    /// broker stages the plugin and the review page shows what it adds;
+    /// nothing installs until its Install.
     pub fn install_plugin(&'static self, name: &str) {
         if !self.plugin_busy.get_untracked().is_empty() {
             return;
         }
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        spawn(async move {
+            let r = crate::plugin_review::inspect(client::post_status, &name).await;
+            match r {
+                Ok(crate::plugin_review::Inspected::Review(r)) => {
+                    self.plugin_busy.set(String::new());
+                    self.plain_review_err.set(String::new());
+                    self.plain_review.set(Some(*r));
+                    self.push_nav("review", &name, "");
+                }
+                // the Node rollback has no review: Add installs as before
+                Ok(crate::plugin_review::Inspected::NoReview) => {
+                    self.plain_review.set(None);
+                    self.plugin_busy.set(String::new());
+                    self.install_unreviewed(&name);
+                }
+                Err(e) => {
+                    self.plugin_busy.set(String::new());
+                    crate::toast::show(e);
+                }
+            }
+        });
+    }
+
+    /// The one-step Add of the Node rollback (before 2.1): a plugin with
+    /// setup fields opens its Setup page first.
+    fn install_unreviewed(&'static self, name: &str) {
         let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
         if needs_setup {
             self.open_setup(name, "install");
@@ -4924,12 +4959,54 @@ impl Store {
         let name = name.to_owned();
         self.plugin_busy.set(name.clone());
         spawn(async move {
-            let _ = client::post("/plugins/install", serde_json::json!({"name": name})).await;
+            let _ = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, None)).await;
             self.fetch_plugins();
             self.fetch_mcp();
             self.fetch_plugin_detail(&name);
             self.plugin_busy.set(String::new());
         });
+    }
+
+    /// The review's Install: a plugin with setup values opens its Setup
+    /// page first (Grok Bot's "needs a few values" form), which installs.
+    pub fn install_reviewed(&'static self) {
+        let Some(r) = self.plain_review.get_untracked() else { return };
+        if !self.plugin_busy.get_untracked().is_empty() {
+            return;
+        }
+        let needs_setup = r.setup || self.plugins.get_untracked().iter().any(|p| p.name == r.name && p.setup);
+        if needs_setup {
+            self.open_setup(&r.name, "install");
+            return;
+        }
+        self.plugin_busy.set(r.name.clone());
+        spawn(async move {
+            let done = crate::plugin_review::install(client::post_any, &r, &BTreeMap::new()).await;
+            self.plugin_busy.set(String::new());
+            match done {
+                Ok(()) => self.reviewed_installed(&r.name),
+                Err(e) => self.plain_review_err.set(e),
+            }
+        });
+    }
+
+    /// The review's Cancel: nothing installs (the staged copy expires).
+    pub fn cancel_review(&'static self) {
+        self.plain_review.set(None);
+        self.plain_review_err.set(String::new());
+        self.pop_nav();
+    }
+
+    /// After a reviewed install: the lists refetched, and the Setup and
+    /// review pages closed.
+    fn reviewed_installed(&'static self, name: &str) {
+        self.plain_review.set(None);
+        self.fetch_plugins();
+        self.fetch_mcp();
+        self.fetch_plugin_detail(name);
+        while matches!(self.plugin_nav.get_untracked().last().map(|n| n.page.clone()).as_deref(), Some("setup" | "review")) {
+            self.pop_nav();
+        }
     }
 
     /// Push the Setup page (`mode` = "install" | "edit") with a fresh
@@ -4977,13 +5054,35 @@ impl Store {
         self.plugin_busy.set(name.clone());
         self.setup_err.set(String::new());
         spawn(async move {
+            if install {
+                // installs only what the review staged (D2)
+                let review = self.plain_review.get_untracked().filter(|r| r.name == name);
+                let Some(r) = review else {
+                    // no review: the Node rollback's one-step install
+                    let r = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, Some(&vals))).await;
+                    self.plugin_busy.set(String::new());
+                    match r {
+                        Some(v) if self::b(&v, "ok") => {
+                            self.fetch_plugins();
+                            self.fetch_mcp();
+                            self.fetch_plugin_detail(&name);
+                            self.pop_nav();
+                        }
+                        _ => self.setup_err.set("Couldn't add the plugin. Check the values and try again.".into()),
+                    }
+                    return;
+                };
+                let done = crate::plugin_review::install(client::post_any, &r, &vals).await;
+                self.plugin_busy.set(String::new());
+                match done {
+                    Ok(()) => self.reviewed_installed(&name),
+                    Err(e) => self.setup_err.set(e),
+                }
+                return;
+            }
             let values: serde_json::Map<String, serde_json::Value> =
                 vals.into_iter().map(|(k, v)| (k, serde_json::json!(v))).collect();
-            let r = if install {
-                client::post("/plugins/install", serde_json::json!({"name": name, "values": values})).await
-            } else {
-                client::post("/plugins/settings", serde_json::json!({"plugin": name, "values": values})).await
-            };
+            let r = client::post("/plugins/settings", serde_json::json!({"plugin": name, "values": values})).await;
             self.plugin_busy.set(String::new());
             match r {
                 Some(v) if self::b(&v, "ok") => {
@@ -4992,11 +5091,7 @@ impl Store {
                     self.fetch_plugin_detail(&name);
                     self.pop_nav();
                 }
-                _ => self.setup_err.set(if install {
-                    "Couldn't add the plugin. Check the values and try again.".into()
-                } else {
-                    "Couldn't save the values.".into()
-                }),
+                _ => self.setup_err.set("Couldn't save the values.".into()),
             }
         });
     }
