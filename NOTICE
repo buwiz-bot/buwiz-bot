@@ -3,9 +3,9 @@ Copyright 2026 Buwiz
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-Third-party logos under server/src/plugins/icons/ and the plugin catalogs
-under server/src/plugins/ name other companies' products; their names and
-marks belong to their owners and are not covered by this license.
+Product names in this repository belong to their owners. The plugin
+catalog Buwiz Bot shows is fetched at runtime from
+https://github.com/buwiz-app/catalog and is not part of this repository.
 
 Third-party code in this repository
 -----------------------------------
@@ -22,6 +22,11 @@ by OpenOOXML), licensed under the Apache License, Version 2.0 (the same
 text as this repository's LICENSE). The BetterOffice fonts shipped in the
 app bundle are under the SIL Open Font License 1.1 (in that package's
 LICENSES/).
+
+server/src/plugins/external_plugins/ vendors three plugins under their own
+licenses: calcom (MIT, Cal.com), neon (Apache-2.0, Neon) and
+google-workspace (MIT, taylorwilsdon/google_workspace_mcp); each folder's
+plugin.json names its license and author.
 
 server/tools/oxlint/anti-slop/ is vendored from
 https://github.com/dmmulroy/anti-slop (commit 13909c9), Copyright (c) 2026

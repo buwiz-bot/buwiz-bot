@@ -269,6 +269,7 @@ blaze/         ra-jit, the live-patching toolchain (submodule)
 Buwiz Bot is free and open source under the [Apache License 2.0](LICENSE)
 (`NOTICE` holds the copyright line). The bundled UI engine `nsh`
 (longbridge/nsh, through the hexuria/nsh fork) and `blaze` (ra-jit) are
-Apache-2.0 too. Third-party logos and plugin catalog entries under
-`server/src/plugins/` name other companies' products; their marks belong to
-their owners.
+Apache-2.0 too. The plugin catalog is fetched at runtime from
+[buwiz-app/catalog](https://github.com/buwiz-app/catalog); the plugins it
+lists carry their own licenses. See `NOTICE` for third-party code in this
+repository.
