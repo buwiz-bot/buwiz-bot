@@ -33,6 +33,14 @@ pub trait PluginView: Send + Sync {
     fn call_tool(&self, id: &str, tool: &str, args: Value, meta: Option<Value>) -> BoxFuture<'static, Result<Value, V1Error>>;
     /// The host's state changes (`plugins.events`), when it has them.
     fn events(&self) -> Option<broadcast::Receiver<Value>>;
+    /// A 2.1 package's accounts section (`Host::accounts_view`).
+    fn accounts(&self, _id: &str) -> Value {
+        json!([])
+    }
+    /// The accounts a 2.1 package declares.
+    fn declared_accounts(&self, _id: &str) -> Vec<crate::v1::package::Account> {
+        Vec::new()
+    }
 }
 
 impl PluginView for Arc<Host> {
@@ -54,6 +62,12 @@ impl PluginView for Arc<Host> {
     }
     fn events(&self) -> Option<broadcast::Receiver<Value>> {
         Some(Host::events(self))
+    }
+    fn accounts(&self, id: &str) -> Value {
+        self.accounts_view(id)
+    }
+    fn declared_accounts(&self, id: &str) -> Vec<crate::v1::package::Account> {
+        Host::declared_accounts(self, id)
     }
 }
 
@@ -161,7 +175,8 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
 }
 
 /// The plugin as GET /v1/host/plugins lists it (`describe`); `info` is a
-/// routine's user state (v1 routines' `info`).
+/// routine's user state (v1 routines' `info`). A 2.1 package's record
+/// adds `package` (its folder), `skills` and `accounts` (no tokens).
 pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value) -> Value {
     let m = row.manifest();
     let rt = p.runtime(&row.id);
@@ -231,5 +246,11 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
         })
         .collect();
     out.insert("tools".into(), json!(listed));
+    if let Some(dir) = &row.package {
+        out.insert("package".into(), json!(dir));
+        let skills: Vec<Value> = parse(&row.skills, json!([])).as_array().into_iter().flatten().map(|s| json!({"name": s.get("name"), "description": s.get("description")})).collect();
+        out.insert("skills".into(), json!(skills));
+        out.insert("accounts".into(), p.accounts(&row.id));
+    }
     Value::Object(out)
 }

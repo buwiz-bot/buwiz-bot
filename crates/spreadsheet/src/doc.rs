@@ -104,7 +104,7 @@ enum Stage {
     /// The whole model, when the first paint parsed only the top rows.
     Model(Box<WorkbookModel>),
     /// The editable workbook.
-    Full(Result<Workbook, String>),
+    Full(Result<Box<Workbook>, String>),
 }
 
 /// The open's remaining work, run on a helper thread after the first paint.
@@ -147,14 +147,14 @@ impl Book {
     /// The model and the active sheet of `bytes` in `format`, quickly, and
     /// how to build the full workbook.
     fn quick(bytes: Vec<u8>, format: &str, name: &str) -> Result<(WorkbookModel, usize, Rest), String> {
-        let full = |bytes: Vec<u8>| -> Rest { Box::new(move |tx| drop(tx.send(Stage::Full(Workbook::open(&bytes).map_err(|e| e.to_string()))))) };
+        let full = |bytes: Vec<u8>| -> Rest { Box::new(move |tx| drop(tx.send(Stage::Full(Workbook::open(&bytes).map(Box::new).map_err(|e| e.to_string()))))) };
         match format {
             "csv" | "tsv" => {
                 let text = String::from_utf8_lossy(&bytes);
                 let sep = if format == "tsv" { '\t' } else { ',' };
                 let model = convert::delimited_model(&convert::parse_delimited(&text, sep), name);
                 let copy = model.clone();
-                Ok((model, 0, Box::new(move |tx| drop(tx.send(Stage::Full(Workbook::from_model(copy).map_err(|e| e.to_string())))))))
+                Ok((model, 0, Box::new(move |tx| drop(tx.send(Stage::Full(Workbook::from_model(copy).map(Box::new).map_err(|e| e.to_string())))))))
             }
             "xls" => {
                 let xlsx = convert::xls_to_xlsx(&bytes)?;
@@ -539,7 +539,7 @@ impl Document for Book {
                 }
                 Ok(Stage::Full(Ok(mut wb))) => {
                     let _ = wb.set_active_sheet(SheetId(self.active as u32));
-                    self.engine = Engine::Full(Box::new(wb));
+                    self.engine = Engine::Full(wb);
                     self.rev += 1;
                     let waiting = std::mem::take(&mut self.waiting);
                     for cmd in waiting {

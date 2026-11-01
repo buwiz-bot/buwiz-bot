@@ -23,8 +23,8 @@ mod rest_data;
 
 use std::collections::HashMap;
 
-// `BodyInfo` and `STATE_GROUPS` are re-exported for the avatar/picker
-// surface that lands with the detail pane — nothing consumes them yet.
+// `BodyInfo` is re-exported for the avatar/picker surface that lands with
+// the detail pane — nothing consumes it yet.
 #[allow(unused_imports)]
 pub(crate) use bodies::BodyInfo;
 pub(crate) use paint::{
@@ -33,7 +33,7 @@ pub(crate) use paint::{
 pub(crate) use render::{uh, MarkTree, PaintOpts, UhSize};
 
 #[allow(unused_imports)]
-pub(crate) use clips::{STATE_GROUPS, STATES};
+pub(crate) use clips::STATES;
 
 pub(crate) type V2 = [f64; 2];
 pub(crate) type V3 = [f64; 3];
@@ -70,10 +70,6 @@ pub(crate) fn ts(e: f64) -> f64 {
 pub(crate) fn ye(e: f64) -> f64 {
     1.0 - (1.0 - e).powi(3)
 }
-/// `Is` — back out.
-pub(crate) fn back(e: f64) -> f64 {
-    1.0 + 2.70158 * (e - 1.0).powi(3) + 1.70158 * (e - 1.0).powi(2)
-}
 /// `wb` — smoothstep.
 pub(crate) fn wb(e: f64) -> f64 {
     e * e * (3.0 - 2.0 * e)
@@ -82,7 +78,6 @@ const RR: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
 const BB: [f64; 4] = [0.4, 0.06, 0.18, 1.0];
 const XB: f64 = 0.28;
 const IA: f64 = 0.35;
-const AA: f64 = 0.26;
 const VB: f64 = 4.25 / 60.0;
 const SB: f64 = 2.0 / 60.0;
 const UI: f64 = 1.06;
@@ -128,16 +123,6 @@ fn tb(e: f64) -> f64 {
         (1.0 - (1.0 - n) * (1.0 - n)) * UI
     } else {
         UI + (1.0 - UI) * ns((t - 0.7) / 0.3)
-    }
-}
-/// `Eb` — the open amount within the blink window.
-fn eb(e: f64, u1: f64, u2: f64) -> f64 {
-    if e < u1 {
-        ns(e / u1)
-    } else if e <= u2 {
-        1.0
-    } else {
-        1.0 - ns((e - u2) / (1e-6f64).max(1.0 - u2))
     }
 }
 
@@ -261,10 +246,6 @@ pub(crate) struct Tables {
     pub eye_flip: [bool; 2],
     /// `oh` — the rest pose euler (degrees), `hl`'s rotation track.
     pub rest_rot: V3,
-    /// `zE` — `OM(192)`.
-    pub z_angles: Vec<f64>,
-    /// `jE` — `BM(96)`.
-    pub stations: Vec<f64>,
     /// `vE` — the pencil scribble's station trail of `{at,point}`.
     pub pencil_trail: Vec<(f64, V2)>,
     /// `dE` — the teardrop ring the pencil morph travels (`lE(Sd, 48)`).
@@ -350,16 +331,13 @@ pub(crate) fn tables() -> Tables {
     let ee = q_to_euler(sb);
     let rest_rot = [ee[0] / MN, ee[1] / MN, ee[2] / MN];
 
-    let z_angles = (0..192).map(|n| n as f64 / 192.0 * TAU).collect();
-    let stations = (0..96).map(|n| n as f64 / 96.0).collect();
-
     // `vE` — the pencil trail: sampled along `wc`'s path while the pencil
     // travels left→right (the Oo window).
     let oo = render::PS * render::PR;
     let mut trail: Vec<(f64, V2)> = Vec::new();
     for t in 0..(oo as usize) {
         let n = render::wh(t as f64);
-        if trail.last().map_or(true, |&(_, p)| hypot2(n[0] - p[0], n[1] - p[1]) > render::SE) {
+        if trail.last().is_none_or(|&(_, p)| hypot2(n[0] - p[0], n[1] - p[1]) > render::SE) {
             trail.push((t as f64, n));
         }
     }
@@ -377,8 +355,6 @@ pub(crate) fn tables() -> Tables {
         eye_frames,
         eye_flip,
         rest_rot,
-        z_angles,
-        stations,
         pencil_trail: trail,
         pencil_ring,
         circle_ring,
@@ -510,9 +486,9 @@ fn jb(p0: V2, p1: V2, p2: V2, is_arc: bool) -> [f64; FB] {
             let j = oo / 2.0;
             let jd = 4.0 / 3.0 * (j / 4.0).tan() * f_r;
             let fe = [n, n + j, n + oo];
-            for k in 0..3 {
-                let te = hh(fe[k]);
-                let z = lt(fe[k]);
+            for (k, &angle) in fe.iter().enumerate() {
+                let te = hh(angle);
+                let z = lt(angle);
                 d(&mut l, k, te);
                 if k > 0 {
                     f(&mut l, k, [te[0] - jd * z[0], te[1] - jd * z[1]]);
@@ -545,9 +521,9 @@ fn jb(p0: V2, p1: V2, p2: V2, is_arc: bool) -> [f64; FB] {
     f(&mut l, 2, [c + 2.0 / 3.0 * (g[0] - c), u + 2.0 / 3.0 * (g[1] - u)]);
     l
 }
-/// `_r` — an eye record.
-fn eye(off: V2, tilt: f64, wid: f64, p0: V2, p1: V2, p2: V2, is_arc: bool, oval: V2) -> Eye {
-    let s = jb(p0, p1, p2, is_arc);
+/// `_r` — an eye record; `lid` is the lid's three control points (`jb`).
+fn eye(off: V2, tilt: f64, wid: f64, lid: [V2; 3], is_arc: bool, oval: V2) -> Eye {
+    let s = jb(lid[0], lid[1], lid[2], is_arc);
     Eye {
         off,
         tilt,
@@ -565,7 +541,7 @@ fn sc(e: f64, t: f64, n: f64, r: V2, o: f64) -> Eye {
     let s = 0.0f64.max((t - e) / 2.0);
     let i = n * std::f64::consts::PI / 180.0;
     let (a, c) = (i.sin() * s, i.cos() * s);
-    eye(r, o, e / 2.0, [-a, -c], [0.0, 0.0], [a, c], false, [0.0, 0.0])
+    eye(r, o, e / 2.0, [[-a, -c], [0.0, 0.0], [a, c]], false, [0.0, 0.0])
 }
 /// `zn` — an open eye.
 fn zn(e: f64, t: f64, n: f64, r: f64) -> Eye {
@@ -573,7 +549,7 @@ fn zn(e: f64, t: f64, n: f64, r: f64) -> Eye {
 }
 /// `qb` — a flat lid eye.
 fn qb(e: f64, t: f64, n: f64) -> Eye {
-    eye([n, 0.0], 0.0, t, [-e, 0.0], [0.0, 0.0], [e, 0.0], false, [e, t])
+    eye([n, 0.0], 0.0, t, [[-e, 0.0], [0.0, 0.0], [e, 0.0]], false, [e, t])
 }
 fn zt(e: Eye) -> [Eye; 2] {
     [e.clone(), e]
@@ -588,9 +564,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [0.03, 0.03],
             0.0,
             IL,
-            [0.16, -0.04],
-            [0.0, 0.12],
-            [-0.16, -0.04],
+            [[0.16, -0.04], [0.0, 0.12], [-0.16, -0.04]],
             true,
             [0.0, 0.0],
         )),
@@ -601,9 +575,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [0.01, 0.0],
             0.0,
             MR / 2.0,
-            [-0.11, 0.025],
-            [0.0, -0.05],
-            [0.11, 0.025],
+            [[-0.11, 0.025], [0.0, -0.05], [0.11, 0.025]],
             false,
             [0.0, 0.0],
         )),
@@ -613,9 +585,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [-0.1, 0.0],
             0.0,
             IL,
-            [0.01, 0.16],
-            [-0.17, 0.0],
-            [0.01, -0.16],
+            [[0.01, 0.16], [-0.17, 0.0], [0.01, -0.16]],
             false,
             [0.0, 0.0],
         )),
@@ -623,12 +593,6 @@ fn vn(name: &str) -> [Eye; 2] {
     }
 }
 
-fn is_expr(e: &str) -> bool {
-    matches!(
-        e,
-        "neutral" | "happy" | "surprised" | "sad" | "sleepy" | "squinted" | "calm" | "inspecting" | "confused"
-    )
-}
 /// `Db`/`Hb` — alias an expression name into the table.
 fn hb(e: &str) -> &'static str {
     let t = e.trim().to_lowercase();
@@ -805,7 +769,7 @@ fn qb_morph(e: &Eye, t: &Eye, n: f64) -> Eye {
 /// `Jb` — the lid box of an eye.
 fn jbx(e: &Eye) -> Option<(f64, f64, f64, f64, f64)> {
     let t = e.is_oval();
-    if !(e.wid > 0.0) && !t {
+    if e.wid.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) && !t {
         return None;
     }
     let n = e.lid_y;
@@ -960,15 +924,6 @@ enum MorphPath {
 
 #[derive(Clone)]
 enum FaceAnim {
-    Blink {
-        from_inspect: f64,
-        to_name: &'static str,
-        from: [Eye; 2],
-        to: [Eye; 2],
-        t: f64,
-        dur: f64,
-        held: bool,
-    },
     Morph {
         path: MorphPath,
         from_inspect: f64,
@@ -993,47 +948,37 @@ enum FaceAnim {
 impl FaceAnim {
     fn t(&self) -> f64 {
         match self {
-            FaceAnim::Blink { t, .. } | FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t,
+            FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t,
         }
     }
     fn dur(&self) -> f64 {
         match self {
-            FaceAnim::Blink { dur, .. } | FaceAnim::Morph { dur, .. } | FaceAnim::LidMorph { dur, .. } => {
-                *dur
-            }
+            FaceAnim::Morph { dur, .. } | FaceAnim::LidMorph { dur, .. } => *dur,
         }
     }
     fn set_t(&mut self, v: f64) {
         match self {
-            FaceAnim::Blink { t, .. } | FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t = v,
+            FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t = v,
         }
     }
     fn held(&self) -> bool {
         match self {
-            FaceAnim::Blink { held, .. } | FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => {
-                *held
-            }
+            FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => *held,
         }
     }
     fn set_held(&mut self, v: bool) {
         match self {
-            FaceAnim::Blink { held, .. } | FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => {
-                *held = v;
-            }
+            FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => *held = v,
         }
     }
     fn to_name(&self) -> &'static str {
         match self {
-            FaceAnim::Blink { to_name, .. }
-            | FaceAnim::Morph { to_name, .. }
-            | FaceAnim::LidMorph { to_name, .. } => to_name,
+            FaceAnim::Morph { to_name, .. } | FaceAnim::LidMorph { to_name, .. } => to_name,
         }
     }
-    fn from_inspect(&self) -> f64 {
+    fn inspect_from(&self) -> f64 {
         match self {
-            FaceAnim::Blink { from_inspect, .. }
-            | FaceAnim::Morph { from_inspect, .. }
-            | FaceAnim::LidMorph { from_inspect, .. } => *from_inspect,
+            FaceAnim::Morph { from_inspect, .. } | FaceAnim::LidMorph { from_inspect, .. } => *from_inspect,
         }
     }
 }
@@ -1061,7 +1006,6 @@ impl Face {
             return self.t.clone();
         };
         match r {
-            FaceAnim::Blink { from, .. } => from.clone(),
             FaceAnim::Morph { path, from, to, .. } => {
                 let m = dl(r).clamp(0.0, 1.0);
                 let go = |b: &Eye, v: &Eye| -> Eye {
@@ -1092,10 +1036,7 @@ impl Face {
         let Some(r) = &self.r else {
             return self.n;
         };
-        if let FaceAnim::Blink { from_inspect, .. } = r {
-            return *from_inspect;
-        }
-        let f = r.from_inspect();
+        let f = r.inspect_from();
         let h = if r.to_name() == "inspecting" { 1.0 } else { 0.0 };
         if let FaceAnim::Morph { .. } = r {
             return f + (h - f) * dl(r);
@@ -1110,20 +1051,8 @@ impl Face {
             h
         }
     }
-    fn blink_amount(&self) -> Option<f64> {
-        let r = self.r.as_ref()?;
-        let FaceAnim::Blink { t, dur, held, .. } = r else {
-            return None;
-        };
-        if *held {
-            return None;
-        }
-        let f = (t / dur).min(1.0);
-        let (u1, u2) = li(true, *dur);
-        Some(eb(f, u1, u2).clamp(0.0, 1.0))
-    }
     fn is_morphing(&self) -> bool {
-        self.r.as_ref().is_some_and(|r| !matches!(r, FaceAnim::Blink { .. }) && !r.held())
+        self.r.as_ref().is_some_and(|r| !r.held())
     }
     fn name(&self) -> &'static str {
         self.e
@@ -1172,24 +1101,9 @@ impl Face {
         });
         self.e = f;
     }
-    /// `c` — blink, only when no live (unheld) animation runs.
-    fn blink(&mut self) {
-        if self.r.as_ref().is_some_and(|r| !r.held()) {
-            return;
-        }
-        self.r = Some(FaceAnim::Blink {
-            from_inspect: self.n,
-            to_name: self.e,
-            from: [self.t[0].wt(), self.t[1].wt()],
-            to: vn(self.e),
-            t: 0.0,
-            dur: AA,
-            held: false,
-        });
-    }
     /// `u` — an expression track event.
     fn play(&mut self, name: &'static str, through_blink: bool) {
-        if name == self.e && self.r.as_ref().map_or(true, |r| r.to_name() == name) {
+        if name == self.e && self.r.as_ref().is_none_or(|r| r.to_name() == name) {
             return;
         }
         if through_blink && !dr(name) && !dr(self.e) {
@@ -1202,9 +1116,7 @@ impl Face {
     fn settle(&mut self, f: &FaceAnim, h: f64) {
         if h >= f.dur() {
             self.t = match f {
-                FaceAnim::Blink { to, .. }
-                | FaceAnim::Morph { to, .. }
-                | FaceAnim::LidMorph { to, .. } => [to[0].wt(), to[1].wt()],
+                FaceAnim::Morph { to, .. } | FaceAnim::LidMorph { to, .. } => [to[0].wt(), to[1].wt()],
             };
             self.n = if f.to_name() == "inspecting" { 1.0 } else { 0.0 };
             self.r = None;
@@ -1289,7 +1201,6 @@ pub(crate) fn rp(e: &str) -> u32 {
 // the effect engine — `Ix` → MorphFx
 // ---------------------------------------------------------------------------
 
-const TX: u32 = 2654435769;
 const SX: f64 = std::f64::consts::PI;
 const MX: f64 = 0.1;
 const AX: f64 = 1.5;
@@ -1398,8 +1309,8 @@ impl MorphFx {
             }
         }
         let mut want = v.is_some();
-        if let Some(i) = self.i {
-            if ex_loop(i) {
+        if let Some(i) = self.i
+            && ex_loop(i) {
                 if !self.l && self.g - self.y > ac(i) {
                     self.l = true;
                     self.d = self.g;
@@ -1408,7 +1319,6 @@ impl MorphFx {
                     self.y = self.g;
                 }
                 want = !self.l;
-            }
         }
         self.amount.t = if want { 1.0 } else { 0.0 };
         if v.is_some() && v != self.c {
@@ -1679,7 +1589,7 @@ impl RunClip {
 }
 
 /// `vt` — sample a track at time `t`.
-fn vt<'a>(e: &'a [RtKey], t: f64) -> Option<Vec<f64>> {
+fn vt(e: &[RtKey], t: f64) -> Option<Vec<f64>> {
     if e.is_empty() {
         return None;
     }
@@ -1843,14 +1753,12 @@ struct BodyBlend {
 
 /// The mark frame — `frame()`'s output, `Uh`'s input.
 pub(crate) struct Frame {
-    pub body: &'static str,
     pub quat: V4,
     pub zoom: f64,
     pub offset: V2,
     pub squash: V2,
     pub squash_anchor: f64,
     pub eyes: Option<[Eye; 2]>,
-    pub inspect_weight: f64,
     pub bodies: Vec<BodyBlend2>,
     pub morph: Option<MorphSnap>,
     /// `On*t/2/x` resolved by the renderer — not part of the JS frame; kept
@@ -1977,10 +1885,9 @@ impl Mark {
             self.big_i = false;
         }
     }
-    /// `H` — defer a face command while a blink/lid is down.
+    /// `H` — defer a face command while a lid is down.
     fn defer(&mut self, cmd: FaceCmd) {
-        let blink = self.n.blink_amount().unwrap_or_else(|| self.fe());
-        if blink > 0.0 {
+        if self.fe() > 0.0 {
             self.big_p = Some(cmd);
             return;
         }
@@ -2000,10 +1907,10 @@ impl Mark {
             }
             FaceCmd::HoldFace => {
                 let q = self.big_b.unwrap_or_else(|| {
-                    if self.a_load.is_none() {
-                        gl(&self.y.expression, self.w)
+                    if let Some(load) = &self.a_load {
+                        gl(&load.clip.expression, 0.0)
                     } else {
-                        gl(&self.a_load.as_ref().unwrap().clip.expression, 0.0)
+                        gl(&self.y.expression, self.w)
                     }
                 });
                 if q != self.n.name() {
@@ -2065,8 +1972,8 @@ impl Mark {
         self.y = c.clone();
         self.w = 0.0;
         self.f = c.squash_anchor;
-        if c.body.is_some() && !self.o {
-            self.r = c.body.unwrap();
+        if let Some(body) = c.body && !self.o {
+            self.r = body;
         }
         self.p = Inspect {
             bias: c.inspect_bias.unwrap_or(self.p.bias),
@@ -2253,7 +2160,7 @@ impl Mark {
         }
     }
     fn pe(&self) -> f64 {
-        self.n.blink_amount().unwrap_or_else(|| self.fe())
+        self.fe()
     }
     /// `be` — the eyes of the frame (`ge` = yaw for `sx`).
     fn be(&self, ge: f64, inspect_w: f64) -> [Eye; 2] {
@@ -2296,7 +2203,6 @@ impl Mark {
             && self.g.is_none()
             && self.big_p.is_none()
             && !self.n.is_morphing()
-            && self.n.blink_amount().is_none()
             && self.a.snapshot().is_settled
             && g
     }
@@ -2325,10 +2231,6 @@ impl Mark {
             self.load_now(d);
         }
     }
-    pub(crate) fn play(&mut self) {
-        self.v = false;
-        self.playing = true;
-    }
     #[allow(dead_code)]
     pub(crate) fn pause(&mut self) {
         self.v = true;
@@ -2342,7 +2244,7 @@ impl Mark {
     pub(crate) fn rest(&mut self) {
         self.v = false;
         let ld = Loaded { clip: RunClip::rest(self.tab.rest_rot), name: "rest", is_playing: false, phase: 0.0, is_rest: true };
-        if self.a_load.is_none() && self.e_load.as_ref().map_or(true, |e| e.name == "rest") {
+        if self.a_load.is_none() && self.e_load.as_ref().is_none_or(|e| e.name == "rest") {
             if self.e_load.is_none() {
                 self.load_now(ld);
             }
@@ -2385,9 +2287,6 @@ impl Mark {
     /// `poke(kind, {turns})`.
     pub(crate) fn poke(&mut self, kind: &'static str, turns: f64) {
         self.pokes.push(Poke { kind, t: 0.0, turns: turns.round().max(1.0) });
-    }
-    pub(crate) fn blink(&mut self) {
-        self.n.blink();
     }
     /// `setInspect({bias, isFollowingTurn})`.
     #[allow(dead_code)]
@@ -2437,7 +2336,7 @@ impl Mark {
         }
         self.look_step(q);
         self.n.step(q);
-        if self.big_p.is_some() && self.n.blink_amount().unwrap_or_else(|| self.fe()) == 0.0 {
+        if self.big_p.is_some() && self.fe() == 0.0 {
             let c = self.big_p.take().unwrap();
             self.run_cmd(c);
         }
@@ -2485,14 +2384,12 @@ impl Mark {
         let pe = |ue: usize| he[ue] + (t[ue] - he[ue]) * x;
         let ge = pe(1);
         Frame {
-            body: self.r,
             quat: ib(pe(0) * MN, (ge + ie) * MN, pe(2) * MN),
             zoom: self.h,
             offset: if x == 1.0 { c } else { [c[0] * x, c[1] * x] },
             squash: if x == 1.0 { d } else { [1.0 + (d[0] - 1.0) * x, 1.0 + (d[1] - 1.0) * x] },
             squash_anchor: self.f,
             eyes: if v.amount >= KX { None } else { Some(self.be(ge, u)) },
-            inspect_weight: u,
             bodies: self.bodies(),
             morph: if v.kind.is_none() && v.is_settled { None } else { Some(v) },
             _p: (),
@@ -2524,10 +2421,9 @@ fn nv(e: &[&'static str], r: &mut Rand, p: Option<&str>) -> Vec<&'static str> {
         let n = (r.next() * (s + 1) as f64).floor() as usize;
         v.swap(s, n);
     }
-    if let Some(o) = v.iter().position(|s| Some(*s) != p) {
-        if o > 0 {
+    if let Some(o) = v.iter().position(|s| Some(*s) != p)
+        && o > 0 {
             v.swap(0, o);
-        }
     }
     v
 }
@@ -2579,10 +2475,9 @@ impl Director {
         o
     }
     fn clips_of(&self) -> &'static [&'static str] {
-        if self.s_compact {
-            if let Some(c) = self.l.compact_clips {
+        if self.s_compact
+            && let Some(c) = self.l.compact_clips {
                 return c;
-            }
         }
         self.l.clips
     }
@@ -2597,9 +2492,8 @@ impl Director {
         if e.is_empty() {
             e.extend(nv(v, &mut self.rng, self.p));
         }
-        e.first().copied().map(|c| {
+        e.first().copied().inspect(|_| {
             e.remove(0);
-            c
         })
     }
     /// `w` — load the next clip.
@@ -2648,9 +2542,6 @@ impl Director {
             self.load_next(mark, first_phase);
         }
     }
-    pub(crate) fn state(&self) -> &'static str {
-        self.u
-    }
     #[allow(dead_code)]
     pub(crate) fn clip(&self) -> Option<&'static str> {
         self.p
@@ -2688,21 +2579,19 @@ impl Director {
             return;
         }
         self.d += dt;
-        if let Some(next) = self.l.next {
-            if self.l.hold_seconds > 0.0 && self.d >= self.l.hold_seconds {
+        if let Some(next) = self.l.next
+            && self.l.hold_seconds > 0.0 && self.d >= self.l.hold_seconds {
                 self.set_state(mark, next, None);
                 return;
-            }
         }
         if mark.loop_count() != self.h {
-            if let Some(next) = self.l.next {
-                if self.l.hold_seconds == 0.0 {
+            if let Some(next) = self.l.next
+                && self.l.hold_seconds == 0.0 {
                     self.f += 1;
                     if self.f >= self.clips_of().len() {
                         self.set_state(mark, next, None);
                         return;
                     }
-                }
             }
             self.load_next(mark, None);
         }

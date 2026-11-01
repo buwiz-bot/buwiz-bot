@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Builds buwiz-gws, the Google Workspace plugin (app.buwiz.google-workspace,
+# github.com/buwiz-app/google-workspace), at the commit
+# plugins/google-workspace/rev pins: a release build with RUSTC_WRAPPER=
+# empty (a caching wrapper can hand back a stale build), through
+# scripts/wait-build. Prints the binary's path. A rev already built is not
+# built again.
+#   GWS_TARGET_DIR  where builds go (default <CARGO_TARGET_DIR, else
+#                   broker/target>/gws); each rev is installed under
+#                   <GWS_TARGET_DIR>/<rev>/bin/
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO=https://github.com/buwiz-app/google-workspace
+REV="$(tr -d '[:space:]' < "$ROOT/plugins/google-workspace/rev")"
+[[ "$REV" =~ ^[0-9a-f]{40}$ ]] || { echo "plugins/google-workspace/rev is not a commit: $REV" >&2; exit 1; }
+DIR="${GWS_TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/broker/target}/gws}"
+BIN="$DIR/$REV/bin/buwiz-gws"
+if [ ! -x "$BIN" ]; then
+  # stdout is the path alone: cargo's output goes to stderr
+  RUSTC_WRAPPER='' CARGO_TARGET_DIR="$DIR/target" "$ROOT/scripts/wait-build" \
+    cargo install --locked --git "$REPO" --rev "$REV" --root "$DIR/$REV" buwiz-gws >&2
+fi
+echo "$BIN"

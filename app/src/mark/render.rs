@@ -53,7 +53,6 @@ const MT2: usize = 512;
 const HS: usize = 5;
 const YT2: f64 = -15.0 + 259.0 / 2.0;
 const ZT_M: f64 = 0.62;
-const BD: usize = 96;
 const JT3: f64 = 22.0;
 const VD: f64 = 62.0;
 const EE2: f64 = 0.84;
@@ -497,7 +496,7 @@ fn et_rec(e: &Eye) -> EtRec {
     } else {
         0.0
     };
-    let s = e.pts.len().saturating_sub(1).max(0);
+    let s = e.pts.len().saturating_sub(1);
     let mut i = Vec::with_capacity(s * HS);
     for a in 0..s {
         let [c, u] = e.pts[a];
@@ -525,13 +524,7 @@ fn at(e: &[f64], t: f64, n: f64) -> f64 {
         let a = e[o + 2];
         let c = e[o + 3];
         let u = (s * a + i * c) * e[o + 4];
-        let l = if u < 0.0 {
-            0.0
-        } else if u > 1.0 {
-            1.0
-        } else {
-            u
-        };
+        let l = u.clamp(0.0, 1.0);
         let d = s - a * l;
         let f = i - c * l;
         let h = d * d + f * f;
@@ -751,8 +744,8 @@ fn kt(e: &[V2], dev: f64, edge: f64) -> Vec<V2> {
         let l = e[c % e.len()];
         let mut d = -1.0f64;
         let mut f = a;
-        for p in a + 1..c {
-            let g = wt(e[p], u, l);
+        for (p, &point) in e.iter().enumerate().take(c).skip(a + 1) {
+            let g = wt(point, u, l);
             if g > d {
                 d = g;
                 f = p;
@@ -763,7 +756,7 @@ fn kt(e: &[V2], dev: f64, edge: f64) -> Vec<V2> {
             return;
         }
         if !h {
-            f = a + c >> 1;
+            f = (a + c) >> 1;
         }
         r[f] = 1;
         split(e, r, a, f, dev, edge);
@@ -1382,7 +1375,7 @@ fn tt2(e: V2, t: Vec<Vec<Seg>>) -> Vec<Vec<Seg>> {
     let mut s: Vec<Belt> = Vec::new();
     let mut i: Vec<V2> = Vec::new();
     for a in t {
-        let c = a.iter().position(|x| n(x));
+        let c = a.iter().position(&n);
         let Some(c) = c else {
             r.push(a);
             continue;
@@ -1630,7 +1623,7 @@ fn ht(e: &JtRec, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
         "path",
         &[("d", e.body.clone()), ("fill", i), ("fill-rule", sv("evenodd"))],
     ));
-    if e.eyes != "" {
+    if !e.eyes.is_empty() {
         s.push(r2("path", &[("d", e.eyes.clone()), ("fill", uc(t))]));
     }
     kc(e.size, n, r, s)
@@ -1792,7 +1785,7 @@ fn km(e: &[Vec<(V2, V2)>], t: V2, r: f64) -> f64 {
         let g = a[1] - t[1];
         let m = (p * f - g * d) / h;
         let y = (p * s - g * o) / h;
-        if m >= 0.0 && y >= -CD && y <= 1.0 + CD && !(m <= i) {
+        if m >= 0.0 && (-CD..=1.0 + CD).contains(&y) && !matches!(m.partial_cmp(&i), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) {
             i = m;
         }
     }
@@ -1912,7 +1905,7 @@ fn zm2(e: &[V2], t: V2) -> Option<(usize, V2)> {
             continue;
         }
         let u = s + (t[1] - i) / (c - i) * (a - s);
-        if u >= t[0] && r.as_ref().map_or(true, |(_, p)| u > p[0]) {
+        if u >= t[0] && r.as_ref().is_none_or(|(_, p)| u > p[0]) {
             r = Some((o, [u, t[1]]));
         }
     }
@@ -2305,7 +2298,7 @@ fn me_path(e: &[V2]) -> String {
 fn te2(e: f64, t: (f64, f64), n: bool) -> Vec<Part> {
     let r = [X - VD, X + VD];
     let mut o = Vec::new();
-    for s in 0..2usize {
+    for (s, &position) in r.iter().enumerate() {
         let i = le((e - s as f64 * 0.12) / (1.0 - s as f64 * 0.12), 0.0, 1.0);
         if i <= 0.004 {
             continue;
@@ -2314,7 +2307,7 @@ fn te2(e: f64, t: (f64, f64), n: bool) -> Vec<Part> {
         let c = ts(i);
         let u = gh(t, if s == 0 { 0.0 } else { 2.0 }, e, n);
         o.push(ht_disc(
-            X + (r[s] - X) * c,
+            X + (position - X) * c,
             X - u.lift,
             JT3 * a * u.pop * NE2,
             a * u.tone,
@@ -2615,7 +2608,7 @@ pub(crate) fn le_ring(e: &[V2], t: usize) -> Vec<V2> {
     let s = r.sin();
     (0..n)
         .map(|a| {
-            let [c, u] = e[(((a + n - t) % n + n) % n)];
+            let [c, u] = e[((a + n - t) % n + n) % n];
             let l = c - X;
             let d = u - X;
             [X + l * o - d * s, X + l * s + d * o]
@@ -2645,7 +2638,6 @@ struct DeCore {
 
 struct De {
     core: DeCore,
-    is_face_visible: bool,
     zoom: f64,
     parts: Vec<Part>,
 }
@@ -2718,7 +2710,7 @@ fn de(e: &MorphSnap, t: f64, tab: &Tables) -> De {
         } else {
             0.0
         };
-        let f2 = if j >= 0.18 && j < 0.42 {
+        let f2 = if (0.18..0.42).contains(&j) {
             0.05 * ((j - 0.18) / 0.24 * PI).sin()
         } else {
             0.0
@@ -2775,7 +2767,6 @@ fn de(e: &MorphSnap, t: f64, tab: &Tables) -> De {
     let _ = oo;
     De {
         core,
-        is_face_visible: o < 0.5,
         zoom: hh,
         parts: l.into_iter().filter(|j| j.opacity() > 0.0).collect(),
     }
@@ -2943,7 +2934,7 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
     let c: String = e.eyes.iter().map(|e| ga(e)).collect::<Vec<_>>().join("");
     let mut u: Vec<MarkTree> = Vec::new();
     let mut l = vec![r2("path", &[("d", a.clone()), ("fill", i.clone())])];
-    if c != "" && t.cutout {
+    if !c.is_empty() && t.cutout {
         u.push(re(
             "mask",
             &[
@@ -2970,7 +2961,7 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
                 ("mask", format!("url(#{}-holes)", n)),
             ],
         );
-    } else if c != "" {
+    } else if !c.is_empty() {
         u.push(re(
             "clipPath",
             &[("id", format!("{}-body", n))],
@@ -3075,7 +3066,13 @@ pub(crate) fn uh(
         Some((s, i)) => (Some(s), !i.is_empty()),
         None => (None, false),
     };
-    if first.is_none() || rest || e.morph.is_some() {
+    if let Some(s) = first.filter(|_| !rest && e.morph.is_none()) {
+        if s.body == "sphere" {
+            ht(&jt(e, t, n, tab), t, r, o.extent)
+        } else {
+            am(&em(e, s.body, t, n), r, o.extent)
+        }
+    } else {
         he(
             e,
             t,
@@ -3085,13 +3082,6 @@ pub(crate) fn uh(
             o.extent,
             tab,
         )
-    } else {
-        let s = first.unwrap();
-        if s.body == "sphere" {
-            ht(&jt(e, t, n, tab), t, r, o.extent)
-        } else {
-            am(&em(e, s.body, t, n), r, o.extent)
-        }
     }
 }
 

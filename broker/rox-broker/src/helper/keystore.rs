@@ -9,6 +9,11 @@
 //! over once ([`Keystore::move_from_rox`]). `BUWIZ_KEYSTORE=file:<dir>` keeps
 //! one 0600 file per plugin instead; the tests use it, or a keychain file
 //! of their own.
+//!
+//! A mini app account's tokens (2.1 §4) live beside them: service
+//! `com.buwiz.bot.account-token`, account `<plugin>/<account>/<label>`, the
+//! token JSON as base64url (so `security -i` takes it bare); a file store
+//! keeps `account-tokens/<plugin>~<account>~<label>.json`.
 
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -20,6 +25,8 @@ use rox_v1::ids::plugin_id_ok;
 use rox_v1::keys::SessionKey;
 
 pub const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.plugin-key";
+/// Mini app account tokens (2.1 §4).
+pub const ACCOUNT_SERVICE: &str = "com.buwiz.bot.account-token";
 /// Rox's service, before the rename: its keys are moved over once.
 pub const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";
 const SECURITY: &str = "/usr/bin/security";
@@ -32,6 +39,7 @@ struct Items<'a> {
 }
 
 const ITEMS: Items<'static> = Items { service: KEYCHAIN_SERVICE, keychain: None };
+const ACCOUNT_ITEMS: Items<'static> = Items { service: ACCOUNT_SERVICE, keychain: None };
 
 impl Items<'_> {
     fn put(&self, id: &str, seed: &str) -> Result<(), String> {
@@ -88,6 +96,22 @@ fn check_id(id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("not a plugin id: {}", id.chars().take(80).collect::<String>()))
+    }
+}
+
+/// An account label: `^[A-Za-z0-9][A-Za-z0-9._@+-]{0,59}$` (no spaces or
+/// quotes: it is part of a Keychain account name on a `security -i` line).
+pub fn label_ok(s: &str) -> bool {
+    let mut cs = s.chars();
+    s.len() <= 60 && cs.next().is_some_and(|c| c.is_ascii_alphanumeric()) && cs.all(|c| c.is_ascii_alphanumeric() || "._@+-".contains(c))
+}
+
+/// `<plugin>/<account>/<label>`, each part of its grammar.
+fn check_ref(r: &str) -> Result<(), String> {
+    let parts: Vec<&str> = r.split('/').collect();
+    match parts.as_slice() {
+        [p, a, l] if plugin_id_ok(p) && crate::v1::package::account_id_ok(a) && label_ok(l) => Ok(()),
+        _ => Err(format!("not an account token reference: {}", r.chars().take(120).collect::<String>())),
     }
 }
 
@@ -151,6 +175,53 @@ impl Keystore {
             },
             Keystore::Keychain => {
                 ITEMS.remove(id);
+                Ok(())
+            }
+        }
+    }
+
+    fn token_file(dir: &std::path::Path, r: &str) -> PathBuf {
+        dir.join("account-tokens").join(format!("{}.json", r.replace('/', "~")))
+    }
+
+    /// Stores an account's tokens under `r` (`<plugin>/<account>/<label>`).
+    pub fn put_token(&self, r: &str, tokens: &serde_json::Value) -> Result<(), String> {
+        check_ref(r)?;
+        let text = tokens.to_string();
+        match self {
+            Keystore::File(dir) => {
+                let sub = dir.join("account-tokens");
+                std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let path = Self::token_file(dir, r);
+                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+            }
+            Keystore::Keychain => ACCOUNT_ITEMS.put(r, &rox_v1::keys::b64(text.as_bytes())),
+        }
+    }
+
+    /// An account's tokens, or `None` when there are none.
+    pub fn get_token(&self, r: &str) -> Result<Option<serde_json::Value>, String> {
+        check_ref(r)?;
+        let text = match self {
+            Keystore::File(dir) => std::fs::read_to_string(Self::token_file(dir, r)).ok(),
+            Keystore::Keychain => ACCOUNT_ITEMS.get(r).and_then(|b| rox_v1::keys::unb64(&b).ok()).and_then(|b| String::from_utf8(b).ok()),
+        };
+        Ok(text.and_then(|t| serde_json::from_str(&t).ok()))
+    }
+
+    pub fn remove_token(&self, r: &str) -> Result<(), String> {
+        check_ref(r)?;
+        match self {
+            Keystore::File(dir) => match std::fs::remove_file(Self::token_file(dir, r)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            },
+            Keystore::Keychain => {
+                ACCOUNT_ITEMS.remove(r);
                 Ok(())
             }
         }
@@ -285,6 +356,53 @@ mod tests {
         assert_eq!((old.get(ID), old.get(NEWER)), (None, None), "deleted from the old service");
         assert_eq!(old.get(OTHER), Some(seed()), "only the given plugins are touched");
         assert_eq!(new.move_from(&old, &ids).unwrap(), 0, "nothing left to move");
+        run(&["delete-keychain", kc]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_store_keeps_account_tokens_private_under_their_reference() {
+        let dir = std::env::temp_dir().join(format!("rox-keystore-tokens-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ks = Keystore::File(dir.clone());
+        let r = "app.buwiz.fixture/google/u@example.com";
+        assert_eq!(ks.get_token(r).unwrap(), None);
+        let t = serde_json::json!({"access_token": "at", "refresh_token": "rt", "expires_at": 10});
+        ks.put_token(r, &t).unwrap();
+        assert_eq!(ks.get_token(r).unwrap(), Some(t.clone()));
+        let file = dir.join("account-tokens/app.buwiz.fixture~google~u@example.com.json");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        ks.remove_token(r).unwrap();
+        ks.remove_token(r).unwrap();
+        assert_eq!(ks.get_token(r).unwrap(), None);
+        for bad in ["app.buwiz.fixture/google", "app.buwiz.fixture/Google/default", "app.buwiz.fixture/google/a b", "app.buwiz.fixture/google/../x", "x/google/default"] {
+            assert!(ks.put_token(bad, &t).unwrap_err().starts_with("not an account token reference"), "{bad}");
+        }
+        assert!(label_ok("default") && label_ok("u+1@example.com") && !label_ok(".x") && !label_ok("") && !label_ok(&"a".repeat(61)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The account service's items in a keychain file of the test's own: a
+    /// token blob goes through `security -i` bare and reads back.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn account_tokens_round_trip_through_a_test_keychain() {
+        let dir = std::env::temp_dir().join(format!("rox-keystore-acct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kc = dir.join("test.keychain-db");
+        let kc = kc.to_str().unwrap();
+        let run = |args: &[&str]| assert!(Command::new(SECURITY).args(args).stdout(Stdio::null()).status().unwrap().success(), "security {args:?}");
+        run(&["create-keychain", "-p", "test", kc]);
+        run(&["unlock-keychain", "-p", "test", kc]);
+        let service = format!("com.buwiz.bot.test-account-token.{}", std::process::id());
+        let items = Items { service: &service, keychain: Some(kc) };
+        let r = "app.buwiz.fixture/google/default";
+        let blob = rox_v1::keys::b64(serde_json::json!({"access_token": "a b \"c\"", "expires_at": 1}).to_string().as_bytes());
+        items.put(r, &blob).unwrap();
+        assert_eq!(items.get(r), Some(blob));
+        assert!(items.remove(r));
+        assert_eq!(items.get(r), None);
         run(&["delete-keychain", kc]);
         let _ = std::fs::remove_dir_all(&dir);
     }

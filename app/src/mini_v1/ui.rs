@@ -93,6 +93,23 @@ pub struct V1 {
     running: RefCell<Vec<(u64, String, String)>>,
     /// The document a `buwiz.preview` shows over the apps (7.10).
     pub preview: Signal<Option<super::bridge::Preview>>,
+    /// Account sign-ins waiting on the browser ([`signing_key`]).
+    pub signing: Signal<HashSet<String>>,
+    /// A refused sign-in's message, by [`signing_key`], under its row.
+    pub account_err: Signal<HashMap<String, String>>,
+}
+
+/// What a refused sign-in says: `needs_setup` is the setup it lacks.
+pub fn signin_error(e: &RoxError) -> String {
+    match (e.code.as_str(), e.message.is_empty()) {
+        ("needs_setup", true) => "Add your Google client in Setup".to_owned(),
+        _ => e.message.clone(),
+    }
+}
+
+/// `<plugin>|<account>/<label>`: a sign-in in progress.
+pub fn signing_key(plugin: &str, account: &str, label: &str) -> String {
+    format!("{plugin}|{}", connect::account_key(account, label))
 }
 
 impl V1 {
@@ -124,6 +141,8 @@ impl V1 {
             prewarm: RefCell::new(Default::default()),
             running: RefCell::new(Vec::new()),
             preview: signal(None),
+            signing: signal(HashSet::new()),
+            account_err: signal(HashMap::new()),
         }
     }
 
@@ -1266,6 +1285,77 @@ impl Store {
         self.v1_job("", move || host_api::set_tool_disabled(&broker(), &p, &t, disabled), |_| {});
     }
 
+    /// A 2.1 account's Sign out or Remove (spec 2.1 §4).
+    pub fn v1_account(&'static self, plugin: &str, account: &str, label: &str, action: host_api::AccountAction) {
+        if action == host_api::AccountAction::SignIn {
+            let key = signing_key(plugin, account, label.trim());
+            return self.v1_signin(plugin, account, label, move |e| {
+                store().v1.account_err.update(|m| {
+                    m.insert(key, signin_error(&e));
+                })
+            });
+        }
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.to_owned());
+        self.v1_job("", move || host_api::account_action(&broker(), &p, &a, &l, action), |_| {});
+    }
+
+    /// Sign in: the broker opens the browser; the row says "Signing in…"
+    /// until the list has it connected (checked every 2 s, 5 min at most)
+    /// or Cancel. `failed` hears a refusal.
+    pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(RoxError) + 'static) {
+        let key = signing_key(plugin, account, label.trim());
+        if self.v1.signing.with_untracked(|s| s.contains(&key)) {
+            return;
+        }
+        self.v1.account_err.update(|m| {
+            m.remove(&key);
+        });
+        self.v1.signing.update(|s| {
+            s.insert(key.clone());
+        });
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.trim().to_owned());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
+                let r = crate::vault::off_main(move || host_api::account_action(&broker(), &p2, &a2, &l2, host_api::AccountAction::SignIn)).await;
+                if let Some(Err(e)) = r {
+                    self.v1.signing.update(|s| {
+                        s.remove(&key);
+                    });
+                    return failed(e);
+                }
+                for _ in 0..150 {
+                    if !self.v1.signing.with_untracked(|s| s.contains(&key)) {
+                        break;
+                    }
+                    let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
+                    let done = crate::vault::off_main(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let list = host_api::plugins(&broker()).ok()?;
+                        let p = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?;
+                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && x.connected()))
+                    })
+                    .await
+                    .flatten();
+                    if done == Some(true) {
+                        break;
+                    }
+                }
+                self.v1.signing.update(|s| {
+                    s.remove(&key);
+                });
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// Stops waiting on a sign-in (the browser was closed).
+    pub fn v1_signin_cancel(&'static self, key: &str) {
+        self.v1.signing.update(|s| {
+            s.remove(key);
+        });
+    }
+
     /// A routine's approve, enable (in the open chat) or disable (5.9).
     pub fn v1_routine(&'static self, plugin: &str, routine: &str, action: host_api::RoutineAction) {
         let (p, r) = (plugin.to_owned(), routine.to_owned());
@@ -1350,6 +1440,11 @@ impl Store {
     /// then the plugin's attachments, pins (and their sidebar items) and
     /// storage go.
     pub fn v1_uninstall(&'static self, plugin: &str) {
+        self.v1_uninstall_then(plugin, || {});
+    }
+
+    /// [`Self::v1_uninstall`], then `after` once it is done.
+    fn v1_uninstall_then(&'static self, plugin: &str, after: impl FnOnce() + 'static) {
         let p = plugin.to_owned();
         self.v1_close_opens(plugin);
         let prefix = format!("v1:{plugin}/");
@@ -1375,8 +1470,107 @@ impl Store {
                     "Uninstalled. Removed {} attachment(s) and {} pin(s).",
                     removed.attachments, removed.pins
                 ));
+                after();
             },
         );
+    }
+
+    // ————— App install and uninstall cards in a chat —————
+
+    /// Card `i` of chat `chat`'s local state, changed by `f`.
+    pub fn app_card<T>(&'static self, chat: &str, i: i64, f: impl FnOnce(&mut crate::store::AppCard) -> T) -> T {
+        let mut out = None;
+        self.app_cards.update(|l| {
+            let at = match l.iter().position(|c| c.chat == chat && c.i == i) {
+                Some(at) => at,
+                None => {
+                    l.push(crate::store::AppCard { chat: chat.to_owned(), i, ..Default::default() });
+                    l.len() - 1
+                }
+            };
+            out = Some(f(&mut l[at]));
+        });
+        out.expect("updated")
+    }
+
+    /// What is typed into card `i`'s fields, taken out of the store.
+    fn app_take_typed(&'static self, chat: &str, i: i64) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        self.app_typed.update(|l| {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(l).into_iter().partition(|(c, at, _, _)| c == chat && *at == i);
+            *l = rest;
+            out = mine.into_iter().map(|(_, _, k, v)| (k, v)).collect();
+        });
+        out
+    }
+
+    /// An install card's main button: installs what it reviewed with the
+    /// values typed into it (or the settings of the plugin chosen), off
+    /// the main thread; the typed values go with the call and nowhere else.
+    pub fn app_install(&'static self, chat: &str, i: i64, n: &crate::store::AppInstallNotice) {
+        let (chat, n) = (chat.to_owned(), n.clone());
+        let Some(picked) = self.app_card(&chat, i, |c| (!c.busy).then(|| {
+            c.start();
+            c.picked.clone()
+        })) else {
+            return;
+        };
+        let typed = self.app_take_typed(&chat, i);
+        let body = n.install_body(&typed, n.settings_from(picked.as_deref()));
+        drop(typed);
+        Owner::detached().run(|| {
+            spawn(async move {
+                let r = crate::vault::off_main(move || connect::install_with(&broker(), body)).await;
+                let r = match r {
+                    Some(Ok(connect::Installed::Done)) => Ok("installed"),
+                    Some(Ok(connect::Installed::NeedsApproval(_))) => {
+                        Err("This update adds permissions; ask for the install again to review them".to_owned())
+                    }
+                    Some(Ok(connect::Installed::NeedsDowngrade)) => {
+                        Err(format!("This is older than the installed {}; ask for the install again to review it", n.title))
+                    }
+                    Some(Err(e)) => Err(e.message),
+                    None => Err("The install did not finish".to_owned()),
+                };
+                self.app_card(&chat, i, |c| c.finish(r));
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// An app card's other answers: Not now (`declined`), Cancel
+    /// (`cancelled`), or Uninstall (`uninstalled`, after the uninstall
+    /// Connect Apps runs); the broker's notice is settled with it.
+    pub fn app_answer(&'static self, chat: &str, i: i64, kind: &'static str, id: &str, state: &'static str) {
+        let (chat, plugin, id) = (chat.to_owned(), id.to_owned(), id.to_owned());
+        let settle = move || {
+            drop(self.app_take_typed(&chat, i));
+            self.app_card(&chat, i, |c| c.finish(Ok(state)));
+            let (chat, id) = (chat.clone(), id.clone());
+            Owner::detached().run(|| {
+                spawn(async move {
+                    let r = crate::vault::off_main(move || host_api::settle_notice(&broker(), &chat, kind, &id, state)).await;
+                    if let Some(Err(e)) = r {
+                        log::warn!("app notice settle: {}", e.message);
+                    }
+                })
+            });
+        };
+        if state == "uninstalled" {
+            self.v1_uninstall_then(&plugin, settle);
+        } else {
+            settle();
+        }
+    }
+
+    /// An `account_required` card's Sign in: the account's first label
+    /// (or `default`); a refusal stays on the card.
+    pub fn account_card_signin(&'static self, chat: &str, i: i64, n: &crate::store::AccountRequiredNotice) {
+        let label = self.v1.listed.with_untracked(|l| l.iter().find(|p| p.id == n.plugin).map(|p| p.signin_label(&n.account)));
+        let label = label.unwrap_or_else(|| "default".to_owned());
+        self.app_card(chat, i, |c| c.error.clear());
+        let ch = chat.to_owned();
+        self.v1_signin(&n.plugin, &n.account, &label, move |e| store().app_card(&ch, i, |c| c.finish(Err(signin_error(&e)))));
     }
 
     /// Open logs of a plugin (14.5): its log file in the Finder.
@@ -1527,7 +1721,7 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
     let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
     // a fresh answer's cards that mount at once: their sessions open now,
     // alongside their modules (14.6)
-    if !cards::aged(untracked(|| user_after())) {
+    if !cards::aged(untracked(&user_after)) {
         for ((_, c), slot) in cards.iter().zip(&slots) {
             let first_party = store().v1.entry(&c.plugin).is_some_and(|p| p.first_party);
             if *slot != cards::Slot::Link && c.placement == Placement::Inline && first_party {
@@ -1975,7 +2169,7 @@ pub fn preview_layer() -> impl IntoElement {
         || {
             let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
             let page = element_ref();
-            let stop = page.clone();
+            let stop = page;
             // a string loaded with no base URL is about:blank
             let own = |url: &str| url.is_empty() || url.starts_with("about:");
             view()
@@ -2098,6 +2292,14 @@ mod tests {
     use super::*;
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+    #[test]
+    fn a_sign_in_that_needs_setup_says_what_is_missing() {
+        assert_eq!(signin_error(&RoxError::new("needs_setup", "")), "Add your Google client in Setup");
+        assert_eq!(signin_error(&RoxError::new("needs_setup", "Add your Google client in Setup first")), "Add your Google client in Setup first");
+        assert_eq!(signin_error(&RoxError::new("internal", "the broker answered 500")), "the broker answered 500");
+        assert_eq!(signing_key("app.buwiz.gws", "google", "work"), "app.buwiz.gws|google/work");
+    }
 
     #[test]
     fn an_attachment_is_sent_as_a_message_carrying_its_canonical_token() {

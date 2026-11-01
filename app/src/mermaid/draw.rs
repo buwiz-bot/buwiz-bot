@@ -263,7 +263,8 @@ impl Ctx<'_> {
         // A `<text>` is a label: its lines are `<tspan>`s with x/y, or the
         // text itself at the element's x/y.
         let label: String = flat_text(el);
-        let mut lines: Vec<(f32, f32, String, Vec<(String, State)>)> = Vec::new();
+        type TextLine = (f32, f32, String, Vec<(String, State)>);
+        let mut lines: Vec<TextLine> = Vec::new();
         let x = num(el.attr("x"));
         let y = num(el.attr("y"));
         for child in &el.children {

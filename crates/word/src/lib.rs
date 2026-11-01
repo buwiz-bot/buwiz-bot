@@ -37,7 +37,7 @@ use std::sync::Arc;
 use nsh_core::prelude::*;
 
 use buwiz_office_kit::host::{Format, host};
-use doc::{Caret, Meta, Out, Word};
+use doc::{Caret, MediaKey, Meta, Out, Word};
 use draw::Drawn;
 
 /// The app's hooks: the view's state in its store, the open document's
@@ -70,7 +70,7 @@ pub struct WordUi {
     /// The page area's size, in points.
     pub area: Signal<(f32, f32)>,
     /// Pictures as `data:` URIs, by (part, relationship id).
-    pub media: Signal<Arc<HashMap<(Option<String>, String), String>>>,
+    pub media: Signal<Arc<HashMap<MediaKey, String>>>,
     /// The find bar: `Some(query)` while open.
     pub find: Signal<Option<String>>,
     /// The review list (tracked changes and comments) shows.

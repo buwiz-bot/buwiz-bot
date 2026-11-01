@@ -4,7 +4,7 @@
 // fixtures/fake-gws-upstream.mjs, the real server's text format), and the
 // reserved tools of spec 7.8. GWS-* are this suite's own IDs (not in spec
 // 17); the reserved-tool tests reuse the RSV IDs they check. With GWS_CMD
-// naming a rox-gws binary the same cases run against it, and GWS-06 holds
+// naming a buwiz-gws binary the same cases run against it, and GWS-06 holds
 // its wire to server.mjs's, byte for byte.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -207,7 +207,7 @@ async function wire(spec, messages) {
   return lines;
 }
 
-test("GWS-06 rox-gws answers as server.mjs does, byte for byte", { skip: !GWS_CMD && "set GWS_CMD to a rox-gws binary" }, async () => {
+test("GWS-06 buwiz-gws answers as server.mjs does, byte for byte", { skip: !GWS_CMD && "set GWS_CMD to a buwiz-gws binary (scripts/gws-build prints one)" }, async () => {
   const k = generate();
   const other = generate();
   let id = 0;
