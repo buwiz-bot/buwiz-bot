@@ -317,7 +317,7 @@ fn market_page() -> impl IntoElement {
     // A new category starts at the top (the virtual list would otherwise
     // keep the old scroll offset).
     let body = element_ref();
-    let b2 = body.clone();
+    let b2 = body;
     effect(move || {
         let _ = store().plugin_cat.get();
         let _ = store().plugin_query.get();
@@ -375,7 +375,7 @@ fn market_page() -> impl IntoElement {
                             .flex_wrap()
                             .py(px(12.0))
                             .child(each(
-                                || visible_cats(),
+                                visible_cats,
                                 |c| c.clone(),
                                 |c, _| cat_pill(c.get()),
                             ))
@@ -1509,7 +1509,7 @@ fn sm_btn(
         .bg(move || if hov.get() { bg_hov } else { bg })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(
             text(label)
                 .number_of_lines(1)
@@ -1537,7 +1537,7 @@ fn pill_btn(
         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .when(glyph.is_some(), |v| {
             v.child(
                 view()
@@ -2056,7 +2056,8 @@ fn account_row(
     };
     // the action beside the status: Authenticate (OAuth), Reconnect
     // (a failed probe), Connect (a disabled row).
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match a.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match a.status.as_str() {
         _ if blocked && a.status != "connected" => {
             let p = plugin.clone();
             Some(("Setup", Box::new(move || store().open_setup(&p, "edit"))))
@@ -2105,7 +2106,7 @@ fn account_row(
         right = right.child(sm_btn(
             Btn::Secondary,
             move || if busy_here { "Opening…".to_owned() } else { verb.to_owned() },
-            move || f(),
+            f,
         ));
     }
     let show_err = a.status == "error" && !needs && !a.err.is_empty();
@@ -2317,7 +2318,7 @@ pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() 
         .rounded(px(8.0))
         .justify_center()
         .bg(move || if (on2)() { pair("#1680f3", "#1e86fc") } else { tc(0.15) })
-        .on_press(move || on_toggle())
+        .on_press(on_toggle)
         .child(
             view()
                 .size(px(12.0))
@@ -2555,12 +2556,10 @@ fn host(url: &str) -> String {
 /// "Vercel"), else the host's first label.
 fn developer_of(url: &str) -> String {
     let h = host(url);
-    if h == "github.com" {
-        if let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next()) {
-            if !owner.is_empty() {
-                return Store::plugin_title(owner);
-            }
-        }
+    if h == "github.com"
+        && let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next())
+        && !owner.is_empty() {
+        return Store::plugin_title(owner);
     }
     h.split('.').next().map(|s| s.to_owned()).unwrap_or_else(|| "—".to_owned())
 }
@@ -2982,7 +2981,8 @@ fn server_account(s: McpServer) -> impl IntoElement {
     let id = s.id.clone();
     let transport = if remote { "remote" } else { "command" }.to_owned();
     let err = s.err.clone();
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match s.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match s.status.as_str() {
         "error" => {
             let verb = if needs && remote { "Authenticate" } else { "Reconnect" };
             Some((verb, Box::new(move || store().auth_or_retry(&id, &transport, &err, ""))))
@@ -2992,7 +2992,7 @@ fn server_account(s: McpServer) -> impl IntoElement {
     };
     let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
     if let Some((verb, f)) = action {
-        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), move || f()));
+        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), f));
     }
     let show_err = s.status == "error" && !(needs && remote) && !s.err.is_empty();
     card().py(px(8.0)).child(
@@ -3480,6 +3480,50 @@ fn v1_plugin_page() -> impl IntoElement {
         })))
 }
 
+/// A review's details as Connect Apps shows them: what an update changes,
+/// the permissions it adds, every review line and the warnings (also the
+/// chat's install card).
+pub(crate) fn review_details(r: &crate::mini_v1::connect::Review) -> View {
+    let mut v = view().gap(px(10.0));
+    if let Some(from) = &r.from_version {
+        v = v.child(
+            text(if r.downgrade {
+                format!("This is an older version than the {from} installed.")
+            } else if *from == r.version {
+                format!("Version {from} is installed already.")
+            } else {
+                format!("Updates {from} to {}.", r.version)
+            })
+            .text_size(px(13.0))
+            .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
+        );
+    }
+    if !r.added.is_empty() {
+        let mut added = card().child(sec_label("This update adds permissions"));
+        for l in &r.added {
+            added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
+        }
+        v = v.child(added);
+    }
+    let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
+    for l in &r.lines {
+        let indent = l.starts_with("  ");
+        lines = lines.child(
+            text(l.trim_start().to_owned())
+                .pl(px(if indent { 28.0 } else { 14.0 }))
+                .pr(px(14.0))
+                .py(px(3.0))
+                .text_size(px(13.0))
+                .text_color(if indent { ink2() } else { theme::TEXT }),
+        );
+    }
+    v = v.child(lines);
+    for w in &r.warnings {
+        v = v.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
+    }
+    v
+}
+
 /// Add a v1 plugin: its command line, then the review (13.1 step 3) with
 /// every line, Cancel (nothing changes) and Install — or, for an update,
 /// what it adds and Approve, or Install older version (12.1, 13.2).
@@ -3522,42 +3566,7 @@ fn v1_install_page() -> impl IntoElement {
                 .gap(px(10.0))
                 .child(text(format!("{} {}", r.title, r.version)).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
                 .child(text(format!("By {}", r.publisher)).text_size(px(13.0)).text_color(ink3()));
-            if let Some(from) = &r.from_version {
-                page = page.child(
-                    text(if r.downgrade {
-                        format!("This is an older version than the {from} installed.")
-                    } else if *from == r.version {
-                        format!("Version {from} is installed already.")
-                    } else {
-                        format!("Updates {from} to {}.", r.version)
-                    })
-                    .text_size(px(13.0))
-                    .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
-                );
-            }
-            if !r.added.is_empty() {
-                let mut added = card().child(sec_label("This update adds permissions"));
-                for l in &r.added {
-                    added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
-                }
-                page = page.child(added);
-            }
-            let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
-            for l in &r.lines {
-                let indent = l.starts_with("  ");
-                lines = lines.child(
-                    text(l.trim_start().to_owned())
-                        .pl(px(if indent { 28.0 } else { 14.0 }))
-                        .pr(px(14.0))
-                        .py(px(3.0))
-                        .text_size(px(13.0))
-                        .text_color(if indent { ink2() } else { theme::TEXT }),
-                );
-            }
-            page = page.child(lines);
-            for w in &r.warnings {
-                page = page.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
-            }
+            page = page.child(review_details(&r));
             page.child(
                 view()
                     .flex_row()

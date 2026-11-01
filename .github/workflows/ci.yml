@@ -1,6 +1,7 @@
 name: CI
 
-# The app's, the office crates' and the broker's tests on Apple silicon,
+# The app's, the office crates' and the broker's tests, and clippy on the
+# app and the office crates, on Apple silicon,
 # for every PR.
 on:
   pull_request:
@@ -42,6 +43,26 @@ jobs:
       - name: Test
         working-directory: app
         run: cargo test --locked -p rox -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet
+
+  clippy:
+    name: App and office crates (cargo clippy)
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # rustup installs app/rust-toolchain.toml's 1.99.0 on first use
+      - name: Add clippy
+        working-directory: app
+        run: rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+          key: clippy
+      - name: Clippy
+        working-directory: app
+        run: cargo clippy --all-targets --locked -p rox -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet -- -D warnings 2>&1
 
   broker:
     name: Broker (cargo test)

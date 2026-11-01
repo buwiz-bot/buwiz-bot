@@ -482,7 +482,7 @@ fn headers(u: &'static SheetUi, cols: bool) -> CanvasView {
 fn hits(u: &'static SheetUi) -> impl IntoElement {
     let v_ref = element_ref();
     let h_ref = element_ref();
-    SCROLLERS.with(|s| s.set(Some((v_ref.clone(), h_ref.clone()))));
+    SCROLLERS.with(|s| s.set(Some((v_ref, h_ref))));
     let size = move || -> (f32, f32) {
         let Some((shape, f)) = frame(u) else { return (0.0, 0.0) };
         let (w, h) = u.area.get();
@@ -735,7 +735,7 @@ pub fn grid(u: &'static SheetUi) -> impl IntoElement {
                         .h_full()
                         .border_r(px(0.5))
                         .border_r_color(theme().border_s)
-                        .on_press(move || edit::select_all()),
+                        .on_press(edit::select_all),
                 )
                 .child(view().flex_1().h_full().overflow_hidden().child(headers(u, true).absolute().size_full()))
                 .child(header_hits(u, true).left(px(ROW_HEAD))),

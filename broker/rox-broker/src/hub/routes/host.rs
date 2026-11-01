@@ -7,6 +7,8 @@
 //! code, message, retryable}` with the status map below. Plugin actions
 //! and sessions are the plugin host's (`helper::plugins`,
 //! `helper::sessions`); the routine routes are `hub::routines::v1`'s.
+//! An install may take settings from another plugin (`env_from`), and
+//! `notices/settle` answers a mini app's install or uninstall card.
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
 //!
@@ -27,7 +29,9 @@ use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use hyper::{Method, Response, StatusCode};
 use serde_json::{json, Value};
 
+use crate::helper::plugins::Host;
 use crate::hub::ctx::HubCtx;
+use crate::hub::routines::store_host::settle_notices;
 use crate::hub::routines::v1::V1;
 use crate::hub::routines::Routines;
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
@@ -187,6 +191,7 @@ enum Route {
 const POSTS: &[&str] = &[
     "/v1/host/plugins/inspect",
     "/v1/host/plugins/install",
+    "/v1/host/notices/settle",
     "/v1/host/apps/source",
     "/v1/host/sessions/open",
     "/v1/host/sessions/close",
@@ -230,9 +235,12 @@ impl Route {
                         _ => v1.hook(ctx, b),
                     };
                 }
+                if *path == "/v1/host/notices/settle" {
+                    return settle(ctx, b);
+                }
                 if let Some(op) = path.strip_prefix("/v1/host/plugins/") {
                     let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
-                    return if op == "inspect" { host.inspect(b).await } else { host.install(b).await };
+                    return if op == "inspect" { host.inspect(b).await } else { install_plugin(ctx, host, b).await };
                 }
                 let ss = ctx.sessions.as_ref().ok_or_else(no_host)?;
                 match *path {
@@ -261,6 +269,76 @@ impl Route {
             }
         }
     }
+}
+
+/// The install body's `env_from: "<installed id>"`: each key of
+/// `env_from_keys` the body's `env` lacks is copied from that plugin's
+/// env. The values stay in the broker (never logged, never answered).
+pub fn with_env_from(host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let from = match b.get("env_from") {
+        None | Some(Value::Null) => return Ok(b.clone()),
+        Some(Value::String(f)) if !f.is_empty() => f,
+        Some(_) => return V1Error::err("invalid_args", "env_from must be an installed plugin id"),
+    };
+    let Some(keys) = b.get("env_from_keys").and_then(Value::as_array).filter(|k| k.iter().all(Value::is_string)) else {
+        return V1Error::err("invalid_args", "env_from_keys must be an array of names");
+    };
+    let Some(row) = host.row(from) else { return V1Error::err("not_found", format!("{} is not installed", js::slice_utf16(from, 80))) };
+    let theirs = crate::helper::plugins::parse(&row.env, json!({}));
+    let mut out = b.clone();
+    let o = out.as_object_mut().expect("the body is an object");
+    let mut env = match o.get("env") {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(m)) => m.clone(),
+        Some(_) => return V1Error::err("invalid_args", "env must map names to strings"),
+    };
+    for k in keys.iter().filter_map(Value::as_str) {
+        if env.contains_key(k) {
+            continue;
+        }
+        match theirs.get(k).and_then(Value::as_str) {
+            Some(v) => {
+                env.insert(k.to_owned(), json!(v));
+            }
+            None => return V1Error::err("invalid_args", format!("{from} has no {}", js::slice_utf16(k, 80))),
+        }
+    }
+    o.insert("env".into(), Value::Object(env));
+    o.shift_remove("env_from");
+    o.shift_remove("env_from_keys");
+    Ok(out)
+}
+
+/// `POST /v1/host/plugins/install` with `env_from`; once it installed,
+/// every pending `app_install` card for the id reads `installed`.
+pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let out = host.install(&with_env_from(host, b)?).await?;
+    if let Some(id) = out.get("id").and_then(Value::as_str) {
+        settle_notices(ctx, None, "app_install", id, "installed");
+    }
+    Ok(out)
+}
+
+/// `POST /v1/host/notices/settle {chat, kind, id, state}`: the user's
+/// answer on an install or uninstall card.
+pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
+    let str_of = |k: &str| b.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+    let (Some(chat), Some(kind), Some(id), Some(state)) = (str_of("chat"), str_of("kind"), str_of("id"), str_of("state")) else {
+        return V1Error::err("invalid_args", "send {chat, kind, id, state}");
+    };
+    let states: &[&str] = match kind {
+        "app_install" => &["declined"],
+        "app_uninstall" => &["uninstalled", "cancelled"],
+        _ => return V1Error::err("invalid_args", "kind must be app_install or app_uninstall"),
+    };
+    if !states.contains(&state) {
+        return V1Error::err("invalid_args", format!("{kind} settles as {}", states.join(" or ")));
+    }
+    if ctx.store.read(|s| s.thread(chat).is_none()) {
+        return V1Error::err("not_found", format!("no chat {}", js::slice_utf16(chat, 80)));
+    }
+    let n = settle_notices(ctx, Some(chat), kind, id, state);
+    Ok(json!({"ok": true, "settled": n}))
 }
 
 /// `POST /v1/hooks/<instance>/<secret>`: a webhook instance's run, 202
