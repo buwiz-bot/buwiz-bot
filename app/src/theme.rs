@@ -147,7 +147,7 @@ pub(crate) fn always_dark(c: AdaptiveColor) -> AdaptiveColor {
 
 /// `bubbleFill` for an explicit bot color (theme.ts:58).
 pub(crate) fn bubble_fill_of(color: &str) -> AdaptiveColor {
-    let (d, l) = bubble_pair(&crate::mark::norm_color(color));
+    let (d, l) = bubble_pair(&crate::mascot::norm_color(color));
     AdaptiveColor {
         light: Hsla::from_str(l).unwrap_or_default(),
         dark: Hsla::from_str(d).unwrap_or_default(),

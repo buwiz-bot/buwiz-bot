@@ -1,8 +1,8 @@
-//! The agent avatar (`app/blob.tsx`) — a native `canvas()` port of `BotBlob`:
-//! the `Mark`/`Director` engine from `mark.rs` advances on a 60fps clock
-//! signal, and each paint either draws the live `Uh` tree through
-//! `paint_tree` or — for a settled resting mark — the baked `paint_rest`
-//! frames. `blobGaze`/`blobPokes`/`blobEdit` keep their JS shapes.
+//! The agent avatar: a `canvas()` hosting the mascot (`crate::mascot`).
+//! Its animator advances on the store's shared clock while anything moves;
+//! a settled, resting avatar sleeps until its gaze, edit shade or a poke
+//! wakes it. `BlobGaze`/`BlobPokes`/`BlobEdit` are the drivers views share
+//! with an avatar.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 
 use nsh_core::prelude::*;
 
-use crate::mark::{self, PaintOpts, UhSize, V2};
-use crate::mark::{gaze_advance, gaze_set, GazeState};
+use crate::mascot::{self, Gesture, Look};
 use crate::store::RoxBot;
 use crate::theme;
 
@@ -51,7 +50,7 @@ impl Wake {
 /// (`follow`) and the canvas (`target`/`ver`). Cells the canvas reads
 /// untracked, plus the wake a resting canvas sleeps on.
 pub(crate) struct BlobGaze {
-    target: Cell<Option<V2>>,
+    target: Cell<Option<Look>>,
     ver: Cell<u32>,
     wake: Wake,
 }
@@ -64,7 +63,7 @@ impl BlobGaze {
             wake: Wake::new(),
         })
     }
-    fn change(&self, next: Option<V2>) {
+    fn change(&self, next: Option<Look>) {
         if self.target.get() == next {
             return;
         }
@@ -83,7 +82,7 @@ impl BlobGaze {
     pub(crate) fn rest(&self) {
         self.change(None);
     }
-    pub(crate) fn target(&self) -> Option<V2> {
+    pub(crate) fn target(&self) -> Option<Look> {
         self.target.get()
     }
     pub(crate) fn ver(&self) -> u32 {
@@ -91,10 +90,10 @@ impl BlobGaze {
     }
 }
 
-/// `blobPokes()` — queued `poke(kind, {turns})`s the canvas drains on its
-/// next clock tick (≤33ms, like the TS loop reading `pokes.q`).
+/// Queued gestures (and how many times to play each) the canvas drains on
+/// its next paint.
 pub(crate) struct BlobPokes {
-    queue: RefCell<Vec<(&'static str, f64)>>,
+    queue: RefCell<Vec<(Gesture, f64)>>,
     wake: Wake,
 }
 
@@ -105,12 +104,11 @@ impl BlobPokes {
             wake: Wake::new(),
         })
     }
-    pub(crate) fn fire(&self, kind: &str, turns: Option<f64>) {
-        let kind = mark::UN.iter().copied().find(|k| *k == kind).unwrap_or(mark::UN[0]);
-        self.queue.borrow_mut().push((kind, turns.unwrap_or(1.0)));
+    pub(crate) fn fire(&self, gesture: Gesture, turns: Option<f64>) {
+        self.queue.borrow_mut().push((gesture, turns.unwrap_or(1.0)));
         self.wake.ping();
     }
-    fn drain(&self) -> Vec<(&'static str, f64)> {
+    fn drain(&self) -> Vec<(Gesture, f64)> {
         self.queue.borrow_mut().drain(..).collect()
     }
 }
@@ -210,7 +208,7 @@ pub(crate) struct BotBlobProps {
     pub pokes: Option<Rc<BlobPokes>>,
     pub morph_shape: bool,
     pub seed: Option<String>,
-    pub gaze_at: Option<V2>,
+    pub gaze_at: Option<Look>,
 }
 
 impl Default for BotBlobProps {
@@ -234,211 +232,166 @@ impl Default for BotBlobProps {
     }
 }
 
-/// The per-canvas engine + prop mirrors (`draw`'s locals in `BotBlob`).
+/// The per-canvas animator + prop mirrors.
 struct Inner {
-    tab: Rc<mark::Tables>,
-    mark: mark::Mark,
-    dir: mark::Director,
-    gs: GazeState,
+    animator: mascot::Animator,
     last_shape: String,
     last_state: &'static str,
     last_compact: bool,
     last_emphasis: bool,
     last_resting: bool,
     last_gaze_ver: u32,
-    was_playing: bool,
     live_until: Instant,
     grace_until: Instant,
-    ek: f64,
+    edit_level: f64,
     prev_clock: f64,
     asleep: bool,
 }
 
+/// The state a props' source (or fixed name) shows now.
+fn state_of(props: &BotBlobProps) -> &'static mascot::StateSpec {
+    match &props.state_src {
+        Some(source) => mascot::state(&source()),
+        None => mascot::state(props.state),
+    }
+}
+
+/// Small avatars skip the outline wobble.
+fn is_compact(size: f32) -> bool {
+    size * 0.82 < 48.0
+}
+
 impl Inner {
-    fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
-        let body = mark::yn(&props.shape);
-        let seed = props
-            .seed
-            .as_deref()
-            .map(mark::rp)
-            .unwrap_or_else(|| (std::time::SystemTime::now()
+    fn new(props: &BotBlobProps) -> Self {
+        let seed = props.seed.as_deref().map(mascot::seed_from).unwrap_or_else(|| {
+            (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.subsec_nanos())
-                .unwrap_or(1)) | 1);
-        let box_ = props.size as f64 * 0.82;
-        let mut mark = mark::Mark::new(&tab, Some(body), 1.0, false, false, seed);
-        let state = props
-            .state_src
-            .as_ref()
-            .map(|f| mark::state_name(&f()))
-            .unwrap_or_else(|| mark::state_name(props.state));
-        let resting = props.paused || state == "idle";
-        let dir = mark::Director::new(&mut mark, state, seed, box_ < 48.0, resting, None);
-        let initial = props
-            .gaze
-            .as_ref()
-            .and_then(|g| g.target())
-            .or(props.gaze_at);
-        mark.set_gaze(initial);
-        let mut gs = GazeState::default();
-        gaze_set(&mut gs, initial);
+                .unwrap_or(1))
+                | 1
+        });
+        let state = state_of(props);
+        let resting = props.paused || state.name == "idle";
+        let mut animator = mascot::Animator::new(
+            mascot::Shape::from_name(&props.shape),
+            state,
+            seed,
+            resting,
+            is_compact(props.size),
+        );
+        animator.look_at(props.gaze.as_ref().and_then(|g| g.target()).or(props.gaze_at));
+        animator.settle_gaze();
         let now = Instant::now();
         Self {
-            tab,
-            mark,
-            dir,
-            gs,
+            animator,
             last_shape: props.shape.clone(),
-            last_state: state,
-            last_compact: box_ < 48.0,
+            last_state: state.name,
+            last_compact: is_compact(props.size),
             last_emphasis: false,
             last_resting: resting,
             last_gaze_ver: props.gaze.as_ref().map_or(0, |g| g.ver()),
-            was_playing: false,
             live_until: now,
             grace_until: now,
-            ek: 0.0,
+            edit_level: 0.0,
             prev_clock: 0.0,
             asleep: true,
         }
     }
 
-    /// `draw`'s prop-diff section (blob.tsx: shape/state/compact/emphasis/
-    /// gaze/pokes/resting), then the clock advance.
-    fn sync(&mut self, props: &BotBlobProps) -> bool {
+    /// Mirrors prop changes (shape, state, size, emphasis, gaze, pokes,
+    /// resting) into the animator.
+    fn sync(&mut self, props: &BotBlobProps, reduced_motion: bool) {
         let now = Instant::now();
-        let mut dirty = false;
         if props.shape != self.last_shape {
-            self.mark.set_body(mark::yn(&props.shape), false);
-            if props.morph_shape {
+            let morph = props.morph_shape && !reduced_motion;
+            self.animator.set_shape(mascot::Shape::from_name(&props.shape), morph);
+            if morph {
                 self.grace_until = now + Duration::from_millis(1400);
             }
             self.live_until = now + Duration::from_millis(1200);
             self.last_shape = props.shape.clone();
-            dirty = true;
         }
-        let state = props
-            .state_src
-            .as_ref()
-            .map(|f| mark::state_name(&f()))
-            .unwrap_or_else(|| mark::state_name(props.state));
-        if state != self.last_state {
-            if state == "idle" {
+        let state = state_of(props);
+        if state.name != self.last_state {
+            if state.name == "idle" {
                 self.grace_until = now + Duration::from_millis(1400);
             }
-            self.dir.set_state_pub(&mut self.mark, state);
-            self.last_state = state;
-            dirty = true;
+            self.animator.set_state(state);
+            self.last_state = state.name;
         }
-        let compact = (props.size as f64 * 0.82) < 48.0;
+        let compact = is_compact(props.size);
         if compact != self.last_compact {
-            self.dir.set_compact(compact);
+            self.animator.set_compact(compact);
             self.last_compact = compact;
         }
-        let emphasized = props
-            .emph_src
-            .as_ref()
-            .map(|f| f())
-            .unwrap_or(props.emphasized);
+        let emphasized = props.emph_src.as_ref().map(|f| f()).unwrap_or(props.emphasized);
         if emphasized != self.last_emphasis {
-            self.dir.set_emphasis(&mut self.mark, emphasized);
+            self.animator.set_emphasis(emphasized);
             self.live_until = now + Duration::from_millis(400);
             self.last_emphasis = emphasized;
         }
         if let Some(gaze) = &props.gaze
             && gaze.ver() != self.last_gaze_ver {
-                let target = gaze.target().or(props.gaze_at);
-                self.mark.set_gaze(target);
-                gaze_set(&mut self.gs, target);
+                self.animator.look_at(gaze.target().or(props.gaze_at));
                 self.last_gaze_ver = gaze.ver();
         }
         if let Some(pokes) = &props.pokes {
-            for (kind, turns) in pokes.drain() {
-                self.mark.poke(kind, turns);
-                self.live_until = now + Duration::from_millis(1500);
+            for (gesture, turns) in pokes.drain() {
+                // reduced motion: a click doesn't throw the body around
+                if !reduced_motion {
+                    self.animator.play(gesture, turns);
+                    self.live_until = now + Duration::from_millis(1500);
+                }
             }
         }
-        let resting = props.paused || (state == "idle" && now >= self.grace_until);
+        let resting = self.is_resting(props, now, reduced_motion);
         if resting != self.last_resting {
-            self.dir.set_resting(&mut self.mark, resting);
+            self.animator.set_resting(resting);
             self.last_resting = resting;
         }
-        dirty
     }
 
-    /// `draw`'s live branch: advance clocks, update `ek`, mirror the
-    /// rest-pose hold reset.
-    fn advance(&mut self, props: &BotBlobProps, clock: f64, resting: bool, live: bool) {
-        let edit_target = props.edit.as_ref().map_or(0.0, |e| e.target.get());
-        let mut dt = 0.0;
-        if live {
-            if self.asleep {
-                self.prev_clock = clock;
-                self.asleep = false;
-            } else {
-                dt = (clock - self.prev_clock).clamp(0.0, 0.1);
-                self.prev_clock = clock;
-            }
-            if dt > 0.0 {
-                if !resting {
-                    self.dir.advance(&mut self.mark, dt);
-                }
-                self.mark.advance(dt);
-                gaze_advance(&mut self.gs, dt);
-                self.ek += (edit_target - self.ek) * (1.0 - (-14.0 * dt).exp());
-            }
-        } else {
+    /// Paused, idle past the grace period, or reduced motion: the state's
+    /// still frame (eyes still follow the pointer).
+    fn is_resting(&self, props: &BotBlobProps, now: Instant, reduced_motion: bool) -> bool {
+        props.paused || reduced_motion || (self.last_state == "idle" && now >= self.grace_until)
+    }
+
+    /// Advances the animator by the clock's step while live, and eases the
+    /// edit shade toward its target.
+    fn advance(&mut self, props: &BotBlobProps, clock: f64, live: bool) {
+        if !live {
             self.asleep = true;
+            return;
         }
-        let playing = self.mark.is_playing();
-        if self.was_playing && !playing {
-            self.gs.hold = 0.0;
+        if self.asleep {
+            self.prev_clock = clock;
+            self.asleep = false;
+            return;
         }
-        self.was_playing = playing;
+        let dt = (clock - self.prev_clock).clamp(0.0, 0.1);
+        self.prev_clock = clock;
+        if dt > 0.0 {
+            self.animator.advance(dt);
+            let edit_target = props.edit.as_ref().map_or(0.0, |e| e.target.get());
+            self.edit_level += (edit_target - self.edit_level) * (1.0 - (-14.0 * dt).exp());
+        }
     }
 
-    /// `draw`'s paint section.
-    fn paint(&mut self, p: Painter, props: &BotBlobProps, resting: bool) -> Painter {
-        let size = props.size as f64;
-        let canvas_size = size * 1.5;
-        let box_ = size * 0.82;
-        let extent = (box_ * (0.92 / 0.6) * 100.0).round() / 100.0;
-        let x = (canvas_size - extent) / 2.0;
-        let y = x;
-        // `inkOf` (blob.tsx:70): "#FFFFFF" is the adaptive swatch — black on
-        // light themes. Reading `dark()` inside the painter subscribes it
-        // to the env memo, so a theme flip repaints.
-        let ink = mark::ink_of(&props.color, !dark());
-        let ink_paint = if self.ek > 0.001 {
-            mark::darken(&ink, 0.7 * self.ek)
+    /// Paints the current frame: the body on a `size*1.5` canvas, centered.
+    fn paint(&self, p: Painter, props: &BotBlobProps) -> Painter {
+        let size = props.size;
+        let center = size * 0.75;
+        let radius = size * 0.41;
+        // Reading `dark()` inside the painter subscribes it to the theme,
+        // so a theme flip repaints.
+        let ink = mascot::ink_of(&props.color, !dark());
+        let ink = if self.edit_level > 0.001 {
+            mascot::darken(ink, 0.7 * self.edit_level)
         } else {
-            ink.clone()
+            ink
         };
-        let playing = self.mark.is_playing();
-        let now = Instant::now();
-        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until
-            && let Some(bytes) = mark::rest_bytes(&props.shape) {
-                return mark::paint_rest(p, &bytes, &self.gs, x, y, extent, &ink_paint);
-        }
-        let frame = self.mark.frame();
-        let tree = mark::uh(
-            &frame,
-            &PaintOpts {
-                ink: [0.0, 0.0, 0.0],
-                spot: [0.0, 0.0, 0.0],
-                cutout: true,
-                ink_paint: Some(ink_paint),
-                spot_paint: None,
-            },
-            extent,
-            "m",
-            &UhSize {
-                display_size: Some(box_),
-                extent,
-            },
-            &self.tab,
-        );
-        mark::paint_tree(p, &tree, x, y, extent)
+        self.animator.figure().paint(p, center, center, radius, ink)
     }
 }
 
@@ -447,7 +400,7 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
+    let st = Rc::new(RefCell::new(Inner::new(&props)));
     let props = Rc::new(props);
     view()
         .size(px(size))
@@ -455,16 +408,17 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
             canvas(move || {
                 let mut st = st.borrow_mut();
                 let props = &*props;
-                st.sync(props);
+                let reduced_motion = reduce_motion();
+                st.sync(props, reduced_motion);
                 let now = Instant::now();
-                let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
-                let live = !resting
-                    || !st.mark.is_settled()
-                    || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.ek).abs() > 0.002
-                    || st.grace_until > now;
+                let live = !st.animator.is_settled()
+                    || !st.is_resting(props, now, reduced_motion)
+                    || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.edit_level).abs() > 0.002
+                    || st.grace_until > now
+                    || st.live_until > now;
                 // Live: the shared clock repaints it next frame. Settled:
-                // sleep until gaze, edit or a poke wakes it (blob.tsx's
-                // not-live branch), so resting avatars cost no frames.
+                // sleep until gaze, edit or a poke wakes it, so resting
+                // avatars cost no frames.
                 let t = if live {
                     crate::live::store().tick()
                 } else {
@@ -479,8 +433,8 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                     }
                     0.0
                 };
-                st.advance(props, t, resting, live);
-                st.paint(Painter::new(), props, resting)
+                st.advance(props, t, live);
+                st.paint(Painter::new(), props)
             })
             .size(px(canvas_size))
             .absolute()
@@ -530,7 +484,7 @@ pub(crate) struct BotAvatarProps {
     pub pokes: Option<Rc<BlobPokes>>,
     pub morph_shape: bool,
     pub seed: Option<String>,
-    pub gaze_at: Option<V2>,
+    pub gaze_at: Option<Look>,
 }
 
 impl BotAvatarProps {
