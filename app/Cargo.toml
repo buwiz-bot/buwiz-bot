@@ -36,8 +36,8 @@ buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 # (nsh's tasks run inside a tokio context)
 tokio = { version = "1", features = ["sync"] }
 # First-party mini apps' native screens: the screen definition and the
-# bridge a screen gets (moves to the SDK repo, buwiz-app/buwiz-sdk).
-buwiz-app = { path = "../crates/app" }
+# bridge a screen gets, from the SDK (its nsh is patched below).
+buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "2120c725112e2072b22f6630079fc938b6c9b1e9" }
 
 [dev-dependencies]
 # pele::corpus: the port's test inputs, to check the drawing of every one.
@@ -71,7 +71,7 @@ nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }
 
 # The office crates build with the app: one lockfile and target dir.
 [workspace]
-members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet", "../crates/app"]
+members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet"]
 
 # A binary per supported host target; the library is what the iOS runner and
 # nsh's generated workspace link.
@@ -88,3 +88,10 @@ path = "src/lib.rs"
 [profile.dev.package."*"]
 opt-level = 3
 debug-assertions = false
+
+# buwiz-app takes nsh from hexuria/nsh by rev; build it on the submodule, so
+# the app links one nsh (one nsh-core, one set of signals and elements).
+[patch."https://github.com/hexuria/nsh"]
+nsh-core = { path = "../nsh/crates/nsh-core" }
+nsh-macros = { path = "../nsh/crates/nsh-macros" }
+nsh-engine = { path = "../nsh/crates/nsh-engine" }
