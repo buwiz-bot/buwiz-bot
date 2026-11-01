@@ -1319,7 +1319,7 @@ impl Dragged {
 /// The ghost's icon, by kind.
 #[derive(Clone, PartialEq)]
 enum Face {
-    Bot(RoxBot),
+    Bot(Box<RoxBot>),
     Chat(String),
     Art(Box<RoxApp>),
 }
@@ -2187,7 +2187,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
         });
     draggable(row, src, key, move || {
         let b = b.get_untracked();
-        Dragged::new("bot", b.id.clone(), String::new(), b.name.clone(), Face::Bot(b))
+        Dragged::new("bot", b.id.clone(), String::new(), b.name.clone(), Face::Bot(Box::new(b)))
     })
 }
 
