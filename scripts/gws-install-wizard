@@ -14,12 +14,17 @@
 #
 # It reads no tokens, secrets or install records, and prints none: the
 # plugin's current environment stays where it is, and step 4 says where.
-#   ROX_APP=<dir>/Buwiz Bot.app  the bundle (default ~/Applications/Buwiz Bot.app)
+#   BUWIZ_APP=<dir>/Buwiz Bot.app  the bundle (default ~/Applications/Buwiz Bot.app;
+#                           ROX_APP, its old name, still works)
 #   CARGO_TARGET_DIR        honoured, as by bundle-dev.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${ROX_APP:-$HOME/Applications/Buwiz Bot.app}"
+if [ -z "${BUWIZ_APP+x}" ] && [ -n "${ROX_APP+x}" ]; then
+  echo "ROX_APP is an old name; use BUWIZ_APP" >&2
+  BUWIZ_APP="$ROX_APP"
+fi
+APP="${BUWIZ_APP:-$HOME/Applications/Buwiz Bot.app}"
 TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
 SIGNED="$ROOT/plugins/google-workspace/manifest.signed.json"
 GWS="$APP/Contents/Resources/broker/bin/buwiz-gws"
@@ -56,7 +61,7 @@ step "3/4 Bundle $APP"
 echo "Runs app/bundle-dev.sh with this build: buwiz-gws and its signed manifest go to $(dirname "$GWS")/."
 echo "Quit Buwiz Bot first; it starts nothing."
 if ask "Bundle now?"; then
-  ROX_APP="$APP" BUWIZ_BROKER_BIN="$TARGET/rox-broker" BUWIZ_GWS_BIN="$BUILT" BUWIZ_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
+  BUWIZ_APP="$APP" BUWIZ_BROKER_BIN="$TARGET/rox-broker" BUWIZ_GWS_BIN="$BUILT" BUWIZ_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
 fi
 [ -x "$GWS" ] || { echo "no $GWS: bundle first" >&2; exit 1; }
 

@@ -375,7 +375,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// An empty store over `data` (Node's `GROK_DATA_DIR`); [`Store::load`]
+    /// An empty store over `data` (Node's `BUWIZ_BROKER_DATA_DIR`); [`Store::load`]
     /// reads it.
     pub fn new(data: PathBuf) -> Self {
         let db = Db::new(data.join("generated").join("app.db"));

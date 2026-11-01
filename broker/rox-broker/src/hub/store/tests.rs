@@ -31,8 +31,9 @@ fn node_in(dir: &Path, code: &str) -> String {
     let o = Command::new("node")
         .args(["--input-type=module", "-e", &format!("{code}\nprocess.exit(0);")])
         .current_dir(server())
-        .env("GROK_DATA_DIR", dir)
+        .env("BUWIZ_BROKER_DATA_DIR", dir)
         .env("MOCK", "1")
+        .env_remove("BUWIZ_NODE_ROLE")
         .env_remove("ROX_NODE_ROLE")
         .output()
         .expect("node runs");

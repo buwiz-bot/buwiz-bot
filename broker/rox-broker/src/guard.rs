@@ -8,7 +8,7 @@ use hyper::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN, TRANSFER_EN
 use hyper::{Method, StatusCode};
 
 /// The origins allowed to call: the front door's own, plus `extra`
-/// (`GROK_ALLOWED_ORIGINS`, comma-separated).
+/// (`BUWIZ_ALLOWED_ORIGINS`, comma-separated).
 pub fn allowed_origins(port: u16, extra: Option<&str>) -> Vec<String> {
     let mut out = vec![format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")];
     out.extend(extra.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned));

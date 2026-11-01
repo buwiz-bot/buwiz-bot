@@ -3,7 +3,7 @@
 // Not part of the protocol (spec 14.3): the routes the host design (its
 // section 4) fixes between Rox and this broker. Every request carries
 // `X-Buwiz-Host: <token>`; the token is 32 random bytes the broker writes to
-// <GROK_DATA_DIR>/host-token (0600) when it starts, and a request without
+// <BUWIZ_BROKER_DATA_DIR>/host-token (0600) when it starts, and a request without
 // it is answered 401 before anything else happens. The Origin and JSON
 // guard (guard.mjs) has already run. Bodies are JSON; refusals are
 // {ok:false, code, message, retryable} with the spec's codes. Bridge calls

@@ -1,5 +1,5 @@
 //! The `/mcp/*` routes Rox calls (plan 4.3), answered here when this broker
-//! hosts the MCP servers (`ROX_BROKER_MCP_HOST=1`), as routes/market.mjs
+//! hosts the MCP servers (`BUWIZ_BROKER_MCP_HOST=1`), as routes/market.mjs
 //! answered them: the same shapes, status codes and texts. Three stay
 //! Node's until the chats move (phase 5), since they touch its in-memory
 //! chats: `POST /mcp/attach`, `GET /mcp/attachments` and `POST

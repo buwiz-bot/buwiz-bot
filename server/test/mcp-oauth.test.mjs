@@ -1,7 +1,7 @@
 // Remote MCP servers and their OAuth sign-in (Rust broker plan 4.2): the
 // flow as the user runs it, against a fake server and authorization server
 // (fixtures/oauth-server.mjs). Written against Node first; the same cases
-// then run through rox-broker (BUWIZ_BROKER_CMD, ROX_BROKER_MCP_HOST=1).
+// then run through rox-broker (BUWIZ_BROKER_CMD, BUWIZ_BROKER_MCP_HOST=1).
 //
 // No browser opens: `open` on the broker's PATH is a stub that records its
 // arguments, and every sign-in here asks for the authorize URL instead
@@ -18,7 +18,7 @@ const dataDir = tempDir("mcp-oauth");
 const bin = tempDir("mcp-oauth-bin");
 const opened = join(bin, "opened");
 
-process.env.GROK_DATA_DIR = dataDir;
+process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 process.env.MOCK = "1";
 process.env.PORT = String(PORT);
 writeFileSync(join(bin, "open"), `#!/bin/sh\necho "$@" >> '${opened}'\n`);

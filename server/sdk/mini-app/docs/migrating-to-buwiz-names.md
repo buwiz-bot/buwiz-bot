@@ -108,3 +108,83 @@ names, the certificate `typ`), `jsonrpc.rs` and `service.rs`
 Until each ships, Buwiz Bot shows it as failed with the update message;
 chats keep their history (their links were rewritten to `buwiz://` at the
 first start of Buwiz Bot).
+
+## Environment variables, scripts and temp files (old names still work)
+
+Separately from the protocol, Buwiz Bot's own environment variables,
+scripts and temp files now have Buwiz names. Unlike the protocol names
+above, the old ones keep working for now: a variable set only by its old
+name is read, and the program says once on stderr
+`<old> is an old name; use <new>`. Removing the old names is a later
+decision. The table lives in `broker/rox-v1/src/env.rs` and
+`server/src/env.mjs` (a test checks they match).
+
+| Old (still read, with a warning) | New |
+|---|---|
+| `ROX_BACKEND` | `BUWIZ_BACKEND` |
+| `ROX_BACKGROUND` | `BUWIZ_BACKGROUND` |
+| `ROX_DATA_DIR` | `BUWIZ_DATA_DIR` |
+| `ROX_HOST_TOKEN_FILE` | `BUWIZ_HOST_TOKEN_FILE` |
+| `ROX_JANK_LOG` | `BUWIZ_JANK_LOG` |
+| `ROX_FPS` | `BUWIZ_FPS` |
+| `ROX_MACHINE_ID` | `BUWIZ_MACHINE_ID` |
+| `ROX_MINI_CACHE` | `BUWIZ_MINI_CACHE` |
+| `ROX_OFFICE_FONTS` | `BUWIZ_OFFICE_FONTS` |
+| `ROX_STATUS` | `BUWIZ_STATUS` |
+| `ROX_PANE` | `BUWIZ_PANE` |
+| `ROX_PLUGINS` | `BUWIZ_PLUGINS` |
+| `ROX_MODELS` | `BUWIZ_MODELS` |
+| `ROX_SIDE` | `BUWIZ_SIDE` |
+| `ROX_ACCOUNT` | `BUWIZ_ACCOUNT` |
+| `ROX_TAB` | `BUWIZ_TAB` |
+| `ROX_AVATAR` | `BUWIZ_AVATAR` |
+| `ROX_OPEN` | `BUWIZ_OPEN` |
+| `ROX_SCROLL` | `BUWIZ_SCROLL` |
+| `ROX_SEND` | `BUWIZ_SEND` |
+| `ROX_PALETTE` | `BUWIZ_PALETTE` |
+| `ROX_SLOTS` | `BUWIZ_SLOTS` |
+| `ROX_MINI` | `BUWIZ_MINI` |
+| `ROX_CARD` | `BUWIZ_CARD` |
+| `ROX_GAZE` | `BUWIZ_GAZE` |
+| `ROX_PILL` | `BUWIZ_PILL` |
+| `ROX_OVERLAY` | `BUWIZ_OVERLAY` |
+| `ROX_BROKER_HUB` | `BUWIZ_BROKER_HUB` |
+| `ROX_BROKER_V1_HOST` | `BUWIZ_BROKER_V1_HOST` |
+| `ROX_BROKER_MCP_HOST` | `BUWIZ_BROKER_MCP_HOST` |
+| `ROX_BROKER_NO_NODE` | `BUWIZ_BROKER_NO_NODE` |
+| `ROX_BROKER_FORWARD_ALL` | `BUWIZ_BROKER_FORWARD_ALL` |
+| `GROK_DATA_DIR` | `BUWIZ_BROKER_DATA_DIR` |
+| `GROK_ALLOWED_ORIGINS` | `BUWIZ_ALLOWED_ORIGINS` |
+| `GROK_BUNDLE_ID` | `BUWIZ_BUNDLE_ID` |
+| `ROX_PUBLIC_PORT` | `BUWIZ_PUBLIC_PORT` |
+| `ROX_NODE_ROLE` | `BUWIZ_NODE_ROLE` |
+| `ROX_PLUGIN_CATALOG` | `BUWIZ_PLUGIN_CATALOG` |
+| `ROX_V1_LINE` | `BUWIZ_V1_LINE` |
+| `ROX_V1_LINE_TOKEN` | `BUWIZ_V1_LINE_TOKEN` |
+| `ROX_LINE_HOSTS` | `BUWIZ_LINE_HOSTS` |
+| `ROX_LINE_TOKEN` | `BUWIZ_LINE_TOKEN` |
+| `ROX_V1_CALL_TIMEOUT_MS` | `BUWIZ_V1_CALL_TIMEOUT_MS` |
+| `ROX_V1_MANUAL_CLOCK` | `BUWIZ_V1_MANUAL_CLOCK` |
+| `ROX_BRIDGE_URL` | `BUWIZ_BRIDGE_URL` |
+| `ROX_BRIDGE_TOKEN` | `BUWIZ_BRIDGE_TOKEN` |
+| `ROX_STUB_LOG` | `BUWIZ_STUB_LOG` |
+| `ROX_DEFS_WRITE` | `BUWIZ_DEFS_WRITE` |
+| `ROX_APP` | `BUWIZ_APP` |
+| `ROX_LOG` | `BUWIZ_LOG` |
+| `ROX_BUILD_LOCK` | `BUWIZ_BUILD_LOCK` |
+| `ROX_BUILD_HOLD` | `BUWIZ_BUILD_HOLD` |
+| `ROX_BIN` | `BUWIZ_BOT_BIN` |
+| `ROX_BROKER_BIN` | `BUWIZ_BROKER_BIN` |
+| `${ROX_FILES_DIR}` (placeholder in a plugin's `.mcp.json`) | `${BUWIZ_FILES_DIR}` |
+
+`BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR` make an app a test
+instance, and so does any of them by its old name.
+
+| Old (still works) | New |
+|---|---|
+| `scripts/test-rox` | `scripts/buwiz-test` (the old one runs it) |
+| `scripts/rox-agent` | `scripts/buwiz-agent` (the old one runs it) |
+| `scripts/broker-live use-rox` | `scripts/broker-live use-bundled` (`status` says `mode: bundled`) |
+| `$TMPDIR/rox-gpui-agent-token` | `$TMPDIR/buwiz-gpui-agent-token` (the dev launcher writes both) |
+| `$TMPDIR/rox-agent-menu` | `$TMPDIR/buwiz-agent-menu` (the app reads both) |
+| `$TMPDIR/rox-build.mutex`, `rox-build.hold` | `$TMPDIR/buwiz-build.mutex`, `buwiz-build.hold` (`scripts/wait-build` takes both locks and honours both hold files) |

@@ -1,5 +1,5 @@
 //! Every route of the Node broker (drafted from `server/tools/route-inventory.mjs`),
-//! by who answers it with the hub on (`ROX_BROKER_HUB=1`, plan D30):
+//! by who answers it with the hub on (`BUWIZ_BROKER_HUB=1`, plan D30):
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
@@ -7,7 +7,7 @@
 //!   6.1 (`Hub(OfficeFiles)`), `/popout` (6.3) too,
 //!   and `GET /` and `/file/render` for every other kind since phase 7
 //!   (`Hub(Files)`): no route is Node's office role's any more, so the hub
-//!   runs without Node (`ROX_BROKER_NO_NODE=1`). `/highlight` is deleted
+//!   runs without Node (`BUWIZ_BROKER_NO_NODE=1`). `/highlight` is deleted
 //!   (6.2: no caller), and `/mermaid*` too (Rox draws every diagram natively).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
 //!   with that part switched off, the hub answers 501 instead of Node.

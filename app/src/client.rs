@@ -3,7 +3,7 @@
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
 //! `/state/:app`, `/artifacts`, `/mcp/servers`, `/skills`.
 //!
-//! The address comes from `ROX_BACKEND`, read once, so a test Rox can talk
+//! The address comes from `BUWIZ_BACKEND`, read once, so a test Rox can talk
 //! to a test broker on another port. The broker's host-internal routes
 //! (`/v1/host/*`, the mini app protocol's) also need the token the broker
 //! writes at start ([`host_token`]): only a process that can read it may
@@ -11,17 +11,17 @@
 
 use nsh_core::prelude::*;
 
-/// The app server when `ROX_BACKEND` names none.
+/// The app server when `BUWIZ_BACKEND` names none.
 pub const DEFAULT_GEN: &str = "http://127.0.0.1:8787";
 
-/// The generation server the TSX app binds to: `ROX_BACKEND`, read once,
+/// The generation server the TSX app binds to: `BUWIZ_BACKEND`, read once,
 /// else [`DEFAULT_GEN`].
 pub fn backend() -> &'static str {
     static GEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    GEN.get_or_init(|| backend_from(std::env::var("ROX_BACKEND").ok().as_deref()))
+    GEN.get_or_init(|| backend_from(rox_v1::env::var("BUWIZ_BACKEND").as_deref()))
 }
 
-/// `ROX_BACKEND`'s value as the server's origin: an `http(s)://` URL
+/// `BUWIZ_BACKEND`'s value as the server's origin: an `http(s)://` URL
 /// without its trailing `/`. Anything else is a typo, and talking to the
 /// default instead would reach the live server: logged, and the default
 /// is used only when the variable is unset or empty.
@@ -32,13 +32,13 @@ pub(crate) fn backend_from(env: Option<&str>) -> String {
     let v = v.trim_end_matches('/');
     let rest = v.strip_prefix("http://").or_else(|| v.strip_prefix("https://")).unwrap_or_default();
     if rest.is_empty() || rest.contains(['/', '?', '#', ' ']) {
-        log::error!("ROX_BACKEND {v:?} is not an http origin; using an unreachable one");
+        log::error!("BUWIZ_BACKEND {v:?} is not an http origin; using an unreachable one");
         return "http://127.0.0.1:0".to_owned();
     }
     v.to_owned()
 }
 
-/// Where the broker keeps the host token: `ROX_HOST_TOKEN_FILE`, else
+/// Where the broker keeps the host token: `BUWIZ_HOST_TOKEN_FILE`, else
 /// `~/Library/Application Support/Grok Shell/host-token`.
 pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathBuf {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
@@ -52,7 +52,7 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    token_in(&host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home))
+    token_in(&host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
 }
 
 /// The token in `path`, trimmed; `None` when the file is missing or empty.

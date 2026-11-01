@@ -30,12 +30,12 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// Where the app keeps its data: `ROX_DATA_DIR`, else
+/// Where the app keeps its data: `BUWIZ_DATA_DIR`, else
 /// `~/Library/Application Support/Buwiz Bot`, or Rox's folder while a
 /// move that could not run left the data there (it is tried again at the
 /// next launch).
 pub fn data_dir() -> PathBuf {
-    data_dir_in(std::env::var_os("ROX_DATA_DIR").as_deref(), &home())
+    data_dir_in(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home())
 }
 
 /// [`data_dir`] with the override `over` and the home `home`.
@@ -49,8 +49,8 @@ pub fn data_dir_in(over: Option<&OsStr>, home: &Path) -> PathBuf {
 }
 
 /// Where nsh keeps the app's own data (`storage.json`, under `<dir>/<app
-/// id>`) for an instance with its own data dir (`ROX_DATA_DIR`, which
-/// scripts/test-rox sets): `<ROX_DATA_DIR>/nsh`, so a test instance never
+/// id>`) for an instance with its own data dir (`BUWIZ_DATA_DIR`, which
+/// scripts/buwiz-test sets): `<BUWIZ_DATA_DIR>/nsh`, so a test instance never
 /// shares the owner's `~/Library/Application Support/com.buwiz.bot`.
 /// `None` (the owner's app) leaves nsh's default.
 pub fn nsh_data_dir_in(over: Option<&OsStr>) -> Option<PathBuf> {
@@ -65,7 +65,7 @@ pub fn logs_dir(home: &Path) -> PathBuf {
 /// What [`migrate_data`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Migration {
-    /// `ROX_DATA_DIR` is set: nothing is looked at.
+    /// `BUWIZ_DATA_DIR` is set: nothing is looked at.
     Overridden,
     /// No Rox data dir.
     Nothing,
@@ -306,7 +306,7 @@ mod tests {
         let out = std::process::Command::new("bash")
             .arg(manifest.join("bundle-dev.sh"))
             .env("HOME", &dir)
-            .env("ROX_APP", &app)
+            .env("BUWIZ_APP", &app)
             .env("MATERIAL_SYMBOLS_TTF", &font)
             .env("OFFICE_FONTS", modules.join("fonts"))
             .env("OFFICE_DIST", dir.join("no-dist"))
@@ -333,25 +333,30 @@ mod tests {
         assert_eq!(plist["CFBundleURLTypes"][0]["CFBundleURLSchemes"], serde_json::json!(["buwiz"]), "rox:// is not routed");
         let launcher = app.join("Contents/MacOS/buwiz-bot");
         assert!(std::fs::metadata(&launcher).unwrap().permissions().mode() & 0o111 != 0);
-        assert!(std::fs::read_to_string(&launcher).unwrap().contains("/buwiz-bot-bin\""));
+        let script = std::fs::read_to_string(&launcher).unwrap();
+        assert!(script.contains("/buwiz-bot-bin\""));
+        // the token by its new file name and, for an older scripts/rox-agent,
+        // its old one; BUWIZ_FPS by both names
+        assert!(script.contains("buwiz-gpui-agent-token") && script.contains("rox-gpui-agent-token"));
+        assert!(script.contains("BUWIZ_FPS=0 ROX_FPS=0"));
         assert!(!app.join("Contents/MacOS/rox").exists());
         // a dry run leaves LaunchServices alone
         assert!(!String::from_utf8_lossy(&out.stdout).contains("unregistered"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `scripts/test-rox --bundle-only` around a stand-in binary: a test
+    /// `scripts/buwiz-test --bundle-only` around a stand-in binary: a test
     /// bundle of its own, named apart from Buwiz Bot, with the TEST icon,
     /// signed; the name defaults to the instance dir's.
     #[test]
     fn test_rox_wraps_a_test_bundle_apart_from_buwiz_bot() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dir = scratch("test-rox");
+        let dir = scratch("buwiz-test");
         let fake = dir.join("fake-bin");
         std::fs::copy("/bin/echo", &fake).unwrap();
         let run = |args: &[&str], instance: &Path| {
             let out = std::process::Command::new("bash")
-                .arg(manifest.join("../scripts/test-rox"))
+                .arg(manifest.join("../scripts/buwiz-test"))
                 .arg("--bundle-only")
                 .args(args)
                 .arg(&fake)
@@ -385,6 +390,17 @@ mod tests {
         // no --name: the instance dir's, made fit for a bundle id
         let app = run(&[], &dir.join("Bench_2"));
         assert_eq!(app.file_name().unwrap(), "Buwiz Bot test-bench-2.app");
+        // scripts/test-rox, the old name, runs the same and says it is old
+        let out = std::process::Command::new("sh")
+            .arg(manifest.join("../scripts/test-rox"))
+            .args(["--bundle-only", "--name", "books"])
+            .arg(&fake)
+            .arg(dir.join("bench"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(PathBuf::from(String::from_utf8(out.stdout).unwrap().trim()), dir.join("bench/Buwiz Bot test-books.app"));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("scripts/test-rox is an old name; use scripts/buwiz-test"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

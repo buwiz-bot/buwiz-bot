@@ -619,6 +619,7 @@ dependencies = [
  "nsh-platform-macos",
  "objc2-core-foundation",
  "objc2-core-text",
+ "rox-v1",
 ]
 
 [[package]]
