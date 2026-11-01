@@ -4,7 +4,7 @@
 # asks first.
 #
 #   1. builds buwiz-gws at the commit plugins/google-workspace/rev pins
-#      (scripts/gws-build) and rox-broker (release, RUSTC_WRAPPER= empty);
+#      (scripts/gws-build) and buwiz-broker (release, RUSTC_WRAPPER= empty);
 #   2. signs the manifest with the publisher key gc-2026-01 from the login
 #      Keychain (macOS asks you) into
 #      plugins/google-workspace/manifest.signed.json;
@@ -37,13 +37,13 @@ ask() {
   [ "$a" = y ] || [ "$a" = Y ]
 }
 
-step "1/4 Build buwiz-gws (at plugins/google-workspace/rev) and rox-broker (release)"
+step "1/4 Build buwiz-gws (at plugins/google-workspace/rev) and buwiz-broker (release)"
 if ask "Build now?"; then
   "$ROOT/scripts/gws-build" >/dev/null
-  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-broker)
+  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p buwiz-broker)
 fi
 BUILT="$("$ROOT/scripts/gws-build")"
-[ -x "$BUILT" ] && [ -x "$TARGET/rox-broker" ] || { echo "no release build in $TARGET: build first" >&2; exit 1; }
+[ -x "$BUILT" ] && [ -x "$TARGET/buwiz-broker" ] || { echo "no release build in $TARGET: build first" >&2; exit 1; }
 echo "manifest version: $("$BUILT" manifest | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')"
 
 step "2/4 Sign the manifest with $KEY_ID (you approve the Keychain prompt)"
@@ -52,7 +52,7 @@ if ask "Sign now?"; then
   UNSIGNED="$(mktemp -t buwiz-gws-manifest)"
   trap 'rm -f "$UNSIGNED"' EXIT
   "$BUILT" manifest > "$UNSIGNED"
-  "$TARGET/rox-broker" sign-manifest "$UNSIGNED" --keychain "$KEY_ID" --out "$SIGNED"
+  "$TARGET/buwiz-broker" sign-manifest "$UNSIGNED" --keychain "$KEY_ID" --out "$SIGNED"
 fi
 [ -f "$SIGNED" ] && grep -q '"signature"' "$SIGNED" || { echo "no signed manifest at $SIGNED: sign first" >&2; exit 1; }
 echo "signed: $SIGNED"
@@ -61,7 +61,7 @@ step "3/4 Bundle $APP"
 echo "Runs app/bundle-dev.sh with this build: buwiz-gws and its signed manifest go to $(dirname "$GWS")/."
 echo "Quit Buwiz Bot first; it starts nothing."
 if ask "Bundle now?"; then
-  BUWIZ_APP="$APP" BUWIZ_BROKER_BIN="$TARGET/rox-broker" BUWIZ_GWS_BIN="$BUILT" BUWIZ_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
+  BUWIZ_APP="$APP" BUWIZ_BROKER_BIN="$TARGET/buwiz-broker" BUWIZ_GWS_BIN="$BUILT" BUWIZ_GWS_MANIFEST="$SIGNED" "$ROOT/app/bundle-dev.sh"
 fi
 [ -x "$GWS" ] || { echo "no $GWS: bundle first" >&2; exit 1; }
 

@@ -10,7 +10,7 @@ https://github.com/buwiz-app/catalog and is not part of this repository.
 Third-party code in this repository
 -----------------------------------
 
-broker/rox-broker/src/helper/oauth.rs is a port of the MCP TypeScript
+broker/buwiz-broker/src/helper/oauth.rs is a port of the MCP TypeScript
 SDK's auth() (version 1.32, https://github.com/modelcontextprotocol/typescript-sdk),
 Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects,
 LLC, used under the MIT License (text below; the project is moving to

@@ -6,7 +6,7 @@
 // modules. PIPE-01..13 run pipeline.mjs in a Node of their own (nodeIn);
 // Rust's hub/pipeline tests check the same files, rows, argv and chunk
 // names against the same stub. PIPE-20..22 drive it end to end through a
-// MOCK /chat (the legacy generate path), so through rox-broker they wait on
+// MOCK /chat (the legacy generate path), so through buwiz-broker they wait on
 // /chat (5.2).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

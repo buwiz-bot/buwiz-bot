@@ -22,7 +22,7 @@ const timeouts = {};
 
 if (Number(env("BUWIZ_V1_CALL_TIMEOUT_MS")) > 0) timeouts.call = Number(env("BUWIZ_V1_CALL_TIMEOUT_MS"));
 
-// rox-broker hosts the plugins when it was started with BUWIZ_BROKER_V1_HOST=1:
+// buwiz-broker hosts the plugins when it was started with BUWIZ_BROKER_V1_HOST=1:
 // it hands Node the line's address and token, and "v1" in BUWIZ_LINE_HOSTS
 const onLine = !!LINE.base && LINE.hosts.includes("v1");
 
@@ -31,7 +31,7 @@ export const plugins = onLine
   : createPlugins({ db, keys: keystore(), logDir: join(DATA_DIR, "v1", "logs"), timeouts });
 
 // Rox's plugin keys move to the new Keychain service (once) before any
-// plugin starts; on the line, rox-broker moves them
+// plugin starts; on the line, buwiz-broker moves them
 if (!onLine) {
   const keys = keystore();
   const ids = db.prepare("SELECT id FROM v1_plugins").all().map((r) => r.id);
@@ -64,9 +64,9 @@ async function routineTurn({ plugin, routine, thread, shown, prompt, surface, ma
 
 const threads = createRoutineThreads({ store, nextId: () => `t${nextThreadSeq()}`, uid: uuidv7, save: writeIndex });
 
-// Not in Node's office role (BUWIZ_NODE_ROLE=office): rox-broker owns
+// Not in Node's office role (BUWIZ_NODE_ROLE=office): buwiz-broker owns
 // v1_routines and v1_instances there, and createRoutines would write them
-// on import (the one-time move to instances, racing rox-broker's on an
+// on import (the one-time move to instances, racing buwiz-broker's on an
 // older database) and on a plugin's uninstall. Nothing in the role reaches
 // the routines: their routes answer 501 and app-server never starts them.
 export const routines = OFFICE_ROLE ? null : createRoutines({ db, plugins, runTurn: routineTurn, threads, threadExists: (id) => !!findThread(String(id || "")) });

@@ -2,7 +2,7 @@
 // order, signature, protocol and version rules, every grammar of section 3
 // and every manifest limit of Appendix A at the limit and one over. Also
 // the JCS vectors shared with Rox and the ed25519 helpers. With
-// BUWIZ_BROKER_CMD set, every manifest check also runs in rox-broker and must
+// BUWIZ_BROKER_CMD set, every manifest check also runs in buwiz-broker and must
 // answer as Node does (v1-rust.mjs), and its sign-manifest must write the
 // same bytes.
 import assert from "node:assert/strict";
@@ -453,7 +453,7 @@ test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a ma
 
   if (RUST) {
     runRust();
-    assert.equal(readFileSync(`${out}.rust`, "utf8"), readFileSync(out, "utf8"), "rox-broker sign-manifest writes Node's bytes");
+    assert.equal(readFileSync(`${out}.rust`, "utf8"), readFileSync(out, "utf8"), "buwiz-broker sign-manifest writes Node's bytes");
   }
 });
 

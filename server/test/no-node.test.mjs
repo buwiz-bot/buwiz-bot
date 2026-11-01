@@ -1,15 +1,16 @@
-// rox-broker with no Node at all (Rust broker plan phase 7):
+// buwiz-broker with no Node at all (Rust broker plan phase 7):
 // BUWIZ_BROKER_HUB=1 with BUWIZ_BROKER_NO_NODE=1 starts no Node child, and
 // answers what Node would have: /health, /, the CORS preflight, the 404 of a
 // route nobody has. The preflight case is pinned on Node too (it ignores
-// both variables); the rest needs rox-broker (BUWIZ_BROKER_CMD).
+// both variables); the rest needs buwiz-broker (BUWIZ_BROKER_CMD).
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { after, before, test } from "node:test";
 import { PORT, brokerCommand, request, serverEnv, startServer, tempDir } from "./helpers.mjs";
 
 const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
-const RUST_ONLY = { skip: !RUST && "rox-broker only (BUWIZ_BROKER_CMD)" };
+const BROKER_NAMES = ["buwiz-broker", "rox-broker"];
+const RUST_ONLY = { skip: !RUST && "buwiz-broker only (BUWIZ_BROKER_CMD)" };
 const DATA = tempDir("no-node");
 let server;
 
@@ -37,10 +38,12 @@ test("NONODE-01 no Node process runs, and the front door says it is up", RUST_ON
   const health = await request("GET", "/health");
 
   assert.equal(health.status, 200);
-  assert.deepEqual(health.json, { ok: true, broker: "rox-broker" });
+  // "rox-broker" is the name a broker built before the rename answers with
+  // (BUWIZ_BROKER_CMD may name one); both are the Rust broker
+  assert.deepEqual({ ...health.json, broker: BROKER_NAMES.includes(health.json.broker) }, { ok: true, broker: true }, JSON.stringify(health.json));
   const meta = await request("GET", "/meta");
 
-  assert.equal(meta.json.broker, "rox-broker");
+  assert.ok(BROKER_NAMES.includes(meta.json.broker), meta.json.broker);
   assert.equal(meta.json.node_version, "");
   // a few hub routes, Node's last resort, and a route deleted in 6.2
   assert.match((await request("GET", "/")).text, /^app-server ok — \d+ threads, model=mock\n$/);

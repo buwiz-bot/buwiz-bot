@@ -72,7 +72,7 @@ import { allowedOrigins, refusal } from "./guard.mjs";
 // The office role (BUWIZ_NODE_ROLE=office, plan 5.0c) answers only these:
 // /office/*, and /file/render until 6.1 (D32); /health and / so the front
 // door sees it up. Every other route is the hub's (/popout since 6.3) or
-// deleted (/highlight and /mermaid*), and rox-broker never
+// deleted (/highlight and /mermaid*), and buwiz-broker never
 // forwards one: one that reaches Node anyway gets 501, never a write.
 const officeRoute = (method, url) =>
   method === "GET" && (url === "/" || url === "/health" || url.startsWith("/office/") ||
@@ -146,7 +146,7 @@ const server = createServer(async (req, res) => {
 });
 
 // The store's startup writes, and the office tools' MCP child, are the
-// hub's in the office role (rox-broker runs them): Node skips every one.
+// hub's in the office role (buwiz-broker runs them): Node skips every one.
 if (!OFFICE_ROLE) {
   persist(); // seed the DB on first boot / after a JSON→SQLite migration
 

@@ -63,7 +63,7 @@ mod tests {
 
     /// Writes contact sheets of every shape in a few states to
     /// `$MASCOT_PREVIEW_DIR` (PNG), for a look without running the app:
-    /// `MASCOT_PREVIEW_DIR=/tmp/m cargo test -p rox --lib mascot::tests::preview -- --ignored`.
+    /// `MASCOT_PREVIEW_DIR=/tmp/m cargo test -p buwiz-bot --lib mascot::tests::preview -- --ignored`.
     #[test]
     #[ignore]
     fn preview() {

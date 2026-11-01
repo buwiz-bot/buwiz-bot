@@ -112,7 +112,7 @@ scripts and temp files now have Buwiz names. Unlike the protocol names
 above, the old ones keep working for now: a variable set only by its old
 name is read, and the program says once on stderr
 `<old> is an old name; use <new>`. Removing the old names is a later
-decision. The table lives in `broker/rox-v1/src/env.rs` and
+decision. The table lives in `broker/buwiz-protocol/src/env.rs` and
 `server/src/env.mjs` (a test checks they match).
 
 | Old (still read, with a warning) | New |
@@ -183,7 +183,7 @@ The broker's data folder on the owner's Mac moved too:
 | `~/Library/Application Support/Grok Shell` | `~/Library/Application Support/Buwiz Broker` |
 
 It moves once, by a rename, before a broker starts on it (Buwiz Bot before
-it starts its bundled broker, or a `rox-broker` given the owner's folder),
+it starts its bundled broker, or a `buwiz-broker` given the owner's folder),
 after a backup of `generated/app.db` into
 `Grok Shell/backups/<UTC time>-pre-move/`. Paths into the folder stored in
 the database (a plugin's command and env, icons, attachments, MCP servers'

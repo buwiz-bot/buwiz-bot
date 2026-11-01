@@ -1,6 +1,6 @@
-// The tool loop's contract with rox-broker (Rust broker plan, D35): the
+// The tool loop's contract with buwiz-broker (Rust broker plan, D35): the
 // tool schemas and the agent's system prompt Node sends, as Rust reads them
-// from broker/rox-broker/src/hub/tools/defs.json. This fails when one side
+// from broker/buwiz-broker/src/hub/tools/defs.json. This fails when one side
 // drifts. `BUWIZ_DEFS_WRITE=1 node --test test/tool-defs.test.mjs` rewrites
 // the file from Node's modules.
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ROOT, STUB_BIN, env, nodeIn, tempDir } from "./helpers.mjs";
 
-const FILE = join(ROOT, "..", "broker", "rox-broker", "src", "hub", "tools", "defs.json");
+const FILE = join(ROOT, "..", "broker", "buwiz-broker", "src", "hub", "tools", "defs.json");
 // what follows the skill sections in the agent's system prompt
 const CONTRACT = "\n\nWhen you DO write a widget module, this contract applies:\n";
 

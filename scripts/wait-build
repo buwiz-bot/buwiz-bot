@@ -1,7 +1,7 @@
 #!/bin/bash
 # One heavy build at a time across agents and sessions: waits while a hold
 # file exists, then takes a mutex (a directory) for the command's run.
-#   scripts/wait-build cargo build -p rox
+#   scripts/wait-build cargo build -p buwiz-bot
 # BUWIZ_BUILD_LOCK / BUWIZ_BUILD_HOLD move the mutex and the hold file
 # (ROX_BUILD_LOCK / ROX_BUILD_HOLD, their old names, still work).
 #

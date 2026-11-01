@@ -111,11 +111,11 @@ test("manifest commands and scopes outside the grammar are dropped", async () =>
   assert.match(server.log(), /mcp ui-fixture: manifest scopes entry "bad\.scope" dropped/);
 });
 
-// rox-broker (plan 4.1) starts a stdio server whose process died again on
+// buwiz-broker (plan 4.1) starts a stdio server whose process died again on
 // its next use; Node kept the dead client until the row changed
 const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1";
 
-test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
+test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "buwiz-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
   const pids = () => readFileSync(mark, "utf8").split("\n").filter(Boolean).map(Number);
   const pid = pids().at(-1);
   const gone = () => {
