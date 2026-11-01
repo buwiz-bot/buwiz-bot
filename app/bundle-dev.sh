@@ -8,13 +8,14 @@
 # through the bundle (`open -a ~/Applications/Buwiz\ Bot.app`) so links go to
 # the running copy instead of starting a second one; copy a fresh build in
 # first (`rm`, then
-# `cp target/debug/rox ~/Applications/Buwiz\ Bot.app/Contents/MacOS/buwiz-bot-bin`).
+# `cp target/debug/buwiz-bot ~/Applications/Buwiz\ Bot.app/Contents/MacOS/buwiz-bot-bin`).
 #
 # Its icon is app/resources/AppIcon.icns, the Buwiz logo.
 #
 # It also packages the broker Rox starts when none answers (plan 7.2) into
-# Contents/Resources/broker/: rox-broker (a release build with
-# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one) and the static files it
+# Contents/Resources/broker/: buwiz-broker (a release build with
+# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one; rox-broker, its old
+# name, links to it) and the static files it
 # serves, `server/` being its --assets and `node_modules/` beside it, and
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
 # launched Rox has no nsh on PATH), release builds of this checkout's nsh
@@ -28,7 +29,7 @@
 #                           registered with LaunchServices, and Rox.app is
 #                           left registered (ROX_APP, its old name, still
 #                           works)
-#   BUWIZ_BROKER_BIN=<path>   the rox-broker to package
+#   BUWIZ_BROKER_BIN=<path>   the buwiz-broker to package
 #   BUWIZ_GWS_BIN=<path>    the buwiz-gws to package
 #   BUWIZ_GWS_MANIFEST=<path>  its signed manifest
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
@@ -52,7 +53,7 @@ if [ -z "${BUWIZ_APP+x}" ] && [ -n "${ROX_APP+x}" ]; then
 fi
 APP="${BUWIZ_APP:-$DEFAULT_APP}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN=/Volumes/goldcoders/Projects/rox/app/target/debug/rox
+BIN="${CARGO_TARGET_DIR:-$ROOT/app/target}/debug/buwiz-bot"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 mkdir -p "$APP/Contents/MacOS"
@@ -170,9 +171,9 @@ SERVER="$ROOT/server"
 B="$APP/Contents/Resources/broker"
 BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
 if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
-  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p rox-broker)
+  (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p buwiz-broker)
 fi
-BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/rox-broker}"
+BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/buwiz-broker}"
 BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$("$ROOT/scripts/gws-build")}"
 GWS_MANIFEST="${BUWIZ_GWS_MANIFEST:-$ROOT/plugins/google-workspace/manifest.signed.json}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
@@ -187,7 +188,10 @@ fi
 # rm first: a copy over a binary keeps its old code signature
 rm -rf "$B"
 mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules"
-cp "$BUWIZ_BROKER_BIN" "$B/rox-broker"
+cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
+# its name before the rename, for one release: an app binary built before
+# it (a buwiz-bot-bin not refreshed yet) starts broker/rox-broker
+ln -s buwiz-broker "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"

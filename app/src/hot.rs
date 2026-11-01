@@ -35,7 +35,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // `BUWIZ_STATUS=<state|demo>`: debug-mount the run-status surface —
     // the composer status row and bot marks play the state without a
     // `/status:` send (same `agentSet` path, no server).
-    if let Some(s) = rox_v1::env::var("BUWIZ_STATUS") {
+    if let Some(s) = buwiz_protocol::env::var("BUWIZ_STATUS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1500)).await;
             store().mock_status(&s);
@@ -44,7 +44,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // `BUWIZ_PANE=1`: open the right detail pane at boot — keypress
     // automation can't reach the window, so screenshots need the env.
-    if rox_v1::env::is_set("BUWIZ_PANE") {
+    if buwiz_protocol::env::is_set("BUWIZ_PANE") {
         spawn(async move {
             timer(std::time::Duration::from_millis(800)).await;
             store().right_open.set(true);
@@ -52,7 +52,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
 
     // `BUWIZ_PLUGINS=1`: open the Connect Apps modal at boot.
-    if rox_v1::env::is_set("BUWIZ_PLUGINS") {
+    if buwiz_protocol::env::is_set("BUWIZ_PLUGINS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             store().open_plugins();
@@ -60,7 +60,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
 
     // `BUWIZ_MODELS=effort|list`: open the model popover at boot.
-    if let Some(mode) = rox_v1::env::var("BUWIZ_MODELS") {
+    if let Some(mode) = buwiz_protocol::env::var("BUWIZ_MODELS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             crate::models::dev_open(&mode);
@@ -68,13 +68,13 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
 
     // `BUWIZ_SIDE=rail|full`: pin the sidebar mode for screenshots.
-    if let Some(m) = rox_v1::env::var("BUWIZ_SIDE") {
+    if let Some(m) = buwiz_protocol::env::var("BUWIZ_SIDE") {
         store().side_shown.set(true);
         store().side_mode.set(m);
     }
 
     // `BUWIZ_ACCOUNT=1`: open the account popover at boot.
-    if rox_v1::env::is_set("BUWIZ_ACCOUNT") {
+    if buwiz_protocol::env::is_set("BUWIZ_ACCOUNT") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             store().account_open.set(true);
@@ -82,13 +82,13 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
 
     // `BUWIZ_TAB=library|details|…`: pin the detail pane's tab.
-    if let Some(tb) = rox_v1::env::var("BUWIZ_TAB") {
+    if let Some(tb) = buwiz_protocol::env::var("BUWIZ_TAB") {
         store().detail_tab.set(tb);
     }
 
     // `BUWIZ_AVATAR=1`: open the avatar editor card at boot (after any
     // `BUWIZ_OPEN` thread lands so `activeBot` exists).
-    if rox_v1::env::is_set("BUWIZ_AVATAR") {
+    if buwiz_protocol::env::is_set("BUWIZ_AVATAR") {
         spawn(async move {
             timer(std::time::Duration::from_millis(2600)).await;
             store().open_avatar_editor();
@@ -98,7 +98,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // `BUWIZ_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
     // screenshots — `open_thread` is the row-press path (select + turns +
     // apps). A list replays an agent switch with a beat between opens.
-    if let Some(t) = rox_v1::env::var("BUWIZ_OPEN")
+    if let Some(t) = buwiz_protocol::env::var("BUWIZ_OPEN")
         && !t.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
@@ -114,7 +114,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // `BUWIZ_SCROLL=<px>`: scroll the transcript to a pixel offset at
     // boot — `open_thread`'s scrollToEnd lands on the latest, so shots
     // of earlier content (the file cards) need a jump back.
-    if let Some(off) = rox_v1::env::var("BUWIZ_SCROLL") {
+    if let Some(off) = buwiz_protocol::env::var("BUWIZ_SCROLL") {
         let off = off.trim().parse::<f32>().unwrap_or(0.0);
         spawn(async move {
             timer(std::time::Duration::from_millis(2400)).await;
@@ -126,7 +126,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // `BUWIZ_SEND=<text>`: fill the draft and send at boot — synthetic
     // input can't drive the composer, so stream verification needs it.
-    if let Some(msg) = rox_v1::env::var("BUWIZ_SEND")
+    if let Some(msg) = buwiz_protocol::env::var("BUWIZ_SEND")
         && !msg.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
@@ -137,7 +137,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // `BUWIZ_PALETTE=<query>`: open the ⌘K card at boot — synthetic keys
     // can't reach `on_key`, so palette verification needs it.
-    if let Some(q) = rox_v1::env::var("BUWIZ_PALETTE") {
+    if let Some(q) = buwiz_protocol::env::var("BUWIZ_PALETTE") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1400)).await;
             let st = store();
@@ -149,7 +149,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
 
     // `BUWIZ_SLOTS=1`: print the ⌘1…9 slot order once the model loads.
-    if rox_v1::env::is_set("BUWIZ_SLOTS") {
+    if buwiz_protocol::env::is_set("BUWIZ_SLOTS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1500)).await;
             let st = store();
@@ -206,7 +206,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // the same fetch → compile → AppView path the chat cards take, without
     // needing a widget turn to be on screen. `BUWIZ_CARD=R<n>` mounts the
     // turn's whole card instead, chrome and fixed body height included.
-    if let Some(app) = rox_v1::env::var("BUWIZ_MINI")
+    if let Some(app) = buwiz_protocol::env::var("BUWIZ_MINI")
         && !app.is_empty() {
             return view()
                 .flex_1()
@@ -214,7 +214,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                 .bg(theme::MAIN)
                 .child(crate::mini::mini_app(&app, 0.0, None, None));
     }
-    if let Some(app) = rox_v1::env::var("BUWIZ_CARD")
+    if let Some(app) = buwiz_protocol::env::var("BUWIZ_CARD")
         && !app.is_empty() {
             return view()
                 .flex_1()
@@ -232,7 +232,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     }
     // `BUWIZ_GAZE=1`: two resting blobs pinned to opposite gaze targets —
     // verifies set_gaze → unsettled → advance → paint_rest end to end.
-    if rox_v1::env::is_set("BUWIZ_GAZE") {
+    if buwiz_protocol::env::is_set("BUWIZ_GAZE") {
         return view()
             .flex_1()
             .h_full()
@@ -263,7 +263,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // fixed anchor — verifies the overlay renders, positions and paints
     // without a synthetic click. A turn index attaches picks to a real
     // turn so the tapback badge can be checked end to end.
-    if let Some(pill) = rox_v1::env::var("BUWIZ_PILL") {
+    if let Some(pill) = buwiz_protocol::env::var("BUWIZ_PILL") {
         let i = pill.parse::<i64>().unwrap_or(-1);
         spawn(async move {
             // Past the transcript's layout settle — its scroll ticks
@@ -285,7 +285,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // `BUWIZ_OVERLAY=ctx|prompt|lightbox|plus|bot|palette|appdetails:<R n>`: open an overlay at boot
     // — verifies each layer mounts and paints without synthetic input.
-    if let Some(ov) = rox_v1::env::var("BUWIZ_OVERLAY") {
+    if let Some(ov) = buwiz_protocol::env::var("BUWIZ_OVERLAY") {
         spawn(async move {
             timer(std::time::Duration::from_millis(2000)).await;
             let st = store();

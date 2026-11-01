@@ -18,7 +18,7 @@ pub const DEFAULT_GEN: &str = "http://127.0.0.1:8787";
 /// else [`DEFAULT_GEN`].
 pub fn backend() -> &'static str {
     static GEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    GEN.get_or_init(|| backend_from(rox_v1::env::var("BUWIZ_BACKEND").as_deref()))
+    GEN.get_or_init(|| backend_from(buwiz_protocol::env::var("BUWIZ_BACKEND").as_deref()))
 }
 
 /// `BUWIZ_BACKEND`'s value as the server's origin: an `http(s)://` URL
@@ -45,7 +45,7 @@ pub(crate) fn backend_from(env: Option<&str>) -> String {
 pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathBuf {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
         Some(p) => p.into(),
-        None => rox_v1::broker_dir::dir_in(std::path::Path::new(home)).join("host-token"),
+        None => buwiz_protocol::broker_dir::dir_in(std::path::Path::new(home)).join("host-token"),
     }
 }
 
@@ -54,7 +54,7 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    token_in(&host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
+    token_in(&host_token_path(buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
 }
 
 /// The token in `path`, trimmed; `None` when the file is missing or empty.

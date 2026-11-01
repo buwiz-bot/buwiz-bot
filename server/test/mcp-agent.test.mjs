@@ -2,9 +2,9 @@
 // (toolList), its tool calls (execTool), a routine's check, and a remote
 // server whose answer reads as signed out, in this process on a temp data
 // dir. With BUWIZ_BROKER_CMD and BUWIZ_BROKER_MCP_HOST=1 the same modules reach
-// the servers through `rox-broker helper` over the line, as the live
+// the servers through `buwiz-broker helper` over the line, as the live
 // broker hands Node its line (BUWIZ_V1_LINE, BUWIZ_LINE_HOSTS=mcp), and the
-// servers run under rox-broker, not this process.
+// servers run under buwiz-broker, not this process.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -47,7 +47,7 @@ if (RUST) {
       out += d;
       if (/helper on 127\.0\.0\.1:\d+/.test(out)) resolve();
     });
-    helper.on("exit", (code) => reject(new Error(`rox-broker helper exited (${code})`)));
+    helper.on("exit", (code) => reject(new Error(`buwiz-broker helper exited (${code})`)));
   });
   Object.assign(process.env, { BUWIZ_V1_LINE: `http://127.0.0.1:${port}`, BUWIZ_V1_LINE_TOKEN: token, BUWIZ_LINE_HOSTS: "mcp" });
 }
@@ -95,7 +95,7 @@ test("the agent sees an enabled server's tools under mcp_<server>_<tool>; a swit
   assert.deepEqual(pids(offMark), []);
 });
 
-test("the agent's call reaches the server and comes back as text; under rox-broker, the server is rox-broker's child", NODE_ONLY, async () => {
+test("the agent's call reaches the server and comes back as text; under buwiz-broker, the server is buwiz-broker's child", NODE_ONLY, async () => {
   const r = await call("mcp_apps_echo", { a: 1 });
 
   assert.equal(r.is_error, false, r.content);

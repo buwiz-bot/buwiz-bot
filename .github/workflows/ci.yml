@@ -42,7 +42,7 @@ jobs:
           workspaces: app
       - name: Test
         working-directory: app
-        run: cargo test --locked -p rox -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet
+        run: cargo test --locked -p buwiz-bot -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet
 
   clippy:
     name: App and office crates (cargo clippy)
@@ -62,7 +62,7 @@ jobs:
           key: clippy
       - name: Clippy
         working-directory: app
-        run: cargo clippy --all-targets --locked -p rox -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet -- -D warnings 2>&1
+        run: cargo clippy --all-targets --locked -p buwiz-bot -p buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet -- -D warnings 2>&1
 
   broker:
     name: Broker (cargo test)

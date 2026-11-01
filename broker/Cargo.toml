@@ -1,5 +1,5 @@
 [workspace]
-members = ["rox-broker", "rox-mcp", "rox-v1"]
+members = ["buwiz-broker", "buwiz-mcp", "buwiz-protocol"]
 resolver = "2"
 
 # /file/render's highlighter matches every line with fancy-regex: unoptimized

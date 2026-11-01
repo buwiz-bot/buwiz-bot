@@ -33,11 +33,11 @@ mod jank_log {
             env_logger::Env::default().default_filter_or("error,nsh::jank=warn"),
         )
         .build();
-        let path = rox_v1::env::var_os("BUWIZ_JANK_LOG")
+        let path = buwiz_protocol::env::var_os("BUWIZ_JANK_LOG")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var_os("HOME").unwrap_or_default();
-                rox::identity::logs_dir(std::path::Path::new(&home)).join("jank.log")
+                buwiz_bot::identity::logs_dir(std::path::Path::new(&home)).join("jank.log")
             });
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -126,14 +126,14 @@ mod jank_log {
 
 /// The root the runners mount: the same component every platform shows.
 pub fn app_root() -> nsh_core::element::Root {
-    let root = nsh_core::element::Root::of::<rox::App>().app_id(rox::identity::APP_ID);
-    rox::fonts().into_iter().fold(root, |root, font| root.font(font))
+    let root = nsh_core::element::Root::of::<buwiz_bot::App>().app_id(buwiz_bot::identity::APP_ID);
+    buwiz_bot::fonts().into_iter().fold(root, |root, font| root.font(font))
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn ui_sets() -> Vec<nsh_core::element::Registry> {
-    vec![nsh_base::registry(), rox::registry()]
+    vec![nsh_base::registry(), buwiz_bot::registry()]
 }
 
 #[cfg(target_os = "macos")]
@@ -141,33 +141,33 @@ fn main() -> impl std::process::Termination {
     jank_log::init();
     // Rox's data dir becomes Buwiz Bot's, once, before anything opens it
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    match rox::identity::migrate_data(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
+    match buwiz_bot::identity::migrate_data(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
         Ok(done) => log::info!("rox: data dir migration: {done:?}"),
         Err(e) => log::error!("rox: Rox's data dir was not moved (it is used where it is): {e}"),
     }
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
-    rox::broker::ensure_started();
+    buwiz_bot::broker::ensure_started();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
-        title: rox::app_name().to_owned(),
-        app_id: rox::identity::APP_ID.to_owned(),
+        title: buwiz_bot::app_name().to_owned(),
+        app_id: buwiz_bot::identity::APP_ID.to_owned(),
         size: (1100, 760),
         // `BUWIZ_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
         // costs, CPU/GPU/memory) at the window's top right.
-        fps: rox_v1::env::var("BUWIZ_FPS").is_some_and(|v| v != "0"),
+        fps: buwiz_protocol::env::var("BUWIZ_FPS").is_some_and(|v| v != "0"),
         // A test instance (`BUWIZ_BACKGROUND=1`, which scripts/buwiz-test sets)
         // starts in the background: launching it never takes the focus from
         // the app in front. The owner's Rox, automation on or not, comes
         // to the front as any app does.
-        activate: rox_v1::env::var("BUWIZ_BACKGROUND").as_deref() != Some("1"),
+        activate: buwiz_protocol::env::var("BUWIZ_BACKGROUND").as_deref() != Some("1"),
         // a test instance's nsh storage in its own data dir, not the owner's
-        data_dir: rox::identity::nsh_data_dir_in(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref()),
+        data_dir: buwiz_bot::identity::nsh_data_dir_in(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref()),
         ..Default::default()
     };
-    rox::mini::register_mini_app(&options.components);
-    rox::zoom::register_zoom(&options.components);
-    rox::keys::register_keys(&options.components);
+    buwiz_bot::mini::register_mini_app(&options.components);
+    buwiz_bot::zoom::register_zoom(&options.components);
+    buwiz_bot::keys::register_keys(&options.components);
     platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 

@@ -7,7 +7,7 @@ patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
 
 - Bundle id: `com.buwiz.bot` (`dev.goldcoders.rox` before the rename; see
   [Identity and data](#identity-and-data))
-- App crate: `app/` (`rox`)
+- App crate: `app/` (`buwiz-bot`; `rox` before the rename)
 
 ## Prerequisites
 
@@ -106,7 +106,7 @@ The dev launcher makes a new random token at every launch and keeps it in
 on a command line; `scripts/rox-agent`, its old name, still works. To run
 a bare build with automation, do the same:
 `GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=<random>
-GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/rox`.
+GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/buwiz-bot`.
 
 `GPUI_AGENT_ALLOW_RELEASE=1`: the dev profile builds dependencies without
 debug assertions, which gpui-agent's guard reads as a release build.
@@ -117,11 +117,11 @@ debug assertions, which gpui-agent's guard reads as a release build.
 with LaunchServices. The bundle (`com.buwiz.bot`) declares the `buwiz://`
 URL scheme. Its executable (`buwiz-bot`)
 `exec`s `Contents/MacOS/buwiz-bot-bin` when there is one, else
-`app/target/debug/rox`, with the
+`app/target/debug/buwiz-bot`, with the
 gpui-agent variables above and `BUWIZ_FPS=0`, so it picks up each cargo rebuild
 without re-bundling. Run the script again only if the bundle is deleted or
 its Info.plist changes, or to repackage the broker: it also puts
-`rox-broker` and the static files it serves into
+`buwiz-broker` and the static files it serves into
 `Contents/Resources/broker/`. At launch, when nothing answers on
 `127.0.0.1:8787` and it is no test instance (`BUWIZ_BACKEND`,
 `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR` set), Buwiz Bot starts that broker detached,
@@ -133,7 +133,7 @@ Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …).
 The names from before, `ROX_*` and the three `GROK_*` ones, still work: a
 variable set only by its old name is read, and the program says once on
 stderr `<old> is an old name; use <new>`. The table is in
-`broker/rox-v1/src/env.rs` (and `server/src/env.mjs`, the same);
+`broker/buwiz-protocol/src/env.rs` (and `server/src/env.mjs`, the same);
 `server/sdk/mini-app/docs/migrating-to-buwiz-names.md` lists it. A test
 instance is one that sets `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or
 `BUWIZ_DATA_DIR`, or any of them by its old name.
@@ -169,7 +169,7 @@ nothing of Rox's is kept for compatibility:
 - Broker data: `~/Library/Application Support/Buwiz Broker`, called
   `Grok Shell` before. It moves once, by a rename, just before a broker
   starts on it: Buwiz Bot moves it before it starts its bundled broker,
-  and a `rox-broker` started on the owner's folder by either name
+  and a `buwiz-broker` started on the owner's folder by either name
   (`scripts/broker-live`) moves it after binding its port. First the
   database is backed up (`VACUUM INTO`) to
   `Grok Shell/backups/<UTC time>-pre-move/app.db`, then the folder is
@@ -185,24 +185,32 @@ nothing of Rox's is kept for compatibility:
   benches). A rename that fails is not replaced by a copy: `Grok Shell`
   stays in use and the move is tried at the next start. Until it moves,
   the host token, `scripts/broker-live` and `scripts/live-copy` read
-  `Grok Shell` (`broker/rox-v1/src/broker_dir.rs`).
+  `Grok Shell` (`broker/buwiz-protocol/src/broker_dir.rs`).
 - Logs: `~/Library/Logs/Buwiz Bot`; caches: `~/Library/Caches/Buwiz Bot`
   (the icon font Rox cached in `…/Rox` is used until then).
 - `bundle-dev.sh` unregisters `~/Applications/Rox.app` from LaunchServices;
   delete it yourself.
+- Crates and binaries: the app crate is `buwiz-bot` (was `rox`), the
+  broker `broker/buwiz-broker` (was `rox-broker`), its MCP client
+  `broker/buwiz-mcp` (`rox-mcp`) and the protocol pieces
+  `broker/buwiz-protocol` (`rox-v1`). For one release the dev bundle keeps
+  `Resources/broker/rox-broker` as a link to `buwiz-broker` (an app binary
+  built before looks for it), the app and `scripts/broker-live` take a
+  broker by either name, and `broker/rox-v1/src/jcs-vectors.json` stays as
+  a copy for other repos' tests. The broker's subcommands keep their names.
 
 ### Switching the live broker to Buwiz Bot.app's
 
 `scripts/broker-live use-bundled` (`use-rox`, its old name, still works) stops whatever broker holds port 8787 and
-starts Buwiz Bot.app's own `rox-broker` with the same command line Buwiz Bot uses.
+starts Buwiz Bot.app's own `buwiz-broker` with the same command line Buwiz Bot uses.
 Buwiz Bot then finds it answering, and later launches start the same broker if
 it is not running.
 
-1. `app/bundle-dev.sh`, then `ls ~/Applications/Buwiz\ Bot.app/Contents/Resources/broker/{rox-broker,bin/nsh,bin/nsh-macos-host}`.
+1. `app/bundle-dev.sh`, then `ls ~/Applications/Buwiz\ Bot.app/Contents/Resources/broker/{buwiz-broker,bin/nsh,bin/nsh-macos-host}`.
 2. `scripts/broker-live backup`. Check that it prints a
-   `backups/<time>/` dir holding `app.db`, `server/` and `rox-broker/`.
+   `backups/<time>/` dir holding `app.db`, `server/` and `buwiz-broker/`.
 3. `scripts/broker-live use-bundled`. Check that it ends with
-   `Buwiz Bot.app's rox-broker on 8787`. If the broker doesn't come up, the
+   `Buwiz Bot.app's buwiz-broker on 8787`. If the broker doesn't come up, the
    script starts Node again and exits 1.
 4. `scripts/broker-live status`. Check:
    - `health: 200` and `mode: bundled`;
@@ -212,13 +220,14 @@ it is not running.
    Then build a widget in Buwiz Bot, and watch `~/Library/Logs/Buwiz\ Bot/broker.log`.
 
 Rollback: `scripts/broker-live use-node` brings back the Node broker, and
-`use-rust` brings back the rox-broker in `Grok Shell.app` with Node behind
+`use-rust` brings back the Rust broker in `Grok Shell.app` (`buwiz-broker`,
+or `rox-broker` packaged before the rename) with Node behind
 it. Both need `Grok Shell.app`'s `Resources/server/` (`RES`). After either, run
 `status` again and check that `mode:` reads `node` or `rust`, then make the
 same checks as in step 4.
 
 Links reach the running Buwiz Bot only when it was launched through the bundle. A
-bare `./target/debug/rox` is a different app to macOS, so a link would start
+bare `./target/debug/buwiz-bot` is a different app to macOS, so a link would start
 a second copy. A link opened while Buwiz Bot is closed launches it and opens the
 link. The app receives links with nsh's `on_open_url` (registered in the
 `App` root, `src/lib.rs`), which hands `buwiz://chat/…` links to
@@ -234,7 +243,7 @@ opt-level = 3
 debug-assertions = false
 ```
 
-Only the `rox` crate itself stays a debug build, so ra-jit keeps patching
+Only the `buwiz-bot` crate itself stays a debug build, so ra-jit keeps patching
 it. Why:
 
 - nsh's own workspace optimizes its hot crates in dev (QuickJS, taffy,
@@ -246,7 +255,7 @@ it. Why:
   (profiled: main thread 99% busy → 16%).
 
 Costs: the first build after a clean rebuilds all dependencies optimized
-(~8–9 min); after that only `rox` recompiles (~1–2 min, seconds for small
+(~8–9 min); after that only `buwiz-bot` recompiles (~1–2 min, seconds for small
 edits). Dependencies' internal `debug_assert!`s are off — when debugging
 nsh itself, delete the block. For a fair comparison with other apps, use
 `cargo build --release`.
