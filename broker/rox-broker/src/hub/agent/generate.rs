@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::slash_mock::{mock, slash, upload};
+use super::tool_log;
 use super::turn::agent_turn;
 use super::user_content::{artifact_blocks, user_content};
 use crate::hub::model::{self, Ask};
@@ -69,6 +70,27 @@ fn reply_turn(run: &Run, text: &str) -> Option<Turn> {
     Some(t)
 }
 
+/// Appends the reply's turn, which keeps what the tools returned. A reply
+/// with no turn of its own (no text, no links) leaves that on the last ai
+/// turn since the user's (a card, or text said between tool calls).
+/// → whether a turn was added or changed.
+fn append_reply(run: &Run, text: &str) -> Result<bool, String> {
+    let tools = tool_log::take(run);
+    if let Some(mut turn) = reply_turn(run, text) {
+        turn.tools = tools;
+        run.ctx.store.append_turn(&run.turn.thread, turn)?;
+        return Ok(true);
+    }
+    let Some(tools) = tools else { return Ok(false) };
+    run.ctx.store.write(|s| {
+        let Some(t) = s.thread_mut(&run.turn.thread) else { return false };
+        let since = t.turns.iter().rposition(|u| u.role == "user").map_or(0, |i| i + 1);
+        let Some(u) = t.turns[since..].iter_mut().rev().find(|u| u.role == "ai" && !u.building) else { return false };
+        u.tools = Some(tools);
+        true
+    })
+}
+
 /// Whether the tool loop runs (`!MOCK && PROVIDER === "anthropic"`).
 fn tools_on(run: &Run) -> bool {
     !run.settings.mock && run.settings.anthropic()
@@ -82,10 +104,7 @@ pub async fn background_turn(run: &Run, shown: &str, prompt: &str, extra: &Value
     let done = ctx.store.append_turn(&run.turn.thread, Turn::user(shown).with_extra(extra))?.ok_or_else(|| format!("unknown thread {}", run.turn.thread))?;
     ctx.store.write_index();
     let text = if tools_on(run) { agent_turn(run, prompt, &json!({}), &[]).await } else { Ok(chat_reply(run, prompt, &json!({}), &[]).await) };
-    let t = text.as_deref().unwrap_or("");
-    if let Some(turn) = reply_turn(run, t) {
-        ctx.store.append_turn(&run.turn.thread, turn)?;
-    }
+    append_reply(run, text.as_deref().unwrap_or(""))?;
     ctx.store.write_index();
     run.set_job("done", "replied");
     ctx.jobs.with(run.job, |j| {
@@ -154,16 +173,13 @@ pub async fn generate(run: &Run, prompt: &str, extra: &Value, retry: Option<&str
             Ok(t) => t,
             Err(e) => {
                 // what the tools made rides its own turn, even after a crash
-                if let Some(turn) = reply_turn(run, "") {
-                    ctx.store.append_turn(&run.turn.thread, turn)?;
+                if append_reply(run, "")? {
                     ctx.store.write_index();
                 }
                 return Err(e);
             }
         };
-        if let Some(turn) = reply_turn(run, &text) {
-            ctx.store.append_turn(&run.turn.thread, turn)?;
-        }
+        append_reply(run, &text)?;
         ctx.store.write_index();
         let cards = run.state().cards;
         println!("✓ turn via {} ({}) — {cards} card(s)", run.label(), js::slice_utf16(prompt, 60));

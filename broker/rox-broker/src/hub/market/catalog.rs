@@ -149,7 +149,7 @@ fn ident(s: &str) -> bool {
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
-const BUILTIN: [&str; 7] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"];
+const BUILTIN: [&str; 8] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"];
 
 fn is_secret_key(k: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -413,16 +413,17 @@ impl Market {
             return adjust_servers(hinted);
         }
         let Some(root) = self.plugin_root(ctx, key) else { return Map::new() };
-        for m in [".mcp.json", "gemini-extension.json", "mcp.json"] {
-            let j = parse(std::fs::read_to_string(root.join(m)).ok().as_deref(), Value::Null);
-            let s = if j.is_null() { None } else { Some(or(j.get("mcpServers"), j.get("mcp").cloned().unwrap_or(Value::Null))) };
-            if let Some(s) = s.filter(|s| s.is_object() || s.is_array()) {
-                if !entries(Some(&s)).is_empty() {
-                    return adjust_servers(Some(&s));
-                }
-            }
+        manifest_servers(&root)
+    }
+
+    /// `serverConfigs` of a plugin whose files are at `root` (not
+    /// installed yet: a review's staging folder).
+    pub fn server_configs_at(&self, key: &str, root: &Path) -> Map<String, Value> {
+        let hinted = at(at(self.entry_of(key), "install"), "servers");
+        if truthy(hinted) && !entries(hinted).is_empty() {
+            return adjust_servers(hinted);
         }
-        Map::new()
+        manifest_servers(root)
     }
 
     pub fn plugin_uses_google(&self, ctx: &HubCtx, key: &str) -> bool {
@@ -432,6 +433,11 @@ impl Market {
     /// `fieldsOf(key)`: the catalog's fields, every `${KEY}` the configs use
     /// without one, then the OAuth client fields a connector needs.
     pub fn fields_of(&self, ctx: &HubCtx, key: &str) -> Vec<Value> {
+        self.fields_with(ctx, key, &self.server_configs(ctx, key))
+    }
+
+    /// [`Market::fields_of`] over these server configs.
+    pub fn fields_with(&self, ctx: &HubCtx, key: &str, servers: &Map<String, Value>) -> Vec<Value> {
         let e = self.entry_of(key);
         let mut out: Vec<Value> = Vec::new();
         let mut seen: Vec<String> = Vec::new();
@@ -468,7 +474,6 @@ impl Market {
             m.insert("options".into(), Value::Array(options));
             out.push(Value::Object(m));
         }
-        let servers = self.server_configs(ctx, key);
         for cfg in servers.values() {
             if literal_client(cfg) {
                 continue;
@@ -603,7 +608,8 @@ impl Market {
                     let mut parts = inner.split(":-");
                     let (name, dflt) = (parts.next().unwrap_or(""), parts.next());
                     match name {
-                        "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" => root.clone(),
+                        // 2.1 §1: ${PLUGIN_ROOT} for every plugin
+                        "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" | "PLUGIN_ROOT" => root.clone(),
                         "workspaceFolder" | "userHome" => val(name).unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                         "HOME" | "USERPROFILE" => val(name).or_else(|| std::env::var(name).ok()).unwrap_or_default(),
                         "ROX_FILES_DIR" => self.out_dir.display().to_string(),
@@ -729,6 +735,20 @@ impl Market {
         }
         None
     }
+}
+
+/// The servers a plugin's own manifests at `root` declare.
+fn manifest_servers(root: &Path) -> Map<String, Value> {
+    for m in [".mcp.json", "gemini-extension.json", "mcp.json"] {
+        let j = parse(std::fs::read_to_string(root.join(m)).ok().as_deref(), Value::Null);
+        let s = if j.is_null() { None } else { Some(or(j.get("mcpServers"), j.get("mcp").cloned().unwrap_or(Value::Null))) };
+        if let Some(s) = s.filter(|s| s.is_object() || s.is_array()) {
+            if !entries(Some(&s)).is_empty() {
+                return adjust_servers(Some(&s));
+            }
+        }
+    }
+    Map::new()
 }
 
 /// What `materialize` makes of a server config.
