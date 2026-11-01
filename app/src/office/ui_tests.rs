@@ -723,8 +723,10 @@ fn a_chart_is_selected_dragged_nudged_and_deselected_as_on_the_web() {
     for k in ["right", "right", "right", "shift+down"] {
         app.key(k);
     }
-    let p = read(&app);
-    assert_eq!(word(&p, "nudge"), "3,10", "{p:?}");
+    // waited for, not read at once: each key pumps only 50 ms, and on a
+    // loaded runner the last arrow's batch comes later (the probe then
+    // still showed "3,0"); the send comes 250 ms after the last key
+    let p = until(&mut app, "the outline nudged by all four arrows", |p| word(p, "nudge") == "3,10");
     assert_eq!(num(&p, "srev"), rev, "nothing sent yet: {p:?}");
     let p = until(&mut app, "the nudge sent", |p| near(num(p, "chartx"), x0 + 67.0) && near(num(p, "charty"), 50.0));
     assert_eq!(num(&p, "srev"), rev + 1.0, "the nudges as one move: {p:?}");
