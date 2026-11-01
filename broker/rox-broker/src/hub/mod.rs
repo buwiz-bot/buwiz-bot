@@ -16,6 +16,7 @@ pub mod library;
 pub mod market;
 pub mod model;
 pub mod pipeline;
+pub mod policy;
 pub mod render;
 pub mod routes;
 pub mod store;
@@ -113,6 +114,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
     routes::popout::install(routes, ctx);
+    routes::local_exec::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);
     routines::install(routes, ctx);

@@ -87,6 +87,12 @@ fn same(got: &[u8], want: &[u8]) -> bool {
     !want.is_empty() && got.len() == want.len() && got.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
+/// The host token this process made, for tests that call a token-gated route.
+#[cfg(test)]
+pub fn token() -> Option<String> {
+    TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Whether `headers` carry this process's host token (constant time).
 pub fn authorized(headers: &HeaderMap) -> bool {
     let want = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
@@ -111,7 +117,7 @@ pub fn status_of(code: &str) -> StatusCode {
     }
 }
 
-fn refusal(status: StatusCode, code: &str, message: impl Into<String>) -> HubResponse {
+pub fn refusal(status: StatusCode, code: &str, message: impl Into<String>) -> HubResponse {
     types::json(status, &V1Error::new(code, message).body())
 }
 
