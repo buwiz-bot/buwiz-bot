@@ -100,12 +100,6 @@ pub async fn post(path: &str, body: serde_json::Value) -> Option<serde_json::Val
     serde_json::from_str(&res.text()).ok()
 }
 
-/// `PUT path` with a JSON body — `post` with the verb changed, for routes
-/// that replace a whole record (`/coworkers/{id}/ceiling`).
-pub async fn put(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
-    call("PUT", path, Some(body)).await.filter(|(s, _)| (200..300).contains(s)).map(|(_, v)| v)
-}
-
 /// A call that keeps its status: `Some((status, body))` on any answer (the
 /// body is `Null` when it is not JSON), `None` when the broker did not
 /// answer. For callers that read 409 or 501 as states, not failures.
