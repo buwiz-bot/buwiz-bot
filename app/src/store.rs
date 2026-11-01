@@ -596,7 +596,7 @@ pub struct Turn {
     /// Interactive cards (approvals, choices, forms, plugin needs) under
     /// the reply, in document order: the optional `cards` array of raw wire
     /// objects (`cards::Card::from_wire`), or the dev hook's local turn.
-    pub cards: Vec<crate::cards::TurnCard>,
+    pub(crate) cards: Vec<crate::cards::TurnCard>,
     /// The v1 attachments that went to the model with this user message
     /// (`v1Attachments`, spec 10.3): (canonical token, title).
     pub v1_attachments: Vec<(String, String)>,
@@ -1818,7 +1818,7 @@ pub struct Store {
     /// Each interactive card's state by its key (`cards::CardState`): no
     /// entry is still open. Kept while Rox runs; a form's typed values are
     /// never here.
-    pub card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
+    pub(crate) card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
     /// A choice card's picks by card key (field id → option).
     pub card_picks: Signal<std::collections::HashMap<String, BTreeMap<String, String>>>,
     /// Plugin-needs cards whose "Remember for <bot>" is on.
@@ -5313,7 +5313,7 @@ impl Store {
     }
 
     /// The dev hook's cards as a local reply at the end of the open chat.
-    pub fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
+    pub(crate) fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
         let chat = self.active_id.get_untracked();
         if chat.is_empty() {
             crate::toast::show("Open a chat first");
