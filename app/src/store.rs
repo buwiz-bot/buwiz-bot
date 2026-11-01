@@ -4926,16 +4926,44 @@ impl Store {
         let name = name.to_owned();
         self.plugin_busy.set(name.clone());
         spawn(async move {
-            let r = crate::plugin_review::inspect(client::post_any, &name).await;
-            self.plugin_busy.set(String::new());
+            let r = crate::plugin_review::inspect(client::post_status, &name).await;
             match r {
-                Ok(r) => {
+                Ok(crate::plugin_review::Inspected::Review(r)) => {
+                    self.plugin_busy.set(String::new());
                     self.plain_review_err.set(String::new());
-                    self.plain_review.set(Some(r));
+                    self.plain_review.set(Some(*r));
                     self.push_nav("review", &name, "");
                 }
-                Err(e) => crate::toast::show(e),
+                // the Node rollback has no review: Add installs as before
+                Ok(crate::plugin_review::Inspected::NoReview) => {
+                    self.plain_review.set(None);
+                    self.plugin_busy.set(String::new());
+                    self.install_unreviewed(&name);
+                }
+                Err(e) => {
+                    self.plugin_busy.set(String::new());
+                    crate::toast::show(e);
+                }
             }
+        });
+    }
+
+    /// The one-step Add of the Node rollback (before 2.1): a plugin with
+    /// setup fields opens its Setup page first.
+    fn install_unreviewed(&'static self, name: &str) {
+        let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
+        if needs_setup {
+            self.open_setup(name, "install");
+            return;
+        }
+        let name = name.to_owned();
+        self.plugin_busy.set(name.clone());
+        spawn(async move {
+            let _ = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, None)).await;
+            self.fetch_plugins();
+            self.fetch_mcp();
+            self.fetch_plugin_detail(&name);
+            self.plugin_busy.set(String::new());
         });
     }
 
@@ -5029,10 +5057,22 @@ impl Store {
             if install {
                 // installs only what the review staged (D2)
                 let review = self.plain_review.get_untracked().filter(|r| r.name == name);
-                let done = match &review {
-                    Some(r) => crate::plugin_review::install(client::post_any, r, &vals).await,
-                    None => Err("Review the plugin first: go back and press Add.".to_owned()),
+                let Some(r) = review else {
+                    // no review: the Node rollback's one-step install
+                    let r = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, Some(&vals))).await;
+                    self.plugin_busy.set(String::new());
+                    match r {
+                        Some(v) if self::b(&v, "ok") => {
+                            self.fetch_plugins();
+                            self.fetch_mcp();
+                            self.fetch_plugin_detail(&name);
+                            self.pop_nav();
+                        }
+                        _ => self.setup_err.set("Couldn't add the plugin. Check the values and try again.".into()),
+                    }
+                    return;
                 };
+                let done = crate::plugin_review::install(client::post_any, &r, &vals).await;
                 self.plugin_busy.set(String::new());
                 match done {
                     Ok(()) => self.reviewed_installed(&name),

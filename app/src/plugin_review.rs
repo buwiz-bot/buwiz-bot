@@ -4,8 +4,12 @@
 //! Install sends `POST /plugins/install {name, staging, approve: true,
 //! values?}`. The broker refuses an install without both.
 //!
-//! The requests go through a `post` function (the app's `client::post_any`),
-//! so the tests drive them with a fake broker.
+//! The review needs the Rust broker: the Node rollback has no
+//! `/plugins/inspect` (it answers 404), and there Add installs as before
+//! ([`Inspected::NoReview`]).
+//!
+//! The requests go through a `post` function (the app's `client`), so the
+//! tests drive them with a fake broker.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -187,14 +191,34 @@ pub fn install_body(review: &PlainReview, values: &BTreeMap<String, String>) -> 
     body
 }
 
-/// `POST /plugins/inspect`: the review (nothing is installed).
-pub async fn inspect<P, F>(post: P, name: &str) -> Result<PlainReview, String>
+/// What Add's inspect found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inspected {
+    Review(Box<PlainReview>),
+    /// The broker has no `/plugins/inspect` (the Node rollback): Add
+    /// installs in one step, as before 2.1.
+    NoReview,
+}
+
+/// The one-step install body of the Node rollback (no review): `{name}`,
+/// or from the Setup page `{name, values}` with every typed value.
+pub fn legacy_install_body(name: &str, values: Option<&BTreeMap<String, String>>) -> Value {
+    match values {
+        None => json!({ "name": name }),
+        Some(v) => json!({ "name": name, "values": v.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>() }),
+    }
+}
+
+/// `POST /plugins/inspect`: the review (nothing is installed). `post`
+/// answers `(status, JSON body or null)`.
+pub async fn inspect<P, F>(post: P, name: &str) -> Result<Inspected, String>
 where
     P: Fn(&'static str, Value) -> F,
-    F: Future<Output = Option<Value>>,
+    F: Future<Output = Option<(u16, Value)>>,
 {
     match post("/plugins/inspect", inspect_body(name)).await {
-        Some(v) => PlainReview::of(&v),
+        Some((404, _)) => Ok(Inspected::NoReview),
+        Some((_, v)) => PlainReview::of(&v).map(|r| Inspected::Review(Box::new(r))),
         None => Err("Couldn't reach the broker.".to_owned()),
     }
 }
@@ -232,9 +256,18 @@ mod tests {
     struct Fake {
         sent: Mutex<Vec<(String, Value)>>,
         install: Mutex<Option<Value>>,
+        /// The Node rollback: no `/plugins/inspect` (404 "not found").
+        node: bool,
     }
 
     impl Fake {
+        fn inspect(&self) -> impl Fn(&'static str, Value) -> std::future::Ready<Option<(u16, Value)>> + '_ {
+            move |route, body| {
+                self.sent.lock().unwrap().push((route.to_owned(), body));
+                std::future::ready(Some(if self.node { (404, Value::Null) } else { (200, inspect_answer()) }))
+            }
+        }
+
         fn post(&self) -> impl Fn(&'static str, Value) -> std::future::Ready<Option<Value>> + '_ {
             move |route, body| {
                 self.sent.lock().unwrap().push((route.to_owned(), body));
@@ -265,7 +298,7 @@ mod tests {
     #[test]
     fn plain_review_add_inspects_first_and_install_sends_the_staging_token() {
         let b = Fake::default();
-        let r = now(inspect(b.post(), "demo")).unwrap();
+        let Inspected::Review(r) = now(inspect(b.inspect(), "demo")).unwrap() else { panic!("a review") };
         assert_eq!(*b.sent.lock().unwrap(), [("/plugins/inspect".to_owned(), json!({"name": "demo"}))]);
         assert_eq!((r.title.as_str(), r.byline(), r.setup), ("Demo", "By Demo Co · made by Ada".to_owned(), true));
         assert_eq!(
@@ -293,7 +326,7 @@ mod tests {
     #[test]
     fn plain_review_refusals_come_back_as_messages() {
         let b = Fake::default();
-        let r = now(inspect(b.post(), "demo")).unwrap();
+        let Inspected::Review(r) = now(inspect(b.inspect(), "demo")).unwrap() else { panic!("a review") };
         *b.install.lock().unwrap() = Some(json!({"ok": false, "code": "review_expired", "error": "this review expired; review the plugin again"}));
         assert_eq!(now(install(b.post(), &r, &BTreeMap::new())), Err("This review expired. Add the plugin again to review it.".to_owned()));
         *b.install.lock().unwrap() = Some(json!({"ok": false, "error": "Demo needs Demo API Key before it can be added"}));
@@ -301,5 +334,19 @@ mod tests {
         assert_eq!(PlainReview::of(&json!({"ok": false, "error": "unknown plugin x"})), Err("unknown plugin x".to_owned()));
         let unreachable = |_: &'static str, _: Value| std::future::ready(None);
         assert_eq!(now(inspect(unreachable, "demo")), Err("Couldn't reach the broker.".to_owned()));
+        // another refusal of inspect stays an error
+        let refused = |_: &'static str, _: Value| std::future::ready(Some((400, json!({"ok": false, "error": "demo can't be installed: gone"}))));
+        assert_eq!(now(inspect(refused, "demo")), Err("demo can't be installed: gone".to_owned()));
+    }
+
+    #[test]
+    fn plain_review_under_the_node_rollback_add_installs_as_before() {
+        let b = Fake { node: true, ..Default::default() };
+        assert_eq!(now(inspect(b.inspect(), "demo")), Ok(Inspected::NoReview));
+        assert_eq!(*b.sent.lock().unwrap(), [("/plugins/inspect".to_owned(), json!({"name": "demo"}))]);
+        // the one-step bodies the app sent before 2.1
+        assert_eq!(legacy_install_body("demo", None), json!({"name": "demo"}));
+        let vals = BTreeMap::from([("DEMO_API_KEY".to_owned(), "k-1".to_owned())]);
+        assert_eq!(legacy_install_body("demo", Some(&vals)), json!({"name": "demo", "values": {"DEMO_API_KEY": "k-1"}}));
     }
 }
