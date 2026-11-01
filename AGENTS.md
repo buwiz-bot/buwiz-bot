@@ -30,6 +30,11 @@ are lost at the next rebuild.
 - Drive the running app with `gpui-agent` (`README.md`), not OS clicks or
   keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)rox-agent-menu`,
   read by `app/src/hot.rs`) runs commands: `cmd <command-id>`.
+- Point `gpui-agent` at your own instance by address: `--addr
+  127.0.0.1:<your agent port>` (or `GPUI_AGENT_ADDR`), never `--connect`
+  (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is
+  running, which can be the owner's own app or another agent's test bench.
+  A test instance gets its own broker port, agent port and data dir.
 - Performance: the monitor (`dev.perf`) logs over-budget frames to
   `~/Library/Logs/Buwiz Bot/jank.log`; the `/perf` skill reads it.
 - A build that ignores a source change came from a rustc-wrapper cache:

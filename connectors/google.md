@@ -8,10 +8,10 @@ One Google Cloud project and **one OAuth client (type: Desktop app)** serve all 
 
 | Item | Value |
 |---|---|
-| Google account | `codeitlikemiley@gmail.com` (gcloud has several accounts; always pass `--account=codeitlikemiley@gmail.com`) |
+| Google account | `you@example.com` (gcloud has several accounts; always pass `--account=you@example.com`) |
 | Cloud project | **BudgetWise**, id `budgetwise-bqkm6`, number `537583266937` (the number is the start of the Client ID) |
 | OAuth client | Desktop app, Client ID `537583266937-l32ec2n1…apps.googleusercontent.com`, saved once in Buwiz Bot under the shared Google setup |
-| Consent screen | External, Testing, `codeitlikemiley@gmail.com` added as test user |
+| Consent screen | External, Testing, `you@example.com` added as test user |
 | APIs enabled | all 12 from step 2 (6 base APIs + 6 `*mcp` services) |
 
 **Where it stands:** sign-in works and the tokens are saved, but **Google's own MCP servers (`*mcp.googleapis.com`) refuse every tool call** with:
@@ -25,7 +25,7 @@ This applies to personal Gmail accounts too (confirmed live). So, for now:
 
 ### To switch to Google's official servers later
 
-1. Signed in as `codeitlikemiley@gmail.com`, apply at https://developers.google.com/workspace/preview and name project `budgetwise-bqkm6` (537583266937). Wait for the approval email.
+1. Signed in as `you@example.com`, apply at https://developers.google.com/workspace/preview and name project `budgetwise-bqkm6` (537583266937). Wait for the approval email.
 2. Check it took: in Buwiz Bot, turn the **Gmail** connector back on (Connect apps → Gmail → **Connect**) and ask "list my last 3 email subjects". The preview error should be gone. If it says "Sign-in expired", press **Authenticate** (Testing-mode tokens last 7 days, see below).
 3. Add the other official Google plugins you want (Calendar, Drive, Docs, Sheets, Slides); they reuse the same client, the APIs are already enabled.
 4. Then turn the `Google Workspace` (local) plugin off, or uninstall it, so the AI sees one set of Google tools.
@@ -196,7 +196,7 @@ Recommendation for personal use: stay in Testing and accept weekly re-auth, or c
 The stopgap until the preview enrollment comes through. Plugin files: `grok-shell/server/plugins/external_plugins/google-workspace/` (listed in `server/plugins/marketplace.json`).
 
 - **What runs:** `uvx workspace-mcp --single-user --tool-tier extended --tools gmail calendar drive docs sheets slides` — 57 tools: mail, calendars and events, Drive search/read/create plus rename/copy/share (`update_drive_file`), Docs editing (`modify_doc_text`, `find_and_replace_doc`), Sheets and Slides. The smaller `core` tier (24 tools) can't rename or find-and-replace — the AI then reports the file "unchanged". Needs `uv` (`~/.local/bin/uvx`); the first start downloads the package.
-- **Setup values:** Google Client ID and Secret are the shared ones (saving them in any Google plugin updates all). **Google Account Email** = `codeitlikemiley@gmail.com` (so the AI never has to ask which account).
+- **Setup values:** Google Client ID and Secret are the shared ones (saving them in any Google plugin updates all). **Google Account Email** = `you@example.com` (so the AI never has to ask which account).
 - **Sign-in:** there is no Authenticate button — the row shows Connected because the local server is running. The first Google tool call opens a Google consent tab; approve every box. Google redirects to `http://localhost:8791/oauth2callback`, which the running server receives (Desktop clients accept any loopback port, nothing to register). If the redirect page says "can't connect", that sign-in was started by a server that has since stopped — ask the AI again to start a fresh one.
 - **Where tokens live:** `~/.google_workspace_mcp/credentials/` (not in Buwiz Bot). Delete that folder to sign out.
 - **More tools:** change `--tool-tier extended` to `complete` in the plugin's `.mcp.json` (more tools = bigger prompt for the AI).
