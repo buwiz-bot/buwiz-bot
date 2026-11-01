@@ -13,10 +13,16 @@ use super::text::approved_text;
 use crate::js;
 
 /// The notice's one line: "<name> ran · 2 new items" / "<name> failed: …";
-/// a consent card's question (`noticeText`).
+/// a consent card's question (`noticeText`); a mini app's install or
+/// uninstall card's.
 pub fn notice_text(n: &Value) -> String {
     let s = |k: &str| n.get(k).map(js::string_of).unwrap_or_default();
     let list = |k: &str| n.get(k).and_then(Value::as_array).filter(|l| !l.is_empty()).map(|l| l.iter().map(js::string_of).collect::<Vec<_>>());
+    match n.get("kind").and_then(Value::as_str) {
+        Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
+        Some("app_uninstall") => return format!("Uninstall {}? It removes its pins, attachments and data.", s("title")),
+        _ => {}
+    }
     if n.get("kind").and_then(Value::as_str) == Some("routine_consent") {
         let summary = n.get("summary").filter(|v| js::truthy(v));
         let what = match summary {
@@ -127,5 +133,9 @@ mod tests {
         assert_eq!(notice_text(&card), "Enable Fixture writer (From the agent) here? It may change Fixture data without asking: fx_echo.");
         let reads = json!({"kind": "routine_consent", "name": "W", "title": "F", "summary": "", "writes": [], "reads": ["G: a, b", "H: c"]});
         assert_eq!(notice_text(&reads), "Enable W here? It reads G: a, b; H: c.");
+        let install = json!({"kind": "app_install", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "source": "https://github.com/o/r/releases/tag/v1.1.0", "state": "pending"});
+        assert_eq!(notice_text(&install), "Install X 1.1.0 from https://github.com/o/r/releases/tag/v1.1.0?");
+        let uninstall = json!({"kind": "app_uninstall", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "state": "pending"});
+        assert_eq!(notice_text(&uninstall), "Uninstall X? It removes its pins, attachments and data.");
     }
 }
