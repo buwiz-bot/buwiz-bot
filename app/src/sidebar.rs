@@ -2370,7 +2370,7 @@ pub(crate) fn rail_pop_layer() -> impl IntoElement {
             crate::agents::subtitle(&pop.bot, &store().bots.get_untracked())
         };
         // h = pad(20) + name row(18) + gap(4) + lines(≤2 × 18)
-        let lines = ((preview.len() as f32 / 34.0).ceil().max(1.0)).min(2.0);
+        let lines = (preview.len() as f32 / 34.0).ceil().clamp(1.0, 2.0);
         let h = 20.0 + 18.0 + 4.0 + lines * 18.0;
         let top = (pop.cy - h / 2.0).max(8.0);
         view()

@@ -5023,7 +5023,7 @@ impl Store {
     pub fn crop_zoom(&'static self, d: f64) {
         let c = self.draft_crop.get_untracked();
         self.draft_crop
-            .set(Self::clamp_crop(Crop { s: (c.s + d).max(1.0).min(3.0), ..c }));
+            .set(Self::clamp_crop(Crop { s: (c.s + d).clamp(1.0, 3.0), ..c }));
     }
     pub fn crop_drag(&'static self, from: Crop, dx: f64, dy: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
@@ -5034,7 +5034,7 @@ impl Store {
     }
     pub fn crop_scale(&'static self, from: Crop, dx: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
-            s: (from.s + (dx / 236.0) * 2.0).max(1.0).min(3.0),
+            s: (from.s + (dx / 236.0) * 2.0).clamp(1.0, 3.0),
             ..from
         }));
     }
