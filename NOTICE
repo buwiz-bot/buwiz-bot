@@ -6,3 +6,47 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party logos under server/src/plugins/icons/ and the plugin catalogs
 under server/src/plugins/ name other companies' products; their names and
 marks belong to their owners and are not covered by this license.
+
+Third-party code in this repository
+-----------------------------------
+
+broker/rox-broker/src/helper/oauth.rs is a port of the MCP TypeScript
+SDK's auth() (version 1.32, https://github.com/modelcontextprotocol/typescript-sdk),
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects,
+LLC, used under the MIT License (text below; the project is moving to
+Apache-2.0, see its LICENSE).
+
+crates/office-kit/src/fonts.rs and crates/word/src/project.rs port parts
+of BetterOffice (@betteroffice/fonts 0.4.0 and @betteroffice/docx 0.4.3,
+by OpenOOXML), licensed under the Apache License, Version 2.0 (the same
+text as this repository's LICENSE). The BetterOffice fonts shipped in the
+app bundle are under the SIL Open Font License 1.1 (in that package's
+LICENSES/).
+
+server/tools/oxlint/anti-slop/ is vendored from
+https://github.com/dmmulroy/anti-slop (commit 13909c9), Copyright (c) 2026
+Dillon Mulroy, under the MIT License (server/tools/oxlint/anti-slop/LICENSE).
+
+MIT License
+
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
