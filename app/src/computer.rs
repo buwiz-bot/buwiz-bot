@@ -252,6 +252,12 @@ pub(crate) fn is_not_ported(v: &Value) -> bool {
     v.get("code").and_then(Value::as_str) == Some("not_ported")
 }
 
+/// A reply that says no: `{ok:false}`, `{error}` or `{code, message}`
+/// (an empty 204 body is `Null`, a yes).
+pub(crate) fn refused(v: &Value) -> bool {
+    v.get("ok").and_then(Value::as_bool) == Some(false) || ComputerError::parse(v).is_some()
+}
+
 // ————————————————————————— state —————————————————————————
 
 /// What the broker said about the routes.
@@ -495,7 +501,11 @@ async fn set_egress(bot: String, mode: Egress) {
     });
     let reply = client::put(&path(&bot, "/egress-policy"), serde_json::json!({ "mode": mode.as_wire() })).await;
     update_pane(&bot, |p| match reply.as_ref() {
-        Some(Value::Null) | Some(Value::Object(_)) if reply.as_ref().is_some_and(|v| ComputerError::parse(v).is_none()) => {
+        Some(v) if is_not_ported(v) => {
+            p.pending_egress = None;
+            p.route = Route::Missing;
+        }
+        Some(v) if !refused(v) => {
             if let Some(c) = p.computer.as_mut() {
                 c.egress = Some(mode);
             }
@@ -503,7 +513,9 @@ async fn set_egress(bot: String, mode: Egress) {
         }
         Some(v) => {
             p.pending_egress = None;
-            p.action_error = ComputerError::parse(v).map(|e| sentence(&e.message));
+            p.action_error = ComputerError::parse(v)
+                .map(|e| sentence(&e.message))
+                .or_else(|| Some("The server refused that network rule.".to_owned()));
         }
         None => {
             p.pending_egress = None;
@@ -805,6 +817,9 @@ mod tests {
         assert_eq!(e.map(|e| sentence(&e.message)).as_deref(), Some("Docker is not running."));
         assert!(is_not_ported(&serde_json::json!({"ok": false, "code": "not_ported"})));
         assert!(!is_not_ported(&serde_json::json!({"state": "absent"})));
+        assert!(refused(&serde_json::json!({"ok": false, "code": "not_ported"})));
+        assert!(refused(&serde_json::json!({"error": "unknown mode"})));
+        assert!(!refused(&Value::Null) && !refused(&serde_json::json!({"mode": "never"})));
         assert_eq!(Egress::from_wire("bypass"), Some(Egress::Always));
         assert_eq!(Egress::Never.as_wire(), "never");
         assert_eq!(update_rest_label(true, true), "Update available");
