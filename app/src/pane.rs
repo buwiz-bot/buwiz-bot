@@ -70,8 +70,8 @@ fn top_bar() -> impl IntoElement {
         .flex_row()
         .items_center()
         .justify_end()
-        .gap_2()
-        .px_3()
+        .gap_1()
+        .px_2()
         .h(px(TOP))
         .window_drag(true)
         .child(icon_rail())
@@ -273,9 +273,11 @@ fn rail_hover() -> AdaptiveColor {
     theme::tone(theme::hsla(0.0, 0.0, 0.467, 0.2), theme::hsla(0.0, 0.0, 0.467, 0.2))
 }
 
-/// One rail button: a 28pt square with an 8pt radius and a 16pt glyph,
-/// and its sentence in a tooltip under it after a moment (the rail's own
-/// copy of `sidebar::rail_circle`'s tooltip, which hangs above its rail).
+/// One rail button: a 24pt square with a 6pt radius and a 15pt glyph —
+/// nine of them, the theme and close circles and the strip's padding fit
+/// the pane's 320pt — and its sentence in a tooltip under it after a
+/// moment (the rail's own copy of `sidebar::rail_circle`'s tooltip,
+/// which hangs above its rail).
 fn rail_btn(id: &'static str, look: RailLook, on: impl Fn() + 'static) -> impl IntoElement {
     let hovered = signal(false);
     let tip = signal(false);
@@ -290,13 +292,13 @@ fn rail_btn(id: &'static str, look: RailLook, on: impl Fn() + 'static) -> impl I
         // a disabled button takes no presses and says it is disabled, to
         // screen readers and to gpui-agent's snapshot
         .disabled(!enabled)
-        .size(px(28.0))
-        .rounded(px(8.0))
+        .size(px(24.0))
+        .rounded(px(6.0))
         .items_center()
         .justify_center()
         .opacity(if enabled { 1.0 } else { 0.5 })
         .bg(move || if hovered.get() { rail_hover() } else { AdaptiveColor::TRANSPARENT })
-        .child(crate::icons::icon_ink(look.icon, 16.0, move || ink.color()))
+        .child(crate::icons::icon_ink(look.icon, 15.0, move || ink.color()))
         .child(when(
             move || tip.get(),
             move || {
@@ -305,7 +307,7 @@ fn rail_btn(id: &'static str, look: RailLook, on: impl Fn() + 'static) -> impl I
                 let one_line = measure_text("420 12px -apple-system, system-ui, sans-serif", &words).0.ceil() + 12.0;
                 view()
                     .absolute()
-                    .top(px(28.0 + 6.0))
+                    .top(px(24.0 + 6.0))
                     .right(px(-6.0))
                     .z_index(40)
                     .pointer_events(PointerEvents::None)
@@ -379,7 +381,7 @@ pub(crate) fn open_pane_btn(
 /// The rail, rebuilt as the tab, the host switch and this bot's computer
 /// change.
 fn icon_rail() -> impl IntoElement {
-    view().flex_row().items_center().gap(px(2.0)).child(dynamic(|| rail_buttons().into_element()))
+    view().flex_row().items_center().child(dynamic(|| rail_buttons().into_element()))
 }
 
 fn rail_buttons() -> impl IntoElement {
@@ -400,7 +402,6 @@ fn rail_buttons() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
-        .gap(px(2.0))
         .child(rail_btn(
             "header-monitor",
             RailLook {
