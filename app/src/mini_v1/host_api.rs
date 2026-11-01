@@ -178,6 +178,40 @@ pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: boo
     post(b, &format!("/v1/host/plugins/{plugin}/tools"), json!({"tool": tool, "disabled": disabled}), SHORT_TIMEOUT)
 }
 
+/// What the person does to one of a 2.1 package's accounts (spec 2.1 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountAction {
+    /// The broker opens the system browser; the list then says the state.
+    SignIn,
+    SignOut,
+    Remove,
+}
+
+/// The account routes, in one place: `/v1/host/plugins/:id/accounts/:account/{signin,signout,remove}`.
+pub fn account_route(plugin: &str, account: &str, action: AccountAction) -> String {
+    let verb = match action {
+        AccountAction::SignIn => "signin",
+        AccountAction::SignOut => "signout",
+        AccountAction::Remove => "remove",
+    };
+    format!("/v1/host/plugins/{plugin}/accounts/{account}/{verb}")
+}
+
+/// A manifest account id: `^[a-z][a-z0-9-]{0,31}$`.
+pub fn account_id_ok(id: &str) -> bool {
+    let mut c = id.chars();
+    c.next().is_some_and(|f| f.is_ascii_lowercase()) && id.len() <= 32 && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '-')
+}
+
+/// `POST` an account route with `{label}`: `{ok, url?}` for a sign-in.
+pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, action: AccountAction) -> Result<Value, RoxError> {
+    let label = label.trim();
+    if !super::perms::plugin_id_ok(plugin) || !account_id_ok(account) || label.is_empty() || label.chars().count() > 60 {
+        return Err(RoxError::new("invalid_args", "not an account of a plugin"));
+    }
+    post(b, &account_route(plugin, account, action), json!({"label": label}), SHORT_TIMEOUT)
+}
+
 /// What the person does to a routine (5.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutineAction {

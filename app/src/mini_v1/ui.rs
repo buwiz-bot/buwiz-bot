@@ -93,6 +93,13 @@ pub struct V1 {
     running: RefCell<Vec<(u64, String, String)>>,
     /// The document a `buwiz.preview` shows over the apps (7.10).
     pub preview: Signal<Option<super::bridge::Preview>>,
+    /// Account sign-ins waiting on the browser ([`signing_key`]).
+    pub signing: Signal<HashSet<String>>,
+}
+
+/// `<plugin>|<account>/<label>`: a sign-in in progress.
+pub fn signing_key(plugin: &str, account: &str, label: &str) -> String {
+    format!("{plugin}|{}", connect::account_key(account, label))
 }
 
 impl V1 {
@@ -124,6 +131,7 @@ impl V1 {
             prewarm: RefCell::new(Default::default()),
             running: RefCell::new(Vec::new()),
             preview: signal(None),
+            signing: signal(HashSet::new()),
         }
     }
 
@@ -1266,6 +1274,69 @@ impl Store {
         self.v1_job("", move || host_api::set_tool_disabled(&broker(), &p, &t, disabled), |_| {});
     }
 
+    /// A 2.1 account's Sign out or Remove (spec 2.1 §4).
+    pub fn v1_account(&'static self, plugin: &str, account: &str, label: &str, action: host_api::AccountAction) {
+        if action == host_api::AccountAction::SignIn {
+            return self.v1_signin(plugin, account, label, crate::toast::show);
+        }
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.to_owned());
+        self.v1_job("", move || host_api::account_action(&broker(), &p, &a, &l, action), |_| {});
+    }
+
+    /// Sign in: the broker opens the browser; the row says "Signing in…"
+    /// until the list has it connected (checked every 2 s, 5 min at most)
+    /// or Cancel. `failed` hears a refusal.
+    pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(String) + 'static) {
+        let key = signing_key(plugin, account, label);
+        if self.v1.signing.with_untracked(|s| s.contains(&key)) {
+            return;
+        }
+        self.v1.signing.update(|s| {
+            s.insert(key.clone());
+        });
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.trim().to_owned());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
+                let r = crate::vault::off_main(move || host_api::account_action(&broker(), &p2, &a2, &l2, host_api::AccountAction::SignIn)).await;
+                if let Some(Err(e)) = r {
+                    self.v1.signing.update(|s| {
+                        s.remove(&key);
+                    });
+                    return failed(e.message);
+                }
+                for _ in 0..150 {
+                    if !self.v1.signing.with_untracked(|s| s.contains(&key)) {
+                        break;
+                    }
+                    let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
+                    let done = crate::vault::off_main(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let list = host_api::plugins(&broker()).ok()?;
+                        let p = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?;
+                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && x.connected()))
+                    })
+                    .await
+                    .flatten();
+                    if done == Some(true) {
+                        break;
+                    }
+                }
+                self.v1.signing.update(|s| {
+                    s.remove(&key);
+                });
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// Stops waiting on a sign-in (the browser was closed).
+    pub fn v1_signin_cancel(&'static self, key: &str) {
+        self.v1.signing.update(|s| {
+            s.remove(key);
+        });
+    }
+
     /// A routine's approve, enable (in the open chat) or disable (5.9).
     pub fn v1_routine(&'static self, plugin: &str, routine: &str, action: host_api::RoutineAction) {
         let (p, r) = (plugin.to_owned(), routine.to_owned());
@@ -1471,6 +1542,16 @@ impl Store {
         } else {
             settle();
         }
+    }
+
+    /// An `account_required` card's Sign in: the account's first label
+    /// (or `default`); a refusal stays on the card.
+    pub fn account_card_signin(&'static self, chat: &str, i: i64, n: &crate::store::AccountRequiredNotice) {
+        let label = self.v1.listed.with_untracked(|l| l.iter().find(|p| p.id == n.plugin).map(|p| p.signin_label(&n.account)));
+        let label = label.unwrap_or_else(|| "default".to_owned());
+        self.app_card(chat, i, |c| c.error.clear());
+        let ch = chat.to_owned();
+        self.v1_signin(&n.plugin, &n.account, &label, move |e| store().app_card(&ch, i, |c| c.finish(Err(e))));
     }
 
     /// Open logs of a plugin (14.5): its log file in the Finder.
