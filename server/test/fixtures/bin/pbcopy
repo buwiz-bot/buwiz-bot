@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // pbcopy stub for the broker tests: reads stdin and copies nothing.
-// ROX_STUB_LOG: each call appends {bin, argv, stdin} as a JSON line there.
+// BUWIZ_STUB_LOG: each call appends {bin, argv, stdin} as a JSON line there.
 const { appendFileSync, readFileSync } = require("node:fs");
+const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
 
 const stdin = readFileSync(0, "utf8");
 
-if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "pbcopy", argv: process.argv.slice(2), stdin }) + "\n");
+if (STUB_LOG) appendFileSync(STUB_LOG, JSON.stringify({ bin: "pbcopy", argv: process.argv.slice(2), stdin }) + "\n");

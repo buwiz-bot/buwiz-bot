@@ -117,7 +117,7 @@ pub(crate) struct Vault {
     pending: Mutex<HashMap<String, PendingSave>>,
 }
 
-/// `ROX_DATA_DIR`, else `~/Library/Application Support/Buwiz Bot`
+/// `BUWIZ_DATA_DIR`, else `~/Library/Application Support/Buwiz Bot`
 /// ([`crate::identity::data_dir`]).
 pub(crate) fn data_dir() -> PathBuf {
     crate::identity::data_dir()

@@ -27,7 +27,7 @@ function run(dir, code, env = {}) {
     const { join } = await import("node:path");
     const P = await import("./src/pipeline.mjs");
     const S = await import("./src/state.mjs");
-    const D = process.env.GROK_DATA_DIR;
+    const D = process.env.BUWIZ_BROKER_DATA_DIR;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const settle = async (files) => {
       for (let i = 0; i < 400 && !files.every((f) => existsSync(join(D, f))); i++) await sleep(25);
@@ -240,9 +240,9 @@ test("PIPE-09 setHead: false for a version with no file; else heads moves, the m
     S.db.prepare("INSERT INTO widgets(name,title) VALUES(?,?)").run("R8", "t");
     await settle(["chunks/R8v1.js", "chunks/R8v2.js", "chunks/R8.js"]);
     const before = (await import("node:fs")).readdirSync(join(D, "chunks")).length;
-    const n = (await import("node:fs")).readFileSync(process.env.ROX_STUB_LOG, "utf8").split("\\n").filter(Boolean).length;
+    const n = (await import("node:fs")).readFileSync(process.env.BUWIZ_STUB_LOG, "utf8").split("\\n").filter(Boolean).length;
     const r = [P.setHead("R8", 5), P.setHead("R8", 1), P.headOf("R8"), P.headOf("R9")];
-    for (let i = 0; i < 400 && (await import("node:fs")).readFileSync(process.env.ROX_STUB_LOG, "utf8").split("\\n").filter(Boolean).length < n + 1; i++) await sleep(25);
+    for (let i = 0; i < 400 && (await import("node:fs")).readFileSync(process.env.BUWIZ_STUB_LOG, "utf8").split("\\n").filter(Boolean).length < n + 1; i++) await sleep(25);
     await sleep(300);
     console.log(JSON.stringify({ r, before, n }));
   `);

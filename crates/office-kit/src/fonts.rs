@@ -8,7 +8,7 @@
 //! The files ship in the app bundle, not in git: `app/bundle-dev.sh`
 //! copies them from `server/node_modules/@betteroffice/fonts/assets` into
 //! `Contents/Resources/fonts/office/`. Dev runs and tests read them from
-//! there, from `ROX_OFFICE_FONTS`, or from the checkout's node_modules.
+//! there, from `BUWIZ_OFFICE_FONTS`, or from the checkout's node_modules.
 //! They are registered with CoreText before the first paint ([`register`])
 //! so the canvas draws by family name ("Carlito") from the very files the
 //! engines measure with.
@@ -265,7 +265,7 @@ pub fn canvas_family(family: &str) -> &str {
     metric_compat_family(family).unwrap_or(family)
 }
 
-/// The folder holding the font files: `ROX_OFFICE_FONTS`, the bundle's
+/// The folder holding the font files: `BUWIZ_OFFICE_FONTS`, the bundle's
 /// `Resources/fonts/office`, this checkout's node_modules (dev builds and
 /// tests), or the dev bundle's (Buwiz Bot.app's, then Rox.app's). `None`
 /// (logged once) when none has them.
@@ -273,7 +273,7 @@ pub fn dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
         let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Some(d) = std::env::var_os("ROX_OFFICE_FONTS") {
+        if let Some(d) = rox_v1::env::var_os("BUWIZ_OFFICE_FONTS") {
             dirs.push(d.into());
         }
         if let Ok(exe) = std::env::current_exe() {
@@ -285,7 +285,7 @@ pub fn dir() -> Option<&'static Path> {
         }
         let found = dirs.iter().find(|d| d.join(BUNDLED[0].file).is_file()).cloned();
         if found.is_none() {
-            log::warn!("no office fonts in {dirs:?}: Word and sheets measure with installed stand-ins (app/bundle-dev.sh copies them; or set ROX_OFFICE_FONTS)");
+            log::warn!("no office fonts in {dirs:?}: Word and sheets measure with installed stand-ins (app/bundle-dev.sh copies them; or set BUWIZ_OFFICE_FONTS)");
         }
         found
     })
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn every_ttf_of_the_manifest_is_there_and_registers() {
-        let dir = dir().expect("the office fonts (npm ci in server/, or ROX_OFFICE_FONTS)");
+        let dir = dir().expect("the office fonts (npm ci in server/, or BUWIZ_OFFICE_FONTS)");
         for face in BUNDLED.iter().filter(|f| f.file.ends_with(".ttf")) {
             assert!(dir.join(face.file).is_file(), "{}", face.file);
         }

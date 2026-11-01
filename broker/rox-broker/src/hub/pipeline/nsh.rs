@@ -115,7 +115,7 @@ pub(crate) mod tests {
     /// to `log`, in mode `mode`.
     pub fn stub(log: &Path, mode: &str) -> NshCli {
         let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/test/fixtures/bin/nsh");
-        NshCli { bin, timeout: TIMEOUT, env: vec![("ROX_STUB_LOG".into(), log.display().to_string()), ("NSH_STUB".into(), mode.into())] }
+        NshCli { bin, timeout: TIMEOUT, env: vec![("BUWIZ_STUB_LOG".into(), log.display().to_string()), ("NSH_STUB".into(), mode.into())] }
     }
 
     /// The stub's recorded argv, oldest first.

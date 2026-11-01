@@ -15,7 +15,7 @@ import { createDelivery } from "../src/agents-run.mjs";
 import { BODY_MAX, HOOK_RATE, createExternals, signature } from "../src/agents-external.mjs";
 import { HUB, PORT, postJson, ROOT, startServer, tempDir } from "./helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): agents-external.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): agents-external.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)
 const NODE_ONLY = { skip: HUB && "Node-only: agents-external.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)" };
 
 function world({ post = async () => 200 } = {}) {
@@ -179,7 +179,7 @@ test("BRG-01 rox-bridge round-trips a message through a test server", async () =
     store.list.push({ id: tid, uid: uuidv7(), title: "Boss", turns: [] });
     store.bots.push({ id: "boss", name: "Boss", shape: "blob", color: "#FFFFFF", threadId: tid, memories: [], integrations: [] });
     writeIndex();
-  `], { cwd: ROOT, env: { ...process.env, GROK_DATA_DIR: dir, MOCK: "1" } });
+  `], { cwd: ROOT, env: { ...process.env, BUWIZ_BROKER_DATA_DIR: dir, MOCK: "1" } });
   const server = await startServer(dir);
   let client;
 
@@ -192,7 +192,7 @@ test("BRG-01 rox-bridge round-trips a message through a test server", async () =
     await client.connect(new StdioClientTransport({
       command: process.execPath,
       args: [join(ROOT, "bridge", "rox-bridge.mjs")],
-      env: { ...process.env, ROX_BRIDGE_URL: `http://127.0.0.1:${PORT}`, ROX_BRIDGE_TOKEN: made.json.secret },
+      env: { ...process.env, BUWIZ_BRIDGE_URL: `http://127.0.0.1:${PORT}`, BUWIZ_BRIDGE_TOKEN: made.json.secret },
     }));
     const tools = (await client.listTools()).tools.map((t) => t.name);
 

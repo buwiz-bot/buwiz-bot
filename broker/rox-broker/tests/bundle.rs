@@ -50,8 +50,10 @@ fn a_bundled_broker_runs_without_node_and_serves_its_assets() {
         .arg(&assets)
         .arg("--data")
         .arg(&data)
-        .env("ROX_BROKER_HUB", "1")
+        .env("BUWIZ_BROKER_HUB", "1")
+        .env_remove("BUWIZ_BROKER_V1_HOST")
         .env_remove("ROX_BROKER_V1_HOST")
+        .env_remove("BUWIZ_BROKER_MCP_HOST")
         .env_remove("ROX_BROKER_MCP_HOST")
         // the model gateway at a closed port, never the real opencodex
         .env("OPENCODEX_URL", "http://127.0.0.1:9")

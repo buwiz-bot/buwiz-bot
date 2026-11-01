@@ -143,7 +143,7 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
     std::env::set_var("OPENCODEX_URL", node["url"].as_str().unwrap());
     std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
     std::env::set_var("NSH", bin.join("nsh"));
-    std::env::set_var("ROX_STUB_LOG", rust_data.join("stubs.log"));
+    std::env::set_var("BUWIZ_STUB_LOG", rust_data.join("stubs.log"));
     let ctx = HubCtx::new(rust_data.clone(), Clock::system());
     let hub = Hub::with(ctx, Vec::new(), |routes, ctx| {
         rox_broker::hub::routes::chat::install(routes, ctx);

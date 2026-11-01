@@ -4,8 +4,9 @@
 // routine runner, whose turns run the way v0's do (backgroundTurn), in
 // the routine's own thread (routine-threads.mjs). Importing it spawns nothing; app-server starts the
 // enabled plugins and the routine poll once it listens.
-// ROX_V1_CALL_TIMEOUT_MS shortens the broker's 120 s call limit for tests.
+// BUWIZ_V1_CALL_TIMEOUT_MS shortens the broker's 120 s call limit for tests.
 import { join } from "node:path";
+import { env } from "../env.mjs";
 import { DATA_DIR, GEN_DIR, OFFICE_ROLE } from "../config.mjs";
 import { allocJobId, db, findThread, modelCtx, nextThreadSeq, store, uuidv7, writeIndex } from "../state.mjs";
 import { MOVED_MARKER, keystore, moveFromRox } from "./keystore.mjs";
@@ -19,10 +20,10 @@ import { createLineSessions } from "./sessions-line.mjs";
 
 const timeouts = {};
 
-if (Number(process.env.ROX_V1_CALL_TIMEOUT_MS) > 0) timeouts.call = Number(process.env.ROX_V1_CALL_TIMEOUT_MS);
+if (Number(env("BUWIZ_V1_CALL_TIMEOUT_MS")) > 0) timeouts.call = Number(env("BUWIZ_V1_CALL_TIMEOUT_MS"));
 
-// rox-broker hosts the plugins when it was started with ROX_BROKER_V1_HOST=1:
-// it hands Node the line's address and token, and "v1" in ROX_LINE_HOSTS
+// rox-broker hosts the plugins when it was started with BUWIZ_BROKER_V1_HOST=1:
+// it hands Node the line's address and token, and "v1" in BUWIZ_LINE_HOSTS
 const onLine = !!LINE.base && LINE.hosts.includes("v1");
 
 export const plugins = onLine
@@ -63,7 +64,7 @@ async function routineTurn({ plugin, routine, thread, shown, prompt, surface, ma
 
 const threads = createRoutineThreads({ store, nextId: () => `t${nextThreadSeq()}`, uid: uuidv7, save: writeIndex });
 
-// Not in Node's office role (ROX_NODE_ROLE=office): rox-broker owns
+// Not in Node's office role (BUWIZ_NODE_ROLE=office): rox-broker owns
 // v1_routines and v1_instances there, and createRoutines would write them
 // on import (the one-time move to instances, racing rox-broker's on an
 // older database) and on a plugin's uninstall. Nothing in the role reaches

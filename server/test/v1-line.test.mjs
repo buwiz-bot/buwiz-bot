@@ -1,4 +1,4 @@
-// rox-broker hosting the v1 plugins (ROX_BROKER_V1_HOST=1, the Rust broker
+// rox-broker hosting the v1 plugins (BUWIZ_BROKER_V1_HOST=1, the Rust broker
 // plan's D10): the plugin processes are rox-broker's, so a Node restart
 // leaves them running, and Node, back, sees them as they are and calls
 // them again. Runs only with BUWIZ_BROKER_CMD (a rox-broker); port
@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { HUB, ROOT, brokerCommand, tempDir } from "./helpers.mjs";
+import { HUB, ROOT, brokerCommand, env, tempDir } from "./helpers.mjs";
 import { FX, bed, fixtureSpec, until } from "./v1-helpers.mjs";
 
 const RUST = !!process.env.BUWIZ_BROKER_CMD;
@@ -58,11 +58,11 @@ const alive = (pid) => {
   }
 };
 
-test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs BUWIZ_BROKER_CMD") || (process.env.ROX_BROKER_NO_NODE === "1" && "Node-only: restarts the Node behind rox-broker; with ROX_BROKER_NO_NODE=1 there is none") }, async () => {
+test("a Node restart leaves rox-broker's plugin running; Node, back, lists it and calls it", { skip: (!RUST && "needs BUWIZ_BROKER_CMD") || (env("BUWIZ_BROKER_NO_NODE") === "1" && "Node-only: restarts the Node behind rox-broker; with BUWIZ_BROKER_NO_NODE=1 there is none") }, async () => {
   const b = bed("line");
   const data = tempDir("v1-line-data");
   const [bin, args] = brokerCommand();
-  const env = { ...process.env, ROX_BROKER_V1_HOST: "1", MOCK: "1", GROK_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile };
+  const env = { ...process.env, BUWIZ_BROKER_V1_HOST: "1", MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile };
 
   let log = "";
 

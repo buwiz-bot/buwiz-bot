@@ -204,8 +204,8 @@ pub(crate) fn close() {
     mp_open().set(None);
 }
 
-/// `ROX_MODELS=effort|list` — boots with the popover open mid-window
-/// (the dev knob, like `ROX_PANE`/`ROX_PLUGINS`).
+/// `BUWIZ_MODELS=effort|list` — boots with the popover open mid-window
+/// (the dev knob, like `BUWIZ_PANE`/`BUWIZ_PLUGINS`).
 pub(crate) fn dev_open(mode: &str) {
     let st = store();
     if st.models.get_untracked().is_empty() {

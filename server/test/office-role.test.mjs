@@ -1,4 +1,4 @@
-// Node's office role (ROX_NODE_ROLE=office, Rust broker plan 5.0c): behind
+// Node's office role (BUWIZ_NODE_ROLE=office, Rust broker plan 5.0c): behind
 // rox-broker's hub Node serves only the office routes and holds no hub
 // state. On a seeded data dir that a normal start would rewrite (a thread
 // without a uid, an unversioned module, stale .stage files, a host token,
@@ -91,7 +91,7 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
   assert.ok(before.rows.threads.some((t) => t.uid === null), "the seed has a thread without a uid");
   assert.ok(!("v1_instances" in before.rows), "the seed is from before instances");
 
-  server = await startServer(dir, { env: { ROX_NODE_ROLE: "office" } });
+  server = await startServer(dir, { env: { BUWIZ_NODE_ROLE: "office" } });
 
   try {
     const caps = await request("GET", "/office/caps");

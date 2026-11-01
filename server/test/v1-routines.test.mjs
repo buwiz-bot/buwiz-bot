@@ -38,7 +38,7 @@ import { createRoutines } from "../src/v1/routines.mjs";
 import { FX, GWS, bed, broker, codeOf, fixtureSpec, installFixture, installGws, upstreamCalls, writeMail } from "./v1-helpers.mjs";
 import { HUB } from "./helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)
 const NODE_ONLY = { skip: HUB && "Node-only: v1/routines.mjs in this process; with the hub the Rust ports run it (hub/routines/tests.rs)" };
 
 let now = 1_800_000_000_000;

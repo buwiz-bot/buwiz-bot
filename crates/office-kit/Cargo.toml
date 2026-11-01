@@ -23,6 +23,8 @@ nsh-core = { path = "../../nsh/crates/nsh-core" }
 nsh-base = { path = "../../nsh/crates/nsh-base" }
 nsh-engine = { path = "../../nsh/crates/nsh-engine", optional = true }
 log = "0.4"
+# the environment variables' Buwiz names, the old ones still read (`fonts`)
+rox-v1 = { path = "../../broker/rox-v1" }
 # the spreadsheet's display lists (`draw`)
 betteroffice-xlsx = { version = "0.5.1", default-features = false }
 xlsx-render = { package = "betteroffice-xlsx-render", version = "0.5.1" }

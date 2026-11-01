@@ -32,73 +32,73 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // "Waiting for approval" / "Waiting for you" while a card waits.
     st.watch_cards();
 
-    // `ROX_STATUS=<state|demo>`: debug-mount the run-status surface —
+    // `BUWIZ_STATUS=<state|demo>`: debug-mount the run-status surface —
     // the composer status row and bot marks play the state without a
     // `/status:` send (same `agentSet` path, no server).
-    if let Ok(s) = std::env::var("ROX_STATUS") {
+    if let Some(s) = rox_v1::env::var("BUWIZ_STATUS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1500)).await;
             store().mock_status(&s);
         });
     }
 
-    // `ROX_PANE=1`: open the right detail pane at boot — keypress
+    // `BUWIZ_PANE=1`: open the right detail pane at boot — keypress
     // automation can't reach the window, so screenshots need the env.
-    if std::env::var("ROX_PANE").is_ok() {
+    if rox_v1::env::is_set("BUWIZ_PANE") {
         spawn(async move {
             timer(std::time::Duration::from_millis(800)).await;
             store().right_open.set(true);
         });
     }
 
-    // `ROX_PLUGINS=1`: open the Connect Apps modal at boot.
-    if std::env::var("ROX_PLUGINS").is_ok() {
+    // `BUWIZ_PLUGINS=1`: open the Connect Apps modal at boot.
+    if rox_v1::env::is_set("BUWIZ_PLUGINS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             store().open_plugins();
         });
     }
 
-    // `ROX_MODELS=effort|list`: open the model popover at boot.
-    if let Ok(mode) = std::env::var("ROX_MODELS") {
+    // `BUWIZ_MODELS=effort|list`: open the model popover at boot.
+    if let Some(mode) = rox_v1::env::var("BUWIZ_MODELS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             crate::models::dev_open(&mode);
         });
     }
 
-    // `ROX_SIDE=rail|full`: pin the sidebar mode for screenshots.
-    if let Ok(m) = std::env::var("ROX_SIDE") {
+    // `BUWIZ_SIDE=rail|full`: pin the sidebar mode for screenshots.
+    if let Some(m) = rox_v1::env::var("BUWIZ_SIDE") {
         store().side_shown.set(true);
         store().side_mode.set(m);
     }
 
-    // `ROX_ACCOUNT=1`: open the account popover at boot.
-    if std::env::var("ROX_ACCOUNT").is_ok() {
+    // `BUWIZ_ACCOUNT=1`: open the account popover at boot.
+    if rox_v1::env::is_set("BUWIZ_ACCOUNT") {
         spawn(async move {
             timer(std::time::Duration::from_millis(900)).await;
             store().account_open.set(true);
         });
     }
 
-    // `ROX_TAB=library|details|…`: pin the detail pane's tab.
-    if let Ok(tb) = std::env::var("ROX_TAB") {
+    // `BUWIZ_TAB=library|details|…`: pin the detail pane's tab.
+    if let Some(tb) = rox_v1::env::var("BUWIZ_TAB") {
         store().detail_tab.set(tb);
     }
 
-    // `ROX_AVATAR=1`: open the avatar editor card at boot (after any
-    // `ROX_OPEN` thread lands so `activeBot` exists).
-    if std::env::var("ROX_AVATAR").is_ok() {
+    // `BUWIZ_AVATAR=1`: open the avatar editor card at boot (after any
+    // `BUWIZ_OPEN` thread lands so `activeBot` exists).
+    if rox_v1::env::is_set("BUWIZ_AVATAR") {
         spawn(async move {
             timer(std::time::Duration::from_millis(2600)).await;
             store().open_avatar_editor();
         });
     }
 
-    // `ROX_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
+    // `BUWIZ_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
     // screenshots — `open_thread` is the row-press path (select + turns +
     // apps). A list replays an agent switch with a beat between opens.
-    if let Ok(t) = std::env::var("ROX_OPEN")
+    if let Some(t) = rox_v1::env::var("BUWIZ_OPEN")
         && !t.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
@@ -111,10 +111,10 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
             });
     }
 
-    // `ROX_SCROLL=<px>`: scroll the transcript to a pixel offset at
+    // `BUWIZ_SCROLL=<px>`: scroll the transcript to a pixel offset at
     // boot — `open_thread`'s scrollToEnd lands on the latest, so shots
     // of earlier content (the file cards) need a jump back.
-    if let Ok(off) = std::env::var("ROX_SCROLL") {
+    if let Some(off) = rox_v1::env::var("BUWIZ_SCROLL") {
         let off = off.trim().parse::<f32>().unwrap_or(0.0);
         spawn(async move {
             timer(std::time::Duration::from_millis(2400)).await;
@@ -124,9 +124,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // `ROX_SEND=<text>`: fill the draft and send at boot — synthetic
+    // `BUWIZ_SEND=<text>`: fill the draft and send at boot — synthetic
     // input can't drive the composer, so stream verification needs it.
-    if let Ok(msg) = std::env::var("ROX_SEND")
+    if let Some(msg) = rox_v1::env::var("BUWIZ_SEND")
         && !msg.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
@@ -135,9 +135,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
             });
     }
 
-    // `ROX_PALETTE=<query>`: open the ⌘K card at boot — synthetic keys
+    // `BUWIZ_PALETTE=<query>`: open the ⌘K card at boot — synthetic keys
     // can't reach `on_key`, so palette verification needs it.
-    if let Ok(q) = std::env::var("ROX_PALETTE") {
+    if let Some(q) = rox_v1::env::var("BUWIZ_PALETTE") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1400)).await;
             let st = store();
@@ -148,8 +148,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // `ROX_SLOTS=1`: print the ⌘1…9 slot order once the model loads.
-    if std::env::var("ROX_SLOTS").is_ok() {
+    // `BUWIZ_SLOTS=1`: print the ⌘1…9 slot order once the model loads.
+    if rox_v1::env::is_set("BUWIZ_SLOTS") {
         spawn(async move {
             timer(std::time::Duration::from_millis(1500)).await;
             let st = store();
@@ -202,11 +202,11 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         Some(px(44.0)),
     );
 
-    // `ROX_MINI=R<n>`: debug-mount a generated widget alone in the window —
+    // `BUWIZ_MINI=R<n>`: debug-mount a generated widget alone in the window —
     // the same fetch → compile → AppView path the chat cards take, without
-    // needing a widget turn to be on screen. `ROX_CARD=R<n>` mounts the
+    // needing a widget turn to be on screen. `BUWIZ_CARD=R<n>` mounts the
     // turn's whole card instead, chrome and fixed body height included.
-    if let Ok(app) = std::env::var("ROX_MINI")
+    if let Some(app) = rox_v1::env::var("BUWIZ_MINI")
         && !app.is_empty() {
             return view()
                 .flex_1()
@@ -214,7 +214,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                 .bg(theme::MAIN)
                 .child(crate::mini::mini_app(&app, 0.0, None, None));
     }
-    if let Ok(app) = std::env::var("ROX_CARD")
+    if let Some(app) = rox_v1::env::var("BUWIZ_CARD")
         && !app.is_empty() {
             return view()
                 .flex_1()
@@ -230,9 +230,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                     ..Default::default()
                 }));
     }
-    // `ROX_GAZE=1`: two resting blobs pinned to opposite gaze targets —
+    // `BUWIZ_GAZE=1`: two resting blobs pinned to opposite gaze targets —
     // verifies set_gaze → unsettled → advance → paint_rest end to end.
-    if std::env::var("ROX_GAZE").is_ok() {
+    if rox_v1::env::is_set("BUWIZ_GAZE") {
         return view()
             .flex_1()
             .h_full()
@@ -259,11 +259,11 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
             }));
     }
 
-    // `ROX_PILL=1` (or `ROX_PILL=<turn index>`): open the emoji pill at a
+    // `BUWIZ_PILL=1` (or `BUWIZ_PILL=<turn index>`): open the emoji pill at a
     // fixed anchor — verifies the overlay renders, positions and paints
     // without a synthetic click. A turn index attaches picks to a real
     // turn so the tapback badge can be checked end to end.
-    if let Ok(pill) = std::env::var("ROX_PILL") {
+    if let Some(pill) = rox_v1::env::var("BUWIZ_PILL") {
         let i = pill.parse::<i64>().unwrap_or(-1);
         spawn(async move {
             // Past the transcript's layout settle — its scroll ticks
@@ -283,9 +283,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         });
     }
 
-    // `ROX_OVERLAY=ctx|prompt|lightbox|plus|bot|palette|appdetails:<R n>`: open an overlay at boot
+    // `BUWIZ_OVERLAY=ctx|prompt|lightbox|plus|bot|palette|appdetails:<R n>`: open an overlay at boot
     // — verifies each layer mounts and paints without synthetic input.
-    if let Ok(ov) = std::env::var("ROX_OVERLAY") {
+    if let Some(ov) = rox_v1::env::var("BUWIZ_OVERLAY") {
         spawn(async move {
             timer(std::time::Duration::from_millis(2000)).await;
             let st = store();
@@ -322,19 +322,22 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // Local automation (`GPUI_AGENT=1`, the dev bundle) has no secondary
     // click: a line `<x> <y> <menu> <arg…>` written to
-    // $TMPDIR/rox-agent-menu opens that right-click menu at (x, y) —
+    // $TMPDIR/buwiz-agent-menu (or its old name, rox-agent-menu) opens
+    // that right-click menu at (x, y) —
     // section <key> | group <id> | lib <id> | card <i> <app> | bot <id>;
     // `refresh` reloads the Library and groups; `card <path>` adds a wire
     // JSON file's interactive cards to the open chat, `cards-clear` drops
     // them (and every card's state).
     if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
         spawn(async move {
-            let path = std::env::temp_dir().join("rox-agent-menu");
+            let paths = ["buwiz-agent-menu", "rox-agent-menu"].map(|f| std::env::temp_dir().join(f));
             loop {
                 timer(std::time::Duration::from_millis(300)).await;
-                let Ok(line) = std::fs::read_to_string(&path) else { continue };
-                let _ = std::fs::remove_file(&path);
-                agent_menu(line.trim());
+                for path in &paths {
+                    let Ok(line) = std::fs::read_to_string(path) else { continue };
+                    let _ = std::fs::remove_file(path);
+                    agent_menu(line.trim());
+                }
             }
         });
     }

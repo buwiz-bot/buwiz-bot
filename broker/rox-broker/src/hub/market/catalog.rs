@@ -130,7 +130,9 @@ fn ident(s: &str) -> bool {
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
-const BUILTIN: [&str; 8] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"];
+// `${BUWIZ_FILES_DIR}`, and `${ROX_FILES_DIR}` (its old name) in configs
+// written before
+const BUILTIN: [&str; 9] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "BUWIZ_FILES_DIR", "ROX_FILES_DIR"];
 
 fn is_secret_key(k: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -192,10 +194,10 @@ pub fn encode_component(s: &str) -> String {
 }
 
 /// The catalog file: `plugins/catalog.json` beside Node's code, or the
-/// file `ROX_PLUGIN_CATALOG` names.
+/// file `BUWIZ_PLUGIN_CATALOG` names.
 pub fn catalog_file(server: &Path) -> PathBuf {
-    match std::env::var("ROX_PLUGIN_CATALOG") {
-        Ok(f) if !f.is_empty() => PathBuf::from(f),
+    match rox_v1::env::var("BUWIZ_PLUGIN_CATALOG") {
+        Some(f) if !f.is_empty() => PathBuf::from(f),
         _ => server.join("plugins/catalog.json"),
     }
 }
@@ -206,7 +208,7 @@ pub struct Market {
     pub server: PathBuf,
     /// `<data>/plugins`
     pub plugins: PathBuf,
-    /// `<data>/generated/files` (`${ROX_FILES_DIR}`)
+    /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`, old name `${ROX_FILES_DIR}`)
     pub out_dir: PathBuf,
     /// the port Rox reaches (fixed OAuth redirects)
     pub port: u16,
@@ -625,7 +627,7 @@ impl Market {
                         "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" | "PLUGIN_ROOT" => root.clone(),
                         "workspaceFolder" | "userHome" => val(name).unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                         "HOME" | "USERPROFILE" => val(name).or_else(|| std::env::var(name).ok()).unwrap_or_default(),
-                        "ROX_FILES_DIR" => self.out_dir.display().to_string(),
+                        "BUWIZ_FILES_DIR" | "ROX_FILES_DIR" => self.out_dir.display().to_string(),
                         n if !ident(n) => all.to_owned(),
                         n => val(n).unwrap_or_else(|| dflt.unwrap_or("").to_owned()),
                     }
