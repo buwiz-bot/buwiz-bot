@@ -17,6 +17,7 @@ mod botdetails;
 mod botmodal;
 pub mod broker;
 mod cards;
+mod ceiling;
 mod chat;
 mod client;
 mod composer;

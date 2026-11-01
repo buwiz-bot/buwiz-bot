@@ -452,6 +452,13 @@ fn details_tab() -> impl IntoElement {
             Some(b) => bot_context(b).into_element(),
             None => view().into_element(),
         }))
+        // which tools it may use: one switch per tool, read from the broker
+        // for this bot and read again when the active bot changes
+        .child(dynamic(|| {
+            let bot = store().active_bot().map(|b| b.id).unwrap_or_default();
+            crate::ceiling::load(bot.clone());
+            if bot.is_empty() { view().into_element() } else { tools_card().into_element() }
+        }))
         // its agents: whom it takes messages from, its conversations with
         // other agents, the helpers it started
         .child(dynamic(|| match store().active_bot() {
@@ -473,6 +480,111 @@ fn details_tab() -> impl IntoElement {
                     .into_element(),
             }
         }))
+}
+
+// ————————————————————————— tools for this bot —————————————————————————
+
+/// Details — "Tools for this Bot" (NativeChat's Tools card, opengrok
+/// `src/components/agent_settings.rs` `CeilingCard`): one row per tool the
+/// broker lists for the active bot, grouped by kind, each with a switch.
+/// Without rows the card is one quiet line: still reading, the broker has no
+/// ceiling route yet, the broker is away, or nothing to switch.
+fn tools_card() -> impl IntoElement {
+    view().pb(px(14.0)).child(pane_label("Tools for this Bot".into())).child(dynamic(|| {
+        let card = store().ceiling.get();
+        let Some(read) = card.rows().filter(|r| !r.tools.is_empty()) else {
+            let line = card.line().unwrap_or_default();
+            return pane_card()
+                .test_id("tools-card")
+                .label(line.clone())
+                .py(px(14.0))
+                .px(px(13.0))
+                .child(text(line).text_size(px(13.0)).text_color(theme::DIM))
+                .into_element();
+        };
+        let mut v = pane_card().test_id("tools-card").label("Tools for this Bot");
+        if let Some(note) = card.note.clone() {
+            v = v.child(text(note).text_size(px(12.0)).text_color(theme::DIM).px(px(10.0)).pt(px(8.0)).pb(px(4.0)));
+        }
+        for kind in [crate::ceiling::CeilingKind::Builtin, crate::ceiling::CeilingKind::Plugin] {
+            let rows = read.of_kind(kind);
+            if rows.is_empty() {
+                continue;
+            }
+            v = v
+                .child(
+                    text(kind.heading())
+                        .text_size(px(11.0))
+                        .text_color(theme::MUTED)
+                        .px(px(10.0))
+                        .pt(px(8.0))
+                        .pb(px(2.0)),
+                )
+                .children(rows.into_iter().map(|r| tool_row(&card, r)));
+        }
+        v.into_element()
+    }))
+}
+
+/// The switch's track: the `#1680f3`/`#1e86fc` blue Settings › Plugins uses
+/// when on, a 15% ink when off (`plugins.rs` `tool_switch`).
+fn switch_track(on: bool) -> AdaptiveColor {
+    if on {
+        let dark = Hsla::from_str("#1e86fc").unwrap_or(theme::ACCENT.dark);
+        theme::tone(Hsla::from_str("#1680f3").unwrap_or(dark), dark)
+    } else {
+        theme::tone(theme::hsla(0.0, 0.0, 0.11, 0.15), theme::hsla(0.0, 0.0, 0.96, 0.15))
+    }
+}
+
+/// One tool: its title and a line under it (why it cannot move, whose
+/// connection it uses, or what it does), and the switch. The whole row is the
+/// control, id `tool-switch-<name>`, so the driver clicks it by name. A row
+/// the broker could not offer is dimmed and only goes off; nothing moves
+/// while another switch is with the broker.
+fn tool_row(card: &crate::ceiling::CeilingCard, r: crate::ceiling::CeilingRow) -> AnyElement {
+    let on = card.shown_on(&r);
+    let live = card.may_switch(&r);
+    let title = r.title().to_owned();
+    let subtitle = r.subtitle();
+    let name = r.name.clone();
+    let hov = signal(false);
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .opacity(if r.is_available() { 1.0 } else { 0.5 })
+        .bg(move || if hov.get() && live { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .test_id(&format!("tool-switch-{}", r.name))
+        .label(format!("{title}: {}", if on { "on" } else { "off" }))
+        .on_press(move || {
+            if live {
+                crate::ceiling::switch(name.clone(), !on);
+            }
+        })
+        .child(
+            view()
+                .flex_1()
+                .gap(px(2.0))
+                .child(text(title.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1))
+                .when_some(subtitle, |v, s| v.child(text(s).text_size(px(11.0)).text_color(theme::MUTED).number_of_lines(2))),
+        )
+        .child(
+            // the same 26×16 switch Settings › Plugins draws (`plugins.rs` `tool_switch`)
+            view()
+                .w(px(26.0))
+                .h(px(16.0))
+                .rounded(px(8.0))
+                .justify_center()
+                .bg(switch_track(on))
+                .child(view().size(px(12.0)).rounded(px(6.0)).bg(white()).ml(if on { px(12.0) } else { px(2.0) })),
+        )
+        .into_element()
 }
 
 // ————————————————————————— agents' conversations —————————————————————————
