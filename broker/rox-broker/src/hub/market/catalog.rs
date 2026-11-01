@@ -149,7 +149,7 @@ fn ident(s: &str) -> bool {
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
-const BUILTIN: [&str; 7] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"];
+const BUILTIN: [&str; 8] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"];
 
 fn is_secret_key(k: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -603,7 +603,8 @@ impl Market {
                     let mut parts = inner.split(":-");
                     let (name, dflt) = (parts.next().unwrap_or(""), parts.next());
                     match name {
-                        "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" => root.clone(),
+                        // 2.1 §1: ${PLUGIN_ROOT} for every plugin
+                        "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" | "PLUGIN_ROOT" => root.clone(),
                         "workspaceFolder" | "userHome" => val(name).unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                         "HOME" | "USERPROFILE" => val(name).or_else(|| std::env::var(name).ok()).unwrap_or_default(),
                         "ROX_FILES_DIR" => self.out_dir.display().to_string(),

@@ -14,6 +14,13 @@
 //! Node keeps the views (the plugin list, routines) and reaches this
 //! host and its sessions (`sessions.rs`) over the line (`helper::line`); each change of a
 //! plugin's state goes out as a snapshot on [`Host::events`].
+//!
+//! A 2.1 package (extension format 2.1 §1) installs from its folder
+//! (`package`): plugin.json verified and every file checked at install,
+//! plugin.json verified again at each spawn, the served manifest's id,
+//! short and version the block's. The record keeps the folder and the
+//! skills; its accounts are `accounts.rs`'s. Uninstall deletes
+//! `<data>/v1/apps/<id>/`.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -29,6 +36,7 @@ use super::keystore::Keystore;
 use super::mcp::{self, Conn, Hooks, RpcError, Spec};
 use crate::js;
 use crate::v1::manifest::{self, MANIFEST_URI};
+use crate::v1::package::{self, Package};
 use crate::v1::trust::Trust;
 use crate::v1::{get, kind_of, tpl, V1Error};
 
@@ -36,6 +44,9 @@ pub const BACKOFF_S: [u64; 7] = [1, 2, 4, 8, 16, 32, 60];
 pub const RESTART_WINDOW_MS: f64 = 10.0 * 60.0 * 1000.0;
 pub const MAX_RESTARTS: usize = 6;
 const LOG_CAP: u64 = 5 * 1024 * 1024;
+
+mod accounts;
+pub use accounts::{flow_id, token_ref, AccountRow, AccountsConfig, CLEAR as ACCOUNT_CLEAR, GOOGLE_AUTHORIZE, GOOGLE_TOKEN, NEEDS_GOOGLE_CLIENT, SET as ACCOUNT_SET};
 
 const SCHEMA: &str = "
   CREATE TABLE IF NOT EXISTS v1_plugins(
@@ -45,6 +56,9 @@ const SCHEMA: &str = "
     enabled INTEGER NOT NULL DEFAULT 1, disabled_tools TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 ";
+
+/// 2.1 §3: columns a 2.0 database lacks.
+const COLUMNS: [(&str, &str); 2] = [("package", "TEXT"), ("skills", "TEXT NOT NULL DEFAULT '[]'")];
 
 type Res<T = Value> = Result<T, V1Error>;
 
@@ -179,6 +193,10 @@ pub struct Row {
     pub enabled: bool,
     pub disabled_tools: String,
     pub created_at: i64,
+    /// a 2.1 package's install folder (2.0: none)
+    pub package: Option<String>,
+    /// `[{name, description, file}]`
+    pub skills: String,
 }
 
 impl Row {
@@ -199,6 +217,8 @@ impl Row {
             enabled: r.get::<_, f64>("enabled")? != 0.0,
             disabled_tools: r.get("disabled_tools")?,
             created_at: r.get::<_, f64>("created_at")? as i64,
+            package: r.get("package")?,
+            skills: r.get::<_, Option<String>>("skills")?.unwrap_or_else(|| "[]".into()),
         })
     }
 
@@ -315,6 +335,8 @@ pub struct Options {
     pub log_dir: Option<PathBuf>,
     pub clock: Clock,
     pub timeouts: Timeouts,
+    /// `<data>/v1/apps`: uninstall deletes `<id>/` under it (none: nothing)
+    pub apps_dir: Option<PathBuf>,
 }
 
 pub struct Host {
@@ -330,6 +352,8 @@ pub struct Host {
     /// orders snapshots: a newer one replaces an older one in Node's view
     seq: AtomicU64,
     closers: Mutex<Vec<Closer>>,
+    apps_dir: Option<PathBuf>,
+    accounts: accounts::Accounts,
     me: Weak<Host>,
 }
 
@@ -341,6 +365,13 @@ impl Host {
         let db = Connection::open(&o.db).map_err(|e| e.to_string())?;
         db.busy_timeout(Duration::from_secs(5)).map_err(|e| e.to_string())?;
         db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        for (col, def) in COLUMNS {
+            let has: bool = db.query_row("SELECT count(*) FROM pragma_table_info('v1_plugins') WHERE name=?", [col], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())? > 0;
+            if !has {
+                db.execute_batch(&format!("ALTER TABLE v1_plugins ADD COLUMN {col} {def}")).map_err(|e| e.to_string())?;
+            }
+        }
+        db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
         let (events, _) = broadcast::channel(1024);
         Ok(Arc::new_cyclic(|me| Host {
             db: Mutex::new(db),
@@ -354,6 +385,8 @@ impl Host {
             events,
             seq: AtomicU64::new(1),
             closers: Mutex::new(Vec::new()),
+            apps_dir: o.apps_dir,
+            accounts: accounts::Accounts::new(),
             me: me.clone(),
         }))
     }
@@ -659,6 +692,17 @@ impl Host {
             self.set_state(id, "failed", Some("protocol_unsupported"), &why);
             return "failed";
         }
+        // a package's plugin.json, verified again (the trust store may have changed)
+        let pkg = match &row.package {
+            None => None,
+            Some(dir) => match package::load(std::path::Path::new(dir), &self.trust(), manifest::HOST_PROTOCOL) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.set_state(id, "failed", Some(&e.code), &e.message);
+                    return "failed";
+                }
+            },
+        };
         if self.with_rt(id, |rt| rt.state) != "restarting" {
             self.set_state(id, "starting", None, "");
         }
@@ -698,6 +742,17 @@ impl Host {
             g.conn.close().await;
             self.fail_state(id, &e);
             return self.with_rt(id, |rt| rt.state);
+        }
+        if let Some(p) = &pkg {
+            let checked = match package::check_served(p, &g.manifest) {
+                Ok(()) => self.push_accounts(id, &g.conn, p).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = checked {
+                g.conn.close().await;
+                self.set_state(id, "failed", Some(&e.code), &e.message);
+                return "failed";
+            }
         }
         self.adopt(id, g);
         "running"
@@ -775,26 +830,67 @@ impl Host {
         }
     }
 
+    /// A body naming a 2.1 package folder (`package`, 2.1 §2): plugin.json
+    /// verified, every file checked, the spawn spec its server's (a body's
+    /// own command and args must be those; its env keeps the package's).
+    fn with_package(&self, body: &Value) -> Res<(Value, Option<(PathBuf, Package)>)> {
+        let dir = match body.get("package") {
+            None | Some(Value::Null) => return Ok((body.clone(), None)),
+            Some(Value::String(d)) if d.starts_with('/') => PathBuf::from(d),
+            Some(_) => return V1Error::err("invalid_args", "package must be the absolute path of a package folder"),
+        };
+        let p = package::load(&dir, &self.trust(), manifest::HOST_PROTOCOL)?;
+        package::check_files(&p, &dir)?;
+        let spawn = package::spawn_body(&p, &dir);
+        let mut out = body.clone();
+        let o = out.as_object_mut().expect("a body with a key is an object");
+        if o.get("command").is_some_and(|c| !c.is_null()) {
+            let args = o.get("args").filter(|a| !a.is_null()).cloned().unwrap_or(json!([]));
+            if o.get("command") != Some(&spawn["command"]) || args != spawn["args"] {
+                return V1Error::err("invalid_args", "the command is not the package's server");
+            }
+        }
+        let mut env = o.get("env").and_then(Value::as_object).cloned().unwrap_or_default();
+        for (k, v) in spawn["env"].as_object().into_iter().flatten() {
+            env.insert(k.clone(), v.clone());
+        }
+        o.insert("command".into(), spawn["command"].clone());
+        o.insert("args".into(), spawn["args"].clone());
+        o.insert("env".into(), Value::Object(env));
+        o.shift_remove("package");
+        Ok((out, Some((dir, p))))
+    }
+
     /// POST /v1/host/plugins/inspect: a temporary spawn, verified, with the
-    /// review of 13.1 step 3. Nothing is installed or stored.
+    /// review of 13.1 step 3. Nothing is installed or stored. `{package}`
+    /// inspects a 2.1 package folder (its answer: `package`).
     pub async fn inspect(&self, body: &Value) -> Res {
-        let (spec, _) = spawn_spec(body)?;
+        let (body, pkg) = self.with_package(body)?;
+        let (spec, _) = spawn_spec(&body)?;
         let fresh = rox_v1::keys::b64(&rox_v1::keys::random::<32>());
         let g = self.bootstrap(&spec, &fresh, None, "").await.map_err(Fail::into_v1)?;
         g.conn.close().await;
         let m = g.manifest;
+        if let Some((_, p)) = &pkg {
+            package::check_served(p, &m)?;
+        }
         let key_id = get(&m, "publisher").and_then(|p| get(p, "key_id")).map(js::string_of).unwrap_or_default();
         self.check_installed(&m, &key_id)?;
         let row = self.row(&tpl(get(&m, "id")));
-        Ok(json!({
+        let mut out = json!({
             "ok": true, "manifest": m, "manifest_sha256": g.sha256,
             "review": manifest::review(&m, &|id| self.title_of(id)),
             "update": self.update_info(row.as_ref(), &m),
             "warnings": self.ambiguity(&m),
-        }))
+        });
+        if let Some((dir, p)) = &pkg {
+            out["package"] = package_info(dir, p);
+        }
+        Ok(out)
     }
 
-    fn record(&self, m: &Value, sha256: &str, raw: &(Value, Value), spec: &Spec, public: &str, tools: &[Value], prev: Option<&Row>) -> Res<()> {
+    #[allow(clippy::too_many_arguments)]
+    fn record(&self, m: &Value, sha256: &str, raw: &(Value, Value), spec: &Spec, public: &str, tools: &[Value], prev: Option<&Row>, pkg: Option<&(PathBuf, Package)>) -> Res<()> {
         let now = self.clock.now() as i64;
         let tools: Vec<Value> = tools
             .iter()
@@ -805,14 +901,17 @@ impl Host {
             .collect();
         let s = |k: &str| tpl(get(m, k));
         let key_id = get(m, "publisher").and_then(|p| get(p, "key_id")).map(js::string_of).unwrap_or_default();
+        let folder = pkg.map(|(d, _)| d.display().to_string());
+        let skills = pkg.map(|(d, p)| package::skills_of(p, d)).unwrap_or_default();
         self.sql(|db| {
             db.execute(
-                "INSERT OR REPLACE INTO v1_plugins(id,short,command,args,env,version,protocol,publisher_key_id,plugin_pub,manifest,manifest_sha256,tools,enabled,disabled_tools,created_at,updated_at)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+                "INSERT OR REPLACE INTO v1_plugins(id,short,command,args,env,version,protocol,publisher_key_id,plugin_pub,manifest,manifest_sha256,tools,enabled,disabled_tools,created_at,updated_at,package,skills)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
                 params![
                     s("id"), s("short"), spec.command, js::stringify(&raw.0), js::stringify(&raw.1), s("version"), s("protocol"), key_id, public,
                     js::stringify(m), sha256, js::stringify(&Value::Array(tools)),
                     prev.map_or("[]", |p| p.disabled_tools.as_str()), prev.map_or(now, |p| if p.created_at != 0 { p.created_at } else { now }), now,
+                    folder, js::stringify(&Value::Array(skills)),
                 ],
             )
         })?;
@@ -823,7 +922,11 @@ impl Host {
     /// 4) or updates an installed plugin (13.3). `manifest_sha256` must be
     /// the reviewed hash; an update that adds permissions needs
     /// `approve_permissions: true`, an older version `allow_downgrade: true`.
+    /// `package` installs a 2.1 package folder (its plugin.json and files
+    /// checked again).
     pub async fn install(&self, body: &Value) -> Res {
+        let (body, pkg) = self.with_package(body)?;
+        let body = &body;
         let (spec, raw) = spawn_spec(body)?;
         let wanted = get(body, "manifest_sha256").map(js::string_of).unwrap_or_else(|| "undefined".to_owned());
         if !(wanted.len() == 64 && wanted.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
@@ -844,6 +947,9 @@ impl Host {
         let checked: Res<Next> = async {
             if g0.sha256 != wanted {
                 return V1Error::err("manifest_invalid", "the plugin serves a manifest other than the one reviewed; inspect it again");
+            }
+            if let Some((_, p)) = &pkg {
+                package::check_served(p, &m)?;
             }
             let key_id = get(&m, "publisher").and_then(|p| get(p, "key_id")).map(js::string_of).unwrap_or_default();
             self.check_installed(&m, &key_id)?;
@@ -911,8 +1017,17 @@ impl Host {
                 }
             }
         };
+        if let Some((_, p)) = &pkg {
+            if let Err(e) = self.push_accounts(&id, &g.conn, p).await {
+                g.conn.close().await;
+                if row.is_none() {
+                    self.remove_key(&id).await;
+                }
+                return Err(e);
+            }
+        }
         let public = rox_v1::keys::SessionKey::from_seed(&seed).map(|k| k.public()).unwrap_or_default();
-        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, row.as_ref())?;
+        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, row.as_ref(), pkg.as_ref())?;
         self.with_rt(&id, |rt| rt.restarts.clear());
         self.adopt(&id, g);
         let (state, generation) = self.with_rt(&id, |rt| (rt.state, rt.generation));
@@ -969,7 +1084,8 @@ impl Host {
     }
 
     /// 13.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,
-    /// stop, delete the key, remove the record.
+    /// stop, delete the key, the accounts and `<data>/v1/apps/<id>/`, remove
+    /// the record.
     pub async fn uninstall(&self, id: &str) -> Res {
         let row = self.must_row(id)?;
         let lock = self.lock_of(id);
@@ -998,6 +1114,10 @@ impl Host {
         self.clear_timer(id);
         self.stop_conn(id).await;
         self.remove_key(id).await;
+        self.forget_accounts(id).await;
+        if let Some(apps) = self.apps_dir.as_ref().filter(|_| rox_v1::ids::plugin_id_ok(id)) {
+            let _ = std::fs::remove_dir_all(apps.join(id));
+        }
         self.sql(|db| db.execute("DELETE FROM v1_plugins WHERE id=?", [id]))?;
         let generation = self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).remove(id).map_or(0, |rt| rt.generation);
         let gone = json!({
@@ -1159,6 +1279,14 @@ pub fn spawn_spec(body: &Value) -> Res<(Spec, (Value, Value))> {
         env: js::ordered(map).into_iter().map(|(k, v)| (k.clone(), js::string_of(v))).collect(),
     };
     Ok((spec, (args, env)))
+}
+
+/// A package as an inspect answer and the install card read it: its
+/// folder, skills and declared accounts.
+pub fn package_info(dir: &std::path::Path, p: &Package) -> Value {
+    let skills: Vec<Value> = package::skills_of(p, dir).into_iter().map(|s| json!({"name": s["name"], "description": s["description"]})).collect();
+    let accounts: Vec<Value> = p.accounts.iter().map(|a| json!({"id": a.id, "provider": a.provider, "label": a.label, "required": a.required})).collect();
+    json!({"dir": dir.display().to_string(), "id": p.id, "version": p.version, "skills": skills, "accounts": accounts})
 }
 
 /// Text of an MCP tool result as JSON: structuredContent, else the first
@@ -1333,6 +1461,8 @@ mod tests {
             enabled: true,
             disabled_tools: "[]".into(),
             created_at: 0,
+            package: None,
+            skills: "[]".into(),
         }
     }
 
