@@ -40,6 +40,7 @@ mod models;
 mod palette;
 mod pane;
 mod settings;
+mod settings_computer;
 mod slash;
 mod plugins;
 mod plugin_review;

@@ -43,8 +43,10 @@ pub(crate) enum UserFormReply {
 }
 
 /// One request: `(status, body)`, the body as JSON or, when it is not
-/// JSON, as its text. `None` when the server could not be reached.
-async fn call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
+/// JSON, as its text. `None` when the server could not be reached. The
+/// Settings › Computer page reads it raw: a 501 `not_ported` there means
+/// "not on this broker yet", not a refusal.
+pub(crate) async fn call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
     call_as(method, path, body, None).await
 }
 
@@ -139,6 +141,43 @@ pub(crate) fn rule_body(kind: &str, pattern: &str) -> Value {
 
 pub(crate) async fn write_rule(kind: &str, pattern: &str) -> Sent {
     send("POST", "/local-exec/policy/rule", rule_body(kind, pattern)).await
+}
+
+/// `DELETE /local-exec/policy/rule {machineId, kind, pattern}` (the same
+/// body as the add; opengrok-server `local_exec.rs` `remove_rule`).
+pub(crate) async fn remove_rule(kind: &str, pattern: &str) -> Option<(u16, Value)> {
+    call("DELETE", "/local-exec/policy/rule", Some(&rule_body(kind, pattern))).await
+}
+
+/// `PUT /local-exec/policy {machineId, mode: never|ask|bypass}`
+/// (opengrok-server `local_exec.rs` `SetMode`).
+pub(crate) fn mode_body(mode: &str) -> Value {
+    json!({ "machineId": machine_id(), "mode": mode })
+}
+
+pub(crate) async fn write_mode(mode: &str) -> Option<(u16, Value)> {
+    call("PUT", "/local-exec/policy", Some(&mode_body(mode))).await
+}
+
+/// `GET /local-exec/policy?machine=<id>` (opengrok-server `local_exec.rs`
+/// `MachineQuery`, answered by `policy_listing`).
+pub(crate) async fn read_policy() -> Option<(u16, Value)> {
+    let path = format!("/local-exec/policy?machine={}", urlenc(&machine_id()));
+    call("GET", &path, None).await
+}
+
+/// `GET /ag-ui/host-settings`: the host record with `egressTunnelEnabled`
+/// and `egressTunnelAvailable` (opengrok-server `agui/routes/host.rs`
+/// `host_settings_reply`).
+pub(crate) async fn read_host_settings() -> Option<(u16, Value)> {
+    call("GET", "/ag-ui/host-settings", None).await
+}
+
+/// `PUT /ag-ui/host-settings {egressTunnelEnabled}`: a partial record,
+/// answered with the whole one (opengrok-server `agui/routes/host.rs`
+/// `patch_host_settings`, mounted as `put` in `agui/routes.rs`).
+pub(crate) async fn write_host_settings(patch: Value) -> Option<(u16, Value)> {
+    call("PUT", "/ag-ui/host-settings", Some(&patch)).await
 }
 
 /// `PUT /coworkers/{id}/computer/egress-policy {mode}`.
