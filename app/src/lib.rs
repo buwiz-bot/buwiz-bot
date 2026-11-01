@@ -20,6 +20,7 @@ mod cards;
 mod chat;
 mod client;
 mod composer;
+mod computer;
 mod ctx;
 mod dotgrid;
 mod files;
