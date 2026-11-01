@@ -660,6 +660,24 @@ fn top_bar() -> impl IntoElement {
                     None => view().into_element(),
                 })),
         )
+        // Grok has no right-side control in this strip; with the pane
+        // closed, though, nothing else reaches the Bot's computer or its
+        // settings, so the pane's own two buttons show here meanwhile.
+        .child(when(
+            || !store().right_open.get(),
+            || {
+                view()
+                    .absolute()
+                    .right(px(16.0))
+                    .top(px(16.0))
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(crate::pane::open_pane_btn("title-monitor", "monitor", "Computer", "computer"))
+                    .child(crate::pane::open_pane_btn("title-right-sidebar", "settings", "Bot settings", "details"))
+                    .into_element()
+            },
+        ))
 }
 
 /// The header pill of an agents' conversation: the first two

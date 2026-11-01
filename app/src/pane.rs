@@ -74,6 +74,7 @@ fn top_bar() -> impl IntoElement {
         .px_3()
         .h(px(TOP))
         .window_drag(true)
+        .child(icon_rail())
         .child(pane_circle_btn("theme", || {
             // App.tsx:2492 — the pref's own icon, not the resolved scheme.
             match store().theme_pref.get().as_str() {
@@ -127,6 +128,351 @@ fn pane_circle_btn(
 /// round buttons ink brighter than the default `DIM` glyphs.
 fn icon_view(name: &'static str) -> impl IntoElement {
     crate::icons::icon_ink(name, 15.0, || theme::tc("#f5f5f5e6"))
+}
+
+// ————————————————————————— the pane's icon rail —————————————————————————
+// NativeChat's row of small icon buttons over a Bot's screen
+// (`opengrok/src/components/computer.rs` `box_chrome`), here in the
+// pane's own top strip, left of the theme and close circles: Computer,
+// Recipes, Plugins, Tools, Route traffic, this computer's network rule,
+// Update, Reset and Bot settings. Every copy string below is transcribed
+// from that file; what a state looks like is a plain function of the
+// state, tested in this module's tests.
+
+/// A rail glyph's ink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RailInk {
+    Muted,
+    /// The tab this button opens is the one showing.
+    Active,
+    Accent,
+    Danger,
+    Success,
+}
+
+impl RailInk {
+    fn color(self) -> AdaptiveColor {
+        match self {
+            RailInk::Muted => theme::MUTED,
+            RailInk::Active => theme::TEXT,
+            RailInk::Accent => theme::ACCENT,
+            RailInk::Danger => theme::DOWN,
+            RailInk::Success => theme::UP,
+        }
+    }
+}
+
+/// How one rail button draws: its glyph, its ink, whether a press does
+/// anything (a disabled one is drawn at half opacity, as `box_chrome`'s
+/// `icon_btn_enabled` does), and the sentence it says on hover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RailLook {
+    pub icon: &'static str,
+    pub ink: RailInk,
+    pub enabled: bool,
+    pub tip: String,
+}
+
+/// Said after a tooltip for a button the broker has no route for yet.
+const NOT_YET: &str = " — not on this server yet";
+
+/// What the reroute icon says on hover (`opengrok src/components/
+/// computer.rs` `reroute_tip`): the host-wide switch, so it says it
+/// applies to all of the person's computers.
+fn reroute_tip(routing: bool) -> &'static str {
+    if routing {
+        "Routing traffic through this desktop for all your computers. New connections go out through it. Click to stop."
+    } else {
+        "Traffic goes out on its own. Click to route web traffic from all your computers through this desktop instead."
+    }
+}
+
+/// What this computer's network rule says on hover (`opengrok
+/// src/components/computer.rs` `network_rule_tip`).
+fn network_rule_tip(current: crate::computer::Egress) -> String {
+    format!(
+        "Use your network from this computer: {}. Click to change. Applies to this computer only.",
+        current.label()
+    )
+}
+
+/// Route traffic through this desktop — the host switch Settings ›
+/// Computer owns (`settings_computer`, `GET/PUT /ag-ui/host-settings`
+/// `egressTunnelEnabled`). `answered` is whether the server said
+/// anything at all: a broker without the route (404/501) or none at all
+/// leaves the globe muted and dead (`opengrok src/components/computer.rs`
+/// `route_traffic_icon`).
+pub(crate) fn route_traffic_look(answered: bool, routing: bool) -> RailLook {
+    if !answered {
+        return RailLook {
+            icon: "globe",
+            ink: RailInk::Muted,
+            enabled: false,
+            tip: "This server has no tunnel yet.".to_owned(),
+        };
+    }
+    if routing {
+        RailLook { icon: "routeTraffic", ink: RailInk::Success, enabled: true, tip: reroute_tip(true).to_owned() }
+    } else {
+        RailLook { icon: "globe", ink: RailInk::Muted, enabled: true, tip: reroute_tip(false).to_owned() }
+    }
+}
+
+/// This computer's network rule (`PUT|GET /coworkers/{id}/computer/
+/// egress-policy`): tinted when the answer is not "ask", dead until the
+/// server has one (`opengrok src/components/computer.rs`
+/// `network_policy_icon`).
+pub(crate) fn network_policy_look(current: Option<crate::computer::Egress>) -> RailLook {
+    use crate::computer::Egress;
+    let ink = match current {
+        None | Some(Egress::Ask) => RailInk::Muted,
+        Some(Egress::Always) => RailInk::Accent,
+        Some(Egress::Never) => RailInk::Danger,
+    };
+    let tip = current
+        .map(network_rule_tip)
+        .unwrap_or_else(|| "This computer has no network rule from the server yet.".to_owned());
+    RailLook { icon: "shieldBadge", ink, enabled: current.is_some(), tip }
+}
+
+/// Update this computer: the status is the tooltip, and the glyph is
+/// tinted while a newer image waits (`opengrok src/components/
+/// computer.rs` `box_chrome`). The enable rule is the Computer tab's own
+/// (`computer::controls`): a box, nothing running on it, and something
+/// to update.
+pub(crate) fn update_look(present: bool, busy: bool, stale: bool, current: bool) -> RailLook {
+    let tip = if stale {
+        "Update available"
+    } else if current {
+        "Up to date"
+    } else if present {
+        "Update this computer"
+    } else {
+        "No computer yet"
+    };
+    RailLook {
+        icon: "download",
+        ink: if stale { RailInk::Success } else { RailInk::Muted },
+        enabled: present && !busy && !(current && !stale),
+        tip: tip.to_owned(),
+    }
+}
+
+/// Reset this computer (`box_chrome`: a box that is not updating).
+pub(crate) fn reset_look(present: bool, busy: bool) -> RailLook {
+    RailLook {
+        icon: "reset",
+        ink: RailInk::Muted,
+        enabled: present && !busy,
+        tip: "Reset this computer".to_owned(),
+    }
+}
+
+/// `box_chrome`'s hover fill: `#777777` at 20%, the same on either theme.
+fn rail_hover() -> AdaptiveColor {
+    theme::tone(theme::hsla(0.0, 0.0, 0.467, 0.2), theme::hsla(0.0, 0.0, 0.467, 0.2))
+}
+
+/// One rail button: a 28pt square with an 8pt radius and a 16pt glyph,
+/// and its sentence in a tooltip under it after a moment (the rail's own
+/// copy of `sidebar::rail_circle`'s tooltip, which hangs above its rail).
+fn rail_btn(id: &'static str, look: RailLook, on: impl Fn() + 'static) -> impl IntoElement {
+    let hovered = signal(false);
+    let tip = signal(false);
+    let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let epoch2 = epoch.clone();
+    let enabled = look.enabled;
+    let ink = look.ink;
+    let words = look.tip.clone();
+    view()
+        .test_id(id)
+        .label(look.tip.clone())
+        // a disabled button takes no presses and says it is disabled, to
+        // screen readers and to gpui-agent's snapshot
+        .disabled(!enabled)
+        .size(px(28.0))
+        .rounded(px(8.0))
+        .items_center()
+        .justify_center()
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .bg(move || if hovered.get() { rail_hover() } else { AdaptiveColor::TRANSPARENT })
+        .child(crate::icons::icon_ink(look.icon, 16.0, move || ink.color()))
+        .child(when(
+            move || tip.get(),
+            move || {
+                // Its own width: the sentence on one line plus the padding,
+                // up to the pane's own width less its padding.
+                let one_line = measure_text("420 12px -apple-system, system-ui, sans-serif", &words).0.ceil() + 12.0;
+                view()
+                    .absolute()
+                    .top(px(28.0 + 6.0))
+                    .right(px(-6.0))
+                    .z_index(40)
+                    .pointer_events(PointerEvents::None)
+                    .w(px(one_line.min(W - 32.0)))
+                    .py(px(4.0))
+                    .px(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.122, 1.0)))
+                    .child(
+                        text(words.clone())
+                            .text_size(px(12.0))
+                            .line_height(px(16.0))
+                            .font_weight(FontWeight(420))
+                            .text_color(theme::TEXT),
+                    )
+                    .into_element()
+            },
+        ))
+        .on_mouse_enter(move |_: &MouseEvent| {
+            hovered.set(true);
+            let e = epoch.get().wrapping_add(1);
+            epoch.set(e);
+            let epoch = epoch.clone();
+            spawn(async move {
+                timer(std::time::Duration::from_millis(500)).await;
+                if epoch.get() == e {
+                    tip.set(true);
+                }
+            });
+        })
+        .on_mouse_leave(move |_: &MouseEvent| {
+            epoch2.set(epoch2.get().wrapping_add(1));
+            hovered.set(false);
+            tip.set(false);
+        })
+        .on_press(move || {
+            tip.set(false);
+            if enabled {
+                on()
+            }
+        })
+}
+
+/// Opens the pane on `tab`, or closes it when that tab is the one open.
+fn show_tab(tab: &'static str) {
+    let st = store();
+    if st.detail_tab.get_untracked() == tab && st.right_open.get_untracked() {
+        st.right_open.set(false);
+    } else {
+        st.detail_tab.set(tab.to_owned());
+        st.right_open.set(true);
+    }
+}
+
+/// The chat's own way back while the pane is closed (`hot::top_bar`): the
+/// rail's button, opening the pane on `tab`. Its ids are the title bar's
+/// own (`title-monitor`, `title-right-sidebar`) so they never collide
+/// with the pane's.
+pub(crate) fn open_pane_btn(
+    id: &'static str,
+    icon: &'static str,
+    tip: &'static str,
+    tab: &'static str,
+) -> impl IntoElement {
+    rail_btn(id, RailLook { icon, ink: RailInk::Muted, enabled: true, tip: tip.to_owned() }, move || {
+        store().detail_tab.set(tab.to_owned());
+        store().right_open.set(true);
+    })
+}
+
+/// The rail, rebuilt as the tab, the host switch and this bot's computer
+/// change.
+fn icon_rail() -> impl IntoElement {
+    view().flex_row().items_center().gap(px(2.0)).child(dynamic(|| rail_buttons().into_element()))
+}
+
+fn rail_buttons() -> impl IntoElement {
+    use crate::computer::Action;
+    let st = store();
+    let computer_shown = st.detail_tab.get() == "computer";
+    let details_shown = st.detail_tab.get() == "details";
+    let bot = st.active_bot();
+    // The host record is Settings › Computer's read; the rail asks for it
+    // too, so the globe says the truth before Settings is ever opened.
+    crate::settings_computer::ensure_host_settings();
+    let (answered, routing) = crate::settings_computer::host_egress_tunnel();
+    let computer = bot.as_ref().and_then(|b| crate::computer::rail_computer(&b.id));
+    let present = computer.as_ref().is_some_and(crate::computer::Computer::present);
+    let busy = computer.as_ref().is_some_and(crate::computer::Computer::updating);
+    let stale = computer.as_ref().is_some_and(crate::computer::Computer::image_stale);
+    let current = computer.as_ref().is_some_and(crate::computer::Computer::image_current);
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(2.0))
+        .child(rail_btn(
+            "header-monitor",
+            RailLook {
+                icon: "monitor",
+                ink: if computer_shown { RailInk::Active } else { RailInk::Muted },
+                enabled: true,
+                tip: "Computer".to_owned(),
+            },
+            || show_tab("computer"),
+        ))
+        .child(rail_btn(
+            "computer-recipes",
+            RailLook {
+                icon: "cake",
+                ink: RailInk::Muted,
+                enabled: false,
+                tip: format!("Recipes: tasks taught on this screen{NOT_YET}"),
+            },
+            || {},
+        ))
+        .child(rail_btn(
+            "computer-plugins",
+            RailLook {
+                icon: "plugins",
+                ink: RailInk::Muted,
+                enabled: false,
+                tip: format!("Plugins for this Bot{NOT_YET}"),
+            },
+            || {},
+        ))
+        .child(rail_btn(
+            "computer-tools",
+            RailLook {
+                icon: "wrench",
+                ink: RailInk::Muted,
+                enabled: bot.is_some(),
+                tip: "Tools for this Bot".to_owned(),
+            },
+            // the Tools card lives in Details
+            || {
+                store().detail_tab.set("details".to_owned());
+            },
+        ))
+        .child(rail_btn("route-traffic-this-computer", route_traffic_look(answered, routing), move || {
+            crate::settings_computer::set_egress_tunnel(!routing);
+        }))
+        .child(rail_btn(
+            "network-policy",
+            network_policy_look(computer.as_ref().and_then(|c| c.egress)),
+            // the Computer tab holds the choice itself
+            || {
+                store().detail_tab.set("computer".to_owned());
+            },
+        ))
+        .child(rail_btn("computer-update", update_look(present, busy, stale, current), || {
+            store().detail_tab.set("computer".to_owned());
+            crate::computer::ask_confirm(Action::Update);
+        }))
+        .child(rail_btn("computer-reset", reset_look(present, busy), || {
+            store().detail_tab.set("computer".to_owned());
+            crate::computer::ask_confirm(Action::Reset);
+        }))
+        .child(rail_btn(
+            "header-right-sidebar",
+            RailLook {
+                icon: "settings",
+                ink: if details_shown { RailInk::Active } else { RailInk::Muted },
+                enabled: true,
+                tip: "Bot settings".to_owned(),
+            },
+            || show_tab("details"),
+        ))
 }
 
 // ————————————————————————— variant A: the bot profile —————————————————————————
@@ -2486,9 +2832,64 @@ async fn client_post(route: &str, body: serde_json::Value) -> Option<serde_json:
 
 #[cfg(test)]
 mod tests {
-    use super::{chat_routines, routines_section, ChatRoutine, RoutineKind, RoutinesSection, ThisRoutine};
+    use super::{
+        chat_routines, network_policy_look, reset_look, route_traffic_look, routines_section, update_look, ChatRoutine,
+        RailInk, RoutineKind, RoutinesSection, ThisRoutine,
+    };
+    use crate::computer::Egress;
     use crate::mini_v1::connect::Listed;
     use crate::store::RoutineOf;
+
+    #[test]
+    fn the_rails_route_traffic_icon_says_which_of_its_three_states_it_is_in() {
+        let none = route_traffic_look(false, false);
+        assert_eq!((none.icon, none.ink, none.enabled), ("globe", RailInk::Muted, false));
+        assert_eq!(none.tip, "This server has no tunnel yet.");
+        // a server that answered, with the tunnel off: the globe, and the
+        // offer to route traffic through this desktop
+        let off = route_traffic_look(true, false);
+        assert_eq!((off.icon, off.ink, off.enabled), ("globe", RailInk::Muted, true));
+        assert!(off.tip.starts_with("Traffic goes out on its own.") && off.tip.ends_with("through this desktop instead."));
+        let on = route_traffic_look(true, true);
+        assert_eq!((on.icon, on.ink, on.enabled), ("routeTraffic", RailInk::Success, true));
+        assert!(on.tip.starts_with("Routing traffic through this desktop for all your computers.") && on.tip.ends_with("Click to stop."));
+        // a server with no tunnel route is never asked to change one
+        assert!(!route_traffic_look(false, true).enabled);
+    }
+
+    #[test]
+    fn the_rails_network_rule_is_tinted_only_when_the_answer_is_not_ask() {
+        assert_eq!(network_policy_look(Some(Egress::Ask)).ink, RailInk::Muted);
+        assert_eq!(network_policy_look(Some(Egress::Always)).ink, RailInk::Accent);
+        assert_eq!(network_policy_look(Some(Egress::Never)).ink, RailInk::Danger);
+        let always = network_policy_look(Some(Egress::Always));
+        assert!(always.enabled);
+        assert_eq!(always.tip, "Use your network from this computer: Always. Click to change. Applies to this computer only.");
+        let nothing = network_policy_look(None);
+        assert_eq!((nothing.ink, nothing.enabled), (RailInk::Muted, false));
+        assert_eq!(nothing.tip, "This computer has no network rule from the server yet.");
+    }
+
+    #[test]
+    fn the_rails_update_and_reset_say_the_computers_status_and_enable_with_it() {
+        // (present, busy, stale, current) → the tooltip `box_chrome` shows
+        let tip = |present, busy, stale, current| update_look(present, busy, stale, current).tip;
+        assert_eq!(tip(true, false, true, false), "Update available");
+        assert_eq!(tip(true, false, false, true), "Up to date");
+        assert_eq!(tip(true, false, false, false), "Update this computer");
+        assert_eq!(tip(false, false, false, false), "No computer yet");
+        let stale = update_look(true, false, true, false);
+        assert_eq!((stale.ink, stale.enabled), (RailInk::Success, true), "a newer image waits: tinted and pressable");
+        assert!(!update_look(true, false, false, true).enabled, "nothing to update");
+        assert!(!update_look(true, true, true, false).enabled, "an update is already running");
+        assert!(!update_look(false, false, false, false).enabled, "no computer at all");
+        assert_eq!(update_look(true, false, false, false).ink, RailInk::Muted);
+        // reset wants a computer that is not updating
+        assert!(reset_look(true, false).enabled);
+        assert!(!reset_look(true, true).enabled);
+        assert!(!reset_look(false, false).enabled);
+        assert_eq!(reset_look(true, false).tip, "Reset this computer");
+    }
 
     #[test]
     fn a_routine_thread_shows_its_own_routine_and_a_chat_its_routines() {
