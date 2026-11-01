@@ -60,7 +60,7 @@ pub(crate) fn host_token() -> Option<String> {
 /// Whether `path` is one of the broker's host-internal routes, which carry
 /// the host token.
 pub(crate) fn is_host_route(path: &str) -> bool {
-    path.starts_with("/v1/host/")
+    path.starts_with("/v1/host/") || path.starts_with("/local-exec/")
 }
 
 fn req(method: &str, path: &str) -> HttpRequest {
