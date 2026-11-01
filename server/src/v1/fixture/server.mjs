@@ -15,8 +15,13 @@
 // per run and may change it); the app sources sit beside this file.
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
 // tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
-// old-cert (a protocol 1.x `rox-session` certificate). strict-host breaks
-// none: it refuses to be provisioned by a host older than protocol 2.0.
+// old-cert (a protocol 1.x `rox-session` certificate), no-accounts (no
+// buwiz.account.set/clear: -32601). strict-host breaks none: it refuses to
+// be provisioned by a host older than protocol 2.0.
+//
+// buwiz.account.set/clear (protocol 2.1) keep the pushed accounts in
+// memory; fx_stats shows each one's subject, expiry and the first 12 hex
+// of its token's sha256, never the token.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -44,6 +49,7 @@ const sessions = new Map(); // open_id → app
 const tickets = new Map(); // ticket → subject
 const bySubject = new Map(); // subject → ticket
 const calls = {};
+const accounts = new Map(); // `${account}/${label}` → what buwiz.account.set pushed
 const origins = {}; // tool → the last caller's origin (8.4)
 let cancelled = 0;
 let served = 0;
@@ -131,12 +137,30 @@ function uninstall() {
   return ok({ ok: true });
 }
 
+function accountSet(args) {
+  if (misbehave("no-accounts")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.account.set is not implemented");
+
+  if (!isString(args?.account) || !isString(args?.label) || !isString(args?.access_token)) return fail("invalid_args", "send {account, label, access_token, …}");
+  accounts.set(`${args.account}/${args.label}`, { subject: args.subject ?? "", expires_at: args.expires_at ?? null, token: sha256hex(args.access_token).slice(0, 12), sets: (accounts.get(`${args.account}/${args.label}`)?.sets || 0) + 1 });
+
+  return ok({ ok: true });
+}
+
+function accountClear(args) {
+  if (misbehave("no-accounts")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.account.clear is not implemented");
+  accounts.delete(`${args?.account}/${args?.label}`);
+
+  return ok({ ok: true });
+}
+
 const RESERVED = {
   "buwiz.provision": provision,
   "buwiz.session.open": sessionOpen,
   "buwiz.session.close": (args) => (sessions.delete(args?.open_id), ok({ ok: true })),
   "buwiz.ticket.resolve": ticketResolve,
   "buwiz.uninstall": uninstall,
+  "buwiz.account.set": accountSet,
+  "buwiz.account.clear": accountClear,
 };
 
 // ── the fixture's own tools ──────────────────────────────────────────────
@@ -247,7 +271,7 @@ const TOOLS = [
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
   { name: "fx_app_only", description: "A tool for apps only (10.1 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
-  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size }) },
+  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts) }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
     run: async () => (await server.sendResourceListChanged(), ok({ ok: true })),

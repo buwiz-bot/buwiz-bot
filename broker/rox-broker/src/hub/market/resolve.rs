@@ -25,7 +25,8 @@ fn market_re() -> &'static Regex {
     re(&R, r"(^|/)(?:\.[a-z0-9]+-plugin|\.agents/plugins|\.github/plugin|\.plugin)/marketplace\.json$")
 }
 
-const MANIFEST_RANK: [&str; 5] = [".cursor-plugin/", ".claude-plugin/", ".grok-plugin/", ".codex-plugin/", ".plugin/"];
+// 2.1 §1: a mini app's `.buwiz-plugin/` first
+const MANIFEST_RANK: [&str; 6] = [".buwiz-plugin/", ".cursor-plugin/", ".claude-plugin/", ".grok-plugin/", ".codex-plugin/", ".plugin/"];
 
 fn rank_of(f: &str) -> usize {
     MANIFEST_RANK.iter().position(|m| f.contains(m)).unwrap_or(MANIFEST_RANK.len())

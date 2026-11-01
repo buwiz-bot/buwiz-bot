@@ -18,9 +18,10 @@ use super::trust::Trust;
 use super::{canonicalize, ed_verify, get, is_v1, kind_of, safe_int, same, shown, signed_bytes, tpl, V1Error};
 use crate::js;
 
-// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// 2.1: packages (plugin.json's signed buwiz block) and accounts
+// (buwiz.account.set/clear). 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
 // buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
-pub const HOST_PROTOCOL: &str = "2.0.0";
+pub const HOST_PROTOCOL: &str = "2.1.0";
 pub const APP_MIME: &str = "text/x-nsh-tsx";
 pub const MANIFEST_URI: &str = "buwiz://manifest";
 
@@ -1130,7 +1131,13 @@ mod tests {
     #[test]
     fn refusals_name_the_field_and_carry_the_spec_code() {
         assert_eq!(refused(|m| m["protocol"] = json!("3.0.0")).code, "protocol_unsupported");
-        assert_eq!(refused(|m| m["protocol"] = json!("2.1.0")).code, "protocol_unsupported");
+        assert_eq!(refused(|m| m["protocol"] = json!("2.2.0")).code, "protocol_unsupported");
+        // a 2.1 host runs 2.0 and 2.1 plugins
+        for p in ["2.0.0", "2.0.3", "2.1.0"] {
+            let (text, trust) = signed(|m| m["protocol"] = json!(p));
+            assert!(verify(&text, &trust, HOST_PROTOCOL).is_ok(), "{p}");
+        }
+        assert_eq!(HOST_PROTOCOL, "2.1.0");
         // a 1.x plugin speaks the rox names: told to update
         let old = refused(|m| m["protocol"] = json!("1.1.0"));
         assert_eq!((old.code.as_str(), old.message.as_str()), ("protocol_unsupported", "the plugin implements protocol 1.1.0: this plugin is built for an older protocol; update it"));

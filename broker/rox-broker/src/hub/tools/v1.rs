@@ -4,6 +4,9 @@
 //! from enabled, running, approved plugins; a routine's turn sees its own
 //! surface (5.9); a tool result's `buwiz/open` becomes a card on the reply
 //! and its `buwiz/suggest` the reply's next steps, never shown to the model.
+//! A 2.1 tool that answers `{code: "account_required", account}` for an
+//! account its package declares puts a sign-in card (`account_required`)
+//! in the chat.
 
 use std::sync::Arc;
 
@@ -195,6 +198,11 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
         Err(e) => return Out { content: json!(format!("{name}: {}: {}", if e.code.is_empty() { "error" } else { &e.code }, js::slice_utf16(&e.message, 300))), is_error: Some(true) },
     };
     let failed = r.get("isError").is_some_and(js::truthy);
+    if failed {
+        if let Some(out) = account_required(run, p.as_ref(), &row, &r) {
+            return out;
+        }
+    }
     if let Some(open) = r.pointer("/_meta/buwiz~1open").filter(|o| js::truthy(o)) {
         if !failed {
             note_card(run, &row, open);
@@ -206,6 +214,27 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
         }
     }
     Out { content: json!(fold(&r)), is_error: Some(failed) }
+}
+
+/// 2.1 §4: a failed call whose data is `{code: "account_required",
+/// account}`, `account` one the package declares: one pending sign-in card
+/// per chat and account, and a line for the model.
+fn account_required(run: &Run, p: &dyn PluginView, row: &Row, r: &Value) -> Option<Out> {
+    let data = crate::helper::plugins::result_data(r);
+    if data.get("code").and_then(Value::as_str) != Some("account_required") {
+        return None;
+    }
+    let account = data.get("account").and_then(Value::as_str)?;
+    let a = p.declared_accounts(&row.id).into_iter().find(|a| a.id == account)?;
+    let title = row.manifest().get("title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| row.id.clone());
+    let chat = run.thread_id();
+    let pending = run.ctx.store.read(|s| {
+        s.thread(&chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "account_required" && n["id"] == json!(row.id) && n["account"] == json!(a.id) && n["state"] == "pending"))
+    });
+    let n = json!({"kind": "account_required", "id": row.id, "plugin": row.id, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "state": "pending"});
+    let asked = pending || super::miniapps::post(run, &n);
+    let how = if asked { ": a card in this chat asks them to" } else { "" };
+    Some(Out { content: json!(format!("{title} needs the user to sign in to their {} first{how}. You cannot sign in for them; try again after they have.", a.label)), is_error: Some(true) })
 }
 
 /// `@short:scope:value` tokens a message types (grammar.mjs `typedToken`,
