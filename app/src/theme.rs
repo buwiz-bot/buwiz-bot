@@ -31,7 +31,6 @@ pub const CARD2: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.06), hsla(0.0, 0.0,
 /// transparent over the pane).
 pub const EDITOR: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.122, 1.0));
 pub const MENU_BG: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.165, 1.0));
-pub const DOCK: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 0.8), hsla(0.0, 0.0, 0.086, 0.8));
 
 // Foregrounds (TS: TEXT, DIM, MUTED, FAINT, GHOST).
 pub const TEXT: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 1.0), hsla(0.0, 0.0, 0.96, 1.0));
@@ -76,18 +75,11 @@ pub const DOWN: AdaptiveColor = tone(hsla(0.02, 0.85, 0.50, 1.0), hsla(0.02, 0.8
 pub const DOWN_TINT: AdaptiveColor = tone(hsla(0.02, 0.85, 0.50, 0.14), hsla(0.02, 0.85, 0.62, 0.14));
 pub const ACCENT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 1.0), hsla(0.60, 0.99, 0.63, 1.0));
 pub const ACCENT_TINT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 0.15), hsla(0.60, 0.99, 0.63, 0.15));
-pub const PURPLE: AdaptiveColor = tone(hsla(0.75, 0.85, 0.55, 1.0), hsla(0.75, 0.85, 0.68, 1.0));
 
 /// The generation placeholder's dot grid (`dotgrid.rs`): a resting dot is
 /// a faint speck of the ink; a filled one is Rox's blue (#3b82f6).
 pub const DOT_IDLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.16), hsla(0.0, 0.0, 0.96, 0.16));
 pub const DOT_FILL: AdaptiveColor = tone(hsla(0.603, 0.91, 0.60, 1.0), hsla(0.603, 0.91, 0.60, 1.0));
-
-// The page color the avatar/status discs knock out to.
-pub const PAGE: AdaptiveColor = MAIN;
-
-/// The status dot and running accents of an agent's card.
-pub const RUNNING: AdaptiveColor = tone(hsla(0.58, 0.90, 0.50, 1.0), hsla(0.58, 0.90, 0.65, 1.0));
 
 /// theme.ts `tc`: `#f5f5f5<alpha>` dark neutrals map to `#1c1c1c` in light
 /// (with Sand's alpha remap); the SOLID table covers the opaque neutrals;

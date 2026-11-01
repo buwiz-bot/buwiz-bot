@@ -123,7 +123,7 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
             let shown = desc_of.clone();
             when(move || !shown().is_empty(), move || {
                 let desc_of = desc_of.clone();
-                text(move || desc_of())
+                text(desc_of)
                     .text_size(px(12.0))
                     .text_color(theme::DIM)
                     .mt(px(2.0))
@@ -302,5 +302,5 @@ fn card_action(
         )
         .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-        .on_press(move || on())
+        .on_press(on)
 }

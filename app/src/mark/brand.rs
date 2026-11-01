@@ -38,9 +38,11 @@ fn variants() -> [(&'static str, String); 2] {
     [("light", ink_of(COLOR, true)), ("dark", ink_of(COLOR, false))]
 }
 
+type Curves = (Vec<([f64; 2], Vec<([f64; 2], [f64; 2])>)>, f64);
+
 /// Each ring as `(start, [(control, end)])`, framed: a closed chain of
 /// quadratics from midpoint to midpoint.
-fn curves() -> (Vec<([f64; 2], Vec<([f64; 2], [f64; 2])>)>, f64) {
+fn curves() -> Curves {
     let (rings, [fx, fy, side]) = outline();
     let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) / 2.0 - fx, (a[1] + b[1]) / 2.0 - fy];
     let rings = rings

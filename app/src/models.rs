@@ -259,7 +259,7 @@ pub(crate) fn model_pill() -> impl IntoElement {
         .child(when(
             || !effort_label().is_empty(),
             || {
-                text(move || effort_label())
+                text(effort_label)
                     .text_size(px(12.0))
                     .line_height(px(16.0))
                     .text_color(move || if is_top() { hx(TOP_TINT) } else { hx(EFFORT_TINT) })
@@ -476,11 +476,10 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                     when(
                         move || model_of(&choice().0).map(|m| m.fast).unwrap_or(false),
                         {
-                            let hover = hover.clone();
                             move || {
-                                let h1 = hover.clone();
-                                let h2 = hover.clone();
-                                let h3 = hover.clone();
+                                let h1 = hover;
+                                let h2 = hover;
+                                let h3 = hover;
                                 view()
                                     .size(px(28.0))
                                     .rounded(px(8.0))
@@ -520,9 +519,9 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                 // centered: effort name + "model ›" → list mode.
                 .child(
                     view().flex_1().items_center().child({
-                        let h1 = hover.clone();
-                        let h2 = hover.clone();
-                        let h3 = hover.clone();
+                        let h1 = hover;
+                        let h2 = hover;
+                        let h3 = hover;
                         view()
                             .items_center()
                             .px(px(10.0))
@@ -586,9 +585,9 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                 )
                 // reset — model's default effort, fast off.
                 .child({
-                    let h1 = hover.clone();
-                    let h2 = hover.clone();
-                    let h3 = hover.clone();
+                    let h1 = hover;
+                    let h2 = hover;
+                    let h3 = hover;
                     view()
                         .size(px(28.0))
                         .rounded(px(8.0))
@@ -617,7 +616,6 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
         // tooltips at card level, above their buttons (Codex).
         .child(when(
             {
-                let hover = hover.clone();
                 move || {
                     hover.get() == "fast"
                         && model_of(&choice().0).map(|m| m.fast).unwrap_or(false)
@@ -635,7 +633,6 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
         ))
         .child(when(
             {
-                let hover = hover.clone();
                 move || hover.get() == "reset"
             },
             || tip(None, Some(-10.0), -34.0, "Reset to default"),
@@ -653,9 +650,9 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
 fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
     // the step the grant landed on (`from`), while the drag is held.
     let drag = signal(None::<i32>);
-    let drag2 = drag.clone();
-    let drag3 = drag.clone();
-    let drag4 = drag.clone();
+    let drag2 = drag;
+    let drag3 = drag;
+    let drag4 = drag;
     const SPARKS: [(f32, f32, f32); 10] = [
         (0.06, 0.3, 2.0), (0.14, 0.7, 1.5), (0.22, 0.4, 2.5), (0.31, 0.75, 1.5),
         (0.38, 0.25, 2.0), (0.47, 0.6, 1.5), (0.55, 0.35, 2.5), (0.63, 0.72, 2.0),
@@ -715,8 +712,7 @@ fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
                     }
                 })
                 // the light band sweeping across (2400ms loop).
-                .child(when(move || is_top(), {
-                    let clock = clock;
+                .child(when(is_top, {
                     move || {
                         view()
                             .absolute()
@@ -737,8 +733,7 @@ fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
                     }
                 }))
                 // drifting sparkles, twinkling out of phase.
-                .child(when(move || is_top(), {
-                    let clock = clock;
+                .child(when(is_top, {
                     move || {
                         view().size_full().children(SPARKS.iter().enumerate().map(
                             |(k, (x, y, r))| {
@@ -772,7 +767,7 @@ fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
         )
         // the step dots.
         .child(each(
-            || efforts(),
+            efforts,
             |e| e.0.clone(),
             |_e, i| {
                 view()
