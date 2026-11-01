@@ -6,6 +6,12 @@
 //! `<data>/v1/apps/<id>/<version>/` through a temp dir and a rename. What
 //! comes out is the spawn spec `Host::inspect` takes; nothing is installed.
 //!
+//! A release with a `plugin.json` asset is a 2.1 package instead (2.1
+//! §2.1): plugin.json verified (`v1::package`), every `files` asset and
+//! this platform's binary checked against its sha256 and written at its
+//! path, plugin.json beside them; the spawn spec is `mcpServers[server]`
+//! with `${PLUGIN_ROOT}` the folder.
+//!
 //! The API base is a parameter (production: [`GITHUB_API`]); plain http is
 //! allowed only when the base itself is http (tests on 127.0.0.1).
 
@@ -17,11 +23,14 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use super::http::{self, Req};
+use crate::v1::package::{self, Package, PLUGIN_FILE};
 use crate::v1::trust::Trust;
 
 pub const GITHUB_API: &str = "https://api.github.com";
 pub const INDEX_ASSET: &str = "buwiz-release.json";
 pub const MANIFEST_FILE: &str = "manifest.signed.json";
+/// A 2.1 package's release asset (flat, as GitHub's are).
+pub const PLUGIN_ASSET: &str = PLUGIN_FILE;
 const SMALL_MAX: usize = 1024 * 1024;
 const BINARY_MAX: usize = 200 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
@@ -212,31 +221,33 @@ async fn small(url: &str, accept: &str, plain: bool, cap: usize) -> Result<Vec<u
     Ok(out)
 }
 
-/// A body streamed to `file` (at most `cap` bytes); its sha256.
-async fn to_file(url: &str, plain: bool, cap: usize, file: &Path) -> Result<String, String> {
+/// A body streamed to `file` (at most `cap` bytes, `what` in the
+/// refusal); its sha256 and size.
+async fn to_file(url: &str, plain: bool, cap: usize, file: &Path, what: &str) -> Result<(String, usize), String> {
     let mut res = get(url, "application/octet-stream", plain).await?;
+    let over = || format!("{what} is over {} MiB", cap / 1024 / 1024);
     if too_big(&res, cap) {
-        return Err(format!("the binary is over {} MiB", cap / 1024 / 1024));
+        return Err(over());
     }
     let mut f = std::fs::File::create(file).map_err(|e| e.to_string())?;
     let (mut h, mut n) = (Sha256::new(), 0usize);
     while let Some(c) = res.chunk().await? {
         n += c.len();
         if n > cap {
-            return Err(format!("the binary is over {} MiB", cap / 1024 / 1024));
+            return Err(over());
         }
         h.update(&c);
         f.write_all(&c).map_err(|e| e.to_string())?;
     }
     f.flush().map_err(|e| e.to_string())?;
-    Ok(hex(&h.finalize()))
+    Ok((hex(&h.finalize()), n))
 }
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn file_sha(p: &Path) -> Option<String> {
+pub(crate) fn file_sha(p: &Path) -> Option<String> {
     let mut f = std::fs::File::open(p).ok()?;
     let mut h = Sha256::new();
     std::io::copy(&mut f, &mut h).ok()?;
@@ -246,14 +257,19 @@ fn file_sha(p: &Path) -> Option<String> {
 /// A release ready to inspect.
 #[derive(Debug, Clone)]
 pub struct Fetched {
-    pub index: Index,
+    pub id: String,
+    pub version: String,
+    /// a 2.0 index's `[{key, label, secret}]`
+    pub needs_env: Vec<Value>,
     /// the release page (`…/releases/tag/<tag>`)
     pub source: String,
     pub dir: PathBuf,
     pub command: String,
     pub args: Vec<String>,
-    /// `run.env` expanded
+    /// `run.env` (2.1: the server's env) expanded
     pub env: Vec<(String, String)>,
+    /// a 2.1 package's plugin.json, verified
+    pub package: Option<Package>,
 }
 
 impl Fetched {
@@ -300,6 +316,9 @@ pub async fn fetch(api: &str, src: &Source, trust: &Trust, data: &Path) -> Resul
     let release: Value = serde_json::from_slice(&body).map_err(|_| "GitHub's release answer is not JSON".to_owned())?;
     let tag = release.get("tag_name").and_then(Value::as_str).map(str::to_owned).or_else(|| src.tag.clone()).unwrap_or_default();
     let source = format!("https://github.com/{}/{}/releases/tag/{tag}", src.owner, src.repo);
+    if asset_url(&release, PLUGIN_ASSET).is_ok() {
+        return fetch_package(&release, plain, source, trust, data).await;
+    }
     let text = small(&asset_url(&release, INDEX_ASSET)?, "application/octet-stream", plain, SMALL_MAX).await?;
     let ix = verify_index(&String::from_utf8_lossy(&text), trust, &platform())?;
     let base = data.join("v1").join("apps").join(&ix.id);
@@ -321,7 +340,70 @@ pub async fn fetch(api: &str, src: &Source, trust: &Trust, data: &Path) -> Resul
     let manifest = std::fs::read(dir.join(MANIFEST_FILE)).map_err(|e| e.to_string())?;
     check_manifest(&manifest, &ix)?;
     let env = expand(&ix.env, &dir.join(MANIFEST_FILE), &dir);
-    Ok(Fetched { command: dir.join(&ix.binary.asset).display().to_string(), args: ix.args.clone(), env, source, dir, index: ix })
+    let command = dir.join(&ix.binary.asset).display().to_string();
+    Ok(Fetched { id: ix.id, version: ix.version, needs_env: ix.needs_env, command, args: ix.args, env, source, dir, package: None })
+}
+
+/// The 2.1 path: plugin.json verified, its files and this platform's
+/// binary in `<data>/v1/apps/<id>/<version>/` (a complete folder is kept).
+async fn fetch_package(release: &Value, plain: bool, source: String, trust: &Trust, data: &Path) -> Result<Fetched, String> {
+    let text = small(&asset_url(release, PLUGIN_ASSET)?, "application/octet-stream", plain, package::PLUGIN_JSON_MAX).await?;
+    let text = String::from_utf8(text).map_err(|_| "plugin.json is not UTF-8".to_owned())?;
+    let p = package::verify(&text, trust, crate::v1::manifest::HOST_PROTOCOL, &platform()).map_err(|e| e.message)?;
+    if p.binary.is_none() {
+        return Err(format!("no build for {}", platform()));
+    }
+    let base = data.join("v1").join("apps").join(&p.id);
+    let dir = base.join(&p.version);
+    let complete = std::fs::read(dir.join(PLUGIN_FILE)).is_ok_and(|b| b == text.as_bytes()) && package::check_files(&p, &dir).is_ok();
+    if !complete {
+        std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+        let tmp = base.join(format!(".tmp-{}-{}", p.version, rox_v1::keys::random_id()));
+        if let Err(e) = stage_package(release, &p, &text, plain, &tmp).await {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(e) = std::fs::rename(&tmp, &dir) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("could not move the release into place: {e}"));
+        }
+    }
+    let body = package::spawn_body(&p, &dir);
+    let args = body["args"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+    let env = body["env"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned())).collect();
+    let command = body["command"].as_str().unwrap_or_default().to_owned();
+    Ok(Fetched { id: p.id.clone(), version: p.version.clone(), needs_env: Vec::new(), source, dir, command, args, env, package: Some(p) })
+}
+
+/// The package's files (50 MiB in all), its binary (200 MiB, 0755) and
+/// plugin.json into `tmp`, each checked.
+async fn stage_package(release: &Value, p: &Package, text: &str, plain: bool, tmp: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+    let mut left = package::FILES_BYTES_MAX as usize;
+    let bin = p.binary.as_ref().ok_or_else(|| format!("no build for {}", platform()))?;
+    for (f, is_bin) in p.files.iter().map(|f| (f, false)).chain(std::iter::once((bin, true))) {
+        let dest = tmp.join(&f.path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let url = asset_url(release, &f.asset)?;
+        let (sha, n) = if is_bin {
+            to_file(&url, plain, package::BINARY_BYTES_MAX as usize, &dest, &f.path).await?
+        } else {
+            to_file(&url, plain, left, &dest, "the package's files together").await?
+        };
+        if sha != f.sha256 {
+            return Err(format!("{} does not match plugin.json's sha256", f.path));
+        }
+        if is_bin {
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        } else {
+            left -= n;
+        }
+    }
+    std::fs::write(tmp.join(PLUGIN_FILE), text).map_err(|e| e.to_string())
 }
 
 /// The manifest and binary into `tmp`, checked.
@@ -335,7 +417,7 @@ async fn stage(release: &Value, ix: &Index, plain: bool, tmp: &Path) -> Result<(
     check_manifest(&manifest, ix)?;
     std::fs::write(tmp.join(MANIFEST_FILE), &manifest).map_err(|e| e.to_string())?;
     let bin = tmp.join(&ix.binary.asset);
-    let sha = to_file(&asset_url(release, &ix.binary.asset)?, plain, BINARY_MAX, &bin).await?;
+    let (sha, _) = to_file(&asset_url(release, &ix.binary.asset)?, plain, BINARY_MAX, &bin, "the binary").await?;
     if sha != ix.binary.sha256 {
         return Err(format!("{} does not match the index's sha256", ix.binary.asset));
     }

@@ -75,8 +75,10 @@ pub struct Fetched {
 }
 
 /// `fetchPlugin(e)`: the plugin's directory (and catalog skills living
-/// elsewhere in the repo) checked out into `plugins/<key>`.
-pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
+/// elsewhere in the repo) checked out into `<base>/<key>` (a review's
+/// staging folder; install moves it to `plugins/<key>`). The recorded
+/// paths are relative to that folder, as they will be to `plugins/`.
+pub async fn fetch_plugin(m: &Market, e: &Value, base: &Path) -> Result<Fetched, String> {
     let hint = e.get("install").filter(|h| js::truthy(h)).cloned().unwrap_or(json!({}));
     let display = super::string(e.get("displayName"));
     if truthy(hint.get("unavailable")) {
@@ -100,7 +102,7 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
     }
     let path = path.unwrap_or_default();
     let key = super::string(e.get("key"));
-    let dest = m.plugins.join(&key);
+    let dest = base.join(&key);
     let _ = std::fs::remove_dir_all(&dest);
     std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     // small plugin dirs come over whole; a big repo's root only brings its
@@ -120,6 +122,7 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
         static REF: OnceLock<Regex> = OnceLock::new();
         let top: Vec<String> = under.iter().map(|f| f[pre.len()..].split('/').next().unwrap_or("").to_owned()).collect();
         for p in [
+            ".buwiz-plugin",
             ".cursor-plugin",
             ".claude-plugin",
             ".grok-plugin",
@@ -181,9 +184,10 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
     })
 }
 
-/// `installLegacy(p)`: a vendored plugin's own dir, else a clone of its
-/// repo at its pinned sha into `plugins/<name>`.
-pub async fn install_legacy(m: &Market, p: &Value) -> Result<PathBuf, String> {
+/// `installLegacy(p)`: a vendored plugin's own dir, the clone already in
+/// `plugins/<name>`, else a clone of its repo at its pinned sha into
+/// `<base>/<name>` (a review's staging folder).
+pub async fn install_legacy(m: &Market, p: &Value, base: &Path) -> Result<PathBuf, String> {
     let name = super::string(p.get("name"));
     let src = p.get("source");
     let path = at(src, "path");
@@ -195,7 +199,8 @@ pub async fn install_legacy(m: &Market, p: &Value) -> Result<PathBuf, String> {
         }
         return Ok(root);
     }
-    let dir = m.plugins.join(&name);
+    let installed = m.plugins.join(&name);
+    let dir = if installed.join(".git").exists() { installed } else { base.join(&name) };
     if !dir.join(".git").exists() {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(dir.parent().unwrap_or(&dir));
@@ -243,6 +248,12 @@ fn read_head(p: &Path) -> Option<String> {
 /// `pluginInventory(key, root)`.
 pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Value {
     let meta = m.installed_meta(ctx, key).unwrap_or(json!({}));
+    inventory_at(&m.plugins, root, meta.get("skills"), m.server_configs(ctx, key))
+}
+
+/// What the plugin at `root` ships: `skills` are the recorded `{name, file}`
+/// (files relative to `base`), else its `skills/` folder.
+pub fn inventory_at(base: &Path, root: &Path, skills: Option<&Value>, servers: Map<String, Value>) -> Value {
     let list_dir = |sub: &str, md: bool| -> Vec<Value> {
         let base = root.join(sub);
         let Ok(list) = crate::hub::pipeline::versions::read_dir_sorted(&base) else { return Vec::new() };
@@ -255,7 +266,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
             })
             .collect()
     };
-    let skills = match meta.get("skills") {
+    let skills = match skills {
         Some(Value::Array(list)) if !list.is_empty() => {
             let mut seen: Vec<String> = Vec::new();
             list.iter()
@@ -267,7 +278,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
                     }
                 })
                 .map(|s| {
-                    let file = m.plugins.join(super::string(s.get("file")));
+                    let file = base.join(super::string(s.get("file")));
                     let mut o = Map::new();
                     if let Some(n) = s.get("name") {
                         o.insert("name".into(), n.clone());
@@ -280,7 +291,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
         _ => list_dir("skills", false),
     };
     let mut manifest = json!({});
-    for f in [".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
+    for f in [".buwiz-plugin/plugin.json", ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
         let j = parse(std::fs::read_to_string(root.join(f)).ok().as_deref(), Value::Null);
         if truthy(j.get("name")) {
             manifest = j;
@@ -298,7 +309,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
         "agents": list_dir("agents", true),
         "hooks": root.join("hooks/hooks.json").exists(),
         "lsp": root.join(".lsp.json").exists(),
-        "servers": Value::Object(m.server_configs(ctx, key)),
+        "servers": Value::Object(servers),
         "manifest": { "author": author, "version": super::or(manifest.get("version"), Value::Null), "license": super::or(manifest.get("license"), Value::Null) },
     })
 }
@@ -314,7 +325,9 @@ pub fn skill_file(m: &Market, ctx: &HubCtx, key: &str, skill: &str) -> Option<Pa
     ok.then(|| root.join("skills").join(skill).join("SKILL.md"))
 }
 
-/// `pluginSkillsInject()`: installed plugin skills as the agent's index.
+/// `pluginSkillsInject()`: installed plugin skills as the agent's index;
+/// an enabled 2.1 mini app's package skills (`v1_plugins.skills`) join it
+/// under its short name.
 pub fn plugin_skills_inject(m: &Market, ctx: &HubCtx) -> String {
     let names: Vec<String> = ctx
         .db
@@ -333,6 +346,23 @@ pub fn plugin_skills_inject(m: &Market, ctx: &HubCtx) -> String {
             if let Some(f) = skill_file(m, ctx, &name, &sname).filter(|f| f.exists()) {
                 let desc = sk.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_default();
                 lines.push(format!("- {name}/{sname}: {} (file: {})", js::slice_utf16(&desc, 160), f.display()));
+            }
+        }
+    }
+    let apps: Vec<(String, String)> = ctx
+        .db
+        .with(|db| {
+            let mut st = db.prepare("SELECT short, skills FROM v1_plugins WHERE enabled=1 AND package IS NOT NULL ORDER BY created_at")?;
+            let r = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?;
+            r.collect()
+        })
+        .unwrap_or_default();
+    for (short, skills) in apps {
+        for sk in parse(Some(&skills), json!([])).as_array().into_iter().flatten() {
+            let (sname, file) = (super::string(sk.get("name")), super::string(sk.get("file")));
+            if !sname.is_empty() && Path::new(&file).exists() {
+                let desc = sk.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_default();
+                lines.push(format!("- {short}/{sname}: {} (file: {file})", js::slice_utf16(&desc, 160)));
             }
         }
     }
