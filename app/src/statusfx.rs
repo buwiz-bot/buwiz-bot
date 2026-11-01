@@ -177,7 +177,6 @@ pub(crate) fn fx_overlay_fn(
 ) -> impl IntoElement {
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    let ink = ink;
     // `startFx` — the store's shared ~30fps overlay clock, read only
     // while an effect plays.
     canvas(move || {

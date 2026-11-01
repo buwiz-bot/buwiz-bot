@@ -752,7 +752,6 @@ fn full_sidebar() -> impl IntoElement {
     // goes back to the top (once, a moment after launch).
     let list = element_ref();
     {
-        let list = list;
         let done = std::cell::Cell::new(false);
         effect(move || {
             let loaded = !store().bots.with(|b| b.is_empty());

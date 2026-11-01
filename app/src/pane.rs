@@ -1400,7 +1400,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 // The square tile: an app's icon, an image's thumbnail, a
                 // file's set icon or its type tile.
                 .child({
-                    let a = a;
                     dynamic(move || crate::appdetails::artifact_tile(&a.get(), 28.0).into_element())
                 })
                 .child(
@@ -1408,7 +1407,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .flex_1()
                         .child(
                             text({
-                                let a = a;
                                 move || a.get().title
                             })
                             .text_size(px(13.0))
@@ -1417,7 +1415,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         )
                         .child(
                             text({
-                                let a = a;
                                 move || subtitle(&a.get())
                             })
                             .text_size(px(12.0))
@@ -1427,7 +1424,6 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 )
                 .child(when(
                     {
-                        let a = a;
                         move || a.get().v > 0
                     },
                     move || {

@@ -7024,7 +7024,7 @@ impl Store {
                 let hit = self.turns.with_untracked(|t| {
                     t.iter().position(|t| turn_is(t, &key)).map(|p| (p, t[p].i))
                 });
-                let list = self.chat_list.borrow().clone();
+                let list = *self.chat_list.borrow();
                 if let (Some((pos, i)), Some(list)) = (hit, list) {
                     list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
                     self.flash(i);
