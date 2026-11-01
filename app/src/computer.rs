@@ -339,7 +339,7 @@ thread_local! {
 }
 
 fn pane_signal() -> Signal<Pane> {
-    PANE.with(|s| s.clone())
+    PANE.with(|s| *s)
 }
 
 /// The pane's state for `bot`, starting over when the bot changed.
@@ -361,6 +361,35 @@ fn update_pane(bot: &str, f: impl FnOnce(&mut Pane)) {
             f(p);
         }
     });
+}
+
+/// This bot's computer for a surface outside the tab — the right pane's
+/// icon rail (`pane::icon_rail`), which draws Update, Reset and the
+/// network rule beside the tab's own controls. What the tab last read,
+/// asking the broker once when the rail wants it first; `None` while the
+/// broker has said nothing (the rail's icons are disabled meanwhile).
+pub(crate) fn rail_computer(bot: &str) -> Option<Computer> {
+    let p = pane_signal().get();
+    if p.bot != bot {
+        for_bot(bot);
+        let id = bot.to_owned();
+        crate::store::spawn_detached(async move { refresh_status(id).await });
+        return None;
+    }
+    p.computer.clone().filter(|_| p.route == Route::Live)
+}
+
+/// The rail's Update / Reset: the tab's own confirm, so the question the
+/// Computer tab already asks is the one the person answers.
+pub(crate) fn ask_confirm(action: Action) {
+    pane_signal().update(|p| p.confirm = Some(action));
+}
+
+/// Whether an update or a reset the person already confirmed is running,
+/// so the rail's Update and Reset wait for it as the tab's own do.
+pub(crate) fn rail_acting(bot: &str) -> bool {
+    let p = pane_signal().get();
+    p.bot == bot && p.acting.is_some()
 }
 
 fn path(bot: &str, rest: &str) -> String {
@@ -777,7 +806,7 @@ fn seg(id: &str, label: &str, on: bool, press: impl Fn() + 'static) -> impl Into
         .bg(move || if on { theme::TEXT } else if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || press())
+        .on_press(press)
         .child(text(label.to_owned()).text_size(px(12.0)).text_color(if on { theme::MAIN } else { theme::TEXT }))
 }
 

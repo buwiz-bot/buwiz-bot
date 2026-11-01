@@ -189,6 +189,17 @@ struct Ui {
     draft_deny: Signal<String>,
     /// A write in flight: the controls wait for it.
     busy: Signal<bool>,
+    /// Whether the host record has been asked for at all: the right pane's
+    /// icon rail can be the first surface that wants it, before this page
+    /// is ever opened.
+    host_asked: Signal<bool>,
+    /// A host read in flight: one request at a time, so a broker that is
+    /// down is not asked once per frame.
+    host_loading: Signal<bool>,
+    /// When the last host read that never reached the broker finished: a
+    /// refused connection fails in a millisecond, so the rail waits a
+    /// few seconds before asking again instead of spinning.
+    host_failed_at: Signal<Option<std::time::Instant>>,
     /// What the last refused write said.
     note: Signal<String>,
 }
@@ -203,6 +214,9 @@ fn ui() -> Ui {
             draft_allow: signal(String::new()),
             draft_deny: signal(String::new()),
             busy: signal(false),
+            host_asked: signal(false),
+            host_loading: signal(false),
+            host_failed_at: signal(None),
             note: signal(String::new()),
         });
         Box::leak(Box::new(ui)) as *const Ui as usize
@@ -220,19 +234,74 @@ fn reload() {
     let u = ui();
     Owner::detached().run(|| {
         spawn(async move { apply_policy(transport::read_policy().await) });
+    });
+    load_host(u);
+}
+
+/// `GET /ag-ui/host-settings` into the page's signals. A read that never
+/// reached the broker (it was down, or the request failed) leaves the
+/// record unasked, so the next surface that wants it asks again; a
+/// broker that answered that it has no such route (404/501) has said all
+/// it will say.
+fn load_host(u: Ui) {
+    if u.host_loading.get_untracked() {
+        return;
+    }
+    u.host_asked.set(true);
+    u.host_loading.set(true);
+    Owner::detached().run(|| {
         spawn(async move {
             match reach(transport::read_host_settings().await) {
                 Ok(body) => {
                     u.host.set(Some(HostSettings::parse(&body)));
                     u.host_reach.set(Reach::Live);
+                    u.host_failed_at.set(None);
                 }
                 Err(r) => {
+                    if !matches!(r, Reach::NotPorted) {
+                        u.host_asked.set(false);
+                        u.host_failed_at.set(Some(std::time::Instant::now()));
+                    }
                     u.host.set(None);
                     u.host_reach.set(r);
                 }
             }
+            u.host_loading.set(false);
         });
     });
+}
+
+/// Whether the server answered about the host record, and the tunnel's
+/// intent — for the right pane's icon rail, which draws the same switch
+/// (`pane::route_traffic_look`) and reads the signals this page owns.
+pub(crate) fn host_egress_tunnel() -> (bool, bool) {
+    let u = ui();
+    (u.host_reach.get().live(), u.host.get().is_some_and(|h| h.egress_tunnel_enabled))
+}
+
+/// How long the rail leaves a broker that did not answer alone before
+/// asking for the host record again.
+const HOST_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads the host record if nothing has asked for it yet (or the last
+/// try never reached the broker), one request at a time and no sooner
+/// than `HOST_RETRY` after a failure — the rail renders again as soon as
+/// the failure lands, and a refused connection fails in a millisecond.
+pub(crate) fn ensure_host_settings() {
+    let u = ui();
+    if u.host_asked.get_untracked() || u.host_loading.get_untracked() {
+        return;
+    }
+    if u.host_failed_at.get_untracked().is_some_and(|at| at.elapsed() < HOST_RETRY) {
+        return;
+    }
+    load_host(u);
+}
+
+/// The host switch's write, as the rail presses it: one transport for
+/// both surfaces, and the record is read again after it.
+pub(crate) fn set_egress_tunnel(enabled: bool) {
+    set_egress(enabled);
 }
 
 /// The listing just read decides what the page shows: live controls over
@@ -310,6 +379,9 @@ fn set_egress(enabled: bool) {
                 }
             }
             u.busy.set(false);
+            // the server's own answer again, so nothing local is left
+            // standing for a write it did not take
+            load_host(u);
         });
     });
 }
@@ -581,7 +653,7 @@ fn switch(id: &str, on: bool, live: bool, flip: impl Fn() + 'static) -> impl Int
         .label(if on { "On" } else { "Off" })
         .child(view().w(px(16.0)).h(px(16.0)).rounded(px(8.0)).bg(theme::ON_FILL).when(!on, |v| v.absolute().left(px(2.0)).top(px(2.0))));
     if live {
-        track = track.on_press(move || flip());
+        track = track.on_press(flip);
     }
     track
 }
@@ -606,7 +678,7 @@ fn small_btn_id(id: String, label: &'static str, on: impl Fn() + 'static) -> imp
         .bg(theme::HOVER)
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .label(label)
         .test_id(&id)
 }
