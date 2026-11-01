@@ -45,6 +45,8 @@ pub mod apps;
 pub mod artifacts;
 /// pop-out windows and their table (6.3)
 pub mod popout;
+/// the shell consent policy (`/local-exec/policy`)
+pub mod local_exec;
 
 use super::types::Pattern::{self, Exact as X, Prefix as P, Segments as S};
 use super::types::Verb::{self, Any, Get, Post};
@@ -74,6 +76,8 @@ pub enum Track {
     OfficeFiles,
     /// phase 7: `/file/render` for every other kind, and `GET /`
     Files,
+    /// S2: the shell consent policy, `/local-exec/policy` and its rules
+    LocalExec,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +238,9 @@ pub const ROUTES: &[Entry] = &[
     e(Get, X("/"), Hub(Files)),
     e(Get, P("/office/"), Hub(OfficeFiles)),
     e(Get, X("/file/render"), Hub(Files)),
+    // S2: the shell consent policy (opengrok-server `/local-exec/policy`)
+    e(Any, X("/local-exec/policy"), Hub(LocalExec)),
+    e(Any, X("/local-exec/policy/rule"), Hub(LocalExec)),
     // already Rust's: leaf (phase 2)
     e(Any, X("/prefs"), Rust),
     e(Any, X("/keymap"), Rust),
@@ -353,7 +360,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 120);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 122);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }
