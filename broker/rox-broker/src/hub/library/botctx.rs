@@ -4,8 +4,8 @@
 //!
 //! The plugin catalog (5.8, track C) is a seam: [`Catalog`] in `ctx.ext`.
 //! Without it no catalog entry exists (a plugin integration resolves only
-//! when installed, named by its id; an MCP server has no description or
-//! icon).
+//! when installed, named by its id; an MCP server has no description).
+//! No integration has a logo (`icon` is ""): the app draws letter tiles.
 
 use std::sync::Arc;
 
@@ -18,12 +18,10 @@ use crate::hub::store::{now_ms, uuidv7, Bot, State};
 use crate::hub::types::{ToolResult, TurnCtx};
 use crate::js;
 
-/// plugins.mjs's `entryOf` and `iconFile`, as the catalog (track C) answers them.
+/// plugins.mjs's `entryOf`, as the catalog (track C) answers it.
 pub trait PluginCatalog: Send + Sync {
     /// The catalog entry for a key (`{key, name, displayName, description, …}`).
     fn entry(&self, key: &str) -> Option<Value>;
-    /// Whether the key has a logo (`iconFile(key)`).
-    fn has_icon(&self, key: &str) -> bool;
 }
 
 /// The seam in `ctx.ext`.
@@ -117,10 +115,6 @@ pub fn memory_remove(bot: &mut Bot, memory_id: &str) -> Result<(), String> {
 
 const KINDS: [&str; 3] = ["mcp", "plugin", "skill"];
 
-fn icon_path(key: &str) -> String {
-    format!("/plugins/icon/{}", encode_uri_component(key))
-}
-
 /// `encodeURIComponent`.
 pub fn encode_uri_component(s: &str) -> String {
     let mut out = String::new();
@@ -162,12 +156,7 @@ pub fn lookup(ctx: &HubCtx, conn: &Connection, kind: &str, id: &str) -> Option<V
             let (rid, name) = (r[0].clone(), r[1].clone());
             let name = or(&name, &rid);
             let e = entry(&js::string_of(&name));
-            let key = field(&e, "key").map(|k| js::string_of(&k));
-            let icon = match (&e, key) {
-                (Some(_), Some(k)) if cat.is_some_and(|c| c.has_icon(&k)) => icon_path(&k),
-                _ => String::new(),
-            };
-            Some(json!({"id": rid, "name": name, "kind": kind, "description": field(&e, "description").unwrap_or(json!("")), "icon": icon}))
+            Some(json!({"id": rid, "name": name, "kind": kind, "description": field(&e, "description").unwrap_or(json!("")), "icon": ""}))
         }
         "plugin" => {
             let inst = text_col(conn, "SELECT name FROM installed_plugins WHERE name=?", &[id]);
@@ -176,8 +165,7 @@ pub fn lookup(ctx: &HubCtx, conn: &Connection, kind: &str, id: &str) -> Option<V
                 return None;
             }
             let name = field(&e, "displayName").or_else(|| field(&e, "name")).unwrap_or(json!(id));
-            let icon = if cat.is_some_and(|c| c.has_icon(id)) { icon_path(id) } else { String::new() };
-            Some(json!({"id": id, "name": name, "kind": kind, "description": field(&e, "description").unwrap_or(json!("")), "icon": icon}))
+            Some(json!({"id": id, "name": name, "kind": kind, "description": field(&e, "description").unwrap_or(json!("")), "icon": ""}))
         }
         "skill" => {
             let r = text_col(conn, "SELECT id,name,description FROM skills WHERE id=? OR name=?", &[id, id])?;

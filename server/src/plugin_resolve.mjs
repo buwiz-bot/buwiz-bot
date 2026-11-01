@@ -1,10 +1,10 @@
-// plugin_resolve.mjs — locate a Grok Bot catalog entry's plugin inside its
+// plugin_resolve.mjs — locate a catalog entry's plugin inside its
 // repository and read what it ships (MCP servers, skills).
 //
 // Works over an abstract repo view — `files` (every path at HEAD) and
-// `read(path) → string|null` — so the catalog sync tool (blobless clones in
-// a scratch dir) and the server's installer (blobless clones under
-// PLUGINS_DIR/.repos) share one resolver.
+// `read(path) → string|null` — so any reader of a repo (the server's
+// installer reads blobless clones under PLUGINS_DIR/.repos) shares one
+// resolver.
 import { posix } from "node:path";
 
 const { dirname, join, normalize } = posix;

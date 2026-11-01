@@ -33,6 +33,10 @@ fn hx(hex: &str) -> AdaptiveColor {
     AdaptiveColor::from(Hsla::from_str(hex).unwrap_or(theme::ACCENT.dark))
 }
 
+/// What Connect Apps shows where the catalog list was when there is
+/// nothing in the catalog to add.
+pub(crate) const CATALOG_EMPTY: &str = "No plugin catalog yet. Add an MCP server, or install a mini app from chat.";
+
 /// `hue(name)` — the letter-tile color (App.tsx:102).
 pub(crate) fn hue(s: &str) -> Hsla {
     const HUES: [&str; 7] = [
@@ -42,16 +46,9 @@ pub(crate) fn hue(s: &str) -> Hsla {
     Hsla::from_str(HUES[i]).unwrap_or(theme::ACCENT.dark)
 }
 
-/// `plugTile` — the connector tile: the brand logo when the icon set has
-/// the brand's paths, else the hue letter tile (App.tsx:1460).
+/// `plugTile` — the plugin / connector tile: its first letter on the
+/// name's hue (App.tsx:1460). No logos: Buwiz Bot bundles none.
 pub(crate) fn plug_tile(name: &str, size: f32) -> impl IntoElement {
-    let url = store().plugin_icon(name);
-    if !url.is_empty() {
-        return logo_tile(url, size, size * 0.25).into_element();
-    }
-    if crate::icons::has_brand(name) {
-        return crate::icons::brand_tile(name, size).into_element();
-    }
     let initial = name
         .chars()
         .next()
@@ -74,35 +71,9 @@ pub(crate) fn plug_tile(name: &str, size: f32) -> impl IntoElement {
         .into_element()
 }
 
-/// A catalog logo (served by the app server) on a white plate, clipped
-/// to the tile's radius — Grok Bot's plugin tiles.
-/// Grok Bot's plugin tile: a white rounded plate in both themes (dark
-/// marks like Vercel's stay visible), a 0.5pt `#1c1c1c14` edge, the
-/// square logo inset 12%.
-fn logo_tile(url: String, size: f32, _radius: f32) -> impl IntoElement {
-    let inner = (size * 0.76).round();
-    view()
-        .size(px(size))
-        .rounded(px((size * 0.28).round()))
-        .overflow_hidden()
-        .bg(white())
-        .border(px(0.5))
-        .border_color(Hsla::from_str("#1c1c1c14").unwrap_or(theme::ACCENT.dark))
-        .items_center()
-        .justify_center()
-        .child(image(url).w(px(inner)).h(px(inner)))
-}
-
-/// `chipTile` — the overlapped logo in the "N connected" chip
+/// `chipTile` — the overlapped letter tile in the "N connected" chip
 /// (App.tsx:1468).
 fn chip_tile(name: &str, size: f32) -> impl IntoElement {
-    let url = store().plugin_icon(name);
-    if !url.is_empty() {
-        return logo_tile(url, size, size * 0.3).into_element();
-    }
-    if crate::icons::has_brand(name) {
-        return crate::icons::brand_chip(name, size).into_element();
-    }
     let initial = name
         .chars()
         .next()
@@ -394,6 +365,24 @@ fn market_page() -> impl IntoElement {
                         },
                         || {
                             text("No plugins match")
+                                .text_size(px(13.0))
+                                .text_color(theme::DIM)
+                                .py(px(24.0))
+                                .self_center()
+                        },
+                    ))
+                    // No catalog plugin left to add (no catalog file, or an
+                    // empty one): say so where the list would be.
+                    .child(when(
+                        || {
+                            // once the first catalog answer is in
+                            !store().plugins_rev.get().is_empty()
+                                && store().plugin_query.get().is_empty()
+                                && store().plugin_cat.get() == "All"
+                                && store().plugin_recommended().is_empty()
+                        },
+                        || {
+                            text(CATALOG_EMPTY)
                                 .text_size(px(13.0))
                                 .text_color(theme::DIM)
                                 .py(px(24.0))

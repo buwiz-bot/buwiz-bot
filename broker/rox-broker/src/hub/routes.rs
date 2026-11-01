@@ -20,6 +20,8 @@
 //! Deleted in 6.2 (no caller; drafts' route inventory has the evidence):
 //! `POST /highlight`. It has no entry, so with the hub on it gets the
 //! hub's 404; plain Node still answers it until phase 7 (D11/D12).
+//! `GET /plugins/icon/<key>` went with the bundled third-party logos (the
+//! Apache-2.0 relicense, #93): neither broker answers it, so it gets the 404.
 
 /// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
 pub mod agents;
@@ -208,7 +210,6 @@ pub const ROUTES: &[Entry] = &[
     // 5.8 market and skills
     e(Get, P("/plugins/catalog"), Hub(Market)),
     e(Get, P("/plugins/detail"), Hub(Market)),
-    e(Get, P("/plugins/icon/"), Hub(Market)),
     e(Get, P("/plugins/skill"), Hub(Market)),
     e(Post, X("/plugins/inspect"), Hub(Market)),
     e(Post, X("/plugins/install"), Hub(Market)),
@@ -354,7 +355,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 121);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 120);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }

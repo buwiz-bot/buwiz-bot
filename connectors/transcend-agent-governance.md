@@ -2,7 +2,7 @@
 
 Checked against the plugin repo and live endpoints on 2026-10-25. Transcend publishes no public docs for the Agent Governance gateway; items marked **(unconfirmed)** must be answered by Transcend.
 
-Connector id: use the full id `transcend-agent-governance`. The entry in `needs-oauth-app.json` truncates the callback to `.../oauth/callback/transcend-agent-governan`; that is a truncation, so the callback to register is `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` (confirm in Buwiz Bot's plugin page).
+Connector id: use the full id `transcend-agent-governance`. The 2026-10-25 catalog probe (its `needs-oauth-app.json`, no longer shipped) truncated the callback to `.../oauth/callback/transcend-agent-governan`; that is a truncation, so the callback to register is `http://127.0.0.1:8787/oauth/callback/transcend-agent-governance` (confirm in Buwiz Bot's plugin page).
 
 ## What it unlocks
 

@@ -1,7 +1,8 @@
-//! plugins.mjs's catalog side: Grok Bot's snapshot merged with the legacy
-//! xAI marketplace, categories, the hidden OAuth-app entries, logos, setup
-//! values (with the shared `@google` row), the setup fields a plugin shows,
-//! its MCP server configs and their materialized rows' fields.
+//! plugins.mjs's catalog side: the first-party catalog (`plugins/catalog.json`,
+//! possibly absent or empty), categories, an installed plugin the catalog
+//! doesn't list (read from its installed record), setup values (with the
+//! shared `@google` row), the setup fields a plugin shows, its MCP server
+//! configs and their materialized rows' fields.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,30 +32,17 @@ const CAT_ORDER: [(&str, &str); 11] = [
 
 fn cat_of_key(k: &str) -> Option<&'static str> {
     Some(match k {
-        "LOGIN_AND_CREDENTIAL_MANAGEMENT" => "credentials",
+        "CREDENTIALS" | "LOGIN_AND_CREDENTIAL_MANAGEMENT" => "credentials",
         "PRODUCTIVITY" | "DOCUMENTS_AND_FILES" => "productivity",
-        "INBOX_AND_COLLABORATION" | "SCHEDULING" => "communication",
+        "COMMUNICATION" | "INBOX_AND_COLLABORATION" | "SCHEDULING" => "communication",
         "SALES" => "sales",
         "MARKETING" => "marketing",
-        "CUSTOMER_SUPPORT" => "support",
-        "PAYMENTS" | "FINANCE_AND_LEGAL" => "finance",
-        "DATA_ANALYTICS" => "data",
+        "SUPPORT" | "CUSTOMER_SUPPORT" => "support",
+        "FINANCE" | "PAYMENTS" | "FINANCE_AND_LEGAL" => "finance",
+        "DATA" | "DATA_ANALYTICS" => "data",
         "DESIGN" | "CANVAS" => "design",
-        "INFRASTRUCTURE" => "code",
+        "CODE" | "INFRASTRUCTURE" => "code",
         "RESEARCH" => "research",
-        _ => return None,
-    })
-}
-
-fn cat_override(n: &str) -> Option<&'static [&'static str]> {
-    Some(match n {
-        "slack" => &["communication"],
-        "notion" | "notion-workspace" | "linear" => &["productivity"],
-        "figma" | "tldraw" => &["design"],
-        "github" | "github-plugin" | "runlayer" | "superpowers" | "compound-engineering" | "create-plugin" => &["code"],
-        "langfuse" => &["data"],
-        "parallel" => &["research", "data"],
-        "context7-plugin" | "context7" => &["research"],
         _ => return None,
     })
 }
@@ -89,13 +77,6 @@ fn key_norm(k: &str) -> String {
 fn cats_of(e: &Value) -> Vec<Value> {
     if truthy(e.get("marketplace")) {
         return Vec::new();
-    }
-    for n in [e.get("pluginName"), e.get("name")] {
-        if truthy(n) {
-            if let Some(o) = cat_override(&js::string_of(n.unwrap()).trim_matches(js::is_space).to_lowercase()) {
-                return o.iter().map(|s| json!(s)).collect();
-            }
-        }
     }
     let keys: Vec<Value> = match nn(e.get("categoryKeys")) {
         Some(Value::Array(a)) => a.clone(),
@@ -210,8 +191,16 @@ pub fn encode_component(s: &str) -> String {
     out
 }
 
-/// What the market reads once: the catalog files beside Node's code, and
-/// where installs go.
+/// The catalog file: `plugins/catalog.json` beside Node's code, or the
+/// file `ROX_PLUGIN_CATALOG` names.
+pub fn catalog_file(server: &Path) -> PathBuf {
+    match std::env::var("ROX_PLUGIN_CATALOG") {
+        Ok(f) if !f.is_empty() => PathBuf::from(f),
+        _ => server.join("plugins/catalog.json"),
+    }
+}
+
+/// What the market reads once: the catalog file, and where installs go.
 pub struct Market {
     /// Node's SERVER_DIR (server/src)
     pub server: PathBuf,
@@ -221,13 +210,12 @@ pub struct Market {
     pub out_dir: PathBuf,
     /// the port Rox reaches (fixed OAuth redirects)
     pub port: u16,
-    pub fetched_at: String,
+    /// the catalog file's `version` (part of the catalog's rev)
+    pub version: String,
     pub entries: Vec<Value>,
     by_key: HashMap<String, usize>,
-    legacy: HashMap<String, Value>,
-    hidden: HashMap<String, Vec<Value>>,
-    icons: HashMap<String, String>,
-    pub show_oauth_app: bool,
+    /// the entries listed by `source` (vendored, or a repo cloned whole)
+    sourced: HashMap<String, Value>,
     /// dcrSupport's answers by server URL: `None` while unknown
     pub(crate) dcr: Arc<Mutex<HashMap<String, Option<bool>>>>,
 }
@@ -237,87 +225,102 @@ fn read_json(p: &Path) -> Option<Value> {
 }
 
 impl Market {
+    /// The catalog's entries: one with a `source` (vendored under
+    /// `plugins/external_plugins/`, or a repository cloned whole) becomes
+    /// a `legacy` entry; any other is a full entry (`key`, `install`
+    /// hints, `fields`, …). No file, or no plugins in it, is an empty
+    /// catalog.
     pub fn load(server: &Path, data: &Path, port: u16) -> Self {
-        let grok = read_json(&server.join("plugins/grokbot-catalog.json")).unwrap_or_else(|| json!({ "plugins": [] }));
-        let legacy_list = read_json(&server.join("plugins/marketplace.json")).unwrap_or_else(|| json!({ "plugins": [] }));
-        let list = |v: &Value| v.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default();
-        let mut out: Vec<Value> = list(&grok)
-            .into_iter()
-            .map(|e| {
-                let cats = cats_of(&e);
-                let mut m = spread(Some(&e));
-                m.insert("cats".into(), Value::Array(cats));
-                Value::Object(m)
-            })
-            .collect();
-        let keys: std::collections::HashSet<String> = out.iter().flat_map(|e| ["key", "name", "pluginName"].map(|k| e.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into()))).collect();
-        let mut legacy = HashMap::new();
-        for p in list(&legacy_list) {
-            let name = p.get("name").map(js::string_of).unwrap_or_else(|| "undefined".into());
-            legacy.insert(name.clone(), p.clone());
-            if keys.contains(&name) {
+        let file = read_json(&catalog_file(server)).unwrap_or_else(|| json!({ "plugins": [] }));
+        let owner = at(file.get("owner"), "name").filter(|v| js::truthy(v)).map(js::string_of);
+        let mut out: Vec<Value> = Vec::new();
+        let mut sourced = HashMap::new();
+        for p in file.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default() {
+            if !p.is_object() {
                 continue;
             }
+            let cats = Value::Array(cats_of(&p));
+            if p.get("source").is_none() {
+                let mut m = spread(Some(&p));
+                m.insert("cats".into(), cats);
+                out.push(Value::Object(m));
+                continue;
+            }
+            let name = p.get("name").map(js::string_of).unwrap_or_else(|| "undefined".into());
+            sourced.insert(name.clone(), p.clone());
             let repo = at(Some(&p), "source").and_then(|s| s.get("url")).and_then(Value::as_str).map(|u| u.strip_suffix(".git").unwrap_or(u).to_owned());
+            let by = at(p.get("author"), "name").filter(|v| js::truthy(v)).map(js::string_of).or_else(|| owner.clone()).unwrap_or_default();
             out.push(json!({
-                "key": name, "name": name, "pluginName": name, "displayName": title_case(&name), "description": or(p.get("description"), json!("")),
-                "category": or(p.get("category"), json!("other")), "cats": [], "websiteUrl": or(p.get("homepage"), Value::Null),
-                "repositoryUrl": repo.filter(|r| !r.is_empty()).map_or(Value::Null, Value::String),
-                "connectors": [], "skills": [], "publisher": { "name": "xai", "displayName": "xAI" }, "legacy": true, "keywords": or(p.get("keywords"), json!([])),
+                "key": name, "name": name, "pluginName": name, "displayName": or(p.get("displayName"), json!(title_case(&name))), "description": or(p.get("description"), json!("")),
+                "category": or(p.get("category"), json!("other")), "cats": cats, "websiteUrl": or(p.get("homepage"), Value::Null),
+                "repositoryUrl": repo.filter(|r| !r.is_empty()).map_or_else(|| or(p.get("repository"), Value::Null), Value::String),
+                "connectors": [], "skills": [], "publisher": { "name": by, "displayName": by }, "legacy": true, "keywords": or(p.get("keywords"), json!([])),
             }));
         }
-        let by_key = out.iter().enumerate().map(|(i, e)| (e.get("key").map(js::string_of).unwrap_or_else(|| "undefined".into()), i)).collect();
-        let mut hidden: HashMap<String, Vec<Value>> = HashMap::new();
-        for r in read_json(&server.join("plugins/needs-oauth-app.json")).as_ref().map(list).unwrap_or_default() {
-            hidden.entry(r.get("name").map(js::string_of).unwrap_or_else(|| "undefined".into())).or_default().push(r);
-        }
-        let mut icons = HashMap::new();
-        if let Ok(list) = crate::hub::pipeline::versions::read_dir_sorted(&server.join("plugins/icons")) {
-            for f in list {
-                let f = f.file_name().to_string_lossy().into_owned();
-                let stem = match f.rfind('.') {
-                    Some(i) if i + 1 < f.len() => f[..i].to_owned(),
-                    _ => f.clone(),
-                };
-                icons.insert(stem, f);
-            }
+        // the first entry of a key wins
+        let mut by_key = HashMap::new();
+        for (i, e) in out.iter().enumerate() {
+            by_key.entry(e.get("key").map(js::string_of).unwrap_or_else(|| "undefined".into())).or_insert(i);
         }
         Self {
             server: server.to_owned(),
             plugins: data.join("plugins"),
             out_dir: data.join("generated").join("files"),
             port,
-            fetched_at: grok.get("fetchedAt").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default(),
+            version: file.get("version").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default(),
             entries: out,
             by_key,
-            legacy,
-            hidden,
-            icons,
-            show_oauth_app: matches!(std::env::var("ROX_SHOW_OAUTH_APP_PLUGINS").unwrap_or_default().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+            sourced,
             dcr: Arc::default(),
         }
     }
 
-    /// `entryOf(key)`.
+    /// `entryOf(key)`: the catalog's entry.
     pub fn entry_of(&self, key: &str) -> Option<&Value> {
         self.by_key.get(key).map(|i| &self.entries[*i])
     }
 
-    /// `legacyOf(key)`.
+    /// `legacyOf(key)`: the catalog's record of a plugin listed by source.
     pub fn legacy_of(&self, key: &str) -> Option<&Value> {
-        self.legacy.get(key)
+        self.sourced.get(key)
     }
 
-    /// `hiddenInfo(key)`.
-    pub fn hidden_info(&self, key: &str) -> Option<Value> {
-        self.hidden.get(key).map(|l| Value::Array(l.clone()))
+    /// `entryFor(key)`: the catalog's entry, else (installed from a catalog
+    /// that's gone, or no longer listed) one made from the installed
+    /// record: its manifest's name and description, its connector rows.
+    pub fn entry_for(&self, ctx: &HubCtx, key: &str) -> Option<Value> {
+        if let Some(e) = self.entry_of(key) {
+            return Some(e.clone());
+        }
+        let meta = self.installed_meta(ctx, key)?;
+        Some(self.installed_entry(ctx, key, &meta))
     }
 
-    /// `iconFile(key)`.
-    pub fn icon_file(&self, key: &str) -> Option<PathBuf> {
-        let name = self.entry_of(key).and_then(|e| e.get("name")).map(js::string_of);
-        let f = name.and_then(|n| self.icons.get(&n)).or_else(|| self.icons.get(key))?;
-        Some(self.server.join("plugins/icons").join(f))
+    /// The entry of an installed plugin the catalog doesn't list.
+    pub fn installed_entry(&self, ctx: &HubCtx, key: &str, meta: &Value) -> Value {
+        let manifest = self.plugin_root(ctx, key).map(|r| super::install::manifest_at(&r)).unwrap_or(Value::Null);
+        let field = |k: &str| manifest.get(k).filter(|v| v.is_string() && js::truthy(v)).cloned();
+        let author = match manifest.get("author") {
+            Some(a) if truthy(a.get("name")) => js::string_of(&a["name"]),
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let ids: Vec<String> = entries(at(Some(meta), "mcp")).into_iter().map(|(_, v)| js::string_of(&v)).collect();
+        let mut connectors: Vec<Value> = Vec::new();
+        for id in ids {
+            let name = ctx.db.with(|db| db.query_row("SELECT name FROM mcp_servers WHERE id=?", [&id], |r| r.get::<_, Option<String>>(0)).optional()).ok().flatten().flatten();
+            if let Some(n) = name.filter(|n| !n.is_empty()) {
+                if !connectors.iter().any(|c| c["name"] == json!(n)) {
+                    connectors.push(json!({ "name": n }));
+                }
+            }
+        }
+        json!({
+            "key": key, "name": key, "pluginName": key, "displayName": field("displayName").unwrap_or_else(|| json!(title_case(key))),
+            "description": field("description").unwrap_or(json!("")), "category": "other", "cats": [], "websiteUrl": field("homepage").unwrap_or(Value::Null),
+            "repositoryUrl": or(at(Some(meta), "repo"), field("repository").unwrap_or(Value::Null)), "connectors": connectors, "skills": [],
+            "publisher": { "name": author, "displayName": author }, "keywords": [], "uncataloged": true,
+        })
     }
 
     /// `installedRow(key)`: its meta text (None: not installed).
@@ -337,7 +340,17 @@ impl Market {
             let r = super::join(&self.plugins, &js::string_of(root));
             return r.exists().then_some(r);
         }
-        let p = self.legacy_of(key)?;
+        let Some(p) = self.legacy_of(key) else {
+            // cloned whole from a catalog that no longer lists it: the clone
+            // in plugins/<key> (a vendored one's files went with the catalog)
+            let safe = !key.is_empty() && !key.starts_with('.') && key.chars().all(|c| c.is_ascii_alphanumeric() || "_.@-".contains(c));
+            let dir = self.plugins.join(key);
+            if meta.is_none() || !safe || !dir.join(".git").exists() {
+                return None;
+            }
+            let path = text(at(meta.as_ref(), "path")).unwrap_or("");
+            return Some(if path.is_empty() { dir } else { super::join(&dir, path) });
+        };
         let src = p.get("source");
         let path = at(src, "path");
         if text(at(src, "type")) == Some("local") || (truthy(path) && !truthy(at(src, "url"))) {

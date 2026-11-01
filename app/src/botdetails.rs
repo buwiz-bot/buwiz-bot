@@ -505,7 +505,6 @@ fn add_page(b: &RoxBot) -> impl IntoElement {
         name: s.name.clone(),
         kind: "skill".into(),
         description: s.description.clone(),
-        icon: String::new(),
     }));
     let mut c = card();
     if rows.is_empty() {
@@ -541,25 +540,7 @@ fn add_page(b: &RoxBot) -> impl IntoElement {
     view().pt(px(18.0)).child(c)
 }
 
-/// An integration's logo on a white plate, else its first letter.
+/// An integration's tile: its first letter on the name's hue (no logos).
 fn logo(it: &BotIntegration, size: f32) -> AnyElement {
-    let plate = view()
-        .size(px(size))
-        .rounded(px((size * 0.26).round()))
-        .overflow_hidden()
-        .items_center()
-        .justify_center();
-    if it.icon.is_empty() {
-        let letter = it.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        return plate
-            .bg(theme::HOVER)
-            .child(text(letter).text_size(px(size * 0.45)).font_weight(FontWeight::SEMIBOLD).text_color(theme::DIM))
-            .into_element();
-    }
-    plate
-        .bg(white())
-        .border(px(0.5))
-        .border_color(theme::BORDER_S)
-        .child(image(format!("{}{}", crate::client::backend(), it.icon)).w(px(size * 0.76)).h(px(size * 0.76)))
-        .into_element()
+    crate::plugins::plug_tile(&it.name, size).into_element()
 }

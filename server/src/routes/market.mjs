@@ -1,4 +1,4 @@
-// routes/market.mjs — the plugin catalog (Grok Bot's snapshot), installs,
+// routes/market.mjs — the plugin catalog (plugins/catalog.json), installs,
 // plugin pages, connector accounts, private skills and MCP servers.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import {
   invalidate as mcpInvalidate, statusOf as mcpStatus,
 } from "../mcp.mjs";
 import {
-  CATEGORIES, SHOW_OAUTH_APP_PLUGINS, hiddenInfo, iconFile, catalogEntries, catalogFetchedAt, catalogSkills, entryOf, fetchPlugin, fieldsOf, installedMeta,
+  CATEGORIES, catalogEntries, catalogVersion, catalogSkills, entryFor, entryOf, fetchPlugin, fieldsOf, installedMeta,
   installedRow, legacyOf, materialize, pluginInventory, pluginRoot, removePluginFiles, saveSettings, serverConfigs,
   pluginUsesGoogle, serverIdFor, settingsOf, skillDescription, skillFile,
 } from "../plugins.mjs";
@@ -35,7 +35,7 @@ const fail = (res, e) => sendJson(res, { ok: false, error: String(e?.message || 
 const catLabel = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.label]));
 const parse = (s, d) => { try { return JSON.parse(s) ?? d; } catch { return d; } };
 
-// Legacy xAI-marketplace install (plugins Grok Bot doesn't list): clone the
+// A catalog plugin listed by source: its vendored dir, else a clone of its
 // repo at its pinned sha into plugins/<name>.
 async function installLegacy(p) {
   const dir = join(PLUGINS_DIR, p.name);
@@ -89,27 +89,27 @@ function accountNote(key, server, row, st) {
 }
 
 export default async function handle(req, res) {
-  // ————— Plugin marketplace (Grok Bot's catalog) —————
-  // GET /plugins/catalog[?rev=<rev>] → catalog rows + installed flags; a
+  // ————— Plugin catalog —————
+  // GET /plugins/catalog[?rev=<rev>] → catalog rows + installed flags, then
+  // the installed plugins the catalog doesn't list (from their records); a
   // matching rev answers {unchanged:true} so the open modal's poll is cheap.
   if (req.method === "GET" && req.url?.startsWith("/plugins/catalog")) {
     const installed = new Map(db.prepare("SELECT name, meta FROM installed_plugins").all().map((r) => [r.name, r.meta]));
-    const rev = `${catalogFetchedAt()}|${[...installed.keys()].sort().join(",")}|${installed.size ? [...installed.values()].join("").length : 0}`;
+    const rev = `${catalogVersion()}|${[...installed.keys()].sort().join(",")}|${installed.size ? [...installed.values()].join("").length : 0}`;
     const q = new URL(req.url, "http://x").searchParams;
     if (q.get("rev") === rev) return sendJson(res, { rev, unchanged: true }), true;
+    const unlisted = [...installed.keys()].filter((k) => !entryOf(k)).map((k) => entryFor(k));
     sendJson(res, {
-      marketplace: "grok-bot",
+      marketplace: "buwiz-bot",
       rev,
       categories: CATEGORIES,
-      plugins: catalogEntries().filter((e) => SHOW_OAUTH_APP_PLUGINS || installed.has(e.key) || !hiddenInfo(e.key)).map((e) => ({
+      plugins: [...catalogEntries(), ...unlisted].map((e) => ({
         name: e.key,
         displayName: e.displayName || e.name,
         description: e.description || "",
         category: e.cats?.length ? catLabel[e.cats[0]] : e.category || "other",
         cats: (e.cats || []).map((c) => catLabel[c]),
         homepage: e.websiteUrl || null,
-        iconUrl: e.iconUrl || null,
-        icon: iconFile(e.key) ? `/plugins/icon/${encodeURIComponent(e.key)}` : null,
         publisher: e.publisher?.displayName || e.publisher?.name || "",
         keywords: [
           ...(e.keywords || []), e.name, e.pluginName,
@@ -201,7 +201,7 @@ export default async function handle(req, res) {
   if (req.method === "POST" && req.url === "/plugins/settings") {
     const b = await readBody(req);
     try {
-      const e = entryOf(b.plugin);
+      const e = entryFor(b.plugin);
       if (!e) throw new Error(`unknown plugin ${b.plugin}`);
       const cur = settingsOf(e.key);
       const next = { ...cur };
@@ -225,7 +225,7 @@ export default async function handle(req, res) {
     return true;
   }
   async function reapply(key) {
-    const e = entryOf(key);
+    const e = entryFor(key);
     {
       const meta = installedMeta(e.key);
       if (meta) {
@@ -244,11 +244,12 @@ export default async function handle(req, res) {
     }
   }
 
-  // GET /plugins/detail?name=<key> — catalog entry + (installed) content
-  // inventory + live status of its connectors + setup fields.
+  // GET /plugins/detail?name=<key> — catalog entry (an installed plugin the
+  // catalog doesn't list: its record's) + (installed) content inventory +
+  // live status of its connectors + setup fields.
   if (req.method === "GET" && req.url?.startsWith("/plugins/detail")) {
     const key = new URL(req.url, "http://x").searchParams.get("name");
-    const e = entryOf(key);
+    const e = entryFor(key);
     if (!e) return sendJson(res, { error: "unknown plugin" }, 404), true;
     const meta = installedMeta(e.key);
     const root = meta ? pluginRoot(e.key) : null;
@@ -279,11 +280,12 @@ export default async function handle(req, res) {
       const st = row ? mcpStatus(row.id) : { status: "off", tools: 0 };
       return {
         name,
-        transport: cfg ? (cfg.url ? "remote" : "command") : "unknown",
+        // a connector no config declares: its row's
+        transport: cfg ? (cfg.url ? "remote" : "command") : row ? (row.url ? "remote" : "command") : "unknown",
         id: row?.id || null,
         status: row ? (!row.enabled ? "off" : m?.missing.length && st.status !== "connected" ? "needs-auth" : st.status) : "not-added",
         tools: st.tools, err: st.err || null, accounts,
-        unavailable: cfg ? null : "Its configuration isn't published in the plugin's repository",
+        unavailable: cfg || row ? null : "Its configuration isn't published in the plugin's repository",
         needs: m?.missing || [],
         callbackUrl: m?.own ? fixedRedirectUrl(row?.id || serverIdFor(e.key, name)) : null,
       };
@@ -292,9 +294,7 @@ export default async function handle(req, res) {
     sendJson(res, {
       name: e.key, displayName: e.displayName || e.name, description: e.description || "",
       category: e.cats?.length ? catLabel[e.cats[0]] : e.category || "other",
-      homepage: e.websiteUrl || null, source: e.repositoryUrl || e.install?.repo || null, iconUrl: e.iconUrl || null,
-      icon: iconFile(e.key) ? `/plugins/icon/${encodeURIComponent(e.key)}` : null,
-      needsOAuthApp: hiddenInfo(e.key),
+      homepage: e.websiteUrl || null, source: e.repositoryUrl || e.install?.repo || null,
       publisher: e.publisher?.displayName || e.publisher?.name || "",
       availability: e.marketplace ? `Private marketplace (${e.marketplace.displayName || e.marketplace.name})` : "Public",
       unavailable: e.install?.unavailable || null,
@@ -316,7 +316,7 @@ export default async function handle(req, res) {
     const b = await readBody(req);
     try {
       const { plugin, server, label } = b;
-      const e = entryOf(plugin);
+      const e = entryFor(plugin);
       if (!e || !installedRow(e.key)) throw new Error(`plugin ${plugin} is not installed`);
       const m = materialize(e.key, server);
       if (!m || (!m.url && !m.command)) throw new Error(`${plugin} declares no server ${server}`);
@@ -357,18 +357,6 @@ export default async function handle(req, res) {
     return true;
   }
 
-  // GET /plugins/icon/<key> — the plugin's logo file.
-  if (req.method === "GET" && req.url?.startsWith("/plugins/icon/")) {
-    const key = decodeURIComponent(req.url.slice("/plugins/icon/".length).split("?")[0]);
-    const f = iconFile(key);
-    if (!f) return (res.statusCode = 404), res.end(), true;
-    const ext = f.split(".").pop().toLowerCase();
-    res.setHeader("content-type", { svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", ico: "image/x-icon" }[ext] || "application/octet-stream");
-    res.setHeader("cache-control", "max-age=86400");
-    res.end(readFileSync(f));
-    return true;
-  }
-
   // GET /oauth/callback/<id> — the fixed redirect for pre-registered OAuth
   // clients (e.g. http://127.0.0.1:8787/oauth/callback/x).
   if (req.method === "GET" && req.url?.startsWith("/oauth/callback/")) {
@@ -402,7 +390,7 @@ export default async function handle(req, res) {
   // GET /plugins/skill?plugin=<key>&skill=<skill> — the SKILL.md body.
   if (req.method === "GET" && req.url?.startsWith("/plugins/skill")) {
     const q = new URL(req.url, "http://x").searchParams;
-    const e = entryOf(q.get("plugin"));
+    const e = entryFor(q.get("plugin"));
     const skill = String(q.get("skill") || "");
     const file = e && installedRow(e.key) ? skillFile(e.key, skill) : null;
     if (!file || !existsSync(file)) {
