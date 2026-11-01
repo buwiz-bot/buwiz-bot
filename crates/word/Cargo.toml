@@ -1,6 +1,7 @@
 [package]
 name = "buwiz-word"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2024"
 publish = false
 description = "The Word view: .docx (and legacy .doc) opened, edited and saved natively"
