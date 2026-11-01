@@ -141,7 +141,12 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             let name = u.get("name").map(js::string_of).unwrap_or_default();
             let (p, d) = activity::tool_activity(ctx, &name, u.get("input").unwrap_or(&json!({})));
             run.set_job(&p, &d);
-            let r = exec_tool(run, u).await;
+            // a switched-off tool is refused as a result the model reads
+            // (opengrok-harness: fail closed, say why), never run
+            let r = match crate::hub::tools::ceiling::refusal(ctx, &run.turn, &name) {
+                Some(why) => crate::hub::tools::Out::err(why),
+                None => exec_tool(run, u).await,
+            };
             tool_log::record(run, &name, u.get("input").unwrap_or(&json!({})), &r);
             if r.is_error == Some(true) {
                 println!("  ✗ {name}: {}", js::slice_utf16(&js::squeeze(&js::string_of(&r.content)), 200));

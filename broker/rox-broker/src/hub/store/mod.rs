@@ -63,7 +63,7 @@ pub mod write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::ctx::Db;
 use super::traits::TurnDone;
@@ -151,6 +151,52 @@ impl Thread {
     }
 }
 
+/// A bot's tool ceiling (opengrok-server `agui/ceiling.rs`, #268): the
+/// rows its owner switched — `{name, kind, description, enabled,
+/// available?, label?, connector?}` — and the `version` a PUT names so a
+/// stale write is refused (409). No rows is the state before anyone
+/// looked: every tool on. Once rows exist a name without one is off (a
+/// ceiling only goes down, as `opengrok-policy` intersects it). Rows a
+/// PUT sent for tools this broker does not know are kept, never dropped.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ceiling {
+    pub rows: Vec<Value>,
+    pub version: i64,
+}
+
+impl Ceiling {
+    /// The row named `name`.
+    pub fn row(&self, name: &str) -> Option<&Value> {
+        self.rows.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(name))
+    }
+
+    /// Whether the ceiling lets `name` through: its row's `enabled`; on,
+    /// when nobody has set a ceiling yet; off otherwise.
+    pub fn allows(&self, name: &str) -> bool {
+        match self.row(name) {
+            Some(r) => r.get("enabled").map(crate::js::truthy).unwrap_or(true),
+            None => self.rows.is_empty(),
+        }
+    }
+
+    /// The `tools` column: `{"rows": [...], "version": n}`; `None` for the
+    /// untouched ceiling, which is what the migration leaves old rows at.
+    pub fn to_json(&self) -> Option<Value> {
+        if self.rows.is_empty() && self.version == 0 {
+            return None;
+        }
+        Some(json!({ "rows": self.rows, "version": self.version }))
+    }
+
+    /// A ceiling from its column (or a bot JSON's `tools`); anything that
+    /// is not that shape is the untouched ceiling.
+    pub fn from_json(v: &Value) -> Self {
+        let rows = v.get("rows").and_then(Value::as_array).cloned().unwrap_or_default();
+        let version = v.get("version").and_then(Value::as_i64).unwrap_or(0);
+        Self { rows, version }
+    }
+}
+
 /// A bot (`store.bots[i]`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bot {
@@ -184,6 +230,8 @@ pub struct Bot {
     pub accepts: Option<Value>,
     /// Bot Details' "Last updated": in memory only (never persisted)
     pub updated_at: Option<f64>,
+    /// the bot's tool ceiling (app.db `bots.tools`)
+    pub tools: Ceiling,
 }
 
 impl Bot {
@@ -214,6 +262,7 @@ impl Bot {
             helper: None,
             accepts: None,
             updated_at: None,
+            tools: Ceiling::default(),
         }
     }
 }

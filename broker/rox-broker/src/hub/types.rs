@@ -20,6 +20,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub enum Verb {
     Get,
     Post,
+    Put,
     Any,
 }
 
@@ -28,6 +29,7 @@ impl Verb {
         match self {
             Verb::Get => method == Method::GET,
             Verb::Post => method == Method::POST,
+            Verb::Put => method == Method::PUT,
             Verb::Any => true,
         }
     }

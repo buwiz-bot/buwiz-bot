@@ -95,8 +95,14 @@ fn copy_db(from: &Path, to: &Path) {
 fn db_diff(a: &Path, b: &Path) -> String {
     let o = Command::new("node").arg("tools/db-diff.mjs").arg(a.join("generated/app.db")).arg(b.join("generated/app.db")).current_dir(server()).output().unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    // S1's `bots.tools` has no Node twin: a NULL there is what Node's row is
+    let text = text.replace(",\"tools\":null", "");
     let tables_only = text.lines().filter(|l| l.ends_with("(table only here)")).count();
-    let rest: Vec<&str> = text.lines().filter(|l| !l.is_empty() && !l.ends_with("(table only here)") && *l != format!("{tables_only} rows differ")).collect();
+    let rest: Vec<&str> = text.lines().filter(|l| !l.is_empty() && !l.ends_with("(table only here)") && !l.ends_with(" rows differ")).collect();
+    // a row that differed only by that column reads the same on both sides now
+    let twin = |l: &str| l.replace(": only in A: ", ": only in B: ");
+    let rest: Vec<&str> = rest.iter().copied().filter(|l| !(l.contains(": only in A: ") && rest.contains(&twin(l).as_str())) && !(l.contains(": only in B: ") && rest.contains(&l.replace(": only in B: ", ": only in A: ").as_str()))).collect();
+    let _ = tables_only;
     rest.join("\n")
 }
 
@@ -258,4 +264,46 @@ fn store_backfills_uids_by_nodes_time_rule_once() {
     assert_eq!(first.iter().map(|id| v7_time(Some(id)).unwrap()).collect::<Vec<_>>(), [k - 2, k - 1, k, k + 1, k + 2, k + 3]);
     assert_eq!(ids(&hub(&dir)), first, "idempotent");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn store_bot_tool_ceiling_round_trips_and_old_rows_migrate_to_every_tool_on() {
+    use super::Ceiling;
+    // an app.db from before the `tools` column: a bot row the migration
+    // must leave at "every tool on, version 0"
+    let dir = temp("ceiling");
+    drop(hub(&dir));
+    hub(&dir)
+        .db
+        .with(|c| c.execute_batch("ALTER TABLE bots DROP COLUMN tools; INSERT INTO bots(id,name,shape,color,thread_id,ord) VALUES('old','Old','star','#FF309B',NULL,9);"))
+        .unwrap();
+    let ctx = hub(&dir);
+    let old = ctx.store.read(|s| s.bot("old").cloned()).unwrap();
+    assert_eq!(old.tools, Ceiling::default(), "a migrated row has no ceiling rows and version 0");
+    assert!(old.tools.allows("shell_run"));
+    assert_eq!(old.tools.version, 0);
+    // a ceiling written row by row, with a row for a tool nobody here knows
+    let rows = vec![json!({"name": "shell_run", "kind": "builtin", "enabled": false}), json!({"name": "acme", "kind": "plugin", "enabled": true, "note": "kept as sent"})];
+    ctx.store
+        .write(|s| {
+            s.bots.push(Bot { tools: Ceiling { rows: rows.clone(), version: 3 }, ..Bot::new("bob", "Bob", "blob", "#1084FE", None) });
+            if let Some(b) = s.bots.iter_mut().find(|b| b.id == "old") {
+                b.tools = Ceiling { rows: vec![json!({"name": "fetch_url", "kind": "builtin", "enabled": true})], version: 1 };
+            }
+        })
+        .unwrap();
+    let again = hub(&dir);
+    let (bob, old) = again.store.read(|s| (s.bot("bob").cloned().unwrap(), s.bot("old").cloned().unwrap()));
+    assert_eq!(bob.tools, Ceiling { rows, version: 3 });
+    assert!(!bob.tools.allows("shell_run"));
+    assert_eq!(bob.tools.rows[1]["note"], "kept as sent");
+    assert_eq!(old.tools.version, 1);
+    assert!(old.tools.allows("fetch_url"));
+    assert!(!old.tools.allows("shell_run"), "once rows exist a name without one is off");
+    // the column itself: NULL for the untouched ceiling, JSON otherwise
+    let col: Option<String> = again.db.with(|c| c.query_row("SELECT tools FROM bots WHERE id='bob'", [], |r| r.get(0))).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&col.unwrap()).unwrap()["version"], 3);
+    again.store.write(|s| s.bots.iter_mut().find(|b| b.id == "bob").map(|b| b.tools = Ceiling::default())).unwrap();
+    let col: Option<String> = again.db.with(|c| c.query_row("SELECT tools FROM bots WHERE id='bob'", [], |r| r.get(0))).unwrap();
+    assert_eq!(col, None);
 }
