@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod manifest;
+pub mod package;
 pub mod params;
 pub mod signing;
 pub mod trust;

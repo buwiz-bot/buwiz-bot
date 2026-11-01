@@ -76,6 +76,8 @@ impl Fake {
             enabled: true,
             disabled_tools: "[]".into(),
             created_at: 1,
+            package: None,
+            skills: "[]".into(),
         };
         let gws = row(GWS, "gws", "Google Workspace", json!([]), vec![tool("gws_search_mail", true), tool("gws_read_mail", true)]);
         let fx = row(FX, "fx", "Fixture", fx_routines, vec![tool("fx_echo", false), tool("fx_search", true), tool("fx_query", false)]);

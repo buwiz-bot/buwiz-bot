@@ -120,6 +120,7 @@ pub async fn fetch_plugin(m: &Market, e: &Value) -> Result<Fetched, String> {
         static REF: OnceLock<Regex> = OnceLock::new();
         let top: Vec<String> = under.iter().map(|f| f[pre.len()..].split('/').next().unwrap_or("").to_owned()).collect();
         for p in [
+            ".buwiz-plugin",
             ".cursor-plugin",
             ".claude-plugin",
             ".grok-plugin",
@@ -280,7 +281,7 @@ pub fn plugin_inventory(m: &Market, ctx: &HubCtx, key: &str, root: &Path) -> Val
         _ => list_dir("skills", false),
     };
     let mut manifest = json!({});
-    for f in [".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
+    for f in [".buwiz-plugin/plugin.json", ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
         let j = parse(std::fs::read_to_string(root.join(f)).ok().as_deref(), Value::Null);
         if truthy(j.get("name")) {
             manifest = j;
@@ -314,7 +315,9 @@ pub fn skill_file(m: &Market, ctx: &HubCtx, key: &str, skill: &str) -> Option<Pa
     ok.then(|| root.join("skills").join(skill).join("SKILL.md"))
 }
 
-/// `pluginSkillsInject()`: installed plugin skills as the agent's index.
+/// `pluginSkillsInject()`: installed plugin skills as the agent's index;
+/// an enabled 2.1 mini app's package skills (`v1_plugins.skills`) join it
+/// under its short name.
 pub fn plugin_skills_inject(m: &Market, ctx: &HubCtx) -> String {
     let names: Vec<String> = ctx
         .db
@@ -333,6 +336,23 @@ pub fn plugin_skills_inject(m: &Market, ctx: &HubCtx) -> String {
             if let Some(f) = skill_file(m, ctx, &name, &sname).filter(|f| f.exists()) {
                 let desc = sk.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_default();
                 lines.push(format!("- {name}/{sname}: {} (file: {})", js::slice_utf16(&desc, 160), f.display()));
+            }
+        }
+    }
+    let apps: Vec<(String, String)> = ctx
+        .db
+        .with(|db| {
+            let mut st = db.prepare("SELECT short, skills FROM v1_plugins WHERE enabled=1 AND package IS NOT NULL ORDER BY created_at")?;
+            let r = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?;
+            r.collect()
+        })
+        .unwrap_or_default();
+    for (short, skills) in apps {
+        for sk in parse(Some(&skills), json!([])).as_array().into_iter().flatten() {
+            let (sname, file) = (super::string(sk.get("name")), super::string(sk.get("file")));
+            if !sname.is_empty() && Path::new(&file).exists() {
+                let desc = sk.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_default();
+                lines.push(format!("- {short}/{sname}: {} (file: {file})", js::slice_utf16(&desc, 160)));
             }
         }
     }

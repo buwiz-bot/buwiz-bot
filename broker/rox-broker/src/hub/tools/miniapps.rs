@@ -3,7 +3,8 @@
 //! fetches and verifies a GitHub release (`helper::release`), inspects it
 //! and posts an `app_install` card in the chat: only the user's Install
 //! installs it. `app_uninstall` posts an `app_uninstall` card the same way;
-//! `app_enable` / `app_disable` act at once; `app_list` lists.
+//! `app_enable` / `app_disable` act at once; `app_list` lists. A 2.1
+//! package's card also names its folder (`package`), skills and accounts.
 
 use serde_json::{json, Value};
 
@@ -52,7 +53,7 @@ fn title_of(m: &Value, id: &str) -> String {
 }
 
 /// The card in the turn's chat; `false` when the chat is gone.
-fn post(run: &Run, n: &Value) -> bool {
+pub(super) fn post(run: &Run, n: &Value) -> bool {
     let host = StoreHost::new();
     host.bind(&run.ctx);
     threads::notice(&host, &run.thread_id(), n)
@@ -112,22 +113,25 @@ async fn install(run: &Run, host: &Host, input: &Value) -> Out {
         Ok(f) => f,
         Err(e) => return Out::err(format!("app_install: {e}")),
     };
-    let spec = f.spec();
+    let mut spec = f.spec();
+    if f.package.is_some() {
+        spec["package"] = json!(f.dir.display().to_string());
+    }
     let i = match host.inspect(&spec).await {
         Ok(i) => i,
         Err(e) => return Out::err(format!("app_install: the release did not pass inspection: {}: {}", e.code, e.message)),
     };
     let m = &i["manifest"];
-    let title = title_of(m, &f.index.id);
+    let title = title_of(m, &f.id);
     let publisher = m.pointer("/publisher/name").or_else(|| m.pointer("/publisher/id")).filter(|p| js::truthy(p)).map(js::string_of).unwrap_or_default();
     // installed plugins whose env already holds every needed key (keys only)
-    let keys: Vec<String> = f.index.needs_env.iter().map(|n| js::string_of(&n["key"])).collect();
+    let keys: Vec<String> = f.needs_env.iter().map(|n| js::string_of(&n["key"])).collect();
     let env_from: Vec<Value> = if keys.is_empty() {
         Vec::new()
     } else {
         host.rows()
             .into_iter()
-            .filter(|r| r.id != f.index.id)
+            .filter(|r| r.id != f.id)
             .filter(|r| {
                 let env = parse(&r.env, json!({}));
                 keys.iter().all(|k| env.get(k).is_some_and(Value::is_string))
@@ -135,11 +139,11 @@ async fn install(run: &Run, host: &Host, input: &Value) -> Out {
             .map(|r| json!({"id": r.id, "title": title_of(&r.manifest(), &r.id)}))
             .collect()
     };
-    let n = json!({
+    let mut n = json!({
         "kind": "app_install",
-        "id": f.index.id,
+        "id": f.id,
         "title": title,
-        "version": f.index.version,
+        "version": f.version,
         "publisher": publisher,
         "source": f.source,
         "command": spec["command"],
@@ -148,14 +152,20 @@ async fn install(run: &Run, host: &Host, input: &Value) -> Out {
         "manifest_sha256": i["manifest_sha256"],
         "review": i["review"],
         "update": i["update"],
-        "needs_env": f.index.needs_env,
+        "needs_env": f.needs_env,
         "env_from": env_from,
         "state": "pending",
     });
+    if let Some(p) = i.get("package") {
+        // the user's Install sends `package` back with the command
+        n["package"] = p["dir"].clone();
+        n["skills"] = json!(p["skills"].as_array().into_iter().flatten().map(|s| s["name"].clone()).collect::<Vec<_>>());
+        n["accounts"] = p["accounts"].clone();
+    }
     if !post(run, &n) {
         return Out::err("no chat to show the install card in".into());
     }
-    Out::ok(format!("a card in this chat asks the user to review and Install {title} {}; you cannot install it yourself", f.index.version))
+    Out::ok(format!("a card in this chat asks the user to review and Install {title} {}; you cannot install it yourself", f.version))
 }
 
 #[cfg(test)]
@@ -168,7 +178,7 @@ mod tests {
 
     use super::*;
     use crate::helper::keystore::Keystore;
-    use crate::helper::plugins::{Clock as HostClock, Options, Timeouts};
+    use crate::helper::plugins::{AccountsConfig, Clock as HostClock, Options, Timeouts};
     use crate::helper::release::tests::{index, trust, KEY, SEED};
     use crate::hub::ctx::HubCtx;
     use crate::hub::model::Settings;
@@ -181,15 +191,18 @@ mod tests {
 
     /// path → (status, location, body)
     type Files = Arc<Mutex<HashMap<String, (u16, String, Vec<u8>)>>>;
+    /// `<method> <path>` and the body of each request
+    type Log = Arc<Mutex<Vec<(String, String)>>>;
 
-    /// A fake GitHub on 127.0.0.1:0: the API, and assets behind a redirect.
-    async fn github(files: Files) -> String {
+    /// A fake GitHub on 127.0.0.1:0: the API, and assets behind a redirect
+    /// (and a token endpoint, whatever `files` says).
+    async fn github(files: Files, log: Log) -> String {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(async move {
             loop {
                 let Ok((mut s, _)) = l.accept().await else { return };
-                let files = files.clone();
+                let (files, log) = (files.clone(), log.clone());
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut chunk = [0u8; 4096];
@@ -199,8 +212,18 @@ mod tests {
                             Ok(n) => buf.extend_from_slice(&chunk[..n]),
                         }
                     }
-                    let head = String::from_utf8_lossy(&buf).into_owned();
+                    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(0) + 4;
+                    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                    let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                    while buf.len() < end + len {
+                        match s.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
                     let path = head.split(' ').nth(1).unwrap_or("/").to_owned();
+                    let method = head.split(' ').next().unwrap_or("").to_owned();
+                    log.lock().unwrap().push((format!("{method} {path}"), String::from_utf8_lossy(&buf[end..]).into_owned()));
                     let (status, location, body) = files.lock().unwrap().get(&path).cloned().unwrap_or((404, String::new(), b"{}".to_vec()));
                     let loc = if location.is_empty() { String::new() } else { format!("location: {location}\r\n") };
                     let out = format!("HTTP/1.1 {status} X\r\n{loc}content-length: {}\r\nconnection: close\r\n\r\n", body.len());
@@ -252,6 +275,21 @@ mod tests {
     }
 
     async fn bed(label: &str) -> (Arc<HubCtx>, Arc<Host>, Files, PathBuf, String) {
+        let b = bed_in(label, HostClock::system()).await;
+        (b.ctx, b.host, b.files, b.dir, b.base)
+    }
+
+    struct Bed {
+        ctx: Arc<HubCtx>,
+        host: Arc<Host>,
+        files: Files,
+        log: Log,
+        dir: PathBuf,
+        base: String,
+        db: PathBuf,
+    }
+
+    async fn bed_in(label: &str, clock: HostClock) -> Bed {
         let dir = std::env::temp_dir().join(format!("rox-miniapps-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
         let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
         ctx.store.load().unwrap();
@@ -261,7 +299,7 @@ mod tests {
         let approved: Vec<Value> = t.approved.iter().map(|(id, k)| json!({"id": id, "publisher_key_id": k})).collect();
         std::fs::write(&trust_file, json!({"v": 1, "publishers": pubs, "approved_plugins": approved}).to_string()).unwrap();
         let db = dir.join("plugins.db");
-        let host = Host::new(Options { db: db.clone(), keys: Keystore::from_spec(&format!("file:{}", dir.join("keys").display())).unwrap(), trust_file, log_dir: None, clock: HostClock::system(), timeouts: Timeouts::default() }).unwrap();
+        let host = Host::new(Options { db: db.clone(), keys: Keystore::from_spec(&format!("file:{}", dir.join("keys").display())).unwrap(), trust_file, log_dir: None, clock, timeouts: Timeouts::default(), apps_dir: Some(dir.join("v1/apps")) }).unwrap();
         // an installed plugin whose settings the new one may reuse
         let c = rusqlite::Connection::open(&db).unwrap();
         c.execute(
@@ -270,10 +308,10 @@ mod tests {
         )
         .unwrap();
         ctx.plugins = Some(host.clone());
-        let files: Files = Arc::default();
-        let base = github(files.clone()).await;
+        let (files, log): (Files, Log) = (Arc::default(), Arc::default());
+        let base = github(files.clone(), log.clone()).await;
         ctx.ext.insert(GithubApi(base.clone()));
-        (Arc::new(ctx), host, files, dir, base)
+        Bed { ctx: Arc::new(ctx), host, files, log, dir, base, db }
     }
 
     fn run_in(ctx: &Arc<HubCtx>) -> Run {
@@ -396,5 +434,258 @@ mod tests {
         assert_eq!(with_env_from(&host, &b(json!({"env_from": "app.buwiz.other"}))).unwrap_err().code, "invalid_args");
         assert_eq!(with_env_from(&host, &b(json!({"env_from": 5, "env_from_keys": []}))).unwrap_err().code, "invalid_args");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const SKILL: &str = "---\nname: triage\ndescription: Triage the inbox\n---\nRead the newest mail first.\n";
+
+    /// The fixture as a 2.1 package: plugin.json (signed, with a google
+    /// account), the served manifest and a skill as files, the launcher
+    /// as this platform's binary; `edit` changes plugin.json before it is
+    /// signed.
+    fn publish_pkg(files: &Files, base: &str, tag: &str, edit: impl FnOnce(&mut Value)) {
+        let dir = server_dir();
+        let mut m: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+        m["publisher"]["key_id"] = json!(KEY);
+        let sources: Vec<(String, Vec<u8>)> = ["board", "card"].iter().map(|id| (id.to_string(), std::fs::read(dir.join(format!("{id}.tsx"))).unwrap())).collect();
+        let manifest = crate::v1::signing::sign_manifest(&m, &rox_v1::keys::b64(&SEED), &sources).unwrap().to_string().into_bytes();
+        let bin = format!("#!/bin/sh\nexec '{}' '{}' \"$@\"\n", node(), dir.join("server.mjs").display()).into_bytes();
+        let (msha, bsha, ssha) = (sha(&manifest), sha(&bin), sha(SKILL.as_bytes()));
+        let plugin = crate::v1::package::tests::plugin_json(&release::platform(), |p| {
+            p["mcpServers"]["fx"]["args"] = json!([]);
+            p["buwiz"]["files"] = json!({
+                "manifest.signed.json": {"asset": "manifest.signed.json", "sha256": msha},
+                "skills/triage/SKILL.md": {"asset": "skills.triage.SKILL.md", "sha256": ssha},
+            });
+            p["buwiz"]["binaries"][release::platform()] = json!({"path": "bin/fx", "asset": "fx-bin", "sha256": bsha});
+            edit(p);
+        });
+        let mut f = files.lock().unwrap();
+        let mut assets = Vec::new();
+        for (name, body) in [("plugin.json", plugin.to_string().into_bytes()), ("manifest.signed.json", manifest), ("skills.triage.SKILL.md", SKILL.as_bytes().to_vec()), ("fx-bin", bin)] {
+            f.insert(format!("/dl/{tag}/{name}"), (302, format!("{base}/obj/{tag}/{name}"), Vec::new()));
+            f.insert(format!("/obj/{tag}/{name}"), (200, String::new(), body));
+            assets.push(json!({"name": name, "browser_download_url": format!("{base}/dl/{tag}/{name}")}));
+        }
+        f.insert(format!("/repos/o/r/releases/tags/{tag}"), (200, String::new(), json!({"tag_name": tag, "assets": assets}).to_string().into_bytes()));
+    }
+
+    fn token_answer(files: &Files, status: u16, body: Value) {
+        files.lock().unwrap().insert("/token".into(), (status, String::new(), body.to_string().into_bytes()));
+    }
+
+    fn jwt(claims: Value) -> String {
+        use base64::Engine as _;
+        format!("e30.{}.sig", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string()))
+    }
+
+    async fn until(what: &str, f: impl AsyncFn() -> bool) {
+        for _ in 0..200 {
+            if f().await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    async fn pushed(host: &Host) -> Value {
+        let r = host.call_tool(FX, "fx_stats", &json!({}), None, None).await.unwrap();
+        r["structuredContent"]["accounts"].clone()
+    }
+
+    /// Installs the tag's package through app_install and the user's card.
+    async fn install_pkg(b: &Bed, tag: &str) -> Value {
+        let run = run_in(&b.ctx);
+        let out = call(&run, "app_install", json!({"url": format!("https://github.com/o/r/releases/tag/{tag}")})).await;
+        assert_eq!(out.is_error, None, "{out:?}");
+        let (_, n) = last_notice(&b.ctx, &run.thread_id());
+        let body = json!({"command": n["command"], "args": n["args"], "env": n["env"], "manifest_sha256": n["manifest_sha256"], "package": n["package"]});
+        let r = install_plugin(&b.ctx, &b.host, &body).await.unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        n
+    }
+
+    fn google_client(b: &Bed) {
+        let c = rusqlite::Connection::open(&b.db).unwrap();
+        c.execute_batch("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)").unwrap();
+        c.execute("INSERT OR REPLACE INTO plugin_settings VALUES('@google', ?, 1)", [r#"{"GOOGLE_CLIENT_ID":"cid","GOOGLE_CLIENT_SECRET":"csec"}"#]).unwrap();
+    }
+
+    fn accounts_config(b: &Bed, opened: &Arc<Mutex<Vec<String>>>) {
+        let o = opened.clone();
+        b.host.set_accounts_config(AccountsConfig {
+            port: 8787,
+            google_authorize: "https://accounts.example.test/auth".into(),
+            google_token: format!("{}/token", b.base),
+            open: Arc::new(move |u: &str| o.lock().unwrap().push(u.to_owned())),
+        });
+    }
+
+    /// signin with open: false; → (flow, state) from its authorize URL.
+    async fn sign_in(b: &Bed) -> (String, String, url::Url) {
+        let r = b.host.account_signin(FX, "google", &json!({"open": false})).await.unwrap();
+        let u = url::Url::parse(r["url"].as_str().unwrap()).unwrap();
+        let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let flow = q["redirect_uri"].strip_prefix("http://127.0.0.1:8787/oauth/callback/").unwrap();
+        let flow = js::decode_uri_component(flow).unwrap();
+        (flow, q["state"].clone(), u)
+    }
+
+    #[tokio::test]
+    async fn a_2_1_package_installs_and_its_google_account_is_pushed_refreshed_and_cleared() {
+        let b = bed_in("pkg", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        accounts_config(&b, &opened);
+        let n = install_pkg(&b, "v1.0.0").await;
+        let at = b.dir.join("v1/apps").join(FX).join("1.0.0");
+        assert_eq!(n["package"], json!(at.display().to_string()));
+        assert_eq!(n["skills"], json!(["triage"]));
+        assert_eq!(n["accounts"], json!([{"id": "google", "provider": "google", "label": "Google account", "required": true}]));
+        assert_eq!(n["command"], json!(at.join("bin/fx").display().to_string()));
+        assert_eq!(n["env"], json!({"FX_MANIFEST": at.join("manifest.signed.json").display().to_string()}));
+        let keys: Vec<&String> = n.as_object().unwrap().keys().collect();
+        assert_eq!(&keys[keys.len() - 4..], ["state", "package", "skills", "accounts"]);
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(std::fs::metadata(at.join("bin/fx")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::read_to_string(at.join("skills/triage/SKILL.md")).unwrap(), SKILL);
+        assert!(at.join("plugin.json").exists());
+        let row = b.host.row(FX).unwrap();
+        assert_eq!(row.package.as_deref(), Some(at.display().to_string().as_str()));
+        assert_eq!(parse(&row.skills, json!([])), json!([{"name": "triage", "description": "Triage the inbox", "file": at.join("skills/triage/SKILL.md").display().to_string()}]));
+        assert_eq!(b.host.runtime_view(FX).state, "running");
+
+        // no Google client yet: the row says so, sign-in refuses
+        let view = b.host.accounts_view(FX);
+        assert_eq!(view, json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": null, "state": "none", "required": true, "setup": "Add your Google client in Setup"}]));
+        let e = b.host.account_signin(FX, "google", &json!({})).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("needs_setup", "Add your Google client in Setup"));
+        assert_eq!(b.host.account_signin(FX, "github", &json!({})).await.unwrap_err().code, "not_found");
+        google_client(&b);
+
+        let (flow, state, u) = sign_in(&b).await;
+        assert_eq!(flow, "account:app.buwiz.fixture/google/default");
+        let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        assert_eq!(u.host_str(), Some("accounts.example.test"));
+        assert_eq!((q["client_id"].as_str(), q["access_type"].as_str(), q["prompt"].as_str(), q["code_challenge_method"].as_str(), q["response_type"].as_str()), ("cid", "offline", "consent", "S256", "code"));
+        assert_eq!(q["scope"], "https://www.googleapis.com/auth/gmail.readonly openid email");
+        assert!(opened.lock().unwrap().is_empty(), "open: false opens nothing");
+        assert_eq!(b.host.accounts_view(FX), json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": null, "state": "none", "required": true}]));
+        assert!(b.host.account_pending(&flow));
+        assert_eq!(b.host.account_callback(&flow, Some("code-1"), Some("wrong"), None).await.0, "refused");
+        assert_eq!(b.host.account_callback("account:app.buwiz.fixture/google/other", Some("code-1"), Some(&state), None).await.0, "refused");
+
+        token_answer(&b.files, 200, json!({"access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600, "token_type": "Bearer", "scope": "https://www.googleapis.com/auth/gmail.readonly openid email", "id_token": jwt(json!({"email": "u@example.com"}))}));
+        assert_eq!(b.host.account_callback(&flow, Some("code-1"), Some(&state), None).await, ("connected", String::new()));
+        assert!(!b.host.account_pending(&flow));
+        let (_, body) = b.log.lock().unwrap().iter().rev().find(|(r, _)| r == "POST /token").cloned().unwrap();
+        let form: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+        assert_eq!((form["grant_type"].as_str(), form["code"].as_str(), form["client_id"].as_str(), form["client_secret"].as_str()), ("authorization_code", "code-1", "cid", "csec"));
+        assert_eq!(form["redirect_uri"], "http://127.0.0.1:8787/oauth/callback/account%3Aapp.buwiz.fixture%2Fgoogle%2Fdefault");
+        assert_eq!(rox_v1::keys::sha256_hex(form["code_verifier"].as_bytes()).len(), 64);
+        let tok = |t: &str| rox_v1::keys::sha256_hex(t.as_bytes())[..12].to_owned();
+        assert_eq!(pushed(&b.host).await, json!({"google/default": {"subject": "u@example.com", "expires_at": 3600, "token": tok("at-1"), "sets": 1}}));
+        let rows = b.host.account_rows(FX);
+        assert_eq!((rows[0].state.as_str(), rows[0].subject.as_str(), rows[0].token_ref.as_str()), ("connected", "u@example.com", "app.buwiz.fixture/google/default"));
+        assert_eq!(rows[0].scopes, ["https://www.googleapis.com/auth/gmail.readonly", "openid", "email"]);
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap().unwrap()["refresh_token"], "rt-1");
+        // the views carry no token
+        let listed = crate::hub::routines::plugins::describe(&b.host, &b.host.row(FX).unwrap(), &|_, _| json!({}));
+        assert_eq!(listed["accounts"], json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": "u@example.com", "state": "connected", "required": true}]));
+        assert_eq!(listed["package"], json!(at.display().to_string()));
+        assert_eq!(listed["skills"], json!([{"name": "triage", "description": "Triage the inbox"}]));
+        let text = listed.to_string();
+        assert!(!text.contains("at-1") && !text.contains("rt-1"), "{text}");
+
+        // 5 minutes before expiry: refreshed and pushed again
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true));
+        until("the refreshed token", async || pushed(&b.host).await["google/default"]["token"] == json!(tok("at-2"))).await;
+        let (_, body) = b.log.lock().unwrap().iter().rev().find(|(r, _)| r == "POST /token").cloned().unwrap();
+        let form: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+        assert_eq!((form["grant_type"].as_str(), form["refresh_token"].as_str()), ("refresh_token", "rt-1"));
+        assert_eq!(pushed(&b.host).await["google/default"]["expires_at"], 6900);
+        assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap().unwrap()["refresh_token"], "rt-1", "the old refresh token stays");
+
+        // a new process gets the account after provision
+        b.host.disable(FX).await.unwrap();
+        assert_eq!(b.host.enable(FX).await.unwrap()["state"], "running");
+        assert_eq!(pushed(&b.host).await, json!({"google/default": {"subject": "u@example.com", "expires_at": 6900, "token": tok("at-2"), "sets": 1}}));
+
+        // a failed refresh: expired, and cleared in the plugin
+        token_answer(&b.files, 400, json!({"error": "invalid_grant"}));
+        assert!(b.host.clock.manual_step(Some(6_600_000.0), true));
+        until("the clear", async || pushed(&b.host).await == json!({})).await;
+        assert_eq!(b.host.account_rows(FX)[0].state, "expired");
+        assert_eq!(b.host.accounts_view(FX)[0]["state"], "expired");
+
+        // sign out, then remove
+        assert_eq!(b.host.account_signout(FX, "google", &json!({})).await.unwrap()["state"], "none");
+        assert_eq!(b.host.account_rows(FX)[0].state, "none");
+        assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap(), None);
+        assert_eq!(b.host.account_remove(FX, "google", &json!({"label": "default"})).await.unwrap()["state"], "removed");
+        assert!(b.host.account_rows(FX).is_empty());
+        assert_eq!(b.host.accounts_view(FX)[0]["state"], "none", "declared, never signed in: a default row");
+        assert_eq!(b.host.account_remove(FX, "google", &json!({})).await.unwrap_err().code, "not_found");
+
+        // uninstall takes the folder and every account with it
+        let (flow, state, _) = sign_in(&b).await;
+        token_answer(&b.files, 200, json!({"access_token": "at-3", "refresh_token": "rt-3", "expires_in": 3600, "token_type": "Bearer"}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
+        b.host.uninstall(FX).await.unwrap();
+        assert!(!b.dir.join("v1/apps").join(FX).exists(), "the app's folder went");
+        assert!(b.host.account_rows(FX).is_empty());
+        assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap(), None);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_plugin_that_declares_accounts_and_answers_32601_fails_plugin_invalid() {
+        let b = bed_in("pkg32601", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |p| p["mcpServers"]["fx"]["args"] = json!(["--misbehave=no-accounts"]));
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        google_client(&b);
+        let (flow, state, _) = sign_in(&b).await;
+        token_answer(&b.files, 200, json!({"access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600, "token_type": "Bearer"}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
+        let rt = b.host.runtime_view(FX);
+        assert_eq!((rt.state, rt.code.as_deref(), rt.message.as_str()), ("failed", Some("plugin_invalid"), "app.buwiz.fixture does not implement buwiz.account.set"));
+        // and so does a spawn that pushes after provision
+        assert_eq!(b.host.enable(FX).await.unwrap()["code"], "plugin_invalid");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_2_1_release_is_refused_when_a_file_or_the_served_manifest_is_not_the_packages() {
+        let b = bed_in("pkgbad", HostClock::system()).await;
+        let run = run_in(&b.ctx);
+        let install = async |tag: &str| call(&run, "app_install", json!({"url": format!("https://github.com/o/r/releases/tag/{tag}")})).await;
+        publish_pkg(&b.files, &b.base, "short", |p| p["buwiz"]["short"] = json!("fy"));
+        let out = install("short").await;
+        assert!(out.content.as_str().unwrap().contains("the served manifest's short is fx; plugin.json's buwiz.short is fy"), "{out:?}");
+        publish_pkg(&b.files, &b.base, "badbin", |p| p["buwiz"]["binaries"][release::platform()]["sha256"] = json!("c".repeat(64)));
+        let out = install("badbin").await;
+        assert_eq!(out, Out::err("app_install: bin/fx does not match plugin.json's sha256".into()));
+        publish_pkg(&b.files, &b.base, "noplat", |p| {
+            let bin = p["buwiz"]["binaries"][release::platform()].clone();
+            p["buwiz"]["binaries"] = json!({"plan9-mips": bin});
+        });
+        assert_eq!(install("noplat").await, Out::err(format!("app_install: no build for {}", release::platform())));
+        // a plugin.json changed after signing
+        publish_pkg(&b.files, &b.base, "tampered", |_| {});
+        {
+            let mut f = b.files.lock().unwrap();
+            let e = f.get_mut("/obj/tampered/plugin.json").unwrap();
+            let mut p: Value = serde_json::from_slice(&e.2).unwrap();
+            p["mcpServers"]["fx"]["command"] = json!("/bin/sh");
+            e.2 = p.to_string().into_bytes();
+        }
+        assert!(install("tampered").await.content.as_str().unwrap().contains("buwiz.signature does not verify"));
+        assert!(b.host.row(FX).is_none(), "nothing installed");
+        let _ = std::fs::remove_dir_all(&b.dir);
     }
 }
