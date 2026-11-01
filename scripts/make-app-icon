@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Renders the app icons from their vector sources in app/resources/ (see
+# README.md there):
+#   AppIcon.svg       -> AppIcon.png (the 1024x1024 master) and AppIcon.icns
+#   AppIcon-test.svg  -> AppIcon-test.icns (scripts/test-rox's test bundles)
+# Every size of an iconset (16, 32, 128, 256, 512 and their @2x) is drawn
+# from the vector by rsvg-convert (`brew install librsvg`), none scaled
+# from another; iconutil packs them. Commit what it writes.
+set -euo pipefail
+
+RES="$(cd "$(dirname "$0")/../app/resources" && pwd)"
+command -v rsvg-convert >/dev/null || { echo "make-app-icon: needs rsvg-convert (brew install librsvg)" >&2; exit 1; }
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+icns() { # <svg> <icns out>
+  local set="$WORK/$(basename "$1" .svg).iconset"
+  mkdir -p "$set"
+  for s in 16 32 128 256 512; do
+    rsvg-convert -w "$s" -h "$s" "$1" -o "$set/icon_${s}x${s}.png"
+    rsvg-convert -w $((s * 2)) -h $((s * 2)) "$1" -o "$set/icon_${s}x${s}@2x.png"
+  done
+  iconutil -c icns "$set" -o "$2"
+}
+
+rsvg-convert -w 1024 -h 1024 "$RES/AppIcon.svg" -o "$RES/AppIcon.png"
+icns "$RES/AppIcon.svg" "$RES/AppIcon.icns"
+icns "$RES/AppIcon-test.svg" "$RES/AppIcon-test.icns"
+echo "wrote $RES/AppIcon.png, AppIcon.icns, AppIcon-test.icns"

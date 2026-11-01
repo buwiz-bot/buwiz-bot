@@ -311,6 +311,8 @@ mod tests {
         assert_eq!(plist["CFBundleIdentifier"], APP_ID);
         assert_eq!(plist["CFBundleExecutable"], "buwiz-bot");
         assert_eq!(plist["CFBundleDisplayName"], "Buwiz Bot");
+        assert_eq!(plist["CFBundleIconFile"], "AppIcon");
+        assert!(app.join("Contents/Resources/AppIcon.icns").is_file(), "the Buwiz logo is in the bundle");
         assert_eq!(plist["CFBundleURLTypes"][0]["CFBundleURLName"], APP_ID);
         assert_eq!(plist["CFBundleURLTypes"][0]["CFBundleURLSchemes"], serde_json::json!(["buwiz"]), "rox:// is not routed");
         let launcher = app.join("Contents/MacOS/buwiz-bot");
@@ -319,6 +321,54 @@ mod tests {
         assert!(!app.join("Contents/MacOS/rox").exists());
         // a dry run leaves LaunchServices alone
         assert!(!String::from_utf8_lossy(&out.stdout).contains("unregistered"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `scripts/test-rox --bundle-only` around a stand-in binary: a test
+    /// bundle of its own, named apart from Buwiz Bot, with the TEST icon,
+    /// signed; the name defaults to the instance dir's.
+    #[test]
+    fn test_rox_wraps_a_test_bundle_apart_from_buwiz_bot() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = scratch("test-rox");
+        let fake = dir.join("fake-bin");
+        std::fs::copy("/bin/echo", &fake).unwrap();
+        let run = |args: &[&str], instance: &Path| {
+            let out = std::process::Command::new("bash")
+                .arg(manifest.join("../scripts/test-rox"))
+                .arg("--bundle-only")
+                .args(args)
+                .arg(&fake)
+                .arg(instance)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
+        };
+        let app = run(&["--name", "books"], &dir.join("bench"));
+        assert_eq!(app, dir.join("bench/Buwiz Bot test-books.app"));
+        let plist = std::process::Command::new("/usr/bin/plutil")
+            .args(["-convert", "json", "-o", "-"])
+            .arg(app.join("Contents/Info.plist"))
+            .output()
+            .unwrap();
+        let plist: serde_json::Value = serde_json::from_slice(&plist.stdout).unwrap();
+        assert_eq!(plist["CFBundleIdentifier"], "dev.buwiz.bot.test-books");
+        assert_eq!(plist["CFBundleName"], "Buwiz Bot test-books");
+        assert_eq!(plist["CFBundleDisplayName"], "Buwiz Bot test-books");
+        assert_eq!(plist["CFBundleExecutable"], "buwiz-bot-test-books");
+        assert_eq!(plist["CFBundleIconFile"], "AppIcon");
+        assert!(plist.get("CFBundleURLTypes").is_none(), "a test bundle answers no buwiz:// link");
+        assert_eq!(
+            std::fs::read(app.join("Contents/Resources/AppIcon.icns")).unwrap(),
+            std::fs::read(manifest.join("resources/AppIcon-test.icns")).unwrap()
+        );
+        assert!(app.join("Contents/MacOS/buwiz-bot-test-books").is_file());
+        let signed = std::process::Command::new("/usr/bin/codesign").arg("--verify").arg(&app).status().unwrap();
+        assert!(signed.success(), "signed ad hoc");
+        // no --name: the instance dir's, made fit for a bundle id
+        let app = run(&[], &dir.join("Bench_2"));
+        assert_eq!(app.file_name().unwrap(), "Buwiz Bot test-bench-2.app");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
