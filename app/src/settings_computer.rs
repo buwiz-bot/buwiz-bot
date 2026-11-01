@@ -189,6 +189,10 @@ struct Ui {
     draft_deny: Signal<String>,
     /// A write in flight: the controls wait for it.
     busy: Signal<bool>,
+    /// Whether the host record has been asked for at all: the right pane's
+    /// icon rail can be the first surface that wants it, before this page
+    /// is ever opened.
+    host_asked: Signal<bool>,
     /// What the last refused write said.
     note: Signal<String>,
 }
@@ -203,6 +207,7 @@ fn ui() -> Ui {
             draft_allow: signal(String::new()),
             draft_deny: signal(String::new()),
             busy: signal(false),
+            host_asked: signal(false),
             note: signal(String::new()),
         });
         Box::leak(Box::new(ui)) as *const Ui as usize
@@ -220,6 +225,14 @@ fn reload() {
     let u = ui();
     Owner::detached().run(|| {
         spawn(async move { apply_policy(transport::read_policy().await) });
+    });
+    load_host(u);
+}
+
+/// `GET /ag-ui/host-settings` into the page's signals.
+fn load_host(u: Ui) {
+    u.host_asked.set(true);
+    Owner::detached().run(|| {
         spawn(async move {
             match reach(transport::read_host_settings().await) {
                 Ok(body) => {
@@ -233,6 +246,28 @@ fn reload() {
             }
         });
     });
+}
+
+/// Whether the server answered about the host record, and the tunnel's
+/// intent — for the right pane's icon rail, which draws the same switch
+/// (`pane::route_traffic_look`) and reads the signals this page owns.
+pub(crate) fn host_egress_tunnel() -> (bool, bool) {
+    let u = ui();
+    (u.host_reach.get().live(), u.host.get().is_some_and(|h| h.egress_tunnel_enabled))
+}
+
+/// Reads the host record if nothing has asked for it yet.
+pub(crate) fn ensure_host_settings() {
+    let u = ui();
+    if !u.host_asked.get_untracked() {
+        load_host(u);
+    }
+}
+
+/// The host switch's write, as the rail presses it: one transport for
+/// both surfaces, and the record is read again after it.
+pub(crate) fn set_egress_tunnel(enabled: bool) {
+    set_egress(enabled);
 }
 
 /// The listing just read decides what the page shows: live controls over
@@ -310,6 +345,9 @@ fn set_egress(enabled: bool) {
                 }
             }
             u.busy.set(false);
+            // the server's own answer again, so nothing local is left
+            // standing for a write it did not take
+            load_host(u);
         });
     });
 }
@@ -581,7 +619,7 @@ fn switch(id: &str, on: bool, live: bool, flip: impl Fn() + 'static) -> impl Int
         .label(if on { "On" } else { "Off" })
         .child(view().w(px(16.0)).h(px(16.0)).rounded(px(8.0)).bg(theme::ON_FILL).when(!on, |v| v.absolute().left(px(2.0)).top(px(2.0))));
     if live {
-        track = track.on_press(move || flip());
+        track = track.on_press(flip);
     }
     track
 }
@@ -606,7 +644,7 @@ fn small_btn_id(id: String, label: &'static str, on: impl Fn() + 'static) -> imp
         .bg(theme::HOVER)
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .label(label)
         .test_id(&id)
 }
