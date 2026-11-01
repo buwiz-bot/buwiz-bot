@@ -1,0 +1,22 @@
+[package]
+name = "rox-box"
+version = "0.1.0"
+edition = "2024"
+description = "The Bot's computer: the Computer trait and the local Docker box behind it (transcribed from opengrok-server's opengrok-box)"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+# the box's own secrets (BOX_TOKEN, the VNC password): the OS CSPRNG, nothing clock-derived
+getrandom = "0.2"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
