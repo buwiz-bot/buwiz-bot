@@ -15,6 +15,7 @@
 pub mod activity;
 pub mod artifact;
 pub mod builtin;
+pub mod ceiling;
 pub mod defs;
 pub mod drive;
 pub mod mcp;
@@ -172,6 +173,11 @@ pub async fn tool_list(run: &Run) -> Vec<Value> {
     out.extend(mcp);
     if !server_search() {
         out.push(defs::client_search().clone());
+    }
+    // the acting bot's ceiling (opengrok-policy: ceiling ∩ profile, only
+    // ever narrower): what the global switches left is filtered once more
+    if let Some(c) = ceiling::of_turn(&run.ctx, &run.turn) {
+        out.retain(|t| ceiling::offers(&c, defs::name_of(t)));
     }
     out
 }

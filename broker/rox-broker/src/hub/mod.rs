@@ -106,6 +106,7 @@ impl Registry {
 fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // track A first: it loads the store the others' starts read
     routes::chat::install(routes, ctx);
+    routes::ceiling::install(routes);
     pipeline::install(ctx);
     // 5.7b: after the store's start, as app-server.mjs runs its migration
     routes::apps::install(routes, ctx);

@@ -24,6 +24,7 @@
 /// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
 pub mod agents;
 pub mod bots;
+pub mod ceiling;
 pub mod chat;
 pub mod groups;
 pub mod market;
