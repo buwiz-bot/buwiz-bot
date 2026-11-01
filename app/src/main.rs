@@ -161,6 +161,8 @@ fn main() -> impl std::process::Termination {
         // the app in front. The owner's Rox, automation on or not, comes
         // to the front as any app does.
         activate: std::env::var("ROX_BACKGROUND").as_deref() != Ok("1"),
+        // a test instance's nsh storage in its own data dir, not the owner's
+        data_dir: rox::identity::nsh_data_dir_in(std::env::var_os("ROX_DATA_DIR").as_deref()),
         ..Default::default()
     };
     rox::mini::register_mini_app(&options.components);
