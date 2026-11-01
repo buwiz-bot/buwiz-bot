@@ -61,7 +61,7 @@ fn get_tools(ctx: &HubCtx, req: &HubRequest) -> HubResponse {
     let Some(b) = bot_of(ctx, req) else { return no_bot() };
     let tools: Vec<Value> = ceiling::known(ctx, &b)
         .into_iter()
-        .filter(|k| b.tools.allows(&k.name))
+        .filter(|k| k.on && b.tools.allows(&k.name))
         .map(|k| {
             let mut row = json!({ "name": k.name, "description": k.description, "kind": k.kind, "mode": "always" });
             if let Some(l) = k.label {
@@ -73,23 +73,41 @@ fn get_tools(ctx: &HubCtx, req: &HubRequest) -> HubResponse {
     answer(StatusCode::OK, &json!({ "tools": tools }))
 }
 
-/// A PUT's `version` against the stored one (`agui/ceiling.rs`: a write
-/// that names the version it read is refused once that moved).
-fn stale(sent: Option<i64>, have: i64) -> Option<HubResponse> {
-    match sent {
-        Some(v) if v != have => Some(answer(StatusCode::CONFLICT, &json!({ "error": "the tools changed since you looked", "code": "ceiling-changed" }))),
-        _ => None,
-    }
+/// The most rows a ceiling holds: every known row plus the unknown ones
+/// a PUT may keep; past this a write is a mistake or an attack, not a
+/// Tools card.
+const ROWS_MAX: usize = 1024;
+
+/// Why a write did not land.
+enum Unsaved {
+    /// `agui/ceiling.rs`: the write names a version that has moved (409).
+    Stale,
+    /// The bot was removed between the read and the write.
+    Gone,
 }
 
-/// Store `rows` as `bot`'s ceiling at the next version; the bot as saved.
-fn save(ctx: &HubCtx, bot: &Bot, rows: Vec<Value>) -> Result<Bot, String> {
-    let next = Ceiling { rows, version: bot.tools.version + 1 };
-    ctx.store.write(|s| {
-        let b = s.bots.iter_mut().find(|b| b.id == bot.id).ok_or_else(|| "no such bot".to_owned())?;
-        b.tools = next;
-        Ok::<Bot, String>(b.clone())
-    })?
+/// Store `rows` as the ceiling of the bot `id` at the next version, if
+/// `version` (what the PUT read, when it says) is still the stored one;
+/// the bot as saved. The check and the write share the store's lock, so
+/// two PUTs that read one version cannot both land.
+fn save(ctx: &HubCtx, id: &str, version: Option<i64>, rows: Vec<Value>) -> Result<Bot, Unsaved> {
+    ctx.store
+        .write(|s| {
+            let b = s.bots.iter_mut().find(|b| b.id == id).ok_or(Unsaved::Gone)?;
+            if version.is_some_and(|v| v != b.tools.version) {
+                return Err(Unsaved::Stale);
+            }
+            b.tools = Ceiling { rows, version: b.tools.version + 1 };
+            Ok(b.clone())
+        })
+        .unwrap_or(Err(Unsaved::Gone))
+}
+
+fn unsaved(why: Unsaved) -> HubResponse {
+    match why {
+        Unsaved::Stale => answer(StatusCode::CONFLICT, &json!({ "error": "the tools changed since you looked", "code": "ceiling-changed" })),
+        Unsaved::Gone => no_bot(),
+    }
 }
 
 /// `PUT /coworkers/{bot}/ceiling` (`agui/ceiling.rs` `put_ceiling`): the
@@ -108,13 +126,16 @@ fn put_ceiling(ctx: &HubCtx, req: &HubRequest) -> HubResponse {
     if enabled.is_none() && body.get("tools").and_then(Value::as_array).is_none() {
         return refusal(StatusCode::UNPROCESSABLE_ENTITY, "send {\"enabled\": [names]} or {\"tools\": [rows]}");
     }
-    if let Some(res) = stale(version, b.tools.version) {
-        return res;
+    if version.is_some_and(|v| v != b.tools.version) {
+        return unsaved(Unsaved::Stale);
     }
     let rows = ceiling::settle(ctx, &b, &sent, enabled.as_deref());
-    match save(ctx, &b, rows) {
+    if rows.len() > ROWS_MAX {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, &format!("too many tool rows (at most {ROWS_MAX})"));
+    }
+    match save(ctx, &b.id, version, rows) {
         Ok(saved) => reply(ctx, &saved),
-        Err(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(why) => unsaved(why),
     }
 }
 
@@ -130,8 +151,9 @@ fn put_tool_mode(ctx: &HubCtx, req: &HubRequest) -> HubResponse {
     if !matches!(mode.as_str(), "always" | "ask" | "never") {
         return refusal(StatusCode::UNPROCESSABLE_ENTITY, "mode is always, ask or never");
     }
-    if let Some(res) = stale(body.get("version").and_then(Value::as_i64), b.tools.version) {
-        return res;
+    let version = body.get("version").and_then(Value::as_i64);
+    if version.is_some_and(|v| v != b.tools.version) {
+        return unsaved(Unsaved::Stale);
     }
     let known = ceiling::known(ctx, &b);
     if !known.iter().any(|k| k.name == tool) && b.tools.row(&tool).is_none() {
@@ -145,9 +167,9 @@ fn put_tool_mode(ctx: &HubCtx, req: &HubRequest) -> HubResponse {
         }
     }
     let rows = ceiling::settle(ctx, &b, &sent, None);
-    match save(ctx, &b, rows) {
+    match save(ctx, &b.id, version, rows) {
         Ok(_) => answer(StatusCode::OK, &json!({ "tool": tool, "mode": mode })),
-        Err(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(why) => unsaved(why),
     }
 }
 
@@ -159,7 +181,9 @@ mod tests {
     use hyper::Method;
     use serde_json::{json, Value};
 
+    use super::{save, Unsaved, ROWS_MAX};
     use crate::hub::store::{Bot, Ceiling};
+    use crate::hub::tools::ceiling;
     use crate::hub::traits::Clock;
     use crate::hub::types::HubRequest;
     use crate::hub::{Hub, HubCtx};
@@ -176,7 +200,8 @@ mod tests {
         ctx.db
             .with(|c| {
                 c.execute("INSERT INTO skills(id,name,description,body,enabled,created_at) VALUES('tone','Tone Guide','how to talk','Be brief.',1,1)", [])?;
-                c.execute("INSERT INTO mcp_servers(id,name,enabled) VALUES('acme','Acme',1)", [])
+                c.execute("INSERT INTO mcp_servers(id,name,enabled) VALUES('acme','Acme',1)", [])?;
+                c.execute("INSERT INTO mcp_servers(id,name,enabled) VALUES('dark','Dark',0)", [])
             })
             .unwrap();
         Hub::with(ctx, Vec::new(), |routes, _| super::install(routes))
@@ -207,7 +232,8 @@ mod tests {
             assert_eq!(row(&v, name)["kind"], "builtin", "{name}");
         }
         assert_eq!(row(&v, "acme"), &json!({"name": "acme", "kind": "plugin", "description": "", "enabled": true, "label": "Acme"}));
-        assert_eq!(row(&v, "tone"), &json!({"name": "tone", "kind": "skill", "description": "how to talk", "enabled": true, "label": "Tone Guide"}));
+        assert_eq!(row(&v, "skill:tone"), &json!({"name": "skill:tone", "kind": "skill", "description": "how to talk", "enabled": true, "label": "Tone Guide"}));
+        assert_eq!(row(&v, "dark")["available"], false, "a server the global switch holds off is listed, marked unavailable");
         let (status, v) = send(&hub, Method::GET, "/coworkers/nobody/ceiling", Value::Null).await;
         assert_eq!((status, v), (404, json!({"ok": false, "code": "not_found", "message": "no such bot", "retryable": false})));
     }
@@ -215,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn ceiling_put_switches_rows_keeps_unknown_ones_and_refuses_a_stale_version() {
         let hub = hub("put");
-        let (status, v) = send(&hub, Method::PUT, "/coworkers/ann/ceiling", json!({"enabled": ["fetch_url", "acme", "tone", "ghost"], "version": 0})).await;
+        let (status, v) = send(&hub, Method::PUT, "/coworkers/ann/ceiling", json!({"enabled": ["fetch_url", "acme", "skill:tone", "ghost"], "version": 0})).await;
         assert_eq!(status, 200, "{v}");
         assert_eq!(v["version"], 1);
         assert_eq!(row(&v, "shell_run")["enabled"], false);
@@ -241,6 +267,16 @@ mod tests {
         // bad bodies and no bot
         assert_eq!(send(&hub, Method::PUT, "/coworkers/ann/ceiling", json!({"version": 2})).await.0, 422);
         assert_eq!(send(&hub, Method::PUT, "/coworkers/nobody/ceiling", json!({"enabled": []})).await.0, 404);
+        // more rows than any Tools card sends
+        let flood: Vec<Value> = (0..ROWS_MAX + 1).map(|i| json!({"name": format!("x{i}"), "enabled": true})).collect();
+        assert_eq!(send(&hub, Method::PUT, "/coworkers/ann/ceiling", json!({"tools": flood})).await.0, 422);
+        assert_eq!(hub.ctx().store.read(|s| s.bot("ann").map(|b| b.tools.version)), Some(2), "nothing written");
+        // two writes that read one version: the check sits under the store's lock, so only the first lands
+        let ann = hub.ctx().store.read(|s| s.bot("ann").cloned()).unwrap();
+        let rows = ceiling::settle(hub.ctx(), &ann, &[], Some(&["fetch_url".to_owned()]));
+        assert!(save(hub.ctx(), "ann", Some(2), rows.clone()).is_ok());
+        assert!(matches!(save(hub.ctx(), "ann", Some(2), rows), Err(Unsaved::Stale)));
+        assert!(matches!(save(hub.ctx(), "nobody", None, Vec::new()), Err(Unsaved::Gone)));
     }
 
     #[tokio::test]
@@ -249,6 +285,8 @@ mod tests {
         let (status, v) = send(&hub, Method::GET, "/coworkers/ann/tools", Value::Null).await;
         assert_eq!(status, 200);
         assert_eq!(row(&v, "shell_run"), &json!({"name": "shell_run", "description": row(&v, "shell_run")["description"], "kind": "builtin", "mode": "always"}));
+        assert_eq!(row(&v, "acme")["mode"], "always");
+        assert_eq!(row(&v, "dark"), &Value::Null, "a server the global switch holds off is not offered: ceiling ∩ global");
         assert_eq!(send(&hub, Method::PUT, "/coworkers/ann/ceiling", json!({"enabled": ["fetch_url"]})).await.0, 200);
         let (_, v) = send(&hub, Method::GET, "/coworkers/ann/tools", Value::Null).await;
         let names: Vec<&str> = v["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
