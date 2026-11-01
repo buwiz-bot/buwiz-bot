@@ -132,7 +132,7 @@ fn open_diagram(code: &str) {
 fn diagram_canvas(g: std::sync::Arc<crate::mermaid::Drawn>, fixed: Option<f32>) -> View {
     let width = signal(g.w);
     let gw = g.w;
-    let k = move || fixed.unwrap_or_else(|| (width.get() / gw).min(1.0).max(0.01));
+    let k = move || fixed.unwrap_or_else(|| (width.get() / gw).clamp(0.01, 1.0));
     let gd = g.clone();
     let mut out = view()
         .w(px(g.w * fixed.unwrap_or(1.0)))

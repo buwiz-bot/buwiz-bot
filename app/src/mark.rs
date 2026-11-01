@@ -775,7 +775,7 @@ fn qb_morph(e: &Eye, t: &Eye, n: f64) -> Eye {
 /// `Jb` — the lid box of an eye.
 fn jbx(e: &Eye) -> Option<(f64, f64, f64, f64, f64)> {
     let t = e.is_oval();
-    if !(e.wid > 0.0) && !t {
+    if e.wid.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) && !t {
         return None;
     }
     let n = e.lid_y;

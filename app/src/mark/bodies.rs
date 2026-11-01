@@ -1560,7 +1560,7 @@ fn vh(e: Vec<V2>) -> Option<Vec<V2>> {
 
 /// `SS` — the `front` seat: eye loops on a plane facing the viewer.
 fn ss_seat(e: f64, t: &EyeLoops, r: &Projector) -> Vec<Vec<V2>> {
-    if !((r.rotate)([0.0, 0.0, 1.0])[2] > 0.03) {
+    if (r.rotate)([0.0, 0.0, 1.0])[2].partial_cmp(&0.03) != Some(std::cmp::Ordering::Greater) {
         return vec![];
     }
     let s = t.shift_y.sin();
@@ -1578,7 +1578,7 @@ fn ss_seat(e: f64, t: &EyeLoops, r: &Projector) -> Vec<Vec<V2>> {
 /// `MS` — the `loft` seat: eye loops on the domed surface.
 fn ms_seat(e: &Rc<dyn Fn(f64, f64) -> f64>, t: &EyeLoops, pr: &Projector) -> Vec<Vec<V2>> {
     let r = &pr.rotate;
-    if !(r([0.0, 0.0, 1.0])[2] >= 0.05) {
+    if !matches!(r([0.0, 0.0, 1.0])[2].partial_cmp(&0.05), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) {
         return vec![];
     }
     let i = t.shift_y.sin();
@@ -1890,7 +1890,7 @@ const VL: Ml = Ml {
 
 fn ml(e: &Eye) -> Ml {
     let t = lc(e);
-    if !(e.wid > 0.0) && !t {
+    if e.wid.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) && !t {
         return VL;
     }
     // `e.lidY || 1` — 0 and NaN are falsy.
@@ -2210,7 +2210,7 @@ fn lv_eyes(e: &[Eye; 2], t: f64, n: f64, r: f64, o: f64) -> Vec<Vec<V2>> {
     let i = -o.sin();
     for (c, a) in e.iter().enumerate() {
         let u = lc(a);
-        if !(a.wid > 0.0) && !u || !u && a.pts.len() < 2 {
+        if a.wid.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) && !u || !u && a.pts.len() < 2 {
             continue;
         }
         let l = if c == 0 { -1.0 } else { 1.0 };

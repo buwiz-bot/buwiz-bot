@@ -496,7 +496,7 @@ fn et_rec(e: &Eye) -> EtRec {
     } else {
         0.0
     };
-    let s = e.pts.len().saturating_sub(1).max(0);
+    let s = e.pts.len().saturating_sub(1);
     let mut i = Vec::with_capacity(s * HS);
     for a in 0..s {
         let [c, u] = e.pts[a];
@@ -1785,7 +1785,7 @@ fn km(e: &[Vec<(V2, V2)>], t: V2, r: f64) -> f64 {
         let g = a[1] - t[1];
         let m = (p * f - g * d) / h;
         let y = (p * s - g * o) / h;
-        if m >= 0.0 && (-CD..=1.0 + CD).contains(&y) && !(m <= i) {
+        if m >= 0.0 && (-CD..=1.0 + CD).contains(&y) && !matches!(m.partial_cmp(&i), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) {
             i = m;
         }
     }
