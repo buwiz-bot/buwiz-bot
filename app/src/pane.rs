@@ -1908,7 +1908,7 @@ fn bot_tab() -> impl IntoElement {
                 .flex_wrap()
                 .justify_center()
                 .gap_2()
-                .children(crate::mark::BOT_SHAPES.iter().map(|sh| {
+                .children(crate::mascot::BOT_SHAPES.iter().map(|sh| {
                     let sh = *sh;
                     view()
                         .size(px(48.0))
@@ -1958,7 +1958,7 @@ fn bot_tab() -> impl IntoElement {
                 .justify_center()
                 .gap_2()
                 .px_5()
-                .children(crate::mark::BOT_COLORS.iter().map(|c| {
+                .children(crate::mascot::BOT_COLORS.iter().map(|c| {
                     let c = *c;
                     view()
                         .size(px(32.0))
@@ -1971,7 +1971,7 @@ fn bot_tab() -> impl IntoElement {
                                 .active_bot()
                                 .map(|b| {
                                     b.image.is_empty()
-                                        && crate::mark::norm_color(&b.color) == crate::mark::norm_color(c)
+                                        && crate::mascot::norm_color(&b.color) == crate::mascot::norm_color(c)
                                 })
                                 .unwrap_or(false);
                             if same { theme::BORDER_S } else { AdaptiveColor::TRANSPARENT }
@@ -1990,10 +1990,7 @@ fn bot_tab() -> impl IntoElement {
                                 .rounded(px(12.0))
                                 // `inkOf(c())` on a style binding — follows
                                 // the env memo when the theme flips.
-                                .bg(move || {
-                                    Hsla::from_str(&crate::mark::ink_of(c, !dark()))
-                                        .unwrap_or(theme::TEXT.dark)
-                                }),
+                                .bg(move || crate::mascot::ink_of(c, !dark())),
                         )
                         .into_element()
                 })),
