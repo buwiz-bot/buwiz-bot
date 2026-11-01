@@ -396,7 +396,10 @@ fn rail_buttons() -> impl IntoElement {
     let (answered, routing) = crate::settings_computer::host_egress_tunnel();
     let computer = bot.as_ref().and_then(|b| crate::computer::rail_computer(&b.id));
     let present = computer.as_ref().is_some_and(crate::computer::Computer::present);
-    let busy = computer.as_ref().is_some_and(crate::computer::Computer::updating);
+    // an update or reset the person confirmed is running, or the image
+    // itself is updating: either way Update and Reset wait
+    let busy = computer.as_ref().is_some_and(crate::computer::Computer::updating)
+        || bot.as_ref().is_some_and(|b| crate::computer::rail_acting(&b.id));
     let stale = computer.as_ref().is_some_and(crate::computer::Computer::image_stale);
     let current = computer.as_ref().is_some_and(crate::computer::Computer::image_current);
     view()
@@ -2883,6 +2886,9 @@ mod tests {
         assert_eq!((stale.ink, stale.enabled), (RailInk::Success, true), "a newer image waits: tinted and pressable");
         assert!(!update_look(true, false, false, true).enabled, "nothing to update");
         assert!(!update_look(true, true, true, false).enabled, "an update is already running");
+        // the same while the confirmed update or reset is in flight
+        // (`computer::rail_acting`), which the rail folds into `busy`
+        assert!(!update_look(true, true, false, false).enabled && !reset_look(true, true).enabled, "acting: both wait");
         assert!(!update_look(false, false, false, false).enabled, "no computer at all");
         assert_eq!(update_look(true, false, false, false).ink, RailInk::Muted);
         // reset wants a computer that is not updating
