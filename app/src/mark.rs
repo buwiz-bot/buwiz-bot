@@ -78,7 +78,6 @@ const RR: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
 const BB: [f64; 4] = [0.4, 0.06, 0.18, 1.0];
 const XB: f64 = 0.28;
 const IA: f64 = 0.35;
-const AA: f64 = 0.26;
 const VB: f64 = 4.25 / 60.0;
 const SB: f64 = 2.0 / 60.0;
 const UI: f64 = 1.06;
@@ -124,16 +123,6 @@ fn tb(e: f64) -> f64 {
         (1.0 - (1.0 - n) * (1.0 - n)) * UI
     } else {
         UI + (1.0 - UI) * ns((t - 0.7) / 0.3)
-    }
-}
-/// `Eb` — the open amount within the blink window.
-fn eb(e: f64, u1: f64, u2: f64) -> f64 {
-    if e < u1 {
-        ns(e / u1)
-    } else if e <= u2 {
-        1.0
-    } else {
-        1.0 - ns((e - u2) / (1e-6f64).max(1.0 - u2))
     }
 }
 
@@ -941,15 +930,6 @@ enum MorphPath {
 
 #[derive(Clone)]
 enum FaceAnim {
-    Blink {
-        from_inspect: f64,
-        to_name: &'static str,
-        from: [Eye; 2],
-        to: [Eye; 2],
-        t: f64,
-        dur: f64,
-        held: bool,
-    },
     Morph {
         path: MorphPath,
         from_inspect: f64,
@@ -974,47 +954,37 @@ enum FaceAnim {
 impl FaceAnim {
     fn t(&self) -> f64 {
         match self {
-            FaceAnim::Blink { t, .. } | FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t,
+            FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t,
         }
     }
     fn dur(&self) -> f64 {
         match self {
-            FaceAnim::Blink { dur, .. } | FaceAnim::Morph { dur, .. } | FaceAnim::LidMorph { dur, .. } => {
-                *dur
-            }
+            FaceAnim::Morph { dur, .. } | FaceAnim::LidMorph { dur, .. } => *dur,
         }
     }
     fn set_t(&mut self, v: f64) {
         match self {
-            FaceAnim::Blink { t, .. } | FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t = v,
+            FaceAnim::Morph { t, .. } | FaceAnim::LidMorph { t, .. } => *t = v,
         }
     }
     fn held(&self) -> bool {
         match self {
-            FaceAnim::Blink { held, .. } | FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => {
-                *held
-            }
+            FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => *held,
         }
     }
     fn set_held(&mut self, v: bool) {
         match self {
-            FaceAnim::Blink { held, .. } | FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => {
-                *held = v;
-            }
+            FaceAnim::Morph { held, .. } | FaceAnim::LidMorph { held, .. } => *held = v,
         }
     }
     fn to_name(&self) -> &'static str {
         match self {
-            FaceAnim::Blink { to_name, .. }
-            | FaceAnim::Morph { to_name, .. }
-            | FaceAnim::LidMorph { to_name, .. } => to_name,
+            FaceAnim::Morph { to_name, .. } | FaceAnim::LidMorph { to_name, .. } => to_name,
         }
     }
     fn from_inspect(&self) -> f64 {
         match self {
-            FaceAnim::Blink { from_inspect, .. }
-            | FaceAnim::Morph { from_inspect, .. }
-            | FaceAnim::LidMorph { from_inspect, .. } => *from_inspect,
+            FaceAnim::Morph { from_inspect, .. } | FaceAnim::LidMorph { from_inspect, .. } => *from_inspect,
         }
     }
 }
@@ -1042,7 +1012,6 @@ impl Face {
             return self.t.clone();
         };
         match r {
-            FaceAnim::Blink { from, .. } => from.clone(),
             FaceAnim::Morph { path, from, to, .. } => {
                 let m = dl(r).clamp(0.0, 1.0);
                 let go = |b: &Eye, v: &Eye| -> Eye {
@@ -1073,9 +1042,6 @@ impl Face {
         let Some(r) = &self.r else {
             return self.n;
         };
-        if let FaceAnim::Blink { from_inspect, .. } = r {
-            return *from_inspect;
-        }
         let f = r.from_inspect();
         let h = if r.to_name() == "inspecting" { 1.0 } else { 0.0 };
         if let FaceAnim::Morph { .. } = r {
@@ -1091,20 +1057,8 @@ impl Face {
             h
         }
     }
-    fn blink_amount(&self) -> Option<f64> {
-        let r = self.r.as_ref()?;
-        let FaceAnim::Blink { t, dur, held, .. } = r else {
-            return None;
-        };
-        if *held {
-            return None;
-        }
-        let f = (t / dur).min(1.0);
-        let (u1, u2) = li(true, *dur);
-        Some(eb(f, u1, u2).clamp(0.0, 1.0))
-    }
     fn is_morphing(&self) -> bool {
-        self.r.as_ref().is_some_and(|r| !matches!(r, FaceAnim::Blink { .. }) && !r.held())
+        self.r.as_ref().is_some_and(|r| !r.held())
     }
     fn name(&self) -> &'static str {
         self.e
@@ -1153,21 +1107,6 @@ impl Face {
         });
         self.e = f;
     }
-    /// `c` — blink, only when no live (unheld) animation runs.
-    fn blink(&mut self) {
-        if self.r.as_ref().is_some_and(|r| !r.held()) {
-            return;
-        }
-        self.r = Some(FaceAnim::Blink {
-            from_inspect: self.n,
-            to_name: self.e,
-            from: [self.t[0].wt(), self.t[1].wt()],
-            to: vn(self.e),
-            t: 0.0,
-            dur: AA,
-            held: false,
-        });
-    }
     /// `u` — an expression track event.
     fn play(&mut self, name: &'static str, through_blink: bool) {
         if name == self.e && self.r.as_ref().is_none_or(|r| r.to_name() == name) {
@@ -1183,9 +1122,7 @@ impl Face {
     fn settle(&mut self, f: &FaceAnim, h: f64) {
         if h >= f.dur() {
             self.t = match f {
-                FaceAnim::Blink { to, .. }
-                | FaceAnim::Morph { to, .. }
-                | FaceAnim::LidMorph { to, .. } => [to[0].wt(), to[1].wt()],
+                FaceAnim::Morph { to, .. } | FaceAnim::LidMorph { to, .. } => [to[0].wt(), to[1].wt()],
             };
             self.n = if f.to_name() == "inspecting" { 1.0 } else { 0.0 };
             self.r = None;
@@ -1954,10 +1891,9 @@ impl Mark {
             self.big_i = false;
         }
     }
-    /// `H` — defer a face command while a blink/lid is down.
+    /// `H` — defer a face command while a lid is down.
     fn defer(&mut self, cmd: FaceCmd) {
-        let blink = self.n.blink_amount().unwrap_or_else(|| self.fe());
-        if blink > 0.0 {
+        if self.fe() > 0.0 {
             self.big_p = Some(cmd);
             return;
         }
@@ -2230,7 +2166,7 @@ impl Mark {
         }
     }
     fn pe(&self) -> f64 {
-        self.n.blink_amount().unwrap_or_else(|| self.fe())
+        self.fe()
     }
     /// `be` — the eyes of the frame (`ge` = yaw for `sx`).
     fn be(&self, ge: f64, inspect_w: f64) -> [Eye; 2] {
@@ -2273,7 +2209,6 @@ impl Mark {
             && self.g.is_none()
             && self.big_p.is_none()
             && !self.n.is_morphing()
-            && self.n.blink_amount().is_none()
             && self.a.snapshot().is_settled
             && g
     }
@@ -2359,9 +2294,6 @@ impl Mark {
     pub(crate) fn poke(&mut self, kind: &'static str, turns: f64) {
         self.pokes.push(Poke { kind, t: 0.0, turns: turns.round().max(1.0) });
     }
-    pub(crate) fn blink(&mut self) {
-        self.n.blink();
-    }
     /// `setInspect({bias, isFollowingTurn})`.
     #[allow(dead_code)]
     pub(crate) fn set_inspect(&mut self, bias: Option<f64>, follow: Option<bool>) {
@@ -2410,7 +2342,7 @@ impl Mark {
         }
         self.look_step(q);
         self.n.step(q);
-        if self.big_p.is_some() && self.n.blink_amount().unwrap_or_else(|| self.fe()) == 0.0 {
+        if self.big_p.is_some() && self.fe() == 0.0 {
             let c = self.big_p.take().unwrap();
             self.run_cmd(c);
         }
