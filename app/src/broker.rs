@@ -164,28 +164,28 @@ pub fn data_dir(home: &Path) -> PathBuf {
 }
 
 /// Moves the broker's folder from `Grok Shell` to `Buwiz Broker` once,
-/// after a backup of its database (`rox_v1::broker_dir::move_once`, the
+/// after a backup of its database, rewriting the paths stored in it and
+/// leaving `Grok Shell` as a link (`rox_v1::broker_dir::move_once`, the
 /// one the broker runs too). Called only when this app is about to start
 /// the broker: nothing answered on the owner's port, and `busy` asks once
 /// more. A move that can't run leaves `Grok Shell` in use ([`data_dir`])
 /// and is tried at the next start.
 pub fn move_data_dir(home: &Path, busy: &dyn Fn() -> bool) -> rox_v1::broker_dir::Move {
     use rox_v1::broker_dir::{Move, DIR_NAME, OLD_DIR_NAME};
-    let m = rox_v1::broker_dir::move_once(home, busy, &backup_db);
+    let m = rox_v1::broker_dir::move_once(home, busy);
     match &m {
         Move::Nothing | Move::AlreadyThere => {}
-        Move::Moved { backup } => log::info!("broker: moved {OLD_DIR_NAME} to {DIR_NAME} (database backup: {backup:?})"),
+        Move::Moved { backup, rewritten, linked } => {
+            log::info!("broker: moved {OLD_DIR_NAME} to {DIR_NAME} (database backup: {backup:?}; {OLD_DIR_NAME} left as a link to it: {linked})");
+            for (column, n) in rewritten {
+                log::info!("broker: {column}: {n} stored path(s) now under {DIR_NAME}");
+            }
+        }
         other => log::warn!("broker: {OLD_DIR_NAME} not moved to {DIR_NAME} this time ({other:?}); using it"),
     }
     m
 }
 
-/// A consistent copy of the database `from` in the new file `to`
-/// (`VACUUM INTO`: one read transaction).
-fn backup_db(from: &Path, to: &Path) -> Result<(), String> {
-    let db = rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
-    db.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(|_| ()).map_err(|e| e.to_string())
-}
 
 /// The command line for `broker` (the bundle's `rox-broker`): the default
 /// origin's port, the data dir ([`data_dir`]), the static files beside it
@@ -520,9 +520,9 @@ mod tests {
         use rox_v1::broker_dir::{new_dir, old_dir, Move, MOVED_MARKER};
         let home = home_with_grok_shell("start");
         assert_eq!(data_dir(&home), old_dir(&home), "read from the old one until it moves");
-        let Move::Moved { backup: Some(backup) } = move_data_dir(&home, &|| false) else { panic!("not moved") };
+        let Move::Moved { backup: Some(backup), linked: true, .. } = move_data_dir(&home, &|| false) else { panic!("not moved") };
         let new = new_dir(&home);
-        assert!(!old_dir(&home).exists() && new.join(MOVED_MARKER).is_file());
+        assert!(old_dir(&home).symlink_metadata().unwrap().file_type().is_symlink() && new.join(MOVED_MARKER).is_file());
         let copy = rusqlite::Connection::open(backup.join("app.db")).unwrap();
         assert_eq!(copy.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
         let l = launch(Path::new("/A/Rox.app/Contents/Resources/broker/rox-broker"), &home, 8787);
