@@ -521,9 +521,9 @@ fn jb(p0: V2, p1: V2, p2: V2, is_arc: bool) -> [f64; FB] {
     f(&mut l, 2, [c + 2.0 / 3.0 * (g[0] - c), u + 2.0 / 3.0 * (g[1] - u)]);
     l
 }
-/// `_r` — an eye record.
-fn eye(off: V2, tilt: f64, wid: f64, p0: V2, p1: V2, p2: V2, is_arc: bool, oval: V2) -> Eye {
-    let s = jb(p0, p1, p2, is_arc);
+/// `_r` — an eye record; `lid` is the lid's three control points (`jb`).
+fn eye(off: V2, tilt: f64, wid: f64, lid: [V2; 3], is_arc: bool, oval: V2) -> Eye {
+    let s = jb(lid[0], lid[1], lid[2], is_arc);
     Eye {
         off,
         tilt,
@@ -541,7 +541,7 @@ fn sc(e: f64, t: f64, n: f64, r: V2, o: f64) -> Eye {
     let s = 0.0f64.max((t - e) / 2.0);
     let i = n * std::f64::consts::PI / 180.0;
     let (a, c) = (i.sin() * s, i.cos() * s);
-    eye(r, o, e / 2.0, [-a, -c], [0.0, 0.0], [a, c], false, [0.0, 0.0])
+    eye(r, o, e / 2.0, [[-a, -c], [0.0, 0.0], [a, c]], false, [0.0, 0.0])
 }
 /// `zn` — an open eye.
 fn zn(e: f64, t: f64, n: f64, r: f64) -> Eye {
@@ -549,7 +549,7 @@ fn zn(e: f64, t: f64, n: f64, r: f64) -> Eye {
 }
 /// `qb` — a flat lid eye.
 fn qb(e: f64, t: f64, n: f64) -> Eye {
-    eye([n, 0.0], 0.0, t, [-e, 0.0], [0.0, 0.0], [e, 0.0], false, [e, t])
+    eye([n, 0.0], 0.0, t, [[-e, 0.0], [0.0, 0.0], [e, 0.0]], false, [e, t])
 }
 fn zt(e: Eye) -> [Eye; 2] {
     [e.clone(), e]
@@ -564,9 +564,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [0.03, 0.03],
             0.0,
             IL,
-            [0.16, -0.04],
-            [0.0, 0.12],
-            [-0.16, -0.04],
+            [[0.16, -0.04], [0.0, 0.12], [-0.16, -0.04]],
             true,
             [0.0, 0.0],
         )),
@@ -577,9 +575,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [0.01, 0.0],
             0.0,
             MR / 2.0,
-            [-0.11, 0.025],
-            [0.0, -0.05],
-            [0.11, 0.025],
+            [[-0.11, 0.025], [0.0, -0.05], [0.11, 0.025]],
             false,
             [0.0, 0.0],
         )),
@@ -589,9 +585,7 @@ fn vn(name: &str) -> [Eye; 2] {
             [-0.1, 0.0],
             0.0,
             IL,
-            [0.01, 0.16],
-            [-0.17, 0.0],
-            [0.01, -0.16],
+            [[0.01, 0.16], [-0.17, 0.0], [0.01, -0.16]],
             false,
             [0.0, 0.0],
         )),
@@ -982,7 +976,7 @@ impl FaceAnim {
             FaceAnim::Morph { to_name, .. } | FaceAnim::LidMorph { to_name, .. } => to_name,
         }
     }
-    fn from_inspect(&self) -> f64 {
+    fn inspect_from(&self) -> f64 {
         match self {
             FaceAnim::Morph { from_inspect, .. } | FaceAnim::LidMorph { from_inspect, .. } => *from_inspect,
         }
@@ -1042,7 +1036,7 @@ impl Face {
         let Some(r) = &self.r else {
             return self.n;
         };
-        let f = r.from_inspect();
+        let f = r.inspect_from();
         let h = if r.to_name() == "inspecting" { 1.0 } else { 0.0 };
         if let FaceAnim::Morph { .. } = r {
             return f + (h - f) * dl(r);
