@@ -1,6 +1,7 @@
 [package]
 name = "buwiz-office-kit"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2024"
 publish = false
 description = "The office views' shared kit: controls, drawing, fonts, the document worker and the host interface"

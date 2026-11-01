@@ -1,0 +1,55 @@
+Buwiz Bot
+Copyright 2026 Buwiz
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Product names in this repository belong to their owners. The plugin
+catalog Buwiz Bot shows is fetched at runtime from
+https://github.com/buwiz-app/catalog and is not part of this repository.
+
+Third-party code in this repository
+-----------------------------------
+
+broker/rox-broker/src/helper/oauth.rs is a port of the MCP TypeScript
+SDK's auth() (version 1.32, https://github.com/modelcontextprotocol/typescript-sdk),
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects,
+LLC, used under the MIT License (text below; the project is moving to
+Apache-2.0, see its LICENSE).
+
+crates/office-kit/src/fonts.rs and crates/word/src/project.rs port parts
+of BetterOffice (@betteroffice/fonts 0.4.0 and @betteroffice/docx 0.4.3,
+by OpenOOXML), licensed under the Apache License, Version 2.0 (the same
+text as this repository's LICENSE). The BetterOffice fonts shipped in the
+app bundle are under the SIL Open Font License 1.1 (in that package's
+LICENSES/).
+
+server/src/plugins/external_plugins/ vendors three plugins under their own
+licenses: calcom (MIT, Cal.com), neon (Apache-2.0, Neon) and
+google-workspace (MIT, taylorwilsdon/google_workspace_mcp); each folder's
+plugin.json names its license and author.
+
+server/tools/oxlint/anti-slop/ is vendored from
+https://github.com/dmmulroy/anti-slop (commit 13909c9), Copyright (c) 2026
+Dillon Mulroy, under the MIT License (server/tools/oxlint/anti-slop/LICENSE).
+
+MIT License
+
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
