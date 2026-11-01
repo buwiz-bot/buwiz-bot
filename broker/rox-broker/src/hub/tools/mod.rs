@@ -87,6 +87,8 @@ pub struct RunState {
     pub cards: u64,
     pub v1_cards: Vec<Value>,
     pub drive_seen: Vec<(String, Value)>,
+    /// the calls the reply's turn keeps (`agent/tool_log.rs`)
+    pub tool_log: Vec<Value>,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).

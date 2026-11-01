@@ -206,6 +206,7 @@ impl Turn {
             "art" => self.art = Some(v),
             "links" => self.links = Some(v),
             "suggest" => self.suggest = Some(v),
+            "tools" => self.tools = Some(v),
             "v1Attachments" => self.v1_attachments = Some(v),
             "routine" => self.routine = Some(v),
             "notice" => self.notice = Some(v),
@@ -240,6 +241,7 @@ impl Turn {
             || t(&self.art)
             || l(&self.links)
             || l(&self.suggest)
+            || l(&self.tools)
             || l(&self.v1_attachments)
             || t(&self.routine)
             || t(&self.notice)
@@ -263,6 +265,7 @@ impl Turn {
             ("pending", &self.pending, l(&self.pending)),
             ("read_by", &self.read_by, l(&self.read_by)),
             ("agent", &self.agent, t(&self.agent)),
+            ("tools", &self.tools, l(&self.tools)),
         ];
         for (k, v, on) in opt {
             if on {
