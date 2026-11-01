@@ -1527,7 +1527,7 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
     let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
     // a fresh answer's cards that mount at once: their sessions open now,
     // alongside their modules (14.6)
-    if !cards::aged(untracked(|| user_after())) {
+    if !cards::aged(untracked(&user_after)) {
         for ((_, c), slot) in cards.iter().zip(&slots) {
             let first_party = store().v1.entry(&c.plugin).is_some_and(|p| p.first_party);
             if *slot != cards::Slot::Link && c.placement == Placement::Inline && first_party {

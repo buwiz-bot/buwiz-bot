@@ -66,10 +66,9 @@ pub(crate) fn mini_app(
             None => JsonValue::Null,
         })
         .on_native_event(move |e: &NativeEvent| {
-            if &*e.name == "natural" {
-                if let (Some(f), Some(h)) = (&on_natural, e.data.as_f64()) {
+            if &*e.name == "natural"
+                && let (Some(f), Some(h)) = (&on_natural, e.data.as_f64()) {
                     f(h as f32);
-                }
             }
         })
         .prop("source", move || {
@@ -691,6 +690,8 @@ mod imp {
     /// only; an event goes out only when it changed).
     const MEASURE_EVERY: f64 = 0.4;
 
+    type ViewportCallback = Box<dyn Fn(serde_json::Value)>;
+
     pub struct FitIvars {
         /// Consecutive ticks spent collapsed (see `collapsed`).
         collapsed_ticks: Cell<u32>,
@@ -721,7 +722,7 @@ mod imp {
         /// keys, and takes the keyboard when it comes into a window.
         owns_keys: Cell<bool>,
         /// Hears the size a v1 app lays out at when it changes.
-        on_viewport: RefCell<Option<Box<dyn Fn(serde_json::Value)>>>,
+        on_viewport: RefCell<Option<ViewportCallback>>,
         /// An inline card's hold until its app's layout settles
         /// (`mini_v1::settle`): armed by the mount, not by the app's loads.
         settle: RefCell<Option<crate::mini_v1::settle::Settle>>,
@@ -792,13 +793,12 @@ mod imp {
                 {
                     log::info!("mini v1 timing: {module} view to first frame {} ms (session, engine start, module, layout)", at.elapsed().as_millis());
                 }
-                if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app)) {
-                    if (h - self.ivars().natural.get()).abs() >= 1.0 {
+                if let Some(h) = self.subviews().firstObject().and_then(|app| natural(&app))
+                    && (h - self.ivars().natural.get()).abs() >= 1.0 {
                         self.ivars().natural.set(h);
                         if let Some(ctx) = self.ivars().ctx.borrow().as_ref() {
                             ctx.emit("natural", serde_json::json!(h.ceil()));
                         }
-                    }
                 }
                 self.schedule();
             }

@@ -969,8 +969,7 @@ fn notice_row(n: RoutineNotice) -> impl IntoElement {
 fn consent_row(c: crate::store::ConsentNotice) -> impl IntoElement {
     let inst = c.instance.clone();
     let answered = move || {
-        let local = store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()));
-        local
+        store().routine_consented.with(|l| l.iter().find(|(i, _)| *i == inst).map(|(_, s)| s.clone()))
     };
     let (yes_hov, no_hov) = (signal(false), signal(false));
     let (c1, c2, c3) = (c.clone(), c.clone(), c.clone());
@@ -2167,7 +2166,8 @@ mod tests {
             let mut config = EngineConfig::new(App::Rust(Root::new::<Rows>(|| ())));
             config.viewport = Size::new(px(900.0), px(4000.0));
             let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
-            let (mut children, mut labels, mut live): (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>) =
+            type NodeState = (HashMap<NodeId, Vec<NodeId>>, Vec<(NodeId, String)>, std::collections::HashSet<NodeId>);
+            let (mut children, mut labels, mut live): NodeState =
                 Default::default();
             // Until nothing comes for a while: a diagram lays out in a task.
             let deadline = Instant::now() + Duration::from_secs(10);

@@ -254,6 +254,8 @@ pub type Handler = Arc<dyn Fn(Value, Option<AnyReply>) + Send + Sync>;
 /// `buwiz.session`).
 pub type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
+type StoreJob = Box<dyn FnOnce() + Send>;
+
 /// One open's bridge state, shared by its handlers.
 pub struct OpenContext {
     pub prepared: Arc<Prepared>,
@@ -265,7 +267,7 @@ pub struct OpenContext {
     gate: Mutex<Gate>,
     files: Mutex<HashMap<String, Picked>>,
     /// Storage operations, in the order the app made them.
-    store_jobs: Mutex<Option<mpsc::Sender<Box<dyn FnOnce() + Send>>>>,
+    store_jobs: Mutex<Option<mpsc::Sender<StoreJob>>>,
 }
 
 impl OpenContext {

@@ -2056,7 +2056,8 @@ fn account_row(
     };
     // the action beside the status: Authenticate (OAuth), Reconnect
     // (a failed probe), Connect (a disabled row).
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match a.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match a.status.as_str() {
         _ if blocked && a.status != "connected" => {
             let p = plugin.clone();
             Some(("Setup", Box::new(move || store().open_setup(&p, "edit"))))
@@ -2555,12 +2556,10 @@ fn host(url: &str) -> String {
 /// "Vercel"), else the host's first label.
 fn developer_of(url: &str) -> String {
     let h = host(url);
-    if h == "github.com" {
-        if let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next()) {
-            if !owner.is_empty() {
-                return Store::plugin_title(owner);
-            }
-        }
+    if h == "github.com"
+        && let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next())
+        && !owner.is_empty() {
+        return Store::plugin_title(owner);
     }
     h.split('.').next().map(|s| s.to_owned()).unwrap_or_else(|| "—".to_owned())
 }
@@ -2982,7 +2981,8 @@ fn server_account(s: McpServer) -> impl IntoElement {
     let id = s.id.clone();
     let transport = if remote { "remote" } else { "command" }.to_owned();
     let err = s.err.clone();
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match s.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match s.status.as_str() {
         "error" => {
             let verb = if needs && remote { "Authenticate" } else { "Reconnect" };
             Some((verb, Box::new(move || store().auth_or_retry(&id, &transport, &err, ""))))
