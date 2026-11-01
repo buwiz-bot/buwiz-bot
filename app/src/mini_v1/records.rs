@@ -122,7 +122,7 @@ pub fn file(dir: &Path) -> PathBuf {
 }
 
 /// The rox names a stored record may hold, and their buwiz ones
-/// (protocol 2.0; the broker's app.db gets the same rewrite).
+/// (protocol 1.0; the broker's app.db gets the same rewrite).
 const RENAMES: [(&str, &str); 7] = [
     ("rox-app://", "buwiz-app://"),
     ("rox://", "buwiz://"),
@@ -146,7 +146,7 @@ impl Records {
     /// The records in `dir`; none yet (or unreadable) is empty.
     pub fn load(dir: &Path) -> Records {
         let Ok(text) = std::fs::read_to_string(file(dir)) else { return Records::default() };
-        // protocol 2.0: a file from before it names links and providers
+        // protocol 1.0: a file from Rox names links and providers
         // the rox way; rewritten once, and saved with the marker
         let marked = serde_json::from_str::<Value>(&text).is_ok_and(|v| v.get("names").and_then(Value::as_str) == Some("buwiz"));
         let renamed = buwiz_names(&text);

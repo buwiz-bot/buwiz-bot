@@ -16,10 +16,12 @@
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
 // tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
 // old-cert (a protocol 1.x `rox-session` certificate), no-accounts (no
-// buwiz.account.set/clear: -32601). strict-host breaks none: it refuses to
-// be provisioned by a host older than protocol 2.0.
+// buwiz.account.set/clear: -32601), rox (a plugin built for Rox: rox.*
+// reserved tools and rox://manifest; any other call is "rox.provision must
+// come first", or -32601 with rox:quiet). strict-host breaks none: it refuses to
+// be provisioned by a host that does not run protocol 1.0.
 //
-// buwiz.account.set/clear (protocol 2.1) keep the pushed accounts in
+// buwiz.account.set/clear keep the pushed accounts in
 // memory; fx_stats shows each one's subject, expiry and the first 12 hex
 // of its token's sha256, never the token.
 import { randomBytes } from "node:crypto";
@@ -87,7 +89,7 @@ const fail = (code, message) => ({ isError: true, content: [{ type: "text", text
 function provision(args) {
   if (misbehave("skip-provision")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.provision is not implemented");
 
-  if (misbehave("strict-host") && !/^2\.0\.\d+$/.test(String(args?.protocol))) return fail("protocol_unsupported", `this plugin needs a protocol 2.0 host, not ${args?.protocol}`);
+  if (misbehave("strict-host") && !/^1\.0\.\d+$/.test(String(args?.protocol))) return fail("protocol_unsupported", `this plugin needs a protocol 1.0 host, not ${args?.protocol}`);
 
   if (args?.key?.alg !== "ed25519" || pubOf(args.key.seed) !== args.pub) return fail("invalid_args", "the key and pub do not match");
 
@@ -282,15 +284,24 @@ const TOOLS = [
 const instructions = process.env.FX_INSTRUCTIONS ?? "## Fixture\nUse fx_search to find items; fx_echo answers with what it was sent.";
 const server = new Server({ name: "rox-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
 
+const ROX = misbehave("rox");
+const reservedName = (name) => (ROX ? name.replace(/^buwiz\./, "rox.") : name);
+const manifestUri = ROX ? "rox://manifest" : "buwiz://manifest";
+
 server.setRequestHandler(ListToolsRequestSchema, () => ({
   tools: [
-    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
+    ...Object.keys(RESERVED).map((name) => ({ name: reservedName(name), description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args = {}, _meta: meta } = req.params;
+
+  if (ROX && name !== "rox.provision") {
+    if (misbehave("rox:quiet")) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
+    throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
+  }
 
   if (Object.hasOwn(RESERVED, name)) return RESERVED[name](args);
 
@@ -315,7 +326,7 @@ const APPS = { board: "board.tsx", card: "card.tsx" };
 
 server.setRequestHandler(ListResourcesRequestSchema, () => ({
   resources: [
-    { uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" },
+    { uri: manifestUri, name: "manifest", mimeType: "application/json" },
     ...Object.keys(APPS).map((id) => ({ uri: `buwiz-app://${id}`, name: id, mimeType: "text/x-nsh-tsx" })),
   ],
 }));
@@ -323,7 +334,7 @@ server.setRequestHandler(ListResourcesRequestSchema, () => ({
 server.setRequestHandler(ReadResourceRequestSchema, (req) => {
   const { uri } = req.params;
 
-  if (uri === "buwiz://manifest") return { contents: [{ uri, mimeType: "application/json", text: readFileSync(MANIFEST, "utf8") }] };
+  if (uri === manifestUri) return { contents: [{ uri, mimeType: "application/json", text: readFileSync(MANIFEST, "utf8") }] };
   const id = uri.startsWith("buwiz-app://") ? uri.slice(12) : "";
   const file = process.env[`FX_APP_${id.toUpperCase()}`] || (APPS[id] && join(HERE, APPS[id]));
 

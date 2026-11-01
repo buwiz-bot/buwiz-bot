@@ -15,9 +15,9 @@ refusal: objects that grant access fail closed (spec 2.2).
 
 | Field | Req | Rule |
 |---|---|---|
-| `protocol` | yes | Semver of the protocol you implement: `"2.0.0"`. A 2.0 host accepts `2.0.x` and refuses `2.1.x` and up (it needs a newer host) and every `1.x` (`protocol_unsupported`: "this plugin is built for an older protocol; update it"; 1.x used the rox names, see [migrating-to-buwiz-names.md](migrating-to-buwiz-names.md)). |
+| `protocol` | yes | Semver of the protocol you implement: `"1.0.0"` ([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)). A 1.0 host accepts `1.0.x` and refuses `1.1.x` and up (`protocol_unsupported`: it needs a newer Buwiz Bot). 2.0 and 2.1 were pre-release numbers of 1.0: a manifest naming `2.0.x` or `2.1.x` is refused with `protocol_unsupported`: "<title> uses the pre-release mini app protocol <protocol>; install its 1.0 version". An install from Rox (its tools named `rox.*`) does not start; see [migrating-to-buwiz-names.md](migrating-to-buwiz-names.md). |
 | `id` | yes | Reverse DNS, `^[a-z][a-z0-9-]{0,62}(\.[a-z][a-z0-9-]{0,62}){2,7}$`, at most 255 chars. Not `buwiz.`, `com.buwiz.bot` or `com.buwiz.bot.*` (Buwiz Bot's own). Buwiz plugins are `app.buwiz.<name>`. Must be on the trust store's approved list. |
-| `short` | yes | `^[a-z][a-z0-9]{1,15}$`. Not `buwiz`, `app`, `chat`, `mcp`, `nsh`, `all`. Unique among enabled plugins. Every tool name starts with `<short>_`. |
+| `short` | yes | `^[a-z][a-z0-9]{1,15}$`. Not `buwiz`, `app`, `chat`, `mcp`, `nsh`, `all`, `office`, `skill`, `routine`, `bot` (the last four are built-in tool prefixes the agent never sees from a plugin). Unique among enabled plugins. Every tool name starts with `<short>_`. |
 | `version` | yes | Semver, at most 32 chars. Raise it on every release: a manifest that changes under the same version is `manifest_changed`. |
 | `title` | yes | 1 to 60 chars. |
 | `description` | no | At most 300 chars. Never sent to the model. |
@@ -152,5 +152,6 @@ These are the limits the broker enforces (`LIMITS` in
 Limits outside the manifest (bridge calls, results, storage, timeouts) are
 in [bridge.md](bridge.md#limits).
 
-Section numbers such as spec 4.1 refer to the Mini App Protocol v1
-specification, which is private and not in this repo.
+Section numbers such as spec 4.1 refer to the
+[mini app protocol 1.0 specification](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)
+(2.0 and 2.1 were its pre-release numbers).

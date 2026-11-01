@@ -218,7 +218,7 @@ test("SDK-10 BRG-03 paces an app's calls to the broker's 20 a second: 25 tools a
 
   copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "many.tsx"));
   writeFileSync(join(dir, "manifest.json"), JSON.stringify({
-    protocol: "2.0.0", id: "app.buwiz.many", short: "many", version: "0.1.0", title: "Many",
+    protocol: "1.0.0", id: "app.buwiz.many", short: "many", version: "0.1.0", title: "Many",
     publisher: { id: "app.buwiz", key_id: "test-sdk-10", name: "Goldcoders" },
     apps: [{
       id: "many", title: "Many", description: "", entry: "buwiz-app://many", mime: "text/x-nsh-tsx", sdk: "1",
@@ -267,7 +267,7 @@ test("SDK-12 INV-04 asks an attachable scope to resolve only a ticket its own co
 
   copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "quiet.tsx"));
   writeFileSync(join(dir, "manifest.json"), JSON.stringify({
-    protocol: "2.0.0", id: "app.buwiz.quiet", short: "quiet", version: "0.1.0", title: "Quiet",
+    protocol: "1.0.0", id: "app.buwiz.quiet", short: "quiet", version: "0.1.0", title: "Quiet",
     publisher: { id: "app.buwiz", key_id: "test-sdk-12", name: "Goldcoders" },
     apps: [{
       id: "quiet", title: "Quiet", description: "", entry: "buwiz-app://quiet", mime: "text/x-nsh-tsx", sdk: "1",
@@ -304,7 +304,7 @@ test("SDK-12 INV-04 asks an attachable scope to resolve only a ticket its own co
   assert.equal(code, 0);
 });
 
-test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blank, at most 4000 characters, from a 2.0 plugin", async () => {
+test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blank, at most 4000 characters, from a 1.0 plugin", async () => {
   const dir = tempDir("sdk-prompt");
   const manifest = (protocol) => ({
     protocol, id: "app.buwiz.starter", short: "starter", version: "0.1.0", title: "Starter",
@@ -318,8 +318,8 @@ test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blan
   });
 
   copyFileSync(join(SDK, "template", "hello.tsx"), join(dir, "starter.tsx"));
-  writeFileSync(join(dir, "manifest-1.1.json"), JSON.stringify(manifest("2.0.0")));
   writeFileSync(join(dir, "manifest-1.0.json"), JSON.stringify(manifest("1.0.0")));
+  writeFileSync(join(dir, "manifest-2.1.json"), JSON.stringify(manifest("2.1.0")));
   // a bare /draft is a starter flow: text for the composer. MODE=bad
   // answers it over the cap, and answers prompt for the scope too; SRC
   // serves another manifest
@@ -332,7 +332,7 @@ test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blan
       return ok({ result: "open", app: "starter", title: "Starter", placement: "full" });
     }
     await startPlugin({
-      name: "starter", manifestFile: process.env.BUWIZ_PLUGIN_MANIFEST || process.env.SRC || ${JSON.stringify(join(dir, "manifest-1.1.json"))},
+      name: "starter", manifestFile: process.env.BUWIZ_PLUGIN_MANIFEST || process.env.SRC || ${JSON.stringify(join(dir, "manifest-1.0.json"))},
       apps: { starter: ${JSON.stringify(join(dir, "starter.tsx"))} },
       tools: [{ name: "starter_resolve", description: "Resolve /draft and @starter:note.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, run: resolve }],
     });
@@ -340,7 +340,7 @@ test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blan
   const server = ["--command", process.execPath, "--args", join(dir, "server.mjs"), "--sign-with", KEY];
   const prompts = (res) => res.rows.filter((r) => r.id === "INV-10").map((r) => [r.status, r.note]);
 
-  // a 2.0 plugin: the bare command's prompt passes
+  // a 1.0 plugin: the bare command's prompt passes
   const good = await runner(server);
 
   assert.ok(good.res, good.stderr);
@@ -360,11 +360,11 @@ test("SDK-13 INV-10 checks a starter flow's prompt answer: a command's, non-blan
   assert.deepEqual(failed(bad.res).filter((f) => !f.startsWith("INV-10")), [], "the other checks pass: the shape is 9.2's");
   assert.equal(bad.code, 1);
 
-  // a 1.x plugin (the rox names) is refused before anything it answers
-  const old = await runner([...server, "--env", `SRC=${join(dir, "manifest-1.0.json")}`]);
+  // a 2.1 plugin (a pre-release number of 1.0) is refused before anything it answers
+  const old = await runner([...server, "--env", `SRC=${join(dir, "manifest-2.1.json")}`]);
 
   assert.ok(old.res, old.stderr);
-  assert.ok(failed(old.res).some((f) => f.includes("this plugin is built for an older protocol; update it")), failed(old.res).join("\n"));
+  assert.ok(failed(old.res).some((f) => f.includes("Starter uses the pre-release mini app protocol 2.1.0; install its 1.0 version")), failed(old.res).join("\n"));
 });
 
 test("SDK-14 the runner provisions as the broker does, with the host's protocol: a plugin that checks it passes RSV-01..05", async () => {

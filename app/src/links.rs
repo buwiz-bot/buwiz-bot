@@ -96,7 +96,7 @@ pub(crate) fn outside(url: &str) -> Outside {
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
     match scheme.as_str() {
         "http" | "https" | "mailto" | "tel" => Outside::Open,
-        // `buwiz:` is Buwiz Bot's own; `rox:` was, before protocol 2.0, and an
+        // `buwiz:` is Buwiz Bot's own; `rox:` was Rox's (before protocol 1.0), and an
         // old build may still claim it, so neither goes to the system
         "buwiz" | "rox" => Outside::Refuse,
         _ => Outside::Ask,

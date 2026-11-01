@@ -60,7 +60,7 @@ export const V1 = Object.freeze({
 export const V1_RESERVED = Object.freeze({
   // the app's bundle id (com.buwiz.bot), itself and under it
   idPrefixes: ["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"],
-  shorts: ["buwiz", "app", "chat", "mcp", "nsh", "all"],
+  shorts: ["buwiz", "app", "chat", "mcp", "nsh", "all", "office", "skill", "routine", "bot"],
   commands: ["status"],
 });
 

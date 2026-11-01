@@ -44,8 +44,8 @@ pub struct Tool {
     pub disabled: bool,
 }
 
-/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 2.0)
-/// or `rox.<lowercase>` (an install from before it).
+/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 1.0)
+/// or `rox.<lowercase>` (an install from Rox).
 fn reserved_tool(name: &str) -> bool {
     ["buwiz.", "rox."].iter().any(|p| name.strip_prefix(p).is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')))
 }
@@ -335,7 +335,7 @@ impl Listed {
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false),
             generation: v.get("generation").and_then(Value::as_u64).unwrap_or(0),
             // the reserved lifecycle tools (`buwiz.provision`, …; `rox.*` in a
-            // record from before protocol 2.0) are the broker's, never the
+            // record from Rox) are the broker's, never the
             // person's to switch: not listed, not counted
             tools: list(v, "tools")
                 .iter()

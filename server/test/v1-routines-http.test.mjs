@@ -208,7 +208,7 @@ test("RTH-02 install, then GET /v1/host/plugins byte for byte with each routine'
         short: "fx",
         title: "Fixture",
         version: "1.0.0",
-        protocol: "2.0.0",
+        protocol: "1.0.0",
         publisher: manifest.publisher,
         state: "running",
         code: null,

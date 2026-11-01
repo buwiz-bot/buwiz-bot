@@ -254,5 +254,6 @@ Buwiz Bot renders your app in Buwiz Bot's own light or dark setting, not the OS'
 | App source | 512 KiB |
 | App load / one JS call / heap / stack | 10 s / 2 s / 256 MB / 4 MB |
 
-Section numbers such as spec 4.1 refer to the Mini App Protocol v1
-specification, which is private and not in this repo.
+Section numbers such as spec 4.1 refer to the
+[mini app protocol 1.0 specification](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)
+(2.0 and 2.1 were its pre-release numbers).
