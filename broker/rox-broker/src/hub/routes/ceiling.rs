@@ -84,6 +84,8 @@ enum Unsaved {
     Stale,
     /// The bot was removed between the read and the write.
     Gone,
+    /// app.db did not take the write.
+    Db(String),
 }
 
 /// Store `rows` as the ceiling of the bot `id` at the next version, if
@@ -100,13 +102,14 @@ fn save(ctx: &HubCtx, id: &str, version: Option<i64>, rows: Vec<Value>) -> Resul
             b.tools = Ceiling { rows, version: b.tools.version + 1 };
             Ok(b.clone())
         })
-        .unwrap_or(Err(Unsaved::Gone))
+        .unwrap_or_else(|e| Err(Unsaved::Db(e)))
 }
 
 fn unsaved(why: Unsaved) -> HubResponse {
     match why {
         Unsaved::Stale => answer(StatusCode::CONFLICT, &json!({ "error": "the tools changed since you looked", "code": "ceiling-changed" })),
         Unsaved::Gone => no_bot(),
+        Unsaved::Db(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
