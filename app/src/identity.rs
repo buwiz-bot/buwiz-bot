@@ -48,6 +48,15 @@ pub fn data_dir_in(over: Option<&OsStr>, home: &Path) -> PathBuf {
     if !new.exists() && old.is_dir() { old } else { new }
 }
 
+/// Where nsh keeps the app's own data (`storage.json`, under `<dir>/<app
+/// id>`) for an instance with its own data dir (`ROX_DATA_DIR`, which
+/// scripts/test-rox sets): `<ROX_DATA_DIR>/nsh`, so a test instance never
+/// shares the owner's `~/Library/Application Support/com.buwiz.bot`.
+/// `None` (the owner's app) leaves nsh's default.
+pub fn nsh_data_dir_in(over: Option<&OsStr>) -> Option<PathBuf> {
+    over.filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("nsh"))
+}
+
 /// `~/Library/Logs/Buwiz Bot` (the broker's and the jank log).
 pub fn logs_dir(home: &Path) -> PathBuf {
     home.join("Library/Logs").join(DIR_NAME)
@@ -155,6 +164,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
+
+    #[test]
+    fn a_test_instance_keeps_nsh_storage_in_its_own_data_dir() {
+        assert_eq!(nsh_data_dir_in(Some(OsStr::new("/tmp/bench/data"))), Some(PathBuf::from("/tmp/bench/data/nsh")));
+        assert_eq!(nsh_data_dir_in(Some(OsStr::new(""))), None, "an empty override is none");
+        assert_eq!(nsh_data_dir_in(None), None, "the owner's app keeps nsh's default");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rox-identity-{}-{name}", std::process::id()));
