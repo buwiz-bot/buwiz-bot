@@ -626,9 +626,9 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
                 })),
         )
         .children((0..3usize).map(|i| {
-            let zp = z_phase.clone();
-            let zp2 = z_phase.clone();
-            let zp3 = z_phase.clone();
+            let zp = z_phase;
+            let zp2 = z_phase;
+            let zp3 = z_phase;
             text("z")
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)

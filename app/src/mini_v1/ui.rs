@@ -1975,7 +1975,7 @@ pub fn preview_layer() -> impl IntoElement {
         || {
             let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
             let page = element_ref();
-            let stop = page.clone();
+            let stop = page;
             // a string loaded with no base URL is about:blank
             let own = |url: &str| url.is_empty() || url.starts_with("about:");
             view()
