@@ -241,6 +241,84 @@ pub struct Listed {
     pub routines: Vec<Routine>,
     /// Each app's title and placements ("BIR Forms · full screen").
     pub apps: Vec<String>,
+    /// Its package's accounts (2.1), a row per signed-in label; empty
+    /// for a 2.0 plugin.
+    pub accounts: Vec<Account>,
+    /// Its package's skills (2.1); empty for a 2.0 plugin.
+    pub skills: Vec<Skill>,
+}
+
+/// One account row of a 2.1 package (spec 2.1 §4): only its state and who
+/// it is; the token stays with the broker and the plugin.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Account {
+    /// The manifest's account id (`google`).
+    pub account: String,
+    /// This sign-in's label (`default`, `work`).
+    pub label: String,
+    pub provider: String,
+    /// The manifest's label ("Google account").
+    pub title: String,
+    /// Who is signed in ("" none).
+    pub subject: String,
+    /// `none`, `connected` or `expired`.
+    pub state: String,
+    pub required: bool,
+    /// What Setup lacks before it can sign in ("Add your Google client in
+    /// Setup"); "" when nothing.
+    pub setup: String,
+}
+
+impl Account {
+    fn of(v: &Value) -> Account {
+        Account {
+            account: s(v, "account"),
+            label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| "default".to_owned()),
+            provider: s(v, "provider"),
+            title: s(v, "title"),
+            subject: s(v, "subject"),
+            state: Some(s(v, "state")).filter(|l| !l.is_empty()).unwrap_or_else(|| "none".to_owned()),
+            required: v.get("required").and_then(Value::as_bool).unwrap_or(false),
+            setup: s(v, "setup"),
+        }
+    }
+
+    pub fn connected(&self) -> bool {
+        self.state == "connected"
+    }
+
+    /// The row's status word.
+    pub fn status(&self) -> &'static str {
+        match self.state.as_str() {
+            "connected" => "Connected",
+            "expired" => "Needs sign-in",
+            _ => "Not signed in",
+        }
+    }
+
+    /// "Google account", or "Google account (work)" for a label of its own:
+    /// the name its controls are labelled with.
+    pub fn name(&self) -> String {
+        let title = if self.title.is_empty() { &self.account } else { &self.title };
+        if self.label == "default" { title.clone() } else { format!("{title} ({})", self.label) }
+    }
+
+    /// The key a sign-in in progress is kept under.
+    pub fn key(&self) -> String {
+        account_key(&self.account, &self.label)
+    }
+}
+
+/// `<account>/<label>`.
+pub fn account_key(account: &str, label: &str) -> String {
+    format!("{account}/{label}")
+}
+
+/// One of a package's skills, as its page lists it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
 }
 
 impl Listed {
@@ -308,7 +386,36 @@ impl Listed {
                     format!("{} · {}", s(a, "title"), places.join(", "))
                 })
                 .collect(),
+            accounts: list(v, "accounts").iter().map(Account::of).filter(|a| !a.account.is_empty() && a.state != "removed").collect(),
+            skills: list(v, "skills")
+                .iter()
+                .map(|k| Skill { name: s(k, "name"), description: s(k, "description") })
+                .filter(|k| !k.name.is_empty())
+                .collect(),
         }
+    }
+
+    /// Its accounts by manifest id, in the broker's order: (id, rows).
+    pub fn account_groups(&self) -> Vec<(String, Vec<Account>)> {
+        let mut out: Vec<(String, Vec<Account>)> = Vec::new();
+        for a in &self.accounts {
+            match out.iter_mut().find(|(id, _)| *id == a.account) {
+                Some((_, rows)) => rows.push(a.clone()),
+                None => out.push((a.account.clone(), vec![a.clone()])),
+            }
+        }
+        out
+    }
+
+    /// Whether any sign-in of `account` is connected.
+    pub fn account_connected(&self, account: &str) -> bool {
+        self.accounts.iter().any(|a| a.account == account && a.connected())
+    }
+
+    /// The label a chat card's Sign in uses for `account`: its first row's
+    /// (an expired one signs in again), else `default`.
+    pub fn signin_label(&self, account: &str) -> String {
+        self.accounts.iter().find(|a| a.account == account).map(|a| a.label.clone()).unwrap_or_else(|| "default".to_owned())
     }
 
     /// The state as the list says it.
@@ -888,6 +995,81 @@ mod tests {
         let p = log_file("app.buwiz.ebirforms").unwrap();
         assert!(p.ends_with("v1/logs/app.buwiz.ebirforms.log"), "{}", p.display());
         assert_eq!(log_file("../x"), None);
+    }
+
+    #[test]
+    fn a_2_1_plugin_lists_its_accounts_and_skills_and_a_2_0_plugin_neither() {
+        let old = Listed::of(&json!({"id": "app.buwiz.ebirforms", "title": "BIR", "tools": []}));
+        assert!(old.accounts.is_empty() && old.skills.is_empty() && old.account_groups().is_empty());
+        assert_eq!(old.signin_label("google"), "default");
+        let l = Listed::of(&json!({"id": "app.buwiz.google-workspace", "title": "Google Workspace",
+            "accounts": [
+                {"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": "uriah@example.com", "state": "connected", "required": true},
+                {"account": "google", "label": "work", "provider": "google", "title": "Google account", "subject": null, "state": "expired", "required": true},
+                {"account": "drive", "label": "default", "provider": "oauth:https://auth.example.com", "title": "Drive", "subject": null, "state": "none", "required": false,
+                    "setup": "Add your Google client in Setup"},
+                {"account": "google", "label": "old", "provider": "google", "title": "Google account", "state": "removed"},
+                {"label": "no account id"},
+            ],
+            "skills": [{"name": "triage-inbox", "description": "Sort the inbox"}, {"description": "no name"}],
+        }));
+        assert_eq!(l.accounts.len(), 3, "a removed row and one without an account id are dropped");
+        assert_eq!((l.accounts[0].setup.as_str(), l.accounts[2].setup.as_str()), ("", "Add your Google client in Setup"));
+        let a = &l.accounts[0];
+        assert_eq!((a.subject.as_str(), a.status(), a.name(), a.required), ("uriah@example.com", "Connected", "Google account".to_owned(), true));
+        let w = &l.accounts[1];
+        assert_eq!((w.subject.as_str(), w.status(), w.name(), w.key()), ("", "Needs sign-in", "Google account (work)".to_owned(), "google/work".to_owned()));
+        assert_eq!(l.accounts[2].status(), "Not signed in");
+        let groups = l.account_groups();
+        assert_eq!(groups.iter().map(|(id, rows)| (id.as_str(), rows.len())).collect::<Vec<_>>(), [("google", 2), ("drive", 1)]);
+        assert!(l.account_connected("google") && !l.account_connected("drive"));
+        assert_eq!(l.signin_label("google"), "default");
+        assert_eq!(l.skills, [Skill { name: "triage-inbox".into(), description: "Sort the inbox".into() }]);
+        // a broker that leaves out label and state: the default slot, not signed in
+        let bare = Listed::of(&json!({"id": "x.y.z", "accounts": [{"account": "google", "provider": "google"}]}));
+        assert_eq!((bare.accounts[0].label.as_str(), bare.accounts[0].state.as_str(), bare.accounts[0].name()), ("default", "none", "google".to_owned()));
+    }
+
+    #[test]
+    fn each_account_button_sends_its_route_with_the_label_only() {
+        use host_api::{AccountAction, account_action};
+        let b = Lifecycle::default();
+        account_action(&b, "app.buwiz.google-workspace", "google", "default", AccountAction::SignIn).unwrap();
+        account_action(&b, "app.buwiz.google-workspace", "google", " work ", AccountAction::SignOut).unwrap();
+        account_action(&b, "app.buwiz.google-workspace", "google", "work", AccountAction::Remove).unwrap();
+        host_api::settle_notice(&b, "c1", "account_required", "app.buwiz.google-workspace", "declined").unwrap();
+        assert_eq!(
+            *b.routes.lock().unwrap(),
+            [
+                ("POST /v1/host/plugins/app.buwiz.google-workspace/accounts/google/signin".to_owned(), json!({"label": "default"})),
+                ("POST /v1/host/plugins/app.buwiz.google-workspace/accounts/google/signout".to_owned(), json!({"label": "work"})),
+                ("POST /v1/host/plugins/app.buwiz.google-workspace/accounts/google/remove".to_owned(), json!({"label": "work"})),
+                (
+                    "POST /v1/host/notices/settle".to_owned(),
+                    json!({"chat": "c1", "kind": "account_required", "id": "app.buwiz.google-workspace", "state": "declined"})
+                ),
+            ]
+        );
+        // nothing reaches the broker for a bad plugin, account or label
+        let b = Lifecycle::default();
+        for (p, a, l) in [
+            ("../x", "google", "default"),
+            ("app.buwiz.gws", "Google", "default"),
+            ("app.buwiz.gws", "g/../x", "default"),
+            ("app.buwiz.gws", "google", "  "),
+            ("app.buwiz.gws", "google", "work email"),
+            ("app.buwiz.gws", "google", "-work"),
+            ("app.buwiz.gws", "google", "a/b"),
+        ] {
+            assert!(account_action(&b, p, a, l, AccountAction::SignIn).is_err(), "{p} {a} {l:?}");
+        }
+        assert!(account_action(&b, "app.buwiz.gws", "google", &"x".repeat(61), AccountAction::SignIn).is_err());
+        assert!(b.routes().is_empty());
+        for ok in ["default", "work", "uriah@example.com", "a.b_c+d-e", "W2"] {
+            assert!(host_api::account_label_ok(ok), "{ok}");
+        }
+        assert!(host_api::account_label_ok(&"x".repeat(60)) && !host_api::account_label_ok("é"));
+        assert!(host_api::account_id_ok("google") && host_api::account_id_ok("g-2") && !host_api::account_id_ok("2g") && !host_api::account_id_ok(&"a".repeat(33)));
     }
 
     #[test]
