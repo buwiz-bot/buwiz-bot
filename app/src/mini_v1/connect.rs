@@ -415,7 +415,7 @@ pub fn command_line(line: &str) -> Option<(Option<Value>, String, Vec<String>)> 
         words.next();
     }
     let command = words.next()?;
-    Some(((!env.is_empty()).then(|| Value::Object(env)), command, words.collect()))
+    Some(((!env.is_empty()).then_some(Value::Object(env)), command, words.collect()))
 }
 
 /// `line` split into words: whitespace separates them outside quotes;

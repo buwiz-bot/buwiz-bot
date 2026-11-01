@@ -866,8 +866,7 @@ fn reported(js: &str, limits: nsh_engine::Limits) -> Vec<(AppErrorKind, String)>
         let _ = rx.recv_timeout(Duration::from_millis(20));
     }
     drop(engine);
-    let r = reports.lock().unwrap().clone();
-    r
+    reports.lock().unwrap().clone()
 }
 
 #[test]

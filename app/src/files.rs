@@ -15,12 +15,6 @@ use crate::theme;
 
 use crate::theme::tc;
 
-const WHITE85: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 1.0,
-    a: 0.85,
-};
 const LIGHT_BG: Hsla = Hsla {
     h: 0.0,
     s: 0.0,
@@ -138,7 +132,7 @@ fn open_diagram(code: &str) {
 fn diagram_canvas(g: std::sync::Arc<crate::mermaid::Drawn>, fixed: Option<f32>) -> View {
     let width = signal(g.w);
     let gw = g.w;
-    let k = move || fixed.unwrap_or_else(|| (width.get() / gw).min(1.0).max(0.01));
+    let k = move || fixed.unwrap_or_else(|| (width.get() / gw).clamp(0.01, 1.0));
     let gd = g.clone();
     let mut out = view()
         .w(px(g.w * fixed.unwrap_or(1.0)))
@@ -1087,7 +1081,7 @@ pub(crate) fn media_gallery(files: Vec<Attach>) -> impl IntoElement {
                         })
                         .into_element();
                     }
-                    let sum: f64 = files.iter().map(|f| aspect(f)).sum();
+                    let sum: f64 = files.iter().map(&aspect).sum();
                     let h = 240.0f64.min((GAL_W - GAP * (files.len() - 1) as f64) / sum);
                     let last = files.len() - 1;
                     view()
@@ -1199,7 +1193,7 @@ fn round_btn(glyph: &'static str, label: &'static str, on: impl Fn() + 'static) 
                     a: 0.85,
                 }),
         )
-        .on_press(move || on())
+        .on_press(on)
 }
 
 /// The lightbox layer — mount in the root stack (lightbox.tsx `Lightbox`).
@@ -1217,11 +1211,10 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
         let (sw, sh) = st.light_stage.get();
         // fit the media's own aspect so a player never letterboxes
         let (mut mw, mut mh) = (cur.w, cur.h);
-        if mw <= 0.0 || mh <= 0.0 {
-            if cur.kind == "video" {
+        if (mw <= 0.0 || mh <= 0.0)
+            && cur.kind == "video" {
                 mw = 16.0;
                 mh = 9.0;
-            }
         }
         let (fw, fh) = if sw <= 0.0 || sh <= 0.0 {
             (0.0, 0.0)
@@ -1522,7 +1515,7 @@ fn round_pill(glyph: &'static str, on: impl Fn() + 'static) -> impl IntoElement 
                     a: 0.85,
                 }),
         )
-        .on_press(move || on())
+        .on_press(on)
 }
 
 // ——————————————————— the fullscreen viewer (`FileViewer`) ———————————————————
@@ -1582,7 +1575,7 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
         })
     };
     let office_page = element_ref();
-    OFFICE_PAGE.with(|p| p.set(Some(office_page.clone())));
+    OFFICE_PAGE.with(|p| p.set(Some(office_page)));
     let place = |v: WebView| v.absolute().top(px(52.0)).left(px(0.0)).right(px(0.0)).bottom(px(0.0));
     view()
         .absolute()
@@ -2152,10 +2145,9 @@ fn table_view(sheets: Vec<Sheet>) -> impl IntoElement {
         .unwrap_or_default();
     let cols = sh.rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
     let width = |c: usize| -> f32 {
-        if let Some(w) = sh.widths.get(c) {
-            if *w > 0.0 {
+        if let Some(w) = sh.widths.get(c)
+            && *w > 0.0 {
                 return (w * 7.0).round().clamp(48.0, 320.0) as f32;
-            }
         }
         let longest = sh
             .rows

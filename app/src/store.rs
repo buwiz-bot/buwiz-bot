@@ -759,7 +759,7 @@ pub struct Turn {
     /// Interactive cards (approvals, choices, forms, plugin needs) under
     /// the reply, in document order: the optional `cards` array of raw wire
     /// objects (`cards::Card::from_wire`), or the dev hook's local turn.
-    pub cards: Vec<crate::cards::TurnCard>,
+    pub(crate) cards: Vec<crate::cards::TurnCard>,
     /// The v1 attachments that went to the model with this user message
     /// (`v1Attachments`, spec 10.3): (canonical token, title).
     pub v1_attachments: Vec<(String, String)>,
@@ -1462,7 +1462,7 @@ impl RoxGroup {
 pub enum GroupRow {
     Bot(RoxBot),
     Chat(ThreadMeta),
-    Artifact(RoxApp),
+    Artifact(Box<RoxApp>),
     /// A server's mini app: its module name and title.
     App(String, String),
 }
@@ -1987,7 +1987,7 @@ pub struct Store {
     /// Each interactive card's state by its key (`cards::CardState`): no
     /// entry is still open. Kept while Rox runs; a form's typed values are
     /// never here.
-    pub card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
+    pub(crate) card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
     /// A choice card's picks by card key (field id → option).
     pub card_picks: Signal<std::collections::HashMap<String, BTreeMap<String, String>>>,
     /// Plugin-needs cards whose "Remember for <bot>" is on.
@@ -2672,14 +2672,13 @@ impl Store {
         });
         self.fetch_groups();
         spawn(async move {
-            if let Some(v) = client::get("/state/rox-reactions").await {
-                if let Some(m) = v.get("state").and_then(|s| s.as_object()) {
+            if let Some(v) = client::get("/state/rox-reactions").await
+                && let Some(m) = v.get("state").and_then(|s| s.as_object()) {
                     self.art_reactions.set(
                         m.iter()
                             .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
                             .collect(),
                     );
-                }
             }
         });
         spawn(async move {
@@ -2692,14 +2691,13 @@ impl Store {
                 }
             }
             // Drafts before the chats: opening the active one restores its.
-            if let Some(v) = client::get("/state/rox-drafts").await {
-                if let Some(m) = v.get("state").and_then(|st| st.get("drafts")).and_then(|d| d.as_object()) {
+            if let Some(v) = client::get("/state/rox-drafts").await
+                && let Some(m) = v.get("state").and_then(|st| st.get("drafts")).and_then(|d| d.as_object()) {
                     *self.drafts.borrow_mut() = m
                         .iter()
                         .map(|(k, d)| (k.clone(), Draft::from_json(d)))
                         .filter(|(_, d)| !d.is_empty())
                         .collect();
-                }
             }
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
@@ -3012,7 +3010,7 @@ impl Store {
                     .cloned()
                     .map(GroupRow::Chat),
                 "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
-                _ => it.artifact.clone().map(GroupRow::Artifact),
+                _ => it.artifact.clone().map(|a| GroupRow::Artifact(Box::new(a))),
             })
             .collect()
     }
@@ -3220,10 +3218,9 @@ impl Store {
         {
             return r.state.clone();
         }
-        if let Some(st) = self.settled.get().as_ref() {
-            if st.bot == id {
+        if let Some(st) = self.settled.get().as_ref()
+            && st.bot == id {
                 return st.state.clone();
-            }
         }
         "idle".to_owned()
     }
@@ -3371,13 +3368,13 @@ impl Store {
                 .filter(|it| it.kind == "bot")
                 .filter_map(|it| vis.iter().find(|b| b.id == it.id).copied())
                 .collect();
-            items.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+            items.sort_by_key(|a| std::cmp::Reverse(count_of(&a.thread_id)));
             for b in items {
                 push(&b.thread_id);
             }
         }
         let mut un: Vec<&RoxBot> = vis.iter().filter(|b| !grouped(&b.id)).copied().collect();
-        un.sort_by(|a, b| count_of(&b.thread_id).cmp(&count_of(&a.thread_id)));
+        un.sort_by_key(|a| std::cmp::Reverse(count_of(&a.thread_id)));
         for b in un {
             push(&b.thread_id);
         }
@@ -3692,8 +3689,8 @@ impl Store {
                     .iter()
                     .map(|e| Kv(s(e, "key"), s(e, "value")))
                     .collect();
-                if rows.is_empty() {
-                    if let Some(obj) = v.get("state").and_then(|o| o.as_object()) {
+                if rows.is_empty()
+                    && let Some(obj) = v.get("state").and_then(|o| o.as_object()) {
                         rows = obj
                             .iter()
                             .take(10)
@@ -3706,7 +3703,6 @@ impl Store {
                                 Kv(k.clone(), v)
                             })
                             .collect();
-                    }
                 }
                 self.detail.set(rows);
             }
@@ -3810,10 +3806,9 @@ impl Store {
             let _ = client::post("/app/version", serde_json::json!({"name": app, "v": v})).await;
             self.refresh_thread_apps();
             self.refresh_threads();
-            if let Some(i) = self.app_details.get_untracked().filter(|i| i.name == app_name(&app)) {
-                if let Some(v) = client::get(&details_url(&i.name, &i.kind)).await {
+            if let Some(i) = self.app_details.get_untracked().filter(|i| i.name == app_name(&app))
+                && let Some(v) = client::get(&details_url(&i.name, &i.kind)).await {
                     self.app_details.set(Some(AppInfo::from_json(&v)));
-                }
             }
         });
     }
@@ -3963,10 +3958,9 @@ impl Store {
         self.ad_busy.set(String::new());
         match v {
             Some(v) if self::b(&v, "ok") => {
-                if let Some(cur) = self.app_details.get_untracked() {
-                    if cur.name == s(&v, "name") {
+                if let Some(cur) = self.app_details.get_untracked()
+                    && cur.name == s(&v, "name") {
                         self.app_details.set(Some(AppInfo::from_json(&v)));
-                    }
                 }
                 self.refresh_thread_apps();
                 // the chat's cards show the edited titles and file names
@@ -5205,7 +5199,7 @@ impl Store {
     pub fn crop_zoom(&'static self, d: f64) {
         let c = self.draft_crop.get_untracked();
         self.draft_crop
-            .set(Self::clamp_crop(Crop { s: (c.s + d).max(1.0).min(3.0), ..c }));
+            .set(Self::clamp_crop(Crop { s: (c.s + d).clamp(1.0, 3.0), ..c }));
     }
     pub fn crop_drag(&'static self, from: Crop, dx: f64, dy: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
@@ -5216,7 +5210,7 @@ impl Store {
     }
     pub fn crop_scale(&'static self, from: Crop, dx: f64) {
         self.draft_crop.set(Self::clamp_crop(Crop {
-            s: (from.s + (dx / 236.0) * 2.0).max(1.0).min(3.0),
+            s: (from.s + (dx / 236.0) * 2.0).clamp(1.0, 3.0),
             ..from
         }));
     }
@@ -5495,7 +5489,7 @@ impl Store {
     }
 
     /// The dev hook's cards as a local reply at the end of the open chat.
-    pub fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
+    pub(crate) fn add_local_turn(&'static self, cards: Vec<crate::cards::TurnCard>) {
         let chat = self.active_id.get_untracked();
         if chat.is_empty() {
             crate::toast::show("Open a chat first");
@@ -5677,11 +5671,10 @@ impl Store {
             while queue.len() > 3 {
                 queue.pop_front();
             }
-            if shown.is_none() || shown_at.elapsed() >= HOLD {
-                if let Some(next) = queue.pop_front() {
+            if (shown.is_none() || shown_at.elapsed() >= HOLD)
+                && let Some(next) = queue.pop_front() {
                     shown = Some(next);
                     shown_at = std::time::Instant::now();
-                }
             }
             if let Some((state, label)) = shown.clone() {
                 let mins = shown_at.elapsed().as_secs() / 60;
@@ -5699,7 +5692,7 @@ impl Store {
             }
             // The reply streams into the transcript; the chat list less often.
             self.refresh_turns();
-            if tick % 4 == 0 {
+            if tick.is_multiple_of(4) {
                 self.refresh_threads();
             }
             tick += 1;
@@ -5950,12 +5943,12 @@ impl Store {
     pub fn file_raw_url(path: &str) -> String {
         // a file on this Mac outside the server's (`buwiz://view`'s)
         if path.starts_with('/') {
-            let enc = path.split('/').map(|p| crate::client::urlenc(p)).collect::<Vec<_>>().join("/");
+            let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
             return format!("file://{enc}");
         }
         let enc = path
             .split('/')
-            .map(|p| crate::client::urlenc(p))
+            .map(crate::client::urlenc)
             .collect::<Vec<_>>()
             .join("/");
         format!("{}/file/raw/{enc}", crate::client::backend())
@@ -6315,7 +6308,7 @@ impl Store {
     /// `closeP` — the pill's owner, a scroll tick or `reset_fresh` closes
     /// it. `i = -1` closes unconditionally.
     pub fn close_pill(&'static self, i: i64) {
-        if i < 0 || self.pill.get_untracked().as_ref().map_or(false, |a| a.i == i) {
+        if i < 0 || self.pill.get_untracked().as_ref().is_some_and(|a| a.i == i) {
             self.pill.set(None);
         }
     }
@@ -7200,7 +7193,7 @@ impl Store {
                 let hit = self.turns.with_untracked(|t| {
                     t.iter().position(|t| turn_is(t, &key)).map(|p| (p, t[p].i))
                 });
-                let list = self.chat_list.borrow().clone();
+                let list = *self.chat_list.borrow();
                 if let (Some((pos, i)), Some(list)) = (hit, list) {
                     list.scroll_to_index(pos as u32, percentage(0.5), px(0.0), false);
                     self.flash(i);

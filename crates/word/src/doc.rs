@@ -175,13 +175,16 @@ pub struct Meta {
     pub watermark: Option<serde_json::Value>,
 }
 
+/// A picture's key: (part, relationship id).
+pub type MediaKey = (Option<String>, String);
+
 pub enum Out {
     Meta(Box<Meta>),
     /// Page `index` drawn for layout `rev` at the zoom it was asked at.
     Page { index: usize, rev: u64, zoom: f32, drawn: Arc<Drawn> },
     Caret(Caret),
     /// Picture bytes by (part, relationship id), once each.
-    Media(Vec<((Option<String>, String), Arc<Vec<u8>>)>),
+    Media(Vec<(MediaKey, Arc<Vec<u8>>)>),
     Copied(String),
     /// The document as HTML to print.
     Print(String),
@@ -206,7 +209,7 @@ pub struct Word {
     /// What was drawn of each page: its list as drawn, the layout and the zoom.
     drawn: HashMap<usize, (Arc<DisplayPage>, u64, f32)>,
     /// Pictures already sent.
-    media_sent: std::collections::HashSet<(Option<String>, String)>,
+    media_sent: std::collections::HashSet<MediaKey>,
     media: Option<Vec<(String, Vec<u8>)>>,
     found: Vec<(Spot, Spot)>,
     found_at: usize,
@@ -488,15 +491,15 @@ impl Word {
             if page.unbuilt {
                 continue;
             }
-            if let Some((old, rev, zoom)) = self.drawn.get_mut(&i) {
-                if *zoom == self.zoom && (*rev == self.rev || **old == page) {
-                    // the same page: its drawing stands
-                    if *rev != self.rev {
-                        *rev = self.rev;
-                        outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(Drawn::default()) });
-                    }
-                    continue;
+            if let Some((old, rev, zoom)) = self.drawn.get_mut(&i)
+                && *zoom == self.zoom && (*rev == self.rev || **old == page)
+            {
+                // the same page: its drawing stands
+                if *rev != self.rev {
+                    *rev = self.rev;
+                    outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(Drawn::default()) });
                 }
+                continue;
             }
             let drawn = draw::page(&page, &self.layout.fonts, self.zoom);
             pictures.extend(drawn.pictures.iter().map(|p| (p.part.clone(), p.rel_id.clone())));
@@ -507,7 +510,7 @@ impl Word {
     }
 
     /// The bytes of pictures not sent yet.
-    fn send_media(&mut self, wanted: Vec<(Option<String>, String)>, outs: &mut Vec<Out>) {
+    fn send_media(&mut self, wanted: Vec<MediaKey>, outs: &mut Vec<Out>) {
         let fresh: Vec<_> = wanted.into_iter().filter(|k| !self.media_sent.contains(k)).collect();
         if fresh.is_empty() {
             return;

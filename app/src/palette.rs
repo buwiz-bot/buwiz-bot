@@ -41,7 +41,7 @@ fn palette_card() -> impl IntoElement {
     let results = computed(|| store().palette_results());
     // The list's scroll offset, to keep the arrow-key selection in view.
     let scroll_y = signal(0.0f32);
-    let list_for_keys = list.clone();
+    let list_for_keys = list;
     let card = view()
         .w(px(CARD_W))
         .max_h(px(CARD_H))

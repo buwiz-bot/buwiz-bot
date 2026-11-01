@@ -366,7 +366,7 @@ fn option_row(
         .bg(if on { theme::TEXT } else { theme::SUBTLE })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || press())
+        .on_press(press)
         .when_some(letter, |r, l| r.child(super::keycap(l, live)))
         .child(
             text(label)

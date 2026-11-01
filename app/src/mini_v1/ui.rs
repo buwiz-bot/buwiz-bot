@@ -1621,7 +1621,7 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
     let slots = cards::arrange(&cards.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
     // a fresh answer's cards that mount at once: their sessions open now,
     // alongside their modules (14.6)
-    if !cards::aged(untracked(|| user_after())) {
+    if !cards::aged(untracked(&user_after)) {
         for ((_, c), slot) in cards.iter().zip(&slots) {
             let first_party = store().v1.entry(&c.plugin).is_some_and(|p| p.first_party);
             if *slot != cards::Slot::Link && c.placement == Placement::Inline && first_party {
@@ -2069,7 +2069,7 @@ pub fn preview_layer() -> impl IntoElement {
         || {
             let doc = || store().v1.preview.with(|p| p.clone().unwrap_or(super::bridge::Preview { title: String::new(), html: String::new() }));
             let page = element_ref();
-            let stop = page.clone();
+            let stop = page;
             // a string loaded with no base URL is about:blank
             let own = |url: &str| url.is_empty() || url.starts_with("about:");
             view()

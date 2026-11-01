@@ -317,7 +317,7 @@ fn market_page() -> impl IntoElement {
     // A new category starts at the top (the virtual list would otherwise
     // keep the old scroll offset).
     let body = element_ref();
-    let b2 = body.clone();
+    let b2 = body;
     effect(move || {
         let _ = store().plugin_cat.get();
         let _ = store().plugin_query.get();
@@ -375,7 +375,7 @@ fn market_page() -> impl IntoElement {
                             .flex_wrap()
                             .py(px(12.0))
                             .child(each(
-                                || visible_cats(),
+                                visible_cats,
                                 |c| c.clone(),
                                 |c, _| cat_pill(c.get()),
                             ))
@@ -1509,7 +1509,7 @@ fn sm_btn(
         .bg(move || if hov.get() { bg_hov } else { bg })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(
             text(label)
                 .number_of_lines(1)
@@ -1537,7 +1537,7 @@ fn pill_btn(
         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .when(glyph.is_some(), |v| {
             v.child(
                 view()
@@ -2056,7 +2056,8 @@ fn account_row(
     };
     // the action beside the status: Authenticate (OAuth), Reconnect
     // (a failed probe), Connect (a disabled row).
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match a.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match a.status.as_str() {
         _ if blocked && a.status != "connected" => {
             let p = plugin.clone();
             Some(("Setup", Box::new(move || store().open_setup(&p, "edit"))))
@@ -2105,7 +2106,7 @@ fn account_row(
         right = right.child(sm_btn(
             Btn::Secondary,
             move || if busy_here { "Opening…".to_owned() } else { verb.to_owned() },
-            move || f(),
+            f,
         ));
     }
     let show_err = a.status == "error" && !needs && !a.err.is_empty();
@@ -2317,7 +2318,7 @@ pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() 
         .rounded(px(8.0))
         .justify_center()
         .bg(move || if (on2)() { pair("#1680f3", "#1e86fc") } else { tc(0.15) })
-        .on_press(move || on_toggle())
+        .on_press(on_toggle)
         .child(
             view()
                 .size(px(12.0))
@@ -2555,12 +2556,10 @@ fn host(url: &str) -> String {
 /// "Vercel"), else the host's first label.
 fn developer_of(url: &str) -> String {
     let h = host(url);
-    if h == "github.com" {
-        if let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next()) {
-            if !owner.is_empty() {
-                return Store::plugin_title(owner);
-            }
-        }
+    if h == "github.com"
+        && let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next())
+        && !owner.is_empty() {
+        return Store::plugin_title(owner);
     }
     h.split('.').next().map(|s| s.to_owned()).unwrap_or_else(|| "—".to_owned())
 }
@@ -2982,7 +2981,8 @@ fn server_account(s: McpServer) -> impl IntoElement {
     let id = s.id.clone();
     let transport = if remote { "remote" } else { "command" }.to_owned();
     let err = s.err.clone();
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match s.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match s.status.as_str() {
         "error" => {
             let verb = if needs && remote { "Authenticate" } else { "Reconnect" };
             Some((verb, Box::new(move || store().auth_or_retry(&id, &transport, &err, ""))))
@@ -2992,7 +2992,7 @@ fn server_account(s: McpServer) -> impl IntoElement {
     };
     let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
     if let Some((verb, f)) = action {
-        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), move || f()));
+        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), f));
     }
     let show_err = s.status == "error" && !(needs && remote) && !s.err.is_empty();
     card().py(px(8.0)).child(
