@@ -109,6 +109,7 @@ pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
         SqlValue::Text(sql_json(&Value::Array(b.memories.clone()))),
         SqlValue::Text(sql_json(&Value::Array(b.integrations.clone()))),
         b.extra_json().map(SqlValue::Text).unwrap_or(SqlValue::Null),
+        b.tools.to_json().map(|v| SqlValue::Text(sql_json(&v))).unwrap_or(SqlValue::Null),
     ]
 }
 
@@ -195,7 +196,7 @@ pub fn persist(conn: &Connection, s: &mut State) -> Result<(), String> {
         if !old.bots.get(&b.id).is_some_and(|r| same_row(r, row)) {
             let mut r = vec![SqlValue::Text(b.id.clone())];
             r.extend(row.iter().cloned());
-            sql.push(("INSERT OR REPLACE INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r));
+            sql.push(("INSERT OR REPLACE INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,tools) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r));
         }
     }
     for k in ["active", "sections", "seq"] {
@@ -266,9 +267,9 @@ pub(crate) fn read_written(conn: &Connection) -> rusqlite::Result<Written> {
         turns.entry(id).or_default().push(r[1..].to_vec());
     }
     w.turns = turns;
-    let mut st = conn.prepare("SELECT id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra FROM bots")?;
+    let mut st = conn.prepare("SELECT id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,tools FROM bots")?;
     let rows = st.query_map([], |r| {
-        let v: Row = (0..20).map(|i| r.get::<_, SqlValue>(i)).collect::<rusqlite::Result<_>>()?;
+        let v: Row = (0..21).map(|i| r.get::<_, SqlValue>(i)).collect::<rusqlite::Result<_>>()?;
         Ok(v)
     })?;
     for r in rows {

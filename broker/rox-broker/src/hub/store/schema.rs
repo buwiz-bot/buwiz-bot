@@ -88,6 +88,8 @@ const TRIED: &[&str] = &[
     "ALTER TABLE bots ADD COLUMN instructions TEXT",
     "ALTER TABLE bots ADD COLUMN memories TEXT",
     "ALTER TABLE bots ADD COLUMN integrations TEXT",
+    // S1: a bot's tool ceiling; NULL is "every tool on, version 0"
+    "ALTER TABLE bots ADD COLUMN tools TEXT",
     "ALTER TABLE threads ADD COLUMN hidden INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN routine TEXT",

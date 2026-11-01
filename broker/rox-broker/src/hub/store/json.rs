@@ -16,7 +16,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use super::{Bot, State, Thread, Turn};
+use super::{Bot, Ceiling, State, Thread, Turn};
 use crate::js;
 
 const LONE: u32 = 0x10F800;
@@ -311,6 +311,7 @@ pub fn bot_set(b: &mut Bot, key: &str, v: Value) {
         "helper" => b.helper = Some(v),
         "accepts" => b.accepts = Some(v),
         "updated_at" => b.updated_at = v.as_f64(),
+        "tools" => b.tools = Ceiling::from_json(&v),
         _ => {}
     }
 }
