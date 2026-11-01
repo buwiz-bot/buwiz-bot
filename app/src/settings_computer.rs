@@ -196,6 +196,10 @@ struct Ui {
     /// A host read in flight: one request at a time, so a broker that is
     /// down is not asked once per frame.
     host_loading: Signal<bool>,
+    /// When the last host read that never reached the broker finished: a
+    /// refused connection fails in a millisecond, so the rail waits a
+    /// few seconds before asking again instead of spinning.
+    host_failed_at: Signal<Option<std::time::Instant>>,
     /// What the last refused write said.
     note: Signal<String>,
 }
@@ -212,6 +216,7 @@ fn ui() -> Ui {
             busy: signal(false),
             host_asked: signal(false),
             host_loading: signal(false),
+            host_failed_at: signal(None),
             note: signal(String::new()),
         });
         Box::leak(Box::new(ui)) as *const Ui as usize
@@ -250,10 +255,12 @@ fn load_host(u: Ui) {
                 Ok(body) => {
                     u.host.set(Some(HostSettings::parse(&body)));
                     u.host_reach.set(Reach::Live);
+                    u.host_failed_at.set(None);
                 }
                 Err(r) => {
                     if !matches!(r, Reach::NotPorted) {
                         u.host_asked.set(false);
+                        u.host_failed_at.set(Some(std::time::Instant::now()));
                     }
                     u.host.set(None);
                     u.host_reach.set(r);
@@ -272,13 +279,23 @@ pub(crate) fn host_egress_tunnel() -> (bool, bool) {
     (u.host_reach.get().live(), u.host.get().is_some_and(|h| h.egress_tunnel_enabled))
 }
 
+/// How long the rail leaves a broker that did not answer alone before
+/// asking for the host record again.
+const HOST_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Reads the host record if nothing has asked for it yet (or the last
-/// try never reached the broker), one request at a time.
+/// try never reached the broker), one request at a time and no sooner
+/// than `HOST_RETRY` after a failure — the rail renders again as soon as
+/// the failure lands, and a refused connection fails in a millisecond.
 pub(crate) fn ensure_host_settings() {
     let u = ui();
-    if !u.host_asked.get_untracked() && !u.host_loading.get_untracked() {
-        load_host(u);
+    if u.host_asked.get_untracked() || u.host_loading.get_untracked() {
+        return;
     }
+    if u.host_failed_at.get_untracked().is_some_and(|at| at.elapsed() < HOST_RETRY) {
+        return;
+    }
+    load_host(u);
 }
 
 /// The host switch's write, as the rail presses it: one transport for
