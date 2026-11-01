@@ -44,6 +44,12 @@ pub struct Tool {
     pub disabled: bool,
 }
 
+/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 2.0)
+/// or `rox.<lowercase>` (an install from before it).
+fn reserved_tool(name: &str) -> bool {
+    ["buwiz.", "rox."].iter().any(|p| name.strip_prefix(p).is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')))
+}
+
 /// One of a plugin's routines (5.9) as the person manages it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Routine {
@@ -250,8 +256,12 @@ impl Listed {
             message: s(v, "message"),
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false),
             generation: v.get("generation").and_then(Value::as_u64).unwrap_or(0),
+            // the reserved lifecycle tools (`buwiz.provision`, …; `rox.*` in a
+            // record from before protocol 2.0) are the broker's, never the
+            // person's to switch: not listed, not counted
             tools: list(v, "tools")
                 .iter()
+                .filter(|t| !reserved_tool(&s(t, "name")))
                 .map(|t| Tool {
                     name: s(t, "name"),
                     description: s(t, "description"),
@@ -867,6 +877,10 @@ mod tests {
         }));
         assert_eq!((l.publisher.as_str(), l.state_label().as_str(), l.failed()), ("Goldcoders", "Failed", true));
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
+        // the lifecycle tools are the broker's: not listed, not counted
+        let reserved = Listed::of(&json!({"id": "app.buwiz.books", "tools": [
+            {"name": "buwiz.provision"}, {"name": "buwiz.session.open"}, {"name": "rox.ticket.resolve"}, {"name": "books_today"}, {"name": "buwiz_x"}]}));
+        assert_eq!(reserved.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["books_today", "buwiz_x"]);
         assert_eq!(l.routines[0].reads, ["app.buwiz.gws: gws_search_mail"]);
         assert_eq!((l.routines[0].last_run, l.routines[0].last_error.as_str()), (1793194720000.0, "bir_payment_search: offline"));
         assert_eq!((l.routines[0].home.as_str(), l.routines[0].last_items), ("", None));
