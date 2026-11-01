@@ -488,15 +488,15 @@ impl Word {
             if page.unbuilt {
                 continue;
             }
-            if let Some((old, rev, zoom)) = self.drawn.get_mut(&i) {
-                if *zoom == self.zoom && (*rev == self.rev || **old == page) {
-                    // the same page: its drawing stands
-                    if *rev != self.rev {
-                        *rev = self.rev;
-                        outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(Drawn::default()) });
-                    }
-                    continue;
+            if let Some((old, rev, zoom)) = self.drawn.get_mut(&i)
+                && *zoom == self.zoom && (*rev == self.rev || **old == page)
+            {
+                // the same page: its drawing stands
+                if *rev != self.rev {
+                    *rev = self.rev;
+                    outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(Drawn::default()) });
                 }
+                continue;
             }
             let drawn = draw::page(&page, &self.layout.fonts, self.zoom);
             pictures.extend(drawn.pictures.iter().map(|p| (p.part.clone(), p.rel_id.clone())));
