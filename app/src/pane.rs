@@ -428,7 +428,7 @@ fn rail_buttons() -> impl IntoElement {
         .child(rail_btn(
             "computer-plugins",
             RailLook {
-                icon: "plugins",
+                icon: "plug",
                 ink: RailInk::Muted,
                 enabled: false,
                 tip: format!("Plugins for this Bot{NOT_YET}"),
