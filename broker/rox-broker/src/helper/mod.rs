@@ -10,5 +10,6 @@ pub mod mcp;
 pub mod mcp_servers;
 pub mod oauth;
 pub mod plugins;
+pub mod release;
 pub mod remote;
 pub mod sessions;
