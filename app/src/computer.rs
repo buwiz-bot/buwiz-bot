@@ -327,8 +327,9 @@ pub(crate) struct Pane {
 }
 
 thread_local! {
-    // `keep` restores once per live patch, so the signal is made once.
-    static PANE: Signal<Pane> = keep("computer.pane", Pane::default);
+    // Made once, owned by nobody (the tab body's owner dies with the tab,
+    // taking its signals), and restored across live patches by `keep`.
+    static PANE: Signal<Pane> = Owner::detached().run(|| keep("computer.pane", Pane::default));
 }
 
 fn pane_signal() -> Signal<Pane> {
