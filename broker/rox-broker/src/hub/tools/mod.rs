@@ -206,7 +206,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "react" => return builtin::react(run, input),
         "app_tools_load" => return Ok(mcp::app_tools_load(run, input).await),
         "fetch_url" => return builtin::fetch_url(input).await,
-        "shell_run" => return Ok(builtin::shell_run(input).await),
+        "shell_run" => return Ok(builtin::shell_run(&run.ctx, input).await),
         "query_source" => return Ok(builtin::query_source(input).await),
         "web_search" => return builtin::web_search(input).await,
         "app_icon" => return artifact::app_icon(run, input).await,

@@ -10,6 +10,9 @@ use url::Url;
 
 use super::{Out, Run};
 use crate::helper::http;
+use crate::hub::ctx::HubCtx;
+use crate::hub::policy::local_exec::{self, LocalExecDecision};
+use crate::hub::policy;
 use crate::js;
 
 /// `fetch(url, {signal: AbortSignal.timeout(ms), redirect: "follow"})`:
@@ -93,12 +96,38 @@ fn trim_end(s: &str) -> &str {
 }
 
 /// `shell_run`: `zsh -lc <command>` on this Mac, capped.
-pub async fn shell_run(input: &Value) -> Out {
+pub async fn shell_run(ctx: &HubCtx, input: &Value) -> Out {
     let command = input.get("command").filter(|c| js::truthy(c)).map(js::string_of).unwrap_or_default();
     let command = command.trim_matches(js::is_space).to_owned();
     if command.is_empty() {
         return Out::err("shell_run needs a command".into());
     }
+    if let Some(refusal) = shell_refusal(ctx, &command) {
+        return Out::err(refusal);
+    }
+    spawn_shell(input, command).await
+}
+
+/// THE GATE, before anything is spawned: the local-commands policy of this
+/// broker's own machine (`hub/policy`) judges `command`. `Some` is the
+/// refusal the model reads instead of running it; `None` runs. `Ask` is a
+/// refusal too until the approval card (S4) can park the run: saying so
+/// beats a silent yes.
+fn shell_refusal(ctx: &HubCtx, command: &str) -> Option<String> {
+    let machine = policy::local_machine_id();
+    match local_exec::decide(&policy::load(&ctx.db, &machine), command) {
+        LocalExecDecision::Allow => None,
+        LocalExecDecision::Deny { why, .. } => Some(format!("refused by the local commands policy: {why}")),
+        LocalExecDecision::Ask => Some(
+            "refused by the local commands policy: this computer's local commands are set to ask (mode: ask), and asking the person is not available yet, so ask is treated as never for now — no rule allows this command. Tell the person what you needed it for; they can add an allow rule or change the mode in Settings → Computer."
+                .to_owned(),
+        ),
+    }
+}
+
+/// Runs `command` in zsh as today's `shell_run` does; only `shell_run`
+/// calls it, after the gate.
+async fn spawn_shell(input: &Value, command: String) -> Out {
     let n = crate::hub::store::json::js_number(input.get("timeout_ms"));
     let ms = (if n.is_nan() || n == 0.0 { 30000.0 } else { n }).clamp(1000.0, 180000.0);
     let cwd = match input.get("cwd").filter(|c| js::truthy(c)) {
@@ -253,12 +282,66 @@ mod tests {
         assert_eq!(tags_to_space_none("a <b>bold</b> <> x"), "a bold <> x");
     }
 
+    fn ctx(label: &str) -> HubCtx {
+        let dir = std::env::temp_dir().join(format!("rox-builtin-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+        let ctx = HubCtx::new(dir, crate::hub::traits::Clock::manual());
+        ctx.store.load().unwrap();
+        ctx
+    }
+
     #[tokio::test]
     async fn builtin_shell_run_reports_output_and_exit() {
-        let r = shell_run(&json!({"command": "echo out; echo err >&2; exit 3", "cwd": "/"})).await;
+        // no policy row: the default (bypass) runs as before
+        let ctx = ctx("run");
+        let r = shell_run(&ctx, &json!({"command": "echo out; echo err >&2; exit 3", "cwd": "/"})).await;
         assert_eq!(r, Out { content: json!("out\nerr\n(exit 3)"), is_error: Some(true) });
-        let r = shell_run(&json!({"command": "true", "cwd": "/"})).await;
+        let r = shell_run(&ctx, &json!({"command": "true", "cwd": "/"})).await;
         assert_eq!(r, Out { content: json!("(no output)"), is_error: Some(false) });
-        assert_eq!(shell_run(&json!({"command": "  "})).await, Out::err("shell_run needs a command".into()));
+        assert_eq!(shell_run(&ctx, &json!({"command": "  "})).await, Out::err("shell_run needs a command".into()));
+    }
+
+    /// A denied command never reaches zsh: the command would leave a file
+    /// behind, and the file is not there afterwards.
+    #[tokio::test]
+    async fn builtin_shell_run_refuses_by_policy_before_spawning() {
+        let ctx = ctx("gate");
+        let machine = policy::local_machine_id();
+        let marker = ctx.data.join("spawned");
+        let touch = json!({"command": format!("touch {}", marker.display()), "cwd": "/"});
+        let refusal = |r: &Out| -> String {
+            assert_eq!(r.is_error, Some(true), "{r:?}");
+            let text = r.content.as_str().unwrap_or("").to_owned();
+            assert!(text.starts_with("refused by the local commands policy: "), "{text}");
+            text
+        };
+
+        policy::set_mode(&ctx.db, &machine, local_exec::LocalExecMode::Ask, 1).unwrap();
+        policy::add_rule(&ctx.db, &machine, "deny", "touch", 2).unwrap();
+        let r = shell_run(&ctx, &touch).await;
+        assert!(refusal(&r).contains("a deny rule on this computer refused this command"));
+        assert!(!marker.exists(), "a denied command was spawned");
+        // deny beats allow, and hiding the command behind an allowed one does not help
+        policy::add_rule(&ctx.db, &machine, "allow", "true", 3).unwrap();
+        let r = shell_run(&ctx, &json!({"command": format!("true && touch {}", marker.display()), "cwd": "/"})).await;
+        refusal(&r);
+        assert!(!marker.exists());
+
+        // ask with no matching rule: a refusal that says approval is not here yet
+        policy::remove_rule(&ctx.db, &machine, "deny", "touch").unwrap();
+        let r = shell_run(&ctx, &touch).await;
+        let text = refusal(&r);
+        assert!(text.contains("mode: ask") && text.contains("treated as never for now"), "{text}");
+        assert!(!marker.exists());
+        // the allow rule runs its command
+        assert_eq!(shell_run(&ctx, &json!({"command": "true", "cwd": "/"})).await, Out { content: json!("(no output)"), is_error: Some(false) });
+
+        policy::set_mode(&ctx.db, &machine, local_exec::LocalExecMode::Never, 4).unwrap();
+        let r = shell_run(&ctx, &json!({"command": "true", "cwd": "/"})).await;
+        assert!(refusal(&r).contains("mode: never"));
+
+        policy::set_mode(&ctx.db, &machine, local_exec::LocalExecMode::Bypass, 5).unwrap();
+        let r = shell_run(&ctx, &touch).await;
+        assert_eq!(r.is_error, Some(false), "{r:?}");
+        assert!(marker.exists(), "bypass runs the command");
     }
 }
