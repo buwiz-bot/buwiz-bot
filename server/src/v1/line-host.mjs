@@ -4,6 +4,7 @@
 // in-process broker (test/v1-helpers.mjs, and a plugin's own broker tests,
 // such as BIR's v1-tests, through BUWIZ_BROKER_DIR).
 import { spawn } from "node:child_process";
+import { both } from "../env.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { random128 } from "./ed.mjs";
 import { systemClock } from "./plugins.mjs";
@@ -19,9 +20,10 @@ export function lineHost({ cmd, db: file, logDir, trustFile, keystore, clock = s
   const db = new DatabaseSync(file, { timeout: 5000 });
   const token = random128();
   const childEnv = {
-    ...process.env, ...env, ROX_LINE_TOKEN: token, BUWIZ_TRUST_FILE: trustFile, BUWIZ_KEYSTORE: keystore,
-    ...(clock !== systemClock ? { ROX_V1_MANUAL_CLOCK: "1" } : {}),
-    ...(timeouts.call ? { ROX_V1_CALL_TIMEOUT_MS: String(timeouts.call) } : {}),
+    // by their old names too: `cmd` may be a rox-broker from before the rename
+    ...process.env, ...env, ...both("BUWIZ_LINE_TOKEN", token), BUWIZ_TRUST_FILE: trustFile, BUWIZ_KEYSTORE: keystore,
+    ...(clock !== systemClock ? both("BUWIZ_V1_MANUAL_CLOCK", "1") : {}),
+    ...(timeouts.call ? both("BUWIZ_V1_CALL_TIMEOUT_MS", String(timeouts.call)) : {}),
   };
   const child = spawn(cmd, ["helper", "--db", file, ...(logDir ? ["--log-dir", logDir] : [])], { env: childEnv, stdio: ["ignore", "pipe", "inherit"] });
   const base = new Promise((resolve, reject) => {

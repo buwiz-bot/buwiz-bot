@@ -12,13 +12,14 @@
 //   A module containing the text "nsh-stub:fail" fails too, whatever the
 //   mode: the entry itself, the "./<name>" module a check entry imports, or
 //   the "../<dir>/<name>" module a pop-out wrapper imports.
-// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+// BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
+const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
 
 const argv = process.argv.slice(2);
 
-if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "nsh", argv }) + "\n");
+if (STUB_LOG) appendFileSync(STUB_LOG, JSON.stringify({ bin: "nsh", argv }) + "\n");
 const mode = process.env.NSH_STUB || "pass";
 
 if (mode === "missing") process.exit(127);

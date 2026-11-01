@@ -2,7 +2,7 @@
 # Renders the app icons from their vector sources in app/resources/ (see
 # README.md there):
 #   AppIcon.svg       -> AppIcon.png (the 1024x1024 master) and AppIcon.icns
-#   AppIcon-test.svg  -> AppIcon-test.icns (scripts/test-rox's test bundles)
+#   AppIcon-test.svg  -> AppIcon-test.icns (scripts/buwiz-test's test bundles)
 # Every size of an iconset (16, 32, 128, 256, 512 and their @2x) is drawn
 # from the vector by rsvg-convert (`brew install librsvg`), none scaled
 # from another; iconutil packs them. Commit what it writes.

@@ -9,7 +9,7 @@
 import { CallToolResultSchema, ListResourcesResultSchema, ListToolsResultSchema, ReadResourceResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { LINE } from "./v1/line-env.mjs";
 
-/** Whether rox-broker hosts the v0 MCP servers (ROX_LINE_HOSTS names mcp). */
+/** Whether rox-broker hosts the v0 MCP servers (BUWIZ_LINE_HOSTS names mcp). */
 export const mcpOnLine = !!LINE.base && LINE.hosts.includes("mcp");
 
 // rox-broker owns each server's status (plan 4.3); this is its mirror:

@@ -24,9 +24,10 @@
 # with its signed manifest beside it as buwiz-gws.manifest.json when there
 # is one (plugins/google-workspace/manifest.signed.json;
 # scripts/gws-install-wizard makes it).
-#   ROX_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
+#   BUWIZ_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices, and Rox.app is
-#                           left registered
+#                           left registered (ROX_APP, its old name, still
+#                           works)
 #   BUWIZ_BROKER_BIN=<path>   the rox-broker to package
 #   BUWIZ_GWS_BIN=<path>    the buwiz-gws to package
 #   BUWIZ_GWS_MANIFEST=<path>  its signed manifest
@@ -45,7 +46,11 @@ set -euo pipefail
 
 DEFAULT_APP="$HOME/Applications/Buwiz Bot.app"
 OLD_APP="$HOME/Applications/Rox.app"
-APP="${ROX_APP:-$DEFAULT_APP}"
+if [ -z "${BUWIZ_APP+x}" ] && [ -n "${ROX_APP+x}" ]; then
+  echo "ROX_APP is an old name; use BUWIZ_APP" >&2
+  BUWIZ_APP="$ROX_APP"
+fi
+APP="${BUWIZ_APP:-$DEFAULT_APP}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN=/Volumes/goldcoders/Projects/rox/app/target/debug/rox
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -141,10 +146,14 @@ cat > "$APP/Contents/MacOS/buwiz-bot" <<SH
 # preferred: started by LaunchServices, loading the binary straight off the
 # external volume waits on a files-and-folders permission.
 # A new automation token every launch, readable only by this user (the
-# per-user temp dir is 0700); \`scripts/rox-agent\` hands it to gpui-agent.
-TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token"
+# per-user temp dir is 0700); \`scripts/buwiz-agent\` hands it to gpui-agent.
+# The same token under its old name too (rox-gpui-agent-token), for a
+# scripts/rox-agent from before the rename.
+TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token"
 ( umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > "\$TOKEN_FILE" )
-export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 ROX_FPS=0
+( umask 077 && cp "\$TOKEN_FILE" "\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token" )
+# BUWIZ_FPS by its old name too: the binary may be a build from before it
+export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 BUWIZ_FPS=0 ROX_FPS=0
 GPUI_AGENT_TOKEN="\$(cat "\$TOKEN_FILE")"
 export GPUI_AGENT_TOKEN
 BIN="\$(dirname "\$0")/buwiz-bot-bin"

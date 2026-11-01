@@ -1,0 +1,12 @@
+#!/bin/sh
+# gpui-agent against the dev bundle's Buwiz Bot, with the token its launcher
+# wrote (app/bundle-dev.sh): the token goes through the environment, not
+# argv. GPUI_AGENT_ADDR picks another instance (default 127.0.0.1:17421).
+# (scripts/rox-agent is its old name.) The token file is
+# buwiz-gpui-agent-token, else rox-gpui-agent-token, the name a launcher
+# made before the rename writes.
+dir="$(getconf DARWIN_USER_TEMP_DIR)"
+file="${dir}buwiz-gpui-agent-token"
+[ -r "$file" ] || file="${dir}rox-gpui-agent-token"
+[ -r "$file" ] || { echo "buwiz-agent: no token at ${dir}buwiz-gpui-agent-token; launch Buwiz Bot through ~/Applications/Buwiz Bot.app" >&2; exit 1; }
+GPUI_AGENT_TOKEN="$(cat "$file")" GPUI_AGENT_ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}" exec gpui-agent "$@"

@@ -24,7 +24,7 @@ use crate::live::store;
 use crate::store::Attach;
 
 /// Set in the child process that runs a test's body.
-const CHILD: &str = "ROX_OFFICE_UI_TEST";
+const CHILD: &str = "BUWIZ_OFFICE_UI_TEST";
 
 /// The files the buttons open (`open 0`, `open 1`, …).
 static FILES: OnceLock<Vec<Attach>> = OnceLock::new();
@@ -52,9 +52,9 @@ fn in_child(name: &str) -> bool {
         .env(CHILD, "1")
         // nothing reaches a server: no network (the stub answers 404) and
         // an origin nothing listens on
-        .env("ROX_BACKEND", "http://127.0.0.1:1")
+        .env("BUWIZ_BACKEND", "http://127.0.0.1:1")
         // a reply's files: under the token's folder
-        .env("ROX_HOST_TOKEN_FILE", broker_dir(name).join("token"))
+        .env("BUWIZ_HOST_TOKEN_FILE", broker_dir(name).join("token"))
         .output()
         .expect("run the test's child");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

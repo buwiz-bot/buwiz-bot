@@ -2,7 +2,7 @@
 // 4.3): resolve, detach, attachment rename, open and its one-time pass,
 // apps, manifest, tools, and a server switched off and deleted. Written
 // against Node; the same file runs through rox-broker, which answers them
-// itself when it hosts MCP (ROX_BROKER_MCP_HOST=1).
+// itself when it hosts MCP (BUWIZ_BROKER_MCP_HOST=1).
 //
 // `open` on the broker's PATH is a stub that records what it was handed, so
 // no link reaches the system.
@@ -11,7 +11,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { oauthServer } from "./fixtures/oauth-server.mjs";
-import { PORT, ROOT, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { PORT, ROOT, env, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp-routes");
 const bin = tempDir("mcp-routes-bin");
@@ -20,7 +20,7 @@ const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
 const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
 
-process.env.GROK_DATA_DIR = dataDir;
+process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 process.env.MOCK = "1";
 process.env.PORT = String(PORT);
 writeFileSync(join(bin, "open"), `#!/bin/sh\necho "$@" >> '${opened}'\n`);
@@ -31,7 +31,7 @@ const { db } = await import("../src/state.mjs");
 
 // rox-broker hosting MCP answers these routes itself, and flags a remote
 // server's sign-in from any call (Node did only in the model's calls)
-const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
+const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1";
 
 let server;
 let fx;
@@ -196,7 +196,7 @@ test("switching a server off stops it, on starts it; deleting drops the row and 
   assert.equal(await listed("apps"), undefined);
 });
 
-test("a remote server whose call fails as signed out shows needs-auth", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (ROX_BROKER_MCP_HOST=1) only" }, async () => {
+test("a remote server whose call fails as signed out shows needs-auth", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
   addRow("remote", { url: `${fx.base}/open` });
   assert.equal((await request("GET", "/mcp/tools?id=remote")).json.status, "connected");
   const c = await postJson("/mcp/call", { server: "remote", tool: "denied", args: {} });

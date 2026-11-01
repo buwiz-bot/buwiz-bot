@@ -12,7 +12,7 @@ use nsh_platform_macos as platform;
 /// The process logger: `env_logger` as before, plus every `nsh::jank`
 /// line (a frame over budget, a slow engine wake-up, and what each did —
 /// logged while the performance monitor runs, ⌘⇧F) appended to
-/// `~/Library/Logs/Buwiz Bot/jank.log` (`ROX_JANK_LOG` overrides). The monitor's
+/// `~/Library/Logs/Buwiz Bot/jank.log` (`BUWIZ_JANK_LOG` overrides). The monitor's
 /// Clear (⌘⇧K) logs `nsh_engine::perf::RESET_MARK`, which empties the file:
 /// what is in it is what happened since the last clear.
 #[cfg(target_os = "macos")]
@@ -33,7 +33,7 @@ mod jank_log {
             env_logger::Env::default().default_filter_or("error,nsh::jank=warn"),
         )
         .build();
-        let path = std::env::var_os("ROX_JANK_LOG")
+        let path = rox_v1::env::var_os("BUWIZ_JANK_LOG")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var_os("HOME").unwrap_or_default();
@@ -141,7 +141,7 @@ fn main() -> impl std::process::Termination {
     jank_log::init();
     // Rox's data dir becomes Buwiz Bot's, once, before anything opens it
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    match rox::identity::migrate_data(std::env::var_os("ROX_DATA_DIR").as_deref(), &home) {
+    match rox::identity::migrate_data(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
         Ok(done) => log::info!("rox: data dir migration: {done:?}"),
         Err(e) => log::error!("rox: Rox's data dir was not moved (it is used where it is): {e}"),
     }
@@ -153,16 +153,16 @@ fn main() -> impl std::process::Termination {
         title: rox::app_name().to_owned(),
         app_id: rox::identity::APP_ID.to_owned(),
         size: (1100, 760),
-        // `ROX_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
+        // `BUWIZ_FPS=1`: nsh's performance HUD (FPS, main-thread and commit
         // costs, CPU/GPU/memory) at the window's top right.
-        fps: std::env::var("ROX_FPS").is_ok_and(|v| v != "0"),
-        // A test instance (`ROX_BACKGROUND=1`, which scripts/test-rox sets)
+        fps: rox_v1::env::var("BUWIZ_FPS").is_some_and(|v| v != "0"),
+        // A test instance (`BUWIZ_BACKGROUND=1`, which scripts/buwiz-test sets)
         // starts in the background: launching it never takes the focus from
         // the app in front. The owner's Rox, automation on or not, comes
         // to the front as any app does.
-        activate: std::env::var("ROX_BACKGROUND").as_deref() != Ok("1"),
+        activate: rox_v1::env::var("BUWIZ_BACKGROUND").as_deref() != Some("1"),
         // a test instance's nsh storage in its own data dir, not the owner's
-        data_dir: rox::identity::nsh_data_dir_in(std::env::var_os("ROX_DATA_DIR").as_deref()),
+        data_dir: rox::identity::nsh_data_dir_in(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref()),
         ..Default::default()
     };
     rox::mini::register_mini_app(&options.components);
