@@ -194,7 +194,7 @@ mod tests {
     /// the write routes want.
     fn hub(label: &str) -> Hub {
         let dir = std::env::temp_dir().join(format!("rox-lxp-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
-        let mut ctx = HubCtx::new(dir, Clock::manual());
+        let ctx = HubCtx::new(dir, Clock::manual());
         ctx.store.load().unwrap();
         let hub = Hub::with(ctx, Vec::new(), |routes, ctx| {
             crate::hub::routines::install(routes, ctx);
