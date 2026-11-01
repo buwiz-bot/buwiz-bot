@@ -119,7 +119,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         let off = off.trim().parse::<f32>().unwrap_or(0.0);
         spawn(async move {
             timer(std::time::Duration::from_millis(2400)).await;
-            if let Some(l) = store().chat_list.borrow().clone() {
+            if let Some(l) = *store().chat_list.borrow() {
                 l.scroll_to_offset(px(off), false);
             }
         });

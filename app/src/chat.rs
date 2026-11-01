@@ -179,7 +179,6 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     let left = std::rc::Rc::new(std::cell::Cell::new(None::<(i64, bool)>));
     let first = std::rc::Rc::new(std::cell::Cell::new(true));
     {
-        let list = list;
         let last_scroll = last_scroll.clone();
         effect(move || {
             let on = active.get();
@@ -370,7 +369,6 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         .on_scroll({
             let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let mine = mine.clone();
-            let list = list;
             let first_row = first_row.clone();
             let last_row = last_row.clone();
             let view_h = view_h.clone();

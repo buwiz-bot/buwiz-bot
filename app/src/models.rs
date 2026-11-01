@@ -476,7 +476,6 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
                     when(
                         move || model_of(&choice().0).map(|m| m.fast).unwrap_or(false),
                         {
-                            let hover = hover;
                             move || {
                                 let h1 = hover;
                                 let h2 = hover;
@@ -617,7 +616,6 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
         // tooltips at card level, above their buttons (Codex).
         .child(when(
             {
-                let hover = hover;
                 move || {
                     hover.get() == "fast"
                         && model_of(&choice().0).map(|m| m.fast).unwrap_or(false)
@@ -635,7 +633,6 @@ fn effort_card(o: &ModelsOpen) -> impl IntoElement {
         ))
         .child(when(
             {
-                let hover = hover;
                 move || hover.get() == "reset"
             },
             || tip(None, Some(-10.0), -34.0, "Reset to default"),
@@ -716,7 +713,6 @@ fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
                 })
                 // the light band sweeping across (2400ms loop).
                 .child(when(is_top, {
-                    let clock = clock;
                     move || {
                         view()
                             .absolute()
@@ -738,7 +734,6 @@ fn slider(clock: impl Fn() -> f64 + Copy + 'static) -> impl IntoElement {
                 }))
                 // drifting sparkles, twinkling out of phase.
                 .child(when(is_top, {
-                    let clock = clock;
                     move || {
                         view().size_full().children(SPARKS.iter().enumerate().map(
                             |(k, (x, y, r))| {
