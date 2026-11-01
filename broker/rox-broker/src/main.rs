@@ -56,6 +56,28 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // the owner's folder: Grok Shell moves to Buwiz Broker once, before
+    // anything opens it (rox_v1::broker_dir). This broker holds its port
+    // now; on another port it checks that none answers on the owner's.
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let own_port = config.port;
+    let busy = move || own_port != rox_v1::broker_dir::OWNER_PORT && rox_v1::broker_dir::port_answers(rox_v1::broker_dir::OWNER_PORT);
+    let chunks = std::env::var("NSH_CHUNK_DIR").ok();
+    match config.settle_owner_dir(rox_v1::env::var("BUWIZ_BROKER_DATA_DIR").as_deref(), chunks.as_deref(), &home, &busy) {
+        None | Some(rox_v1::broker_dir::Move::Nothing | rox_v1::broker_dir::Move::AlreadyThere) => {}
+        Some(rox_v1::broker_dir::Move::Moved { backup, rewritten, linked }) => {
+            eprintln!(
+                "rox-broker: moved {} to {} (database backup: {}; the old name left as a link: {linked})",
+                rox_v1::broker_dir::OLD_DIR_NAME,
+                rox_v1::broker_dir::DIR_NAME,
+                backup.map(|b| b.display().to_string()).unwrap_or_else(|| "none, no database".into())
+            );
+            for (column, n) in rewritten {
+                eprintln!("  {column}: {n} stored path(s) rewritten");
+            }
+        }
+        Some(m) => eprintln!("rox-broker: {} not moved to {} this time ({m:?}); using it", rox_v1::broker_dir::OLD_DIR_NAME, rox_v1::broker_dir::DIR_NAME),
+    }
     // what this broker hosts behind the line, for Node (BUWIZ_LINE_HOSTS):
     // v1 plugins (phase 3) and v0 MCP servers (phase 4), each switched on
     let hosts: Vec<&str> = [("v1", "BUWIZ_BROKER_V1_HOST"), ("mcp", "BUWIZ_BROKER_MCP_HOST")]

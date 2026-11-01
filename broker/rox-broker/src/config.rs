@@ -14,6 +14,12 @@
 //! `--data` sets `BUWIZ_BROKER_DATA_DIR` for Node; without it Node keeps the
 //! environment's. The routes answered in Rust use the same data dir as
 //! Node (`data_dir`).
+//!
+//! Given the owner's folder (`~/Library/Application Support/Buwiz Broker`,
+//! or `Grok Shell`, its old name), the broker moves `Grok Shell` to `Buwiz
+//! Broker` once before it opens anything there ([`Config::settle_owner_dir`],
+//! `rox_v1::broker_dir`), and uses the folder that holds the data. Any other
+//! data dir (a test's, a bench's, a checkout's) is used as given.
 
 use std::path::PathBuf;
 
@@ -99,6 +105,37 @@ impl Config {
     }
 }
 
+impl Config {
+    /// When the data dir (`--data`, else `env_data`) is the owner's folder
+    /// under `home`, by either name: moves `Grok Shell` to `Buwiz Broker`
+    /// once (`busy`: a broker answers on the owner's port) and points `data` at the folder holding the
+    /// data, and Node's `NSH_CHUNK_DIR` (`chunk_env`) at its `chunks` when it
+    /// was under the old one. `None` for any other data dir: nothing is
+    /// looked at.
+    pub fn settle_owner_dir(
+        &mut self,
+        env_data: Option<&str>,
+        chunk_env: Option<&str>,
+        home: &std::path::Path,
+        busy: &dyn Fn() -> bool,
+    ) -> Option<rox_v1::broker_dir::Move> {
+        use rox_v1::broker_dir;
+        let given = self.data_dir(env_data);
+        if !broker_dir::is_owners(home, &given) {
+            return None;
+        }
+        let moved = broker_dir::move_once(home, busy);
+        let dir = broker_dir::dir_in(home);
+        if let Some(rest) = chunk_env.and_then(|c| std::path::Path::new(c).strip_prefix(&given).ok()) {
+            if dir != given {
+                self.node_env.push(("NSH_CHUNK_DIR".to_owned(), dir.join(rest).to_string_lossy().into_owned()));
+            }
+        }
+        self.data = Some(dir);
+        Some(moved)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +190,82 @@ mod tests {
         // the trust store is the assets' (no file there: the checkout's path under it)
         assert_eq!(c.trust_file(None), PathBuf::from("/b/broker/server/v1/trust.json"));
         assert!(Config::parse(&args(&["--assets"]), None).is_err());
+    }
+
+    /// A temp home, removed when dropped.
+    struct Home(PathBuf);
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn home(name: &str) -> Home {
+        let dir = std::env::temp_dir().join(format!("rox-broker-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Library/Application Support")).unwrap();
+        Home(dir)
+    }
+    fn grok_shell(h: &Home) -> PathBuf {
+        let old = rox_v1::broker_dir::old_dir(&h.0);
+        std::fs::create_dir_all(old.join("generated")).unwrap();
+        let db = rusqlite::Connection::open(old.join("generated/app.db")).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES (42);").unwrap();
+        old
+    }
+
+    /// Given the owner's old folder, the broker backs its database up,
+    /// moves it and runs on the new one; Node's chunks follow.
+    #[test]
+    fn the_owners_folder_moves_once_with_a_backup() {
+        use rox_v1::broker_dir::{self, Move};
+        let h = home("move");
+        let old = grok_shell(&h);
+        let chunks = old.join("chunks");
+        let mut c = Config::parse(&args(&["--data", old.to_str().unwrap()]), None).unwrap();
+        let moved = c.settle_owner_dir(None, chunks.to_str(), &h.0, &|| false);
+        let new = broker_dir::new_dir(&h.0);
+        let Some(Move::Moved { backup: Some(backup), .. }) = moved else { panic!("{moved:?}") };
+        assert_eq!(c.data, Some(new.clone()));
+        assert_eq!(c.data_dir(Some(old.to_str().unwrap())), new, "--data and the environment both follow");
+        assert!(c.node_env.contains(&("NSH_CHUNK_DIR".to_owned(), new.join("chunks").to_string_lossy().into_owned())));
+        assert!(old.symlink_metadata().unwrap().file_type().is_symlink(), "Grok Shell is left as a link");
+        let copy = rusqlite::Connection::open(backup.join("app.db")).unwrap();
+        assert_eq!(copy.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 42, "the backup holds the data");
+        let live = rusqlite::Connection::open(new.join("generated/app.db")).unwrap();
+        assert_eq!(live.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 42, "the data is unchanged");
+        assert!(new.join(broker_dir::MOVED_MARKER).is_file());
+        // the next start, given the new name, finds it there
+        let mut c = Config::parse(&args(&[]), None).unwrap();
+        assert_eq!(c.settle_owner_dir(new.to_str(), None, &h.0, &|| false), Some(Move::AlreadyThere));
+        assert_eq!(c.data, Some(new));
+    }
+
+    /// Given the new name before anything moved, while a broker runs on
+    /// the old folder: no move, and the old folder is used.
+    #[test]
+    fn a_running_broker_keeps_the_old_folder_in_use() {
+        use rox_v1::broker_dir::{self, Move};
+        let h = home("busy");
+        let old = grok_shell(&h);
+        let new = broker_dir::new_dir(&h.0);
+        let mut c = Config::parse(&args(&["--data", new.to_str().unwrap()]), None).unwrap();
+        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| true), Some(Move::Busy));
+        assert_eq!(c.data, Some(old.clone()));
+        assert!(!new.exists() && old.symlink_metadata().unwrap().is_dir() && old.join("generated/app.db").is_file());
+    }
+
+    /// A test's or a bench's data dir is never the owner's: nothing is
+    /// looked at, even with a Grok Shell beside it.
+    #[test]
+    fn another_data_dir_is_left_as_given() {
+        let h = home("other");
+        let old = grok_shell(&h);
+        let bench = h.0.join("bench");
+        let mut c = Config::parse(&args(&["--data", bench.to_str().unwrap()]), None).unwrap();
+        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| false), None);
+        let mut e = Config::parse(&args(&[]), None).unwrap();
+        assert_eq!(e.settle_owner_dir(bench.to_str(), None, &h.0, &|| false), None);
+        assert_eq!((c.data, e.data), (Some(bench), None));
+        assert!(old.join("generated/app.db").is_file() && !rox_v1::broker_dir::new_dir(&h.0).exists());
     }
 }

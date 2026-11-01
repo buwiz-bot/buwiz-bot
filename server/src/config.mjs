@@ -11,7 +11,8 @@ const APP_ROOT = join(SERVER_DIR, "..");
 // bundled Resources/server/ in the packaged app.
 const serverFile = (rel) => join(SERVER_DIR, rel);
 // Packaged mode: BUWIZ_BROKER_DATA_DIR points at a writable dir (~/Library/Application
-// Support/Grok Shell) — generated/, widgets/, windows/, .stage all live there
+// Support/Buwiz Broker, Grok Shell before it moved; whoever starts Node names
+// it) — generated/, widgets/, windows/, .stage all live there
 // instead of inside the read-only .app bundle. widgets/ is seeded from the
 // shipped copy on first launch (the launcher does the copy).
 const DATA_DIR = env("BUWIZ_BROKER_DATA_DIR") || APP_ROOT;
