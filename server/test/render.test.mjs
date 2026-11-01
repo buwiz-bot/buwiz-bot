@@ -1,9 +1,9 @@
 // GET /file/render for every kind but the office ones (those are
 // office.test's OFF-21), and GET / (Rust broker plan phase 7: the last
-// routes Node's office role answered). Pinned on Node; rox-broker's hub
+// routes Node's office role answered). Pinned on Node; buwiz-broker's hub
 // answers the same JSON.
 //
-// Code lines: Node colours them with Shiki, rox-broker with syntect and
+// Code lines: Node colours them with Shiki, buwiz-broker with syntect and
 // the same two themes (tools/tmtheme.mjs). The grammars differ, so these
 // cases pin the shape exactly (lines, each token [text, dark, light], the
 // tokens joining to the line, colours from the two palettes) and the
@@ -330,6 +330,6 @@ test("RENDER-11 GET /: the broker's one-line status", async () => {
   }
 });
 
-test("RENDER-12 the tmTheme files rox-broker colours with are files.mjs's themes", () => {
+test("RENDER-12 the tmTheme files buwiz-broker colours with are files.mjs's themes", () => {
   execFileSync(process.execPath, [join(ROOT, "tools", "tmtheme.mjs"), "--check"], { stdio: "pipe" });
 });

@@ -386,7 +386,7 @@ mod tests {
 
     // Times of Pele's layout and of the translation to canvas ops, per
     // flowchart sample. Ignored; run in release:
-    //   cargo test --release -p rox --lib mermaid::tests::translate_times -- --ignored --nocapture
+    //   cargo test --release -p buwiz-bot --lib mermaid::tests::translate_times -- --ignored --nocapture
     #[test]
     #[ignore]
     fn translate_times() {

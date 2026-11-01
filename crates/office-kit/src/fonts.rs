@@ -273,7 +273,7 @@ pub fn dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
         let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Some(d) = rox_v1::env::var_os("BUWIZ_OFFICE_FONTS") {
+        if let Some(d) = buwiz_protocol::env::var_os("BUWIZ_OFFICE_FONTS") {
             dirs.push(d.into());
         }
         if let Ok(exe) = std::env::current_exe() {

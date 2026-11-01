@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  The hardened runtime's exceptions for the app's executable and rox-broker
+  The hardened runtime's exceptions for the app's executable and buwiz-broker
   (scripts/release/sign.sh; docs/release.md says why each one is or isn't
   here). Everything else in the bundle is signed with none.
 

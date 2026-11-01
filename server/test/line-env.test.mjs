@@ -1,4 +1,4 @@
-// The line token rox-broker hands Node never reaches what Node starts
+// The line token buwiz-broker hands Node never reaches what Node starts
 // (v1/line-env.mjs): stdio MCP servers and other children inherit Node's
 // environment.
 import assert from "node:assert/strict";

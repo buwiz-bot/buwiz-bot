@@ -1,6 +1,6 @@
 //! Where the app bundle's `Contents/Resources` are: beside the running
 //! executable, else in the dev bundle in `~/Applications` (for a bare
-//! `target/debug/rox`), Buwiz Bot.app's and then Rox.app's, the bundle
+//! `target/debug/buwiz-bot`), Buwiz Bot.app's and then Rox.app's, the bundle
 //! before the rename.
 
 use std::path::{Path, PathBuf};

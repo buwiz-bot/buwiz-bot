@@ -1,27 +1,27 @@
-// mcp-line.mjs — a v0 MCP server's client held by rox-broker (Rust broker
+// mcp-line.mjs — a v0 MCP server's client held by buwiz-broker (Rust broker
 // plan 4.1, 4.2, D12), behind the line: the SDK Client's methods mcp.mjs
 // uses (callTool, listResources, readResource, getServerCapabilities,
 // close), so mcp.mjs keeps its own logic and folds the answers as before.
 // Results go through the SDK's schemas here, as plugins-line.mjs's do.
-// rox-broker starts a server whose process or stream died again on its
+// buwiz-broker starts a server whose process or stream died again on its
 // next use. A remote server's OAuth runs there too: the sign-in a route
 // starts and the callback that finishes it.
 import { CallToolResultSchema, ListResourcesResultSchema, ListToolsResultSchema, ReadResourceResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { LINE } from "./v1/line-env.mjs";
 
-/** Whether rox-broker hosts the v0 MCP servers (BUWIZ_LINE_HOSTS names mcp). */
+/** Whether buwiz-broker hosts the v0 MCP servers (BUWIZ_LINE_HOSTS names mcp). */
 export const mcpOnLine = !!LINE.base && LINE.hosts.includes("mcp");
 
-// rox-broker owns each server's status (plan 4.3); this is its mirror:
+// buwiz-broker owns each server's status (plan 4.3); this is its mirror:
 // every line answer carries the status after it, and the line's `mcp`
 // events bring the changes made elsewhere (its own /mcp routes).
 const mirror = new Map(); // id -> {status, tools, err?}
 let onDrop = () => {};
 
-/** rox-broker's status of `id` ({status, tools, err?}), as statusOf. */
+/** buwiz-broker's status of `id` ({status, tools, err?}), as statusOf. */
 export const lineStatus = (id) => mirror.get(id) || { status: "idle", tools: 0 };
 
-/** `f(id)` when rox-broker drops a server's client (it went idle there). */
+/** `f(id)` when buwiz-broker drops a server's client (it went idle there). */
 export const onLineDrop = (f) => (onDrop = f);
 
 function note(id, st) {
@@ -82,7 +82,7 @@ async function listen() {
 
 if (mcpOnLine) listen();
 
-/** Connects `id`'s server in rox-broker: {client, tools, needsAuth}.
+/** Connects `id`'s server in buwiz-broker: {client, tools, needsAuth}.
  *  Throws the connection's error, worded as the SDK words it (with its
  *  HTTP status as `code`). */
 export async function lineConnect(id) {
@@ -111,7 +111,7 @@ export async function lineConnect(id) {
   return { client, tools: ListToolsResultSchema.parse({ tools: r.tools || [] }).tools, needsAuth: r.needsAuth || null };
 }
 
-/** mcp.mjs's beginAuth in rox-broker: {ok, authorized} or {ok,
+/** mcp.mjs's beginAuth in buwiz-broker: {ok, authorized} or {ok,
  *  redirected, authorizeUrl?}; throws the flow's error. */
 export async function lineAuthBegin(id, open) {
   const r = await post("mcp/auth/begin", { id, open });
@@ -121,7 +121,7 @@ export async function lineAuthBegin(id, open) {
   return r;
 }
 
-/** The OAuth callback in rox-broker: "connected", "refused" (no such
+/** The OAuth callback in buwiz-broker: "connected", "refused" (no such
  *  flow, a wrong state) or "failed" (with why, when the exchange failed). */
 export async function lineAuthFinish(id, { code, state, error }) {
   const r = await post("mcp/auth/finish", { id, code, state, error });

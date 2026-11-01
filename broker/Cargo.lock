@@ -429,6 +429,64 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "buwiz-broker"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "betteroffice-docx",
+ "betteroffice-docx-edit",
+ "betteroffice-docx-parse",
+ "betteroffice-opc",
+ "betteroffice-pptx",
+ "betteroffice-pptx-edit",
+ "betteroffice-xlsx",
+ "buwiz-mcp",
+ "buwiz-protocol",
+ "bytes",
+ "ed25519-dalek",
+ "fancy-regex",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "libc",
+ "regex-lite",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "syntect",
+ "tokio",
+ "two-face",
+ "url",
+ "webpki-roots",
+]
+
+[[package]]
+name = "buwiz-mcp"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "buwiz-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1396,63 +1454,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rox-broker"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "betteroffice-docx",
- "betteroffice-docx-edit",
- "betteroffice-docx-parse",
- "betteroffice-opc",
- "betteroffice-pptx",
- "betteroffice-pptx-edit",
- "betteroffice-xlsx",
- "bytes",
- "ed25519-dalek",
- "fancy-regex",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "libc",
- "regex-lite",
- "rox-mcp",
- "rox-v1",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "syntect",
- "tokio",
- "two-face",
- "url",
- "webpki-roots",
-]
-
-[[package]]
-name = "rox-mcp"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rox-v1"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

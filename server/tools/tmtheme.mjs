@@ -1,6 +1,6 @@
 // The highlighter's themes (files.mjs `cursorThemes()`, Grok's cursor-dark
-// and cursor-light palettes) as TextMate .tmTheme files, for rox-broker's
-// syntect highlighter (broker/rox-broker/src/hub/render/).
+// and cursor-light palettes) as TextMate .tmTheme files, for buwiz-broker's
+// syntect highlighter (broker/buwiz-broker/src/hub/render/).
 //
 //   node tools/tmtheme.mjs          writes them
 //   node tools/tmtheme.mjs --check  exits 1 when the committed ones differ
@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "broker", "rox-broker", "src", "hub", "render");
+const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "broker", "buwiz-broker", "src", "hub", "render");
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const str = (k, v) => `\t\t\t\t<key>${k}</key>\n\t\t\t\t<string>${esc(v)}</string>\n`;

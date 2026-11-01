@@ -1,6 +1,6 @@
 // v1/sessions-line.mjs — app opens and the calls they make, held by
-// rox-broker (Rust broker plan 3.5): sessions.mjs's interface over the line
-// (broker/rox-broker/src/helper/sessions.rs). A call's result goes through
+// buwiz-broker (Rust broker plan 3.5): sessions.mjs's interface over the line
+// (broker/buwiz-broker/src/helper/sessions.rs). A call's result goes through
 // the MCP SDK's schema here, as plugins-line.mjs's tool calls do, so Rox
 // gets what the in-process sessions gave it.
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";

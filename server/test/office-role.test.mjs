@@ -1,5 +1,5 @@
 // Node's office role (BUWIZ_NODE_ROLE=office, Rust broker plan 5.0c): behind
-// rox-broker's hub Node serves only the office routes and holds no hub
+// buwiz-broker's hub Node serves only the office routes and holds no hub
 // state. On a seeded data dir that a normal start would rewrite (a thread
 // without a uid, an unversioned module, stale .stage files, a host token,
 // a database from before v1 routine instances with an enabled routine),
@@ -57,7 +57,7 @@ const snapshot = () => ({
 });
 
 // Node-only: it starts Node in its office role and asserts Node's own 501s;
-// through rox-broker's hub those routes are the hub's and answer
+// through buwiz-broker's hub those routes are the hub's and answer
 test("OFFICE-01 the office role writes no hub state, serves the office routes and refuses hub routes", { skip: HUB && "Node-only: Node's office role answers these routes 501; the hub answers them" }, async () => {
   // a data dir as a normal Node start leaves it, with a chat and a /state row
   let server = await startServer(dir);
@@ -76,7 +76,7 @@ test("OFFICE-01 the office role writes no hub state, serves the office routes an
 
   db.exec("UPDATE threads SET uid=NULL WHERE rowid=(SELECT min(rowid) FROM threads)");
   // a v1 routine enabled before instances: v1/routines.mjs moves it to an
-  // instance once, at import (rox-broker's job behind the hub)
+  // instance once, at import (buwiz-broker's job behind the hub)
   db.exec("DROP TABLE v1_instances");
   db.prepare("INSERT INTO v1_routines(plugin, routine, thread, enabled, seen, last_run) VALUES(?,?,?,1,?,?)").run("dev.example.office", "watch", "t1", "[\"a\"]", 1700000000000);
   db.close();

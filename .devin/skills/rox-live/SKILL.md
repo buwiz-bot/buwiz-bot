@@ -1,6 +1,6 @@
 ---
 name: rox-live
-description: Work on the Buwiz Bot NSH+ra-jit app (crate `rox`) — edit patchable src/ code, run the macOS/iOS-simulator dev loops, or verify a live splice landed with state intact. Use when touching app/, running dev.sh/ios.sh, debugging a patch that didn't apply, or checking whether an edit spliced or relinked.
+description: Work on the Buwiz Bot NSH+ra-jit app (crate `buwiz-bot`) — edit patchable src/ code, run the macOS/iOS-simulator dev loops, or verify a live splice landed with state intact. Use when touching app/, running dev.sh/ios.sh, debugging a patch that didn't apply, or checking whether an edit spliced or relinked.
 ---
 
 # Buwiz Bot — live Rust UI with NSH + ra-jit

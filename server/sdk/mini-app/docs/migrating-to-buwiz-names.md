@@ -116,7 +116,7 @@ scripts and temp files now have Buwiz names. Unlike the protocol names
 above, the old ones keep working for now: a variable set only by its old
 name is read, and the program says once on stderr
 `<old> is an old name; use <new>`. Removing the old names is a later
-decision. The table lives in `broker/rox-v1/src/env.rs` and
+decision. The table lives in `broker/buwiz-protocol/src/env.rs` and
 `server/src/env.mjs` (a test checks they match).
 
 | Old (still read, with a warning) | New |
@@ -179,6 +179,25 @@ decision. The table lives in `broker/rox-v1/src/env.rs` and
 
 `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR` make an app a test
 instance, and so does any of them by its old name.
+
+The broker's data folder on the owner's Mac moved too:
+
+| Old | New |
+|---|---|
+| `~/Library/Application Support/Grok Shell` | `~/Library/Application Support/Buwiz Broker` |
+
+It moves once, by a rename, before a broker starts on it (Buwiz Bot before
+it starts its bundled broker, or a `buwiz-broker` given the owner's folder),
+after a backup of `generated/app.db` into
+`Grok Shell/backups/<UTC time>-pre-move/`. Paths into the folder stored in
+the database (a plugin's command and env, icons, attachments, MCP servers'
+env and auth) are rewritten to the new folder in the same step, and `Grok
+Shell` stays behind as a symlink to `Buwiz Broker` (to be removed in a
+later release), so a plugin's own config holding an old absolute path
+keeps working. `.moved-from-grok-shell` in the new folder says it was done. Nothing moves while a broker answers on 8787.
+Until it moves, readers (the host token, `scripts/broker-live`,
+`scripts/live-copy`) use `Grok Shell`. A plugin or test that names the data
+dir by `BUWIZ_BROKER_DATA_DIR` (or `GROK_DATA_DIR`) is not affected.
 
 | Old (still works) | New |
 |---|---|

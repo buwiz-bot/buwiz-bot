@@ -18,7 +18,7 @@ pub const DEFAULT_GEN: &str = "http://127.0.0.1:8787";
 /// else [`DEFAULT_GEN`].
 pub fn backend() -> &'static str {
     static GEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    GEN.get_or_init(|| backend_from(rox_v1::env::var("BUWIZ_BACKEND").as_deref()))
+    GEN.get_or_init(|| backend_from(buwiz_protocol::env::var("BUWIZ_BACKEND").as_deref()))
 }
 
 /// `BUWIZ_BACKEND`'s value as the server's origin: an `http(s)://` URL
@@ -39,11 +39,13 @@ pub(crate) fn backend_from(env: Option<&str>) -> String {
 }
 
 /// Where the broker keeps the host token: `BUWIZ_HOST_TOKEN_FILE`, else
-/// `~/Library/Application Support/Grok Shell/host-token`.
+/// `~/Library/Application Support/Buwiz Broker/host-token`, or `Grok
+/// Shell`'s while that folder was not moved yet (a broker from before the
+/// move still runs on it).
 pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathBuf {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
         Some(p) => p.into(),
-        None => std::path::Path::new(home).join("Library/Application Support/Grok Shell/host-token"),
+        None => buwiz_protocol::broker_dir::dir_in(std::path::Path::new(home)).join("host-token"),
     }
 }
 
@@ -52,7 +54,7 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    token_in(&host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
+    token_in(&host_token_path(buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
 }
 
 /// The token in `path`, trimmed; `None` when the file is missing or empty.
@@ -191,10 +193,10 @@ mod tests {
     }
 
     #[test]
-    fn the_host_token_file_defaults_to_grok_shells_data_dir() {
+    fn the_host_token_file_defaults_to_the_brokers_data_dir() {
         assert_eq!(
             super::host_token_path(None, "/Users/u"),
-            std::path::PathBuf::from("/Users/u/Library/Application Support/Grok Shell/host-token")
+            std::path::PathBuf::from("/Users/u/Library/Application Support/Buwiz Broker/host-token")
         );
         assert_eq!(super::host_token_path(Some(" "), "/Users/u"), super::host_token_path(None, "/Users/u"));
         assert_eq!(
@@ -204,6 +206,22 @@ mod tests {
         assert!(super::is_host_route("/v1/host/plugins"));
         assert!(!super::is_host_route("/v1/hostx"));
         assert!(!super::is_host_route("/mcp/call"));
+    }
+
+    /// A broker from before the move still on `Grok Shell`: the token is
+    /// read there until `Buwiz Broker` exists.
+    #[test]
+    fn the_host_token_falls_back_to_grok_shell_until_it_moves() {
+        let home = std::env::temp_dir().join(format!("rox-host-token-home-{}", std::process::id()));
+        let support = home.join("Library/Application Support");
+        std::fs::create_dir_all(support.join("Grok Shell")).unwrap();
+        std::fs::write(support.join("Grok Shell/host-token"), "old\n").unwrap();
+        let h = home.to_str().unwrap();
+        assert_eq!(super::host_token_path(None, h), support.join("Grok Shell/host-token"));
+        assert_eq!(super::token_in(&super::host_token_path(None, h)).as_deref(), Some("old"));
+        std::fs::create_dir_all(support.join("Buwiz Broker")).unwrap();
+        assert_eq!(super::host_token_path(None, h), support.join("Buwiz Broker/host-token"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

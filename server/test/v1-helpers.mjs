@@ -82,7 +82,7 @@ export function bed(label) {
 }
 
 /** An in-process broker for bed `b`: {plugins, sessions, db}. With
- *  BUWIZ_BROKER_CMD set, its plugins run in `rox-broker helper` and are
+ *  BUWIZ_BROKER_CMD set, its plugins run in `buwiz-broker helper` and are
  *  reached over the line (plugins-line.mjs, sessions-line.mjs), as the
  *  Rust broker plan has them from 3.4; `db` is then the app.db the two
  *  share. */

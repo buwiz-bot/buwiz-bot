@@ -1,23 +1,23 @@
 #!/bin/sh
 # The Mini App Protocol v1 conformance run (drafts/rox-mini-app-protocol-v1.md,
 # section 17), both sides: the broker's suite against the fixture plugin
-# (`npm run conformance`) and Rox's host tests (with broker/rox-v1, which
+# (`npm run conformance`) and Rox's host tests (with broker/buwiz-protocol, which
 # Rox shares), named by spec ID. Prints
 # each side's checklist and exits non-zero if either fails.
 #
-#   scripts/mini-app-conformance [--rust <rox-broker>] [broker dir]
+#   scripts/mini-app-conformance [--rust <buwiz-broker>] [broker dir]
 #
 # The broker dir defaults to this repo's server/; a grok-shell checkout
 # (server/v1) still works. `--rust` runs the broker side through that
-# rox-broker, hosting the plugins and sessions itself (BUWIZ_BROKER_CMD and
+# buwiz-broker, hosting the plugins and sessions itself (BUWIZ_BROKER_CMD and
 # BUWIZ_BROKER_V1_HOST=1). CARGO_TARGET_DIR is honoured: set it to keep the
 # build out of app/target while Rox is running from there. TEST_PORT moves
 # the broker's test port off a running one.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${1:-}" = "--rust" ]; then
-  [ -x "${2:-}" ] || { echo "usage: $0 [--rust <rox-broker>] [broker dir]" >&2; exit 2; }
-  # by its old name too: the rox-broker may be a build from before the rename
+  [ -x "${2:-}" ] || { echo "usage: $0 [--rust <buwiz-broker>] [broker dir]" >&2; exit 2; }
+  # by its old name too: the buwiz-broker may be a build from before the rename
   BUWIZ_BROKER_CMD="$2" BUWIZ_BROKER_V1_HOST=1 ROX_BROKER_V1_HOST=1
   export BUWIZ_BROKER_CMD BUWIZ_BROKER_V1_HOST ROX_BROKER_V1_HOST
   shift 2
@@ -33,13 +33,13 @@ else
 fi
 
 echo "== Buwiz Bot host"
-# Rox's own tests, and the protocol pieces it shares with the broker (rox-v1)
-out="$(cd "$ROOT/app" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p rox --lib -- --format terse 2>&1)" || fail=1
-shared="$(cd "$ROOT/broker" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p rox-v1 --lib -- --format terse 2>&1)" || fail=1
+# Rox's own tests, and the protocol pieces it shares with the broker (buwiz-protocol)
+out="$(cd "$ROOT/app" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p buwiz-bot --lib -- --format terse 2>&1)" || fail=1
+shared="$(cd "$ROOT/broker" && CARGO_PROFILE_TEST_DEBUG=0 cargo test -q -p buwiz-protocol --lib -- --format terse 2>&1)" || fail=1
 out="$out
 $shared"
-ids="$( { (cd "$ROOT/app" && cargo test -q -p rox --lib -- --list 2>/dev/null); \
-  (cd "$ROOT/broker" && cargo test -q -p rox-v1 --lib -- --list 2>/dev/null); } \
+ids="$( { (cd "$ROOT/app" && cargo test -q -p buwiz-bot --lib -- --list 2>/dev/null); \
+  (cd "$ROOT/broker" && cargo test -q -p buwiz-protocol --lib -- --list 2>/dev/null); } \
   | sed -n 's/^\(.*\): test$/\1/p' \
   | grep -oiE '(^|::)(man|app|brg|rsv|inv|agt|lcy|con)_[0-9]{2}[a-z0-9_]*' | sed 's/^:://' | sort -u)"
 echo "$out" | grep -E '^test result|FAILED|panicked'

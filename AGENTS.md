@@ -21,7 +21,7 @@ are lost at the next rebuild.
 
 ## Working on the app
 
-- Build with `cd app && cargo build -p rox`. Format by hand: rustfmt on the
+- Build with `cd app && cargo build -p buwiz-bot`. Format by hand: rustfmt on the
   app crate rewrites dozens of untouched files.
 - Install a build into the dev bundle by removing the old binary first
   (`rm` then `cp` to `~/Applications/Buwiz Bot.app/Contents/MacOS/buwiz-bot-bin`): a
@@ -34,7 +34,7 @@ are lost at the next rebuild.
 - Start a test instance with `scripts/buwiz-test` (`scripts/test-rox` is
   its old name). Environment variables have Buwiz names (`BUWIZ_*`); the
   old `ROX_*`/`GROK_*` names still work, with a warning
-  (`broker/rox-v1/src/env.rs` has the table).
+  (`broker/buwiz-protocol/src/env.rs` has the table).
 - Point `gpui-agent` at your own instance by address: `--addr
   127.0.0.1:<your agent port>` (or `GPUI_AGENT_ADDR`), never `--connect`
   (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is
@@ -53,6 +53,9 @@ are lost at the next rebuild.
 - Test with `cd server && npm test` (after `npm ci`). Each test starts its
   own broker on `TEST_PORT` (8797 by default) with a temp data dir; pick
   another port when one is taken.
+- The owner's broker data is `~/Library/Application Support/Buwiz Broker`
+  (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
+  Never point a test or bench at it: give it its own data dir.
 - Package it into an app bundle with
   `server/tools/package-server.sh <Resources dir>`.
 - A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest

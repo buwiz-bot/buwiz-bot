@@ -135,7 +135,7 @@ const env = () => ({
   HTTPS_PROXY: `http://127.0.0.1:${SINK_PORT}`,
   HTTP_PROXY: `http://127.0.0.1:${SINK_PORT}`,
   NO_PROXY: "127.0.0.1,localhost",
-  // rox-broker hosts the MCP servers (Node ignores these)
+  // buwiz-broker hosts the MCP servers (Node ignores these)
   BUWIZ_BROKER_MCP_HOST: "1",
   BUWIZ_PLUGIN_CATALOG: CATALOG_FILE,
 });
