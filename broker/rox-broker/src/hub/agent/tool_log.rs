@@ -84,6 +84,9 @@ fn patterns() -> &'static [(Regex, &'static str)] {
     static P: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     P.get_or_init(|| {
         [
+            // a signed ticket (`tkt_` + 16 or more letters and digits: a ULID
+            // today, any later form too) under any key, or in text
+            (r"\btkt_[0-9A-Za-z]{16,}\b", "[redacted]"),
             (r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", "[redacted]"),
             (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", "${1} [redacted]"),
             // a TIN: 9 digits and a 3-5 digit branch, dashed or not
@@ -99,11 +102,12 @@ fn patterns() -> &'static [(Regex, &'static str)] {
     })
 }
 
-/// JWTs, bearer tokens and TINs out of `s`, and in a plain text (`json`
-/// false) the values of its `key: value` pairs under a secret's name too.
+/// Tickets, JWTs, bearer tokens and TINs out of `s`, and in a plain text
+/// (`json` false) the values of its `key: value` pairs under a secret's
+/// name too.
 fn scrub(s: &str, json: bool) -> String {
     let mut out = s.to_owned();
-    for (re, to) in &patterns()[..if json { 3 } else { 4 }] {
+    for (re, to) in &patterns()[..if json { 4 } else { 5 }] {
         out = re.replace_all(&out, *to).into_owned();
     }
     out
@@ -263,6 +267,21 @@ mod tests {
         let plain = entry("x", &json!({}), &ok("TIN: 123-456-789-000, total 1,500.00 on 2026-11-01"));
         assert_eq!(plain["result"], json!("TIN: [TIN], total 1,500.00 on 2026-11-01"));
         assert!(!tin_key("tinted") && !tin_key("destination") && tin_key("Payer_Tin"));
+    }
+
+    #[test]
+    fn tool_log_redacts_a_ticket_under_any_key() {
+        let (t1, t2) = ("tkt_01JC8Q2W3E4R5T6Y7U8I9O0P1A", "tkt_01HZX9YKMN2P3Q4R5S6T7V8W9X");
+        assert!(patterns()[0].0.is_match(t2), "a ULID ticket matches");
+        // the taxpayer's ticket under `tin_root`, a return's passed as `form`
+        let list = entry("ebirforms_profiles_list", &json!({}), &ok(&format!(r#"{{"items":[{{"name":"Dela Cruz","tin_root":"{t2}"}}]}}"#)));
+        assert_eq!(list["result"], json!(r#"{"items":[{"name":"Dela Cruz","tin_root":"[redacted]"}]}"#));
+        let est = entry("ebirforms_penalty_estimate", &json!({"form": t2, "period": "2026-Q3"}), &ok(&format!("Estimate for {t2}: 1,500.00")));
+        assert_eq!(est["input"], json!(r#"{"form":"[redacted]","period":"2026-Q3"}"#));
+        assert_eq!(est["result"], json!("Estimate for [redacted]: 1,500.00"));
+        // any letters, lowercase too, are redacted; a short `tkt_` word is kept
+        let other = entry("x", &json!({"form": t1, "low": t2.to_lowercase()}), &ok("tkt_short"));
+        assert_eq!((other["input"].clone(), other["result"].clone()), (json!(r#"{"form":"[redacted]","low":"[redacted]"}"#), json!("tkt_short")));
     }
 
     #[test]
