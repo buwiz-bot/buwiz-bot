@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the release bundle, dist/<CFBundleName>.app: release-profile builds
-# of the app, the broker workspace (rox-broker, rox-gws) and nsh (nsh,
-# nsh-macos-host), assembled as app/bundle-dev.sh assembles the dev bundle
+# of the app, the broker workspace (rox-broker), the Google Workspace
+# plugin (buwiz-gws, scripts/gws-build) and nsh (nsh, nsh-macos-host),
+# assembled as app/bundle-dev.sh assembles the dev bundle
 # but without its dev-only parts: the executable is the app itself (no
 # launcher, no gpui-agent token or env exports, nothing that points at a
 # checkout), and nothing is registered with LaunchServices. The bundle is
@@ -16,11 +17,11 @@
 #                             nsh's unless NSH_TARGET_DIR is set
 #   BROKER_TARGET_DIR         the broker workspace's (default broker/target)
 #   NSH_TARGET_DIR            nsh's (default CARGO_TARGET_DIR, else nsh/target)
-#   ROX_BIN, ROX_BROKER_BIN, ROX_GWS_BIN, NSH_BIN, NSH_HOST_BIN
+#   ROX_BIN, ROX_BROKER_BIN, BUWIZ_GWS_BIN, NSH_BIN, NSH_HOST_BIN
 #                             prebuilt binaries to package instead of
 #                             building them
-#   ROX_GWS_MANIFEST=<path>   rox-gws's signed manifest (default
-#                             broker/rox-gws/manifest.signed.json)
+#   BUWIZ_GWS_MANIFEST=<path> buwiz-gws's signed manifest (default
+#                             plugins/google-workspace/manifest.signed.json)
 #   OFFICE_DIST, OFFICE_FONTS, MATERIAL_SYMBOLS_TTF   as in bundle-dev.sh
 #   NODE_MODULES=<dir>        server/'s node_modules (default server/node_modules)
 #   APP_ICON=<path>           AppIcon.icns, or a 1024x1024 PNG to make it
@@ -108,20 +109,17 @@ if [ -z "${ROX_BIN:-}" ]; then
   cargo_release "$ROOT/app" "$APP_TARGET" --bin "$BIN_NAME"
   ROX_BIN="$APP_TARGET/release/$BIN_NAME"
 fi
-if [ -z "${ROX_BROKER_BIN:-}" ] || [ -z "${ROX_GWS_BIN:-}" ]; then
-  PKGS=()
-  [ -n "${ROX_BROKER_BIN:-}" ] || PKGS+=(-p rox-broker)
-  [ -n "${ROX_GWS_BIN:-}" ] || PKGS+=(-p rox-gws)
-  cargo_release "$ROOT/broker" "$BROKER_TARGET" "${PKGS[@]}"
+if [ -z "${ROX_BROKER_BIN:-}" ]; then
+  cargo_release "$ROOT/broker" "$BROKER_TARGET" -p rox-broker
 fi
 ROX_BROKER_BIN="${ROX_BROKER_BIN:-$BROKER_TARGET/release/rox-broker}"
-ROX_GWS_BIN="${ROX_GWS_BIN:-$BROKER_TARGET/release/rox-gws}"
+BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$(GWS_TARGET_DIR="$BROKER_TARGET/gws" "$ROOT/scripts/gws-build")}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
   cargo_release "$ROOT/nsh" "$NSH_TARGET" -p nsh-cli -p nsh-macos-host
   NSH_BIN="$NSH_TARGET/release/nsh"
   NSH_HOST_BIN="$NSH_TARGET/release/nsh-macos-host"
 fi
-for b in "$ROX_BIN" "$ROX_BROKER_BIN" "$ROX_GWS_BIN" "${NSH_BIN:-}" "${NSH_HOST_BIN:-}"; do
+for b in "$ROX_BIN" "$ROX_BROKER_BIN" "$BUWIZ_GWS_BIN" "${NSH_BIN:-}" "${NSH_HOST_BIN:-}"; do
   [ -x "$b" ] || die "missing binary: ${b:-nsh or nsh-macos-host (set both NSH_BIN and NSH_HOST_BIN, or neither)}"
 done
 
@@ -144,12 +142,12 @@ mkdir -p "$B/bin" "$B/server/office/editor/dist" "$B/node_modules"
 cp "$ROX_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
-cp "$ROX_GWS_BIN" "$B/bin/rox-gws"
-GWS_MANIFEST="${ROX_GWS_MANIFEST:-$ROOT/broker/rox-gws/manifest.signed.json}"
+cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"
+GWS_MANIFEST="${BUWIZ_GWS_MANIFEST:-$ROOT/plugins/google-workspace/manifest.signed.json}"
 if [ -f "$GWS_MANIFEST" ]; then
-  cp "$GWS_MANIFEST" "$B/bin/rox-gws.manifest.json"
+  cp "$GWS_MANIFEST" "$B/bin/buwiz-gws.manifest.json"
 else
-  echo "warning: no signed rox-gws manifest at $GWS_MANIFEST (set ROX_GWS_MANIFEST); this release can't provision Google Workspace" >&2
+  echo "warning: no signed buwiz-gws manifest at $GWS_MANIFEST (set BUWIZ_GWS_MANIFEST); this release can't provision Google Workspace" >&2
 fi
 cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
 cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
