@@ -598,7 +598,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buwiz-app"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=bb76aa1e9f30a8ca37106be5240d989b807278c5#bb76aa1e9f30a8ca37106be5240d989b807278c5"
+source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=2120c725112e2072b22f6630079fc938b6c9b1e9#2120c725112e2072b22f6630079fc938b6c9b1e9"
 dependencies = [
  "base64 0.22.1",
  "nsh-core",
