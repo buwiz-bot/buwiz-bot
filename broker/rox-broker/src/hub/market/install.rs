@@ -290,14 +290,7 @@ pub fn inventory_at(base: &Path, root: &Path, skills: Option<&Value>, servers: M
         }
         _ => list_dir("skills", false),
     };
-    let mut manifest = json!({});
-    for f in [".buwiz-plugin/plugin.json", ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
-        let j = parse(std::fs::read_to_string(root.join(f)).ok().as_deref(), Value::Null);
-        if truthy(j.get("name")) {
-            manifest = j;
-            break;
-        }
-    }
+    let manifest = manifest_at(root);
     let author = match manifest.get("author") {
         Some(a) if truthy(a.get("name")) => a["name"].clone(),
         Some(Value::String(s)) => json!(s),
@@ -312,6 +305,17 @@ pub fn inventory_at(base: &Path, root: &Path, skills: Option<&Value>, servers: M
         "servers": Value::Object(servers),
         "manifest": { "author": author, "version": super::or(manifest.get("version"), Value::Null), "license": super::or(manifest.get("license"), Value::Null) },
     })
+}
+
+/// The plugin manifest at `root`: the first `plugin.json` with a name, `{}` with none.
+pub fn manifest_at(root: &Path) -> Value {
+    for f in [".buwiz-plugin/plugin.json", ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"] {
+        let j = parse(std::fs::read_to_string(root.join(f)).ok().as_deref(), Value::Null);
+        if truthy(j.get("name")) {
+            return j;
+        }
+    }
+    json!({})
 }
 
 /// `skillFile(key, skill)`: the SKILL.md of one of its skills.

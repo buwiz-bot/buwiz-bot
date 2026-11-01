@@ -193,7 +193,7 @@ Recommendation for personal use: stay in Testing and accept weekly re-auth, or c
 
 ## Google Workspace (local) plugin
 
-The stopgap until the preview enrollment comes through. Plugin files: `grok-shell/server/plugins/external_plugins/google-workspace/` (listed in `server/plugins/marketplace.json`).
+The stopgap until the preview enrollment comes through. Plugin files: `server/src/plugins/external_plugins/google-workspace/` (listed in `server/src/plugins/catalog.json`).
 
 - **What runs:** `uvx workspace-mcp --single-user --tool-tier extended --tools gmail calendar drive docs sheets slides` — 57 tools: mail, calendars and events, Drive search/read/create plus rename/copy/share (`update_drive_file`), Docs editing (`modify_doc_text`, `find_and_replace_doc`), Sheets and Slides. The smaller `core` tier (24 tools) can't rename or find-and-replace — the AI then reports the file "unchanged". Needs `uv` (`~/.local/bin/uvx`); the first start downloads the package.
 - **Setup values:** Google Client ID and Secret are the shared ones (saving them in any Google plugin updates all). **Google Account Email** = `codeitlikemiley@gmail.com` (so the AI never has to ask which account).

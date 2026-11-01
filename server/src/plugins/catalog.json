@@ -1,0 +1,44 @@
+{
+  "name": "buwiz-bot",
+  "description": "The plugins Buwiz Bot ships in external_plugins/, each under its own license. Fields come from each plugin's own .grok-plugin/plugin.json.",
+  "owner": { "name": "Buwiz Bot" },
+  "version": "1",
+  "plugins": [
+    {
+      "name": "calcom",
+      "displayName": "Cal.com",
+      "description": "Cal.com scheduling for Grok Build via the hosted Cal.com MCP server at mcp.cal.com. Check availability, book, reschedule and cancel meetings, manage event types and schedules, and reach any Cal.com API v2 operation. Sign in with your Cal.com account on first connect.",
+      "category": "scheduling",
+      "source": { "type": "local", "path": "./external_plugins/calcom" },
+      "author": { "name": "Cal.com" },
+      "homepage": "https://cal.com/docs/mcp-server",
+      "repository": "https://www.npmjs.com/package/@calcom/cal-mcp",
+      "license": "MIT",
+      "keywords": ["cal.com", "calcom", "cal.com mcp", "cal.com scheduling", "cal.com booking"]
+    },
+    {
+      "name": "neon",
+      "displayName": "Neon",
+      "description": "Manage your Neon Serverless Postgres projects, databases, and branches with the Neon agent skills and the Neon MCP Server.",
+      "category": "data",
+      "source": { "type": "local", "path": "./external_plugins/neon" },
+      "author": { "name": "Neon" },
+      "homepage": "https://neon.com",
+      "repository": "https://github.com/neondatabase/agent-skills",
+      "license": "Apache-2.0",
+      "keywords": ["neon", "postgres", "serverless", "database", "mcp"]
+    },
+    {
+      "name": "google-workspace",
+      "displayName": "Google Workspace",
+      "description": "Gmail, Google Calendar, Drive, Docs, Sheets and Slides through the open-source workspace-mcp server, run locally on the regular Google APIs with your own OAuth client.",
+      "category": "productivity",
+      "source": { "type": "local", "path": "./external_plugins/google-workspace" },
+      "author": { "name": "taylorwilsdon" },
+      "homepage": "https://workspacemcp.com",
+      "repository": "https://github.com/taylorwilsdon/google_workspace_mcp",
+      "license": "MIT",
+      "keywords": ["google", "gmail", "calendar", "drive", "docs", "sheets", "slides", "mcp"]
+    }
+  ]
+}

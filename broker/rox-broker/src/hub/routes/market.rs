@@ -1,5 +1,5 @@
-//! The market's 12 routes (routes/market.mjs): `/plugins/catalog`,
-//! `/plugins/detail`, `/plugins/icon/<key>`, `/plugins/skill`,
+//! The market's 11 routes (routes/market.mjs): `/plugins/catalog`,
+//! `/plugins/detail`, `/plugins/skill`,
 //! `/plugins/inspect` (2.1's review, no Node twin), `/plugins/install`,
 //! `/plugins/uninstall`, `/plugins/settings`,
 //! `/plugins/connect`, and the private skills' `POST /skills`,
@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
+use hyper::header::{HeaderValue, CONTENT_TYPE};
 use hyper::{Response, StatusCode};
 use serde_json::{json, Map, Value};
 
 use crate::hub::ctx::HubCtx;
-use crate::hub::market::catalog::{cat_label, categories, encode_component, Market};
+use crate::hub::market::catalog::{cat_label, categories, Market};
 use crate::hub::market::install::{mcp_invalidate, mcp_status, plugin_inventory, remove_plugin_files, skill_file, upsert_connector};
 use crate::hub::market::{at, entries, or, parse, resolve, review, skills, spread, string, truthy, unique};
 use crate::hub::types::{json as answer, HubRequest, HubResponse, Pattern, Verb};
@@ -38,7 +38,6 @@ pub fn register(routes: &mut Registry, market: Arc<Market>) {
     route!(Verb::Post, Pattern::Exact("/plugins/settings"), settings);
     route!(Verb::Get, Pattern::Prefix("/plugins/detail"), detail);
     route!(Verb::Post, Pattern::Exact("/plugins/connect"), connect);
-    route!(Verb::Get, Pattern::Prefix("/plugins/icon/"), icon);
     route!(Verb::Get, Pattern::Prefix("/plugins/skill"), skill);
     routes.route(Verb::Post, Pattern::Exact("/skills"), |ctx, req| async move { skills_save(&ctx, req) });
     routes.route(Verb::Post, Pattern::Exact("/skills/state"), |ctx, req| async move { skills_state(&ctx, req) });
@@ -95,8 +94,9 @@ fn rows(ctx: &HubCtx, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<Ma
     })
 }
 
-/// `GET /plugins/catalog[?rev=]`: the catalog rows and installed flags; a
-/// matching rev answers `{rev, unchanged: true}`.
+/// `GET /plugins/catalog[?rev=]`: the catalog rows and installed flags,
+/// then the installed plugins the catalog doesn't list (from their
+/// records); a matching rev answers `{rev, unchanged: true}`.
 async fn catalog(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
     let installed = match rows(ctx, "SELECT name, meta FROM installed_plugins", &[]) {
         Ok(r) => r,
@@ -106,17 +106,15 @@ async fn catalog(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
     let mut keys: Vec<String> = installed.iter().map(|r| string(r.get("name"))).collect();
     keys.sort();
     let joined: String = installed.iter().map(|r| r.get("meta").filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default()).collect();
-    let rev = format!("{}|{}|{}", m.fetched_at, keys.join(","), if installed.is_empty() { 0 } else { joined.encode_utf16().count() });
+    let rev = format!("{}|{}|{}", m.version, keys.join(","), if installed.is_empty() { 0 } else { joined.encode_utf16().count() });
     if req.query("rev").as_deref() == Some(rev.as_str()) {
         return ok(json!({ "rev": rev, "unchanged": true }));
     }
     let mut plugins = Vec::new();
-    for e in &m.entries {
+    let unlisted: Vec<Value> = installed.iter().map(|r| string(r.get("name"))).filter(|k| m.entry_of(k).is_none()).filter_map(|k| m.entry_for(ctx, &k)).collect();
+    for e in m.entries.iter().chain(unlisted.iter()) {
         let key = string(e.get("key"));
         let meta = meta_of(&key);
-        if !(m.show_oauth_app || meta.is_some() || m.hidden_info(&key).is_none()) {
-            continue;
-        }
         let cats: Vec<Value> = entries(e.get("cats").filter(|c| js::truthy(c))).into_iter().map(|(_, c)| cat_label(&js::string_of(&c)).map_or(Value::Null, |l| json!(l))).collect();
         let mut keywords: Vec<Value> = entries(e.get("keywords").filter(|k| js::truthy(k))).into_iter().map(|(_, k)| k).collect();
         keywords.extend([e.get("name").cloned().unwrap_or(Value::Null), e.get("pluginName").cloned().unwrap_or(Value::Null)]);
@@ -130,8 +128,6 @@ async fn catalog(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
             "category": category(e),
             "cats": cats,
             "homepage": or(e.get("websiteUrl"), Value::Null),
-            "iconUrl": or(e.get("iconUrl"), Value::Null),
-            "icon": m.icon_file(&key).map_or(Value::Null, |_| json!(format!("/plugins/icon/{}", encode_component(&key)))),
             "publisher": or(at(e.get("publisher"), "displayName"), or(at(e.get("publisher"), "name"), json!(""))),
             "keywords": keywords.into_iter().filter(js::truthy).collect::<Vec<_>>(),
             "domains": [],
@@ -142,7 +138,7 @@ async fn catalog(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
             "meta": meta.map_or(Value::Null, |v| parse(v.as_str(), json!({}))),
         }));
     }
-    ok(json!({ "marketplace": "grok-bot", "rev": rev, "categories": categories(), "plugins": plugins }))
+    ok(json!({ "marketplace": "buwiz-bot", "rev": rev, "categories": categories(), "plugins": plugins }))
 }
 
 /// `e.cats?.length ? catLabel[e.cats[0]] : e.category || "other"`
@@ -299,7 +295,7 @@ async fn settings(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
 }
 
 async fn save_settings(m: &Market, ctx: &HubCtx, b: &Value) -> Result<(), String> {
-    let key = string(m.entry_of(&key_of(b.get("plugin"))).ok_or_else(|| format!("unknown plugin {}", string(b.get("plugin"))))?.get("key"));
+    let key = string(m.entry_for(ctx, &key_of(b.get("plugin"))).ok_or_else(|| format!("unknown plugin {}", string(b.get("plugin"))))?.get("key"));
     let mut next = m.settings_of(ctx, &key);
     let values = b.get("values").filter(|v| js::truthy(v)).cloned().unwrap_or(json!({}));
     for f in m.fields_of(ctx, &key) {
@@ -336,7 +332,7 @@ async fn save_settings(m: &Market, ctx: &HubCtx, b: &Value) -> Result<(), String
 /// `reapply(key)`: the plugin's connector rows rebuilt from its values,
 /// and a row added for each connector no longer waiting.
 async fn reapply(m: &Market, ctx: &HubCtx, key: &str) -> Result<(), String> {
-    let key = string(m.entry_of(key).ok_or_else(|| "Cannot read properties of null (reading 'key')".to_owned())?.get("key"));
+    let key = string(m.entry_for(ctx, key).ok_or_else(|| "Cannot read properties of null (reading 'key')".to_owned())?.get("key"));
     let Some(mut meta) = m.installed_meta(ctx, &key) else { return Ok(()) };
     for server in m.server_configs(ctx, &key).keys().cloned().collect::<Vec<_>>() {
         let mine: Vec<Value> = entries(at(Some(&meta), "mcp").filter(|c| js::truthy(c))).into_iter().map(|(_, v)| v).collect();
@@ -375,12 +371,13 @@ fn account_note(m: &Market, ctx: &HubCtx, key: &str, server: &str, row: &Map<Str
     String::new()
 }
 
-/// `GET /plugins/detail?name=`: the entry, what an installed copy ships,
+/// `GET /plugins/detail?name=`: the entry (an installed plugin the catalog
+/// doesn't list: its record's), what an installed copy ships,
 /// each connector's accounts and status (an idle enabled one is probed in
 /// the background), and the setup fields.
 async fn detail(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
     let name = req.query("name").unwrap_or_default();
-    let Some(e) = m.entry_of(&name).cloned() else { return answer(StatusCode::NOT_FOUND, &json!({ "error": "unknown plugin" })) };
+    let Some(e) = m.entry_for(ctx, &name) else { return answer(StatusCode::NOT_FOUND, &json!({ "error": "unknown plugin" })) };
     let key = string(e.get("key"));
     let meta = m.installed_meta(ctx, &key);
     let root = meta.as_ref().and_then(|_| m.plugin_root(ctx, &key));
@@ -446,10 +443,13 @@ async fn detail(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
         }
         let row = list.first();
         let st = row.map_or_else(|| json!({ "status": "off", "tools": 0 }), |r| mcp_status(ctx, &string(r.get("id"))));
-        let transport = match cfg {
-            Some(c) if truthy(c.get("url")) => "remote",
-            Some(_) => "command",
-            None => "unknown",
+        // a connector with no config the catalog or files declare: its row's
+        let transport = match (cfg, row) {
+            (Some(c), _) if truthy(c.get("url")) => "remote",
+            (Some(_), _) => "command",
+            (None, Some(r)) if truthy(r.get("url")) => "remote",
+            (None, Some(_)) => "command",
+            (None, None) => "unknown",
         };
         let callback = match &mat {
             Some(x) if x.own => {
@@ -466,7 +466,7 @@ async fn detail(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
             "tools": st.get("tools").cloned().unwrap_or(Value::Null),
             "err": or(st.get("err"), Value::Null),
             "accounts": accounts,
-            "unavailable": if cfg.is_some() { Value::Null } else { json!("Its configuration isn't published in the plugin's repository") },
+            "unavailable": if cfg.is_some() || row.is_some() { Value::Null } else { json!("Its configuration isn't published in the plugin's repository") },
             "needs": mat.as_ref().map_or(json!([]), |x| json!(x.missing)),
             "callbackUrl": callback,
         }));
@@ -492,9 +492,6 @@ async fn detail(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
         "category": category(&e),
         "homepage": or(e.get("websiteUrl"), Value::Null),
         "source": or(e.get("repositoryUrl"), or(at(e.get("install"), "repo"), Value::Null)),
-        "iconUrl": or(e.get("iconUrl"), Value::Null),
-        "icon": m.icon_file(&key).map_or(Value::Null, |_| json!(format!("/plugins/icon/{}", encode_component(&key)))),
-        "needsOAuthApp": m.hidden_info(&key).unwrap_or(Value::Null),
         "publisher": or(at(e.get("publisher"), "displayName"), or(at(e.get("publisher"), "name"), json!(""))),
         "availability": match marketplace {
             Some(mk) => json!(format!("Private marketplace ({})", js::string_of(&or(mk.get("displayName"), mk.get("name").cloned().unwrap_or(Value::Null))))),
@@ -526,7 +523,7 @@ async fn connect(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
 
 async fn connect_account(m: &Market, ctx: &HubCtx, b: &Value) -> Result<Value, String> {
     let (plugin, server) = (string(b.get("plugin")), string(b.get("server")));
-    let key = match m.entry_of(&key_of(b.get("plugin"))) {
+    let key = match m.entry_for(ctx, &key_of(b.get("plugin"))) {
         Some(e) if m.installed_row(ctx, &string(e.get("key"))).is_some() => string(e.get("key")),
         _ => return Err(format!("plugin {plugin} is not installed")),
     };
@@ -590,40 +587,10 @@ async fn connect_account(m: &Market, ctx: &HubCtx, b: &Value) -> Result<Value, S
     Ok(Value::Object(out))
 }
 
-/// `GET /plugins/icon/<key>`: the logo file; 404 with no body.
-async fn icon(m: &Market, _ctx: &HubCtx, req: HubRequest) -> HubResponse {
-    let rest = &req.url["/plugins/icon/".len()..];
-    let key = js::decode_uri_component(rest.split('?').next().unwrap_or("")).unwrap_or_default();
-    let Some(f) = m.icon_file(&key) else {
-        let mut res = Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed());
-        *res.status_mut() = StatusCode::NOT_FOUND;
-        return res;
-    };
-    let Ok(bytes) = std::fs::read(&f) else {
-        let mut res = Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed());
-        *res.status_mut() = StatusCode::NOT_FOUND;
-        return res;
-    };
-    let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let ct = match ext.as_str() {
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "ico" => "image/x-icon",
-        _ => "application/octet-stream",
-    };
-    let mut res = Response::new(Full::new(Bytes::from(bytes)).map_err(|never| match never {}).boxed());
-    res.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static(ct));
-    res.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("max-age=86400"));
-    res
-}
-
 /// `GET /plugins/skill?plugin=&skill=`: an installed plugin's SKILL.md,
 /// else the catalog's description and link.
 async fn skill(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
-    let e = m.entry_of(&req.query("plugin").unwrap_or_default()).cloned();
+    let e = m.entry_for(ctx, &req.query("plugin").unwrap_or_default());
     let skill = req.query("skill").unwrap_or_default();
     let file = e.as_ref().and_then(|e| {
         let key = string(e.get("key"));
@@ -733,9 +700,8 @@ mod tests {
             "key": "demo", "name": "demo", "displayName": "Demo", "description": "A demo.", "publisher": { "displayName": "Demo Co" },
             "install": { "repo": format!("file://{}", repo.display()), "path": "" },
             "fields": [{ "key": "DEMO_API_KEY", "label": "Demo API Key", "isRequired": true, "isSecret": true }],
-        }] });
-        write(&server.join("plugins/grokbot-catalog.json"), &catalog.to_string());
-        write(&server.join("plugins/marketplace.json"), r#"{"plugins":[{"name":"vend","description":"Vendored.","source":{"type":"local","path":"./external_plugins/vend"}}]}"#);
+        }, { "name": "vend", "description": "Vendored.", "source": { "type": "local", "path": "./external_plugins/vend" } }] });
+        write(&server.join("plugins/catalog.json"), &catalog.to_string());
         write(&server.join("plugins/external_plugins/vend/skills/tidy/SKILL.md"), "---\ndescription: Tidies.\n---\n");
         let data = root.join("data");
         std::fs::create_dir_all(data.join("generated")).unwrap();
@@ -748,6 +714,15 @@ mod tests {
 
     async fn post(f: &Fixture, url: &str, body: Value) -> (u16, Value) {
         let req = HubRequest { method: Method::POST, url: url.into(), headers: HeaderMap::new(), body: Bytes::from(body.to_string()), params: Vec::new() };
+        send(f, req).await
+    }
+
+    async fn get(f: &Fixture, url: &str) -> (u16, Value) {
+        let req = HubRequest { method: Method::GET, url: url.into(), headers: HeaderMap::new(), body: Bytes::new(), params: Vec::new() };
+        send(f, req).await
+    }
+
+    async fn send(f: &Fixture, req: HubRequest) -> (u16, Value) {
         let res = f.hub.answer(req).await;
         let status = res.status().as_u16();
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
@@ -860,5 +835,60 @@ mod tests {
         assert!(!f.plugins.join("vend").exists());
         let (_, v) = post(&f, "/plugins/inspect", json!({ "name": "nope" })).await;
         assert_eq!(v["error"], "unknown plugin nope");
+    }
+    #[tokio::test]
+    async fn mkt_no_catalog_lists_nothing_and_keeps_installed_plugins_working() {
+        let f = fixture("nocat");
+        // installed from a catalog Buwiz no longer ships: a record, its files
+        // and the connector row it made
+        let files = f.plugins.join("old/plug");
+        write(&files.join(".claude-plugin/plugin.json"), r#"{"name":"old","displayName":"Old Plugin","description":"From before.","author":{"name":"Old Co"}}"#);
+        write(&files.join("skills/tidy/SKILL.md"), "---\ndescription: Tidies.\n---\n");
+        let empty = root_without_catalog(&f);
+        let market = Arc::new(Market::load(&empty, &f.root.join("data"), 9));
+        assert!(market.entries.is_empty());
+        let hub = Hub::with(HubCtx::new(f.root.join("data"), Clock::manual()), Vec::new(), |routes, _| register(routes, market));
+        crate::hub::market::schema(hub.ctx()).unwrap();
+        let g = Fixture { hub, root: f.root.join("nocat-view"), plugins: f.plugins.clone() };
+        let meta = json!({ "root": "old/plug", "catalogId": "1", "mcp": ["old-web"], "created": ["old-web"] });
+        g.hub.ctx().db.with(|db| {
+            db.execute("INSERT INTO installed_plugins(name, meta, created_at) VALUES('old', ?, 1)", [meta.to_string()])?;
+            db.execute("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at, url) VALUES('old-web', 'old-web', '', '[]', '{}', 1, 1, 'https://mcp.old.invalid/mcp')", [])
+        }).unwrap();
+
+        // the catalog: only the installed plugin, from its record
+        let (status, v) = get(&g, "/plugins/catalog").await;
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["marketplace"], "buwiz-bot");
+        let rows = v["plugins"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{v}");
+        assert_eq!((rows[0]["name"].as_str(), rows[0]["displayName"].as_str(), rows[0]["installed"].as_bool()), (Some("old"), Some("Old Plugin"), Some(true)));
+        assert_eq!(rows[0]["publisher"], "Old Co");
+        // its page: name, the connector and its account, the skill
+        let (status, d) = get(&g, "/plugins/detail?name=old").await;
+        assert_eq!(status, 200, "{d}");
+        assert_eq!((d["displayName"].as_str(), d["description"].as_str(), d["installed"].as_bool()), (Some("Old Plugin"), Some("From before."), Some(true)));
+        assert_eq!(d["skills"], json!([{ "name": "tidy", "description": "Tidies." }]));
+        let m = &d["mcp"][0];
+        assert_eq!((m["name"].as_str(), m["transport"].as_str(), m["id"].as_str(), m["unavailable"].clone()), (Some("old-web"), Some("remote"), Some("old-web"), Value::Null));
+        assert_eq!(m["accounts"][0]["id"], "old-web");
+        // settings save (nothing to re-apply), the skill reads, inspect refuses
+        assert_eq!(post(&g, "/plugins/settings", json!({ "plugin": "old", "values": {} })).await, (200, json!({ "ok": true })));
+        assert_eq!(get(&g, "/plugins/skill?plugin=old&skill=tidy").await.1["description"], "Tidies.");
+        assert_eq!(post(&g, "/plugins/inspect", json!({ "name": "old" })).await.1["error"], "unknown plugin old");
+        // uninstall: the record, its files and the row it made go
+        assert_eq!(post(&g, "/plugins/uninstall", json!({ "name": "old" })).await, (200, json!({ "ok": true })));
+        assert!(installed(&g, "old").is_none() && !f.plugins.join("old").exists());
+        let left: i64 = g.hub.ctx().db.with(|db| db.query_row("SELECT COUNT(*) FROM mcp_servers", [], |r| r.get(0))).unwrap();
+        assert_eq!(left, 0);
+        let (_, v) = get(&g, "/plugins/catalog").await;
+        assert_eq!(v["plugins"], json!([]));
+    }
+
+    /// A server folder with no catalog file.
+    fn root_without_catalog(f: &Fixture) -> PathBuf {
+        let dir = f.root.join("server-empty");
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        dir
     }
 }

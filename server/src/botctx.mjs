@@ -2,7 +2,7 @@
 // and integrations, all filled on demand. The bot rows live in store.bots
 // (persisted by state.mjs); this module holds the operations on them, the
 // system-prompt section and the agent tools that act on the thread's bot.
-import { entryOf, iconFile } from "./plugins.mjs";
+import { entryOf } from "./plugins.mjs";
 import { db, persist, store, threadBot, uuidv7 } from "./state.mjs";
 
 export const botOfThread = (thread) => (thread?.id ? threadBot(thread.id) : undefined);
@@ -65,12 +65,12 @@ function lookup(kind, id) {
   if (kind === "mcp") {
     const r = db.prepare("SELECT id,name FROM mcp_servers WHERE id=? OR name=?").get(id, id);
     const cat = r && entryOf(r.name || r.id);
-    return r && { id: r.id, name: r.name || r.id, kind, description: cat?.description || "", icon: cat && iconFile(cat.key) ? `/plugins/icon/${encodeURIComponent(cat.key)}` : "" };
+    return r && { id: r.id, name: r.name || r.id, kind, description: cat?.description || "", icon: "" };
   }
   if (kind === "plugin") {
     const inst = db.prepare("SELECT name FROM installed_plugins WHERE name=?").get(id);
     const cat = entryOf(id);
-    return (inst || cat) && { id, name: cat?.displayName || cat?.name || id, kind, description: cat?.description || "", icon: iconFile(id) ? `/plugins/icon/${encodeURIComponent(id)}` : "" };
+    return (inst || cat) && { id, name: cat?.displayName || cat?.name || id, kind, description: cat?.description || "", icon: "" };
   }
   if (kind === "skill") {
     const r = db.prepare("SELECT id,name,description FROM skills WHERE id=? OR name=?").get(id, id);

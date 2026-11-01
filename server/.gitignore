@@ -11,4 +11,3 @@ keys/
 # the built office editor (npm run build:office-editor); no trailing slash,
 # so a stray symlink here is ignored too
 src/office/editor/dist
-src/plugins/icons_orig/

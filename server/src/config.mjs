@@ -72,14 +72,11 @@ const ATTACH_DIR = join(GEN_DIR, "attachments");
 const OUT_DIR = join(GEN_DIR, "files");
 const ASSETS_DIR = join(GEN_DIR, "assets");
 
+// The first-party plugin catalog (plugins/catalog.json, or the file
+// ROX_PLUGIN_CATALOG names): {name, owner, version, plugins:[…]}. No file
+// is an empty catalog.
 const PLUGIN_CATALOG = (() => {
-  try { return JSON.parse(readFileSync(join(SERVER_DIR, "plugins", "marketplace.json"), "utf8")); }
-  catch { return { plugins: [] }; }
-})();
-// Grok Bot's plugin catalog snapshot (tools/sync-grokbot-catalog.mjs):
-// {source, fetchedAt, plugins:[entry + key + install hints]}.
-const GROKBOT_CATALOG = (() => {
-  try { return JSON.parse(readFileSync(serverFile("plugins/grokbot-catalog.json"), "utf8")); }
+  try { return JSON.parse(readFileSync(process.env.ROX_PLUGIN_CATALOG || serverFile("plugins/catalog.json"), "utf8")) || { plugins: [] }; }
   catch { return { plugins: [] }; }
 })();
 const PLUGINS_DIR = join(DATA_DIR, "plugins");
@@ -123,5 +120,5 @@ export {
   APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, OFFICE_ROLE, PROVIDER, BASE_URL, MODEL,
   MAX_TOKENS, MOCK, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W,
   POP_H, WINDOWS_DIR, CHUNK_DIR, AVATAR_DIR, ATTACH_DIR, OUT_DIR, ASSETS_DIR,
-  PLUGIN_CATALOG, GROKBOT_CATALOG, PLUGINS_DIR, git, outFile,
+  PLUGIN_CATALOG, PLUGINS_DIR, git, outFile,
 };
