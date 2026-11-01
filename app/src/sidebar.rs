@@ -396,33 +396,6 @@ fn rail_circle(name: &'static str, label: &'static str, on: impl Fn() + 'static)
         })
 }
 
-/// `railPlate(key, 36)` — the 54-wide hover plate with a sized icon,
-/// shared by the rail's action buttons (App.tsx:1173).
-fn rail_plate(
-    name: &'static str,
-    label: &'static str,
-    icon_size: f32,
-    h: f32,
-    on: impl Fn() + 'static,
-) -> impl IntoElement {
-    let hovered = signal(false);
-    view()
-        .label(label)
-        .child(
-            view()
-                .w(px(54.0))
-                .h(px(h))
-                .rounded(px(10.0))
-                .items_center()
-                .justify_center()
-                .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
-                .child(icon_sized(name, icon_size)),
-        )
-        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
-        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-        .on_press(on)
-}
-
 /// `newMenu` (App.tsx:973) — open the add-menu below the measured
 /// button (or at the fallback corner when the measure is lost).
 fn open_add_menu(node: ElementRef) {

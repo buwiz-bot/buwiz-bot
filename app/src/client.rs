@@ -110,15 +110,6 @@ pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json:
     serde_json::from_str(&res.text()).ok()
 }
 
-/// DELETE `path`.
-pub async fn del(path: &str) -> Option<serde_json::Value> {
-    let res = fetch(req("DELETE", path)).await.ok()?;
-    if !res.ok() {
-        return None;
-    }
-    serde_json::from_str(&res.text()).ok()
-}
-
 /// Fire-and-forget POST used by mutations (rename, delete, react…).
 /// Detached: these run from press handlers that close their own layer
 /// (emoji pill, context menu) right after calling, and a task spawned

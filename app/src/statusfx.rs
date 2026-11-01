@@ -134,13 +134,6 @@ pub(crate) fn shimmer_at(
     .min_w(px(60.0))
 }
 
-/// A plain (non-animated) status line.
-pub(crate) fn status_line(label: impl Fn() -> String + 'static) -> impl IntoElement {
-    text(label)
-        .text_size(px(12.0))
-        .text_color(theme::FAINT)
-}
-
 // ---------------------------------------------------------------------------
 // `morphKind`/`FxOverlay`/`StatusAvatar`/`StatusFx` — statusfx.tsx's canvas
 // parts (the ambient `drawFx` around the mark, and the poked status blob).
