@@ -420,7 +420,7 @@ fn rail_plate(
         )
         .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-        .on_press(move || on())
+        .on_press(on)
 }
 
 /// `newMenu` (App.tsx:973) — open the add-menu below the measured
@@ -633,7 +633,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
     let a0 = a.get_untracked();
     let hovered = signal(false);
     let node = element_ref();
-    let node2 = node.clone();
+    let node2 = node;
     view()
         .element_ref(&node)
         .size(px(54.0))
@@ -651,7 +651,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
             let st = store();
             let seq = st.pop_seq.get() + 1;
             st.pop_seq.set(seq);
-            let node = node2.clone();
+            let node = node2;
             spawn(async move {
                 if let Some(m) = node.measure().await {
                     let st = store();
@@ -752,12 +752,12 @@ fn full_sidebar() -> impl IntoElement {
     // goes back to the top (once, a moment after launch).
     let list = element_ref();
     {
-        let list = list.clone();
+        let list = list;
         let done = std::cell::Cell::new(false);
         effect(move || {
             let loaded = !store().bots.with(|b| b.is_empty());
             if loaded && !done.replace(true) {
-                let list = list.clone();
+                let list = list;
                 spawn(async move {
                     timer(std::time::Duration::from_millis(120)).await;
                     list.scroll_to(Point { x: px(0.0), y: px(0.0) }, false);
@@ -1207,7 +1207,7 @@ pub(crate) fn account_pop_layer() -> impl IntoElement {
                 .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
                 .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
                 .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-                .on_press(move || on())
+                .on_press(on)
         }
         let divider = || {
             view()

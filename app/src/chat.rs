@@ -179,7 +179,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
     let left = std::rc::Rc::new(std::cell::Cell::new(None::<(i64, bool)>));
     let first = std::rc::Rc::new(std::cell::Cell::new(true));
     {
-        let list = list.clone();
+        let list = list;
         let last_scroll = last_scroll.clone();
         effect(move || {
             let on = active.get();
@@ -193,9 +193,9 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                     fade.value(MotionChannel::Opacity).set(0.0);
                     return;
                 }
-                st.chat_list.replace(Some(list.clone()));
+                st.chat_list.replace(Some(list));
                 if first.replace(false) {
-                    open_at(opening, list.clone(), shown, fade);
+                    open_at(opening, list, shown, fade);
                     return;
                 }
                 // Shown again: where it was, unless a link names a turn.
@@ -225,7 +225,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         .bind_motion(&fade)
         // Hidden chats take no input.
         .pointer_events(move || if active.get() { PointerEvents::Auto } else { PointerEvents::None })
-        .child(new_messages_pill(list.clone()))
+        .child(new_messages_pill(list))
         .child({
         let cell_chat = mine.clone();
         virtual_list(
@@ -370,7 +370,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
         .on_scroll({
             let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let mine = mine.clone();
-            let list = list.clone();
+            let list = list;
             let first_row = first_row.clone();
             let last_row = last_row.clone();
             let view_h = view_h.clone();
@@ -398,7 +398,7 @@ pub(crate) fn transcript(mine: String) -> impl IntoElement {
                 epoch.set(e);
                 let epoch = epoch.clone();
                 let (mine, list, first_row, last_scroll) =
-                    (mine.clone(), list.clone(), first_row.clone(), last_scroll.clone());
+                    (mine.clone(), list, first_row.clone(), last_scroll.clone());
                 let last_row = last_row.clone();
                 let view_h = view_h.clone();
                 spawn(async move {
@@ -526,7 +526,7 @@ fn new_messages_pill(list: ElementRef) -> impl IntoElement {
     when(
         || store().new_below.get().is_some(),
         move || {
-            let list = list.clone();
+            let list = list;
             view()
                 .absolute()
                 .left(px(0.0))
@@ -1093,7 +1093,7 @@ fn user_row(t: Turn, chat: String) -> impl IntoElement {
     // shell.tsx:425 — the row's `hover` gates the action bar; during a
     // scroll `chatScrolling` skips the writes (every write is a commit).
     let hov = signal(false);
-    let hov2 = hov.clone();
+    let hov2 = hov;
     let bar_opacity = move || {
         if hov.get() && !store().chat_scrolling.get() {
             1.0f32
@@ -1371,7 +1371,7 @@ fn agent_row(t: Turn) -> impl IntoElement {
     // shell.tsx:254 `hov` — gates the action bar's opacity; the writes are
     // skipped while `chatScrolling` (every write is a commit).
     let hov = signal(false);
-    let hov2 = hov.clone();
+    let hov2 = hov;
     let bar_opacity = move || {
         if hov.get() && !store().chat_scrolling.get() {
             1.0f32
@@ -1888,7 +1888,7 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
     // a 1.25 scale pop (120ms).
     let dot = move |e: &'static str| {
         let h = signal(false);
-        let (h1, h2, h3) = (h.clone(), h.clone(), h.clone());
+        let (h1, h2, h3) = (h, h, h);
         let e2 = e.to_owned();
         let cur = current.clone();
         let cur2 = current.clone();
@@ -1918,8 +1918,8 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
             .child(text(e).text_size(px(17.0)))
     };
     let plus_hov = signal(false);
-    let (ph1, ph2) = (plus_hov.clone(), plus_hov.clone());
-    let (grid_bg, grid_open, grid_when) = (grid.clone(), grid.clone(), grid.clone());
+    let (ph1, ph2) = (plus_hov, plus_hov);
+    let (grid_bg, grid_open, grid_when) = (grid, grid, grid);
     view()
         .gap(px(2.0))
         .px(px(6.0))
@@ -1974,7 +1974,7 @@ pub(crate) fn emoji_pill(i: i64, slot: String, current: String) -> impl IntoElem
                                     .iter()
                                     .map(|e| {
                                         let h = signal(false);
-                                        let (h1, h2) = (h.clone(), h.clone());
+                                        let (h1, h2) = (h, h);
                                         let e2 = e.to_owned();
                                         let cur = current_grid.clone();
                                         let cur2 = current_grid.clone();

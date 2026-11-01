@@ -317,7 +317,7 @@ fn market_page() -> impl IntoElement {
     // A new category starts at the top (the virtual list would otherwise
     // keep the old scroll offset).
     let body = element_ref();
-    let b2 = body.clone();
+    let b2 = body;
     effect(move || {
         let _ = store().plugin_cat.get();
         let _ = store().plugin_query.get();
@@ -375,7 +375,7 @@ fn market_page() -> impl IntoElement {
                             .flex_wrap()
                             .py(px(12.0))
                             .child(each(
-                                || visible_cats(),
+                                visible_cats,
                                 |c| c.clone(),
                                 |c, _| cat_pill(c.get()),
                             ))
@@ -1509,7 +1509,7 @@ fn sm_btn(
         .bg(move || if hov.get() { bg_hov } else { bg })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(
             text(label)
                 .number_of_lines(1)
@@ -1537,7 +1537,7 @@ fn pill_btn(
         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .when(glyph.is_some(), |v| {
             v.child(
                 view()
@@ -2105,7 +2105,7 @@ fn account_row(
         right = right.child(sm_btn(
             Btn::Secondary,
             move || if busy_here { "Opening…".to_owned() } else { verb.to_owned() },
-            move || f(),
+            f,
         ));
     }
     let show_err = a.status == "error" && !needs && !a.err.is_empty();
@@ -2317,7 +2317,7 @@ pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() 
         .rounded(px(8.0))
         .justify_center()
         .bg(move || if (on2)() { pair("#1680f3", "#1e86fc") } else { tc(0.15) })
-        .on_press(move || on_toggle())
+        .on_press(on_toggle)
         .child(
             view()
                 .size(px(12.0))
@@ -2992,7 +2992,7 @@ fn server_account(s: McpServer) -> impl IntoElement {
     };
     let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
     if let Some((verb, f)) = action {
-        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), move || f()));
+        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), f));
     }
     let show_err = s.status == "error" && !(needs && remote) && !s.err.is_empty();
     card().py(px(8.0)).child(

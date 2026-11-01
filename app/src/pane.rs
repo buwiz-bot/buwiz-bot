@@ -1370,9 +1370,9 @@ fn lib_chip(kind: &'static str, label: &'static str, n: usize, on: bool) -> impl
 fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
     let a0 = a.get();
     let n_chip = a0.app.clone();
-    let a_ctx = a.clone();
+    let a_ctx = a;
     let focus = a0.app.clone();
-    let press = a.clone();
+    let press = a;
     view()
         .child(
             view()
@@ -1400,7 +1400,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 // The square tile: an app's icon, an image's thumbnail, a
                 // file's set icon or its type tile.
                 .child({
-                    let a = a.clone();
+                    let a = a;
                     dynamic(move || crate::appdetails::artifact_tile(&a.get(), 28.0).into_element())
                 })
                 .child(
@@ -1408,7 +1408,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .flex_1()
                         .child(
                             text({
-                                let a = a.clone();
+                                let a = a;
                                 move || a.get().title
                             })
                             .text_size(px(13.0))
@@ -1417,7 +1417,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         )
                         .child(
                             text({
-                                let a = a.clone();
+                                let a = a;
                                 move || subtitle(&a.get())
                             })
                             .text_size(px(12.0))
@@ -1427,11 +1427,11 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                 )
                 .child(when(
                     {
-                        let a = a.clone();
+                        let a = a;
                         move || a.get().v > 0
                     },
                     move || {
-                        let a2 = a.clone();
+                        let a2 = a;
                         crate::versions::version_chip(n_chip.clone(), move || {
                             let a = a2.get();
                             (a.v, a.versions)

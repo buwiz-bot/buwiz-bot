@@ -942,7 +942,7 @@ pub(crate) fn prompt_layer() -> impl IntoElement {
                                     .rounded(px(7.0))
                                     .bg(theme::ACCENT)
                                     .opacity(|| if store().group_name.get().trim().is_empty() { 0.4f32 } else { 1.0 })
-                                    .on_press(move || commit()),
+                                    .on_press(commit),
                             ),
                     ),
             )
@@ -1100,7 +1100,7 @@ pub(crate) fn color_layer() -> impl IntoElement {
                                     .rounded(px(7.0))
                                     .bg(theme::ACCENT)
                                     .opacity(|| if hex_color(&store().color_draft.get()).is_some() { 1.0f32 } else { 0.4 })
-                                    .on_press(move || save()),
+                                    .on_press(save),
                             ),
                     ),
             )

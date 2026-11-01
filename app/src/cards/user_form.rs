@@ -1547,7 +1547,7 @@ fn link_btn(label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
         .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .label(label)
 }
 

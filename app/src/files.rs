@@ -1199,7 +1199,7 @@ fn round_btn(glyph: &'static str, label: &'static str, on: impl Fn() + 'static) 
                     a: 0.85,
                 }),
         )
-        .on_press(move || on())
+        .on_press(on)
 }
 
 /// The lightbox layer — mount in the root stack (lightbox.tsx `Lightbox`).
@@ -1522,7 +1522,7 @@ fn round_pill(glyph: &'static str, on: impl Fn() + 'static) -> impl IntoElement 
                     a: 0.85,
                 }),
         )
-        .on_press(move || on())
+        .on_press(on)
 }
 
 // ——————————————————— the fullscreen viewer (`FileViewer`) ———————————————————
@@ -1582,7 +1582,7 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
         })
     };
     let office_page = element_ref();
-    OFFICE_PAGE.with(|p| p.set(Some(office_page.clone())));
+    OFFICE_PAGE.with(|p| p.set(Some(office_page)));
     let place = |v: WebView| v.absolute().top(px(52.0)).left(px(0.0)).right(px(0.0)).bottom(px(0.0));
     view()
         .absolute()

@@ -5774,12 +5774,12 @@ impl Store {
     pub fn file_raw_url(path: &str) -> String {
         // a file on this Mac outside the server's (`buwiz://view`'s)
         if path.starts_with('/') {
-            let enc = path.split('/').map(|p| crate::client::urlenc(p)).collect::<Vec<_>>().join("/");
+            let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
             return format!("file://{enc}");
         }
         let enc = path
             .split('/')
-            .map(|p| crate::client::urlenc(p))
+            .map(crate::client::urlenc)
             .collect::<Vec<_>>()
             .join("/");
         format!("{}/file/raw/{enc}", crate::client::backend())

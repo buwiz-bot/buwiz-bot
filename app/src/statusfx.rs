@@ -136,7 +136,7 @@ pub(crate) fn shimmer_at(
 
 /// A plain (non-animated) status line.
 pub(crate) fn status_line(label: impl Fn() -> String + 'static) -> impl IntoElement {
-    text(move || label())
+    text(label)
         .text_size(px(12.0))
         .text_color(theme::FAINT)
 }
