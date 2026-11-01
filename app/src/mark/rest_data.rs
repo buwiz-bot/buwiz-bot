@@ -1,6 +1,5 @@
 //! `mark/rest.data.ts` — baked resting frames per picker shape, verbatim.
 
-pub(crate) const REST_W: usize = 192;
 pub(crate) const REST_N: usize = 96;
 pub(crate) const REST_EN: usize = 20;
 /// (hold, grid n) per layer — layer 0 is the rest frame.

@@ -53,7 +53,6 @@ const MT2: usize = 512;
 const HS: usize = 5;
 const YT2: f64 = -15.0 + 259.0 / 2.0;
 const ZT_M: f64 = 0.62;
-const BD: usize = 96;
 const JT3: f64 = 22.0;
 const VD: f64 = 62.0;
 const EE2: f64 = 0.84;
@@ -2639,7 +2638,6 @@ struct DeCore {
 
 struct De {
     core: DeCore,
-    is_face_visible: bool,
     zoom: f64,
     parts: Vec<Part>,
 }
@@ -2769,7 +2767,6 @@ fn de(e: &MorphSnap, t: f64, tab: &Tables) -> De {
     let _ = oo;
     De {
         core,
-        is_face_visible: o < 0.5,
         zoom: hh,
         parts: l.into_iter().filter(|j| j.opacity() > 0.0).collect(),
     }

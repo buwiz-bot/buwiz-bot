@@ -350,6 +350,7 @@ impl UserFormSpec {
     }
 
     /// Where the card is in the view: its entry id, else its call id.
+    #[cfg(test)]
     pub(crate) fn card_key(&self) -> &str {
         if !self.entry_id.is_empty() {
             &self.entry_id
@@ -366,6 +367,7 @@ impl UserFormSpec {
 
     /// Two frames of one card: the same entry id, else the same call id.
     /// Two cards that each carry their own entry id are siblings.
+    #[cfg(test)]
     pub(crate) fn same_card(&self, other: &Self) -> bool {
         if self.has_entry_id() && other.has_entry_id() {
             return self.entry_id == other.entry_id;
@@ -376,6 +378,7 @@ impl UserFormSpec {
     /// Folds a later frame of the same card onto this one: ids it lacked,
     /// a settlement, fields it adds. A field the card shows is never
     /// dropped by a narrower envelope.
+    #[cfg(test)]
     pub(crate) fn merge(&mut self, incoming: UserFormSpec) {
         if incoming.has_entry_id() {
             self.entry_id = incoming.entry_id;
@@ -455,6 +458,7 @@ impl UserFormSpec {
 }
 
 /// Folds `incoming` into the card it belongs to in `cards`, or appends it.
+#[cfg(test)]
 pub(crate) fn merge_into(cards: &mut Vec<UserFormSpec>, incoming: UserFormSpec) {
     match cards.iter_mut().find(|c| c.same_card(&incoming)) {
         Some(card) => card.merge(incoming),

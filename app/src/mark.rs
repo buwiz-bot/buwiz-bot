@@ -23,8 +23,8 @@ mod rest_data;
 
 use std::collections::HashMap;
 
-// `BodyInfo` and `STATE_GROUPS` are re-exported for the avatar/picker
-// surface that lands with the detail pane — nothing consumes them yet.
+// `BodyInfo` is re-exported for the avatar/picker surface that lands with
+// the detail pane — nothing consumes it yet.
 #[allow(unused_imports)]
 pub(crate) use bodies::BodyInfo;
 pub(crate) use paint::{
@@ -33,7 +33,7 @@ pub(crate) use paint::{
 pub(crate) use render::{uh, MarkTree, PaintOpts, UhSize};
 
 #[allow(unused_imports)]
-pub(crate) use clips::{STATE_GROUPS, STATES};
+pub(crate) use clips::STATES;
 
 pub(crate) type V2 = [f64; 2];
 pub(crate) type V3 = [f64; 3];
@@ -69,10 +69,6 @@ pub(crate) fn ts(e: f64) -> f64 {
 /// `Ye` — cubic out.
 pub(crate) fn ye(e: f64) -> f64 {
     1.0 - (1.0 - e).powi(3)
-}
-/// `Is` — back out.
-pub(crate) fn back(e: f64) -> f64 {
-    1.0 + 2.70158 * (e - 1.0).powi(3) + 1.70158 * (e - 1.0).powi(2)
 }
 /// `wb` — smoothstep.
 pub(crate) fn wb(e: f64) -> f64 {
@@ -261,10 +257,6 @@ pub(crate) struct Tables {
     pub eye_flip: [bool; 2],
     /// `oh` — the rest pose euler (degrees), `hl`'s rotation track.
     pub rest_rot: V3,
-    /// `zE` — `OM(192)`.
-    pub z_angles: Vec<f64>,
-    /// `jE` — `BM(96)`.
-    pub stations: Vec<f64>,
     /// `vE` — the pencil scribble's station trail of `{at,point}`.
     pub pencil_trail: Vec<(f64, V2)>,
     /// `dE` — the teardrop ring the pencil morph travels (`lE(Sd, 48)`).
@@ -350,9 +342,6 @@ pub(crate) fn tables() -> Tables {
     let ee = q_to_euler(sb);
     let rest_rot = [ee[0] / MN, ee[1] / MN, ee[2] / MN];
 
-    let z_angles = (0..192).map(|n| n as f64 / 192.0 * TAU).collect();
-    let stations = (0..96).map(|n| n as f64 / 96.0).collect();
-
     // `vE` — the pencil trail: sampled along `wc`'s path while the pencil
     // travels left→right (the Oo window).
     let oo = render::PS * render::PR;
@@ -377,8 +366,6 @@ pub(crate) fn tables() -> Tables {
         eye_frames,
         eye_flip,
         rest_rot,
-        z_angles,
-        stations,
         pencil_trail: trail,
         pencil_ring,
         circle_ring,
@@ -623,12 +610,6 @@ fn vn(name: &str) -> [Eye; 2] {
     }
 }
 
-fn is_expr(e: &str) -> bool {
-    matches!(
-        e,
-        "neutral" | "happy" | "surprised" | "sad" | "sleepy" | "squinted" | "calm" | "inspecting" | "confused"
-    )
-}
 /// `Db`/`Hb` — alias an expression name into the table.
 fn hb(e: &str) -> &'static str {
     let t = e.trim().to_lowercase();
@@ -1289,7 +1270,6 @@ pub(crate) fn rp(e: &str) -> u32 {
 // the effect engine — `Ix` → MorphFx
 // ---------------------------------------------------------------------------
 
-const TX: u32 = 2654435769;
 const SX: f64 = std::f64::consts::PI;
 const MX: f64 = 0.1;
 const AX: f64 = 1.5;
@@ -1842,14 +1822,12 @@ struct BodyBlend {
 
 /// The mark frame — `frame()`'s output, `Uh`'s input.
 pub(crate) struct Frame {
-    pub body: &'static str,
     pub quat: V4,
     pub zoom: f64,
     pub offset: V2,
     pub squash: V2,
     pub squash_anchor: f64,
     pub eyes: Option<[Eye; 2]>,
-    pub inspect_weight: f64,
     pub bodies: Vec<BodyBlend2>,
     pub morph: Option<MorphSnap>,
     /// `On*t/2/x` resolved by the renderer — not part of the JS frame; kept
@@ -2324,10 +2302,6 @@ impl Mark {
             self.load_now(d);
         }
     }
-    pub(crate) fn play(&mut self) {
-        self.v = false;
-        self.playing = true;
-    }
     #[allow(dead_code)]
     pub(crate) fn pause(&mut self) {
         self.v = true;
@@ -2484,14 +2458,12 @@ impl Mark {
         let pe = |ue: usize| he[ue] + (t[ue] - he[ue]) * x;
         let ge = pe(1);
         Frame {
-            body: self.r,
             quat: ib(pe(0) * MN, (ge + ie) * MN, pe(2) * MN),
             zoom: self.h,
             offset: if x == 1.0 { c } else { [c[0] * x, c[1] * x] },
             squash: if x == 1.0 { d } else { [1.0 + (d[0] - 1.0) * x, 1.0 + (d[1] - 1.0) * x] },
             squash_anchor: self.f,
             eyes: if v.amount >= KX { None } else { Some(self.be(ge, u)) },
-            inspect_weight: u,
             bodies: self.bodies(),
             morph: if v.kind.is_none() && v.is_settled { None } else { Some(v) },
             _p: (),
@@ -2643,9 +2615,6 @@ impl Director {
         if !self.i_resting {
             self.load_next(mark, first_phase);
         }
-    }
-    pub(crate) fn state(&self) -> &'static str {
-        self.u
     }
     #[allow(dead_code)]
     pub(crate) fn clip(&self) -> Option<&'static str> {

@@ -15,12 +15,6 @@ use crate::theme;
 
 use crate::theme::tc;
 
-const WHITE85: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 1.0,
-    a: 0.85,
-};
 const LIGHT_BG: Hsla = Hsla {
     h: 0.0,
     s: 0.0,

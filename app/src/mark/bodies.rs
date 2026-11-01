@@ -1872,7 +1872,6 @@ fn lc(e: &Eye) -> bool {
 /// `Ml` — an eye's placement summary for the oval path.
 struct Ml {
     on: bool,
-    oval: bool,
     width: f64,
     height: f64,
     tilt: f64,
@@ -1882,7 +1881,6 @@ struct Ml {
 
 const VL: Ml = Ml {
     on: false,
-    oval: false,
     width: 0.0,
     height: 0.0,
     tilt: 0.0,
@@ -1905,7 +1903,6 @@ fn ml(e: &Eye) -> Ml {
     if t {
         return Ml {
             on: true,
-            oval: true,
             width: 2.0 * e.oval[0],
             height: 2.0 * e.oval[1] * n,
             tilt: r,
@@ -1917,8 +1914,7 @@ fn ml(e: &Eye) -> Ml {
     if o.len() < 2 {
         return Ml {
             on: false,
-            oval: false,
-            width: 0.0,
+                    width: 0.0,
             height: 0.0,
             tilt: 0.0,
             cx: e.off[0],
@@ -1933,7 +1929,6 @@ fn ml(e: &Eye) -> Ml {
     let l = 2.0 * e.wid;
     Ml {
         on: true,
-        oval: false,
         width: l,
         height: (u + l) * n,
         tilt: a.atan2(c) * (180.0 / std::f64::consts::PI) + r,
