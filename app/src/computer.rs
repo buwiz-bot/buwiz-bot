@@ -339,7 +339,7 @@ thread_local! {
 }
 
 fn pane_signal() -> Signal<Pane> {
-    PANE.with(|s| s.clone())
+    PANE.with(|s| *s)
 }
 
 /// The pane's state for `bot`, starting over when the bot changed.
@@ -777,7 +777,7 @@ fn seg(id: &str, label: &str, on: bool, press: impl Fn() + 'static) -> impl Into
         .bg(move || if on { theme::TEXT } else if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || press())
+        .on_press(press)
         .child(text(label.to_owned()).text_size(px(12.0)).text_color(if on { theme::MAIN } else { theme::TEXT }))
 }
 
