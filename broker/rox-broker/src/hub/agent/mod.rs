@@ -14,6 +14,7 @@ pub mod files;
 pub mod generate;
 pub mod placeholders;
 pub mod slash_mock;
+pub mod tool_log;
 pub mod turn;
 pub mod user_content;
 
