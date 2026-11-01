@@ -10,6 +10,8 @@
 # first (`rm`, then
 # `cp target/debug/rox ~/Applications/Buwiz\ Bot.app/Contents/MacOS/buwiz-bot-bin`).
 #
+# Its icon is app/resources/AppIcon.icns, the Buwiz logo.
+#
 # It also packages the broker Rox starts when none answers (plan 7.2) into
 # Contents/Resources/broker/: rox-broker (a release build with
 # RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one) and the static files it
@@ -91,6 +93,9 @@ cp "$OFFICE_FONTS"/assets/*.ttf "$APP/Contents/Resources/fonts/office/"
 cp "$OFFICE_FONTS"/LICENSES/* "$APP/Contents/Resources/fonts/office/LICENSES/"
 cp "$OFFICE_FONTS/LICENSE" "$APP/Contents/Resources/fonts/office/LICENSE"
 
+# The Buwiz logo (app/resources/README.md)
+cp "$ROOT/app/resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -104,6 +109,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>Buwiz Bot</string>
   <key>CFBundleExecutable</key>
   <string>buwiz-bot</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>

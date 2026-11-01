@@ -5,18 +5,82 @@
 # back) and the visible workspace never changes. Prints the pid; drive it
 # with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
 # never lists its window within 30 seconds.
-#   scripts/test-rox <rox binary> <instance dir> <agent port> [VAR=value ...]
+#   scripts/test-rox [--name <name>] <rox binary> <instance dir> <agent port> [VAR=value ...]
+#   scripts/test-rox --bundle-only [--name <name>] <rox binary> <instance dir>
+#     (makes the test bundle below, prints its path, starts nothing)
 # e.g. ROX_BACKEND=http://127.0.0.1:8798 ROX_HOST_TOKEN_FILE=<data>/host-token
+#
+# It runs as a test bundle of its own, never as Buwiz Bot: the binary is
+# copied into "<instance dir>/Buwiz Bot test-<name>.app" as
+# Contents/MacOS/buwiz-bot-test-<name> (id dev.buwiz.bot.test-<name>, the
+# icon with the orange TEST band, signed ad hoc) and started from there, so
+# the Dock, the app switcher and the window say "Buwiz Bot test-<name>".
+# <name> (letters, digits, -) defaults to the instance dir's name. The copy
+# is refreshed when the binary changes.
 set -e
-BIN="$1"; R="$2"; PORT="$3"; shift 3
+NAME=""
+ONLY=""
+if [ "$1" = --bundle-only ]; then ONLY=1; shift; fi
+if [ "$1" = --name ]; then NAME="$2"; shift 2; fi
+BIN="$1"; R="$2"
+if [ -n "$ONLY" ]; then shift 2; else PORT="$3"; shift 3; fi
 mkdir -p "$R/data" "$R/tmp"
+R="$(cd "$R" && pwd)"
+if [ -z "$NAME" ]; then
+  NAME="$(basename "$R" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//')"
+fi
+case "$NAME" in
+  ""|*[!A-Za-z0-9-]*) echo "test-rox: the name must be letters, digits and -: '$NAME'" >&2; exit 2 ;;
+esac
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TITLE="Buwiz Bot test-$NAME"
+EXE="buwiz-bot-test-$NAME"
+APP="$R/$TITLE.app"
+VERSION="$(awk -F'"' '/^\[/{s=$0} s=="[package]" && /^version *=/{print $2; exit}' "$ROOT/app/Cargo.toml")"
+STAMP="$(stat -f '%m %z %i' "$BIN") $BIN $NAME"
+if [ ! -x "$APP/Contents/MacOS/$EXE" ] || [ "$(cat "$R/bundle-stamp" 2>/dev/null)" != "$STAMP" ]; then
+  # from scratch: a copy over a binary keeps its old signature
+  rm -rf "$APP"
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  cp "$BIN" "$APP/Contents/MacOS/$EXE"
+  cp "$ROOT/app/resources/AppIcon-test.icns" "$APP/Contents/Resources/AppIcon.icns"
+  cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.buwiz.bot.test-$NAME</string>
+  <key>CFBundleName</key>
+  <string>$TITLE</string>
+  <key>CFBundleDisplayName</key>
+  <string>$TITLE</string>
+  <key>CFBundleExecutable</key>
+  <string>$EXE</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>$VERSION</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$VERSION</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+  codesign --force -s - "$APP" >/dev/null 2>&1 || { echo "test-rox: could not sign $APP" >&2; exit 1; }
+  echo "$STAMP" > "$R/bundle-stamp"
+fi
+[ -n "$ONLY" ] && { echo "$APP"; exit 0; }
 umask 077
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
 env TMPDIR="$R/tmp/" ROX_DATA_DIR="$R/data" ROX_BACKGROUND=1 GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/token")" "$@" \
-  nohup "$BIN" > "$R/rox.log" 2>&1 < /dev/null &
+  nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
 echo "$P" > "$R/pid"
 for _ in $(seq 1 120); do
