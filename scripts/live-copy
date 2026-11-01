@@ -12,7 +12,12 @@
 # The copy holds your chats: keep it out of any repo (refused here).
 set -euo pipefail
 DEST="${1:?usage: scripts/live-copy <dir>}"
-SRC="${SRC:-$HOME/Library/Application Support/Grok Shell}"
+# the broker's folder, or Grok Shell, its old name, while it was not moved
+if [ -z "${SRC:-}" ]; then
+  SRC="$HOME/Library/Application Support/Buwiz Broker"
+  OLD_SRC="$HOME/Library/Application Support/Grok Shell"
+  if [ ! -e "$SRC" ] && [ -d "$OLD_SRC" ]; then SRC="$OLD_SRC"; fi
+fi
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 [ -f "$SRC/generated/app.db" ] || { echo "no app.db under $SRC" >&2; exit 1; }

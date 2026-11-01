@@ -78,9 +78,10 @@ They are in the broker's database, which this wizard does not open:
   <data dir>/generated/app.db, table v1_plugins, column env (a JSON
   object), row id 'app.buwiz.google-workspace', or
   'dev.goldcoders.google-workspace' for an install from before protocol 2.0
-where <data dir> is the broker's (~/Library/Application Support/Grok Shell
-on this Mac). They hold your OAuth client settings: copy them yourself,
-and don't paste them into chats or logs. Pin the upstream while you are
+where <data dir> is the broker's (~/Library/Application Support/Buwiz
+Broker on this Mac, Grok Shell before it moved). They hold your OAuth
+client settings: copy them yourself, and don't paste them into chats or
+logs. Pin the upstream while you are
 there: in GWS_UPSTREAM's args, "workspace-mcp" becomes "workspace-mcp==2.2.1".
 
 The review shows app.buwiz.google-workspace with two read-only tools,
