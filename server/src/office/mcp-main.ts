@@ -23,7 +23,7 @@ async function main() {
     },
   });
   if (values.help) {
-    process.stderr.write("Usage: office-mcp [--root <directory>] [--read-only]\n\ngrok-shell's bundled BetterOffice stdio MCP server for DOCX, XLSX, and PPTX create/read/edit/export.\n");
+    process.stderr.write("Usage: office-mcp [--root <directory>] [--read-only]\n\nBuwiz Bot's bundled BetterOffice stdio MCP server for DOCX, XLSX, and PPTX create/read/edit/export.\n");
     return;
   }
   // Rendering needs @napi-rs/canvas and @betteroffice/fonts; when they are

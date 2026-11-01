@@ -28,7 +28,7 @@ export function brokerCommand() {
   return [bin === "node" ? process.execPath : bin, args];
 }
 
-/** Whether the tests run through rox-broker with its hub on
+/** Whether the tests run through buwiz-broker with its hub on
  *  (BUWIZ_BROKER_HUB=1, plan D30): the brain answers in Rust, and Node runs
  *  only its office role. A case that tests Node's own brain is skipped
  *  then (`{ skip: HUB && "Node-only: …" }`), as a Rust-only case is

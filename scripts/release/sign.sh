@@ -3,7 +3,7 @@
 # loose Mach-O (the broker, nsh, nsh-macos-host, buwiz-gws, anything under
 # Resources/), deepest first; then any nested bundle (frameworks, plugins,
 # helper apps), deepest first; then the app. Only the app's executable and
-# rox-broker get app.entitlements; the rest are signed with none.
+# buwiz-broker get app.entitlements; the rest are signed with none.
 #
 #   scripts/release/sign.sh [identity] [<bundle>.app]
 #
@@ -24,7 +24,7 @@ EXE="$APP/Contents/MacOS/$(plist_get "$PLIST" CFBundleExecutable)"
 [ -n "$BUNDLE_ID" ] && [ -f "$EXE" ] || die "$PLIST names no bundle id or no executable that exists"
 ENTITLEMENTS="$(dirname "$0")/app.entitlements"
 # the broker spawns osascript on the app's behalf (app/src/broker.rs places it)
-ENTITLED=("$APP/Contents/Resources/broker/rox-broker")
+ENTITLED=("$APP/Contents/Resources/broker/buwiz-broker")
 
 FLAGS=(--force --options runtime --sign "$ID")
 if [ "$ID" = - ]; then

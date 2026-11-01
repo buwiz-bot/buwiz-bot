@@ -129,7 +129,7 @@ pub(crate) async fn answer_run(run_id: &str, call_id: &str, approved: bool) -> S
 /// This Mac's id for its local-exec rules: `BUWIZ_MACHINE_ID`, until Rox
 /// enrols a daemon of its own.
 pub(crate) fn machine_id() -> String {
-    rox_v1::env::var("BUWIZ_MACHINE_ID").unwrap_or_default()
+    buwiz_protocol::env::var("BUWIZ_MACHINE_ID").unwrap_or_default()
 }
 
 /// `POST /local-exec/policy/rule {machineId, kind: allow|deny, pattern}`.
@@ -212,7 +212,7 @@ async fn user_form_send(path: &str, body: Value) -> UserFormReply {
 /// The card's sentence when a saved login stayed in the app.
 pub(crate) const UNPROVEN: &str = "Buwiz Bot couldn't verify its broker, so the saved login wasn't sent.";
 
-/// The broker's proof route (`rox-broker` `hub/routes/host.rs`): no token
+/// The broker's proof route (`buwiz-broker` `hub/routes/host.rs`): no token
 /// on the request, an HMAC of the nonce under the token in the answer.
 pub(crate) const PROVE_PATH: &str = "/v1/host/prove";
 
@@ -224,7 +224,7 @@ const SUBMIT_PATH: &str = "/ag-ui/user-form/submit";
 /// token in the 0600 file. Otherwise nothing leaves the app and the card
 /// says why. Values the person typed go by [`submit_user_form`].
 pub(crate) async fn submit_saved_login(body: Value) -> UserFormReply {
-    let nonce = rox_v1::keys::b64(&rox_v1::keys::random::<32>());
+    let nonce = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
     let reply = send_proven(client::host_token(), &nonce, body, |path, body, token| async move {
         call_as("POST", path, Some(&body), token.as_deref()).await
     })
@@ -253,7 +253,7 @@ where
         Some((200, reply)) => reply
             .get("proof")
             .and_then(Value::as_str)
-            .is_some_and(|proof| rox_v1::proof::proof_matches(&token, nonce, proof)),
+            .is_some_and(|proof| buwiz_protocol::proof::proof_matches(&token, nonce, proof)),
         Some((status, _)) => {
             log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; a saved login was not sent");
             false
@@ -354,7 +354,7 @@ mod tests {
     /// the token, never a body.
     fn run(token: Option<&str>, prove: impl Fn(&str) -> Option<(u16, Value)>) -> (UserFormReply, Vec<(String, Option<String>)>) {
         let seen = RefCell::new(Vec::new());
-        let nonce = rox_v1::keys::b64(&[9u8; 32]);
+        let nonce = buwiz_protocol::keys::b64(&[9u8; 32]);
         let body = submit_body("e_1", "cw_1", serde_json::Map::from_iter([("password".to_owned(), json!("s3cret"))]), Some("sl_1"), None);
         let reply = ready(send_proven(token.map(str::to_owned), &nonce, body, |path, body, token| {
             seen.borrow_mut().push((path.to_owned(), token));
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_saved_login_goes_with_the_token_to_a_broker_that_proves_it_holds_it() {
-        let (reply, seen) = run(Some("tok"), |n| Some((200, json!({ "ok": true, "proof": rox_v1::proof::broker_proof("tok", n) }))));
+        let (reply, seen) = run(Some("tok"), |n| Some((200, json!({ "ok": true, "proof": buwiz_protocol::proof::broker_proof("tok", n) }))));
         assert!(matches!(reply, UserFormReply::Settled(_)), "{reply:?}");
         assert_eq!(seen, [(PROVE_PATH.to_owned(), None), (SUBMIT_PATH.to_owned(), Some("tok".to_owned()))], "no token on the proof");
     }
@@ -383,10 +383,10 @@ mod tests {
         // a proof under another token, a wrong-shaped one, Node's 401, a 404, no server
         type Answer = Box<dyn Fn(&str) -> Option<(u16, Value)>>;
         let answers: Vec<Answer> = vec![
-            Box::new(|n| Some((200, json!({ "proof": rox_v1::proof::broker_proof("other", n) })))),
+            Box::new(|n| Some((200, json!({ "proof": buwiz_protocol::proof::broker_proof("other", n) })))),
             Box::new(|_| Some((200, json!({ "proof": 42 })))),
             Box::new(|_| Some((200, json!({ "formResolution": "submitted" })))),
-            Box::new(|n| Some((401, json!({ "proof": rox_v1::proof::broker_proof("tok", n) })))),
+            Box::new(|n| Some((401, json!({ "proof": buwiz_protocol::proof::broker_proof("tok", n) })))),
             Box::new(|_| Some((404, json!("no")))),
             Box::new(|_| None),
         ];

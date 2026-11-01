@@ -110,7 +110,7 @@ pub(crate) fn is_word(name: &str) -> bool {
 /// `BUWIZ_HOST_TOKEN_FILE`).
 fn files_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let token = crate::client::host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home);
+    let token = crate::client::host_token_path(buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home);
     Some(token.parent()?.join("generated/files"))
 }
 

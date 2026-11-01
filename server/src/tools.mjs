@@ -861,7 +861,7 @@ export async function toolFetchUrl(input) {
   const r = await fetch(url, {
     signal: AbortSignal.timeout(20000),
     redirect: "follow",
-    headers: { "user-agent": "Mozilla/5.0 (grok-shell)" },
+    headers: { "user-agent": "Mozilla/5.0 (buwiz-bot)" },
   });
 
   if (!r.ok) return { content: `fetch failed: ${r.status}`, is_error: true };
@@ -910,7 +910,7 @@ export function toolShell(input) {
 export async function toolQuerySource(input) {
   const src = String(input.source || "");
 
-  // this broker's own front door (rox-broker's when it runs Node), never a
+  // this broker's own front door (buwiz-broker's when it runs Node), never a
   // fixed 8787: a test or rehearsal broker must not reach the live one
   const url =
     src === "linear"
@@ -934,7 +934,7 @@ export async function toolWebSearch(input) {
 
   const r = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
     signal: AbortSignal.timeout(20000),
-    headers: { "user-agent": "Mozilla/5.0 (grok-shell)" },
+    headers: { "user-agent": "Mozilla/5.0 (buwiz-bot)" },
   });
 
   if (!r.ok) return { content: `search failed: ${r.status}`, is_error: true };

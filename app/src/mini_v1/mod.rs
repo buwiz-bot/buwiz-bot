@@ -30,7 +30,7 @@
 pub mod bridge;
 pub mod cache;
 // JCS, keys and the composer's tokens: shared with the broker
-pub use rox_v1::{jcs, keys, tokens};
+pub use buwiz_protocol::{jcs, keys, tokens};
 pub mod cards;
 pub mod connect;
 pub mod consent;

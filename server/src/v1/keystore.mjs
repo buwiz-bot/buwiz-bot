@@ -119,7 +119,7 @@ export async function moveKeys(old, store, ids) {
 }
 
 // Rox's plugin keys (`ids`, the installed plugins) moved to the new service
-// once: `marker` (beside app.db, shared with rox-broker) says it is done,
+// once: `marker` (beside app.db, shared with buwiz-broker) says it is done,
 // and a failure writes none, so the next start tries again. A file store
 // has nothing to move.
 export async function moveFromRox(store, ids, marker) {
@@ -131,7 +131,7 @@ export async function moveFromRox(store, ids, marker) {
   return n;
 }
 
-// rox-broker's name for the marker (helper/keystore.rs MOVED_MARKER)
+// buwiz-broker's name for the marker (helper/keystore.rs MOVED_MARKER)
 export const MOVED_MARKER = ".plugin-keys-moved-from-rox";
 
 /** The keystore BUWIZ_KEYSTORE names (`file:<dir>`), else the Keychain. */

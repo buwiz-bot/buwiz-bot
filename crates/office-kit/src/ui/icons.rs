@@ -146,7 +146,7 @@ pub fn has(name: &str) -> bool {
 /// The font file's bytes: in the app bundle beside the executable
 /// (`Contents/Resources/fonts/`), else in the dev bundle
 /// (`~/Applications/Buwiz Bot.app`, then `Rox.app`, for a bare
-/// `target/debug/rox`). `None` without either: the icons draw nothing.
+/// `target/debug/buwiz-bot`). `None` without either: the icons draw nothing.
 pub fn font_data() -> Option<Vec<u8>> {
     let dirs = crate::bundle::resources("fonts");
     let found = dirs.iter().find_map(|d| std::fs::read(d.join(FILE)).ok());

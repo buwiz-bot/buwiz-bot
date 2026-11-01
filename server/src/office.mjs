@@ -236,7 +236,7 @@ export async function ensureOfficeMcp(root) {
         : ["--experimental-transform-types", MCP_MAIN, "--root", root],
       stderr: "pipe",
     });
-    const client = new Client({ name: "grok-shell", version: "1.0.0" });
+    const client = new Client({ name: "buwiz-bot", version: "1.0.0" });
     transport.stderr?.on("data", (d) => {
       const line = String(d).trim();
       if (line && !line.startsWith("(node:") && !line.includes("ExperimentalWarning")) console.error(`  office-mcp: ${line}`);

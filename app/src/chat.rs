@@ -2287,7 +2287,7 @@ mod tests {
 
     /// Native views per transcript row, as the engine mounts them headless:
     /// the 24-file `/mock files` reply, a plain reply, a user message and
-    /// one card of each kind (`cargo test -p rox views_per_row --
+    /// one card of each kind (`cargo test -p buwiz-bot views_per_row --
     /// --nocapture` prints them).
     mod views {
         use std::collections::HashMap;

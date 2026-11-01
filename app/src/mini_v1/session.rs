@@ -362,7 +362,7 @@ pub fn listen_for_generations() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         std::thread::Builder::new()
-            .name("rox-broker-events".to_owned())
+            .name("buwiz-broker-events".to_owned())
             .spawn(|| {
                 let broker = host_api::HttpBroker::configured();
                 loop {

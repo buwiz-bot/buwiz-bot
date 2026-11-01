@@ -10,7 +10,7 @@ const attempts = new Map(); // id -> Promise<{client,tools,err}>
 const recs = new Map(); // id -> settled {client,tools,err}
 
 export function statusOf(id) {
-  // rox-broker's status, the one its /mcp routes show (plan 4.3)
+  // buwiz-broker's status, the one its /mcp routes show (plan 4.3)
   if (mcpOnLine) return lineStatus(id);
   const r = recs.get(id);
   if (!r) return { status: "idle", tools: 0 };
@@ -57,7 +57,7 @@ import { PUBLIC_PORT } from "./config.mjs";
 import { isName } from "./grammar.mjs";
 import { lineAuthBegin, lineAuthFinish, lineConnect, lineStatus, mcpOnLine, onLineDrop } from "./mcp-line.mjs";
 
-// rox-broker dropped a server's client (switched off, deleted, signed in
+// buwiz-broker dropped a server's client (switched off, deleted, signed in
 // there): forget ours, so the next use connects again
 onLineDrop((id) => {
   attempts.delete(id);
@@ -109,7 +109,7 @@ export function handleOAuthCallback(req, res) {
     res.setHeader("content-type", "text/html");
     const code = u.searchParams.get("code");
     const errTxt = u.searchParams.get("error");
-    // rox-broker holds the flow (plan 4.2): it checks and finishes it
+    // buwiz-broker holds the flow (plan 4.2): it checks and finishes it
     if (mcpOnLine) {
       lineAuthFinish(id, { code, state: u.searchParams.get("state"), error: errTxt }).then(({ result, error }) => {
         if (result === "connected") authHooks?.done(id);
@@ -262,7 +262,7 @@ export async function beginAuth(row, { open = true } = {}) {
 async function connect(row) {
   const rec = { client: null, tools: [], err: null };
   try {
-    // rox-broker hosts the servers, stdio and remote (plan 4.1, 4.2): its
+    // buwiz-broker hosts the servers, stdio and remote (plan 4.1, 4.2): its
     // client, over the line
     if (mcpOnLine) {
       const { client, tools, needsAuth } = await lineConnect(row.id);
@@ -295,7 +295,7 @@ async function connect(row) {
         const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
         transport = new StreamableHTTPClientTransport(new URL(row.url), opts);
       }
-      const client = new Client({ name: "grok-shell", version: "1.0.0" });
+      const client = new Client({ name: "buwiz-bot", version: "1.0.0" });
       await client.connect(transport);
       const { tools } = await client.listTools();
       rec.client = client;
@@ -317,7 +317,7 @@ async function connect(row) {
       env: { ...process.env, PATH: toolPath(), ...JSON.parse(row.env || "{}") },
       stderr: "pipe",
     });
-    const client = new Client({ name: "grok-shell", version: "1.0.0" });
+    const client = new Client({ name: "buwiz-bot", version: "1.0.0" });
     transport.stderr?.on("data", (d) => {
       const line = String(d).trim();
       if (
