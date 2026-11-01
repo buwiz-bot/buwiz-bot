@@ -170,9 +170,21 @@ pub struct AppInstallNotice {
     /// Installed plugins whose settings have every `needs_env` key:
     /// (id, title).
     pub env_from: Vec<(String, String)>,
+    /// A 2.1 package's skills (names) and accounts; empty for 2.0.
+    pub skills: Vec<String>,
+    pub accounts: Vec<InstallAccount>,
     pub text: String,
     /// `pending`, `installed` or `declined`.
     pub state: String,
+}
+
+/// An account a 2.1 package declares, as its install card names it.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct InstallAccount {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+    pub required: bool,
 }
 
 fn notice_state(v: &serde_json::Value) -> String {
@@ -206,6 +218,17 @@ impl AppInstallNotice {
                 .filter(|e| !e.key.is_empty())
                 .collect(),
             env_from: list(v, "env_from").iter().map(|e| (s(e, "id"), s(e, "title"))).filter(|(i, _)| !i.is_empty()).collect(),
+            skills: list(v, "skills").iter().filter_map(|k| k.as_str().map(str::to_owned)).filter(|k| !k.is_empty()).collect(),
+            accounts: list(v, "accounts")
+                .iter()
+                .map(|a| InstallAccount {
+                    id: s(a, "id"),
+                    provider: s(a, "provider"),
+                    label: s(a, "label"),
+                    required: a.get("required").and_then(|x| x.as_bool()).unwrap_or(false),
+                })
+                .filter(|a| !a.id.is_empty())
+                .collect(),
             text,
             state: notice_state(v),
         })
@@ -219,6 +242,28 @@ impl AppInstallNotice {
             "declined" => Some("Not installed"),
             _ => None,
         }
+    }
+
+    /// "Skills: a, b" (None without skills).
+    pub fn skills_line(&self) -> Option<String> {
+        (!self.skills.is_empty()).then(|| format!("Skills: {}", self.skills.join(", ")))
+    }
+
+    /// "Accounts: Google account (sign in after install)": a required one
+    /// is offered after the install, the rest are optional.
+    pub fn accounts_line(&self) -> Option<String> {
+        if self.accounts.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = self
+            .accounts
+            .iter()
+            .map(|a| {
+                let name = if a.label.is_empty() { &a.id } else { &a.label };
+                format!("{name} ({})", if a.required { "sign in after install" } else { "optional" })
+            })
+            .collect();
+        Some(format!("Accounts: {}", names.join(", ")))
     }
 
     /// The installed plugin whose settings Install copies: `picked` is
@@ -267,6 +312,61 @@ impl AppUninstallNotice {
         match local.unwrap_or(&self.state) {
             "uninstalled" => Some("Uninstalled"),
             "cancelled" => Some("Not uninstalled"),
+            _ => None,
+        }
+    }
+}
+
+/// A `notice` turn the broker posts when a tool needs a missing account
+/// (`account_required`): Sign in or Not now; once that account is
+/// connected, a quiet line.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AccountRequiredNotice {
+    pub plugin: String,
+    /// The plugin's title.
+    pub title: String,
+    pub account: String,
+    /// The manifest's account label ("Google account").
+    pub label: String,
+    pub provider: String,
+    pub text: String,
+    /// `pending` or `declined`.
+    pub state: String,
+}
+
+impl AccountRequiredNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "account_required" || s(v, "plugin").is_empty() || s(v, "account").is_empty() {
+            return None;
+        }
+        Some(Self {
+            plugin: s(v, "plugin"),
+            title: s(v, "title"),
+            account: s(v, "account"),
+            label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| s(v, "account")),
+            provider: s(v, "provider"),
+            text,
+            state: notice_state(v),
+        })
+    }
+
+    /// "Sign in to Google account to use Google Workspace".
+    pub fn question(&self) -> String {
+        if self.title.is_empty() {
+            format!("Sign in to {}", self.label)
+        } else {
+            format!("Sign in to {} to use {}", self.label, self.title)
+        }
+    }
+
+    /// The quiet line it becomes, None while it asks: `connected` is the
+    /// plugin list's word on that account, `local` the answer here.
+    pub fn answered(&self, local: Option<&str>, connected: bool) -> Option<String> {
+        if connected {
+            return Some(format!("{} · Connected", self.label));
+        }
+        match local.unwrap_or(&self.state) {
+            "declined" => Some(format!("{} · Not signed in", self.label)),
             _ => None,
         }
     }
@@ -773,6 +873,8 @@ pub struct Turn {
     pub app_install: Option<AppInstallNotice>,
     /// A `notice` turn asking to uninstall a mini app.
     pub app_uninstall: Option<AppUninstallNotice>,
+    /// A `notice` turn asking to sign in to a mini app's account.
+    pub account_required: Option<AccountRequiredNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -1882,6 +1984,7 @@ impl Turn {
             consent: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ConsentNotice::of(n, s(v, "text")))).flatten(),
             app_install: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppInstallNotice::of(n, s(v, "text")))).flatten(),
             app_uninstall: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppUninstallNotice::of(n, s(v, "text")))).flatten(),
+            account_required: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AccountRequiredNotice::of(n, s(v, "text")))).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -7766,6 +7869,46 @@ mod tests {
         assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "app_uninstall", "title": "X"}})).app_uninstall.is_none());
         // a user turn carrying one is no card
         assert!(Turn::of(&serde_json::json!({"role": "user", "notice": install_notice(serde_json::json!({}))["notice"]})).app_install.is_none());
+    }
+
+    #[test]
+    fn a_2_1_install_card_names_its_skills_and_accounts() {
+        use super::Turn;
+        let old = Turn::of(&install_notice(serde_json::json!({}))).app_install.unwrap();
+        assert_eq!((old.skills_line(), old.accounts_line()), (None, None), "a 2.0 notice has neither");
+        let n = Turn::of(&install_notice(serde_json::json!({
+            "skills": ["triage-inbox", "draft-reply"],
+            "accounts": [{"id": "google", "provider": "google", "label": "Google account", "required": true},
+                {"id": "drive", "provider": "oauth:https://auth.example.com", "label": "Drive", "required": false}],
+        })))
+        .app_install
+        .unwrap();
+        assert_eq!(n.skills_line().as_deref(), Some("Skills: triage-inbox, draft-reply"));
+        assert_eq!(n.accounts_line().as_deref(), Some("Accounts: Google account (sign in after install), Drive (optional)"));
+        assert_eq!(n.accounts[1].provider, "oauth:https://auth.example.com");
+    }
+
+    #[test]
+    fn an_account_required_notice_asks_until_declined_or_connected() {
+        use super::Turn;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Sign in to Google account",
+            "notice": {"kind": "account_required", "plugin": "app.buwiz.google-workspace", "title": "Google Workspace",
+                "account": "google", "label": "Google account", "provider": "google", "state": "pending"}}));
+        assert!(t.app_install.is_none() && t.consent.is_none() && t.notice.is_none());
+        let n = t.account_required.expect("a sign-in card");
+        assert_eq!((n.plugin.as_str(), n.account.as_str(), n.provider.as_str()), ("app.buwiz.google-workspace", "google", "google"));
+        assert_eq!(n.question(), "Sign in to Google account to use Google Workspace");
+        assert_eq!(n.answered(None, false), None, "it asks");
+        assert_eq!(n.answered(Some("declined"), false).as_deref(), Some("Google account · Not signed in"), "Not now, before the chat reloads");
+        assert_eq!(n.answered(None, true).as_deref(), Some("Google account · Connected"), "signed in from the card or the page");
+        assert_eq!(n.answered(Some("declined"), true).as_deref(), Some("Google account · Connected"));
+        let settled = super::AccountRequiredNotice { state: "declined".into(), ..n.clone() };
+        assert_eq!(settled.answered(None, false).as_deref(), Some("Google account · Not signed in"));
+        for bad in [serde_json::json!({"kind": "account_required", "account": "google"}), serde_json::json!({"kind": "account_required", "plugin": "x.y.z"})] {
+            assert!(Turn::of(&serde_json::json!({"role": "notice", "notice": bad})).account_required.is_none());
+        }
+        let no_label = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google"}}));
+        assert_eq!(no_label.account_required.unwrap().question(), "Sign in to google");
     }
 
     #[test]

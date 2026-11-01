@@ -1483,7 +1483,7 @@ fn sm_btn(
     kind: Btn,
     label: impl Fn() -> String + 'static,
     on: impl Fn() + 'static,
-) -> impl IntoElement {
+) -> View {
     let hov = signal(false);
     let (bg, bg_hov, ink) = match kind {
         Btn::Secondary => (tc(0.06), tc(0.10), theme::TEXT),
@@ -3416,6 +3416,7 @@ fn v1_plugin_page() -> impl IntoElement {
                 }
                 page = page.child(apps);
             }
+            page = page.child(v1_accounts_section(p.id.clone()));
             if !p.tools.is_empty() {
                 let mut tools = card().child(sec_label(format!("Tools {} of {} on", p.tools.iter().filter(|t| !t.disabled).count(), p.tools.len())));
                 for t in p.tools.clone() {
@@ -3438,6 +3439,13 @@ fn v1_plugin_page() -> impl IntoElement {
                     );
                 }
                 page = page.child(tools);
+            }
+            if !p.skills.is_empty() {
+                let mut skills = card().child(sec_label("Skills")).pb(px(4.0));
+                for k in &p.skills {
+                    skills = skills.child(glyph_row("gb-cube", k.name.clone(), k.description.clone()));
+                }
+                page = page.child(skills);
             }
             if !p.routines.is_empty() {
                 let mut routines = card().child(sec_label("Routines"));
@@ -3478,6 +3486,226 @@ fn v1_plugin_page() -> impl IntoElement {
             }
             page.into_element()
         })))
+}
+
+/// The tile of an account's provider: `google`, or an `oauth:` issuer's host.
+fn provider_name(provider: &str) -> String {
+    match provider.strip_prefix("oauth:") {
+        Some(url) => url.rsplit("://").next().unwrap_or(url).split(['/', ':']).next().unwrap_or(url).to_owned(),
+        None => provider.to_owned(),
+    }
+}
+
+/// A 2.1 mini app's Accounts (spec 2.1 §4), as a plugin's: a card per
+/// declared account, a row per signed-in label, then "Add another".
+fn v1_accounts_section(plugin: String) -> impl IntoElement {
+    dynamic(move || {
+        let Some(p) = store().v1.listed.get().into_iter().find(|x| x.id == plugin) else {
+            return view().into_element();
+        };
+        let groups = p.account_groups();
+        if groups.is_empty() {
+            return view().into_element();
+        }
+        let many = groups.len() > 1;
+        let mut col = view().gap(px(16.0));
+        for (_, rows) in groups {
+            let title = rows[0].title.clone();
+            let label = if many { format!("Accounts · {title}") } else { "Accounts".to_owned() };
+            let mut c = card().py(px(8.0));
+            for a in rows.iter().cloned() {
+                c = c.child(v1_account_row(&plugin, a));
+            }
+            c = c.child(v1_add_account(&plugin, &rows));
+            col = col.child(view().child(sec_label(label)).child(c));
+        }
+        col.into_element()
+    })
+}
+
+fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyElement {
+    use crate::mini_v1::host_api::AccountAction;
+    let st = store();
+    let key = crate::mini_v1::ui::signing_key(plugin, &a.account, &a.label);
+    let edit_key = format!("v1:{key}");
+    let name = a.name();
+    if st.acct_edit.get() == edit_key {
+        let confirming = st.acct_confirm.get() == edit_key;
+        let (p, acc, l, k) = (plugin.to_owned(), a.account.clone(), a.label.clone(), edit_key.clone());
+        return view()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(14.0))
+            .py(px(6.0))
+            .child(text(name.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+            .child(
+                sm_btn(
+                    if confirming { Btn::DangerSolid } else { Btn::Danger },
+                    move || if confirming { "Confirm Remove".to_owned() } else { "Remove".to_owned() },
+                    move || {
+                        if confirming {
+                            store().acct_edit.set(String::new());
+                            store().acct_confirm.set(String::new());
+                            store().v1_account(&p, &acc, &l, AccountAction::Remove)
+                        } else {
+                            store().acct_confirm.set(k.clone())
+                        }
+                    },
+                )
+                .label(if confirming { format!("Confirm remove {name}") } else { format!("Remove {name}") }),
+            )
+            .child(
+                sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                    store().acct_edit.set(String::new());
+                    store().acct_confirm.set(String::new());
+                })
+                .label("Cancel"),
+            )
+            .into_element();
+    }
+    let signing = st.v1.signing.get().contains(&key);
+    let (status, ink) = if signing {
+        ("Signing in…", ink3())
+    } else {
+        (a.status(), match a.state.as_str() {
+            "connected" => ok_ink(),
+            "expired" => warn_ink(),
+            _ => ink3(),
+        })
+    };
+    let (p, acc, l) = (plugin.to_owned(), a.account.clone(), a.label.clone());
+    let button = if signing {
+        let k = key.clone();
+        sm_btn(Btn::Ghost, || "Cancel".into(), move || store().v1_signin_cancel(&k)).label(format!("Stop signing in to {name}"))
+    } else if a.connected() {
+        sm_btn(Btn::Secondary, || "Sign out".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignOut))
+            .label(format!("Sign out of {name}"))
+    } else {
+        sm_btn(Btn::Secondary, || "Sign in".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
+            .label(format!("Sign in to {name}"))
+    };
+    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink)).child(button);
+    // Remove is the row menu's, as a plugin's; a slot never signed in has none
+    if a.state != "none" || a.label != "default" {
+        let (k, n) = (edit_key, name.clone());
+        right = right.child(
+            view()
+                .size(px(14.0))
+                .items_center()
+                .justify_center()
+                .label(format!("Account options for {n}"))
+                .on_press(move || {
+                    store().acct_confirm.set(String::new());
+                    store().acct_edit.set(k.clone());
+                })
+                .child(icon_ink("gb-pencil", 10.0, ink3)),
+        );
+    }
+    let mut who = view()
+        .flex_1()
+        .min_w(px(0.0))
+        .child(text(a.label.clone()).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
+    if !a.subject.is_empty() {
+        who = who.child(text(a.subject.clone()).number_of_lines(1).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()));
+    }
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .label(name)
+        .child(plug_tile(&provider_name(&a.provider), 20.0))
+        .child(who)
+        .child(right)
+        .into_element()
+}
+
+/// "Add another <account>": a label, then Sign in with it.
+fn v1_add_account(plugin: &str, rows: &[crate::mini_v1::connect::Account]) -> AnyElement {
+    let st = store();
+    let a = rows[0].clone();
+    let title = if a.title.is_empty() { a.account.clone() } else { a.title.clone() };
+    let key = format!("v1:{plugin}|{}", a.account);
+    let taken: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+    if st.acct_add.get() != key {
+        let hov = signal(false);
+        return view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .label(format!("Add another {title}"))
+            .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+            .on_press(move || {
+                store().acct_add_val.set(String::new());
+                store().acct_err.set(String::new());
+                store().acct_edit.set(String::new());
+                store().acct_add.set(key.clone());
+            })
+            .child(icon_ink("gb-plus", 10.0, ink2))
+            .child(text("Add Another Account").text_size(px(13.0)).line_height(px(18.0)).text_color(ink2()))
+            .into_element();
+    }
+    let err = st.acct_err.get();
+    let (p, acc) = (plugin.to_owned(), a.account.clone());
+    let go = std::rc::Rc::new(move || {
+        let v = store().acct_add_val.get_untracked().trim().to_owned();
+        if v.is_empty() {
+            return;
+        }
+        if taken.contains(&v) {
+            return store().acct_err.set(format!("{v} is already an account here"));
+        }
+        store().acct_add.set(String::new());
+        store().v1_account(&p, &acc, &v, crate::mini_v1::host_api::AccountAction::SignIn)
+    });
+    let go2 = go.clone();
+    view()
+        .px(px(14.0))
+        .py(px(6.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .child(
+                    view().flex_1().min_w(px(0.0)).h(px(26.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(8.0)).justify_center().child(
+                        input()
+                            .label(format!("Label for another {title}"))
+                            .value(move || store().acct_add_val.get())
+                            .placeholder("Label this account, e.g. work or personal")
+                            .placeholder_color(|| color(tc(0.4)))
+                            .auto_focus(true)
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .h(px(26.0))
+                            .on_change(|t: &str| store().acct_add_val.set(t.to_owned()))
+                            .on_submit(move |_: &str| go())
+                            .on_key_press(|k: &str| {
+                                if k == "Escape" {
+                                    store().acct_add.set(String::new());
+                                }
+                            }),
+                    ),
+                )
+                .child(sm_btn(Btn::Primary, || "Sign in".into(), move || go2()).label(format!("Sign in to another {title}")))
+                .child(
+                    sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                        store().acct_add.set(String::new());
+                        store().acct_err.set(String::new());
+                    })
+                    .label("Cancel"),
+                ),
+        )
+        .when(!err.is_empty(), |v| {
+            v.child(text(err.clone()).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
+        })
+        .into_element()
 }
 
 /// A review's details as Connect Apps shows them: what an update changes,
