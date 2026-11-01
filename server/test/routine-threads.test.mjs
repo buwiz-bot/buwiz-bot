@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { HUB, tempDir } from "./helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): state.mjs in this process; with the hub the store is Rust's (hub/routines/store_host.rs, STORE-01)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): state.mjs in this process; with the hub the store is Rust's (hub/routines/store_host.rs, STORE-01)
 const NODE_ONLY = { skip: HUB && "Node-only: state.mjs in this process; with the hub the store is Rust's (hub/routines/store_host.rs, STORE-01)" };
 
 const dir = tempDir("routine-threads");
@@ -19,7 +19,7 @@ const run = (code) =>
   JSON.parse(
     execFileSync(process.execPath, ["--input-type=module", "-e", code], {
       cwd: new URL("..", import.meta.url).pathname,
-      env: { ...process.env, GROK_DATA_DIR: dir, MOCK: "1" },
+      env: { ...process.env, BUWIZ_BROKER_DATA_DIR: dir, MOCK: "1" },
       encoding: "utf8",
     }).trim().split("\n").at(-1),
   );

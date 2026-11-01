@@ -13,7 +13,7 @@ import { AgentError, LIMITS, createAgents } from "../src/agents.mjs";
 import { PER_AGENT, createDelivery, historyFor, peerPrompt } from "../src/agents-run.mjs";
 import { HUB, postJson, request, startServer, tempDir } from "./helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): agents.mjs and agents-run.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): agents.mjs and agents-run.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)
 const NODE_ONLY = { skip: HUB && "Node-only: agents.mjs and agents-run.mjs in this process; with the hub the Rust ports run them (hub/agents/tests.rs)" };
 
 function world({ bots = ["Piccolo", "Boss", "Ada"], now } = {}) {
@@ -290,7 +290,7 @@ mkdirSync(join(dir, "widgets"));
 const inServer = (code) =>
   execFileSync(process.execPath, ["--input-type=module", "-e", code], {
     cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, GROK_DATA_DIR: dir, MOCK: "1" },
+    env: { ...process.env, BUWIZ_BROKER_DATA_DIR: dir, MOCK: "1" },
     encoding: "utf8",
   }).trim().split("\n").at(-1);
 

@@ -28,7 +28,7 @@ mkdirSync(join(data, "widgets"), { recursive: true });
 for (const k of ["MOCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEN_PROVIDER", "GEN_BASE_URL", "GEN_MODEL", "GEN_MAX_TOKENS", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LINEAR_API_KEY"]) delete process.env[k];
 const bin = join(server, "test", "fixtures", "bin");
 
-Object.assign(process.env, { GROK_DATA_DIR: data, OPENCODEX_URL: fake.url, PATH: `${bin}:${process.env.PATH}`, NSH: join(bin, "nsh"), ROX_STUB_LOG: join(data, "stubs.log") });
+Object.assign(process.env, { BUWIZ_BROKER_DATA_DIR: data, OPENCODEX_URL: fake.url, PATH: `${bin}:${process.env.PATH}`, NSH: join(bin, "nsh"), BUWIZ_STUB_LOG: join(data, "stubs.log") });
 console.error = () => {};
 console.log = () => {};
 

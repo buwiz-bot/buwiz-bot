@@ -9,13 +9,13 @@ import { V1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";
 import { HUB, tempDir } from "./helpers.mjs";
 import { FX, bed, broker, installFixture, writeTrust } from "./v1-helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): tools.mjs's agent surface in this process; with the hub the Rust ports run it (hub/tools/tests.rs)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): tools.mjs's agent surface in this process; with the hub the Rust ports run it (hub/tools/tests.rs)
 const NODE_ONLY = { skip: HUB && "Node-only: tools.mjs's agent surface in this process; with the hub the Rust ports run it (hub/tools/tests.rs)" };
 
 const b = bed("agent");
 const dataDir = tempDir("v1-agent-data");
 
-process.env.GROK_DATA_DIR = dataDir;
+process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 
 process.env.MOCK = "1";
 

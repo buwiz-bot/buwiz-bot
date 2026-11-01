@@ -2,16 +2,48 @@
 # One heavy build at a time across agents and sessions: waits while a hold
 # file exists, then takes a mutex (a directory) for the command's run.
 #   scripts/wait-build cargo build -p rox
-# ROX_BUILD_LOCK / ROX_BUILD_HOLD move the mutex and the hold file.
-LOCK=${ROX_BUILD_LOCK:-${TMPDIR:-/tmp}/rox-build.mutex}
-HOLD=${ROX_BUILD_HOLD:-${TMPDIR:-/tmp}/rox-build.hold}
+# BUWIZ_BUILD_LOCK / BUWIZ_BUILD_HOLD move the mutex and the hold file
+# (ROX_BUILD_LOCK / ROX_BUILD_HOLD, their old names, still work).
+#
+# Checkouts from before the rename take rox-build.mutex and wait on
+# rox-build.hold only, so this one honours both: it waits while either hold
+# file exists and takes buwiz-build.mutex, then rox-build.mutex, keeping
+# builds serialized across old and new checkouts. (Always in that order, so
+# two new ones never hold one each.)
+for v in LOCK HOLD; do
+  if [ -z "$(eval echo "\${BUWIZ_BUILD_$v+x}")" ] && [ -n "$(eval echo "\${ROX_BUILD_$v+x}")" ]; then
+    echo "ROX_BUILD_$v is an old name; use BUWIZ_BUILD_$v" >&2
+    eval "BUWIZ_BUILD_$v=\$ROX_BUILD_$v"
+  fi
+done
+T=${TMPDIR:-/tmp}
+LOCK=${BUWIZ_BUILD_LOCK:-$T/buwiz-build.mutex}
+HOLD=${BUWIZ_BUILD_HOLD:-$T/buwiz-build.hold}
+OLD_LOCK=$T/rox-build.mutex
+OLD_HOLD=$T/rox-build.hold
+# a lock moved elsewhere is its own: no old one beside it
+if [ -n "${BUWIZ_BUILD_LOCK:-}" ]; then OLD_LOCK=""; fi
+if [ -n "${BUWIZ_BUILD_HOLD:-}" ]; then OLD_HOLD=""; fi
+
+held=()
+release() { [ ${#held[@]} -gt 0 ] && rm -rf "${held[@]}"; held=(); }
+trap release EXIT
+
+# take: mkdir the mutex $1, clearing one whose owner is gone; 0 when taken
+take() {
+  if mkdir "$1" 2>/dev/null; then echo $$ > "$1/pid"; held+=("$1"); return 0; fi
+  owner=$(cat "$1/pid" 2>/dev/null)
+  if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$1"; fi
+  return 1
+}
+
 while true; do
-  if [ -e "$HOLD" ]; then sleep 30; continue; fi
-  if mkdir "$LOCK" 2>/dev/null; then break; fi
-  owner=$(cat "$LOCK/pid" 2>/dev/null)
-  if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+  if [ -e "$HOLD" ] || { [ -n "$OLD_HOLD" ] && [ -e "$OLD_HOLD" ]; }; then sleep 30; continue; fi
+  if take "$LOCK"; then
+    if [ -z "$OLD_LOCK" ] || take "$OLD_LOCK"; then break; fi
+    # an old checkout builds: let ours go and wait
+    release
+  fi
   sleep 15
 done
-echo $$ > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
 "$@"

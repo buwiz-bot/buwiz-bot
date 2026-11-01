@@ -1,7 +1,7 @@
 // The leftover leaves no 5.x item names (track L): Reminders through JXA,
 // Linear's three routes, and the file routes that write or hand a file to
 // another app (/file/write, /file/open, /file/save). Run against Node they
-// pin down what rox-broker's hub must match (ROX_BROKER_HUB=1).
+// pin down what rox-broker's hub must match (BUWIZ_BROKER_HUB=1).
 //
 // osascript, open and secret are the PATH stubs: the Reminders answers and
 // the save panel's chosen path come from a file the test writes. Linear's

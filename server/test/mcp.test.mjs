@@ -8,12 +8,12 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { FIXTURE, PORT, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { FIXTURE, PORT, env, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp");
 const mark = join(dataDir, "fixture-spawned");
 
-process.env.GROK_DATA_DIR = dataDir;
+process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 
 process.env.MOCK = "1";
 
@@ -113,9 +113,9 @@ test("manifest commands and scopes outside the grammar are dropped", async () =>
 
 // rox-broker (plan 4.1) starts a stdio server whose process died again on
 // its next use; Node kept the dead client until the row changed
-const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1";
+const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1";
 
-test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (ROX_BROKER_MCP_HOST=1) only" }, async () => {
+test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "rox-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
   const pids = () => readFileSync(mark, "utf8").split("\n").filter(Boolean).map(Number);
   const pid = pids().at(-1);
   const gone = () => {

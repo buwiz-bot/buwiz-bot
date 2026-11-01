@@ -3,7 +3,7 @@
 //! group of its own, which its plugin and MCP children join: stopping Node
 //! stops the group, so no child outlives it (Node itself leaves them
 //! running on SIGTERM; a Google Workspace plugin did, once per restart).
-//! With `ROX_BROKER_NO_NODE=1` there is no Node at all ([`Node::absent`]).
+//! With `BUWIZ_BROKER_NO_NODE=1` there is no Node at all ([`Node::absent`]).
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -77,7 +77,7 @@ fn free_port() -> std::io::Result<u16> {
     Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
-/// `GROK_ALLOWED_ORIGINS` for Node: what the environment gives, plus the
+/// `BUWIZ_ALLOWED_ORIGINS` for Node: what the environment gives, plus the
 /// front door's own origins. Node allows its own port's origins by itself,
 /// and behind the front door its port is a private one.
 pub fn allowed_origins(env: Option<&str>, public_port: u16) -> String {
@@ -118,15 +118,25 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
         let mut cmd = tokio::process::Command::new(&config.node);
         cmd.process_group(0).arg(&config.node_script)
             .env("PORT", port.to_string())
+            .stdin(std::process::Stdio::null());
+        // each by its Buwiz name and its old one: the Node beside this
+        // broker may be an older build that reads only the old names
+        let mut env: Vec<(String, std::ffi::OsString)> = vec![
             // the port URLs leaving Node must name (OAuth redirects, file
             // links): this front door's, not Node's own
-            .env("ROX_PUBLIC_PORT", config.port.to_string())
-            .env("GROK_ALLOWED_ORIGINS", allowed_origins(std::env::var("GROK_ALLOWED_ORIGINS").ok().as_deref(), config.port))
-            .stdin(std::process::Stdio::null());
+            ("BUWIZ_PUBLIC_PORT".into(), config.port.to_string().into()),
+            ("BUWIZ_ALLOWED_ORIGINS".into(), allowed_origins(rox_v1::env::var("BUWIZ_ALLOWED_ORIGINS").as_deref(), config.port).into()),
+        ];
         if let Some(data) = &config.data {
-            cmd.env("GROK_DATA_DIR", data);
+            env.push(("BUWIZ_BROKER_DATA_DIR".into(), data.into()));
         }
-        cmd.envs(config.node_env.iter().map(|(k, v)| (k, v)));
+        env.extend(config.node_env.iter().map(|(k, v)| (k.clone(), v.into())));
+        for (k, v) in &env {
+            cmd.env(k, v);
+            if let Some(old) = rox_v1::env::old_name(k) {
+                cmd.env(old, v);
+            }
+        }
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {

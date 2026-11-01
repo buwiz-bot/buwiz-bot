@@ -58,7 +58,7 @@ pub fn node_paths() -> (PathBuf, u16) {
     let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok();
     let server = config.as_ref().map(|c| c.server_dir()).unwrap_or_else(|| PathBuf::from("src"));
     let server = std::env::current_dir().map(|d| d.join(&server)).unwrap_or(server);
-    (server, std::env::var("ROX_PUBLIC_PORT").ok().and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787))
+    (server, rox_v1::env::var("BUWIZ_PUBLIC_PORT").and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787))
 }
 
 /// The tables the market writes, as state.mjs makes them (IF NOT EXISTS,

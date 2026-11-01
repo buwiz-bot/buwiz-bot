@@ -107,10 +107,10 @@ pub(crate) fn is_word(name: &str) -> bool {
 
 /// The broker's reply files: `generated/files` in its data folder, which
 /// holds the host token too (a test broker's comes from
-/// `ROX_HOST_TOKEN_FILE`).
+/// `BUWIZ_HOST_TOKEN_FILE`).
 fn files_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let token = crate::client::host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
+    let token = crate::client::host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home);
     Some(token.parent()?.join("generated/files"))
 }
 

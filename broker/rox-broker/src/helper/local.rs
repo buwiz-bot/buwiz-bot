@@ -85,8 +85,8 @@ mod tests {
         let out = MacTools
             .run(LocalCommand {
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), "printf '%s:' \"$ROX_LOCAL_T\"; cat; exit 3".into()],
-                env: vec![("ROX_LOCAL_T".into(), "hi".into())],
+                args: vec!["-c".into(), "printf '%s:' \"$BUWIZ_LOCAL_T\"; cat; exit 3".into()],
+                env: vec![("BUWIZ_LOCAL_T".into(), "hi".into())],
                 stdin: Some(b"in".to_vec()),
                 timeout: None,
             })

@@ -113,7 +113,7 @@ pub struct Leaf {
 }
 
 impl Leaf {
-    /// `data` is Node's data dir (`GROK_DATA_DIR`); `allowed` the origins
+    /// `data` is Node's data dir (`BUWIZ_BROKER_DATA_DIR`); `allowed` the origins
     /// the guard lets through.
     pub fn new(data: PathBuf, allowed: Vec<String>) -> Self {
         Self { data, allowed, db: Mutex::new(None) }

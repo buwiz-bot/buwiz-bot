@@ -17,9 +17,10 @@
 #                             nsh's unless NSH_TARGET_DIR is set
 #   BROKER_TARGET_DIR         the broker workspace's (default broker/target)
 #   NSH_TARGET_DIR            nsh's (default CARGO_TARGET_DIR, else nsh/target)
-#   ROX_BIN, ROX_BROKER_BIN, BUWIZ_GWS_BIN, NSH_BIN, NSH_HOST_BIN
+#   BUWIZ_BOT_BIN, BUWIZ_BROKER_BIN, BUWIZ_GWS_BIN, NSH_BIN, NSH_HOST_BIN
 #                             prebuilt binaries to package instead of
-#                             building them
+#                             building them (ROX_BIN and ROX_BROKER_BIN, the
+#                             first two's old names, still work)
 #   BUWIZ_GWS_MANIFEST=<path> buwiz-gws's signed manifest (default
 #                             plugins/google-workspace/manifest.signed.json)
 #   OFFICE_DIST, OFFICE_FONTS, MATERIAL_SYMBOLS_TTF   as in bundle-dev.sh
@@ -33,6 +34,15 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib.sh"
+
+# the old names, with a warning
+for pair in BUWIZ_BOT_BIN:ROX_BIN BUWIZ_BROKER_BIN:ROX_BROKER_BIN; do
+  new="${pair%%:*}" old="${pair#*:}"
+  if [ -z "${!new+x}" ] && [ -n "${!old+x}" ]; then
+    echo "$old is an old name; use $new" >&2
+    printf -v "$new" '%s' "${!old}"
+  fi
+done
 
 # The identity, from the Info.plist app/bundle-dev.sh writes, so the two
 # bundles can't drift: name, bundle id, URL schemes and the executable's
@@ -105,21 +115,21 @@ if [ -z "$ICON" ]; then
 fi
 
 # The builds.
-if [ -z "${ROX_BIN:-}" ]; then
+if [ -z "${BUWIZ_BOT_BIN:-}" ]; then
   cargo_release "$ROOT/app" "$APP_TARGET" --bin "$BIN_NAME"
-  ROX_BIN="$APP_TARGET/release/$BIN_NAME"
+  BUWIZ_BOT_BIN="$APP_TARGET/release/$BIN_NAME"
 fi
-if [ -z "${ROX_BROKER_BIN:-}" ]; then
+if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
   cargo_release "$ROOT/broker" "$BROKER_TARGET" -p rox-broker
 fi
-ROX_BROKER_BIN="${ROX_BROKER_BIN:-$BROKER_TARGET/release/rox-broker}"
+BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/release/rox-broker}"
 BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$(GWS_TARGET_DIR="$BROKER_TARGET/gws" "$ROOT/scripts/gws-build")}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
   cargo_release "$ROOT/nsh" "$NSH_TARGET" -p nsh-cli -p nsh-macos-host
   NSH_BIN="$NSH_TARGET/release/nsh"
   NSH_HOST_BIN="$NSH_TARGET/release/nsh-macos-host"
 fi
-for b in "$ROX_BIN" "$ROX_BROKER_BIN" "$BUWIZ_GWS_BIN" "${NSH_BIN:-}" "${NSH_HOST_BIN:-}"; do
+for b in "$BUWIZ_BOT_BIN" "$BUWIZ_BROKER_BIN" "$BUWIZ_GWS_BIN" "${NSH_BIN:-}" "${NSH_HOST_BIN:-}"; do
   [ -x "$b" ] || die "missing binary: ${b:-nsh or nsh-macos-host (set both NSH_BIN and NSH_HOST_BIN, or neither)}"
 done
 
@@ -128,7 +138,7 @@ APP="$OUT/$APP_NAME.app"
 C="$APP/Contents"
 rm -rf "$APP"
 mkdir -p "$C/MacOS" "$C/Resources/fonts/office/LICENSES"
-cp "$ROX_BIN" "$C/MacOS/$EXECUTABLE"
+cp "$BUWIZ_BOT_BIN" "$C/MacOS/$EXECUTABLE"
 
 cp "$SYMBOLS" "$C/Resources/fonts/MaterialSymbolsOutlined.ttf"
 cp "$ROOT/app/fonts/MaterialSymbolsOutlined-LICENSE" "$C/Resources/fonts/MaterialSymbolsOutlined-LICENSE"
@@ -139,7 +149,7 @@ cp "$OFFICE_FONTS/LICENSE" "$C/Resources/fonts/office/LICENSE"
 # The broker and its static files: the layout app/src/broker.rs expects.
 B="$C/Resources/broker"
 mkdir -p "$B/bin" "$B/server/office/editor/dist" "$B/node_modules"
-cp "$ROX_BROKER_BIN" "$B/rox-broker"
+cp "$BUWIZ_BROKER_BIN" "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"

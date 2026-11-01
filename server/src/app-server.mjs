@@ -24,6 +24,7 @@
 
 // first: takes the line token out of the environment before anything spawns
 import "./v1/line-env.mjs";
+import { env } from "./env.mjs";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import {
@@ -68,7 +69,7 @@ import { migrateGroups } from "./groups.mjs";
 import { startRoutines } from "./routines.mjs";
 import { allowedOrigins, refusal } from "./guard.mjs";
 
-// The office role (ROX_NODE_ROLE=office, plan 5.0c) answers only these:
+// The office role (BUWIZ_NODE_ROLE=office, plan 5.0c) answers only these:
 // /office/*, and /file/render until 6.1 (D32); /health and / so the front
 // door sees it up. Every other route is the hub's (/popout since 6.3) or
 // deleted (/highlight and /mermaid*), and rox-broker never
@@ -92,9 +93,9 @@ const routes = [
 ];
 
 // No wildcard CORS: an origin is answered only when it is allowed (the
-// server's own pages, plus GROK_ALLOWED_ORIGINS, comma-separated), and any
+// server's own pages, plus BUWIZ_ALLOWED_ORIGINS, comma-separated), and any
 // other Origin is refused before a route runs (guard.mjs).
-const ALLOWED = allowedOrigins(PORT, process.env.GROK_ALLOWED_ORIGINS);
+const ALLOWED = allowedOrigins(PORT, env("BUWIZ_ALLOWED_ORIGINS"));
 
 const server = createServer(async (req, res) => {
   const no = refusal(req, ALLOWED);

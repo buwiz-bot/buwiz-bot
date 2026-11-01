@@ -102,7 +102,7 @@ scripts/release/dmg.sh
 scripts/release/manifest.sh
 ```
 
-`build.sh` takes prebuilt binaries (`ROX_BIN`, `ROX_BROKER_BIN`,
+`build.sh` takes prebuilt binaries (`BUWIZ_BOT_BIN`, `BUWIZ_BROKER_BIN`,
 `BUWIZ_GWS_BIN`, `NSH_BIN` with `NSH_HOST_BIN`) and other input paths
 (`NODE_MODULES`, `OFFICE_DIST`, `OFFICE_FONTS`, `MATERIAL_SYMBOLS_TTF`,
 `BUWIZ_GWS_MANIFEST`); its header lists them. Output goes to `dist/`

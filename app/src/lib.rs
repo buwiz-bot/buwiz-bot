@@ -86,7 +86,7 @@ pub fn app_name() -> &'static str {
 /// The name [`app_name`] shows: `APP_NAME` from the environment; else the
 /// name of the app bundle the binary runs in (`bundle`: its id and
 /// display name), when it is one of Buwiz Bot's (`com.buwiz.bot`, or a
-/// `dev.buwiz.bot.*` test bundle of `scripts/test-rox`); else, a build run
+/// `dev.buwiz.bot.*` test bundle of `scripts/buwiz-test`); else, a build run
 /// outside any of them (`cargo run`, a worktree's binary), "Buwiz Bot
 /// dev-v<version>".
 pub fn pick_app_name(env: Option<&str>, bundle: Option<(&str, &str)>, version: &str) -> String {

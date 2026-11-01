@@ -1,10 +1,10 @@
-//! The hub switch (`ROX_BROKER_HUB=1`, plan D30) in front of a stand-in
+//! The hub switch (`BUWIZ_BROKER_HUB=1`, plan D30) in front of a stand-in
 //! Node (tests/fixture-node.mjs, logging every request it gets): with the
 //! hub on, a hub route no track has ported answers 501 and Node never sees
 //! it, and Node runs in its office role; with it off, the same request is
 //! forwarded as today. No route reaches Node with the hub on (phase 7); a
 //! path no broker has is Node's 404 from the hub. With
-//! `ROX_BROKER_NO_NODE=1` too, Node is never started.
+//! `BUWIZ_BROKER_NO_NODE=1` too, Node is never started.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -56,8 +56,11 @@ fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
         .arg(&data)
         .env("FIXTURE_LOG", &log)
         .env("FIXTURE_ROLE_FILE", log.with_extension("role"))
+        .env_remove("BUWIZ_BROKER_HUB")
         .env_remove("ROX_BROKER_HUB")
+        .env_remove("BUWIZ_BROKER_NO_NODE")
         .env_remove("ROX_BROKER_NO_NODE")
+        .env_remove("BUWIZ_NODE_ROLE")
         .env_remove("ROX_NODE_ROLE")
         // the hub's /models and image routes call the model gateway: at a
         // closed port, never the real opencodex (localhost:8080), and no
@@ -69,10 +72,10 @@ fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
         .env("HOME", &data)
         .stdout(std::process::Stdio::null());
     if hub {
-        cmd.env("ROX_BROKER_HUB", "1");
+        cmd.env("BUWIZ_BROKER_HUB", "1");
     }
     if no_node {
-        cmd.env("ROX_BROKER_NO_NODE", "1");
+        cmd.env("BUWIZ_BROKER_NO_NODE", "1");
     }
     let broker = Broker { child: cmd.spawn().unwrap(), port, log, data };
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -173,14 +176,32 @@ fn no_node_starts_no_node_and_answers_preflights() {
     assert_eq!(b.seen(), Vec::<String>::new());
 }
 
+/// The old names still work: `ROX_BROKER_NO_NODE=1` alone is read, with
+/// the warning that it is old.
+#[test]
+fn an_old_name_is_still_read_and_warned_about() {
+    let out = Command::new(env!("CARGO_BIN_EXE_rox-broker"))
+        .args(["--port", &free_port().to_string()])
+        .env_remove("BUWIZ_BROKER_HUB")
+        .env_remove("ROX_BROKER_HUB")
+        .env_remove("BUWIZ_BROKER_NO_NODE")
+        .env("ROX_BROKER_NO_NODE", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("ROX_BROKER_NO_NODE is an old name; use BUWIZ_BROKER_NO_NODE"), "{err}");
+    assert_eq!(err.matches("is an old name").count(), 1, "{err}");
+}
+
 #[test]
 fn no_node_needs_the_hub() {
     // the env var and the flag (the broker inside Rox.app) alike
-    let env = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string()]).env_remove("ROX_BROKER_HUB").env("ROX_BROKER_NO_NODE", "1").output().unwrap();
-    let flag = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string(), "--no-node"]).env_remove("ROX_BROKER_HUB").env_remove("ROX_BROKER_NO_NODE").output().unwrap();
+    let env = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string()]).env_remove("BUWIZ_BROKER_HUB").env_remove("ROX_BROKER_HUB").env("BUWIZ_BROKER_NO_NODE", "1").output().unwrap();
+    let flag = Command::new(env!("CARGO_BIN_EXE_rox-broker")).args(["--port", &free_port().to_string(), "--no-node"]).env_remove("BUWIZ_BROKER_HUB").env_remove("ROX_BROKER_HUB").env_remove("BUWIZ_BROKER_NO_NODE").env_remove("ROX_BROKER_NO_NODE").output().unwrap();
     for out in [env, flag] {
         assert_eq!(out.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("(ROX_BROKER_NO_NODE=1) needs ROX_BROKER_HUB=1"));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("(BUWIZ_BROKER_NO_NODE=1) needs BUWIZ_BROKER_HUB=1"));
     }
 }
 

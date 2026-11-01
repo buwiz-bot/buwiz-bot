@@ -30,7 +30,7 @@ function seeded(label) {
     const { newGroup } = await import("./src/groups.mjs");
     newGroup({ name: "Team", item: { kind: "bot", ref: bid } });
     process.exit(0);
-  `], { cwd: ROOT, env: { ...process.env, GROK_DATA_DIR: dir, MOCK: "1" }, stdio: "pipe" });
+  `], { cwd: ROOT, env: { ...process.env, BUWIZ_BROKER_DATA_DIR: dir, MOCK: "1" }, stdio: "pipe" });
 
   return join(dir, "generated", "app.db");
 }
