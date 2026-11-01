@@ -11,6 +11,13 @@
 //! - `POST /local-exec/policy/rule` `{machineId, kind, pattern}` → 204
 //! - `DELETE /local-exec/policy/rule` `{machineId, kind, pattern}` → 204
 //!
+//! The writes carry Rox's host token (`X-Buwiz-Host`, `hub/routes/host.rs`,
+//! the `/v1/host/*` precedent): the broker listens on loopback and the
+//! Origin guard lets a request with no Origin through, so without it any
+//! local process could set `mode` to `bypass` and switch the consent gate
+//! off. A missing or wrong token is a 401 before the body is read. The read
+//! stays open: the lists are the person's own settings, not a secret.
+//!
 //! Bad input is a 422 with `{error, code}` and changes nothing. The one
 //! check a rule must pass is `standing_rule_refusal`: the store writes rows,
 //! never policy.
@@ -24,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::chat::parse;
+use super::host;
 use crate::hub::ctx::HubCtx;
 use crate::hub::policy::local_exec::{standing_rule_refusal, LocalExecMode, LocalExecPolicy};
 use crate::hub::policy::{self, machine_or_local};
@@ -95,6 +103,11 @@ fn no_content() -> HubResponse {
     res
 }
 
+/// The 401 `/v1/host/*` answers when `X-Buwiz-Host` is missing or wrong.
+fn unauthorized() -> HubResponse {
+    host::refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Buwiz-Host is missing or wrong")
+}
+
 fn method_not_allowed() -> HubResponse {
     coded(StatusCode::METHOD_NOT_ALLOWED, "method not allowed", "method_not_allowed")
 }
@@ -116,6 +129,9 @@ async fn policy_route(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             answer(StatusCode::OK, &policy_listing(&machine, &policy::load(&ctx.db, &machine)))
         }
         Method::PUT => {
+            if !host::authorized(&req.headers) {
+                return unauthorized();
+            }
             let set: SetMode = match body(&req) {
                 Ok(b) => b,
                 Err(why) => return bad_request(&why),
@@ -136,6 +152,9 @@ async fn policy_route(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 async fn rule_route(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if req.method != Method::POST && req.method != Method::DELETE {
         return method_not_allowed();
+    }
+    if !host::authorized(&req.headers) {
+        return unauthorized();
     }
     let rule: RuleBody = match body(&req) {
         Ok(b) => b,
@@ -171,16 +190,31 @@ mod tests {
     use crate::hub::Hub;
     use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 
+    /// A hub with the routines track too: its start writes the host token
+    /// the write routes want.
     fn hub(label: &str) -> Hub {
         let dir = std::env::temp_dir().join(format!("rox-lxp-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
-        let ctx = HubCtx::new(dir, Clock::manual());
+        let mut ctx = HubCtx::new(dir, Clock::manual());
         ctx.store.load().unwrap();
-        Hub::with(ctx, Vec::new(), install)
+        let hub = Hub::with(ctx, Vec::new(), |routes, ctx| {
+            crate::hub::routines::install(routes, ctx);
+            install(routes, ctx);
+        });
+        hub.start();
+        hub
     }
 
+    /// With the host token, as Rox calls.
     async fn call(hub: &Hub, method: Method, url: &str, body: &str) -> (u16, Value) {
+        send(hub, method, url, body, host::token().as_deref()).await
+    }
+
+    async fn send(hub: &Hub, method: Method, url: &str, body: &str, token: Option<&str>) -> (u16, Value) {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(t) = token {
+            headers.insert("x-buwiz-host", HeaderValue::from_str(t).unwrap());
+        }
         let req = HubRequest { method, url: url.into(), headers, body: Bytes::from(body.to_owned()), params: Vec::new() };
         let res = hub.answer(req).await;
         let status = res.status().as_u16();
@@ -245,6 +279,27 @@ mod tests {
         assert_eq!(s, 405);
         let (s, v) = call(&hub, Method::GET, "/local-exec/policy?machineId=m1", "").await;
         assert_eq!((s, v), (200, json!({"machineId": "m1", "mode": "bypass", "allow": [], "deny": ["sudo"], "inert": []})));
+    }
+
+    #[tokio::test]
+    async fn local_exec_policy_writes_want_the_host_token_and_the_read_does_not() {
+        let hub = hub("auth");
+        let refused = json!({"ok": false, "code": "unauthorized", "message": "X-Buwiz-Host is missing or wrong", "retryable": false});
+        for (method, url, body) in [
+            (Method::PUT, "/local-exec/policy", r#"{"machineId":"m1","mode":"bypass"}"#),
+            (Method::POST, "/local-exec/policy/rule", r#"{"machineId":"m1","kind":"allow","pattern":"rm"}"#),
+            (Method::DELETE, "/local-exec/policy/rule", r#"{"machineId":"m1","kind":"deny","pattern":"rm"}"#),
+        ] {
+            assert_eq!(send(&hub, method.clone(), url, body, None).await, (401, refused.clone()), "{method} without a token");
+            assert_eq!(send(&hub, method.clone(), url, body, Some("not-the-token")).await, (401, refused.clone()), "{method} with a wrong token");
+        }
+        // nothing changed, and the read needs no token
+        let (s, v) = send(&hub, Method::GET, "/local-exec/policy?machineId=m1", "", None).await;
+        assert_eq!((s, v), (200, json!({"machineId": "m1", "mode": "bypass", "allow": [], "deny": [], "inert": []})));
+        let (s, _) = call(&hub, Method::PUT, "/local-exec/policy", r#"{"machineId":"m1","mode":"never"}"#).await;
+        assert_eq!(s, 204);
+        let (_, v) = send(&hub, Method::GET, "/local-exec/policy?machineId=m1", "", None).await;
+        assert_eq!(v["mode"], "never");
     }
 
     #[test]
