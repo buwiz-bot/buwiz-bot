@@ -16,6 +16,12 @@
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
 //!
+//! `POST /v1/host/prove {nonce}` takes no token either: it answers
+//! `{ok: true, proof}`, `proof` = base64url(HMAC-SHA256(host token,
+//! "buwiz-broker-proof:" + nonce)) (`rox_v1::proof`), so the app can tell
+//! this broker from a stranger on its port before a saved login leaves it
+//! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
+//!
 //! The agents' `/v1/host/agents/*` routes (5.6, track E) answer 501 here
 //! until that track registers them; it checks the token with
 //! [`authorized`].
@@ -42,6 +48,7 @@ use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
 use crate::v1::V1Error;
+use rox_v1::proof::same;
 
 const BODY_MAX: usize = 2 * 1024 * 1024;
 
@@ -83,8 +90,23 @@ fn write_token(file: &Path, token: &str) -> std::io::Result<()> {
     std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
 }
 
-fn same(got: &[u8], want: &[u8]) -> bool {
-    !want.is_empty() && got.len() == want.len() && got.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+/// The broker's proof of identity; it takes no token.
+const PROVE: &str = "/v1/host/prove";
+
+/// `POST /v1/host/prove {nonce}` → `{ok: true, proof}` under this hub's
+/// host token; no token on the request (the app sends none to a server
+/// it has not proven).
+fn prove(rs: &Routines, req: &HubRequest) -> HubResponse {
+    if req.method != Method::POST {
+        return refusal(StatusCode::METHOD_NOT_ALLOWED, "not_supported", format!("{} {PROVE}", req.method));
+    }
+    let nonce = read_body(&req.body).and_then(|b| b.get("nonce").and_then(Value::as_str).map(str::to_owned));
+    let Some(nonce) = nonce.filter(|n| rox_v1::proof::valid_nonce(n)) else {
+        return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {nonce}: 22 to 128 base64url characters");
+    };
+    let token = rs.token.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|t| !t.is_empty());
+    let Some(token) = token else { return refusal(StatusCode::SERVICE_UNAVAILABLE, "not_ready", "the host token is not ready") };
+    types::json(StatusCode::OK, &json!({"ok": true, "proof": rox_v1::proof::broker_proof(&token, &nonce)}))
 }
 
 /// Whether `headers` carry this process's host token (constant time).
@@ -160,6 +182,9 @@ pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
 }
 
 async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    if req.path() == PROVE {
+        return prove(&rs, &req);
+    }
     if !authorized_by(&rs, &req.headers) {
         return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Buwiz-Host is missing or wrong");
     }
