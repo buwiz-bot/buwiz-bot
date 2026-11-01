@@ -385,6 +385,13 @@ pub(crate) fn ask_confirm(action: Action) {
     pane_signal().update(|p| p.confirm = Some(action));
 }
 
+/// Whether an update or a reset the person already confirmed is running,
+/// so the rail's Update and Reset wait for it as the tab's own do.
+pub(crate) fn rail_acting(bot: &str) -> bool {
+    let p = pane_signal().get();
+    p.bot == bot && p.acting.is_some()
+}
+
 fn path(bot: &str, rest: &str) -> String {
     format!("/coworkers/{}/computer{rest}", client::urlenc(bot))
 }
