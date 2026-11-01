@@ -210,6 +210,7 @@ pub const ROUTES: &[Entry] = &[
     e(Get, P("/plugins/detail"), Hub(Market)),
     e(Get, P("/plugins/icon/"), Hub(Market)),
     e(Get, P("/plugins/skill"), Hub(Market)),
+    e(Post, X("/plugins/inspect"), Hub(Market)),
     e(Post, X("/plugins/install"), Hub(Market)),
     e(Post, X("/plugins/uninstall"), Hub(Market)),
     e(Post, X("/plugins/settings"), Hub(Market)),
@@ -353,7 +354,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 120);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 121);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }

@@ -1,6 +1,7 @@
-//! The market's 11 routes (routes/market.mjs): `/plugins/catalog`,
+//! The market's 12 routes (routes/market.mjs): `/plugins/catalog`,
 //! `/plugins/detail`, `/plugins/icon/<key>`, `/plugins/skill`,
-//! `/plugins/install`, `/plugins/uninstall`, `/plugins/settings`,
+//! `/plugins/inspect` (2.1's review, no Node twin), `/plugins/install`,
+//! `/plugins/uninstall`, `/plugins/settings`,
 //! `/plugins/connect`, and the private skills' `POST /skills`,
 //! `/skills/state`, `/skills/delete`.
 
@@ -14,8 +15,8 @@ use serde_json::{json, Map, Value};
 
 use crate::hub::ctx::HubCtx;
 use crate::hub::market::catalog::{cat_label, categories, encode_component, Market};
-use crate::hub::market::install::{fetch_plugin, install_legacy, mcp_invalidate, mcp_status, plugin_inventory, remove_plugin_files, skill_file, upsert_connector};
-use crate::hub::market::{at, entries, or, parse, resolve, skills, spread, string, truthy, unique};
+use crate::hub::market::install::{mcp_invalidate, mcp_status, plugin_inventory, remove_plugin_files, skill_file, upsert_connector};
+use crate::hub::market::{at, entries, or, parse, resolve, review, skills, spread, string, truthy, unique};
 use crate::hub::types::{json as answer, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
@@ -31,6 +32,7 @@ pub fn register(routes: &mut Registry, market: Arc<Market>) {
         }};
     }
     route!(Verb::Get, Pattern::Prefix("/plugins/catalog"), catalog);
+    route!(Verb::Post, Pattern::Exact("/plugins/inspect"), inspect);
     route!(Verb::Post, Pattern::Exact("/plugins/install"), install);
     route!(Verb::Post, Pattern::Exact("/plugins/uninstall"), uninstall);
     route!(Verb::Post, Pattern::Exact("/plugins/settings"), settings);
@@ -151,16 +153,54 @@ fn category(e: &Value) -> Value {
     }
 }
 
-/// `POST /plugins/install {name, values?}`.
-async fn install(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
-    match install_plugin(m, ctx, &body(&req)).await {
+/// `POST /plugins/inspect {name}`: the plugin fetched into a staging
+/// folder and its review (`{ok, staging, name, expires, setup, review}`);
+/// nothing is installed.
+async fn inspect(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
+    let b = body(&req);
+    let name = key_of(b.get("name").or(b.get("id")));
+    match review::inspect(m, ctx, &name).await {
         Ok(v) => ok(v),
         Err(e) => fail(e),
     }
 }
 
-async fn install_plugin(m: &Market, ctx: &HubCtx, b: &Value) -> Result<Value, String> {
-    let e = m.entry_of(&key_of(b.get("name"))).ok_or_else(|| format!("unknown plugin {}", string(b.get("name"))))?.clone();
+/// A refusal with a code the app reads (`{ok: false, code, error}`).
+fn refuse(code: &str, e: &str) -> HubResponse {
+    answer(StatusCode::BAD_REQUEST, &json!({ "ok": false, "code": code, "error": e }))
+}
+
+/// `POST /plugins/install {staging, approve: true, name?, values?}`: what
+/// `/plugins/inspect` staged, after the person approved its review (D2).
+/// A body without both is refused (`consent_required`); an unknown or
+/// expired staging token is `review_expired`.
+async fn install(m: &Market, ctx: &HubCtx, req: HubRequest) -> HubResponse {
+    let b = body(&req);
+    let token = b.get("staging").and_then(Value::as_str).unwrap_or("");
+    if b.get("approve") != Some(&json!(true)) || token.is_empty() {
+        return refuse("consent_required", "a plugin installs only after its review: POST /plugins/inspect, then /plugins/install with its staging token and approve: true");
+    }
+    let now = crate::hub::market::now(ctx);
+    let staged = match review::open(m, token) {
+        Some(s) if s.expired(now) => {
+            let _ = std::fs::remove_dir_all(&s.dir);
+            None
+        }
+        s => s,
+    };
+    let Some(staged) = staged else { return refuse("review_expired", "this review expired; review the plugin again") };
+    let named = key_of(b.get("name"));
+    if !named.is_empty() && m.entry_of(&named).map(|e| string(e.get("key"))) != Some(staged.key.clone()) {
+        return refuse("invalid_args", &format!("the review is for {}, not {named}", staged.key));
+    }
+    match install_plugin(m, ctx, &b, staged).await {
+        Ok(v) => ok(v),
+        Err(e) => fail(e),
+    }
+}
+
+async fn install_plugin(m: &Market, ctx: &HubCtx, b: &Value, staged: review::Staged) -> Result<Value, String> {
+    let e = m.entry_of(&staged.key).ok_or_else(|| format!("unknown plugin {}", staged.key))?.clone();
     let key = string(e.get("key"));
     if truthy(b.get("values")) {
         let mut vals = m.settings_of(ctx, &key);
@@ -175,22 +215,13 @@ async fn install_plugin(m: &Market, ctx: &HubCtx, b: &Value) -> Result<Value, St
         .filter(|(_, f)| truthy(f.get("isRequired")) && !truthy(vals.get(&string(f.get("key")))))
         .map(|(_, f)| string(f.get("label")))
         .collect();
+    // the staging folder stays: the same review installs once the values are in
     if !missing.is_empty() {
         return Err(format!("{} needs {} before it can be added", string(e.get("displayName")), missing.join(", ")));
     }
     let prev = m.installed_meta(ctx, &key);
-    let meta = if truthy(e.get("legacy")) {
-        let p = m.legacy_of(&key).cloned().unwrap_or(Value::Null);
-        install_legacy(m, &p).await?;
-        json!({ "path": or(at(p.get("source"), "path"), json!("")) })
-    } else {
-        let got = fetch_plugin(m, &e).await?;
-        let mut meta = json!({ "root": got.root, "skills": got.skills, "repo": or(at(e.get("install"), "repo"), Value::Null), "sha": or(at(e.get("install"), "sha"), Value::Null) });
-        if let Some(id) = e.get("id") {
-            meta["catalogId"] = id.clone();
-        }
-        meta
-    };
+    let meta = staged.meta.clone();
+    staged.commit(m)?;
     let prev_list = |k: &str| or(at(prev.as_ref(), k), json!([]));
     // recorded first, so pluginRoot and materialize see the new files
     let mut first = spread(Some(&meta));
@@ -642,5 +673,192 @@ fn skills_delete(ctx: &HubCtx, req: HubRequest) -> HubResponse {
     match serde_json::from_slice::<Value>(text).ok().filter(|b| !b.is_null()).map(|b| skills::delete(ctx, &b)) {
         Some(Ok(())) => raw(StatusCode::OK, "application/json", r#"{"ok":true}"#),
         _ => raw(StatusCode::BAD_REQUEST, "application/json", r#"{"ok":false}"#),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The plain plugin review (2.1 §2.2, D2) over a local git repository
+    //! and a vendored plugin: no network.
+    use super::*;
+    use crate::hub::traits::Clock;
+    use crate::hub::Hub;
+    use hyper::header::HeaderMap;
+    use hyper::Method;
+    use rusqlite::OptionalExtension;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    struct Fixture {
+        hub: Hub,
+        root: PathBuf,
+        plugins: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn write(p: &Path, text: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git").args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "init.defaultBranch=main"]).args(args).current_dir(dir).output().unwrap();
+        assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+    }
+
+    /// A catalog with `demo` (a local repo: two servers, a skill, a
+    /// command, hooks, one required field) and the vendored `vend`.
+    fn fixture(label: &str) -> Fixture {
+        let root = std::env::temp_dir().join(format!("rox-mkt-review-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        write(&repo.join(".claude-plugin/plugin.json"), r#"{"name":"demo","version":"1.2.0","author":{"name":"Ada"}}"#);
+        write(
+            &repo.join(".mcp.json"),
+            r#"{"mcpServers":{"demo-cli":{"command":"npx","args":["-y","demo-mcp"],"env":{"DEMO_API_KEY":"${DEMO_API_KEY}","DEMO_REGION":"eu-literal-value"}},"demo-web":{"url":"https://mcp.demo.invalid/mcp"}}}"#,
+        );
+        write(&repo.join("skills/hello/SKILL.md"), "---\nname: hello\ndescription: Says hello.\n---\n");
+        write(&repo.join("commands/run.md"), "---\ndescription: Runs.\n---\n");
+        write(&repo.join("hooks/hooks.json"), "{}");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "fixture"]);
+        let server = root.join("server");
+        let catalog = json!({ "plugins": [{
+            "key": "demo", "name": "demo", "displayName": "Demo", "description": "A demo.", "publisher": { "displayName": "Demo Co" },
+            "install": { "repo": format!("file://{}", repo.display()), "path": "" },
+            "fields": [{ "key": "DEMO_API_KEY", "label": "Demo API Key", "isRequired": true, "isSecret": true }],
+        }] });
+        write(&server.join("plugins/grokbot-catalog.json"), &catalog.to_string());
+        write(&server.join("plugins/marketplace.json"), r#"{"plugins":[{"name":"vend","description":"Vendored.","source":{"type":"local","path":"./external_plugins/vend"}}]}"#);
+        write(&server.join("plugins/external_plugins/vend/skills/tidy/SKILL.md"), "---\ndescription: Tidies.\n---\n");
+        let data = root.join("data");
+        std::fs::create_dir_all(data.join("generated")).unwrap();
+        let market = Arc::new(Market::load(&server, &data, 9));
+        let ctx = HubCtx::new(data.clone(), Clock::manual());
+        let hub = Hub::with(ctx, Vec::new(), |routes, _| register(routes, market));
+        crate::hub::market::schema(hub.ctx()).unwrap();
+        Fixture { hub, root, plugins: data.join("plugins") }
+    }
+
+    async fn post(f: &Fixture, url: &str, body: Value) -> (u16, Value) {
+        let req = HubRequest { method: Method::POST, url: url.into(), headers: HeaderMap::new(), body: Bytes::from(body.to_string()), params: Vec::new() };
+        let res = f.hub.answer(req).await;
+        let status = res.status().as_u16();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn installed(f: &Fixture, key: &str) -> Option<Value> {
+        let meta: Option<String> = f.hub.ctx().db.with(|db| db.query_row("SELECT meta FROM installed_plugins WHERE name=?", [key], |r| r.get(0)).optional()).unwrap();
+        meta.map(|m| serde_json::from_str(&m).unwrap())
+    }
+
+    #[tokio::test]
+    async fn mkt_review_install_without_an_approved_review_is_refused() {
+        let f = fixture("refuse");
+        for body in [json!({ "name": "demo" }), json!({ "name": "demo", "staging": "0".repeat(32) }), json!({ "name": "demo", "approve": true }), json!({ "name": "demo", "staging": "0".repeat(32), "approve": "yes" })] {
+            let (status, v) = post(&f, "/plugins/install", body.clone()).await;
+            assert_eq!((status, v["code"].as_str()), (400, Some("consent_required")), "{body}");
+        }
+        // a token no inspect made (or not a token at all)
+        for token in ["0".repeat(32), "../demo".into()] {
+            let (status, v) = post(&f, "/plugins/install", json!({ "staging": token, "approve": true })).await;
+            assert_eq!((status, v["code"].as_str()), (400, Some("review_expired")));
+        }
+        assert!(!f.plugins.join("demo").exists() && installed(&f, "demo").is_none());
+    }
+
+    #[tokio::test]
+    async fn mkt_review_inspect_stages_and_install_moves_it_into_place() {
+        let f = fixture("flow");
+        let (status, v) = post(&f, "/plugins/inspect", json!({ "name": "demo" })).await;
+        assert_eq!(status, 200, "{v}");
+        let token = v["staging"].as_str().unwrap().to_owned();
+        assert_eq!((v["name"].as_str(), v["setup"].as_bool(), v["expires"].as_i64()), (Some("demo"), Some(true), Some(review::TTL_MS)));
+        let r = &v["review"];
+        assert_eq!((r["title"].as_str(), r["publisher"].as_str(), r["author"].as_str(), r["version"].as_str()), (Some("Demo"), Some("Demo Co"), Some("Ada"), Some("1.2.0")));
+        assert_eq!((r["signed"].as_bool(), r["unsigned"].as_str()), (Some(false), Some("Unsigned: Buwiz can't check who made it")));
+        assert_eq!(
+            r["servers"],
+            json!([
+                { "name": "demo-cli", "transport": "command", "url": null, "command": "npx -y demo-mcp", "env": ["DEMO_API_KEY", "DEMO_REGION"], "headers": [], "auth": "none", "unavailable": null },
+                { "name": "demo-web", "transport": "remote", "url": "https://mcp.demo.invalid/mcp", "command": null, "env": [], "headers": [], "auth": "oauth", "unavailable": null },
+            ])
+        );
+        assert_eq!(r["skills"], json!([{ "name": "hello", "description": "Says hello." }]));
+        assert_eq!(r["listed"], json!({ "commands": ["run"], "agents": [], "hooks": true, "lsp": false }));
+        // env names, never values
+        assert!(!v.to_string().contains("eu-literal-value"));
+        // staged, not installed
+        let staged = f.plugins.join(".staging").join(&token);
+        assert!(staged.join("files/demo/.mcp.json").exists());
+        assert!(!f.plugins.join("demo").exists() && installed(&f, "demo").is_none());
+
+        // the required field is checked at install; the review stays
+        let (status, v) = post(&f, "/plugins/install", json!({ "staging": token, "approve": true })).await;
+        assert_eq!((status, v["error"].as_str()), (400, Some("Demo needs Demo API Key before it can be added")));
+        assert!(staged.exists());
+        // the review is for demo only
+        let (_, v) = post(&f, "/plugins/install", json!({ "name": "vend", "staging": token, "approve": true })).await;
+        assert_eq!(v["code"], "invalid_args");
+
+        let (status, v) = post(&f, "/plugins/install", json!({ "name": "demo", "staging": token, "approve": true, "values": { "DEMO_API_KEY": "k-123" } })).await;
+        assert_eq!(status, 200, "{v}");
+        assert_eq!((v["ok"].as_bool(), v["name"].as_str()), (Some(true), Some("demo")));
+        assert_eq!(v["mcp"], json!(["demo-cli", "demo-web"]));
+        assert_eq!(v["kinds"], json!(["skills", "commands", "hooks/hooks.json"]));
+        assert!(f.plugins.join("demo/.mcp.json").exists() && !staged.exists());
+        let meta = installed(&f, "demo").unwrap();
+        assert_eq!((meta["root"].as_str(), meta["created"].clone()), (Some("demo"), json!(["demo-cli", "demo-web"])));
+        // a review installs once
+        let (_, v) = post(&f, "/plugins/install", json!({ "staging": token, "approve": true })).await;
+        assert_eq!(v["code"], "review_expired");
+    }
+
+    #[tokio::test]
+    async fn mkt_review_staging_expires_after_30_minutes_and_on_the_next_inspect() {
+        let f = fixture("expiry");
+        let (_, first) = post(&f, "/plugins/inspect", json!({ "name": "demo" })).await;
+        let first = first["staging"].as_str().unwrap().to_owned();
+        // the next inspect of the plugin replaces the earlier review
+        let (_, second) = post(&f, "/plugins/inspect", json!({ "name": "demo" })).await;
+        let second = second["staging"].as_str().unwrap().to_owned();
+        assert_ne!(first, second);
+        assert!(!f.plugins.join(".staging").join(&first).exists());
+        let (_, v) = post(&f, "/plugins/install", json!({ "staging": first, "approve": true, "values": { "DEMO_API_KEY": "k" } })).await;
+        assert_eq!(v["code"], "review_expired");
+        // 30 minutes on, it has expired: refused and deleted
+        f.hub.ctx().clock.manual_step(Some((review::TTL_MS + 1) as f64), false);
+        let (status, v) = post(&f, "/plugins/install", json!({ "staging": second, "approve": true, "values": { "DEMO_API_KEY": "k" } })).await;
+        assert_eq!((status, v["code"].as_str()), (400, Some("review_expired")));
+        assert!(!f.plugins.join(".staging").join(&second).exists());
+        assert!(installed(&f, "demo").is_none());
+        // an expired one of another plugin goes at the next inspect too
+        let (_, v) = post(&f, "/plugins/inspect", json!({ "name": "vend" })).await;
+        let vend = v["staging"].as_str().unwrap().to_owned();
+        f.hub.ctx().clock.manual_step(Some((2 * review::TTL_MS + 2) as f64), false);
+        post(&f, "/plugins/inspect", json!({ "name": "demo" })).await;
+        assert!(!f.plugins.join(".staging").join(&vend).exists());
+    }
+
+    #[tokio::test]
+    async fn mkt_review_a_vendored_plugin_reviews_and_installs_in_place() {
+        let f = fixture("vend");
+        let (status, v) = post(&f, "/plugins/inspect", json!({ "name": "vend" })).await;
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["review"]["skills"], json!([{ "name": "tidy", "description": "Tidies." }]));
+        assert_eq!((v["review"]["servers"].clone(), v["review"]["unsigned"].as_str()), (json!([]), Some(review::UNSIGNED)));
+        let (status, v) = post(&f, "/plugins/install", json!({ "staging": v["staging"], "approve": true })).await;
+        assert_eq!((status, v["ok"].as_bool()), (200, Some(true)), "{v}");
+        assert_eq!(installed(&f, "vend").unwrap()["path"], "./external_plugins/vend");
+        assert!(!f.plugins.join("vend").exists());
+        let (_, v) = post(&f, "/plugins/inspect", json!({ "name": "nope" })).await;
+        assert_eq!(v["error"], "unknown plugin nope");
     }
 }
