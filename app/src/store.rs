@@ -478,11 +478,10 @@ pub struct PluginRow {
     /// `meta.mcp` — the connector ids the plugin ships (the connected-page
     /// dedupe key; not counted twice against standalone servers).
     pub meta_mcp: Vec<String>,
-    /// Grok Bot catalog fields: the shown name, the logo URL (served by
-    /// the app server; empty = letter tile), Grok's category labels, the
-    /// publisher, whether its setup has fields (Add opens Setup first).
+    /// Catalog fields: the shown name (its tile is a letter tile), the
+    /// category labels, the publisher, whether its setup has fields (Add
+    /// opens Setup first).
     pub display_name: String,
-    pub icon: String,
     pub cats: Vec<String>,
     pub publisher: String,
     pub setup: bool,
@@ -1650,14 +1649,13 @@ pub struct BotIntegration {
     pub id: String,
     pub name: String,
     pub kind: String,
-    /// What it does and its logo (`/plugins/icon/…`, "" when none).
+    /// What it does.
     pub description: String,
-    pub icon: String,
 }
 
 impl BotIntegration {
     pub fn of(i: &serde_json::Value) -> Self {
-        Self { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind"), description: s(i, "description"), icon: s(i, "icon") }
+        Self { id: s(i, "id"), name: s(i, "name"), kind: s(i, "kind"), description: s(i, "description") }
     }
 }
 
@@ -4685,10 +4683,6 @@ impl Store {
                         })
                         .unwrap_or_default(),
                     display_name: s(r, "displayName"),
-                    icon: {
-                        let i = s(r, "icon");
-                        if i.is_empty() { i } else { format!("{}{}", client::backend(), i) }
-                    },
                     cats: list(r, "cats").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect(),
                     publisher: s(r, "publisher"),
                     setup: self::b(r, "setup"),
@@ -5105,17 +5099,6 @@ impl Store {
             .find(|p| p.name == name && !p.display_name.is_empty())
             .map(|p| p.display_name.clone())
             .unwrap_or_else(|| Self::plugin_title(name))
-    }
-
-    /// The plugin's logo URL (empty = none): by catalog key, else the
-    /// installed plugin that registered this connector id.
-    pub fn plugin_icon(&self, name: &str) -> String {
-        let rows = self.plugins.get_untracked();
-        rows.iter()
-            .find(|p| p.name == name)
-            .or_else(|| rows.iter().find(|p| p.installed && p.meta_mcp.iter().any(|m| m == name)))
-            .map(|p| p.icon.clone())
-            .unwrap_or_default()
     }
 
     /// `uninstallPlugin` (App.tsx:1419).

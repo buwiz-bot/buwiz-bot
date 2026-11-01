@@ -1,100 +1,97 @@
-// plugins.mjs — the plugin catalog (Grok Bot's snapshot + the legacy xAI
-// marketplace), per-plugin setup values, catalog installs from git, and the
-// connector configs materialized from them.
+// plugins.mjs — the first-party plugin catalog (plugins/catalog.json, maybe
+// absent or empty), installed plugins it doesn't list (from their records),
+// per-plugin setup values, catalog installs from git, and the connector
+// configs materialized from them.
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { GROKBOT_CATALOG, SERVER_DIR, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git, serverFile } from "./config.mjs";
+import { SERVER_DIR, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git } from "./config.mjs";
 import { db } from "./state.mjs";
 import { fixedRedirectUrl } from "./mcp.mjs";
 import { adjustServers as adjust, repoOf, resolveEntry, sourceUrlInfo } from "./plugin_resolve.mjs";
 
-// ————— categories (Grok Bot's marketplace browse model) —————
-// Grok Bot files catalog entries under its own eleven categories, from the
-// entry's categoryKeys plus a few per-plugin overrides; private-marketplace
-// entries stay out of the category sections.
+// ————— categories —————
+// Catalog entries go under eleven categories, from the entry's
+// categoryKeys (else its category); private-marketplace entries stay out
+// of the category sections.
 const CAT_ORDER = ["credentials", "productivity", "communication", "design", "code", "data", "sales", "marketing", "finance", "research", "support"];
 const CAT_LABEL = {
   credentials: "Password Managers", productivity: "Productivity", communication: "Communication", design: "Design",
   code: "Code", data: "Data", sales: "Sales", marketing: "Marketing", finance: "Finance", research: "Research", support: "Support",
 };
 const CAT_OF_KEY = {
-  LOGIN_AND_CREDENTIAL_MANAGEMENT: "credentials", PRODUCTIVITY: "productivity", INBOX_AND_COLLABORATION: "communication",
-  SCHEDULING: "communication", SALES: "sales", MARKETING: "marketing", CUSTOMER_SUPPORT: "support", PAYMENTS: "finance",
-  FINANCE_AND_LEGAL: "finance", DATA_ANALYTICS: "data", DESIGN: "design", CANVAS: "design", DOCUMENTS_AND_FILES: "productivity",
-  INFRASTRUCTURE: "code", RESEARCH: "research",
-};
-const CAT_OVERRIDE = {
-  slack: ["communication"], notion: ["productivity"], "notion-workspace": ["productivity"], linear: ["productivity"],
-  figma: ["design"], tldraw: ["design"], github: ["code"], "github-plugin": ["code"], runlayer: ["code"], langfuse: ["data"],
-  parallel: ["research", "data"], superpowers: ["code"], "compound-engineering": ["code"], "create-plugin": ["code"],
-  "context7-plugin": ["research"], context7: ["research"],
+  CREDENTIALS: "credentials", LOGIN_AND_CREDENTIAL_MANAGEMENT: "credentials", PRODUCTIVITY: "productivity", COMMUNICATION: "communication",
+  INBOX_AND_COLLABORATION: "communication", SCHEDULING: "communication", SALES: "sales", MARKETING: "marketing", SUPPORT: "support",
+  CUSTOMER_SUPPORT: "support", FINANCE: "finance", PAYMENTS: "finance", FINANCE_AND_LEGAL: "finance", DATA: "data", DATA_ANALYTICS: "data",
+  DESIGN: "design", CANVAS: "design", DOCUMENTS_AND_FILES: "productivity", CODE: "code", INFRASTRUCTURE: "code", RESEARCH: "research",
 };
 const keyNorm = (k) => String(k).trim().toUpperCase().replace(/&/g, " AND ").replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 function catsOf(e) {
   if (e.marketplace) return [];
-  for (const n of [e.pluginName, e.name]) {
-    const o = n && CAT_OVERRIDE[n.trim().toLowerCase()];
-    if (o) return o;
-  }
   const keys = e.categoryKeys ?? (e.categoryKey ? [e.categoryKey] : [e.category]);
   return [...new Set(keys.map((k) => CAT_OF_KEY[keyNorm(k || "")]).filter(Boolean))];
 }
 export const CATEGORIES = CAT_ORDER.map((id) => ({ id, label: CAT_LABEL[id] }));
 
 // ————— catalog —————
-const legacyByName = new Map((PLUGIN_CATALOG.plugins || []).map((p) => [p.name, p]));
-const CATALOG = (() => {
-  const out = (GROKBOT_CATALOG.plugins || []).map((e) => ({ ...e, cats: catsOf(e) }));
-  const keys = new Set(out.flatMap((e) => [e.key, e.name, e.pluginName]));
-  // xAI marketplace plugins Grok Bot doesn't list stay installable.
-  for (const p of PLUGIN_CATALOG.plugins || []) {
-    if (keys.has(p.name)) continue;
-    out.push({
-      key: p.name, name: p.name, pluginName: p.name, displayName: titleCase(p.name), description: p.description || "",
-      category: p.category || "other", cats: [], websiteUrl: p.homepage || null, repositoryUrl: p.source?.url?.replace(/\.git$/, "") || null,
-      connectors: [], skills: [], publisher: { name: "xai", displayName: "xAI" }, legacy: true, keywords: p.keywords || [],
-    });
-  }
-  return out;
-})();
-const byKey = new Map(CATALOG.map((e) => [e.key, e]));
+// An entry with a `source` (vendored under plugins/external_plugins/, or a
+// repository cloned whole) is a `legacy` entry; any other is a full entry
+// (key, install hints, fields, …). The first entry of a key wins.
+const sourced = (PLUGIN_CATALOG.plugins || []).filter((p) => p && p.source);
+const legacyByName = new Map(sourced.map((p) => [p.name, p]));
+const CATALOG = (PLUGIN_CATALOG.plugins || []).filter((p) => p && typeof p === "object").map((p) => {
+  if (!p.source) return { ...p, cats: catsOf(p) };
+  const by = p.author?.name || PLUGIN_CATALOG.owner?.name || "";
+  return {
+    key: p.name, name: p.name, pluginName: p.name, displayName: p.displayName || titleCase(p.name), description: p.description || "",
+    category: p.category || "other", cats: catsOf(p), websiteUrl: p.homepage || null,
+    repositoryUrl: p.source?.url?.replace(/\.git$/, "") || p.repository || null,
+    connectors: [], skills: [], publisher: { name: by, displayName: by }, legacy: true, keywords: p.keywords || [],
+  };
+});
+const byKey = new Map();
+for (const e of CATALOG) if (!byKey.has(e.key)) byKey.set(e.key, e);
 function titleCase(n) {
   return String(n).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 export const catalogEntries = () => CATALOG;
-export const catalogFetchedAt = () => GROKBOT_CATALOG.fetchedAt || "";
+export const catalogVersion = () => PLUGIN_CATALOG.version || "";
 export const entryOf = (key) => byKey.get(String(key || "")) || null;
 export const legacyOf = (key) => legacyByName.get(String(key || "")) || null;
 
-// Plugins whose connectors need a pre-registered OAuth app (or sit behind
-// a vendor's account gateway) — tools/probe-oauth-apps.mjs. Hidden from
-// the catalog unless ROX_SHOW_OAUTH_APP_PLUGINS=1; installed ones stay.
-const HIDDEN = (() => {
-  const m = new Map();
-  try {
-    for (const r of JSON.parse(readFileSync(serverFile("plugins/needs-oauth-app.json"), "utf8")).plugins || []) {
-      if (!m.has(r.name)) m.set(r.name, []);
-      m.get(r.name).push(r);
-    }
-  } catch {}
-  return m;
-})();
-export const SHOW_OAUTH_APP_PLUGINS = /^(1|true|yes)$/i.test(process.env.ROX_SHOW_OAUTH_APP_PLUGINS || "");
-export const hiddenInfo = (key) => HIDDEN.get(key) || null;
-
-// Logos: server/plugins/icons/<catalog name>.<ext> (from the catalog's
-// iconUrl). → absolute file path or null.
-const ICON_DIR = serverFile("plugins/icons");
-const ICON_FILES = (() => {
-  const m = new Map();
-  try { for (const f of readdirSync(ICON_DIR)) m.set(f.replace(/\.[^.]+$/, ""), f); } catch {}
-  return m;
-})();
-export function iconFile(key) {
+// The catalog's entry, else (installed from a catalog that's gone, or no
+// longer listed) one made from the installed record: its manifest's name
+// and description, its connector rows.
+export function entryFor(key) {
   const e = entryOf(key);
-  const f = ICON_FILES.get(e?.name) || ICON_FILES.get(key);
-  return f ? join(ICON_DIR, f) : null;
+  if (e) return e;
+  const meta = installedMeta(String(key || ""));
+  return meta ? installedEntry(String(key), meta) : null;
+}
+export function installedEntry(key, meta) {
+  const root = pluginRoot(key);
+  const man = root ? manifestAt(root) : {};
+  const str = (v) => (typeof v === "string" && v ? v : null);
+  const author = typeof man.author === "string" ? man.author : man.author?.name || "";
+  const names = [];
+  for (const id of meta.mcp || []) {
+    const n = db.prepare("SELECT name FROM mcp_servers WHERE id=?").get(id)?.name;
+    if (n && !names.includes(n)) names.push(n);
+  }
+  return {
+    key, name: key, pluginName: key, displayName: str(man.displayName) || titleCase(key), description: str(man.description) || "",
+    category: "other", cats: [], websiteUrl: str(man.homepage), repositoryUrl: meta.repo || str(man.repository),
+    connectors: names.map((name) => ({ name })), skills: [], publisher: { name: author, displayName: author }, keywords: [], uncataloged: true,
+  };
+}
+
+// The plugin manifest at root: the first plugin.json with a name, {} with none.
+export function manifestAt(root) {
+  for (const f of [".buwiz-plugin/plugin.json", ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json"]) {
+    const j = parse(existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : null, null);
+    if (j?.name) return j;
+  }
+  return {};
 }
 
 export const installedRow = (key) => db.prepare("SELECT name, meta FROM installed_plugins WHERE name=?").get(key);
@@ -106,7 +103,8 @@ export const installedMeta = (key) => {
 
 // Where an installed plugin's files live: catalog installs record `root`
 // (relative to PLUGINS_DIR); legacy installs are the clone + source path,
-// vendored ones the catalog's external_plugins dir.
+// vendored ones the catalog's external_plugins dir. A clone the catalog no
+// longer lists is still plugins/<key> (a vendored one's files are gone).
 export function pluginRoot(key) {
   const meta = installedMeta(key);
   if (meta?.root != null) {
@@ -114,7 +112,11 @@ export function pluginRoot(key) {
     return existsSync(r) ? r : null;
   }
   const p = legacyOf(key);
-  if (!p) return null;
+  if (!p) {
+    const dir = join(PLUGINS_DIR, String(key));
+    if (!meta || !/^[\w.@-]+$/.test(key) || key.startsWith(".") || !existsSync(join(dir, ".git"))) return null;
+    return meta.path ? join(dir, meta.path) : dir;
+  }
   if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
     const root = join(SERVER_DIR, "plugins", String(p.source.path).replace(/^\.\//, ""));
     return existsSync(root) ? root : null;
@@ -148,8 +150,8 @@ const BUILTIN = new Set(["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "workspaceF
 const VAR_RE = /\$\{([^}]+)\}/g;
 const isSecretKey = (k) => /KEY|TOKEN|SECRET|PASSWORD|PAT\b/i.test(k);
 
-// The MCP server configs a catalog entry declares (install hints from the
-// snapshot, else the installed copy's manifests).
+// The MCP server configs a catalog entry declares (its install hints, else
+// the installed copy's manifests).
 export function serverConfigs(key) {
   const e = entryOf(key);
   if (e?.install?.servers && Object.keys(e.install.servers).length) return adjust(e.install.servers);
@@ -216,8 +218,7 @@ export function dcrSupport(url) {
 }
 
 // The setup fields a plugin shows: the catalog's own `fields`, then every
-// ${KEY} its MCP config references without a field (Grok Bot does the
-// same from the plugin's variable names), then — for connectors that need
+// ${KEY} its MCP config references without a field, then — for connectors that need
 // a pre-registered OAuth client — Client ID / Client Secret / Bearer Token.
 export function fieldsOf(key) {
   const e = entryOf(key);

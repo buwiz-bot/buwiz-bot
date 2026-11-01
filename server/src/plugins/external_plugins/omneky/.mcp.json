@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "omneky": {
-      "type": "http",
-      "url": "https://mcp.omneky.com/mcp"
-    }
-  }
-}
