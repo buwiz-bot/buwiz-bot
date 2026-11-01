@@ -526,7 +526,7 @@ impl Host {
         let args = json!({"protocol": manifest::HOST_PROTOCOL, "plugin": id, "key": {"alg": "ed25519", "seed": seed}, "pub": public});
         let prov = match self.reserved(conn, "buwiz.provision", args, self.timeouts.reserved).await {
             Ok(p) => p,
-            Err(e) => return refuse("plugin_invalid", format!("buwiz.provision failed: {}", js::slice_utf16(e.message(), 200))),
+            Err(e) => return refuse("plugin_invalid", format!("buwiz.provision failed: {}", js::slice_utf16(once_prefixed(e.message()), 200))),
         };
         let sha_ok = get(&prov, "manifest_sha256").map(js::string_of).is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
         if get(&prov, "ok") != Some(&Value::Bool(true)) || !sha_ok {
@@ -652,6 +652,12 @@ impl Host {
         let Some(row) = self.row(id).filter(|r| r.enabled) else { return self.with_rt(id, |rt| rt.state) };
         if self.conn_of(id).is_some() {
             return self.with_rt(id, |rt| rt.state);
+        }
+        // a record from before a protocol bump: say so, don't spawn a plugin
+        // that can only answer the old reserved tools
+        if let Some(why) = older_protocol(&row) {
+            self.set_state(id, "failed", Some("protocol_unsupported"), &why);
+            return "failed";
         }
         if self.with_rt(id, |rt| rt.state) != "restarting" {
             self.set_state(id, "starting", None, "");
@@ -1279,9 +1285,74 @@ impl Sink {
     }
 }
 
+/// Why an installed plugin can't start under this host: its record names
+/// an older protocol major (a plugin built before a protocol bump).
+fn older_protocol(row: &Row) -> Option<String> {
+    let major = |p: &str| p.split('.').next().and_then(|m| m.parse::<u64>().ok());
+    let (theirs, ours) = (major(&row.protocol)?, major(manifest::HOST_PROTOCOL)?);
+    if theirs >= ours {
+        return None;
+    }
+    let title = get(&row.manifest(), "title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| row.id.clone());
+    Some(format!(
+        "{title} {} ({}) was made for an older Buwiz Bot (mini app protocol {}; this one runs {}), so it can't start. Install its current version, or uninstall it.",
+        row.version,
+        row.id,
+        row.protocol,
+        manifest::HOST_PROTOCOL
+    ))
+}
+
+/// An RPC error's message with a repeated `MCP error <code>: ` prefix
+/// dropped (a plugin whose own message already carries it).
+fn once_prefixed(msg: &str) -> &str {
+    match msg.strip_prefix("MCP error ").and_then(|r| r.split_once(": ")).map(|(_, r)| r) {
+        Some(inner) if inner.starts_with("MCP error ") => inner,
+        _ => msg,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row_of(id: &str, protocol: &str) -> Row {
+        Row {
+            id: id.into(),
+            short: "gws".into(),
+            command: "x".into(),
+            args: "[]".into(),
+            env: "{}".into(),
+            version: "1.1.0".into(),
+            protocol: protocol.into(),
+            publisher_key_id: "k".into(),
+            plugin_pub: String::new(),
+            manifest: json!({"title": "Google Workspace"}).to_string(),
+            manifest_sha256: String::new(),
+            tools: "[]".into(),
+            enabled: true,
+            disabled_tools: "[]".into(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_record_from_an_older_protocol_says_why_it_cannot_start() {
+        let old = row_of("dev.goldcoders.google-workspace", "1.0.0");
+        assert_eq!(
+            older_protocol(&old).unwrap(),
+            format!("Google Workspace 1.1.0 (dev.goldcoders.google-workspace) was made for an older Buwiz Bot (mini app protocol 1.0.0; this one runs {}), so it can't start. Install its current version, or uninstall it.", manifest::HOST_PROTOCOL)
+        );
+        assert_eq!(older_protocol(&row_of("app.buwiz.google-workspace", manifest::HOST_PROTOCOL)), None);
+        assert_eq!(older_protocol(&row_of("x", "not a version")), None, "unreadable: the gate decides");
+    }
+
+    #[test]
+    fn a_doubled_mcp_error_prefix_is_said_once() {
+        assert_eq!(once_prefixed("MCP error -32600: MCP error -32600: rox.provision must come first"), "MCP error -32600: rox.provision must come first");
+        assert_eq!(once_prefixed("MCP error -32001: Request timed out"), "MCP error -32001: Request timed out");
+        assert_eq!(once_prefixed("refused"), "refused");
+    }
 
     #[test]
     fn a_spawn_spec_is_stdio_only_with_string_args_and_env() {
