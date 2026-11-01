@@ -153,7 +153,7 @@ test("RSV-04 buwiz.ticket.resolve returns a title and no subject field", async (
   assert.equal(await codeOf(sessions.ticketTitle({ plugin: FX, ticket: "acme-123" })), "invalid_args");
 });
 
-test("RSV-05 buwiz.session.close and buwiz.uninstall answer ok; an unknown rox.* answers -32601", async () => {
+test("RSV-05 buwiz.session.close and buwiz.uninstall answer ok; an unknown buwiz.* answers -32601", async () => {
   const { b } = setup("rsv05");
   const c = await rawFixture(b);
   const k = generate();

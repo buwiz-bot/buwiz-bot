@@ -623,7 +623,7 @@ impl Market {
                     let mut parts = inner.split(":-");
                     let (name, dflt) = (parts.next().unwrap_or(""), parts.next());
                     match name {
-                        // 2.1 §1: ${PLUGIN_ROOT} for every plugin
+                        // §7.2: ${PLUGIN_ROOT} for every plugin
                         "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" | "PLUGIN_ROOT" => root.clone(),
                         "workspaceFolder" | "userHome" => val(name).unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                         "HOME" | "USERPROFILE" => val(name).or_else(|| std::env::var(name).ok()).unwrap_or_default(),

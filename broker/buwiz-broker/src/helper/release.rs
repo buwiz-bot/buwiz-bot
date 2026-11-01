@@ -6,8 +6,8 @@
 //! `<data>/v1/apps/<id>/<version>/` through a temp dir and a rename. What
 //! comes out is the spawn spec `Host::inspect` takes; nothing is installed.
 //!
-//! A release with a `plugin.json` asset is a 2.1 package instead (2.1
-//! §2.1): plugin.json verified (`v1::package`), every `files` asset and
+//! A release with a `plugin.json` asset is a package instead (§8.2):
+//! plugin.json verified (`v1::package`), every `files` asset and
 //! this platform's binary checked against its sha256 and written at its
 //! path, plugin.json beside them; the spawn spec is `mcpServers[server]`
 //! with `${PLUGIN_ROOT}` the folder.
@@ -29,7 +29,7 @@ use crate::v1::trust::Trust;
 pub const GITHUB_API: &str = "https://api.github.com";
 pub const INDEX_ASSET: &str = "buwiz-release.json";
 pub const MANIFEST_FILE: &str = "manifest.signed.json";
-/// A 2.1 package's release asset (flat, as GitHub's are).
+/// A package's release asset (flat, as GitHub's are).
 pub const PLUGIN_ASSET: &str = PLUGIN_FILE;
 const SMALL_MAX: usize = 1024 * 1024;
 const BINARY_MAX: usize = 200 * 1024 * 1024;
@@ -259,16 +259,16 @@ pub(crate) fn file_sha(p: &Path) -> Option<String> {
 pub struct Fetched {
     pub id: String,
     pub version: String,
-    /// a 2.0 index's `[{key, label, secret}]`
+    /// a bare binary index's `[{key, label, secret}]`
     pub needs_env: Vec<Value>,
     /// the release page (`…/releases/tag/<tag>`)
     pub source: String,
     pub dir: PathBuf,
     pub command: String,
     pub args: Vec<String>,
-    /// `run.env` (2.1: the server's env) expanded
+    /// `run.env` (a package: the server's env) expanded
     pub env: Vec<(String, String)>,
-    /// a 2.1 package's plugin.json, verified
+    /// a package's plugin.json, verified
     pub package: Option<Package>,
 }
 
@@ -344,7 +344,7 @@ pub async fn fetch(api: &str, src: &Source, trust: &Trust, data: &Path) -> Resul
     Ok(Fetched { id: ix.id, version: ix.version, needs_env: ix.needs_env, command, args: ix.args, env, source, dir, package: None })
 }
 
-/// The 2.1 path: plugin.json verified, its files and this platform's
+/// The package path (§8.2): plugin.json verified, its files and this platform's
 /// binary in `<data>/v1/apps/<id>/<version>/` (a complete folder is kept).
 async fn fetch_package(release: &Value, plain: bool, source: String, trust: &Trust, data: &Path) -> Result<Fetched, String> {
     let text = small(&asset_url(release, PLUGIN_ASSET)?, "application/octet-stream", plain, package::PLUGIN_JSON_MAX).await?;

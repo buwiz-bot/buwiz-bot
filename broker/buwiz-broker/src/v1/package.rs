@@ -1,10 +1,10 @@
-//! A mini app package (extension format 2.1 §1): a plugin folder whose
+//! A mini app package (§7): a plugin folder whose
 //! `plugin.json` carries one signed `buwiz` block. The block names the
 //! mini app's `mcpServers` entry, its accounts, and every other file of the
 //! folder by sha256 (binaries per platform). The signature is ed25519 by
 //! `buwiz.publisher.key_id` over JCS of the whole plugin.json with
 //! `buwiz.signature` removed, so commands, skills and every hash are
-//! covered. Trust is the 2.0 manifest's: a trusted key, the id approved
+//! covered. Trust is the manifest's (§5.1): a trusted key, the id approved
 //! for it. The served `buwiz://manifest` keeps its own signature.
 
 use std::path::Path;

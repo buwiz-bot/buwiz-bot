@@ -170,9 +170,10 @@ pub struct AppInstallNotice {
     /// Installed plugins whose settings have every `needs_env` key:
     /// (id, title).
     pub env_from: Vec<(String, String)>,
-    /// A 2.1 package's install folder, sent back with Install ("" for 2.0).
+    /// A package's install folder, sent back with Install ("" for a bare
+    /// binary).
     pub package: String,
-    /// A 2.1 package's skills (names) and accounts; empty for 2.0.
+    /// A package's skills (names) and accounts; empty for a bare binary.
     pub skills: Vec<String>,
     pub accounts: Vec<InstallAccount>,
     pub text: String,
@@ -180,7 +181,7 @@ pub struct AppInstallNotice {
     pub state: String,
 }
 
-/// An account a 2.1 package declares, as its install card names it.
+/// An account a package declares, as its install card names it.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct InstallAccount {
     pub id: String,
@@ -2431,7 +2432,7 @@ pub struct Store {
     /// The Setup page's draft values (field key → text) and its error.
     pub setup_vals: Signal<BTreeMap<String, String>>,
     pub setup_err: Signal<String>,
-    /// A catalog plugin's review before it installs (2.1 §2.2): what
+    /// A catalog plugin's review before it installs: what
     /// `/plugins/inspect` staged, and the review page's error.
     pub plain_review: Signal<Option<crate::plugin_review::PlainReview>>,
     pub plain_review_err: Signal<String>,
@@ -4910,7 +4911,7 @@ impl Store {
         }
     }
 
-    /// `installPlugin` (App.tsx:1407), behind 2.1's review (D2): the
+    /// `installPlugin` (App.tsx:1407), behind the review every install shows: the
     /// broker stages the plugin and the review page shows what it adds;
     /// nothing installs until its Install.
     pub fn install_plugin(&'static self, name: &str) {
@@ -4942,7 +4943,7 @@ impl Store {
         });
     }
 
-    /// The one-step Add of the Node rollback (before 2.1): a plugin with
+    /// The one-step Add of the Node rollback (before the review): a plugin with
     /// setup fields opens its Setup page first.
     fn install_unreviewed(&'static self, name: &str) {
         let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
@@ -7961,7 +7962,7 @@ mod tests {
     fn a_2_1_install_card_names_its_skills_and_accounts() {
         use super::Turn;
         let old = Turn::of(&install_notice(serde_json::json!({}))).app_install.unwrap();
-        assert_eq!((old.skills_line(), old.accounts_line()), (None, None), "a 2.0 notice has neither");
+        assert_eq!((old.skills_line(), old.accounts_line()), (None, None), "a bare binary's notice has neither");
         let n = Turn::of(&install_notice(serde_json::json!({
             "skills": ["triage-inbox", "draft-reply"],
             "accounts": [{"id": "google", "provider": "google", "label": "Google account", "required": true},
@@ -7972,7 +7973,7 @@ mod tests {
         assert_eq!(n.skills_line().as_deref(), Some("Skills: triage-inbox, draft-reply"));
         assert_eq!(n.accounts_line().as_deref(), Some("Accounts: Google account (sign in after install), Drive (optional)"));
         assert_eq!(n.accounts[1].provider, "oauth:https://auth.example.com");
-        // a 2.1 install sends its package folder back; a 2.0 one sends none
+        // a package install sends its folder back; a bare binary's sends none
         assert!(old.install_body(&[], None).get("package").is_none());
         let p = Turn::of(&install_notice(serde_json::json!({"package": "/data/v1/apps/app.buwiz.google-workspace/1.2.0"}))).app_install.unwrap();
         let b = p.install_body(&[], None);

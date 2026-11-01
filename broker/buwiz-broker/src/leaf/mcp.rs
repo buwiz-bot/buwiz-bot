@@ -9,7 +9,7 @@
 //! is what `/mcp/servers` shows and Node mirrors. `/mcp/open` hands only
 //! Rox links to the system (`open`, from PATH), an app link with a one-time
 //! pass that `/mcp/open/pass` redeems (open-pass.mjs). `/oauth/callback/`
-//! also finishes a mini app account's sign-in (2.1 §4) when the plugin
+//! also finishes a mini app account's sign-in (§20.2) when the plugin
 //! host started it.
 
 use std::collections::HashMap;

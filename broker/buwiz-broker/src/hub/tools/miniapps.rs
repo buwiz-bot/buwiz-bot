@@ -3,7 +3,7 @@
 //! fetches and verifies a GitHub release (`helper::release`), inspects it
 //! and posts an `app_install` card in the chat: only the user's Install
 //! installs it. `app_uninstall` posts an `app_uninstall` card the same way;
-//! `app_enable` / `app_disable` act at once; `app_list` lists. A 2.1
+//! `app_enable` / `app_disable` act at once; `app_list` lists. A
 //! package's card also names its folder (`package`), skills and accounts.
 
 use serde_json::{json, Value};
@@ -438,7 +438,7 @@ mod tests {
 
     const SKILL: &str = "---\nname: triage\ndescription: Triage the inbox\n---\nRead the newest mail first.\n";
 
-    /// The fixture as a 2.1 package: plugin.json (signed, with a google
+    /// The fixture as a package: plugin.json (signed, with a google
     /// account), the served manifest and a skill as files, the launcher
     /// as this platform's binary; `edit` changes plugin.json before it is
     /// signed.

@@ -12,7 +12,7 @@
 //! | `added` | `{prev, next}` | lines |
 //! | `semver` | `{a, b}` | -1, 0, 1 or `null` |
 //! | `limits` | `{}` | Appendix A |
-//! | `package` | `{text, trust, host?, platform?}` (a 2.1 plugin.json) | `{id, short, version, server, accounts, files, binary}` |
+//! | `package` | `{text, trust, host?, platform?}` (a package's plugin.json) | `{id, short, version, server, accounts, files, binary}` |
 //!
 //! The answer is `{ok: true, value}`, or a refusal's wire form.
 

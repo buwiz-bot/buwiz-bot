@@ -165,7 +165,7 @@ test("RSV-04 gws: buwiz.ticket.resolve answers valid:false and no subject", asyn
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.ticket.resolve", { ticket: "tkt_00000000000000000000000000" }), { valid: false });
 });
 
-test("RSV-05 gws: buwiz.session.close and buwiz.uninstall answer ok; unknown rox.* is -32601", async () => {
+test("RSV-05 gws: buwiz.session.close and buwiz.uninstall answer ok; unknown buwiz.* is -32601", async () => {
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.session.close", { open_id: "x" }), { ok: true });
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.uninstall", {}), { ok: true });
   assert.equal(await plugins.callReserved(GWS, "buwiz.frobnicate", {}), null);

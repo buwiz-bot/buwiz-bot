@@ -15,7 +15,7 @@
 //! host and its sessions (`sessions.rs`) over the line (`helper::line`); each change of a
 //! plugin's state goes out as a snapshot on [`Host::events`].
 //!
-//! A 2.1 package (extension format 2.1 §1) installs from its folder
+//! A package (§7) installs from its folder
 //! (`package`): plugin.json verified and every file checked at install,
 //! plugin.json verified again at each spawn, the served manifest's id,
 //! short and version the block's. The record keeps the folder and the
@@ -57,7 +57,7 @@ const SCHEMA: &str = "
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 ";
 
-/// 2.1 §3: columns a 2.0 database lacks.
+/// Columns a database written before packages lacks.
 const COLUMNS: [(&str, &str); 2] = [("package", "TEXT"), ("skills", "TEXT NOT NULL DEFAULT '[]'")];
 
 type Res<T = Value> = Result<T, V1Error>;
@@ -193,7 +193,7 @@ pub struct Row {
     pub enabled: bool,
     pub disabled_tools: String,
     pub created_at: i64,
-    /// a 2.1 package's install folder (2.0: none)
+    /// a package's install folder (a bare binary: none)
     pub package: Option<String>,
     /// `[{name, description, file}]`
     pub skills: String,
@@ -858,7 +858,7 @@ impl Host {
         }
     }
 
-    /// A body naming a 2.1 package folder (`package`, 2.1 §2): plugin.json
+    /// A body naming a package folder (`package`, §7.4): plugin.json
     /// verified, every file checked, the spawn spec its server's (a body's
     /// own command and args must be those; its env keeps the package's).
     fn with_package(&self, body: &Value) -> Res<(Value, Option<(PathBuf, Package)>)> {
@@ -891,7 +891,7 @@ impl Host {
 
     /// POST /v1/host/plugins/inspect: a temporary spawn, verified, with the
     /// review of 13.1 step 3. Nothing is installed or stored. `{package}`
-    /// inspects a 2.1 package folder (its answer: `package`).
+    /// inspects a package folder (its answer: `package`).
     pub async fn inspect(&self, body: &Value) -> Res {
         let (body, pkg) = self.with_package(body)?;
         let (spec, _) = spawn_spec(&body)?;
@@ -950,7 +950,7 @@ impl Host {
     /// 4) or updates an installed plugin (13.3). `manifest_sha256` must be
     /// the reviewed hash; an update that adds permissions needs
     /// `approve_permissions: true`, an older version `allow_downgrade: true`.
-    /// `package` installs a 2.1 package folder (its plugin.json and files
+    /// `package` installs a package folder (its plugin.json and files
     /// checked again).
     pub async fn install(&self, body: &Value) -> Res {
         let (body, pkg) = self.with_package(body)?;

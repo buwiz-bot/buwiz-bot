@@ -4,7 +4,7 @@
 //! from enabled, running, approved plugins; a routine's turn sees its own
 //! surface (5.9); a tool result's `buwiz/open` becomes a card on the reply
 //! and its `buwiz/suggest` the reply's next steps, never shown to the model.
-//! A 2.1 tool that answers `{code: "account_required", account}` for an
+//! A package tool that answers `{code: "account_required", account}` for an
 //! account its package declares puts a sign-in card (`account_required`)
 //! in the chat.
 
@@ -216,7 +216,7 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
     Out { content: json!(fold(&r)), is_error: Some(failed) }
 }
 
-/// 2.1 §4: a failed call whose data is `{code: "account_required",
+/// §20.4: a failed call whose data is `{code: "account_required",
 /// account}`, `account` one the package declares: one pending sign-in card
 /// per chat and account, and a line for the model.
 fn account_required(run: &Run, p: &dyn PluginView, row: &Row, r: &Value) -> Option<Out> {

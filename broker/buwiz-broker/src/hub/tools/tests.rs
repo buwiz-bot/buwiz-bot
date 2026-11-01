@@ -146,7 +146,7 @@ impl PluginView for Arc<Fake> {
                 let failed = args.get("fail") == Some(&json!(true));
                 Ok(json!({"content": text(if failed { "failed".into() } else { "Here is the card.".into() }), "isError": failed, "_meta": meta}))
             }
-            // a 2.1 tool whose account is missing (2.1 §4)
+            // a package tool whose account is missing (§20.4)
             "fx_mail" => {
                 let data = json!({"code": "account_required", "account": args.get("account").cloned().unwrap_or(json!("google"))});
                 Ok(json!({"content": text(data.to_string()), "structuredContent": data, "isError": true}))
@@ -547,7 +547,7 @@ async fn magt_04_a_remote_answer_that_reads_signed_out_marks_it_and_the_next_cal
     let _ = fx.wait();
 }
 
-/// 2.1 §4: `{code: "account_required", account}` from a tool of a package
+/// §20.4: `{code: "account_required", account}` from a tool of a package
 /// that declares the account is a sign-in card in the chat (one while it
 /// is pending) and a line for the model; an undeclared account is a plain
 /// failure.
