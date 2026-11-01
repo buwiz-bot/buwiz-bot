@@ -30,7 +30,7 @@ pub struct FrontDoor {
     line: Option<Arc<Line>>,
     /// the /mcp routes, when this broker hosts the MCP servers (4.3)
     mcp: Option<leaf::mcp::McpRoutes>,
-    /// the brain's routes, with `ROX_BROKER_HUB=1` (plan D30)
+    /// the brain's routes, with `BUWIZ_BROKER_HUB=1` (plan D30)
     hub: Option<Arc<Hub>>,
     client: Client<HttpConnector, Incoming>,
 }

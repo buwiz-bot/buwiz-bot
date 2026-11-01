@@ -7,15 +7,16 @@
 //     1 as a cancelled dialog does; a missing file prints nothing.
 //   OSASCRIPT_STUB_FAIL=1: exits 1 as a cancelled dialog does.
 //   OSASCRIPT_STUB_OUT: printed as is. Default: nothing.
-// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there, plus
+// BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there, plus
 // {env} with the REM_* variables (the arguments JXA scripts read) when any
 // is set.
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
 
 const rem = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("REM_")).sort(([a], [b]) => (a < b ? -1 : 1)));
 const call = { bin: "osascript", argv: process.argv.slice(2), ...(Object.keys(rem).length ? { env: rem } : {}) };
 
-if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify(call) + "\n");
+if (STUB_LOG) appendFileSync(STUB_LOG, JSON.stringify(call) + "\n");
 const file = process.env.OSASCRIPT_STUB_FILE;
 const out = file ? (existsSync(file) ? readFileSync(file, "utf8") : "") : process.env.OSASCRIPT_STUB_OUT || "";
 

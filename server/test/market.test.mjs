@@ -7,7 +7,7 @@
 // no catalog lists, and the bundled first-party catalog.
 //
 // The broker reads a synthetic catalog (CATALOG below, written to a temp
-// file and named by ROX_PLUGIN_CATALOG); its plugins and hosts are made up.
+// file and named by BUWIZ_PLUGIN_CATALOG); its plugins and hosts are made up.
 // No network: the catalog's repositories are local bare repos built here,
 // reached through git's own `url.<file://…>.insteadOf` (GIT_CONFIG_*), with
 // only the file protocol allowed. The catalog also probes some connectors'
@@ -136,8 +136,8 @@ const env = () => ({
   HTTP_PROXY: `http://127.0.0.1:${SINK_PORT}`,
   NO_PROXY: "127.0.0.1,localhost",
   // rox-broker hosts the MCP servers (Node ignores these)
-  ROX_BROKER_MCP_HOST: "1",
-  ROX_PLUGIN_CATALOG: CATALOG_FILE,
+  BUWIZ_BROKER_MCP_HOST: "1",
+  BUWIZ_PLUGIN_CATALOG: CATALOG_FILE,
 });
 
 before(async () => {
@@ -620,7 +620,7 @@ test("MKT-15 the bundled catalog lists the three vendored plugins; no catalog fi
     ["google-workspace", "Google Workspace", "taylorwilsdon", ["productivity"]],
   ]);
   for (const name of ["calcom", "neon", "google-workspace"]) assert.ok(existsSync(join(ROOT, "src", "plugins", "external_plugins", name, ".mcp.json")), name);
-  const none = read({ ROX_PLUGIN_CATALOG: join(dir, "no-such-catalog.json") });
+  const none = read({ BUWIZ_PLUGIN_CATALOG: join(dir, "no-such-catalog.json") });
 
   assert.deepEqual(none, { rows: [], kept: "Kept" });
 });

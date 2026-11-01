@@ -4,12 +4,13 @@
 //     call, "<window-id> <title>" lines; missing: nothing);
 //   `list-workspaces --focused` prints AEROSPACE_STUB_WORKSPACE (default
 //     "1"); anything else succeeds silently.
-// ROX_STUB_LOG: each call appends {bin, argv} as a JSON line there.
+// BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
 
 const argv = process.argv.slice(2);
 
-if (process.env.ROX_STUB_LOG) appendFileSync(process.env.ROX_STUB_LOG, JSON.stringify({ bin: "aerospace", argv }) + "\n");
+if (STUB_LOG) appendFileSync(STUB_LOG, JSON.stringify({ bin: "aerospace", argv }) + "\n");
 const file = process.env.AEROSPACE_STUB_WINDOWS;
 
 if (argv[0] === "list-windows" && file && existsSync(file)) process.stdout.write(readFileSync(file, "utf8"));

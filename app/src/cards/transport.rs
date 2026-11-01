@@ -126,10 +126,10 @@ pub(crate) async fn answer_run(run_id: &str, call_id: &str, approved: bool) -> S
     send("POST", &path, answer_body(call_id, approved)).await
 }
 
-/// This Mac's id for its local-exec rules: `ROX_MACHINE_ID`, until Rox
+/// This Mac's id for its local-exec rules: `BUWIZ_MACHINE_ID`, until Rox
 /// enrols a daemon of its own.
 pub(crate) fn machine_id() -> String {
-    std::env::var("ROX_MACHINE_ID").unwrap_or_default()
+    rox_v1::env::var("BUWIZ_MACHINE_ID").unwrap_or_default()
 }
 
 /// `POST /local-exec/policy/rule {machineId, kind: allow|deny, pattern}`.

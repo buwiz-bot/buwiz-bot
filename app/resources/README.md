@@ -11,7 +11,7 @@ site's own 512 px icon places it.
   `scripts/release/build.sh` put it in the bundle as
   `Contents/Resources/AppIcon.icns`.
 - `AppIcon-test.svg`, `AppIcon-test.icns`: the same with an orange TEST
-  band, the icon of the test bundles `scripts/test-rox` makes, so a test
+  band, the icon of the test bundles `scripts/buwiz-test` makes, so a test
   instance never looks like the real app in the Dock or the app switcher.
 
 The PNG and the icns files are generated: edit the SVGs, then run

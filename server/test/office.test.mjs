@@ -498,7 +498,7 @@ const dir = tempDir("office-http");
 const files = join(dir, "generated", "files");
 let server;
 
-const hubEnv = () => modelEnv(fake, join(dir, "stubs.log"), RUST ? { ROX_BROKER_HUB: "1", ROX_BROKER_MCP_HOST: "1", ROX_BROKER_V1_HOST: "1" } : {});
+const hubEnv = () => modelEnv(fake, join(dir, "stubs.log"), RUST ? { BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_MCP_HOST: "1", BUWIZ_BROKER_V1_HOST: "1" } : {});
 
 test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async () => {
   mkdirSync(files, { recursive: true });

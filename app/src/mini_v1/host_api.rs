@@ -313,7 +313,7 @@ pub struct HttpBroker {
 }
 
 impl HttpBroker {
-    /// The broker Rox is configured for (`ROX_BACKEND`).
+    /// The broker Rox is configured for (`BUWIZ_BACKEND`).
     pub fn configured() -> HttpBroker {
         HttpBroker { origin: crate::client::backend().to_owned() }
     }

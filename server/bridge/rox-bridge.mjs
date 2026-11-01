@@ -5,17 +5,19 @@
 // endpoint in Rox (POST /v1/host/agents/endpoints/create {bot, kind:
 // "bridge", name}), then add this server to Claude Code:
 //
-//   claude mcp add rox -e ROX_BRIDGE_TOKEN=<token> -- node <rox>/server/bridge/rox-bridge.mjs
+//   claude mcp add rox -e BUWIZ_BRIDGE_TOKEN=<token> -- node <rox>/server/bridge/rox-bridge.mjs
 //
-// ROX_BRIDGE_URL is the broker (default http://127.0.0.1:8787). The bridge
+// BUWIZ_BRIDGE_URL is the broker (default http://127.0.0.1:8787); ROX_BRIDGE_URL
+// and ROX_BRIDGE_TOKEN, the old names, still work. The bridge
 // is one participant ("Claude Code · <its endpoint name>") in the agent's
 // conversations, which Rox shows read-only with a notice in the agent's chat.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { env } from "../src/env.mjs";
 
-const BASE = (process.env.ROX_BRIDGE_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
-const TOKEN = process.env.ROX_BRIDGE_TOKEN || "";
+const BASE = (env("BUWIZ_BRIDGE_URL") || "http://127.0.0.1:8787").replace(/\/+$/, "");
+const TOKEN = env("BUWIZ_BRIDGE_TOKEN") || "";
 
 const TOOLS = [
   {
@@ -65,7 +67,7 @@ async function call(name, args) {
 
   if (!method) return { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true };
 
-  if (!TOKEN) return { content: [{ type: "text", text: "ROX_BRIDGE_TOKEN is not set" }], isError: true };
+  if (!TOKEN) return { content: [{ type: "text", text: "BUWIZ_BRIDGE_TOKEN is not set" }], isError: true };
 
   try {
     const res = await fetch(BASE + path, {

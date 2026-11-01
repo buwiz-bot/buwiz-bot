@@ -13,7 +13,7 @@
 //! plugin list changes; uninstall deletes the plugin's folder, cache
 //! included (13.6).
 //!
-//! `ROX_MINI_CACHE=0` turns the cache off (to measure the cold path).
+//! `BUWIZ_MINI_CACHE=0` turns the cache off (to measure the cold path).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -25,9 +25,9 @@ use serde_json::{Value, json};
 
 use super::keys;
 
-/// Whether the cache is on (`ROX_MINI_CACHE=0` turns it off).
+/// Whether the cache is on (`BUWIZ_MINI_CACHE=0` turns it off).
 pub fn enabled() -> bool {
-    std::env::var("ROX_MINI_CACHE").map_or(true, |v| v != "0")
+    rox_v1::env::var("BUWIZ_MINI_CACHE").is_none_or(|v| v != "0")
 }
 
 /// This Rox build: what compiled the module (nsh's compiler, the import

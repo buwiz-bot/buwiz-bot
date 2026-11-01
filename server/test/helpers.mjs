@@ -8,6 +8,9 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { env, withOld } from "../src/env.mjs";
+
+export { env };
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const PORT = Number(process.env.TEST_PORT || 8797);
@@ -26,11 +29,11 @@ export function brokerCommand() {
 }
 
 /** Whether the tests run through rox-broker with its hub on
- *  (ROX_BROKER_HUB=1, plan D30): the brain answers in Rust, and Node runs
+ *  (BUWIZ_BROKER_HUB=1, plan D30): the brain answers in Rust, and Node runs
  *  only its office role. A case that tests Node's own brain is skipped
  *  then (`{ skip: HUB && "Node-only: …" }`), as a Rust-only case is
  *  skipped on plain Node. */
-export const HUB = !!(process.env.BUWIZ_BROKER_CMD || "").trim() && process.env.ROX_BROKER_HUB === "1";
+export const HUB = !!(process.env.BUWIZ_BROKER_CMD || "").trim() && env("BUWIZ_BROKER_HUB") === "1";
 
 export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}-`));
 
@@ -41,8 +44,8 @@ export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}
 export const STUB_BIN = join(ROOT, "test", "fixtures", "bin");
 
 /** The env that puts the stubs first on the broker's PATH, NSH at the nsh
- *  stub, and their call log at `log` (ROX_STUB_LOG). */
-export const stubEnv = (log) => ({ PATH: `${STUB_BIN}:${process.env.PATH}`, NSH: join(STUB_BIN, "nsh"), ROX_STUB_LOG: log });
+ *  stub, and their call log at `log` (BUWIZ_STUB_LOG). */
+export const stubEnv = (log) => ({ PATH: `${STUB_BIN}:${process.env.PATH}`, NSH: join(STUB_BIN, "nsh"), BUWIZ_STUB_LOG: log });
 
 /** The stubs' calls so far: [{bin, argv, stdin?}], oldest first. */
 export const stubCalls = (log) =>
@@ -60,7 +63,7 @@ export const nodeIn = (dataDir, code, env = {}) => (
   mkdirSync(join(dataDir, "widgets"), { recursive: true }),
   execFileSync(process.execPath, ["--input-type=module", "-e", `${code}\nprocess.exit(0);`], {
     cwd: ROOT,
-    env: { ...process.env, GROK_DATA_DIR: dataDir, MOCK: "1", ...env },
+    env: { ...process.env, BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", ...env },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim().split("\n").at(-1)
@@ -132,21 +135,21 @@ export const postJson = (path, obj) =>
 const up = () => request("GET", "/health").then((r) => r.status === 200, () => false);
 
 /** The environment startServer gives the broker: this process's, the test
- *  defaults (PORT, GROK_DATA_DIR, MOCK=1, no extra origins), then `env`
- *  over them; a key set to `undefined` is removed (`{MOCK: undefined}`
- *  turns MOCK off). */
+ *  defaults (PORT, BUWIZ_BROKER_DATA_DIR, MOCK=1, no extra origins), then `env`
+ *  over them; a key set to `undefined` is removed, by its old name too
+ *  (`{MOCK: undefined}` turns MOCK off). */
 export function serverEnv(dataDir, env = {}) {
-  const out = { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "" };
+  const out = { ...process.env, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "" };
 
   for (const [k, v] of Object.entries(env)) {
-    if (v === undefined) delete out[k];
+    if (v === undefined) for (const n of withOld(k)) delete out[n];
     else out[k] = String(v);
   }
 
   return out;
 }
 
-/** Starts the server on PORT with GROK_DATA_DIR=dataDir; resolves to
+/** Starts the server on PORT with BUWIZ_BROKER_DATA_DIR=dataDir; resolves to
  *  {log, stop, pid} (pid leads the broker's process group). `env`
  *  overrides the environment (serverEnv). */
 export async function startServer(dataDir, { env } = {}) {

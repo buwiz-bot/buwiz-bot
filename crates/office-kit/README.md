@@ -48,7 +48,7 @@ The app also calls into the kit: `fonts::register` and
 cargo test -p buwiz-office-kit
 ```
 
-The fonts' tests read BetterOffice's font files: `ROX_OFFICE_FONTS`, or the
+The fonts' tests read BetterOffice's font files: `BUWIZ_OFFICE_FONTS`, or the
 checkout's `server/node_modules/@betteroffice/fonts/assets`.
 
 ## Licence

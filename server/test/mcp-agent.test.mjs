@@ -1,9 +1,9 @@
 // The brain's MCP servers (Rust broker plan 4.4): the tools the agent sees
 // (toolList), its tool calls (execTool), a routine's check, and a remote
 // server whose answer reads as signed out, in this process on a temp data
-// dir. With BUWIZ_BROKER_CMD and ROX_BROKER_MCP_HOST=1 the same modules reach
+// dir. With BUWIZ_BROKER_CMD and BUWIZ_BROKER_MCP_HOST=1 the same modules reach
 // the servers through `rox-broker helper` over the line, as the live
-// broker hands Node its line (ROX_V1_LINE, ROX_LINE_HOSTS=mcp), and the
+// broker hands Node its line (BUWIZ_V1_LINE, BUWIZ_LINE_HOSTS=mcp), and the
 // servers run under rox-broker, not this process.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -11,9 +11,9 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { oauthServer } from "./fixtures/oauth-server.mjs";
-import { HUB, PORT, ROOT, tempDir } from "./helpers.mjs";
+import { HUB, PORT, ROOT, env, tempDir } from "./helpers.mjs";
 
-// Node-only under the hub (ROX_BROKER_HUB=1): tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)
+// Node-only under the hub (BUWIZ_BROKER_HUB=1): tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)
 const NODE_ONLY = { skip: HUB && "Node-only: tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)" };
 
 const dataDir = tempDir("mcp-agent");
@@ -21,9 +21,9 @@ const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
 const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
 // (not under the hub, where every case here is skipped: no helper to start)
-const RUST = !HUB && process.env.BUWIZ_BROKER_CMD && process.env.ROX_BROKER_MCP_HOST === "1" ? process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/)[0] : "";
+const RUST = !HUB && process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1" ? process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/)[0] : "";
 
-process.env.GROK_DATA_DIR = dataDir;
+process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 process.env.MOCK = "1";
 
 // the line, before any module reads it (v1/line-env.mjs)
@@ -37,7 +37,7 @@ if (RUST) {
 
   helper = spawn(RUST, ["helper", "--db", join(dataDir, "generated", "app.db"), "--port", String(port)], {
     cwd: ROOT,
-    env: { ...process.env, ROX_LINE_TOKEN: token, ROX_PUBLIC_PORT: String(PORT) },
+    env: { ...process.env, BUWIZ_LINE_TOKEN: token, BUWIZ_PUBLIC_PORT: String(PORT) },
     stdio: ["ignore", "pipe", "inherit"],
   });
   await new Promise((resolve, reject) => {
@@ -49,7 +49,7 @@ if (RUST) {
     });
     helper.on("exit", (code) => reject(new Error(`rox-broker helper exited (${code})`)));
   });
-  Object.assign(process.env, { ROX_V1_LINE: `http://127.0.0.1:${port}`, ROX_V1_LINE_TOKEN: token, ROX_LINE_HOSTS: "mcp" });
+  Object.assign(process.env, { BUWIZ_V1_LINE: `http://127.0.0.1:${port}`, BUWIZ_V1_LINE_TOKEN: token, BUWIZ_LINE_HOSTS: "mcp" });
 }
 
 const { db, activeThread } = await import("../src/state.mjs");
