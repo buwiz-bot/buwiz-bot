@@ -110,6 +110,46 @@ pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json:
     serde_json::from_str(&res.text()).ok()
 }
 
+/// [`get`], but the status and an error body come back too (a route the
+/// broker has not ported answers 501 `{ok:false, code:"not_ported"}`; a
+/// body that is not JSON is `Null`). `None` only when nothing answered.
+pub async fn get_any(path: &str) -> Option<(u16, serde_json::Value)> {
+    let res = fetch(req("GET", path)).await.ok()?;
+    Some((res.status(), serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null)))
+}
+
+/// GET `path` as bytes with the reply's `Content-Type` (a screen PNG).
+/// `None` on a transport error or a non-2xx status.
+pub async fn get_bytes(path: &str) -> Option<(String, Vec<u8>)> {
+    let res = fetch(req("GET", path)).await.ok()?;
+    if !res.ok() {
+        return None;
+    }
+    let mime = res
+        .head
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.to_owned())
+        .unwrap_or_default();
+    Some((mime, res.body))
+}
+
+/// PUT `path` with a JSON body; returns the reply parsed as JSON (`Null`
+/// for an empty 204 body). An error status's JSON body comes back too, as
+/// [`post_any`] does, so the caller can read its sentence.
+pub async fn put(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+    let mut r = req("PUT", path);
+    r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+    r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
+    let res = fetch(r).await.ok()?;
+    let text = res.text();
+    if text.trim().is_empty() {
+        return Some(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).ok()
+}
+
 /// DELETE `path`.
 pub async fn del(path: &str) -> Option<serde_json::Value> {
     let res = fetch(req("DELETE", path)).await.ok()?;
