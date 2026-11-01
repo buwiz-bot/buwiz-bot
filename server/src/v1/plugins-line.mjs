@@ -1,16 +1,16 @@
-// v1/plugins-line.mjs — v1 plugins hosted by rox-broker (Rust broker plan
-// 3.4): the interface of createPlugins() over the line, rox-broker's
-// /v1/line/* (broker/rox-broker/src/helper/line.rs).
+// v1/plugins-line.mjs — v1 plugins hosted by buwiz-broker (Rust broker plan
+// 3.4): the interface of createPlugins() over the line, buwiz-broker's
+// /v1/line/* (broker/buwiz-broker/src/helper/line.rs).
 //
-// rox-broker owns the processes, the keys and the v1_plugins records; this
+// buwiz-broker owns the processes, the keys and the v1_plugins records; this
 // keeps what the rest of the broker reads synchronously: the records (the
 // same app.db, row by row), each plugin's runtime (a snapshot the line
 // sends on every change, newest wins by `seq`) and the plugin list. Tool
 // results come back raw and go through the MCP SDK's schemas here, so
 // callers see what the in-process client gave them. App sessions live in
-// rox-broker too (sessions-line.mjs), which ends a plugin's opens itself.
+// buwiz-broker too (sessions-line.mjs), which ends a plugin's opens itself.
 //
-// With a fake clock (tests) rox-broker runs a manual clock: each restart it
+// With a fake clock (tests) buwiz-broker runs a manual clock: each restart it
 // schedules is mirrored as a timer on that clock, whose firing tells the
 // line to fire it.
 import { EventEmitter } from "node:events";
@@ -19,11 +19,11 @@ import { V1Error } from "./errors.mjs";
 import { createViews, systemClock } from "./plugins.mjs";
 import { loadTrust } from "./trust.mjs";
 
-/** `base` is rox-broker's address (or a promise of it), `token` the line's. */
+/** `base` is buwiz-broker's address (or a promise of it), `token` the line's. */
 export function createLinePlugins({ base, token, db, clock = systemClock, trust = loadTrust, timeouts = {} }) {
   const T = { call: 120_000, resolve: 10_000, reserved: 5_000, cancel: 5_000, ...timeouts };
   const events = new EventEmitter();
-  const runtimes = new Map(); // id → runtime, as rox-broker last sent it
+  const runtimes = new Map(); // id → runtime, as buwiz-broker last sent it
   const seqs = new Map(); // id → the newest snapshot's seq
   const said = new Map(); // id → the last state announced to Rox
   const manual = clock !== systemClock;

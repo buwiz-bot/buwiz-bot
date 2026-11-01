@@ -1,14 +1,14 @@
 // Office (Rust broker plan 6.1): the BetterOffice `office_*` tools, office_create,
 // the /office/* routes and /file/render for office files, pinned on Node so the
-// Rust port (rox-broker's `office` module) can be held to the same answers.
+// Rust port (buwiz-broker's `office` module) can be held to the same answers.
 //
 // The tools are driven through the office MCP server as the hub calls it:
 // Node's child (`node mcp-main.ts --root <dir>`, what office.mjs and
-// helper/office.rs spawn) or, with BUWIZ_BROKER_CMD set, rox-broker's own
-// (`rox-broker office-mcp --root <dir>`, the same in-process code the hub's
+// helper/office.rs spawn) or, with BUWIZ_BROKER_CMD set, buwiz-broker's own
+// (`buwiz-broker office-mcp --root <dir>`, the same in-process code the hub's
 // office tools call). OFF-30 then runs office tools through a chat turn of the
 // broker itself, with the fake opencodex scripting the calls, and checks the
-// process tree: Node's broker runs the MCP child, rox-broker runs none.
+// process tree: Node's broker runs the MCP child, buwiz-broker runs none.
 //
 // What is pinned, and why: each scripted call's answer (`structuredContent`,
 // `isError`, and for an image its PNG header) goes through `norm()` and is
@@ -26,7 +26,7 @@
 // file means. A render is pinned by its metadata and the PNG's IHDR (width,
 // height), not its pixels, for the same reason.
 //
-// DIFF: where rox-broker answers differently from Node on purpose, the case
+// DIFF: where buwiz-broker answers differently from Node on purpose, the case
 // says so in a `// DIFF:` comment and pins both answers.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -40,13 +40,13 @@ import { ROOT, modelEnv, postJson, request, startServer, tempDir, waitFor } from
 
 const SEEDS = join(ROOT, "src", "office", "seeds");
 const GOLDEN = join(ROOT, "test", "fixtures", "office-golden.json");
-const TOOLS_JSON = join(ROOT, "..", "broker", "rox-broker", "src", "office", "tools.json");
+const TOOLS_JSON = join(ROOT, "..", "broker", "buwiz-broker", "src", "office", "tools.json");
 const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
 const WRITE = process.env.OFFICE_GOLDEN === "write";
 const golden = !WRITE && existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, "utf8")) : {};
 const recorded = {};
 
-/** The office MCP server for workspace `root`: Node's child, or rox-broker's. */
+/** The office MCP server for workspace `root`: Node's child, or buwiz-broker's. */
 function officeCommand(root) {
   if (RUST) {
     const [bin] = process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/);
@@ -142,7 +142,7 @@ function session(client, root) {
   return { call, log };
 }
 
-/** What rox-broker answers for a pinned Node step, where it differs on
+/** What buwiz-broker answers for a pinned Node step, where it differs on
  *  purpose; each difference says why. */
 function expected(step, actual) {
   if (!RUST || !step) return step;
@@ -161,7 +161,7 @@ function expected(step, actual) {
     return { ...step, result: { ...r, receipt: { ...r.receipt, changedSheets, calculation: { ...r.receipt.calculation, changedCells } } } };
   }
 
-  // DIFF: rox-broker has no DOCX page renderer. Node paints pages with
+  // DIFF: buwiz-broker has no DOCX page renderer. Node paints pages with
   // render.ts (the docx package's JS layout, @napi-rs/canvas and
   // @betteroffice/fonts); the crates' PNG path for DOCX is the `raster`
   // feature of betteroffice-docx, which needs betteroffice-docx-raster
@@ -476,7 +476,7 @@ test("OFF-06 office_create makes each kind, never overwrites, and checks its pay
   pin("create", log);
 });
 
-test("OFF-07 the office MCP server is no Node process when rox-broker serves it", async () => {
+test("OFF-07 the office MCP server is no Node process when buwiz-broker serves it", async () => {
   const root = workspace("proc");
   const { client, pid } = await connect(root);
 
@@ -540,7 +540,7 @@ test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async (
     assert.equal(r.status, 404, path);
     assert.equal(r.text, "", path);
   }
-  // DIFF: Node logs which side served nothing; rox-broker's front door logs `hub` for these
+  // DIFF: Node logs which side served nothing; buwiz-broker's front door logs `hub` for these
   if (RUST) assert.match(server.log(), /GET \/office\/caps 200 \d+ms hub/);
 });
 
@@ -590,7 +590,7 @@ test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload an
   if (RUST) assert.deepEqual(server.log().match(/GET \/file\/render 200 \d+ms \w+/g).map((l) => l.split(" ").at(-1)), ["hub", "hub", "hub", "hub", "hub", "hub"]);
 });
 
-test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose, accept, export (a card), create (a card); rox-broker runs no office child", async () => {
+test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose, accept, export (a card), create (a card); buwiz-broker runs no office child", async () => {
   const thread = (await postJson("/thread/new", {})).json.id;
 
   fake.script("office", [
@@ -638,7 +638,7 @@ test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose,
   const cards = turns.filter((t) => t.label === "office").map((t) => t.files?.map((f) => f.name));
 
   assert.deepEqual(cards, [["copy.xlsx"], ["memo.docx"]]);
-  // the process tree: Node's broker spawns the office MCP child; rox-broker none
+  // the process tree: Node's broker spawns the office MCP child; buwiz-broker none
   const tree = execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
   const office = tree.split("\n").filter((l) => /mcp-main\.(ts|js)/.test(l) && l.includes(`--root ${files}`));
 

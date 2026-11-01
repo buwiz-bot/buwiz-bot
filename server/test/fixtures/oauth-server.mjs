@@ -1,7 +1,7 @@
 // A remote MCP server behind its own OAuth authorization server, for the
 // OAuth flow test (Rust broker plan 4.2), in the test's process: no SDK,
 // no network beyond 127.0.0.1. It records every request it gets, so a run
-// through Node and a run through rox-broker can be compared.
+// through Node and a run through buwiz-broker can be compared.
 //
 // MCP, each path its own resource:
 //   /mcp   streamable HTTP, Bearer required (401 names its resource metadata)

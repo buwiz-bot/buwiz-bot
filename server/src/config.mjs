@@ -11,7 +11,8 @@ const APP_ROOT = join(SERVER_DIR, "..");
 // bundled Resources/server/ in the packaged app.
 const serverFile = (rel) => join(SERVER_DIR, rel);
 // Packaged mode: BUWIZ_BROKER_DATA_DIR points at a writable dir (~/Library/Application
-// Support/Grok Shell) — generated/, widgets/, windows/, .stage all live there
+// Support/Buwiz Broker, Grok Shell before it moved; whoever starts Node names
+// it) — generated/, widgets/, windows/, .stage all live there
 // instead of inside the read-only .app bundle. widgets/ is seeded from the
 // shipped copy on first launch (the launcher does the copy).
 const DATA_DIR = env("BUWIZ_BROKER_DATA_DIR") || APP_ROOT;
@@ -20,11 +21,11 @@ const GEN_DIR = join(DATA_DIR, "generated");
 // graph — so a bad module never reaches the dev server (no red overlay flash).
 const STAGE_DIR = join(DATA_DIR, ".stage");
 const PORT = Number(process.env.PORT || 8787);
-// The port Rox and browsers reach: rox-broker's front door, which runs this
+// The port Rox and browsers reach: buwiz-broker's front door, which runs this
 // process on a port of its own (BUWIZ_PUBLIC_PORT); PORT when Node is it. URLs
 // that leave this process (OAuth redirects, file links) use this one.
 const PUBLIC_PORT = Number(env("BUWIZ_PUBLIC_PORT") || PORT);
-// BUWIZ_NODE_ROLE=office: Node behind rox-broker's hub (BUWIZ_BROKER_HUB=1),
+// BUWIZ_NODE_ROLE=office: Node behind buwiz-broker's hub (BUWIZ_BROKER_HUB=1),
 // which owns the brain. Node then serves only the office routes and holds
 // no hub state: it never writes the store, the host token or .stage, and
 // starts no routines, agents or plugins (app-server.mjs).

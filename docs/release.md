@@ -22,7 +22,7 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 
 | Script | Does |
 | --- | --- |
-| `build.sh` | Release builds of the app, the broker workspace (`rox-broker`), the Google Workspace plugin (`buwiz-gws`, from buwiz-app/google-workspace at the commit `plugins/google-workspace/rev` pins, through `scripts/gws-build`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports). |
+| `build.sh` | Release builds of the app, the broker workspace (`buwiz-broker`), the Google Workspace plugin (`buwiz-gws`, from buwiz-app/google-workspace at the commit `plugins/google-workspace/rev` pins, through `scripts/gws-build`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports). |
 | `sign.sh [identity]` | Developer ID signing with the hardened runtime, inside out: every Mach-O, then nested bundles, then the app. `-` signs ad hoc (a dry run). |
 | `notarize.sh <app or dmg>` | `notarytool submit --wait`, then `stapler staple` and `stapler validate`. Skips, saying so, without the `NOTARY_*` env (`REQUIRE_NOTARIZATION=1` makes that an error). |
 | `dmg.sh [identity]` | A drag-to-Applications dmg (hdiutil, no new tools), signed, notarized and stapled; writes `<dmg>.sha256` and prints the sha256 and size. |
@@ -33,7 +33,7 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 The name, bundle id, executable name and URL schemes come from the
 Info.plist `app/bundle-dev.sh` writes (`Buwiz Bot`, `com.buwiz.bot`,
 `buwiz-bot`, `buwiz`), so the release and dev bundles agree. In the
-release bundle `MacOS/buwiz-bot` is the app itself (the cargo `rox`
+release bundle `MacOS/buwiz-bot` is the app itself (the cargo `buwiz-bot`
 binary), not the dev launcher. On top of those:
 
 - `CFBundleShortVersionString`: `app/Cargo.toml`'s `[package] version`.
@@ -61,7 +61,7 @@ Put one of these in `app/resources/` (or point `APP_ICON` at it):
 ### Entitlements
 
 `scripts/release/app.entitlements` goes on the app's executable and on
-`rox-broker`; `nsh`, `nsh-macos-host` and `buwiz-gws` get none.
+`buwiz-broker`; `nsh`, `nsh-macos-host` and `buwiz-gws` get none.
 
 | Entitlement | Why |
 | --- | --- |
@@ -124,7 +124,7 @@ There is no upload step yet. To publish, download the artifact and run
 the commands `manifest.sh` prints (dmg and sidecar first, `latest.json`
 last).
 
-`.github/workflows/ci.yml` runs, on every PR, `cargo test -p rox -p
+`.github/workflows/ci.yml` runs, on every PR, `cargo test -p buwiz-bot -p
 buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet` (the app workspace;
 the office crates take their fonts from `server/`'s `npm ci`) and the
 broker workspace's `cargo test` (whose diff tests run `server/`'s Node

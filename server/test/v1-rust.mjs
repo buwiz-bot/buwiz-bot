@@ -1,7 +1,7 @@
-// v1/manifest.mjs's checks run in rox-broker too (BUWIZ_BROKER_CMD set):
-// every call asks `rox-broker manifest <op>` and Node's module the same
+// v1/manifest.mjs's checks run in buwiz-broker too (BUWIZ_BROKER_CMD set):
+// every call asks `buwiz-broker manifest <op>` and Node's module the same
 // question and asserts the same answer (the value, or the code and
-// message), then hands back rox-broker's. Importing this in place of
+// message), then hands back buwiz-broker's. Importing this in place of
 // v1/manifest.mjs makes a test file run each case against both.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -29,7 +29,7 @@ function both(op, input, run) {
 
   const got = rust(op, input);
 
-  assert.deepEqual(comparable(got), comparable(want), `rox-broker manifest ${op} answers as Node`);
+  assert.deepEqual(comparable(got), comparable(want), `buwiz-broker manifest ${op} answers as Node`);
 
   if (!got.ok) throw new V1Error(got.code, got.message);
 
@@ -42,11 +42,11 @@ const trustJson = (t) => ({
   approved_plugins: t.approved,
 });
 
-assert.deepEqual(rust("limits", {}).value, JSON.parse(JSON.stringify(node.LIMITS)), "rox-broker holds Appendix A's limits");
+assert.deepEqual(rust("limits", {}).value, JSON.parse(JSON.stringify(node.LIMITS)), "buwiz-broker holds Appendix A's limits");
 
 export const { LIMITS } = node;
 
-// the host protocol is Node's (rox-broker's is the same: 1.0)
+// the host protocol is Node's (buwiz-broker's is the same: 1.0)
 export const verifyManifest = (text, trust, host) =>
   both("verify", { text: String(text ?? ""), trust: trustJson(trust), host: host || node.HOST_PROTOCOL }, () => node.verifyManifest(text, trust, host));
 

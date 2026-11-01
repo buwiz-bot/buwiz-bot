@@ -168,7 +168,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     ]);
 
     const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: { PATH: process.env.PATH || "", ...spec.env }, stderr: "pipe" });
-    const client = new Client({ name: "rox-broker", version: "1.0.0" });
+    const client = new Client({ name: "buwiz-broker", version: "1.0.0" });
     const conn = { client, transport, closed: false };
 
     const sink = stderrSink(id, seed, () => {
@@ -773,7 +773,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
 }
 
 /** What the broker reads of its v1 plugins, wherever they run (here, or in
- *  rox-broker over the line: plugins-line.mjs): the records in v1_plugins
+ *  buwiz-broker over the line: plugins-line.mjs): the records in v1_plugins
  *  and the plugin list of GET /v1/host/plugins, with each routine's user
  *  state from routines.mjs. `runtime(id)` is the plugin's live state. */
 export function createViews({ db, runtime, trust }) {

@@ -35,7 +35,7 @@ fn home() -> PathBuf {
 /// move that could not run left the data there (it is tried again at the
 /// next launch).
 pub fn data_dir() -> PathBuf {
-    data_dir_in(rox_v1::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home())
+    data_dir_in(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home())
 }
 
 /// [`data_dir`] with the override `over` and the home `home`.
@@ -335,6 +335,13 @@ mod tests {
         assert!(std::fs::metadata(&launcher).unwrap().permissions().mode() & 0o111 != 0);
         let script = std::fs::read_to_string(&launcher).unwrap();
         assert!(script.contains("/buwiz-bot-bin\""));
+        // the checkout's debug build by the binary's own name
+        assert!(script.contains("/debug/buwiz-bot\""), "{script}");
+        // the broker by its name, and by its old one (a link) for an app
+        // binary built before the rename
+        let broker = app.join("Contents/Resources/broker");
+        assert!(broker.join("buwiz-broker").is_file());
+        assert_eq!(std::fs::read_link(broker.join("rox-broker")).unwrap(), Path::new("buwiz-broker"));
         // the token by its new file name and, for an older scripts/rox-agent,
         // its old one; BUWIZ_FPS by both names
         assert!(script.contains("buwiz-gpui-agent-token") && script.contains("rox-gpui-agent-token"));
@@ -416,7 +423,7 @@ mod tests {
         let nsh: serde_json::Value = serde_json::from_str(include_str!("../nsh.json")).unwrap();
         assert_eq!(nsh["id"], APP_ID);
         assert!(include_str!("../ios.sh").contains(&format!("\nID={APP_ID}\n")));
-        assert!(include_str!("main.rs").contains(".app_id(rox::identity::APP_ID)"));
-        assert!(include_str!("main.rs").contains("app_id: rox::identity::APP_ID.to_owned()"));
+        assert!(include_str!("main.rs").contains(".app_id(buwiz_bot::identity::APP_ID)"));
+        assert!(include_str!("main.rs").contains("app_id: buwiz_bot::identity::APP_ID.to_owned()"));
     }
 }

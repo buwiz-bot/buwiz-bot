@@ -1,5 +1,5 @@
 // The environment variables' Buwiz names, the old Rox and Grok names still
-// read (src/env.mjs; broker/rox-v1/src/env.rs keeps the same table and
+// read (src/env.mjs; broker/buwiz-protocol/src/env.rs keeps the same table and
 // checks the two match).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -61,7 +61,7 @@ test("each name is in the table once", () => {
     assert.ok(!seen.has(name) && !seen.has(old), `${name} / ${old} twice`);
     seen.add(name).add(old);
   }
-  // the Rust table (broker/rox-v1/src/env.rs) has the same pairs, in order
-  const rust = [...readFileSync(join(ROOT, "..", "broker", "rox-v1", "src", "env.rs"), "utf8").split("pub const NAMES")[1].split("];")[0].matchAll(/\("(\w+)", "(\w+)"\)/g)].map((m) => [m[1], m[2]]);
+  // the Rust table (broker/buwiz-protocol/src/env.rs) has the same pairs, in order
+  const rust = [...readFileSync(join(ROOT, "..", "broker", "buwiz-protocol", "src", "env.rs"), "utf8").split("pub const NAMES")[1].split("];")[0].matchAll(/\("(\w+)", "(\w+)"\)/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(rust, NAMES);
 });

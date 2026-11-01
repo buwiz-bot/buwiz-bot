@@ -1,7 +1,7 @@
 // Remote MCP servers and their OAuth sign-in (Rust broker plan 4.2): the
 // flow as the user runs it, against a fake server and authorization server
 // (fixtures/oauth-server.mjs). Written against Node first; the same cases
-// then run through rox-broker (BUWIZ_BROKER_CMD, BUWIZ_BROKER_MCP_HOST=1).
+// then run through buwiz-broker (BUWIZ_BROKER_CMD, BUWIZ_BROKER_MCP_HOST=1).
 //
 // No browser opens: `open` on the broker's PATH is a stub that records its
 // arguments, and every sign-in here asks for the authorize URL instead

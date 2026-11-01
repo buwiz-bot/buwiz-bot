@@ -16,7 +16,7 @@ const OTHER = "dev.example.other";
 const NEWER = "dev.example.newer";
 const seed = (b) => Buffer.alloc(32, b).toString("base64url");
 
-test("the services are Buwiz Bot's, then Rox's; the marker is rox-broker's", () => {
+test("the services are Buwiz Bot's, then Rox's; the marker is buwiz-broker's", () => {
   assert.equal(KEYCHAIN_SERVICE, "com.buwiz.bot.plugin-key");
   assert.equal(OLD_KEYCHAIN_SERVICE, "dev.goldcoders.rox.plugin-key");
   assert.equal(MOVED_MARKER, ".plugin-keys-moved-from-rox");

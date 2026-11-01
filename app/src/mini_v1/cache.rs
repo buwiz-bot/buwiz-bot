@@ -27,7 +27,7 @@ use super::keys;
 
 /// Whether the cache is on (`BUWIZ_MINI_CACHE=0` turns it off).
 pub fn enabled() -> bool {
-    rox_v1::env::var("BUWIZ_MINI_CACHE").is_none_or(|v| v != "0")
+    buwiz_protocol::env::var("BUWIZ_MINI_CACHE").is_none_or(|v| v != "0")
 }
 
 /// This Rox build: what compiled the module (nsh's compiler, the import

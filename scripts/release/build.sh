@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the release bundle, dist/<CFBundleName>.app: release-profile builds
-# of the app, the broker workspace (rox-broker), the Google Workspace
+# of the app, the broker workspace (buwiz-broker), the Google Workspace
 # plugin (buwiz-gws, scripts/gws-build) and nsh (nsh, nsh-macos-host),
 # assembled as app/bundle-dev.sh assembles the dev bundle
 # but without its dev-only parts: the executable is the app itself (no
@@ -120,9 +120,9 @@ if [ -z "${BUWIZ_BOT_BIN:-}" ]; then
   BUWIZ_BOT_BIN="$APP_TARGET/release/$BIN_NAME"
 fi
 if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
-  cargo_release "$ROOT/broker" "$BROKER_TARGET" -p rox-broker
+  cargo_release "$ROOT/broker" "$BROKER_TARGET" -p buwiz-broker
 fi
-BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/release/rox-broker}"
+BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/release/buwiz-broker}"
 BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$(GWS_TARGET_DIR="$BROKER_TARGET/gws" "$ROOT/scripts/gws-build")}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
   cargo_release "$ROOT/nsh" "$NSH_TARGET" -p nsh-cli -p nsh-macos-host
@@ -149,7 +149,7 @@ cp "$OFFICE_FONTS/LICENSE" "$C/Resources/fonts/office/LICENSE"
 # The broker and its static files: the layout app/src/broker.rs expects.
 B="$C/Resources/broker"
 mkdir -p "$B/bin" "$B/server/office/editor/dist" "$B/node_modules"
-cp "$BUWIZ_BROKER_BIN" "$B/rox-broker"
+cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"
