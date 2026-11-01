@@ -16,6 +16,7 @@ struct Broker {
     child: Child,
     port: u16,
     log: PathBuf,
+    data: PathBuf,
 }
 
 impl Drop for Broker {
@@ -73,7 +74,7 @@ fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
     if no_node {
         cmd.env("ROX_BROKER_NO_NODE", "1");
     }
-    let broker = Broker { child: cmd.spawn().unwrap(), port, log };
+    let broker = Broker { child: cmd.spawn().unwrap(), port, log, data };
     let deadline = Instant::now() + Duration::from_secs(15);
     while request(port, "GET", "/health", b"").map(|(s, _)| s != 200).unwrap_or(true) {
         assert!(Instant::now() < deadline, "rox-broker on {port} never became healthy");
@@ -191,4 +192,42 @@ fn hub_off_forwards_hub_routes_unchanged() {
     assert_eq!(request(b.port, "GET", "/office/caps", b"").unwrap(), (404, "no".to_owned()));
     assert_eq!(request(b.port, "GET", "/role", b"").unwrap(), (200, String::new()));
     assert_eq!(b.seen(), ["GET /threads", "POST /v1/hooks/ah_x/secret", "GET /office/caps", "GET /role"]);
+}
+
+#[test]
+fn hub_proves_itself_with_its_host_token_and_asks_for_none() {
+    let b = start("prove", true);
+    // written once the hub starts
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let token = loop {
+        match std::fs::read_to_string(b.data.join("host-token")) {
+            Ok(t) if !t.trim().is_empty() => break t,
+            _ => assert!(Instant::now() < deadline, "no host token"),
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let nonce = rox_v1::keys::b64(&[42u8; 32]);
+    // no X-Buwiz-Host on the request: the answer is the HMAC under the token
+    let (status, body) = request(b.port, "POST", "/v1/host/prove", format!(r#"{{"nonce":"{nonce}"}}"#).as_bytes()).unwrap();
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let proof = v["proof"].as_str().unwrap();
+    assert!(rox_v1::proof::proof_matches(token.trim(), &nonce, proof));
+    assert_eq!(proof, rox_v1::proof::broker_proof(token.trim(), &nonce));
+    assert!(!rox_v1::proof::proof_matches("another token", &nonce, proof));
+    // another nonce, another proof
+    let other = rox_v1::keys::b64(&[43u8; 32]);
+    let (_, body) = request(b.port, "POST", "/v1/host/prove", format!(r#"{{"nonce":"{other}"}}"#).as_bytes()).unwrap();
+    assert!(!body.contains(proof));
+    // the nonce's bounds and form; a GET is not the route
+    for bad in [r#"{}"#.to_owned(), r#"{"nonce":42}"#.to_owned(), format!(r#"{{"nonce":"{}"}}"#, "a".repeat(21)), format!(r#"{{"nonce":"{}"}}"#, "a".repeat(129)), r#"{"nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaa="}"#.to_owned(), "not json".to_owned()] {
+        let (status, body) = request(b.port, "POST", "/v1/host/prove", bad.as_bytes()).unwrap();
+        assert_eq!(status, 400, "{bad}: {body}");
+        assert!(!body.contains("proof"), "{bad}");
+    }
+    assert_eq!(request(b.port, "GET", "/v1/host/prove", b"").unwrap().0, 405);
+    // the other host routes still want the token
+    assert_eq!(request(b.port, "GET", "/v1/host/plugins", b"").unwrap().0, 401);
+    assert_eq!(b.seen(), Vec::<String>::new(), "Node saw the proof");
+    let _ = std::fs::remove_dir_all(&b.data);
 }
