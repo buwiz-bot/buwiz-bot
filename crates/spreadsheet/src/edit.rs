@@ -374,7 +374,7 @@ pub fn action(what: &str) {
 /// The input over the active cell: invisible until something is typed.
 pub fn cell_editor(u: &'static SheetUi) -> impl IntoElement {
     let field = element_ref();
-    FIELD.with(|f| f.set(Some(field.clone())));
+    FIELD.with(|f| f.set(Some(field)));
     let rect = move || -> (f32, f32, f32, f32) {
         let Some((shape, f)) = grid::frame(u) else { return (0.0, 0.0, 0.0, 0.0) };
         let cell = u.editing.with(|e| e.as_ref().map(|e| e.cell)).unwrap_or_else(|| u.sel.get().active);
