@@ -639,6 +639,8 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         app_install_row(n, chat.to_owned(), t.i).into_element()
     } else if let Some(n) = t.app_uninstall.clone() {
         app_uninstall_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.account_required.clone() {
+        account_required_row(n, chat.to_owned(), t.i).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -1106,6 +1108,9 @@ fn app_install_row(n: crate::store::AppInstallNotice, chat: String, i: i64) -> i
             )
             .child(text(format!("By {} · {}", n.publisher, n.source)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(2))
             .child(crate::plugins::review_details(&n.review));
+        for line in [n.skills_line(), n.accounts_line()].into_iter().flatten() {
+            c = c.child(text(line).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(3));
+        }
         if !n.needs_env.is_empty() {
             for (id, title) in n.env_from.iter() {
                 let on = from.as_deref() == Some(id.as_str());
@@ -1218,6 +1223,41 @@ fn app_uninstall_row(n: crate::store::AppUninstallNotice, chat: String, i: i64) 
                     })),
             )
             .into_element()
+    }))
+}
+
+/// A tool that needs a missing account (`account_required`): Sign in
+/// (the broker opens the browser) or Not now; once the plugin list has the
+/// account connected, the quiet line "<label> · Connected".
+fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned());
+        let connected = listed.as_ref().is_some_and(|p| p.account_connected(&n.account));
+        if let Some(done) = n.answered(local.local(), connected) {
+            return app_quiet_line(done);
+        }
+        let label = listed.as_ref().map(|p| p.signin_label(&n.account)).unwrap_or_else(|| "default".to_owned());
+        let signing = store().v1.signing.with(|s| s.contains(&crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label)));
+        let (ch1, ch2, n1, n2) = (chat.clone(), chat.clone(), n.clone(), n.clone());
+        let mut buttons = view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
+            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
+            }));
+        if signing {
+            buttons = buttons.child(text("Waiting for the sign-in in your browser…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
     }))
 }
 
