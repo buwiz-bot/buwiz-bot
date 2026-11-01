@@ -98,8 +98,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // `ROX_OPEN=<thread>[,<thread>…]`: open thread(s) at boot for
     // screenshots — `open_thread` is the row-press path (select + turns +
     // apps). A list replays an agent switch with a beat between opens.
-    if let Ok(t) = std::env::var("ROX_OPEN") {
-        if !t.is_empty() {
+    if let Ok(t) = std::env::var("ROX_OPEN")
+        && !t.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
                 for (i, id) in t.split(',').enumerate() {
@@ -109,7 +109,6 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                     store().open_thread(id.trim().to_owned());
                 }
             });
-        }
     }
 
     // `ROX_SCROLL=<px>`: scroll the transcript to a pixel offset at
@@ -127,14 +126,13 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 
     // `ROX_SEND=<text>`: fill the draft and send at boot — synthetic
     // input can't drive the composer, so stream verification needs it.
-    if let Ok(msg) = std::env::var("ROX_SEND") {
-        if !msg.is_empty() {
+    if let Ok(msg) = std::env::var("ROX_SEND")
+        && !msg.is_empty() {
             spawn(async move {
                 timer(std::time::Duration::from_millis(1200)).await;
                 store().draft.set(msg);
                 store().send();
             });
-        }
     }
 
     // `ROX_PALETTE=<query>`: open the ⌘K card at boot — synthetic keys
@@ -208,17 +206,16 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // the same fetch → compile → AppView path the chat cards take, without
     // needing a widget turn to be on screen. `ROX_CARD=R<n>` mounts the
     // turn's whole card instead, chrome and fixed body height included.
-    if let Ok(app) = std::env::var("ROX_MINI") {
-        if !app.is_empty() {
+    if let Ok(app) = std::env::var("ROX_MINI")
+        && !app.is_empty() {
             return view()
                 .flex_1()
                 .h_full()
                 .bg(theme::MAIN)
                 .child(crate::mini::mini_app(&app, 0.0, None, None));
-        }
     }
-    if let Ok(app) = std::env::var("ROX_CARD") {
-        if !app.is_empty() {
+    if let Ok(app) = std::env::var("ROX_CARD")
+        && !app.is_empty() {
             return view()
                 .flex_1()
                 .h_full()
@@ -232,7 +229,6 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                     },
                     ..Default::default()
                 }));
-        }
     }
     // `ROX_GAZE=1`: two resting blobs pinned to opposite gaze targets —
     // verifies set_gaze → unsettled → advance → paint_rest end to end.
@@ -463,7 +459,7 @@ fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> 
             })
             .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
             .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-            .label(move || message())
+            .label(message)
             .flex_row()
             .items_center()
             .gap(px(6.0))
@@ -494,7 +490,7 @@ fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> 
             .child(when(
                 move || hovered.get(),
                 move || {
-                    text(move || message())
+                    text(message)
                         .text_size(px(11.0))
                         .font_family("monospace")
                         .text_color(theme::TEXT)

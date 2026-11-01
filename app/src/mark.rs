@@ -359,7 +359,7 @@ pub(crate) fn tables() -> Tables {
     let mut trail: Vec<(f64, V2)> = Vec::new();
     for t in 0..(oo as usize) {
         let n = render::wh(t as f64);
-        if trail.last().map_or(true, |&(_, p)| hypot2(n[0] - p[0], n[1] - p[1]) > render::SE) {
+        if trail.last().is_none_or(|&(_, p)| hypot2(n[0] - p[0], n[1] - p[1]) > render::SE) {
             trail.push((t as f64, n));
         }
     }
@@ -510,9 +510,9 @@ fn jb(p0: V2, p1: V2, p2: V2, is_arc: bool) -> [f64; FB] {
             let j = oo / 2.0;
             let jd = 4.0 / 3.0 * (j / 4.0).tan() * f_r;
             let fe = [n, n + j, n + oo];
-            for k in 0..3 {
-                let te = hh(fe[k]);
-                let z = lt(fe[k]);
+            for (k, &angle) in fe.iter().enumerate() {
+                let te = hh(angle);
+                let z = lt(angle);
                 d(&mut l, k, te);
                 if k > 0 {
                     f(&mut l, k, [te[0] - jd * z[0], te[1] - jd * z[1]]);
@@ -1189,7 +1189,7 @@ impl Face {
     }
     /// `u` — an expression track event.
     fn play(&mut self, name: &'static str, through_blink: bool) {
-        if name == self.e && self.r.as_ref().map_or(true, |r| r.to_name() == name) {
+        if name == self.e && self.r.as_ref().is_none_or(|r| r.to_name() == name) {
             return;
         }
         if through_blink && !dr(name) && !dr(self.e) {
@@ -1398,8 +1398,8 @@ impl MorphFx {
             }
         }
         let mut want = v.is_some();
-        if let Some(i) = self.i {
-            if ex_loop(i) {
+        if let Some(i) = self.i
+            && ex_loop(i) {
                 if !self.l && self.g - self.y > ac(i) {
                     self.l = true;
                     self.d = self.g;
@@ -1408,7 +1408,6 @@ impl MorphFx {
                     self.y = self.g;
                 }
                 want = !self.l;
-            }
         }
         self.amount.t = if want { 1.0 } else { 0.0 };
         if v.is_some() && v != self.c {
@@ -1679,7 +1678,7 @@ impl RunClip {
 }
 
 /// `vt` — sample a track at time `t`.
-fn vt<'a>(e: &'a [RtKey], t: f64) -> Option<Vec<f64>> {
+fn vt(e: &[RtKey], t: f64) -> Option<Vec<f64>> {
     if e.is_empty() {
         return None;
     }
@@ -2000,10 +1999,10 @@ impl Mark {
             }
             FaceCmd::HoldFace => {
                 let q = self.big_b.unwrap_or_else(|| {
-                    if self.a_load.is_none() {
-                        gl(&self.y.expression, self.w)
+                    if let Some(load) = &self.a_load {
+                        gl(&load.clip.expression, 0.0)
                     } else {
-                        gl(&self.a_load.as_ref().unwrap().clip.expression, 0.0)
+                        gl(&self.y.expression, self.w)
                     }
                 });
                 if q != self.n.name() {
@@ -2065,8 +2064,8 @@ impl Mark {
         self.y = c.clone();
         self.w = 0.0;
         self.f = c.squash_anchor;
-        if c.body.is_some() && !self.o {
-            self.r = c.body.unwrap();
+        if let Some(body) = c.body && !self.o {
+            self.r = body;
         }
         self.p = Inspect {
             bias: c.inspect_bias.unwrap_or(self.p.bias),
@@ -2342,7 +2341,7 @@ impl Mark {
     pub(crate) fn rest(&mut self) {
         self.v = false;
         let ld = Loaded { clip: RunClip::rest(self.tab.rest_rot), name: "rest", is_playing: false, phase: 0.0, is_rest: true };
-        if self.a_load.is_none() && self.e_load.as_ref().map_or(true, |e| e.name == "rest") {
+        if self.a_load.is_none() && self.e_load.as_ref().is_none_or(|e| e.name == "rest") {
             if self.e_load.is_none() {
                 self.load_now(ld);
             }
@@ -2524,10 +2523,9 @@ fn nv(e: &[&'static str], r: &mut Rand, p: Option<&str>) -> Vec<&'static str> {
         let n = (r.next() * (s + 1) as f64).floor() as usize;
         v.swap(s, n);
     }
-    if let Some(o) = v.iter().position(|s| Some(*s) != p) {
-        if o > 0 {
+    if let Some(o) = v.iter().position(|s| Some(*s) != p)
+        && o > 0 {
             v.swap(0, o);
-        }
     }
     v
 }
@@ -2579,10 +2577,9 @@ impl Director {
         o
     }
     fn clips_of(&self) -> &'static [&'static str] {
-        if self.s_compact {
-            if let Some(c) = self.l.compact_clips {
+        if self.s_compact
+            && let Some(c) = self.l.compact_clips {
                 return c;
-            }
         }
         self.l.clips
     }
@@ -2597,9 +2594,8 @@ impl Director {
         if e.is_empty() {
             e.extend(nv(v, &mut self.rng, self.p));
         }
-        e.first().copied().map(|c| {
+        e.first().copied().inspect(|_| {
             e.remove(0);
-            c
         })
     }
     /// `w` — load the next clip.
@@ -2688,21 +2684,19 @@ impl Director {
             return;
         }
         self.d += dt;
-        if let Some(next) = self.l.next {
-            if self.l.hold_seconds > 0.0 && self.d >= self.l.hold_seconds {
+        if let Some(next) = self.l.next
+            && self.l.hold_seconds > 0.0 && self.d >= self.l.hold_seconds {
                 self.set_state(mark, next, None);
                 return;
-            }
         }
         if mark.loop_count() != self.h {
-            if let Some(next) = self.l.next {
-                if self.l.hold_seconds == 0.0 {
+            if let Some(next) = self.l.next
+                && self.l.hold_seconds == 0.0 {
                     self.f += 1;
                     if self.f >= self.clips_of().len() {
                         self.set_state(mark, next, None);
                         return;
                     }
-                }
             }
             self.load_next(mark, None);
         }

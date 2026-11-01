@@ -1180,7 +1180,7 @@ fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
 /// The account popover (App.tsx:3099): scrim closes on press +
 /// right-click; the card anchors above the footer circle — header (avatar
 /// + "uriah / Local account"), Mini Apps / Plugins / Settings, then the
-/// inert account rows.
+///   inert account rows.
 pub(crate) fn account_pop_layer() -> impl IntoElement {
     dynamic(|| {
         if !store().account_open.get() {
@@ -1360,6 +1360,8 @@ enum Target {
     Out(&'static str),
 }
 
+type RowFrames = std::collections::HashMap<String, std::collections::HashMap<String, (f32, f32)>>;
+
 /// The drag state of the full sidebar's list. Coordinates are the list
 /// content's; the frames are kept as they lay out (no signal), and only
 /// the dragged row and the target are signals, so a drag moves the ghost
@@ -1378,7 +1380,7 @@ struct Dnd {
     /// Group blocks, `__un` and the Chats header: (y, height).
     zones: std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>,
     /// Rows by zone and `GroupRow::key`: (y in their parent, height).
-    rows: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, (f32, f32)>>>,
+    rows: std::cell::RefCell<RowFrames>,
     /// Where a group's rows' parent starts inside its block (below the
     /// header): row frames are relative to it.
     bases: std::cell::RefCell<std::collections::HashMap<String, f32>>,
@@ -1530,14 +1532,13 @@ impl Dnd {
             // Chats: its header down to its last row
             let (cy, ch) = *zones.get("__chats")?;
             let mut end = cy + ch;
-            if !collapsed("__chats") {
-                if let Some(f) = rows.get("__chats") {
+            if !collapsed("__chats")
+                && let Some(f) = rows.get("__chats") {
                     for t in store().chats() {
                         if let Some(&(ry, rh)) = f.get(&format!("chat:{}", t.id)) {
                             end = end.max(ry + rh);
                         }
                     }
-                }
             }
             (y >= cy - 5.0 && y < end + 5.0).then_some(Target::Out("__chats"))
         })

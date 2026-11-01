@@ -59,8 +59,8 @@ pub(crate) fn pane() -> impl IntoElement {
         )
 }
 
-/// `avatarEditing`'s floating editor card — mounted at the root layers so
-/// its scrim covers the whole window (App.tsx:3163).
+// `avatarEditing`'s floating editor card — mounted at the root layers so
+// its scrim covers the whole window (App.tsx:3163).
 
 /// `pane top` — the window-drag strip's right side: the theme toggle and
 /// the close button, both 36pt circles (App.tsx:2474).
@@ -1992,7 +1992,7 @@ fn bot_tab() -> impl IntoElement {
                                 // the env memo when the theme flips.
                                 .bg(move || {
                                     Hsla::from_str(&crate::mark::ink_of(c, !dark()))
-                                        .unwrap_or_else(|_| theme::TEXT.dark)
+                                        .unwrap_or(theme::TEXT.dark)
                                 }),
                         )
                         .into_element()

@@ -345,13 +345,12 @@ impl Inner {
             self.live_until = now + Duration::from_millis(400);
             self.last_emphasis = emphasized;
         }
-        if let Some(gaze) = &props.gaze {
-            if gaze.ver() != self.last_gaze_ver {
+        if let Some(gaze) = &props.gaze
+            && gaze.ver() != self.last_gaze_ver {
                 let target = gaze.target().or(props.gaze_at);
                 self.mark.set_gaze(target);
                 gaze_set(&mut self.gs, target);
                 self.last_gaze_ver = gaze.ver();
-            }
         }
         if let Some(pokes) = &props.pokes {
             for (kind, turns) in pokes.drain() {
@@ -417,10 +416,9 @@ impl Inner {
         };
         let playing = self.mark.is_playing();
         let now = Instant::now();
-        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until {
-            if let Some(bytes) = mark::rest_bytes(&props.shape) {
+        if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until
+            && let Some(bytes) = mark::rest_bytes(&props.shape) {
                 return mark::paint_rest(p, &bytes, &self.gs, x, y, extent, &ink_paint);
-            }
         }
         let frame = self.mark.frame();
         let tree = mark::uh(
@@ -577,7 +575,6 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
                 morph_shape: p.morph_shape,
                 seed: p.seed,
                 gaze_at: p.gaze_at,
-                ..Default::default()
             }))
         })
 }

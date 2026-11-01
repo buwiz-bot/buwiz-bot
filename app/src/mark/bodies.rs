@@ -466,11 +466,7 @@ fn us(e: &str, t: f64) -> Vec<V2> {
     let mut s = String::new();
     let mut cur = [0.0f64; 2];
     let mut start = [0.0f64; 2];
-    loop {
-        let tok = match next_tok!() {
-            Some(t) => t,
-            None => break,
-        };
+    while let Some(tok) = next_tok!() {
         if tok
             .chars()
             .next()
@@ -1282,7 +1278,7 @@ fn is(lr: &LoftRings) -> Rc<dyn Fn(f64, f64) -> f64> {
     let t = lr.center;
     let n = lr.depth;
     let mut o = [0.0f64; QN];
-    for i in 0..QN {
+    for (i, out) in o.iter_mut().enumerate() {
         let a = (i as f64 + 0.5) / QN as f64 * TAU;
         let (c, u) = (a.cos(), a.sin());
         let mut l = 0.0f64;
@@ -1299,11 +1295,11 @@ fn is(lr: &LoftRings) -> Rc<dyn Fn(f64, f64) -> f64> {
             let w = f[1] - t[1];
             let s2 = (y * g - w * p) / m;
             let b = (y * u - w * c) / m;
-            if s2 > l && b >= 0.0 && b <= 1.0 {
+            if s2 > l && (0.0..=1.0).contains(&b) {
                 l = s2;
             }
         }
-        o[i] = l;
+        *out = l;
     }
     let s_fn = move |i: f64, a: f64| -> f64 {
         let c = i - t[0];
@@ -2093,7 +2089,7 @@ fn dv_eye(e: &[V2], t: f64) -> Vec<V2> {
     let mut n: Vec<V2> = Vec::new();
     for u in e {
         let l = n.last();
-        if l.map_or(true, |l| (u[0] - l[0]).hypot(u[1] - l[1]) > 1e-6) {
+        if l.is_none_or(|l| (u[0] - l[0]).hypot(u[1] - l[1]) > 1e-6) {
             n.push(*u);
         }
     }
@@ -2234,13 +2230,12 @@ fn lv_eyes(e: &[Eye; 2], t: f64, n: f64, r: f64, o: f64) -> Vec<Vec<V2>> {
             let ee = sv2 * h + b * f;
             [p + l * v * t, g + ee * t * d]
         };
-        if let Some(fr) = &a.fill_ring {
-            if fr.len() >= 3 {
+        if let Some(fr) = &a.fill_ring
+            && fr.len() >= 3 {
                 let sv2 = oe(a.off[0], 0.0);
                 let b = oe(a.off[1], 0.0);
                 s.push(fr.iter().map(|&[v, ee]| m(v - sv2, (ee - b) * d)).collect());
                 continue;
-            }
         }
         if u {
             let mut sv2: Vec<V2> = Vec::with_capacity(AS2);
@@ -2278,7 +2273,7 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
     let o = n.height / SV;
     let s = n.gap / IS;
     if t.iter()
-        .all(|a| lc(a) && a.fill_ring.as_ref().map_or(true, |r| r.is_empty()))
+        .all(|a| lc(a) && a.fill_ring.as_ref().is_none_or(|r| r.is_empty()))
     {
         let e0 = ml(&t[0]);
         let t0 = ml(&t[1]);
@@ -2299,8 +2294,8 @@ pub(crate) fn gc(e: &[Vec<V2>]) -> String {
             continue;
         }
         t += &format!("M{} {}", un(n[0][0]), un(n[0][1]));
-        for r in 1..n.len() {
-            t += &format!(" {} {}", un(n[r][0]), un(n[r][1]));
+        for point in n.iter().skip(1) {
+            t += &format!(" {} {}", un(point[0]), un(point[1]));
         }
         t += "Z";
     }
@@ -2440,7 +2435,7 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
         let ncy = (a.bytes[base + 1] as f64 / 255.0 * 2.0 - 1.0) * a.c;
         cx += w * (ncx * phi.cos() + ncy * phi.sin());
         cy += w * (ncy * phi.cos() - ncx * phi.sin());
-        for i in 0..kk {
+        for (i, radius) in radii.iter_mut().enumerate() {
             let mut t = TAU * i as f64 / kk as f64 + phi;
             if flip {
                 t = std::f64::consts::PI - t;
@@ -2451,7 +2446,7 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
             }
             let i0 = (f.floor() as usize) % kk;
             let fr = f - f.floor();
-            radii[i] += w * (a.bytes[base + 2 + i0] as f64 * (1.0 - fr)
+            *radius += w * (a.bytes[base + 2 + i0] as f64 * (1.0 - fr)
                 + a.bytes[base + 2 + (i0 + 1) % kk] as f64 * fr);
         }
     }
@@ -2462,10 +2457,10 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
     let ct = turn.cos();
     let st = turn.sin();
     let mut d = String::new();
-    for i in 0..kk {
+    for (i, radius) in radii.iter().enumerate() {
         let t = TAU * i as f64 / kk as f64;
-        let px = cx + s * radii[i] * t.cos();
-        let py = cy + s * radii[i] * t.sin();
+        let px = cx + s * radius * t.cos();
+        let py = cy + s * radius * t.sin();
         let x = ((c + o * (px * ct - py * st)) * 100.0).round() / 100.0;
         let y = ((c - o * (py * ct + px * st)) * 100.0).round() / 100.0;
         d += &format!("{}{} {}", if i == 0 { "M" } else { " " }, x, y);
@@ -2496,7 +2491,7 @@ pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye
         Some(r) => {
             let info = cs(body);
             match info {
-                Some(info) => gs(&*info, rot, n, &cv(body, r)),
+                Some(info) => gs(&info, rot, n, &cv(body, r)),
                 None => vec![],
             }
         }

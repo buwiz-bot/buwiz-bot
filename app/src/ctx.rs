@@ -152,8 +152,8 @@ fn run(it: &CtxItem) {
         "file-open" => {
             let (i_s, path) = arg.split_once('|').unwrap_or(("", arg));
             let i: i64 = i_s.parse().unwrap_or(-1);
-            if let Some(t) = st.turns.get_untracked().iter().find(|t| t.i == i) {
-                if let Some(f) = t
+            if let Some(t) = st.turns.get_untracked().iter().find(|t| t.i == i)
+                && let Some(f) = t
                     .files
                     .iter()
                     .chain(t.attachments.iter())
@@ -161,7 +161,6 @@ fn run(it: &CtxItem) {
                 {
                     let f = f.clone();
                     st.open_file(&f);
-                }
             }
         }
         "plugin-cat" => st.plugin_cat.set(arg.to_owned()),
@@ -644,15 +643,14 @@ pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem
     } else if id.starts_with("file:") {
         items.push(CtxItem::danger("Delete", "trash", "lib-delete", id.clone()));
     }
-    if app {
-        if a.published {
+    if app
+        && a.published {
             items.push(CtxItem::danger(
                 "Delete Everywhere…",
                 "trash",
                 "app-delete-everywhere",
                 id,
             ));
-        }
     }
     items
 }
@@ -799,7 +797,7 @@ fn ctx_card(menu: CtxMenu) -> impl IntoElement {
                     move || items.clone(),
                     |it| it.label.clone(),
                     move |it, i| {
-                        ctx_row(it.get(), i.get() as usize, sub, sub_set.clone())
+                        ctx_row(it.get(), i.get(), sub, sub_set.clone())
                     },
                 )),
         )
@@ -845,7 +843,7 @@ fn menu_card(x: f32, y: f32, items: Vec<CtxItem>, cancel: Rc<dyn Fn()>) -> impl 
         .child(each(
             move || items.clone(),
             |it| it.label.clone(),
-            move |it, i| ctx_row_leaf(it.get(), i.get() as usize, cancel.clone()),
+            move |it, i| ctx_row_leaf(it.get(), i.get(), cancel.clone()),
         ))
 }
 

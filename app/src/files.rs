@@ -1087,7 +1087,7 @@ pub(crate) fn media_gallery(files: Vec<Attach>) -> impl IntoElement {
                         })
                         .into_element();
                     }
-                    let sum: f64 = files.iter().map(|f| aspect(f)).sum();
+                    let sum: f64 = files.iter().map(&aspect).sum();
                     let h = 240.0f64.min((GAL_W - GAP * (files.len() - 1) as f64) / sum);
                     let last = files.len() - 1;
                     view()
@@ -1217,11 +1217,10 @@ pub(crate) fn lightbox_layer() -> impl IntoElement {
         let (sw, sh) = st.light_stage.get();
         // fit the media's own aspect so a player never letterboxes
         let (mut mw, mut mh) = (cur.w, cur.h);
-        if mw <= 0.0 || mh <= 0.0 {
-            if cur.kind == "video" {
+        if (mw <= 0.0 || mh <= 0.0)
+            && cur.kind == "video" {
                 mw = 16.0;
                 mh = 9.0;
-            }
         }
         let (fw, fh) = if sw <= 0.0 || sh <= 0.0 {
             (0.0, 0.0)
@@ -2152,10 +2151,9 @@ fn table_view(sheets: Vec<Sheet>) -> impl IntoElement {
         .unwrap_or_default();
     let cols = sh.rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
     let width = |c: usize| -> f32 {
-        if let Some(w) = sh.widths.get(c) {
-            if *w > 0.0 {
+        if let Some(w) = sh.widths.get(c)
+            && *w > 0.0 {
                 return (w * 7.0).round().clamp(48.0, 320.0) as f32;
-            }
         }
         let longest = sh
             .rows
