@@ -59,6 +59,8 @@ fn row(id: &str, short: &str, manifest: Value, tools: Vec<Value>) -> Row {
         enabled: true,
         disabled_tools: "[]".into(),
         created_at: 1,
+        package: None,
+        skills: "[]".into(),
     }
 }
 
@@ -144,12 +146,21 @@ impl PluginView for Arc<Fake> {
                 let failed = args.get("fail") == Some(&json!(true));
                 Ok(json!({"content": text(if failed { "failed".into() } else { "Here is the card.".into() }), "isError": failed, "_meta": meta}))
             }
+            // a 2.1 tool whose account is missing (2.1 §4)
+            "fx_mail" => {
+                let data = json!({"code": "account_required", "account": args.get("account").cloned().unwrap_or(json!("google"))});
+                Ok(json!({"content": text(data.to_string()), "structuredContent": data, "isError": true}))
+            }
             _ => Ok(json!({"content": text(json!({"tool": tool, "args": args, "caller": caller, "plugin": id}).to_string())})),
         };
         Box::pin(async move { out })
     }
     fn events(&self) -> Option<broadcast::Receiver<Value>> {
         None
+    }
+    fn declared_accounts(&self, id: &str) -> Vec<crate::v1::package::Account> {
+        let google = crate::v1::package::Account { id: "google".into(), provider: "google".into(), label: "Google account".into(), scopes: Vec::new(), required: true };
+        if id == FX { vec![google] } else { Vec::new() }
     }
 }
 
@@ -534,4 +545,43 @@ async fn magt_04_a_remote_answer_that_reads_signed_out_marks_it_and_the_next_cal
     ctx.mcp.as_ref().unwrap().stop_all().await;
     let _ = fx.kill();
     let _ = fx.wait();
+}
+
+/// 2.1 §4: `{code: "account_required", account}` from a tool of a package
+/// that declares the account is a sign-in card in the chat (one while it
+/// is pending) and a line for the model; an undeclared account is a plain
+/// failure.
+#[tokio::test]
+async fn account_required_puts_one_sign_in_card_in_the_chat() {
+    let fake = Fake::new("");
+    {
+        let mut rows = fake.rows.lock().unwrap();
+        let r = rows.iter_mut().find(|r| r.id == FX).unwrap();
+        let mut tools: Vec<Value> = serde_json::from_str(&r.tools).unwrap();
+        tools.push(tool("fx_mail", "Read mail", json!({})));
+        r.tools = json!(tools).to_string();
+    }
+    let ctx = with_plugins("acctreq", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    let chat = run.thread_id();
+    let cards = || ctx.store.read(|s| s.thread(&chat).unwrap().turns.iter().filter_map(|u| u.notice.clone().map(|n| (u.text.clone().unwrap_or_default(), n))).collect::<Vec<_>>());
+    let r = call(&run, "fx_mail", json!({})).await;
+    assert_eq!(r, Out { content: json!("Fixture needs the user to sign in to their Google account first: a card in this chat asks them to. You cannot sign in for them; try again after they have."), is_error: Some(true) });
+    let (text, n) = cards().pop().unwrap();
+    assert_eq!(text, "Sign in to Google for Fixture");
+    assert_eq!(n, json!({"kind": "account_required", "id": FX, "plugin": FX, "title": "Fixture", "account": "google", "provider": "google", "label": "Google account", "state": "pending"}));
+    call(&run, "fx_mail", json!({})).await;
+    assert_eq!(cards().len(), 1, "one card while it is pending");
+    let other = call(&run, "fx_mail", json!({"account": "github"})).await;
+    assert_eq!(other.is_error, Some(true));
+    assert!(other.content.as_str().unwrap().contains("account_required"), "an undeclared account is the tool's own failure: {other:?}");
+    assert_eq!(cards().len(), 1);
+    // signed in: the card settles
+    assert_eq!(crate::hub::routes::host::settle_signed_in(&ctx, FX, "other"), 0);
+    assert_eq!(crate::hub::routes::host::settle_signed_in(&ctx, FX, "google"), 1);
+    assert_eq!(cards()[0].1["state"], "connected");
+    // the user's Not now
+    ctx.store.write(|s| s.thread_mut(&chat).unwrap().turns.last_mut().unwrap().notice.as_mut().unwrap()["state"] = json!("pending")).unwrap();
+    assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap()["settled"], 1);
+    assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "dismissed"})).unwrap_err().code, "invalid_args");
 }

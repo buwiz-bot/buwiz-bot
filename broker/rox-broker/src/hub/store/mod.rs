@@ -95,6 +95,9 @@ pub struct Turn {
     pub art: Option<Value>,
     pub links: Option<Value>,
     pub suggest: Option<Value>,
+    /// what the reply's tools returned (`agent/tool_log.rs`): Rust's own,
+    /// read back only into the model's history, never sent to the app
+    pub tools: Option<Value>,
     pub v1_attachments: Option<Value>,
     pub routine: Option<Value>,
     pub notice: Option<Value>,

@@ -987,10 +987,9 @@ pub(crate) fn host() -> impl IntoElement {
             serde_json::json!([n, kind, payload, title])
         })
         .on_native_event(|e: &NativeEvent| {
-            if &*e.name == "key" {
-                if let Some(k) = e.data.as_str() {
+            if &*e.name == "key"
+                && let Some(k) = e.data.as_str() {
                     crate::settings::recorded(k);
-                }
             }
         })
         .absolute()

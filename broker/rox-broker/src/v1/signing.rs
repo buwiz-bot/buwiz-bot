@@ -36,7 +36,22 @@ pub fn sign_manifest(m: &Value, seed: &str, sources: &[(String, Vec<u8>)]) -> Re
     Ok(out)
 }
 
-const USAGE: &str = "usage: rox-broker sign-manifest <manifest.json> (--key-file <path> | --keychain <key_id>) [--app <id>=<file>]... [--out <file>]";
+/// A copy of plugin.json `p` with `p[block].signature`: ed25519 by
+/// `p[block].publisher.key_id` over JCS of all of `p` without that
+/// signature (2.1 §1); `v1::package::check_signature` verifies it.
+pub fn sign_block(p: &Value, block: &str, seed: &str) -> Result<Value, String> {
+    let mut out = p.clone();
+    let b = out.get_mut(block).and_then(Value::as_object_mut).ok_or_else(|| format!("plugin.json has no {block} block"))?;
+    b.shift_remove("signature");
+    let key_id = b.get("publisher").and_then(|p| get(p, "key_id")).filter(|k| js::truthy(k)).cloned().ok_or_else(|| format!("plugin.json has no {block}.publisher.key_id"))?;
+    let bytes = signed_bytes(&out)?;
+    let key = rox_v1::keys::SessionKey::from_seed(seed).map_err(|_| "a seed is 32 bytes of base64url".to_owned())?;
+    let value = key.sign_bytes(&bytes);
+    out[block].as_object_mut().expect("an object above").insert("signature".to_owned(), json!({"alg": "ed25519", "key_id": key_id, "value": value}));
+    Ok(out)
+}
+
+const USAGE: &str = "usage: rox-broker sign-manifest <manifest.json> (--key-file <path> | --keychain <key_id>) [--app <id>=<file>]... [--out <file>]\n       rox-broker sign-manifest <plugin.json> --block buwiz (--key-file <path> | --keychain <key_id>) [--out <file>]";
 
 /// `rox-broker sign-manifest`, as `node server/v1/sign-manifest.mjs`:
 ///
@@ -46,12 +61,15 @@ const USAGE: &str = "usage: rox-broker sign-manifest <manifest.json> (--key-file
 /// rox-broker sign-manifest manifest.json --key-file test.key ...
 /// ```
 ///
+/// `--block buwiz` signs a 2.1 package's plugin.json instead: the key is
+/// the block's `publisher.key_id`, the signature goes in the block.
+///
 /// The key comes from the login Keychain (service
 /// `dev.goldcoders.publisher`, account = key id) through `/usr/bin/security`,
 /// or from a 0600 file holding the base64url seed (test keys). The seed is
 /// never printed; the signed manifest goes to `--out` or stdout.
 pub fn cli(args: &[String]) -> Result<(), String> {
-    let (mut file, mut out, mut key_file, mut keychain) = (None, None, None, None);
+    let (mut file, mut out, mut key_file, mut keychain, mut block) = (None, None, None, None, None);
     let mut apps = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -59,6 +77,7 @@ pub fn cli(args: &[String]) -> Result<(), String> {
             "--key-file" => key_file = it.next().cloned(),
             "--keychain" => keychain = it.next().cloned(),
             "--out" => out = it.next().cloned(),
+            "--block" => block = it.next().cloned(),
             "--app" => {
                 let spec = it.next().cloned().unwrap_or_default();
                 let (id, path) = spec.split_once('=').ok_or_else(|| format!("--app {spec}: expected <id>=<file>"))?;
@@ -73,10 +92,18 @@ pub fn cli(args: &[String]) -> Result<(), String> {
     if !m.is_object() {
         return Err("the manifest must be a JSON object".to_owned());
     }
-    let key_id = m.get("publisher").and_then(|p| get(p, "key_id"));
+    if block.as_ref().is_some_and(|b| b.is_empty() || !apps.is_empty()) {
+        return Err(USAGE.to_owned());
+    }
+    let signer = match &block {
+        Some(b) => m.get(b.as_str()).ok_or_else(|| format!("{file} has no {b} block"))?,
+        None => &m,
+    };
+    let key_id = signer.get("publisher").and_then(|p| get(p, "key_id"));
     if let Some(kc) = &keychain {
         if key_id.and_then(Value::as_str) != Some(kc.as_str()) {
-            return Err(format!("the manifest's publisher.key_id is {}, not {kc}", super::tpl(key_id)));
+            let at = block.as_ref().map(|b| format!("{b}.")).unwrap_or_default();
+            return Err(format!("the manifest's {at}publisher.key_id is {}, not {kc}", super::tpl(key_id)));
         }
     }
     let seed = match (&key_file, &keychain) {
@@ -86,7 +113,11 @@ pub fn cli(args: &[String]) -> Result<(), String> {
             .ok_or_else(|| format!("no publisher key {kc} in the login Keychain"))?,
         _ => unreachable!("one of them, checked above"),
     };
-    let signed = format!("{}\n", js::stringify_pretty(&sign_manifest(&m, &seed, &apps)?));
+    let signed = match &block {
+        Some(b) => sign_block(&m, b, &seed)?,
+        None => sign_manifest(&m, &seed, &apps)?,
+    };
+    let signed = format!("{}\n", js::stringify_pretty(&signed));
     match out {
         Some(path) => std::fs::write(&path, signed).map_err(|e| format!("{path}: {e}")),
         None => {
@@ -123,5 +154,40 @@ mod tests {
         assert_eq!(sign_manifest(&m, &seed, &[("b".to_owned(), vec![])]).unwrap_err(), "the manifest has no app b");
         assert_eq!(sign_manifest(&json!({"publisher": {}}), &seed, &[]).unwrap_err(), "the manifest has no publisher.key_id");
         assert!(sign_manifest(&json!({"publisher": {"key_id": "k"}, "w": 1.5}), &seed, &[]).unwrap_err().contains("safe integers only"));
+    }
+
+    #[test]
+    fn a_block_signature_covers_the_whole_plugin_json_and_sits_in_the_block() {
+        let seed = rox_v1::keys::b64(&[5; 32]);
+        let p = json!({"name": "x", "mcpServers": {"s": {"command": "c"}}, "buwiz": {"id": "a", "publisher": {"key_id": "k"}, "signature": {"old": 1}}});
+        let s = sign_block(&p, "buwiz", &seed).unwrap();
+        let keys: Vec<&String> = s["buwiz"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["id", "publisher", "signature"]);
+        assert_eq!(s["buwiz"]["signature"]["key_id"], "k");
+        let public = rox_v1::keys::SessionKey::from_seed(&seed).unwrap().public();
+        let bytes = signed_bytes(&super::super::package::unsigned(&s)).unwrap();
+        assert!(super::super::ed_verify(&public, &bytes, s["buwiz"]["signature"]["value"].as_str().unwrap()));
+        let mut changed = s.clone();
+        changed["mcpServers"]["s"]["command"] = json!("evil");
+        let bytes = signed_bytes(&super::super::package::unsigned(&changed)).unwrap();
+        assert!(!super::super::ed_verify(&public, &bytes, s["buwiz"]["signature"]["value"].as_str().unwrap()));
+        assert_eq!(sign_block(&json!({"name": "x"}), "buwiz", &seed).unwrap_err(), "plugin.json has no buwiz block");
+        assert_eq!(sign_block(&json!({"buwiz": {}}), "buwiz", &seed).unwrap_err(), "plugin.json has no buwiz.publisher.key_id");
+    }
+
+    #[test]
+    fn the_cli_signs_a_block_with_a_key_file() {
+        let dir = std::env::temp_dir().join(format!("rox-sign-block-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (key, input, out) = (dir.join("k.key"), dir.join("plugin.json"), dir.join("signed.json"));
+        std::fs::write(&key, rox_v1::keys::b64(&[5; 32])).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&input, r#"{"name":"x","buwiz":{"publisher":{"key_id":"k"}}}"#).unwrap();
+        let s = |p: &std::path::Path| p.display().to_string();
+        cli(&[s(&input), "--block".into(), "buwiz".into(), "--key-file".into(), s(&key), "--out".into(), s(&out)]).unwrap();
+        let signed: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(signed, sign_block(&json!({"name": "x", "buwiz": {"publisher": {"key_id": "k"}}}), "buwiz", &rox_v1::keys::b64(&[5; 32])).unwrap());
+        assert!(cli(&[s(&input), "--block".into(), "buwiz".into(), "--app".into(), format!("a={}", s(&key)), "--key-file".into(), s(&key)]).unwrap_err().starts_with("usage"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

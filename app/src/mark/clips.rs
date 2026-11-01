@@ -885,15 +885,6 @@ pub(crate) static STATES: &[(&str, StateDef)] = &[
     }),
 ];
 
-/// `Zx` — the state picker groups.
-pub(crate) static STATE_GROUPS: &[(&str, &[&str])] = &[
-    ("Lifecycle", &["idle", "listening", "thinking", "streaming", "searching", "reading", "working", "coding", "running", "computing", "controlling", "waiting", "blocked", "finished", "failed", "sleeping", "waking"]),
-    ("Reactions", &["happy", "excited", "laughing", "proud", "curious", "playful", "shy", "surprised", "suspicious", "angry", "confused", "sad", "drowsy", "bored", "scared", "celebrate", "approving"]),
-    ("Morphs", &["orbit", "radar", "progress", "spawning", "loading", "dictating", "sending", "receiving", "uploading", "writing", "alerting", "bouncing", "powering-down"]),
-    ("Product", &["humming", "notifying", "dragging"]),
-    ("Brand", &["logo", "showcase", "turntable"]),
-];
-
 /// `bv` — the heartChubby outline the loft seat needs (normalized x,y).
 pub(crate) static HEART_OUTLINE: &[[f64; 2]] = &[
     [0.934475052698969, 0.004363180216799212],

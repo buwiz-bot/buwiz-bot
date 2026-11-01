@@ -225,7 +225,7 @@ fn pill(label: &'static str, primary: bool, on: bool, act: impl Fn() + 'static) 
         .rounded(px(20.0))
         .bg(if primary { theme::TEXT } else { theme::HOVER })
         .opacity(if on { 1.0f32 } else { 0.35 })
-        .when(on, |v| v.on_press(move || act()))
+        .when(on, |v| v.on_press(act))
 }
 
 fn mark(b: &RoxBot, size: f32) -> impl IntoElement {
