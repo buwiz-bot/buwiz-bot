@@ -558,7 +558,7 @@ fn rail_member(gid: String, m: GroupRow) -> AnyElement {
     match m {
         GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
         GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
-        GroupRow::Artifact(a) => rail_art(gid, signal(a).read_only()).into_element(),
+        GroupRow::Artifact(a) => rail_art(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => rail_app(gid, key, title).into_element(),
     }
 }
@@ -1321,7 +1321,7 @@ impl Dragged {
 enum Face {
     Bot(RoxBot),
     Chat(String),
-    Art(RoxApp),
+    Art(Box<RoxApp>),
 }
 
 /// Where a drop lands: group `gid` before its visible row `slot` (its
@@ -1854,7 +1854,7 @@ fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
         ),
         GroupRow::Artifact(_) => each(
             move || match m.get() {
-                GroupRow::Artifact(a) => vec![a],
+                GroupRow::Artifact(a) => vec![*a],
                 _ => Vec::new(),
             },
             |a| a.app.clone(),
@@ -1958,7 +1958,7 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
                 .map(|it| it.thread.clone())
                 .unwrap_or_default()
         });
-        Dragged::new("artifact", a.app.clone(), thread, a.title.clone(), Face::Art(a))
+        Dragged::new("artifact", a.app.clone(), thread, a.title.clone(), Face::Art(Box::new(a)))
     })
 }
 
