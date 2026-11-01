@@ -3480,6 +3480,50 @@ fn v1_plugin_page() -> impl IntoElement {
         })))
 }
 
+/// A review's details as Connect Apps shows them: what an update changes,
+/// the permissions it adds, every review line and the warnings (also the
+/// chat's install card).
+pub(crate) fn review_details(r: &crate::mini_v1::connect::Review) -> View {
+    let mut v = view().gap(px(10.0));
+    if let Some(from) = &r.from_version {
+        v = v.child(
+            text(if r.downgrade {
+                format!("This is an older version than the {from} installed.")
+            } else if *from == r.version {
+                format!("Version {from} is installed already.")
+            } else {
+                format!("Updates {from} to {}.", r.version)
+            })
+            .text_size(px(13.0))
+            .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
+        );
+    }
+    if !r.added.is_empty() {
+        let mut added = card().child(sec_label("This update adds permissions"));
+        for l in &r.added {
+            added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
+        }
+        v = v.child(added);
+    }
+    let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
+    for l in &r.lines {
+        let indent = l.starts_with("  ");
+        lines = lines.child(
+            text(l.trim_start().to_owned())
+                .pl(px(if indent { 28.0 } else { 14.0 }))
+                .pr(px(14.0))
+                .py(px(3.0))
+                .text_size(px(13.0))
+                .text_color(if indent { ink2() } else { theme::TEXT }),
+        );
+    }
+    v = v.child(lines);
+    for w in &r.warnings {
+        v = v.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
+    }
+    v
+}
+
 /// Add a v1 plugin: its command line, then the review (13.1 step 3) with
 /// every line, Cancel (nothing changes) and Install — or, for an update,
 /// what it adds and Approve, or Install older version (12.1, 13.2).
@@ -3522,42 +3566,7 @@ fn v1_install_page() -> impl IntoElement {
                 .gap(px(10.0))
                 .child(text(format!("{} {}", r.title, r.version)).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
                 .child(text(format!("By {}", r.publisher)).text_size(px(13.0)).text_color(ink3()));
-            if let Some(from) = &r.from_version {
-                page = page.child(
-                    text(if r.downgrade {
-                        format!("This is an older version than the {from} installed.")
-                    } else if *from == r.version {
-                        format!("Version {from} is installed already.")
-                    } else {
-                        format!("Updates {from} to {}.", r.version)
-                    })
-                    .text_size(px(13.0))
-                    .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
-                );
-            }
-            if !r.added.is_empty() {
-                let mut added = card().child(sec_label("This update adds permissions"));
-                for l in &r.added {
-                    added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
-                }
-                page = page.child(added);
-            }
-            let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
-            for l in &r.lines {
-                let indent = l.starts_with("  ");
-                lines = lines.child(
-                    text(l.trim_start().to_owned())
-                        .pl(px(if indent { 28.0 } else { 14.0 }))
-                        .pr(px(14.0))
-                        .py(px(3.0))
-                        .text_size(px(13.0))
-                        .text_color(if indent { ink2() } else { theme::TEXT }),
-                );
-            }
-            page = page.child(lines);
-            for w in &r.warnings {
-                page = page.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
-            }
+            page = page.child(review_details(&r));
             page.child(
                 view()
                     .flex_row()
