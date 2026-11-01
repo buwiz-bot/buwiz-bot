@@ -1,15 +1,16 @@
 # Buwiz Bot connector setup guides
 
-Step-by-step guides for plugins whose sign-in cannot self-register (no OAuth dynamic client registration), so you must create your own developer app, API key or token on the provider's site first. Written 2026-10-25 from `grok-shell/server/plugins/needs-oauth-app.json` (probed 2026-10-25) plus per-provider research. Every guide marks what could not be confirmed as **(unconfirmed)**. Nothing here was created or submitted on any provider; all credentials are still to do.
+Step-by-step guides for plugins whose sign-in cannot self-register (no OAuth dynamic client registration), so you must create your own developer app, API key or token on the provider's site first. Written 2026-10-25 from a probe of the third-party plugin catalog Buwiz Bot then bundled (probed 2026-10-25) plus per-provider research. Every guide marks what could not be confirmed as **(unconfirmed)**. Nothing here was created or submitted on any provider; all credentials are still to do.
+
+Buwiz Bot no longer bundles that catalog (or its logos): it was removed for the Apache-2.0 relicense (#93). The plugins below are no longer listed in **Connect apps**. The guides still apply to a copy installed before the removal (it keeps loading and running) and to adding a provider's MCP endpoint yourself as an MCP server.
 
 Status for every row: **needs setup**. "Callback" in each guide is `http://127.0.0.1:8787/oauth/callback/<connector id>` unless the provider forces otherwise; confirm the exact string on Buwiz Bot's plugin page.
 
 ## How to enable in Buwiz Bot once you have credentials
 
-1. Open **Connect apps** and find the plugin.
+1. Open **Connect apps** and find the plugin (an installed one is listed under the plugins you added).
 2. Open the plugin's settings and paste the credentials the guide lists (Client ID, and Client Secret when the guide says so). Google plugins share one Desktop-app client, so enter it once.
 3. Click **Authenticate** and approve in the browser window that opens.
-4. Plugins hidden from the catalog (the ones in `needs-oauth-app.json`) are shown again by starting the server with `ROX_SHOW_OAUTH_APP_PLUGINS=1` (also accepts `true` / `yes`). Already-installed plugins stay visible without it. (Flag read from `grok-shell/server/plugins.mjs`.)
 
 Plugins that need an API key / token instead of OAuth credentials depend on Buwiz Bot letting you send a custom `Authorization` header; none of the guides could confirm that field exists.
 
@@ -54,7 +55,7 @@ Plugins that need an API key / token instead of OAuth credentials depend on Buwi
 
 ## Not possible (no guide)
 
-Hosted behind another vendor's account gateway, per `needs-oauth-app.json`: `finance` (Grok connector gateway), `link`, `onedrive`, `outlook`, `outlook-calendar`, `power-bi`, `sharepoint`, `teams` (all Cursor-hosted, need a Cursor account).
+Hosted behind another vendor's account gateway, per the 2026-10-25 probe: `finance` (Grok connector gateway), `link`, `onedrive`, `outlook`, `outlook-calendar`, `power-bi`, `sharepoint`, `teams` (all Cursor-hosted, need a Cursor account).
 
 ## Cross-cutting findings
 
