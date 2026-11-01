@@ -63,12 +63,14 @@ pub(crate) fn store() -> &'static Store {
     unsafe { &*(at as *const Store) }
 }
 
+type SignalReaders = RefCell<HashMap<&'static str, Rc<dyn Fn() -> Box<dyn Any>>>>;
+
 thread_local! {
     /// The live session (patch room behind the image, the watcher's patch
     /// file). Started once, with the app.
     static LIVE: RefCell<Option<ra_jit_live::Live>> = const { RefCell::new(None) };
     /// What reads each `keep` signal now: refreshed as components mount.
-    static READERS: RefCell<HashMap<&'static str, Rc<dyn Fn() -> Box<dyn Any>>>> =
+    static READERS: SignalReaders =
         RefCell::new(HashMap::new());
     /// What the last snapshot left: read once by the next `keep` of the
     /// name, which registers its own reader instead.

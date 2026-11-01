@@ -396,33 +396,6 @@ fn rail_circle(name: &'static str, label: &'static str, on: impl Fn() + 'static)
         })
 }
 
-/// `railPlate(key, 36)` — the 54-wide hover plate with a sized icon,
-/// shared by the rail's action buttons (App.tsx:1173).
-fn rail_plate(
-    name: &'static str,
-    label: &'static str,
-    icon_size: f32,
-    h: f32,
-    on: impl Fn() + 'static,
-) -> impl IntoElement {
-    let hovered = signal(false);
-    view()
-        .label(label)
-        .child(
-            view()
-                .w(px(54.0))
-                .h(px(h))
-                .rounded(px(10.0))
-                .items_center()
-                .justify_center()
-                .bg(move || if hovered.get() { plate_hover() } else { AdaptiveColor::TRANSPARENT })
-                .child(icon_sized(name, icon_size)),
-        )
-        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
-        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-        .on_press(move || on())
-}
-
 /// `newMenu` (App.tsx:973) — open the add-menu below the measured
 /// button (or at the fallback corner when the measure is lost).
 fn open_add_menu(node: ElementRef) {
@@ -585,7 +558,7 @@ fn rail_member(gid: String, m: GroupRow) -> AnyElement {
     match m {
         GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
         GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
-        GroupRow::Artifact(a) => rail_art(gid, signal(a).read_only()).into_element(),
+        GroupRow::Artifact(a) => rail_art(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => rail_app(gid, key, title).into_element(),
     }
 }
@@ -633,7 +606,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
     let a0 = a.get_untracked();
     let hovered = signal(false);
     let node = element_ref();
-    let node2 = node.clone();
+    let node2 = node;
     view()
         .element_ref(&node)
         .size(px(54.0))
@@ -651,7 +624,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
             let st = store();
             let seq = st.pop_seq.get() + 1;
             st.pop_seq.set(seq);
-            let node = node2.clone();
+            let node = node2;
             spawn(async move {
                 if let Some(m) = node.measure().await {
                     let st = store();
@@ -752,12 +725,11 @@ fn full_sidebar() -> impl IntoElement {
     // goes back to the top (once, a moment after launch).
     let list = element_ref();
     {
-        let list = list.clone();
         let done = std::cell::Cell::new(false);
         effect(move || {
             let loaded = !store().bots.with(|b| b.is_empty());
             if loaded && !done.replace(true) {
-                let list = list.clone();
+                let list = list;
                 spawn(async move {
                     timer(std::time::Duration::from_millis(120)).await;
                     list.scroll_to(Point { x: px(0.0), y: px(0.0) }, false);
@@ -1181,7 +1153,7 @@ fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
 /// The account popover (App.tsx:3099): scrim closes on press +
 /// right-click; the card anchors above the footer circle — header (avatar
 /// + "uriah / Local account"), Mini Apps / Plugins / Settings, then the
-/// inert account rows.
+///   inert account rows.
 pub(crate) fn account_pop_layer() -> impl IntoElement {
     dynamic(|| {
         if !store().account_open.get() {
@@ -1207,7 +1179,7 @@ pub(crate) fn account_pop_layer() -> impl IntoElement {
                 .child(text(label).text_size(px(13.0)).text_color(theme::TEXT))
                 .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
                 .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-                .on_press(move || on())
+                .on_press(on)
         }
         let divider = || {
             view()
@@ -1347,9 +1319,9 @@ impl Dragged {
 /// The ghost's icon, by kind.
 #[derive(Clone, PartialEq)]
 enum Face {
-    Bot(RoxBot),
+    Bot(Box<RoxBot>),
     Chat(String),
-    Art(RoxApp),
+    Art(Box<RoxApp>),
 }
 
 /// Where a drop lands: group `gid` before its visible row `slot` (its
@@ -1360,6 +1332,8 @@ enum Target {
     Into(String, Option<usize>),
     Out(&'static str),
 }
+
+type RowFrames = std::collections::HashMap<String, std::collections::HashMap<String, (f32, f32)>>;
 
 /// The drag state of the full sidebar's list. Coordinates are the list
 /// content's; the frames are kept as they lay out (no signal), and only
@@ -1379,7 +1353,7 @@ struct Dnd {
     /// Group blocks, `__un` and the Chats header: (y, height).
     zones: std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>,
     /// Rows by zone and `GroupRow::key`: (y in their parent, height).
-    rows: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, (f32, f32)>>>,
+    rows: std::cell::RefCell<RowFrames>,
     /// Where a group's rows' parent starts inside its block (below the
     /// header): row frames are relative to it.
     bases: std::cell::RefCell<std::collections::HashMap<String, f32>>,
@@ -1531,14 +1505,13 @@ impl Dnd {
             // Chats: its header down to its last row
             let (cy, ch) = *zones.get("__chats")?;
             let mut end = cy + ch;
-            if !collapsed("__chats") {
-                if let Some(f) = rows.get("__chats") {
+            if !collapsed("__chats")
+                && let Some(f) = rows.get("__chats") {
                     for t in store().chats() {
                         if let Some(&(ry, rh)) = f.get(&format!("chat:{}", t.id)) {
                             end = end.max(ry + rh);
                         }
                     }
-                }
             }
             (y >= cy - 5.0 && y < end + 5.0).then_some(Target::Out("__chats"))
         })
@@ -1881,7 +1854,7 @@ fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
         ),
         GroupRow::Artifact(_) => each(
             move || match m.get() {
-                GroupRow::Artifact(a) => vec![a],
+                GroupRow::Artifact(a) => vec![*a],
                 _ => Vec::new(),
             },
             |a| a.app.clone(),
@@ -1985,7 +1958,7 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
                 .map(|it| it.thread.clone())
                 .unwrap_or_default()
         });
-        Dragged::new("artifact", a.app.clone(), thread, a.title.clone(), Face::Art(a))
+        Dragged::new("artifact", a.app.clone(), thread, a.title.clone(), Face::Art(Box::new(a)))
     })
 }
 
@@ -2214,7 +2187,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
         });
     draggable(row, src, key, move || {
         let b = b.get_untracked();
-        Dragged::new("bot", b.id.clone(), String::new(), b.name.clone(), Face::Bot(b))
+        Dragged::new("bot", b.id.clone(), String::new(), b.name.clone(), Face::Bot(Box::new(b)))
     })
 }
 
@@ -2397,7 +2370,7 @@ pub(crate) fn rail_pop_layer() -> impl IntoElement {
             crate::agents::subtitle(&pop.bot, &store().bots.get_untracked())
         };
         // h = pad(20) + name row(18) + gap(4) + lines(≤2 × 18)
-        let lines = ((preview.len() as f32 / 34.0).ceil().max(1.0)).min(2.0);
+        let lines = (preview.len() as f32 / 34.0).ceil().clamp(1.0, 2.0);
         let h = 20.0 + 18.0 + 4.0 + lines * 18.0;
         let top = (pop.cy - h / 2.0).max(8.0);
         view()
