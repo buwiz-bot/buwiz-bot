@@ -3,6 +3,7 @@
 // it, an in-process broker on an in-memory db with a file keystore, and a
 // "fake Rox" that makes session keys and signs call envelopes exactly as
 // spec 8.1 says. Nothing here touches the login Keychain or port 8787.
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23,10 +24,12 @@ export const FX = "app.buwiz.fixture";
 export const GWS = "app.buwiz.google-workspace";
 export const GWS_DIR = join(ROOT, "src", "v1", "plugins", "google-workspace");
 export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
-/** The gws plugin under test: `GWS_CMD` names a rox-gws binary (broker/
- *  rox-gws, run as `rox-gws mcp` with its own manifest), else server.mjs. */
+/** The gws plugin under test: `GWS_CMD` names a buwiz-gws binary
+ *  (buwiz-app/google-workspace; `scripts/gws-build` prints the pinned one),
+ *  run as `buwiz-gws mcp` with the manifest `buwiz-gws manifest` prints,
+ *  else server.mjs. */
 export const GWS_CMD = (process.env.GWS_CMD || "").trim();
-const GWS_MANIFEST = GWS_CMD ? join(ROOT, "..", "broker", "rox-gws", "manifest.json") : join(GWS_DIR, "manifest.json");
+const gwsManifestText = () => (GWS_CMD ? execFileSync(GWS_CMD, ["manifest"], { encoding: "utf8" }) : readFileSync(join(GWS_DIR, "manifest.json"), "utf8"));
 
 /** A publisher key of this run: {keyId, seed, pub}. */
 export function publisher(keyId = `test-${random128().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10)}`) {
@@ -123,7 +126,7 @@ export function writeMail(b, mail) {
  *  bed's publisher, the fake upstream with a call log at b.dir/gws.log.
  *  `env` overrides (e.g. GWS_UPSTREAM: "" for a missing upstream). */
 export function gwsSpec(b, env = {}) {
-  const m = JSON.parse(readFileSync(GWS_MANIFEST, "utf8"));
+  const m = JSON.parse(gwsManifestText());
 
   m.publisher.key_id = b.pub.keyId;
   const manifestFile = join(b.dir, "gws-manifest.json");

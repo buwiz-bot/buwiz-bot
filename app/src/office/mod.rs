@@ -322,7 +322,7 @@ fn on_event<O>(e: Event<O>, out: fn(O)) {
         Event::Saved(path) => {
             let shown = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if !native_ext_same(&u.key.get_untracked(), &path) {
-                crate::toast::show(&format!("Saved as {shown}"));
+                crate::toast::show(format!("Saved as {shown}"));
             }
             let key = u.key.get_untracked();
             if !key.starts_with('/') {

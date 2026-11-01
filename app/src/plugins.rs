@@ -317,7 +317,7 @@ fn market_page() -> impl IntoElement {
     // A new category starts at the top (the virtual list would otherwise
     // keep the old scroll offset).
     let body = element_ref();
-    let b2 = body.clone();
+    let b2 = body;
     effect(move || {
         let _ = store().plugin_cat.get();
         let _ = store().plugin_query.get();
@@ -375,7 +375,7 @@ fn market_page() -> impl IntoElement {
                             .flex_wrap()
                             .py(px(12.0))
                             .child(each(
-                                || visible_cats(),
+                                visible_cats,
                                 |c| c.clone(),
                                 |c, _| cat_pill(c.get()),
                             ))
@@ -1483,7 +1483,7 @@ fn sm_btn(
     kind: Btn,
     label: impl Fn() -> String + 'static,
     on: impl Fn() + 'static,
-) -> impl IntoElement {
+) -> View {
     let hov = signal(false);
     let (bg, bg_hov, ink) = match kind {
         Btn::Secondary => (tc(0.06), tc(0.10), theme::TEXT),
@@ -1509,7 +1509,7 @@ fn sm_btn(
         .bg(move || if hov.get() { bg_hov } else { bg })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .child(
             text(label)
                 .number_of_lines(1)
@@ -1537,7 +1537,7 @@ fn pill_btn(
         .bg(move || if hov.get() { tc(0.10) } else { tc(0.06) })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .when(glyph.is_some(), |v| {
             v.child(
                 view()
@@ -2056,7 +2056,8 @@ fn account_row(
     };
     // the action beside the status: Authenticate (OAuth), Reconnect
     // (a failed probe), Connect (a disabled row).
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match a.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match a.status.as_str() {
         _ if blocked && a.status != "connected" => {
             let p = plugin.clone();
             Some(("Setup", Box::new(move || store().open_setup(&p, "edit"))))
@@ -2105,7 +2106,7 @@ fn account_row(
         right = right.child(sm_btn(
             Btn::Secondary,
             move || if busy_here { "Opening…".to_owned() } else { verb.to_owned() },
-            move || f(),
+            f,
         ));
     }
     let show_err = a.status == "error" && !needs && !a.err.is_empty();
@@ -2317,7 +2318,7 @@ pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() 
         .rounded(px(8.0))
         .justify_center()
         .bg(move || if (on2)() { pair("#1680f3", "#1e86fc") } else { tc(0.15) })
-        .on_press(move || on_toggle())
+        .on_press(on_toggle)
         .child(
             view()
                 .size(px(12.0))
@@ -2555,12 +2556,10 @@ fn host(url: &str) -> String {
 /// "Vercel"), else the host's first label.
 fn developer_of(url: &str) -> String {
     let h = host(url);
-    if h == "github.com" {
-        if let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next()) {
-            if !owner.is_empty() {
-                return Store::plugin_title(owner);
-            }
-        }
+    if h == "github.com"
+        && let Some(owner) = url.split("github.com/").nth(1).and_then(|r| r.split('/').next())
+        && !owner.is_empty() {
+        return Store::plugin_title(owner);
     }
     h.split('.').next().map(|s| s.to_owned()).unwrap_or_else(|| "—".to_owned())
 }
@@ -2982,7 +2981,8 @@ fn server_account(s: McpServer) -> impl IntoElement {
     let id = s.id.clone();
     let transport = if remote { "remote" } else { "command" }.to_owned();
     let err = s.err.clone();
-    let action: Option<(&'static str, Box<dyn Fn()>)> = match s.status.as_str() {
+    type Action = (&'static str, Box<dyn Fn()>);
+    let action: Option<Action> = match s.status.as_str() {
         "error" => {
             let verb = if needs && remote { "Authenticate" } else { "Reconnect" };
             Some((verb, Box::new(move || store().auth_or_retry(&id, &transport, &err, ""))))
@@ -2992,7 +2992,7 @@ fn server_account(s: McpServer) -> impl IntoElement {
     };
     let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
     if let Some((verb, f)) = action {
-        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), move || f()));
+        right = right.child(sm_btn(Btn::Secondary, move || verb.to_owned(), f));
     }
     let show_err = s.status == "error" && !(needs && remote) && !s.err.is_empty();
     card().py(px(8.0)).child(
@@ -3416,6 +3416,7 @@ fn v1_plugin_page() -> impl IntoElement {
                 }
                 page = page.child(apps);
             }
+            page = page.child(v1_accounts_section(p.id.clone()));
             if !p.tools.is_empty() {
                 let mut tools = card().child(sec_label(format!("Tools {} of {} on", p.tools.iter().filter(|t| !t.disabled).count(), p.tools.len())));
                 for t in p.tools.clone() {
@@ -3438,6 +3439,13 @@ fn v1_plugin_page() -> impl IntoElement {
                     );
                 }
                 page = page.child(tools);
+            }
+            if !p.skills.is_empty() {
+                let mut skills = card().child(sec_label("Skills")).pb(px(4.0));
+                for k in &p.skills {
+                    skills = skills.child(glyph_row("gb-cube", k.name.clone(), k.description.clone()));
+                }
+                page = page.child(skills);
             }
             if !p.routines.is_empty() {
                 let mut routines = card().child(sec_label("Routines"));
@@ -3478,6 +3486,295 @@ fn v1_plugin_page() -> impl IntoElement {
             }
             page.into_element()
         })))
+}
+
+/// The tile of an account's provider: `google`, or an `oauth:` issuer's host.
+fn provider_name(provider: &str) -> String {
+    match provider.strip_prefix("oauth:") {
+        Some(url) => url.rsplit("://").next().unwrap_or(url).split(['/', ':']).next().unwrap_or(url).to_owned(),
+        None => provider.to_owned(),
+    }
+}
+
+/// A 2.1 mini app's Accounts (spec 2.1 §4), as a plugin's: a card per
+/// declared account, a row per signed-in label, then "Add another".
+fn v1_accounts_section(plugin: String) -> impl IntoElement {
+    dynamic(move || {
+        let Some(p) = store().v1.listed.get().into_iter().find(|x| x.id == plugin) else {
+            return view().into_element();
+        };
+        let groups = p.account_groups();
+        if groups.is_empty() {
+            return view().into_element();
+        }
+        let many = groups.len() > 1;
+        let mut col = view().gap(px(16.0));
+        for (_, rows) in groups {
+            let title = rows[0].title.clone();
+            let label = if many { format!("Accounts · {title}") } else { "Accounts".to_owned() };
+            let mut c = card().py(px(8.0));
+            for a in rows.iter().cloned() {
+                c = c.child(v1_account_row(&plugin, a));
+            }
+            c = c.child(v1_add_account(&plugin, &rows));
+            col = col.child(view().child(sec_label(label)).child(c));
+        }
+        col.into_element()
+    })
+}
+
+fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyElement {
+    use crate::mini_v1::host_api::AccountAction;
+    let st = store();
+    let key = crate::mini_v1::ui::signing_key(plugin, &a.account, &a.label);
+    let edit_key = format!("v1:{key}");
+    let name = a.name();
+    if st.acct_edit.get() == edit_key {
+        let confirming = st.acct_confirm.get() == edit_key;
+        let (p, acc, l, k) = (plugin.to_owned(), a.account.clone(), a.label.clone(), edit_key.clone());
+        return view()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(14.0))
+            .py(px(6.0))
+            .child(text(name.clone()).flex_1().number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+            .child(
+                sm_btn(
+                    if confirming { Btn::DangerSolid } else { Btn::Danger },
+                    move || if confirming { "Confirm Remove".to_owned() } else { "Remove".to_owned() },
+                    move || {
+                        if confirming {
+                            store().acct_edit.set(String::new());
+                            store().acct_confirm.set(String::new());
+                            store().v1_account(&p, &acc, &l, AccountAction::Remove)
+                        } else {
+                            store().acct_confirm.set(k.clone())
+                        }
+                    },
+                )
+                .label(if confirming { format!("Confirm remove {name}") } else { format!("Remove {name}") }),
+            )
+            .child(
+                sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                    store().acct_edit.set(String::new());
+                    store().acct_confirm.set(String::new());
+                })
+                .label("Cancel"),
+            )
+            .into_element();
+    }
+    let signing = st.v1.signing.get().contains(&key);
+    let (status, ink) = if signing {
+        ("Signing in…", ink3())
+    } else {
+        (a.status(), match a.state.as_str() {
+            "connected" => ok_ink(),
+            "expired" => warn_ink(),
+            _ => ink3(),
+        })
+    };
+    let (p, acc, l) = (plugin.to_owned(), a.account.clone(), a.label.clone());
+    let button = if signing {
+        let k = key.clone();
+        sm_btn(Btn::Ghost, || "Cancel".into(), move || store().v1_signin_cancel(&k)).label(format!("Stop signing in to {name}"))
+    } else if a.connected() {
+        sm_btn(Btn::Secondary, || "Sign out".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignOut))
+            .label(format!("Sign out of {name}"))
+    } else {
+        sm_btn(Btn::Secondary, || "Sign in".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
+            .label(format!("Sign in to {name}"))
+    };
+    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink)).child(button);
+    // Remove is the row menu's, as a plugin's; a slot never signed in has none
+    if a.state != "none" || a.label != "default" {
+        let (k, n) = (edit_key, name.clone());
+        right = right.child(
+            view()
+                .size(px(14.0))
+                .items_center()
+                .justify_center()
+                .label(format!("Account options for {n}"))
+                .on_press(move || {
+                    store().acct_confirm.set(String::new());
+                    store().acct_edit.set(k.clone());
+                })
+                .child(icon_ink("gb-pencil", 10.0, ink3)),
+        );
+    }
+    let mut who = view()
+        .flex_1()
+        .min_w(px(0.0))
+        .child(text(a.label.clone()).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
+    if !a.subject.is_empty() {
+        who = who.child(text(a.subject.clone()).number_of_lines(1).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()));
+    }
+    // the setup a sign-in still lacks (no shared Google client), and a
+    // refused sign-in's reason; the shared client is set in a Google
+    // plugin's Setup, so there is no Setup button here
+    let setup = if a.connected() { String::new() } else { a.setup.clone() };
+    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().unwrap_or_default() };
+    let err = if err == setup { String::new() } else { err };
+    view()
+        .px(px(14.0))
+        .py(px(10.0))
+        .label(name)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(plug_tile(&provider_name(&a.provider), 20.0))
+                .child(who)
+                .child(right),
+        )
+        .when(!setup.is_empty(), |v| {
+            v.child(text(setup.clone()).number_of_lines(2).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()).pt(px(4.0)))
+        })
+        .when(!err.is_empty(), |v| {
+            v.child(text(err.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
+        })
+        .into_element()
+}
+
+/// "Add another <account>": a label, then Sign in with it.
+fn v1_add_account(plugin: &str, rows: &[crate::mini_v1::connect::Account]) -> AnyElement {
+    let st = store();
+    let a = rows[0].clone();
+    let title = if a.title.is_empty() { a.account.clone() } else { a.title.clone() };
+    let key = format!("v1:{plugin}|{}", a.account);
+    let taken: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+    if st.acct_add.get() != key {
+        let hov = signal(false);
+        return view()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .label(format!("Add another {title}"))
+            .bg(move || if hov.get() { tc(0.03) } else { AdaptiveColor::TRANSPARENT })
+            .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+            .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+            .on_press(move || {
+                store().acct_add_val.set(String::new());
+                store().acct_err.set(String::new());
+                store().acct_edit.set(String::new());
+                store().acct_add.set(key.clone());
+            })
+            .child(icon_ink("gb-plus", 10.0, ink2))
+            .child(text("Add Another Account").text_size(px(13.0)).line_height(px(18.0)).text_color(ink2()))
+            .into_element();
+    }
+    let err = st.acct_err.get();
+    let add_key = key;
+    let (p, acc) = (plugin.to_owned(), a.account.clone());
+    let go = std::rc::Rc::new(move || {
+        let v = store().acct_add_val.get_untracked().trim().to_owned();
+        if v.is_empty() {
+            return;
+        }
+        if !crate::mini_v1::host_api::account_label_ok(&v) {
+            return store().acct_err.set(crate::mini_v1::host_api::LABEL_RULE.to_owned());
+        }
+        if taken.contains(&v) {
+            return store().acct_err.set(format!("{v} is already an account here"));
+        }
+        store().acct_add.set(String::new());
+        // a refusal opens the form again with its reason
+        let (k, v2) = (add_key.clone(), v.clone());
+        store().v1_signin(&p, &acc, &v, move |e| {
+            store().acct_add_val.set(v2);
+            store().acct_err.set(crate::mini_v1::ui::signin_error(&e));
+            store().acct_add.set(k);
+        })
+    });
+    let go2 = go.clone();
+    view()
+        .px(px(14.0))
+        .py(px(6.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .child(
+                    view().flex_1().min_w(px(0.0)).h(px(26.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(8.0)).justify_center().child(
+                        input()
+                            .label(format!("Label for another {title}"))
+                            .value(move || store().acct_add_val.get())
+                            .placeholder("Label this account, e.g. work or personal")
+                            .placeholder_color(|| color(tc(0.4)))
+                            .auto_focus(true)
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .h(px(26.0))
+                            .on_change(|t: &str| store().acct_add_val.set(t.to_owned()))
+                            .on_submit(move |_: &str| go())
+                            .on_key_press(|k: &str| {
+                                if k == "Escape" {
+                                    store().acct_add.set(String::new());
+                                }
+                            }),
+                    ),
+                )
+                .child(sm_btn(Btn::Primary, || "Sign in".into(), move || go2()).label(format!("Sign in to another {title}")))
+                .child(
+                    sm_btn(Btn::Ghost, || "Cancel".into(), || {
+                        store().acct_add.set(String::new());
+                        store().acct_err.set(String::new());
+                    })
+                    .label("Cancel"),
+                ),
+        )
+        .when(!err.is_empty(), |v| {
+            v.child(text(err.clone()).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
+        })
+        .into_element()
+}
+
+/// A review's details as Connect Apps shows them: what an update changes,
+/// the permissions it adds, every review line and the warnings (also the
+/// chat's install card).
+pub(crate) fn review_details(r: &crate::mini_v1::connect::Review) -> View {
+    let mut v = view().gap(px(10.0));
+    if let Some(from) = &r.from_version {
+        v = v.child(
+            text(if r.downgrade {
+                format!("This is an older version than the {from} installed.")
+            } else if *from == r.version {
+                format!("Version {from} is installed already.")
+            } else {
+                format!("Updates {from} to {}.", r.version)
+            })
+            .text_size(px(13.0))
+            .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
+        );
+    }
+    if !r.added.is_empty() {
+        let mut added = card().child(sec_label("This update adds permissions"));
+        for l in &r.added {
+            added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
+        }
+        v = v.child(added);
+    }
+    let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
+    for l in &r.lines {
+        let indent = l.starts_with("  ");
+        lines = lines.child(
+            text(l.trim_start().to_owned())
+                .pl(px(if indent { 28.0 } else { 14.0 }))
+                .pr(px(14.0))
+                .py(px(3.0))
+                .text_size(px(13.0))
+                .text_color(if indent { ink2() } else { theme::TEXT }),
+        );
+    }
+    v = v.child(lines);
+    for w in &r.warnings {
+        v = v.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
+    }
+    v
 }
 
 /// Add a v1 plugin: its command line, then the review (13.1 step 3) with
@@ -3522,42 +3819,7 @@ fn v1_install_page() -> impl IntoElement {
                 .gap(px(10.0))
                 .child(text(format!("{} {}", r.title, r.version)).text_size(px(17.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
                 .child(text(format!("By {}", r.publisher)).text_size(px(13.0)).text_color(ink3()));
-            if let Some(from) = &r.from_version {
-                page = page.child(
-                    text(if r.downgrade {
-                        format!("This is an older version than the {from} installed.")
-                    } else if *from == r.version {
-                        format!("Version {from} is installed already.")
-                    } else {
-                        format!("Updates {from} to {}.", r.version)
-                    })
-                    .text_size(px(13.0))
-                    .text_color(if r.downgrade { warn_ink() } else { theme::TEXT }),
-                );
-            }
-            if !r.added.is_empty() {
-                let mut added = card().child(sec_label("This update adds permissions"));
-                for l in &r.added {
-                    added = added.child(text(l.clone()).px(px(14.0)).py(px(4.0)).text_size(px(13.0)).text_color(theme::TEXT));
-                }
-                page = page.child(added);
-            }
-            let mut lines = card().child(sec_label("What it can do")).pb(px(8.0));
-            for l in &r.lines {
-                let indent = l.starts_with("  ");
-                lines = lines.child(
-                    text(l.trim_start().to_owned())
-                        .pl(px(if indent { 28.0 } else { 14.0 }))
-                        .pr(px(14.0))
-                        .py(px(3.0))
-                        .text_size(px(13.0))
-                        .text_color(if indent { ink2() } else { theme::TEXT }),
-                );
-            }
-            page = page.child(lines);
-            for w in &r.warnings {
-                page = page.child(text(w.clone()).text_size(px(12.0)).text_color(warn_ink()));
-            }
+            page = page.child(review_details(&r));
             page.child(
                 view()
                     .flex_row()

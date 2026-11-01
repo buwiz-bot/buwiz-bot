@@ -353,6 +353,6 @@ fn small_btn(label: &'static str, danger: bool, on: impl Fn() + 'static) -> impl
         .bg(theme::HOVER)
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .label(label)
 }

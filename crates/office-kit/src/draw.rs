@@ -42,7 +42,7 @@ impl Palette {
 
 /// `#rrggbb` (or `#rrggbbaa`) as a color; black when unreadable.
 pub fn hex(s: &str) -> Hsla {
-    Hsla::from_str(s).unwrap_or_else(|_| Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
+    Hsla::from_str(s).unwrap_or(Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
 }
 
 /// Measures `text` in a CSS `font` (the canvas's `measureText`).

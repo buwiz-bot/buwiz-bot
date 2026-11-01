@@ -274,7 +274,7 @@ pub fn escape() {
 /// The hidden input typing goes into.
 fn typing() -> impl IntoElement {
     let field = element_ref();
-    FIELD.with(|f| f.set(Some(field.clone())));
+    FIELD.with(|f| f.set(Some(field)));
     let buf = signal(String::new());
     TYPED.with_borrow_mut(|t| *t = Field { value: Some(buf), given: String::new() });
     input()
@@ -411,7 +411,7 @@ fn page_at(x: f32, y: f32) -> Option<(usize, f32, f32)> {
 fn pages() -> impl IntoElement {
     let u = ui();
     let scroller = element_ref();
-    SCROLLER.with(|s| s.set(Some(scroller.clone())));
+    SCROLLER.with(|s| s.set(Some(scroller)));
     let total = move || {
         let z = u.zoom.get();
         u.meta.with(|m| tops(&m.pages, z).1)

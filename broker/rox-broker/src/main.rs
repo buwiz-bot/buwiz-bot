@@ -69,7 +69,7 @@ async fn main() {
         let data = config.data_dir(std::env::var("GROK_DATA_DIR").ok().as_deref());
         let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false), McpHost::new(&db, config.port)) {
+        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), config.port), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
                 let token = rox_v1::keys::b64(&rox_v1::keys::random::<32>());
                 config.node_env.push(("ROX_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
@@ -101,7 +101,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false) {
+            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), config.port) {
                 Ok(host) => {
                     ctx.sessions = Some(rox_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -128,7 +128,12 @@ async fn main() {
     let door = FrontDoor::new(node.clone(), leaf);
     let door = match &line {
         // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
-        Some(line) if hosts.contains(&"mcp") => door.with_line(line.clone()).with_mcp(rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone())),
+        Some(line) if hosts.contains(&"mcp") => {
+            let routes = rox_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone());
+            // a mini app account's sign-in comes back on the same callback route
+            let routes = if hosts.contains(&"v1") { routes.with_plugins(line.host().clone()) } else { routes };
+            door.with_line(line.clone()).with_mcp(routes)
+        }
         Some(line) => door.with_line(line.clone()),
         None => door,
     };
@@ -254,14 +259,15 @@ fn manifest_op(args: &[String]) -> i32 {
             0
         }
         None => {
-            eprintln!("usage: rox-broker manifest <verify|tools|props|review|added|semver|limits> < request.json");
+            eprintln!("usage: rox-broker manifest <verify|tools|props|review|added|semver|limits|package> < request.json");
             2
         }
     }
 }
 
-/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`.
-fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool) -> Result<Arc<Host>, String> {
+/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`; `port`
+/// the front door's (account sign-ins redirect there).
+fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, port: u16) -> Result<Arc<Host>, String> {
     let keys = rox_broker::helper::keystore::Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default())?;
     let mut timeouts = Timeouts::default();
     // ROX_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
@@ -269,7 +275,8 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
         timeouts.call = Duration::from_millis(ms);
     }
     let clock = if manual_clock { Clock::manual() } else { Clock::system() };
-    let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts })?;
+    let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts, apps_dir })?;
+    host.set_accounts_config(rox_broker::helper::plugins::AccountsConfig { port, ..Default::default() });
     // Rox's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
     match keys.move_from_rox(&ids, &db.with_file_name(rox_broker::helper::keystore::MOVED_MARKER)) {
@@ -305,15 +312,15 @@ async fn helper(args: &[String]) -> i32 {
         return 2;
     };
     let trust = std::env::var("BUWIZ_TRUST_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| "src/v1/trust.json".into());
-    let host = match plugin_host(&db, log_dir, trust, std::env::var("ROX_V1_MANUAL_CLOCK").as_deref() == Ok("1")) {
+    // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
+    let public = ["ROX_PUBLIC_PORT", "PORT"].iter().find_map(|k| std::env::var(k).ok()?.parse::<u16>().ok()).unwrap_or(8787);
+    let host = match plugin_host(&db, log_dir, trust, std::env::var("ROX_V1_MANUAL_CLOCK").as_deref() == Ok("1"), None, public) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("rox-broker helper: {e}");
             return 1;
         }
     };
-    // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
-    let public = ["ROX_PUBLIC_PORT", "PORT"].iter().find_map(|k| std::env::var(k).ok()?.parse::<u16>().ok()).unwrap_or(8787);
     let mcp = match McpHost::new(&db, public) {
         Ok(m) => m,
         Err(e) => {
