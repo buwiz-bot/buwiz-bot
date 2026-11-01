@@ -7,8 +7,20 @@
 //! code, message, retryable}` with the status map below. Plugin actions
 //! and sessions are the plugin host's (`helper::plugins`,
 //! `helper::sessions`); the routine routes are `hub::routines::v1`'s.
+//! An install may take settings from another plugin (`env_from`), and
+//! `notices/settle` answers a mini app's install or uninstall card.
+//! A mini app's accounts (2.1 §4): `GET /v1/host/plugins/<id>/accounts`,
+//! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
+//! a sign-in settles the chat's `account_required` cards for it
+//! (`connected`); the user's Not now settles them `declined`.
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
+//!
+//! `POST /v1/host/prove {nonce}` takes no token either: it answers
+//! `{ok: true, proof}`, `proof` = base64url(HMAC-SHA256(host token,
+//! "buwiz-broker-proof:" + nonce)) (`rox_v1::proof`), so the app can tell
+//! this broker from a stranger on its port before a saved login leaves it
+//! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
 //!
 //! The agents' `/v1/host/agents/*` routes (5.6, track E) answer 501 here
 //! until that track registers them; it checks the token with
@@ -27,13 +39,16 @@ use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use hyper::{Method, Response, StatusCode};
 use serde_json::{json, Value};
 
+use crate::helper::plugins::Host;
 use crate::hub::ctx::HubCtx;
+use crate::hub::routines::store_host::settle_notices;
 use crate::hub::routines::v1::V1;
 use crate::hub::routines::Routines;
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
 use crate::v1::V1Error;
+use rox_v1::proof::same;
 
 const BODY_MAX: usize = 2 * 1024 * 1024;
 
@@ -75,8 +90,23 @@ fn write_token(file: &Path, token: &str) -> std::io::Result<()> {
     std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
 }
 
-fn same(got: &[u8], want: &[u8]) -> bool {
-    !want.is_empty() && got.len() == want.len() && got.iter().zip(want).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+/// The broker's proof of identity; it takes no token.
+const PROVE: &str = "/v1/host/prove";
+
+/// `POST /v1/host/prove {nonce}` → `{ok: true, proof}` under this hub's
+/// host token; no token on the request (the app sends none to a server
+/// it has not proven).
+fn prove(rs: &Routines, req: &HubRequest) -> HubResponse {
+    if req.method != Method::POST {
+        return refusal(StatusCode::METHOD_NOT_ALLOWED, "not_supported", format!("{} {PROVE}", req.method));
+    }
+    let nonce = read_body(&req.body).and_then(|b| b.get("nonce").and_then(Value::as_str).map(str::to_owned));
+    let Some(nonce) = nonce.filter(|n| rox_v1::proof::valid_nonce(n)) else {
+        return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {nonce}: 22 to 128 base64url characters");
+    };
+    let token = rs.token.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|t| !t.is_empty());
+    let Some(token) = token else { return refusal(StatusCode::SERVICE_UNAVAILABLE, "not_ready", "the host token is not ready") };
+    types::json(StatusCode::OK, &json!({"ok": true, "proof": rox_v1::proof::broker_proof(&token, &nonce)}))
 }
 
 /// Whether `headers` carry this process's host token (constant time).
@@ -139,6 +169,7 @@ fn sent(path: &str, out: Result<Value, V1Error>) -> HubResponse {
 }
 
 pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
+    routes.on_start(settle_on_sign_in);
     let host = rs.clone();
     routes.route(Verb::Any, Pattern::Prefix("/v1/host/"), move |ctx, req| {
         let rs = host.clone();
@@ -151,6 +182,9 @@ pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
 }
 
 async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    if req.path() == PROVE {
+        return prove(&rs, &req);
+    }
     if !authorized_by(&rs, &req.headers) {
         return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Buwiz-Host is missing or wrong");
     }
@@ -160,6 +194,17 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     }
     if req.method == Method::GET && path == "/v1/host/events" {
         return events(&ctx);
+    }
+    if let Some(raw) = path.strip_prefix("/v1/host/plugins/").and_then(|r| r.strip_suffix("/accounts")).filter(|r| req.method == Method::GET && !r.is_empty() && !r.contains('/')) {
+        let out = match (js::decode_uri_component(raw), ctx.plugins.as_ref()) {
+            (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
+            (_, None) => Err(V1Error::new("plugin_unavailable", "this broker hosts no v1 plugins")),
+            (Ok(id), Some(host)) => match host.row(&id) {
+                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id)})),
+                None => Err(V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(&id, 80)))),
+            },
+        };
+        return sent(&path, out);
     }
     if req.method != Method::POST {
         return refusal(StatusCode::METHOD_NOT_ALLOWED, "not_supported", format!("{} {path}", req.method));
@@ -176,11 +221,14 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
 enum Route {
     Post(&'static str),
     Action(String, &'static str),
+    /// `/v1/host/plugins/<id>/accounts/<account>/<op>`
+    Account(String, String, &'static str),
 }
 
 const POSTS: &[&str] = &[
     "/v1/host/plugins/inspect",
     "/v1/host/plugins/install",
+    "/v1/host/notices/settle",
     "/v1/host/apps/source",
     "/v1/host/sessions/open",
     "/v1/host/sessions/close",
@@ -203,6 +251,10 @@ impl Route {
         }
         // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools)$/
         let rest = path.strip_prefix("/v1/host/plugins/")?;
+        if let [id, "accounts", account, op] = rest.split('/').collect::<Vec<_>>().as_slice() {
+            let op = ["signin", "signout", "remove"].into_iter().find(|o| o == op)?;
+            return (!id.is_empty() && !account.is_empty()).then(|| Route::Account((*id).to_owned(), (*account).to_owned(), op));
+        }
         let (id, action) = rest.split_once('/')?;
         let action = ["enable", "disable", "uninstall", "tools"].into_iter().find(|a| *a == action)?;
         (!id.is_empty()).then(|| Route::Action(id.to_owned(), action))
@@ -224,9 +276,12 @@ impl Route {
                         _ => v1.hook(ctx, b),
                     };
                 }
+                if *path == "/v1/host/notices/settle" {
+                    return settle(ctx, b);
+                }
                 if let Some(op) = path.strip_prefix("/v1/host/plugins/") {
                     let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
-                    return if op == "inspect" { host.inspect(b).await } else { host.install(b).await };
+                    return if op == "inspect" { host.inspect(b).await } else { install_plugin(ctx, host, b).await };
                 }
                 let ss = ctx.sessions.as_ref().ok_or_else(no_host)?;
                 match *path {
@@ -253,8 +308,130 @@ impl Route {
                     _ => host.set_tool(&id, b.get("tool"), b.get("disabled")),
                 }
             }
+            Route::Account(raw, account, op) => {
+                let (Ok(id), Ok(account)) = (js::decode_uri_component(raw), js::decode_uri_component(account)) else { return V1Error::err("internal", "URI malformed") };
+                let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
+                match *op {
+                    "signin" => host.account_signin(&id, &account, b).await,
+                    "signout" => host.account_signout(&id, &account, b).await,
+                    _ => host.account_remove(&id, &account, b).await,
+                }
+            }
         }
     }
+}
+
+/// The install body's `env_from: "<installed id>"`: each key of
+/// `env_from_keys` the body's `env` lacks is copied from that plugin's
+/// env. The values stay in the broker (never logged, never answered).
+pub fn with_env_from(host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let from = match b.get("env_from") {
+        None | Some(Value::Null) => return Ok(b.clone()),
+        Some(Value::String(f)) if !f.is_empty() => f,
+        Some(_) => return V1Error::err("invalid_args", "env_from must be an installed plugin id"),
+    };
+    let Some(keys) = b.get("env_from_keys").and_then(Value::as_array).filter(|k| k.iter().all(Value::is_string)) else {
+        return V1Error::err("invalid_args", "env_from_keys must be an array of names");
+    };
+    let Some(row) = host.row(from) else { return V1Error::err("not_found", format!("{} is not installed", js::slice_utf16(from, 80))) };
+    let theirs = crate::helper::plugins::parse(&row.env, json!({}));
+    let mut out = b.clone();
+    let o = out.as_object_mut().expect("the body is an object");
+    let mut env = match o.get("env") {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(m)) => m.clone(),
+        Some(_) => return V1Error::err("invalid_args", "env must map names to strings"),
+    };
+    for k in keys.iter().filter_map(Value::as_str) {
+        if env.contains_key(k) {
+            continue;
+        }
+        match theirs.get(k).and_then(Value::as_str) {
+            Some(v) => {
+                env.insert(k.to_owned(), json!(v));
+            }
+            None => return V1Error::err("invalid_args", format!("{from} has no {}", js::slice_utf16(k, 80))),
+        }
+    }
+    o.insert("env".into(), Value::Object(env));
+    o.shift_remove("env_from");
+    o.shift_remove("env_from_keys");
+    Ok(out)
+}
+
+/// `POST /v1/host/plugins/install` with `env_from`; once it installed,
+/// every pending `app_install` card for the id reads `installed`.
+pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let out = host.install(&with_env_from(host, b)?).await?;
+    if let Some(id) = out.get("id").and_then(Value::as_str) {
+        settle_notices(ctx, None, "app_install", id, "installed");
+    }
+    Ok(out)
+}
+
+/// `POST /v1/host/notices/settle {chat, kind, id, state}`: the user's
+/// answer on an install or uninstall card.
+pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
+    let str_of = |k: &str| b.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+    let (Some(chat), Some(kind), Some(id), Some(state)) = (str_of("chat"), str_of("kind"), str_of("id"), str_of("state")) else {
+        return V1Error::err("invalid_args", "send {chat, kind, id, state}");
+    };
+    let states: &[&str] = match kind {
+        "app_install" => &["declined"],
+        "app_uninstall" => &["uninstalled", "cancelled"],
+        "account_required" => &["declined"],
+        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall or account_required"),
+    };
+    if !states.contains(&state) {
+        return V1Error::err("invalid_args", format!("{kind} settles as {}", states.join(" or ")));
+    }
+    if ctx.store.read(|s| s.thread(chat).is_none()) {
+        return V1Error::err("not_found", format!("no chat {}", js::slice_utf16(chat, 80)));
+    }
+    let n = settle_notices(ctx, Some(chat), kind, id, state);
+    Ok(json!({"ok": true, "settled": n}))
+}
+
+/// A signed-in account settles its pending `account_required` cards (the
+/// plugin's, for that account) as `connected`.
+fn settle_on_sign_in(ctx: Arc<HubCtx>) {
+    let Some(mut events) = ctx.plugins.as_ref().map(|h| h.account_events()) else { return };
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(e) if e.get("state").and_then(Value::as_str) == Some("connected") => {
+                    settle_signed_in(&ctx, &js::string_of(&e["plugin"]), &js::string_of(&e["account"]));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => return,
+            }
+        }
+    });
+}
+
+/// Every chat's pending `account_required` card of `plugin` and `account`
+/// reads `connected`; → how many.
+pub fn settle_signed_in(ctx: &HubCtx, plugin: &str, account: &str) -> usize {
+    let n = ctx
+        .store
+        .write(|s| {
+            let mut n = 0;
+            for t in s.list.iter_mut() {
+                for u in &mut t.turns {
+                    let Some(x) = u.notice.as_mut() else { continue };
+                    if x["kind"] == "account_required" && x["id"] == json!(plugin) && x["account"] == json!(account) && x["state"] == "pending" {
+                        x["state"] = json!("connected");
+                        n += 1;
+                    }
+                }
+            }
+            n
+        })
+        .unwrap_or(0);
+    if n > 0 {
+        ctx.store.write_index();
+    }
+    n
 }
 
 /// `POST /v1/hooks/<instance>/<secret>`: a webhook instance's run, 202
@@ -318,5 +495,24 @@ impl hyper::body::Body for Channel {
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, hyper::Error>>> {
         self.0.poll_recv(cx).map(|chunk| chunk.map(|b| Ok(Frame::data(b))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_routes_name_the_plugin_the_account_and_the_op() {
+        let of = |p: &str| match Route::of(p) {
+            Some(Route::Account(id, account, op)) => Some((id, account, op)),
+            _ => None,
+        };
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/signin"), Some(("app.buwiz.gws".into(), "google".into(), "signin")));
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/signout").map(|r| r.2), Some("signout"));
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/remove").map(|r| r.2), Some("remove"));
+        assert!(Route::of("/v1/host/plugins/app.buwiz.gws/accounts/google/delete").is_none());
+        assert!(Route::of("/v1/host/plugins//accounts/google/signin").is_none());
+        assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/enable"), Some(Route::Action(_, "enable"))));
     }
 }

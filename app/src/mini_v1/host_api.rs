@@ -140,6 +140,13 @@ pub fn install(
     post(b, "/v1/host/plugins/install", body, Duration::from_secs(30))
 }
 
+/// `POST /v1/host/notices/settle`: the user's answer to chat `chat`'s
+/// pending `kind` notices about plugin `id` (`declined`, `uninstalled`,
+/// `cancelled`).
+pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &str) -> Result<(), RoxError> {
+    post(b, "/v1/host/notices/settle", json!({"chat": chat, "kind": kind, "id": id, "state": state}), SHORT_TIMEOUT).map(drop)
+}
+
 /// What the broker does to an installed plugin (13.4 to 13.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginAction {
@@ -169,6 +176,50 @@ pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: boo
         return Err(RoxError::new("invalid_args", "not a plugin id"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/tools"), json!({"tool": tool, "disabled": disabled}), SHORT_TIMEOUT)
+}
+
+/// What the person does to one of a 2.1 package's accounts (spec 2.1 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountAction {
+    /// The broker opens the system browser; the list then says the state.
+    SignIn,
+    SignOut,
+    Remove,
+}
+
+/// The account routes, in one place: `/v1/host/plugins/:id/accounts/:account/{signin,signout,remove}`.
+pub fn account_route(plugin: &str, account: &str, action: AccountAction) -> String {
+    let verb = match action {
+        AccountAction::SignIn => "signin",
+        AccountAction::SignOut => "signout",
+        AccountAction::Remove => "remove",
+    };
+    format!("/v1/host/plugins/{plugin}/accounts/{account}/{verb}")
+}
+
+/// A manifest account id: `^[a-z][a-z0-9-]{0,31}$`.
+pub fn account_id_ok(id: &str) -> bool {
+    let mut c = id.chars();
+    c.next().is_some_and(|f| f.is_ascii_lowercase()) && id.len() <= 32 && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '-')
+}
+
+/// An account label as the broker takes it (it names Keychain items):
+/// `^[A-Za-z0-9][A-Za-z0-9._@+-]{0,59}$`.
+pub fn account_label_ok(label: &str) -> bool {
+    let mut c = label.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphanumeric()) && label.len() <= 60 && c.all(|x| x.is_ascii_alphanumeric() || "._@+-".contains(x))
+}
+
+/// What the add form says of a label the broker would refuse.
+pub const LABEL_RULE: &str = "Letters, digits and . _ @ + - only";
+
+/// `POST` an account route with `{label}`: `{ok, url?}` for a sign-in.
+pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, action: AccountAction) -> Result<Value, RoxError> {
+    let label = label.trim();
+    if !super::perms::plugin_id_ok(plugin) || !account_id_ok(account) || !account_label_ok(label) {
+        return Err(RoxError::new("invalid_args", "not an account of a plugin"));
+    }
+    post(b, &account_route(plugin, account, action), json!({"label": label}), SHORT_TIMEOUT)
 }
 
 /// What the person does to a routine (5.9).

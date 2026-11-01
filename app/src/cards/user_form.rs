@@ -27,6 +27,9 @@
 //! saved login's secret is read from the Keychain only after Touch ID
 //! (`vault::Vault::unlock`), held here unpainted ([`Held`]), and goes into
 //! `values` only inside the submit body (`savedLogin:true, savedLoginId`).
+//! That body is sent only to a broker that has just proven it holds the
+//! host token (`transport::submit_saved_login`, `POST /v1/host/prove`);
+//! otherwise it stays in the app and the card says so.
 //! Nothing secret is put on a turn, in the store, in a log line or in a
 //! `Debug` print: [`Values`] and [`Field`] redact theirs.
 //!
@@ -350,6 +353,7 @@ impl UserFormSpec {
     }
 
     /// Where the card is in the view: its entry id, else its call id.
+    #[cfg(test)]
     pub(crate) fn card_key(&self) -> &str {
         if !self.entry_id.is_empty() {
             &self.entry_id
@@ -366,6 +370,7 @@ impl UserFormSpec {
 
     /// Two frames of one card: the same entry id, else the same call id.
     /// Two cards that each carry their own entry id are siblings.
+    #[cfg(test)]
     pub(crate) fn same_card(&self, other: &Self) -> bool {
         if self.has_entry_id() && other.has_entry_id() {
             return self.entry_id == other.entry_id;
@@ -376,6 +381,7 @@ impl UserFormSpec {
     /// Folds a later frame of the same card onto this one: ids it lacked,
     /// a settlement, fields it adds. A field the card shows is never
     /// dropped by a narrower envelope.
+    #[cfg(test)]
     pub(crate) fn merge(&mut self, incoming: UserFormSpec) {
         if incoming.has_entry_id() {
             self.entry_id = incoming.entry_id;
@@ -455,6 +461,7 @@ impl UserFormSpec {
 }
 
 /// Folds `incoming` into the card it belongs to in `cards`, or appends it.
+#[cfg(test)]
 pub(crate) fn merge_into(cards: &mut Vec<UserFormSpec>, incoming: UserFormSpec) {
     match cards.iter_mut().find(|c| c.same_card(&incoming)) {
         Some(card) => card.merge(incoming),
@@ -775,6 +782,29 @@ fn other_page(spec: &UserFormSpec) -> Option<String> {
     (login_origin(spec).as_ref() != Some(&page)).then_some(page)
 }
 
+/// The site whose saved logins a card offers: its page's when its
+/// `domain` names another site (`other_page`), else [`login_origin`].
+pub(crate) fn offered_site(spec: &UserFormSpec) -> Option<String> {
+    other_page(spec).or_else(|| login_origin(spec))
+}
+
+/// The site a card's `domain` names when its page is on another: its
+/// logins are never offered on their own, only listed once the person
+/// asks for them, beside the mismatch.
+pub(crate) fn asked_site(spec: &UserFormSpec) -> Option<String> {
+    other_page(spec).and_then(|_| login_origin(spec))
+}
+
+/// The rows a card lists: the page's, and the `domain`'s only once the
+/// person asked for them (`shown`), each row once.
+fn listed(rows: &[SiteLogin], asked: &[SiteLogin], shown: bool) -> Vec<SiteLogin> {
+    let mut out = rows.to_vec();
+    if shown {
+        out.extend(asked.iter().filter(|a| !rows.iter().any(|r| r.id == a.id)).cloned());
+    }
+    out
+}
+
 /// The Touch ID reason for using `row` on a form for `site`: both sites
 /// when they differ, so the sheet shows a mismatch too.
 fn use_reason(row: &SiteLogin, site: &str) -> String {
@@ -856,6 +886,9 @@ struct Local {
     pick: Signal<Pick>,
     /// The person chose to type the login by hand: no list.
     by_hand: Signal<bool>,
+    /// The person asked to see the logins of the site the card's `domain`
+    /// names, which is not its page's.
+    show_asked: Signal<bool>,
     /// The ending was painted here because no server answered.
     offline: Signal<bool>,
     /// Try again on a card the wire settled as not filled.
@@ -890,6 +923,7 @@ fn local(key: &str) -> Local {
         values: signal(Values::default()),
         pick: signal(Pick::None),
         by_hand: signal(false),
+        show_asked: signal(false),
         offline: signal(false),
         retry: signal(false),
     });
@@ -979,7 +1013,12 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
             }
             // the values exist from here only inside the body, on its way out
             let body = transport::submit_body(&spec.entry_id, &agent, values.into_map(), login_id.as_deref(), None);
-            let reply = transport::submit_user_form(body).await;
+            // what came from the vault goes only to a broker that proves itself
+            let reply = if login_id.is_some() {
+                transport::submit_saved_login(body).await
+            } else {
+                transport::submit_user_form(body).await
+            };
             let entry = spec.entry_id.as_str();
             match reply {
                 UserFormReply::Settled(body) => {
@@ -988,8 +1027,11 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                     if r == FormResolution::Submitted
                         && let Some(id) = &login_id
                     {
-                        // a legacy row is this site's from its first use
-                        if let Some(site) = login_origin(&spec) {
+                        // a legacy row is this site's from its first use (not
+                        // on a card whose `domain` and page disagree)
+                        if other_page(&spec).is_none()
+                            && let Some(site) = login_origin(&spec)
+                        {
                             vault().pin_site(id, &site);
                         }
                         vault().mark_used(id);
@@ -1205,7 +1247,11 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, local_paint: 
 fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     let loc = local(&key);
     let target = card_target(&spec);
-    let rows: Vec<SiteLogin> = match (&target, login_origin(&spec)) {
+    let rows: Vec<SiteLogin> = match (&target, offered_site(&spec)) {
+        (Some(t), Some(origin)) => vault().rows_for(&origin, t.kind()),
+        _ => Vec::new(),
+    };
+    let asked: Vec<SiteLogin> = match (&target, asked_site(&spec)) {
         (Some(t), Some(origin)) => vault().rows_for(&origin, t.kind()),
         _ => Vec::new(),
     };
@@ -1232,8 +1278,9 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     if let Some(i) = spec.instruction.as_ref().filter(|i| !i.is_empty()) {
         v = v.child(note(i.clone()));
     }
-    if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty()), login_origin(&spec)) {
-        v = v.child(saved_strip(key.clone(), rows, t, site, other_page(&spec)));
+    if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), offered_site(&spec)) {
+        let asked = asked_site(&spec).map(|named| (named, asked));
+        v = v.child(saved_strip(key.clone(), rows, t, site, asked));
     }
     for f in &spec.fields {
         v = v.child(field_view(key.clone(), f.clone(), target.clone()));
@@ -1270,18 +1317,22 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
 
 /// The saved logins for the card's site: Use (Touch ID), or Type it by hand.
 /// The site the card asks for shows above them, and each row's own site
-/// under its name, marked when it is not the same site.
+/// under its name, marked when it is not the same site. `site` is the
+/// card's page's; when its `domain` names another (`asked`: that site and
+/// its rows), the mismatch shows first and that site's logins are listed
+/// only once the person asks for them.
 fn saved_strip(
     key: String,
     rows: Vec<SiteLogin>,
     target: CardTarget,
     site: String,
-    page: Option<String>,
+    asked: Option<(String, Vec<SiteLogin>)>,
 ) -> impl IntoElement {
     let loc = local(&key);
     dynamic(move || {
         let pick = loc.pick.get();
         let typing = loc.by_hand.get();
+        let shown = loc.show_asked.get();
         let mut v = view().gap(px(6.0));
         match pick {
             Pick::Confirming { username } => {
@@ -1308,17 +1359,24 @@ fn saved_strip(
             _ => "From your saved logins. Touch ID fills it in; the password is never shown.",
         };
         v = v.child(text(hint).text_size(px(12.0)).text_color(theme::MUTED));
-        let asks = match &page {
-            Some(page) => format!("This form asks for {site} (its page is on {page})"),
+        let asks = match &asked {
+            Some((named, _)) => format!(
+                "This form names {named}, but its page is on {site}. Only logins for {site} are offered; check the page before you use another site's."
+            ),
             None => format!("This form asks for {site}"),
         };
         v = v.child(
             text(asks)
-                .number_of_lines(2)
+                .number_of_lines(3)
                 .text_size(px(12.0))
-                .text_color(if page.is_some() { theme::DOWN } else { theme::MUTED }),
+                .font_weight(if asked.is_some() { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                .text_color(if asked.is_some() { theme::DOWN } else { theme::MUTED }),
         );
-        for row in &rows {
+        let other: &[SiteLogin] = asked.as_ref().map(|(_, r)| r.as_slice()).unwrap_or_default();
+        if rows.is_empty() && !shown {
+            v = v.child(text(format!("No login is saved for {site}.")).text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        for row in &listed(&rows, other, shown) {
             let (k, r, t, s) = (key.clone(), row.clone(), target.clone(), site.clone());
             let saved_for = match site_match(&row.origin, true, &site) {
                 SiteMatch::Exact => (format!("Saved for {}", row.origin), theme::MUTED),
@@ -1351,8 +1409,13 @@ fn saved_strip(
                     })),
             );
         }
+        let mut links = view().flex_row().gap_2();
+        if let Some((named, _)) = asked.as_ref().filter(|(_, r)| !shown && r.iter().any(|a| !rows.iter().any(|b| b.id == a.id))) {
+            let k = key.clone();
+            links = links.child(link_btn(format!("Show logins saved for {named}"), move || local(&k).show_asked.set(true)));
+        }
         let k = key.clone();
-        v.child(view().flex_row().child(link_btn("Type it by hand", move || by_hand(&k)))).into_element()
+        v.child(links.child(link_btn("Type it by hand", move || by_hand(&k)))).into_element()
     })
 }
 
@@ -1540,14 +1603,15 @@ fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static,
         .label(label)
 }
 
-fn link_btn(label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
+fn link_btn(label: impl Into<String>, on: impl Fn() + 'static) -> impl IntoElement {
+    let label: String = label.into();
     let hov = signal(false);
-    text(label)
+    text(label.clone())
         .text_size(px(12.0))
         .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT })
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-        .on_press(move || on())
+        .on_press(on)
         .label(label)
 }
 
@@ -1772,9 +1836,40 @@ mod tests {
 
         let row = SiteLogin { origin: "google.com".into(), username: "ada".into(), ..Default::default() };
         assert_eq!(use_reason(&row, "google.com"), "use the saved login for google.com as ada");
+        // the other site's login, picked by hand on the mismatched card,
+        // names both sites on the Touch ID sheet
+        let alice = SiteLogin { id: "sl_a".into(), origin: "alice.pythonanywhere.com".into(), username: "alice".into(), ..Default::default() };
+        assert_eq!(
+            use_reason(&alice, &offered_site(&odd).unwrap()),
+            "use the login saved for alice.pythonanywhere.com as alice on mallory.pythonanywhere.com"
+        );
         assert_eq!(
             use_reason(&row, "accounts.google.com"),
             "use the login saved for google.com as ada on accounts.google.com"
         );
+    }
+
+    #[test]
+    fn a_card_whose_domain_names_another_site_offers_only_its_pages_logins() {
+        let spec = |domain: Option<&str>, live: Option<&str>| UserFormSpec {
+            domain: domain.map(str::to_owned),
+            live_host: live.map(str::to_owned),
+            ..Default::default()
+        };
+        let odd = spec(Some("alice.pythonanywhere.com"), Some("https://mallory.pythonanywhere.com/login"));
+        assert_eq!(offered_site(&odd).as_deref(), Some("mallory.pythonanywhere.com"), "the page's site is offered");
+        assert_eq!(asked_site(&odd).as_deref(), Some("alice.pythonanywhere.com"), "the domain's only on request");
+        // no mismatch: as before
+        for same in [spec(Some("https://localhost:3000"), Some("localhost:3000")), spec(Some("example.com"), None), spec(None, Some("example.com"))] {
+            assert_eq!(offered_site(&same), login_origin(&same));
+            assert_eq!(asked_site(&same), None);
+        }
+        let row = |id: &str, origin: &str| SiteLogin { id: id.into(), origin: origin.into(), username: id.into(), ..Default::default() };
+        let page = vec![row("m", "mallory.pythonanywhere.com")];
+        let named = vec![row("a", "alice.pythonanywhere.com"), row("m", "mallory.pythonanywhere.com")];
+        let ids = |rows: Vec<SiteLogin>| rows.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(listed(&page, &named, false)), ["m"], "the other site's login is not listed by itself");
+        assert_eq!(ids(listed(&[], &named[..1], false)), Vec::<String>::new());
+        assert_eq!(ids(listed(&page, &named, true)), ["m", "a"], "listed once asked for, each row once");
     }
 }

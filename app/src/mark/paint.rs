@@ -34,10 +34,9 @@ fn path_of(data: &str) -> Path {
         if let Some(p) = paths.get(data) {
             return p.clone();
         }
-        if paths.len() >= 256 {
-            if let Some(k) = paths.keys().next().cloned() {
+        if paths.len() >= 256
+            && let Some(k) = paths.keys().next().cloned() {
                 paths.remove(&k);
-            }
         }
         let p = svg_path(data);
         paths.insert(data.to_owned(), p.clone());
@@ -75,7 +74,7 @@ fn apply_transform(mut p: Painter, value: &str) -> Painter {
         let Some(close) = rest[open..].find(')') else { break };
         let raw = &rest[open + 1..open + close];
         let args: Vec<f64> = raw
-            .split(|c: char| c == ' ' || c == ',')
+            .split([' ', ','])
             .filter(|s| !s.is_empty())
             .filter_map(|s| s.parse::<f64>().ok())
             .collect();
@@ -205,8 +204,8 @@ fn paint_node<'a>(
                         },
                     );
                 }
-                if let Some(stroke) = tree.attr("stroke") {
-                    if stroke != "none" {
+                if let Some(stroke) = tree.attr("stroke")
+                    && stroke != "none" {
                         p = p
                             .stroke_color(hsla_of(stroke))
                             .line_width(number_attr(tree, "stroke-width", 1.0) as f32)
@@ -221,7 +220,6 @@ fn paint_node<'a>(
                                 _ => nsh_core::canvas::LineJoin::Miter,
                             })
                             .stroke_path(&path);
-                    }
                 }
             }
         }
@@ -234,12 +232,12 @@ fn paint_node<'a>(
             if fill != "none" {
                 p = p.fill_color(hsla_of(fill)).fill();
             }
-            if let Some(stroke) = tree.attr("stroke") {
-                if stroke != "none" {
+            if let Some(stroke) = tree.attr("stroke")
+                && stroke != "none" {
                     let dash: Vec<Points> = tree
                         .attr("stroke-dasharray")
                         .unwrap_or("")
-                        .split(|c: char| c == ' ' || c == ',')
+                        .split([' ', ','])
                         .filter(|s| !s.is_empty())
                         .filter_map(|s| s.parse::<f32>().ok())
                         .map(Points)
@@ -250,7 +248,6 @@ fn paint_node<'a>(
                         .line_dash(&dash)
                         .stroke()
                         .line_dash(&[]);
-                }
             }
         }
         _ => {}
@@ -269,7 +266,7 @@ pub(crate) fn paint_tree(p: Painter, tree: &MarkTree, x: f64, y: f64, px: f64) -
     let vb: Vec<f64> = tree
         .attr("viewBox")
         .unwrap_or("0 0 1 1")
-        .split(|c: char| c == ' ' || c == ',')
+        .split([' ', ','])
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse::<f64>().ok())
         .collect();
@@ -421,8 +418,8 @@ pub(crate) fn rest_rings(bytes: &[u8], s: &GazeState, px: f64) -> [Vec<[f64; 2]>
             return ([0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
         }
         let mut base = 1usize;
-        for i in 0..index as usize {
-            base += REST_LAYERS[i].1 * REST_LAYERS[i].1;
+        for layer in &REST_LAYERS[..index as usize] {
+            base += layer.1 * layer.1;
         }
         let n = REST_LAYERS[index as usize].1 as f64;
         let fx = (s.cx + 1.0) / 2.0 * (n - 1.0);

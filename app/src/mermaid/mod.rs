@@ -42,10 +42,9 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     }
 
     pub fn put(&mut self, k: K, v: V) {
-        if self.map.insert(k.clone(), v).is_some() {
-            if let Some(i) = self.order.iter().position(|o| *o == k) {
+        if self.map.insert(k.clone(), v).is_some()
+            && let Some(i) = self.order.iter().position(|o| *o == k) {
                 self.order.remove(i);
-            }
         }
         self.order.push_back(k);
         while self.order.len() > self.cap {
@@ -90,7 +89,8 @@ fn code_hash(code: &str) -> u64 {
 }
 
 fn scenes() -> &'static Mutex<Lru<u64, Arc<Result<Laid, Unported>>>> {
-    static SCENES: OnceLock<Mutex<Lru<u64, Arc<Result<Laid, Unported>>>>> = OnceLock::new();
+    type SceneCache = Mutex<Lru<u64, Arc<Result<Laid, Unported>>>>;
+    static SCENES: OnceLock<SceneCache> = OnceLock::new();
     SCENES.get_or_init(|| Mutex::new(Lru::new(KEEP)))
 }
 

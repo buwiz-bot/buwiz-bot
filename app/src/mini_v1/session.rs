@@ -44,6 +44,8 @@ pub enum Ended {
     Restarted,
 }
 
+type EndListener = Box<dyn Fn(Ended) + Send + Sync>;
+
 /// One open's session.
 pub struct Session {
     pub plugin: String,
@@ -52,7 +54,7 @@ pub struct Session {
     pub not_after: i64,
     key: keys::SessionKey,
     ended: Mutex<Option<Ended>>,
-    on_end: Mutex<Vec<Box<dyn Fn(Ended) + Send + Sync>>>,
+    on_end: Mutex<Vec<EndListener>>,
 }
 
 /// The sessions alive in this process, for generation events.
@@ -191,11 +193,13 @@ impl Session {
 /// How long a pre-opened session waits for its card (spec 14.6).
 pub const PREOPEN_TTL: Duration = Duration::from_secs(60);
 
+type Preopened = (String, String, String, std::time::Instant, Arc<Session>);
+
 /// Sessions opened ahead of their card (a tool result's inline card that
 /// is about to mount): `(plugin, app, perms digest, opened at, session)`.
 /// Each is used by one open at most (4.4); unused ones are closed after
 /// [`PREOPEN_TTL`].
-static POOL: Mutex<Vec<(String, String, String, std::time::Instant, Arc<Session>)>> = Mutex::new(Vec::new());
+static POOL: Mutex<Vec<Preopened>> = Mutex::new(Vec::new());
 
 /// Opens a session for `app` of `plugin` ahead of its open and keeps it
 /// for [`take_preopened`]. Nothing when one is waiting already.
@@ -341,9 +345,11 @@ pub fn end_plugin(plugin: &str, why: Ended) -> usize {
     n
 }
 
+type EventListener = Arc<dyn Fn(&Value) + Send + Sync>;
+
 /// Who else hears the broker's `plugin` events (part B: the list, and
 /// the opens waiting to reconnect), after their sessions are handled.
-static LISTENER: Mutex<Option<Arc<dyn Fn(&Value) + Send + Sync>>> = Mutex::new(None);
+static LISTENER: Mutex<Option<EventListener>> = Mutex::new(None);
 
 /// Sets who hears the broker's `plugin` events after [`on_plugin_event`].
 pub fn set_event_listener(f: Arc<dyn Fn(&Value) + Send + Sync>) {
@@ -434,7 +440,8 @@ pub(crate) mod tests {
 
     #[test]
     fn cert_failures_refuse_the_open_with_plugin_bad_signature() {
-        let cases: [(&str, fn(&mut Value, &mut Value)); 11] = [
+        type CertCase = (&'static str, fn(&mut Value, &mut Value));
+        let cases: [CertCase; 11] = [
             ("signed by another key", |_, a| {
                 if a.is_object() {
                     a["plugin_pub"] = json!(keys::SessionKey::generate().public());
