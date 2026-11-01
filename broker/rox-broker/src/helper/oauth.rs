@@ -227,7 +227,7 @@ impl Provider<'_> {
 
 /// The system's way to open a URL (`open` on macOS, as Node's execFile ran
 /// it: looked up on PATH).
-fn open_url(u: &str) {
+pub(crate) fn open_url(u: &str) {
     let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     if let Ok(mut child) = std::process::Command::new(cmd).arg(u).stdin(std::process::Stdio::null()).spawn() {
         std::thread::spawn(move || {
@@ -579,7 +579,7 @@ fn form(pairs: &[(String, String)]) -> Vec<u8> {
 }
 
 /// `executeTokenRequest`.
-async fn token_request(
+pub(crate) async fn token_request(
     f: &Fetcher,
     as_url: &Url,
     metadata: Option<&Map<String, Value>>,
@@ -630,7 +630,7 @@ async fn token_request(
 }
 
 /// `registerClient`.
-async fn register(f: &Fetcher, as_url: &Url, metadata: Option<&Map<String, Value>>, client: &Map<String, Value>, scope: Option<&str>) -> Result<Map<String, Value>, AuthError> {
+pub(crate) async fn register(f: &Fetcher, as_url: &Url, metadata: Option<&Map<String, Value>>, client: &Map<String, Value>, scope: Option<&str>) -> Result<Map<String, Value>, AuthError> {
     let url = match metadata {
         Some(m) => {
             let Some(r) = m.get("registration_endpoint").and_then(Value::as_str) else {

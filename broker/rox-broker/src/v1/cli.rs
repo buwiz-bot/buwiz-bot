@@ -12,6 +12,7 @@
 //! | `added` | `{prev, next}` | lines |
 //! | `semver` | `{a, b}` | -1, 0, 1 or `null` |
 //! | `limits` | `{}` | Appendix A |
+//! | `package` | `{text, trust, host?, platform?}` (a 2.1 plugin.json) | `{id, short, version, server, accounts, files, binary}` |
 //!
 //! The answer is `{ok: true, value}`, or a refusal's wire form.
 
@@ -45,6 +46,19 @@ pub fn run(op: &str, input: &Value) -> Option<Value> {
         "added" => Ok(json!(manifest::added_permissions(arg("prev"), arg("next")))),
         "semver" => Ok(json!(manifest::compare_semver(arg("a").as_str().unwrap_or_default(), arg("b").as_str().unwrap_or_default()))),
         "limits" => Ok(manifest::limits_json()),
+        "package" => {
+            let host = get(input, "host").and_then(Value::as_str).unwrap_or(HOST_PROTOCOL);
+            let platform = get(input, "platform").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(crate::helper::release::platform);
+            let text = arg("text").as_str().unwrap_or_default();
+            super::package::verify(text, &Trust::from_value(get(input, "trust").unwrap_or(&empty)), host, &platform).map(|p| {
+                let file = |f: &super::package::File| json!({"path": f.path, "asset": f.asset, "sha256": f.sha256});
+                json!({
+                    "id": p.id, "short": p.short, "version": p.version, "server": p.server,
+                    "accounts": p.accounts.iter().map(super::package::Account::json).collect::<Vec<_>>(),
+                    "files": p.files.iter().map(file).collect::<Vec<_>>(), "binary": p.binary.as_ref().map(file),
+                })
+            })
+        }
         _ => return None,
     };
     Some(match answer {

@@ -9,6 +9,10 @@
 //! `helper::sessions`); the routine routes are `hub::routines::v1`'s.
 //! An install may take settings from another plugin (`env_from`), and
 //! `notices/settle` answers a mini app's install or uninstall card.
+//! A mini app's accounts (2.1 §4): `GET /v1/host/plugins/<id>/accounts`,
+//! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
+//! a sign-in settles the chat's `account_required` cards for it
+//! (`connected`); the user's Not now settles them `declined`.
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
 //!
@@ -143,6 +147,7 @@ fn sent(path: &str, out: Result<Value, V1Error>) -> HubResponse {
 }
 
 pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
+    routes.on_start(settle_on_sign_in);
     let host = rs.clone();
     routes.route(Verb::Any, Pattern::Prefix("/v1/host/"), move |ctx, req| {
         let rs = host.clone();
@@ -165,6 +170,17 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     if req.method == Method::GET && path == "/v1/host/events" {
         return events(&ctx);
     }
+    if let Some(raw) = path.strip_prefix("/v1/host/plugins/").and_then(|r| r.strip_suffix("/accounts")).filter(|r| req.method == Method::GET && !r.is_empty() && !r.contains('/')) {
+        let out = match (js::decode_uri_component(raw), ctx.plugins.as_ref()) {
+            (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
+            (_, None) => Err(V1Error::new("plugin_unavailable", "this broker hosts no v1 plugins")),
+            (Ok(id), Some(host)) => match host.row(&id) {
+                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id)})),
+                None => Err(V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(&id, 80)))),
+            },
+        };
+        return sent(&path, out);
+    }
     if req.method != Method::POST {
         return refusal(StatusCode::METHOD_NOT_ALLOWED, "not_supported", format!("{} {path}", req.method));
     }
@@ -180,6 +196,8 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
 enum Route {
     Post(&'static str),
     Action(String, &'static str),
+    /// `/v1/host/plugins/<id>/accounts/<account>/<op>`
+    Account(String, String, &'static str),
 }
 
 const POSTS: &[&str] = &[
@@ -208,6 +226,10 @@ impl Route {
         }
         // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools)$/
         let rest = path.strip_prefix("/v1/host/plugins/")?;
+        if let [id, "accounts", account, op] = rest.split('/').collect::<Vec<_>>().as_slice() {
+            let op = ["signin", "signout", "remove"].into_iter().find(|o| o == op)?;
+            return (!id.is_empty() && !account.is_empty()).then(|| Route::Account((*id).to_owned(), (*account).to_owned(), op));
+        }
         let (id, action) = rest.split_once('/')?;
         let action = ["enable", "disable", "uninstall", "tools"].into_iter().find(|a| *a == action)?;
         (!id.is_empty()).then(|| Route::Action(id.to_owned(), action))
@@ -259,6 +281,15 @@ impl Route {
                         Ok(out)
                     }
                     _ => host.set_tool(&id, b.get("tool"), b.get("disabled")),
+                }
+            }
+            Route::Account(raw, account, op) => {
+                let (Ok(id), Ok(account)) = (js::decode_uri_component(raw), js::decode_uri_component(account)) else { return V1Error::err("internal", "URI malformed") };
+                let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
+                match *op {
+                    "signin" => host.account_signin(&id, &account, b).await,
+                    "signout" => host.account_signout(&id, &account, b).await,
+                    _ => host.account_remove(&id, &account, b).await,
                 }
             }
         }
@@ -323,7 +354,8 @@ pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     let states: &[&str] = match kind {
         "app_install" => &["declined"],
         "app_uninstall" => &["uninstalled", "cancelled"],
-        _ => return V1Error::err("invalid_args", "kind must be app_install or app_uninstall"),
+        "account_required" => &["declined"],
+        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall or account_required"),
     };
     if !states.contains(&state) {
         return V1Error::err("invalid_args", format!("{kind} settles as {}", states.join(" or ")));
@@ -333,6 +365,48 @@ pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     }
     let n = settle_notices(ctx, Some(chat), kind, id, state);
     Ok(json!({"ok": true, "settled": n}))
+}
+
+/// A signed-in account settles its pending `account_required` cards (the
+/// plugin's, for that account) as `connected`.
+fn settle_on_sign_in(ctx: Arc<HubCtx>) {
+    let Some(mut events) = ctx.plugins.as_ref().map(|h| h.account_events()) else { return };
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(e) if e.get("state").and_then(Value::as_str) == Some("connected") => {
+                    settle_signed_in(&ctx, &js::string_of(&e["plugin"]), &js::string_of(&e["account"]));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => return,
+            }
+        }
+    });
+}
+
+/// Every chat's pending `account_required` card of `plugin` and `account`
+/// reads `connected`; → how many.
+pub fn settle_signed_in(ctx: &HubCtx, plugin: &str, account: &str) -> usize {
+    let n = ctx
+        .store
+        .write(|s| {
+            let mut n = 0;
+            for t in s.list.iter_mut() {
+                for u in &mut t.turns {
+                    let Some(x) = u.notice.as_mut() else { continue };
+                    if x["kind"] == "account_required" && x["id"] == json!(plugin) && x["account"] == json!(account) && x["state"] == "pending" {
+                        x["state"] = json!("connected");
+                        n += 1;
+                    }
+                }
+            }
+            n
+        })
+        .unwrap_or(0);
+    if n > 0 {
+        ctx.store.write_index();
+    }
+    n
 }
 
 /// `POST /v1/hooks/<instance>/<secret>`: a webhook instance's run, 202
@@ -396,5 +470,24 @@ impl hyper::body::Body for Channel {
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, hyper::Error>>> {
         self.0.poll_recv(cx).map(|chunk| chunk.map(|b| Ok(Frame::data(b))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_routes_name_the_plugin_the_account_and_the_op() {
+        let of = |p: &str| match Route::of(p) {
+            Some(Route::Account(id, account, op)) => Some((id, account, op)),
+            _ => None,
+        };
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/signin"), Some(("app.buwiz.gws".into(), "google".into(), "signin")));
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/signout").map(|r| r.2), Some("signout"));
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/remove").map(|r| r.2), Some("remove"));
+        assert!(Route::of("/v1/host/plugins/app.buwiz.gws/accounts/google/delete").is_none());
+        assert!(Route::of("/v1/host/plugins//accounts/google/signin").is_none());
+        assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/enable"), Some(Route::Action(_, "enable"))));
     }
 }
