@@ -173,7 +173,13 @@ nothing of Rox's is kept for compatibility:
   (`scripts/broker-live`) moves it after binding its port. First the
   database is backed up (`VACUUM INTO`) to
   `Grok Shell/backups/<UTC time>-pre-move/app.db`, then the folder is
-  renamed and `.moved-from-grok-shell` is written in it. Nothing moves
+  renamed. Right after, in one transaction, every text value in the
+  database holding a path under the old folder (plugin commands and env,
+  icons, attachments, MCP servers' env and auth) is rewritten to the new
+  one; if that fails the folder is renamed back. `Grok Shell` is then left
+  as a symlink to `Buwiz Broker`, so paths stored outside the database keep
+  resolving (it can be removed in a later release), and
+  `.moved-from-grok-shell` is written in the new folder. Nothing moves
   while a broker answers on 8787, when `Buwiz Broker` exists already (the
   old folder is then left alone), or for any other data dir (tests,
   benches). A rename that fails is not replaced by a copy: `Grok Shell`

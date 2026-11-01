@@ -108,8 +108,7 @@ impl Config {
 impl Config {
     /// When the data dir (`--data`, else `env_data`) is the owner's folder
     /// under `home`, by either name: moves `Grok Shell` to `Buwiz Broker`
-    /// once (`busy`: a broker answers on the owner's port; `backup_db`:
-    /// the database's copy) and points `data` at the folder holding the
+    /// once (`busy`: a broker answers on the owner's port) and points `data` at the folder holding the
     /// data, and Node's `NSH_CHUNK_DIR` (`chunk_env`) at its `chunks` when it
     /// was under the old one. `None` for any other data dir: nothing is
     /// looked at.
@@ -119,14 +118,13 @@ impl Config {
         chunk_env: Option<&str>,
         home: &std::path::Path,
         busy: &dyn Fn() -> bool,
-        backup_db: &dyn Fn(&std::path::Path, &std::path::Path) -> Result<(), String>,
     ) -> Option<rox_v1::broker_dir::Move> {
         use rox_v1::broker_dir;
         let given = self.data_dir(env_data);
         if !broker_dir::is_owners(home, &given) {
             return None;
         }
-        let moved = broker_dir::move_once(home, busy, backup_db);
+        let moved = broker_dir::move_once(home, busy);
         let dir = broker_dir::dir_in(home);
         if let Some(rest) = chunk_env.and_then(|c| std::path::Path::new(c).strip_prefix(&given).ok()) {
             if dir != given {
@@ -136,14 +134,6 @@ impl Config {
         self.data = Some(dir);
         Some(moved)
     }
-}
-
-/// A consistent copy of the SQLite database `from` in the new file `to`
-/// (`VACUUM INTO`: one read transaction, so a write in flight is either in
-/// the copy or not).
-pub fn backup_db(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
-    let db = rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
-    db.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -232,13 +222,13 @@ mod tests {
         let old = grok_shell(&h);
         let chunks = old.join("chunks");
         let mut c = Config::parse(&args(&["--data", old.to_str().unwrap()]), None).unwrap();
-        let moved = c.settle_owner_dir(None, chunks.to_str(), &h.0, &|| false, &backup_db);
+        let moved = c.settle_owner_dir(None, chunks.to_str(), &h.0, &|| false);
         let new = broker_dir::new_dir(&h.0);
-        let Some(Move::Moved { backup: Some(backup) }) = moved else { panic!("{moved:?}") };
+        let Some(Move::Moved { backup: Some(backup), .. }) = moved else { panic!("{moved:?}") };
         assert_eq!(c.data, Some(new.clone()));
         assert_eq!(c.data_dir(Some(old.to_str().unwrap())), new, "--data and the environment both follow");
         assert!(c.node_env.contains(&("NSH_CHUNK_DIR".to_owned(), new.join("chunks").to_string_lossy().into_owned())));
-        assert!(!old.exists());
+        assert!(old.symlink_metadata().unwrap().file_type().is_symlink(), "Grok Shell is left as a link");
         let copy = rusqlite::Connection::open(backup.join("app.db")).unwrap();
         assert_eq!(copy.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 42, "the backup holds the data");
         let live = rusqlite::Connection::open(new.join("generated/app.db")).unwrap();
@@ -246,7 +236,7 @@ mod tests {
         assert!(new.join(broker_dir::MOVED_MARKER).is_file());
         // the next start, given the new name, finds it there
         let mut c = Config::parse(&args(&[]), None).unwrap();
-        assert_eq!(c.settle_owner_dir(new.to_str(), None, &h.0, &|| false, &backup_db), Some(Move::AlreadyThere));
+        assert_eq!(c.settle_owner_dir(new.to_str(), None, &h.0, &|| false), Some(Move::AlreadyThere));
         assert_eq!(c.data, Some(new));
     }
 
@@ -259,9 +249,9 @@ mod tests {
         let old = grok_shell(&h);
         let new = broker_dir::new_dir(&h.0);
         let mut c = Config::parse(&args(&["--data", new.to_str().unwrap()]), None).unwrap();
-        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| true, &backup_db), Some(Move::Busy));
+        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| true), Some(Move::Busy));
         assert_eq!(c.data, Some(old.clone()));
-        assert!(!new.exists() && old.join("generated/app.db").is_file());
+        assert!(!new.exists() && old.symlink_metadata().unwrap().is_dir() && old.join("generated/app.db").is_file());
     }
 
     /// A test's or a bench's data dir is never the owner's: nothing is
@@ -272,9 +262,9 @@ mod tests {
         let old = grok_shell(&h);
         let bench = h.0.join("bench");
         let mut c = Config::parse(&args(&["--data", bench.to_str().unwrap()]), None).unwrap();
-        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| false, &backup_db), None);
+        assert_eq!(c.settle_owner_dir(None, None, &h.0, &|| false), None);
         let mut e = Config::parse(&args(&[]), None).unwrap();
-        assert_eq!(e.settle_owner_dir(bench.to_str(), None, &h.0, &|| false, &backup_db), None);
+        assert_eq!(e.settle_owner_dir(bench.to_str(), None, &h.0, &|| false), None);
         assert_eq!((c.data, e.data), (Some(bench), None));
         assert!(old.join("generated/app.db").is_file() && !rox_v1::broker_dir::new_dir(&h.0).exists());
     }

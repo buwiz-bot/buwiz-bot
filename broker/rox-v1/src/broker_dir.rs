@@ -19,6 +19,16 @@
 //! and the move is tried again at the next start. A lock file in
 //! Application Support keeps the app and the broker from moving it at the
 //! same time.
+//!
+//! The database stores absolute paths into the folder (a plugin's command
+//! and env, app icons, attachments in turns' meta, MCP servers' env and
+//! auth). Right after the rename, under the lock and before anything opens
+//! it, every text value holding the old folder's path is rewritten to the
+//! new one, in one transaction ([`rewrite_paths`]); should that fail the
+//! folder is renamed back. Then `Grok Shell` is left as a symlink to `Buwiz
+//! Broker`, so paths outside the database (plugin folders' own configs,
+//! a process still holding the old path) keep resolving. The link can go in
+//! a later release, once every install has moved.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -74,15 +84,21 @@ pub enum Move {
     /// touched.
     AlreadyThere,
     /// Renamed; the database's backup is in `backup` (`None`: there was no
-    /// database).
-    Moved { backup: Option<PathBuf> },
+    /// database), `rewritten` the values rewritten per `table.column`,
+    /// `linked` whether `Grok Shell` was left as a symlink to it.
+    Moved { backup: Option<PathBuf>, rewritten: Vec<(String, usize)>, linked: bool },
     /// A broker answers on the owner's port: it may be using the folder.
     Busy,
     /// Another process held the move lock for too long.
     LockHeld,
-    /// The backup or the rename failed: `Grok Shell` stays in use.
+    /// The backup, the rename or the paths' rewrite failed: `Grok Shell`
+    /// stays in use.
     Failed(String),
 }
+
+/// [`rewrite_paths`]'s shape: (database, old folder, new folder) →
+/// (`table.column`, values rewritten).
+pub type Rewrite = dyn Fn(&Path, &Path, &Path) -> Result<Vec<(String, usize)>, String>;
 
 /// The hooks [`move_with`] runs; [`move_once`] passes the real ones.
 pub struct Hooks<'a> {
@@ -91,16 +107,18 @@ pub struct Hooks<'a> {
     /// A consistent copy of the SQLite database `from` into the new file
     /// `to` (sqlite's online backup or `VACUUM INTO`).
     pub backup_db: &'a dyn Fn(&Path, &Path) -> Result<(), String>,
+    /// [`rewrite_paths`]: the database, the old folder, the new one.
+    pub rewrite: &'a Rewrite,
     pub rename: &'a dyn Fn(&Path, &Path) -> std::io::Result<()>,
     /// How long to wait for another process's move.
     pub lock_wait: Duration,
 }
 
 /// Moves `Grok Shell` to `Buwiz Broker` under `home`, once (see the
-/// module). `busy` asks whether a broker answers on the owner's port;
-/// `backup_db` copies the database. Then use [`dir_in`].
-pub fn move_once(home: &Path, busy: &dyn Fn() -> bool, backup_db: &dyn Fn(&Path, &Path) -> Result<(), String>) -> Move {
-    move_with(home, &Hooks { busy, backup_db, rename: &|from, to| std::fs::rename(from, to), lock_wait: Duration::from_secs(60) })
+/// module). `busy` asks whether a broker answers on the owner's port.
+/// Then use [`dir_in`].
+pub fn move_once(home: &Path, busy: &dyn Fn() -> bool) -> Move {
+    move_with(home, &Hooks { busy, backup_db: &backup_db, rewrite: &rewrite_paths, rename: &|from, to| std::fs::rename(from, to), lock_wait: Duration::from_secs(60) })
 }
 
 /// [`move_once`] with its hooks.
@@ -140,7 +158,9 @@ fn move_locked(old: &Path, new: &Path, hooks: &Hooks) -> Move {
     let stamp = utc_stamp(SystemTime::now());
     let db = old.join("generated").join("app.db");
     let backup = if db.is_file() {
-        let dir = old.join("backups").join(format!("{stamp}-pre-move"));
+        // a fresh folder: a retry within the same second gets its own
+        let base = old.join("backups");
+        let dir = (1..).map(|i| base.join(if i == 1 { format!("{stamp}-pre-move") } else { format!("{stamp}-pre-move-{i}") })).find(|d| d.symlink_metadata().is_err()).unwrap_or_default();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return Move::Failed(format!("the backup folder {}: {e}", dir.display()));
         }
@@ -154,16 +174,93 @@ fn move_locked(old: &Path, new: &Path, hooks: &Hooks) -> Move {
     if let Err(e) = (hooks.rename)(old, new) {
         return Move::Failed(format!("renaming {} to {}: {e}", old.display(), new.display()));
     }
+    // the stored paths follow, before anything opens the database
+    let new_db = new.join("generated").join("app.db");
+    let rewritten = if new_db.is_file() {
+        match (hooks.rewrite)(&new_db, old, new) {
+            Ok(r) => r,
+            Err(e) => {
+                // nothing opened the folder since: back to where it was
+                let back = (hooks.rename)(new, old).map(|()| "renamed back".to_owned()).unwrap_or_else(|b| format!("not renamed back: {b}"));
+                return Move::Failed(format!("rewriting the paths in {}: {e} ({back})", new_db.display()));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    // paths outside the database keep resolving
+    let linked = std::os::unix::fs::symlink(DIR_NAME, old).is_ok();
     // the backup moved with the folder
     let backup = backup.and_then(|b| b.strip_prefix(old).ok().map(|rel| new.join(rel)));
     let marker = format!(
-        "{{\"from\":{},\"at\":\"{stamp}\",\"backup\":{}}}\n",
+        "{{\"from\":{},\"at\":\"{stamp}\",\"backup\":{},\"rewritten\":{},\"linked\":{linked}}}\n",
         json_str(&old.to_string_lossy()),
-        backup.as_ref().map(|b| json_str(&b.to_string_lossy())).unwrap_or_else(|| "null".into())
+        backup.as_ref().map(|b| json_str(&b.to_string_lossy())).unwrap_or_else(|| "null".into()),
+        rewritten.iter().map(|(_, n)| n).sum::<usize>()
     );
     // the move is done either way; a missing marker loses nothing
     let _ = std::fs::write(new.join(MOVED_MARKER), marker);
-    Move::Moved { backup }
+    Move::Moved { backup, rewritten, linked }
+}
+
+/// A consistent copy of the SQLite database `from` in the new file `to`
+/// (`VACUUM INTO`: one read transaction).
+pub fn backup_db(from: &Path, to: &Path) -> Result<(), String> {
+    let db = rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
+    db.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Rewrites, in the database `db`, every text value that holds the folder
+/// `old`'s path to hold `new`'s: `<old>/…` (also JSON-escaped, `\/`),
+/// `<old>"` (a JSON string ending at the folder) and a value that is the
+/// folder itself. Every text column of every table (virtual tables and
+/// their shadow tables excepted), in one transaction: all or nothing.
+/// Text that only mentions "Grok Shell" is left as it is; blobs are never
+/// touched. → (`table.column`, values rewritten), the columns that had any.
+pub fn rewrite_paths(db: &Path, old: &Path, new: &Path) -> Result<Vec<(String, usize)>, String> {
+    let (Some(old), Some(new)) = (old.to_str(), new.to_str()) else {
+        return Err("a folder path that is not UTF-8".into());
+    };
+    let esc = |p: &str| p.replace('/', "\\/");
+    let pairs = [(format!("{old}/"), format!("{new}/")), (format!("{}\\/", esc(old)), format!("{}\\/", esc(new))), (format!("{old}\""), format!("{new}\""))];
+    let e = |e: rusqlite::Error| e.to_string();
+    let mut conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(e)?;
+    conn.busy_timeout(Duration::from_secs(5)).map_err(e)?;
+    let tx = conn.transaction().map_err(e)?;
+    let tables: Vec<(String, String)> = {
+        let mut q = tx.prepare("SELECT name, coalesce(sql, '') FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name").map_err(e)?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?;
+        rows.collect::<Result<_, _>>().map_err(e)?
+    };
+    let virtuals: Vec<&str> = tables.iter().filter(|(_, sql)| sql.trim_start().to_ascii_uppercase().starts_with("CREATE VIRTUAL")).map(|(n, _)| n.as_str()).collect();
+    let quote = |id: &str| format!("\"{}\"", id.replace('"', "\"\""));
+    let mut counts = Vec::new();
+    for (table, _) in &tables {
+        if virtuals.iter().any(|v| table == v || table.starts_with(&format!("{v}_"))) {
+            continue;
+        }
+        let cols: Vec<String> = {
+            let mut q = tx.prepare("SELECT name FROM pragma_table_info(?1)").map_err(e)?;
+            let rows = q.query_map([table], |r| r.get(0)).map_err(e)?;
+            rows.collect::<Result<_, _>>().map_err(e)?
+        };
+        for col in cols {
+            let c = quote(&col);
+            let sql = format!(
+                "UPDATE {t} SET {c} = CASE WHEN {c} = ?7 THEN ?8 ELSE replace(replace(replace({c}, ?1, ?2), ?3, ?4), ?5, ?6) END \
+                 WHERE typeof({c}) = 'text' AND ({c} = ?7 OR instr({c}, ?1) > 0 OR instr({c}, ?3) > 0 OR instr({c}, ?5) > 0)",
+                t = quote(table)
+            );
+            let n = tx
+                .execute(&sql, rusqlite::params![pairs[0].0, pairs[0].1, pairs[1].0, pairs[1].1, pairs[2].0, pairs[2].1, old, new])
+                .map_err(|err| format!("{table}.{col}: {err}"))?;
+            if n > 0 {
+                counts.push((format!("{table}.{col}"), n));
+            }
+        }
+    }
+    tx.commit().map_err(e)?;
+    Ok(counts)
 }
 
 /// Takes the lock at `path`, waiting up to `wait` for another holder.
@@ -212,6 +309,7 @@ fn json_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use std::cell::Cell;
 
     /// A temp home, removed when dropped.
@@ -226,11 +324,12 @@ mod tests {
         fn support(&self) -> PathBuf {
             self.0.join(SUPPORT)
         }
-        /// A `Grok Shell` with a database and a host token.
+        /// A `Grok Shell` with a WAL database (one row) and a host token.
         fn grok_shell(&self) {
             let old = old_dir(&self.0);
             std::fs::create_dir_all(old.join("generated")).unwrap();
-            std::fs::write(old.join("generated/app.db"), b"db").unwrap();
+            let db = Connection::open(old.join("generated/app.db")).unwrap();
+            db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES ('db');").unwrap();
             std::fs::write(old.join("host-token"), b"tok").unwrap();
         }
         fn entries(&self) -> Vec<String> {
@@ -245,12 +344,12 @@ mod tests {
         }
     }
 
-    fn copy_db(from: &Path, to: &Path) -> Result<(), String> {
-        std::fs::copy(from, to).map(|_| ()).map_err(|e| e.to_string())
+    fn x_of(db: &Path) -> String {
+        Connection::open(db).unwrap().query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap()
     }
 
     fn hooks<'a>(busy: &'a dyn Fn() -> bool, rename: &'a dyn Fn(&Path, &Path) -> std::io::Result<()>) -> Hooks<'a> {
-        Hooks { busy, backup_db: &copy_db, rename, lock_wait: Duration::from_millis(300) }
+        Hooks { busy, backup_db: &backup_db, rewrite: &rewrite_paths, rename, lock_wait: Duration::from_millis(300) }
     }
     fn real_rename(a: &Path, b: &Path) -> std::io::Result<()> {
         std::fs::rename(a, b)
@@ -265,29 +364,36 @@ mod tests {
     }
 
     #[test]
-    fn grok_shell_alone_is_backed_up_then_moved_with_a_marker() {
+    fn grok_shell_alone_is_backed_up_moved_and_linked_with_a_marker() {
         let h = Home::new("move");
         h.grok_shell();
-        let Move::Moved { backup: Some(backup) } = move_with(&h.0, &hooks(&|| false, &real_rename)) else { panic!("not moved") };
-        let new = new_dir(&h.0);
-        assert_eq!(h.entries(), [DIR_NAME], "the old folder and the lock are gone");
-        assert_eq!(std::fs::read(new.join("generated/app.db")).unwrap(), b"db", "the data is as it was");
+        let Move::Moved { backup: Some(backup), linked: true, .. } = move_with(&h.0, &hooks(&|| false, &real_rename)) else { panic!("not moved and linked") };
+        let (new, old) = (new_dir(&h.0), old_dir(&h.0));
+        assert_eq!(h.entries(), [DIR_NAME, OLD_DIR_NAME], "the lock is gone");
+        // Grok Shell is now a link that resolves to the new folder
+        assert!(old.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&old).unwrap(), PathBuf::from(DIR_NAME));
+        assert_eq!(std::fs::canonicalize(&old).unwrap(), std::fs::canonicalize(&new).unwrap());
+        assert_eq!(std::fs::read(old.join("host-token")).unwrap(), b"tok");
+        assert_eq!(x_of(&new.join("generated/app.db")), "db", "the data is as it was");
         assert_eq!(std::fs::read(new.join("host-token")).unwrap(), b"tok");
         assert!(backup.starts_with(new.join("backups")) && backup.file_name().unwrap().to_string_lossy().ends_with("-pre-move"));
-        assert_eq!(std::fs::read(backup.join("app.db")).unwrap(), b"db");
+        assert_eq!(x_of(&backup.join("app.db")), "db");
         let marker: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(new.join(MOVED_MARKER)).unwrap()).unwrap();
-        assert_eq!(marker["from"], old_dir(&h.0).to_string_lossy().as_ref());
+        assert_eq!(marker["from"], old.to_string_lossy().as_ref());
         assert_eq!(marker["backup"], backup.to_string_lossy().as_ref());
+        assert_eq!(marker["linked"], true);
         assert_eq!(dir_in(&h.0), new);
-        // once: the next start finds it there
+        // once: the next start finds it there, the link is fine
         assert_eq!(move_with(&h.0, &hooks(&|| false, &real_rename)), Move::AlreadyThere);
+        assert_eq!(std::fs::read_dir(new.join("backups")).unwrap().count(), 1, "no second backup");
     }
 
     #[test]
     fn a_folder_without_a_database_moves_without_a_backup() {
         let h = Home::new("nodb");
         std::fs::create_dir_all(old_dir(&h.0)).unwrap();
-        assert_eq!(move_with(&h.0, &hooks(&|| false, &real_rename)), Move::Moved { backup: None });
+        assert_eq!(move_with(&h.0, &hooks(&|| false, &real_rename)), Move::Moved { backup: None, rewritten: vec![], linked: true });
         assert!(new_dir(&h.0).join(MOVED_MARKER).is_file());
     }
 
@@ -328,9 +434,25 @@ mod tests {
         let h = Home::new("nobackup");
         h.grok_shell();
         let no = |_: &Path, _: &Path| Err("disk full".to_owned());
-        let hooks = Hooks { busy: &|| false, backup_db: &no, rename: &real_rename, lock_wait: Duration::from_millis(300) };
+        let hooks = Hooks { busy: &|| false, backup_db: &no, rewrite: &rewrite_paths, rename: &real_rename, lock_wait: Duration::from_millis(300) };
         assert!(matches!(move_with(&h.0, &hooks), Move::Failed(w) if w.contains("disk full")));
         assert_eq!(dir_in(&h.0), old_dir(&h.0));
+    }
+
+    /// The paths' rewrite fails: the folder goes back to its old name, no
+    /// link, and the old folder stays in use.
+    #[test]
+    fn a_failed_rewrite_renames_it_back() {
+        let h = Home::new("norewrite");
+        h.grok_shell();
+        let no = |_: &Path, _: &Path, _: &Path| Err("database is locked".to_owned());
+        let hooks = Hooks { busy: &|| false, backup_db: &backup_db, rewrite: &no, rename: &real_rename, lock_wait: Duration::from_millis(300) };
+        let Move::Failed(why) = move_with(&h.0, &hooks) else { panic!("not failed") };
+        assert!(why.contains("database is locked") && why.contains("renamed back"), "{why}");
+        let old = old_dir(&h.0);
+        assert!(old.symlink_metadata().unwrap().is_dir() && !new_dir(&h.0).exists());
+        assert_eq!(x_of(&old.join("generated/app.db")), "db");
+        assert_eq!(dir_in(&h.0), old);
     }
 
     #[test]
@@ -368,7 +490,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
                 std::fs::rename(a, b)
             };
-            move_with(&home, &Hooks { busy: &|| false, backup_db: &copy_db, rename: &rename, lock_wait: Duration::from_secs(10) })
+            move_with(&home, &Hooks { busy: &|| false, backup_db: &backup_db, rewrite: &rewrite_paths, rename: &rename, lock_wait: Duration::from_secs(10) })
         };
         let (a, b) = (std::thread::spawn(run.clone()), std::thread::spawn(run));
         let mut got = [a.join().unwrap(), b.join().unwrap()];
@@ -376,6 +498,81 @@ mod tests {
         assert_eq!(got[0], Move::AlreadyThere);
         assert!(matches!(got[1], Move::Moved { .. }));
         assert_eq!(std::fs::read_dir(new_dir(&h.0).join("backups")).unwrap().count(), 1, "one backup");
+    }
+
+    /// The owner's tables, as far as their paths go: a plugin installed
+    /// from a release (command and env into `<data>/v1/apps`), app icons,
+    /// attachments in a turn's meta (JSON), an MCP server's env and auth,
+    /// and a bot's description that only mentions Grok Shell.
+    #[test]
+    fn stored_paths_into_the_folder_follow_it() {
+        let h = Home::new("paths");
+        h.grok_shell();
+        let (old, new) = (old_dir(&h.0), new_dir(&h.0));
+        let (o, n) = (old.to_str().unwrap().to_owned(), new.to_str().unwrap().to_owned());
+        let db = Connection::open(old.join("generated/app.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE v1_plugins(id TEXT PRIMARY KEY, command TEXT, env TEXT, plugin_pub TEXT);
+             CREATE TABLE apps(id INTEGER PRIMARY KEY, icon TEXT, data BLOB);
+             CREATE TABLE turns(id INTEGER PRIMARY KEY, meta TEXT, n INTEGER);
+             CREATE TABLE mcp_servers(id TEXT, env TEXT, auth TEXT);
+             CREATE TABLE bots(id TEXT, description TEXT);
+             CREATE TABLE \"odd \"\"name\"(\"a col\" TEXT);",
+        )
+        .unwrap();
+        let gws = format!("{o}/v1/apps/app.buwiz.google-workspace/1.2.0");
+        let env = serde_json::json!({"GWS_MANIFEST": format!("{gws}/manifest.json"), "GWS_USER_EMAIL": "x@y"}).to_string();
+        db.execute("INSERT INTO v1_plugins VALUES ('app.buwiz.google-workspace', ?1, ?2, 'k')", [format!("{gws}/bin/gws"), env.clone()]).unwrap();
+        db.execute("INSERT INTO apps VALUES (1, ?1, ?2)", rusqlite::params![format!("{o}/generated/avatars/a.png"), format!("{o}/x").into_bytes()]).unwrap();
+        let meta = serde_json::json!({"attachments": [{"path": format!("{o}/generated/attachments/t1/f.pdf"), "name": "f.pdf"}], "cwd": o}).to_string();
+        db.execute("INSERT INTO turns VALUES (1, ?1, 3)", [meta]).unwrap();
+        let escaped = format!("{{\"dir\":\"{}\\/chunks\"}}", o.replace('/', "\\/"));
+        db.execute("INSERT INTO mcp_servers VALUES ('m', ?1, ?2)", [escaped, format!("{{\"token_file\":\"{o}/mcp/m.json\"}}")]).unwrap();
+        let prose = "A bot from the Grok Shell days; it lived in Application Support/Grok Shell.";
+        db.execute("INSERT INTO bots VALUES ('b', ?1)", [prose]).unwrap();
+        db.execute("INSERT INTO \"odd \"\"name\" VALUES (?1)", [o.clone()]).unwrap();
+        // a sibling folder whose name only starts the same is not ours
+        db.execute("INSERT INTO bots VALUES ('c', ?1)", [format!("{o} Backup/x")]).unwrap();
+        drop(db);
+
+        let Move::Moved { rewritten, linked: true, backup: Some(backup) } = move_with(&h.0, &hooks(&|| false, &real_rename)) else { panic!("not moved") };
+        let counts: std::collections::HashMap<&str, usize> = rewritten.iter().map(|(c, k)| (c.as_str(), *k)).collect();
+        assert_eq!(counts.get("v1_plugins.command"), Some(&1));
+        assert_eq!(counts.get("v1_plugins.env"), Some(&1));
+        assert_eq!(counts.get("apps.icon"), Some(&1));
+        assert_eq!(counts.get("turns.meta"), Some(&1));
+        assert_eq!(counts.get("mcp_servers.env"), Some(&1));
+        assert_eq!(counts.get("mcp_servers.auth"), Some(&1));
+        assert_eq!(counts.get("odd \"name.a col"), Some(&1));
+        assert!(!counts.contains_key("bots.description") && !counts.contains_key("apps.data"), "{counts:?}");
+
+        let db = Connection::open(new.join("generated/app.db")).unwrap();
+        let one = |sql: &str| db.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap();
+        let ngws = format!("{n}/v1/apps/app.buwiz.google-workspace/1.2.0");
+        assert_eq!(one("SELECT command FROM v1_plugins"), format!("{ngws}/bin/gws"));
+        let env: serde_json::Value = serde_json::from_str(&one("SELECT env FROM v1_plugins")).unwrap();
+        assert_eq!(env["GWS_MANIFEST"], format!("{ngws}/manifest.json"));
+        assert_eq!(env["GWS_USER_EMAIL"], "x@y");
+        assert_eq!(one("SELECT plugin_pub FROM v1_plugins"), "k");
+        assert_eq!(one("SELECT icon FROM apps"), format!("{n}/generated/avatars/a.png"));
+        let blob: Vec<u8> = db.query_row("SELECT data FROM apps", [], |r| r.get(0)).unwrap();
+        assert_eq!(blob, format!("{o}/x").into_bytes(), "blobs are never touched");
+        let meta: serde_json::Value = serde_json::from_str(&one("SELECT meta FROM turns")).unwrap();
+        assert_eq!(meta["attachments"][0]["path"], format!("{n}/generated/attachments/t1/f.pdf"));
+        assert_eq!(meta["cwd"], n.as_str(), "a JSON value that is the folder itself");
+        let menv: serde_json::Value = serde_json::from_str(&one("SELECT env FROM mcp_servers")).unwrap();
+        assert_eq!(menv["dir"], format!("{n}/chunks"), "the escaped form");
+        assert_eq!(one("SELECT auth FROM mcp_servers"), format!("{{\"token_file\":\"{n}/mcp/m.json\"}}"));
+        assert_eq!(one("SELECT description FROM bots WHERE id = 'b'"), prose);
+        assert_eq!(one("SELECT description FROM bots WHERE id = 'c'"), format!("{o} Backup/x"));
+        assert_eq!(one("SELECT \"a col\" FROM \"odd \"\"name\""), n);
+        // the backup keeps the paths as they were
+        let b = Connection::open(backup.join("app.db")).unwrap();
+        assert_eq!(b.query_row("SELECT command FROM v1_plugins", [], |r| r.get::<_, String>(0)).unwrap(), format!("{gws}/bin/gws"));
+        drop((db, b));
+        // a second start does nothing
+        assert_eq!(move_with(&h.0, &hooks(&|| false, &real_rename)), Move::AlreadyThere);
+        assert_eq!(rewrite_paths(&new.join("generated/app.db"), &old, &new).unwrap(), vec![], "nothing left to rewrite");
     }
 
     #[test]
