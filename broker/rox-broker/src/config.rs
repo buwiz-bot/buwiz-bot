@@ -11,7 +11,7 @@
 //! reads (office pages, the plugin catalog, trust.json; `node_modules`
 //! beside it): Node's server dir, the script's folder, when not given, as
 //! a checkout and the Grok Shell bundle lay them out (plan 7.1).
-//! `--data` sets `GROK_DATA_DIR` for Node; without it Node keeps the
+//! `--data` sets `BUWIZ_BROKER_DATA_DIR` for Node; without it Node keeps the
 //! environment's. The routes answered in Rust use the same data dir as
 //! Node (`data_dir`).
 
@@ -83,7 +83,7 @@ impl Config {
         }
     }
 
-    /// Node's data dir: `--data`, else `GROK_DATA_DIR`, else the folder
+    /// Node's data dir: `--data`, else `BUWIZ_BROKER_DATA_DIR`, else the folder
     /// above the script's (config.mjs's APP_ROOT).
     pub fn data_dir(&self, env: Option<&str>) -> PathBuf {
         if let Some(data) = &self.data {

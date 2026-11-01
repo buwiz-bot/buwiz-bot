@@ -3,31 +3,32 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import { env } from "./env.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = join(SERVER_DIR, "..");
 // Runtime assets resolved beside the server code — server/ in dev, the
 // bundled Resources/server/ in the packaged app.
 const serverFile = (rel) => join(SERVER_DIR, rel);
-// Packaged mode: GROK_DATA_DIR points at a writable dir (~/Library/Application
+// Packaged mode: BUWIZ_BROKER_DATA_DIR points at a writable dir (~/Library/Application
 // Support/Grok Shell) — generated/, widgets/, windows/, .stage all live there
 // instead of inside the read-only .app bundle. widgets/ is seeded from the
 // shipped copy on first launch (the launcher does the copy).
-const DATA_DIR = process.env.GROK_DATA_DIR || APP_ROOT;
+const DATA_DIR = env("BUWIZ_BROKER_DATA_DIR") || APP_ROOT;
 const GEN_DIR = join(DATA_DIR, "generated");
 // Candidates are compiled+typechecked here first — OUTSIDE the app's import
 // graph — so a bad module never reaches the dev server (no red overlay flash).
 const STAGE_DIR = join(DATA_DIR, ".stage");
 const PORT = Number(process.env.PORT || 8787);
 // The port Rox and browsers reach: rox-broker's front door, which runs this
-// process on a port of its own (ROX_PUBLIC_PORT); PORT when Node is it. URLs
+// process on a port of its own (BUWIZ_PUBLIC_PORT); PORT when Node is it. URLs
 // that leave this process (OAuth redirects, file links) use this one.
-const PUBLIC_PORT = Number(process.env.ROX_PUBLIC_PORT || PORT);
-// ROX_NODE_ROLE=office: Node behind rox-broker's hub (ROX_BROKER_HUB=1),
+const PUBLIC_PORT = Number(env("BUWIZ_PUBLIC_PORT") || PORT);
+// BUWIZ_NODE_ROLE=office: Node behind rox-broker's hub (BUWIZ_BROKER_HUB=1),
 // which owns the brain. Node then serves only the office routes and holds
 // no hub state: it never writes the store, the host token or .stage, and
 // starts no routines, agents or plugins (app-server.mjs).
-const OFFICE_ROLE = process.env.ROX_NODE_ROLE === "office";
+const OFFICE_ROLE = env("BUWIZ_NODE_ROLE") === "office";
 // Providers: Claude goes through opencodex's Anthropic Messages endpoint by
 // default (OPENCODEX_URL — it owns the real key; the client key is a dummy).
 // GEN_PROVIDER=openai + GEN_BASE_URL/GEN_MODEL selects an OpenAI-compatible
@@ -53,7 +54,7 @@ const NSH_HOST =
   process.env.NSH_HOST ||
   (NSH.includes("/") ? join(dirname(NSH), "nsh-macos-host") : "nsh-macos-host");
 // Bundle id the packaged app and its pop-out windows share (nsh.json's "id").
-const BUNDLE_ID = process.env.GROK_BUNDLE_ID || "dev.goldcoders.grokshell";
+const BUNDLE_ID = env("BUWIZ_BUNDLE_ID") || "dev.goldcoders.grokshell";
 const OPENCODEX = process.env.OPENCODEX_URL || "http://localhost:8080";
 
 const WIDGETS_DIR = join(DATA_DIR, "widgets");
@@ -73,10 +74,10 @@ const OUT_DIR = join(GEN_DIR, "files");
 const ASSETS_DIR = join(GEN_DIR, "assets");
 
 // The first-party plugin catalog (plugins/catalog.json, or the file
-// ROX_PLUGIN_CATALOG names): {name, owner, version, plugins:[…]}. No file
+// BUWIZ_PLUGIN_CATALOG names): {name, owner, version, plugins:[…]}. No file
 // is an empty catalog.
 const PLUGIN_CATALOG = (() => {
-  try { return JSON.parse(readFileSync(process.env.ROX_PLUGIN_CATALOG || serverFile("plugins/catalog.json"), "utf8")) || { plugins: [] }; }
+  try { return JSON.parse(readFileSync(env("BUWIZ_PLUGIN_CATALOG") || serverFile("plugins/catalog.json"), "utf8")) || { plugins: [] }; }
   catch { return { plugins: [] }; }
 })();
 const PLUGINS_DIR = join(DATA_DIR, "plugins");

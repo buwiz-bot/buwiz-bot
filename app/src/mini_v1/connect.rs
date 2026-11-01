@@ -727,7 +727,7 @@ pub fn log_file(plugin: &str) -> Option<std::path::PathBuf> {
         return None;
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    let token = crate::client::host_token_path(std::env::var("ROX_HOST_TOKEN_FILE").ok().as_deref(), &home);
+    let token = crate::client::host_token_path(rox_v1::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home);
     Some(token.parent()?.join("v1").join("logs").join(format!("{plugin}.log")))
 }
 

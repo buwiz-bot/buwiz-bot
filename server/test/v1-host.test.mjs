@@ -58,7 +58,7 @@ function host(method, path, obj, extra = {}) {
 before(async () => {
   child = spawn(...brokerCommand(), {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", GROK_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
+    env: { ...process.env, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -99,7 +99,7 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
 test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
   const second = spawn(...brokerCommand(), {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), GROK_DATA_DIR: dataDir, MOCK: "1", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
+    env: { ...process.env, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
     stdio: "ignore",
   });
 

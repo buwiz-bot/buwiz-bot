@@ -171,7 +171,7 @@ fn min(a: f64, b: f64) -> f64 {
 }
 
 fn env_or(k: &str, default: &str) -> String {
-    std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
+    rox_v1::env::var(k).filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
 }
 
 /// config.mjs: `NSH`, and `NSH_HOST`, else `nsh-macos-host` beside NSH
@@ -431,7 +431,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         }
     }
     let shown_name = if shown_v != 0.0 { format!("{app_title} · v{}", tpl(shown_v)) } else { app_title };
-    let bundle_id = env_or("GROK_BUNDLE_ID", "dev.goldcoders.grokshell");
+    let bundle_id = env_or("BUWIZ_BUNDLE_ID", "dev.goldcoders.grokshell");
     let size = format!("{}x{}", tpl(want_w), tpl(want_h + 26.0));
     let spawned = tokio::process::Command::new(&host)
         .arg("--bundle")

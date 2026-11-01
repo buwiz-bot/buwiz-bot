@@ -132,7 +132,7 @@ fn it_answers_health_and_meta_itself() {
 
 #[test]
 fn forward_all_sends_the_ported_routes_to_node_again() {
-    let b = start_env("forward-all", &[("ROX_BROKER_FORWARD_ALL", "1")]);
+    let b = start_env("forward-all", &[("BUWIZ_BROKER_FORWARD_ALL", "1")]);
     let meta: serde_json::Value = serde_json::from_str(&get(b.port, "/meta").unwrap().1).unwrap();
     assert_eq!(meta["ported"], serde_json::json!([]));
     // the fixture answers 404 "no" to what it doesn't know

@@ -26,7 +26,7 @@ mkdirSync(join(data, "widgets"), { recursive: true });
 writeFileSync(join(data, "src.png"), Buffer.from(PNG_B64, "base64"));
 for (const k of ["MOCK", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEN_PROVIDER", "GEN_BASE_URL", "GEN_MODEL", "GEN_MAX_TOKENS", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LINEAR_API_KEY"]) delete process.env[k];
 Object.assign(process.env, {
-  GROK_DATA_DIR: data,
+  BUWIZ_BROKER_DATA_DIR: data,
   OPENCODEX_URL: fake.url,
   PATH: `${join(server, "test", "fixtures", "bin")}:${process.env.PATH}`,
   ...(mode === "openai" ? { GEN_PROVIDER: "openai", GEN_BASE_URL: `${fake.url}/v1`, OPENROUTER_API_KEY: "test-key" } : { ANTHROPIC_BASE_URL: `${fake.url}/direct` }),

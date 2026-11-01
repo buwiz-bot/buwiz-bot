@@ -145,8 +145,9 @@ export function saveSettings(key, vals) {
 }
 
 // Builtins a plugin config may reference besides its own fields
-// (ROX_FILES_DIR: the generated-files folder the office tools work in).
-const BUILTIN = new Set(["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "ROX_FILES_DIR"]);
+// (BUWIZ_FILES_DIR: the generated-files folder the office tools work in;
+// ROX_FILES_DIR, its old name, in configs written before).
+const BUILTIN = new Set(["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "BUWIZ_FILES_DIR", "ROX_FILES_DIR"]);
 const VAR_RE = /\$\{([^}]+)\}/g;
 const isSecretKey = (k) => /KEY|TOKEN|SECRET|PASSWORD|PAT\b/i.test(k);
 
@@ -309,7 +310,7 @@ export function materialize(key, server, cfg = serverConfigs(key)[server]) {
       if (name === "CLAUDE_PLUGIN_ROOT" || name === "CURSOR_PLUGIN_ROOT") return root;
       if (name === "workspaceFolder" || name === "userHome") return vals[name] ?? homedir();
       if (name === "HOME" || name === "USERPROFILE") return vals[name] ?? process.env[name] ?? "";
-      if (name === "ROX_FILES_DIR") return OUT_DIR;
+      if (name === "BUWIZ_FILES_DIR" || name === "ROX_FILES_DIR") return OUT_DIR;
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return all;
       return vals[name] ?? (dflt !== undefined ? dflt : "");
     });

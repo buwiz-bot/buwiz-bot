@@ -1,5 +1,5 @@
 // rox-broker with no Node at all (Rust broker plan phase 7):
-// ROX_BROKER_HUB=1 with ROX_BROKER_NO_NODE=1 starts no Node child, and
+// BUWIZ_BROKER_HUB=1 with BUWIZ_BROKER_NO_NODE=1 starts no Node child, and
 // answers what Node would have: /health, /, the CORS preflight, the 404 of a
 // route nobody has. The preflight case is pinned on Node too (it ignores
 // both variables); the rest needs rox-broker (BUWIZ_BROKER_CMD).
@@ -14,7 +14,7 @@ const DATA = tempDir("no-node");
 let server;
 
 before(async () => {
-  server = await startServer(DATA, { env: { ROX_BROKER_HUB: "1", ROX_BROKER_NO_NODE: "1", OPENCODEX_URL: "http://127.0.0.1:9", ANTHROPIC_BASE_URL: "http://127.0.0.1:9" } });
+  server = await startServer(DATA, { env: { BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_NO_NODE: "1", OPENCODEX_URL: "http://127.0.0.1:9", ANTHROPIC_BASE_URL: "http://127.0.0.1:9" } });
 });
 
 after(async () => {
@@ -74,10 +74,10 @@ test("NONODE-02 a CORS preflight: 204 with the origin echoed, a foreign origin r
   assert.equal(evil.json.ok, false);
 });
 
-test("NONODE-03 ROX_BROKER_NO_NODE=1 without the hub is refused at start", RUST_ONLY, () => {
+test("NONODE-03 BUWIZ_BROKER_NO_NODE=1 without the hub is refused at start", RUST_ONLY, () => {
   const [bin, args] = brokerCommand();
-  const r = spawnSync(bin, args, { env: serverEnv(DATA, { ROX_BROKER_HUB: undefined, ROX_BROKER_NO_NODE: "1" }), encoding: "utf8", timeout: 10000 });
+  const r = spawnSync(bin, args, { env: serverEnv(DATA, { BUWIZ_BROKER_HUB: undefined, BUWIZ_BROKER_NO_NODE: "1" }), encoding: "utf8", timeout: 10000 });
 
   assert.equal(r.status, 2, r.stderr);
-  assert.match(r.stderr, /ROX_BROKER_NO_NODE=1\) needs ROX_BROKER_HUB=1/);
+  assert.match(r.stderr, /BUWIZ_BROKER_NO_NODE=1\) needs BUWIZ_BROKER_HUB=1/);
 });

@@ -1,6 +1,6 @@
 // The tools that call the broker itself (launch_app, promote_app,
 // demote_app, query_source) reach this broker's front door, PUBLIC_PORT
-// (ROX_PUBLIC_PORT behind rox-broker, else PORT), never a fixed 8787: a
+// (BUWIZ_PUBLIC_PORT behind rox-broker, else PORT), never a fixed 8787: a
 // test or rehearsal broker must not touch the live one (plan D34). In this
 // process on a temp data dir; a stub on TEST_PORT stands in for the front
 // door and records what reaches it.
@@ -9,11 +9,11 @@ import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import { PORT, tempDir } from "./helpers.mjs";
 
-process.env.GROK_DATA_DIR = tempDir("self-calls");
+process.env.BUWIZ_BROKER_DATA_DIR = tempDir("self-calls");
 process.env.MOCK = "1";
 // Node's own port is another one: the calls must name the front door's
 process.env.PORT = String(PORT + 1);
-process.env.ROX_PUBLIC_PORT = String(PORT);
+process.env.BUWIZ_PUBLIC_PORT = String(PORT);
 
 const { toolArtifact, toolQuerySource } = await import("../src/tools.mjs");
 
