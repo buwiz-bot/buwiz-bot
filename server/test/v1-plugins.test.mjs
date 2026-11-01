@@ -61,12 +61,12 @@ test("RSV-01 buwiz.provision is the first request answered; other tools before i
 
   await assert.rejects(c.callTool({ name: "fx_echo", arguments: {} }), /buwiz.provision must come first/);
   const k = generate();
-  const r = await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  const r = await c.callTool({ name: "buwiz.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
 
   assert.equal(data(r).ok, true);
   assert.equal(data(r).manifest_sha256, manifestHash(JSON.parse(readFileSync(b.manifestFile, "utf8"))));
   // idempotent for the same key
-  assert.equal(data(await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } })).ok, true);
+  assert.equal(data(await c.callTool({ name: "buwiz.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } })).ok, true);
   assert.equal(data(await c.callTool({ name: "fx_echo", arguments: { a: 1 } })).args.a, 1);
   // a plugin that does not answer buwiz.provision is plugin_invalid
   assert.equal(await codeOf(installFixture(plugins, b, ["--misbehave=skip-provision"])), "plugin_invalid");
@@ -77,7 +77,7 @@ test("RSV-02 buwiz.session.open with an unknown app or a wrong perms_sha256 fail
   const c = await rawFixture(b);
   const k = generate();
 
-  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
   const base = { open_id: "AAAAAAAAAAAAAAAAAAAAAA", ks_pub: generate().pub, not_after: Date.now() + 60_000 };
   const unknown = await c.callTool({ name: "buwiz.session.open", arguments: { ...base, app: "nope", perms_sha256: permsDigest({}) } });
 
@@ -158,7 +158,7 @@ test("RSV-05 buwiz.session.close and buwiz.uninstall answer ok; an unknown rox.*
   const c = await rawFixture(b);
   const k = generate();
 
-  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+  await c.callTool({ name: "buwiz.provision", arguments: { protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
   assert.deepEqual(data(await c.callTool({ name: "buwiz.session.close", arguments: { open_id: "x" } })), { ok: true });
   assert.deepEqual(data(await c.callTool({ name: "buwiz.uninstall", arguments: {} })), { ok: true });
   await assert.rejects(c.callTool({ name: "buwiz.revoke", arguments: {} }), (e) => e.code === -32601);

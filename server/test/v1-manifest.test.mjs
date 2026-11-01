@@ -150,13 +150,16 @@ test("MAN-21 an app is a TSX screen or a native one {screen, abi: 1}, never both
   firstRefused((m) => (native(m), (m.apps[0].native.loader = "x")), /^apps\[0\]\.native\.loader: is not a known key/);
 });
 
-test("MAN-04 a 2.0 host takes 2.0.x; 3.x and 2.1 need a newer host; 1.x (the rox names) is told to update", () => {
-  refused((m) => (m.protocol = "3.0.0"), "protocol_unsupported", /needs a Buwiz Bot/);
-  refused((m) => (m.protocol = "2.1.0"), "protocol_unsupported", /needs a Buwiz Bot that supports 2\.1/);
-  ok((m) => (m.protocol = "2.0.0"));
-  ok((m) => (m.protocol = "2.0.1"));
-  for (const old of ["1.0.0", "1.1.0", "0.9.0"])
-    refused((m) => (m.protocol = old), "protocol_unsupported", /^the plugin implements protocol \d\.\d\.\d: this plugin is built for an older protocol; update it$/);
+test("MAN-04 a 1.0 host takes 1.0.x; 1.1 and 3.x need a newer host; 2.0 and 2.1 (1.0's pre-release numbers) are told to install 1.0", () => {
+  refused((m) => (m.protocol = "3.0.0"), "protocol_unsupported", /^the plugin implements protocol 3\.0\.0; this Buwiz Bot supports 1\.0, so it needs a Buwiz Bot that supports 3\.0$/);
+  refused((m) => (m.protocol = "1.1.0"), "protocol_unsupported", /^the plugin implements protocol 1\.1\.0; this Buwiz Bot supports 1\.0, so it needs a Buwiz Bot that supports 1\.1$/);
+  refused((m) => (m.protocol = "2.2.0"), "protocol_unsupported", /needs a Buwiz Bot that supports 2\.2/);
+  ok((m) => (m.protocol = "1.0.0"));
+  ok((m) => (m.protocol = "1.0.1"));
+  for (const pre of ["2.0.0", "2.0.3", "2.1.0"])
+    refused((m) => (m.protocol = pre), "protocol_unsupported", new RegExp(`^Fixture uses the pre-release mini app protocol ${pre.replaceAll(".", "\\.")}; install its 1\\.0 version$`));
+  refused((m) => ((m.protocol = "2.1.0"), delete m.title), "protocol_unsupported", /^this mini app uses the pre-release mini app protocol 2\.1\.0; install its 1\.0 version$/);
+  refused((m) => (m.protocol = "0.9.0"), "protocol_unsupported", /^the plugin implements protocol 0\.9\.0: this plugin is built for an older protocol; update it$/);
   refused((m) => (m.protocol = "1.0"), "manifest_invalid");
   refused((m) => (m.version = "v1"), "manifest_invalid");
   assert.equal(compareSemver("1.0.0-alpha", "1.0.0"), -1);
@@ -219,6 +222,8 @@ test("MAN-07 every grammar of section 3: one valid and one invalid value", () =>
   refused((m) => (m.short = "mcp"), "manifest_invalid", /reserved/);
   refused((m) => (m.id = "buwiz.goldcoders.fixture"), "manifest_invalid");
   refused((m) => reshort(m, "buwiz"), "manifest_invalid", /reserved/);
+  // the built-in tool prefixes (office_, skill_, routine_, bot_): a plugin with such a short would lose its tools
+  for (const short of ["office", "skill", "routine", "bot"]) refused((m) => reshort(m, short), "manifest_invalid", new RegExp(`^short: ${short} is reserved$`));
   // the app's bundle id and the buwiz names are reserved; the rox ones are not any more
   const reserved = (id) => V1_RESERVED.idPrefixes.some((p) => id.startsWith(p));
 

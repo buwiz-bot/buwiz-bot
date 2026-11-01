@@ -54,7 +54,7 @@ pub mod ui;
 use serde_json::{Value, json};
 
 /// The protocol version this host implements (spec 2.2).
-pub const PROTOCOL: &str = "2.0.0";
+pub const PROTOCOL: &str = "1.0.0";
 
 /// A bridge rejection (spec 14.1): what the app's promise rejects with.
 #[derive(Debug, Clone, PartialEq, Eq)]

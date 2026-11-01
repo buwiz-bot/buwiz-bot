@@ -1,6 +1,7 @@
-// Protocol 2.0's names at the plugin boundary: the buwiz ones work and the
-// 1.x rox ones are refused. A plugin built for protocol 1.x is told to
-// update; a `rox-session` certificate or a `rox-call` envelope does not
+// Protocol 1.0's names at the plugin boundary: the buwiz ones work and
+// Rox's rox ones are refused. A plugin naming 2.0 or 2.1 (1.0's pre-release
+// numbers) is told to install its 1.0 version, and a Rox-era record does not
+// start; a `rox-session` certificate or a `rox-call` envelope does not
 // verify; `rox.*` tools are no longer reserved, so a plugin cannot list
 // them; the plugin hears `buwiz/caller`.
 import assert from "node:assert/strict";
@@ -38,16 +39,47 @@ test("NAM-02 the rox names are refused: a rox-call envelope, rox.* as reserved n
 
   assert.equal(await codeOf(sessions.call(envelope(open, "fx_echo", {}, { typ: "rox-call" }))), "session_invalid");
   assert.ok(isV1("reservedTool", "buwiz.session.open"));
-  assert.ok(!isV1("reservedTool", "rox.session.open"), "rox.* is no reserved name in 2.0");
+  assert.ok(!isV1("reservedTool", "rox.session.open"), "rox.* is no reserved name in 1.0");
 });
 
-test("NAM-03 a protocol 1.x plugin is told to update", async () => {
+test("NAM-03 a plugin naming protocol 2.0 or 2.1 (1.0's pre-release numbers) is told to install its 1.0 version", async () => {
   const old = bed("names-old");
 
-  old.writeManifest((x) => (x.protocol = "1.1.0"));
+  old.writeManifest((x) => (x.protocol = "2.1.0"));
   const o = broker(old);
 
-  await assert.rejects(o.plugins.inspect(fixtureSpec(old)), (e) => e.code === "protocol_unsupported" && /this plugin is built for an older protocol; update it/.test(e.message));
+  await assert.rejects(o.plugins.inspect(fixtureSpec(old)), (e) => e.code === "protocol_unsupported" && e.message === "Fixture uses the pre-release mini app protocol 2.1.0; install its 1.0 version");
+  await o.plugins.stopAll();
+});
+
+test("NAM-03c a plugin built for Rox (rox://manifest, asking for rox.provision) is told it was made for Rox", async () => {
+  for (const mode of ["rox", "rox:quiet"]) {
+    const rox = bed(`names-${mode.replace(":", "-")}`);
+    const o = broker(rox);
+
+    await assert.rejects(o.plugins.inspect(fixtureSpec(rox, [`--misbehave=${mode}`])), (e) => e.code === "protocol_unsupported" && e.message === "Fixture was made for Rox, an older protocol; install its 1.0 version", mode);
+    await o.plugins.stopAll();
+  }
+});
+
+test("NAM-03b an installed record from Rox (rox.* tools) or a pre-release protocol fails before it spawns", { skip: !!process.env.BUWIZ_BROKER_CMD && "Node's records (rox-broker: older_protocol's unit test)" }, async () => {
+  const rec = bed("names-record");
+  const o = broker(rec);
+
+  await installFixture(o.plugins, rec);
+  await o.plugins.stopAll();
+  const cases = [
+    [{ protocol: "1.1.0", tools: JSON.stringify([{ name: "rox.provision", description: "", readOnly: false }]) }, "Fixture was made for Rox, an older protocol; install its 1.0 version"],
+    [{ protocol: "2.0.0", tools: "[]" }, "Fixture uses the pre-release mini app protocol 2.0.0; install its 1.0 version"],
+  ];
+
+  for (const [row, message] of cases) {
+    o.db.prepare("UPDATE v1_plugins SET protocol=?, tools=? WHERE id=?").run(row.protocol, row.tools, FX);
+    assert.equal(await o.plugins.spawn(FX), "failed");
+    assert.deepEqual([o.plugins.runtime(FX).code, o.plugins.runtime(FX).message], ["protocol_unsupported", message]);
+    assert.equal(o.plugins.runtime(FX).conn ?? null, null, "never spawned");
+  }
+
   await o.plugins.stopAll();
 });
 

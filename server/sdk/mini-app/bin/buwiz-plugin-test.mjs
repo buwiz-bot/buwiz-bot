@@ -224,7 +224,7 @@ function manIdOf(e) {
 const MAN_ROWS = [
   ["MAN-01", "the manifest is signed by a trusted publisher key; the signature verifies over JCS (4.2)"],
   ["MAN-03", "the manifest is a JSON object (I-JSON, no duplicate keys)"],
-  ["MAN-04", "protocol 2.0.x is accepted by a 2.0 host; version is semver"],
+  ["MAN-04", "protocol 1.0.x is accepted by a 1.0 host; version is semver"],
   ["MAN-05", "needs is absent or []"],
   ["MAN-06", "permissions carry only known keys"],
   ["MAN-07", "every name follows its grammar (3)"],
