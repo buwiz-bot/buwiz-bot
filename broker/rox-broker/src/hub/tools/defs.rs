@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use serde_json::Value;
 
 use crate::hub::ctx::HubCtx;
+use crate::hub::store::Ceiling;
 use crate::hub::library::botctx;
 use crate::hub::market::catalog::Market;
 use crate::hub::types::TurnCtx;
@@ -67,7 +68,7 @@ pub fn agent_tools() -> &'static [Value] {
     &defs().agent_tools
 }
 
-fn name_of(t: &Value) -> &str {
+pub fn name_of(t: &Value) -> &str {
     t.get("name").and_then(Value::as_str).unwrap_or("")
 }
 
@@ -84,18 +85,21 @@ pub fn builtin_names() -> impl Iterator<Item = &'static str> {
 
 /// `baseSystem()`: the agent's prompt with the skill sections and the
 /// widget contract (`linear`: whether a Linear key is set).
-pub fn base_system(ctx: &HubCtx, linear: bool) -> String {
+pub fn base_system(ctx: &HubCtx, linear: bool, ceiling: Option<&Ceiling>) -> String {
     let d = defs();
     let plugins = ctx.ext.get::<Arc<Market>>().map(|m| crate::hub::market::install::plugin_skills_inject(m, ctx)).unwrap_or_default();
-    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject(ctx), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", linear))
+    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject_under(ctx, ceiling), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", linear))
 }
 
 /// `agentSystem(thread)`: the base prompt plus, in a bot's thread, the
 /// bot's own section.
 pub async fn agent_system(ctx: &HubCtx, turn: &TurnCtx) -> String {
     let linear = crate::hub::routes::leftovers::linear_key(ctx).await.is_some();
-    let bot = ctx.store.read(|s| botctx::bot_section(botctx::bot_of(s, turn)));
-    format!("{}{bot}", base_system(ctx, linear))
+    let (bot, ceiling) = ctx.store.read(|s| {
+        let b = botctx::bot_of(s, turn);
+        (botctx::bot_section(b), b.map(|b| b.tools.clone()))
+    });
+    format!("{}{bot}", base_system(ctx, linear, ceiling.as_ref()))
 }
 
 #[cfg(test)]

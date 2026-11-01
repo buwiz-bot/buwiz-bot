@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use super::{nn, now};
 use crate::hub::ctx::HubCtx;
+use crate::hub::store::Ceiling;
 use crate::hub::types::{ToolResult, TurnCtx};
 use crate::js;
 
@@ -165,12 +166,20 @@ fn admin(ctx: &HubCtx, tool: &str, input: &Value) -> Result<ToolResult, String> 
 /// `privateSkillsInject()`: the enabled skills' bodies for the agent's
 /// system prompt.
 pub fn private_skills_inject(ctx: &HubCtx) -> String {
+    private_skills_inject_under(ctx, None)
+}
+
+/// The same under a bot's tool ceiling: a skill switched off there is
+/// left out of the prompt as a globally disabled one is (ceiling ∩
+/// global, opengrok-policy's rule — the ceiling only narrows).
+pub fn private_skills_inject_under(ctx: &HubCtx, ceiling: Option<&Ceiling>) -> String {
     let rows = ctx.db.with(|db| {
-        let mut st = db.prepare("SELECT name, description, body FROM skills WHERE enabled=1 ORDER BY created_at")?;
-        let r = st.query_map([], |r| Ok((cell(r.get_ref(0)?), cell(r.get_ref(1)?), cell(r.get_ref(2)?))))?;
+        let mut st = db.prepare("SELECT name, description, body, id FROM skills WHERE enabled=1 ORDER BY created_at")?;
+        let r = st.query_map([], |r| Ok((cell(r.get_ref(0)?), cell(r.get_ref(1)?), cell(r.get_ref(2)?), r.get::<_, Option<String>>(3)?.unwrap_or_default())))?;
         r.collect::<rusqlite::Result<Vec<_>>>()
     });
     let Ok(rows) = rows else { return String::new() };
+    let rows: Vec<(Value, Value, Value)> = rows.into_iter().filter(|(_, _, _, id)| ceiling.is_none_or(|c| c.allows(&crate::hub::tools::ceiling::skill_row(id)))).map(|(n, d, b, _)| (n, d, b)).collect();
     if rows.is_empty() {
         return String::new();
     }

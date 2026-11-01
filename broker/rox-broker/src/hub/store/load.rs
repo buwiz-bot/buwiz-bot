@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use super::json::{bot_from, bot_set, js_number_str, turn_from};
 use super::uuid7::{now_ms, uuidv7, uuidv7_at, v7_time};
 use super::write::{read_written, to_json, SqlValue};
-use super::{bot_defaults, Bot, State, Thread};
+use super::{bot_defaults, Bot, Ceiling, State, Thread};
 use crate::js;
 
 fn col(r: &rusqlite::Row, name: &str) -> rusqlite::Result<Value> {
@@ -137,6 +137,7 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             instructions: Some(get("instructions").as_str().map(str::to_owned).unwrap_or(instructions)),
             memories: list("memories"),
             integrations: list("integrations"),
+            tools: parse(&get("tools"), "a bot's tools").map(|v| Ceiling::from_json(&v)).unwrap_or_default(),
             made_by: None,
             purpose: None,
             helper: None,
