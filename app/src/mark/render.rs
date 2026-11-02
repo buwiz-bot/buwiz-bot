@@ -373,6 +373,24 @@ fn em(e: &Frame, body: &'static str, t: &PaintOpts, n: f64) -> EmRec {
     }
 }
 
+/// `EM`'s body and eye loops for a frame at full angle precision (no
+/// `Rh` sprite-cache snapping), in an `n` px square: what a custom body's
+/// resting frames are baked from.
+pub(super) fn exact_rings(e: &Frame, body: &'static str, n: f64) -> (Vec<Vec<V2>>, Vec<Vec<V2>>) {
+    let o = ((n * e.zoom / H_UND).round() as i64).max(8) as f64;
+    let s = o.max(IH);
+    let sh = bodies::dollar_h(body, &ch(&e.quat, 0.0), s, e.eyes.as_ref());
+    let [u, l, d, f] = oh(e, n, o, s);
+    let place = |paths: &[String]| -> Vec<Vec<V2>> {
+        paths
+            .iter()
+            .flat_map(|p| ad(p))
+            .map(|r| r.iter().map(|&[x, y]| [u * x + d, l * y + f]).collect())
+            .collect()
+    };
+    (place(&sh.body), place(&sh.eyes))
+}
+
 /// `AM` — the atlas branch tree.
 fn am(e: &EmRec, t: &str, n: f64) -> MarkTree {
     let r = e.sprite;

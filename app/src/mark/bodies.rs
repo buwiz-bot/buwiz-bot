@@ -17,12 +17,13 @@ use std::rc::Rc;
 
 use super::atlas_data::{AtlasEntry, ATLAS, ATLAS_K, ATLAS_STEP};
 use super::clips::HEART_OUTLINE;
+use super::custom::{self, BakedNodes};
 use super::{Eye, V2, V3};
 
 /// `x` — every body path lives in a 228.5px box centered here.
 pub(crate) const X: f64 = 114.2705;
 const TAU: f64 = std::f64::consts::PI * 2.0;
-const BV: f64 = 228.44;
+pub(super) const BV: f64 = 228.44;
 
 fn te(e: f64) -> f64 {
     (e * 100.0).round() / 100.0
@@ -396,7 +397,7 @@ fn dv_path(e: f64, t: f64, n: f64) -> String {
 }
 
 /// `us` — the path-string parser/sampler: flattens `d` to points every ≤`t`px.
-fn us(e: &str, t: f64) -> Vec<V2> {
+pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
     // JS tokenizes `/[MLCQZmlcqz]|-?\d*\.?\d+(?:e[-+]?\d+)?/g`.
     let mut toks: Vec<String> = Vec::new();
     let b = e.as_bytes();
@@ -771,7 +772,7 @@ impl Outline {
 }
 
 /// `hc` — bake an outline record from path data.
-fn hc(e: &str) -> Outline {
+pub(super) fn hc(e: &str) -> Outline {
     let t = vv_norm(e, &us(e, 4.0));
     let n = us(&t, 4.0);
     let z = zv(&n, 160);
@@ -834,7 +835,10 @@ thread_local! {
 }
 
 /// `Zr` — the cached outline of a named body.
-fn zr_outline(e: &'static str) -> Rc<Outline> {
+pub(super) fn zr_outline(e: &'static str) -> Rc<Outline> {
+    if let Some(body) = custom::find(e) {
+        return body.outline.clone();
+    }
     ZL_CACHE.with(|c| {
         c.borrow_mut()
             .entry(e)
@@ -980,7 +984,7 @@ fn kh(e: &'static str) -> Rc<dyn Fn(f64) -> f64> {
 }
 
 /// `Jt` — an outline ring as normalized 3D points (z=0).
-fn jt(e: &[V2]) -> Vec<V3> {
+pub(super) fn jt(e: &[V2]) -> Vec<V3> {
     e.iter()
         .map(|&[t, n]| [(t - X) / X, -(n - X) / X, 0.0])
         .collect()
@@ -1218,13 +1222,13 @@ fn hn(e: f64, face_z: f64) -> BodyInfo {
 }
 
 /// `sS`/`iS` — the loft: lathed rings from a 2D ring + the surface function.
-struct LoftRings {
-    rings: Vec<Vec<V3>>,
+pub(super) struct LoftRings {
+    pub rings: Vec<Vec<V3>>,
     center: V2,
     depth: f64,
 }
 
-fn ss(e: &[V3], t: f64) -> LoftRings {
+pub(super) fn ss(e: &[V3], t: f64) -> LoftRings {
     const ZL: usize = 160;
     const DL: usize = 16;
     const HH: f64 = 0.72;
@@ -1447,7 +1451,7 @@ fn body_info(e: &str) -> Option<BodyInfo> {
         }
         "house" => hn(1.17, UV),
         "star6" => hn(1.4976, 0.3),
-        _ => return None,
+        _ => return custom::find(e).map(|b| hl(b.size, b.loft_points.clone(), b.depth)),
     })
 }
 
@@ -1481,8 +1485,8 @@ pub(crate) struct Rot {
 }
 
 const AS: f64 = 0.2; // `aS`
-const CS: f64 = 0.36; // `cS`
-const US: f64 = 1.18; // `uS`
+pub(super) const CS: f64 = 0.36; // `cS`
+pub(super) const US: f64 = 1.18; // `uS`
 
 /// `pc` — the projection radius of a body at display size `t`.
 fn pc(e: &BodyInfo, t: f64) -> f64 {
@@ -1811,15 +1815,15 @@ pub(crate) struct EyeLoops {
     pub shift_y: f64,
 }
 
-struct AvEye {
-    width: f64,
-    height: f64,
-    gap: f64,
-    shift_y: f64,
+pub(super) struct AvEye {
+    pub width: f64,
+    pub height: f64,
+    pub gap: f64,
+    pub shift_y: f64,
 }
 
 /// `av` — per-body eye box metrics.
-fn av(e: &str) -> Option<AvEye> {
+pub(super) fn av(e: &str) -> Option<AvEye> {
     let (width, height, gap, shift_y) = match e {
         "cloud" => (0.21294, 0.46683, 0.470016, 0.07),
         "square" => (0.2553258426966292, 0.559752808988764, 0.529408, 0.12),
@@ -1845,7 +1849,10 @@ fn av(e: &str) -> Option<AvEye> {
         "dome" => (0.2132, 0.4674, 0.47872, 0.10599813600185524),
         "arch" => (0.1924, 0.4218, 0.448, 0.16),
         "leaf" => (0.1872, 0.4104, 0.448, 0.04),
-        _ => return None,
+        _ => {
+            let b = custom::find(e)?;
+            (b.eyes.width, b.eyes.height, b.eyes.gap, b.eyes.shift_y)
+        }
     };
     Some(AvEye {
         width,
@@ -2267,7 +2274,7 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
     let r = n.width / OV;
     let o = n.height / SV;
     let s = n.gap / IS;
-    if t.iter()
+    let mut loops = if t.iter()
         .all(|a| lc(a) && a.fill_ring.as_ref().is_none_or(|r| r.is_empty()))
     {
         let e0 = ml(&t[0]);
@@ -2278,7 +2285,13 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
             loops: lv_eyes(t, r, s, o, n.shift_y),
             shift_y: 0.0,
         }
+    };
+    if let Some(b) = custom::find(e) {
+        for p in loops.loops.iter_mut().flatten() {
+            p[0] += b.eye_x;
+        }
     }
+    loops
 }
 
 /// `gc` — loops as `M..Z` path data.
@@ -2310,6 +2323,24 @@ pub(crate) struct Atlas {
     pub step: f64,
     pub k: usize,
     pub bytes: Vec<u8>,
+    /// A custom body's nodes, solved on first use (`bytes` is then empty).
+    pub baked: Option<BakedNodes>,
+}
+
+impl Atlas {
+    /// Node `index`'s `k + 2` values in byte units: center x/y, then radii.
+    pub(super) fn node(&self, index: usize) -> Rc<[f64]> {
+        match &self.baked {
+            Some(b) => b.node(index),
+            None => {
+                let base = index * (self.k + 2);
+                self.bytes[base..base + self.k + 2]
+                    .iter()
+                    .map(|&b| b as f64)
+                    .collect()
+            }
+        }
+    }
 }
 
 /// `atob` — base64 decode (the `A-Za-z0-9+/` alphabet, `=` padding).
@@ -2346,11 +2377,15 @@ fn decode_atlas(entry: &AtlasEntry, step: f64, k: usize) -> Atlas {
         step,
         k,
         bytes: b64(entry.r),
+        baked: None,
     }
 }
 
 /// The decoded atlas for a body (`atlases` cache, `null` when none).
-fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
+pub(super) fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
+    if let Some(b) = custom::find(body) {
+        return Some(b.atlas.clone());
+    }
     ATLAS_CACHE.with(|c| {
         if let Some(a) = c.borrow().get(body) {
             return a.clone();
@@ -2365,7 +2400,7 @@ fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
 }
 
 /// `rows` — `yS`'s rotation at roll 0 as rows (x,y,view axes).
-fn rows(yaw: f64, pitch: f64) -> [f64; 9] {
+pub(super) fn rows(yaw: f64, pitch: f64) -> [f64; 9] {
     let cy = yaw.cos();
     let sy = yaw.sin();
     let cp = pitch.cos();
@@ -2418,16 +2453,17 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
         let phi = (ax * r[3] + ay * r[4] + az * r[5])
             .atan2(ax * r[0] + ay * r[1] + az * r[2]);
         let flip = a.mirror && node_yaw < 0.0;
-        let base = (row as usize * cols
-            + if a.mirror {
-                (node_yaw.abs() / step).round() as usize
-            } else {
-                jj as usize
-            })
-            * (kk + 2);
-        let ncx = (a.bytes[base] as f64 / 255.0 * 2.0 - 1.0) * a.c
+        let node = a.node(
+            row as usize * cols
+                + if a.mirror {
+                    (node_yaw.abs() / step).round() as usize
+                } else {
+                    jj as usize
+                },
+        );
+        let ncx = (node[0] / 255.0 * 2.0 - 1.0) * a.c
             * if flip { -1.0 } else { 1.0 };
-        let ncy = (a.bytes[base + 1] as f64 / 255.0 * 2.0 - 1.0) * a.c;
+        let ncy = (node[1] / 255.0 * 2.0 - 1.0) * a.c;
         cx += w * (ncx * phi.cos() + ncy * phi.sin());
         cy += w * (ncy * phi.cos() - ncx * phi.sin());
         for (i, radius) in radii.iter_mut().enumerate() {
@@ -2441,8 +2477,7 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
             }
             let i0 = (f.floor() as usize) % kk;
             let fr = f - f.floor();
-            *radius += w * (a.bytes[base + 2 + i0] as f64 * (1.0 - fr)
-                + a.bytes[base + 2 + (i0 + 1) % kk] as f64 * fr);
+            *radius += w * (node[2 + i0] * (1.0 - fr) + node[2 + (i0 + 1) % kk] * fr);
         }
     }
     let c = n / 2.0;

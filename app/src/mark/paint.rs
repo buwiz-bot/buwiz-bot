@@ -322,8 +322,13 @@ fn b64(data: &str) -> Vec<u8> {
 }
 
 /// `restOf(shape)` — decoded resting frames (`None` when unbaked),
-/// decoded once per shape: a resting mark repaints on every gaze step.
+/// decoded once per shape: a resting mark repaints on every gaze step. A
+/// custom body (`outline:<path>` or its `custom:` name) bakes its own on
+/// first use.
 pub(crate) fn rest_bytes(shape: &str) -> Option<std::rc::Rc<[u8]>> {
+    if let Some(bytes) = super::custom::rest_bytes(shape) {
+        return Some(bytes);
+    }
     let (name, data) = REST.iter().find(|(n, _)| *n == shape)?;
     Some(RESTS.with(|c| c.borrow_mut().entry(name).or_insert_with(|| b64(data).into()).clone()))
 }
