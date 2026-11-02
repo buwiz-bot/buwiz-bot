@@ -59,6 +59,42 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
   else delete bot.parts;
 }
 
+// GEN_AVATAR_KEEPALIVE_MS "<wait>[,<every>]": how long a slow design may
+// run before its answer starts, and how often a space keeps it alive.
+function keepAliveMs() {
+  const [wait, every] = String(process.env.GEN_AVATAR_KEEPALIVE_MS || "").split(",").map(Number);
+  return [wait > 0 ? wait : 10000, every > 0 ? every : wait > 0 ? wait : 15000];
+}
+
+// Answers `work()` (→ the JSON to send; a throw is a 400 {ok:false}).
+// The app's HTTP client gives up on a response idle for 60s, and a rich
+// design or a picture can take longer: past the wait the answer starts as
+// a 200 at once, a space goes out every interval (JSON parsers skip
+// leading whitespace), and the result (or {ok:false, error}) ends it. A
+// client that hangs up gets nothing more.
+async function keepAlive(res, work) {
+  const [wait, every] = keepAliveMs();
+  const job = Promise.resolve()
+    .then(work)
+    .then((v) => [200, v], (e) => [400, { ok: false, error: String(e?.message || e) }]);
+  let timer;
+  const first = await Promise.race([job, new Promise((ok) => (timer = setTimeout(() => ok(null), wait)))]);
+  clearTimeout(timer);
+  res.setHeader("content-type", "application/json");
+  if (first) {
+    res.statusCode = first[0];
+    return res.end(JSON.stringify(first[1]));
+  }
+  res.statusCode = 200;
+  res.on("error", () => {});
+  const gone = () => res.destroyed || res.writableEnded;
+  res.write(" ");
+  const beat = setInterval(() => (gone() ? clearInterval(beat) : res.write(" ")), every);
+  const [, v] = await job;
+  clearInterval(beat);
+  if (!gone()) res.end(JSON.stringify(v));
+}
+
 export default async function handle(req, res) {
   // A bot is a named agent persona (blob avatar: shape + color) that owns
   // one thread — Grok Bot's model.
@@ -365,17 +401,12 @@ export default async function handle(req, res) {
   if (req.method === "POST" && req.url === "/avatar/design") {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", async () => {
-      res.setHeader("content-type", "application/json");
-      try {
+    req.on("end", () =>
+      keepAlive(res, async () => {
         const { prompt, image, name, model, style, effort, fast } = JSON.parse(body || "{}");
-        const candidates = await designAvatar({ prompt, image, name, model, style, effort, fast });
-        res.end(JSON.stringify({ ok: true, candidates }));
-      } catch (e) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
-      }
-    });
+        return { ok: true, candidates: await designAvatar({ prompt, image, name, model, style, effort, fast }) };
+      }),
+    );
     return true;
   }
   // POST /avatar/picture {image?, prompt?, model?} — Picture mode: a
@@ -385,16 +416,12 @@ export default async function handle(req, res) {
   if (req.method === "POST" && req.url === "/avatar/picture") {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", async () => {
-      res.setHeader("content-type", "application/json");
-      try {
+    req.on("end", () =>
+      keepAlive(res, async () => {
         const { prompt, image, model, effort, fast } = JSON.parse(body || "{}");
-        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image, model, effort, fast })) }));
-      } catch (e) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
-      }
-    });
+        return { ok: true, ...(await designPicture({ prompt, image, model, effort, fast })) };
+      }),
+    );
     return true;
   }
   return false;

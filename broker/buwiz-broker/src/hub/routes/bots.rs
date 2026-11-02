@@ -15,6 +15,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::Bytes;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use super::chat::{answer, card_names, ok, parse, ready, refused, sweep_modules, thrown, trimmed, wrote};
@@ -45,8 +47,8 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/attach/pick"), attach_pick);
     routes.route(Verb::Post, P("/avatar/image/"), avatar_image);
     routes.route(Verb::Post, X("/avatar/gen"), avatar_gen);
-    routes.route(Verb::Post, X("/avatar/design"), avatar_design);
-    routes.route(Verb::Post, X("/avatar/picture"), avatar_picture);
+    routes.route(Verb::Post, X("/avatar/design"), |ctx, req| keep_alive(avatar_design(ctx, req)));
+    routes.route(Verb::Post, X("/avatar/picture"), |ctx, req| keep_alive(avatar_picture(ctx, req)));
 }
 
 /// A bot's avatar fields: its shape, colour, a custom shape's outline, and
@@ -951,6 +953,88 @@ async fn rasterize_previews(ctx: Arc<HubCtx>, svgs: Vec<String>) -> Option<Vec<V
     r.ok()
 }
 
+/// `GEN_AVATAR_KEEPALIVE_MS` "<wait>[,<every>]": how long a slow design
+/// may run before its answer starts, and how often a space keeps it alive
+/// (10 s and 15 s).
+fn keep_alive_ms() -> (u64, u64) {
+    let v = std::env::var("GEN_AVATAR_KEEPALIVE_MS").unwrap_or_default();
+    let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok().filter(|n| *n > 0.0).map(|n| n as u64));
+    let wait = it.next().flatten();
+    let every = it.next().flatten();
+    (wait.unwrap_or(10_000), every.or(wait).unwrap_or(15_000))
+}
+
+/// routes/bots.mjs `keepAlive`: the app's HTTP client gives up on a
+/// response idle for 60 s, and a rich design or a picture can take longer.
+/// A job done within the wait answers as it is; past it the answer starts
+/// as a 200 at once, a space goes out every interval (JSON parsers skip
+/// leading whitespace), and the job's JSON (an error's `{ok:false,
+/// error}` too) ends it. The job runs on its own task: a client that hangs
+/// up stops the spaces, and the job finishes unheard.
+async fn keep_alive<F>(job: F) -> HubResponse
+where
+    F: std::future::Future<Output = HubResponse> + Send + 'static,
+{
+    let (wait, every) = keep_alive_ms();
+    keep_alive_after(wait, every, job).await
+}
+
+async fn keep_alive_after<F>(wait: u64, every: u64, job: F) -> HubResponse
+where
+    F: std::future::Future<Output = HubResponse> + Send + 'static,
+{
+    let mut job = tokio::spawn(job);
+    tokio::select! {
+        done = &mut job => return match done {
+            Ok(res) => res,
+            Err(e) => thrown(&e.to_string()),
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_millis(wait)) => {}
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+    tokio::spawn(async move {
+        if tx.send(Bytes::from_static(b" ")).await.is_err() {
+            return;
+        }
+        let mut beat = tokio::time::interval(std::time::Duration::from_millis(every));
+        beat.tick().await;
+        let res = loop {
+            tokio::select! {
+                done = &mut job => break done,
+                _ = beat.tick() => {
+                    if tx.send(Bytes::from_static(b" ")).await.is_err() {
+                        return;
+                    }
+                }
+                _ = tx.closed() => return,
+            }
+        };
+        let body = match res {
+            Ok(r) => match r.into_body().collect().await {
+                Ok(b) => b.to_bytes(),
+                Err(e) => Bytes::from(out(&json!({"ok": false, "error": e.to_string()}))),
+            },
+            Err(e) => Bytes::from(out(&json!({"ok": false, "error": e.to_string()}))),
+        };
+        let _ = tx.send(body).await;
+    });
+    let mut res = HubResponse::new(KeptAlive(rx).boxed());
+    res.headers_mut().insert(hyper::header::CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
+    res
+}
+
+/// A body fed from a channel (`keep_alive`'s spaces, then the JSON).
+struct KeptAlive(tokio::sync::mpsc::Receiver<Bytes>);
+
+impl hyper::body::Body for KeptAlive {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, hyper::Error>>> {
+        self.0.poll_recv(cx).map(|chunk| chunk.map(|b| Ok(hyper::body::Frame::data(b))))
+    }
+}
+
 /// MOCK's stand-in picture when there is no reference (test/fixtures/avatar-mock.png).
 const MOCK_PICTURE: &[u8] = include_bytes!("../../../../../server/test/fixtures/avatar-mock.png");
 
@@ -1058,4 +1142,57 @@ async fn svg_picture(ctx: &Arc<HubCtx>, ask: &str, block: Option<Value>, pick: &
     let _ = std::fs::remove_file(&svg_path);
     r?;
     Ok(if chosen.is_empty() { avatar_model(Settings::global()) } else { chosen.to_owned() })
+}
+
+#[cfg(test)]
+mod keep_alive_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    async fn slow(ms: u64, res: HubResponse) -> HubResponse {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        res
+    }
+
+    async fn body(res: HubResponse) -> String {
+        String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_answers_fast_jobs_as_they_are() {
+        let res = keep_alive_after(200, 50, slow(10, refused("describe the bot or add a picture", true))).await;
+        assert_eq!(res.status(), 400);
+        assert_eq!(body(res).await, r#"{"ok":false,"error":"describe the bot or add a picture"}"#);
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_starts_slow_jobs_at_once_and_sends_spaces() {
+        let t0 = Instant::now();
+        let res = keep_alive_after(100, 50, slow(400, ok(&json!({"ok": true, "candidates": []})))).await;
+        assert!(t0.elapsed() < Duration::from_millis(350), "a 200 before the job is done");
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()[hyper::header::CONTENT_TYPE], "application/json");
+        let text = body(res).await;
+        assert!(t0.elapsed() >= Duration::from_millis(400));
+        assert!(text.starts_with("   ") && text.trim_start() == r#"{"ok":true,"candidates":[]}"#, "{text:?}");
+        // a late error is the 200's body
+        let res = keep_alive_after(50, 20, slow(150, refused("no rich design came back", true))).await;
+        assert_eq!(res.status(), 200);
+        let text = body(res).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({"ok": false, "error": "no rich design came back"}));
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_survives_a_client_that_hangs_up() {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let job = async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = done_tx.send(());
+            ok(&json!({"ok": true}))
+        };
+        let res = keep_alive_after(20, 10, job).await;
+        drop(res);
+        // the job still runs to its end, and nothing panics
+        tokio::time::timeout(Duration::from_secs(2), done_rx).await.unwrap().unwrap();
+    }
 }
