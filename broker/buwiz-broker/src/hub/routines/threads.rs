@@ -1,4 +1,4 @@
-//! Where a v1 routine's runs land (`v1/routine-threads.mjs`, spec 5.9):
+//! Where a v1 routine's runs land (`v1/routine-threads.mjs`, spec 19.1):
 //! each instance has its own thread, made when it is enabled and reused by
 //! every run, titled by the routine's name (and the instance's params) and
 //! marked `routine: {plugin, id, instance, name, thread}`, `thread` being

@@ -1,6 +1,6 @@
 // v1/routes.mjs — the host-internal API Rox calls (`/v1/host/*`).
 //
-// Not part of the protocol (spec 14.3): the routes the host design (its
+// Not part of the protocol (spec 1): the routes the host design (its
 // section 4) fixes between Rox and this broker. Every request carries
 // `X-Buwiz-Host: <token>`; the token is 32 random bytes the broker writes to
 // <BUWIZ_BROKER_DATA_DIR>/host-token (0600) when it starts, and a request without
@@ -96,7 +96,7 @@ const POSTS = {
   "/v1/host/call": (b) => sessions.call(b),
   "/v1/host/tickets/title": (b) => sessions.ticketTitle(b),
   "/v1/host/resolve": (b) => sessions.resolve(b),
-  // v1 routines (5.9): the user's one-time approval of what one reads, and
+  // v1 routines (19.3): the user's one-time approval of what one reads, and
   // the switch that runs it in a chat
   "/v1/host/routines/approve": (b) => routines.approve(b),
   "/v1/host/routines/enable": (b) => routines.enable(b),
@@ -176,7 +176,7 @@ async function answer(req, res, path) {
   }
 }
 
-// POST /v1/hooks/<instance>/<secret>: a webhook instance's run (5.9). No
+// POST /v1/hooks/<instance>/<secret>: a webhook instance's run (19.3). No
 // host token: the secret in the path is the key. 202 once it started.
 async function hookRoute(req, res, path) {
   const m = /^\/v1\/hooks\/([^/]+)\/([^/]+)$/.exec(path);

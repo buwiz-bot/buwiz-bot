@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// v1/sign-manifest.mjs — sign a plugin manifest with a publisher key (4.2).
+// v1/sign-manifest.mjs — sign a plugin manifest with a publisher key (5.2).
 //
 //   node src/v1/sign-manifest.mjs manifest.json --keychain gc-2026-01 \
 //        --app forms=dist/forms.tsx --app calendar=dist/calendar.tsx [--out signed.json]
 //   node src/v1/sign-manifest.mjs manifest.json --key-file test.key ...
 //
-// Fills each named app's `fingerprint` from its source bytes (6.2), then
+// Fills each named app's `fingerprint` from its source bytes (11.2), then
 // `signature` = ed25519 over the JCS bytes of the manifest without it. The
 // key comes from the macOS login Keychain (service dev.goldcoders.publisher,
 // account = key id) or from a 0600 file holding the base64url seed (test

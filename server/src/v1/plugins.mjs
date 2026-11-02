@@ -1,14 +1,14 @@
 // v1/plugins.mjs — the broker's v1 plugins: install records, processes,
-// restarts (spec 4.3, 5.2, 12, 13, 14).
+// restarts (spec 5.4, 6.2, 9, 22).
 //
 // A v1 plugin is a stdio MCP child the broker owns, apart from the v0
 // mcp_servers (mcp.mjs), which keep working as they do. Every spawn runs
 // the same gate: connect, `buwiz.provision` with the plugin key as the first
-// request (7.8), read `buwiz://manifest`, verify it (5.2), check tools/list
-// against it, and compare it with the install record (12.1). Only then is
+// request (10.2), read `buwiz://manifest`, verify it (6.2), check tools/list
+// against it, and compare it with the install record (6.2 step 11). Only then is
 // the plugin `running`, under a new generation. A crash restarts it with
 // backoff 1-60 s; the seventh restart within 10 minutes leaves it
-// `failed` (14.4). A verification failure never loops: it is `failed`
+// `failed` (22.3). A verification failure never loops: it is `failed`
 // with the spec's code. Install records live in `v1_plugins`; keys live
 // in the keystore and reach the plugin only on its stdin.
 //
@@ -27,7 +27,7 @@ import {
 } from "./manifest.mjs";
 import { isApproved, loadTrust } from "./trust.mjs";
 
-// 9.8: the first-party publisher, whose approved plugins' answer cards
+// 5.3: the first-party publisher, whose approved plugins' answer cards
 // mount at once
 export const FIRST_PARTY = "app.buwiz";
 
@@ -73,7 +73,7 @@ export function olderProtocol(row, title) {
   return `${title} ${row.version} (${row.id}) was made for an older Buwiz Bot (mini app protocol ${row.protocol}; this one runs ${HOST_PROTOCOL}), so it can't start. Install its current version, or uninstall it.`;
 }
 
-/** A spawn spec from a request body: stdio only (14.3). */
+/** A spawn spec from a request body: stdio only (1). */
 export function spawnSpec(body) {
   if (!isObject(body)) refuse("invalid_args", "send {command, args, env?}");
 
@@ -131,7 +131,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
   }
 
   // stderr → the plugin's log (5 MiB, one rotation), with the seed redacted:
-  // a plugin that prints its key fails conformance (4.3) and is stopped.
+  // a plugin that prints its key fails conformance (5.4) and is stopped.
   function stderrSink(id, seed, onLeak) {
     let carry = "";
     const file = logDir && join(logDir, `${id}.log`);
@@ -182,7 +182,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       hooks.onClose?.(conn);
     };
 
-    // malformed MCP is a crash (14.4)
+    // malformed MCP is a crash (22.3)
     client.onerror = (e) => {
       if (e instanceof SyntaxError || e?.name === "ZodError") transport.close().catch(() => {});
     };
@@ -202,7 +202,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     return data;
   }
 
-  // The gate every spawn passes: provision, read, verify (5.2 steps 1-5, 7).
+  // The gate every spawn passes: provision, read, verify (9.1; 6.2 steps 1-9).
   async function bootstrap(spec, seed, hooks = {}, known = "") {
     const conn = await connect(spec, seed, known || "inspect", hooks);
 
@@ -227,7 +227,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
 
       if (prov.manifest_sha256 !== v.sha256) refuse("manifest_invalid", "buwiz.provision reports a manifest other than the one the plugin serves");
 
-      if (conn.leaked) refuse("plugin_invalid", "the plugin wrote its key to stderr (4.3)");
+      if (conn.leaked) refuse("plugin_invalid", "the plugin wrote its key to stderr (5.4)");
 
       return { conn, ...v };
     } catch (e) {
@@ -279,7 +279,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     return { manifest, sha256, tools, instructions: conn.client.getInstructions?.() || "" };
   }
 
-  // 5.2 step 6: one publisher per id; `short` unique among enabled plugins
+  // 6.2 step 10: one publisher per id; `short` unique among enabled plugins
   function checkInstalled(m, keyId) {
     const row = rowOf(m.id);
 
@@ -318,7 +318,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       },
       onLeak: (conn) => {
         if (rt.conn !== conn) return;
-        stopConn(rt).then(() => setState(rt, "failed", "plugin_invalid", "the plugin wrote its key to stderr (4.3)"));
+        stopConn(rt).then(() => setState(rt, "failed", "plugin_invalid", "the plugin wrote its key to stderr (5.4)"));
       },
       onListChanged: (conn) => reread(rt, conn),
     };
@@ -341,7 +341,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     }, delay);
   }
 
-  // The install record against what the plugin now serves (12.1, 13.3).
+  // The install record against what the plugin now serves (6.2 step 11, 9.4).
   function compareInstalled(row, v) {
     if (v.sha256 === row.manifest_sha256) return null;
 
@@ -385,7 +385,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
       v = await bootstrap({ command: row.command, args: parse(row.args, []), env: parse(row.env, {}) }, seed, hooksFor(rt), id);
     } catch (e) {
       // a process that would not start or answer counts as a crash; a
-      // plugin that answered with something invalid does not loop (14.4)
+      // plugin that answered with something invalid does not loop (22.3)
       if (e instanceof V1Error) setState(rt, "failed", e.code, e.message);
       else scheduleRestart(rt);
 
@@ -419,7 +419,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     return rt.state;
   }
 
-  // resources/list_changed: read and verify again (5.1, 12.1)
+  // resources/list_changed: read and verify again (6.1, 6.2 step 11)
   async function reread(rt, conn) {
     if (rt.conn !== conn) return;
     const row = rowOf(rt.id);
@@ -459,7 +459,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     };
   }
 
-  // 3.1 rule 5: a command another enabled plugin also declares
+  // 4.1 rule 5: a command another enabled plugin also declares
   function ambiguity(m) {
     const out = [];
 
@@ -480,7 +480,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
   };
 
   /** POST /v1/host/plugins/inspect: a temporary spawn, verified, with
-   *  the review of 13.1 step 3. Nothing is installed or stored. */
+   *  the review of 6.10 (as 9.2 says). Nothing is installed or stored. */
   async function inspect(body) {
     const spec = spawnSpec(body);
     const v = await bootstrap(spec, generate().seed);
@@ -509,15 +509,15 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     );
   }
 
-  /** POST /v1/host/plugins/install: installs what was reviewed (13.1 step
-   *  4) or updates an installed plugin (13.3). `manifest_sha256` must be
+  /** POST /v1/host/plugins/install: installs what was reviewed (9.3) or
+   *  updates an installed plugin (9.4). `manifest_sha256` must be
    *  the reviewed hash. An update that adds permissions needs
    *  `approve_permissions: true`; an older version `allow_downgrade: true`. */
   async function install(body) {
     const spec = spawnSpec(body);
 
     if (!/^[0-9a-f]{64}$/.test(String(body.manifest_sha256))) refuse("invalid_args", "manifest_sha256 (the reviewed manifest's hash) is required");
-    // an update keeps the plugin key; a new install generates one (4.3)
+    // an update keeps the plugin key; a new install generates one (5.4)
     const fresh = generate();
     const v0 = await bootstrap(spec, fresh.seed);
     const m = v0.manifest;
@@ -559,7 +559,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     const rt = runtime(m.id);
 
     if (row) {
-      // 13.3 step 5-6: stop the old version; its opens end with it
+      // 9.4: stop the old version; its opens end with it
       if (rt.timer) clock.clearTimeout(rt.timer);
       await stopConn(rt);
       await Promise.all(closers.map((f) => f(m.id, { stop: false })));
@@ -711,7 +711,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     }
   }
 
-  // 14.4: a call past the broker limit is cancelled; a plugin that does not
+  // 22.2: a call past the broker limit is cancelled; a plugin that does not
   // answer within 5 s after that is restarted
   function hangCheck(rt, conn) {
     conn.client.ping({ timeout: T.cancel }).catch(() => {
@@ -719,7 +719,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     });
   }
 
-  /** A reserved tool on a running plugin; -32601 is `null` (7.9). */
+  /** A reserved tool on a running plugin; -32601 is `null` (10.1). */
   async function callReserved(id, name, args) {
     const rt = runtime(id);
 
@@ -745,7 +745,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     return rt.conn.client.readResource({ uri });
   }
 
-  /** Mark a plugin failed (a bad certificate: 4.4 step 4, 14.4). */
+  /** Mark a plugin failed (a bad certificate: 5.5 step 4, 22.3). */
   async function fail(id, code, message) {
     const rt = runtime(id);
 
@@ -805,7 +805,7 @@ export function createViews({ db, runtime, trust }) {
       enabled: !!row.enabled,
       generation: rt.generation,
       plugin_pub: row.plugin_pub,
-      // 9.8: an approved plugin of the first-party publisher: its inline
+      // 16.2: an approved plugin of the first-party publisher: its inline
       // answer cards mount at once in Rox
       first_party: m.publisher?.id === FIRST_PARTY && isApproved(trust(), row.id, row.publisher_key_id),
       manifest_sha256: row.manifest_sha256,
@@ -817,7 +817,7 @@ export function createViews({ db, runtime, trust }) {
     };
   }
 
-  // 5.9: a routine reads only approved plugins' readOnlyHint tools
+  // 6.7: a routine reads only approved plugins' readOnlyHint tools
   function readsStatus(r) {
     const tr = trust();
 

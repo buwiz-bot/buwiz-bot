@@ -1,13 +1,13 @@
-//! The v1 plugin host (spec 4.3, 5.2, 12-14; `v1/plugins.mjs`): install
+//! The v1 plugin host (spec 5.4, 6.2, 9, 22; `v1/plugins.mjs`): install
 //! records, processes, restarts.
 //!
 //! A v1 plugin is a stdio MCP child this host owns. Every spawn runs the
 //! same gate: connect, `buwiz.provision` with the plugin key as the first
-//! request (7.8), read `buwiz://manifest`, verify it (5.2), check tools/list
-//! against it, and compare it with the install record (12.1). Only then is
+//! request (10.2), read `buwiz://manifest`, verify it (6.2), check tools/list
+//! against it, and compare it with the install record (6.2 step 11). Only then is
 //! the plugin `running`, under a new generation. A crash restarts it with
 //! backoff 1-60 s; the seventh restart within 10 minutes leaves it `failed`
-//! (14.4). A verification failure never loops. Records live in
+//! (22.3). A verification failure never loops. Records live in
 //! `v1_plugins`; keys live in the keystore and reach the plugin only on its
 //! stdin.
 //!
@@ -533,8 +533,8 @@ impl Host {
         Ok(data)
     }
 
-    /// The gate every spawn passes: provision, read, verify (5.2 steps
-    /// 1-5, 7). `running` names the plugin whose runtime the connection
+    /// The gate every spawn passes: provision, read, verify (9.1; 6.2
+    /// steps 1-9). `running` names the plugin whose runtime the connection
     /// will be (its hooks restart it); `None` for a temporary one.
     async fn bootstrap(&self, spec: &Spec, seed: &str, running: Option<&str>, known: &str) -> Result<Gate, Fail> {
         let (conn, hooks) = self.connect(spec, seed, if known.is_empty() { "inspect" } else { known }, running).await?;
@@ -542,7 +542,7 @@ impl Host {
             Ok((manifest, sha256, tools, instructions)) if !hooks.leaked.load(Ordering::SeqCst) => Ok(Gate { conn, manifest, sha256, tools, instructions }),
             Ok(_) => {
                 conn.close().await;
-                refuse("plugin_invalid", "the plugin wrote its key to stderr (4.3)")
+                refuse("plugin_invalid", "the plugin wrote its key to stderr (5.4)")
             }
             Err(e) => {
                 conn.close().await;
@@ -615,7 +615,7 @@ impl Host {
         Ok((v.manifest, v.sha256, tools, conn.instructions()))
     }
 
-    /// 5.2 step 6: one publisher per id; `short` unique among enabled plugins.
+    /// 6.2 step 10: one publisher per id; `short` unique among enabled plugins.
     fn check_installed(&self, m: &Value, key_id: &str) -> Res<()> {
         let id = tpl(get(m, "id"));
         if let Some(row) = self.row(&id) {
@@ -681,7 +681,7 @@ impl Host {
         self.set_state(id, "restarting", None, &format!("restarting in {} s", delay / 1000));
     }
 
-    /// The install record against what the plugin now serves (12.1, 13.3).
+    /// The install record against what the plugin now serves (6.2 step 11, 9.4).
     fn compare_installed(row: &Row, manifest: &Value, sha256: &str) -> Option<V1Error> {
         if sha256 == row.manifest_sha256 {
             return None;
@@ -744,7 +744,7 @@ impl Host {
         let g = match self.bootstrap(&row.spec(), &seed, Some(id), id).await {
             Ok(g) => g,
             // a process that would not start or answer counts as a crash; a
-            // plugin that answered with something invalid does not loop (14.4)
+            // plugin that answered with something invalid does not loop (22.3)
             Err(Fail::V1(e)) => {
                 self.set_state(id, "failed", Some(&e.code), &e.message);
                 return "failed";
@@ -786,7 +786,7 @@ impl Host {
         "running"
     }
 
-    /// resources/list_changed: read and verify again (5.1, 12.1).
+    /// resources/list_changed: read and verify again (6.1, 6.2 step 11).
     async fn reread(&self, id: &str, conn: Arc<Conn>) {
         let current = |h: &Host| h.conn_of(id).is_some_and(|c| Arc::ptr_eq(&c, &conn));
         if !current(self) {
@@ -830,7 +830,7 @@ impl Host {
         })
     }
 
-    /// 3.1 rule 5: a command another enabled plugin also declares.
+    /// 4.1 rule 5: a command another enabled plugin also declares.
     fn ambiguity(&self, m: &Value) -> Vec<String> {
         let mine = get(m, "commands").and_then(Value::as_array).cloned().unwrap_or_default();
         let (id, short) = (get(m, "id").cloned(), tpl(get(m, "short")));
@@ -946,8 +946,8 @@ impl Host {
         Ok(())
     }
 
-    /// POST /v1/host/plugins/install: installs what was reviewed (13.1 step
-    /// 4) or updates an installed plugin (13.3). `manifest_sha256` must be
+    /// POST /v1/host/plugins/install: installs what was reviewed (9.3) or
+    /// updates an installed plugin (9.4). `manifest_sha256` must be
     /// the reviewed hash; an update that adds permissions needs
     /// `approve_permissions: true`, an older version `allow_downgrade: true`.
     /// `package` installs a package folder (its plugin.json and files
@@ -960,7 +960,7 @@ impl Host {
         if !(wanted.len() == 64 && wanted.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
             return V1Error::err("invalid_args", "manifest_sha256 (the reviewed manifest's hash) is required");
         }
-        // an update keeps the plugin key; a new install generates one (4.3)
+        // an update keeps the plugin key; a new install generates one (5.4)
         let fresh = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
         let g0 = self.bootstrap(&spec, &fresh, None, "").await.map_err(Fail::into_v1)?;
         let m = g0.manifest.clone();
@@ -1022,7 +1022,7 @@ impl Host {
         let lock = self.lock_of(&id);
         let _held = lock.lock().await;
         let g = if row.is_some() {
-            // 13.3 step 5-6: stop the old version; its opens end with it
+            // 9.4: stop the old version; its opens end with it
             self.clear_timer(&id);
             self.stop_conn(&id).await;
             self.end_opens(&id).await;
@@ -1076,7 +1076,7 @@ impl Host {
         self.row(id).ok_or_else(|| V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(id, 80))))
     }
 
-    /// 13.4: end the opens and stop the process; storage, keys and
+    /// 9.5: end the opens and stop the process; storage, keys and
     /// tickets stay.
     pub async fn disable(&self, id: &str) -> Res {
         self.must_row(id)?;
@@ -1091,7 +1091,7 @@ impl Host {
         Ok(json!({"ok": true, "state": "stopped"}))
     }
 
-    /// 13.5: spawn and verify again.
+    /// 9.5: spawn and verify again.
     pub async fn enable(&self, id: &str) -> Res {
         let row = self.must_row(id)?;
         self.check_installed(&row.manifest(), &row.publisher_key_id)?;
@@ -1111,7 +1111,7 @@ impl Host {
         }))
     }
 
-    /// 13.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,
+    /// 9.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,
     /// stop, delete the key, the accounts and `<data>/v1/apps/<id>/`, remove
     /// the record.
     pub async fn uninstall(&self, id: &str) -> Res {
@@ -1157,7 +1157,7 @@ impl Host {
         Ok(json!({"ok": true, "runtime": gone}))
     }
 
-    /// 8.3: the per-tool switch.
+    /// 14.5: the per-tool switch.
     pub fn set_tool(&self, id: &str, tool: Option<&Value>, disabled: Option<&Value>) -> Res {
         let row = self.must_row(id)?;
         let known = parse(&row.tools, json!([]));
@@ -1206,7 +1206,7 @@ impl Host {
         }
     }
 
-    /// 14.4: a call past the broker limit is cancelled; a plugin that does
+    /// 22.2: a call past the broker limit is cancelled; a plugin that does
     /// not answer a ping within 5 s after that is restarted.
     fn hang_check(&self, id: &str, conn: Arc<Conn>) {
         let (me, id, wait) = (self.me.clone(), id.to_owned(), self.timeouts.cancel);
@@ -1220,7 +1220,7 @@ impl Host {
         });
     }
 
-    /// A reserved tool on a running plugin; -32601 is `null` (7.9).
+    /// A reserved tool on a running plugin; -32601 is `null` (10.1).
     pub async fn call_reserved(&self, id: &str, name: &str, args: Value) -> Res {
         let conn = self.running_conn(id)?;
         match self.reserved(&conn, name, args, self.timeouts.reserved).await {
@@ -1237,7 +1237,7 @@ impl Host {
         conn.request("resources/read", json!({"uri": uri}), mcp::DEFAULT_TIMEOUT).await.map_err(|e| V1Error::new("internal", e.message))
     }
 
-    /// Marks a plugin failed (a bad certificate: 4.4 step 4, 14.4).
+    /// Marks a plugin failed (a bad certificate: 5.5 step 4, 22.3).
     pub async fn fail(&self, id: &str, code: &str, message: &str) -> Res {
         self.stop_conn(id).await;
         let code = code.to_owned();
@@ -1281,7 +1281,7 @@ impl Host {
     }
 }
 
-/// A spawn spec from a request body: stdio only (14.3). Also the body's
+/// A spawn spec from a request body: stdio only (1). Also the body's
 /// `args` and `env` as given, for the record.
 pub fn spawn_spec(body: &Value) -> Res<(Spec, (Value, Value))> {
     let Some(o) = body.as_object() else { return V1Error::err("invalid_args", "send {command, args, env?}") };
@@ -1365,11 +1365,11 @@ impl Hooks for ConnHooks {
             return;
         }
         self.leaked.store(true, Ordering::SeqCst);
-        // a plugin that prints its key fails conformance (4.3) and is stopped
+        // a plugin that prints its key fails conformance (5.4) and is stopped
         if let Some((host, id, _)) = self.current() {
             tokio::spawn(async move {
                 host.stop_conn(&id).await;
-                host.set_state(&id, "failed", Some("plugin_invalid"), "the plugin wrote its key to stderr (4.3)");
+                host.set_state(&id, "failed", Some("plugin_invalid"), "the plugin wrote its key to stderr (5.4)");
             });
         }
     }

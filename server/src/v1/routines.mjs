@@ -1,5 +1,5 @@
-// v1/routines.mjs — v1 plugin routines (spec 5.9, "How a routine runs",
-// "Routine instances").
+// v1/routines.mjs — v1 plugin routines (spec 19.1 "A run",
+// 19.2 "params").
 //
 // A v1 routine is declared in a plugin's manifest; it is a template. What
 // runs is an instance of it: (plugin, routine, instance id, the chat it
@@ -335,7 +335,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
   const settle = (row, state) => threads.settle(row.thread, row.id, state);
 
   /** POST /v1/host/routines/approve {plugin, routine}: the user's one-time
-   *  approval of what the routine reads (5.9, Q1). */
+   *  approval of what the routine reads (19.3). */
   function approve(body) {
     const r = mustRoutine(body);
 
@@ -685,7 +685,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
 
   // ── one run ──────────────────────────────────────────────────────────
 
-  // `routine`: the routine's id and instance, on a call to its own plugin (8.4)
+  // `routine`: the routine's id and instance, on a call to its own plugin (16.1)
   async function call(pluginId, tool, args, mark) {
     const meta = { "buwiz/caller": { origin: "routine", plugin: pluginId, ...(mark || {}), ts: Date.now() } };
     const r = await plugins.callTool(pluginId, tool, args, { meta });
@@ -880,7 +880,7 @@ export function createRoutines({ db, plugins, runTurn, threads, threadExists = (
     }, pollMs);
   }
 
-  // 13.6: an uninstalled plugin's routines go with it
+  // 9.6: an uninstalled plugin's routines go with it
   plugins.events.on("plugin", (e) => {
     if (e.state === "uninstalled") {
       db.prepare("DELETE FROM v1_routines WHERE plugin=?").run(e.id);

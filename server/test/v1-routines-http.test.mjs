@@ -113,7 +113,7 @@ const FIXTURE_TOOLS = [
   ["fx_search", "Search fixture items (read only).", true],
   ["fx_query", "A routine's search text: {query} from args.q.", false],
   ["fx_secret", "A tool no app may call.", false],
-  ["fx_app_only", "A tool for apps only (10.1 audience).", false],
+  ["fx_app_only", "A tool for apps only (16.4 audience).", false],
   ["fx_stats", "What the fixture was asked.", false],
   ["fx_reload", "Tell the host the resources changed.", false],
 ];

@@ -1,4 +1,4 @@
-//! The trust store (spec 4.1; `v1/trust.mjs`): which publisher keys sign
+//! The trust store (spec 5.1; `v1/trust.mjs`): which publisher keys sign
 //! manifests and which plugins may be installed. The file is read on every
 //! use, so an edit counts at the next verification; a missing or broken
 //! file trusts nothing.

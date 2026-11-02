@@ -1,8 +1,8 @@
-//! What v1 plugins put in front of the model (v1/agent.mjs, spec 9.1, 9.6,
-//! 10): their tools under their own names (`<short>_<tool>`, `[short] `
+//! What v1 plugins put in front of the model (v1/agent.mjs, spec 16, 18):
+//! their tools under their own names (`<short>_<tool>`, `[short] `
 //! descriptions capped at 1024), server instructions and scope hints, only
 //! from enabled, running, approved plugins; a routine's turn sees its own
-//! surface (5.9); a tool result's `buwiz/open` becomes a card on the reply
+//! surface (19.1); a tool result's `buwiz/open` becomes a card on the reply
 //! and its `buwiz/suggest` the reply's next steps, never shown to the model.
 //! A package tool that answers `{code: "account_required", account}` for an
 //! account its package declares puts a sign-in card (`account_required`)
@@ -34,7 +34,7 @@ pub fn view(ctx: &HubCtx) -> Arc<dyn PluginView> {
     }
 }
 
-/// Enabled, running and approved as installed (4.1).
+/// Enabled, running and approved as installed (5.1).
 pub fn contributing(p: &dyn PluginView) -> Vec<Row> {
     let trust = p.trust();
     p.rows().into_iter().filter(|r| r.enabled && p.runtime(&r.id).state == "running" && trust.is_approved(&r.id, &r.publisher_key_id)).collect()
@@ -58,7 +58,7 @@ fn in_surface(surface: Option<&Value>, plugin: &str, name: &str) -> bool {
         .any(|x| x.get("plugin").and_then(Value::as_str) == Some(plugin) && x.get("tools").and_then(Value::as_array).is_some_and(|t| t.iter().any(|n| n.as_str() == Some(name))))
 }
 
-/// 10.1: a tool whose `buwiz/audience` leaves out "agent" serves apps only.
+/// 16.4: a tool whose `buwiz/audience` leaves out "agent" serves apps only.
 fn for_agent(t: &Value) -> bool {
     match t.pointer("/_meta/buwiz~1audience") {
         Some(Value::Array(a)) => a.iter().any(|x| x.as_str() == Some("agent")),
@@ -121,7 +121,7 @@ fn cap_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// 9.8 `noteSuggest`: at most 3 next steps, labels 40 and prompts 200
+/// 16.3 `noteSuggest`: at most 3 next steps, labels 40 and prompts 200
 /// characters, the rest of each dropped.
 pub fn note_suggest(lt: &mut LinkTurn, suggest: &Value) {
     let Some(list) = suggest.as_array() else { return };
@@ -139,7 +139,7 @@ pub fn note_suggest(lt: &mut LinkTurn, suggest: &Value) {
     }
 }
 
-/// 9.6 `noteCard`: a card for the reply, never an open; a bad card is
+/// 16.2 `noteCard`: a card for the reply, never an open; a bad card is
 /// dropped and logged.
 fn note_card(run: &Run, row: &Row, open: &Value) {
     let card = match crate::helper::sessions::check_open(&row.manifest(), open) {
@@ -160,9 +160,9 @@ fn note_card(run: &Run, row: &Row, open: &Value) {
 }
 
 /// `v1AgentCall(plugins, job, name, input)`: a model call to a v1 tool
-/// (origin agent, 8.4); in a routine's turn a call to its own plugin names
+/// (origin agent, 16.1); in a routine's turn a call to its own plugin names
 /// the routine, and a tool of it that changes data runs only when the
-/// routine lists it in `writes` (5.9).
+/// routine lists it in `writes` (19.1).
 pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
     let p = view(&run.ctx);
     let surface = run.turn.surface.as_ref();
@@ -304,7 +304,7 @@ fn text(v: Option<&Value>) -> String {
 }
 
 /// `v1PromptSection(plugins, prompt, attachments)`: the approved plugins'
-/// instructions, the chat's attachments (10.3) and the scopes in play.
+/// instructions, the chat's attachments (18.3) and the scopes in play.
 pub fn prompt_section(p: &dyn PluginView, prompt: &str, attachments: Option<&Value>) -> String {
     let rows = contributing(p);
     let mut parts = Vec::new();

@@ -1,5 +1,5 @@
-// v1/routine-threads.mjs — where a v1 routine's runs land (spec 5.9,
-// "Where a routine's runs go"). Each routine instance has its own thread,
+// v1/routine-threads.mjs — where a v1 routine's runs land (spec 19.1).
+// Each routine instance has its own thread,
 // made when it is enabled (routines.mjs) and reused by every run, titled by
 // the routine's name (and the instance's params) and marked `routine:
 // {plugin, id, instance, name, thread}` — `thread` is the chat the

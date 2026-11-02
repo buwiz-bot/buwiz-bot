@@ -1,15 +1,15 @@
-// v1/manifest.mjs — verifying a plugin's `buwiz://manifest` (spec 5).
+// v1/manifest.mjs — verifying a plugin's `buwiz://manifest` (spec 6).
 //
 // The broker trusts nothing a plugin says until its manifest passes, in
-// the spec's order (5.2): I-JSON parse, protocol and version, trust store,
+// the spec's order (6.2): I-JSON parse, protocol and version, trust store,
 // publisher signature over JCS, then every field's grammar and limit
-// (5.3-5.9, 6.6, Appendix A). A failure is a V1Error with the spec's code
+// (6.3-6.9, 11.5, 24). A failure is a V1Error with the spec's code
 // (manifest_invalid, protocol_unsupported, not_supported) and the field's
 // path in the message, so the plugin author can find it. Checks that need
 // more than the manifest (the plugin's tools/list, other installs) are
 // separate functions the plugin manager calls. The same module answers
-// the install review lines (13.1 step 3), the permissions digest and the
-// props validation of 6.6.
+// the install review lines (6.10), the permissions digest and the
+// props validation of 11.5.
 import { createHash } from "node:crypto";
 import { V1_RESERVED, isV1 } from "../grammar.mjs";
 import { verify } from "./ed.mjs";
@@ -28,7 +28,7 @@ export const MANIFEST_URI = "buwiz://manifest";
 // the manifest a plugin built for Rox serves instead
 export const ROX_MANIFEST_URI = "rox://manifest";
 
-// Appendix A, the limits a manifest is held to.
+// Section 24, the limits a manifest is held to.
 export const LIMITS = Object.freeze({
   manifestBytes: 256 * 1024,
   pluginId: 255,
@@ -82,7 +82,7 @@ export const sha256hex = (s) => createHash("sha256").update(s).digest("hex");
 /** sha256(JCS(permissions)), lowercase hex; absent permissions are `{}`. */
 export const permsDigest = (perms) => sha256hex(canonicalSigned(perms ?? {}));
 
-/** The manifest's identity hash: sha256 of its JCS bytes (5.2 step 7). */
+/** The manifest's identity hash: sha256 of its JCS bytes (6.2 step 9). */
 export const manifestHash = (m) => sha256hex(canonicalSigned(m));
 
 const chars = (s) => [...s].length;
@@ -152,7 +152,7 @@ function obj(v, path) {
   return v;
 }
 
-// Objects that carry an access grant refuse unknown keys (2.2: fail closed).
+// Objects that carry an access grant refuse unknown keys (3.4: fail closed).
 function onlyKeys(o, allowed, path) {
   for (const k of Object.keys(o)) if (!allowed.includes(k)) throw invalid(`${path}.${k}`, "is not a known key here (refused: unknown keys in access grants fail closed)");
 }
@@ -178,7 +178,7 @@ function ownTool(v, short, path) {
   if (!v.startsWith(`${short}_`)) throw invalid(path, `tool ${v} must start with ${short}_`);
 }
 
-// ── props schema subset (6.6) ────────────────────────────────────────────
+// ── props schema subset (11.5) ───────────────────────────────────────────
 
 const SCHEMA_KEYS = ["type", "properties", "required", "items", "enum", "maxLength", "minimum", "maximum"];
 const SCHEMA_TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"];
@@ -272,7 +272,7 @@ function routines(m) {
 
     obj(r, at);
     // a routine carries access grants (`reads`, `writes`): unknown keys,
-    // v0's `needs` among them, are refused (2.2, 5.9)
+    // v0's `needs` among them, are refused (3.4, 6.7)
     onlyKeys(r, ["id", "name", "description", "every_s", "query", "prompt", "reads", "writes", "params"], at);
     name(r.id, "routineId", `${at}.id`);
     text(r.name, `${at}.name`, { min: 1, max: LIMITS.routineName });
@@ -309,7 +309,7 @@ function routines(m) {
 
     if (tools > LIMITS.readsTools) throw invalid(`${at}.reads`, `names ${tools} tools; at most ${LIMITS.readsTools}`);
     // `writes`: the plugin's own tools that change data, which the
-    // routine's turn may call without asking (5.9)
+    // routine's turn may call without asking (6.7)
     const writes = list(r.writes, `${at}.writes`, LIMITS.writes);
 
     for (const [k, t] of writes.entries()) {
@@ -436,7 +436,7 @@ function apps(m) {
 
       if (a.inline.min_width !== undefined) int(a.inline.min_width, `${at}.inline.min_width`, LIMITS.inlineWidth[0], a.inline.width);
 
-      // buwiz.fit's range (6.5): min_height <= height <= max_height
+      // buwiz.fit's range (6.9): min_height <= height <= max_height
       if (a.inline.min_height !== undefined) int(a.inline.min_height, `${at}.inline.min_height`, LIMITS.inlineHeight[0], a.inline.height);
 
       if (a.inline.max_height !== undefined) int(a.inline.max_height, `${at}.inline.max_height`, a.inline.height, LIMITS.inlineHeight[1]);
@@ -470,7 +470,7 @@ function fields(m) {
   apps(m);
 }
 
-// ── verification (5.2) ───────────────────────────────────────────────────
+// ── verification (6.2) ───────────────────────────────────────────────────
 
 /** 2.0.x and 2.1.x: the pre-release numbers of protocol 1.0. */
 export const preRelease = (protocol) => /^2\.[01]\./.test(String(protocol));
@@ -529,7 +529,7 @@ function signatureOf(m, trust) {
   if (!verify(key.public_key, bytes, s.value)) throw invalid("signature", "does not verify with the publisher key");
 }
 
-/** Verifies manifest text against `trust` (spec 5.2 steps 1-5).
+/** Verifies manifest text against `trust` (spec 6.2 steps 1-7).
  *  → {manifest, sha256}; throws V1Error otherwise. */
 export function verifyManifest(textIn, trust, host = HOST_PROTOCOL) {
   const raw = String(textIn ?? "");
@@ -548,7 +548,7 @@ export function verifyManifest(textIn, trust, host = HOST_PROTOCOL) {
   signatureOf(m, trust);
 
   if (m.needs !== undefined && !(Array.isArray(m.needs) && !m.needs.length))
-    throw new V1Error("not_supported", "needs: shared services are not supported in v1 (5.3); it must be absent or []");
+    throw new V1Error("not_supported", "needs: shared services are not supported in v1 (6.3); it must be absent or []");
   fields(m);
   const native = (m.apps || []).findIndex((a) => a.native !== undefined);
 
@@ -582,7 +582,7 @@ export function checkTools(m, tools) {
 
   for (const [t, where] of named) if (!names.has(t)) throw invalid(where, `names ${t}, which the plugin's tools/list does not have`);
 
-  // 5.9: a routine's `writes` are tools that change data; a read-only
+  // 6.7: a routine's `writes` are tools that change data; a read-only
   // tool is on its turn anyway and is not a write
   for (const [i, r] of (m.routines || []).entries()) {
     for (const [k, name] of (r.writes || []).entries()) {
@@ -595,7 +595,7 @@ export function checkTools(m, tools) {
   }
 }
 
-// ── props (6.6) ──────────────────────────────────────────────────────────
+// ── props (11.5) ─────────────────────────────────────────────────────────
 
 const bad = (why) => new V1Error("invalid_args", `props: ${why}`);
 
@@ -643,7 +643,7 @@ function propsMatch(s, v, path) {
   if (Array.isArray(v) && s.items) for (const [i, x] of v.entries()) propsMatch(s.items, x, `${path}[${i}]`);
 }
 
-/** Props for an open of an app with props schema `s` (6.6): an object,
+/** Props for an open of an app with props schema `s` (11.5): an object,
  *  at most 8 KiB, depth 8, 100 items per array, prop-key grammar, and
  *  valid against the schema subset. Throws V1Error invalid_args. */
 export function validateProps(s, props) {
@@ -662,11 +662,11 @@ export function validateProps(s, props) {
   if (s) propsMatch(s, props, "props");
 }
 
-// ── install review (13.1 step 3) and update consent (13.2) ───────────────
+// ── install review (6.10) and update consent (9.4) ───────────────────────
 
 const mb = (n) => (n >= 1024 * 1024 ? `${Math.round((n / 1048576) * 10) / 10} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
-// the description's first word (5.8) without trailing punctuation ("Return:")
+// the description's first word (6.6) without trailing punctuation ("Return:")
 const noun = (s) => String(s?.description || s?.name || "").trim().split(/\s+/)[0].replace(/[^\p{L}\p{N}]+$/u, "") || s?.name;
 
 function permissionLines(m, p) {
@@ -697,7 +697,7 @@ function permissionLines(m, p) {
   return lines;
 }
 
-/** What the install screen shows (13.1 step 3). `titleOf(pluginId)` names
+/** What the install screen shows (6.10). `titleOf(pluginId)` names
  *  another plugin a routine reads from. */
 export function reviewOf(m, titleOf = (id) => id) {
   const apps = (m.apps || []).map((a) => ({
@@ -733,7 +733,7 @@ export function reviewOf(m, titleOf = (id) => id) {
 
 const added = (a = [], b = []) => b.filter((x) => !a.includes(x));
 
-/** The permissions `next` grants that `prev` did not (13.2: any added key
+/** The permissions `next` grants that `prev` did not (9.4: any added key
  *  or entry needs consent; removals do not). Plain lines; [] = none. */
 export function addedPermissions(prev, next) {
   const out = [];
