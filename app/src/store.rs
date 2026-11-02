@@ -6359,7 +6359,11 @@ impl Store {
         self.bot_modal.set(false);
         let mut body = body_fields(&self.bot_shape.get_untracked());
         body["name"] = name.into();
-        body["color"] = self.bot_color.get_untracked().into();
+        // A rich design brings its own shell colour; the sheet's colour
+        // (the primary ink by default) would paint it white.
+        if body.get("color").is_none() {
+            body["color"] = self.bot_color.get_untracked().into();
+        }
         self.design_reset();
         // Detached: the sheet's owner ends with `bot_modal` above, and a
         // task under it would die before it ran.
