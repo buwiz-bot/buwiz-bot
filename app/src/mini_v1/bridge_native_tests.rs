@@ -201,6 +201,30 @@ fn nat_07_a_panicking_screen_shows_the_error_banner() {
     assert_eq!(load::say::runtime("Fixture Board", "the ledger broke"), "Fixture Board stopped: the ledger broke.");
 }
 
+/// Books' own screens, compiled in, mount through this bridge and draw.
+#[test]
+fn nat_10_the_books_screens_mount_and_draw() {
+    for screen in ["books.ledger", "books.quiet"] {
+        let perms = json!({});
+        let mut prepared = (*native_prepared(screen, &perms)).clone();
+        prepared.plugin.id = "app.buwiz.books".to_owned();
+        let (ctx, _, _, root) = context(Arc::new(prepared), &perms);
+        let failed: Arc<Mutex<Vec<String>>> = Arc::default();
+        let f = failed.clone();
+        let viewport = json!({"width": 720, "height": 480, "placement": "full"});
+        let mounted = screens::mount(&ctx, viewport, Arc::new(move |m: &str| f.lock().unwrap().push(m.to_owned())))
+            .unwrap_or_else(|e| panic!("{screen}: {}", e.message));
+        let (tx, rx) = mpsc::channel();
+        let engine = Engine::start(EngineConfig::new(App::Rust(mounted.root)), || ApproxTextEngine, Sink(tx, Default::default()))
+            .expect("engine starts");
+        let drew = rx.recv_timeout(Duration::from_secs(10)).map(|b| b.items.len()).unwrap_or(0);
+        assert!(drew > 0, "{screen} drew nothing");
+        drop(engine);
+        assert!(failed.lock().unwrap().is_empty(), "{screen}: {:?}", failed.lock().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 #[test]
 fn nat_08_a_missing_screen_says_it_needs_a_newer_buwiz_bot() {
     let perms = board_perms();

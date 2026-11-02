@@ -952,6 +952,42 @@ mod tests {
         assert_eq!((e.code.as_str(), e.message.as_str()), ("permission_denied", "Could not open Fixture Card: native screens are for first-party plugins only."));
     }
 
+    /// A broker listing Books as its manifest (at the pinned rev) has it,
+    /// approved and first-party.
+    struct ListsBooks;
+
+    impl host_api::Broker for ListsBooks {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+            match route {
+                "/v1/host/plugins" => {
+                    let mut books = books_mini_app::manifest::unsigned("test");
+                    let m = books.as_object_mut().unwrap();
+                    m.insert("enabled".to_owned(), true.into());
+                    m.insert("generation".to_owned(), 1.into());
+                    m.insert("first_party".to_owned(), true.into());
+                    Ok(serde_json::json!({ "plugins": [books] }))
+                }
+                _ => Err(RoxError::new("not_found", format!("{route}: a native screen fetches nothing"))),
+            }
+        }
+    }
+
+    #[test]
+    fn the_books_manifests_native_apps_prepare_from_the_screens_compiled_in() {
+        let books = books_mini_app::manifest::unsigned("test");
+        let mut opened = Vec::new();
+        for app in books["apps"].as_array().unwrap().iter().filter(|a| a.get("native").is_some()) {
+            let id = app["id"].as_str().unwrap();
+            let p = prepare(&ListsBooks, &format!("v1:app.buwiz.books/{id}")).unwrap_or_else(|e| panic!("{id}: {}", e.message));
+            let screen = app["native"]["screen"].as_str().unwrap();
+            assert_eq!(p.native, Some(NativeScreen { screen: screen.to_owned(), abi: 1 }), "{id}");
+            assert_eq!(p.fingerprint, format!("native:{screen}@1"));
+            opened.push(screen);
+        }
+        opened.sort_unstable();
+        assert_eq!(opened, ["books.ledger", "books.quiet"]);
+    }
+
     #[test]
     fn app_01_a_one_byte_change_refuses_the_app() {
         let ok = prepare(&Serves { listed: card(CARD), served: CARD.to_owned() }, KEY).unwrap();

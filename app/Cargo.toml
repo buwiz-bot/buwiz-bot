@@ -38,11 +38,16 @@ buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 tokio = { version = "1", features = ["sync"] }
 # First-party mini apps' native screens: the screen definition and the
 # bridge a screen gets, from the SDK (its nsh is patched below).
-buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "fff55d395d1c5c524833ec1073c43d34ac542070" }
-# Books' native screens (`books.quiet`, `books.ledger`), by git rev.
-books-screens = { git = "https://github.com/buwiz-app/books", rev = "63486dfc5b870f56920566d2edf47861acfa5c22" }
+buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "79883a820597c623c9259cc0fac0c4166bdde093" }
+# Books' native screens (`books.quiet`, `books.ledger`), by git rev. Books
+# pins buwiz-app too: bump both together, to the rev Books' is on, or
+# `ScreenDef` is two types.
+books-screens = { git = "https://github.com/buwiz-app/books", rev = "31635df3d99d9ca333034692b61cd323676625b4" }
 
 [dev-dependencies]
+# Books' manifest, at books-screens' rev: every native screen it names is
+# one compiled in (`screens::tests`).
+books-mini-app = { git = "https://github.com/buwiz-app/books", rev = "31635df3d99d9ca333034692b61cd323676625b4" }
 # pele::corpus: the port's test inputs, to check the drawing of every one.
 pele = { git = "https://github.com/hexuria/pele-rs", rev = "9af923e41c031b8c7644940685afc201df4f340f", features = ["corpus"] }
 # The office crates' headless driver and test documents, and the engines
