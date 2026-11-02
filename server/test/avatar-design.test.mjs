@@ -150,7 +150,7 @@ test("AVD-06 designCandidates: still failing after the retry, the failures drop 
 
 test("AVD-07 designCandidates: nothing usable twice falls back to one kit pick; all-custom gets a kit", async () => {
   const s = stub("I cannot draw.", "Still no JSON.");
-  assert.deepEqual(await designCandidates({ prompt: "reads receipts" }, s), [{ name: "Cloud", shape: "cloud", color: "#00BCA6", why: "A kit shape picked for the description." }]);
+  assert.deepEqual(await designCandidates({ prompt: "reads receipts" }, s), [{ name: "Cloud", shape: "cloud", color: "#FFFFFF", why: "A kit shape picked for the description." }]);
   assert.match(s.calls[1][2].content, /- the reply had no JSON candidates\n- there must be exactly 3 candidates \(got 0\)/);
   assert.deepEqual(s.picks, ["reads receipts"]);
   const t = stub([cust("A"), cust("B"), cust("C")], [cust("A"), cust("B"), cust("C")]);
@@ -282,7 +282,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
 
 test("AVD-13 the system prompt names the engine's rules and every kit shape", () => {
   for (const k of KIT_SHAPES) assert.match(DESIGN_SYSTEM, new RegExp(`^- ${k}: `, "m"));
-  for (const s of ["no face", "no holes", "y DOWN", "55-80%", "about 10 units", "M, L, C, Q and Z", "#FFFFFF is special", "JSON only"]) assert.ok(DESIGN_SYSTEM.includes(s), s);
+  for (const s of ["no face", "no holes", "y DOWN", "55-80%", "about 10 units", "M, L, C, Q and Z", "JSON only", "By default every candidate is #FFFFFF"]) assert.ok(DESIGN_SYSTEM.includes(s), s);
 });
 
 test("AVD-14 /avatar/design on the OpenAI-compatible path: chat/completions with the image as image_url", async () => {

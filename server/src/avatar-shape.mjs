@@ -260,7 +260,7 @@ Custom outline (shape = "custom", outline = SVG path data):
 - A simple, recognisable silhouette, like a cookie cutter or a bold app glyph: 4 to 16 segments, smooth C or Q curves for organic forms.
 - Keep a roomy, solid area in the upper middle: the eyes go there.
 
-Colour: "#RRGGBB". Saturated, mid-brightness colours that read on both light and dark backgrounds, e.g. #FF263C red, #FF6700 orange, #FF9800 amber, #00C972 green, #00BCA6 teal, #1084FE blue, #9159FE purple, #FF309B pink, #936439 brown, #777777 grey. Avoid near-black, pastel and very light colours. #FFFFFF is special: the adaptive swatch, white on dark backgrounds and black on light ones; use it for a monochrome look.
+Colour: "#RRGGBB". By default every candidate is #FFFFFF, the app's primary ink: the adaptive swatch, black on light backgrounds and white on dark ones. Use another colour only when the request asks for one (a named colour, "colourful", "in its own colours", or a character whose colour is part of who it is). Then pick saturated, mid-brightness colours that read on both light and dark backgrounds, e.g. #FF263C red, #FF6700 orange, #FF9800 amber, #00C972 green, #00BCA6 teal, #1084FE blue, #9159FE purple, #FF309B pink, #936439 brown, #777777 grey. Avoid near-black, pastel and very light colours.
 
 Reply with JSON only (no prose, no code fences):
 {"candidates":[{"name":"…","shape":"…","color":"#RRGGBB","outline":"M … Z","why":"…"}]}
@@ -272,7 +272,7 @@ export function designRequest({ prompt, name, image }) {
     name ? `The bot's name: ${name}` : "",
     `The request (what the bot is or does, or how it should look): ${prompt}`,
     image
-      ? "The image attached is the subject. Candidate 1 MUST be that subject made into an avatar: shape \"custom\", an outline tracing the subject's silhouette (simplified to the rules), in the subject's main colour. The request says what to keep or change. Candidates 2 and 3 are other takes: another custom outline or a fitting kit shape."
+      ? "The image attached is the subject. Candidate 1 MUST be that subject made into an avatar: shape \"custom\", an outline tracing the subject's silhouette (simplified to the rules), in #FFFFFF unless the request asks for colour (then the subject's main colour). The request says what to keep or change. Candidates 2 and 3 are other takes: another custom outline or a fitting kit shape."
       : "Candidates may be kit shapes or custom outlines; at least one must be a kit shape. Use a custom outline when the bot has an obvious emblem (a receipt, a leaf, a cat's head).",
   ].filter(Boolean).join("\n");
 }
@@ -364,8 +364,9 @@ export async function designCandidates({ prompt, name, image }, { ask, pick }) {
 }
 
 async function kitFallback(prompt, pick) {
-  const { shape, color } = await pick(prompt);
-  return { name: KIT[shape] ? shape[0].toUpperCase() + shape.slice(1) : "Blob", shape, color, why: "A kit shape picked for the description." };
+  // The kit picker's shape, in the primary ink: Design defaults to #FFFFFF.
+  const { shape } = await pick(prompt);
+  return { name: KIT[shape] ? shape[0].toUpperCase() + shape.slice(1) : "Blob", shape, color: "#FFFFFF", why: "A kit shape picked for the description." };
 }
 
 // MOCK mode: fixed candidates, valid outlines.
@@ -378,9 +379,9 @@ export const MOCK_OUTLINES = {
   receipt: "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z",
 };
 export function mockCandidates({ image } = {}) {
-  const kit = { name: "Blue Blob", shape: "blob", color: "#1084FE", why: "A friendly ball in the default blue." };
-  const cat = { name: "Cat Head", shape: "custom", color: "#FF9800", outline: MOCK_OUTLINES.cat, why: "A bold cat silhouette." };
-  const pebble = { name: "Pebble", shape: "custom", color: "#00C972", outline: MOCK_OUTLINES.pebble, why: "A calm, rounded pebble." };
-  const receipt = { name: "Receipt", shape: "custom", color: "#9159FE", outline: MOCK_OUTLINES.receipt, why: "A receipt with a torn foot." };
+  const kit = { name: "Blob", shape: "blob", color: "#FFFFFF", why: "A friendly ball in the primary ink." };
+  const cat = { name: "Cat Head", shape: "custom", color: "#FFFFFF", outline: MOCK_OUTLINES.cat, why: "A bold cat silhouette." };
+  const pebble = { name: "Pebble", shape: "custom", color: "#FFFFFF", outline: MOCK_OUTLINES.pebble, why: "A calm, rounded pebble." };
+  const receipt = { name: "Receipt", shape: "custom", color: "#FFFFFF", outline: MOCK_OUTLINES.receipt, why: "A receipt with a torn foot." };
   return image ? [{ ...cat, name: "Image Subject", why: "The image's subject as a silhouette." }, kit, pebble] : [kit, receipt, cat];
 }

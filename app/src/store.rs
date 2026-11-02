@@ -2704,7 +2704,7 @@ impl Store {
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
             bot_shape: signal("blob".to_owned()),
-            bot_color: signal("#1084FE".to_owned()),
+            bot_color: signal("#FFFFFF".to_owned()),
             bot_hover: signal(String::new()),
             pane_btn_hover: signal(String::new()),
             avatar_hover: signal(false),
