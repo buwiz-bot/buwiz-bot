@@ -269,7 +269,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   const calls = fake.calls();
   assert.equal(calls.length, 2);
   assert.equal(calls[0].path, "/v1/messages");
-  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-sonnet-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "Design's own model, not the chat's");
+  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-opus-5-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "Design's own model, not the chat's");
   assert.match(calls[1].body.messages[2].content, /candidate 2 \(Bad\): outline covers/);
   fake.reset();
   fake.script("design-img", [reply([cust("Fox", GOOD.cat, "#FF6700"), kit("A"), cust("B")])]);
@@ -289,7 +289,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   fake.reset();
   fake.script("design-default", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
   assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-default]] a fox", model: "" })).status, 200);
-  assert.equal(fake.calls()[0].body.model, "claude-sonnet-5", "the picker's Default is Design's default");
+  assert.equal(fake.calls()[0].body.model, "claude-opus-5-5", "the picker's Default is Design's default");
   // GEN_AVATAR_MODEL picks Design's model; GEN_MODEL (the chat's) does not
   await server.stop();
   server = await startServer(dir, { env: env({ MOCK: undefined, GEN_MODEL: "claude-haiku-5-5", GEN_AVATAR_MODEL: "claude-opus-5" }) });

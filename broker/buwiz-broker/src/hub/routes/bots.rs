@@ -594,9 +594,9 @@ fn text_of(m: &Value) -> String {
 }
 
 /// Design's model (config.mjs `AVATAR_MODEL`): `GEN_AVATAR_MODEL`, else
-/// claude-sonnet-5 on Anthropic and the provider's model elsewhere.
+/// claude-opus-5-5 on Anthropic and the provider's model elsewhere.
 fn avatar_model(settings: &Settings) -> String {
-    std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| if settings.anthropic() { "claude-sonnet-5".into() } else { settings.model.clone() })
+    std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| if settings.anthropic() { "claude-opus-5-5".into() } else { settings.model.clone() })
 }
 
 /// `/\/(\.|%2e){2}(\/|$)/i`: a `..` segment as sent.

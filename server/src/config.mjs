@@ -45,7 +45,7 @@ const MODEL =
 // Avatar design (/avatar/design) draws with a model of its own: tracing a
 // silhouette needs a stronger one than the chat default.
 const AVATAR_MODEL =
-  process.env.GEN_AVATAR_MODEL || (PROVIDER === "anthropic" ? "claude-sonnet-5" : MODEL);
+  process.env.GEN_AVATAR_MODEL || (PROVIDER === "anthropic" ? "claude-opus-5-5" : MODEL);
 // Output budget covers interleaved thinking (~5k) plus a real module — a
 // polished game runs 400+ lines; 6k truncated mid-file and produced mocks.
 const MAX_TOKENS = Number(process.env.GEN_MAX_TOKENS || 20000);

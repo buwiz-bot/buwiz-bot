@@ -146,7 +146,7 @@ export const PICTURE_STYLE = readFileSync(new URL("./templates/avatar-picture-st
  *  picture, the character is the user's description. */
 export function pictureRequest({ prompt = "", image = false } = {}) {
   const extra = String(prompt || "").trim();
-  const style = image ? PICTURE_STYLE : PICTURE_STYLE.replace(/^Reinterpret the reference image as/, "Draw the character described below as");
+  const style = image ? PICTURE_STYLE : PICTURE_STYLE.replace(/^Turn the subject of the reference picture into a minimal flat "Bot" avatar\. Use the picture only to recognise who the subject is; do not copy its pose, framing or background\./, "Draw the character described below as a minimal flat \"Bot\" avatar.");
   return [style, extra ? `${image ? "Also, from the user" : "The character"}: ${extra}` : ""].filter(Boolean).join("\n\n");
 }
 
