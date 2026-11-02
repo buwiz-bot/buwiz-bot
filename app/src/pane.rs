@@ -1872,13 +1872,8 @@ fn editor_tabs() -> impl IntoElement {
                     .justify_center()
                     .label("Reset avatar")
                     .child(text("Reset").text_size(px(13.0)).text_color(theme::DIM))
-                    .on_press(|| {
-                        let Some(b) = store().active_bot_untracked() else { return };
-                        store().update_bot(
-                            &b.id,
-                            serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
-                        );
-                    })
+                    // Asks first: the confirm row on the Bot tab resets.
+                    .on_press(|| store().avatar_reset_ask.set(true))
                     .into_element()
             },
         ))
@@ -1917,6 +1912,18 @@ fn bot_tab() -> impl IntoElement {
         .px_3()
         .pb(px(20.0))
         .gap(px(26.0))
+        .child(when(
+            || store().avatar_reset_ask.get(),
+            || {
+                crate::design::confirm_row(
+                    "Reset this bot to the default avatar?".to_owned(),
+                    "Reset",
+                    || store().reset_avatar(),
+                    || store().avatar_reset_ask.set(false),
+                )
+                .into_element()
+            },
+        ))
         .child(crate::design::saved(false))
         .child(
             view()

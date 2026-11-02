@@ -2459,6 +2459,11 @@ pub struct Store {
     /// "Your designs": every Design pick, newest first, kept in
     /// `/state/buwiz-avatar-designs` so any bot can use one again.
     pub design_saved: Signal<Vec<AvatarCand>>,
+    /// The saved design waiting on "Remove it?" (its index), and whether
+    /// Reset is waiting on "Reset the avatar?": nothing is removed or
+    /// reset before the confirm row's button.
+    pub design_removing: Signal<Option<usize>>,
+    pub avatar_reset_ask: Signal<bool>,
 
     // ————— Plugins marketplace (App.tsx:1291–1640 + the modal) —————
     /// `pluginsOpen` — the modal's visibility.
@@ -2742,6 +2747,8 @@ impl Store {
             design_err: signal(String::new()),
             design_was: signal(None),
             design_saved: signal(Vec::new()),
+            design_removing: signal(None),
+            avatar_reset_ask: signal(false),
             plugins_open: signal(false),
             plugin_nav: signal(vec![PluginNav::market()]),
             plugins: signal(Vec::new()),
@@ -5399,6 +5406,8 @@ impl Store {
         self.design_picked.set(None);
         self.design_err.set(String::new());
         self.design_was.set(None);
+        self.design_removing.set(None);
+        self.avatar_reset_ask.set(false);
     }
 
     /// Design: `POST /avatar/design` with the prompt (and the picture, if
@@ -5415,7 +5424,8 @@ impl Store {
         } else {
             self.active_bot_untracked().map(|b| b.name).unwrap_or_default()
         };
-        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim()});
+        let model = self.design_model().0;
+        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model});
         if let Some(d) = &image {
             body["image"] = d.uri.clone().into();
         }
@@ -5449,6 +5459,36 @@ impl Store {
             }
             self.design_busy.set(false);
         });
+    }
+
+    /// The model Design asks: the model picker's choice (the open bot's
+    /// own, or the app-wide one in the Create New Bot sheet), with its
+    /// label; an empty id is "Default", which the broker's Design default
+    /// answers.
+    pub fn design_model(&'static self) -> (String, String) {
+        let id = if self.bot_modal.get() { self.model.get() } else { self.choice().0 };
+        let label = if id.is_empty() {
+            "the default model".to_owned()
+        } else {
+            self.models
+                .get()
+                .into_iter()
+                .find(|m| m.id == id)
+                .map(|m| m.label)
+                .unwrap_or_else(|| pretty_model(&id))
+        };
+        (id, label)
+    }
+
+    /// Reset (after its confirm row): the default ball in the primary ink,
+    /// no photo.
+    pub fn reset_avatar(&'static self) {
+        self.avatar_reset_ask.set(false);
+        let Some(b) = self.active_bot_untracked() else { return };
+        self.update_bot(
+            &b.id,
+            serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
+        );
     }
 
     /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
@@ -5526,8 +5566,9 @@ impl Store {
         self.save_designs();
     }
 
-    /// Removes saved design `i`.
+    /// Removes saved design `i` (after its confirm row).
     pub fn design_forget(&'static self, i: usize) {
+        self.design_removing.set(None);
         self.design_saved.update(|v| {
             if i < v.len() {
                 v.remove(i);

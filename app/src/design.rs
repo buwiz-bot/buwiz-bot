@@ -17,6 +17,11 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
         .child(prompt_field())
         .child(dynamic(|| picture_row().into_element()))
         .child(design_button())
+        .child(
+            text(|| format!("with {}", store().design_model().1))
+                .text_size(px(12.0))
+                .text_color(theme::MUTED),
+        )
         .child(dynamic(move || choices(for_new).into_element()))
         .child(error_line())
 }
@@ -199,10 +204,24 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
             st.active_bot().filter(|b| b.image.is_empty()).map(|b| b.shape)
         };
         let ink = current_color(for_new);
+        let removing = st
+            .design_removing
+            .get()
+            .and_then(|i| saved.get(i).map(|c| (i, c.name.clone())));
         view()
             .w_full()
             .gap(px(8.0))
             .child(text("Your designs").text_size(px(12.0)).text_color(theme::MUTED))
+            .child(match removing {
+                Some((i, name)) => confirm_row(
+                    format!("Remove “{name}” from Your designs?"),
+                    "Remove",
+                    move || store().design_forget(i),
+                    || store().design_removing.set(None),
+                )
+                .into_element(),
+                None => view().into_element(),
+            })
             .child(
                 view()
                     .flex_row()
@@ -256,7 +275,8 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
                                         .justify_center()
                                         .child(text("✕").text_size(px(10.0)).text_color(theme::DIM))
                                         .label("Remove this design")
-                                        .on_press(move || store().design_forget(i))
+                                        // Asks first: the confirm row below removes.
+                                        .on_press(move || store().design_removing.set(Some(i)))
                                         .into_element()
                                 },
                             ))
@@ -265,4 +285,49 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
             )
             .into_element()
     })
+}
+
+/// An inline "are you sure?" row: the question, Keep (cancel) and the
+/// destructive action in red. Nothing happens until one is pressed.
+pub(crate) fn confirm_row(
+    question: String,
+    action: &'static str,
+    on_do: impl Fn() + 'static,
+    on_keep: impl Fn() + 'static,
+) -> impl IntoElement {
+    view()
+        .w_full()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .py(px(8.0))
+        .px(px(10.0))
+        .rounded(px(10.0))
+        .bg(theme::SUBTLE)
+        .border_1()
+        .border_color(theme::BORDER_S)
+        .child(text(question).flex_1().text_size(px(12.0)).text_color(theme::TEXT))
+        .child(
+            view()
+                .h(px(24.0))
+                .px(px(10.0))
+                .rounded(px(12.0))
+                .bg(theme::HOVER)
+                .justify_center()
+                .child(text("Keep").text_size(px(12.0)).text_color(theme::TEXT))
+                .label("Keep it")
+                .on_press(on_keep),
+        )
+        .child(
+            view()
+                .h(px(24.0))
+                .px(px(10.0))
+                .rounded(px(12.0))
+                .bg(theme::DOWN_TINT)
+                .justify_center()
+                .child(text(action).text_size(px(12.0)).text_color(theme::DOWN))
+                .label(action)
+                .on_press(on_do),
+        )
 }
