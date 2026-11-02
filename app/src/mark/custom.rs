@@ -931,6 +931,8 @@ pub(crate) struct Decal {
     pub loops: Vec<Vec<V2>>,
     /// Per point: past the outline by more than [`OFF_BODY`].
     pub off: Vec<Vec<bool>>,
+    /// Drawn over the eyes and rims (a fringe, an eyepatch, glasses).
+    pub over: bool,
     pub fill: String,
     pub opacity: f64,
 }
@@ -945,6 +947,12 @@ pub(crate) struct Rich {
     pub eye_box: Option<(AvEye, f64)>,
     /// A rim around each eye: its colour and thickness (body units).
     pub rim: Option<(String, f64)>,
+    /// The eye drawn always shut (0 the viewer's left, 1 the right).
+    pub shut: Option<usize>,
+    /// Eyes under an over-layer at design time (viewer's left, right):
+    /// not drawn at all, so no gaze shift, blink or wide expression can
+    /// peek out past the layer's edge.
+    pub hidden: [bool; 2],
     /// The extra parts (`"p"`), each its own lofted body in the main
     /// part's frame.
     pub parts: Vec<RichPart>,
@@ -978,6 +986,8 @@ pub(crate) struct Place {
 const MAX_PARTS: usize = 6;
 /// The thinnest an extra part's loft gets (half-depth, body units).
 const PART_MIN_DEPTH: f64 = 0.06;
+/// The range of a part's `d` (its half-depth in head half-depths).
+const PART_DEPTH: (f64, f64) = (0.05, 1.6);
 
 /// The largest subpath of an outline, in the 100×100 box.
 fn outline_points(path: &str) -> Result<Vec<V2>, String> {
@@ -1002,8 +1012,15 @@ fn outline_points(path: &str) -> Result<Vec<V2>, String> {
 }
 
 /// One part's lofted body, placed in the shared frame `front` at body
-/// `size` (eyes are placed only on the main part).
-fn part_body(pts: &[V2], front: &FrontMap, size: f64, with_eyes: bool) -> Result<CustomBody, String> {
+/// `size` (eyes are placed only on the main part), `depth` its loft
+/// half-depth when the recipe sets one.
+fn part_body(
+    pts: &[V2],
+    front: &FrontMap,
+    size: f64,
+    with_eyes: bool,
+    depth: Option<f64>,
+) -> Result<CustomBody, String> {
     let mut d = String::new();
     for (i, p) in pts.iter().enumerate() {
         let x = ((X + (p[0] - front.center[0]) * front.scale) * 100.0).round() / 100.0;
@@ -1032,10 +1049,10 @@ fn part_body(pts: &[V2], front: &FrontMap, size: f64, with_eyes: bool) -> Result
     };
     // the head keeps a rounded body's thickness; a thin extra part (an
     // antler, a feather) stays as thin as it is wide
-    let depth = if with_eyes {
-        loft_depth(circle.1)
-    } else {
-        (CLOUD_DEPTH * circle.1).clamp(PART_MIN_DEPTH, CLOUD_DEPTH)
+    let depth = match depth {
+        Some(d) => d,
+        None if with_eyes => loft_depth(circle.1),
+        None => (CLOUD_DEPTH * circle.1).clamp(PART_MIN_DEPTH, CLOUD_DEPTH),
     };
     let loft_points = bodies::jt(&bodies::us(&outline.path, 1.0));
     let atlas = Rc::new(Atlas {
@@ -1170,7 +1187,7 @@ fn multi_part(
         .map(|p| signed_area(p).abs() * unit * unit)
         .sum();
     let size = (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE);
-    let base = Rc::new(part_body(&main_pts, &front, size, true)?);
+    let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
         centroid: centroid_of(&body_polygon(&base.outline.path)),
@@ -1179,7 +1196,20 @@ fn multi_part(
     }];
     for (i, (part, pts)) in list.iter().zip(&part_pts).enumerate() {
         let n = i + 1;
-        let geometry = Rc::new(part_body(pts, &front, size, false).map_err(|e| format!("part {n}: {e}"))?);
+        // `d`: the part's half-depth in head half-depths (hair that wraps
+        // the head is about as deep as it)
+        let depth = match part.get("d") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(d) => Some(
+                d.as_f64()
+                    .filter(|d| d.is_finite())
+                    .ok_or_else(|| format!("part {n} \"d\" must be a number"))?
+                    .clamp(PART_DEPTH.0, PART_DEPTH.1)
+                    * base.depth,
+            ),
+        };
+        let geometry =
+            Rc::new(part_body(pts, &front, size, false, depth).map_err(|e| format!("part {n}: {e}"))?);
         let shell = colour(part.get("c"), &format!("part {n} shell"))?;
         let decals = parse_layers(part.get("l"), &geometry, &format!("part {n} "))?;
         let z = match part.get("z") {
@@ -1381,16 +1411,46 @@ fn parse_layers(layers: Option<&serde_json::Value>, base: &CustomBody, part: &st
     let mut decals = Vec::with_capacity(layers.len());
     for (i, layer) in layers.iter().enumerate() {
         let n = format!("{part}layer {}", i + 1);
-        let parts = layer
-            .as_array()
-            .ok_or_else(|| format!("{n} must be [path, colour, opacity]"))?;
+        // `[path, fill, opacity?, "over"?]`, or the object form
+        // `{"path", "fill", "opacity"?, "over"?}`
+        let (parts, over) = match layer {
+            serde_json::Value::Array(a) => {
+                let mut a = a.clone();
+                // `[path, fill, "over"]` leaves the opacity out
+                if a.get(2).and_then(|v| v.as_str()) == Some("over") {
+                    a.insert(2, serde_json::Value::Null);
+                }
+                let over = match a.get(3) {
+                    None | Some(serde_json::Value::Null) => false,
+                    Some(serde_json::Value::String(s)) if s == "over" => true,
+                    Some(_) => return Err(format!("{n}: the 4th entry may only be \"over\"")),
+                };
+                (a, over)
+            }
+            serde_json::Value::Object(o) => {
+                let over = match o.get("over") {
+                    None | Some(serde_json::Value::Null) => false,
+                    Some(serde_json::Value::Bool(b)) => *b,
+                    Some(_) => return Err(format!("{n}: \"over\" must be true or false")),
+                };
+                let mut a = vec![
+                    o.get("path").cloned().unwrap_or(serde_json::Value::Null),
+                    o.get("fill").cloned().unwrap_or(serde_json::Value::Null),
+                ];
+                if let Some(op) = o.get("opacity") {
+                    a.push(op.clone());
+                }
+                (a, over)
+            }
+            _ => return Err(format!("{n} must be [path, colour, opacity]")),
+        };
         let path = parts
             .first()
             .and_then(|p| p.as_str())
             .ok_or_else(|| format!("{n} needs a path"))?;
         let fill = colour(parts.get(1), &n)?;
         let opacity = match parts.get(2) {
-            None => 1.0,
+            None | Some(serde_json::Value::Null) => 1.0,
             Some(o) => o
                 .as_f64()
                 .filter(|o| o.is_finite())
@@ -1417,6 +1477,7 @@ fn parse_layers(layers: Option<&serde_json::Value>, base: &CustomBody, part: &st
             .collect();
         decals.push(Decal {
             off,
+            over,
             loops,
             fill,
             opacity,
@@ -1472,7 +1533,7 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
         }
     };
     let shell = colour(v.get("c"), "shell")?;
-    let (eyes, eye_box, rim) = match v.get("e") {
+    let (eyes, eye_box, rim, shut) = match v.get("e") {
         Some(e @ serde_json::Value::Object(_)) => {
             let eyes = colour(e.get("c"), "eye")?;
             let at = match e.get("at") {
@@ -1501,11 +1562,32 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                     Some((fill, rw * width))
                 }
             };
-            (eyes, eye_box, rim)
+            let shut = match e.get("shut") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(s)) if s == "l" => Some(0),
+                Some(serde_json::Value::String(s)) if s == "r" => Some(1),
+                Some(_) => return Err("eye \"shut\" must be \"l\" or \"r\"".to_owned()),
+            };
+            (eyes, eye_box, rim, shut)
         }
-        e => (colour(e, "eye")?, None, None),
+        e => (colour(e, "eye")?, None, None, None),
     };
     let decals = parse_layers(v.get("l"), &base, "")?;
+    // an eye whose oval sits under the main part's over-layers is hidden
+    let hidden = {
+        let (eye, x) = eye_box.as_ref().map_or((&base.eyes, base.eye_x), |(b, x)| (b, *x));
+        let y = -eye.shift_y.sin();
+        let over: Vec<&Vec<V2>> = decals.iter().filter(|d| d.over).flat_map(|d| &d.loops).collect();
+        let covered = |p: V2| over.iter().any(|l| inside(l, p));
+        [-1.0, 1.0].map(|side| {
+            let c = [x + side * eye.gap / 2.0, y];
+            let (w, h) = (eye.width / 2.0, eye.height / 2.0);
+            !over.is_empty()
+                && [c, [c[0] - w, c[1]], [c[0] + w, c[1]], [c[0], c[1] - h], [c[0], c[1] + h]]
+                    .iter()
+                    .all(|&p| covered(p))
+        })
+    };
     let (parts, layout, overlap) = match parts_spec {
         Some((parts, layout)) => {
             let polys: Vec<Vec<V2>> = std::iter::once(&base)
@@ -1532,6 +1614,8 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                 decals,
                 eye_box,
                 rim,
+                shut,
+                hidden,
                 parts,
                 layout,
                 overlap,
@@ -3101,15 +3185,24 @@ mod tests {
         let Ok(dir) = std::env::var("MARK_PARTS_DIR") else {
             return;
         };
+        part_sheets(
+            &dir,
+            "#2A2A2E",
+            &[
+                ("blob", "sphere"),
+                ("luffy", rich_body(LUFFY).unwrap()),
+                ("chopper", rich_body(CHOPPER).unwrap()),
+                ("gear 5", rich_body(GEAR5).unwrap()),
+            ],
+        );
+    }
+
+    /// `rest.svg` (rest at 64/80/96pt) and `turn.svg` (yaw -40/0/40/72,
+    /// pitch 40) for `rows` on a `bg` background.
+    fn part_sheets(dir: &str, bg: &str, rows: &[(&str, &'static str)]) {
         let tab = shared_tables();
-        let rows: Vec<(&str, &'static str)> = vec![
-            ("blob", "sphere"),
-            ("luffy", rich_body(LUFFY).unwrap()),
-            ("chopper", rich_body(CHOPPER).unwrap()),
-            ("gear 5", rich_body(GEAR5).unwrap()),
-        ];
         let head = |w: f64, h: f64| {
-            format!("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'><rect width='100%' height='100%' fill='#2A2A2E'/>")
+            format!("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'><rect width='100%' height='100%' fill='{bg}'/>")
         };
         let ink = "#1884FC";
         let mut svg = head(110.0 + 3.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
@@ -3158,4 +3251,253 @@ mod tests {
         }
         std::fs::write(format!("{dir}/turn.svg"), svg + "</svg>").unwrap();
     }
+
+    const LUFFY3: &str = r##"{"o":"M24 62 L17 58 L24 52 C26 38 38 32 50 32 C62 32 74 38 76 52 L83 58 L76 62 C74 80 62 92 50 93 C38 92 26 80 24 62 Z","c":"#F6D3B0","l":[["M27 48 L32 57 L37 50 L43 58 L50 50 L57 58 L63 50 L68 57 L73 48 Z","#151515"],["M18 58 L24 54 L24 61 Z","#E8B98F"],["M82 58 L76 54 L76 61 Z","#E8B98F"],["M58 74.5 L66 74 L66 75.6 L58 76.1 Z","#B5543E"],["M60 72.8 L60.9 72.8 L60.9 77.6 L60 77.6 Z","#B5543E"],["M63.2 72.6 L64.1 72.6 L64.1 77.4 L63.2 77.4 Z","#B5543E"]],"e":{"c":"#111111","at":[50,68],"gap":20,"s":0.85,"rim":"#FFFFFF","rw":0.6},"p":[{"o":"M20 66 L10 58 L18 54 L8 46 L18 42 L12 34 L24 32 C32 24 68 24 76 32 L88 34 L82 42 L92 46 L82 54 L90 58 L80 66 L72 64 C64 58 36 58 28 64 Z","c":"#151515","z":-0.1HAIRD},{"o":"M2 40 C2 33 16 30 28 30 C28 15 38 6 50 6 C62 6 72 15 72 30 C84 30 98 33 98 40 C98 47 76 50 50 50 C24 50 2 47 2 40 Z","c":"#F2C062","z":0.1HATD,"l":[["M28 22 C40 19 60 19 72 22 L72 30 L28 30 Z","#D7322E"],["M4 43 C20 47 80 47 96 43 C90 48 74 50 50 50 C26 50 10 48 4 43 Z","#D9A441"],["M36 12 C42 9 48 8 52 9 C46 11 42 14 38 18 Z","#F8D98A",0.8]]}]}"##;
+
+    fn luffy3(hair: Option<f64>, hat: Option<f64>) -> String {
+        let d = |v: Option<f64>| v.map_or(String::new(), |v| format!(",\"d\":{v}"));
+        LUFFY3.replace("HAIRD", &d(hair)).replace("HATD", &d(hat))
+    }
+
+    /// The visible area of part `part` in a rich tree (grid-sampled, screen
+    /// units²), split left/right of the main part's centre: the part's
+    /// outline minus every part drawn over it.
+    fn visible_part(tree: &MarkTree, part: &str, shell: &str) -> (f64, f64) {
+        let mut ps = Vec::new();
+        all_paths(tree, &mut ps);
+        // the drawn outlines in paint order: the main body and the parts
+        let shapes: Vec<(Option<&str>, Vec<V2>)> = ps
+            .iter()
+            .filter(|p| {
+                p.attr("data-layer").is_none()
+                    && p.attr("data-eye").is_none()
+                    && p.attr("data-rim").is_none()
+                    && (p.attr("data-part").is_some() || p.attr("fill") == Some(shell))
+            })
+            .map(|p| (p.attr("data-part"), loops(p.attr("d").unwrap_or("")).remove(0)))
+            .collect();
+        let Some(at) = shapes.iter().position(|(id, _)| *id == Some(part)) else {
+            return (0.0, 0.0);
+        };
+        let main = &shapes.iter().find(|(id, _)| id.is_none()).unwrap().1;
+        let cx = centroid(main)[0];
+        let target = &shapes[at].1;
+        let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for p in target {
+            x0 = x0.min(p[0]);
+            x1 = x1.max(p[0]);
+            y0 = y0.min(p[1]);
+            y1 = y1.max(p[1]);
+        }
+        let main_at = shapes.iter().position(|(id, _)| id.is_none()).unwrap();
+        let above: Vec<&Vec<V2>> = shapes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > at || (*i == main_at && main_at > at))
+            .map(|(_, s)| &s.1)
+            .collect();
+        const G: usize = 120;
+        let cell = (x1 - x0) * (y1 - y0) / (G * G) as f64;
+        let (mut left, mut right) = (0.0, 0.0);
+        for i in 0..G {
+            for j in 0..G {
+                let p = [x0 + (x1 - x0) * (i as f64 + 0.5) / G as f64, y0 + (y1 - y0) * (j as f64 + 0.5) / G as f64];
+                if inside(target, p) && !above.iter().any(|s| inside(s, p)) {
+                    if p[0] < cx {
+                        left += cell;
+                    } else {
+                        right += cell;
+                    }
+                }
+            }
+        }
+        (left, right)
+    }
+
+    /// Hair a recipe makes about as deep as the head (`d` 1.1) shows beside
+    /// the head at the tilted rest pose about as much as it does from the
+    /// front, at every avatar size; the same hair as a thin plate (no `d`)
+    /// is mostly swallowed by the head's side.
+    #[test]
+    fn deep_hair_shows_at_rest() {
+        let tab = shared_tables();
+        for (extent, display) in [(80.47, 52.48), (100.59, 65.6), (120.71, 78.72)] {
+            let area = |hair: Option<f64>, rest: bool| {
+                let name = rich_body(&luffy3(hair, None)).unwrap();
+                let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
+                if !rest {
+                    mark.u = [0.0, 0.0, 0.0];
+                }
+                visible_part(&render_ink(&mark, extent, display, "#1884FC"), "1", "#F6D3B0")
+            };
+            let (front, thin, deep) = (area(Some(1.1), false), area(None, true), area(Some(1.1), true));
+            let sum = |a: (f64, f64)| a.0 + a.1;
+            println!(
+                "at {display}: hair visible front {:.0}, rest thin {:.0} {thin:.0?}, rest deep {:.0} {deep:.0?}",
+                sum(front),
+                sum(thin),
+                sum(deep)
+            );
+            assert!(deep.0 > 0.0 && deep.1 > 0.0, "hair on both sides at rest");
+            assert!(sum(deep) >= 0.8 * sum(front));
+            assert!(sum(deep) >= 1.4 * sum(thin));
+        }
+    }
+
+    /// Writes the round-6 sheets as SVG into `MARK_DEPTH_DIR` (light
+    /// background: the hair is black).
+    #[test]
+    fn render_depth_sheets() {
+        let Ok(dir) = std::env::var("MARK_DEPTH_DIR") else {
+            return;
+        };
+        let thin = luffy3(None, None);
+        let deep = luffy3(Some(1.1), None);
+        part_sheets(
+            &dir,
+            "#D8D8DE",
+            &[
+                ("blob", "sphere"),
+                ("luffy (no d)", rich_body(&thin).unwrap()),
+                ("luffy hair d1.1", rich_body(&deep).unwrap()),
+                ("chopper", rich_body(CHOPPER).unwrap()),
+            ],
+        );
+    }
+
+    // -- shut eyes and over-layers (round 7) -----------------------------------
+
+    /// Zoro: a skin head with ears, a green crop (d 1.1, z -0.1), the
+    /// viewer's right eye shut with a scar running through it (an over
+    /// layer), three gold earrings on the viewer's left ear.
+    const ZORO: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M19.5 60.5 C19.5 59.3 21.3 59.3 21.3 60.5 C21.3 61.7 19.5 61.7 19.5 60.5 Z","#E0B23A"],["M19.2 63.5 C19.2 62.3 21 62.3 21 63.5 C21 64.7 19.2 64.7 19.2 63.5 Z","#E0B23A"],["M19.6 66.5 C19.6 65.3 21.4 65.3 21.4 66.5 C21.4 67.7 19.6 67.7 19.6 66.5 Z","#E0B23A"],["M58.6 51 L60.4 51 L60.9 74 L59.1 74 Z","#9C4A3A",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85,"shut":"r"},"p":[{"o":"M22 57 L18 45 L24 41 L22 31 L32 31 L34 23 L44 27 L50 19 L56 27 L66 23 L68 31 L78 31 L76 41 L82 45 L78 57 C74 45 64 41 50 41 C36 41 26 45 22 57 Z","c":"#3C8D3C","z":-0.1,"d":1.1}]}"##;
+    /// Sanji: a skin head, blond hair (d 1.1, z -0.1), a blond fringe over
+    /// the viewer's right eye (over), a curly eyebrow above the left eye and
+    /// a small goatee.
+    const SANJI: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M33.5 52.5 C34 47.5 41 46 45.5 49 C48 51 47 55.5 43.5 55.8 C41 56 39.8 53.8 41.8 52.6 C43 52 44.4 52.8 44 54 L45.2 54.3 C45.8 52.2 44 50.6 41.6 51.2 C38.6 52 38.9 56.9 43.4 57.1 C48 57.3 50 52 46.5 48.3 C42 44 35 45.5 33.5 52.5 Z","#C9A23A"],["M47 85.5 L53 85.5 L51.2 90.5 L48.8 90.5 Z","#E0BE4A"],["M44 33 C59 32 74 39 78 53 C80 66 75 77 66 81 C63 74 59 72 53 70 C50 62 48 50 44 33 Z","#F2D15C",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85},"p":[{"o":"M21 60 C16 42 30 26 50 26 C70 26 84 42 79 60 C75 46 64 40 50 40 C36 40 25 46 21 60 Z","c":"#F2D15C","z":-0.1,"d":1.1}]}"##;
+
+    /// The two eyes' loops of a rich tree, viewer's left first.
+    fn eye_loops(tree: &MarkTree) -> Vec<Vec<V2>> {
+        let mut ps = Vec::new();
+        all_paths(tree, &mut ps);
+        let mut eyes: Vec<Vec<V2>> = ps
+            .iter()
+            .filter(|p| p.attr("data-eye").is_some())
+            .flat_map(|p| loops(p.attr("d").unwrap_or("")))
+            .collect();
+        eyes.sort_by(|a, b| centroid(a)[0].total_cmp(&centroid(b)[0]));
+        eyes
+    }
+
+    fn height(l: &[V2]) -> f64 {
+        let (lo, hi) = l.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+        hi - lo
+    }
+
+    /// The shut eye is closed in every frame (rest, gaze sweep, every
+    /// state clip, pokes); the open eye still opens and blinks.
+    #[test]
+    fn shut_eye_stays_shut() {
+        let tab = shared_tables();
+        let name = rich_body(ZORO).unwrap();
+        let open = eye_loops(&render_ink(&Mark::new(&tab, Some(name), 1.0, false, false, 1), 120.71, 78.72, "#1884FC"));
+        assert_eq!(open.len(), 2);
+        let (left_open, right_shut) = (height(&open[0]), height(&open[1]));
+        println!("rest: open eye {left_open:.1}, shut eye {right_shut:.1}");
+        assert!(right_shut < 0.3 * left_open);
+        let rest_area = signed_area(&open[0]).abs();
+        let mut frames = 0;
+        let mut worst = 0.0f64;
+        for (label, tree, _, _) in rich_run(name, 120.71, 78.72) {
+            let eyes = eye_loops(&tree);
+            if eyes.len() == 2 {
+                frames += 1;
+                // the viewer's right eye is the closed lid in every frame,
+                // whatever the expression widens the eyes to: a fraction of
+                // the open eye, or no bigger than it while it blinks too
+                let (open, shut) = (signed_area(&eyes[0]).abs(), signed_area(&eyes[1]).abs());
+                let ratio = shut / open;
+                if open > 0.5 * rest_area {
+                    worst = worst.max(ratio);
+                    assert!(ratio < 0.4, "{label}: shut eye {shut:.0} vs open {open:.0}");
+                } else {
+                    assert!(shut <= open * 1.25 + 1.0, "{label}: shut eye {shut:.0} vs blinking {open:.0}");
+                }
+            }
+        }
+        println!("shut eye at most {worst:.2} of the open eye's area over {frames} frames");
+        assert!(frames > 1000);
+        let blink = blink_mark(name);
+        let eyes = eye_loops(&render_ink(&blink, 120.71, 78.72, "#1884FC"));
+        let open_now = eyes.iter().map(|e| height(e)).fold(0.0, f64::max);
+        println!("blink: open eye {open_now:.1}");
+        assert!(open_now < 0.4 * left_open);
+    }
+
+    /// An over-layer draws above the eyes, and an eye under it stays
+    /// covered through the gaze sweep, blinks and every state clip: an eye
+    /// the layer covers in the design is not drawn at all.
+    #[test]
+    fn over_layer_hides_the_eye() {
+        let name = rich_body(SANJI).unwrap();
+        let mut covered = 0;
+        for (label, tree, _, morph) in rich_run(name, 120.71, 78.72) {
+            let mut ps = Vec::new();
+            all_paths(&tree, &mut ps);
+            let Some(at) = ps.iter().position(|p| p.attr("data-layer") == Some("2")) else {
+                continue;
+            };
+            let last_eye = ps.iter().rposition(|p| p.attr("data-eye").is_some());
+            assert!(last_eye.is_none_or(|e| e < at), "{label}: the fringe draws under the eyes");
+            let eyes = eye_loops(&tree);
+            if morph {
+                continue;
+            }
+            // the viewer's right eye sits under the fringe: never drawn
+            assert!(eyes.len() <= 1, "{label}: {} eyes", eyes.len());
+            if label.starts_with("rest") {
+                assert_eq!(eyes.len(), 1, "{label}: the open eye");
+            }
+            covered += 1;
+        }
+        println!("eye covered in {covered} frames");
+        assert!(covered > 1000);
+    }
+
+    #[test]
+    fn shut_and_over_parse() {
+        let head = r##""o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#141414""##;
+        assert!(rich_body(&format!(r##"{{{head},"e":{{"c":"#FFFFFF","shut":"x"}}}}"##)).is_err());
+        assert!(rich_body(&format!(r##"{{{head},"e":"#FFFFFF","l":[["M30 50 L60 50 L60 60 Z","#FFFFFF",1,"under"]]}}"##)).is_err());
+        let a = rich(rich_body(&format!(r##"{{{head},"e":"#FFFFFF","l":[["M30 50 L60 50 L60 60 Z","#FFFFFF","over"]]}}"##)).unwrap()).unwrap();
+        let b = rich(rich_body(&format!(r##"{{{head},"e":"#FFFFFF","l":[{{"path":"M30 50 L60 50 L60 60 Z","fill":"#FFFFFF","over":true}}]}}"##)).unwrap()).unwrap();
+        assert!(a.decals[0].over && b.decals[0].over);
+        assert_eq!(a.decals[0].loops, b.decals[0].loops);
+        let c = rich(rich_body(&format!(r##"{{{head},"e":{{"c":"#FFFFFF","shut":"l"}}}}"##)).unwrap()).unwrap();
+        assert_eq!(c.shut, Some(0));
+    }
+
+    /// Writes the round-7 sheets as SVG into `MARK_SHUT_DIR`, plus a blink.
+    #[test]
+    fn render_shut_sheets() {
+        let Ok(dir) = std::env::var("MARK_SHUT_DIR") else {
+            return;
+        };
+        part_sheets(
+            &dir,
+            "#D8D8DE",
+            &[("blob", "sphere"), ("zoro", rich_body(ZORO).unwrap()), ("sanji", rich_body(SANJI).unwrap())],
+        );
+        let mut svg = String::from("<svg xmlns='http://www.w3.org/2000/svg' width='330' height='170'><rect width='100%' height='100%' fill='#D8D8DE'/>");
+        for (c, recipe) in [ZORO, SANJI].iter().enumerate() {
+            let mark = blink_mark(rich_body(recipe).unwrap());
+            let mut t = render_ink(&mark, 144.0, 96.0, "#1884FC");
+            t.attrs.retain(|(k, _)| *k != "id");
+            let mut x = String::new();
+            xml(&t, &mut x);
+            svg += &format!("<g transform='translate({} 10)'>{}</g>", 10.0 + c as f64 * 160.0, x.replace("m-", &format!("b{c}-")));
+        }
+        std::fs::write(format!("{dir}/blink.svg"), svg + "</svg>").unwrap();
+    }
+
 }

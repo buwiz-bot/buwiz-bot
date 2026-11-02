@@ -1700,6 +1700,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
                     .collect(),
                 fill: decal.fill.clone(),
                 opacity: decal.opacity,
+                over: decal.over,
             })
             .filter(|r| !r.loops.is_empty())
             .collect(),
@@ -1716,6 +1717,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
                 .collect(),
             fill: fill.clone(),
             opacity: 1.0,
+            over: false,
         }],
         _ => vec![],
     };
@@ -1757,6 +1759,8 @@ struct DecalRec {
     loops: Vec<Vec<V2>>,
     fill: String,
     opacity: f64,
+    /// Drawn over the eyes and rims (an `"over"` layer).
+    over: bool,
 }
 
 /// `bc`'s shape record.
@@ -3051,7 +3055,8 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
     let mut l = vec![r2("path", &[("d", a.clone()), ("fill", i.clone())])];
     if e.rich.is_some() || !e.decals.is_empty() {
         // a rich body: the decals and filled eyes, clipped to the body
-        let mut inside = decal_paths(&e.decals, shade, ga_loops);
+        let (over, under): (Vec<DecalRec>, Vec<DecalRec>) = e.decals.iter().cloned().partition(|r| r.over);
+        let mut inside = decal_paths(&under, shade, ga_loops);
         for rim in e.rims.iter().filter(|r| r.opacity > 0.001) {
             let mut attrs = vec![
                 ("d", ga_loops(&rim.loops)),
@@ -3070,6 +3075,7 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
             };
             inside.push(r2("path", &[("d", c.clone()), ("fill", fill), ("data-eye", sv("1"))]));
         }
+        inside.extend(decal_paths(&over, shade, ga_loops));
         u.push(re(
             "clipPath",
             &[("id", format!("{}-clip", n))],
@@ -3337,6 +3343,7 @@ fn part_draws(rich: &custom::Rich, rot: &Rot, s: f64, map: &dyn Fn(V2) -> V2) ->
                             .collect(),
                         fill: d.fill.clone(),
                         opacity: d.opacity,
+                        over: d.over,
                     })
                     .filter(|r| !r.loops.is_empty())
                     .collect(),
@@ -3407,10 +3414,12 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
                 loops: bodies::decal_loops(body, &rot, s, &decal.loops, &decal.off),
                 fill: decal.fill.clone(),
                 opacity: decal.opacity,
+                over: decal.over,
             })
             .filter(|r| !r.loops.is_empty())
             .collect();
-        inside = decal_paths(&decals, shade, bodies::gc);
+        let (over, under): (Vec<DecalRec>, Vec<DecalRec>) = decals.into_iter().partition(|r| r.over);
+        inside = decal_paths(&under, shade, bodies::gc);
         if let Some((rim, _)) = &rich.rim {
             for r in &sh.rims {
                 inside.push(r2("path", &[("d", r.clone()), ("fill", shaded(rim, shade)), ("data-rim", sv("1"))]));
@@ -3422,6 +3431,7 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
                 &[("d", eye.clone()), ("fill", shaded(&rich.eyes, shade)), ("data-eye", sv("1"))],
             ));
         }
+        inside.extend(decal_paths(&over, shade, bodies::gc));
     }
     let clip = format!("{}-clip", id);
     let body_paths = |fill: Option<String>| -> Vec<MarkTree> {

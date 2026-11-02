@@ -2682,7 +2682,36 @@ pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye
             let info = cs(body);
             match info {
                 Some(info) => {
-                    let loops = cv(body, r);
+                    // a rich body's shut eye: always the closed lid of the
+                    // resting eye, wherever gaze moves the open one (an
+                    // expression that widens the eyes doesn't fatten it)
+                    let shut = custom::rich(body).and_then(|rich| rich.shut);
+                    let shut_eyes;
+                    let r = match shut {
+                        Some(i) => {
+                            let mut e = r.clone();
+                            let mut rest = super::Face::new().eyes()[i].clone();
+                            rest.off = e[i].off;
+                            e[i] = super::cl(&rest, 1.0);
+                            shut_eyes = e;
+                            &shut_eyes
+                        }
+                        None => r,
+                    };
+                    let mut loops = cv(body, r);
+                    // a rich body's eyes under an over-layer are not drawn
+                    if let Some(hidden) = custom::rich(body).map(|rich| rich.hidden)
+                        && hidden.iter().any(|h| *h)
+                    {
+                        let mid = loops.loops.iter().flatten().map(|p| p[0]).sum::<f64>()
+                            / loops.loops.iter().map(|l| l.len()).sum::<usize>().max(1) as f64;
+                        for l in &mut loops.loops {
+                            let x = l.iter().map(|p| p[0]).sum::<f64>() / l.len().max(1) as f64;
+                            if hidden[if x < mid { 0 } else { 1 }] {
+                                l.clear();
+                            }
+                        }
+                    }
                     // a rich body's rims: each eye loop grown outward,
                     // seated and projected exactly like the eye
                     if let Some((_, d)) = custom::rich(body).and_then(|r| r.rim.clone()) {
