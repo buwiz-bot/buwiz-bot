@@ -1,6 +1,9 @@
 //! `fixImports`: drop imports nsh can't resolve (react and friends) and add
-//! the nsh names a module uses without importing them. The patterns are
-//! Node's; `\s` and `\b` read ASCII here, as JavaScript's `\b` does (its
+//! the nsh names a module uses without importing them, from where nsh 0.3
+//! serves them (`nsh` and `nsh/base`; it removed `nsh/canvas`, `nsh/image`,
+//! `nsh/list`, `nsh/ui/mobile` and the other alias modules). A name counts
+//! as used where it is an identifier in the code, not a word in a string or
+//! a comment. The import patterns are Node's; `\s` reads ASCII here (its
 //! `\s` also takes Unicode spaces, which no generated import uses).
 
 use std::sync::OnceLock;
@@ -10,23 +13,14 @@ use regex_lite::{Captures, Regex};
 use crate::js;
 
 /// Names the model may use without importing them, from "nsh".
-const CORE_NAMES: [&str; 13] = ["batch", "cleanup", "computed", "context", "effect", "Input", "mount", "Scroll", "signal", "split", "Text", "untracked", "View"];
-
-/// Names from nsh's other modules, in Node's key order.
-const MODULE_NAMES: [(&str, &str); 12] = [
-    ("Canvas", "nsh/canvas"),
-    ("Image", "nsh/image"),
-    ("List", "nsh/list"),
-    ("Video", "nsh/video"),
-    ("WebView", "nsh/webview"),
-    ("Button", "nsh/ui/mobile"),
-    ("Card", "nsh/ui/mobile"),
-    ("Keyboard", "nsh/ui/mobile"),
-    ("KeyboardAvoidingView", "nsh/ui/mobile"),
-    ("SafeAreaView", "nsh/ui/mobile"),
-    ("StatusBar", "nsh/ui/mobile"),
-    ("TextField", "nsh/ui/mobile"),
+const CORE_NAMES: [&str; 18] = [
+    "batch", "Canvas", "cleanup", "computed", "context", "effect", "Image", "Keyboard", "List", "mount", "Scroll", "signal", "split", "Text", "untracked", "Video", "View", "WebView",
 ];
+
+/// Names from nsh's other modules. (`Card`, `TextField`, `StatusBar`,
+/// `SafeAreaView` and `KeyboardAvoidingView` have no home in nsh 0.3: an
+/// import of them would fail the check anyway, so none is added.)
+const MODULE_NAMES: [(&str, &str); 2] = [("Button", "nsh/base"), ("Input", "nsh/base")];
 
 fn re(slot: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     slot.get_or_init(|| Regex::new(pattern).expect("a valid pattern"))
@@ -53,7 +47,8 @@ pub fn fix_imports(code: &str) -> String {
             imported.insert(trim(first).to_owned());
         }
     }
-    let missing = |n: &str| Regex::new(&format!(r"\b{n}\b")).expect("a name").is_match(&code) && !imported.contains(n);
+    let used = identifiers(&code);
+    let missing = |n: &str| used.contains(n) && !imported.contains(n);
     let core: Vec<&str> = CORE_NAMES.into_iter().filter(|n| missing(n)).collect();
     let mut by_mod: Vec<(&str, Vec<&str>)> = Vec::new();
     for (n, module) in MODULE_NAMES {
@@ -84,6 +79,81 @@ pub fn fix_imports(code: &str) -> String {
     code
 }
 
+/// The identifiers of `code`, outside comments and string literals. A
+/// template literal's text is skipped and its `${…}` read as code. A quote
+/// that doesn't close on its own line is no string (an apostrophe in JSX
+/// text: `<Text>Don't</Text>`), and a name after a lone `.` is a property,
+/// not a use. Regex literals are not told apart from division.
+fn identifiers(code: &str) -> std::collections::HashSet<&str> {
+    let b = code.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80;
+    let mut out = std::collections::HashSet::new();
+    // the brace depth of each open `${` (a `}` at it resumes the template)
+    let mut templates: Vec<usize> = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0;
+    // in a template's text, from i: to its end, or into a `${`
+    let template_text = |mut i: usize, templates: &mut Vec<usize>, depth: usize| -> usize {
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 2,
+                b'`' => return i + 1,
+                b'$' if b.get(i + 1) == Some(&b'{') => {
+                    templates.push(depth);
+                    return i + 2;
+                }
+                _ => i += 1,
+            }
+        }
+        i
+    };
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b'/' if b.get(i + 1) == Some(&b'/') => i = code[i..].find('\n').map_or(b.len(), |n| i + n),
+            b'/' if b.get(i + 1) == Some(&b'*') => i = code[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2),
+            b'\'' | b'"' => {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != c && b[j] != b'\n' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                i = if j < b.len() && b[j] == c { j + 1 } else { i + 1 };
+            }
+            b'`' => i = template_text(i + 1, &mut templates, depth),
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                if templates.last() == Some(&depth) {
+                    templates.pop();
+                    i = template_text(i + 1, &mut templates, depth);
+                } else {
+                    depth = depth.saturating_sub(1);
+                    i += 1;
+                }
+            }
+            _ if ident(c) && !c.is_ascii_digit() => {
+                let start = i;
+                while i < b.len() && ident(b[i]) {
+                    i += 1;
+                }
+                let member = start > 0 && b[start - 1] == b'.' && !(start > 2 && &b[start - 3..start] == b"...");
+                if !member {
+                    out.insert(&code[start..i]);
+                }
+            }
+            _ if ident(c) => {
+                while i < b.len() && ident(b[i]) {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,12 +173,25 @@ mod tests {
                 "import { View as V } from \"nsh\";\nconst a = signal(1); effect(() => a());\nexport default () => <V><Text>x</Text></V>;\n",
                 "import { View as V, effect, signal, Text } from \"nsh\";\nconst a = signal(1); effect(() => a());\nexport default () => <V><Text>x</Text></V>;\n",
             ),
+            // nsh 0.3's homes: Image and List from "nsh", Button from
+            // nsh/base, Card nowhere
             (
                 "import { View } from \"nsh\";\nexport default () => <View><Button /><Card /><List /><Image src=\"a\" /></View>;\n",
-                "import { Image } from \"nsh/image\";\nimport { List } from \"nsh/list\";\nimport { Button, Card } from \"nsh/ui/mobile\";\nimport { View } from \"nsh\";\nexport default () => <View><Button /><Card /><List /><Image src=\"a\" /></View>;\n",
+                "import { Button } from \"nsh/base\";\nimport { View, Image, List } from \"nsh\";\nexport default () => <View><Button /><Card /><List /><Image src=\"a\" /></View>;\n",
+            ),
+            (
+                "export default () => <Canvas draw={() => {}} />;\nconst f = <Input value=\"\" />;\n",
+                "import { Input } from \"nsh/base\";\nimport { Canvas } from \"nsh\";\nexport default () => <Canvas draw={() => {}} />;\nconst f = <Input value=\"\" />;\n",
             ),
             ("export default () => \"TextView mounted\";\n", "export default () => \"TextView mounted\";\n"),
-            ("export default () => \"a View here\";\n", "import { View } from \"nsh\";\nexport default () => \"a View here\";\n"),
+            // a word in a string or a comment is no use of the name
+            ("export default () => \"a View here\";\n", "export default () => \"a View here\";\n"),
+            ("// a List of Image cards, an Input\n/* View */ export default () => 'Button';\n", "// a List of Image cards, an Input\n/* View */ export default () => 'Button';\n"),
+            ("const s = `an Image of ${n} Canvas`;\n", "const s = `an Image of ${n} Canvas`;\n"),
+            // a template's ${…} is code; a property is no use
+            ("const s = `x ${signal(1)} ${{ a: 1 }.a}`; o.View;\n", "import { signal } from \"nsh\";\nconst s = `x ${signal(1)} ${{ a: 1 }.a}`; o.View;\n"),
+            // an apostrophe in JSX text opens no string
+            ("export default () => [<b>Don't</b>, <Text>x</Text>];\n", "import { Text } from \"nsh\";\nexport default () => [<b>Don't</b>, <Text>x</Text>];\n"),
         ];
         for (input, want) in cases {
             assert_eq!(fix_imports(input), want, "{input}");

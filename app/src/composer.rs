@@ -12,7 +12,6 @@ use nsh_core::prelude::*;
 use crate::icons::{self, icon};
 use crate::live::store;
 use crate::statusfx;
-use crate::store::AtItem;
 use crate::theme;
 
 fn right_w() -> Signal<f32> {
@@ -33,21 +32,8 @@ fn plus_hover() -> Signal<String> {
 fn attach_hover() -> Signal<String> {
     store().attach_hover
 }
-fn at_items() -> Signal<Vec<AtItem>> {
-    store().at_items
-}
 fn at_start() -> Signal<i64> {
     store().at_start
-}
-fn at_seq() -> Signal<u64> {
-    store().at_seq
-}
-
-fn json_s(v: &serde_json::Value, k: &str) -> String {
-    v.get(k)
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }
 
 /// `composerTall` — several lines, a long line, or a reply / attachments
@@ -589,14 +575,13 @@ fn right_controls() -> impl IntoElement {
 }
 
 /// `draftChanged` — the draft's signal, then the popup: `/name` lists
-/// commands; `@<query>` the servers with `@` scopes and the
-/// artifacts/files (App.tsx:463), `@server:…` that server's scopes and
-/// values (slash.rs).
+/// commands; `@<query>` the mini-app servers with `@` scopes,
+/// `@server:…` that server's scopes and values (slash.rs). Generated
+/// apps and files are not `@` rows: they open from the command palette.
 pub(crate) fn draft_changed(t: &str) {
     let st = store();
     st.draft.set(t.to_owned());
     if crate::slash::slash_menu(t) {
-        at_items().set(Vec::new());
         at_start().set(-1);
         return;
     }
@@ -615,72 +600,15 @@ pub(crate) fn draft_changed(t: &str) {
         return;
     }
     at_start().set(i as i64);
-    let n = at_seq().get_untracked() + 1;
-    at_seq().set(n);
     if crate::slash::token_menu(tail) {
-        at_items().set(Vec::new());
         return;
     }
     crate::slash::server_menu(tail);
-    let thread = st.active_id.get_untracked();
-    let q = tail.to_owned();
-    spawn(async move {
-        let v = crate::client::get(&format!(
-            "/artifacts?thread={}&q={}",
-            crate::client::urlenc(&thread),
-            crate::client::urlenc(&q)
-        ))
-        .await;
-        if at_seq().get_untracked() != n {
-            return;
-        }
-        let items: Vec<AtItem> = v
-            .and_then(|v| {
-                v.get("items").and_then(|x| x.as_array()).map(|l| {
-                    l.iter()
-                        .map(|x| AtItem {
-                            kind: json_s(x, "kind"),
-                            name: json_s(x, "name"),
-                            title: json_s(x, "title"),
-                            file: json_s(x, "file"),
-                            v: x.get("v").and_then(|n| n.as_i64()).unwrap_or(0),
-                            uri: json_s(x, "uri"),
-                            scope: json_s(x, "scope"),
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-        at_items().set(items);
-    });
-}
-
-/// `atPick` — the @ tail becomes the item's title and its uri stages as
-/// an attachment the server resolves (App.tsx:476).
-pub(crate) fn at_pick(it: &AtItem) {
-    let st = store();
-    let t = st.draft.get_untracked();
-    let i = at_start().get_untracked().max(0) as usize;
-    let name = if it.title.is_empty() {
-        it.name.clone()
-    } else {
-        it.title.clone()
-    };
-    st.draft.set(format!("{}{} ", &t[..i.min(t.len())], name));
-    crate::slash::close();
-    st.attachments.update(|a| {
-        a.push(crate::store::Attach {
-            kind: "file".to_owned(),
-            name: name.clone(),
-            url: it.uri.clone(),
-            ..Default::default()
-        })
-    });
 }
 
 /// The `/` and `@` popup — commands, servers, scopes, values or a
-/// resolve's choices, then this thread's artifacts first, then global
-/// (App.tsx:2250); five rows show, the rest scroll in with the selection.
+/// resolve's choices (App.tsx:2250); five rows show, the rest scroll in
+/// with the selection.
 fn pop_picker() -> impl IntoElement {
     dynamic(|| {
         let rows = crate::slash::rows();
@@ -722,28 +650,23 @@ fn pop_picker() -> impl IntoElement {
 /// A popup row; `n` its number among the rows shown (⌘n picks it).
 fn pop_row(r: crate::slash::PopRow, selected: bool, n: usize) -> impl IntoElement {
     use crate::slash::Pick;
-    let tile = match &r.pick {
-        Pick::Artifact(it) if it.kind == "app" => crate::appdetails::app_icon(&it.name, 20.0).into_element(),
-        p => view()
-            .size(px(20.0))
-            .rounded(px(5.0))
-            .items_center()
-            .justify_center()
-            .bg(tc(0.10))
-            .child(
-                text(match p {
-                    Pick::Artifact(_) => "doc",
-                    Pick::Builtin(_) | Pick::Command(..) => "/",
-                    Pick::App(..) => "</>",
-                    Pick::Choice(..) | Pick::Value(..) => "›",
-                    _ => "@",
-                })
-                .text_size(px(10.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tc(0.54)),
-            )
-            .into_element(),
-    };
+    let tile = view()
+        .size(px(20.0))
+        .rounded(px(5.0))
+        .items_center()
+        .justify_center()
+        .bg(tc(0.10))
+        .child(
+            text(match &r.pick {
+                Pick::Builtin(_) | Pick::Command(..) => "/",
+                Pick::Choice(..) | Pick::Value(..) => "›",
+                _ => "@",
+            })
+            .text_size(px(10.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(tc(0.54)),
+        )
+        .into_element();
     let r2 = r.clone();
     view()
         .flex_row()

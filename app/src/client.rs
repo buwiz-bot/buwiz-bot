@@ -1,7 +1,7 @@
 //! HTTP against the Grok app server (`server/app-server.mjs`, default
 //! `127.0.0.1:8787`): the same endpoints the TSX app calls — `/chat`,
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
-//! `/state/:app`, `/artifacts`, `/mcp/servers`, `/skills`.
+//! `/state/:app`, `/mcp/servers`, `/skills`.
 //!
 //! The address comes from `BUWIZ_BACKEND`, read once, so a test Rox can talk
 //! to a test broker on another port. The broker's host-internal routes

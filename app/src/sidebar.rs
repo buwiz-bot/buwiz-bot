@@ -1945,7 +1945,9 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .text_size(px(12.0))
                         .text_color(theme::MUTED)
                         .number_of_lines(1),
-                ),
+                )
+                // a pop-out this row (or the palette) asked for that failed
+                .child(crate::widgets::popout_err_text(a.get_untracked().app, 4)),
         );
     let src = Src::group(&gid2);
     draggable(row, src, key, move || {

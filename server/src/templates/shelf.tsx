@@ -1,6 +1,6 @@
-import { cleanup, effect, Input, signal, Text, View } from "nsh";
+import { cleanup, effect, keymap, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { isAvailable, Menu } from "nsh/desktop";
-import { keymap } from "nsh/keymap";
 
 const GEN = "http://127.0.0.1:8787";
 const get = (p: string) =>
@@ -81,12 +81,11 @@ function TitleBox(props: {
             if (t - lastTap < 380) props.begin();
             lastTap = t;
           }}
-          activeOpacity={0.7}
+          activeStyle={{ opacity: 0.7 }}
           accessibilityLabel="double-click to rename"
         >
           <Text
-            style={{ color: "#f5f5f5", fontSize: 12.5, fontWeight: "600" }}
-            numberOfLines={1}
+            style={{ color: "#f5f5f5", fontSize: 12.5, fontWeight: "600", numberOfLines: 1 }}
           >
             {props.item.title}
           </Text>
@@ -100,13 +99,13 @@ function TitleBox(props: {
         returnKeyType="done"
         autoFocus
         onFocus={() => (open = true)}
-        onChangeText={(t) => (latest = t)}
+        onChange={(e) => (latest = e.value)}
         onBlur={() => {
           open = false;
           if (!cancelled) commit(latest);
           cancelled = false;
         }}
-        onSubmitEditing={(e) => commit(e.text)}
+        onSubmit={(e) => commit(e.text)}
         style={{
           fontSize: 12.5,
           fontWeight: "600",
@@ -160,7 +159,7 @@ function TagBox(props: {
       else={
         <View
           onPress={props.begin}
-          activeOpacity={0.7}
+          activeStyle={{ opacity: 0.7 }}
           style={{
             borderRadius: 999,
             paddingHorizontal: 7,
@@ -176,18 +175,18 @@ function TagBox(props: {
         ref={input}
         defaultValue=""
         placeholder="+tag"
-        placeholderTextColor="#f5f5f566"
         returnKeyType="done"
         autoFocus
-        onChangeText={(t) => (latest = t)}
+        onChange={(e) => (latest = e.value)}
         onFocus={() => (open = true)}
         onBlur={() => {
           open = false;
           if (!cancelled) commit(latest);
           cancelled = false;
         }}
-        onSubmitEditing={(e) => commit(e.text)}
+        onSubmit={(e) => commit(e.text)}
         style={{
+          placeholderColor: "#f5f5f566",
           width: 56,
           fontSize: 10,
           color: "#f5f5f5",
@@ -275,7 +274,7 @@ export function WidgetShelf() {
   const act = (g: string, onTap: () => void, on: boolean) => (
     <View
       onPress={onTap}
-      activeOpacity={0.7}
+      activeStyle={{ opacity: 0.7 }}
       style={{
         borderRadius: 7,
         paddingHorizontal: 8,
@@ -290,7 +289,7 @@ export function WidgetShelf() {
   const chip = (label: string, on: boolean, onTap: () => void, color = "#5e6ad2") => (
     <View
       onPress={onTap}
-      activeOpacity={0.7}
+      activeStyle={{ opacity: 0.7 }}
       style={{
         borderRadius: 999,
         paddingHorizontal: 10,
@@ -377,7 +376,7 @@ export function WidgetShelf() {
                   tags: w().tags.filter((x) => x !== t()),
                 }).then(load);
               }}
-              activeOpacity={0.7}
+              activeStyle={{ opacity: 0.7 }}
               style={{
                 borderRadius: 999,
                 paddingHorizontal: 7,
@@ -404,7 +403,7 @@ export function WidgetShelf() {
               setTimeout(() => sent.set(""), 1500);
             });
           }}
-          activeOpacity={0.7}
+          activeStyle={{ opacity: 0.7 }}
           style={{
             borderRadius: 8,
             paddingHorizontal: 9,
@@ -428,10 +427,10 @@ export function WidgetShelf() {
         </Text>
         <Input
           value={q()}
-          onChangeText={(t) => q.set(t)}
+          onChange={(e) => q.set(e.value)}
           placeholder="filter…"
-          placeholderTextColor="#f5f5f566"
           style={{
+            placeholderColor: "#f5f5f566",
             width: 140,
             fontSize: 11,
             color: "#f5f5f5",

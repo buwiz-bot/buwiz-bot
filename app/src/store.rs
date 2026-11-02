@@ -1730,19 +1730,6 @@ pub struct ModelsOpen {
     pub h: f32,
 }
 
-/// One `/artifacts` row for the @-mention picker
-/// (`{kind, name, title, file, v, uri, scope}`).
-#[derive(Clone, PartialEq)]
-pub struct AtItem {
-    pub kind: String,
-    pub name: String,
-    pub title: String,
-    pub file: String,
-    pub v: i64,
-    pub uri: String,
-    pub scope: String,
-}
-
 /// "Nm", "Nh", "Nh Nm" — how long a run status has shown.
 fn elapsed_label(mins: u64) -> String {
     match (mins / 60, mins % 60) {
@@ -1851,6 +1838,33 @@ fn popout_body(app: &str) -> serde_json::Value {
         }
     }
     body
+}
+
+/// `/popout`'s answer (`None`: the broker wasn't reached): `Ok(already
+/// open)`, or the text the row or card that asked shows.
+fn popout_reply(d: Option<&serde_json::Value>) -> Result<bool, String> {
+    let Some(d) = d else {
+        return Err("The window could not open: server unreachable".to_owned());
+    };
+    if b(d, "ok") {
+        return Ok(b(d, "already"));
+    }
+    match s(d, "error").trim() {
+        "" => Err("The window could not open.".to_owned()),
+        e => Err(format!("The window could not open: {e}")),
+    }
+}
+
+thread_local! {
+    /// Each module key's last pop-out failure (`Store::popout_err`).
+    static POPOUT_ERRS: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// `Store::group_item`: a v1 app's add is Rox's pin alone; its remove
+/// goes on to the server too, which may hold a `group_items` row for it.
+fn v1_add_stays_local(kind: &str, id: &str, add: bool) -> bool {
+    add && kind == "app" && crate::mini_v1::is_v1(id)
 }
 
 fn s(v: &serde_json::Value, k: &str) -> String {
@@ -2061,18 +2075,14 @@ pub struct Store {
     pub plus_hover: Signal<String>,
     /// `attachHover` — hovered tile's uri, or "__dictate" / "__voice".
     pub attach_hover: Signal<String>,
-    /// `atItems` — the @-mention picker's rows; empty closes it.
-    pub at_items: Signal<Vec<AtItem>>,
     /// `atStart` — the draft offset the active @-query began at (-1 = none).
     pub at_start: Signal<i64>,
-    /// `atSeq` — stale `/artifacts` answers are dropped by generation.
-    pub at_seq: Signal<u64>,
     pub at_open: Signal<bool>,
     /// The commands, `@` scopes and apps MCP servers announce
     /// (`GET /mcp/manifest`, slash.rs).
     pub mcp_manifest: Signal<Vec<crate::slash::Manifest>>,
     /// The composer popup's own rows (commands, servers, scopes, values,
-    /// a resolve's choices; the artifacts ride `at_items`), its header and
+    /// a resolve's choices), its header and
     /// the selected row.
     pub pop_rows: Signal<Vec<crate::slash::PopRow>>,
     pub pop_head: Signal<String>,
@@ -2549,9 +2559,7 @@ impl Store {
             plus_menu: signal(None),
             plus_hover: signal(String::new()),
             attach_hover: signal(String::new()),
-            at_items: signal(Vec::new()),
             at_start: signal(-1),
-            at_seq: signal(0),
             mcp_manifest: signal(Vec::new()),
             pop_rows: signal(Vec::new()),
             pop_head: signal(String::new()),
@@ -3654,7 +3662,6 @@ impl Store {
         self.reply_to.set(None);
         self.attachments.set(Vec::new());
         self.draft.set(String::new());
-        self.at_items.set(Vec::new());
         self.at_open.set(false);
         self.at_start.set(-1);
         self.pop_rows.set(Vec::new());
@@ -6597,8 +6604,12 @@ impl Store {
             };
             match crate::mini::compile_widget(&name, &src) {
                 Ok(js) => {
+                    // each fetch is a new open, as v1's: Retry after a run
+                    // error reloads the card even when the code is the same
+                    static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let n = FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     self.mini_err(&name).set(String::new());
-                    sig.set(js);
+                    sig.set(format!("{js}\n// open {n}\n"));
                 }
                 Err(e) => {
                     log::warn!("mini {name}: compile failed: {e}");
@@ -6683,7 +6694,42 @@ impl Store {
     /// `app` carries the version as `name@v<k>` (Grok's `Art.app` key);
     /// the route wants them split — `name` bare, `v` a number.
     pub fn popout(&'static self, app: &str) {
-        client::post_bg("/popout".to_owned(), popout_body(app));
+        self.post_popout(app, popout_body(app), false);
+    }
+
+    /// Posts `/popout` for `app`. A failure's text lands in
+    /// `popout_err(app)`, which the sidebar and Library rows, the details
+    /// pane and the card show (the palette closes first: its app's sidebar
+    /// row shows it); `note` puts a success on the card's status line. Detached, as
+    /// `client::post_bg` is: a context menu that asked closes right after.
+    fn post_popout(&'static self, app: &str, body: serde_json::Value, note: bool) {
+        let app = app.to_owned();
+        self.popout_err(&app).set(String::new());
+        Owner::detached().run(|| {
+            spawn(async move {
+                let d = client::post_any("/popout", body).await;
+                match popout_reply(d.as_ref()) {
+                    Ok(already) if note => {
+                        self.card_note(&app, if already { "window already open" } else { "↗ window opened" })
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::warn!("popout {app}: {e}");
+                        self.popout_err(&app).set(e);
+                    }
+                }
+            })
+        });
+    }
+
+    /// The last pop-out failure of module key `app` (`""` = none).
+    pub fn popout_err(&'static self, app: &str) -> Signal<String> {
+        if let Some(s) = POPOUT_ERRS.with(|m| m.borrow().get(app).copied()) {
+            return s;
+        }
+        let sig = self.owner.run(|| signal(String::new()));
+        POPOUT_ERRS.with(|m| m.borrow_mut().insert(app.to_owned(), sig));
+        sig
     }
 
     /// `popout()` (shell.tsx:760) at a size: the window opens at `w × h` —
@@ -6698,19 +6744,7 @@ impl Store {
         if h > 0.0 {
             body["h"] = serde_json::json!(h.ceil());
         }
-        let app = app.to_owned();
-        Owner::detached().run(|| {
-            spawn(async move {
-                let d = client::post("/popout", body).await;
-                let ok = d.as_ref().is_some_and(|d| b(d, "ok"));
-                let note = match (ok, d.as_ref().is_some_and(|d| b(d, "already"))) {
-                    (false, _) => "popout failed",
-                    (true, true) => "window already open",
-                    (true, false) => "↗ window opened",
-                };
-                self.card_note(&app, note);
-            })
-        });
+        self.post_popout(app, body, true);
     }
 
     /// The size card `i` (module `app`) lays its app out at: the declared
@@ -6950,8 +6984,11 @@ impl Store {
     pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
         // a v1 app's pin is Rox's too: {plugin, app, ticket?, placement}
         if kind == "app" && crate::mini_v1::is_v1(id) {
+            self.v1_pinned(id, thread, add);
+        }
+        if v1_add_stays_local(kind, id, add) {
             // the app server's groups take v0 apps only: Rox keeps it
-            return self.v1_pinned(id, thread, add);
+            return;
         }
         let mut body = serde_json::json!({
             "id": gid, "kind": kind, "ref": id, "op": if add { "add" } else { "remove" },
@@ -7813,6 +7850,33 @@ fn conn_names(v1: &[(String, String)], inst: &[PluginRow], standalone: &[McpServ
 mod tests {
     use super::{link_pass, link_token, mini_link};
     use crate::links::{app_key_parts, app_opens_unasked, AppOpener};
+
+    #[test]
+    fn a_popout_failure_carries_the_brokers_error_text() {
+        use super::popout_reply;
+        use serde_json::json;
+        assert_eq!(popout_reply(Some(&json!({"ok": true, "pid": 7}))), Ok(false));
+        assert_eq!(popout_reply(Some(&json!({"ok": true, "already": true}))), Ok(true));
+        assert_eq!(
+            popout_reply(Some(&json!({"ok": false, "error": "build failed: nsh has no module `nsh/device`\n"}))),
+            Err("The window could not open: build failed: nsh has no module `nsh/device`".to_owned())
+        );
+        assert_eq!(popout_reply(Some(&json!({"ok": false}))), Err("The window could not open.".to_owned()));
+        assert_eq!(
+            popout_reply(None),
+            Err("The window could not open: server unreachable".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_v1_apps_group_remove_reaches_the_server() {
+        use super::v1_add_stays_local;
+        let v1 = "v1:app.buwiz.ebirforms/forms";
+        assert!(v1_add_stays_local("app", v1, true), "an add is Rox's pin only");
+        assert!(!v1_add_stays_local("app", v1, false), "a remove posts /group/item");
+        assert!(!v1_add_stays_local("app", "mcp:apps/hello", true));
+        assert!(!v1_add_stays_local("artifact", "R18", false));
+    }
 
     #[test]
     fn connected_counts_v1_plugins_first_then_catalog_then_servers() {

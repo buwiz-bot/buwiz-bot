@@ -5,9 +5,9 @@
 //! tokens complete as they're typed; a message of tokens alone opens them,
 //! one with other text goes to the model with its tokens in it.
 //!
-//! The composer's popup (`/` commands, `@` servers, scopes and values, a
-//! resolve's choices, and the artifacts the old @ picker listed) is one
-//! list: ↑ ↓ move, Enter or Tab picks, ⌘1…⌘9 pick a shown row, Escape
+//! The composer's popup (`/` commands, `@` servers, scopes and values, and
+//! a resolve's choices) is one list. `@` lists mini-app data only: generated
+//! apps and files open from the command palette, not from here. The list: ↑ ↓ move, Enter or Tab picks, ⌘1…⌘9 pick a shown row, Escape
 //! closes (keys.rs). The rows remember the text they were computed for:
 //! when the answer lags the typing (plugin commands resolve over the
 //! broker), Enter sends what's typed rather than an older query's row.
@@ -21,7 +21,6 @@ use nsh_core::prelude::*;
 
 use crate::client;
 use crate::live::store;
-use crate::store::AtItem;
 
 /// The popup shows this many rows; the rest scroll in with the selection.
 pub(crate) const VISIBLE: usize = 5;
@@ -86,15 +85,11 @@ pub enum Pick {
     Server(String),
     /// `@<server>:<scope>:` — its values next.
     Scope(String, String),
-    /// A server's mini app, opened: (server, app, title).
-    App(String, String, String),
     /// A completed token, `@<server>:<scope>:<value>`.
     Value(String, String, String),
     /// One of a resolve's choices: (server, name, the args with it, whether
     /// a slash command asked — its draft then follows the args).
     Choice(String, String, String, bool),
-    /// An artifact or file (`/artifacts`).
-    Artifact(AtItem),
     /// A v1 plugin's command, in the form that reaches it (`name` or
     /// `short:name`, 3.1).
     V1Command(String),
@@ -528,41 +523,20 @@ fn show_for(query: String, rows: Vec<PopRow>, head: String) {
     });
 }
 
-/// Closes the popup (the artifact list with it).
+/// Closes the popup.
 pub(crate) fn close() {
     let st = store();
     st.complete_seq.set(st.complete_seq.get() + 1);
     batch(|| {
         st.pop_rows.set(Vec::new());
         st.pop_head.set(String::new());
-        st.at_items.set(Vec::new());
         st.at_start.set(-1);
     });
 }
 
-/// Every row the popup lists: its own, then the artifacts (tracked).
+/// Every row the popup lists (tracked).
 pub(crate) fn rows() -> Vec<PopRow> {
-    let st = store();
-    let mut rows = st.pop_rows.get();
-    rows.extend(st.at_items.get().into_iter().map(|it| {
-        let hint = if it.kind == "app" {
-            format!(
-                "{}{}{}",
-                it.name,
-                if it.v > 0 { format!(" · v{}", it.v) } else { String::new() },
-                if it.scope == "thread" { " · this chat" } else { "" },
-            )
-        } else {
-            it.file.clone()
-        };
-        PopRow {
-            label: if it.title.is_empty() { it.name.clone() } else { it.title.clone() },
-            hint,
-            detail: String::new(),
-            pick: Pick::Artifact(it),
-        }
-    }));
-    rows
+    store().pop_rows.get()
 }
 
 /// `/<q>` being typed (no space yet): the commands starting with it, the
@@ -620,28 +594,33 @@ pub(crate) fn slash_menu(t: &str) -> bool {
     true
 }
 
-/// `@<q>` (no `:` yet): the servers with scopes or apps that match.
+/// `@<q>` (no `:` yet): the servers with `@` scopes that match.
 pub(crate) fn server_menu(q: &str) {
     refresh();
+    let plugins = store().v1.entries.get_untracked();
+    let rows = store().mcp_manifest.with_untracked(|ms| server_rows(q, ms, &plugins));
+    show(rows, String::new());
+}
+
+/// The `@<q>` rows: the MCP servers and enabled v1 plugins with `@`
+/// scopes whose name starts with `q` or whose title has it, a v1 plugin
+/// replacing an MCP server of its short. A server announcing only apps
+/// is no row: its apps are not data.
+fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::PluginEntry]) -> Vec<PopRow> {
     let q = q.to_lowercase();
-    let mut rows: Vec<PopRow> = store().mcp_manifest.with_untracked(|ms| {
-        ms.iter()
-            .filter(|m| !m.scopes.is_empty() || !m.apps.is_empty())
-            .filter(|m| m.id.starts_with(&q) || m.title.to_lowercase().contains(&q))
-            .map(|m| PopRow {
-                pick: Pick::Server(m.id.clone()),
-                label: format!("@{}", m.id),
-                hint: m.title.clone(),
-                detail: if m.scopes.is_empty() {
-                    format!("{} apps", m.apps.len())
-                } else {
-                    m.scopes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
-                },
-            })
-            .collect()
-    });
+    let mut rows: Vec<PopRow> = ms
+        .iter()
+        .filter(|m| !m.scopes.is_empty())
+        .filter(|m| m.id.starts_with(&q) || m.title.to_lowercase().contains(&q))
+        .map(|m| PopRow {
+            pick: Pick::Server(m.id.clone()),
+            label: format!("@{}", m.id),
+            hint: m.title.clone(),
+            detail: m.scopes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+        })
+        .collect();
     // v1 plugins with scopes, by their short
-    for p in store().v1.entries.get_untracked().into_iter().filter(|p| p.enabled && !p.scopes.is_empty()) {
+    for p in plugins.iter().filter(|p| p.enabled && !p.scopes.is_empty()) {
         if p.short.starts_with(&q) || p.title.to_lowercase().contains(&q) {
             rows.retain(|r| r.pick != Pick::Server(p.short.clone()));
             rows.push(PopRow {
@@ -652,7 +631,7 @@ pub(crate) fn server_menu(q: &str) {
             });
         }
     }
-    show(rows, String::new());
+    rows
 }
 
 /// `@<server>:…` being typed: that server's scopes (its apps when it has
@@ -666,22 +645,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
             Some((scope, value)) => {
                 store().v1_complete(server, scope, value);
             }
-            None => {
-                let q = rest.to_lowercase();
-                let rows = p
-                    .scopes
-                    .iter()
-                    .map(|sc| (js(sc, "name"), js(sc, "description")))
-                    .filter(|(n, _)| n.starts_with(&q))
-                    .map(|(n, d)| PopRow {
-                        pick: Pick::Scope(p.short.clone(), n.clone()),
-                        label: format!("@{}:{n}", p.short),
-                        hint: String::new(),
-                        detail: d,
-                    })
-                    .collect();
-                show(rows, String::new());
-            }
+            None => show(v1_scope_rows(&p, rest), String::new()),
         }
         return true;
     }
@@ -691,30 +655,20 @@ pub(crate) fn token_menu(tail: &str) -> bool {
         return true;
     };
     let Some((scope, value)) = rest.split_once(':') else {
+        // `@` is mini-app data only: a server's scopes, never its apps
+        // (those open from the command palette)
         let q = rest.to_lowercase();
-        let rows = if m.scopes.is_empty() {
-            m.apps
-                .iter()
-                .filter(|a| a.name.to_lowercase().starts_with(&q) || a.title.to_lowercase().contains(&q))
-                .map(|a| PopRow {
-                    pick: Pick::App(m.id.clone(), a.name.clone(), a.title.clone()),
-                    label: if a.title.is_empty() { a.name.clone() } else { a.title.clone() },
-                    hint: "Mini app".to_owned(),
-                    detail: a.description.clone(),
-                })
-                .collect()
-        } else {
-            m.scopes
-                .iter()
-                .filter(|s| s.name.to_lowercase().starts_with(&q))
-                .map(|s| PopRow {
-                    pick: Pick::Scope(m.id.clone(), s.name.clone()),
-                    label: format!("@{}:{}", m.id, s.name),
-                    hint: String::new(),
-                    detail: s.description.clone(),
-                })
-                .collect()
-        };
+        let rows = m
+            .scopes
+            .iter()
+            .filter(|s| s.name.to_lowercase().starts_with(&q))
+            .map(|s| PopRow {
+                pick: Pick::Scope(m.id.clone(), s.name.clone()),
+                label: format!("@{}:{}", m.id, s.name),
+                hint: String::new(),
+                detail: s.description.clone(),
+            })
+            .collect();
         show(rows, String::new());
         return true;
     };
@@ -733,6 +687,22 @@ pub(crate) fn token_menu(tail: &str) -> bool {
         })
     });
     true
+}
+
+/// `@<short>:<q>` rows: the v1 plugin's scopes starting with `q`.
+fn v1_scope_rows(p: &crate::mini_v1::load::PluginEntry, q: &str) -> Vec<PopRow> {
+    let q = q.to_lowercase();
+    p.scopes
+        .iter()
+        .map(|sc| (js(sc, "name"), js(sc, "description")))
+        .filter(|(n, _)| n.starts_with(&q))
+        .map(|(n, d)| PopRow {
+            pick: Pick::Scope(p.short.clone(), n.clone()),
+            label: format!("@{}:{n}", p.short),
+            hint: String::new(),
+            detail: d,
+        })
+        .collect()
 }
 
 /// A new completion ask's number: an older one's answer is dropped.
@@ -853,11 +823,6 @@ pub(crate) fn pick(row: &PopRow) {
             st.draft.set(next.clone());
             value_picked(server.clone(), scope.clone(), value.clone(), next);
         }
-        Pick::App(server, app, title) => {
-            st.draft.set(before_tail());
-            close();
-            st.open_mini_full(&format!("mcp:{server}/{app}"), title);
-        }
         Pick::Choice(server, name, args, slash) => {
             let sent = slash.then(|| format!("/{name} {args}"));
             if let Some(s) = &sent {
@@ -866,7 +831,6 @@ pub(crate) fn pick(row: &PopRow) {
             close();
             resolve(server.clone(), name.clone(), args.clone(), sent);
         }
-        Pick::Artifact(it) => crate::composer::at_pick(it),
         Pick::V1Command(form) => command(form.as_str()),
         Pick::V1Choice(plugin, kind, name, value) => st.v1_pick(plugin.clone(), kind, name.clone(), value.clone(), row.label.clone()),
     }
@@ -950,7 +914,99 @@ pub(crate) fn tab() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Enter, Pick, PopRow, on_enter, parse_token};
+    use super::{Entry, Enter, Manifest, Pick, PopRow, on_enter, parse_token, server_rows, v1_scope_rows, value_rows};
+    use crate::mini_v1::load::PluginEntry;
+    use serde_json::json;
+
+    fn entry(name: &str) -> Entry {
+        Entry { name: name.to_owned(), ..Default::default() }
+    }
+
+    fn manifest(id: &str, scopes: &[&str], apps: &[&str]) -> Manifest {
+        Manifest {
+            id: id.to_owned(),
+            title: id.to_uppercase(),
+            scopes: scopes.iter().map(|n| entry(n)).collect(),
+            apps: apps.iter().map(|n| entry(n)).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn plugin(short: &str, title: &str, enabled: bool, scopes: &[&str]) -> PluginEntry {
+        PluginEntry {
+            id: format!("app.buwiz.{short}"),
+            short: short.to_owned(),
+            title: title.to_owned(),
+            enabled,
+            scopes: scopes.iter().map(|n| json!({ "name": n, "description": format!("{n} rows") })).collect(),
+            apps: vec![json!({ "id": "main" })],
+            ..Default::default()
+        }
+    }
+
+    /// The `@` popup's picks are data only: servers, scopes, values and
+    /// choices, never a generated app or file.
+    fn data_only(rows: &[PopRow]) -> bool {
+        rows.iter().all(|r| matches!(r.pick, Pick::Server(_) | Pick::Scope(..) | Pick::Value(..) | Pick::Choice(..) | Pick::V1Choice(..)))
+    }
+
+    #[test]
+    fn at_alone_lists_the_mini_app_servers_with_scopes_only() {
+        let ms = [manifest("bir", &["taxpayer"], &[]), manifest("gallery", &[], &["hello", "todo"])];
+        let ps = [
+            plugin("ebirforms", "eBIR Forms", true, &["taxprofile", "branchcode", "taxform"]),
+            plugin("books", "Books", true, &["person", "account", "period"]),
+            plugin("off", "Disabled", false, &["thing"]),
+            plugin("viewer", "Viewer", true, &[]),
+        ];
+        let rows = server_rows("", &ms, &ps);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        // an apps-only server, a disabled plugin and one without scopes are no rows
+        assert_eq!(labels, ["@bir", "@ebirforms", "@books"]);
+        assert!(rows.iter().all(|r| matches!(r.pick, Pick::Server(_))));
+        assert_eq!(rows[1].detail, "taxprofile, branchcode, taxform");
+        assert_eq!(rows[2].detail, "person, account, period");
+    }
+
+    #[test]
+    fn at_query_filters_servers_and_a_v1_plugin_replaces_its_mcp_namesake() {
+        let ms = [manifest("books", &["legacy"], &[]), manifest("gallery", &[], &["books"])];
+        let ps = [plugin("books", "Books", true, &["person"]), plugin("ebirforms", "eBIR Forms", true, &["taxprofile"])];
+        let rows = server_rows("bo", &ms, &ps);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].pick == Pick::Server("books".to_owned()));
+        assert_eq!(rows[0].detail, "person");
+        // a title match counts too
+        let rows = server_rows("bir", &ms, &ps);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@ebirforms"]);
+        assert!(server_rows("zzz", &ms, &ps).is_empty());
+    }
+
+    #[test]
+    fn at_server_colon_lists_its_scopes_and_scope_colon_its_values() {
+        let p = plugin("ebirforms", "eBIR Forms", true, &["taxprofile", "branchcode", "taxform"]);
+        let rows = v1_scope_rows(&p, "");
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), [
+            "@ebirforms:taxprofile",
+            "@ebirforms:branchcode",
+            "@ebirforms:taxform"
+        ]);
+        assert!(rows[0].pick == Pick::Scope("ebirforms".to_owned(), "taxprofile".to_owned()));
+        assert_eq!(v1_scope_rows(&p, "TAX").len(), 2);
+        assert!(data_only(&rows));
+        let found = vec![
+            ("123456789/".to_owned(), "Acme Corp".to_owned(), "TIN 123-456-789".to_owned()),
+            ("987654321/".to_owned(), "987654321/".to_owned(), String::new()),
+        ];
+        let rows = value_rows("ebirforms", "taxprofile", found);
+        assert!(rows[0].pick == Pick::Value("ebirforms".to_owned(), "taxprofile".to_owned(), "123456789/".to_owned()));
+        assert_eq!((rows[0].label.as_str(), rows[0].hint.as_str()), ("Acme Corp", "123456789/"));
+        // a label that is the value has no hint
+        assert_eq!(rows[1].hint, "");
+        assert!(data_only(&rows));
+        let ms = [manifest("bir", &["taxpayer"], &[])];
+        assert!(data_only(&server_rows("", &ms, &[p])));
+    }
 
     #[test]
     fn tokens_parse_in_the_app_servers_grammar() {

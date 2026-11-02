@@ -8,15 +8,19 @@ use serde_json::Value;
 use super::{Answer, Leaf};
 use crate::js;
 
-/// The name in the URL: `?name=` first, else the path after `/state/`,
-/// decoded. `Err` where Node's decodeURIComponent throws.
+/// The name in the URL: the path after `/state/`, decoded, else `?name=`.
+/// The path wins: an inline widget is granted only its own
+/// `/state/<name>` path (the app's `widget_policy`), and a query must not
+/// re-aim that grant at another key. `Err` where Node's
+/// decodeURIComponent throws.
 fn state_name(url: &str) -> Result<String, ()> {
-    if let Some(name) = js::search_param(url, "name").filter(|n| !n.is_empty()) {
-        return Ok(name);
-    }
     let path = js::pathname(url);
     let rest = path.strip_prefix("/state").map(|r| r.strip_prefix('/').unwrap_or(r)).unwrap_or(&path);
-    js::decode_uri_component(rest)
+    let from_path = js::decode_uri_component(rest)?;
+    if !from_path.is_empty() {
+        return Ok(from_path);
+    }
+    Ok(js::search_param(url, "name").unwrap_or_default())
 }
 
 /// `/^[\w.-]+$/`
@@ -83,10 +87,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_name_comes_from_the_query_then_the_path() {
+    fn the_name_comes_from_the_path_then_the_query() {
         assert_eq!(state_name("/state/rox-zoom"), Ok("rox-zoom".to_owned()));
         assert_eq!(state_name("/state?name=a&x=1"), Ok("a".to_owned()));
+        assert_eq!(state_name("/state/?name=a"), Ok("a".to_owned()));
         assert_eq!(state_name("/state/b?name="), Ok("b".to_owned()));
+        // a widget granted only /state/R28 cannot re-aim it with a query
+        assert_eq!(state_name("/state/R28?name=rox-zoom"), Ok("R28".to_owned()));
         assert_eq!(state_name("/state"), Ok(String::new()));
         assert_eq!(state_name("/statefoo"), Ok("foo".to_owned()));
         assert_eq!(state_name("/state/leaf%2Dd"), Ok("leaf-d".to_owned()));

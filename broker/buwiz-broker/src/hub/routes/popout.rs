@@ -1,8 +1,10 @@
 //! Pop-out windows (plan 6.3; `POST /popout` in routes/apps.mjs and
 //! windows.mjs): a module, or a pinned version of it, in a window of its
 //! own. The route writes a mount wrapper (`windows/pop-<name>[-<v>].tsx`),
-//! builds it once with `nsh build -o` (the bundle is cached by the
-//! wrapper's sha1) and starts `nsh-macos-host` on the bundle, detached.
+//! builds it once with `nsh build -o` (the bundle is cached by a key over
+//! the wrapper, the module it mounts and the nsh binaries; [`build_key`])
+//! and starts `nsh-macos-host` on the bundle, detached, its output in the
+//! build dir's `host.log`.
 //! One window per key (`R1`, `R1@v2`): a second press raises the open one,
 //! a newer head replaces it. `/app/version` reopens an open window on the
 //! new head and the `close_app` tool ends an app's windows, both through
@@ -22,7 +24,7 @@ use std::time::Duration;
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
-use sha1::{Digest, Sha1};
+use sha2::{Digest, Sha256};
 
 use super::chat::{answer, parse};
 use crate::hub::ctx::HubCtx;
@@ -188,6 +190,55 @@ fn nsh_bins() -> (String, String) {
     (nsh, host)
 }
 
+/// What the pop-out's bundle cache is keyed on: a format tag, the nsh and
+/// host binaries' identities, the wrapper's text and the bytes of the
+/// module it mounts (the head or the pinned version file). A bundle built
+/// against another nsh, or an older module, is never reused. 16 hex digits
+/// of a SHA-256.
+fn build_key(wrapper: &str, module: &[u8], nsh: &str, host: &str) -> String {
+    let mut h = Sha256::new();
+    for part in [b"pop-v2".as_slice(), nsh.as_bytes(), host.as_bytes(), wrapper.as_bytes(), module] {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part);
+    }
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// A binary's identity for [`build_key`]: its resolved path and the
+/// SHA-256 of its bytes, hashed once per path, size and mtime; `missing:`
+/// and the name when it can't be found or read.
+fn bin_identity(bin: &str) -> String {
+    static SEEN: OnceLock<Mutex<HashMap<(std::path::PathBuf, u64, Option<std::time::SystemTime>), String>>> = OnceLock::new();
+    let path = if bin.contains('/') {
+        Some(std::path::PathBuf::from(bin))
+    } else {
+        std::env::var("PATH").ok().and_then(|p| p.split(':').map(|d| Path::new(d).join(bin)).find(|p| p.is_file()))
+    };
+    let Some(path) = path else { return format!("missing:{bin}") };
+    let Ok(meta) = std::fs::metadata(&path) else { return format!("missing:{bin}") };
+    let at = (path.clone(), meta.len(), meta.modified().ok());
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(id) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(&at) {
+        return id.clone();
+    }
+    let Ok(bytes) = std::fs::read(&path) else { return format!("missing:{bin}") };
+    let id = format!("{}:{}", path.display(), Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    seen.lock().unwrap_or_else(|e| e.into_inner()).insert(at, id.clone());
+    id
+}
+
+/// The host's stdout and stderr: `log`, opened to append, else /dev/null.
+fn host_log(log: &Path) -> (Stdio, Stdio) {
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(log);
+    match file.and_then(|f| Ok((f.try_clone()?, f))) {
+        Ok((out, err)) => (Stdio::from(out), Stdio::from(err)),
+        Err(e) => {
+            eprintln!("  /popout: {}: {e}", log.display());
+            (Stdio::null(), Stdio::null())
+        }
+    }
+}
+
 /// `execFileSync(bin, args, {encoding: "utf8"})`: stdout, or `None` where
 /// Node threw (no binary, a non-zero exit).
 async fn exec(bin: &str, args: &[&str]) -> Option<String> {
@@ -326,11 +377,15 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let ver_path = pop_v.and_then(|v| ver_file(&dirs, &name, &tpl(v)));
     let widget_file = dirs.widgets.join(format!("{name}.tsx"));
     let gen_file = dirs.gen.join(format!("{name}.tsx"));
+    // the head is generated/<name>.tsx, as `/module` reads it; the
+    // published copy only stands in for it when the widgets table has the
+    // row (a widgets file without one is an orphan, maybe long stale)
+    let published = || ctx.db.with(|c| c.query_row("SELECT 1 FROM widgets WHERE name=?", [&name], |_| Ok(())).optional()).ok().flatten().is_some();
     let file = match (&ver_path, pop_v) {
         (Some(p), _) if p.exists() => Some(p.clone()),
         (_, Some(_)) => None,
-        _ if widget_file.exists() => Some(widget_file.clone()),
         _ if gen_file.exists() => Some(gen_file.clone()),
+        _ if widget_file.exists() && published() => Some(widget_file.clone()),
         _ => None,
     };
     let Some(file) = file else { return reply(&json!({"ok": false, "error": "no such module"})) };
@@ -345,7 +400,8 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     // the window hugs content height up to three quarters of the screen
     let cap_h = max(560.0, (desktop_bounds().await.1 * 0.75).floor());
     // the module's declared size, so the window opens at it
-    let src = std::fs::read(&file).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let src_bytes = std::fs::read(&file).unwrap_or_default();
+    let src = String::from_utf8_lossy(&src_bytes).into_owned();
     static SIZE: OnceLock<regex_lite::Regex> = OnceLock::new();
     static WIDTH: OnceLock<regex_lite::Regex> = OnceLock::new();
     let size_m = SIZE
@@ -403,12 +459,12 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     );
     let wrapper_file = win_dir.join(format!("pop-{name}{}.tsx", suffix("-")));
     let _ = std::fs::write(&wrapper_file, &wrapper);
-    // compile the wrapper once (cached by content), then a bare host on
-    // the bundle
-    let build_key: String = Sha1::digest(wrapper.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>()[..10].to_owned();
-    let build_dir = win_dir.join(format!(".pop-{name}{}-{build_key}", suffix("-")));
-    let bundle = build_dir.join("bundle.nshc");
+    // compile the wrapper once per key (the wrapper, the module it mounts,
+    // both binaries), then a bare host on the bundle
     let (nsh, host) = nsh_bins();
+    let key = build_key(&wrapper, &src_bytes, &bin_identity(&nsh), &bin_identity(&host));
+    let build_dir = win_dir.join(format!(".pop-{name}{}-{key}", suffix("-")));
+    let bundle = build_dir.join("bundle.nshc");
     if !bundle.exists() {
         let _ = std::fs::create_dir_all(&build_dir);
         let b = tokio::process::Command::new(&nsh).arg("build").arg(&wrapper_file).arg("-o").arg(&build_dir).stdin(Stdio::null()).output().await;
@@ -417,29 +473,37 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             Err(_) => true,
         };
         if failed {
-            let text = b.map(|o| {
-                let err = String::from_utf8_lossy(&o.stderr).into_owned();
-                if err.is_empty() {
-                    String::from_utf8_lossy(&o.stdout).into_owned()
-                } else {
-                    err
+            // all of it, in broker.log and in the answer: the last line of
+            // a TypeScript or module error rarely names the cause
+            let text = match b {
+                Ok(o) => {
+                    let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                    let text = [out.trim(), err.trim()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n");
+                    if text.is_empty() {
+                        format!("nsh build exited with {} and no bundle", o.status)
+                    } else {
+                        text
+                    }
                 }
-            });
-            let text = text.unwrap_or_default();
-            let last = text.trim().rsplit('\n').next().unwrap_or("").to_owned();
-            return reply(&json!({"ok": false, "error": format!("build failed: {last}")}));
+                Err(e) => format!("spawn {nsh}: {e}"),
+            };
+            eprintln!("  /popout {name}: build of {} failed:\n{text}", wrapper_file.display());
+            return reply(&json!({"ok": false, "error": format!("build failed: {text}")}));
         }
     }
     let shown_name = if shown_v != 0.0 { format!("{app_title} · v{}", tpl(shown_v)) } else { app_title };
     let bundle_id = env_or("BUWIZ_BUNDLE_ID", "dev.goldcoders.grokshell");
     let size = format!("{}x{}", tpl(want_w), tpl(want_h + 26.0));
+    // the host's own output (a load error, an uncaught exception) lands in
+    // the build dir's host.log, appended, not in /dev/null
+    let (stdout, stderr) = host_log(&build_dir.join("host.log"));
     let spawned = tokio::process::Command::new(&host)
         .arg("--bundle")
         .arg(&bundle)
         .args(["--name", &shown_name, "--app-id", &format!("{bundle_id}.widget"), "--window-size", &size])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
         .process_group(0)
         .spawn();
     // Node's spawn emits an unhandled 'error' here and the broker dies
@@ -480,11 +544,66 @@ mod tests {
         let s = fill(WRAPPER, &vars);
         assert!(!s.contains("${"), "every placeholder is known");
         assert!(s.contains("import R, * as mod from \"<rel>\";"));
-        assert!(s.contains("    {<JSON.stringify(badge)> ? (\n"));
+        assert!(s.contains("const BADGE: string = <JSON.stringify(badge)>;\n") && s.contains("    {BADGE ? (\n"));
         // a value is never filled again
         let s = fill(WRAPPER, &[("rel", "${capH}".into())]);
         assert!(s.contains("from \"${capH}\";"));
-        assert!(s.starts_with("import { mount, Text, View } from \"nsh\";\n") && s.ends_with("));\n"));
+        assert!(s.starts_with("import { colorScheme, mount, Text, View } from \"nsh\";\nimport { isAvailable, Window } from \"nsh/desktop\";\n") && s.ends_with("));\n"));
+        // nsh 0.3's homes and shapes: no removed module, no positional
+        // setTitleBar, no flat setFrame, onLayout's bounds
+        for gone in ["nsh/device", "setTitleBar(\"", "anchorTop", "hug(e.height)", "setFrame({ width", "setFrame({ height"] {
+            assert!(!WRAPPER.contains(gone), "{gone}");
+        }
+        assert!(WRAPPER.contains("Window.setTitleBar({ style: \"hidden\", height: 32 });") && WRAPPER.contains("hug(e.bounds.size.height)"));
+    }
+
+    #[test]
+    fn popout_cache_key_covers_the_binaries_the_wrapper_and_the_module() {
+        let base = build_key("wrapper", b"module", "nsh:a", "host:a");
+        assert_eq!(base.len(), 16);
+        assert_eq!(base, build_key("wrapper", b"module", "nsh:a", "host:a"));
+        let others = [
+            build_key("wrapper", b"module", "nsh:b", "host:a"),
+            build_key("wrapper", b"module", "nsh:a", "host:b"),
+            build_key("wrapper2", b"module", "nsh:a", "host:a"),
+            build_key("wrapper", b"module2", "nsh:a", "host:a"),
+            // the parts are length-framed: moving bytes across a boundary is
+            // another key
+            build_key("wrapper", b"module", "nsh:", "ahost:a"),
+        ];
+        for k in &others {
+            assert_ne!(*k, base);
+        }
+    }
+
+    #[test]
+    fn popout_binary_identity_follows_the_bytes() {
+        let d = std::env::temp_dir().join(format!("rox-popout-id-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("nsh");
+        std::fs::write(&bin, "one").unwrap();
+        let path = bin.display().to_string();
+        let first = bin_identity(&path);
+        assert!(first.starts_with(&format!("{path}:")) && first == bin_identity(&path));
+        // a new nsh at the same path (another size here) is another identity
+        std::fs::write(&bin, "two!").unwrap();
+        assert_ne!(bin_identity(&path), first);
+        assert_eq!(bin_identity(&d.join("absent").display().to_string()), format!("missing:{}", d.join("absent").display()));
+        assert_eq!(bin_identity("no-such-nsh-binary-anywhere"), "missing:no-such-nsh-binary-anywhere");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn popout_host_output_appends_to_its_log() {
+        let d = std::env::temp_dir().join(format!("rox-popout-log-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        std::fs::create_dir_all(&d).unwrap();
+        let log = d.join("host.log");
+        std::fs::write(&log, "before\n").unwrap();
+        let (out, err) = host_log(&log);
+        let st = std::process::Command::new("/bin/sh").args(["-c", "echo out; echo err >&2"]).stdout(out).stderr(err).status().unwrap();
+        assert!(st.success());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "before\nout\nerr\n");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

@@ -7,8 +7,9 @@
 //! Apps keep their details in `apps` (`appmeta`); images and files keep the
 //! user's edits in `artifact_meta`; `library_hidden` archives any of them.
 //!
-//! Also here, for the tool loop (5.4): `image_file_of`, `image_module` (an
-//! image card's module), `mcp_app_module` (`GET /module?name=mcp:…`).
+//! Also here, for the tool loop (5.4): `image_file_of` and `mcp_app_module`
+//! (`GET /module?name=mcp:…`). An image card's module is
+//! `tools::artifact::image_module`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -1295,33 +1296,6 @@ pub async fn rename_remote(ctx: &HubCtx, id: &str, name: &str, origin: &str) -> 
 
 // ————— modules —————
 
-/// tools.mjs `imageModule(file, prompt, w, h)`: an image card's module.
-pub fn image_module(file: &str, _prompt: &str, w: Option<f64>, h: Option<f64>) -> String {
-    let ar = match (w.filter(|w| *w != 0.0 && !w.is_nan()), h.filter(|h| *h != 0.0 && !h.is_nan())) {
-        (Some(w), Some(h)) => format!(", aspectRatio: {:.4}", w / h),
-        _ => String::new(),
-    };
-    format!(
-        r#"import {{ signal, Text, View }} from "nsh";
-import {{ Image }} from "nsh/image";
-
-export default function R() {{
-  const failed = signal(false);
-  return (
-    <View class="gap-2">
-      <If when={{!failed()}}>
-        <Image src="asset:/generated/assets/{file}" resizeMode="cover" onError={{() => failed.set(true)}} style={{{{ width: "100%"{ar}, borderRadius: 12 }}}} />
-      </If>
-      <If when={{failed()}}>
-        <Text class="text-sm text-zinc-500">image failed to load</Text>
-      </If>
-    </View>
-  );
-}}
-"#
-    )
-}
-
 /// mcp.mjs `parseAppKey(key)`: `mcp:<server>/<app>[|<props JSON>]`.
 pub fn parse_app_key(key: &str) -> Option<(String, String, Map<String, Value>)> {
     let rest = key.strip_prefix("mcp:")?;
@@ -1412,6 +1386,5 @@ mod tests {
         assert_eq!(parse_app_key("mcp:apps/hello|{\"a\":1}").map(|k| (k.0, k.1, Value::Object(k.2))), Some(("apps".into(), "hello".into(), json!({"a": 1}))));
         assert!(parse_app_key("mcp:Apps/hello").is_none());
         assert!(is_drive("gdrive:x") && !is_drive("gdrive:"));
-        assert!(image_module("img-a.png", "", Some(3.0), Some(2.0)).contains(r#"style={{ width: "100%", aspectRatio: 1.5000, borderRadius: 12 }}"#));
     }
 }
