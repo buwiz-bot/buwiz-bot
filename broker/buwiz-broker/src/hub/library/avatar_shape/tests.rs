@@ -148,11 +148,23 @@ fn avatar_validate_matches_nodes() {
         {"shape": "custom", "color": "#1084FE"}, {"shape": "custom", "color": "#1084FE", "outline": MOCK_CAT},
         {"shape": "heart", "color": "#FF263C", "outline": "nonsense"}, {"shape": 5, "color": 7, "outline": 9},
         {"shape": "custom", "color": "#12345G", "outline": "M0 0 Z"},
+        // rich: layers and eyes
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#58D63A"},
+        {"shape": "heart", "color": "#FF0000", "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#FFFFFF"},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "eyes": "#58D63A"},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [], "eyes": null},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}]},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "eyes": "nope", "layers": [
+            {"path": "M10 10 L20 10 L20 20 Z", "fill": "red"}, {"path": "M10 10 L20 10 L20 20 Z", "fill": "#FF0000", "opacity": 2},
+            {"path": "M10 10 H20 V20 Z", "fill": "#FF0000"}, {"path": "M10 10 L20 10", "fill": "#FF0000", "opacity": null},
+            5, null, [], {"fill": "#FF0000"}, {"path": "  ", "fill": "#FF0000"}, {"path": "M-9 10 L20 10 L20 20 Z", "fill": "#FF0000", "opacity": 0.5},
+            {"path": "M10 10 L20 10 L20", "fill": "#FF0000"}, {"path": "M10 10 L10.5 10 L10 10.5 Z", "fill": "#ff0000"},
+        ]},
     ]);
     let theirs = node("console.log(JSON.stringify(input.map((r) => m.validateAvatar(r))));", &recipes);
     for (r, t) in recipes.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
         let s = |k: &str| r.get(k).and_then(Value::as_str);
-        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"))), *t, "{r}");
+        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"))), *t, "{r}");
     }
 }
 
@@ -183,8 +195,24 @@ fn avatar_parse_candidates_and_mocks_match_nodes() {
     let mocks = node("console.log(JSON.stringify([m.mockCandidates({}), m.mockCandidates({ image: true })]));", &json!(null));
     let ours = json!([mock_candidates(false).iter().map(Candidate::json).collect::<Vec<_>>(), mock_candidates(true).iter().map(Candidate::json).collect::<Vec<_>>()]);
     assert_eq!(ours, mocks);
-    assert_eq!(design_request("files my BIR forms", "Tax Fox", false), node("console.log(JSON.stringify(m.designRequest({ prompt: 'files my BIR forms', name: 'Tax Fox' })));", &json!(null)));
-    assert_eq!(json!(design_request("keep the ears", "", true)), node("console.log(JSON.stringify(m.designRequest({ prompt: 'keep the ears', name: '', image: true })));", &json!(null)));
+    for (prompt, name, image, rich) in [("files my BIR forms", "Tax Fox", false, false), ("keep the ears", "", true, false), ("", "", true, false), ("", "Giant", true, true), ("a green giant", "", false, true)] {
+        let theirs = node(&format!("console.log(JSON.stringify(m.designRequest({{ prompt: {}, name: {}, image: {image}, rich: {rich} }})));", json!(prompt), json!(name)), &json!(null));
+        assert_eq!(json!(design_request(prompt, name, image, rich)), theirs, "{prompt:?} {image} {rich}");
+    }
+    let rich = node("console.log(JSON.stringify([m.RICH_SYSTEM, m.MOCK_RICH, m.MOCK_RICH.map((c) => m.validateAvatar(c))]));", &json!(null));
+    assert_eq!(rich[0], json!(rich_system()));
+    assert_eq!(rich[1], json!(mock_rich()));
+    assert_eq!(rich[2], json!([[], [], []]));
+    // rich replies: layers and eyes carried (custom only), tidied
+    let rich_texts = json!([
+        json!({"candidates": mock_rich()}).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "layers": [{"path": "  M1 2\n L3 4 ", "color": "#abcdef", "opacity": 0.5}, 5, [], {"fill": "#123456", "opacity": "x"}], "eyes": " #ffeedd "}, {"shape": "blob", "layers": [], "eyes": "#FFFFFF"}, {"shape": "custom", "outline": MOCK_CAT, "layers": "x", "eyes": 5}]).to_string(),
+    ]);
+    let theirs = node("console.log(JSON.stringify(input.map((t) => m.parseCandidates(t))));", &rich_texts);
+    for (t, n) in rich_texts.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
+        let ours: Vec<Value> = parse_candidates(t.as_str().unwrap()).iter().map(Candidate::json).collect();
+        assert_eq!(json!(ours), *n, "{t}");
+    }
 }
 
 /// The design loop over scripted replies, in Rust and in Node: the same
@@ -203,16 +231,22 @@ fn avatar_design_candidates_match_nodes() {
         {"prompt": "y", "replies": [wrap(json!([cust("A", MOCK_PEBBLE), cust("B", MOCK_CAT), cust("C", MOCK_RECEIPT)])), wrap(json!([cust("A", MOCK_PEBBLE), cust("B", MOCK_CAT), cust("C", MOCK_RECEIPT)]))]},
         {"prompt": "keep the ears", "image": img, "replies": [wrap(json!([kit("A", "blob", "#1084FE"), cust("B", MOCK_PEBBLE), cust("C", MOCK_CAT)])), wrap(json!([cust("Subject", MOCK_CAT), kit("A", "blob", "#1084FE"), cust("C", MOCK_PEBBLE)]))]},
         {"prompt": "z", "image": img, "replies": ["nothing", "still nothing"]},
+        {"prompt": "", "image": img, "replies": [wrap(json!([kit("A", "blob", "#1084FE"), cust("B", MOCK_PEBBLE), cust("C", MOCK_CAT)])), wrap(json!([cust("Subject", MOCK_CAT), kit("A", "blob", "#1084FE"), cust("C", MOCK_PEBBLE)]))]},
+        // rich: no kit rule; a candidate without layers is retried, then dropped; none left is an error
+        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!(mock_rich()))]},
+        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE), mock_rich()[2]])), wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE)]))]},
+        {"prompt": "x", "rich": true, "image": img, "replies": ["nothing", wrap(json!([cust("Plain", MOCK_PEBBLE)]))]},
     ]);
     let theirs = node(
         r##"const out = [];
         for (const c of input) {
           const calls = [], picks = [];
           let n = 0;
-          const cands = await m.designCandidates({ prompt: c.prompt, name: c.name || "", image: c.image || null }, {
+          let cands;
+          try { cands = await m.designCandidates({ prompt: c.prompt, name: c.name || "", image: c.image || null, rich: !!c.rich }, {
             ask: async (msgs) => (calls.push(structuredClone(msgs)), c.replies[n++]),
             pick: async (p) => (picks.push(p), { shape: "cloud", color: "#00BCA6" }),
-          });
+          }); } catch (e) { cands = { error: e.message }; }
           out.push({ cands, calls, picks });
         }
         console.log(JSON.stringify(out));"##,
@@ -226,6 +260,7 @@ fn avatar_design_candidates_match_nodes() {
             c["prompt"].as_str().unwrap(),
             c.get("name").and_then(Value::as_str).unwrap_or(""),
             c.get("image").cloned(),
+            c.get("rich").and_then(Value::as_bool).unwrap_or(false),
             |msgs: Vec<Value>| {
                 let mut calls = calls.lock().unwrap();
                 calls.push(json!(msgs));
@@ -237,14 +272,41 @@ fn avatar_design_candidates_match_nodes() {
                 async { "cloud".to_owned() }
             },
         );
-        let cands = futures_lite_block_on(fut).unwrap();
-        let ours = json!({"cands": cands.iter().map(Candidate::json).collect::<Vec<_>>(), "calls": *calls.lock().unwrap(), "picks": *picks.lock().unwrap()});
+        let cands = match futures_lite_block_on(fut) {
+            Ok(c) => json!(c.iter().map(Candidate::json).collect::<Vec<_>>()),
+            Err(e) => json!({"error": e}),
+        };
+        let ours = json!({"cands": cands, "calls": *calls.lock().unwrap(), "picks": *picks.lock().unwrap()});
         assert_eq!(ours, *t, "{}", c["prompt"]);
     }
 }
 
 fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+}
+
+#[test]
+fn avatar_picture_prompts_match_nodes() {
+    let cases = json!([["", true], ["  make it blue  ", true], ["a green giant", false], ["", false]]);
+    let theirs = node(
+        r#"const d = await import("./src/avatar-design.mjs");
+        console.log(JSON.stringify(input.map(([prompt, image]) => d.pictureRequest({ prompt, image })).concat([d.PICTURE_STYLE])));"#,
+        &cases,
+    );
+    let mut ours: Vec<Value> = cases.as_array().unwrap().iter().map(|c| json!(picture_request(c[0].as_str().unwrap(), c[1].as_bool().unwrap()))).collect();
+    ours.push(json!(picture_style()));
+    assert_eq!(json!(ours), theirs);
+    assert!(picture_request("", false).starts_with("Draw the character described below as a minimal flat \"Bot\" avatar.\n\nKeep"));
+}
+
+#[test]
+fn avatar_picture_svg_is_refused_with_scripts_or_outside_images() {
+    assert_eq!(picture_svg("Here: <svg viewBox=\"0 0 1 1\"><rect/></svg> done").unwrap(), "<svg viewBox=\"0 0 1 1\"><rect/></svg>");
+    assert_eq!(picture_svg("no markup").unwrap_err(), "the model returned no SVG");
+    for bad in ["<svg><SCRIPT>x</SCRIPT></svg>", "<svg><image href=\"a.png\"/></svg>", "<svg><foreignObject/></svg>", "<svg><use href = 'https://x/y#a'/></svg>", "<svg><a xlink:HREF=\"http://x\"/></svg>"] {
+        assert_eq!(picture_svg(bad).unwrap_err(), "the SVG used scripts or outside images", "{bad}");
+    }
+    assert!(picture_svg("<svg><use href=\"#a\"/></svg>").is_ok());
 }
 
 #[test]

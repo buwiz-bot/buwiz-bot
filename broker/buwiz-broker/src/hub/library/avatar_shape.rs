@@ -34,6 +34,20 @@ pub fn design_system() -> &'static str {
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 
+/// The rich designer's extra instructions (Node's `RICH_SYSTEM`).
+pub fn rich_system() -> &'static str {
+    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-rich-system.txt");
+    TEXT.strip_suffix('\n').unwrap_or(TEXT)
+}
+
+/// Picture mode's style prompt (avatar-design.mjs `PICTURE_STYLE`).
+pub fn picture_style() -> &'static str {
+    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-picture-style.txt");
+    TEXT.strip_suffix('\n').unwrap_or(TEXT)
+}
+
+pub const LAYERS_MAX: usize = 8;
+
 pub fn is_kit(shape: &str) -> bool {
     KIT.iter().any(|(k, _)| *k == shape)
 }
@@ -361,7 +375,7 @@ pub fn outline_errors(outline: Option<&str>) -> Vec<String> {
     if utf16_len(outline) > OUTLINE_MAX {
         return vec![format!("outline is longer than {OUTLINE_MAX} characters")];
     }
-    if !outline.chars().all(|c| "MLCQZmlcqz0123456789.,-".contains(c) || js::is_space(c)) {
+    if !outline.chars().all(is_outline_char) {
         return vec!["outline may hold only M/L/C/Q/Z commands and numbers".into()];
     }
     let f = match flatten_path(outline) {
@@ -416,9 +430,75 @@ fn is_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// `validateAvatar({shape, color, outline})`: `None` for a value that is
-/// not a string.
-pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>) -> Vec<String> {
+fn is_outline_char(c: char) -> bool {
+    "MLCQZmlcqz0123456789.,-".contains(c) || js::is_space(c)
+}
+
+/// `layerErrors(layers, eyes)`: a rich avatar's painted layers (up to 8
+/// closed paths in the outline's box, each with a fill and an opacity
+/// 0..1) and the eyes' colour. `None` is undefined.
+pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>) -> Vec<String> {
+    let mut errs: Vec<String> = Vec::new();
+    let Some(layers) = layers.and_then(Value::as_array).filter(|l| !l.is_empty()) else { return vec!["a rich avatar needs at least one layer (the face)".into()] };
+    if layers.len() > LAYERS_MAX {
+        errs.push(format!("at most {LAYERS_MAX} layers"));
+    }
+    let empty = Map::new();
+    for (k, l) in layers.iter().enumerate() {
+        let n = format!("layer {}", k + 1);
+        let l = match l {
+            Value::Object(o) => o,
+            Value::Array(_) => &empty,
+            _ => {
+                errs.push(format!("{n} must be {{path, fill}}"));
+                continue;
+            }
+        };
+        if !l.get("fill").and_then(Value::as_str).is_some_and(is_color) {
+            errs.push(format!("{n}'s fill must be #RRGGBB"));
+        }
+        if let Some(o) = l.get("opacity") {
+            if !o.as_f64().is_some_and(|o| (0.0..=1.0).contains(&o)) {
+                errs.push(format!("{n}'s opacity must be 0..1"));
+            }
+        }
+        let Some(d) = l.get("path").and_then(Value::as_str).filter(|d| !d.trim_matches(js::is_space).is_empty()) else {
+            errs.push(format!("{n} needs a path"));
+            continue;
+        };
+        if utf16_len(d) > OUTLINE_MAX {
+            errs.push(format!("{n}'s path is longer than {OUTLINE_MAX} characters"));
+            continue;
+        }
+        if !d.chars().all(is_outline_char) {
+            errs.push(format!("{n}'s path may hold only M/L/C/Q/Z commands and numbers"));
+            continue;
+        }
+        let f = match flatten_path(d) {
+            Ok(f) => f,
+            Err(e) => {
+                errs.push(format!("{n}: {e}"));
+                continue;
+            }
+        };
+        let within = |v: f64| (-5.0..=105.0).contains(&v);
+        if f.coords.iter().any(|[x, y]| !(within(*x) && within(*y))) {
+            errs.push(format!("{n}'s coordinates must stay within -5..105"));
+        }
+        if f.points.len() < 3 || area_centroid(&f.points).0.abs() < 4.0 {
+            errs.push(format!("{n} encloses no area"));
+        }
+    }
+    if !eyes.and_then(Value::as_str).is_some_and(is_color) {
+        errs.push("eyes must be #RRGGBB".into());
+    }
+    errs
+}
+
+/// `validateAvatar({shape, color, outline, layers, eyes})`: `None` for a
+/// value that is not a string (`layers`, `eyes`: for undefined). Layers
+/// (with eyes) make it a rich avatar, which only a custom outline can be.
+pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>, layers: Option<&Value>, eyes: Option<&Value>) -> Vec<String> {
     let mut errs = Vec::new();
     if shape != Some("custom") && !shape.is_some_and(is_kit) {
         errs.push(format!("shape must be one of {} or custom", KIT.iter().map(|k| k.0).collect::<Vec<_>>().join(", ")));
@@ -428,6 +508,14 @@ pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option
     }
     if shape == Some("custom") {
         errs.extend(outline_errors(outline));
+    }
+    let rich = layers.and_then(Value::as_array).is_some_and(|l| !l.is_empty()) || eyes.is_some();
+    if rich {
+        if shape != Some("custom") {
+            errs.push("only a custom outline can have layers".into());
+        } else {
+            errs.extend(layer_errors(layers, eyes));
+        }
     }
     errs
 }
@@ -440,12 +528,18 @@ pub struct Candidate {
     pub color: String,
     /// for a custom shape only
     pub outline: Option<String>,
+    /// a rich candidate's painted layers `[{path, fill, opacity?}]` (custom only)
+    pub layers: Option<Vec<Value>>,
+    /// a rich candidate's eye colour (custom only)
+    pub eyes: Option<String>,
     pub why: String,
 }
 
 impl Candidate {
     pub fn errors(&self) -> Vec<String> {
-        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref())
+        let layers = self.layers.clone().map(Value::Array);
+        let eyes = self.eyes.clone().map(Value::String);
+        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref())
     }
 
     /// `{name, shape, color, outline?, why}`
@@ -457,23 +551,50 @@ impl Candidate {
         if let Some(x) = &self.outline {
             o.insert("outline".into(), json!(x));
         }
+        if let Some(x) = &self.layers {
+            o.insert("layers".into(), Value::Array(x.clone()));
+        }
+        if let Some(x) = &self.eyes {
+            o.insert("eyes".into(), json!(x));
+        }
         o.insert("why".into(), json!(self.why));
         Value::Object(o)
     }
 }
 
-/// `designRequest({prompt, name, image})`: the user turn's text.
-pub fn design_request(prompt: &str, name: &str, image: bool) -> String {
+/// `designRequest({prompt, name, image, rich})`: the user turn's text.
+pub fn design_request(prompt: &str, name: &str, image: bool, rich: bool) -> String {
+    if rich {
+        return rich_request(prompt, name, image);
+    }
     let mut lines = Vec::new();
     if !name.is_empty() {
         lines.push(format!("The bot's name: {name}"));
     }
-    lines.push(format!("The request (what the bot is or does, or how it should look): {prompt}"));
+    lines.push(if prompt.is_empty() {
+        "The request: none. Make the picture's subject into an avatar, in its own main colour, and name each candidate after it.".to_owned()
+    } else {
+        format!("The request (what the bot is or does, or how it should look): {prompt}")
+    });
     lines.push(if image {
         "The image attached is the subject. Candidate 1 MUST be that subject made into an avatar: shape \"custom\", an outline tracing the subject's silhouette (simplified to the rules), in #FFFFFF unless the request asks for colour (then the subject's main colour). The request says what to keep or change. Candidates 2 and 3 are other takes: another custom outline or a fitting kit shape.".to_owned()
     } else {
         "Candidates may be kit shapes or custom outlines; at least one must be a kit shape. Use a custom outline when the bot has an obvious emblem (a receipt, a leaf, a cat's head).".to_owned()
     });
+    lines.join("\n")
+}
+
+/// `richRequest({prompt, name, image})`: a rich design's user text.
+pub fn rich_request(prompt: &str, name: &str, image: bool) -> String {
+    let mut lines = Vec::new();
+    if !name.is_empty() {
+        lines.push(format!("The bot's name: {name}"));
+    }
+    lines.push(if prompt.is_empty() { "The request: none. Make the picture's subject into a rich avatar.".to_owned() } else { format!("The request: {prompt}") });
+    lines.push(
+        if image { "The image attached is the subject. Keep its identity: its main colour on the shell, its hair or head outline, ears or headgear, its face colour, its eye colour." } else { "Design the character the request describes." }.to_owned(),
+    );
+    lines.push("Give exactly 3 rich candidates (different takes), each with shape \"custom\", outline, color (the shell), layers and eyes.".to_owned());
     lines.join("\n")
 }
 
@@ -535,9 +656,36 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                 shape = "custom".into();
             }
             let color = js_trim(&or_empty(x.get("color").filter(|v| js::truthy(v)).or(x.get("colour")))).to_uppercase();
+            let layers = x.get("layers").and_then(Value::as_array).map(|ls| {
+                ls.iter()
+                    .filter_map(|l| match l {
+                        Value::Object(o) => Some((o, false)),
+                        Value::Array(_) => Some((&empty, true)),
+                        _ => None,
+                    })
+                    .map(|(l, array)| {
+                        let mut o = Map::new();
+                        o.insert("path".into(), json!(match l.get("path") {
+                            Some(Value::String(p)) => squeeze_inner(js_trim(p)),
+                            _ => String::new(),
+                        }));
+                        // an array's `fill` is Array.prototype.fill: String() of it, as V8 writes it
+                        let fill = if array { "function fill() { [native code] }".to_owned() } else { or_empty(l.get("fill").filter(|v| js::truthy(v)).or(l.get("color"))) };
+                        o.insert("fill".into(), json!(js_trim(&fill).to_uppercase()));
+                        if let Some(op) = l.get("opacity").filter(|v| v.is_number()) {
+                            o.insert("opacity".into(), op.clone());
+                        }
+                        Value::Object(o)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let eyes = x.get("eyes").and_then(Value::as_str).map(|e| js_trim(e).to_uppercase());
+            let custom = shape == "custom";
             Candidate {
                 name: js::slice_utf16(js_trim(&or_empty(x.get("name"))), 40),
-                outline: (shape == "custom").then_some(outline),
+                outline: custom.then_some(outline),
+                layers: layers.filter(|_| custom),
+                eyes: eyes.filter(|_| custom),
                 shape,
                 color,
                 why: js::slice_utf16(js_trim(&or_empty(x.get("why"))), 240),
@@ -580,11 +728,23 @@ fn squeeze_inner(s: &str) -> String {
 }
 
 // The problems with one round of candidates as a set, and each one's.
-fn check(cands: &[Candidate], image: bool) -> (Vec<Vec<String>>, Vec<String>) {
-    let each: Vec<Vec<String>> = cands.iter().map(Candidate::errors).collect();
+fn check(cands: &[Candidate], image: bool, rich: bool) -> (Vec<Vec<String>>, Vec<String>) {
+    let each: Vec<Vec<String>> = cands
+        .iter()
+        .map(|c| {
+            let mut e = c.errors();
+            if rich && !c.layers.as_ref().is_some_and(|l| !l.is_empty()) {
+                e.push("a rich candidate needs layers and eyes".into());
+            }
+            e
+        })
+        .collect();
     let mut set = Vec::new();
     if cands.len() != 3 {
         set.push(format!("there must be exactly 3 candidates (got {})", cands.len()));
+    }
+    if rich {
+        return (each, set);
     }
     if image && cands.first().map(|c| c.shape.as_str()) != Some("custom") {
         set.push("candidate 1 must be a custom outline tracing the image's subject".into());
@@ -599,7 +759,7 @@ fn check(cands: &[Candidate], image: bool) -> (Vec<Vec<String>>, Vec<String>) {
 /// candidates. `ask(messages)` is the model call (Anthropic-shaped
 /// messages) → the reply's text; `pick(prompt)` → a kit shape for when
 /// nothing usable comes back. `image` is the user turn's image block.
-pub async fn design_candidates<A, AF, K, KF>(prompt: &str, name: &str, image: Option<Value>, ask: A, pick: K) -> Result<Vec<Candidate>, String>
+pub async fn design_candidates<A, AF, K, KF>(prompt: &str, name: &str, image: Option<Value>, rich: bool, ask: A, pick: K) -> Result<Vec<Candidate>, String>
 where
     A: Fn(Vec<Value>) -> AF,
     AF: Future<Output = Result<String, String>>,
@@ -607,7 +767,7 @@ where
     KF: Future<Output = String>,
 {
     let has_image = image.is_some();
-    let text = design_request(prompt, name, has_image);
+    let text = design_request(prompt, name, has_image, rich);
     let content = match image {
         Some(img) => json!([img, {"type": "text", "text": text}]),
         None => json!(text),
@@ -615,7 +775,7 @@ where
     let mut messages = vec![json!({"role": "user", "content": content})];
     let reply = ask(messages.clone()).await?;
     let mut cands = parse_candidates(&reply);
-    let (each, set) = check(&cands, has_image);
+    let (each, set) = check(&cands, has_image, rich);
     let first_good: Vec<Candidate> = cands.iter().zip(&each).filter(|(_, e)| e.is_empty()).map(|(c, _)| c.clone()).collect();
     if !set.is_empty() || each.iter().any(|e| !e.is_empty()) {
         let mut lines = set;
@@ -640,7 +800,7 @@ where
         messages.push(json!({"role": "user", "content": format!("These problems need fixing:\n- {}\nReply with all 3 candidates again, in the same order, fixed. JSON only.", lines.join("\n- "))}));
         let reply = ask(messages).await?;
         cands = parse_candidates(&reply);
-        let (each, _) = check(&cands, has_image);
+        let (each, _) = check(&cands, has_image, rich);
         cands = cands.into_iter().zip(each).filter(|(_, e)| e.is_empty()).map(|(c, _)| c).collect();
         // top up from the first round's good ones
         for c in first_good {
@@ -653,6 +813,12 @@ where
         }
     }
     cands.truncate(3);
+    if rich {
+        if cands.is_empty() {
+            return Err("no rich design came back that the engine can draw; try again or another model".into());
+        }
+        return Ok(cands);
+    }
     if !has_image && !cands.is_empty() && !cands.iter().any(|c| is_kit(&c.shape)) {
         let k = kit_fallback(&pick(prompt.to_owned()).await);
         cands.truncate(2);
@@ -672,7 +838,7 @@ fn kit_fallback(shape: &str) -> Candidate {
     } else {
         "Blob".into()
     };
-    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, why: "A kit shape picked for the description.".into() }
+    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, layers: None, eyes: None, why: "A kit shape picked for the description.".into() }
 }
 
 /// MOCK mode's outlines.
@@ -682,7 +848,7 @@ pub const MOCK_RECEIPT: &str = "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80
 
 /// `mockCandidates({image})`
 pub fn mock_candidates(image: bool) -> Vec<Candidate> {
-    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), why: why.into() };
+    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), layers: None, eyes: None, why: why.into() };
     let kit = c("Blob", "blob", None, "A friendly ball in the primary ink.");
     let cat = c("Cat Head", "custom", Some(MOCK_CAT), "A bold cat silhouette.");
     let pebble = c("Pebble", "custom", Some(MOCK_PEBBLE), "A calm, rounded pebble.");
@@ -692,6 +858,76 @@ pub fn mock_candidates(image: bool) -> Vec<Candidate> {
     } else {
         vec![kit, receipt, cat]
     }
+}
+
+/// `MOCK_RICH`: rich candidates, valid, hand-written.
+pub fn mock_rich() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "Green Giant", "shape": "custom", "color": "#3E8E2F",
+            "outline": "M20 44 L24 18 L36 26 L42 12 L52 22 L62 10 L66 24 L78 18 L82 44 C88 64 76 88 50 90 C24 88 12 64 20 44 Z",
+            "layers": [
+                {"path": "M22 40 Q50 16 80 40 L76 46 Q50 30 26 46 Z", "fill": "#1E2A16"},
+                {"path": "M26 50 C26 36 74 36 76 50 C78 70 66 86 50 86 C34 86 24 70 26 50 Z", "fill": "#F5EBD6"},
+                {"path": "M30 66 C30 62 38 62 38 66 C38 70 30 70 30 66 Z", "fill": "#F2C3B5", "opacity": 0.6},
+                {"path": "M62 66 C62 62 70 62 70 66 C70 70 62 70 62 66 Z", "fill": "#F2C3B5", "opacity": 0.6},
+            ],
+            "eyes": "#58D63A", "why": "A green shell with a dark fringe and a cream face.",
+        }),
+        json!({
+            "name": "Mask Hero", "shape": "custom", "color": "#D9232E",
+            "outline": "M50 10 C74 10 86 26 86 46 C86 66 72 84 58 90 Q50 93 42 90 C28 84 14 66 14 46 C14 26 26 10 50 10 Z",
+            "layers": [
+                {"path": "M24 40 C30 30 44 32 46 44 C46 54 32 58 26 52 Z", "fill": "#111111"},
+                {"path": "M76 40 C70 30 56 32 54 44 C54 54 68 58 74 52 Z", "fill": "#111111"},
+            ],
+            "eyes": "#FFFFFF", "why": "A red mask with black eye patches.",
+        }),
+        json!({
+            "name": "Ginger Cat", "shape": "custom", "color": "#F08A24",
+            "outline": "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
+            "layers": [{"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3"}],
+            "eyes": "#2B1D12", "why": "An orange cat with a cream muzzle.",
+        }),
+    ]
+}
+
+/// avatar-design.mjs `pictureRequest({prompt, image})`: the style, then
+/// what the user typed on top of it; with no picture, the character is the
+/// user's description.
+pub fn picture_request(prompt: &str, image: bool) -> String {
+    const LEAD: &str = "Turn the subject of the reference picture into a minimal flat \"Bot\" avatar. Use the picture only to recognise who the subject is; do not copy its pose, framing or background.";
+    let style = match picture_style().strip_prefix(LEAD) {
+        Some(rest) if !image => format!("Draw the character described below as a minimal flat \"Bot\" avatar.{rest}"),
+        _ => picture_style().to_owned(),
+    };
+    let extra = js_trim(prompt);
+    if extra.is_empty() {
+        style
+    } else {
+        format!("{style}\n\n{}: {extra}", if image { "Also, from the user" } else { "The character" })
+    }
+}
+
+/// The SVG Picture mode asks for (avatar-design.mjs `SVG_RULES`).
+pub const SVG_RULES: &str = "Draw it as one SVG: viewBox=\"0 0 1024 1024\", full-bleed, the background covering every pixel. Flat shapes and simple linear or radial gradients only; no text, no <image>, no filters, no scripts. Reply with only the <svg>…</svg> markup.";
+
+/// The SVG in a reply (`/<svg[\s\S]*<\/svg>/`), or why it can't be drawn.
+pub fn picture_svg(reply: &str) -> Result<&str, String> {
+    let svg = match (reply.find("<svg"), reply.rfind("</svg>")) {
+        (Some(a), Some(b)) if b >= a => &reply[a..b + 6],
+        _ => return Err("the model returned no SVG".into()),
+    };
+    // /<script|<image|<foreignObject|href\s*=\s*["']https?:/i
+    let l = svg.to_lowercase();
+    let external = l.match_indices("href").any(|(i, _)| {
+        let rest = l[i + 4..].trim_start_matches(js::is_space);
+        rest.strip_prefix('=').map(|r| r.trim_start_matches(js::is_space)).and_then(|r| r.strip_prefix('"').or_else(|| r.strip_prefix('\''))).is_some_and(|r| r.starts_with("http:") || r.starts_with("https:"))
+    });
+    if l.contains("<script") || l.contains("<image") || l.contains("<foreignobject") || external {
+        return Err("the SVG used scripts or outside images".into());
+    }
+    Ok(svg)
 }
 
 #[cfg(test)]
