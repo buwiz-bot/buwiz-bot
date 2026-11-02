@@ -38,7 +38,9 @@ buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 tokio = { version = "1", features = ["sync"] }
 # First-party mini apps' native screens: the screen definition and the
 # bridge a screen gets, from the SDK (its nsh is patched below).
-buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "21f6b43c706b094d6d915767015ef4d19dee96fb" }
+buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "fff55d395d1c5c524833ec1073c43d34ac542070" }
+# Books' native screens (`books.quiet`, `books.ledger`), by git rev.
+books-screens = { git = "https://github.com/buwiz-app/books", rev = "63486dfc5b870f56920566d2edf47861acfa5c22" }
 
 [dev-dependencies]
 # pele::corpus: the port's test inputs, to check the drawing of every one.
