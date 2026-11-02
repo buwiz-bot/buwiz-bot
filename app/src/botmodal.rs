@@ -1,5 +1,6 @@
 //! The "Create New Bot" sheet (`botModal`, App.tsx:4229): a centered
-//! 440pt dialog — live 96pt `BotBlob` preview, name field, the
+//! 440pt dialog — live 96pt `BotBlob` preview, name field, the Design
+//! panel (`design::panel`), the
 //! `BOT_SHAPES` grid in the picked ink, the `BOT_COLORS` swatch row, and
 //! Cancel / Create pills. `botHover` marks the hovered control.
 
@@ -139,6 +140,16 @@ fn body() -> impl IntoElement {
                         .h(px(30.0)),
                 ),
         )
+        // Design: describe the bot (and add a picture) → 3 mark avatars;
+        // a pick becomes the draft the preview shows.
+        .child(view().w_full().mt_4().child(crate::design::panel(true)))
+        .child(
+            text("Or pick by hand")
+                .mt_4()
+                .text_size(px(12.0))
+                .text_color(theme::MUTED),
+        )
+        .child(view().w_full().mt_3().child(crate::design::saved(true)))
         .child(dynamic(shapes))
         .child(dynamic(colors))
 }

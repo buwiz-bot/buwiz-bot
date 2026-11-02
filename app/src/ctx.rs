@@ -36,7 +36,7 @@ fn run(it: &CtxItem) {
     let (verb, arg) = (it.act.as_str(), it.arg.as_str());
     match verb {
         "new" => st.new_thread(),
-        "bot-modal" => st.bot_modal.set(true),
+        "bot-modal" => st.open_bot_modal(),
         "palette" => st.palette.set(true),
         "models" => crate::models::open_list(),
         "chat-hide" => st.update_thread(arg, Some(it.flag), None),
