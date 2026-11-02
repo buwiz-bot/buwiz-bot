@@ -890,7 +890,7 @@ impl Host {
     }
 
     /// POST /v1/host/plugins/inspect: a temporary spawn, verified, with the
-    /// review of 13.1 step 3. Nothing is installed or stored. `{package}`
+    /// review of 6.10 (as 9.2 says). Nothing is installed or stored. `{package}`
     /// inspects a package folder (its answer: `package`).
     pub async fn inspect(&self, body: &Value) -> Res {
         let (body, pkg) = self.with_package(body)?;

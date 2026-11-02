@@ -1,8 +1,8 @@
-// The v1 routine runner (server/v1/routines.mjs, spec 5.9 "How a routine
-// runs"): a fixture routine that reads Gmail through the gws plugin over
+// The v1 routine runner (server/v1/routines.mjs, spec 19.1 "A
+// run"): a fixture routine that reads Gmail through the gws plugin over
 // the fake workspace-mcp upstream, run tick by tick on an injected clock
 // with the agent turn recorded instead of run (no model). RTN-* are this
-// suite's own IDs, an extension of spec 17:
+// suite's own IDs, an extension of Appendix C:
 //   RTN-01 an enabled routine the user has not approved does not run
 //   RTN-02 a tick calls the own query tool with origin routine, then the
 //          reads search with that text; a new item runs the prompt once

@@ -1,8 +1,8 @@
 # Testing a plugin: `npm run plugin-test`
 
-`sdk/mini-app/bin/buwiz-plugin-test.mjs` runs the plugin-side checks of
-spec 17 against one plugin and prints a checklist with the spec ID of each
-check. It spawns your plugin the way the broker does and runs the broker's
+`sdk/mini-app/bin/buwiz-plugin-test.mjs` runs the plugin-side checks of the
+spec's Appendix C against one plugin and prints a checklist with the ID of
+each check. It spawns your plugin the way the broker does and runs the broker's
 real v1 code in its own process (`src/v1/plugins.mjs`, `sessions.mjs`,
 `manifest.mjs`) on an in-memory database, a file keystore in a temp
 directory and a trust file written for the run. It opens no port, never
@@ -92,8 +92,8 @@ app.buwiz.books approved`.
 | BRG-03 | A session opens per app with tools and the broker verifies its certificate; one signed call per tool in `permissions.tools` reaches the plugin and is answered (an `isError` answer counts: the call went through). |
 | BRG-04 | The same envelope sent again is `replayed`. |
 | BRG-06 | An envelope signed by another key is `bad_signature`. |
-| INV-04 | Each scope's resolve, with `complete` true and false, answers a spec 9.2 shape within its caps (checked on the raw answer, before the broker would cap it); an attachable scope resolves a chosen completion to a token. |
-| INV-05 | Each command's resolve, for a bare command and for `sdk-probe`, answers a 9.2 shape; an `open` names one of this plugin's apps with valid props. |
+| INV-04 | Each scope's resolve, with `complete` true and false, answers a spec 15.2 shape within its caps (checked on the raw answer, before the broker would cap it); an attachable scope resolves a chosen completion to a token. |
+| INV-05 | Each command's resolve, for a bare command and for `sdk-probe`, answers a 15.2 shape; an `open` names one of this plugin's apps with valid props. |
 | INV-10 | Each `prompt` a resolve answers: a command's, not a scope's; text not only spaces and line breaks, at most 4000 characters; the broker passes it unchanged. Listed only when a resolve answered `prompt`. |
 
 The calls send `{}` as arguments, and the values `""` (commands only: a
@@ -102,7 +102,7 @@ tools. Keep side effects behind explicit arguments (P5) and these calls are
 harmless.
 
 Not checked here: everything only Buwiz Bot can show (consent, the sandbox, storage,
-placement; spec 17.2 to 17.8 host rows), MAN-09 (it needs other installs),
+placement; the host rows of Appendix C.2 to C.8), MAN-09 (it needs other installs),
 and the review items of [security.md](security.md).
 
 ## In the repo's suites
@@ -110,7 +110,7 @@ and the review items of [security.md](security.md).
 `test/v1-sdk.test.mjs` runs the runner against the template and the fixture,
 and against the fixture with `--misbehave=skip-provision`, `bad-cert` and
 `log-seed` to prove it catches a broken plugin. `npm run conformance` lists
-those as extension IDs SDK-01 onward, after the spec 17 checklist.
+those as extension IDs SDK-01 onward, after the Appendix C checklist.
 
 Section numbers such as spec 4.1 refer to the
 [mini app protocol 1.0 specification](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)
