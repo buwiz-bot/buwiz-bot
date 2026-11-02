@@ -28,9 +28,8 @@ use super::{
 type Screens = fn() -> &'static [ScreenDef];
 
 /// The screens crates compiled in: each plugin's id and its crate's
-/// `screens()`. None yet: the first lands with its plugin's screens crate
-/// (pinned by git rev).
-const COMPILED: &[(&str, Screens)] = &[];
+/// `screens()`, each crate pinned by git rev.
+const COMPILED: &[(&str, Screens)] = &[("app.buwiz.books", books_screens::screens)];
 
 /// Native screens by plugin.
 #[derive(Default)]
@@ -210,7 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn this_build_compiles_no_screens_in_yet() {
-        assert!(Registry::compiled().plugins.is_empty());
+    fn books_screens_are_compiled_in_by_plugin_id() {
+        let r = Registry::compiled();
+        for screen in ["books.quiet", "books.ledger"] {
+            assert_eq!(r.find("app.buwiz.books", screen, sdk::ABI).map(|d| d.id), Some(screen));
+            // keyed by the plugin id, not its short name
+            assert!(r.find("books", screen, sdk::ABI).is_none());
+        }
     }
 }

@@ -560,6 +560,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "books-screens"
+version = "0.3.0"
+source = "git+https://github.com/buwiz-app/books?rev=63486dfc5b870f56920566d2edf47861acfa5c22#63486dfc5b870f56920566d2edf47861acfa5c22"
+dependencies = [
+ "buwiz-app",
+ "nsh-core",
+ "serde_json",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -598,7 +608,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buwiz-app"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=21f6b43c706b094d6d915767015ef4d19dee96fb#21f6b43c706b094d6d915767015ef4d19dee96fb"
+source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=fff55d395d1c5c524833ec1073c43d34ac542070#fff55d395d1c5c524833ec1073c43d34ac542070"
 dependencies = [
  "base64 0.22.1",
  "nsh-core",
@@ -615,6 +625,7 @@ dependencies = [
  "betteroffice-opc",
  "betteroffice-xlsx",
  "betteroffice-xlsx-render",
+ "books-screens",
  "buwiz-app",
  "buwiz-office-kit",
  "buwiz-protocol",
