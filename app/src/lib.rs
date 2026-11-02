@@ -30,7 +30,7 @@ pub mod identity;
 pub mod keys;
 mod links;
 pub mod live;
-mod mascot;
+mod mark;
 mod md;
 mod mermaid;
 mod office;

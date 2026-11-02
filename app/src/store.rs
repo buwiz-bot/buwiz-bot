@@ -5424,9 +5424,9 @@ impl Store {
         }
         if arg == "demo" {
             // `names = STATES.filter(n => n !== "idle")`, 1.7s each.
-            let names: Vec<&'static str> = crate::mascot::STATES
+            let names: Vec<&'static str> = crate::mark::STATES
                 .iter()
-                .map(|s| s.name)
+                .map(|(n, _)| *n)
                 .filter(|n| *n != "idle")
                 .collect();
             if let Some(first) = names.first() {
@@ -5457,7 +5457,7 @@ impl Store {
             });
             return;
         }
-        if crate::mascot::is_state(arg) {
+        if crate::mark::STATES.iter().any(|(n, _)| *n == arg) {
             let label = crate::statusfx::status_label(arg);
             self.agent_set(thread, bot, Some((arg.to_owned(), label)));
         } else {

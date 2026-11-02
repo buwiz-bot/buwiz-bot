@@ -3,6 +3,7 @@
 //! `BOT_SHAPES` grid in the picked ink, the `BOT_COLORS` swatch row, and
 //! Cancel / Create pills. `botHover` marks the hovered control.
 
+use std::str::FromStr;
 
 use nsh_base::input;
 use nsh_core::prelude::*;
@@ -154,7 +155,7 @@ fn shapes() -> impl IntoElement {
         .justify_center()
         .gap_2()
         .child(each(
-            || crate::mascot::BOT_SHAPES.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            || crate::mark::BOT_SHAPES.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             |s| s.clone(),
             move |s, _| {
                 let sh = s.get();
@@ -216,7 +217,7 @@ fn colors() -> impl IntoElement {
         .justify_center()
         .gap_2()
         .child(each(
-            || crate::mascot::BOT_COLORS.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            || crate::mark::BOT_COLORS.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             |s| s.clone(),
             move |c, _| {
                 let hex = c.get();
@@ -243,7 +244,8 @@ fn colors() -> impl IntoElement {
                             // `#FFFFFF` is the primary swatch: black on light, white
                             // on dark, as the avatar paints it (`ink_of`).
                             .bg(move || {
-                                crate::mascot::ink_of(&hex4, !dark())
+                                let ink = crate::mark::ink_of(&hex4, !dark());
+                                Hsla::from_str(&ink).unwrap_or(Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })
                             }),
                     )
                     .on_press(move || store().bot_color.set(hex2.clone()))
