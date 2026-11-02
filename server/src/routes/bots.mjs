@@ -1,7 +1,7 @@
 // routes/bots.mjs — extracted from app-server.mjs
 import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { GEN_DIR, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
 import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
@@ -312,6 +312,16 @@ export default async function handle(req, res) {
           if (!picked) return res.end(JSON.stringify({ ok: false, cancelled: true }));
           name = picked.split("/").pop();
           execFileSync("sips", ["-s", "format", "png", picked, "--out", out], { stdio: "ignore" });
+        } else if (kind === "import") {
+          // a file the app's own open panel chose (it stays in front, unlike
+          // AppleScript's chooser): copied in as PNG like a pick
+          const { path } = JSON.parse(body || "{}");
+          if (typeof path !== "string" || !isAbsolute(path)) throw new Error("import needs an absolute file path");
+          let st;
+          try { st = statSync(path); } catch { throw new Error("image not found"); }
+          if (!st.isFile()) throw new Error("image not found");
+          name = path.split("/").pop();
+          execFileSync("sips", ["-s", "format", "png", path, "--out", out], { stdio: "ignore" });
         } else if (kind === "paste") {
           await osa(
             `set f to open for access POSIX file "${out}" with write permission

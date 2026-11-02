@@ -523,3 +523,15 @@ test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order
   await postJson("/bot/update", { id, shape: "hex" });
   assert.ok(!("parts" in (b = await botOf(id))) && b.shape === "hex");
 });
+
+test("AVD-21 /avatar/image/import copies a file the app's open panel chose into the avatar folder", async () => {
+  const src = join(dir, "picked-by-panel.png");
+  writeFileSync(src, Buffer.from(PNG_B64, "base64"));
+  const r = await postJson("/avatar/image/import", { path: src });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.name, "picked-by-panel.png");
+  assert.match(r.json.uri, /^file:\/\/.*\/avatars\/[^/]+\.png$/);
+  bad(await postJson("/avatar/image/import", { path: "relative.png" }), "import needs an absolute file path");
+  bad(await postJson("/avatar/image/import", { path: join(dir, "nope.png") }), "image not found");
+  bad(await postJson("/avatar/image/import", { path: dir }), "image not found");
+});

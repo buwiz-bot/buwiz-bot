@@ -630,6 +630,25 @@ async fn avatar_image(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             }
             picked.rsplit('/').next().unwrap_or(&picked).to_owned()
         }
+        // A file the app's own open panel chose (it stays in front, unlike
+        // AppleScript's chooser): copied in as PNG like a pick.
+        "import" => {
+            let b = match parse(&req.body) {
+                Ok(b) => b,
+                Err(e) => return refused(&e, true),
+            };
+            let path = match b.get("path").and_then(|p| p.as_str()) {
+                Some(p) if std::path::Path::new(p).is_absolute() => p.to_owned(),
+                _ => return refused("import needs an absolute file path", true),
+            };
+            if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+                return refused("image not found", true);
+            }
+            if let Err(e) = exec(&ctx, command("sips", &["-s", "format", "png", &path, "--out", &out_s])).await {
+                return refused(&e, true);
+            }
+            path.rsplit('/').next().unwrap_or(&path).to_owned()
+        }
         "paste" => {
             let script = format!("set f to open for access POSIX file \"{out_s}\" with write permission\n             write (the clipboard as «class PNGf») to f\n             close access f");
             if let Err(e) = osa(&ctx, &script).await {

@@ -524,6 +524,17 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
     }
 }
 
+/// A failed picture's message: the clipboard's, the broker's, or a plain one.
+fn picture_error(kind: &str, v: &serde_json::Value) -> String {
+    if kind == "paste" {
+        "No image on the clipboard".into()
+    } else if s(v, "error").is_empty() {
+        "Couldn't open that image".into()
+    } else {
+        s(v, "error")
+    }
+}
+
 /// The `/bot/*` fields for a shape in the app's form (a rich one brings
 /// its shell colour, layers and eyes).
 pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
@@ -5618,24 +5629,41 @@ impl Store {
     /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
     pub fn design_attach(&'static self, kind: &'static str) {
         self.design_err.set(String::new());
-        spawn(async move {
-            match client::post_any(&format!("/avatar/image/{kind}"), serde_json::json!({})).await {
-                Some(v) if self::b(&v, "ok") => self.design_image.set(Some(AvatarDraft {
-                    uri: s(&v, "uri"),
-                    name: s(&v, "name"),
-                    w: f64of(&v, "w"),
-                    h: f64of(&v, "h"),
-                })),
-                Some(v) if !self::b(&v, "cancelled") => self.design_err.set(if kind == "paste" {
-                    "No image on the clipboard".into()
-                } else if s(&v, "error").is_empty() {
-                    "Couldn't open that image".into()
-                } else {
-                    s(&v, "error")
-                }),
-                _ => {}
-            }
+        self.picture_request(kind, move |st, path, body| {
+            spawn_detached(async move {
+                match client::post_any(&path, body).await {
+                    Some(v) if self::b(&v, "ok") => st.design_image.set(Some(AvatarDraft {
+                        uri: s(&v, "uri"),
+                        name: s(&v, "name"),
+                        w: f64of(&v, "w"),
+                        h: f64of(&v, "h"),
+                    })),
+                    Some(v) if !self::b(&v, "cancelled") => st.design_err.set(picture_error(kind, &v)),
+                    _ => {}
+                }
+            })
         });
+    }
+
+    /// Where a picture comes from: "pick" opens the app's own open panel
+    /// (macOS) and imports the chosen file (`POST /avatar/image/import
+    /// {path}`); "paste" (and "pick" elsewhere) asks the broker
+    /// (`POST /avatar/image/<kind>`). `then` posts it.
+    fn picture_request(
+        &'static self,
+        kind: &'static str,
+        then: impl FnOnce(&'static Store, String, serde_json::Value) + Send + 'static,
+    ) {
+        #[cfg(target_os = "macos")]
+        if kind == "pick" {
+            crate::mini_v1::native::pick_image(move |path| {
+                let Some(path) = path else { return };
+                let path = path.to_string_lossy().into_owned();
+                crate::mini_v1::to_store(move |st| then(st, "/avatar/image/import".to_owned(), serde_json::json!({"path": path})));
+            });
+            return;
+        }
+        then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
     }
 
     /// Uses choice `i` and keeps its shape in "Your designs". A choice in
@@ -5739,29 +5767,22 @@ impl Store {
     /// (App.tsx:1711).
     pub fn pick_avatar(&'static self, kind: &'static str) {
         self.avatar_err.set(String::new());
-        spawn(async move {
-            let j = client::post(&format!("/avatar/image/{kind}"), serde_json::json!({})).await;
-            match j {
-                Some(v) if self::b(&v, "ok") => {
-                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
-                    self.avatar_draft.set(Some(AvatarDraft {
-                        uri: s(&v, "uri"),
-                        name: s(&v, "name"),
-                        w: f64of(&v, "w"),
-                        h: f64of(&v, "h"),
-                    }));
+        self.picture_request(kind, move |st, path, body| {
+            spawn_detached(async move {
+                match client::post_any(&path, body).await {
+                    Some(v) if self::b(&v, "ok") => {
+                        st.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
+                        st.avatar_draft.set(Some(AvatarDraft {
+                            uri: s(&v, "uri"),
+                            name: s(&v, "name"),
+                            w: f64of(&v, "w"),
+                            h: f64of(&v, "h"),
+                        }));
+                    }
+                    Some(v) if !self::b(&v, "cancelled") => st.avatar_err.set(picture_error(kind, &v)),
+                    _ => {}
                 }
-                Some(v) if !self::b(&v, "cancelled") => self.avatar_err.set(
-                    if kind == "paste" {
-                        "No image on the clipboard".into()
-                    } else if s(&v, "error").is_empty() {
-                        "Couldn't open that image".into()
-                    } else {
-                        s(&v, "error")
-                    },
-                ),
-                _ => {}
-            }
+            })
         });
     }
 
