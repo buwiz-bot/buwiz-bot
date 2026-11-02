@@ -6,18 +6,18 @@
 //
 // - buwiz.provision is answered first; every other tool fails until it has
 //   succeeded (P7). The plugin key is kept in memory only, never logged,
-//   written or echoed (4.3, P4).
+//   written or echoed (5.4, P4).
 // - buwiz.session.open checks the app exists and the permissions digest
 //   equals the manifest's, then signs the session certificate over JCS
-//   with the plugin key (4.4); not_after is at most 8 h ahead.
+//   with the plugin key (5.5); not_after is at most 8 h ahead.
 // - buwiz.ticket.resolve answers a title, never the subject (P3).
-// - buwiz.uninstall forgets every ticket and session (9.5).
-// - Any other rox.* name is MCP error -32601 (7.9).
-// - The manifest and app sources are served as resources (5.1, 6.1); the
+// - buwiz.uninstall forgets every ticket and session (10.6, 15.4).
+// - Any other buwiz.* name is MCP error -32601 (10.1).
+// - The manifest and app sources are served as resources (6.1, 11.2); the
 //   manifest is re-read from disk on every request, so a re-signed file
 //   takes effect without a restart.
 //
-// Tickets (9.5): `tickets.issue(subject)` returns a random tkt_ value and
+// Tickets (15.4): `tickets.issue(subject)` returns a random tkt_ value and
 // keeps the subject on this side; `tickets.subject(t)` maps it back for
 // the plugin's own tools. Subjects are strings the plugin chooses.
 import { randomBytes } from "node:crypto";
@@ -39,7 +39,7 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /** A tool result whose structuredContent is `data` (and its text). */
 export const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
 
-/** An isError tool result with a spec error code (14.1) and a message. */
+/** An isError tool result with a spec error code (22.1) and a message. */
 export const fail = (code, message) => ({ isError: true, content: [{ type: "text", text: message }], structuredContent: { code, message } });
 
 /** A fresh ticket: tkt_ + 26 Crockford base32 characters, 130 random bits. */
@@ -82,9 +82,9 @@ export function ticketStore() {
  *   manifestFile  path of the signed manifest (read on every request)
  *   apps          {appId: path of the .tsx source}
  *   tools         [{name, description, inputSchema, annotations?, run(args, caller, extra)}]
- *                 `caller` is _meta["buwiz/caller"] (8.4): {origin, plugin, app?, open_id?, routine?, ts}
+ *                 `caller` is _meta["buwiz/caller"] (16.1): {origin, plugin, app?, open_id?, routine?, ts}
  *   ticketTitle   (subject) => the title buwiz.ticket.resolve shows
- *   instructions  MCP server instructions (approved text, 10.2), optional
+ *   instructions  MCP server instructions (approved text, 18.3), optional
  *   name, version the MCP server identity
  */
 export async function startPlugin(opts) {

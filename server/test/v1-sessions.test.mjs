@@ -1,7 +1,7 @@
-// Spec 17.3 (bridge and signing) at the broker boundary, and the broker's
-// half of 17.5 (resolve results): a fake Rox opens apps and signs
-// envelopes as 8.1 says; the broker's nine checks (8.2) decide. Also the
-// app source path (6.1, 6.2).
+// Appendix C.3 (bridge and signing) at the broker boundary, and the
+// broker's half of C.5 (resolve results): a fake Rox opens apps and signs
+// envelopes as 14.1 says; the broker's nine checks (14.2) decide. Also the
+// app source path (11.2).
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -179,7 +179,7 @@ test("BRG-08 a call on a stale plugin generation is plugin_restarted", async () 
   assert.equal((await call(fresh, "fx_echo")).ok, true, "a new open works");
 });
 
-// ── 17.5, broker side ────────────────────────────────────────────────────
+// ── C.5, broker side ─────────────────────────────────────────────────────
 
 test("INV-04 resolve choices are capped at 20, labels at 80, details at 160", async () => {
   const r = await sessions.resolve({ plugin: FX, kind: "scope", name: "item", value: "many", complete: true });

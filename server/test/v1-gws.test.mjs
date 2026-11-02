@@ -2,8 +2,8 @@
 // workspace): installed through the v1 manager with this run's publisher
 // key, its read-only mail tools over a fake workspace-mcp upstream (test/
 // fixtures/fake-gws-upstream.mjs, the real server's text format), and the
-// reserved tools of spec 7.8. GWS-* are this suite's own IDs (not in spec
-// 17); the reserved-tool tests reuse the RSV IDs they check. With GWS_CMD
+// reserved tools of spec 10. GWS-* are this suite's own IDs (not in
+// Appendix C); the reserved-tool tests reuse the RSV IDs they check. With GWS_CMD
 // naming a buwiz-gws binary the same cases run against it, and GWS-06 holds
 // its wire to server.mjs's, byte for byte.
 import assert from "node:assert/strict";

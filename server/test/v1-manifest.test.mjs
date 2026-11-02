@@ -1,6 +1,6 @@
-// Spec 17.1 (manifest), against server/v1/manifest.mjs: verification
-// order, signature, protocol and version rules, every grammar of section 3
-// and every manifest limit of Appendix A at the limit and one over. Also
+// Appendix C.1 (manifest), against server/v1/manifest.mjs: verification
+// order, signature, protocol and version rules, every grammar of section 4
+// and every manifest limit of section 24 at the limit and one over. Also
 // the JCS vectors shared with Rox and the ed25519 helpers. With
 // BUWIZ_BROKER_CMD set, every manifest check also runs in buwiz-broker and must
 // answer as Node does (v1-rust.mjs), and its sign-manifest must write the
@@ -89,7 +89,7 @@ test("ed25519: raw base64url keys sign and verify; anything else is false", () =
   assert.equal(fromB64u(`${b64u(Buffer.alloc(32))}=`, 32), null, "padding is refused");
 });
 
-// ── 17.1 ─────────────────────────────────────────────────────────────────
+// ── C.1 ──────────────────────────────────────────────────────────────────
 
 test("MAN-01 the manifest signature is over JCS and verifies with the publisher key", () => {
   const m = signed();
@@ -288,7 +288,7 @@ const LOWER_CASES = [
   ["title", 1, (m, n) => (m.title = at(n))],
 ];
 
-test("MAN-08 every manifest limit of Appendix A, at the limit and one over", () => {
+test("MAN-08 every manifest limit of section 24, at the limit and one over", () => {
   for (const [what, limit, edit] of LIMIT_CASES) {
     assert.doesNotThrow(() => check(signed((m) => edit(m, limit))), `${what} at ${limit}`);
     assert.throws(() => check(signed((m) => edit(m, limit + 1))), { code: "manifest_invalid" }, `${what} at ${limit + 1}`);
