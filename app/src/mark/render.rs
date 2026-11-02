@@ -1665,6 +1665,7 @@ fn qt2(e: &Frame, t: f64, tab: &Tables) -> ShapeRec {
     ShapeRec {
         decals: vec![],
         rims: vec![],
+        rich_parts: None,
         rich: None,
         center: s,
         radius: i,
@@ -1718,9 +1719,16 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
         }],
         _ => vec![],
     };
+    // the extra parts show while the eyes do (a status morph past halfway
+    // takes them away with the eyes; the main shell stays)
+    let rich_parts = match (&rich, &e.eyes) {
+        (Some(rich), Some(_)) if !rich.parts.is_empty() => Some(part_draws(rich, &o, r, &d)),
+        _ => None,
+    };
     ShapeRec {
         decals,
         rims,
+        rich_parts,
         rich: rich.map(|r| (r.shell.clone(), r.eyes.clone())),
         center: [a * r / 2.0 + u, c * r / 2.0 + l],
         radius: e.zoom * t / 2.0,
@@ -1757,6 +1765,8 @@ struct ShapeRec {
     decals: Vec<DecalRec>,
     /// A rich body's eye rims (empty for every other body).
     rims: Vec<DecalRec>,
+    /// A multi-part rich body's extra parts and draw order.
+    rich_parts: Option<(Vec<PartDraw>, Vec<usize>)>,
     /// A rich body's shell and eye colours.
     rich: Option<(String, String)>,
     center: V2,
@@ -2956,6 +2966,9 @@ struct Be {
     decals: Vec<DecalRec>,
     /// Their eye rims, likewise.
     rims: Vec<DecalRec>,
+    /// A lone multi-part rich body's extra parts and draw order (not drawn
+    /// in a blend between bodies).
+    rich_parts: Option<(Vec<PartDraw>, Vec<usize>)>,
     /// The heaviest body's shell and eye colours when it is rich.
     rich: Option<(String, String)>,
     /// A rich body in the blend (whose shade memory `ink_shade` reads).
@@ -2998,6 +3011,7 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
     Be {
         decals: faded(|l| &l.decals),
         rims: faded(|l| &l.rims),
+        rich_parts: if single { r[0].0.rich_parts.clone() } else { None },
         rich: r.first().and_then(|(l, _)| l.rich.clone()),
         rich_body: rich_of(e),
         size: t,
@@ -3062,6 +3076,9 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
             vec![r2("path", &[("d", a.clone())])],
         ));
         l.push(re("g", &[("clip-path", format!("url(#{}-clip)", n))], inside));
+        if let Some((parts, order)) = &e.rich_parts {
+            l = layered(l, parts, order, n, shade, ga_loops, &mut u);
+        }
     } else if !c.is_empty() && t.cutout {
         u.push(re(
             "mask",
@@ -3281,6 +3298,93 @@ fn decal_paths(decals: &[DecalRec], shade: f64, d: impl Fn(&[Vec<V2>]) -> String
         .collect()
 }
 
+/// An extra part of a rich body drawn at a pose: its outline, shell and
+/// decals, in the caller's space (its `z` parallax applied).
+#[derive(Clone)]
+struct PartDraw {
+    body: Vec<Vec<V2>>,
+    shell: String,
+    decals: Vec<DecalRec>,
+}
+
+/// A rich body's extra parts at `rot` in an `s` px sprite, each point
+/// mapped by `map`, and the draw order (`custom::part_order`; 0 is the main
+/// part). A part's `z` offset moves it with the parallax a point that far
+/// toward the viewer has.
+fn part_draws(rich: &custom::Rich, rot: &Rot, s: f64, map: &dyn Fn(V2) -> V2) -> (Vec<PartDraw>, Vec<usize>) {
+    let draws = rich
+        .parts
+        .iter()
+        .zip(rich.layout.iter().skip(1))
+        .map(|(part, place)| {
+            let r = bodies::sprite_radius(part.body, s);
+            let v = bodies::view(rot, [0.0, 0.0, place.z_offset]);
+            let at = |l: &Vec<V2>| -> Vec<V2> {
+                l.iter().map(|&p| map([p[0] + r * v[0], p[1] - r * v[1]])).collect()
+            };
+            PartDraw {
+                body: bodies::im(part.body, rot, s).iter().flat_map(|d| ad(d)).map(|l| at(&l)).collect(),
+                shell: part.shell.clone(),
+                decals: part
+                    .decals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| DecalRec {
+                        layer: i,
+                        loops: bodies::decal_loops(part.body, rot, s, &d.loops, &d.off)
+                            .iter()
+                            .map(at)
+                            .collect(),
+                        fill: d.fill.clone(),
+                        opacity: d.opacity,
+                    })
+                    .filter(|r| !r.loops.is_empty())
+                    .collect(),
+            }
+        })
+        .collect();
+    (draws, custom::part_order(rich, rot))
+}
+
+/// The main part's elements (`main`) and the extra parts interleaved in
+/// draw order, each part's decals clipped to its own outline (its
+/// `clipPath` added to `defs`).
+fn layered(
+    main: Vec<MarkTree>,
+    parts: &[PartDraw],
+    order: &[usize],
+    id: &str,
+    shade: f64,
+    d: fn(&[Vec<V2>]) -> String,
+    defs: &mut Vec<MarkTree>,
+) -> Vec<MarkTree> {
+    let mut main = Some(main);
+    let mut out = Vec::new();
+    for &i in order {
+        if i == 0 {
+            out.extend(main.take().unwrap_or_default());
+            continue;
+        }
+        let part = &parts[i - 1];
+        let outline = d(&part.body);
+        let clip = format!("{}-p{}", id, i);
+        defs.push(re("clipPath", &[("id", clip.clone())], vec![r2("path", &[("d", outline.clone())])]));
+        out.push(r2(
+            "path",
+            &[("d", outline), ("fill", shaded(&part.shell, shade)), ("data-part", i.to_string())],
+        ));
+        let decals = decal_paths(&part.decals, shade, d);
+        if !decals.is_empty() {
+            out.push(re(
+                "g",
+                &[("clip-path", format!("url(#{})", clip)), ("data-part", i.to_string())],
+                decals,
+            ));
+        }
+    }
+    out
+}
+
 /// The atlas branch for a rich body (`EM`/`AM` with its own paint): the
 /// shell in the recipe's colour, then the decals and the filled eyes,
 /// both clipped to the body, at the exact pose (no `Rh` snapping, so a
@@ -3331,12 +3435,17 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
     };
     let mut drawn = body_paths(Some(shaded(&rich.shell, shade)));
     drawn.push(re("g", &[("clip-path", format!("url(#{})", clip))], inside));
+    let mut defs = vec![re("clipPath", &[("id", clip)], body_paths(None))];
+    if !rich.parts.is_empty() {
+        let (parts, order) = part_draws(rich, &rot, s, &|p| p);
+        drawn = layered(drawn, &parts, &order, id, shade, bodies::gc, &mut defs);
+    }
     kc(
         n,
         id,
         extent,
         vec![
-            re("defs", &[], vec![re("clipPath", &[("id", clip)], body_paths(None))]),
+            re("defs", &[], defs),
             re(
                 "g",
                 &[("transform", format!("matrix({} 0 0 {} {} {})", xo(u), xo(l), xo(d), xo(f)))],

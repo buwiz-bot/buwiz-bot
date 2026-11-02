@@ -773,7 +773,16 @@ impl Outline {
 
 /// `hc` — bake an outline record from path data.
 pub(super) fn hc(e: &str) -> Outline {
-    let t = vv_norm(e, &us(e, 4.0));
+    outline_of(vv_norm(e, &us(e, 4.0)))
+}
+
+/// `hc` without `Vv`'s recentring: a part of a multi-part body keeps the
+/// place its shared frame gives it.
+pub(super) fn hc_raw(e: &str) -> Outline {
+    outline_of(e.to_owned())
+}
+
+fn outline_of(t: String) -> Outline {
     let n = us(&t, 4.0);
     let z = zv(&n, 160);
     let mut a = 0.0f64;
@@ -2515,6 +2524,22 @@ pub(crate) fn im(body: &'static str, rot: &Rot, n: f64) -> Vec<String> {
         Some(a) => vec![atlas_outline(&a, n, rot.yaw, rot.pitch, rot.roll)],
         None => vec![],
     }
+}
+
+/// A body point (body units) after a pose's rotation: x right, y up, z
+/// toward the viewer.
+pub(crate) fn view(rot: &Rot, p: V3) -> V3 {
+    ys(
+        rot.yaw * std::f64::consts::PI / 180.0,
+        rot.pitch * std::f64::consts::PI / 180.0,
+        rot.roll * std::f64::consts::PI / 180.0,
+    )(p)
+}
+
+/// The projection radius (sprite px per body unit) of a body at sprite
+/// size `n`.
+pub(crate) fn sprite_radius(body: &'static str, n: f64) -> f64 {
+    cs(body).map_or(0.0, |info| pc(&info, n))
 }
 
 /// A rich body's decal loops (body units on its front, y up) lifted onto

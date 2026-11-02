@@ -744,6 +744,7 @@ pub(crate) struct CustomBody {
 
 /// The input box → body mapping of an outline: `Hv`'s centring and
 /// scaling to `Bv`, then `hc`'s own renormalization step if it took one.
+#[derive(Clone, Copy)]
 struct FrontMap {
     scale: f64,
     center: V2,
@@ -753,7 +754,7 @@ struct FrontMap {
 
 impl FrontMap {
     /// A point of the 100×100 input box (y down) in body units (y up).
-    fn to_body(&self, p: V2) -> V2 {
+    fn to_body(self, p: V2) -> V2 {
         let [k, dx, dy] = self.renorm;
         let x = X + (X + (p[0] - self.center[0]) * self.scale + dx - X) * k;
         let y = X + (X + (p[1] - self.center[1]) * self.scale + dy - X) * k;
@@ -944,6 +945,305 @@ pub(crate) struct Rich {
     pub eye_box: Option<(AvEye, f64)>,
     /// A rim around each eye: its colour and thickness (body units).
     pub rim: Option<(String, f64)>,
+    /// The extra parts (`"p"`), each its own lofted body in the main
+    /// part's frame.
+    pub parts: Vec<RichPart>,
+    /// Placement for depth sorting: the main part, then each extra part.
+    pub layout: Vec<Place>,
+    /// Whether two parts' outlines overlap seen from the front (same
+    /// indexing as `layout`).
+    pub overlap: Vec<Vec<bool>>,
+}
+
+/// An extra part of a rich body.
+pub(crate) struct RichPart {
+    /// The part's own body (registered under an internal `custom:` name).
+    pub body: &'static str,
+    pub geometry: Rc<CustomBody>,
+    pub shell: String,
+    pub decals: Vec<Decal>,
+}
+
+/// Where a part sits for depth sorting: its outline's area centroid on the
+/// front plane (body units), its recipe bias `z` and the 3D offset toward
+/// the viewer that bias gives it.
+#[derive(Clone, Copy)]
+pub(crate) struct Place {
+    pub centroid: V2,
+    pub z: f64,
+    pub z_offset: f64,
+}
+
+/// The most extra parts a rich body takes.
+const MAX_PARTS: usize = 6;
+/// The thinnest an extra part's loft gets (half-depth, body units).
+const PART_MIN_DEPTH: f64 = 0.06;
+
+/// The largest subpath of an outline, in the 100×100 box.
+fn outline_points(path: &str) -> Result<Vec<V2>, String> {
+    let mut best: Option<(f64, Vec<V2>)> = None;
+    for s in &subpaths(path)? {
+        let pts = bodies::us(s, 0.5);
+        if pts.len() < 3 {
+            continue;
+        }
+        let a = signed_area(&pts).abs();
+        if best.as_ref().is_none_or(|b| a > b.0) {
+            best = Some((a, pts));
+        }
+    }
+    let Some((area, pts)) = best else {
+        return Err("the outline needs at least 3 points".to_owned());
+    };
+    if area.is_nan() || area < 1.0 {
+        return Err("the outline encloses no area".to_owned());
+    }
+    Ok(pts)
+}
+
+/// One part's lofted body, placed in the shared frame `front` at body
+/// `size` (eyes are placed only on the main part).
+fn part_body(pts: &[V2], front: &FrontMap, size: f64, with_eyes: bool) -> Result<CustomBody, String> {
+    let mut d = String::new();
+    for (i, p) in pts.iter().enumerate() {
+        let x = ((X + (p[0] - front.center[0]) * front.scale) * 100.0).round() / 100.0;
+        let y = ((X + (p[1] - front.center[1]) * front.scale) * 100.0).round() / 100.0;
+        d += &format!("{}{x} {y}", if i == 0 { "M" } else { "L" });
+    }
+    d += "Z";
+    let outline = Rc::new(bodies::hc_raw(&d));
+    let poly = body_polygon(&outline.path);
+    if poly.len() < 3 || signed_area(&poly).abs() < 1e-3 {
+        return Err("the outline encloses no area".to_owned());
+    }
+    let circle = inscribed_circle(&poly);
+    let (eyes, eye_x) = if with_eyes {
+        place_eyes(&poly, size, circle)
+    } else {
+        (
+            AvEye {
+                width: 0.0,
+                height: 0.0,
+                gap: 0.0,
+                shift_y: 0.0,
+            },
+            0.0,
+        )
+    };
+    // the head keeps a rounded body's thickness; a thin extra part (an
+    // antler, a feather) stays as thin as it is wide
+    let depth = if with_eyes {
+        loft_depth(circle.1)
+    } else {
+        (CLOUD_DEPTH * circle.1).clamp(PART_MIN_DEPTH, CLOUD_DEPTH)
+    };
+    let loft_points = bodies::jt(&bodies::us(&outline.path, 1.0));
+    let atlas = Rc::new(Atlas {
+        mirror: false,
+        m: 255.0,
+        c: 1.0,
+        kf: size * CS / US,
+        step: ATLAS_STEP,
+        k: ATLAS_K,
+        bytes: Vec::new(),
+        baked: Some(BakedNodes::new(Solid::loft(&loft_points, depth))),
+    });
+    Ok(CustomBody {
+        outline,
+        front: *front,
+        size,
+        loft_points,
+        depth,
+        eyes,
+        eye_x,
+        atlas,
+        rest: std::cell::OnceCell::new(),
+    })
+}
+
+/// The area centroid of a polygon.
+fn centroid_of(poly: &[V2]) -> V2 {
+    let n = poly.len();
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        let w = p[0] * q[1] - q[0] * p[1];
+        a += w;
+        cx += (p[0] + q[0]) * w;
+        cy += (p[1] + q[1]) * w;
+    }
+    if a.abs() < 1e-12 {
+        return poly.first().copied().unwrap_or([0.0, 0.0]);
+    }
+    [cx / (3.0 * a), cy / (3.0 * a)]
+}
+
+/// Whether `p` is inside the polygon (even-odd).
+fn inside(poly: &[V2], p: V2) -> bool {
+    let n = poly.len();
+    let mut c = false;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) {
+            c = !c;
+        }
+    }
+    c
+}
+
+/// Whether two outlines overlap (sampled on a 32×32 grid over their
+/// common bounding box).
+fn overlaps(a: &[V2], b: &[V2]) -> bool {
+    let bbox = |p: &[V2]| {
+        p.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |m, q| {
+            [m[0].min(q[0]), m[1].min(q[1]), m[2].max(q[0]), m[3].max(q[1])]
+        })
+    };
+    let (ba, bb) = (bbox(a), bbox(b));
+    let (x0, y0, x1, y1) = (ba[0].max(bb[0]), ba[1].max(bb[1]), ba[2].min(bb[2]), ba[3].min(bb[3]));
+    if x0 >= x1 || y0 >= y1 {
+        return false;
+    }
+    const G: usize = 32;
+    (0..G).any(|i| {
+        (0..G).any(|j| {
+            let p = [
+                x0 + (x1 - x0) * (i as f64 + 0.5) / G as f64,
+                y0 + (y1 - y0) * (j as f64 + 0.5) / G as f64,
+            ];
+            inside(a, p) && inside(b, p)
+        })
+    })
+}
+
+/// The main geometry, extra parts and their placement of a multi-part
+/// recipe.
+type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>);
+
+/// A multi-part recipe's main geometry and extra parts: one frame from
+/// the bounding box of every outline (the `Hv` fit of the whole figure),
+/// one body size for all of them (the figure's area matched to the kit
+/// square's), each part its own loft at its place in the frame.
+fn multi_part(
+    main: &str,
+    spec: &serde_json::Value,
+    hash: u64,
+) -> Result<MultiPart, String> {
+    let list = spec.as_array().ok_or("the parts (\"p\") must be a list")?;
+    if list.len() > MAX_PARTS {
+        return Err(format!("at most {MAX_PARTS} parts, got {}", list.len()));
+    }
+    let main_pts = outline_points(main)?;
+    let mut part_pts = Vec::with_capacity(list.len());
+    for (i, part) in list.iter().enumerate() {
+        let n = i + 1;
+        if !part.is_object() {
+            return Err(format!("part {n} must be an object"));
+        }
+        let o = part
+            .get("o")
+            .and_then(|o| o.as_str())
+            .ok_or_else(|| format!("part {n} needs an outline (\"o\")"))?;
+        part_pts.push(outline_points(o).map_err(|e| format!("part {n}: {e}"))?);
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for p in main_pts.iter().chain(part_pts.iter().flatten()) {
+        x0 = x0.min(p[0]);
+        x1 = x1.max(p[0]);
+        y0 = y0.min(p[1]);
+        y1 = y1.max(p[1]);
+    }
+    let front = FrontMap {
+        scale: BV / (x1 - x0).max(y1 - y0),
+        center: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
+        renorm: [1.0, 0.0, 0.0],
+    };
+    // the figure's area in body units, matched to the kit square's
+    let unit = front.scale / X;
+    let area: f64 = std::iter::once(&main_pts)
+        .chain(&part_pts)
+        .map(|p| signed_area(p).abs() * unit * unit)
+        .sum();
+    let size = (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE);
+    let base = Rc::new(part_body(&main_pts, &front, size, true)?);
+    let mut parts = Vec::with_capacity(list.len());
+    let mut layout = vec![Place {
+        centroid: centroid_of(&body_polygon(&base.outline.path)),
+        z: 0.0,
+        z_offset: 0.0,
+    }];
+    for (i, (part, pts)) in list.iter().zip(&part_pts).enumerate() {
+        let n = i + 1;
+        let geometry = Rc::new(part_body(pts, &front, size, false).map_err(|e| format!("part {n}: {e}"))?);
+        let shell = colour(part.get("c"), &format!("part {n} shell"))?;
+        let decals = parse_layers(part.get("l"), &geometry, &format!("part {n} "))?;
+        let z = match part.get("z") {
+            None | Some(serde_json::Value::Null) => 0.0,
+            Some(z) => z
+                .as_f64()
+                .filter(|z| z.is_finite())
+                .ok_or_else(|| format!("part {n} \"z\" must be a number"))?
+                .clamp(-1.0, 1.0),
+        };
+        layout.push(Place {
+            centroid: centroid_of(&body_polygon(&geometry.outline.path)),
+            z,
+            z_offset: z * base.depth,
+        });
+        let body: &'static str = Box::leak(format!("{PREFIX}{hash:016x}-part{n}").into_boxed_str());
+        BODIES.with(|b| b.borrow_mut().insert(body, geometry.clone()));
+        parts.push(RichPart {
+            body,
+            geometry,
+            shell,
+            decals,
+        });
+    }
+    Ok((base, parts, layout))
+}
+
+/// The order to draw a rich body's parts in at a pose, back to front, as
+/// `layout` indices (0 is the main part). Two parts whose outlines overlap
+/// from the front and whose `z` differ keep the recipe's layering (higher
+/// `z` over lower) while the front faces the viewer, and swap once it
+/// turns away; any other pair goes by depth: the rotated centroid, pushed
+/// toward the viewer by the part's `z` offset.
+pub(crate) fn part_order(rich: &Rich, rot: &bodies::Rot) -> Vec<usize> {
+    let facing = bodies::view(rot, [0.0, 0.0, 1.0])[2] > 0.0;
+    let depth: Vec<f64> = rich
+        .layout
+        .iter()
+        .map(|p| bodies::view(rot, [p.centroid[0], p.centroid[1], p.z_offset])[2])
+        .collect();
+    // `a` draws before (behind) `b`
+    let behind = |a: usize, b: usize| -> bool {
+        let (za, zb) = (rich.layout[a].z, rich.layout[b].z);
+        if rich.overlap[a][b] && za != zb {
+            if facing {
+                za < zb
+            } else {
+                za > zb
+            }
+        } else {
+            depth[a] < depth[b]
+        }
+    };
+    let mut order: Vec<usize> = (0..rich.layout.len()).collect();
+    // an insertion sort: the comparison mixes two rules and needn't be a
+    // total order, so place each part after the last one it sits in front of
+    for i in 1..order.len() {
+        let mut j = i;
+        while j > 0 && behind(order[j], order[j - 1]) {
+            order.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+    order
 }
 
 /// The smallest and largest eye size multiplier a recipe may ask for.
@@ -1067,6 +1367,64 @@ fn densify(points: &[V2], step: f64) -> Vec<V2> {
     out
 }
 
+/// A recipe's decal layers on `base`'s front (`part` prefixes the error
+/// messages: empty for the main part).
+fn parse_layers(layers: Option<&serde_json::Value>, base: &CustomBody, part: &str) -> Result<Vec<Decal>, String> {
+    let layers = match layers {
+        None | Some(serde_json::Value::Null) => &[][..],
+        Some(serde_json::Value::Array(a)) => &a[..],
+        Some(_) => return Err(format!("{part}the layers (\"l\") must be a list")),
+    };
+    if layers.len() > MAX_LAYERS {
+        return Err(format!("{part}at most {MAX_LAYERS} layers, got {}", layers.len()));
+    }
+    let mut decals = Vec::with_capacity(layers.len());
+    for (i, layer) in layers.iter().enumerate() {
+        let n = format!("{part}layer {}", i + 1);
+        let parts = layer
+            .as_array()
+            .ok_or_else(|| format!("{n} must be [path, colour, opacity]"))?;
+        let path = parts
+            .first()
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| format!("{n} needs a path"))?;
+        let fill = colour(parts.get(1), &n)?;
+        let opacity = match parts.get(2) {
+            None => 1.0,
+            Some(o) => o
+                .as_f64()
+                .filter(|o| o.is_finite())
+                .ok_or_else(|| format!("{n} opacity must be a number"))?
+                .clamp(0.0, 1.0),
+        };
+        let poly = body_polygon(&base.outline.path);
+        let mut loops = Vec::new();
+        for sub in subpaths(path).map_err(|e| format!("{n}: {e}"))? {
+            let pts = bodies::us(&sub, 0.5);
+            let area = signed_area(&pts).abs();
+            if pts.len() < 3 || area.is_nan() || area < 0.25 {
+                continue;
+            }
+            let body: Vec<V2> = pts.iter().map(|&p| base.front.to_body(p)).collect();
+            loops.push(densify(&body, 0.03));
+        }
+        if loops.is_empty() {
+            return Err(format!("{n} encloses no area"));
+        }
+        let off = loops
+            .iter()
+            .map(|l: &Vec<V2>| l.iter().map(|&p| signed_distance(&poly, p) < -OFF_BODY).collect())
+            .collect();
+        decals.push(Decal {
+            off,
+            loops,
+            fill,
+            opacity,
+        });
+    }
+    Ok(decals)
+}
+
 /// Register a multi-colour body from a recipe and return its name, for
 /// `Mark::new`/`Mark::set_body` like a kit body's.
 ///
@@ -1079,9 +1437,17 @@ fn densify(points: &[V2], step: f64) -> Vec<V2> {
 /// optional (default 1). The decals ride the body's curved front; the
 /// shell, decals and eyes take the recipe's colours instead of the ink.
 ///
+/// `"e"` is the eye colour, or an object placing and sizing the eyes
+/// (`c`, `at`, `gap`, `s`, `rim`, `rw`). `"p"` adds up to 6 extra parts
+/// (`{"o","c","l","z"}`): then every outline shares one frame fitted to the
+/// whole figure, each part is its own loft at its place in it, and the
+/// parts draw in depth order (see [`part_order`]); the top-level outline
+/// is the main part the eyes sit on.
+///
 /// The same recipe always returns the same name (`rich:<hash>`). Errors
 /// are short human-readable messages: bad JSON, a missing or bad colour,
-/// an unusable outline or layer path, more than 8 layers.
+/// an unusable outline or layer path, more than 8 layers, a bad part or
+/// more than 6.
 pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
     let key = json.trim();
     if let Some(name) = BY_RECIPE.with(|m| m.borrow().get(key).copied()) {
@@ -1093,8 +1459,18 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
         .get("o")
         .and_then(|o| o.as_str())
         .ok_or("the recipe needs an outline (\"o\")")?;
-    let base_name = custom_body(outline)?;
-    let base = find(base_name).ok_or("the outline didn't register")?;
+    // with parts, every outline shares one frame; without, the main part
+    // is the plain custom body of its outline
+    let (base, parts_spec) = match v.get("p") {
+        None | Some(serde_json::Value::Null) => {
+            let base_name = custom_body(outline)?;
+            (find(base_name).ok_or("the outline didn't register")?, None)
+        }
+        Some(p) => {
+            let (base, parts, layout) = multi_part(outline, p, fnv(key))?;
+            (base, Some((parts, layout)))
+        }
+    };
     let shell = colour(v.get("c"), "shell")?;
     let (eyes, eye_box, rim) = match v.get("e") {
         Some(e @ serde_json::Value::Object(_)) => {
@@ -1129,58 +1505,21 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
         }
         e => (colour(e, "eye")?, None, None),
     };
-    let layers = match v.get("l") {
-        None | Some(serde_json::Value::Null) => &[][..],
-        Some(serde_json::Value::Array(a)) => &a[..],
-        Some(_) => return Err("the layers (\"l\") must be a list".to_owned()),
+    let decals = parse_layers(v.get("l"), &base, "")?;
+    let (parts, layout, overlap) = match parts_spec {
+        Some((parts, layout)) => {
+            let polys: Vec<Vec<V2>> = std::iter::once(&base)
+                .chain(parts.iter().map(|p| &p.geometry))
+                .map(|b| body_polygon(&b.outline.path))
+                .collect();
+            let overlap = polys
+                .iter()
+                .map(|a| polys.iter().map(|b| overlaps(a, b)).collect())
+                .collect();
+            (parts, layout, overlap)
+        }
+        None => (vec![], vec![], vec![]),
     };
-    if layers.len() > MAX_LAYERS {
-        return Err(format!("at most {MAX_LAYERS} layers, got {}", layers.len()));
-    }
-    let mut decals = Vec::with_capacity(layers.len());
-    for (i, layer) in layers.iter().enumerate() {
-        let n = i + 1;
-        let parts = layer
-            .as_array()
-            .ok_or_else(|| format!("layer {n} must be [path, colour, opacity]"))?;
-        let path = parts
-            .first()
-            .and_then(|p| p.as_str())
-            .ok_or_else(|| format!("layer {n} needs a path"))?;
-        let fill = colour(parts.get(1), &format!("layer {n}"))?;
-        let opacity = match parts.get(2) {
-            None => 1.0,
-            Some(o) => o
-                .as_f64()
-                .filter(|o| o.is_finite())
-                .ok_or_else(|| format!("layer {n} opacity must be a number"))?
-                .clamp(0.0, 1.0),
-        };
-        let poly = body_polygon(&base.outline.path);
-        let mut loops = Vec::new();
-        for sub in subpaths(path).map_err(|e| format!("layer {n}: {e}"))? {
-            let pts = bodies::us(&sub, 0.5);
-            let area = signed_area(&pts).abs();
-            if pts.len() < 3 || area.is_nan() || area < 0.25 {
-                continue;
-            }
-            let body: Vec<V2> = pts.iter().map(|&p| base.front.to_body(p)).collect();
-            loops.push(densify(&body, 0.03));
-        }
-        if loops.is_empty() {
-            return Err(format!("layer {n} encloses no area"));
-        }
-        let off = loops
-            .iter()
-            .map(|l: &Vec<V2>| l.iter().map(|&p| signed_distance(&poly, p) < -OFF_BODY).collect())
-            .collect();
-        decals.push(Decal {
-            off,
-            loops,
-            fill,
-            opacity,
-        });
-    }
     let name: &'static str =
         Box::leak(format!("{RICH_PREFIX}{:016x}", fnv(key)).into_boxed_str());
     BODIES.with(|b| b.borrow_mut().insert(name, base));
@@ -1193,6 +1532,9 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                 decals,
                 eye_box,
                 rim,
+                parts,
+                layout,
+                overlap,
             }),
         )
     });
@@ -2219,7 +2561,7 @@ mod tests {
     #[test]
     fn rich_frame_timing() {
         let tab = shared_tables();
-        for (label, body) in [("plain", custom_body(CAT).unwrap()), ("rich", rich_body(ORANGE_CAT).unwrap()), ("rich brute", rich_body(HULK).unwrap())] {
+        for (label, body) in [("plain", custom_body(CAT).unwrap()), ("rich", rich_body(ORANGE_CAT).unwrap()), ("rich brute", rich_body(HULK).unwrap()), ("luffy", rich_body(LUFFY).unwrap()), ("chopper", rich_body(CHOPPER).unwrap())] {
             let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 2);
             let mut dir = Director::new(&mut mark, "curious", 2, false, false, None);
             // warm the atlas nodes the run visits
@@ -2543,6 +2885,256 @@ mod tests {
                 let mut t = render_ink(&mark, extent, pt * 0.82, ink);
                 t.attrs.retain(|(k, _)| *k != "id");
                 svg += &tree_svg(&t, x0, y0, 1.0);
+            }
+        }
+        std::fs::write(format!("{dir}/rest.svg"), svg + "</svg>").unwrap();
+        let poses: [(&str, V3); 5] = [
+            ("yaw -40", [0.0, -40.0, 0.0]),
+            ("front", [0.0, 0.0, 0.0]),
+            ("yaw 40", [0.0, 40.0, 0.0]),
+            ("yaw 72", [0.0, 72.0, 0.0]),
+            ("pitch 40", [40.0, 20.0, 0.0]),
+        ];
+        let mut svg = head(110.0 + 5.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, (title, _)) in poses.iter().enumerate() {
+            svg += &label(140.0 + c as f64 * 150.0, 18.0, title);
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, (_, rot)) in poses.iter().enumerate() {
+                svg += &pose_svg(body, *rot, 150.0, 100.0 + c as f64 * 150.0, y, &format!("q{r}x{c}"));
+            }
+        }
+        std::fs::write(format!("{dir}/turn.svg"), svg + "</svg>").unwrap();
+    }
+
+    // -- multi-part rich bodies (round 5) --------------------------------------
+
+    /// (a) Luffy: a black-haired head with a skin face (the main part) under
+    /// a straw hat with a red band.
+    const LUFFY: &str = r##"{"o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#141414","l":[["M27 67 C27 55 37 49 50 49 C63 49 73 55 73 67 C73 83 63 92 50 92 C37 92 27 83 27 67 Z","#F2C9A0",1],["M37 71 L39 70 L43 76 L41 77 Z","#B5543E",1]],"e":{"c":"#111111","at":[50,64],"gap":16,"s":0.9},"p":[{"o":"M6 44 C6 37 24 35 33 35 C33 20 41 12 50 12 C59 12 67 20 67 35 C76 35 94 37 94 44 C94 50 72 52 50 52 C28 52 6 50 6 44 Z","c":"#E8C35A","l":[["M33 28 L67 28 L67 35 L33 35 Z","#C62828",1]],"z":0.1}]}"##;
+    /// (b) Chopper: a tan head with white-rimmed eyes and a blue nose, a pink
+    /// top hat with a white X and a rose brim band, brown antlers.
+    const CHOPPER: &str = r##"{"o":"M24 68 C24 52 36 46 50 46 C64 46 76 52 76 68 C76 85 64 95 50 95 C36 95 24 85 24 68 Z","c":"#C68A55","l":[["M46 80 C46 77 54 77 54 80 C54 83 46 83 46 80 Z","#3B6FD6",1]],"e":{"c":"#111111","at":[50,69],"gap":18,"s":1.0,"rim":"#FFFFFF","rw":0.5},"p":[{"o":"M26 50 C26 45 30 43 34 43 C34 26 40 18 50 18 C60 18 66 26 66 43 C70 43 74 45 74 50 C74 55 64 56 50 56 C36 56 26 55 26 50 Z","c":"#F2A0B6","l":[["M43 26 L46 23 L57 35 L54 38 Z M54 23 L57 26 L46 38 L43 35 Z","#FFFFFF",1],["M27 46 L73 46 L73 52 L27 52 Z","#D9667F",1]],"z":0.1},{"o":"M28 46 L21 31 L11 27 L13 23 L21 26 L17 14 L22 13 L25 24 L28 15 L33 16 L29 28 L33 44 Z","c":"#7A4A26","z":-0.05},{"o":"M72 46 L79 31 L89 27 L87 23 L79 26 L83 14 L78 13 L75 24 L72 15 L67 16 L71 28 L67 44 Z","c":"#7A4A26","z":-0.05}]}"##;
+    /// (c) Gear 5: a white cloud-hair head (main) with a skin face, and two
+    /// small clouds floating off its upper left and right.
+    const GEAR5: &str = r##"{"o":"M30 40 C26 30 36 22 44 26 C46 16 60 16 62 26 C70 20 80 28 76 38 C86 42 84 56 76 58 C80 72 70 84 58 86 C54 94 40 92 38 86 C26 86 18 74 24 64 C14 58 18 44 30 40 Z","c":"#F4F4F4","l":[["M34 61 C34 51 42 47 50 47 C58 47 66 51 66 61 C66 75 58 84 50 84 C42 84 34 75 34 61 Z","#F2C9A0",1]],"e":{"c":"#E53935","at":[50,63],"gap":14,"s":0.8,"rim":"#FFFFFF","rw":0.3},"p":[{"o":"M4 22 C2 16 8 12 12 14 C14 8 22 8 24 14 C30 14 30 22 26 24 C24 28 8 28 4 22 Z","c":"#FFFFFF"},{"o":"M96 22 C98 16 92 12 88 14 C86 8 78 8 76 14 C70 14 70 22 74 24 C76 28 92 28 96 22 Z","c":"#FFFFFF"}]}"##;
+    /// A head with a hair bun behind it (z -0.5), overlapping its top.
+    const BUN: &str = r##"{"o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#F2C9A0","e":"#111111","p":[{"o":"M36 30 C36 18 42 10 50 10 C58 10 64 18 64 30 C64 40 58 44 50 44 C42 44 36 40 36 30 Z","c":"#3A2618","z":-0.5}]}"##;
+
+    fn bbox_centre(l: &[V2]) -> V2 {
+        let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for p in l {
+            x0 = x0.min(p[0]);
+            x1 = x1.max(p[0]);
+            y0 = y0.min(p[1]);
+            y1 = y1.max(p[1]);
+        }
+        [(x0 + x1) / 2.0, (y0 + y1) / 2.0]
+    }
+
+    /// Seen from the front, every part sits where the recipe's box puts it
+    /// relative to the head (one shared frame, not one per part).
+    #[test]
+    fn parts_keep_their_placement() {
+        let front = bodies::Rot { yaw: 0.0, pitch: 0.0, roll: 0.0 };
+        for recipe in [LUFFY, CHOPPER, GEAR5] {
+            let name = rich_body(recipe).unwrap();
+            let r = rich(name).unwrap();
+            let main = find(name).unwrap();
+            let v: serde_json::Value = serde_json::from_str(recipe).unwrap();
+            let boxed = |o: &str| bbox_centre(&outline_points(o).unwrap());
+            let main_box = boxed(v["o"].as_str().unwrap());
+            let radius = bodies::sprite_radius(name, 255.0);
+            let at = |b: &'static str| bbox_centre(&loops(&bodies::im(b, &front, 255.0)[0])[0]);
+            let main_px = at(name);
+            for (i, part) in r.parts.iter().enumerate() {
+                let want = boxed(v["p"][i]["o"].as_str().unwrap());
+                let k = main.front.scale / X * radius;
+                let want = [(want[0] - main_box[0]) * k, (want[1] - main_box[1]) * k];
+                let got = at(part.body);
+                let got = [got[0] - main_px[0], got[1] - main_px[1]];
+                let err = (got[0] - want[0]).hypot(got[1] - want[1]);
+                println!("{name} part {}: offset {got:.1?} want {want:.1?} ({err:.2} of 255)", i + 1);
+                assert!(err <= 1.5, "{name} part {}", i + 1);
+            }
+        }
+    }
+
+    /// A bun behind the head draws behind it from the front and in front
+    /// of it once the head turns away; antlers either side swap with the
+    /// turn.
+    #[test]
+    fn parts_draw_in_depth_order() {
+        let r = rich(rich_body(BUN).unwrap()).unwrap();
+        let pos = |order: &[usize], i: usize| order.iter().position(|&o| o == i).unwrap();
+        for (yaw, bun_first) in [(0.0, true), (33.0, true), (-60.0, true), (180.0, false), (150.0, false)] {
+            let order = part_order(&r, &bodies::Rot { yaw, pitch: -16.0, roll: 0.0 });
+            assert_eq!(pos(&order, 1) < pos(&order, 0), bun_first, "yaw {yaw}: {order:?}");
+        }
+        let r = rich(rich_body(CHOPPER).unwrap()).unwrap();
+        // parts: 1 hat, 2 left antler, 3 right antler
+        let order = part_order(&r, &bodies::Rot { yaw: 60.0, pitch: 0.0, roll: 0.0 });
+        assert!(pos(&order, 2) > pos(&order, 3), "yaw 60: {order:?}");
+        let order = part_order(&r, &bodies::Rot { yaw: -60.0, pitch: 0.0, roll: 0.0 });
+        assert!(pos(&order, 3) > pos(&order, 2), "yaw -60: {order:?}");
+        // the hat stays over the head while the face is toward the viewer
+        for yaw in [-70.0, -33.0, 0.0, 33.0, 70.0] {
+            for pitch in [-30.0, -16.0, 0.0, 30.0] {
+                let order = part_order(&r, &bodies::Rot { yaw, pitch, roll: 0.0 });
+                assert!(pos(&order, 1) > pos(&order, 0), "yaw {yaw} pitch {pitch}: {order:?}");
+            }
+        }
+    }
+
+    /// Each part's layers are clipped to that part's own outline.
+    #[test]
+    fn part_layers_clip_to_their_part() {
+        let tab = shared_tables();
+        let name = rich_body(CHOPPER).unwrap();
+        let mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
+        let tree = render_ink(&mark, 120.71, 78.72, "#1884FC");
+        fn walk<'a>(t: &'a MarkTree, out: &mut Vec<&'a MarkTree>) {
+            out.push(t);
+            for c in &t.children {
+                walk(c, out);
+            }
+        }
+        let mut all = Vec::new();
+        walk(&tree, &mut all);
+        let clips: Vec<&str> = all.iter().filter(|t| t.tag == "clipPath").filter_map(|t| t.attr("id")).collect();
+        for i in 1..=3 {
+            assert!(clips.contains(&format!("m-p{i}").as_str()), "{clips:?}");
+        }
+        let groups: Vec<_> = all.iter().filter(|t| t.tag == "g" && t.attr("data-part").is_some()).collect();
+        // the hat has layers; the antlers none
+        assert_eq!(groups.len(), 1);
+        for g in groups {
+            let i = g.attr("data-part").unwrap();
+            assert_eq!(g.attr("clip-path"), Some(format!("url(#m-p{i})").as_str()));
+            assert!(g.children.iter().all(|c| c.attr("data-layer").is_some()));
+        }
+        // the main part's own layers clip to the main outline
+        let main = all.iter().find(|t| t.attr("clip-path") == Some("url(#m-clip)")).unwrap();
+        assert!(main.children.iter().any(|c| c.attr("data-eye").is_some()));
+    }
+
+    /// Luffy at rest: the hat draws over the head and the eyes stay
+    /// visible below its brim, at every avatar size and through a gaze
+    /// sweep.
+    #[test]
+    fn eyes_show_under_a_hat() {
+        let tab = shared_tables();
+        let name = rich_body(LUFFY).unwrap();
+        for (extent, display) in [(80.47, 52.48), (100.59, 65.6), (120.71, 78.72)] {
+            let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
+            for g in 0..=20 {
+                if g > 0 {
+                    mark.set_gaze(Some([(g as f64 / 10.0 - 1.0), 0.4 - g as f64 / 25.0]));
+                    for _ in 0..6 {
+                        mark.advance(1.0 / 30.0);
+                    }
+                }
+                let tree = render_ink(&mark, extent, display, "#1884FC");
+                let mut ps = Vec::new();
+                all_paths(&tree, &mut ps);
+                let eye_at = ps.iter().position(|p| p.attr("data-eye").is_some()).expect("eyes");
+                let hat_at = ps.iter().position(|p| p.attr("data-part") == Some("1")).expect("hat");
+                assert!(hat_at > eye_at, "the hat draws over the head");
+                let hat = loops(ps[hat_at].attr("d").unwrap()).remove(0);
+                let eyes: Vec<V2> = ps
+                    .iter()
+                    .filter(|p| p.attr("data-eye").is_some())
+                    .flat_map(|p| loops(p.attr("d").unwrap()))
+                    .map(|l| centroid(&l))
+                    .collect();
+                assert_eq!(eyes.len(), 2, "at {display} gaze {g}");
+                for e in eyes {
+                    assert!(!inside(&hat, e), "at {display} gaze {g}: eye {e:?} under the hat");
+                }
+            }
+        }
+    }
+
+    /// Through the avatar run (rest gaze sweep with the edit shade, every
+    /// state clip, the pokes, status morphs) the extra parts show in every
+    /// frame with eyes and go with the eyes; the main shell always shows.
+    #[test]
+    fn parts_follow_the_eyes() {
+        let name = rich_body(LUFFY).unwrap();
+        for (extent, display) in [(80.47, 52.48), (120.71, 78.72)] {
+            for (label, tree, has_eyes, _) in rich_run(name, extent, display) {
+                let mut ps = Vec::new();
+                all_paths(&tree, &mut ps);
+                let hat = ps.iter().any(|p| p.attr("data-part") == Some("1"));
+                assert!(ps.iter().any(|p| p.attr("fill") == Some("#141414") || p.attr("fill").is_some_and(|f| f.starts_with("rgb("))), "{label}: no shell");
+                assert_eq!(hat, has_eyes, "{label} at {display}: hat {hat}, eyes {has_eyes}");
+            }
+        }
+    }
+
+    #[test]
+    fn rich_parts_errors() {
+        let head = r##""o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#141414","e":"#111111""##;
+        let part = r##"{"o":"M10 10 L30 10 L30 30 Z","c":"#FFFFFF"}"##;
+        let seven = [part; 7].join(",");
+        for p in [
+            r#""p":{}"#.to_owned(),
+            r#""p":[1]"#.to_owned(),
+            r##""p":[{"c":"#FFFFFF"}]"##.to_owned(),
+            r##""p":[{"o":"M0 0 L10 10","c":"#FFFFFF"}]"##.to_owned(),
+            r##""p":[{"o":"M10 10 L30 10 L30 30 Z","c":"white"}]"##.to_owned(),
+            r##""p":[{"o":"M10 10 L30 10 L30 30 Z","c":"#FFFFFF","z":"up"}]"##.to_owned(),
+            r##""p":[{"o":"M10 10 L30 10 L30 30 Z","c":"#FFFFFF","l":[["M0 0 A1 1 0 0 0 5 5 Z","#000000"]]}]"##.to_owned(),
+            format!(r#""p":[{seven}]"#),
+        ] {
+            let recipe = format!("{{{head},{p}}}");
+            assert!(rich_body(&recipe).is_err(), "{p} should be rejected");
+        }
+        assert!(rich_body(&format!("{{{head},\"p\":[{part}]}}")).is_ok());
+    }
+
+    /// Writes the round-5 sheets as SVG into `MARK_PARTS_DIR`.
+    #[test]
+    fn render_part_sheets() {
+        let Ok(dir) = std::env::var("MARK_PARTS_DIR") else {
+            return;
+        };
+        let tab = shared_tables();
+        let rows: Vec<(&str, &'static str)> = vec![
+            ("blob", "sphere"),
+            ("luffy", rich_body(LUFFY).unwrap()),
+            ("chopper", rich_body(CHOPPER).unwrap()),
+            ("gear 5", rich_body(GEAR5).unwrap()),
+        ];
+        let head = |w: f64, h: f64| {
+            format!("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'><rect width='100%' height='100%' fill='#2A2A2E'/>")
+        };
+        let ink = "#1884FC";
+        let mut svg = head(110.0 + 3.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, pt) in [64.0, 80.0, 96.0].iter().enumerate() {
+            svg += &label(130.0 + c as f64 * 150.0, 18.0, &format!("rest {pt}pt"));
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, pt) in [64.0, 80.0, 96.0].iter().enumerate() {
+                let extent = pt * 0.82 * 0.92 / 0.6;
+                let (x0, y0) = (110.0 + c as f64 * 150.0 + (150.0 - extent) / 2.0, y + (150.0 - extent) / 2.0);
+                if *body == "sphere" {
+                    let bytes = super::super::paint::rest_bytes("blob").unwrap();
+                    svg += &rest_svg(&bytes, extent, x0, y0, ink);
+                    continue;
+                }
+                let mark = Mark::new(&tab, Some(body), 1.0, false, false, 1);
+                let mut t = render_ink(&mark, extent, pt * 0.82, ink);
+                t.attrs.retain(|(k, _)| *k != "id");
+                let mut x = String::new();
+                xml(&t, &mut x);
+                // each cell's ids must be unique within the sheet
+                let x = x.replace("m-", &format!("c{r}{c}-"));
+                svg += &format!("<g transform='translate({x0} {y0})'>{x}</g>");
             }
         }
         std::fs::write(format!("{dir}/rest.svg"), svg + "</svg>").unwrap();
