@@ -1,7 +1,7 @@
 //! The bridge run for real: an app compiled with the shim, in QuickJS on a
 //! headless engine (as `mini.rs`'s tests run widgets), its calls answered
 //! by the Rust handlers, with a fake broker and a [`HostUi`] the tests
-//! answer. Test names carry the spec 17 IDs they cover.
+//! answer. Test names carry the spec's Appendix C IDs they cover.
 
 use std::{
     path::PathBuf,

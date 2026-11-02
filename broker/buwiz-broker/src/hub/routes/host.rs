@@ -301,7 +301,7 @@ impl Route {
                     "disable" => host.disable(&id).await,
                     "uninstall" => {
                         let out = host.uninstall(&id).await?;
-                        // 13.6: its routines go with it
+                        // 9.6: its routines go with it
                         V1::forget(&ctx.db, &id);
                         Ok(out)
                     }

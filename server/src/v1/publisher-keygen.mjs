@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// v1/publisher-keygen.mjs — make a publisher signing key (spec 4.1, 4.2).
+// v1/publisher-keygen.mjs — make a publisher signing key (spec 5.1, 5.2).
 //
 //   node src/v1/publisher-keygen.mjs gc-2026-01 [--publisher app.buwiz]
 //   node src/v1/publisher-keygen.mjs gc-2026-01 --public   # the key the Keychain holds

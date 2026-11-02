@@ -343,7 +343,7 @@ async fn inv_09_an_open_on_an_error_is_ignored_on_a_good_one_a_card_never_an_ope
     let good = run_in(&ctx, TurnCtx::default());
     let r = call(&good, "fx_open", json!({})).await;
     assert_eq!(r.content, json!("Here is the card."), "INV-09: _meta never reaches the model");
-    assert!(ctx.jobs.with(good.job, |j| j.open.is_none()).unwrap(), "INV-09: nothing auto-opens (9.7)");
+    assert!(ctx.jobs.with(good.job, |j| j.open.is_none()).unwrap(), "INV-09: nothing auto-opens (17)");
     let st = good.state();
     assert_eq!(st.v1_cards.len(), 1);
     assert_eq!(st.v1_cards[0]["app"], "card");

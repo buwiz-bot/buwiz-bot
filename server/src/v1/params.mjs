@@ -1,4 +1,4 @@
-// v1/params.mjs — a routine's `params` (spec 5.9, "Routine instances"):
+// v1/params.mjs — a routine's `params` (spec 19.2):
 // the settings one instance of a routine runs with, declared by the plugin
 // as a small JSON Schema and given by whoever makes the instance.
 //

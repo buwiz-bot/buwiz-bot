@@ -2,7 +2,7 @@
 // v1/fixture/server.mjs — the conformance fixture plugin (stdio MCP).
 //
 // Plugin id app.buwiz.fixture, short `fx`. It implements every
-// reserved tool of spec 7.8 the way a conforming plugin must (the key in
+// reserved tool of spec 10 the way a conforming plugin must (the key in
 // memory only, provision first, certificates over JCS, tickets with a
 // subject map that never leaves the process), plus tools that exercise the
 // broker: fx_echo (echoes args and `_meta["buwiz/caller"]`), fx_slow, fx_fail,
@@ -45,14 +45,14 @@ const misbehave = (mode) => flags.some((f) => f === mode || f.startsWith(`${mode
 const crashAfter = Number(flags.find((f) => f.startsWith("crash-after:"))?.split(":")[1] || 0);
 const EIGHT_HOURS = 8 * 3600 * 1000;
 
-// memory only (4.3): never logged, written or echoed
+// memory only (5.4): never logged, written or echoed
 let key = null;
 const sessions = new Map(); // open_id → app
 const tickets = new Map(); // ticket → subject
 const bySubject = new Map(); // subject → ticket
 const calls = {};
 const accounts = new Map(); // `${account}/${label}` → what buwiz.account.set pushed
-const origins = {}; // tool → the last caller's origin (8.4)
+const origins = {}; // tool → the last caller's origin (16.1)
 let cancelled = 0;
 let served = 0;
 
@@ -85,7 +85,7 @@ function ticketFor(subject) {
 const ok = (structured) => ({ content: [{ type: "text", text: JSON.stringify(structured) }], structuredContent: structured });
 const fail = (code, message) => ({ isError: true, content: [{ type: "text", text: message }], structuredContent: { code, message } });
 
-// ── reserved tools (7.8) ─────────────────────────────────────────────────
+// ── reserved tools (10) ──────────────────────────────────────────────────
 function provision(args) {
   if (misbehave("skip-provision")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.provision is not implemented");
 
@@ -184,7 +184,7 @@ function resolveCommand(value) {
 
   if (value === "bad-props") return { result: "open", app: "card", props: { label: "no ticket" }, title: "Fixture Card" };
 
-  // starter flows (9.2, 1.1): text for the composer, never sent by Rox
+  // starter flows (15.2): text for the composer, never sent by Rox
   if (value === "prompt") return { result: "prompt", text: "Draft this month's board update:\n- what shipped\n- what is next" };
 
   if (value === "prompt-long") return { result: "prompt", text: "x".repeat(4001) };
@@ -210,7 +210,7 @@ function resolveScope(args) {
     };
   }
 
-  // a scope never answers prompt (9.2): the broker refuses it
+  // a scope never answers prompt (15.2): the broker refuses it
   if (value === "prompt") return { result: "prompt", text: "Attach this item" };
 
   if (!value || value === "error") return { result: "error", message: `No item matches that. ${"x".repeat(300)}` };
@@ -248,7 +248,7 @@ const TOOLS = [
       const t = ticketFor("opened");
       const props = { ticket: t, label: args.title || "Opened" };
 
-      // 9.8: an answer card's snapshot and when it was taken
+      // 16.2: an answer card's snapshot and when it was taken
       if (args.snapshot) Object.assign(props, { snapshot: args.snapshot, as_of: Date.now() });
       const open = { app: args.app || "card", props, ticket: t, title: args.title || "Fixture Card", placement: "inline" };
 
@@ -272,7 +272,7 @@ const TOOLS = [
     run: (args) => ok({ query: isString(args.q) ? args.q : "from:fixture" }),
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
-  { name: "fx_app_only", description: "A tool for apps only (10.1 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
+  { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
   { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts) }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },

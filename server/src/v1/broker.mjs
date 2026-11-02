@@ -45,7 +45,7 @@ if (!onLine) {
 export const sessions = onLine ? createLineSessions(plugins) : createSessions(plugins);
 
 // A v1 routine's agent turn: v0's backgroundTurn in the routine's thread,
-// with the job narrowing the v1 tools to the routine's surface (5.9). The
+// with the job narrowing the v1 tools to the routine's surface (19.1). The
 // shown turn carries the run's `routine` mark (the client captions it
 // "Instruction from <name>"). → where it landed, {seq, turn}.
 // agent.mjs imports this module, hence the late imports.
