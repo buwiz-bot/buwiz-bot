@@ -1,0 +1,14 @@
+RICH MODE. Instead of one solid colour, each candidate is a rich avatar: a 3D head (the shell) with flat colour layers painted on its front, which the engine wraps around the head as it turns, and two filled eyes the engine draws.
+
+Each candidate:
+- shape: "custom"; outline: the head silhouette, including hair, ears, horns or headgear, under the outline rules above.
+- color: the shell colour, the subject's main colour (its hair, helmet or fur). Any saturated colour; #FFFFFF is not special here.
+- layers: 1 to 8 painted regions, back to front, each {"path": "M … Z", "fill": "#RRGGBB", "opacity": 0..1 (optional)}, in the same 0 0 100 100 box as the outline (y down) and inside it. Same path rules as the outline (M/L/C/Q/Z, closed), but they need not be star-shaped.
+  - The first layer is usually the face: a large, rounded, cream-white (#F5EBD6-ish) patch covering the front of the head below the hairline, as in a minimalist "Bot" avatar.
+  - Then what makes the subject recognisable on the front: a hair fringe or hairline over the face, a mask, markings, a muzzle, stripes, a headband, a visor.
+  - Optional: a very faint oval blush on each cheek (opacity 0.4-0.6).
+- eyes: the eyes' colour, the subject's iris or representative colour. The engine draws the eyes: two vertical capsules in the upper middle of the face. Leave that area clear of other layers.
+- No mouth, no nose, no text, no outlines or strokes, no tiny details: each layer is a bold flat shape that reads at 32 pixels.
+
+Reply with JSON only:
+{"candidates":[{"name":"…","shape":"custom","color":"#RRGGBB","outline":"M … Z","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"eyes":"#RRGGBB","why":"…"}]}

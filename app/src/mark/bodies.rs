@@ -719,7 +719,7 @@ fn qv(e: &str, t: f64, n: f64, r: f64) -> String {
 }
 
 /// `Hv` — normalization (scale to `Bv`, recenter).
-fn hv(e: &[V2]) -> (f64, f64, f64) {
+pub(super) fn hv(e: &[V2]) -> (f64, f64, f64) {
     let (mut t, mut n, mut r, mut o) = (
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -2507,6 +2507,75 @@ pub(crate) fn im(body: &'static str, rot: &Rot, n: f64) -> Vec<String> {
         Some(a) => vec![atlas_outline(&a, n, rot.yaw, rot.pitch, rot.roll)],
         None => vec![],
     }
+}
+
+/// A rich body's decal loops (body units on its front, y up) lifted onto
+/// the loft surface and projected with the eyes' projector, in sprite
+/// space. Where a loop runs onto the part of the front turned away from the
+/// viewer it is cut at the limb (the facing boundary), so back-facing
+/// paint never shows; a loop wholly turned away is dropped.
+pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2>]) -> Vec<Vec<V2>> {
+    let Some(info) = cs(body) else {
+        return vec![];
+    };
+    let Some(Seat::Loft { surface_z }) = &info.seat else {
+        return vec![];
+    };
+    let pr = xh(&info, rot, n);
+    const H: f64 = 0.004;
+    // a point's surface position and how much its normal faces the viewer
+    let lift = |p: V2| -> (V2, f64) {
+        let z = surface_z(p[0], p[1]);
+        let dx = (surface_z(p[0] + H, p[1]) - surface_z(p[0] - H, p[1])) / (2.0 * H);
+        let dy = (surface_z(p[0], p[1] + H) - surface_z(p[0], p[1] - H)) / (2.0 * H);
+        let g = (dx * dx + dy * dy + 1.0).sqrt();
+        let facing = (pr.rotate)([-dx / g, -dy / g, 1.0 / g])[2];
+        (pr.project([p[0], p[1], z]), facing)
+    };
+    let mut out = Vec::new();
+    for l in loops {
+        let lifted: Vec<(V2, f64)> = l.iter().map(|&p| lift(p)).collect();
+        let Some(start) = lifted.iter().position(|(_, f)| *f > 0.0) else {
+            continue;
+        };
+        let m = l.len();
+        let mut ring: Vec<V2> = Vec::with_capacity(m);
+        // where the loop last went behind the limb (in front coordinates)
+        let mut exit: Option<V2> = None;
+        for k in 0..m {
+            let i = (start + k) % m;
+            let j = (i + 1) % m;
+            let (fa, fb) = (lifted[i].1, lifted[j].1);
+            if fa > 0.0 {
+                ring.push(lifted[i].0);
+            }
+            if (fa > 0.0) != (fb > 0.0) {
+                let t = fa / (fa - fb);
+                let c = [l[i][0] + (l[j][0] - l[i][0]) * t, l[i][1] + (l[j][1] - l[i][1]) * t];
+                match exit.take() {
+                    None if fa > 0.0 => {
+                        ring.push(lift(c).0);
+                        exit = Some(c);
+                    }
+                    Some(e) => {
+                        // follow the limb back: the chord between the two
+                        // crossings, lifted point by point
+                        let steps = ((c[0] - e[0]).hypot(c[1] - e[1]) / 0.03).ceil() as usize;
+                        for s in 1..steps {
+                            let t = s as f64 / steps as f64;
+                            ring.push(lift([e[0] + (c[0] - e[0]) * t, e[1] + (c[1] - e[1]) * t]).0);
+                        }
+                        ring.push(lift(c).0);
+                    }
+                    None => ring.push(lift(c).0),
+                }
+            }
+        }
+        if ring.len() >= 3 {
+            out.push(ring);
+        }
+    }
+    out
 }
 
 /// `$h`'s output: the body sprite path(s) + the eye paths.

@@ -11,6 +11,12 @@
 //! pose in the format `paint_rest` reads. Every lookup keyed on a body name
 //! (`cs`, `av`, `cv`, `atlas_of`, `zr_outline`, `rest_bytes`) asks [`find`]
 //! first for a `custom:` name.
+//!
+//! A rich body ([`rich_body`], `rich:` names) is a custom body's geometry
+//! with its own paint: a shell colour, decal layers lifted onto the loft's
+//! front (`bodies::decal_loops`) and filled eyes. `render` draws it
+//! (`rich_atlas`, and the morph branch's rich case) at the exact pose, so
+//! it rests live in the kit rest pose instead of from baked frames.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,6 +49,10 @@ const SQUARE_SIZE: f64 = 1.0413;
 const MAX_SIZE: f64 = 1.5;
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
+/// The name prefix of every rich body.
+const RICH_PREFIX: &str = "rich:";
+/// The most decal layers a rich body takes.
+const MAX_LAYERS: usize = 8;
 
 // ---------------------------------------------------------------------------
 // the extrusion and its silhouettes
@@ -691,7 +701,9 @@ pub(super) fn bake_rest(body: &'static str) -> Rc<[u8]> {
 pub(crate) fn rest_bytes(shape: &str) -> Option<Rc<[u8]>> {
     let name = match shape.strip_prefix("outline:") {
         Some(path) => custom_body(path).ok()?,
-        None => interned(shape)?,
+        // a rich body rests live (its decals have no baked frames)
+        None if shape.starts_with(PREFIX) => interned(shape)?,
+        None => return None,
     };
     let body = find(name)?;
     Some(body.rest.get_or_init(|| bake_rest(name)).clone())
@@ -705,6 +717,8 @@ pub(crate) fn rest_bytes(shape: &str) -> Option<Rc<[u8]>> {
 /// atlas and resting frames.
 pub(crate) struct CustomBody {
     pub outline: Rc<Outline>,
+    /// How the input's 100×100 box maps onto the body's front.
+    front: FrontMap,
     pub size: f64,
     /// The loft input (`Jt` points) and half-depth, for the `loft` seat.
     pub loft_points: Vec<V3>,
@@ -717,6 +731,25 @@ pub(crate) struct CustomBody {
     rest: std::cell::OnceCell<Rc<[u8]>>,
 }
 
+/// The input box → body mapping of an outline: `Hv`'s centring and
+/// scaling to `Bv`, then `hc`'s own renormalization step if it took one.
+struct FrontMap {
+    scale: f64,
+    center: V2,
+    /// `Vv`'s `(k, dx, dy)`, or identity.
+    renorm: [f64; 3],
+}
+
+impl FrontMap {
+    /// A point of the 100×100 input box (y down) in body units (y up).
+    fn to_body(&self, p: V2) -> V2 {
+        let [k, dx, dy] = self.renorm;
+        let x = X + (X + (p[0] - self.center[0]) * self.scale + dx - X) * k;
+        let y = X + (X + (p[1] - self.center[1]) * self.scale + dy - X) * k;
+        [(x - X) / X, -(y - X) / X]
+    }
+}
+
 thread_local! {
     static BY_PATH: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
     static BODIES: RefCell<HashMap<&'static str, Rc<CustomBody>>> = RefCell::new(HashMap::new());
@@ -724,15 +757,15 @@ thread_local! {
 
 /// The custom body registered under `name` (on this thread).
 pub(super) fn find(name: &str) -> Option<Rc<CustomBody>> {
-    if !name.starts_with(PREFIX) {
+    if !name.starts_with(PREFIX) && !name.starts_with(RICH_PREFIX) {
         return None;
     }
     BODIES.with(|b| b.borrow().get(name).cloned())
 }
 
-/// The interned name of a registered custom body.
+/// The interned name of a registered custom or rich body.
 pub(super) fn interned(name: &str) -> Option<&'static str> {
-    if !name.starts_with(PREFIX) {
+    if !name.starts_with(PREFIX) && !name.starts_with(RICH_PREFIX) {
         return None;
     }
     BODIES.with(|b| b.borrow().get_key_value(name).map(|(k, _)| *k))
@@ -795,6 +828,15 @@ fn build(path: &str) -> Result<CustomBody, String> {
         d += &format!("{}{x} {y}", if i == 0 { "M" } else { "L" });
     }
     d += "Z";
+    // `hc` renormalizes (`Vv`) unless the path is already within its
+    // tolerance; keep the same step for anything drawn on this front
+    let (k, dx, dy) = bodies::hv(&bodies::us(&d, 4.0));
+    let renorm = (k - 1.0).abs() >= 0.005 || dx.abs() >= 0.5 || dy.abs() >= 0.5;
+    let front = FrontMap {
+        scale,
+        center: [cx, cy],
+        renorm: if renorm { [k, dx, dy] } else { [1.0, 0.0, 0.0] },
+    };
     let outline = Rc::new(bodies::hc(&d));
     let poly = body_polygon(&outline.path);
     let poly_area = signed_area(&poly).abs();
@@ -818,6 +860,7 @@ fn build(path: &str) -> Result<CustomBody, String> {
     });
     Ok(CustomBody {
         outline,
+        front,
         size,
         loft_points,
         depth,
@@ -858,6 +901,167 @@ pub(crate) fn custom_body(path: &str) -> Result<&'static str, String> {
     let name: &'static str = Box::leak(name.into_boxed_str());
     BODIES.with(|b| b.borrow_mut().insert(name, body));
     BY_PATH.with(|m| m.borrow_mut().insert(key.to_owned(), name));
+    Ok(name)
+}
+
+// ---------------------------------------------------------------------------
+// rich bodies: a custom body with its own colours and surface decals
+// ---------------------------------------------------------------------------
+
+/// One decal layer of a rich body: closed loops on the body's front (body
+/// units, y up, densely sampled so they bend with the surface), a fill and
+/// an opacity.
+pub(crate) struct Decal {
+    pub loops: Vec<Vec<V2>>,
+    pub fill: String,
+    pub opacity: f64,
+}
+
+/// A rich body's paint: the shell, the decals back to front, the eyes.
+pub(crate) struct Rich {
+    pub shell: String,
+    pub eyes: String,
+    pub decals: Vec<Decal>,
+}
+
+thread_local! {
+    static BY_RECIPE: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
+    static RICH: RefCell<HashMap<&'static str, Rc<Rich>>> = RefCell::new(HashMap::new());
+}
+
+/// The paint of the rich body registered under `name` (on this thread).
+pub(super) fn rich(name: &str) -> Option<Rc<Rich>> {
+    if !name.starts_with(RICH_PREFIX) {
+        return None;
+    }
+    RICH.with(|r| r.borrow().get(name).cloned())
+}
+
+/// A `#rgb`/`#rrggbb` colour, uppercased, or an error naming `what`.
+fn colour(v: Option<&serde_json::Value>, what: &str) -> Result<String, String> {
+    let s = v
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("the recipe needs a {what} colour"))?
+        .trim();
+    let hex = s.strip_prefix('#').unwrap_or("");
+    if !matches!(hex.len(), 3 | 6) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("bad {what} colour \"{s}\" (use #rrggbb)"));
+    }
+    let hex = if hex.len() == 3 {
+        hex.chars().flat_map(|c| [c, c]).collect::<String>()
+    } else {
+        hex.to_owned()
+    };
+    Ok(format!("#{}", hex.to_uppercase()))
+}
+
+/// Points of a loop at least `step` apart along it, closing gaps longer
+/// than `step` with evenly spaced points.
+fn densify(points: &[V2], step: f64) -> Vec<V2> {
+    let n = points.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let k = (len / step).ceil().max(1.0) as usize;
+        for j in 0..k {
+            let t = j as f64 / k as f64;
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    out
+}
+
+/// Register a multi-colour body from a recipe and return its name, for
+/// `Mark::new`/`Mark::set_body` like a kit body's.
+///
+/// The recipe is compact JSON:
+/// `{"o":"<outline>","c":"#shell","l":[["<path>","#fill",opacity],…],"e":"#eyes"}`.
+/// `o` builds (or reuses) the plain [`custom_body`] for that outline, so
+/// the geometry, atlas and eye seat are shared with it. `l` holds up to 8
+/// decal layers, back to front: closed M/L/C/Q/Z paths in the same
+/// 0..100 front-view box as `o` (y down), each subpath a loop, the opacity
+/// optional (default 1). The decals ride the body's curved front; the
+/// shell, decals and eyes take the recipe's colours instead of the ink.
+///
+/// The same recipe always returns the same name (`rich:<hash>`). Errors
+/// are short human-readable messages: bad JSON, a missing or bad colour,
+/// an unusable outline or layer path, more than 8 layers.
+pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
+    let key = json.trim();
+    if let Some(name) = BY_RECIPE.with(|m| m.borrow().get(key).copied()) {
+        return Ok(name);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(key).map_err(|e| format!("the recipe isn't JSON: {e}"))?;
+    let outline = v
+        .get("o")
+        .and_then(|o| o.as_str())
+        .ok_or("the recipe needs an outline (\"o\")")?;
+    let base_name = custom_body(outline)?;
+    let base = find(base_name).ok_or("the outline didn't register")?;
+    let shell = colour(v.get("c"), "shell")?;
+    let eyes = colour(v.get("e"), "eye")?;
+    let layers = match v.get("l") {
+        None | Some(serde_json::Value::Null) => &[][..],
+        Some(serde_json::Value::Array(a)) => &a[..],
+        Some(_) => return Err("the layers (\"l\") must be a list".to_owned()),
+    };
+    if layers.len() > MAX_LAYERS {
+        return Err(format!("at most {MAX_LAYERS} layers, got {}", layers.len()));
+    }
+    let mut decals = Vec::with_capacity(layers.len());
+    for (i, layer) in layers.iter().enumerate() {
+        let n = i + 1;
+        let parts = layer
+            .as_array()
+            .ok_or_else(|| format!("layer {n} must be [path, colour, opacity]"))?;
+        let path = parts
+            .first()
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| format!("layer {n} needs a path"))?;
+        let fill = colour(parts.get(1), &format!("layer {n}"))?;
+        let opacity = match parts.get(2) {
+            None => 1.0,
+            Some(o) => o
+                .as_f64()
+                .filter(|o| o.is_finite())
+                .ok_or_else(|| format!("layer {n} opacity must be a number"))?
+                .clamp(0.0, 1.0),
+        };
+        let mut loops = Vec::new();
+        for sub in subpaths(path).map_err(|e| format!("layer {n}: {e}"))? {
+            let pts = bodies::us(&sub, 0.5);
+            let area = signed_area(&pts).abs();
+            if pts.len() < 3 || area.is_nan() || area < 0.25 {
+                continue;
+            }
+            let body: Vec<V2> = pts.iter().map(|&p| base.front.to_body(p)).collect();
+            loops.push(densify(&body, 0.03));
+        }
+        if loops.is_empty() {
+            return Err(format!("layer {n} encloses no area"));
+        }
+        decals.push(Decal {
+            loops,
+            fill,
+            opacity,
+        });
+    }
+    let name: &'static str =
+        Box::leak(format!("{RICH_PREFIX}{:016x}", fnv(key)).into_boxed_str());
+    BODIES.with(|b| b.borrow_mut().insert(name, base));
+    RICH.with(|r| {
+        r.borrow_mut().insert(
+            name,
+            Rc::new(Rich {
+                shell,
+                eyes,
+                decals,
+            }),
+        )
+    });
+    BY_RECIPE.with(|m| m.borrow_mut().insert(key.to_owned(), name));
     Ok(name)
 }
 
@@ -956,6 +1160,51 @@ mod tests {
                 (*shape, h)
             })
             .collect()
+    }
+
+    /// The kit hash run for one body, morphing to `next` and back.
+    fn body_hash(body: &'static str, next: &'static str) -> u64 {
+        let tab = shared_tables();
+        let mut h = 0xcbf29ce484222325u64;
+        let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 7);
+        let mut dir = Director::new(&mut mark, "thinking", 7, false, false, None);
+        for f in 0..60 {
+            step(&mut dir, &mut mark);
+            if f % 6 == 0 {
+                hash_tree(&render(&mark), &mut h);
+            }
+            if f == 30 {
+                dir.set_state_pub(&mut mark, "surprised");
+            }
+        }
+        for target in [next, body] {
+            mark.set_body(target, false);
+            for f in 0..40 {
+                step(&mut dir, &mut mark);
+                if f % 4 == 0 {
+                    hash_tree(&render(&mark), &mut h);
+                }
+            }
+        }
+        h
+    }
+
+    /// Plain custom bodies (round 2) draw and rest byte for byte as they
+    /// did before rich bodies existed.
+    #[test]
+    fn plain_custom_bodies_unchanged() {
+        let mut got = Vec::new();
+        for path in [CAT, RECEIPT] {
+            let name = custom_body(path).unwrap();
+            let mut h = body_hash(name, "hex");
+            for b in super::super::paint::rest_bytes(name).unwrap().iter() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            got.push(h);
+        }
+        let want: [u64; 2] = [0x9b46cb46d116b458, 0xd3a9bc4da368affd];
+        assert_eq!(got, want.to_vec());
     }
 
     /// Captured before custom bodies existed: the kit draws byte for byte
@@ -1584,5 +1833,370 @@ mod tests {
             }
         }
         std::fs::write(format!("{dir}/live.svg"), svg + "</svg>").unwrap();
+    }
+
+    // -- rich bodies ---------------------------------------------------------
+
+    /// (a) a green brute: spiky hair in the outline, a dark fringe, a cream
+    /// face patch, faint blush, bright green eyes.
+    const HULK: &str = r##"{"o":"M14 54 C14 34 24 24 34 19 L36 5 L45 16 L53 3 L60 16 L70 7 L70 21 C81 28 88 40 88 55 C88 80 72 96 50 96 C28 96 14 80 14 54 Z","c":"#5E9A2E","l":[["M16 42 C18 27 31 19 50 19 C69 19 83 27 85 42 C76 35 67 33 60 37 C54 31 45 31 39 37 C31 33 23 35 16 42 Z","#2B2019",1],["M22 62 C22 48 34 41 50 41 C66 41 79 48 79 62 C79 81 67 92 50 92 C33 92 22 81 22 62 Z","#F6EBD6",1],["M25 72 C25 68 34 68 34 72 C34 76 25 76 25 72 Z M66 72 C66 68 75 68 75 72 C75 76 66 76 66 72 Z","#F2B8A8",0.55]],"e":"#7CE03C"}"##;
+    /// (b) a red masked hero: two black eye patches, white eyes.
+    const HERO: &str = r##"{"o":"M50 4 C76 4 90 26 90 52 C90 80 72 96 50 96 C28 96 10 80 10 52 C10 26 24 4 50 4 Z","c":"#D62828","l":[["M25 46 C29 37 43 37 49 47 C45 56 31 58 25 46 Z M75 46 C71 37 57 37 51 47 C55 56 69 58 75 46 Z","#111111",1]],"e":"#FFFFFF"}"##;
+    /// (c) an orange cat: a cream muzzle on the lower face, dark eyes.
+    const ORANGE_CAT: &str = r##"{"o":"M20 92 C8 80 8 55 14 40 L10 6 L38 26 C46 23 54 23 62 26 L90 6 L86 40 C92 55 92 80 80 92 C64 100 36 100 20 92 Z","c":"#F28C28","l":[["M31 79 C31 69 42 66 50 70 C58 66 69 69 69 79 C69 88 59 92 50 90 C41 92 31 88 31 79 Z","#FBE9CF",1]],"e":"#2A1E14"}"##;
+
+    fn render_ink(mark: &Mark, extent: f64, display: f64, ink: &str) -> MarkTree {
+        let tab = shared_tables();
+        uh(
+            &mark.frame(),
+            &PaintOpts {
+                cutout: true,
+                ink_paint: Some(ink.to_owned()),
+                ..Default::default()
+            },
+            extent,
+            "m",
+            &UhSize {
+                display_size: Some(display),
+                extent,
+            },
+            &tab,
+        )
+    }
+
+    /// Every path of a tree, with the decal layer it draws (if any).
+    fn all_paths<'a>(t: &'a MarkTree, out: &mut Vec<&'a MarkTree>) {
+        if t.tag == "path" {
+            out.push(t);
+        }
+        if t.tag == "defs" {
+            return;
+        }
+        for c in &t.children {
+            all_paths(c, out);
+        }
+    }
+
+    /// (decal layers drawn, eye paths drawn, body loop) of a rich tree.
+    fn rich_parts(t: &MarkTree, eye_fill: &str) -> (Vec<usize>, usize, Vec<V2>, Vec<V2>) {
+        // (eye paths carry `data-eye`, decal paths `data-layer`)
+        let mut ps = Vec::new();
+        all_paths(t, &mut ps);
+        let layers: Vec<usize> = ps
+            .iter()
+            .filter_map(|p| p.attr("data-layer").and_then(|l| l.parse().ok()))
+            .collect();
+        let eyes = ps.iter().filter(|p| p.attr("data-eye").is_some()).count();
+        if let Some(e) = ps.iter().find(|p| p.attr("data-eye").is_some()) {
+            let fill = e.attr("fill").unwrap_or("");
+            assert!(fill == eye_fill || fill.starts_with("rgb(") || eye_fill.is_empty(), "eye fill {fill}");
+        }
+        let body = ps.first().map(|p| loops(p.attr("d").unwrap_or("")).remove(0)).unwrap_or_default();
+        let decal_pts = ps
+            .iter()
+            .filter(|p| p.attr("data-layer").is_some())
+            .flat_map(|p| loops(p.attr("d").unwrap_or("")))
+            .flatten()
+            .collect();
+        (layers, eyes, body, decal_pts)
+    }
+
+    #[test]
+    fn rich_body_names_and_errors() {
+        let a = rich_body(HULK).unwrap();
+        assert!(a.starts_with("rich:"));
+        assert_eq!(rich_body(HULK).unwrap(), a);
+        assert_eq!(rich_body(&format!(" {HULK}\n")).unwrap(), a);
+        assert_ne!(rich_body(HERO).unwrap(), a);
+        assert_eq!(yn(a), a);
+        // the geometry is the plain custom body's
+        let recipe: serde_json::Value = serde_json::from_str(HULK).unwrap();
+        let plain = custom_body(recipe["o"].as_str().unwrap()).unwrap();
+        assert!(Rc::ptr_eq(&find(a).unwrap(), &find(plain).unwrap()));
+        assert!(super::super::paint::rest_bytes(a).is_none());
+        let nine: Vec<String> = (0..9).map(|_| r##"["M10 10 L20 10 L20 20 Z","#000000"]"##.to_owned()).collect();
+        for bad in [
+            "",
+            "{",
+            "[]",
+            r##"{"c":"#FF0000","e":"#000000"}"##,
+            r##"{"o":"M0 0 L10 10","c":"#FF0000","e":"#000000"}"##,
+            r##"{"o":"M10 10 L90 10 L90 90 Z","c":"red","e":"#000000"}"##,
+            r##"{"o":"M10 10 L90 10 L90 90 Z","c":"#FF0000"}"##,
+            r##"{"o":"M10 10 L90 10 L90 90 Z","c":"#FF0000","e":"#000","l":[["M0 0 A1 1 0 0 0 5 5 Z","#FFFFFF"]]}"##,
+            r##"{"o":"M10 10 L90 10 L90 90 Z","c":"#FF0000","e":"#000","l":[["M0 0 L10 10","#FFFFFF"]]}"##,
+            r##"{"o":"M10 10 L90 10 L90 90 Z","c":"#FF0000","e":"#000","l":[["M10 10 L20 10 L20 20 Z","#FFFFFF","x"]]}"##,
+            &format!(r##"{{"o":"M10 10 L90 10 L90 90 Z","c":"#FF0000","e":"#000","l":[{}]}}"##, nine.join(",")),
+        ] {
+            assert!(rich_body(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    /// The avatar's ink (the colour picker) changes nothing on a rich body.
+    #[test]
+    fn rich_ignores_the_ink() {
+        let tab = shared_tables();
+        let name = rich_body(HULK).unwrap();
+        let mut a = 0xcbf29ce484222325u64;
+        let mut b = a;
+        let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
+        let mut dir = Director::new(&mut mark, "thinking", 2, false, false, None);
+        for f in 0..90 {
+            step(&mut dir, &mut mark);
+            if f % 5 == 0 {
+                hash_tree(&render_ink(&mark, 120.71, 78.72, "#1884FC"), &mut a);
+                hash_tree(&render_ink(&mark, 120.71, 78.72, "#FC2C3E"), &mut b);
+            }
+        }
+        assert_eq!(a, b);
+        let mut ps = Vec::new();
+        let tree = render_ink(&mark, 120.71, 78.72, "#1884FC");
+        all_paths(&tree, &mut ps);
+        assert!(ps.iter().all(|p| p.attr("fill") != Some("#1884FC")));
+    }
+
+    /// Hover darkening reaches every colour of a rich body.
+    #[test]
+    fn rich_darkens_with_the_edit_shade() {
+        let tab = shared_tables();
+        let name = rich_body(HULK).unwrap();
+        let mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
+        let plain = render_ink(&mark, 120.71, 78.72, "#1884FC");
+        let dark = render_ink(&mark, 120.71, 78.72, &super::super::darken("#1884FC", 0.35));
+        let fills = |t: &MarkTree| {
+            let mut ps = Vec::new();
+            all_paths(t, &mut ps);
+            ps.iter().filter_map(|p| p.attr("fill").map(str::to_owned)).collect::<Vec<_>>()
+        };
+        let (pf, df) = (fills(&plain), fills(&dark));
+        assert_eq!(pf.len(), df.len());
+        assert!(pf.contains(&"#5E9A2E".to_owned()));
+        for (p, d) in pf.iter().zip(&df) {
+            assert_eq!(*d, super::super::darken(p, 0.35), "{p}");
+        }
+    }
+
+    fn frame_eyes(mark: &Mark) -> bool {
+        mark.frame().eyes.is_some()
+    }
+
+    fn frame_morph(mark: &Mark) -> bool {
+        mark.frame().morph.is_some()
+    }
+
+    /// One avatar run (rest gaze sweep with the edit shade, every state
+    /// clip, the pokes): each frame's tree, whether the frame has eyes,
+    /// whether a status morph is on.
+    fn rich_run(body: &'static str, extent: f64, display: f64) -> Vec<(String, MarkTree, bool, bool)> {
+        let tab = shared_tables();
+        let mut out = Vec::new();
+        let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 9);
+        let mut dir = Director::new(&mut mark, "idle", 9, display < 48.0, true, None);
+        let edit = super::super::darken("#1884FC", 0.7);
+        for gy in -2..=2 {
+            for gx in -2..=2 {
+                mark.set_gaze(Some([gx as f64 / 2.0, gy as f64 / 2.0]));
+                for f in 0..10 {
+                    mark.advance(1.0 / 30.0);
+                    let ink = if (gx + gy) % 2 == 0 { "#1884FC" } else { edit.as_str() };
+                    out.push((format!("rest gaze {gx},{gy} f{f}"), render_ink(&mark, extent, display, ink), frame_eyes(&mark), frame_morph(&mark)));
+                }
+            }
+        }
+        mark.set_gaze(None);
+        dir.set_resting(&mut mark, false);
+        for (state, _) in super::super::clips::STATES {
+            dir.set_state_pub(&mut mark, state);
+            for f in 0..75 {
+                step(&mut dir, &mut mark);
+                if f % 3 == 0 {
+                    out.push((format!("{state} f{f}"), render_ink(&mark, extent, display, "#1884FC"), frame_eyes(&mark), frame_morph(&mark)));
+                }
+            }
+        }
+        for kind in super::super::UN {
+            mark.poke(kind, 1.0);
+            for f in 0..45 {
+                step(&mut dir, &mut mark);
+                out.push((format!("poke {kind} f{f}"), render_ink(&mark, extent, display, "#1884FC"), frame_eyes(&mark), frame_morph(&mark)));
+            }
+        }
+        out
+    }
+
+    /// Wherever the eyes are drawn the decals are too (the face patch, in
+    /// every such frame), and in the frames a status morph takes the eyes
+    /// away (`frame.eyes` is None) the decals go with them. (Turned far
+    /// enough that the eyes face away, a sliver of patch can still show at
+    /// the limb without them, as it would on a real head.)
+    #[test]
+    fn decals_follow_the_eyes() {
+        for (recipe, patch, eye) in [(HULK, 1usize, "#7CE03C"), (ORANGE_CAT, 0, "#2A1E14")] {
+            let name = rich_body(recipe).unwrap();
+            for (extent, display) in [(80.47, 52.48), (120.71, 78.72), (50.29, 32.8)] {
+                let (mut with_eyes, mut frames) = (0, 0);
+                for (label, tree, has_eyes, _) in rich_run(name, extent, display) {
+                    let (layers, eyes, _, _) = rich_parts(&tree, eye);
+                    frames += 1;
+                    if eyes > 0 {
+                        with_eyes += 1;
+                        assert!(layers.contains(&patch), "{name} at {display}: {label}: layers {layers:?}");
+                    }
+                    if !has_eyes {
+                        assert!(layers.is_empty(), "{name} at {display}: {label}: decals without eyes");
+                    }
+                    if label.starts_with("rest") {
+                        assert!(eyes >= 2, "{name} at {display}: {label}: {eyes} eyes");
+                    }
+                }
+                println!("{name} at {display}: eyes and decals in {with_eyes}/{frames} frames");
+            }
+        }
+    }
+
+    /// Decal points lie inside the body outline (within 1.5px at the 96pt
+    /// avatar) through the run, at every pose it takes. The slack is the
+    /// atlas: between its 10° nodes the outline is a blend of neighbouring
+    /// silhouettes, a hair inside the true one; the clip trims the rest.
+    #[test]
+    fn decals_stay_inside_the_body() {
+        for recipe in [HULK, HERO, ORANGE_CAT] {
+            let name = rich_body(recipe).unwrap();
+            let mut worst = f64::INFINITY;
+            for (label, tree, _, morph) in rich_run(name, 120.71, 78.72) {
+                let (_, _, body, decals) = rich_parts(&tree, "");
+                // a status morph reshapes the body ring under the decals;
+                // the clip keeps them inside there
+                if body.len() < 3 || morph {
+                    continue;
+                }
+                for p in decals {
+                    let d = signed_distance(&body, p);
+                    worst = worst.min(d);
+                    assert!(d > -1.5, "{name}: {label}: decal point {p:?} {d:.2}px outside");
+                }
+            }
+            println!("{name}: worst decal point {worst:.2}px from the outline");
+        }
+    }
+
+    /// Debug-build cost of a rich frame against the plain body's (printed).
+    #[test]
+    fn rich_frame_timing() {
+        let tab = shared_tables();
+        for (label, body) in [("plain", custom_body(CAT).unwrap()), ("rich", rich_body(ORANGE_CAT).unwrap()), ("rich brute", rich_body(HULK).unwrap())] {
+            let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 2);
+            let mut dir = Director::new(&mut mark, "curious", 2, false, false, None);
+            // warm the atlas nodes the run visits
+            for _ in 0..60 {
+                step(&mut dir, &mut mark);
+                render_ink(&mark, 120.71, 78.72, "#1884FC");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..60 {
+                step(&mut dir, &mut mark);
+                render_ink(&mark, 120.71, 78.72, "#1884FC");
+            }
+            println!("{label}: {:?} per frame", t.elapsed() / 60);
+        }
+    }
+
+    /// Plain custom bodies keep their geometry when a rich body shares it.
+    #[test]
+    fn rich_shares_the_plain_body() {
+        let name = rich_body(ORANGE_CAT).unwrap();
+        let plain = custom_body(CAT).unwrap();
+        assert!(Rc::ptr_eq(&bodies::atlas_of(name).unwrap(), &bodies::atlas_of(plain).unwrap()));
+    }
+
+    /// Writes the rich-body sheets as SVG into `MARK_RICH_DIR` (convert
+    /// with any SVG rasterizer); does nothing without it.
+    #[test]
+    fn render_rich_sheets() {
+        let Ok(dir) = std::env::var("MARK_RICH_DIR") else {
+            return;
+        };
+        let tab = shared_tables();
+        let rows: Vec<(&str, &'static str)> = vec![
+            ("blob", "sphere"),
+            ("brute", rich_body(HULK).unwrap()),
+            ("hero", rich_body(HERO).unwrap()),
+            ("cat", rich_body(ORANGE_CAT).unwrap()),
+        ];
+        let head = |w: f64, h: f64| {
+            format!("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'><rect width='100%' height='100%' fill='#fff'/>")
+        };
+        let tree_svg = |tree: &MarkTree, x: f64, y: f64, scale: f64| {
+            let mut t = String::new();
+            xml(tree, &mut t);
+            format!("<g transform='translate({x} {y}) scale({scale})'>{t}</g>")
+        };
+        let ink = "#1884FC";
+        // rest at the avatar sizes, live at the exact rest pose
+        let mut svg = head(560.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, pt) in [64.0, 80.0, 96.0].iter().enumerate() {
+            svg += &label(130.0 + c as f64 * 150.0, 18.0, &format!("rest {pt}pt"));
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, pt) in [64.0, 80.0, 96.0].iter().enumerate() {
+                let extent = pt * 0.82 * 0.92 / 0.6;
+                let (x0, y0) = (110.0 + c as f64 * 150.0 + (150.0 - extent) / 2.0, y + (150.0 - extent) / 2.0);
+                if *body == "sphere" {
+                    let bytes = super::super::paint::rest_bytes("blob").unwrap();
+                    svg += &rest_svg(&bytes, extent, x0, y0, ink);
+                } else {
+                    let mark = Mark::new(&tab, Some(body), 1.0, false, false, 1);
+                    let mut t = render_ink(&mark, extent, pt * 0.82, ink);
+                    t.attrs.retain(|(k, _)| *k != "id");
+                    svg += &tree_svg(&t, x0, y0, 1.0);
+                }
+            }
+        }
+        std::fs::write(format!("{dir}/rest.svg"), svg + "</svg>").unwrap();
+        // poses
+        let poses: [(&str, V3); 6] = [
+            ("yaw -40", [0.0, -40.0, 0.0]),
+            ("front", [0.0, 0.0, 0.0]),
+            ("yaw 40", [0.0, 40.0, 0.0]),
+            ("yaw 72", [0.0, 72.0, 0.0]),
+            ("yaw 88", [0.0, 88.0, 0.0]),
+            ("pitch 40", [40.0, 20.0, 0.0]),
+        ];
+        let mut svg = head(110.0 + 6.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, (title, _)) in poses.iter().enumerate() {
+            svg += &label(140.0 + c as f64 * 150.0, 18.0, title);
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, (_, rot)) in poses.iter().enumerate() {
+                svg += &pose_svg(body, *rot, 150.0, 100.0 + c as f64 * 150.0, y, &format!("p{r}x{c}"));
+            }
+        }
+        std::fs::write(format!("{dir}/turn.svg"), svg + "</svg>").unwrap();
+        // a status morph coming on: the eyes and decals fade out together
+        let times = [0.0, 0.05, 0.1, 0.2, 0.5, 1.2];
+        let mut svg = head(110.0 + times.len() as f64 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, t) in times.iter().enumerate() {
+            svg += &label(130.0 + c as f64 * 150.0, 18.0, &format!("morph +{t}s"));
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 1);
+            mark.set_morph(Some("thinking"), false);
+            let mut clock = 0.0;
+            for (c, t) in times.iter().enumerate() {
+                while clock < *t - 1e-9 {
+                    mark.advance(1.0 / 60.0);
+                    clock += 1.0 / 60.0;
+                }
+                let tree = render_ink(&mark, 144.0, 96.0, ink);
+                svg += &tree_svg(&tree, 100.0 + c as f64 * 150.0, y, 150.0 / 144.0);
+            }
+        }
+        std::fs::write(format!("{dir}/morph.svg"), svg + "</svg>").unwrap();
     }
 }

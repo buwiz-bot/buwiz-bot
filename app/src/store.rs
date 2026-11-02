@@ -483,8 +483,42 @@ pub(crate) fn is_primary_ink(color: &str) -> bool {
     crate::mark::norm_color(color) == "#FFFFFF"
 }
 
-/// The `/bot/*` fields for a shape in the app's form.
+/// A bot payload's (or a design's) body in the app's shape form, reading
+/// `shape`, `outline`, and for a rich avatar `layers` (with `color`, the
+/// shell, and `eyes`): `rich:<recipe>`, `outline:<path>` or a kit name.
+pub(crate) fn shape_of(v: &serde_json::Value) -> String {
+    let shape = s(v, "shape");
+    let outline = s(v, "outline");
+    match v.get("layers").and_then(|l| l.as_array()) {
+        Some(ls) if shape == "custom" && !outline.is_empty() && !ls.is_empty() => {
+            let l: Vec<serde_json::Value> = ls
+                .iter()
+                .map(|x| {
+                    serde_json::json!([s(x, "path"), s(x, "fill"), x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0)])
+                })
+                .collect();
+            let recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": s(v, "eyes")});
+            format!("{}{recipe}", crate::avatar::RICH)
+        }
+        _ => body_shape(&shape, &outline),
+    }
+}
+
+/// The `/bot/*` fields for a shape in the app's form (a rich one brings
+/// its shell colour, layers and eyes).
 pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
+    if let Some(recipe) = shape.strip_prefix(crate::avatar::RICH) {
+        let r: serde_json::Value = serde_json::from_str(recipe).unwrap_or_default();
+        let layers: Vec<serde_json::Value> = r["l"]
+            .as_array()
+            .map(|ls| {
+                ls.iter()
+                    .map(|x| serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return serde_json::json!({"shape": "custom", "outline": r["o"], "color": r["c"], "layers": layers, "eyes": r["e"]});
+    }
     match shape.strip_prefix(crate::avatar::OUTLINE) {
         Some(path) => serde_json::json!({"shape": "custom", "outline": path}),
         None => serde_json::json!({"shape": shape}),
@@ -2862,7 +2896,7 @@ impl Store {
                     .iter()
                     .map(|c| AvatarCand {
                         name: s(c, "name"),
-                        shape: body_shape(&s(c, "shape"), &s(c, "outline")),
+                        shape: shape_of(c),
                         color: s(c, "color"),
                         why: s(c, "why"),
                     })
@@ -3045,7 +3079,7 @@ impl Store {
                         Some(ThreadBot {
                             id: s(b, "id"),
                             name: s(b, "name"),
-                            shape: body_shape(&s(b, "shape"), &s(b, "outline")),
+                            shape: shape_of(b),
                             color: {
                                 let v = s(b, "color");
                                 if v.is_empty() { "#FFFFFF".into() } else { v }
@@ -3072,9 +3106,7 @@ impl Store {
                     },
                     shape: {
                         let a = &b["avatar"];
-                        let v = s(a, "shape");
-                        let (v, o) = if v.is_empty() { (s(b, "shape"), s(b, "outline")) } else { (v, s(a, "outline")) };
-                        body_shape(&v, &o)
+                        if s(a, "shape").is_empty() { shape_of(b) } else { shape_of(a) }
                     },
                     color: {
                         let v = s(&b["avatar"], "color");
@@ -5433,6 +5465,9 @@ impl Store {
         };
         let model = self.design_model().0;
         let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model});
+        if self.design_mode.get_untracked() == "rich" {
+            body["style"] = "rich".into();
+        }
         if let Some(d) = &image {
             body["image"] = d.uri.clone().into();
         }
@@ -5445,7 +5480,7 @@ impl Store {
                         .iter()
                         .map(|c| AvatarCand {
                             name: s(c, "name"),
-                            shape: body_shape(&s(c, "shape"), &s(c, "outline")),
+                            shape: shape_of(c),
                             color: s(c, "color"),
                             why: s(c, "why"),
                         })
@@ -6387,8 +6422,8 @@ impl Store {
                 if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
                     b.name = v.to_owned();
                 }
-                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
-                    b.shape = body_shape(v, patch.get("outline").and_then(|x| x.as_str()).unwrap_or(""));
+                if patch.get("shape").and_then(|x| x.as_str()).is_some() {
+                    b.shape = shape_of(&patch);
                 }
                 if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
                     b.color = v.to_owned();
@@ -6432,8 +6467,8 @@ impl Store {
                 if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
                     tb.name = v.to_owned();
                 }
-                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
-                    tb.shape = body_shape(v, patch.get("outline").and_then(|x| x.as_str()).unwrap_or(""));
+                if patch.get("shape").and_then(|x| x.as_str()).is_some() {
+                    tb.shape = shape_of(&patch);
                 }
                 if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
                     tb.color = v.to_owned();

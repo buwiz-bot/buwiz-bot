@@ -10,7 +10,7 @@ import { AVATAR_DIR, AVATAR_MODEL, BASE_URL, MOCK, MODEL, PROVIDER } from "./con
 import { anthropic } from "./model.mjs";
 import { editImage, generateImage, keyOf } from "./avatars.mjs";
 import { modelCtx } from "./state.mjs";
-import { DESIGN_SYSTEM, KIT_SHAPES, SWATCHES, designCandidates, mockCandidates } from "./avatar-shape.mjs";
+import { DESIGN_SYSTEM, KIT_SHAPES, MOCK_RICH, RICH_SYSTEM, SWATCHES, designCandidates, mockCandidates } from "./avatar-shape.mjs";
 
 const textOf = (m) => (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
 
@@ -118,16 +118,18 @@ export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM
 }
 
 /** POST /avatar/design's body → its candidates. */
-export async function designAvatar({ prompt, image, name, model } = {}) {
+export async function designAvatar({ prompt, image, name, model, style } = {}) {
+  const rich = style === "rich";
   const text = typeof prompt === "string" ? prompt.trim() : "";
   // a picture alone is enough: the model makes its subject into an avatar
   if (!text && !image) throw new Error("describe the bot or add a picture");
   const block = image ? avatarImageBlock(image) : null;
-  if (MOCK) return mockCandidates({ image: !!block });
+  if (MOCK) return rich ? MOCK_RICH.map((c) => ({ ...c })) : mockCandidates({ image: !!block });
   return designCandidates(
-    { prompt: text, name: typeof name === "string" ? name.trim() : "", image: block },
+    { prompt: text, name: typeof name === "string" ? name.trim() : "", image: block, rich },
     {
-      ask: (messages) => askDesigner(messages, typeof model === "string" ? model.trim() : ""),
+      ask: (messages) =>
+        askDesigner(messages, typeof model === "string" ? model.trim() : "", rich ? { system: `${DESIGN_SYSTEM}\n\n${RICH_SYSTEM}`, maxTokens: 12000 } : undefined),
       // the fallback never fails the request
       pick: (p) => pickKitAvatar(p).catch(() => ({ shape: "blob", color: "#1084FE" })),
     },

@@ -2015,7 +2015,7 @@ fn bot_tab() -> impl IntoElement {
                         .opacity(|| if wears_picture() { 0.3f32 } else { 1.0 })
                         .on_press(move || {
                             let Some(b) = store().active_bot_untracked() else { return };
-                            if !b.image.is_empty() {
+                            if !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH) {
                                 return;
                             }
                             store().update_bot(
@@ -2039,9 +2039,12 @@ fn bot_tab() -> impl IntoElement {
         )
 }
 
-/// Whether the open bot wears a photo or picture avatar (tracked).
+/// Whether the open bot's colours are its own (tracked): a photo or
+/// picture avatar, or a rich (multi-colour) design.
 fn wears_picture() -> bool {
-    store().active_bot().is_some_and(|b| !b.image.is_empty())
+    store()
+        .active_bot()
+        .is_some_and(|b| !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH))
 }
 
 /// `Design` — the prompt, an optional picture, and 3 mark avatars to

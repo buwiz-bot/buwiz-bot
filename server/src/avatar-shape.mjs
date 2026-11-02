@@ -228,14 +228,54 @@ export function outlineErrors(outline) {
   return errs;
 }
 
-/** The problems with an avatar recipe {shape, color, outline}, [] when it
- *  is one the engine can draw. `outline` counts only for shape "custom". */
-export function validateAvatar({ shape, color, outline } = {}) {
+export const LAYERS_MAX = 8;
+
+/** The problems with a rich avatar's painted layers and eye colour: up to
+ *  8 closed paths in the outline's 0..100 box, each with a fill (and an
+ *  opacity 0..1), and the eyes' colour. */
+export function layerErrors(layers, eyes) {
+  const errs = [];
+  if (!Array.isArray(layers) || !layers.length) return ["a rich avatar needs at least one layer (the face)"];
+  if (layers.length > LAYERS_MAX) errs.push(`at most ${LAYERS_MAX} layers`);
+  layers.forEach((l, k) => {
+    const n = `layer ${k + 1}`;
+    if (!l || typeof l !== "object") return errs.push(`${n} must be {path, fill}`);
+    if (typeof l.fill !== "string" || !COLOR.test(l.fill)) errs.push(`${n}'s fill must be #RRGGBB`);
+    if (l.opacity !== undefined && !(typeof l.opacity === "number" && l.opacity >= 0 && l.opacity <= 1))
+      errs.push(`${n}'s opacity must be 0..1`);
+    const d = l.path;
+    if (typeof d !== "string" || !d.trim()) return errs.push(`${n} needs a path`);
+    if (d.length > OUTLINE_MAX) return errs.push(`${n}'s path is longer than ${OUTLINE_MAX} characters`);
+    if (!OUTLINE_CHARS.test(d)) return errs.push(`${n}'s path may hold only M/L/C/Q/Z commands and numbers`);
+    let f;
+    try {
+      f = flattenPath(d);
+    } catch (e) {
+      return errs.push(`${n}: ${e.message}`);
+    }
+    if (f.coords.some(([x, y]) => !(x >= -5 && x <= 105 && y >= -5 && y <= 105))) errs.push(`${n}'s coordinates must stay within -5..105`);
+    const poly = f.points;
+    if (poly.length < 3 || Math.abs(areaCentroid(poly).area) < 4) errs.push(`${n} encloses no area`);
+  });
+  if (typeof eyes !== "string" || !COLOR.test(eyes)) errs.push("eyes must be #RRGGBB");
+  return errs;
+}
+
+/** The problems with an avatar recipe {shape, color, outline, layers?,
+ *  eyes?}, [] when it is one the engine can draw. `outline` counts only
+ *  for shape "custom"; `layers` (with `eyes`) make it a rich avatar, which
+ *  only a custom outline can be. */
+export function validateAvatar({ shape, color, outline, layers, eyes } = {}) {
   const errs = [];
   if (shape !== "custom" && !KIT_SHAPES.includes(shape))
     errs.push(`shape must be one of ${KIT_SHAPES.join(", ")} or custom`);
   if (typeof color !== "string" || !COLOR.test(color)) errs.push("color must be #RRGGBB");
   if (shape === "custom") errs.push(...outlineErrors(outline));
+  const rich = (Array.isArray(layers) && layers.length) || eyes !== undefined;
+  if (rich) {
+    if (shape !== "custom") errs.push("only a custom outline can have layers");
+    else errs.push(...layerErrors(layers, eyes));
+  }
   return errs;
 }
 
@@ -247,7 +287,8 @@ export function validateAvatar({ shape, color, outline } = {}) {
 export const DESIGN_SYSTEM = readFileSync(new URL("./templates/avatar-design-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
 
 /** The user turn's text for a design request. */
-export function designRequest({ prompt, name, image }) {
+export function designRequest({ prompt, name, image, rich = false }) {
+  if (rich) return richRequest({ prompt, name, image });
   return [
     name ? `The bot's name: ${name}` : "",
     prompt
@@ -281,21 +322,34 @@ export function parseCandidates(text) {
     let shape = String(x.shape || "").trim().toLowerCase();
     if (!shape && outline) shape = "custom";
     const color = String(x.color || x.colour || "").trim().toUpperCase();
+    const layers = Array.isArray(x.layers)
+      ? x.layers.filter((l) => l && typeof l === "object").map((l) => ({
+          path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
+          fill: String(l.fill || l.color || "").trim().toUpperCase(),
+          ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
+        }))
+      : null;
+    const eyes = typeof x.eyes === "string" ? x.eyes.trim().toUpperCase() : undefined;
     return {
       name: String(x.name || "").trim().slice(0, 40),
       shape,
       color,
       ...(shape === "custom" ? { outline } : {}),
+      ...(shape === "custom" && layers ? { layers } : {}),
+      ...(shape === "custom" && eyes !== undefined ? { eyes } : {}),
       why: String(x.why || "").trim().slice(0, 240),
     };
   });
 }
 
 // The problems with one round of candidates as a set, and each one's.
-function check(cands, image) {
-  const each = cands.map((c) => validateAvatar(c));
+function check(cands, image, rich = false) {
+  const each = cands.map((c) =>
+    rich && !(c.layers?.length) ? [...validateAvatar(c), "a rich candidate needs layers and eyes"] : validateAvatar(c),
+  );
   const set = [];
   if (cands.length !== 3) set.push(`there must be exactly 3 candidates (got ${cands.length})`);
+  if (rich) return { each, set };
   if (image && cands[0]?.shape !== "custom")
     set.push("candidate 1 must be a custom outline tracing the image's subject");
   if (!image && cands.length && !cands.some((c, k) => KIT_SHAPES.includes(c.shape) && !each[k].length))
@@ -309,12 +363,12 @@ function check(cands, image) {
  *  choice for when nothing usable comes back. `image` is the user turn's
  *  image block, if any. Candidates that fail the checks are retried once,
  *  with the errors listed, then dropped. */
-export async function designCandidates({ prompt, name, image }, { ask, pick }) {
-  const text = designRequest({ prompt, name, image: !!image });
+export async function designCandidates({ prompt, name, image, rich = false }, { ask, pick }) {
+  const text = designRequest({ prompt, name, image: !!image, rich });
   const messages = [{ role: "user", content: image ? [image, { type: "text", text }] : text }];
   let reply = await ask(messages);
   let cands = parseCandidates(reply);
-  let { each, set } = check(cands, image);
+  let { each, set } = check(cands, image, rich);
   const firstGood = cands.filter((_, k) => !each[k].length);
   if (set.length || each.some((e) => e.length)) {
     const lines = [
@@ -328,7 +382,7 @@ export async function designCandidates({ prompt, name, image }, { ask, pick }) {
     );
     reply = await ask(messages);
     cands = parseCandidates(reply);
-    ({ each } = check(cands, image));
+    ({ each } = check(cands, image, rich));
     cands = cands.filter((_, k) => !each[k].length);
     // top up from the first round's good ones
     for (const c of firstGood) {
@@ -337,6 +391,10 @@ export async function designCandidates({ prompt, name, image }, { ask, pick }) {
     }
   }
   cands = cands.slice(0, 3);
+  if (rich) {
+    if (!cands.length) throw new Error("no rich design came back that the engine can draw; try again or another model");
+    return cands;
+  }
   if (!image && cands.length && !cands.some((c) => KIT_SHAPES.includes(c.shape))) {
     const k = await kitFallback(prompt, pick);
     cands = [...cands.slice(0, 2), k];
@@ -367,3 +425,50 @@ export function mockCandidates({ image } = {}) {
   const receipt = { name: "Receipt", shape: "custom", color: "#FFFFFF", outline: MOCK_OUTLINES.receipt, why: "A receipt with a torn foot." };
   return image ? [{ ...cat, name: "Image Subject", why: "The image's subject as a silhouette." }, kit, pebble] : [kit, receipt, cat];
 }
+
+// --- Rich: a multi-colour mark avatar (a shell, painted layers, eyes) -------
+
+/** The rich designer's extra instructions (appended to DESIGN_SYSTEM). */
+export const RICH_SYSTEM = readFileSync(new URL("./templates/avatar-rich-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
+
+/** The user turn's text for a rich design request. */
+export function richRequest({ prompt, name, image }) {
+  return [
+    name ? `The bot's name: ${name}` : "",
+    prompt ? `The request: ${prompt}` : "The request: none. Make the picture's subject into a rich avatar.",
+    image
+      ? "The image attached is the subject. Keep its identity: its main colour on the shell, its hair or head outline, ears or headgear, its face colour, its eye colour."
+      : "Design the character the request describes.",
+    "Give exactly 3 rich candidates (different takes), each with shape \"custom\", outline, color (the shell), layers and eyes.",
+  ].filter(Boolean).join("\n");
+}
+
+/** MOCK rich candidates: valid, hand-written. */
+export const MOCK_RICH = [
+  {
+    name: "Green Giant", shape: "custom", color: "#3E8E2F",
+    outline: "M20 44 L24 18 L36 26 L42 12 L52 22 L62 10 L66 24 L78 18 L82 44 C88 64 76 88 50 90 C24 88 12 64 20 44 Z",
+    layers: [
+      { path: "M22 40 Q50 16 80 40 L76 46 Q50 30 26 46 Z", fill: "#1E2A16" },
+      { path: "M26 50 C26 36 74 36 76 50 C78 70 66 86 50 86 C34 86 24 70 26 50 Z", fill: "#F5EBD6" },
+      { path: "M30 66 C30 62 38 62 38 66 C38 70 30 70 30 66 Z", fill: "#F2C3B5", opacity: 0.6 },
+      { path: "M62 66 C62 62 70 62 70 66 C70 70 62 70 62 66 Z", fill: "#F2C3B5", opacity: 0.6 },
+    ],
+    eyes: "#58D63A", why: "A green shell with a dark fringe and a cream face.",
+  },
+  {
+    name: "Mask Hero", shape: "custom", color: "#D9232E",
+    outline: "M50 10 C74 10 86 26 86 46 C86 66 72 84 58 90 Q50 93 42 90 C28 84 14 66 14 46 C14 26 26 10 50 10 Z",
+    layers: [
+      { path: "M24 40 C30 30 44 32 46 44 C46 54 32 58 26 52 Z", fill: "#111111" },
+      { path: "M76 40 C70 30 56 32 54 44 C54 54 68 58 74 52 Z", fill: "#111111" },
+    ],
+    eyes: "#FFFFFF", why: "A red mask with black eye patches.",
+  },
+  {
+    name: "Ginger Cat", shape: "custom", color: "#F08A24",
+    outline: "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
+    layers: [{ path: "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", fill: "#FBEBD3" }],
+    eyes: "#2B1D12", why: "An orange cat with a cream muzzle.",
+  },
+];

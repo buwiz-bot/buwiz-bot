@@ -14,7 +14,7 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
     view()
         .w_full()
         .gap(px(10.0))
-        .child(when(move || !for_new, || mode_switch().into_element()))
+        .child(mode_switch(for_new))
         .child(prompt_field())
         .child(dynamic(|| picture_row().into_element()))
         .child(design_button())
@@ -33,13 +33,16 @@ fn picture_mode() -> bool {
     st.design_mode.get() == "picture" && !st.bot_modal.get()
 }
 
-/// Mark (3 drawn avatars that move) | Picture (a "Bot"-style picture,
-/// set as a photo).
-fn mode_switch() -> impl IntoElement {
+/// Mark (3 one-colour avatars that move) | Rich (3 multi-colour ones,
+/// their colours their own) | Picture (a "Bot"-style picture, set as a
+/// photo; Edit Avatar only).
+fn mode_switch(for_new: bool) -> impl IntoElement {
+    let modes: &[(&'static str, &'static str)] =
+        if for_new { &[("mark", "Mark"), ("rich", "Rich")] } else { &[("mark", "Mark"), ("rich", "Rich"), ("picture", "Picture")] };
     view()
         .flex_row()
         .gap(px(4.0))
-        .children([("mark", "Mark"), ("picture", "Picture")].into_iter().map(|(m, label)| {
+        .children(modes.iter().copied().map(|(m, label)| {
             view()
                 .h(px(24.0))
                 .px(px(10.0))

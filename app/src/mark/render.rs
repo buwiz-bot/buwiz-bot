@@ -22,6 +22,7 @@ use std::f64::consts::PI;
 use std::rc::Rc;
 
 use super::bodies::{self, Rot, X};
+use super::custom;
 use super::{
     cr, et, jf, le, ts, wb, ye, Eye, EyeFrame, Frame, M3, MorphSnap, Tables, V2, V3,
 };
@@ -1662,6 +1663,8 @@ fn qt2(e: &Frame, t: f64, tab: &Tables) -> ShapeRec {
     let i = n.abs();
     let a = |[c, u]: V2| -> V2 { [s[0] + c * n, s[1] - u * n] };
     ShapeRec {
+        decals: vec![],
+        rich: None,
         center: s,
         radius: i,
         body: vec![dm(s, [r.abs() * i, o.abs() * i], DT)],
@@ -1676,11 +1679,33 @@ fn qt2(e: &Frame, t: f64, tab: &Tables) -> ShapeRec {
 fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
     let n = ((t * e.zoom / H_UND).round() as i64).max(8) as f64;
     let r = n.max(IH);
-    let o = ch(&e.quat, rh(t, e.zoom));
+    let rich = custom::rich(body);
+    // a rich body draws at the exact pose: its decals have no sprite cache
+    let o = ch(&e.quat, if rich.is_some() { 0.0 } else { rh(t, e.zoom) });
     let sh = bodies::dollar_h(body, &o, r, e.eyes.as_ref());
     let [a, c, u, l] = oh(e, t, n, r);
     let d = |[f, h]: V2| -> V2 { [a * f + u, c * h + l] };
+    let decals = match (&rich, &e.eyes) {
+        (Some(rich), Some(_)) => rich
+            .decals
+            .iter()
+            .enumerate()
+            .map(|(i, decal)| DecalRec {
+                layer: i,
+                loops: bodies::decal_loops(body, &o, r, &decal.loops)
+                    .into_iter()
+                    .map(|f| f.iter().map(|&p| d(p)).collect())
+                    .collect(),
+                fill: decal.fill.clone(),
+                opacity: decal.opacity,
+            })
+            .filter(|r| !r.loops.is_empty())
+            .collect(),
+        _ => vec![],
+    };
     ShapeRec {
+        decals,
+        rich: rich.map(|r| (r.shell.clone(), r.eyes.clone())),
         center: [a * r / 2.0 + u, c * r / 2.0 + l],
         radius: e.zoom * t / 2.0,
         body: sh
@@ -1701,8 +1726,21 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
     }
 }
 
+/// A rich body's decal layer in screen space.
+#[derive(Clone)]
+struct DecalRec {
+    layer: usize,
+    loops: Vec<Vec<V2>>,
+    fill: String,
+    opacity: f64,
+}
+
 /// `bc`'s shape record.
 struct ShapeRec {
+    /// A rich body's decals (empty for every other body).
+    decals: Vec<DecalRec>,
+    /// A rich body's shell and eye colours.
+    rich: Option<(String, String)>,
     center: V2,
     radius: f64,
     body: Vec<Vec<V2>>,
@@ -2896,6 +2934,12 @@ struct Be {
     center: V2,
     body: Vec<V2>,
     eyes: Vec<Vec<V2>>,
+    /// Decals of the rich bodies in the blend, faded by their weight.
+    decals: Vec<DecalRec>,
+    /// The heaviest body's shell and eye colours when it is rich.
+    rich: Option<(String, String)>,
+    /// A rich body in the blend (whose shade memory `ink_shade` reads).
+    rich_body: Option<&'static str>,
     head: Option<We>,
     parts: Vec<Part>,
     mark_scale: f64,
@@ -2920,7 +2964,20 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
         .collect::<Vec<_>>());
     let c = e.morph.as_ref().map(|m| de(m, n, tab));
     let u = ON * t / 2.0 / X;
+    let single = r.len() == 1;
+    let decals = r
+        .iter()
+        .flat_map(|(l, w)| {
+            l.decals.iter().map(move |d| DecalRec {
+                opacity: d.opacity * if single { 1.0 } else { *w },
+                ..d.clone()
+            })
+        })
+        .collect();
     Be {
+        decals,
+        rich: r.first().and_then(|(l, _)| l.rich.clone()),
+        rich_body: rich_of(e),
         size: t,
         center: o,
         body: match &c {
@@ -2947,12 +3004,32 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
 fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
     let o = e.size;
     let s = e.center;
-    let i = cc(t);
+    let shade = e.rich_body.map_or(0.0, |b| ink_shade(t, b));
+    let i = match &e.rich {
+        Some((shell, _)) => shaded(shell, shade),
+        None => cc(t),
+    };
     let a = ga(&e.body);
     let c: String = e.eyes.iter().map(|e| ga(e)).collect::<Vec<_>>().join("");
     let mut u: Vec<MarkTree> = Vec::new();
     let mut l = vec![r2("path", &[("d", a.clone()), ("fill", i.clone())])];
-    if !c.is_empty() && t.cutout {
+    if e.rich.is_some() || !e.decals.is_empty() {
+        // a rich body: the decals and filled eyes, clipped to the body
+        let mut inside = decal_paths(&e.decals, shade, ga_loops);
+        if !c.is_empty() {
+            let fill = match &e.rich {
+                Some((_, eyes)) => shaded(eyes, shade),
+                None => uc(t),
+            };
+            inside.push(r2("path", &[("d", c.clone()), ("fill", fill), ("data-eye", sv("1"))]));
+        }
+        u.push(re(
+            "clipPath",
+            &[("id", format!("{}-clip", n))],
+            vec![r2("path", &[("d", a.clone())])],
+        ));
+        l.push(re("g", &[("clip-path", format!("url(#{}-clip)", n))], inside));
+    } else if !c.is_empty() && t.cutout {
         u.push(re(
             "mask",
             &[
@@ -3071,6 +3148,166 @@ fn he(e: &Frame, t: &PaintOpts, n: f64, r: &str, o: f64, s: f64, tab: &Tables) -
 // `Uh`
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// The last undarkened ink each rich body was drawn with.
+    static PLAIN_INK: RefCell<HashMap<&'static str, [f64; 3]>> = RefCell::new(HashMap::new());
+}
+
+fn hex_rgb(c: &str) -> Option<[f64; 3]> {
+    let h = c.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some([(v >> 16) as f64, ((v >> 8) & 255) as f64, (v & 255) as f64])
+}
+
+/// How much the avatar darkened its ink (the hover/edit shade, `darken`'s
+/// `k`) for a rich `body`, read back from `ink_paint`: a darkened ink is
+/// `rgb(..)`, matched against the ink this body last drew undarkened (the
+/// avatar always draws it plain before a hover), else against the picker
+/// colours. 0 when the ink isn't darkened or the amount can't be read
+/// (black ink).
+fn ink_shade(t: &PaintOpts, body: &'static str) -> f64 {
+    let paint = t.ink_paint.as_deref().unwrap_or("").trim();
+    if let Some(plain) = hex_rgb(paint) {
+        PLAIN_INK.with(|m| m.borrow_mut().insert(body, plain));
+        return 0.0;
+    }
+    let Some(rgb) = paint.strip_prefix("rgb(").and_then(|p| p.strip_suffix(')')) else {
+        return 0.0;
+    };
+    let got: Vec<f64> = rgb.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    if got.len() != 3 {
+        return 0.0;
+    }
+    let known = PLAIN_INK.with(|m| m.borrow().get(body).copied());
+    let palette: Vec<[f64; 3]> = super::BOT_COLORS.iter().filter_map(|c| hex_rgb(c)).collect();
+    let mut best = (f64::INFINITY, 0.0);
+    for base in known.into_iter().chain(palette) {
+        let (top, i) = base
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (*c, i))
+            .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
+        if top <= 0.0 {
+            continue;
+        }
+        let k = (1.0 - got[i] / top).clamp(0.0, 1.0);
+        let err: f64 = (0..3).map(|c| ((base[c] * (1.0 - k)).round() - got[c]).abs()).sum();
+        // the remembered ink wins ties with the palette
+        if err < best.0 - 1e-9 {
+            best = (err, k);
+        }
+    }
+    if best.0 <= 3.0 {
+        best.1
+    } else {
+        0.0
+    }
+}
+
+/// The body a blend's rich paint comes from (for its shade memory).
+fn rich_of(e: &Frame) -> Option<&'static str> {
+    e.bodies
+        .iter()
+        .map(|b| b.body)
+        .find(|b| custom::rich(b).is_some())
+}
+
+/// A recipe colour under the avatar's shade.
+fn shaded(c: &str, k: f64) -> String {
+    if k > 0.001 {
+        super::darken(c, k)
+    } else {
+        c.to_owned()
+    }
+}
+
+/// Loops as `M..L..Z` path data (`ga` per loop).
+fn ga_loops(l: &[Vec<V2>]) -> String {
+    l.iter().map(|p| ga(p)).collect::<Vec<_>>().join("")
+}
+
+/// The decal layers as paths, back to front.
+fn decal_paths(decals: &[DecalRec], shade: f64, d: impl Fn(&[Vec<V2>]) -> String) -> Vec<MarkTree> {
+    decals
+        .iter()
+        .filter(|r| r.opacity > 0.001)
+        .map(|r| {
+            let mut attrs = vec![
+                ("d", d(&r.loops)),
+                ("fill", shaded(&r.fill, shade)),
+                ("data-layer", r.layer.to_string()),
+            ];
+            if r.opacity < 1.0 {
+                attrs.push(("opacity", me(r.opacity, 3)));
+            }
+            r2("path", &attrs)
+        })
+        .collect()
+}
+
+/// The atlas branch for a rich body (`EM`/`AM` with its own paint): the
+/// shell in the recipe's colour, then the decals and the filled eyes,
+/// both clipped to the body, at the exact pose (no `Rh` snapping, so a
+/// resting rich body holds the kit rest pose at every size).
+fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts, n: f64, id: &str, extent: f64) -> MarkTree {
+    let o = ((n * e.zoom / H_UND).round() as i64).max(8) as f64;
+    let s = o.max(IH);
+    let rot = ch(&e.quat, 0.0);
+    let sh = bodies::dollar_h(body, &rot, s, e.eyes.as_ref());
+    let [u, l, d, f] = oh(e, n, o, s);
+    let shade = ink_shade(t, body);
+    let mut inside = Vec::new();
+    if e.eyes.is_some() {
+        let decals: Vec<DecalRec> = rich
+            .decals
+            .iter()
+            .enumerate()
+            .map(|(i, decal)| DecalRec {
+                layer: i,
+                loops: bodies::decal_loops(body, &rot, s, &decal.loops),
+                fill: decal.fill.clone(),
+                opacity: decal.opacity,
+            })
+            .filter(|r| !r.loops.is_empty())
+            .collect();
+        inside = decal_paths(&decals, shade, bodies::gc);
+        for eye in &sh.eyes {
+            inside.push(r2(
+                "path",
+                &[("d", eye.clone()), ("fill", shaded(&rich.eyes, shade)), ("data-eye", sv("1"))],
+            ));
+        }
+    }
+    let clip = format!("{}-clip", id);
+    let body_paths = |fill: Option<String>| -> Vec<MarkTree> {
+        sh.body
+            .iter()
+            .map(|b| match &fill {
+                Some(f) => r2("path", &[("d", b.clone()), ("fill", f.clone())]),
+                None => r2("path", &[("d", b.clone())]),
+            })
+            .collect()
+    };
+    let mut drawn = body_paths(Some(shaded(&rich.shell, shade)));
+    drawn.push(re("g", &[("clip-path", format!("url(#{})", clip))], inside));
+    kc(
+        n,
+        id,
+        extent,
+        vec![
+            re("defs", &[], vec![re("clipPath", &[("id", clip)], body_paths(None))]),
+            re(
+                "g",
+                &[("transform", format!("matrix({} 0 0 {} {} {})", xo(u), xo(l), xo(d), xo(f)))],
+                drawn,
+            ),
+        ],
+    )
+}
+
 /// `Uh(e, t, n, r, o)` — frame → `MarkTree`.
 pub(crate) fn uh(
     e: &Frame,
@@ -3087,6 +3324,8 @@ pub(crate) fn uh(
     if let Some(s) = first.filter(|_| !rest && e.morph.is_none()) {
         if s.body == "sphere" {
             ht(&jt(e, t, n, tab), t, r, o.extent)
+        } else if let Some(rich) = custom::rich(s.body) {
+            rich_atlas(e, s.body, &rich, t, n, r, o.extent)
         } else {
             am(&em(e, s.body, t, n), r, o.extent)
         }

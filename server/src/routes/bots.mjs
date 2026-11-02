@@ -13,21 +13,34 @@ import { designAvatar, designPicture, pickKitAvatar } from "../avatar-design.mjs
 // Sets a request's avatar fields on `bot` (a new one or one there): a kit
 // shape clears the outline, an outline without a shape makes it "custom".
 // Only the fields given are checked (a bot's older colour stays as it is).
-function applyAvatar(bot, { shape, color, outline }) {
+function applyAvatar(bot, { shape, color, outline, layers, eyes }) {
   const hasOutline = outline !== undefined && outline !== null && outline !== "";
   const s = shape || (hasOutline ? "custom" : bot.shape);
   const c = color || bot.color;
   const o = s === "custom" ? (hasOutline ? (typeof outline === "string" ? outline.trim() : outline) : bot.outline) : undefined;
+  // A new outline brings its own layers (or none); otherwise they stay.
+  const sentRich = Array.isArray(layers) && layers.length > 0;
+  const keepRich = !hasOutline && s === "custom" && bot.layers?.length;
+  const l = s !== "custom" ? undefined : sentRich ? layers : keepRich ? bot.layers : undefined;
+  const e = l ? (typeof eyes === "string" ? eyes : keepRich ? bot.eyes : eyes) : undefined;
   const errs = validateAvatar({
     shape: shape || hasOutline || s === "custom" ? s : KIT_SHAPES[0],
     color: color ? c : "#1084FE",
     outline: o,
+    ...(l ? { layers: l, eyes: e } : {}),
   });
   if (errs.length) throw new Error(errs.join("; "));
   bot.shape = s;
   bot.color = c;
   if (o) bot.outline = o;
   else delete bot.outline;
+  if (l) {
+    bot.layers = l.map((x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}) }));
+    bot.eyes = e;
+  } else {
+    delete bot.layers;
+    delete bot.eyes;
+  }
 }
 
 export default async function handle(req, res) {
@@ -38,10 +51,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { name, shape, color, outline } = JSON.parse(body || "{}");
+        const { name, shape, color, outline, layers, eyes } = JSON.parse(body || "{}");
         if (!name?.trim()) throw new Error("bot needs a name");
         const av = { shape: "blob", color: "#1084FE" };
-        applyAvatar(av, { shape, color, outline });
+        applyAvatar(av, { shape, color, outline, layers, eyes });
         const tid = `t${nextThreadSeq()}`;
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
         store.list.unshift({ id: tid, uid: uuidv7(), title: name.trim(), turns: [] });
@@ -53,6 +66,7 @@ export default async function handle(req, res) {
           shape: av.shape,
           color: av.color,
           ...(av.outline ? { outline: av.outline } : {}),
+          ...(av.layers ? { layers: av.layers, eyes: av.eyes } : {}),
           threadId: tid,
           ...botDefaults(name.trim()),
           memories: [],
@@ -76,10 +90,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id, name, shape, color, outline, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
+        const { id, name, shape, color, outline, layers, eyes, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
-        if (shape || color || outline !== undefined) applyAvatar(bot, { shape, color, outline });
+        if (shape || color || outline !== undefined || layers !== undefined) applyAvatar(bot, { shape, color, outline, layers, eyes });
         if (name?.trim() && name.trim() !== bot.name) {
           // untouched defaults follow a rename; edited ones stay
           const was = botDefaults(bot.name), now = botDefaults(name.trim());
@@ -326,8 +340,8 @@ export default async function handle(req, res) {
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { prompt, image, name, model } = JSON.parse(body || "{}");
-        const candidates = await designAvatar({ prompt, image, name, model });
+        const { prompt, image, name, model, style } = JSON.parse(body || "{}");
+        const candidates = await designAvatar({ prompt, image, name, model, style });
         res.end(JSON.stringify({ ok: true, candidates }));
       } catch (e) {
         res.statusCode = 400;

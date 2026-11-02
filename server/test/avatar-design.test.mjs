@@ -322,3 +322,43 @@ test("AVD-14 /avatar/design on the OpenAI-compatible path: chat/completions with
   assert.deepEqual(call.body.messages[1].content[0], { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } });
   assert.equal(call.body.messages[1].content[1].type, "text");
 });
+
+test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its layers and eyes, a new outline or a kit shape drops them, across a restart", async () => {
+  const { MOCK_RICH, validateAvatar, layerErrors } = await import("../src/avatar-shape.mjs");
+  for (const c of MOCK_RICH) assert.deepEqual(validateAvatar(c), [], c.name);
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  const d = await postJson("/avatar/design", { prompt: "a green giant", style: "rich" });
+  assert.equal(d.status, 200, d.text);
+  assert.equal(d.json.candidates.length, 3);
+  assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && /^#[0-9A-F]{6}$/i.test(c.eyes)));
+  // the checks
+  assert.deepEqual(layerErrors([], "#FFFFFF"), ["a rich avatar needs at least one layer (the face)"]);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "red" }], "#FFFFFF").join(";"), /fill must be #RRGGBB/);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "#FF0000", opacity: 2 }], "#FFFFFF").join(";"), /opacity must be 0..1/);
+  assert.match(layerErrors([{ path: "M10 10 H20 V20 Z", fill: "#FF0000" }], "#FFFFFF").join(";"), /only M\/L\/C\/Q\/Z/);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "#FF0000" }], "nope").join(";"), /eyes must be #RRGGBB/);
+  assert.match(validateAvatar({ shape: "heart", color: "#FF0000", layers: MOCK_RICH[0].layers, eyes: "#FFFFFF" }).join(";"), /only a custom outline can have layers/);
+  // stored on a bot
+  const r = MOCK_RICH[0];
+  const made = await postJson("/bot/new", { name: "Giant", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  let b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [r.layers, r.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.layers, r.layers);
+  // a colour alone keeps them
+  await postJson("/bot/update", { id, color: "#225522" });
+  assert.deepEqual((b = await botOf(id)).layers, r.layers);
+  // across a restart
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  assert.deepEqual([(b = await botOf(id)).layers, b.eyes], [r.layers, r.eyes]);
+  // a new outline without layers drops them; so does a kit shape
+  await postJson("/bot/update", { id, outline: GOOD.cat });
+  assert.ok(!("layers" in (b = await botOf(id))) && !("eyes" in b));
+  await postJson("/bot/update", { id, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  assert.deepEqual((await botOf(id)).layers, r.layers);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("layers" in (b = await botOf(id))) && b.shape === "hex");
+});
