@@ -477,6 +477,12 @@ pub(crate) fn body_shape(shape: &str, outline: &str) -> String {
     }
 }
 
+/// Whether `color` is the primary ink (`#FFFFFF`, drawn black on light
+/// themes and white on dark ones).
+pub(crate) fn is_primary_ink(color: &str) -> bool {
+    crate::mark::norm_color(color) == "#FFFFFF"
+}
+
 /// The `/bot/*` fields for a shape in the app's form.
 pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
     match shape.strip_prefix(crate::avatar::OUTLINE) {
@@ -5468,21 +5474,27 @@ impl Store {
         });
     }
 
-    /// Uses choice `i` and keeps it in "Your designs".
+    /// Uses choice `i` and keeps its shape in "Your designs". A choice in
+    /// the primary ink keeps the bot's colour; one the prompt coloured
+    /// brings its colour.
     pub fn design_pick(&'static self, i: usize, for_new: bool) {
         let Some(c) = self.design_cands.get_untracked().get(i).cloned() else { return };
         self.design_picked.set(Some(i));
         self.design_keep(&c);
-        self.design_use(c, for_new);
+        let own = !is_primary_ink(&c.color);
+        self.design_use(c, for_new, own);
     }
 
-    /// Puts design `c` on the Create New Bot sheet's draft (`for_new`), or
-    /// on the open bot at once (its avatar morphs). The first change in an
-    /// editing session keeps the bot's old avatar for Revert.
-    pub fn design_use(&'static self, c: AvatarCand, for_new: bool) {
+    /// Puts design `c`'s shape (and its colour, with `with_color`) on the
+    /// Create New Bot sheet's draft (`for_new`), or on the open bot at once
+    /// (its avatar morphs). The first change in an editing session keeps
+    /// the bot's old avatar for Revert.
+    pub fn design_use(&'static self, c: AvatarCand, for_new: bool, with_color: bool) {
         if for_new {
             self.bot_shape.set(c.shape);
-            self.bot_color.set(c.color);
+            if with_color {
+                self.bot_color.set(c.color);
+            }
             return;
         }
         let Some(b) = self.active_bot_untracked() else { return };
@@ -5496,7 +5508,9 @@ impl Store {
             }));
         }
         let mut patch = body_fields(&c.shape);
-        patch["color"] = c.color.into();
+        if with_color {
+            patch["color"] = c.color.into();
+        }
         patch["image"] = "".into();
         patch["crop"] = serde_json::Value::Null;
         self.update_bot(&b.id, patch);
@@ -5505,7 +5519,7 @@ impl Store {
     /// Adds `c` to the front of "Your designs" (once; at most 24).
     fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
-            v.retain(|d| !(d.shape == c.shape && d.color == c.color));
+            v.retain(|d| d.shape != c.shape);
             v.insert(0, c.clone());
             v.truncate(24);
         });

@@ -1955,14 +1955,24 @@ fn bot_tab() -> impl IntoElement {
                                     .into_element()
                             },
                         ))
-                        // App.tsx:3248 — the adaptive swatch raw; the
-                        // painter resolves `inkOf` per theme.
-                        .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
-                            shape: sh.into(),
-                            color: "#FFFFFF".to_owned(),
-                            size: 44.0,
-                            paused: true,
-                            ..Default::default()
+                        // In the bot's colour (the primary ink raw when it
+                        // wears a photo; the painter resolves `inkOf` per
+                        // theme), like the Create New Bot grid; re-drawn
+                        // when the colour changes.
+                        .child(dynamic(move || {
+                            let color = store()
+                                .active_bot()
+                                .filter(|b| b.image.is_empty())
+                                .map(|b| b.color)
+                                .unwrap_or_else(|| "#FFFFFF".to_owned());
+                            crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+                                shape: sh.into(),
+                                color,
+                                size: 44.0,
+                                paused: true,
+                                ..Default::default()
+                            })
+                            .into_element()
                         }))
                         .into_element()
                 })),

@@ -111,13 +111,28 @@ fn design_button() -> impl IntoElement {
         .on_press(|| store().design_avatar())
 }
 
-/// The 3 choices, live; the picked one is outlined and named below.
+/// The colour the options are drawn in: the sheet's draft colour, or the
+/// open bot's (the primary ink when it wears a photo).
+fn current_color(for_new: bool) -> String {
+    let st = store();
+    if for_new {
+        return st.bot_color.get();
+    }
+    st.active_bot()
+        .filter(|b| b.image.is_empty())
+        .map(|b| b.color)
+        .unwrap_or_else(|| "#FFFFFF".to_owned())
+}
+
+/// The 3 choices, live; the picked one is outlined and named below. A
+/// choice in the primary ink shows in the bot's colour, which it keeps.
 fn choices(for_new: bool) -> impl IntoElement {
     let st = store();
     let cands = st.design_cands.get();
     if cands.is_empty() {
         return view().into_element();
     }
+    let ink = current_color(for_new);
     let picked = st.design_picked.get();
     let caption = match picked.and_then(|i| cands.get(i)) {
         Some(c) if c.why.is_empty() => c.name.clone(),
@@ -143,7 +158,7 @@ fn choices(for_new: bool) -> impl IntoElement {
                         .on_press(move || store().design_pick(i, for_new))
                         .child(bot_blob(BotBlobProps {
                             shape: c.shape,
-                            color: c.color,
+                            color: if crate::store::is_primary_ink(&c.color) { ink.clone() } else { c.color },
                             size: 58.0,
                             seed: Some(format!("design{i}")),
                             ..Default::default()
@@ -167,9 +182,10 @@ fn error_line() -> impl IntoElement {
     )
 }
 
-/// "Your designs": every Design pick, newest first, at rest. A tap puts
-/// one on the bot (or the sheet's draft); hover shows ✕ to remove it.
-/// Nothing is drawn while the list is empty.
+/// "Your designs": the shape of every Design pick, newest first, at rest
+/// and in the bot's colour (like the kit grid). A tap puts the shape on
+/// the bot (or the sheet's draft), which keeps its colour; hover shows ✕
+/// to remove it. Nothing is drawn while the list is empty.
 pub(crate) fn saved(for_new: bool) -> impl IntoElement {
     dynamic(move || {
         let st = store();
@@ -178,10 +194,11 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
             return view().into_element();
         }
         let current = if for_new {
-            Some((st.bot_shape.get(), st.bot_color.get()))
+            Some(st.bot_shape.get())
         } else {
-            st.active_bot().filter(|b| b.image.is_empty()).map(|b| (b.shape, b.color))
+            st.active_bot().filter(|b| b.image.is_empty()).map(|b| b.shape)
         };
+        let ink = current_color(for_new);
         view()
             .w_full()
             .gap(px(8.0))
@@ -193,9 +210,7 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
                     .justify_center()
                     .gap_2()
                     .children(saved.into_iter().enumerate().map(|(i, c)| {
-                        let on = current
-                            .as_ref()
-                            .is_some_and(|(sh, co)| *sh == c.shape && crate::mark::norm_color(co) == crate::mark::norm_color(&c.color));
+                        let on = current.as_ref().is_some_and(|sh| *sh == c.shape);
                         let hov = signal(false);
                         let use_it = c.clone();
                         view()
@@ -205,7 +220,7 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
                             .label(format!("Use your {} design", c.name))
                             .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
                             .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
-                            .on_press(move || store().design_use(use_it.clone(), for_new))
+                            .on_press(move || store().design_use(use_it.clone(), for_new, false))
                             .child(when(
                                 move || on,
                                 || {
@@ -220,7 +235,7 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
                             ))
                             .child(bot_blob(BotBlobProps {
                                 shape: c.shape,
-                                color: c.color,
+                                color: ink.clone(),
                                 size: 44.0,
                                 paused: true,
                                 ..Default::default()
