@@ -500,7 +500,9 @@ const EYE_REACH: f64 = 0.65;
 /// of the outline's largest inscribed circle, then shrunk (about their
 /// center) only if an eye oval would cross the outline or reach the
 /// steep rim of the loft (past [`EYE_REACH`] of the way out).
-fn place_eyes(poly: &[V2], size: f64, (c, r): (V2, f64)) -> (AvEye, f64) {
+/// The loft's center for an outline (`sS` scales its rings about the
+/// bounding box's).
+fn loft_mid(poly: &[V2]) -> V2 {
     let (mut x0, mut x1, mut y0, mut y1) = (
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -513,29 +515,38 @@ fn place_eyes(poly: &[V2], size: f64, (c, r): (V2, f64)) -> (AvEye, f64) {
         y0 = y0.min(p[1]);
         y1 = y1.max(p[1]);
     }
-    // the loft's center (`sS` scales its rings about the bounding box's)
-    let mid = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
+    [(x0 + x1) / 2.0, (y0 + y1) / 2.0]
+}
+
+/// Whether two eye ovals `w`×`h`, `gap` apart, centred on `at`, clear the
+/// outline by `margin` (with an expression's slack) and stay inside
+/// [`EYE_REACH`] of the loft's center `mid`.
+fn eyes_clear(poly: &[V2], mid: V2, at: V2, w: f64, h: f64, gap: f64, margin: f64) -> bool {
+    [-1.0, 1.0].iter().all(|side| {
+        (0..32).all(|i| {
+            let t = TAU * i as f64 / 32.0;
+            let p = [
+                at[0] + side * gap / 2.0 + t.cos() * w * 0.6,
+                at[1] + t.sin() * h * 0.6,
+            ];
+            let reach = [
+                mid[0] + (p[0] - mid[0]) / EYE_REACH,
+                mid[1] + (p[1] - mid[1]) / EYE_REACH,
+            ];
+            signed_distance(poly, p) >= margin && signed_distance(poly, reach) >= 0.0
+        })
+    })
+}
+
+fn place_eyes(poly: &[V2], size: f64, (c, r): (V2, f64)) -> (AvEye, f64) {
+    let mid = loft_mid(poly);
     let y = c[1] + EYE_RISE_PER_R * r;
     let base = SQUARE_SIZE / size;
     let mut k = 1.0;
     for _ in 0..40 {
         let [w, h, gap] = SQUARE_EYE.map(|v| v * base * k);
         // the oval at full open plus a widened/taller expression's slack
-        let clear = [-1.0, 1.0].iter().all(|side| {
-            (0..32).all(|i| {
-                let t = TAU * i as f64 / 32.0;
-                let p = [
-                    c[0] + side * gap / 2.0 + t.cos() * w * 0.6,
-                    y + t.sin() * h * 0.6,
-                ];
-                let reach = [
-                    mid[0] + (p[0] - mid[0]) / EYE_REACH,
-                    mid[1] + (p[1] - mid[1]) / EYE_REACH,
-                ];
-                signed_distance(poly, p) >= EYE_MARGIN * k && signed_distance(poly, reach) >= 0.0
-            })
-        });
-        if clear {
+        if eyes_clear(poly, mid, [c[0], y], w, h, gap, EYE_MARGIN * k) {
             break;
         }
         k *= 0.95;
@@ -908,11 +919,17 @@ pub(crate) fn custom_body(path: &str) -> Result<&'static str, String> {
 // rich bodies: a custom body with its own colours and surface decals
 // ---------------------------------------------------------------------------
 
+/// How far past the outline (body units) a decal point counts as off the
+/// body; points nearer the rim ride it.
+const OFF_BODY: f64 = 0.02;
+
 /// One decal layer of a rich body: closed loops on the body's front (body
 /// units, y up, densely sampled so they bend with the surface), a fill and
 /// an opacity.
 pub(crate) struct Decal {
     pub loops: Vec<Vec<V2>>,
+    /// Per point: past the outline by more than [`OFF_BODY`].
+    pub off: Vec<Vec<bool>>,
     pub fill: String,
     pub opacity: f64,
 }
@@ -922,6 +939,84 @@ pub(crate) struct Rich {
     pub shell: String,
     pub eyes: String,
     pub decals: Vec<Decal>,
+    /// The recipe's own eye box and eye midpoint x (body units), when its
+    /// `"e"` places or sizes the eyes; else the outline's computed ones.
+    pub eye_box: Option<(AvEye, f64)>,
+    /// A rim around each eye: its colour and thickness (body units).
+    pub rim: Option<(String, f64)>,
+}
+
+/// The smallest and largest eye size multiplier a recipe may ask for.
+const EYE_SCALE: (f64, f64) = (0.6, 2.2);
+
+/// A number field of the recipe's eye object.
+fn eye_number(e: &serde_json::Value, key: &str) -> Result<Option<f64>, String> {
+    match e.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(Some)
+            .ok_or_else(|| format!("eye \"{key}\" must be a number")),
+    }
+}
+
+/// The eye box a recipe asks for (`at`/`gap`/`s` over the computed one),
+/// fitted the way computed eyes are: the eyes shrink (spacing kept) toward
+/// 0.6× while they cross the outline or the loft's steep rim, then move
+/// toward the inscribed centre, then shrink with their spacing if they
+/// still don't fit.
+fn recipe_eyes(base: &CustomBody, at: Option<V2>, gap: Option<f64>, scale: Option<f64>) -> (AvEye, f64) {
+    let poly = body_polygon(&base.outline.path);
+    let (centre, _) = inscribed_circle(&poly);
+    let mid = loft_mid(&poly);
+    let mut c = match at {
+        Some(p) => base.front.to_body(p),
+        None => [base.eye_x, -base.eyes.shift_y.sin()],
+    };
+    let k = base.front.renorm[0];
+    let unit = base.front.scale * k / X;
+    let (mut w, mut h) = match scale {
+        Some(s) => {
+            let f = SQUARE_SIZE / base.size * s.clamp(EYE_SCALE.0, EYE_SCALE.1);
+            (SQUARE_EYE[0] * f, SQUARE_EYE[1] * f)
+        }
+        None => (base.eyes.width, base.eyes.height),
+    };
+    let mut g = match gap {
+        Some(g) => g.max(0.0) * unit,
+        // bigger eyes than computed keep at least a quarter-eye between them
+        None => base.eyes.gap.max(w * 1.25),
+    };
+    let floor = w * EYE_SCALE.0 / scale.unwrap_or(1.0).clamp(EYE_SCALE.0, EYE_SCALE.1);
+    let start = c;
+    let mut pull = 0.0;
+    for _ in 0..120 {
+        if eyes_clear(&poly, mid, c, w, h, g, EYE_MARGIN * 0.6) {
+            break;
+        }
+        if w * 0.95 >= floor {
+            // the size gives first; the spacing is the design's
+            (w, h) = (w * 0.95, h * 0.95);
+        } else if pull < 1.0 {
+            pull = (pull + 0.1f64).min(1.0);
+            c = [
+                start[0] + (centre[0] - start[0]) * pull,
+                start[1] + (centre[1] - start[1]) * pull,
+            ];
+        } else {
+            (w, h, g) = (w * 0.95, h * 0.95, g * 0.95);
+        }
+    }
+    (
+        AvEye {
+            width: w,
+            height: h,
+            gap: g,
+            shift_y: (-c[1]).clamp(-0.9, 0.9).asin(),
+        },
+        c[0],
+    )
 }
 
 thread_local! {
@@ -1001,7 +1096,39 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
     let base_name = custom_body(outline)?;
     let base = find(base_name).ok_or("the outline didn't register")?;
     let shell = colour(v.get("c"), "shell")?;
-    let eyes = colour(v.get("e"), "eye")?;
+    let (eyes, eye_box, rim) = match v.get("e") {
+        Some(e @ serde_json::Value::Object(_)) => {
+            let eyes = colour(e.get("c"), "eye")?;
+            let at = match e.get("at") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(a) => {
+                    let xy: Vec<f64> = a
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+                        .unwrap_or_default();
+                    if xy.len() != 2 || !xy.iter().all(|v| v.is_finite()) {
+                        return Err("eye \"at\" must be [x, y]".to_owned());
+                    }
+                    Some([xy[0], xy[1]])
+                }
+            };
+            let gap = eye_number(e, "gap")?;
+            let scale = eye_number(e, "s")?;
+            let eye_box = (at.is_some() || gap.is_some() || scale.is_some())
+                .then(|| recipe_eyes(&base, at, gap, scale));
+            let rim = match e.get("rim") {
+                None | Some(serde_json::Value::Null) => None,
+                r => {
+                    let fill = colour(r, "eye rim")?;
+                    let width = eye_box.as_ref().map_or(base.eyes.width, |(b, _)| b.width);
+                    let rw = eye_number(e, "rw")?.unwrap_or(0.25).clamp(0.0, 1.2);
+                    Some((fill, rw * width))
+                }
+            };
+            (eyes, eye_box, rim)
+        }
+        e => (colour(e, "eye")?, None, None),
+    };
     let layers = match v.get("l") {
         None | Some(serde_json::Value::Null) => &[][..],
         Some(serde_json::Value::Array(a)) => &a[..],
@@ -1029,6 +1156,7 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                 .ok_or_else(|| format!("layer {n} opacity must be a number"))?
                 .clamp(0.0, 1.0),
         };
+        let poly = body_polygon(&base.outline.path);
         let mut loops = Vec::new();
         for sub in subpaths(path).map_err(|e| format!("layer {n}: {e}"))? {
             let pts = bodies::us(&sub, 0.5);
@@ -1042,7 +1170,12 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
         if loops.is_empty() {
             return Err(format!("layer {n} encloses no area"));
         }
+        let off = loops
+            .iter()
+            .map(|l: &Vec<V2>| l.iter().map(|&p| signed_distance(&poly, p) < -OFF_BODY).collect())
+            .collect();
         decals.push(Decal {
+            off,
             loops,
             fill,
             opacity,
@@ -1058,6 +1191,8 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                 shell,
                 eyes,
                 decals,
+                eye_box,
+                rim,
             }),
         )
     });
@@ -2198,5 +2333,237 @@ mod tests {
             }
         }
         std::fs::write(format!("{dir}/morph.svg"), svg + "</svg>").unwrap();
+    }
+
+    // -- recipe eyes (round 4) -------------------------------------------------
+
+    /// A masked hero: no lens layers, big white eyes with black rims.
+    const SPIDER: &str = r##"{"o":"M50 4 C76 4 90 26 90 52 C90 80 72 96 50 96 C28 96 10 80 10 52 C10 26 24 4 50 4 Z","c":"#D62828","e":{"c":"#FFFFFF","s":1.9,"rim":"#111111","rw":0.35,"at":[50,48],"gap":30}}"##;
+    /// Goggles: a brown head, a skin face patch, dark eyes in gold rims.
+    const GOGGLES: &str = r##"{"o":"M50 5 C77 5 92 26 92 52 C92 79 74 96 50 96 C26 96 8 79 8 52 C8 26 23 5 50 5 Z","c":"#6B4226","l":[["M20 60 C20 43 34 35 50 35 C66 35 80 43 80 60 C80 81 66 92 50 92 C34 92 20 81 20 60 Z","#F1C7A0",1]],"e":{"c":"#2A1E14","at":[50,54],"gap":28,"s":1.25,"rim":"#D4A017","rw":0.55}}"##;
+    /// A ninja: a dark hood with a skin eye band at y 46..58, the eyes in it.
+    const NINJA: &str = r##"{"o":"M50 4 C76 4 90 26 90 52 C90 80 72 96 50 96 C28 96 10 80 10 52 C10 26 24 4 50 4 Z","c":"#1E2A3A","l":[["M8 45 L92 45 L92 59 L8 59 Z","#E9C49A",1]],"e":{"c":"#111111","at":[50,52],"gap":24,"s":0.9}}"##;
+
+    /// String-`"e"` recipes keep round 3's eyes (no recipe eye box, no
+    /// rim) and draw byte for byte as this snapshot. It moved once, in
+    /// round 4, from round 3's (0xf3dbe89e8cc1a6cc, 0x333f3d3298421459,
+    /// 0x8dbe3467ae0e694c): where a decal crosses the limb, the cut now
+    /// follows the visible edge instead of a straight chord (the hero, with
+    /// no layer at the limb, didn't move).
+    #[test]
+    fn rich_string_eyes_unchanged() {
+        for recipe in [HULK, HERO, ORANGE_CAT] {
+            let r = rich(rich_body(recipe).unwrap()).unwrap();
+            assert!(r.eye_box.is_none() && r.rim.is_none());
+        }
+        let mut got = Vec::new();
+        for recipe in [HULK, HERO, ORANGE_CAT] {
+            let name = rich_body(recipe).unwrap();
+            let mut h = body_hash(name, "hex");
+            for (_, tree, _, _) in rich_run(name, 80.47, 52.48) {
+                hash_tree(&tree, &mut h);
+            }
+            got.push(h);
+        }
+        assert_eq!(got, vec![0x7d2f008d39e30620, 0x333f3d3298421459, 0xe8c5e4ae8f388eec]);
+    }
+
+    /// The two eye centroids at the front pose in a 255px sprite.
+    fn front_eyes(name: &'static str) -> Vec<Vec<V2>> {
+        let eyes = super::super::Face::new().eyes();
+        let rot = bodies::Rot { yaw: 0.0, pitch: 0.0, roll: 0.0 };
+        bodies::dollar_h(name, &rot, 255.0, Some(&eyes))
+            .eyes
+            .iter()
+            .flat_map(|d| loops(d))
+            .collect()
+    }
+
+    fn centroid(l: &[V2]) -> V2 {
+        let n = l.len() as f64;
+        let (x, y) = l.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        [x / n, y / n]
+    }
+
+    /// The recipe's `at` and `gap` land where asked at the front pose.
+    #[test]
+    fn recipe_eyes_land_at_at() {
+        for (recipe, at, gap) in [(SPIDER, [50.0, 48.0], 30.0), (NINJA, [50.0, 52.0], 24.0), (GOGGLES, [50.0, 54.0], 28.0)] {
+            let name = rich_body(recipe).unwrap();
+            let b = find(name).unwrap();
+            let r = b.size * CS * 255.0 / US;
+            let want = b.front.to_body(at);
+            let want = [127.5 + r * want[0], 127.5 - r * want[1]];
+            let eyes = front_eyes(name);
+            assert_eq!(eyes.len(), 2, "{name}");
+            let (a, c) = (centroid(&eyes[0]), centroid(&eyes[1]));
+            let mid = [(a[0] + c[0]) / 2.0, (a[1] + c[1]) / 2.0];
+            let got_gap = (a[0] - c[0]).hypot(a[1] - c[1]);
+            let want_gap = gap * b.front.scale * b.front.renorm[0] / X * r;
+            println!(
+                "{name}: centre {mid:.1?} want {want:.1?}, gap {got_gap:.1} want {want_gap:.1} (of 255)"
+            );
+            assert!((mid[0] - want[0]).hypot(mid[1] - want[1]) <= 2.0, "{name} centre");
+            assert!((got_gap - want_gap).abs() <= want_gap * 0.03, "{name} gap");
+        }
+    }
+
+    /// Eyes asked for past the outline are fitted inside it: shrunk, then
+    /// pulled toward the face.
+    #[test]
+    fn recipe_eyes_are_clamped_inside() {
+        let recipe = r##"{"o":"M50 4 C76 4 90 26 90 52 C90 80 72 96 50 96 C28 96 10 80 10 52 C10 26 24 4 50 4 Z","c":"#D62828","e":{"c":"#FFFFFF","s":2.2,"at":[86,30],"gap":40}}"##;
+        let name = rich_body(recipe).unwrap();
+        let rich = rich(name).unwrap();
+        let (eye, _) = rich.eye_box.as_ref().unwrap();
+        let b = find(name).unwrap();
+        let asked = SQUARE_EYE[0] * SQUARE_SIZE / b.size * 2.2;
+        println!("asked width {asked:.3}, got {:.3}", eye.width);
+        assert!(eye.width < asked);
+        let rot = bodies::Rot { yaw: 0.0, pitch: 0.0, roll: 0.0 };
+        let outline = loops(&bodies::im(name, &rot, 255.0)[0]).remove(0);
+        for p in front_eyes(name).iter().flatten() {
+            assert!(signed_distance(&outline, *p) > 0.0, "eye point {p:?} outside");
+        }
+    }
+
+    /// A rim rings each eye in every frame the eyes are drawn and is gone
+    /// when they are; it sits over the layers and under the eye.
+    #[test]
+    fn rims_follow_the_eyes() {
+        for recipe in [SPIDER, GOGGLES] {
+            let name = rich_body(recipe).unwrap();
+            for (extent, display) in [(80.47, 52.48), (120.71, 78.72)] {
+                for (label, tree, has_eyes, _) in rich_run(name, extent, display) {
+                    let mut ps = Vec::new();
+                    all_paths(&tree, &mut ps);
+                    let eyes = ps.iter().filter(|p| p.attr("data-eye").is_some()).count();
+                    let rims = ps.iter().filter(|p| p.attr("data-rim").is_some()).count();
+                    if eyes > 0 {
+                        assert!(rims > 0, "{name} at {display}: {label}: eyes without rims");
+                        let last_rim = ps.iter().rposition(|p| p.attr("data-rim").is_some()).unwrap();
+                        let first_eye = ps.iter().position(|p| p.attr("data-eye").is_some()).unwrap();
+                        let last_layer = ps.iter().rposition(|p| p.attr("data-layer").is_some());
+                        assert!(last_rim < first_eye && last_layer.is_none_or(|l| l < last_rim));
+                    }
+                    if !has_eyes {
+                        assert_eq!(rims, 0, "{name} at {display}: {label}: rims without eyes");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Height (screen units) of the taller eye of a tree.
+    fn eye_height(tree: &MarkTree) -> f64 {
+        let mut ps = Vec::new();
+        all_paths(tree, &mut ps);
+        ps.iter()
+            .filter(|p| p.attr("data-eye").is_some())
+            .flat_map(|p| loops(p.attr("d").unwrap_or("")))
+            .map(|l| {
+                let ys = l.iter().map(|p| p[1]);
+                let (lo, hi) = ys.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), y| (lo.min(y), hi.max(y)));
+                hi - lo
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// The frame of an idle run with the lids most closed.
+    fn blink_mark(name: &'static str) -> Mark {
+        let tab = shared_tables();
+        let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 5);
+        let mut dir = Director::new(&mut mark, "idle", 5, false, false, None);
+        let mut best = (0.0, 0);
+        for f in 0..600 {
+            step(&mut dir, &mut mark);
+            if mark.fe() > best.0 {
+                best = (mark.fe(), f);
+            }
+        }
+        let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 5);
+        let mut dir = Director::new(&mut mark, "idle", 5, false, false, None);
+        for _ in 0..=best.1 {
+            step(&mut dir, &mut mark);
+        }
+        mark
+    }
+
+    /// Big eyes still blink: at the closed-lid frame the eye is a slit.
+    #[test]
+    fn big_eyes_blink() {
+        let tab = shared_tables();
+        let name = rich_body(SPIDER).unwrap();
+        let open = eye_height(&render_ink(&Mark::new(&tab, Some(name), 1.0, false, false, 5), 144.0, 96.0, "#1884FC"));
+        let blink = blink_mark(name);
+        let shut = eye_height(&render_ink(&blink, 144.0, 96.0, "#1884FC"));
+        println!("lids {:.2}: eye height {shut:.1} vs open {open:.1}", blink.fe());
+        assert!(blink.fe() > 0.8);
+        assert!(shut < open * 0.4, "{shut} vs {open}");
+    }
+
+    /// Writes the round-4 sheets as SVG into `MARK_EYES_DIR`.
+    #[test]
+    fn render_eye_sheets() {
+        let Ok(dir) = std::env::var("MARK_EYES_DIR") else {
+            return;
+        };
+        let tab = shared_tables();
+        let rows: Vec<(&str, &'static str)> = vec![
+            ("blob", "sphere"),
+            ("spider", rich_body(SPIDER).unwrap()),
+            ("goggles", rich_body(GOGGLES).unwrap()),
+            ("ninja", rich_body(NINJA).unwrap()),
+        ];
+        let head = |w: f64, h: f64| {
+            format!("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'><rect width='100%' height='100%' fill='#fff'/>")
+        };
+        let tree_svg = |tree: &MarkTree, x: f64, y: f64, scale: f64| {
+            let mut t = String::new();
+            xml(tree, &mut t);
+            format!("<g transform='translate({x} {y}) scale({scale})'>{t}</g>")
+        };
+        let ink = "#1884FC";
+        let mut svg = head(110.0 + 4.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, title) in ["rest 64pt", "rest 80pt", "rest 96pt", "blink 96pt"].iter().enumerate() {
+            svg += &label(130.0 + c as f64 * 150.0, 18.0, title);
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, pt) in [64.0, 80.0, 96.0, 96.0].iter().enumerate() {
+                let extent = pt * 0.82 * 0.92 / 0.6;
+                let (x0, y0) = (110.0 + c as f64 * 150.0 + (150.0 - extent) / 2.0, y + (150.0 - extent) / 2.0);
+                if *body == "sphere" && c < 3 {
+                    let bytes = super::super::paint::rest_bytes("blob").unwrap();
+                    svg += &rest_svg(&bytes, extent, x0, y0, ink);
+                    continue;
+                }
+                let mark = if c == 3 { blink_mark(body) } else { Mark::new(&tab, Some(body), 1.0, false, false, 1) };
+                let mut t = render_ink(&mark, extent, pt * 0.82, ink);
+                t.attrs.retain(|(k, _)| *k != "id");
+                svg += &tree_svg(&t, x0, y0, 1.0);
+            }
+        }
+        std::fs::write(format!("{dir}/rest.svg"), svg + "</svg>").unwrap();
+        let poses: [(&str, V3); 5] = [
+            ("yaw -40", [0.0, -40.0, 0.0]),
+            ("front", [0.0, 0.0, 0.0]),
+            ("yaw 40", [0.0, 40.0, 0.0]),
+            ("yaw 72", [0.0, 72.0, 0.0]),
+            ("pitch 40", [40.0, 20.0, 0.0]),
+        ];
+        let mut svg = head(110.0 + 5.0 * 150.0, rows.len() as f64 * 150.0 + 30.0);
+        for (c, (title, _)) in poses.iter().enumerate() {
+            svg += &label(140.0 + c as f64 * 150.0, 18.0, title);
+        }
+        for (r, (name, body)) in rows.iter().enumerate() {
+            let y = 30.0 + r as f64 * 150.0;
+            svg += &label(8.0, y + 70.0, name);
+            for (c, (_, rot)) in poses.iter().enumerate() {
+                svg += &pose_svg(body, *rot, 150.0, 100.0 + c as f64 * 150.0, y, &format!("q{r}x{c}"));
+            }
+        }
+        std::fs::write(format!("{dir}/turn.svg"), svg + "</svg>").unwrap();
     }
 }

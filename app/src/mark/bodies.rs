@@ -1851,7 +1851,12 @@ pub(super) fn av(e: &str) -> Option<AvEye> {
         "leaf" => (0.1872, 0.4104, 0.448, 0.04),
         _ => {
             let b = custom::find(e)?;
-            (b.eyes.width, b.eyes.height, b.eyes.gap, b.eyes.shift_y)
+            let rich = custom::rich(e);
+            let eye = rich
+                .as_ref()
+                .and_then(|r| r.eye_box.as_ref())
+                .map_or(&b.eyes, |(eye, _)| eye);
+            (eye.width, eye.height, eye.gap, eye.shift_y)
         }
     };
     Some(AvEye {
@@ -2287,8 +2292,11 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
         }
     };
     if let Some(b) = custom::find(e) {
+        let x = custom::rich(e)
+            .and_then(|r| r.eye_box.as_ref().map(|(_, x)| *x))
+            .unwrap_or(b.eye_x);
         for p in loops.loops.iter_mut().flatten() {
-            p[0] += b.eye_x;
+            p[0] += x;
         }
     }
     loops
@@ -2512,9 +2520,10 @@ pub(crate) fn im(body: &'static str, rot: &Rot, n: f64) -> Vec<String> {
 /// A rich body's decal loops (body units on its front, y up) lifted onto
 /// the loft surface and projected with the eyes' projector, in sprite
 /// space. Where a loop runs onto the part of the front turned away from the
-/// viewer it is cut at the limb (the facing boundary), so back-facing
-/// paint never shows; a loop wholly turned away is dropped.
-pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2>]) -> Vec<Vec<V2>> {
+/// viewer, or off the body, it is cut at the limb (the facing boundary) or
+/// the rim, so back-facing paint never shows; a loop wholly turned away is
+/// dropped.
+pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2>], off: &[Vec<bool>]) -> Vec<Vec<V2>> {
     let Some(info) = cs(body) else {
         return vec![];
     };
@@ -2533,8 +2542,17 @@ pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2
         (pr.project([p[0], p[1], z]), facing)
     };
     let mut out = Vec::new();
-    for l in loops {
-        let lifted: Vec<(V2, f64)> = l.iter().map(|&p| lift(p)).collect();
+    for (l, off) in loops.iter().zip(off) {
+        // a point off the body (a layer drawn past the outline) counts as
+        // turned away, so its loop is cut at the rim instead of lying flat
+        let lifted: Vec<(V2, f64)> = l
+            .iter()
+            .zip(off)
+            .map(|(&p, &off)| {
+                let (q, f) = lift(p);
+                (q, if off { -1.0 } else { f })
+            })
+            .collect();
         let Some(start) = lifted.iter().position(|(_, f)| *f > 0.0) else {
             continue;
         };
@@ -2558,12 +2576,32 @@ pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2
                         exit = Some(c);
                     }
                     Some(e) => {
-                        // follow the limb back: the chord between the two
-                        // crossings, lifted point by point
+                        // follow the limb back: along the chord between the
+                        // two crossings, each point that isn't on the
+                        // visible front is pulled in toward the dome's top
+                        // (the body centre, visible in every pose that
+                        // shows the front) to where the front comes into
+                        // view: the limb or the rim
+                        let visible = |q: V2| surface_z(q[0], q[1]) > 1e-9 && lift(q).1 > 0.0;
                         let steps = ((c[0] - e[0]).hypot(c[1] - e[1]) / 0.03).ceil() as usize;
                         for s in 1..steps {
                             let t = s as f64 / steps as f64;
-                            ring.push(lift([e[0] + (c[0] - e[0]) * t, e[1] + (c[1] - e[1]) * t]).0);
+                            let q = [e[0] + (c[0] - e[0]) * t, e[1] + (c[1] - e[1]) * t];
+                            let q = if visible(q) {
+                                q
+                            } else {
+                                let (mut lo, mut hi) = (0.0f64, 1.0f64);
+                                for _ in 0..12 {
+                                    let m = (lo + hi) / 2.0;
+                                    if visible([q[0] * (1.0 - m), q[1] * (1.0 - m)]) {
+                                        hi = m;
+                                    } else {
+                                        lo = m;
+                                    }
+                                }
+                                [q[0] * (1.0 - hi), q[1] * (1.0 - hi)]
+                            };
+                            ring.push(lift(q).0);
                         }
                         ring.push(lift(c).0);
                     }
@@ -2582,15 +2620,55 @@ pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2
 pub(crate) struct ShOut {
     pub body: Vec<String>,
     pub eyes: Vec<String>,
+    /// A rich body's eye rims (empty for every other body).
+    pub rims: Vec<String>,
+}
+
+/// A closed loop moved `d` outward along its vertex normals (the eye
+/// loops are small and smooth, so this stays clean).
+fn outset(l: &[V2], d: f64) -> Vec<V2> {
+    let n = l.len();
+    if n < 3 {
+        return l.to_vec();
+    }
+    let area: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (l[i], l[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let side = if area >= 0.0 { 1.0 } else { -1.0 };
+    (0..n)
+        .map(|i| {
+            let (a, b) = (l[(i + n - 1) % n], l[(i + 1) % n]);
+            let (tx, ty) = (b[0] - a[0], b[1] - a[1]);
+            let len = tx.hypot(ty).max(1e-12);
+            // outward of a counter-clockwise loop is the tangent turned right
+            [l[i][0] + ty / len * d * side, l[i][1] - tx / len * d * side]
+        })
+        .collect()
 }
 
 /// `$h` — the raster step of `EM`/`PM`: sprite-space body + eye paths.
 pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye; 2]>) -> ShOut {
+    let mut rims = vec![];
     let o = match eyes {
         Some(r) => {
             let info = cs(body);
             match info {
-                Some(info) => gs(&info, rot, n, &cv(body, r)),
+                Some(info) => {
+                    let loops = cv(body, r);
+                    // a rich body's rims: each eye loop grown outward,
+                    // seated and projected exactly like the eye
+                    if let Some((_, d)) = custom::rich(body).and_then(|r| r.rim.clone()) {
+                        let grown = EyeLoops {
+                            loops: loops.loops.iter().map(|l| outset(l, d)).collect(),
+                            shift_y: loops.shift_y,
+                        };
+                        rims = gs(&info, rot, n, &grown);
+                    }
+                    gs(&info, rot, n, &loops)
+                }
                 None => vec![],
             }
         }
@@ -2599,5 +2677,6 @@ pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye
     ShOut {
         body: im(body, rot, n),
         eyes: o.iter().map(|s| gc(std::slice::from_ref(s))).collect(),
+        rims: rims.iter().map(|s| gc(std::slice::from_ref(s))).collect(),
     }
 }

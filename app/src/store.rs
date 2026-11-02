@@ -497,7 +497,12 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
                     serde_json::json!([s(x, "path"), s(x, "fill"), x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0)])
                 })
                 .collect();
-            let recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": s(v, "eyes")});
+            // eyes: a colour, or {c, at, gap, s, rim, rw} (the design places them)
+            let eyes = match v.get("eyes") {
+                Some(e) if e.is_object() => e.clone(),
+                _ => s(v, "eyes").into(),
+            };
+            let recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": eyes});
             format!("{}{recipe}", crate::avatar::RICH)
         }
         _ => body_shape(&shape, &outline),
@@ -5646,12 +5651,12 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Adds `c` to the front of "Your designs" (once; at most 24).
+    /// Adds `c` to the front of "Your designs" (once; at most 48).
     fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
             v.retain(|d| d.shape != c.shape);
             v.insert(0, c.clone());
-            v.truncate(24);
+            v.truncate(48);
         });
         self.save_designs();
     }

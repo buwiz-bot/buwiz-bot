@@ -1664,6 +1664,7 @@ fn qt2(e: &Frame, t: f64, tab: &Tables) -> ShapeRec {
     let a = |[c, u]: V2| -> V2 { [s[0] + c * n, s[1] - u * n] };
     ShapeRec {
         decals: vec![],
+        rims: vec![],
         rich: None,
         center: s,
         radius: i,
@@ -1692,7 +1693,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
             .enumerate()
             .map(|(i, decal)| DecalRec {
                 layer: i,
-                loops: bodies::decal_loops(body, &o, r, &decal.loops)
+                loops: bodies::decal_loops(body, &o, r, &decal.loops, &decal.off)
                     .into_iter()
                     .map(|f| f.iter().map(|&p| d(p)).collect())
                     .collect(),
@@ -1703,8 +1704,23 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
             .collect(),
         _ => vec![],
     };
+    let rims = match (&rich, &rich.as_ref().and_then(|r| r.rim.clone())) {
+        (Some(_), Some((fill, _))) if !sh.rims.is_empty() => vec![DecalRec {
+            layer: 0,
+            loops: sh
+                .rims
+                .iter()
+                .flat_map(|f| ad(f))
+                .map(|f| f.iter().map(|&p| d(p)).collect())
+                .collect(),
+            fill: fill.clone(),
+            opacity: 1.0,
+        }],
+        _ => vec![],
+    };
     ShapeRec {
         decals,
+        rims,
         rich: rich.map(|r| (r.shell.clone(), r.eyes.clone())),
         center: [a * r / 2.0 + u, c * r / 2.0 + l],
         radius: e.zoom * t / 2.0,
@@ -1739,6 +1755,8 @@ struct DecalRec {
 struct ShapeRec {
     /// A rich body's decals (empty for every other body).
     decals: Vec<DecalRec>,
+    /// A rich body's eye rims (empty for every other body).
+    rims: Vec<DecalRec>,
     /// A rich body's shell and eye colours.
     rich: Option<(String, String)>,
     center: V2,
@@ -2936,6 +2954,8 @@ struct Be {
     eyes: Vec<Vec<V2>>,
     /// Decals of the rich bodies in the blend, faded by their weight.
     decals: Vec<DecalRec>,
+    /// Their eye rims, likewise.
+    rims: Vec<DecalRec>,
     /// The heaviest body's shell and eye colours when it is rich.
     rich: Option<(String, String)>,
     /// A rich body in the blend (whose shade memory `ink_shade` reads).
@@ -2965,17 +2985,19 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
     let c = e.morph.as_ref().map(|m| de(m, n, tab));
     let u = ON * t / 2.0 / X;
     let single = r.len() == 1;
-    let decals = r
-        .iter()
-        .flat_map(|(l, w)| {
-            l.decals.iter().map(move |d| DecalRec {
-                opacity: d.opacity * if single { 1.0 } else { *w },
-                ..d.clone()
+    let faded = |pick: fn(&ShapeRec) -> &Vec<DecalRec>| -> Vec<DecalRec> {
+        r.iter()
+            .flat_map(|(l, w)| {
+                pick(l).iter().map(move |d| DecalRec {
+                    opacity: d.opacity * if single { 1.0 } else { *w },
+                    ..d.clone()
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
     Be {
-        decals,
+        decals: faded(|l| &l.decals),
+        rims: faded(|l| &l.rims),
         rich: r.first().and_then(|(l, _)| l.rich.clone()),
         rich_body: rich_of(e),
         size: t,
@@ -3016,6 +3038,17 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
     if e.rich.is_some() || !e.decals.is_empty() {
         // a rich body: the decals and filled eyes, clipped to the body
         let mut inside = decal_paths(&e.decals, shade, ga_loops);
+        for rim in e.rims.iter().filter(|r| r.opacity > 0.001) {
+            let mut attrs = vec![
+                ("d", ga_loops(&rim.loops)),
+                ("fill", shaded(&rim.fill, shade)),
+                ("data-rim", sv("1")),
+            ];
+            if rim.opacity < 1.0 {
+                attrs.push(("opacity", me(rim.opacity, 3)));
+            }
+            inside.push(r2("path", &attrs));
+        }
         if !c.is_empty() {
             let fill = match &e.rich {
                 Some((_, eyes)) => shaded(eyes, shade),
@@ -3267,13 +3300,18 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
             .enumerate()
             .map(|(i, decal)| DecalRec {
                 layer: i,
-                loops: bodies::decal_loops(body, &rot, s, &decal.loops),
+                loops: bodies::decal_loops(body, &rot, s, &decal.loops, &decal.off),
                 fill: decal.fill.clone(),
                 opacity: decal.opacity,
             })
             .filter(|r| !r.loops.is_empty())
             .collect();
         inside = decal_paths(&decals, shade, bodies::gc);
+        if let Some((rim, _)) = &rich.rim {
+            for r in &sh.rims {
+                inside.push(r2("path", &[("d", r.clone()), ("fill", shaded(rim, shade)), ("data-rim", sv("1"))]));
+            }
+        }
         for eye in &sh.eyes {
             inside.push(r2(
                 "path",
