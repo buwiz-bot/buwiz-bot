@@ -1,12 +1,12 @@
-//! App opens and the calls they make (spec 4.4, 7.3, 8, 9.2;
+//! App opens and the calls they make (spec 5.5, 13.2, 14, 15.2;
 //! `v1/sessions.mjs`).
 //!
 //! Rox opens an app by asking for a session: `buwiz.session.open` goes to
 //! the plugin, its certificate is verified with the plugin key from the
 //! install record and kept. From then on every bridge call arrives as
-//! Rox's signed envelope and passes the nine checks of 8.2, in the spec's
+//! Rox's signed envelope and passes the nine checks of 14.2, in the spec's
 //! order, before anything reaches the plugin; the plugin then sees
-//! `_meta["buwiz/caller"]` (8.4). Ticket titles, resolve tools and app
+//! `_meta["buwiz/caller"]` (16.1). Ticket titles, resolve tools and app
 //! sources are here too: they share the validation of plugin answers.
 //! A plugin's opens end when it is disabled, uninstalled or updated
 //! ([`Host::on_close`]).
@@ -32,7 +32,7 @@ pub const MAX_PER_SECOND: usize = 20;
 pub const ARGS_MAX: usize = 256 * 1024;
 pub const RESULT_MAX: usize = 1024 * 1024;
 pub const SOURCE_MAX: usize = 512 * 1024;
-/// A resolve `prompt` answer's text (9.2, 1.1), in characters.
+/// A resolve `prompt` answer's text (15.2), in characters.
 pub const PROMPT_MAX: usize = 4000;
 
 type Res<T = Value> = Result<T, V1Error>;
@@ -46,7 +46,7 @@ fn first_text(r: &Value) -> String {
     get(r, "content").and_then(Value::as_array).into_iter().flatten().find(|c| get(c, "type") == Some(&json!("text"))).and_then(|c| get(c, "text")).and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
-/// A tool result's size as 7.3 counts it: structured plus text (and an
+/// A tool result's size as 13.2 counts it: structured plus text (and an
 /// embedded resource's text or blob), in bytes.
 pub fn result_bytes(r: &Value) -> usize {
     let piece = |c: &Value| match get(c, "type").and_then(Value::as_str) {
@@ -62,7 +62,7 @@ pub fn result_bytes(r: &Value) -> usize {
     text + get(r, "structuredContent").map_or(0, |s| js::stringify(s).len())
 }
 
-/// A tool result without `_meta` (8.4, 9.6: never shown past the broker).
+/// A tool result without `_meta` (16.1, 16.5: never shown past the broker).
 pub fn strip_meta(r: &Value) -> Value {
     let mut out = r.clone();
     if let Some(o) = out.as_object_mut() {
@@ -72,7 +72,7 @@ pub fn strip_meta(r: &Value) -> Value {
 }
 
 /// An open request a plugin made (resolve `open`) checked against its own
-/// manifest `m`: one of its own apps, props valid (6.6), a ticket of the
+/// manifest `m`: one of its own apps, props valid (11.5), a ticket of the
 /// grammar. The normalized open.
 pub fn check_open(m: &Value, o: &Value) -> Res {
     if !o.is_object() {
@@ -162,7 +162,7 @@ impl Sessions {
         self.host.clock.now()
     }
 
-    // ── open / close (4.4) ───────────────────────────────────────────────
+    // ── open / close (5.5) ───────────────────────────────────────────────
 
     fn check_open_request(&self, b: &Value) -> Res<()> {
         if !b.is_object() {
@@ -261,7 +261,7 @@ impl Sessions {
         }
     }
 
-    // ── the call (8.2) ───────────────────────────────────────────────────
+    // ── the call (14.2) ──────────────────────────────────────────────────
 
     /// Checks 1 to 9, in order, and the rate (20 a second); → the open's
     /// plugin, app, the app's permissions, its call slots.
@@ -439,7 +439,7 @@ impl Sessions {
         Ok(row)
     }
 
-    /// POST /v1/host/tickets/title {plugin, ticket} → {valid, title?} (7.4).
+    /// POST /v1/host/tickets/title {plugin, ticket} → {valid, title?} (13.3).
     pub async fn ticket_title(&self, b: &Value) -> Res {
         if !is_v1("ticket", get(b, "ticket")) {
             return V1Error::err("invalid_args", "ticket breaks the ticket grammar");
@@ -457,7 +457,7 @@ impl Sessions {
     }
 
     /// POST /v1/host/resolve {plugin, kind, name, value, complete, context}
-    /// → the 9.2 result (10 s).
+    /// → the 15.2 result (10 s).
     pub async fn resolve(&self, b: &Value) -> Res {
         let kind = get(b, "kind").and_then(Value::as_str).filter(|k| *k == "command" || *k == "scope");
         let (true, Some(kind)) = (b.is_object(), kind) else { return V1Error::err("invalid_args", "kind must be command or scope") };
@@ -500,7 +500,7 @@ impl Sessions {
         Ok(out)
     }
 
-    /// POST /v1/host/apps/source {plugin, app} → {source, fingerprint} (6.1, 6.2).
+    /// POST /v1/host/apps/source {plugin, app} → {source, fingerprint} (11.2).
     pub async fn app_source(&self, b: &Value) -> Res {
         let row = self.running(get(b, "plugin"))?;
         let m = row.manifest();
@@ -559,7 +559,7 @@ fn choices(list: Option<&Value>) -> Res<Vec<Value>> {
         .collect()
 }
 
-/// A resolve tool's `prompt` answer (9.2, protocol 1.1): a starter
+/// A resolve tool's `prompt` answer (15.2): a starter
 /// flow's text, which Rox puts in the composer for the person to edit and
 /// send. Commands only; `text` has something other than spaces, tabs and
 /// line breaks and is at most [`PROMPT_MAX`] characters (refused, not cut:
@@ -577,7 +577,7 @@ pub fn check_prompt(kind: &str, data: &Value) -> Res {
     Ok(json!({"result": "prompt", "text": text}))
 }
 
-/// A resolve tool's answer as 9.2 allows it.
+/// A resolve tool's answer as 15.2 allows it.
 fn resolved(m: &Value, kind: &str, name: Option<&Value>, data: &Value) -> Res {
     match get(data, "result").and_then(Value::as_str) {
         Some("choices") => Ok(json!({"result": "choices", "choices": choices(get(data, "choices"))?})),

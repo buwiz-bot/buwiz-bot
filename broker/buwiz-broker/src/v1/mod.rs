@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::js;
 
-/// A refusal with the spec's code (14.1; `v1/errors.mjs`).
+/// A refusal with the spec's code (22.1; `v1/errors.mjs`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct V1Error {
     pub code: String,
@@ -56,7 +56,7 @@ impl V1Error {
 
 
 /// Whether `s` is a whole `kind` name of the v1 grammar table
-/// (`grammar.mjs` `V1`, spec 3).
+/// (`grammar.mjs` `V1`, spec 4).
 pub fn grammar_ok(kind: &str, s: &str) -> bool {
     let tail = |s: &str, first: fn(char) -> bool, rest: fn(char) -> bool, max: usize| {
         let mut cs = s.chars();

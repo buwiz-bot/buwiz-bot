@@ -16,7 +16,7 @@ use crate::js;
 use crate::v1::trust::Trust;
 use crate::v1::V1Error;
 
-/// 9.8: the first-party publisher.
+/// 5.3: the first-party publisher.
 pub const FIRST_PARTY: &str = "app.buwiz";
 
 /// The plugin host as routines read it.
@@ -125,7 +125,7 @@ fn known_tools(p: &dyn PluginView, row: &Row) -> Vec<Value> {
     }
 }
 
-/// 5.9: a routine reads only approved plugins' readOnlyHint tools
+/// 6.7: a routine reads only approved plugins' readOnlyHint tools
 /// (`readsStatus`): one `{plugin, tools, allowed, reason}` per `reads` entry.
 pub fn reads_status(p: &dyn PluginView, r: &Value) -> Vec<Value> {
     let tr = p.trust();
@@ -164,7 +164,7 @@ pub fn title_of(p: &dyn PluginView, id: &str) -> String {
     }
 }
 
-/// A routine's prompt with its label (10.2), or `None` when the plugin
+/// A routine's prompt with its label (18.3), or `None` when the plugin
 /// may not contribute text: enabled, running and on the approved list as
 /// installed (`v1RoutinePrompt`, `contributing`).
 pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option<String> {

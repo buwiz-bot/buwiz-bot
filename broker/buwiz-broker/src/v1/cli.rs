@@ -11,7 +11,7 @@
 //! | `review` | `{manifest, titles?}` (plugin id → title) | the review |
 //! | `added` | `{prev, next}` | lines |
 //! | `semver` | `{a, b}` | -1, 0, 1 or `null` |
-//! | `limits` | `{}` | Appendix A |
+//! | `limits` | `{}` | section 24 |
 //! | `package` | `{text, trust, host?, platform?}` (a package's plugin.json) | `{id, short, version, server, accounts, files, binary}` |
 //!
 //! The answer is `{ok: true, value}`, or a refusal's wire form.

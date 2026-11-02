@@ -1,4 +1,4 @@
-// v1/signing.mjs — app fingerprints and manifest signatures (6.2, 4.2), as
+// v1/signing.mjs — app fingerprints and manifest signatures (11.2, 5.2), as
 // a library. The server imports this, never the sign-manifest CLI: a
 // bundled server is one file, so a CLI's "am I the main script" check would
 // be true in it and run the CLI instead of the server.

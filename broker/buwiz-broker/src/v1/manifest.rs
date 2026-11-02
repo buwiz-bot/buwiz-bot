@@ -1,12 +1,12 @@
-//! Verifying a plugin's `buwiz://manifest` (spec 5; `v1/manifest.mjs`).
+//! Verifying a plugin's `buwiz://manifest` (spec 6; `v1/manifest.mjs`).
 //!
 //! Nothing a plugin says is trusted until its manifest passes, in the
-//! spec's order (5.2): I-JSON parse, protocol and version, trust store,
+//! spec's order (6.2): I-JSON parse, protocol and version, trust store,
 //! publisher signature over JCS, then every field's grammar and limit
-//! (5.3-5.9, 6.6, Appendix A). A failure is a [`V1Error`] with the spec's
+//! (6.3-6.9, 11.5, 24). A failure is a [`V1Error`] with the spec's
 //! code and the field's path in the message. The same module answers the
-//! install review lines (13.1 step 3), the permissions digest and the props
-//! check of 6.6.
+//! install review lines (6.10), the permissions digest and the props
+//! check of 11.5.
 //!
 //! Where Node would throw a TypeError on a malformed manifest (a tool name
 //! that is a list, say), this refuses it as `manifest_invalid` instead.
@@ -29,7 +29,7 @@ pub const MANIFEST_URI: &str = "buwiz://manifest";
 /// The manifest a plugin built for Rox serves instead.
 pub const ROX_MANIFEST_URI: &str = "rox://manifest";
 
-/// Appendix A, the limits a manifest is held to.
+/// Section 24, the limits a manifest is held to.
 pub mod limits {
     pub const MANIFEST_BYTES: usize = 256 * 1024;
     pub const PLUGIN_ID: usize = 255;
@@ -101,7 +101,7 @@ pub fn perms_digest(perms: Option<&Value>) -> Result<String, String> {
     signed_bytes(perms.unwrap_or(&json!({}))).map(|b| buwiz_protocol::keys::sha256_hex(&b))
 }
 
-/// The manifest's identity hash: sha256 of its JCS bytes (5.2 step 7).
+/// The manifest's identity hash: sha256 of its JCS bytes (6.2 step 9).
 pub fn manifest_hash(m: &Value) -> Result<String, String> {
     signed_bytes(m).map(|b| buwiz_protocol::keys::sha256_hex(&b))
 }
@@ -221,7 +221,7 @@ fn obj<'a>(v: Option<&'a Value>, path: &str) -> Res<&'a Map<String, Value>> {
     }
 }
 
-/// Objects that carry an access grant refuse unknown keys (2.2: fail closed).
+/// Objects that carry an access grant refuse unknown keys (3.4: fail closed).
 fn only_keys(o: &Map<String, Value>, allowed: &[&str], path: &str) -> Res {
     match js::ordered(o).into_iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
         Some((k, _)) => Err(invalid(&format!("{path}.{k}"), "is not a known key here (refused: unknown keys in access grants fail closed)")),
@@ -263,7 +263,7 @@ fn boolean(o: &Map<String, Value>, key: &str, path: &str) -> Res {
     }
 }
 
-// ── props schema subset (6.6) ────────────────────────────────────────────
+// ── props schema subset (11.5) ───────────────────────────────────────────
 
 const SCHEMA_KEYS: &[&str] = &["type", "properties", "required", "items", "enum", "maxLength", "minimum", "maximum"];
 const SCHEMA_TYPES: &[&str] = &["object", "array", "string", "number", "integer", "boolean", "null"];
@@ -367,7 +367,7 @@ fn routines(m: &Map<String, Value>, short: &str) -> Res {
         let at = format!("routines[{i}]");
         let o = obj(Some(r), &at)?;
         // a routine carries access grants (`reads`, `writes`): unknown keys,
-        // v0's `needs` among them, are refused (2.2, 5.9)
+        // v0's `needs` among them, are refused (3.4, 6.7)
         only_keys(o, &["id", "name", "description", "every_s", "query", "prompt", "reads", "writes", "params"], &at)?;
         name(o.get("id"), "routineId", &format!("{at}.id"))?;
         text(o.get("name"), &format!("{at}.name"), 1, Some(L::ROUTINE_NAME), true)?;
@@ -409,7 +409,7 @@ fn routines(m: &Map<String, Value>, short: &str) -> Res {
             return Err(invalid(&format!("{at}.reads"), format!("names {tools} tools; at most {}", L::READS_TOOLS)));
         }
         // `writes`: the plugin's own tools that change data, which the
-        // routine's turn may call without asking (5.9)
+        // routine's turn may call without asking (6.7)
         let writes = list(o.get("writes"), &format!("{at}.writes"), L::WRITES, false)?;
         for (k, t) in writes.iter().enumerate() {
             if is_v1("reservedTool", Some(t)) {
@@ -557,7 +557,7 @@ fn apps(m: &Map<String, Value>, short: &str) -> Res {
             if inl.contains_key("min_width") {
                 int(inl.get("min_width"), &format!("{at}.inline.min_width"), w.0 as f64, width)?;
             }
-            // buwiz.fit's range (6.5): min_height <= height <= max_height
+            // buwiz.fit's range (6.9): min_height <= height <= max_height
             if inl.contains_key("min_height") {
                 int(inl.get("min_height"), &format!("{at}.inline.min_height"), h.0 as f64, height)?;
             }
@@ -595,7 +595,7 @@ fn fields(m: &Map<String, Value>) -> Res {
     apps(m, &short)
 }
 
-// ── verification (5.2) ───────────────────────────────────────────────────
+// ── verification (6.2) ───────────────────────────────────────────────────
 
 /// 2.0.x and 2.1.x: the pre-release numbers of protocol 1.0.
 pub fn pre_release(protocol: &str) -> bool {
@@ -685,7 +685,7 @@ pub struct Verified {
     pub sha256: String,
 }
 
-/// Verifies manifest text against `trust` (spec 5.2 steps 1-5).
+/// Verifies manifest text against `trust` (spec 6.2 steps 1-7).
 pub fn verify(text: &str, trust: &Trust, host: &str) -> Res<Verified> {
     if text.len() > L::MANIFEST_BYTES {
         return Err(invalid("manifest", format!("is over {} bytes", L::MANIFEST_BYTES)));
@@ -697,7 +697,7 @@ pub fn verify(text: &str, trust: &Trust, host: &str) -> Res<Verified> {
     match o.get("needs") {
         None => {}
         Some(Value::Array(n)) if n.is_empty() => {}
-        Some(_) => return Err(V1Error::new("not_supported", "needs: shared services are not supported in v1 (5.3); it must be absent or []")),
+        Some(_) => return Err(V1Error::new("not_supported", "needs: shared services are not supported in v1 (6.3); it must be absent or []")),
     }
     fields(o)?;
     let apps = o.get("apps").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -716,7 +716,7 @@ pub fn verify(text: &str, trust: &Trust, host: &str) -> Res<Verified> {
 /// The plugin's tools/list against its manifest: every tool but the
 /// reserved `rox.*` follows the grammar and starts with `<short>_`
 /// (MAN-10), every tool the manifest names exists, and a routine's writes
-/// are tools that change data (5.9).
+/// are tools that change data (6.7).
 pub fn check_tools(m: &Value, tools: &[Value]) -> Res {
     let short = tpl(get(m, "short"));
     let mut names: Vec<&str> = Vec::new();
@@ -757,7 +757,7 @@ pub fn check_tools(m: &Value, tools: &[Value]) -> Res {
     Ok(())
 }
 
-// ── props (6.6) ──────────────────────────────────────────────────────────
+// ── props (11.5) ─────────────────────────────────────────────────────────
 
 fn bad(why: impl std::fmt::Display) -> V1Error {
     V1Error::new("invalid_args", format!("props: {why}"))
@@ -843,7 +843,7 @@ fn props_match(s: &Value, v: &Value, path: &str) -> Res {
     Ok(())
 }
 
-/// Props for an open of an app with props schema `s` (6.6): an object, at
+/// Props for an open of an app with props schema `s` (11.5): an object, at
 /// most 8 KiB, depth 8, 100 items per array, prop-key grammar, and valid
 /// against the schema subset. Refused as `invalid_args`.
 pub fn validate_props(s: Option<&Value>, props: &Value) -> Res {
@@ -861,7 +861,7 @@ pub fn validate_props(s: Option<&Value>, props: &Value) -> Res {
     }
 }
 
-// ── install review (13.1 step 3) and update consent (13.2) ───────────────
+// ── install review (6.10) and update consent (9.4) ───────────────────────
 
 /// `Math.round`: halves toward +∞.
 fn round(x: f64) -> f64 {
@@ -982,7 +982,7 @@ fn defined(entries: Vec<(&str, Option<Value>)>) -> Value {
     Value::Object(entries.into_iter().filter_map(|(k, v)| Some((k.to_owned(), v?))).collect())
 }
 
-/// What the install screen shows (13.1 step 3). `title_of(plugin)` names
+/// What the install screen shows (6.10). `title_of(plugin)` names
 /// another plugin a routine reads from.
 pub fn review(m: &Value, title_of: &dyn Fn(Option<&Value>) -> String) -> Value {
     let mut apps = Vec::new();
@@ -1046,7 +1046,7 @@ fn added<'a>(a: Option<&Value>, b: Option<&'a Value>) -> Vec<&'a Value> {
     arr(b).iter().filter(|x| !a.iter().any(|y| same(Some(y), Some(x)))).collect()
 }
 
-/// The permissions `next` grants that `prev` did not (13.2: any added key
+/// The permissions `next` grants that `prev` did not (9.4: any added key
 /// or entry needs consent; removals do not). Plain lines; empty = none.
 pub fn added_permissions(prev: &Value, next: &Value) -> Vec<String> {
     let mut out = Vec::new();

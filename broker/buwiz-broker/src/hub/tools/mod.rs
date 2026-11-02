@@ -151,7 +151,7 @@ pub fn set_server_search(on: bool) {
 pub async fn tool_list(run: &Run) -> Vec<Value> {
     let (mcp, deferred) = mcp::surface(run).await;
     let load: Vec<Value> = if deferred.is_empty() { Vec::new() } else { vec![mcp::app_tools_load_def(&deferred)] };
-    // a v1 routine's turn gets exactly its surface (5.9)
+    // a v1 routine's turn gets exactly its surface (19.1)
     if run.turn.surface.is_some() {
         return mcp.into_iter().chain(load).collect();
     }
