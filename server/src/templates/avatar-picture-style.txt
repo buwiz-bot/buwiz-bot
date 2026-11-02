@@ -1,0 +1,10 @@
+Reinterpret the reference image as a minimalist 2D "Bot"-style avatar. The reference image is used solely to preserve the character's identity and distinctive features; it does not replicate the original image's pose, camera distance, or subject composition.
+
+Retain the subject's most recognizable features, such as hair color or primary hair color, hairstyle or head outline, ears or other distinctive shapes, and typical accessories. For human characters, focus on retaining hair color, the outline of the hairstyle, and head accessories; for animals or mascots, focus on retaining the primary color, the outer contour of the head, ears, or other representative features.
+
+Simplify the face into a large, rounded, creamy-white face with a very faint oval-shaped blush on the cheeks. The original subject's primary color should be retained in the hair, ears, outline, or decorations; do not bleach the entire image.
+
+The eyes are simplified into two vertically oriented, solid-colored capsules of equal size and parallel to each other, with an aspect ratio of approximately 3:1. The color should preferably match the original subject's iris color or representative color. Downplay other facial features to make the "double-capsule eyes + mouthless Bot face" the primary visual characteristic.
+
+The aspect ratio is 1:1, with a solid charcoal-black background. Use an extreme close-up head composition, with the head occupying approximately 85%-90% of the frame, peeking in from the lower left and tilted clockwise by about 20 degrees. The face, hair, ears, and outer contours are naturally cropped on the left, bottom, and partially at the top, with both eyes fully exposed; a small portion of the charcoal-black background is retained in the upper right corner. No weapons, circular borders, text, logos, or particle effects should appear.
+Prioritize the minimalist Bot style featuring "no mouth or nose + dual-capsule eyes."

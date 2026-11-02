@@ -250,7 +250,9 @@ export const DESIGN_SYSTEM = readFileSync(new URL("./templates/avatar-design-sys
 export function designRequest({ prompt, name, image }) {
   return [
     name ? `The bot's name: ${name}` : "",
-    `The request (what the bot is or does, or how it should look): ${prompt}`,
+    prompt
+      ? `The request (what the bot is or does, or how it should look): ${prompt}`
+      : "The request: none. Make the picture's subject into an avatar, in its own main colour, and name each candidate after it.",
     image
       ? "The image attached is the subject. Candidate 1 MUST be that subject made into an avatar: shape \"custom\", an outline tracing the subject's silhouette (simplified to the rules), in #FFFFFF unless the request asks for colour (then the subject's main colour). The request says what to keep or change. Candidates 2 and 3 are other takes: another custom outline or a fitting kit shape."
       : "Candidates may be kit shapes or custom outlines; at least one must be a kit shape. Use a custom outline when the bot has an obvious emblem (a receipt, a leaf, a cat's head).",

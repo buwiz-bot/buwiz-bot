@@ -8,7 +8,7 @@ import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeI
 import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, memoryUpdate, setBotProfile } from "../botctx.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
 import { KIT_SHAPES, validateAvatar } from "../avatar-shape.mjs";
-import { designAvatar, pickKitAvatar } from "../avatar-design.mjs";
+import { designAvatar, designPicture, pickKitAvatar } from "../avatar-design.mjs";
 
 // Sets a request's avatar fields on `bot` (a new one or one there): a kit
 // shape clears the outline, an outline without a shape makes it "custom".
@@ -329,6 +329,24 @@ export default async function handle(req, res) {
         const { prompt, image, name, model } = JSON.parse(body || "{}");
         const candidates = await designAvatar({ prompt, image, name, model });
         res.end(JSON.stringify({ ok: true, candidates }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // POST /avatar/picture {image?, prompt?} — Picture mode: a "Bot"-style
+  // picture from the image model (the style prompt, plus what the user
+  // typed on top) → {ok, uri, name, w, h}, the crop editor's draft.
+  if (req.method === "POST" && req.url === "/avatar/picture") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { prompt, image } = JSON.parse(body || "{}");
+        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image })) }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));

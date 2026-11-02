@@ -2463,6 +2463,9 @@ pub struct Store {
     /// Reset is waiting on "Reset the avatar?": nothing is removed or
     /// reset before the confirm row's button.
     pub design_removing: Signal<Option<usize>>,
+    /// Design's mode: "mark" (3 mark avatars) or "picture" (a "Bot"-style
+    /// picture from the image model, set as a photo avatar).
+    pub design_mode: Signal<&'static str>,
     pub avatar_reset_ask: Signal<bool>,
 
     // ————— Plugins marketplace (App.tsx:1291–1640 + the modal) —————
@@ -2748,6 +2751,7 @@ impl Store {
             design_was: signal(None),
             design_saved: signal(Vec::new()),
             design_removing: signal(None),
+            design_mode: signal("mark"),
             avatar_reset_ask: signal(false),
             plugins_open: signal(false),
             plugin_nav: signal(vec![PluginNav::market()]),
@@ -5419,6 +5423,9 @@ impl Store {
         if self.design_busy.get_untracked() || (prompt.is_empty() && image.is_none()) {
             return;
         }
+        if self.design_mode.get_untracked() == "picture" && !self.bot_modal.get_untracked() {
+            return self.design_picture(prompt, image);
+        }
         let name = if self.bot_modal.get_untracked() {
             self.bot_name.get_untracked()
         } else {
@@ -5489,6 +5496,39 @@ impl Store {
             &b.id,
             serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
         );
+    }
+
+    /// Picture mode: `POST /avatar/picture` (the style prompt, the
+    /// reference picture, and what the user typed on top) → the crop
+    /// editor's draft, which Set avatar puts on the bot as a photo.
+    fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
+        let mut body = serde_json::json!({"prompt": prompt});
+        if let Some(d) = &image {
+            body["image"] = d.uri.clone().into();
+        }
+        self.design_err.set(String::new());
+        self.design_busy.set(true);
+        self.avatar_draft.set(None);
+        spawn(async move {
+            match client::post_any("/avatar/picture", body).await {
+                Some(v) if self::b(&v, "ok") => {
+                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
+                    self.avatar_draft.set(Some(AvatarDraft {
+                        uri: s(&v, "uri"),
+                        name: s(&v, "name"),
+                        w: f64of(&v, "w"),
+                        h: f64of(&v, "h"),
+                    }));
+                }
+                Some(v) => self.design_err.set(if s(&v, "error").is_empty() {
+                    "Couldn't draw a picture".into()
+                } else {
+                    s(&v, "error")
+                }),
+                None => self.design_err.set("Couldn't draw a picture".into()),
+            }
+            self.design_busy.set(false);
+        });
     }
 
     /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).

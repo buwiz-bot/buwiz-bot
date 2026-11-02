@@ -192,8 +192,8 @@ test("AVD-09 POST /avatar/design under MOCK: three valid candidates, a kit one w
   for (const c of w.json.candidates) assert.deepEqual(validateAvatar(c), []);
   // deterministic
   assert.deepEqual((await postJson("/avatar/design", { prompt: "reads my receipts and files my BIR forms", name: "Tax Fox" })).json, r.json);
-  bad(await postJson("/avatar/design", { prompt: "  " }), "describe the bot or how it should look");
-  bad(await postJson("/avatar/design", {}), "describe the bot or how it should look");
+  bad(await postJson("/avatar/design", { prompt: "  " }), "describe the bot or add a picture");
+  bad(await postJson("/avatar/design", {}), "describe the bot or add a picture");
 });
 
 test("AVD-10 /avatar/design takes an image only from inside the avatar folder", async () => {
