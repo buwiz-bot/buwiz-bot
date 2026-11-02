@@ -217,4 +217,29 @@ mod tests {
             assert!(r.find("books", screen, sdk::ABI).is_none());
         }
     }
+
+    /// The Books manifest at the pinned rev: every `apps[].native` it
+    /// names opens here, and the registry holds first-party plugins only.
+    #[test]
+    fn every_native_screen_the_books_manifest_names_is_compiled_in() {
+        let manifest = books_mini_app::manifest::unsigned("test");
+        let id = manifest["id"].as_str().unwrap();
+        assert_eq!(manifest["publisher"]["id"], "app.buwiz");
+        let r = Registry::compiled();
+        let named: Vec<(&str, u32)> = manifest["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a.get("native"))
+            .map(|n| (n["screen"].as_str().unwrap(), u32::try_from(n["abi"].as_u64().unwrap()).unwrap()))
+            .collect();
+        assert!(named.len() >= 2, "{named:?}");
+        for (screen, abi) in &named {
+            assert_eq!(r.find(id, screen, *abi).map(|d| d.id), Some(*screen), "{id} names {screen} (abi {abi})");
+        }
+        // first-party only: each compiled-in plugin is of the app.buwiz publisher
+        for (plugin, _) in COMPILED {
+            assert!(plugin.starts_with("app.buwiz."), "{plugin}");
+        }
+    }
 }
