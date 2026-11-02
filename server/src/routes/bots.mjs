@@ -22,7 +22,9 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes }) {
   const sentRich = Array.isArray(layers) && layers.length > 0;
   const keepRich = !hasOutline && s === "custom" && bot.layers?.length;
   const l = s !== "custom" ? undefined : sentRich ? layers : keepRich ? bot.layers : undefined;
-  const e = l ? (typeof eyes === "string" ? eyes : keepRich ? bot.eyes : eyes) : undefined;
+  // sent eyes (a colour or a placement) win; else a kept set keeps its own
+  const sentEyes = typeof eyes === "string" || (eyes && typeof eyes === "object");
+  const e = l ? (sentEyes ? eyes : keepRich ? bot.eyes : eyes) : undefined;
   const errs = validateAvatar({
     shape: shape || hasOutline || s === "custom" ? s : KIT_SHAPES[0],
     color: color ? c : "#1084FE",
@@ -93,7 +95,7 @@ export default async function handle(req, res) {
         const { id, name, shape, color, outline, layers, eyes, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
-        if (shape || color || outline !== undefined || layers !== undefined) applyAvatar(bot, { shape, color, outline, layers, eyes });
+        if (shape || color || outline !== undefined || layers !== undefined || eyes !== undefined) applyAvatar(bot, { shape, color, outline, layers, eyes });
         if (name?.trim() && name.trim() !== bot.name) {
           // untouched defaults follow a rename; edited ones stay
           const was = botDefaults(bot.name), now = botDefaults(name.trim());

@@ -124,6 +124,7 @@ const SEED: &str = r##"
     { id: "bob", name: "Bob", shape: "blob", color: "#1084FE", outline: "M10 10 L90 10 L90 90 Z", layers: [{ path: "M1 1 L9 1 L9 9 Z", fill: "#000000" }], eyes: "#FFFFFF", threadId: null, helper: { parent: "ann", task: "sort" } },
     { id: "cy", name: "Cy", shape: "custom", color: "#FFFFFF", outline: "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 30 L40 30 L35 40 Z", fill: "#F2C3B5", opacity: 0.6 }], eyes: "#58D63A", threadId: t3.id },
     { id: "dee", name: "Dee", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], threadId: null },
+    { id: "eve", name: "Eve", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], eyes: { c: "#58D63A", at: [50, 45.5], gap: 20, s: 1.25, rim: "#111111", rw: 0.3 }, threadId: null },
   );
   store.sections = ["Work"];
   writeIndex();
@@ -185,7 +186,7 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
             s.bots.push(Bot { description: None, instructions: None, outline: Some("M1 1 L9 1 L9 9 Z".into()), layers: Some(vec![json!({"path": "M1 1 L9 1 L9 9 Z", "fill": "#000000"})]), eyes: Some(json!("#FFFFFF")), ..Bot::new("bob", "Bob", "blob", "#1084FE", None) });
             s.bots.push(Bot {
                 layers: Some(vec![json!({"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3"}), json!({"path": "M30 66 L38 66 L34 70 Z", "fill": "#F2C3B5", "opacity": 0.6})]),
-                eyes: Some(json!("#2B1D12")),
+                eyes: Some(json!({"c": "#2B1D12", "at": [50, 52.5], "gap": 21, "s": 1.1, "rim": "#111111", "rw": 0.25})),
                 outline: Some("M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z".into()), ..Bot::new("cy", "Cy", "custom", "#FFFFFF", Some(agents.clone())) });
             s.sections = json!(["Work"]);
             s.active = routine.clone();
@@ -207,7 +208,7 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     assert!(node_threads.contains("\"shape\":\"custom\",\"color\":\"#FFFFFF\",\"outline\":\"M18 44 L22 14"), "a custom bot's outline, in bots[] and list[].bot");
     assert_eq!(node_threads.matches("\"outline\"").count(), 2, "only the custom bot's");
     assert!(node_threads.contains("\"layers\":[{\"path\":\"M34 64 C34 56"), "a rich bot's layers");
-    assert_eq!(node_threads.matches("\"eyes\":\"#2B1D12\"").count(), 2, "in bots[] and list[].bot");
+    assert_eq!(node_threads.matches("\"eyes\":{\"c\":\"#2B1D12\",\"at\":[50,52.5],\"gap\":21,\"s\":1.1,\"rim\":\"#111111\",\"rw\":0.25}").count(), 2, "a placement, in bots[] and list[].bot");
     assert_eq!(node_threads.matches("\"layers\"").count(), 2, "only the custom bot's");
     assert_eq!(db_diff(&twin, &dir), "", "Node's persist() writes what Rust wrote, the placeholder's gap closed");
     for d in [dir, twin] {

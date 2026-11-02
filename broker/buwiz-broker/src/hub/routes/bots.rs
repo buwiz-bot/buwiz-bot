@@ -126,7 +126,9 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         None
     };
     let eyes = b.get("eyes");
-    let e: Option<Value> = l.as_ref().and_then(|_| if eyes.is_some_and(Value::is_string) { eyes.cloned() } else if keep { cur.eyes.clone() } else { eyes.cloned() });
+    // sent eyes (a colour or a placement) win; else a kept set keeps its own
+    let sent_eyes = eyes.is_some_and(|v| v.is_string() || v.is_object() || v.is_array());
+    let e: Option<Value> = l.as_ref().and_then(|_| if sent_eyes { eyes.cloned() } else if keep { cur.eyes.clone() } else { eyes.cloned() });
     let lv = l.clone().map(Value::Array);
     let errs = avatar_shape::validate_avatar(
         if shape.is_some() || has_outline || custom { s } else { Some("blob") },
@@ -210,7 +212,7 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), Avatar::of(b)))) else {
         return refused(&format!("unknown bot {}", template(id)), false);
     };
-    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() {
+    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() {
         match apply_avatar(&cur, &b) {
             Ok(a) => Some(a),
             Err(e) => return refused(&e, false),
@@ -847,18 +849,50 @@ async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         &name,
         block,
         rich,
+        // rich designs get one look at themselves drawn flat (GEN_AVATAR_SELFCHECK=0: none)
+        rich && std::env::var("GEN_AVATAR_SELFCHECK").ok().as_deref() != Some("0"),
         |messages| ask_designer(ask_ctx.clone(), messages, chosen.clone(), system.clone(), max_tokens),
         |p: String| {
             let ctx = pick_ctx.clone();
             // the fallback never fails the request
             async move { pick_kit(&ctx, &p).await.ok().flatten().map(|k| k.0).unwrap_or_else(|| "blob".into()) }
         },
+        |svgs| rasterize_previews(ctx.clone(), svgs),
     )
     .await;
     match r {
         Ok(c) => ok(&json!({"ok": true, "candidates": c.iter().map(avatar_shape::Candidate::json).collect::<Vec<_>>()})),
         Err(e) => refused(&e, true),
     }
+}
+
+/// avatar-design.mjs `rasterizePreviews(svgs)`: the self-check's previews
+/// as PNG image blocks (QuickLook renders each SVG at 512), or `None` when
+/// that fails (the SVG text goes instead).
+async fn rasterize_previews(ctx: Arc<HubCtx>, svgs: Vec<String>) -> Option<Vec<Value>> {
+    use base64::Engine as _;
+    let dir = ctx.store.gen_dir().join("avatars");
+    let id = format!("check-{}-{}", now36(), random36(4));
+    let files: Vec<String> = svgs.iter().enumerate().map(|(k, _)| dir.join(format!("{id}-{k}.svg")).to_string_lossy().into_owned()).collect();
+    let r: Result<Vec<Value>, String> = async {
+        for (f, svg) in files.iter().zip(&svgs) {
+            std::fs::write(f, svg).map_err(|e| e.to_string())?;
+        }
+        let dir_s = dir.to_string_lossy().into_owned();
+        let mut args = vec!["-t", "-s", "512", "-o", dir_s.as_str()];
+        args.extend(files.iter().map(String::as_str));
+        exec(&ctx, command("qlmanage", &args)).await?;
+        files
+            .iter()
+            .map(|f| std::fs::read(format!("{f}.png")).map(|b| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(b)}})).map_err(|e| e.to_string()))
+            .collect()
+    }
+    .await;
+    for f in &files {
+        let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_file(format!("{f}.png"));
+    }
+    r.ok()
 }
 
 /// MOCK's stand-in picture when there is no reference (test/fixtures/avatar-mock.png).

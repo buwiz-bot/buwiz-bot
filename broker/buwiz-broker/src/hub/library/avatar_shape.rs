@@ -437,7 +437,7 @@ fn is_outline_char(c: char) -> bool {
 /// `layerErrors(layers, eyes)`: a rich avatar's painted layers (up to 8
 /// closed paths in the outline's box, each with a fill and an opacity
 /// 0..1) and the eyes' colour. `None` is undefined.
-pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>) -> Vec<String> {
+pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
     let mut errs: Vec<String> = Vec::new();
     let Some(layers) = layers.and_then(Value::as_array).filter(|l| !l.is_empty()) else { return vec!["a rich avatar needs at least one layer (the face)".into()] };
     if layers.len() > LAYERS_MAX {
@@ -489,8 +489,59 @@ pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>) -> Vec<String>
             errs.push(format!("{n} encloses no area"));
         }
     }
-    if !eyes.and_then(Value::as_str).is_some_and(is_color) {
-        errs.push("eyes must be #RRGGBB".into());
+    errs.extend(eye_errors(eyes, outline));
+    errs
+}
+
+/// The smallest and largest eye size multiplier, and the thickest rim.
+pub const EYE_SCALE: (f64, f64) = (0.6, 2.2);
+pub const RIM_MAX: f64 = 1.2;
+
+/// The outline's bounding box `[x0, y0, x1, y1]`, or `None` when it doesn't parse.
+fn outline_box(outline: Option<&str>) -> Option<[f64; 4]> {
+    let pts = flatten_path(outline?).ok()?.points;
+    let f = |init: f64, g: fn(f64, f64) -> f64, k: usize| pts.iter().map(|p| p[k]).fold(init, g);
+    Some([f(f64::INFINITY, f64::min, 0), f(f64::INFINITY, f64::min, 1), f(f64::NEG_INFINITY, f64::max, 0), f(f64::NEG_INFINITY, f64::max, 1)])
+}
+
+/// `eyeErrors(eyes, outline)`: a colour "#RRGGBB", or the recipe's
+/// placement `{c, at?, gap?, s?, rim?, rw?}` (`at` inside the outline's
+/// box, `s` 0.6..2.2, `rw` 0..1.2). `None` is undefined.
+pub fn eye_errors(eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
+    let e = match eyes {
+        Some(Value::String(c)) => return if is_color(c) { vec![] } else { vec!["eyes must be #RRGGBB".into()] },
+        Some(Value::Object(o)) => o,
+        _ => return vec!["eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}".into()],
+    };
+    let mut errs: Vec<String> = Vec::new();
+    let num = |k: &str| e.get(k).and_then(|v| if v.is_number() { v.as_f64() } else { None });
+    if !e.get("c").and_then(Value::as_str).is_some_and(is_color) {
+        errs.push("eyes.c must be #RRGGBB".into());
+    }
+    if let Some(at) = e.get("at") {
+        match at.as_array().filter(|a| a.len() == 2 && a.iter().all(Value::is_number)) {
+            None => errs.push("eyes.at must be [x, y]".into()),
+            Some(a) => {
+                let (x, y) = (a[0].as_f64().unwrap_or(f64::NAN), a[1].as_f64().unwrap_or(f64::NAN));
+                if let Some(b) = outline_box(outline) {
+                    if !(x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) {
+                        errs.push("eyes.at must sit inside the outline's box".into());
+                    }
+                }
+            }
+        }
+    }
+    if e.contains_key("gap") && !num("gap").is_some_and(|g| g > 0.0 && g <= 100.0) {
+        errs.push("eyes.gap must be a number 0..100".into());
+    }
+    if e.contains_key("s") && !num("s").is_some_and(|v| (EYE_SCALE.0..=EYE_SCALE.1).contains(&v)) {
+        errs.push(format!("eyes.s must be {}..{}", js::number(EYE_SCALE.0), js::number(EYE_SCALE.1)));
+    }
+    if e.contains_key("rim") && !e.get("rim").and_then(Value::as_str).is_some_and(is_color) {
+        errs.push("eyes.rim must be #RRGGBB".into());
+    }
+    if e.contains_key("rw") && !num("rw").is_some_and(|v| (0.0..=RIM_MAX).contains(&v)) {
+        errs.push(format!("eyes.rw must be 0..{}", js::number(RIM_MAX)));
     }
     errs
 }
@@ -514,7 +565,7 @@ pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option
         if shape != Some("custom") {
             errs.push("only a custom outline can have layers".into());
         } else {
-            errs.extend(layer_errors(layers, eyes));
+            errs.extend(layer_errors(layers, eyes, outline));
         }
     }
     errs
@@ -530,15 +581,15 @@ pub struct Candidate {
     pub outline: Option<String>,
     /// a rich candidate's painted layers `[{path, fill, opacity?}]` (custom only)
     pub layers: Option<Vec<Value>>,
-    /// a rich candidate's eye colour (custom only)
-    pub eyes: Option<String>,
+    /// a rich candidate's eyes, a colour or a placement (custom only)
+    pub eyes: Option<Value>,
     pub why: String,
 }
 
 impl Candidate {
     pub fn errors(&self) -> Vec<String> {
         let layers = self.layers.clone().map(Value::Array);
-        let eyes = self.eyes.clone().map(Value::String);
+        let eyes = self.eyes.clone();
         validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref())
     }
 
@@ -555,7 +606,7 @@ impl Candidate {
             o.insert("layers".into(), Value::Array(x.clone()));
         }
         if let Some(x) = &self.eyes {
-            o.insert("eyes".into(), json!(x));
+            o.insert("eyes".into(), x.clone());
         }
         o.insert("why".into(), json!(self.why));
         Value::Object(o)
@@ -659,18 +710,26 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
             let layers = x.get("layers").and_then(Value::as_array).map(|ls| {
                 ls.iter()
                     .filter_map(|l| match l {
-                        Value::Object(o) => Some((o, false)),
-                        Value::Array(_) => Some((&empty, true)),
+                        Value::Object(o) => Some(o.clone()),
+                        // the compact form the app uses: [path, fill, opacity?]
+                        Value::Array(a) => {
+                            let mut o = Map::new();
+                            for (k, key) in ["path", "fill", "opacity"].iter().enumerate() {
+                                if let Some(v) = a.get(k) {
+                                    o.insert((*key).into(), v.clone());
+                                }
+                            }
+                            Some(o)
+                        }
                         _ => None,
                     })
-                    .map(|(l, array)| {
+                    .map(|l| {
                         let mut o = Map::new();
                         o.insert("path".into(), json!(match l.get("path") {
                             Some(Value::String(p)) => squeeze_inner(js_trim(p)),
                             _ => String::new(),
                         }));
-                        // an array's `fill` is Array.prototype.fill: String() of it, as V8 writes it
-                        let fill = if array { "function fill() { [native code] }".to_owned() } else { or_empty(l.get("fill").filter(|v| js::truthy(v)).or(l.get("color"))) };
+                        let fill = or_empty(l.get("fill").filter(|v| js::truthy(v)).or(l.get("color")));
                         o.insert("fill".into(), json!(js_trim(&fill).to_uppercase()));
                         if let Some(op) = l.get("opacity").filter(|v| v.is_number()) {
                             o.insert("opacity".into(), op.clone());
@@ -679,7 +738,7 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                     })
                     .collect::<Vec<_>>()
             });
-            let eyes = x.get("eyes").and_then(Value::as_str).map(|e| js_trim(e).to_uppercase());
+            let eyes = parse_eyes(x.get("eyes"));
             let custom = shape == "custom";
             Candidate {
                 name: js::slice_utf16(js_trim(&or_empty(x.get("name"))), 40),
@@ -692,6 +751,28 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
             }
         })
         .collect()
+}
+
+/// A reply's eyes (`parseEyes`): a colour, or the placement object with
+/// its known keys (colours upper-cased); anything else is none.
+fn parse_eyes(e: Option<&Value>) -> Option<Value> {
+    match e? {
+        Value::String(c) => Some(json!(js_trim(c).to_uppercase())),
+        Value::Object(o) => {
+            let mut out = Map::new();
+            for k in ["c", "at", "gap", "s", "rim", "rw"] {
+                if let Some(v) = o.get(k) {
+                    let v = match v {
+                        Value::String(c) if k == "c" || k == "rim" => json!(js_trim(c).to_uppercase()),
+                        v => v.clone(),
+                    };
+                    out.insert(k.into(), v);
+                }
+            }
+            Some(Value::Object(out))
+        }
+        _ => None,
+    }
 }
 
 /// `.replace(/```(?:json)?/gi, "")`
@@ -759,12 +840,19 @@ fn check(cands: &[Candidate], image: bool, rich: bool) -> (Vec<Vec<String>>, Vec
 /// candidates. `ask(messages)` is the model call (Anthropic-shaped
 /// messages) → the reply's text; `pick(prompt)` → a kit shape for when
 /// nothing usable comes back. `image` is the user turn's image block.
-pub async fn design_candidates<A, AF, K, KF>(prompt: &str, name: &str, image: Option<Value>, rich: bool, ask: A, pick: K) -> Result<Vec<Candidate>, String>
+///
+/// With `self_check` (rich only), the set gets one look at itself drawn
+/// flat ([`self_check_round`]); `preview(svgs)` → an image block per SVG,
+/// or `None` to send the SVG text.
+#[allow(clippy::too_many_arguments)]
+pub async fn design_candidates<A, AF, K, KF, V, VF>(prompt: &str, name: &str, image: Option<Value>, rich: bool, self_check: bool, ask: A, pick: K, preview: V) -> Result<Vec<Candidate>, String>
 where
     A: Fn(Vec<Value>) -> AF,
     AF: Future<Output = Result<String, String>>,
     K: Fn(String) -> KF,
     KF: Future<Output = String>,
+    V: FnOnce(Vec<String>) -> VF,
+    VF: Future<Output = Option<Vec<Value>>>,
 {
     let has_image = image.is_some();
     let text = design_request(prompt, name, has_image, rich);
@@ -773,6 +861,7 @@ where
         None => json!(text),
     };
     let mut messages = vec![json!({"role": "user", "content": content})];
+    let first = messages[0].clone();
     let reply = ask(messages.clone()).await?;
     let mut cands = parse_candidates(&reply);
     let (each, set) = check(&cands, has_image, rich);
@@ -817,6 +906,9 @@ where
         if cands.is_empty() {
             return Err("no rich design came back that the engine can draw; try again or another model".into());
         }
+        if self_check {
+            return Ok(self_check_round(prompt, first, cands, &ask, preview).await);
+        }
         return Ok(cands);
     }
     if !has_image && !cands.is_empty() && !cands.iter().any(|c| is_kit(&c.shape)) {
@@ -828,6 +920,152 @@ where
         cands = vec![kit_fallback(&pick(prompt.to_owned()).await)];
     }
     Ok(cands)
+}
+
+/// `selfCheckRound`: each candidate drawn flat ([`preview_svg`]), shown to
+/// the model once with the question whether it reads as the request; a
+/// fix that passes the checks replaces its candidate, any other keeps it.
+/// A failed call keeps the set as it is.
+pub async fn self_check_round<A, AF, V, VF>(prompt: &str, first: Value, cands: Vec<Candidate>, ask: &A, preview: V) -> Vec<Candidate>
+where
+    A: Fn(Vec<Value>) -> AF,
+    AF: Future<Output = Result<String, String>>,
+    V: FnOnce(Vec<String>) -> VF,
+    VF: Future<Output = Option<Vec<Value>>>,
+{
+    const COUNT: [&str; 4] = ["none", "one", "two", "three"];
+    let svgs: Vec<String> = cands.iter().map(preview_svg).collect();
+    let images = preview(svgs.clone()).await;
+    let n = cands.len();
+    let subject = if prompt.is_empty() { "the picture's subject".to_owned() } else { format!("the request \"{prompt}\"") };
+    let mut content: Vec<Value> = Vec::new();
+    for (k, c) in cands.iter().enumerate() {
+        let label = if c.name.is_empty() { "unnamed" } else { &c.name };
+        match &images {
+            Some(imgs) => {
+                content.push(json!({"type": "text", "text": format!("Design {} ({label}):", k + 1)}));
+                content.push(imgs.get(k).cloned().unwrap_or(Value::Null));
+            }
+            None => content.push(json!({"type": "text", "text": format!("Design {} ({label}), as SVG:\n{}", k + 1, svgs[k])})),
+        }
+    }
+    let count = COUNT.get(n).map(|s| s.to_string()).unwrap_or_else(|| n.to_string());
+    content.push(json!({"type": "text", "text": format!("Here are your {count} designs drawn flat. For each, does it read as {subject}? Fix the outline, layers and eyes where it doesn't (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all {n}, JSON only.")}));
+    let said = js::stringify(&json!({"candidates": cands.iter().map(Candidate::json).collect::<Vec<_>>()}));
+    let Ok(reply) = ask(vec![first, json!({"role": "assistant", "content": said}), json!({"role": "user", "content": content})]).await else { return cands };
+    let fixed = parse_candidates(&reply);
+    cands
+        .into_iter()
+        .enumerate()
+        .map(|(k, c)| match fixed.get(k) {
+            Some(f) if f.layers.as_ref().is_some_and(|l| !l.is_empty()) && f.errors().is_empty() => f.clone(),
+            _ => c,
+        })
+        .collect()
+}
+
+// distance from p to the polygon's edge, positive inside
+fn signed_distance(poly: &[P], [px, py]: P) -> f64 {
+    let mut best = f64::INFINITY;
+    for k in 0..poly.len() {
+        let ([ax, ay], [bx, by]) = (poly[k], poly[(k + 1) % poly.len()]);
+        let (ex, ey) = (bx - ax, by - ay);
+        let len = ex * ex + ey * ey;
+        let t = if len > 0.0 { (((px - ax) * ex + (py - ay) * ey) / len).min(1.0).max(0.0) } else { 0.0 };
+        let (dx, dy) = (px - (ax + t * ex), py - (ay + t * ey));
+        best = best.min((dx * dx + dy * dy).sqrt());
+    }
+    if inside(poly, px, py) {
+        best
+    } else {
+        -best
+    }
+}
+
+/// `inscribedCircle(poly)`: the largest circle inside the polygon, the
+/// engine's grid search refined three times around the best cell.
+pub fn inscribed_circle(poly: &[P]) -> (P, f64) {
+    let f = |init: f64, g: fn(f64, f64) -> f64, k: usize| poly.iter().map(|p| p[k]).fold(init, g);
+    let (x0, x1, y0, y1) = (f(f64::INFINITY, f64::min, 0), f(f64::NEG_INFINITY, f64::max, 0), f(f64::INFINITY, f64::min, 1), f(f64::NEG_INFINITY, f64::max, 1));
+    let mut center = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
+    let mut best = signed_distance(poly, center);
+    let (mut hw, mut hh) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
+    const GRID: f64 = 24.0;
+    for _ in 0..4 {
+        let c = center;
+        for i in 0..=24 {
+            for j in 0..=24 {
+                let p = [c[0] - hw + (2.0 * hw * i as f64) / GRID, c[1] - hh + (2.0 * hh * j as f64) / GRID];
+                let d = signed_distance(poly, p);
+                if d > best {
+                    best = d;
+                    center = p;
+                }
+            }
+        }
+        hw *= 4.0 / GRID;
+        hh *= 4.0 / GRID;
+    }
+    (center, best.max(0.0))
+}
+
+/// `eyePlacement(outline, eyes)`: where the preview draws the eyes, (at,
+/// w, h, gap) in the 0..100 box: the recipe's `at`/`gap`/`s`, else the
+/// engine's default in the upper part of the largest inscribed circle.
+pub fn eye_placement(outline: &str, eyes: Option<&Value>) -> (P, f64, f64, f64) {
+    let poly = flatten_path(outline).map(|f| f.points).unwrap_or_else(|_| vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]);
+    let (c, r) = inscribed_circle(&poly);
+    let e = eyes.and_then(Value::as_object);
+    let num = |k: &str| e.and_then(|e| e.get(k)).filter(|v| v.is_number()).and_then(Value::as_f64);
+    let s = num("s").map(|s| s.max(EYE_SCALE.0).min(EYE_SCALE.1)).unwrap_or(1.0);
+    let w = 0.24 * r * s;
+    let at = match e.and_then(|e| e.get("at")).and_then(Value::as_array) {
+        Some(a) => [a.first().and_then(Value::as_f64).unwrap_or(f64::NAN), a.get(1).and_then(Value::as_f64).unwrap_or(f64::NAN)],
+        None => [c[0], c[1] - 0.15 * r],
+    };
+    (at, w, w * 2.2, num("gap").unwrap_or_else(|| (0.5 * r).max(w * 1.25)))
+}
+
+/// `String(Math.round(v * 100) / 100)`
+fn n2(v: f64) -> String {
+    js::number((v * 100.0 + 0.5).floor() / 100.0)
+}
+
+fn esc(v: &str) -> String {
+    v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// `previewSvg(c)`: a rich candidate drawn flat, front view: the outline
+/// in its shell colour, the layers back to front, two capsule eyes (with
+/// their rims) where the engine would put them.
+pub fn preview_svg(c: &Candidate) -> String {
+    let mut out = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" width=\"512\" height=\"512\"><rect width=\"100\" height=\"100\" fill=\"#3A3A3A\"/>");
+    let outline = c.outline.clone().unwrap_or_default();
+    out.push_str(&format!("<path d=\"{}\" fill=\"{}\"/>", esc(&outline), esc(&c.color)));
+    for l in c.layers.iter().flatten() {
+        let s = |k: &str| l.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
+        let op = l.get("opacity").filter(|v| v.is_number()).and_then(Value::as_f64).map(|o| format!(" opacity=\"{}\"", n2(o))).unwrap_or_default();
+        out.push_str(&format!("<path d=\"{}\" fill=\"{}\"{op}/>", esc(&s("path")), esc(&s("fill"))));
+    }
+    let e = c.eyes.as_ref();
+    let colour = match e {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(o)) => o.get("c").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_else(|| "#FFFFFF".into()),
+        _ => "#FFFFFF".into(),
+    };
+    let (at, w, h, gap) = eye_placement(&outline, e);
+    let capsule = |x: f64, y: f64, cw: f64, ch: f64, fill: &str| format!("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" fill=\"{}\"/>", n2(x - cw / 2.0), n2(y - ch / 2.0), n2(cw), n2(ch), n2(cw / 2.0), esc(fill));
+    let rim = e.and_then(Value::as_object).and_then(|o| Some((o.get("rim")?.as_str()?.to_owned(), o.get("rw").filter(|v| v.is_number())?.as_f64()?))).filter(|(_, rw)| *rw > 0.0);
+    for side in [-1.0, 1.0] {
+        let x = at[0] + (side * gap) / 2.0;
+        if let Some((rc, rw)) = &rim {
+            let t = rw * w;
+            out.push_str(&capsule(x, at[1], w + 2.0 * t, h + 2.0 * t, rc));
+        }
+        out.push_str(&capsule(x, at[1], w, h, &colour));
+    }
+    out.push_str("</svg>");
+    out
 }
 
 /// The kit picker's shape, in the primary ink: Design defaults to #FFFFFF.

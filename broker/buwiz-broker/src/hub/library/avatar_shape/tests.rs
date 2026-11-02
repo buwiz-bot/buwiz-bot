@@ -236,6 +236,13 @@ fn avatar_design_candidates_match_nodes() {
         {"prompt": "a green giant", "rich": true, "replies": [wrap(json!(mock_rich()))]},
         {"prompt": "a green giant", "rich": true, "replies": [wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE), mock_rich()[2]])), wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE)]))]},
         {"prompt": "x", "rich": true, "image": img, "replies": ["nothing", wrap(json!([cust("Plain", MOCK_PEBBLE)]))]},
+        // the rich self-check: the previews as SVG text, or as image blocks; a passing fix replaces, a failing one keeps
+        {"prompt": "a green giant", "rich": true, "check": true, "replies": [wrap(json!(mock_rich())), wrap(json!([
+            {"name": "Fixed", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5]], "eyes": {"c": "#58d63a", "at": [50, 50], "gap": 20, "s": 1.3, "rim": "#111111", "rw": 0.4}},
+            {"name": "Broken", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [], "eyes": "#FFFFFF"},
+        ]))]},
+        {"prompt": "", "image": img, "rich": true, "check": true, "images": true, "replies": [wrap(json!(mock_rich())), "no json"]},
+        {"prompt": "y", "rich": true, "check": true, "replies": [wrap(json!([mock_rich()[1]]))]},
     ]);
     let theirs = node(
         r##"const out = [];
@@ -244,6 +251,8 @@ fn avatar_design_candidates_match_nodes() {
           let n = 0;
           let cands;
           try { cands = await m.designCandidates({ prompt: c.prompt, name: c.name || "", image: c.image || null, rich: !!c.rich }, {
+            selfCheck: !!c.check,
+            preview: async (svgs) => (c.images ? svgs.map((_, k) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: "P" + k } })) : null),
             ask: async (msgs) => (calls.push(structuredClone(msgs)), c.replies[n++]),
             pick: async (p) => (picks.push(p), { shape: "cloud", color: "#00BCA6" }),
           }); } catch (e) { cands = { error: e.message }; }
@@ -261,15 +270,21 @@ fn avatar_design_candidates_match_nodes() {
             c.get("name").and_then(Value::as_str).unwrap_or(""),
             c.get("image").cloned(),
             c.get("rich").and_then(Value::as_bool).unwrap_or(false),
+            c.get("check").and_then(Value::as_bool).unwrap_or(false),
             |msgs: Vec<Value>| {
                 let mut calls = calls.lock().unwrap();
                 calls.push(json!(msgs));
-                let r = replies[calls.len() - 1].clone();
+                // a call past the script answers nothing, as Node's undefined reply parses
+                let r = replies.get(calls.len() - 1).cloned().unwrap_or_default();
                 async move { Ok::<_, String>(r) }
             },
             |p: String| {
                 picks.lock().unwrap().push(p);
                 async { "cloud".to_owned() }
+            },
+            |svgs: Vec<String>| {
+                let images = c.get("images").is_some();
+                async move { images.then(|| svgs.iter().enumerate().map(|(k, _)| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": format!("P{k}")}})).collect()) }
             },
         );
         let cands = match futures_lite_block_on(fut) {
@@ -307,6 +322,32 @@ fn avatar_picture_svg_is_refused_with_scripts_or_outside_images() {
         assert_eq!(picture_svg(bad).unwrap_err(), "the SVG used scripts or outside images", "{bad}");
     }
     assert!(picture_svg("<svg><use href=\"#a\"/></svg>").is_ok());
+}
+
+#[test]
+fn avatar_eyes_and_previews_match_nodes() {
+    let outline = MOCK_CAT;
+    let eyes = json!([
+        "#58D63A", "red", 5, null, [1], {"c": "#58D63A"}, {"c": "#58D63A", "at": [50, 58], "gap": 20, "s": 1.2, "rim": "#111111", "rw": 0.3},
+        {"c": "red", "at": [500, 5], "gap": 0, "s": 3, "rim": 1, "rw": 2}, {"c": "#FFFFFF", "at": [1]}, {"c": "#FFFFFF", "at": [50, "x"]}, {"c": "#FFFFFF", "gap": null, "s": null},
+        {"c": "#FFFFFF", "at": [18, 14]}, {"c": "#FFFFFF", "at": [17.9, 50]}, {"c": "#FFFFFF", "s": 0.6, "rw": 0, "gap": 100}, {"c": "#FFFFFF", "s": 2.21, "rw": 1.21, "gap": 100.5},
+    ]);
+    let theirs = node(&format!("console.log(JSON.stringify(input.map((e) => m.eyeErrors(e === '__undef' ? undefined : e, {}))));", json!(outline)), &eyes);
+    let ours: Vec<Vec<String>> = eyes.as_array().unwrap().iter().map(|e| eye_errors(Some(e), Some(outline))).collect();
+    assert_eq!(json!(ours), theirs);
+    // previews: the mocks, the default placement and a placed, rimmed set
+    let mut cands: Vec<Value> = mock_rich();
+    let mut placed = mock_rich()[0].clone();
+    placed["eyes"] = json!({"c": "#58D63A", "at": [50, 58], "gap": 22, "s": 1.4, "rim": "#111111", "rw": 0.3});
+    cands.push(placed);
+    let mut pebble = mock_rich()[2].clone();
+    pebble["outline"] = json!(MOCK_PEBBLE);
+    pebble["eyes"] = json!({"c": "#2B1D12", "s": 0.7});
+    cands.push(pebble);
+    let theirs = node("console.log(JSON.stringify(input.map((c) => m.previewSvg(c))));", &json!(cands));
+    let ours: Vec<String> = cands.iter().map(|c| preview_svg(&parse_candidates(&json!([c]).to_string())[0])).collect();
+    assert_eq!(json!(ours), theirs);
+    assert!(ours[3].contains("fill=\"#111111\"/>"), "{}", ours[3]);
 }
 
 #[test]

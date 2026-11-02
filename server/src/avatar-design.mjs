@@ -136,8 +136,30 @@ export async function designAvatar({ prompt, image, name, model, style, effort, 
         askDesigner(messages, typeof model === "string" ? model.trim() : "", rich ? { system: `${DESIGN_SYSTEM}\n\n${RICH_SYSTEM}`, maxTokens: 12000, ...pick } : pick),
       // the fallback never fails the request
       pick: (p) => pickKitAvatar(p).catch(() => ({ shape: "blob", color: "#1084FE" })),
+      // rich designs get one look at themselves drawn flat (GEN_AVATAR_SELFCHECK=0: none)
+      selfCheck: rich && process.env.GEN_AVATAR_SELFCHECK !== "0",
+      preview: rasterizePreviews,
     },
   );
+}
+
+/** The self-check's previews as PNG image blocks (QuickLook renders each
+ *  SVG at 512), or null when that fails (the SVG text goes instead). */
+export function rasterizePreviews(svgs) {
+  const id = `check-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const files = svgs.map((svg, k) => {
+    const f = join(AVATAR_DIR, `${id}-${k}.svg`);
+    writeFileSync(f, svg);
+    return f;
+  });
+  try {
+    execFileSync("qlmanage", ["-t", "-s", "512", "-o", AVATAR_DIR, ...files], { stdio: "ignore" });
+    return files.map((f) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(`${f}.png`).toString("base64") } }));
+  } catch {
+    return null;
+  } finally {
+    for (const f of files) for (const x of [f, `${f}.png`]) try { unlinkSync(x); } catch {}
+  }
 }
 
 // --- Picture mode: a "Bot"-style picture from the image model ---------------

@@ -230,10 +230,50 @@ export function outlineErrors(outline) {
 
 export const LAYERS_MAX = 8;
 
-/** The problems with a rich avatar's painted layers and eye colour: up to
- *  8 closed paths in the outline's 0..100 box, each with a fill (and an
- *  opacity 0..1), and the eyes' colour. */
-export function layerErrors(layers, eyes) {
+export const EYE_SCALE = [0.6, 2.2];
+export const RIM_MAX = 1.2;
+
+// The outline's bounding box [x0, y0, x1, y1], or null when it doesn't parse.
+function outlineBox(outline) {
+  try {
+    const pts = flattenPath(outline).points;
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  } catch {
+    return null;
+  }
+}
+
+/** The problems with a rich avatar's eyes: a colour "#RRGGBB", or the
+ *  recipe's placement {c, at?, gap?, s?, rim?, rw?} — `c` the colour, `at`
+ *  the point between the eyes (inside the outline's box), `gap` their
+ *  centre distance, `s` a size multiplier 0.6..2.2, `rim` a ring colour
+ *  and `rw` its thickness as a fraction of the eye width (0..1.2). */
+export function eyeErrors(eyes, outline) {
+  if (typeof eyes === "string") return COLOR.test(eyes) ? [] : ["eyes must be #RRGGBB"];
+  if (!eyes || typeof eyes !== "object" || Array.isArray(eyes)) return ["eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"];
+  const errs = [];
+  const num = (v) => typeof v === "number" && Number.isFinite(v);
+  if (typeof eyes.c !== "string" || !COLOR.test(eyes.c)) errs.push("eyes.c must be #RRGGBB");
+  if (eyes.at !== undefined) {
+    const at = eyes.at;
+    if (!Array.isArray(at) || at.length !== 2 || !at.every(num)) errs.push("eyes.at must be [x, y]");
+    else {
+      const b = outlineBox(outline);
+      if (b && !(at[0] >= b[0] && at[0] <= b[2] && at[1] >= b[1] && at[1] <= b[3])) errs.push("eyes.at must sit inside the outline's box");
+    }
+  }
+  if (eyes.gap !== undefined && !(num(eyes.gap) && eyes.gap > 0 && eyes.gap <= 100)) errs.push("eyes.gap must be a number 0..100");
+  if (eyes.s !== undefined && !(num(eyes.s) && eyes.s >= EYE_SCALE[0] && eyes.s <= EYE_SCALE[1])) errs.push(`eyes.s must be ${EYE_SCALE[0]}..${EYE_SCALE[1]}`);
+  if (eyes.rim !== undefined && !(typeof eyes.rim === "string" && COLOR.test(eyes.rim))) errs.push("eyes.rim must be #RRGGBB");
+  if (eyes.rw !== undefined && !(num(eyes.rw) && eyes.rw >= 0 && eyes.rw <= RIM_MAX)) errs.push(`eyes.rw must be 0..${RIM_MAX}`);
+  return errs;
+}
+
+/** The problems with a rich avatar's painted layers and eyes: up to 8
+ *  closed paths in the outline's 0..100 box, each with a fill (and an
+ *  opacity 0..1), and the eyes (eyeErrors). */
+export function layerErrors(layers, eyes, outline) {
   const errs = [];
   if (!Array.isArray(layers) || !layers.length) return ["a rich avatar needs at least one layer (the face)"];
   if (layers.length > LAYERS_MAX) errs.push(`at most ${LAYERS_MAX} layers`);
@@ -257,7 +297,7 @@ export function layerErrors(layers, eyes) {
     const poly = f.points;
     if (poly.length < 3 || Math.abs(areaCentroid(poly).area) < 4) errs.push(`${n} encloses no area`);
   });
-  if (typeof eyes !== "string" || !COLOR.test(eyes)) errs.push("eyes must be #RRGGBB");
+  errs.push(...eyeErrors(eyes, outline));
   return errs;
 }
 
@@ -274,7 +314,7 @@ export function validateAvatar({ shape, color, outline, layers, eyes } = {}) {
   const rich = (Array.isArray(layers) && layers.length) || eyes !== undefined;
   if (rich) {
     if (shape !== "custom") errs.push("only a custom outline can have layers");
-    else errs.push(...layerErrors(layers, eyes));
+    else errs.push(...layerErrors(layers, eyes, outline));
   }
   return errs;
 }
@@ -323,13 +363,17 @@ export function parseCandidates(text) {
     if (!shape && outline) shape = "custom";
     const color = String(x.color || x.colour || "").trim().toUpperCase();
     const layers = Array.isArray(x.layers)
-      ? x.layers.filter((l) => l && typeof l === "object").map((l) => ({
-          path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
-          fill: String(l.fill || l.color || "").trim().toUpperCase(),
-          ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
-        }))
+      ? x.layers
+          .filter((l) => l && typeof l === "object")
+          // the compact form the app uses: [path, fill, opacity?]
+          .map((l) => (Array.isArray(l) ? { path: l[0], fill: l[1], opacity: l[2] } : l))
+          .map((l) => ({
+            path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
+            fill: String(l.fill || l.color || "").trim().toUpperCase(),
+            ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
+          }))
       : null;
-    const eyes = typeof x.eyes === "string" ? x.eyes.trim().toUpperCase() : undefined;
+    const eyes = parseEyes(x.eyes);
     return {
       name: String(x.name || "").trim().slice(0, 40),
       shape,
@@ -340,6 +384,17 @@ export function parseCandidates(text) {
       why: String(x.why || "").trim().slice(0, 240),
     };
   });
+}
+
+// A reply's eyes: a colour, or the placement object with its known keys
+// (colours upper-cased); anything else is none.
+function parseEyes(e) {
+  if (typeof e === "string") return e.trim().toUpperCase();
+  if (!e || typeof e !== "object" || Array.isArray(e)) return undefined;
+  const hex = (v) => (typeof v === "string" ? v.trim().toUpperCase() : v);
+  const out = {};
+  for (const k of ["c", "at", "gap", "s", "rim", "rw"]) if (e[k] !== undefined) out[k] = k === "c" || k === "rim" ? hex(e[k]) : e[k];
+  return out;
 }
 
 // The problems with one round of candidates as a set, and each one's.
@@ -363,7 +418,7 @@ function check(cands, image, rich = false) {
  *  choice for when nothing usable comes back. `image` is the user turn's
  *  image block, if any. Candidates that fail the checks are retried once,
  *  with the errors listed, then dropped. */
-export async function designCandidates({ prompt, name, image, rich = false }, { ask, pick }) {
+export async function designCandidates({ prompt, name, image, rich = false }, { ask, pick, preview, selfCheck = false }) {
   const text = designRequest({ prompt, name, image: !!image, rich });
   const messages = [{ role: "user", content: image ? [image, { type: "text", text }] : text }];
   let reply = await ask(messages);
@@ -393,7 +448,7 @@ export async function designCandidates({ prompt, name, image, rich = false }, { 
   cands = cands.slice(0, 3);
   if (rich) {
     if (!cands.length) throw new Error("no rich design came back that the engine can draw; try again or another model");
-    return cands;
+    return selfCheck ? selfCheckRound({ prompt, first: messages[0], cands, ask, preview }) : cands;
   }
   if (!image && cands.length && !cands.some((c) => KIT_SHAPES.includes(c.shape))) {
     const k = await kitFallback(prompt, pick);
@@ -401,6 +456,127 @@ export async function designCandidates({ prompt, name, image, rich = false }, { 
   }
   if (!cands.length) cands = [await kitFallback(prompt, pick)];
   return cands;
+}
+
+const COUNT = ["none", "one", "two", "three"];
+
+/** The rich self-check: each candidate drawn flat (previewSvg), shown to
+ *  the model once with the question whether it reads as the request; a
+ *  fix that passes the checks replaces its candidate, any other keeps it.
+ *  `preview(svgs)` → an image block per SVG, or null to send the SVG text.
+ *  A failed call keeps the set as it is. */
+export async function selfCheckRound({ prompt, first, cands, ask, preview }) {
+  const svgs = cands.map(previewSvg);
+  const images = preview ? await Promise.resolve(preview(svgs)).catch(() => null) : null;
+  const n = cands.length;
+  const subject = prompt ? `the request "${prompt}"` : "the picture's subject";
+  const content = cands.flatMap((c, k) =>
+    images
+      ? [{ type: "text", text: `Design ${k + 1} (${c.name || "unnamed"}):` }, images[k]]
+      : [{ type: "text", text: `Design ${k + 1} (${c.name || "unnamed"}), as SVG:\n${svgs[k]}` }],
+  );
+  content.push({
+    type: "text",
+    text: `Here are your ${COUNT[n] || n} designs drawn flat. For each, does it read as ${subject}? Fix the outline, layers and eyes where it doesn't (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all ${n}, JSON only.`,
+  });
+  let reply;
+  try {
+    reply = await ask([first, { role: "assistant", content: JSON.stringify({ candidates: cands }) }, { role: "user", content }]);
+  } catch {
+    return cands;
+  }
+  const fixed = parseCandidates(reply);
+  return cands.map((c, k) => {
+    const f = fixed[k];
+    return f && f.layers?.length && !validateAvatar(f).length ? f : c;
+  });
+}
+
+// --- The preview: a candidate drawn flat, front view ------------------------
+
+// distance from p to the polygon's edge, positive inside
+function signedDistance(poly, [px, py]) {
+  let best = Infinity;
+  for (let k = 0; k < poly.length; k++) {
+    const [ax, ay] = poly[k], [bx, by] = poly[(k + 1) % poly.length];
+    const ex = bx - ax, ey = by - ay;
+    const len = ex * ex + ey * ey;
+    const t = len > 0 ? Math.max(0, Math.min(1, ((px - ax) * ex + (py - ay) * ey) / len)) : 0;
+    const dx = px - (ax + t * ex), dy = py - (ay + t * ey);
+    best = Math.min(best, Math.sqrt(dx * dx + dy * dy));
+  }
+  return inside(poly, px, py) ? best : -best;
+}
+
+/** The largest circle inside the polygon [[cx, cy], r]: the engine's grid
+ *  search, refined three times around the best cell. */
+export function inscribedCircle(poly) {
+  const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  let center = [(x0 + x1) / 2, (y0 + y1) / 2];
+  let best = signedDistance(poly, center);
+  let hw = (x1 - x0) / 2, hh = (y1 - y0) / 2;
+  const GRID = 24;
+  for (let it = 0; it < 4; it++) {
+    const c = center;
+    for (let i = 0; i <= GRID; i++)
+      for (let j = 0; j <= GRID; j++) {
+        const p = [c[0] - hw + (2 * hw * i) / GRID, c[1] - hh + (2 * hh * j) / GRID];
+        const d = signedDistance(poly, p);
+        if (d > best) {
+          best = d;
+          center = p;
+        }
+      }
+    hw *= 4 / GRID;
+    hh *= 4 / GRID;
+  }
+  return [center, Math.max(best, 0)];
+}
+
+/** Where the preview draws the eyes: {at, w, h, gap}, in the 0..100 box.
+ *  The recipe's `at`/`gap`/`s` when given; else the engine's default, the
+ *  upper part of the outline's largest inscribed circle. Rough: the
+ *  engine also shrinks eyes that would cross the outline. */
+export function eyePlacement(outline, eyes) {
+  const poly = flattenPath(outline).points;
+  const [c, r] = inscribedCircle(poly);
+  const e = eyes && typeof eyes === "object" ? eyes : {};
+  const s = typeof e.s === "number" ? Math.min(EYE_SCALE[1], Math.max(EYE_SCALE[0], e.s)) : 1;
+  const w = 0.24 * r * s;
+  return {
+    at: Array.isArray(e.at) ? e.at : [c[0], c[1] - 0.15 * r],
+    w,
+    h: w * 2.2,
+    gap: typeof e.gap === "number" ? e.gap : Math.max(0.5 * r, w * 1.25),
+  };
+}
+
+const n2 = (v) => String(Math.round(v * 100) / 100);
+const esc = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+/** A rich candidate drawn flat, front view, as SVG: the outline in its
+ *  shell colour, the layers back to front, two capsule eyes (with their
+ *  rims) where the engine would put them. */
+export function previewSvg(c) {
+  const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">`, `<rect width="100" height="100" fill="#3A3A3A"/>`];
+  out.push(`<path d="${esc(c.outline)}" fill="${esc(c.color)}"/>`);
+  for (const l of c.layers || []) out.push(`<path d="${esc(l.path)}" fill="${esc(l.fill)}"${typeof l.opacity === "number" ? ` opacity="${n2(l.opacity)}"` : ""}/>`);
+  const e = c.eyes;
+  const colour = typeof e === "string" ? e : e?.c || "#FFFFFF";
+  const { at, w, h, gap } = eyePlacement(c.outline, e);
+  const capsule = (x, y, cw, ch, fill) =>
+    `<rect x="${n2(x - cw / 2)}" y="${n2(y - ch / 2)}" width="${n2(cw)}" height="${n2(ch)}" rx="${n2(cw / 2)}" fill="${esc(fill)}"/>`;
+  for (const side of [-1, 1]) {
+    const x = at[0] + (side * gap) / 2;
+    if (e && typeof e === "object" && typeof e.rim === "string" && typeof e.rw === "number" && e.rw > 0) {
+      const t = e.rw * w;
+      out.push(capsule(x, at[1], w + 2 * t, h + 2 * t, e.rim));
+    }
+    out.push(capsule(x, at[1], w, h, colour));
+  }
+  out.push("</svg>");
+  return out.join("");
 }
 
 async function kitFallback(prompt, pick) {
