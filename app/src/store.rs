@@ -2124,6 +2124,8 @@ pub struct Store {
     pub side_shown: Signal<bool>,
     pub right_open: Signal<bool>,
     pub detail_tab: Signal<String>,
+    /// Details › "Tools for this Bot": the active bot's tool ceiling (`ceiling.rs`).
+    pub ceiling: Signal<crate::ceiling::CeilingCard>,
     /// `detailState` — the open app's `/state/:app` k/v rows.
     pub detail: Signal<Vec<Kv>>,
     /// `detail` — the open app's `/catalog` metadata (variant B's header).
@@ -2579,6 +2581,7 @@ impl Store {
             side_shown: signal(true),
             right_open: signal(false),
             detail_tab: signal("state".to_owned()),
+            ceiling: signal(crate::ceiling::CeilingCard::default()),
             detail: signal(Vec::new()),
             detail_app: signal(String::new()),
             detail_meta: signal(None),

@@ -106,6 +106,26 @@ pub async fn post(path: &str, body: serde_json::Value) -> Option<serde_json::Val
     serde_json::from_str(&res.text()).ok()
 }
 
+/// `PUT path` with a JSON body — `post` with the verb changed, for routes
+/// that replace a whole record (`/coworkers/{id}/ceiling`).
+pub async fn put(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+    call("PUT", path, Some(body)).await.filter(|(s, _)| (200..300).contains(s)).map(|(_, v)| v)
+}
+
+/// A call that keeps its status: `Some((status, body))` on any answer (the
+/// body is `Null` when it is not JSON), `None` when the broker did not
+/// answer. For callers that read 409 or 501 as states, not failures.
+pub async fn call(method: &str, path: &str, body: Option<serde_json::Value>) -> Option<(u16, serde_json::Value)> {
+    let mut r = req(method, path);
+    if let Some(b) = body {
+        r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+        r.body = nsh_core::platform::HttpBody::Bytes(b.to_string().into_bytes());
+    }
+    let res = fetch(r).await.ok()?;
+    let v = serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null);
+    Some((res.status(), v))
+}
+
 /// [`post`], but an error status's JSON body comes back too (an endpoint
 /// that answers 400 `{ok:false, error}`).
 pub async fn post_any(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
