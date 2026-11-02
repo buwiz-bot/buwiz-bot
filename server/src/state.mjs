@@ -221,7 +221,9 @@ for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER D
   // A bot's own context, filled on demand: description + instructions
   // (seeded on create, the bot edits them), memories [{id,text,at}] and
   // integrations [{id,kind,at,via}] as JSON arrays.
-  "description TEXT", "instructions TEXT", "memories TEXT", "integrations TEXT"]) {
+  "description TEXT", "instructions TEXT", "memories TEXT", "integrations TEXT",
+  // a custom avatar shape's SVG path data (NULL for a kit shape)
+  "outline TEXT"]) {
   try { db.exec(`ALTER TABLE bots ADD COLUMN ${col}`); } catch {}
 }
 // Chat rows carry Grok's sidebar states too: hidden, archived.
@@ -313,6 +315,7 @@ function loadStore() {
       name: b.name,
       shape: b.shape,
       color: b.color,
+      ...(b.outline ? { outline: b.outline } : {}),
       threadId: b.thread_id,
       pinned: !!b.pinned,
       section: b.section || "",
@@ -401,7 +404,7 @@ export function persist() {
       "INSERT INTO threads(id,title,ord,hidden,archived,uid,routine,agents) VALUES(?,?,?,?,?,?,?,?)",
     );
     const ib = db.prepare(
-      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,outline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const iu = db.prepare(
       `INSERT INTO turns(thread_id,seq,role,text,name,label,caption,reaction,retries,widget,meta,v,uid)
@@ -413,7 +416,8 @@ export function persist() {
         b.image || null, b.crop ? JSON.stringify(b.crop) : null,
         b.model || null, b.effort || null, b.fast ? 1 : 0, b.label || null,
         b.description ?? null, b.instructions ?? null,
-        JSON.stringify(b.memories || []), JSON.stringify(b.integrations || []), botExtra(b)),
+        JSON.stringify(b.memories || []), JSON.stringify(b.integrations || []), botExtra(b),
+        b.shape === "custom" && b.outline ? b.outline : null),
     );
     store.list.forEach((t, i) => {
       it.run(t.id, t.title, i, t.hidden ? 1 : 0, t.archived ? 1 : 0, (t.uid ||= uuidv7()), t.routine ? JSON.stringify(t.routine) : null, t.agents ? JSON.stringify(t.agents) : null);

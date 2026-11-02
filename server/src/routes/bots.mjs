@@ -2,12 +2,33 @@
 import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { GEN_DIR, PROVIDER, MODEL, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
+import { GEN_DIR, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
 import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
 import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, memoryUpdate, setBotProfile } from "../botctx.mjs";
-import { anthropic } from "../model.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
+import { KIT_SHAPES, validateAvatar } from "../avatar-shape.mjs";
+import { designAvatar, pickKitAvatar } from "../avatar-design.mjs";
+
+// Sets a request's avatar fields on `bot` (a new one or one there): a kit
+// shape clears the outline, an outline without a shape makes it "custom".
+// Only the fields given are checked (a bot's older colour stays as it is).
+function applyAvatar(bot, { shape, color, outline }) {
+  const hasOutline = outline !== undefined && outline !== null && outline !== "";
+  const s = shape || (hasOutline ? "custom" : bot.shape);
+  const c = color || bot.color;
+  const o = s === "custom" ? (hasOutline ? (typeof outline === "string" ? outline.trim() : outline) : bot.outline) : undefined;
+  const errs = validateAvatar({
+    shape: shape || hasOutline || s === "custom" ? s : KIT_SHAPES[0],
+    color: color ? c : "#1084FE",
+    outline: o,
+  });
+  if (errs.length) throw new Error(errs.join("; "));
+  bot.shape = s;
+  bot.color = c;
+  if (o) bot.outline = o;
+  else delete bot.outline;
+}
 
 export default async function handle(req, res) {
   // A bot is a named agent persona (blob avatar: shape + color) that owns
@@ -17,8 +38,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { name, shape, color } = JSON.parse(body || "{}");
+        const { name, shape, color, outline } = JSON.parse(body || "{}");
         if (!name?.trim()) throw new Error("bot needs a name");
+        const av = { shape: "blob", color: "#1084FE" };
+        applyAvatar(av, { shape, color, outline });
         const tid = `t${nextThreadSeq()}`;
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
         store.list.unshift({ id: tid, uid: uuidv7(), title: name.trim(), turns: [] });
@@ -27,8 +50,9 @@ export default async function handle(req, res) {
         const bot = {
           id,
           name: name.trim(),
-          shape: shape || "blob",
-          color: color || "#1084FE",
+          shape: av.shape,
+          color: av.color,
+          ...(av.outline ? { outline: av.outline } : {}),
           threadId: tid,
           ...botDefaults(name.trim()),
           memories: [],
@@ -52,9 +76,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id, name, shape, color, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
+        const { id, name, shape, color, outline, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
+        if (shape || color || outline !== undefined) applyAvatar(bot, { shape, color, outline });
         if (name?.trim() && name.trim() !== bot.name) {
           // untouched defaults follow a rename; edited ones stay
           const was = botDefaults(bot.name), now = botDefaults(name.trim());
@@ -62,8 +87,6 @@ export default async function handle(req, res) {
           if (bot.instructions === was.instructions) bot.instructions = now.instructions;
           bot.name = name.trim();
         }
-        if (shape) bot.shape = shape;
-        if (color) bot.color = color;
         if (pinned !== undefined) bot.pinned = !!pinned;
         if (hidden !== undefined) bot.hidden = !!hidden;
         if (image !== undefined) bot.image = String(image);
@@ -276,41 +299,36 @@ export default async function handle(req, res) {
     });
     return true;
   }
+  // the old picker: one kit shape and swatch for a description
   if (req.method === "POST" && req.url === "/avatar/gen") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
-      const SHAPES = [
-        "blob", "cloud", "square", "sparkle", "clover", "heart", "flower",
-        "teardrop", "tablet", "wedge", "house", "star", "hex",
-      ];
-      const COLORS = [
-        "#FFFFFF", "#936439", "#FF263C", "#FF6700", "#FF9800", "#00C972",
-        "#00BCA6", "#1084FE", "#9159FE", "#FF309B", "#777777",
-      ];
       try {
         const { description } = JSON.parse(body || "{}");
         if (!description?.trim()) throw new Error("describe the avatar");
-        let shape = "blob", color = "#1084FE";
-        if (PROVIDER === "anthropic" && anthropic) {
-          const m = await anthropic.messages.create({
-            model: MODEL,
-            max_tokens: 120,
-            system:
-              "Pick an avatar shape and color for a blob character from a description. " +
-              `Reply ONLY with JSON {"shape":<one of ${SHAPES.join("|")}>,"color":<one of ${COLORS.join("|")}>}.`,
-            messages: [{ role: "user", content: description.trim() }],
-          });
-          const txt = (m.content || [])
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("");
-          const j = JSON.parse((txt.match(/\{[\s\S]*\}/) || ["{}"])[0]);
-          if (SHAPES.includes(j.shape)) shape = j.shape;
-          if (COLORS.includes(j.color)) color = j.color;
-        }
+        const { shape, color } = await pickKitAvatar(description.trim());
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true, shape, color }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+      }
+    });
+    return true;
+  }
+  // The designer: {prompt, image?, name?} → 3 candidates {name, shape,
+  // color, outline?, why}. `image` is a file:// URI /avatar/image/pick or
+  // /paste returned; with one, candidate 1 traces its subject.
+  if (req.method === "POST" && req.url === "/avatar/design") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("content-type", "application/json");
+      try {
+        const { prompt, image, name } = JSON.parse(body || "{}");
+        const candidates = await designAvatar({ prompt, image, name });
+        res.end(JSON.stringify({ ok: true, candidates }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
