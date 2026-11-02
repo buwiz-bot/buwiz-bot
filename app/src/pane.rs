@@ -11,7 +11,7 @@ use nsh_base::input;
 use nsh_core::prelude::*;
 use nsh_core::element::View;
 
-use crate::avatar::{bot_avatar, sleeping_blob, BlobEdit, BlobGaze, BotAvatarProps};
+use crate::avatar::{bot_avatar, BlobEdit, BlobGaze, BotAvatarProps};
 use crate::live::store;
 use crate::store::{AppMeta, Crop, Store, RoxApp};
 use crate::theme;
@@ -1491,41 +1491,10 @@ fn clock(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Computer — the sleeping avatar card (App.tsx:2814).
+/// Computer — the bot's computer: status, Start, Update, Reset and the
+/// network policy, with its screen while it runs (`computer.rs`).
 fn computer_tab() -> impl IntoElement {
-    view()
-        .child(
-            view()
-                .h(px(180.0))
-                .rounded(px(12.0))
-                .bg(theme::MAIN)
-                .items_center()
-                .justify_center()
-                .label("Wake computer")
-                .child(
-                    dynamic(|| {
-                        let shape = store().active_bot().map(|b| b.shape).unwrap_or_else(|| "blob".into());
-                        sleeping_blob(&shape, 33.0, "#f5f5f58a").into_element()
-                    })
-                    .into_element(),
-                )
-                .child(
-                    text("Computer is asleep")
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::TEXT)
-                        .pt(px(6.0)),
-                ),
-        )
-        .child(
-            text(move || {
-                let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                format!("{name}'s screen")
-            })
-            .text_size(px(12.0))
-            .text_color(theme::MUTED)
-            .pt(px(10.0)),
-        )
+    crate::computer::pane()
 }
 
 /// `detail() && !activeBot()` — the app detail: tile, title, pills,
