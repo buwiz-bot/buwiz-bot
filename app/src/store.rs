@@ -493,9 +493,7 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
         Some(ls) if shape == "custom" && !outline.is_empty() && !ls.is_empty() => {
             let l: Vec<serde_json::Value> = ls
                 .iter()
-                .map(|x| {
-                    serde_json::json!([s(x, "path"), s(x, "fill"), x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0)])
-                })
+                .map(compact_layer)
                 .collect();
             // eyes: a colour, or {c, at, gap, s, rim, rw} (the design places them)
             let eyes = match v.get("eyes") {
@@ -511,9 +509,14 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
                     .map(|p| {
                         let pl: Vec<serde_json::Value> = p["layers"]
                             .as_array()
-                            .map(|ls| ls.iter().map(|x| serde_json::json!([s(x, "path"), s(x, "fill"), x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0)])).collect())
+                            .map(|ls| ls.iter().map(compact_layer).collect())
                             .unwrap_or_default();
-                        serde_json::json!({"o": s(p, "outline"), "c": s(p, "color"), "l": pl, "z": p.get("z").and_then(|z| z.as_f64()).unwrap_or(0.0)})
+                        let mut part = serde_json::json!({"o": s(p, "outline"), "c": s(p, "color"), "l": pl, "z": p.get("z").and_then(|z| z.as_f64()).unwrap_or(0.0)});
+                        // its depth vs the head's (a hair shell that wraps the head)
+                        if let Some(d) = p.get("d").and_then(|d| d.as_f64()) {
+                            part["d"] = d.into();
+                        }
+                        part
                     })
                     .collect();
                 recipe["p"] = parts.into();
@@ -535,6 +538,30 @@ fn picture_error(kind: &str, v: &serde_json::Value) -> String {
     }
 }
 
+/// A layer `{path, fill, opacity?, over?}` in the engine's compact form
+/// `[path, fill, opacity]`, with a 4th `"over"` when it draws above the
+/// eyes (a fringe over one eye, an eyepatch).
+fn compact_layer(x: &serde_json::Value) -> serde_json::Value {
+    let mut l = vec![
+        serde_json::Value::from(s(x, "path")),
+        s(x, "fill").into(),
+        x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0).into(),
+    ];
+    if x.get("over").and_then(|o| o.as_bool()).unwrap_or(false) {
+        l.push("over".into());
+    }
+    l.into()
+}
+
+/// The compact layer back as `{path, fill, opacity, over?}`.
+fn object_layer(x: &serde_json::Value) -> serde_json::Value {
+    let mut l = serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]});
+    if x.get(3).and_then(|o| o.as_str()) == Some("over") {
+        l["over"] = true.into();
+    }
+    l
+}
+
 /// The `/bot/*` fields for a shape in the app's form (a rich one brings
 /// its shell colour, layers and eyes).
 pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
@@ -543,9 +570,7 @@ pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
         let layers: Vec<serde_json::Value> = r["l"]
             .as_array()
             .map(|ls| {
-                ls.iter()
-                    .map(|x| serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]}))
-                    .collect()
+                ls.iter().map(object_layer).collect()
             })
             .unwrap_or_default();
         let mut out = serde_json::json!({"shape": "custom", "outline": r["o"], "color": r["c"], "layers": layers, "eyes": r["e"]});
@@ -555,9 +580,13 @@ pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
                 .map(|p| {
                     let pl: Vec<serde_json::Value> = p["l"]
                         .as_array()
-                        .map(|ls| ls.iter().map(|x| serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]})).collect())
+                        .map(|ls| ls.iter().map(object_layer).collect())
                         .unwrap_or_default();
-                    serde_json::json!({"outline": p["o"], "color": p["c"], "layers": pl, "z": p["z"]})
+                    let mut part = serde_json::json!({"outline": p["o"], "color": p["c"], "layers": pl, "z": p["z"]});
+                    if p.get("d").is_some_and(|d| d.is_number()) {
+                        part["d"] = p["d"].clone();
+                    }
+                    part
                 })
                 .collect::<Vec<_>>()
                 .into();

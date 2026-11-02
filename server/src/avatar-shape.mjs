@@ -267,6 +267,7 @@ export function eyeErrors(eyes, outline) {
   if (eyes.s !== undefined && !(num(eyes.s) && eyes.s >= EYE_SCALE[0] && eyes.s <= EYE_SCALE[1])) errs.push(`eyes.s must be ${EYE_SCALE[0]}..${EYE_SCALE[1]}`);
   if (eyes.rim !== undefined && !(typeof eyes.rim === "string" && COLOR.test(eyes.rim))) errs.push("eyes.rim must be #RRGGBB");
   if (eyes.rw !== undefined && !(num(eyes.rw) && eyes.rw >= 0 && eyes.rw <= RIM_MAX)) errs.push(`eyes.rw must be 0..${RIM_MAX}`);
+  if (eyes.shut !== undefined && eyes.shut !== "l" && eyes.shut !== "r") errs.push("eyes.shut must be l or r");
   return errs;
 }
 
@@ -283,6 +284,7 @@ export function layerErrors(layers, eyes, outline, { checkEyes = true } = {}) {
     if (typeof l.fill !== "string" || !COLOR.test(l.fill)) errs.push(`${n}'s fill must be #RRGGBB`);
     if (l.opacity !== undefined && !(typeof l.opacity === "number" && l.opacity >= 0 && l.opacity <= 1))
       errs.push(`${n}'s opacity must be 0..1`);
+    if (l.over !== undefined && typeof l.over !== "boolean") errs.push(`${n}'s over must be true or false`);
     const d = l.path;
     if (typeof d !== "string" || !d.trim()) return errs.push(`${n} needs a path`);
     if (d.length > OUTLINE_MAX) return errs.push(`${n}'s path is longer than ${OUTLINE_MAX} characters`);
@@ -308,6 +310,8 @@ export function layerErrors(layers, eyes, outline, { checkEyes = true } = {}) {
 export const PARTS_MAX = 6;
 // a part may be a small piece (a brim, an antler): 2% of the box, not 20%
 const PART_MIN_AREA = 200;
+// a part's half-depth, as a multiple of the head's
+export const PART_DEPTH = [0.05, 1.6];
 
 /** The problems with a rich avatar's parts: up to 6 pieces of their own
  *  [{outline, color, layers?, z?}] in the head's 0..100 box, each outline
@@ -327,6 +331,7 @@ export function partErrors(parts) {
       else if (p.layers.length) errs.push(...layerErrors(p.layers, undefined, p.outline, { checkEyes: false }).map((e) => `${n}: ${e}`));
     }
     if (p.z !== undefined && !(typeof p.z === "number" && p.z >= -1 && p.z <= 1)) errs.push(`${n}'s z must be -1..1`);
+    if (p.d !== undefined && !(typeof p.d === "number" && p.d >= PART_DEPTH[0] && p.d <= PART_DEPTH[1])) errs.push(`${n}'s d must be ${PART_DEPTH[0]}..${PART_DEPTH[1]}`);
   });
   return errs;
 }
@@ -402,6 +407,7 @@ export function parseCandidates(text) {
             color: String(p.color || p.colour || "").trim().toUpperCase(),
             ...(pl ? { layers: pl } : {}),
             ...(typeof p.z === "number" ? { z: p.z } : {}),
+            ...(typeof p.d === "number" ? { d: p.d } : {}),
           };
         })
       : null;
@@ -424,11 +430,14 @@ function parseLayers(ls) {
   if (!Array.isArray(ls)) return null;
   return ls
     .filter((l) => l && typeof l === "object")
-    .map((l) => (Array.isArray(l) ? { path: l[0], fill: l[1], opacity: l[2] } : l))
+    // the compact form: [path, fill, opacity?, "over"?]
+    .map((l) => (Array.isArray(l) ? { path: l[0], fill: l[1], opacity: l[2], ...(l[3] === "over" ? { over: true } : {}) } : l))
     .map((l) => ({
       path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
       fill: String(l.fill || l.color || "").trim().toUpperCase(),
       ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
+      // drawn above the eyes (a fringe over one, an eyepatch, glasses): kept only when true
+      ...(l.over === true ? { over: true } : {}),
     }));
 }
 
@@ -439,7 +448,8 @@ function parseEyes(e) {
   if (!e || typeof e !== "object" || Array.isArray(e)) return undefined;
   const hex = (v) => (typeof v === "string" ? v.trim().toUpperCase() : v);
   const out = {};
-  for (const k of ["c", "at", "gap", "s", "rim", "rw"]) if (e[k] !== undefined) out[k] = k === "c" || k === "rim" ? hex(e[k]) : e[k];
+  const low = (v) => (typeof v === "string" ? v.trim().toLowerCase() : v);
+  for (const k of ["c", "at", "gap", "s", "rim", "rw", "shut"]) if (e[k] !== undefined) out[k] = k === "c" || k === "rim" ? hex(e[k]) : k === "shut" ? low(e[k]) : e[k];
   return out;
 }
 
@@ -606,19 +616,28 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&
  *  rims) where the engine would put them. */
 export function previewSvg(c) {
   const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">`, `<rect width="100" height="100" fill="#3A3A3A"/>`];
-  const piece = (outline, color, layers) => {
+  const drawLayers = (layers, over) => {
+    for (const l of (layers || []).filter((l) => (l.over === true) === over))
+      out.push(`<path d="${esc(l.path)}" fill="${esc(l.fill)}"${typeof l.opacity === "number" ? ` opacity="${n2(l.opacity)}"` : ""}/>`);
+  };
+  // a piece: its outline, then its layers below the eyes (or all of them)
+  const piece = (outline, color, layers, all) => {
     out.push(`<path d="${esc(outline)}" fill="${esc(color)}"/>`);
-    for (const l of layers || []) out.push(`<path d="${esc(l.path)}" fill="${esc(l.fill)}"${typeof l.opacity === "number" ? ` opacity="${n2(l.opacity)}"` : ""}/>`);
+    drawLayers(layers, false);
+    if (all) drawLayers(layers, true);
   };
   // the parts in z order: behind the head (z < 0), then the head and its
   // eyes, then in front (z >= 0, the default)
   const zOf = (p) => (typeof p.z === "number" ? p.z : 0);
   const parts = [...(c.parts || [])].sort((a, b) => zOf(a) - zOf(b));
-  for (const p of parts.filter((p) => zOf(p) < 0)) piece(p.outline, p.color, p.layers);
-  piece(c.outline, c.color, c.layers);
+  // behind the head, the head, the eyes, the over-layers of those, then the parts in front
+  const back = parts.filter((p) => zOf(p) < 0);
+  for (const p of back) piece(p.outline, p.color, p.layers, false);
+  piece(c.outline, c.color, c.layers, false);
   const e = c.eyes;
   const colour = typeof e === "string" ? e : e?.c || "#FFFFFF";
   const { at, w, h, gap } = eyePlacement(c.outline, e);
+  const shut = e && typeof e === "object" && typeof e.shut === "string" ? e.shut : undefined;
   const capsule = (x, y, cw, ch, fill) =>
     `<rect x="${n2(x - cw / 2)}" y="${n2(y - ch / 2)}" width="${n2(cw)}" height="${n2(ch)}" rx="${n2(cw / 2)}" fill="${esc(fill)}"/>`;
   for (const side of [-1, 1]) {
@@ -627,9 +646,14 @@ export function previewSvg(c) {
       const t = e.rw * w;
       out.push(capsule(x, at[1], w + 2 * t, h + 2 * t, e.rim));
     }
-    out.push(capsule(x, at[1], w, h, colour));
+    if (shut === (side < 0 ? "l" : "r"))
+      // a closed eye: a short curved lid line
+      out.push(`<path d="M${n2(x - w / 2)} ${n2(at[1])} Q${n2(x)} ${n2(at[1] + h * 0.25)} ${n2(x + w / 2)} ${n2(at[1])}" fill="none" stroke="${esc(colour)}" stroke-width="${n2(w * 0.35)}" stroke-linecap="round"/>`);
+    else out.push(capsule(x, at[1], w, h, colour));
   }
-  for (const p of parts.filter((p) => zOf(p) >= 0)) piece(p.outline, p.color, p.layers);
+  for (const p of back) drawLayers(p.layers, true);
+  drawLayers(c.layers, true);
+  for (const p of parts.filter((p) => zOf(p) >= 0)) piece(p.outline, p.color, p.layers, true);
   out.push("</svg>");
   return out.join("");
 }

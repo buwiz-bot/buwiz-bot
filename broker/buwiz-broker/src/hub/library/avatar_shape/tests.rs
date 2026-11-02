@@ -149,7 +149,8 @@ fn avatar_validate_matches_nodes() {
         {"shape": "heart", "color": "#FF263C", "outline": "nonsense"}, {"shape": 5, "color": 7, "outline": 9},
         {"shape": "custom", "color": "#12345G", "outline": "M0 0 Z"},
         // parts
-        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -1}]},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -1, "d": 1.1, "layers": [{"path": "M42 32 L58 32 L50 40 Z", "fill": "#FFFFFF", "over": true}, {"path": "M42 32 L58 32 L50 40 Z", "fill": "#FFFFFF", "over": "yes"}]}]},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 0.05}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 1.6}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 0.04}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 1.61}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": "1"}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": null}]},
         {"shape": "heart", "color": "#1E1E1E", "parts": []},
         {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": "x"},
         {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [5, null, [], {"outline": "M30 40 L70 40 L70 46 L30 46 Z", "color": "#E8C85A"}, {"outline": "M44 44 L56 44 L56 56 L44 56 Z", "color": "brown", "z": 2, "layers": [{"path": "M1 1 Z", "fill": "#000000"}]}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": "x", "z": null}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": []}]},
@@ -211,8 +212,8 @@ fn avatar_parse_candidates_and_mocks_match_nodes() {
     // rich replies: layers and eyes carried (custom only), tidied
     let rich_texts = json!([
         json!({"candidates": mock_rich()}).to_string(),
-        json!([{"shape": "custom", "outline": MOCK_CAT, "color": "#1e1e1e", "parts": [{"outline": " M40 30 L60 30\n L60 50 L40 50 Z ", "colour": "#7a4a22", "z": -1, "layers": [["M42 32 L58 32 L50 40 Z", "#ffffff", 0.5]]}, 5, [], {"color": "#E8C85A", "z": "x", "layers": "x"}]}, {"shape": "blob", "parts": [{"outline": "M1 1 Z", "color": "#000000"}]}]).to_string(),
-        json!([{"shape": "custom", "outline": MOCK_CAT, "layers": [{"path": "  M1 2\n L3 4 ", "color": "#abcdef", "opacity": 0.5}, 5, [], {"fill": "#123456", "opacity": "x"}], "eyes": " #ffeedd "}, {"shape": "blob", "layers": [], "eyes": "#FFFFFF"}, {"shape": "custom", "outline": MOCK_CAT, "layers": "x", "eyes": 5}]).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "color": "#1e1e1e", "parts": [{"outline": " M40 30 L60 30\n L60 50 L40 50 Z ", "colour": "#7a4a22", "z": -1, "d": 1.1, "layers": [["M42 32 L58 32 L50 40 Z", "#ffffff", 0.5, "over"], ["M42 32 L58 32 L50 40 Z", "#ffffff", null, "under"], {"path": "M1 1 L9 9 Z", "fill": "#000000", "over": "yes"}]}, 5, [], {"color": "#E8C85A", "z": "x", "d": "x", "layers": "x"}]}, {"shape": "blob", "parts": [{"outline": "M1 1 Z", "color": "#000000"}]}]).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "layers": [{"path": "  M1 2\n L3 4 ", "color": "#abcdef", "opacity": 0.5}, 5, [], {"fill": "#123456", "opacity": "x"}], "eyes": {"c": " #ffeedd ", "shut": " R "}}, {"shape": "blob", "layers": [], "eyes": "#FFFFFF"}, {"shape": "custom", "outline": MOCK_CAT, "layers": "x", "eyes": 5}]).to_string(),
     ]);
     let theirs = node("console.log(JSON.stringify(input.map((t) => m.parseCandidates(t))));", &rich_texts);
     for (t, n) in rich_texts.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
@@ -337,6 +338,7 @@ fn avatar_eyes_and_previews_match_nodes() {
         "#58D63A", "red", 5, null, [1], {"c": "#58D63A"}, {"c": "#58D63A", "at": [50, 58], "gap": 20, "s": 1.2, "rim": "#111111", "rw": 0.3},
         {"c": "red", "at": [500, 5], "gap": 0, "s": 3, "rim": 1, "rw": 2}, {"c": "#FFFFFF", "at": [1]}, {"c": "#FFFFFF", "at": [50, "x"]}, {"c": "#FFFFFF", "gap": null, "s": null},
         {"c": "#FFFFFF", "at": [18, 14]}, {"c": "#FFFFFF", "at": [17.9, 50]}, {"c": "#FFFFFF", "s": 0.6, "rw": 0, "gap": 100}, {"c": "#FFFFFF", "s": 2.21, "rw": 1.21, "gap": 100.5},
+        {"c": "#FFFFFF", "shut": "l"}, {"c": "#FFFFFF", "shut": "r"}, {"c": "#FFFFFF", "shut": "L"}, {"c": "#FFFFFF", "shut": true}, {"c": "#FFFFFF", "shut": null},
     ]);
     let theirs = node(&format!("console.log(JSON.stringify(input.map((e) => m.eyeErrors(e === '__undef' ? undefined : e, {}))));", json!(outline)), &eyes);
     let ours: Vec<Vec<String>> = eyes.as_array().unwrap().iter().map(|e| eye_errors(Some(e), Some(outline))).collect();
@@ -346,6 +348,12 @@ fn avatar_eyes_and_previews_match_nodes() {
     let mut placed = mock_rich()[0].clone();
     placed["eyes"] = json!({"c": "#58D63A", "at": [50, 58], "gap": 22, "s": 1.4, "rim": "#111111", "rw": 0.3});
     cands.push(placed);
+    // a wink, an over-layer (a fringe over one eye) on the head and on a back part
+    let mut wink = mock_rich()[0].clone();
+    wink["eyes"] = json!({"c": "#58D63A", "at": [50, 58], "gap": 22, "rim": "#111111", "rw": 0.2, "shut": "r"});
+    wink["layers"].as_array_mut().unwrap().push(json!({"path": "M30 46 L48 46 L44 64 Z", "fill": "#1E2A16", "over": true}));
+    wink["parts"] = json!([{"outline": "M14 36 L86 36 L86 60 L14 60 Z", "color": "#1E2A16", "z": -1, "layers": [{"path": "M60 40 L80 40 L70 56 Z", "fill": "#FFFFFF", "over": true}]}]);
+    cands.push(wink);
     let mut pebble = mock_rich()[2].clone();
     pebble["outline"] = json!(MOCK_PEBBLE);
     pebble["eyes"] = json!({"c": "#2B1D12", "s": 0.7});

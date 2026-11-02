@@ -168,6 +168,10 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
             m.insert("opacity".into(), op.clone());
         }
+        // stored only when true
+        if x.get("over") == Some(&Value::Bool(true)) {
+            m.insert("over".into(), json!(true));
+        }
         Value::Object(m)
     };
     let layers: Option<Vec<Value>> = l.map(|l| l.iter().map(layer_of).collect());
@@ -187,6 +191,9 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
                 }
                 if let Some(z) = x.get("z").filter(|v| v.is_number()) {
                     m.insert("z".into(), z.clone());
+                }
+                if let Some(d) = x.get("d").filter(|v| v.is_number()) {
+                    m.insert("d".into(), d.clone());
                 }
                 Value::Object(m)
             })

@@ -42,19 +42,20 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
   if (o) bot.outline = o;
   else delete bot.outline;
   if (l) {
-    bot.layers = l.map((x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}) }));
+    bot.layers = l.map((x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}), ...(x.over === true ? { over: true } : {}) }));
     bot.eyes = e;
   } else {
     delete bot.layers;
     delete bot.eyes;
   }
-  const layerOf = (x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}) });
+  const layerOf = (x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}), ...(x.over === true ? { over: true } : {}) });
   if (p)
     bot.parts = p.map((x) => ({
       outline: typeof x.outline === "string" ? x.outline.trim() : x.outline,
       color: x.color,
       ...(Array.isArray(x.layers) && x.layers.length ? { layers: x.layers.map(layerOf) } : {}),
       ...(typeof x.z === "number" ? { z: x.z } : {}),
+      ...(typeof x.d === "number" ? { d: x.d } : {}),
     }));
   else delete bot.parts;
 }

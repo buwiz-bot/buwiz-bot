@@ -472,6 +472,9 @@ pub fn layer_errors_with(layers: Option<&Value>, eyes: Option<&Value>, outline: 
                 errs.push(format!("{n}'s opacity must be 0..1"));
             }
         }
+        if l.get("over").is_some_and(|o| !o.is_boolean()) {
+            errs.push(format!("{n}'s over must be true or false"));
+        }
         let Some(d) = l.get("path").and_then(Value::as_str).filter(|d| !d.trim_matches(js::is_space).is_empty()) else {
             errs.push(format!("{n} needs a path"));
             continue;
@@ -508,6 +511,8 @@ pub fn layer_errors_with(layers: Option<&Value>, eyes: Option<&Value>, outline: 
 pub const PARTS_MAX: usize = 6;
 // a part may be a small piece (a brim, an antler): 2% of the box, not 20%
 const PART_MIN_AREA: f64 = 200.0;
+/// a part's half-depth, as a multiple of the head's
+pub const PART_DEPTH: (f64, f64) = (0.05, 1.6);
 
 /// `partErrors(parts)`: up to 6 pieces of their own `[{outline, color,
 /// layers?, z?}]` in the head's box, each outline checked as the head's
@@ -538,6 +543,9 @@ pub fn part_errors(parts: &Value) -> Vec<String> {
         }
         if p.contains_key("z") && !p.get("z").filter(|v| v.is_number()).and_then(Value::as_f64).is_some_and(|z| (-1.0..=1.0).contains(&z)) {
             errs.push(format!("{n}'s z must be -1..1"));
+        }
+        if p.contains_key("d") && !p.get("d").filter(|v| v.is_number()).and_then(Value::as_f64).is_some_and(|d| (PART_DEPTH.0..=PART_DEPTH.1).contains(&d)) {
+            errs.push(format!("{n}'s d must be {}..{}", js::number(PART_DEPTH.0), js::number(PART_DEPTH.1)));
         }
     }
     errs
@@ -592,6 +600,9 @@ pub fn eye_errors(eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
     }
     if e.contains_key("rw") && !num("rw").is_some_and(|v| (0.0..=RIM_MAX).contains(&v)) {
         errs.push(format!("eyes.rw must be 0..{}", js::number(RIM_MAX)));
+    }
+    if e.contains_key("shut") && !matches!(e.get("shut").and_then(Value::as_str), Some("l" | "r")) {
+        errs.push("eyes.shut must be l or r".into());
     }
     errs
 }
@@ -787,6 +798,9 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                         if let Some(z) = p.get("z").filter(|v| v.is_number()) {
                             o.insert("z".into(), z.clone());
                         }
+                        if let Some(d) = p.get("d").filter(|v| v.is_number()) {
+                            o.insert("d".into(), d.clone());
+                        }
                         Value::Object(o)
                     })
                     .collect::<Vec<_>>()
@@ -814,13 +828,16 @@ fn parse_layers(ls: Option<&Value>) -> Option<Vec<Value>> {
         ls.iter()
             .filter_map(|l| match l {
                 Value::Object(o) => Some(o.clone()),
-                // the compact form the app uses: [path, fill, opacity?]
+                // the compact form the app uses: [path, fill, opacity?, "over"?]
                 Value::Array(a) => {
                     let mut o = Map::new();
                     for (k, key) in ["path", "fill", "opacity"].iter().enumerate() {
                         if let Some(v) = a.get(k) {
                             o.insert((*key).into(), v.clone());
                         }
+                    }
+                    if a.get(3).and_then(Value::as_str) == Some("over") {
+                        o.insert("over".into(), json!(true));
                     }
                     Some(o)
                 }
@@ -837,6 +854,10 @@ fn parse_layers(ls: Option<&Value>) -> Option<Vec<Value>> {
                 if let Some(op) = l.get("opacity").filter(|v| v.is_number()) {
                     o.insert("opacity".into(), op.clone());
                 }
+                // drawn above the eyes (a fringe over one, an eyepatch, glasses): kept only when true
+                if l.get("over") == Some(&Value::Bool(true)) {
+                    o.insert("over".into(), json!(true));
+                }
                 Value::Object(o)
             })
             .collect::<Vec<_>>()
@@ -850,10 +871,11 @@ fn parse_eyes(e: Option<&Value>) -> Option<Value> {
         Value::String(c) => Some(json!(js_trim(c).to_uppercase())),
         Value::Object(o) => {
             let mut out = Map::new();
-            for k in ["c", "at", "gap", "s", "rim", "rw"] {
+            for k in ["c", "at", "gap", "s", "rim", "rw", "shut"] {
                 if let Some(v) = o.get(k) {
                     let v = match v {
                         Value::String(c) if k == "c" || k == "rim" => json!(js_trim(c).to_uppercase()),
+                        Value::String(c) if k == "shut" => json!(js_trim(c).to_lowercase()),
                         v => v.clone(),
                     };
                     out.insert(k.into(), v);
@@ -1131,12 +1153,20 @@ fn esc(v: &str) -> String {
 pub fn preview_svg(c: &Candidate) -> String {
     let mut out = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" width=\"512\" height=\"512\"><rect width=\"100\" height=\"100\" fill=\"#3A3A3A\"/>");
     let outline = c.outline.clone().unwrap_or_default();
-    let piece = |out: &mut String, outline: &str, color: &str, layers: Option<&Vec<Value>>| {
-        out.push_str(&format!("<path d=\"{}\" fill=\"{}\"/>", esc(outline), esc(color)));
-        for l in layers.into_iter().flatten() {
+    let is_over = |l: &Value| l.get("over") == Some(&Value::Bool(true));
+    let draw_layers = |out: &mut String, layers: Option<&Vec<Value>>, over: bool| {
+        for l in layers.into_iter().flatten().filter(|l| is_over(l) == over) {
             let s = |k: &str| l.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
             let op = l.get("opacity").filter(|v| v.is_number()).and_then(Value::as_f64).map(|o| format!(" opacity=\"{}\"", n2(o))).unwrap_or_default();
             out.push_str(&format!("<path d=\"{}\" fill=\"{}\"{op}/>", esc(&s("path")), esc(&s("fill"))));
+        }
+    };
+    // a piece: its outline, then its layers below the eyes (over: false) or all of them
+    let piece = |out: &mut String, outline: &str, color: &str, layers: Option<&Vec<Value>>, all: bool| {
+        out.push_str(&format!("<path d=\"{}\" fill=\"{}\"/>", esc(outline), esc(color)));
+        draw_layers(out, layers, false);
+        if all {
+            draw_layers(out, layers, true);
         }
     };
     // the parts in z order: behind the head (z < 0), then the head and its
@@ -1144,14 +1174,16 @@ pub fn preview_svg(c: &Candidate) -> String {
     let z_of = |p: &Value| p.get("z").filter(|v| v.is_number()).and_then(Value::as_f64).unwrap_or(0.0);
     let mut parts: Vec<&Value> = c.parts.iter().flatten().collect();
     parts.sort_by(|a, b| z_of(a).partial_cmp(&z_of(b)).unwrap_or(std::cmp::Ordering::Equal));
-    let draw_part = |out: &mut String, p: &Value| {
+    let draw_part = |out: &mut String, p: &Value, all: bool| {
         let s = |k: &str| p.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
-        piece(out, &s("outline"), &s("color"), p.get("layers").and_then(Value::as_array));
+        piece(out, &s("outline"), &s("color"), p.get("layers").and_then(Value::as_array), all);
     };
-    for p in parts.iter().filter(|p| z_of(p) < 0.0) {
-        draw_part(&mut out, p);
+    // behind the head, the head, the eyes, the over-layers of those, then the parts in front
+    let back: Vec<&&Value> = parts.iter().filter(|p| z_of(p) < 0.0).collect();
+    for p in &back {
+        draw_part(&mut out, p, false);
     }
-    piece(&mut out, &outline, &c.color, c.layers.as_ref());
+    piece(&mut out, &outline, &c.color, c.layers.as_ref(), false);
     let e = c.eyes.as_ref();
     let colour = match e {
         Some(Value::String(s)) => s.clone(),
@@ -1160,6 +1192,7 @@ pub fn preview_svg(c: &Candidate) -> String {
     };
     let (at, w, h, gap) = eye_placement(&outline, e);
     let capsule = |x: f64, y: f64, cw: f64, ch: f64, fill: &str| format!("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" fill=\"{}\"/>", n2(x - cw / 2.0), n2(y - ch / 2.0), n2(cw), n2(ch), n2(cw / 2.0), esc(fill));
+    let shut = e.and_then(|e| e.get("shut")).and_then(Value::as_str);
     let rim = e.and_then(Value::as_object).and_then(|o| Some((o.get("rim")?.as_str()?.to_owned(), o.get("rw").filter(|v| v.is_number())?.as_f64()?))).filter(|(_, rw)| *rw > 0.0);
     for side in [-1.0, 1.0] {
         let x = at[0] + (side * gap) / 2.0;
@@ -1167,10 +1200,22 @@ pub fn preview_svg(c: &Candidate) -> String {
             let t = rw * w;
             out.push_str(&capsule(x, at[1], w + 2.0 * t, h + 2.0 * t, rc));
         }
-        out.push_str(&capsule(x, at[1], w, h, &colour));
+        if shut == Some(if side < 0.0 { "l" } else { "r" }) {
+            // a closed eye: a short curved lid line
+            out.push_str(&format!(
+                "<path d=\"M{} {} Q{} {} {} {}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\"/>",
+                n2(x - w / 2.0), n2(at[1]), n2(x), n2(at[1] + h * 0.25), n2(x + w / 2.0), n2(at[1]), esc(&colour), n2(w * 0.35)
+            ));
+        } else {
+            out.push_str(&capsule(x, at[1], w, h, &colour));
+        }
     }
+    for p in &back {
+        draw_layers(&mut out, p.get("layers").and_then(Value::as_array), true);
+    }
+    draw_layers(&mut out, c.layers.as_ref(), true);
     for p in parts.iter().filter(|p| z_of(p) >= 0.0) {
-        draw_part(&mut out, p);
+        draw_part(&mut out, p, true);
     }
     out.push_str("</svg>");
     out
