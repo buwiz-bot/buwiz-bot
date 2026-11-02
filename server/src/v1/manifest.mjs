@@ -18,11 +18,15 @@ import { isApproved } from "./trust.mjs";
 import { V1Error } from "./errors.mjs";
 import { schemaProblem } from "./params.mjs";
 
-// 2.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
-// buwiz-call/buwiz-session, buwiz/<key> _meta); 1.x plugins speak rox
-export const HOST_PROTOCOL = "2.0.0";
+// 1.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
+// buwiz-call/buwiz-session, buwiz/<key> _meta). 2.0 and 2.1 were its
+// pre-release numbers: a mini app naming one is told to install its 1.0
+// version.
+export const HOST_PROTOCOL = "1.0.0";
 export const APP_MIME = "text/x-nsh-tsx";
 export const MANIFEST_URI = "buwiz://manifest";
+// the manifest a plugin built for Rox serves instead
+export const ROX_MANIFEST_URI = "rox://manifest";
 
 // Appendix A, the limits a manifest is held to.
 export const LIMITS = Object.freeze({
@@ -468,10 +472,22 @@ function fields(m) {
 
 // ── verification (5.2) ───────────────────────────────────────────────────
 
+/** 2.0.x and 2.1.x: the pre-release numbers of protocol 1.0. */
+export const preRelease = (protocol) => /^2\.[01]\./.test(String(protocol));
+
+/** Why a mini app that names a pre-release protocol is refused. */
+export const preReleaseMessage = (title, protocol) => `${title} uses the pre-release mini app protocol ${protocol}; install its 1.0 version`;
+
+/** Why a plugin built for Rox is refused (its `rox.*` tools, its
+ *  rox://manifest, its asking for rox.provision). */
+export const roxMessage = (title) => `${title} was made for Rox, an older protocol; install its 1.0 version`;
+
 function protocolOf(m, host) {
   if (!isSemver(m.protocol)) throw invalid("protocol", "must be a semver string");
   const [maj, min] = m.protocol.split(".").map(Number);
   const [hmaj, hmin] = host.split(".").map(Number);
+
+  if (preRelease(m.protocol)) throw new V1Error("protocol_unsupported", preReleaseMessage(isString(m.title) && m.title ? m.title.slice(0, 80) : "this mini app", m.protocol));
 
   if (maj < hmaj) throw new V1Error("protocol_unsupported", `the plugin implements protocol ${m.protocol}: this plugin is built for an older protocol; update it`);
 

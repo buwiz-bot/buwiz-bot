@@ -1,7 +1,7 @@
 // sdk/mini-app/lib/buwiz-plugin.mjs — the reserved half of a v1 plugin.
 //
-// Every Rox Mini App Protocol v1 plugin answers the same reserved tools
-// (spec 7.8) the same way; this module does it once so a plugin's own file
+// Every Buwiz Mini App Protocol 1.0 plugin answers the same reserved tools
+// (§10) the same way; this module does it once so a plugin's own file
 // holds only its tools and apps. What it guarantees:
 //
 // - buwiz.provision is answered first; every other tool fails until it has

@@ -1,4 +1,4 @@
-//! First-party native screens (protocol 2.0's `apps[].native: {screen,
+//! First-party native screens (protocol 1.0's `apps[].native: {screen,
 //! abi}`): Rust screens compiled into this build, beside the TSX apps
 //! third-party plugins ship. A native screen mounts in the same per-open
 //! view a TSX app gets, through `App::Rust(root)` instead of a bundle, and

@@ -1,4 +1,4 @@
-// Protocol 2.0's one-time rewrite of app.db (names-migration.mjs) on a
+// Protocol 1.0's one-time rewrite of app.db (names-migration.mjs) on a
 // store shaped like one written before it: chats with rox:// links, a
 // reply's rox-app card link, stored rox/<key> _meta, a pinned link, an
 // attachment's open. It runs once (the marker), changes nothing a second

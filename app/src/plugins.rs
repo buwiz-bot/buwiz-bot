@@ -3488,7 +3488,7 @@ fn provider_name(provider: &str) -> String {
     }
 }
 
-/// A 2.1 mini app's Accounts (spec 2.1 §4), as a plugin's: a card per
+/// A packaged mini app's Accounts (§20), as a plugin's: a card per
 /// declared account, a row per signed-in label, then "Add another".
 fn v1_accounts_section(plugin: String) -> impl IntoElement {
     dynamic(move || {
@@ -3769,7 +3769,7 @@ pub(crate) fn review_details(r: &crate::mini_v1::connect::Review) -> View {
     v
 }
 
-/// A catalog plugin's review before it installs (2.1 §2.2, D2): who
+/// A catalog plugin's review before it installs: who
 /// publishes it, that it's unsigned, its servers (command or URL, the
 /// environment's names), its skills and what it lists but never runs;
 /// Cancel changes nothing, Install installs what was reviewed.

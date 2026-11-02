@@ -1285,7 +1285,7 @@ impl Store {
         self.v1_job("", move || host_api::set_tool_disabled(&broker(), &p, &t, disabled), |_| {});
     }
 
-    /// A 2.1 account's Sign out or Remove (spec 2.1 §4).
+    /// A package account's Sign out or Remove (§20).
     pub fn v1_account(&'static self, plugin: &str, account: &str, label: &str, action: host_api::AccountAction) {
         if action == host_api::AccountAction::SignIn {
             let key = signing_key(plugin, account, label.trim());

@@ -38,7 +38,7 @@ pub fn sign_manifest(m: &Value, seed: &str, sources: &[(String, Vec<u8>)]) -> Re
 
 /// A copy of plugin.json `p` with `p[block].signature`: ed25519 by
 /// `p[block].publisher.key_id` over JCS of all of `p` without that
-/// signature (2.1 §1); `v1::package::check_signature` verifies it.
+/// signature (§7.3); `v1::package::check_signature` verifies it.
 pub fn sign_block(p: &Value, block: &str, seed: &str) -> Result<Value, String> {
     let mut out = p.clone();
     let b = out.get_mut(block).and_then(Value::as_object_mut).ok_or_else(|| format!("plugin.json has no {block} block"))?;
@@ -61,7 +61,7 @@ const USAGE: &str = "usage: buwiz-broker sign-manifest <manifest.json> (--key-fi
 /// buwiz-broker sign-manifest manifest.json --key-file test.key ...
 /// ```
 ///
-/// `--block buwiz` signs a 2.1 package's plugin.json instead: the key is
+/// `--block buwiz` signs a package's plugin.json instead: the key is
 /// the block's `publisher.key_id`, the signature goes in the block.
 ///
 /// The key comes from the login Keychain (service

@@ -1,6 +1,6 @@
 //! The market's 11 routes (routes/market.mjs): `/plugins/catalog`,
 //! `/plugins/detail`, `/plugins/skill`,
-//! `/plugins/inspect` (2.1's review, no Node twin), `/plugins/install`,
+//! `/plugins/inspect` (the review, no Node twin), `/plugins/install`,
 //! `/plugins/uninstall`, `/plugins/settings`,
 //! `/plugins/connect`, and the private skills' `POST /skills`,
 //! `/skills/state`, `/skills/delete`.
@@ -645,7 +645,7 @@ fn skills_delete(ctx: &HubCtx, req: HubRequest) -> HubResponse {
 
 #[cfg(test)]
 mod tests {
-    //! The plain plugin review (2.1 §2.2, D2) over a local git repository
+    //! The plain plugin review over a local git repository
     //! and a vendored plugin: no network.
     use super::*;
     use crate::hub::traits::Clock;

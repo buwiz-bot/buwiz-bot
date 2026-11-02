@@ -1,9 +1,9 @@
-// names-migration.mjs — protocol 2.0's one-time rewrite of app.db (the
+// names-migration.mjs — protocol 1.0's one-time rewrite of app.db (the
 // broker's store) from the rox names to the buwiz ones.
 //
 // Chats, links, pins, attachments and stored _meta held `rox://…` links,
 // the `rox-app` link provider, `rox-app://` entries and `rox/<key>` _meta
-// keys; protocol 2.0 routes and reads only the buwiz names, so every text
+// keys; protocol 1.0 routes and reads only the buwiz names, so every text
 // column of every table (keys excepted) is rewritten once. The marker in
 // `meta` makes it run once; the rewrite is idempotent anyway (no old name
 // survives it). v1_plugins keeps its records as installed: a 1.x plugin's

@@ -330,7 +330,7 @@ pub fn skill_file(m: &Market, ctx: &HubCtx, key: &str, skill: &str) -> Option<Pa
 }
 
 /// `pluginSkillsInject()`: installed plugin skills as the agent's index;
-/// an enabled 2.1 mini app's package skills (`v1_plugins.skills`) join it
+/// an enabled mini app's package skills (`v1_plugins.skills`) join it
 /// under its short name.
 pub fn plugin_skills_inject(m: &Market, ctx: &HubCtx) -> String {
     let names: Vec<String> = ctx

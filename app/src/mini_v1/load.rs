@@ -677,7 +677,7 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
         return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
     }
-    // `native: {screen, abi}` (protocol 2.0): a screen compiled into this
+    // `native: {screen, abi}` (protocol 1.0): a screen compiled into this
     // build, for a first-party plugin only (the broker refuses others too)
     if app.get("native").is_some() {
         return prepare_native(key, plugin, &app, title);
@@ -838,7 +838,7 @@ mod tests {
         let js = build("card", "Card", "import { buwiz, BuwizError as E } from \"buwiz\";\nimport { Text } from \"nsh\";\nexport default function Card() { return <Text>{buwiz.app.app + String(E)}</Text>; }").unwrap();
         assert!(js.contains("const buwiz = globalThis.buwiz;const E = globalThis.BuwizError;"), "{js}");
         assert!(!js.contains("from \"buwiz\""), "{js}");
-        // the old module is gone (protocol 2.0)
+        // Rox's module is gone (protocol 1.0)
         assert_eq!(check_source_imports("import { rox } from \"rox\";"), Err("rox".to_owned()));
         assert_eq!(check_source_imports("import { RoxError } from \"buwiz\";"), Err("RoxError from buwiz".to_owned()));
     }
@@ -872,7 +872,7 @@ mod tests {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
                     "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
-                    "protocol": "2.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
+                    "protocol": "1.0.0", "enabled": true, "generation": 1, "apps": [self.listed],
                 }]})),
                 "/v1/host/apps/source" => {
                     Ok(serde_json::json!({"source": self.served, "fingerprint": self.listed["fingerprint"]}))
@@ -906,7 +906,7 @@ mod tests {
         fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
-                    "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0", "protocol": "2.0.0",
+                    "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0", "protocol": "1.0.0",
                     "enabled": true, "generation": 1, "first_party": self.first_party, "apps": [self.listed],
                 }]})),
                 _ => Err(RoxError::new("not_found", format!("{route}: a native screen fetches nothing"))),
