@@ -10,7 +10,7 @@
 //! one 0600 file per plugin instead; the tests use it, or a keychain file
 //! of their own.
 //!
-//! A mini app account's tokens (2.1 §4) live beside them: service
+//! A mini app account's tokens (§20) live beside them: service
 //! `com.buwiz.bot.account-token`, account `<plugin>/<account>/<label>`, the
 //! token JSON as base64url (so `security -i` takes it bare); a file store
 //! keeps `account-tokens/<plugin>~<account>~<label>.json`.
@@ -25,7 +25,7 @@ use buwiz_protocol::ids::plugin_id_ok;
 use buwiz_protocol::keys::SessionKey;
 
 pub const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.plugin-key";
-/// Mini app account tokens (2.1 §4).
+/// Mini app account tokens (§20).
 pub const ACCOUNT_SERVICE: &str = "com.buwiz.bot.account-token";
 /// Rox's service, before the rename: its keys are moved over once.
 pub const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";

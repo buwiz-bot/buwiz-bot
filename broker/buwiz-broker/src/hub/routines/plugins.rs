@@ -33,11 +33,11 @@ pub trait PluginView: Send + Sync {
     fn call_tool(&self, id: &str, tool: &str, args: Value, meta: Option<Value>) -> BoxFuture<'static, Result<Value, V1Error>>;
     /// The host's state changes (`plugins.events`), when it has them.
     fn events(&self) -> Option<broadcast::Receiver<Value>>;
-    /// A 2.1 package's accounts section (`Host::accounts_view`).
+    /// A package's accounts section (`Host::accounts_view`).
     fn accounts(&self, _id: &str) -> Value {
         json!([])
     }
-    /// The accounts a 2.1 package declares.
+    /// The accounts a package declares.
     fn declared_accounts(&self, _id: &str) -> Vec<crate::v1::package::Account> {
         Vec::new()
     }
@@ -175,7 +175,7 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
 }
 
 /// The plugin as GET /v1/host/plugins lists it (`describe`); `info` is a
-/// routine's user state (v1 routines' `info`). A 2.1 package's record
+/// routine's user state (v1 routines' `info`). A package's record
 /// adds `package` (its folder), `skills` and `accounts` (no tokens).
 pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value) -> Value {
     let m = row.manifest();

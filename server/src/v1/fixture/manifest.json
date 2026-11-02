@@ -1,5 +1,5 @@
 {
-  "protocol": "2.0.0",
+  "protocol": "1.0.0",
   "id": "app.buwiz.fixture",
   "short": "fx",
   "version": "1.0.0",

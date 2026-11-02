@@ -77,7 +77,7 @@ GWS_UPSTREAM and GWS_USER_EMAIL keep the values the plugin runs with now.
 They are in the broker's database, which this wizard does not open:
   <data dir>/generated/app.db, table v1_plugins, column env (a JSON
   object), row id 'app.buwiz.google-workspace', or
-  'dev.goldcoders.google-workspace' for an install from before protocol 2.0
+  'dev.goldcoders.google-workspace' for an install from Rox
 where <data dir> is the broker's (~/Library/Application Support/Buwiz
 Broker on this Mac, Grok Shell before it moved). They hold your OAuth
 client settings: copy them yourself, and don't paste them into chats or
@@ -85,7 +85,7 @@ logs. Pin the upstream while you are
 there: in GWS_UPSTREAM's args, "workspace-mcp" becomes "workspace-mcp==2.2.1".
 
 The review shows app.buwiz.google-workspace with two read-only tools,
-gws_search_mail and gws_read_mail; approve it. An install from before
-protocol 2.0 (dev.goldcoders.google-workspace) stays, failed: remove it
+gws_search_mail and gws_read_mail; approve it. An install from
+Rox (dev.goldcoders.google-workspace) stays, failed: remove it
 in Connect Apps once the new one works.
 TEXT

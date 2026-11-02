@@ -49,7 +49,7 @@ async function raw(env = {}, provisioned = true) {
   if (provisioned) {
     const k = generate();
 
-    await client.callTool({ name: "buwiz.provision", arguments: { protocol: "2.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
+    await client.callTool({ name: "buwiz.provision", arguments: { protocol: "1.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub } });
   }
 
   return client;
@@ -165,7 +165,7 @@ test("RSV-04 gws: buwiz.ticket.resolve answers valid:false and no subject", asyn
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.ticket.resolve", { ticket: "tkt_00000000000000000000000000" }), { valid: false });
 });
 
-test("RSV-05 gws: buwiz.session.close and buwiz.uninstall answer ok; unknown rox.* is -32601", async () => {
+test("RSV-05 gws: buwiz.session.close and buwiz.uninstall answer ok; unknown buwiz.* is -32601", async () => {
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.session.close", { open_id: "x" }), { ok: true });
   assert.deepEqual(await plugins.callReserved(GWS, "buwiz.uninstall", {}), { ok: true });
   assert.equal(await plugins.callReserved(GWS, "buwiz.frobnicate", {}), null);
@@ -235,7 +235,7 @@ test("GWS-06 buwiz-gws answers as server.mjs does, byte for byte", { skip: !GWS_
       call("buwiz.uninstall", {}),
       call("buwiz.provision", { key: { alg: "ed25519", seed: k.seed }, pub: other.pub }),
       call("buwiz.provision", { key: { alg: "ed25519", seed: "bad" }, pub: "x" }),
-      call("buwiz.provision", { protocol: "2.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub }),
+      call("buwiz.provision", { protocol: "1.0.0", plugin: GWS, key: { alg: "ed25519", seed: k.seed }, pub: k.pub }),
       call("buwiz.provision", { key: { alg: "ed25519", seed: other.seed }, pub: other.pub }),
       call("nope_tool", {}),
       call("gws_search_mail", { query: "  " }),

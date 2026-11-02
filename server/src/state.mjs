@@ -232,7 +232,7 @@ for (const col of ["hidden INTEGER DEFAULT 0", "archived INTEGER DEFAULT 0"]) {
 // name, thread} — `thread` is the chat it reports to. Never a sidebar row.
 try { db.exec("ALTER TABLE threads ADD COLUMN routine TEXT"); } catch {}
 
-// protocol 2.0: the rox names in stored chats, links and _meta become the
+// the buwiz names (protocol 1.0): the rox names in stored chats, links and _meta become the
 // buwiz ones, once
 migrateNames(db);
 

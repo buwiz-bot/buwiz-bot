@@ -1,5 +1,6 @@
-//! A plain plugin's review before it installs (extension format 2.1 §2.2,
-//! D2): `POST /plugins/inspect` fetches the plugin into a staging folder
+//! A plain plugin's review before it installs (every install shows a
+//! review; a plain plugin's says it is unsigned): `POST /plugins/inspect`
+//! fetches the plugin into a staging folder
 //! (`plugins/.staging/<token>/`) and answers what it would add; only
 //! `POST /plugins/install {staging, approve: true}` moves it into place.
 //! A staging folder lasts 30 minutes; the next inspect deletes the expired

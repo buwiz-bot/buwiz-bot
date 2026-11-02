@@ -44,8 +44,8 @@ pub struct Tool {
     pub disabled: bool,
 }
 
-/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 2.0)
-/// or `rox.<lowercase>` (an install from before it).
+/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 1.0)
+/// or `rox.<lowercase>` (an install from Rox).
 fn reserved_tool(name: &str) -> bool {
     ["buwiz.", "rox."].iter().any(|p| name.strip_prefix(p).is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')))
 }
@@ -241,14 +241,14 @@ pub struct Listed {
     pub routines: Vec<Routine>,
     /// Each app's title and placements ("BIR Forms · full screen").
     pub apps: Vec<String>,
-    /// Its package's accounts (2.1), a row per signed-in label; empty
-    /// for a 2.0 plugin.
+    /// Its package's accounts (§20), a row per signed-in label; empty
+    /// for a bare binary (no package).
     pub accounts: Vec<Account>,
-    /// Its package's skills (2.1); empty for a 2.0 plugin.
+    /// Its package's skills (§7.2); empty for a bare binary.
     pub skills: Vec<Skill>,
 }
 
-/// One account row of a 2.1 package (spec 2.1 §4): only its state and who
+/// One account row of a package (§20): only its state and who
 /// it is; the token stays with the broker and the plugin.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Account {
@@ -335,7 +335,7 @@ impl Listed {
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false),
             generation: v.get("generation").and_then(Value::as_u64).unwrap_or(0),
             // the reserved lifecycle tools (`buwiz.provision`, …; `rox.*` in a
-            // record from before protocol 2.0) are the broker's, never the
+            // record from Rox) are the broker's, never the
             // person's to switch: not listed, not counted
             tools: list(v, "tools")
                 .iter()

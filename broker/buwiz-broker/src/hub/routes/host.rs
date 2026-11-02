@@ -9,7 +9,7 @@
 //! `helper::sessions`); the routine routes are `hub::routines::v1`'s.
 //! An install may take settings from another plugin (`env_from`), and
 //! `notices/settle` answers a mini app's install or uninstall card.
-//! A mini app's accounts (2.1 §4): `GET /v1/host/plugins/<id>/accounts`,
+//! A mini app's accounts (§20): `GET /v1/host/plugins/<id>/accounts`,
 //! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
 //! a sign-in settles the chat's `account_required` cards for it
 //! (`connected`); the user's Not now settles them `declined`.

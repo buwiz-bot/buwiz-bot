@@ -91,5 +91,6 @@ plugin owns the rest: P1 to P10 of spec 15.2. Tick each before release.
 - The runner (`npm run plugin-test`) checks P3, P4 and P7 mechanically; P1,
   P2, P5, P6, P8 to P10 are review items.
 
-Section numbers such as spec 4.1 refer to the Mini App Protocol v1
-specification, which is private and not in this repo.
+Section numbers such as spec 4.1 refer to the
+[mini app protocol 1.0 specification](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)
+(2.0 and 2.1 were its pre-release numbers).

@@ -196,8 +196,7 @@ nothing of Rox's is kept for compatibility:
   `broker/buwiz-protocol` (`rox-v1`). For one release the dev bundle keeps
   `Resources/broker/rox-broker` as a link to `buwiz-broker` (an app binary
   built before looks for it), the app and `scripts/broker-live` take a
-  broker by either name, and `broker/rox-v1/src/jcs-vectors.json` stays as
-  a copy for other repos' tests. The broker's subcommands keep their names.
+  broker by either name. The broker's subcommands keep their names.
 
 ### Switching the live broker to Buwiz Bot.app's
 
@@ -313,5 +312,6 @@ Buwiz Bot is free and open source under the [Apache License 2.0](LICENSE)
 (longbridge/nsh, through the hexuria/nsh fork) and `blaze` (ra-jit) are
 Apache-2.0 too. The plugin catalog is fetched at runtime from
 [buwiz-app/catalog](https://github.com/buwiz-app/catalog); the plugins it
-lists carry their own licenses. See `NOTICE` for third-party code in this
+lists carry their own licenses. They speak mini app protocol 1.0
+([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md); 2.0 and 2.1 were its pre-release numbers). See `NOTICE` for third-party code in this
 repository.

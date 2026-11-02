@@ -1,4 +1,4 @@
-//! A mini app's accounts (extension format 2.1 §4): declared in its
+//! A mini app's accounts (§20): declared in its
 //! package's `buwiz.accounts`, signed in from the mini app page, recorded
 //! in `v1_accounts` (no tokens: the reference only) with the tokens in the
 //! keystore, and pushed to the plugin (D4): `buwiz.account.set` after

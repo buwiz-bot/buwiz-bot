@@ -1,17 +1,21 @@
-# Protocol 2.0: the buwiz names (breaking)
+# Protocol 1.0: the buwiz names (breaking)
 
-Protocol 2.0 renames every protocol name from `rox` to `buwiz`. It is a
-clean cut: Buwiz Bot no longer accepts the old names anywhere, and it
-refuses a manifest that declares protocol 1.x with
-`protocol_unsupported`: "this plugin is built for an older protocol;
-update it". A plugin keeps working only once it ships a release with the
-names below and a manifest re-signed under them.
+Mini app protocol 1.0 ([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)) renames every protocol name
+of Rox's from `rox` to `buwiz`. (2.0 and 2.1 were pre-release numbers of
+1.0.) It is a clean cut: Buwiz Bot no longer accepts the old names
+anywhere; an install from Rox (its tools named `rox.*`, whatever protocol
+it names) fails before it starts with "… was made for an older Buwiz Bot
+… Install its current version, or uninstall it", and a manifest naming
+2.0.x or 2.1.x is refused with `protocol_unsupported`: "<title> uses the
+pre-release mini app protocol <protocol>; install its 1.0 version". A
+plugin keeps working only once it ships a release with the names below
+and a manifest re-signed under them.
 
 ## Every name, old → new
 
-| Old (1.x, refused) | New (2.0) | Where |
+| Old (Rox, refused) | New (1.0) | Where |
 |---|---|---|
-| `"protocol": "1.x.y"` | `"protocol": "2.0.0"` (the host accepts exactly 2.0) | manifest |
+| `"protocol": "1.x.y"` (Rox), `"2.0.0"`, `"2.1.0"` (pre-release) | `"protocol": "1.0.0"` (the host accepts exactly 1.0) | manifest |
 | `dev.goldcoders.bir` | `app.buwiz.ebirforms` | plugin id (manifest `id`, trust store) |
 | `dev.goldcoders.books` | `app.buwiz.books` | plugin id |
 | `dev.goldcoders.google-workspace` | `app.buwiz.google-workspace` | the bundled plugin's id |
@@ -42,7 +46,7 @@ names below and a manifest re-signed under them.
 | `bin/rox-plugin-test.mjs` | `bin/buwiz-plugin-test.mjs` (`npm run plugin-test`) | SDK |
 | plugin ids `rox.*`, `dev.goldcoders.rox.*` reserved | `buwiz.*`, `com.buwiz.bot`, `com.buwiz.bot.*` reserved; short `buwiz` reserved | manifest `id`, `short` |
 
-New in 2.0: an app may be a native screen instead of TSX,
+New in 1.0: an app may be a native screen instead of TSX,
 `"native": {"screen": "<id>", "abi": 1}` with no `entry`, `mime`, `sdk` or
 `fingerprint`, for first-party plugins only (key `gc-2026-01`, publisher
 `app.buwiz`). This build verifies such apps; opening one says "this screen
@@ -54,7 +58,7 @@ tool and bridge method.
 
 ## Checklist for a plugin
 
-- [ ] Manifest: `"protocol": "2.0.0"`; every `apps[].entry` is
+- [ ] Manifest: `"protocol": "1.0.0"`; every `apps[].entry` is
       `buwiz-app://<id>`; raise `version`.
 - [ ] Reserved tools: answer `buwiz.provision`, `buwiz.session.open`,
       `buwiz.session.close`, `buwiz.ticket.resolve`, `buwiz.uninstall`;
@@ -103,7 +107,7 @@ names, the certificate `typ`), `jsonrpc.rs` and `service.rs`
 
 Until each ships, Buwiz Bot shows it as failed with the update message;
 chats keep their history (their links were rewritten to `buwiz://` at the
-first start of 2.0).
+first start of Buwiz Bot).
 
 ## Environment variables, scripts and temp files (old names still work)
 

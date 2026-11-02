@@ -73,7 +73,7 @@ app.buwiz.books approved`.
 | MAN-01 | The manifest is signed by the trusted key; the signature verifies over JCS. |
 | MAN-02 | A byte changed in the manifest fails verification. |
 | MAN-03 | The manifest is a JSON object (I-JSON). |
-| MAN-04 | `protocol` is 2.0.x; `version` is semver. |
+| MAN-04 | `protocol` is 1.0.x (2.0.x and 2.1.x, pre-release numbers of 1.0, are refused); `version` is semver. |
 | MAN-05 | `needs` absent or `[]`. |
 | MAN-06 | `permissions` hold only known keys. |
 | MAN-07, MAN-08 | Every grammar and limit ([manifest.md](manifest.md)). |
@@ -112,5 +112,6 @@ and against the fixture with `--misbehave=skip-provision`, `bad-cert` and
 `log-seed` to prove it catches a broken plugin. `npm run conformance` lists
 those as extension IDs SDK-01 onward, after the spec 17 checklist.
 
-Section numbers such as spec 4.1 refer to the Mini App Protocol v1
-specification, which is private and not in this repo.
+Section numbers such as spec 4.1 refer to the
+[mini app protocol 1.0 specification](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)
+(2.0 and 2.1 were its pre-release numbers).

@@ -1,10 +1,10 @@
-//! A mini app package (extension format 2.1 §1): a plugin folder whose
+//! A mini app package (§7): a plugin folder whose
 //! `plugin.json` carries one signed `buwiz` block. The block names the
 //! mini app's `mcpServers` entry, its accounts, and every other file of the
 //! folder by sha256 (binaries per platform). The signature is ed25519 by
 //! `buwiz.publisher.key_id` over JCS of the whole plugin.json with
 //! `buwiz.signature` removed, so commands, skills and every hash are
-//! covered. Trust is the 2.0 manifest's: a trusted key, the id approved
+//! covered. Trust is the manifest's (§5.1): a trusted key, the id approved
 //! for it. The served `buwiz://manifest` keeps its own signature.
 
 use std::path::Path;
@@ -125,7 +125,8 @@ fn file_of(v: &Value, at: &str, path: Option<&str>) -> Res<File> {
     Ok(File { path, asset: asset.to_owned(), sha256: sha256.to_owned() })
 }
 
-fn protocol_ok(p: &str, host: &str) -> Res<()> {
+/// `name` says who in a refusal: the block's id, when it has one.
+fn protocol_ok(p: &str, host: &str, name: &str) -> Res<()> {
     let two = |s: &str| {
         let mut it = s.split('.').map(|x| x.parse::<u64>().ok());
         (it.next().flatten(), it.next().flatten())
@@ -134,12 +135,12 @@ fn protocol_ok(p: &str, host: &str) -> Res<()> {
     if !super::manifest::is_semver(Some(&json!(p))) {
         return Err(bad("buwiz.protocol must be a semver string"));
     }
+    if super::manifest::pre_release(p) {
+        return Err(V1Error::new("protocol_unsupported", super::manifest::pre_release_message(name, p)));
+    }
     let (hmaj, hmin) = two(host);
     if Some(maj) != hmaj || Some(min) > hmin {
         return Err(V1Error::new("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports {host}")));
-    }
-    if min < 1 {
-        return Err(bad(format!("buwiz.protocol is {p}; a package is protocol 2.1 or later")));
     }
     Ok(())
 }
@@ -154,7 +155,8 @@ pub fn parse(raw: &str, host: &str, platform: &str) -> Res<Package> {
     let Some(top) = plugin.as_object() else { return Err(bad("must be a JSON object")) };
     let Some(b) = top.get(BLOCK).and_then(Value::as_object) else { return Err(bad("has no buwiz block")) };
     let protocol = text_of(b, "protocol")?;
-    protocol_ok(&protocol, host)?;
+    let name = b.get("id").and_then(Value::as_str).filter(|id| buwiz_protocol::ids::plugin_id_ok(id)).unwrap_or("this mini app");
+    protocol_ok(&protocol, host, name)?;
     let id = text_of(b, "id")?;
     if !buwiz_protocol::ids::plugin_id_ok(&id) {
         return Err(bad("buwiz.id must be a plugin id"));
@@ -397,7 +399,7 @@ pub(crate) mod tests {
             "mcpServers": {"fx": {"command": "${PLUGIN_ROOT}/bin/fx", "args": ["mcp"], "env": {"FX_MANIFEST": "${PLUGIN_ROOT}/manifest.signed.json"}}},
             "skills": ["skills/"],
             "buwiz": {
-                "protocol": "2.1.0", "id": ID, "short": "fx", "version": "1.0.0", "server": "fx",
+                "protocol": "1.0.0", "id": ID, "short": "fx", "version": "1.0.0", "server": "fx",
                 "accounts": [{"id": "google", "provider": "google", "label": "Google account", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"], "required": true}],
                 "files": {"skills/triage/SKILL.md": {"asset": "skills.triage.SKILL.md", "sha256": "a".repeat(64)}},
                 "binaries": {platform: {"path": "bin/fx", "asset": "fx-bin", "sha256": "b".repeat(64)}},
@@ -465,10 +467,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_package_names_protocol_1_0_and_2_x_was_its_pre_release() {
+        assert_eq!(HOST, "1.0.0");
+        for p in ["1.0.0", "1.0.2"] {
+            assert_eq!(verify(&plugin_json("p", |b| b["buwiz"]["protocol"] = json!(p)).to_string(), &trust(&[ID]), HOST, "p").unwrap().protocol, p);
+        }
+        for p in ["2.0.0", "2.1.0"] {
+            let e = refused(|b| b["buwiz"]["protocol"] = json!(p));
+            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("{ID} uses the pre-release mini app protocol {p}; install its 1.0 version")));
+        }
+        for p in ["1.1.0", "3.0.0"] {
+            let e = refused(|b| b["buwiz"]["protocol"] = json!(p));
+            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports 1.0.0")));
+        }
+    }
+
+    #[test]
     fn the_block_is_held_to_its_rules() {
         let cases: Vec<(Edit, &str)> = vec![
-            (Box::new(|p| p["buwiz"]["protocol"] = json!("2.0.0")), "protocol 2.1 or later"),
             (Box::new(|p| p["buwiz"]["protocol"] = json!("2.9.0")), "supports"),
+            (Box::new(|p| p["buwiz"]["protocol"] = json!("1.1.0")), "supports"),
             (Box::new(|p| p["buwiz"]["protocol"] = json!("3.1.0")), "supports"),
             (Box::new(|p| p["buwiz"]["id"] = json!("Fixture")), "buwiz.id must be a plugin id"),
             (Box::new(|p| p["buwiz"]["version"] = json!("1.0.1")), "version must equal buwiz.version"),

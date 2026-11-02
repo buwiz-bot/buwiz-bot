@@ -1,6 +1,7 @@
 # Buwiz Bot mini app kit: start here
 
-Build a first-party plugin for the Mini App Protocol v1: an MCP server that
+Build a first-party plugin for mini app protocol 1.0
+([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md); 2.0 and 2.1 were its pre-release numbers): an MCP server that
 ships apps into Buwiz Bot. Read [docs/overview.md](docs/overview.md) first
 (one page), then follow these ten steps. Paths are from this repo's `server/`
 directory, where `npm run plugin-test` runs.
