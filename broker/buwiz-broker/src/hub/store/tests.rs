@@ -121,7 +121,8 @@ const SEED: &str = r##"
   );
   store.bots.push(
     { id: "ann", name: "Ann", shape: "star", color: "#FF309B", threadId: t1.id, pinned: true, section: "Work", hidden: false, image: "file:///x/ann.png", crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }, model: "gpt-5.5", effort: "high", fast: true, label: "tagline", description: "", instructions: "Be kind.", memories: [{ id: uuidv7(), text: "likes tea", at: 1700000000000 }], integrations: [{ id: "s1", kind: "skill", at: 1700000000000, via: "user" }], made_by: "bob", purpose: "help Bob", accepts: ["bob"] },
-    { id: "bob", name: "Bob", shape: "blob", color: "#1084FE", threadId: null, helper: { parent: "ann", task: "sort" } },
+    { id: "bob", name: "Bob", shape: "blob", color: "#1084FE", outline: "M10 10 L90 10 L90 90 Z", threadId: null, helper: { parent: "ann", task: "sort" } },
+    { id: "cy", name: "Cy", shape: "custom", color: "#FFFFFF", outline: "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z", threadId: t3.id },
   );
   store.sections = ["Work"];
   writeIndex();
@@ -179,7 +180,9 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
             ann.made_by = Some(json!("bob"));
             ann.section = "Work".into();
             s.bots.push(ann);
-            s.bots.push(Bot { description: None, instructions: None, ..Bot::new("bob", "Bob", "blob", "#1084FE", None) });
+            // a kit shape's stray outline is never written
+            s.bots.push(Bot { description: None, instructions: None, outline: Some("M1 1 L9 1 L9 9 Z".into()), ..Bot::new("bob", "Bob", "blob", "#1084FE", None) });
+            s.bots.push(Bot { outline: Some("M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z".into()), ..Bot::new("cy", "Cy", "custom", "#FFFFFF", Some(agents.clone())) });
             s.sections = json!(["Work"]);
             s.active = routine.clone();
             let t = s.fresh_thread("moved");
@@ -197,6 +200,8 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     assert_eq!(turns, node_turns);
     assert_eq!(threads, node_threads);
     assert!(node_threads.contains("\"description\":\"Bob is a personal assistant bot in Buwiz Bot.\""));
+    assert!(node_threads.contains("\"shape\":\"custom\",\"color\":\"#FFFFFF\",\"outline\":\"M18 44 L22 14"), "a custom bot's outline, in bots[] and list[].bot");
+    assert_eq!(node_threads.matches("\"outline\"").count(), 2, "only the custom bot's");
     assert_eq!(db_diff(&twin, &dir), "", "Node's persist() writes what Rust wrote, the placeholder's gap closed");
     for d in [dir, twin] {
         let _ = std::fs::remove_dir_all(d);

@@ -42,6 +42,10 @@ const BASE_URL =
 const MODEL =
   process.env.GEN_MODEL ||
   (PROVIDER === "anthropic" ? "claude-haiku-5-5" : "openai/gpt-4o-mini");
+// Avatar design (/avatar/design) draws with a model of its own: tracing a
+// silhouette needs a stronger one than the chat default.
+const AVATAR_MODEL =
+  process.env.GEN_AVATAR_MODEL || (PROVIDER === "anthropic" ? "claude-sonnet-5" : MODEL);
 // Output budget covers interleaved thinking (~5k) plus a real module — a
 // polished game runs 400+ lines; 6k truncated mid-file and produced mocks.
 const MAX_TOKENS = Number(process.env.GEN_MAX_TOKENS || 20000);
@@ -119,7 +123,7 @@ if (!OFFICE_ROLE)
   );
 
 export {
-  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, OFFICE_ROLE, PROVIDER, BASE_URL, MODEL,
+  APP_ROOT, SERVER_DIR, serverFile, DATA_DIR, GEN_DIR, STAGE_DIR, PORT, PUBLIC_PORT, OFFICE_ROLE, PROVIDER, BASE_URL, MODEL, AVATAR_MODEL,
   MAX_TOKENS, MOCK, NSH, NSH_HOST, BUNDLE_ID, OPENCODEX, WIDGETS_DIR, POP_W,
   POP_H, WINDOWS_DIR, CHUNK_DIR, AVATAR_DIR, ATTACH_DIR, OUT_DIR, ASSETS_DIR,
   PLUGIN_CATALOG, PLUGINS_DIR, git, outFile,

@@ -295,6 +295,7 @@ pub fn bot_set(b: &mut Bot, key: &str, v: Value) {
         "name" => b.name = js::string_of(&v),
         "shape" => b.shape = js::string_of(&v),
         "color" => b.color = js::string_of(&v),
+        "outline" => b.outline = v.as_str().filter(|o| !o.is_empty()).map(str::to_owned),
         "threadId" => b.thread_id = text_of(&v),
         "pinned" => b.pinned = js::truthy(&v),
         "section" => b.section = s(&v),
@@ -624,7 +625,17 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
             o.insert("hidden".into(), json!(t.hidden));
             o.insert("archived".into(), json!(t.archived));
             o.insert("lastApp".into(), json!(t.turns.iter().rev().find_map(|x| x.name.clone().filter(|n| !n.is_empty())).unwrap_or_default()));
-            o.insert("bot".into(), bot.map(|b| json!({"id": b.id, "name": b.name, "shape": b.shape, "color": b.color})).unwrap_or(Value::Null));
+            o.insert(
+                "bot".into(),
+                bot.map(|b| {
+                    let mut o = json!({"id": b.id, "name": b.name, "shape": b.shape, "color": b.color});
+                    if let Some(x) = &b.outline {
+                        o["outline"] = json!(x);
+                    }
+                    o
+                })
+                .unwrap_or(Value::Null),
+            );
             if truthy(t.routine.as_ref()) {
                 o.insert("routine".into(), t.routine.clone().unwrap_or(Value::Null));
             }
@@ -644,6 +655,10 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
             o.insert("name".into(), json!(b.name));
             o.insert("shape".into(), json!(b.shape));
             o.insert("color".into(), json!(b.color));
+            // a custom shape's SVG path data (avatar-shape.mjs)
+            if let Some(x) = &b.outline {
+                o.insert("outline".into(), json!(x));
+            }
             o.insert("threadId".into(), b.thread_id.as_ref().map(|x| json!(x)).unwrap_or(Value::Null));
             o.insert("pinned".into(), json!(b.pinned));
             o.insert("section".into(), json!(b.section));

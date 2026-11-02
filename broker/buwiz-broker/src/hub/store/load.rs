@@ -123,6 +123,7 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             name,
             shape: js::string_of(&get("shape")),
             color: js::string_of(&get("color")),
+            outline: get("outline").as_str().filter(|o| !o.is_empty()).map(str::to_owned),
             thread_id: get("thread_id").as_str().map(str::to_owned),
             pinned: js::truthy(&get("pinned")),
             section: s_or("section"),

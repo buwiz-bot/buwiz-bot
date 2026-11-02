@@ -5,6 +5,7 @@
 // A body is a kit shape (the app's mark engine draws 13 of them) or
 // "custom": an SVG outline in a 0 0 100 100 box, y down, drawn with M/L/C/Q/Z
 // only. The engine fills it with one colour and adds the eyes itself.
+import { readFileSync } from "node:fs";
 
 /** The kit: name → what it looks like (the designer's prompt reads these). */
 export const KIT = {
@@ -241,30 +242,9 @@ export function validateAvatar({ shape, color, outline } = {}) {
 // ---------------------------------------------------------------------------
 // The designer: a model proposes 3 candidates, each checked here.
 
-export const DESIGN_SYSTEM = `You design avatars for Buwiz Bot, a chat app where every bot has one.
-
-What the app draws: its "mark" engine renders ONE solid silhouette filled with ONE colour, then adds two eyes of its own and animates the mark (it moves, blinks and looks around). So draw only the outer silhouette: no face, no eyes, no mouth, no holes, no lines or details inside the shape. It must read at 24 pixels.
-
-A body is a kit shape or a custom outline.
-
-Kit shapes (shape = the name):
-${KIT_SHAPES.map((k) => `- ${k}: ${KIT[k]}`).join("\n")}
-
-Custom outline (shape = "custom", outline = SVG path data):
-- A 0 0 100 100 box, x to the right, y DOWN (y = 0 is the top edge).
-- Only the commands M, L, C, Q and Z (upper case absolute, lower case relative) and plain decimal numbers. No H, V, S, T or A, no exponents.
-- ONE closed shape: a single M at the start, Z at the end, no second subpath, no holes, never crossing itself.
-- Centred, filling roughly 55-80% of the box (its longer side spans about 55-80 units), every coordinate within 0..100.
-- No part thinner than about 10 units: no thin spikes, stems, tails, whiskers, antennae, legs or handles.
-- Every point of the edge visible from the shape's centre: no deep notches or bays that fold back on themselves.
-- A simple, recognisable silhouette, like a cookie cutter or a bold app glyph: 4 to 16 segments, smooth C or Q curves for organic forms.
-- Keep a roomy, solid area in the upper middle: the eyes go there.
-
-Colour: "#RRGGBB". By default every candidate is #FFFFFF, the app's primary ink: the adaptive swatch, black on light backgrounds and white on dark ones. Use another colour only when the request asks for one (a named colour, "colourful", "in its own colours", or a character whose colour is part of who it is). Then pick saturated, mid-brightness colours that read on both light and dark backgrounds, e.g. #FF263C red, #FF6700 orange, #FF9800 amber, #00C972 green, #00BCA6 teal, #1084FE blue, #9159FE purple, #FF309B pink, #936439 brown, #777777 grey. Avoid near-black, pastel and very light colours.
-
-Reply with JSON only (no prose, no code fences):
-{"candidates":[{"name":"…","shape":"…","color":"#RRGGBB","outline":"M … Z","why":"…"}]}
-Exactly 3 candidates, each a distinct idea. name: a short label for the design (1-3 words). why: one short sentence on how it fits the bot. Give outline only when shape is "custom".`;
+// The system prompt lives in templates/ (beside the bundle when packaged),
+// so the Rust hub's /avatar/design reads the very same text.
+export const DESIGN_SYSTEM = readFileSync(new URL("./templates/avatar-design-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
 
 /** The user turn's text for a design request. */
 export function designRequest({ prompt, name, image }) {

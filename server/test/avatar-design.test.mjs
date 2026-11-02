@@ -10,7 +10,7 @@ import { after, before, test } from "node:test";
 import { PNG_B64, say, startFakeOpencodex } from "./fixtures/fake-opencodex.mjs";
 import { modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
 import {
-  DESIGN_SYSTEM, KIT_SHAPES, MOCK_OUTLINES, designCandidates, flattenPath, outlineErrors, parseCandidates, validateAvatar,
+  DESIGN_SYSTEM, KIT, KIT_SHAPES, MOCK_OUTLINES, designCandidates, flattenPath, outlineErrors, parseCandidates, validateAvatar,
 } from "../src/avatar-shape.mjs";
 
 const dir = tempDir("avatar-design");
@@ -269,7 +269,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   const calls = fake.calls();
   assert.equal(calls.length, 2);
   assert.equal(calls[0].path, "/v1/messages");
-  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-haiku-5-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined });
+  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-sonnet-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "Design's own model, not the chat's");
   assert.match(calls[1].body.messages[2].content, /candidate 2 \(Bad\): outline covers/);
   fake.reset();
   fake.script("design-img", [reply([cust("Fox", GOOD.cat, "#FF6700"), kit("A"), cust("B")])]);
@@ -278,10 +278,30 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   assert.equal(w.json.candidates[0].outline, GOOD.cat);
   const [call] = fake.calls();
   assert.deepEqual(call.body.messages[0].content[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } });
+  // the picker's model, routed as a bot's chosen one is (a --fast id keeps its suffix)
+  for (const model of ["gpt-5.5", "claude-haiku-5-5--fast", "  claude-sonnet-5  "]) {
+    fake.reset();
+    fake.script("design-pick", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
+    const p = await postJson("/avatar/design", { prompt: "[[script:design-pick]] a fox", model });
+    assert.equal(p.status, 200, p.text);
+    assert.deepEqual([fake.calls()[0].body.model, fake.calls()[0].body.system], [model.trim(), DESIGN_SYSTEM]);
+  }
+  fake.reset();
+  fake.script("design-default", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-default]] a fox", model: "" })).status, 200);
+  assert.equal(fake.calls()[0].body.model, "claude-sonnet-5", "the picker's Default is Design's default");
+  // GEN_AVATAR_MODEL picks Design's model; GEN_MODEL (the chat's) does not
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_MODEL: "claude-haiku-5-5", GEN_AVATAR_MODEL: "claude-opus-5" }) });
+  fake.reset();
+  fake.script("design-env", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-env]] a fox" })).status, 200);
+  assert.equal(fake.calls()[0].body.model, "claude-opus-5");
 });
 
 test("AVD-13 the system prompt names the engine's rules and every kit shape", () => {
-  for (const k of KIT_SHAPES) assert.match(DESIGN_SYSTEM, new RegExp(`^- ${k}: `, "m"));
+  // the prompt is a template file (the Rust hub reads it too): its kit list is KIT's
+  assert.deepEqual(DESIGN_SYSTEM.split("\n").filter((l) => /^- [a-z]+: /.test(l) && KIT_SHAPES.includes(l.slice(2).split(":")[0])), KIT_SHAPES.map((k) => `- ${k}: ${KIT[k]}`));
   for (const s of ["no face", "no holes", "y DOWN", "55-80%", "about 10 units", "M, L, C, Q and Z", "JSON only", "By default every candidate is #FFFFFF"]) assert.ok(DESIGN_SYSTEM.includes(s), s);
 });
 
@@ -295,6 +315,8 @@ test("AVD-14 /avatar/design on the OpenAI-compatible path: chat/completions with
   assert.deepEqual(r.json.candidates, [cust("Fox", GOOD.cat, "#FF6700"), kit("A"), cust("B")]);
   const [call] = fake.calls();
   assert.equal(call.path, "/v1/chat/completions");
+  // off Anthropic, Design's model defaults to the provider's (GEN_MODEL's)
+  assert.equal(call.body.model, "openai/gpt-4o-mini");
   assert.equal(call.headers.authorization, "Bearer test-key");
   assert.deepEqual(call.body.messages[0], { role: "system", content: DESIGN_SYSTEM });
   assert.deepEqual(call.body.messages[1].content[0], { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } });

@@ -6,6 +6,11 @@
 //! `/avatar/gen` asks the model (5.3) through `ctx.model`; without one it
 //! answers 501. `/avatar/image/gen` draws through the [`AvatarImage`] seam
 //! in `ctx.ext` (5.3's image models); without it that kind answers 501.
+//!
+//! `/bot/new` and `/bot/update` check the avatar (`applyAvatar`: a kit
+//! shape clears a custom outline). `/avatar/design` (avatar-design.mjs) asks
+//! Design's model, or the one the picker sent, for three candidates and
+//! checks them with `library::avatar_shape`; MOCK answers fixed ones.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,12 +20,14 @@ use serde_json::{json, Value};
 use super::chat::{answer, card_names, ok, parse, ready, refused, sweep_modules, thrown, trimmed, wrote};
 use crate::helper::local::{command, exec, tools};
 use crate::hub::ctx::HubCtx;
-use crate::hub::library::botctx;
+use crate::hub::library::{avatar_shape, botctx};
+use crate::hub::model::anthropic::parse_llm;
+use crate::hub::model::{openai, Settings};
 use crate::hub::library::groups::{now36, random36, time_id};
 use crate::hub::store::json::{out, template, turns_json, Lookups};
 use crate::hub::store::{bot_defaults, Bot};
 use crate::hub::traits::LocalCommand;
-use crate::hub::types::{not_ported, BoxFuture, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Prefix as P, TurnCtx, Verb};
+use crate::hub::types::{not_ported, ModelChoice, BoxFuture, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Prefix as P, TurnCtx, Verb};
 use crate::hub::Registry;
 use crate::js;
 
@@ -38,6 +45,48 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/attach/pick"), attach_pick);
     routes.route(Verb::Post, P("/avatar/image/"), avatar_image);
     routes.route(Verb::Post, X("/avatar/gen"), avatar_gen);
+    routes.route(Verb::Post, X("/avatar/design"), avatar_design);
+}
+
+/// routes/bots.mjs `applyAvatar(bot, {shape, color, outline})`: the
+/// avatar a request leaves a bot with (`cur` its shape, colour and
+/// outline), or the errors joined. A kit shape clears the outline, an
+/// outline without a shape makes it "custom"; only the fields given are
+/// checked.
+fn apply_avatar(cur: (&str, &str, Option<&str>), b: &Value) -> Result<(String, String, Option<String>), String> {
+    let shape = b.get("shape").filter(|v| js::truthy(v));
+    let color = b.get("color").filter(|v| js::truthy(v));
+    let outline = b.get("outline");
+    let has_outline = outline.is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+    // `None`: a value that is not a string
+    let s: Option<&str> = match shape {
+        Some(v) => v.as_str(),
+        None if has_outline => Some("custom"),
+        None => Some(cur.0),
+    };
+    let c: Option<&str> = match color {
+        Some(v) => v.as_str(),
+        None => Some(cur.1),
+    };
+    let o: Option<String> = if s == Some("custom") {
+        if has_outline {
+            outline.and_then(Value::as_str).map(|o| o.trim_matches(js::is_space).to_owned())
+        } else {
+            cur.2.map(str::to_owned)
+        }
+    } else {
+        None
+    };
+    let errs = avatar_shape::validate_avatar(
+        if shape.is_some() || has_outline || s == Some("custom") { s } else { Some("blob") },
+        if color.is_some() { c } else { Some("#1084FE") },
+        o.as_deref(),
+    );
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
+    let (s, c) = (s.unwrap_or_default().to_owned(), c.unwrap_or_default().to_owned());
+    Ok((s, c, o.filter(|o| !o.is_empty())))
 }
 
 async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
@@ -51,8 +100,10 @@ async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Ok(_) => return refused("bot needs a name", false),
         Err(e) => return refused(&e, false),
     };
-    let or = |k: &str, d: &str| b.get(k).filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_else(|| d.into());
-    let (shape, color) = (or("shape", "blob"), or("color", "#1084FE"));
+    let (shape, color, outline) = match apply_avatar(("blob", "#1084FE", None), &b) {
+        Ok(a) => a,
+        Err(e) => return refused(&e, false),
+    };
     let id = time_id("b");
     let l = wrote!(ctx.db.with(Lookups::read));
     let gen = ctx.store.gen_dir();
@@ -61,12 +112,18 @@ async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         let tid = t.id.clone();
         let turns = turns_json(&mut t, &l, &gen);
         s.list.insert(0, t);
-        s.bots.push(Bot::new(&id, &name, &shape, &color, Some(tid.clone())));
+        s.bots.push(Bot { outline: outline.clone(), ..Bot::new(&id, &name, &shape, &color, Some(tid.clone())) });
         s.active = tid.clone();
         (tid, turns)
     }));
     let (d, i) = bot_defaults(&name);
-    let bot = json!({"id": id, "name": name, "shape": shape, "color": color, "threadId": tid, "description": d, "instructions": i, "memories": [], "integrations": []});
+    let mut bot = json!({"id": id, "name": name, "shape": shape, "color": color});
+    if let Some(o) = &outline {
+        bot["outline"] = json!(o);
+    }
+    for (k, v) in [("threadId", json!(tid)), ("description", json!(d)), ("instructions", json!(i)), ("memories", json!([])), ("integrations", json!([]))] {
+        bot[k] = v;
+    }
     ctx.store.write_index();
     ok(&json!({"ok": true, "bot": bot, "turns": turns}))
 }
@@ -78,8 +135,16 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Err(e) => return refused(&e, false),
     };
     let id = b.get("id");
-    let Some(bot_id) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| b.id.clone())) else {
+    let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), (b.shape.clone(), b.color.clone(), b.outline.clone())))) else {
         return refused(&format!("unknown bot {}", template(id)), false);
+    };
+    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() {
+        match apply_avatar((&cur.0, &cur.1, cur.2.as_deref()), &b) {
+            Ok(a) => Some(a),
+            Err(e) => return refused(&e, false),
+        }
+    } else {
+        None
     };
     let name = match trimmed(&b, "name") {
         Ok(n) => n.filter(|n| !n.is_empty()),
@@ -88,6 +153,9 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let section = b.get("section").map(|v| js::string_of(v).trim_matches(js::is_space).to_owned());
     wrote!(ctx.store.write(|s| {
         let Some(bot) = s.bot_mut(&bot_id) else { return };
+        if let Some((shape, color, outline)) = avatar {
+            (bot.shape, bot.color, bot.outline) = (shape, color, outline);
+        }
         if let Some(name) = name.filter(|n| *n != bot.name) {
             // untouched defaults follow a rename; edited ones stay
             let (was, now) = (bot_defaults(&bot.name), bot_defaults(&name));
@@ -98,12 +166,6 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
                 bot.instructions = Some(now.1);
             }
             bot.name = name;
-        }
-        if let Some(v) = b.get("shape").filter(|v| js::truthy(v)) {
-            bot.shape = js::string_of(v);
-        }
-        if let Some(v) = b.get("color").filter(|v| js::truthy(v)) {
-            bot.color = js::string_of(v);
         }
         if let Some(v) = b.get("pinned") {
             bot.pinned = js::truthy(v);
@@ -476,6 +538,37 @@ async fn avatar_image(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 const SHAPES: [&str; 13] = ["blob", "cloud", "square", "sparkle", "clover", "heart", "flower", "teardrop", "tablet", "wedge", "house", "star", "hex"];
 const COLORS: [&str; 11] = ["#FFFFFF", "#936439", "#FF263C", "#FF6700", "#FF9800", "#00C972", "#00BCA6", "#1084FE", "#9159FE", "#FF309B", "#777777"];
 
+/// avatar-design.mjs `pickKitAvatar(description)`: the old /avatar/gen
+/// choice, a kit shape and a swatch (blob, #1084FE when the model's answer
+/// is off the lists). `Ok(None)`: no model client (501).
+async fn pick_kit(ctx: &HubCtx, desc: &str) -> Result<Option<(String, String)>, String> {
+    let (mut shape, mut color) = ("blob".to_owned(), "#1084FE".to_owned());
+    let provider = std::env::var("GEN_PROVIDER").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "anthropic".into());
+    if provider == "anthropic" {
+        let Some(model) = ctx.model.clone() else { return Ok(None) };
+        let body = json!({
+            "model": super::chat::model(),
+            "max_tokens": 120,
+            "system": format!("Pick an avatar shape and color for a blob character from a description. Reply ONLY with JSON {{\"shape\":<one of {}>,\"color\":<one of {}>}}.", SHAPES.join("|"), COLORS.join("|")),
+            "messages": [{"role": "user", "content": desc}],
+        });
+        let m = model.create(&TurnCtx::default(), body).await?;
+        let txt = text_of(&m);
+        let found = match (txt.find('{'), txt.rfind('}')) {
+            (Some(a), Some(z)) if z >= a => txt[a..=z].to_owned(),
+            _ => "{}".to_owned(),
+        };
+        let j: Value = serde_json::from_str(&found).map_err(|e| format!("{} in JSON", e.to_string().split(" at line ").next().unwrap_or_default()))?;
+        if let Some(s) = j.get("shape").and_then(Value::as_str).filter(|s| SHAPES.contains(s)) {
+            shape = s.into();
+        }
+        if let Some(c) = j.get("color").and_then(Value::as_str).filter(|c| COLORS.contains(c)) {
+            color = c.into();
+        }
+    }
+    Ok(Some((shape, color)))
+}
+
 async fn avatar_gen(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let b = match parse(&req.body) {
         Ok(b) => b,
@@ -486,39 +579,176 @@ async fn avatar_gen(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Ok(_) => return refused("describe the avatar", false),
         Err(e) => return refused(&e, false),
     };
-    let (mut shape, mut color) = ("blob".to_owned(), "#1084FE".to_owned());
-    let provider = std::env::var("GEN_PROVIDER").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "anthropic".into());
-    if provider == "anthropic" {
-        let Some(model) = ctx.model.clone() else { return not_ported() };
-        let body = json!({
-            "model": super::chat::model(),
-            "max_tokens": 120,
-            "system": format!("Pick an avatar shape and color for a blob character from a description. Reply ONLY with JSON {{\"shape\":<one of {}>,\"color\":<one of {}>}}.", SHAPES.join("|"), COLORS.join("|")),
-            "messages": [{"role": "user", "content": desc}],
-        });
-        let m = match model.create(&TurnCtx::default(), body).await {
-            Ok(m) => m,
-            Err(e) => return refused(&e, false),
-        };
-        let txt: String = m
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|c| c.iter().filter(|x| x.get("type") == Some(&json!("text"))).map(|x| js::string_of(x.get("text").unwrap_or(&Value::Null))).collect())
-            .unwrap_or_default();
-        let found = match (txt.find('{'), txt.rfind('}')) {
-            (Some(a), Some(z)) if z >= a => txt[a..=z].to_owned(),
-            _ => "{}".to_owned(),
-        };
-        let j: Value = match serde_json::from_str(&found) {
-            Ok(j) => j,
-            Err(e) => return refused(&format!("{} in JSON", e.to_string().split(" at line ").next().unwrap_or_default()), false),
-        };
-        if let Some(s) = j.get("shape").and_then(Value::as_str).filter(|s| SHAPES.contains(s)) {
-            shape = s.into();
-        }
-        if let Some(c) = j.get("color").and_then(Value::as_str).filter(|c| COLORS.contains(c)) {
-            color = c.into();
-        }
+    match pick_kit(&ctx, &desc).await {
+        Ok(Some((shape, color))) => ok(&json!({"ok": true, "shape": shape, "color": color})),
+        Ok(None) => not_ported(),
+        Err(e) => refused(&e, false),
     }
-    ok(&json!({"ok": true, "shape": shape, "color": color}))
+}
+
+fn text_of(m: &Value) -> String {
+    m.get("content")
+        .and_then(Value::as_array)
+        .map(|c| c.iter().filter(|x| x.get("type") == Some(&json!("text"))).map(|x| js::string_of(x.get("text").unwrap_or(&Value::Null))).collect())
+        .unwrap_or_default()
+}
+
+/// Design's model (config.mjs `AVATAR_MODEL`): `GEN_AVATAR_MODEL`, else
+/// claude-sonnet-5 on Anthropic and the provider's model elsewhere.
+fn avatar_model(settings: &Settings) -> String {
+    std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| if settings.anthropic() { "claude-sonnet-5".into() } else { settings.model.clone() })
+}
+
+/// `/\/(\.|%2e){2}(\/|$)/i`: a `..` segment as sent.
+fn dot_dot(uri: &str) -> bool {
+    let l = uri.to_ascii_lowercase();
+    let b = l.as_bytes();
+    let unit = |i: usize| -> Option<usize> {
+        if b.get(i) == Some(&b'.') {
+            Some(i + 1)
+        } else if l[i.min(l.len())..].starts_with("%2e") {
+            Some(i + 3)
+        } else {
+            None
+        }
+    };
+    (0..b.len()).any(|i| b[i] == b'/' && unit(i + 1).and_then(unit).is_some_and(|j| j == b.len() || b[j] == b'/'))
+}
+
+/// `path.relative(root, p)` names a path inside `root`.
+fn inside(root: &Path, p: &Path) -> bool {
+    match p.strip_prefix(root) {
+        Ok(rel) => {
+            let r = rel.to_string_lossy();
+            !r.is_empty() && !r.starts_with("..")
+        }
+        Err(_) => false,
+    }
+}
+
+/// avatar-design.mjs `avatarImageBlock(uri)`: the image block for a
+/// `file://` URI /avatar/image/pick or /paste returned; anything outside
+/// the avatar folder is refused.
+async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> {
+    let refuse = || "image must be an avatar image from /avatar/image/pick or /avatar/image/paste".to_owned();
+    let uri = uri.as_str().filter(|u| u.starts_with("file://") && !dot_dot(u)).ok_or_else(refuse)?;
+    // fileURLToPath: a local file URL, no encoded "/"
+    if uri.to_ascii_lowercase().contains("%2f") {
+        return Err(refuse());
+    }
+    let path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()).ok_or_else(refuse)?;
+    let dir = ctx.store.gen_dir().join("avatars");
+    if !inside(&dir, &path) {
+        return Err(refuse());
+    }
+    let real = std::fs::canonicalize(&path).map_err(|_| "image not found".to_owned())?;
+    let _ = std::fs::create_dir_all(&dir);
+    // and where it really is: no symlink out
+    let real_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    if !inside(&real_dir, &real) || !real.is_file() {
+        return Err(refuse());
+    }
+    let mut bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
+    // the Messages API takes up to 5 MB an image: a big photo goes down to 1024
+    if bytes.len() > 3_500_000 {
+        let small = dir.join(format!("design-{}.png", now36()));
+        let (src, out_s) = (real.to_string_lossy().into_owned(), small.to_string_lossy().into_owned());
+        exec(ctx, command("sips", &["-s", "format", "png", "-Z", "1024", &src, "--out", &out_s])).await?;
+        bytes = std::fs::read(&small).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&small);
+    }
+    let media = if bytes.starts_with(&[0x89, 0x50]) {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF") {
+        "image/gif"
+    } else if bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err("image is not a PNG, JPEG, GIF or WebP".into());
+    };
+    use base64::Engine as _;
+    Ok(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": base64::engine::general_purpose::STANDARD.encode(&bytes)}}))
+}
+
+/// avatar-design.mjs `askDesigner(messages, model)`: the reply's text.
+/// `chosen` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
+/// routed through opencodex as a bot's chosen model is; "" is Design's
+/// default ([`avatar_model`]), never the chat's.
+async fn ask_designer(ctx: Arc<HubCtx>, messages: Vec<Value>, chosen: String) -> Result<String, String> {
+    let settings = Settings::global();
+    if settings.anthropic() {
+        let model = ctx.model.clone().ok_or_else(|| "no model client".to_owned())?;
+        let body = json!({"model": avatar_model(settings), "max_tokens": 6000, "system": avatar_shape::design_system(), "messages": messages});
+        let mut turn = TurnCtx::default();
+        if !chosen.is_empty() {
+            let fast = chosen.ends_with("--fast");
+            let base = if fast { &chosen[..chosen.len() - "--fast".len()] } else { chosen.as_str() };
+            turn.model = Some(ModelChoice { model: base.to_owned(), effort: String::new(), fast, name: None });
+        }
+        let m = model.create(&turn, body).await.map_err(|e| parse_llm(&e).1.to_owned())?;
+        return Ok(text_of(&m));
+    }
+    let mut msgs = vec![json!({"role": "system", "content": avatar_shape::design_system()})];
+    for m in &messages {
+        let mut m = m.as_object().cloned().unwrap_or_default();
+        let c = openai::oai_content(m.get("content"))?;
+        m.insert("content".into(), c);
+        msgs.push(Value::Object(m));
+    }
+    let body = json!({"model": if chosen.is_empty() { avatar_model(settings) } else { chosen }, "messages": msgs, "max_tokens": 6000});
+    let (status, text) = openai::completions(settings, &body).await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("llm-api {status}: {text}"));
+    }
+    let data = openai::json_of(&text)?;
+    Ok(openai::choice(&data, &["message", "content"]).filter(|c| js::truthy(c)).map(js::string_of).unwrap_or_default())
+}
+
+/// `POST /avatar/design {prompt, image?, name?, model?}` → `{ok, candidates}`
+/// (avatar-design.mjs `designAvatar`).
+async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, true),
+    };
+    let prompt = match b.get("prompt").and_then(Value::as_str).map(|p| p.trim_matches(js::is_space)) {
+        Some(p) if !p.is_empty() => p.to_owned(),
+        _ => return refused("describe the bot or how it should look", true),
+    };
+    let block = match b.get("image").filter(|v| js::truthy(v)) {
+        Some(img) => match avatar_image_block(&ctx, img).await {
+            Ok(x) => Some(x),
+            Err(e) => return refused(&e, true),
+        },
+        None => None,
+    };
+    let settings = Settings::global();
+    if settings.mock {
+        let c: Vec<Value> = avatar_shape::mock_candidates(block.is_some()).iter().map(avatar_shape::Candidate::json).collect();
+        return ok(&json!({"ok": true, "candidates": c}));
+    }
+    if settings.anthropic() && ctx.model.is_none() {
+        return not_ported();
+    }
+    let name = b.get("name").and_then(Value::as_str).map(|n| n.trim_matches(js::is_space).to_owned()).unwrap_or_default();
+    let chosen = b.get("model").and_then(Value::as_str).map(|m| m.trim_matches(js::is_space).to_owned()).unwrap_or_default();
+    let (ask_ctx, pick_ctx) = (ctx.clone(), ctx.clone());
+    let r = avatar_shape::design_candidates(
+        &prompt,
+        &name,
+        block,
+        |messages| ask_designer(ask_ctx.clone(), messages, chosen.clone()),
+        |p: String| {
+            let ctx = pick_ctx.clone();
+            // the fallback never fails the request
+            async move { pick_kit(&ctx, &p).await.ok().flatten().map(|k| k.0).unwrap_or_else(|| "blob".into()) }
+        },
+    )
+    .await;
+    match r {
+        Ok(c) => ok(&json!({"ok": true, "candidates": c.iter().map(avatar_shape::Candidate::json).collect::<Vec<_>>()})),
+        Err(e) => refused(&e, true),
+    }
 }

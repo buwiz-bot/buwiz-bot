@@ -6,8 +6,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AVATAR_DIR, BASE_URL, MOCK, MODEL, PROVIDER } from "./config.mjs";
+import { AVATAR_DIR, AVATAR_MODEL, BASE_URL, MOCK, MODEL, PROVIDER } from "./config.mjs";
 import { anthropic } from "./model.mjs";
+import { modelCtx } from "./state.mjs";
 import { DESIGN_SYSTEM, KIT_SHAPES, SWATCHES, designCandidates, mockCandidates } from "./avatar-shape.mjs";
 
 const textOf = (m) => (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
@@ -83,17 +84,22 @@ const oaiContent = (c) =>
     ? c
     : c.map((b) => (b.type === "image" ? { type: "image_url", image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } } : b));
 
-/** The designer's model call: Anthropic-shaped messages → the reply text. */
-export async function askDesigner(messages) {
+/** The designer's model call: Anthropic-shaped messages → the reply text.
+ *  `model` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
+ *  routed through opencodex as a bot's chosen model is; "" is Design's
+ *  default, AVATAR_MODEL (GEN_AVATAR_MODEL), never the chat's. */
+export async function askDesigner(messages, model = "") {
   if (PROVIDER === "anthropic") {
-    const m = await anthropic.messages.create({ model: MODEL, max_tokens: 6000, system: DESIGN_SYSTEM, messages });
+    const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: 6000, system: DESIGN_SYSTEM, messages });
+    const fast = model.endsWith("--fast");
+    const m = model ? await modelCtx.run({ model: fast ? model.slice(0, -"--fast".length) : model, fast }, create) : await create();
     return textOf(m);
   }
   const r = await fetch(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: MODEL,
+      model: model || AVATAR_MODEL,
       messages: [{ role: "system", content: DESIGN_SYSTEM }, ...messages.map((m) => ({ ...m, content: oaiContent(m.content) }))],
       max_tokens: 6000,
     }),
@@ -103,14 +109,14 @@ export async function askDesigner(messages) {
 }
 
 /** POST /avatar/design's body → its candidates. */
-export async function designAvatar({ prompt, image, name } = {}) {
+export async function designAvatar({ prompt, image, name, model } = {}) {
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("describe the bot or how it should look");
   const block = image ? avatarImageBlock(image) : null;
   if (MOCK) return mockCandidates({ image: !!block });
   return designCandidates(
     { prompt: prompt.trim(), name: typeof name === "string" ? name.trim() : "", image: block },
     {
-      ask: askDesigner,
+      ask: (messages) => askDesigner(messages, typeof model === "string" ? model.trim() : ""),
       // the fallback never fails the request
       pick: (p) => pickKitAvatar(p).catch(() => ({ shape: "blob", color: "#1084FE" })),
     },

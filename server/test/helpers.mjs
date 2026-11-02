@@ -93,6 +93,7 @@ export const modelEnv = (fake, log, extra = {}) => ({
   GEN_PROVIDER: undefined,
   GEN_BASE_URL: undefined,
   GEN_MODEL: undefined,
+  GEN_AVATAR_MODEL: undefined,
   GEN_MAX_TOKENS: undefined,
   OPENROUTER_API_KEY: undefined,
   OPENAI_API_KEY: undefined,

@@ -1,0 +1,698 @@
+//! avatar-shape.mjs: what a bot's avatar body may be, and the avatar
+//! designer's candidate logic. A body is a kit shape (the app's mark engine
+//! draws 13 of them) or "custom": an SVG outline in a 0 0 100 100 box, y
+//! down, drawn with M/L/C/Q/Z only. The checks, their error texts and the
+//! retry → drop → top-up → kit fallback rules are Node's, step for step.
+
+use std::future::Future;
+
+use serde_json::{json, Map, Value};
+
+use crate::js;
+
+/// The kit: name → what it looks like.
+pub const KIT: [(&str, &str); 13] = [
+    ("blob", "a ball"),
+    ("cloud", "a cloud"),
+    ("square", "a rounded square"),
+    ("sparkle", "a 4-point star"),
+    ("clover", "4 leaves"),
+    ("heart", "a heart"),
+    ("flower", "a star flower"),
+    ("teardrop", "a teardrop"),
+    ("tablet", "a wide pill"),
+    ("wedge", "a rounded triangle"),
+    ("house", "a house"),
+    ("star", "a 6-point star"),
+    ("hex", "a hexagon"),
+];
+pub const OUTLINE_MAX: usize = 4000;
+
+/// The designer's system prompt: the file Node's `DESIGN_SYSTEM` reads.
+pub fn design_system() -> &'static str {
+    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-design-system.txt");
+    TEXT.strip_suffix('\n').unwrap_or(TEXT)
+}
+
+pub fn is_kit(shape: &str) -> bool {
+    KIT.iter().any(|(k, _)| *k == shape)
+}
+
+// curve sampling for the geometry checks
+const STEPS_C: usize = 16;
+const STEPS_Q: usize = 10;
+
+type P = [f64; 2];
+
+/// What `flattenPath` returns.
+pub struct Flat {
+    pub points: Vec<P>,
+    /// every point the data names, control points too
+    pub coords: Vec<P>,
+    pub closed: bool,
+}
+
+/// `d.match(/[MLCQZmlcqz]|-?(?:\d+\.?\d*|\.\d+)/g)`.
+fn tokens(d: &str) -> Vec<String> {
+    let b: Vec<char> = d.chars().collect();
+    let digit = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_digit());
+    // a number at i (no sign): its end
+    let number = |i: usize| -> Option<usize> {
+        if digit(i) {
+            let mut j = i;
+            while digit(j) {
+                j += 1;
+            }
+            if b.get(j) == Some(&'.') {
+                j += 1;
+                while digit(j) {
+                    j += 1;
+                }
+            }
+            Some(j)
+        } else if b.get(i) == Some(&'.') && digit(i + 1) {
+            let mut j = i + 1;
+            while digit(j) {
+                j += 1;
+            }
+            Some(j)
+        } else {
+            None
+        }
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if "MLCQZmlcqz".contains(b[i]) {
+            out.push(b[i].to_string());
+            i += 1;
+            continue;
+        }
+        if b[i] == '-' {
+            if let Some(j) = number(i + 1) {
+                out.push(b[i..j].iter().collect());
+                i = j;
+                continue;
+            }
+        }
+        if let Some(j) = number(i) {
+            out.push(b[i..j].iter().collect());
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `flattenPath(d)`: M/L/C/Q/Z path data (absolute and relative, implicit
+/// repeats) as a polygon, or the syntax error.
+pub fn flatten_path(d: &str) -> Result<Flat, String> {
+    let toks = tokens(d);
+    let kept: usize = d.chars().filter(|c| !js::is_space(*c) && *c != ',').map(char::len_utf16).sum();
+    let joined: usize = toks.iter().map(|t| t.len()).sum();
+    if joined != kept || has_run_on(d) {
+        return Err("outline has a malformed number".into());
+    }
+    let letter = |t: &str| t.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+    let (mut points, mut coords): (Vec<P>, Vec<P>) = (Vec::new(), Vec::new());
+    let (mut cur, mut start): (P, P) = ([0.0, 0.0], [0.0, 0.0]);
+    let (mut cmd, mut subpaths, mut closed, mut i) = (String::new(), 0, false, 0usize);
+    macro_rules! num {
+        () => {{
+            match toks.get(i) {
+                Some(t) if !letter(t) => {
+                    i += 1;
+                    t.parse::<f64>().unwrap_or(f64::NAN)
+                }
+                _ => return Err(format!("outline command {cmd} is missing numbers")),
+            }
+        }};
+    }
+    macro_rules! pt {
+        ($rel:expr) => {{
+            let x = num!();
+            let y = num!();
+            let p = if $rel { [cur[0] + x, cur[1] + y] } else { [x, y] };
+            coords.push(p);
+            p
+        }};
+    }
+    while i < toks.len() {
+        let t = toks[i].clone();
+        if letter(&t) {
+            cmd = t;
+            i += 1;
+        } else if cmd.is_empty() {
+            return Err("outline must start with M".into());
+        } else if cmd == "Z" || cmd == "z" {
+            return Err("outline has numbers after Z".into());
+        } else if cmd == "M" {
+            cmd = "L".into();
+        } else if cmd == "m" {
+            cmd = "l".into();
+        }
+        let up = cmd.to_ascii_uppercase();
+        let rel = cmd != up;
+        if points.is_empty() && up != "M" {
+            return Err("outline must start with M".into());
+        }
+        match up.as_str() {
+            "M" => {
+                if subpaths > 0 {
+                    return Err("outline must be one shape (a single M)".into());
+                }
+                subpaths += 1;
+                cur = pt!(rel);
+                start = cur;
+                points.push(cur);
+            }
+            "Z" => {
+                closed = true;
+                cur = start;
+            }
+            _ => {
+                if closed {
+                    return Err("outline must be one shape (nothing after Z)".into());
+                }
+                if up == "L" {
+                    cur = pt!(rel);
+                    points.push(cur);
+                } else {
+                    let p0 = cur;
+                    let n_ctl = if up == "C" { 3 } else { 2 };
+                    let mut ctl = Vec::new();
+                    for _ in 0..n_ctl {
+                        ctl.push(pt!(rel));
+                    }
+                    let n = if up == "C" { STEPS_C } else { STEPS_Q };
+                    for s in 1..=n {
+                        let u = s as f64 / n as f64;
+                        let v = 1.0 - u;
+                        let (a, b, c, e) = if up == "C" { (v * v * v, 3.0 * v * v * u, 3.0 * v * u * u, u * u * u) } else { (v * v, 2.0 * v * u, u * u, 0.0) };
+                        let q: [P; 4] = if up == "C" { [p0, ctl[0], ctl[1], ctl[2]] } else { [p0, ctl[0], ctl[1], [0.0, 0.0]] };
+                        points.push([a * q[0][0] + b * q[1][0] + c * q[2][0] + e * q[3][0], a * q[0][1] + b * q[1][1] + c * q[2][1] + e * q[3][1]]);
+                    }
+                    cur = *ctl.last().unwrap();
+                }
+            }
+        }
+    }
+    if points.is_empty() {
+        return Err("outline is empty".into());
+    }
+    Ok(Flat { points, coords, closed })
+}
+
+/// `/\.\d*\./`: a number running into the next ("1.2.3").
+fn has_run_on(d: &str) -> bool {
+    let b = d.as_bytes();
+    (0..b.len()).any(|i| {
+        if b[i] != b'.' {
+            return false;
+        }
+        let mut j = i + 1;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        j < b.len() && b[j] == b'.'
+    })
+}
+
+fn area_centroid(poly: &[P]) -> (f64, P) {
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for k in 0..poly.len() {
+        let ([x0, y0], [x1, y1]) = (poly[k], poly[(k + 1) % poly.len()]);
+        let f = x0 * y1 - x1 * y0;
+        a += f;
+        cx += (x0 + x1) * f;
+        cy += (y0 + y1) * f;
+    }
+    ((a / 2.0).abs(), if a != 0.0 { [cx / (3.0 * a), cy / (3.0 * a)] } else { poly[0] })
+}
+
+// even-odd point in polygon
+fn inside(poly: &[P], x: f64, y: f64) -> bool {
+    let mut hit = false;
+    let mut j = poly.len() - 1;
+    for k in 0..poly.len() {
+        let ([xi, yi], [xj, yj]) = (poly[k], poly[j]);
+        if (yi > y) != (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi {
+            hit = !hit;
+        }
+        j = k;
+    }
+    hit
+}
+
+// How often a ray from c at angle th crosses the polygon's edges.
+fn crossings(poly: &[P], c: P, th: f64) -> usize {
+    let (dx, dy) = (th.cos(), th.sin());
+    let mut n = 0;
+    for k in 0..poly.len() {
+        let ([ax, ay], [bx, by]) = (poly[k], poly[(k + 1) % poly.len()]);
+        let (ex, ey) = (bx - ax, by - ay);
+        let den = dx * ey - dy * ex;
+        if den.abs() < 1e-12 {
+            continue;
+        }
+        let (wx, wy) = (ax - c[0], ay - c[1]);
+        let t = (wx * ey - wy * ex) / den;
+        let u = (wx * dy - wy * dx) / den;
+        if t > 1e-9 && (0.0..1.0).contains(&u) {
+            n += 1;
+        }
+    }
+    n
+}
+
+// Parts thinner than ~6 units: rasterize at 1 unit, open with a disk of
+// radius 2.5 (erode, then dilate); a sizeable removed patch is thin.
+const THIN_RADIUS: f64 = 2.5;
+const THIN_CELLS: usize = 40;
+fn thin_part(poly: &[P]) -> bool {
+    const W: usize = 112;
+    const O: f64 = -6.0;
+    let at = |x: usize, y: usize| y * W + x;
+    let mut fill = vec![0u8; W * W];
+    for y in 0..W {
+        for x in 0..W {
+            fill[at(x, y)] = inside(poly, x as f64 + O + 0.5, y as f64 + O + 0.5) as u8;
+        }
+    }
+    let r = THIN_RADIUS.ceil() as i64;
+    let mut disk = Vec::new();
+    for y in -r..=r {
+        for x in -r..=r {
+            if ((x * x + y * y) as f64) <= THIN_RADIUS * THIN_RADIUS {
+                disk.push((x, y));
+            }
+        }
+    }
+    let morph = |src: &[u8], all: bool| -> Vec<u8> {
+        let mut out = vec![0u8; W * W];
+        let r = r as usize;
+        for y in r..W - r {
+            for x in r..W - r {
+                let on = |&(a, b): &(i64, i64)| src[at((x as i64 + a) as usize, (y as i64 + b) as usize)] != 0;
+                out[at(x, y)] = if all { disk.iter().all(on) } else { disk.iter().any(on) } as u8;
+            }
+        }
+        out
+    };
+    let opened = morph(&morph(&fill, true), false);
+    let mut seen = vec![0u8; W * W];
+    for s in 0..W * W {
+        if fill[s] == 0 || opened[s] != 0 || seen[s] != 0 {
+            continue;
+        }
+        let mut size = 0;
+        let mut stack = vec![s];
+        seen[s] = 1;
+        while let Some(q) = stack.pop() {
+            size += 1;
+            let (x, y) = ((q % W) as i64, (q / W) as i64);
+            for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+                if nx < 0 || ny < 0 || nx >= W as i64 || ny >= W as i64 {
+                    continue;
+                }
+                let n = at(nx as usize, ny as usize);
+                if fill[n] != 0 && opened[n] == 0 && seen[n] == 0 {
+                    seen[n] = 1;
+                    stack.push(n);
+                }
+            }
+        }
+        if size > THIN_CELLS {
+            return true;
+        }
+    }
+    false
+}
+
+/// `x.toFixed(2)`: a tie rounds up, as V8 does.
+fn to_fixed2(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "Infinity" } else { "-Infinity" }.into();
+    }
+    let exact = format!("{:.60}", x.abs());
+    let (_, frac) = exact.split_once('.').unwrap_or((&exact, ""));
+    let tie = frac.len() > 2 && frac[2..].starts_with('5') && frac[3..].bytes().all(|b| b == b'0');
+    let y = if tie { f64::from_bits(x.abs().to_bits() + 1) } else { x.abs() };
+    let s = format!("{y:.2}");
+    if x < 0.0 && s.bytes().any(|b| b != b'0' && b != b'.') {
+        format!("-{s}")
+    } else {
+        s
+    }
+}
+
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/// The problems with an outline's path data, empty when it is a good one.
+/// `None` is anything not a string.
+pub fn outline_errors(outline: Option<&str>) -> Vec<String> {
+    let Some(outline) = outline.filter(|o| !o.trim_matches(js::is_space).is_empty()) else { return vec!["a custom shape needs an outline".into()] };
+    if utf16_len(outline) > OUTLINE_MAX {
+        return vec![format!("outline is longer than {OUTLINE_MAX} characters")];
+    }
+    if !outline.chars().all(|c| "MLCQZmlcqz0123456789.,-".contains(c) || js::is_space(c)) {
+        return vec!["outline may hold only M/L/C/Q/Z commands and numbers".into()];
+    }
+    let f = match flatten_path(outline) {
+        Ok(f) => f,
+        Err(e) => return vec![e],
+    };
+    let mut errs: Vec<String> = Vec::new();
+    let within = |v: f64| (-5.0..=105.0).contains(&v);
+    if f.coords.iter().any(|[x, y]| !(within(*x) && within(*y))) {
+        errs.push("outline coordinates must stay within -5..105".into());
+    }
+    let pts = &f.points;
+    let mut poly: Vec<P> = (0..pts.len()).filter(|&k| k == 0 || (pts[k][0] - pts[k - 1][0]).hypot(pts[k][1] - pts[k - 1][1]) > 1e-6).map(|k| pts[k]).collect();
+    let (first, last) = (poly[0], *poly.last().unwrap());
+    let ends = (first[0] - last[0]).hypot(first[1] - last[1]);
+    if !f.closed && ends > 1.0 {
+        errs.push("outline must be closed (end with Z)".into());
+    }
+    if ends <= 1e-6 && poly.len() > 1 {
+        poly.pop();
+    }
+    if poly.len() < 3 {
+        errs.push("outline encloses no area".into());
+        return errs;
+    }
+    let (area, c) = area_centroid(&poly);
+    if area < 2000.0 {
+        // Math.round: half up
+        errs.push(format!("outline covers {}% of the box; it must cover at least 20%", js::number((area / 100.0 + 0.5).floor())));
+    }
+    let fold = |init: f64, f: fn(f64, f64) -> f64, k: usize| poly.iter().map(|p| p[k]).fold(init, f);
+    let w = fold(f64::NEG_INFINITY, f64::max, 0) - fold(f64::INFINITY, f64::min, 0);
+    let h = fold(f64::NEG_INFINITY, f64::max, 1) - fold(f64::INFINITY, f64::min, 1);
+    let aspect = if h != 0.0 && !h.is_nan() { w / h } else { f64::INFINITY };
+    if !((0.4..=2.5).contains(&aspect)) {
+        errs.push(format!("outline's width/height is {}; it must be between 0.4 and 2.5", to_fixed2(aspect)));
+    }
+    if area >= 1.0 {
+        // offset so no ray runs exactly through a vertex of a tidy outline
+        let bad = (0..64).filter(|&k| crossings(&poly, c, ((k as f64 + 0.37) * 2.0 * std::f64::consts::PI) / 64.0) != 1).count();
+        if bad > 0 {
+            errs.push("outline must be star-shaped from its centre (every ray from the centre crosses the edge once): no crossings, holes, or bays that fold back".into());
+        } else if errs.is_empty() && thin_part(&poly) {
+            // (the raster covers the allowed box only: run it on an otherwise good one)
+            errs.push("outline has a part thinner than ~6 units".into());
+        }
+    }
+    errs
+}
+
+fn is_color(c: &str) -> bool {
+    c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `validateAvatar({shape, color, outline})`: `None` for a value that is
+/// not a string.
+pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>) -> Vec<String> {
+    let mut errs = Vec::new();
+    if shape != Some("custom") && !shape.is_some_and(is_kit) {
+        errs.push(format!("shape must be one of {} or custom", KIT.iter().map(|k| k.0).collect::<Vec<_>>().join(", ")));
+    }
+    if !color.is_some_and(is_color) {
+        errs.push("color must be #RRGGBB".into());
+    }
+    if shape == Some("custom") {
+        errs.extend(outline_errors(outline));
+    }
+    errs
+}
+
+/// A candidate as the designer returns it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Candidate {
+    pub name: String,
+    pub shape: String,
+    pub color: String,
+    /// for a custom shape only
+    pub outline: Option<String>,
+    pub why: String,
+}
+
+impl Candidate {
+    pub fn errors(&self) -> Vec<String> {
+        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref())
+    }
+
+    /// `{name, shape, color, outline?, why}`
+    pub fn json(&self) -> Value {
+        let mut o = Map::new();
+        o.insert("name".into(), json!(self.name));
+        o.insert("shape".into(), json!(self.shape));
+        o.insert("color".into(), json!(self.color));
+        if let Some(x) = &self.outline {
+            o.insert("outline".into(), json!(x));
+        }
+        o.insert("why".into(), json!(self.why));
+        Value::Object(o)
+    }
+}
+
+/// `designRequest({prompt, name, image})`: the user turn's text.
+pub fn design_request(prompt: &str, name: &str, image: bool) -> String {
+    let mut lines = Vec::new();
+    if !name.is_empty() {
+        lines.push(format!("The bot's name: {name}"));
+    }
+    lines.push(format!("The request (what the bot is or does, or how it should look): {prompt}"));
+    lines.push(if image {
+        "The image attached is the subject. Candidate 1 MUST be that subject made into an avatar: shape \"custom\", an outline tracing the subject's silhouette (simplified to the rules), in #FFFFFF unless the request asks for colour (then the subject's main colour). The request says what to keep or change. Candidates 2 and 3 are other takes: another custom outline or a fitting kit shape.".to_owned()
+    } else {
+        "Candidates may be kit shapes or custom outlines; at least one must be a kit shape. Use a custom outline when the bot has an obvious emblem (a receipt, a leaf, a cat's head).".to_owned()
+    });
+    lines.join("\n")
+}
+
+fn js_trim(s: &str) -> &str {
+    s.trim_matches(js::is_space)
+}
+
+/// `String(x || "")`
+fn or_empty(v: Option<&Value>) -> String {
+    v.filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default()
+}
+
+/// `parseCandidates(text)`: the candidates in a model's reply, tidied (not
+/// yet validated); empty when there is no JSON to read.
+pub fn parse_candidates(text: &str) -> Vec<Candidate> {
+    let s = strip_fences(text);
+    let mut tries = Vec::new();
+    if let (Some(a), Some(b)) = (s.find('{'), s.rfind('}')) {
+        if b > a {
+            tries.push(&s[a..=b]);
+        }
+    }
+    if let (Some(c), Some(d)) = (s.find('['), s.rfind(']')) {
+        if d > c {
+            tries.push(&s[c..=d]);
+        }
+    }
+    let mut list: Option<Vec<Value>> = None;
+    for t in tries {
+        let Ok(j) = serde_json::from_str::<Value>(t) else { continue };
+        list = match &j {
+            Value::Array(a) => Some(a.clone()),
+            Value::Object(o) => match o.get("candidates") {
+                Some(Value::Array(a)) => Some(a.clone()),
+                _ if o.get("shape").is_some_and(js::truthy) => Some(vec![j.clone()]),
+                _ => None,
+            },
+            _ => None,
+        };
+        if list.is_some() {
+            break;
+        }
+    }
+    let empty = Map::new();
+    list.unwrap_or_default()
+        .iter()
+        .filter_map(|x| match x {
+            Value::Object(o) => Some(o),
+            Value::Array(_) => Some(&empty),
+            _ => None,
+        })
+        .map(|x| {
+            let outline = match x.get("outline") {
+                Some(Value::String(o)) => squeeze_inner(js_trim(o)),
+                _ => String::new(),
+            };
+            let mut shape = js_trim(&or_empty(x.get("shape"))).to_lowercase();
+            if shape.is_empty() && !outline.is_empty() {
+                shape = "custom".into();
+            }
+            let color = js_trim(&or_empty(x.get("color").filter(|v| js::truthy(v)).or(x.get("colour")))).to_uppercase();
+            Candidate {
+                name: js::slice_utf16(js_trim(&or_empty(x.get("name"))), 40),
+                outline: (shape == "custom").then_some(outline),
+                shape,
+                color,
+                why: js::slice_utf16(js_trim(&or_empty(x.get("why"))), 240),
+            }
+        })
+        .collect()
+}
+
+/// `.replace(/```(?:json)?/gi, "")`
+fn strip_fences(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("```") {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 3..];
+        if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case("json") {
+            rest = &rest[4..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `.replace(/\s+/g, " ")` of a trimmed string.
+fn squeeze_inner(s: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for c in s.chars() {
+        if js::is_space(c) {
+            gap = true;
+        } else {
+            if gap {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+// The problems with one round of candidates as a set, and each one's.
+fn check(cands: &[Candidate], image: bool) -> (Vec<Vec<String>>, Vec<String>) {
+    let each: Vec<Vec<String>> = cands.iter().map(Candidate::errors).collect();
+    let mut set = Vec::new();
+    if cands.len() != 3 {
+        set.push(format!("there must be exactly 3 candidates (got {})", cands.len()));
+    }
+    if image && cands.first().map(|c| c.shape.as_str()) != Some("custom") {
+        set.push("candidate 1 must be a custom outline tracing the image's subject".into());
+    }
+    if !image && !cands.is_empty() && !cands.iter().zip(&each).any(|(c, e)| is_kit(&c.shape) && e.is_empty()) {
+        set.push("at least one candidate must be a kit shape".into());
+    }
+    (each, set)
+}
+
+/// `designCandidates({prompt, name, image}, {ask, pick})`: three
+/// candidates. `ask(messages)` is the model call (Anthropic-shaped
+/// messages) → the reply's text; `pick(prompt)` → a kit shape for when
+/// nothing usable comes back. `image` is the user turn's image block.
+pub async fn design_candidates<A, AF, K, KF>(prompt: &str, name: &str, image: Option<Value>, ask: A, pick: K) -> Result<Vec<Candidate>, String>
+where
+    A: Fn(Vec<Value>) -> AF,
+    AF: Future<Output = Result<String, String>>,
+    K: Fn(String) -> KF,
+    KF: Future<Output = String>,
+{
+    let has_image = image.is_some();
+    let text = design_request(prompt, name, has_image);
+    let content = match image {
+        Some(img) => json!([img, {"type": "text", "text": text}]),
+        None => json!(text),
+    };
+    let mut messages = vec![json!({"role": "user", "content": content})];
+    let reply = ask(messages.clone()).await?;
+    let mut cands = parse_candidates(&reply);
+    let (each, set) = check(&cands, has_image);
+    let first_good: Vec<Candidate> = cands.iter().zip(&each).filter(|(_, e)| e.is_empty()).map(|(c, _)| c.clone()).collect();
+    if !set.is_empty() || each.iter().any(|e| !e.is_empty()) {
+        let mut lines = set;
+        for (k, e) in each.iter().enumerate() {
+            if !e.is_empty() {
+                let c = &cands[k];
+                let label = if !c.name.is_empty() {
+                    c.name.as_str()
+                } else if !c.shape.is_empty() {
+                    c.shape.as_str()
+                } else {
+                    "unnamed"
+                };
+                lines.push(format!("candidate {} ({label}): {}", k + 1, e.join("; ")));
+            }
+        }
+        if cands.is_empty() {
+            lines.insert(0, "the reply had no JSON candidates".into());
+        }
+        let said = js_trim(&reply);
+        messages.push(json!({"role": "assistant", "content": if said.is_empty() { "(empty)" } else { said }}));
+        messages.push(json!({"role": "user", "content": format!("These problems need fixing:\n- {}\nReply with all 3 candidates again, in the same order, fixed. JSON only.", lines.join("\n- "))}));
+        let reply = ask(messages).await?;
+        cands = parse_candidates(&reply);
+        let (each, _) = check(&cands, has_image);
+        cands = cands.into_iter().zip(each).filter(|(_, e)| e.is_empty()).map(|(c, _)| c).collect();
+        // top up from the first round's good ones
+        for c in first_good {
+            if cands.len() >= 3 {
+                break;
+            }
+            if !cands.iter().any(|x| x.shape == c.shape && x.color == c.color && x.outline == c.outline) {
+                cands.push(c);
+            }
+        }
+    }
+    cands.truncate(3);
+    if !has_image && !cands.is_empty() && !cands.iter().any(|c| is_kit(&c.shape)) {
+        let k = kit_fallback(&pick(prompt.to_owned()).await);
+        cands.truncate(2);
+        cands.push(k);
+    }
+    if cands.is_empty() {
+        cands = vec![kit_fallback(&pick(prompt.to_owned()).await)];
+    }
+    Ok(cands)
+}
+
+/// The kit picker's shape, in the primary ink: Design defaults to #FFFFFF.
+fn kit_fallback(shape: &str) -> Candidate {
+    let name = if is_kit(shape) {
+        let mut c = shape.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+    } else {
+        "Blob".into()
+    };
+    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, why: "A kit shape picked for the description.".into() }
+}
+
+/// MOCK mode's outlines.
+pub const MOCK_PEBBLE: &str = "M50 16 C73 16 88 31 88 52 C88 73 72 86 50 86 C28 86 12 73 12 52 C12 31 27 16 50 16 Z";
+pub const MOCK_CAT: &str = "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z";
+pub const MOCK_RECEIPT: &str = "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z";
+
+/// `mockCandidates({image})`
+pub fn mock_candidates(image: bool) -> Vec<Candidate> {
+    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), why: why.into() };
+    let kit = c("Blob", "blob", None, "A friendly ball in the primary ink.");
+    let cat = c("Cat Head", "custom", Some(MOCK_CAT), "A bold cat silhouette.");
+    let pebble = c("Pebble", "custom", Some(MOCK_PEBBLE), "A calm, rounded pebble.");
+    let receipt = c("Receipt", "custom", Some(MOCK_RECEIPT), "A receipt with a torn foot.");
+    if image {
+        vec![Candidate { name: "Image Subject".into(), why: "The image's subject as a silhouette.".into(), ..cat }, kit, pebble]
+    } else {
+        vec![kit, receipt, cat]
+    }
+}
+
+#[cfg(test)]
+mod tests;

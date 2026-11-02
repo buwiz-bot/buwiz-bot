@@ -317,7 +317,7 @@ export default async function handle(req, res) {
     });
     return true;
   }
-  // The designer: {prompt, image?, name?} → 3 candidates {name, shape,
+  // The designer: {prompt, image?, name?, model?} → 3 candidates {name, shape,
   // color, outline?, why}. `image` is a file:// URI /avatar/image/pick or
   // /paste returned; with one, candidate 1 traces its subject.
   if (req.method === "POST" && req.url === "/avatar/design") {
@@ -326,8 +326,8 @@ export default async function handle(req, res) {
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { prompt, image, name } = JSON.parse(body || "{}");
-        const candidates = await designAvatar({ prompt, image, name });
+        const { prompt, image, name, model } = JSON.parse(body || "{}");
+        const candidates = await designAvatar({ prompt, image, name, model });
         res.end(JSON.stringify({ ok: true, candidates }));
       } catch (e) {
         res.statusCode = 400;
