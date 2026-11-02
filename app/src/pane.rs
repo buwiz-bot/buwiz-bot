@@ -2231,7 +2231,7 @@ fn crop_editor(d: crate::store::AvatarDraft, show_name: bool) -> impl IntoElemen
                         .bg(theme::TEXT)
                         .items_center()
                         .justify_center()
-                        .child(text("Set avatar").text_size(px(13.0)).text_color(theme::CARD2))
+                        .child(text("Set avatar").text_size(px(13.0)).text_color(theme::MENU_BG))
                         .on_press(|| store().set_avatar()),
                 ),
         )
