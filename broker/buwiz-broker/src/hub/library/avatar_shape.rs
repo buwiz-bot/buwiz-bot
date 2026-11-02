@@ -371,6 +371,11 @@ fn utf16_len(s: &str) -> usize {
 /// The problems with an outline's path data, empty when it is a good one.
 /// `None` is anything not a string.
 pub fn outline_errors(outline: Option<&str>) -> Vec<String> {
+    outline_errors_from(outline, 2000.0)
+}
+
+/// `outlineErrors(outline, {minArea})`: a part's outline may be smaller.
+pub fn outline_errors_from(outline: Option<&str>, min_area: f64) -> Vec<String> {
     let Some(outline) = outline.filter(|o| !o.trim_matches(js::is_space).is_empty()) else { return vec!["a custom shape needs an outline".into()] };
     if utf16_len(outline) > OUTLINE_MAX {
         return vec![format!("outline is longer than {OUTLINE_MAX} characters")];
@@ -402,9 +407,9 @@ pub fn outline_errors(outline: Option<&str>) -> Vec<String> {
         return errs;
     }
     let (area, c) = area_centroid(&poly);
-    if area < 2000.0 {
+    if area < min_area {
         // Math.round: half up
-        errs.push(format!("outline covers {}% of the box; it must cover at least 20%", js::number((area / 100.0 + 0.5).floor())));
+        errs.push(format!("outline covers {}% of the box; it must cover at least {}%", js::number((area / 100.0 + 0.5).floor()), js::number(min_area / 100.0)));
     }
     let fold = |init: f64, f: fn(f64, f64) -> f64, k: usize| poly.iter().map(|p| p[k]).fold(init, f);
     let w = fold(f64::NEG_INFINITY, f64::max, 0) - fold(f64::INFINITY, f64::min, 0);
@@ -438,6 +443,11 @@ fn is_outline_char(c: char) -> bool {
 /// closed paths in the outline's box, each with a fill and an opacity
 /// 0..1) and the eyes' colour. `None` is undefined.
 pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
+    layer_errors_with(layers, eyes, outline, true)
+}
+
+/// `layerErrors(…, {checkEyes})`: a part's layers have no eyes.
+pub fn layer_errors_with(layers: Option<&Value>, eyes: Option<&Value>, outline: Option<&str>, check_eyes: bool) -> Vec<String> {
     let mut errs: Vec<String> = Vec::new();
     let Some(layers) = layers.and_then(Value::as_array).filter(|l| !l.is_empty()) else { return vec!["a rich avatar needs at least one layer (the face)".into()] };
     if layers.len() > LAYERS_MAX {
@@ -489,7 +499,47 @@ pub fn layer_errors(layers: Option<&Value>, eyes: Option<&Value>, outline: Optio
             errs.push(format!("{n} encloses no area"));
         }
     }
-    errs.extend(eye_errors(eyes, outline));
+    if check_eyes {
+        errs.extend(eye_errors(eyes, outline));
+    }
+    errs
+}
+
+pub const PARTS_MAX: usize = 6;
+// a part may be a small piece (a brim, an antler): 2% of the box, not 20%
+const PART_MIN_AREA: f64 = 200.0;
+
+/// `partErrors(parts)`: up to 6 pieces of their own `[{outline, color,
+/// layers?, z?}]` in the head's box, each outline checked as the head's
+/// (from 2% of the box), its layers as the head's (no eyes), `z` -1..1.
+pub fn part_errors(parts: &Value) -> Vec<String> {
+    let Some(parts) = parts.as_array() else { return vec!["parts must be a list".into()] };
+    let mut errs: Vec<String> = Vec::new();
+    if parts.len() > PARTS_MAX {
+        errs.push(format!("at most {PARTS_MAX} parts"));
+    }
+    for (k, p) in parts.iter().enumerate() {
+        let n = format!("part {}", k + 1);
+        let Some(p) = p.as_object() else {
+            errs.push(format!("{n} must be {{outline, color}}"));
+            continue;
+        };
+        if !p.get("color").and_then(Value::as_str).is_some_and(is_color) {
+            errs.push(format!("{n}'s color must be #RRGGBB"));
+        }
+        let outline = p.get("outline").and_then(Value::as_str);
+        errs.extend(outline_errors_from(outline, PART_MIN_AREA).into_iter().map(|e| format!("{n}: {e}")));
+        if let Some(ls) = p.get("layers") {
+            match ls.as_array() {
+                None => errs.push(format!("{n}'s layers must be a list")),
+                Some(a) if !a.is_empty() => errs.extend(layer_errors_with(Some(ls), None, outline, false).into_iter().map(|e| format!("{n}: {e}"))),
+                _ => {}
+            }
+        }
+        if p.contains_key("z") && !p.get("z").filter(|v| v.is_number()).and_then(Value::as_f64).is_some_and(|z| (-1.0..=1.0).contains(&z)) {
+            errs.push(format!("{n}'s z must be -1..1"));
+        }
+    }
     errs
 }
 
@@ -549,7 +599,7 @@ pub fn eye_errors(eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
 /// `validateAvatar({shape, color, outline, layers, eyes})`: `None` for a
 /// value that is not a string (`layers`, `eyes`: for undefined). Layers
 /// (with eyes) make it a rich avatar, which only a custom outline can be.
-pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>, layers: Option<&Value>, eyes: Option<&Value>) -> Vec<String> {
+pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>, layers: Option<&Value>, eyes: Option<&Value>, parts: Option<&Value>) -> Vec<String> {
     let mut errs = Vec::new();
     if shape != Some("custom") && !shape.is_some_and(is_kit) {
         errs.push(format!("shape must be one of {} or custom", KIT.iter().map(|k| k.0).collect::<Vec<_>>().join(", ")));
@@ -568,6 +618,13 @@ pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option
             errs.extend(layer_errors(layers, eyes, outline));
         }
     }
+    if let Some(parts) = parts {
+        if shape != Some("custom") {
+            errs.push("only a custom outline can have parts".into());
+        } else {
+            errs.extend(part_errors(parts));
+        }
+    }
     errs
 }
 
@@ -581,6 +638,8 @@ pub struct Candidate {
     pub outline: Option<String>,
     /// a rich candidate's painted layers `[{path, fill, opacity?}]` (custom only)
     pub layers: Option<Vec<Value>>,
+    /// a rich candidate's pieces `[{outline, color, layers?, z?}]` (custom only)
+    pub parts: Option<Vec<Value>>,
     /// a rich candidate's eyes, a colour or a placement (custom only)
     pub eyes: Option<Value>,
     pub why: String,
@@ -590,7 +649,8 @@ impl Candidate {
     pub fn errors(&self) -> Vec<String> {
         let layers = self.layers.clone().map(Value::Array);
         let eyes = self.eyes.clone();
-        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref())
+        let parts = self.parts.clone().map(Value::Array);
+        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref(), parts.as_ref())
     }
 
     /// `{name, shape, color, outline?, why}`
@@ -607,6 +667,9 @@ impl Candidate {
         }
         if let Some(x) = &self.eyes {
             o.insert("eyes".into(), x.clone());
+        }
+        if let Some(x) = &self.parts {
+            o.insert("parts".into(), Value::Array(x.clone()));
         }
         o.insert("why".into(), json!(self.why));
         Value::Object(o)
@@ -707,32 +770,22 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                 shape = "custom".into();
             }
             let color = js_trim(&or_empty(x.get("color").filter(|v| js::truthy(v)).or(x.get("colour")))).to_uppercase();
-            let layers = x.get("layers").and_then(Value::as_array).map(|ls| {
-                ls.iter()
-                    .filter_map(|l| match l {
-                        Value::Object(o) => Some(o.clone()),
-                        // the compact form the app uses: [path, fill, opacity?]
-                        Value::Array(a) => {
-                            let mut o = Map::new();
-                            for (k, key) in ["path", "fill", "opacity"].iter().enumerate() {
-                                if let Some(v) = a.get(k) {
-                                    o.insert((*key).into(), v.clone());
-                                }
-                            }
-                            Some(o)
-                        }
-                        _ => None,
-                    })
-                    .map(|l| {
+            let layers = parse_layers(x.get("layers"));
+            let parts = x.get("parts").and_then(Value::as_array).map(|ps| {
+                ps.iter()
+                    .filter_map(Value::as_object)
+                    .map(|p| {
                         let mut o = Map::new();
-                        o.insert("path".into(), json!(match l.get("path") {
-                            Some(Value::String(p)) => squeeze_inner(js_trim(p)),
+                        o.insert("outline".into(), json!(match p.get("outline") {
+                            Some(Value::String(d)) => squeeze_inner(js_trim(d)),
                             _ => String::new(),
                         }));
-                        let fill = or_empty(l.get("fill").filter(|v| js::truthy(v)).or(l.get("color")));
-                        o.insert("fill".into(), json!(js_trim(&fill).to_uppercase()));
-                        if let Some(op) = l.get("opacity").filter(|v| v.is_number()) {
-                            o.insert("opacity".into(), op.clone());
+                        o.insert("color".into(), json!(js_trim(&or_empty(p.get("color").filter(|v| js::truthy(v)).or(p.get("colour")))).to_uppercase()));
+                        if let Some(l) = parse_layers(p.get("layers")) {
+                            o.insert("layers".into(), Value::Array(l));
+                        }
+                        if let Some(z) = p.get("z").filter(|v| v.is_number()) {
+                            o.insert("z".into(), z.clone());
                         }
                         Value::Object(o)
                     })
@@ -745,12 +798,49 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                 outline: custom.then_some(outline),
                 layers: layers.filter(|_| custom),
                 eyes: eyes.filter(|_| custom),
+                parts: parts.filter(|_| custom),
                 shape,
                 color,
                 why: js::slice_utf16(js_trim(&or_empty(x.get("why"))), 240),
             }
         })
         .collect()
+}
+
+/// A reply's layers (`parseLayers`), tidied: objects `{path, fill (or
+/// color), opacity?}` or the compact form `[path, fill, opacity?]`.
+fn parse_layers(ls: Option<&Value>) -> Option<Vec<Value>> {
+    ls?.as_array().map(|ls| {
+        ls.iter()
+            .filter_map(|l| match l {
+                Value::Object(o) => Some(o.clone()),
+                // the compact form the app uses: [path, fill, opacity?]
+                Value::Array(a) => {
+                    let mut o = Map::new();
+                    for (k, key) in ["path", "fill", "opacity"].iter().enumerate() {
+                        if let Some(v) = a.get(k) {
+                            o.insert((*key).into(), v.clone());
+                        }
+                    }
+                    Some(o)
+                }
+                _ => None,
+            })
+            .map(|l| {
+                let mut o = Map::new();
+                o.insert("path".into(), json!(match l.get("path") {
+                    Some(Value::String(p)) => squeeze_inner(js_trim(p)),
+                    _ => String::new(),
+                }));
+                let fill = or_empty(l.get("fill").filter(|v| js::truthy(v)).or(l.get("color")));
+                o.insert("fill".into(), json!(js_trim(&fill).to_uppercase()));
+                if let Some(op) = l.get("opacity").filter(|v| v.is_number()) {
+                    o.insert("opacity".into(), op.clone());
+                }
+                Value::Object(o)
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
 /// A reply's eyes (`parseEyes`): a colour, or the placement object with
@@ -1041,12 +1131,27 @@ fn esc(v: &str) -> String {
 pub fn preview_svg(c: &Candidate) -> String {
     let mut out = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" width=\"512\" height=\"512\"><rect width=\"100\" height=\"100\" fill=\"#3A3A3A\"/>");
     let outline = c.outline.clone().unwrap_or_default();
-    out.push_str(&format!("<path d=\"{}\" fill=\"{}\"/>", esc(&outline), esc(&c.color)));
-    for l in c.layers.iter().flatten() {
-        let s = |k: &str| l.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
-        let op = l.get("opacity").filter(|v| v.is_number()).and_then(Value::as_f64).map(|o| format!(" opacity=\"{}\"", n2(o))).unwrap_or_default();
-        out.push_str(&format!("<path d=\"{}\" fill=\"{}\"{op}/>", esc(&s("path")), esc(&s("fill"))));
+    let piece = |out: &mut String, outline: &str, color: &str, layers: Option<&Vec<Value>>| {
+        out.push_str(&format!("<path d=\"{}\" fill=\"{}\"/>", esc(outline), esc(color)));
+        for l in layers.into_iter().flatten() {
+            let s = |k: &str| l.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
+            let op = l.get("opacity").filter(|v| v.is_number()).and_then(Value::as_f64).map(|o| format!(" opacity=\"{}\"", n2(o))).unwrap_or_default();
+            out.push_str(&format!("<path d=\"{}\" fill=\"{}\"{op}/>", esc(&s("path")), esc(&s("fill"))));
+        }
+    };
+    // the parts in z order: behind the head (z < 0), then the head and its
+    // eyes, then in front (z >= 0, the default)
+    let z_of = |p: &Value| p.get("z").filter(|v| v.is_number()).and_then(Value::as_f64).unwrap_or(0.0);
+    let mut parts: Vec<&Value> = c.parts.iter().flatten().collect();
+    parts.sort_by(|a, b| z_of(a).partial_cmp(&z_of(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let draw_part = |out: &mut String, p: &Value| {
+        let s = |k: &str| p.get(k).map(js::string_of).unwrap_or_else(|| "undefined".into());
+        piece(out, &s("outline"), &s("color"), p.get("layers").and_then(Value::as_array));
+    };
+    for p in parts.iter().filter(|p| z_of(p) < 0.0) {
+        draw_part(&mut out, p);
     }
+    piece(&mut out, &outline, &c.color, c.layers.as_ref());
     let e = c.eyes.as_ref();
     let colour = match e {
         Some(Value::String(s)) => s.clone(),
@@ -1064,6 +1169,9 @@ pub fn preview_svg(c: &Candidate) -> String {
         }
         out.push_str(&capsule(x, at[1], w, h, &colour));
     }
+    for p in parts.iter().filter(|p| z_of(p) >= 0.0) {
+        draw_part(&mut out, p);
+    }
     out.push_str("</svg>");
     out
 }
@@ -1076,7 +1184,7 @@ fn kit_fallback(shape: &str) -> Candidate {
     } else {
         "Blob".into()
     };
-    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, layers: None, eyes: None, why: "A kit shape picked for the description.".into() }
+    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, layers: None, eyes: None, parts: None, why: "A kit shape picked for the description.".into() }
 }
 
 /// MOCK mode's outlines.
@@ -1086,7 +1194,7 @@ pub const MOCK_RECEIPT: &str = "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80
 
 /// `mockCandidates({image})`
 pub fn mock_candidates(image: bool) -> Vec<Candidate> {
-    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), layers: None, eyes: None, why: why.into() };
+    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), layers: None, eyes: None, parts: None, why: why.into() };
     let kit = c("Blob", "blob", None, "A friendly ball in the primary ink.");
     let cat = c("Cat Head", "custom", Some(MOCK_CAT), "A bold cat silhouette.");
     let pebble = c("Pebble", "custom", Some(MOCK_PEBBLE), "A calm, rounded pebble.");
@@ -1115,17 +1223,22 @@ pub fn mock_rich() -> Vec<Value> {
         json!({
             "name": "Mask Hero", "shape": "custom", "color": "#D9232E",
             "outline": "M50 10 C74 10 86 26 86 46 C86 66 72 84 58 90 Q50 93 42 90 C28 84 14 66 14 46 C14 26 26 10 50 10 Z",
-            "layers": [
-                {"path": "M24 40 C30 30 44 32 46 44 C46 54 32 58 26 52 Z", "fill": "#111111"},
-                {"path": "M76 40 C70 30 56 32 54 44 C54 54 68 58 74 52 Z", "fill": "#111111"},
-            ],
-            "eyes": "#FFFFFF", "why": "A red mask with black eye patches.",
+            "layers": [{"path": "M18 38 C30 32 70 32 82 38 L80 54 C66 50 34 50 20 54 Z", "fill": "#111111"}],
+            "eyes": {"c": "#FFFFFF", "at": [50, 45], "gap": 24, "s": 1.1, "rim": "#111111", "rw": 0.5},
+            "why": "A red mask with a black band; the eyes ringed in black.",
         }),
         json!({
-            "name": "Ginger Cat", "shape": "custom", "color": "#F08A24",
-            "outline": "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
-            "layers": [{"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3"}],
-            "eyes": "#2B1D12", "why": "An orange cat with a cream muzzle.",
+            "name": "Straw Hat", "shape": "custom", "color": "#1E1E1E",
+            "outline": "M20 52 C18 36 32 28 50 28 C68 28 82 36 80 52 C82 70 72 86 50 88 C28 86 18 70 20 52 Z",
+            "layers": [{"path": "M28 54 C28 42 72 42 72 54 C74 70 64 84 50 84 C36 84 26 70 28 54 Z", "fill": "#F5D7B5"}],
+            "eyes": {"c": "#1E1E1E", "at": [50, 58], "gap": 18},
+            "parts": [{
+                "outline": "M14 36 C14 30 30 28 34 28 C34 16 42 10 50 10 C58 10 66 16 66 28 C70 28 86 30 86 36 C86 42 70 42 50 42 C30 42 14 42 14 36 Z",
+                "color": "#E8C85A",
+                "layers": [{"path": "M34 22 L66 22 L66 28 L34 28 Z", "fill": "#C8302C"}],
+                "z": 1,
+            }],
+            "why": "A black-haired head under a straw hat with a red band.",
         }),
     ]
 }

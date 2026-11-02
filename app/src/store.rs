@@ -502,7 +502,22 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
                 Some(e) if e.is_object() => e.clone(),
                 _ => s(v, "eyes").into(),
             };
-            let recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": eyes});
+            let mut recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": eyes});
+            // extra 3D pieces (a hat, antlers, a floating cloud), each its own
+            // outline, shell colour and layers in the same box
+            if let Some(ps) = v.get("parts").and_then(|p| p.as_array()).filter(|p| !p.is_empty()) {
+                let parts: Vec<serde_json::Value> = ps
+                    .iter()
+                    .map(|p| {
+                        let pl: Vec<serde_json::Value> = p["layers"]
+                            .as_array()
+                            .map(|ls| ls.iter().map(|x| serde_json::json!([s(x, "path"), s(x, "fill"), x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0)])).collect())
+                            .unwrap_or_default();
+                        serde_json::json!({"o": s(p, "outline"), "c": s(p, "color"), "l": pl, "z": p.get("z").and_then(|z| z.as_f64()).unwrap_or(0.0)})
+                    })
+                    .collect();
+                recipe["p"] = parts.into();
+            }
             format!("{}{recipe}", crate::avatar::RICH)
         }
         _ => body_shape(&shape, &outline),
@@ -522,7 +537,21 @@ pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
                     .collect()
             })
             .unwrap_or_default();
-        return serde_json::json!({"shape": "custom", "outline": r["o"], "color": r["c"], "layers": layers, "eyes": r["e"]});
+        let mut out = serde_json::json!({"shape": "custom", "outline": r["o"], "color": r["c"], "layers": layers, "eyes": r["e"]});
+        if let Some(ps) = r["p"].as_array().filter(|p| !p.is_empty()) {
+            out["parts"] = ps
+                .iter()
+                .map(|p| {
+                    let pl: Vec<serde_json::Value> = p["l"]
+                        .as_array()
+                        .map(|ls| ls.iter().map(|x| serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]})).collect())
+                        .unwrap_or_default();
+                    serde_json::json!({"outline": p["o"], "color": p["c"], "layers": pl, "z": p["z"]})
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+        return out;
     }
     match shape.strip_prefix(crate::avatar::OUTLINE) {
         Some(path) => serde_json::json!({"shape": "custom", "outline": path}),

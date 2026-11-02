@@ -713,6 +713,14 @@ mod tests {
         let body = body_of(&shape);
         assert!(body.starts_with("rich:"), "{body}");
         assert_eq!(shape_of(&body_fields(&shape)), shape, "fields → shape is the same design");
+        // with extra 3D parts (a hat), and placed eyes, the round trip holds
+        let mut with_parts = v.clone();
+        with_parts["eyes"] = serde_json::json!({"c": "#111111", "at": [50, 64], "gap": 24, "s": 1.2, "rim": "#FFFFFF", "rw": 0.6});
+        with_parts["parts"] = serde_json::json!([{"outline": CAT, "color": "#F2C062", "z": 0.1,
+            "layers": [{"path": "M30 20 L70 20 L70 27 L30 27 Z", "fill": "#E0393A", "opacity": 1.0}]}]);
+        let shape = shape_of(&with_parts);
+        assert!(shape.contains("\"p\":"), "{shape}");
+        assert_eq!(shape_of(&body_fields(&shape)), shape);
         // no layers: the plain outline
         assert_eq!(shape_of(&serde_json::json!({"shape": "custom", "outline": CAT})), format!("{OUTLINE}{CAT}"));
     }

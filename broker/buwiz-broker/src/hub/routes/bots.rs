@@ -58,15 +58,16 @@ struct Avatar {
     outline: Option<String>,
     layers: Option<Vec<Value>>,
     eyes: Option<Value>,
+    parts: Option<Vec<Value>>,
 }
 
 impl Avatar {
     fn of(b: &Bot) -> Self {
-        Avatar { shape: b.shape.clone(), color: b.color.clone(), outline: b.outline.clone(), layers: b.layers.clone(), eyes: b.eyes.clone() }
+        Avatar { shape: b.shape.clone(), color: b.color.clone(), outline: b.outline.clone(), layers: b.layers.clone(), eyes: b.eyes.clone(), parts: b.parts.clone() }
     }
 
     fn set(self, b: &mut Bot) {
-        (b.shape, b.color, b.outline, b.layers, b.eyes) = (self.shape, self.color, self.outline, self.layers, self.eyes);
+        (b.shape, b.color, b.outline, b.layers, b.eyes, b.parts) = (self.shape, self.color, self.outline, self.layers, self.eyes, self.parts);
     }
 
     /// The fields as a bot payload carries them, after `color`.
@@ -79,6 +80,9 @@ impl Avatar {
             if let Some(e) = &self.eyes {
                 o["eyes"] = e.clone();
             }
+        }
+        if let Some(p) = &self.parts {
+            o["parts"] = Value::Array(p.clone());
         }
     }
 }
@@ -129,6 +133,19 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
     // sent eyes (a colour or a placement) win; else a kept set keeps its own
     let sent_eyes = eyes.is_some_and(|v| v.is_string() || v.is_object() || v.is_array());
     let e: Option<Value> = l.as_ref().and_then(|_| if sent_eyes { eyes.cloned() } else if keep { cur.eyes.clone() } else { eyes.cloned() });
+    // parts follow the same rule: a new outline brings its own (or none)
+    let sent_parts = b.get("parts").and_then(Value::as_array).filter(|p| !p.is_empty());
+    let keep_parts = !has_outline && custom && cur.parts.as_ref().is_some_and(|p| !p.is_empty());
+    let p: Option<Vec<Value>> = if !custom {
+        None
+    } else if let Some(x) = sent_parts {
+        Some(x.clone())
+    } else if keep_parts {
+        cur.parts.clone()
+    } else {
+        None
+    };
+    let pv = p.clone().map(Value::Array);
     let lv = l.clone().map(Value::Array);
     let errs = avatar_shape::validate_avatar(
         if shape.is_some() || has_outline || custom { s } else { Some("blob") },
@@ -136,19 +153,38 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         o.as_deref(),
         lv.as_ref(),
         if l.is_some() { e.as_ref() } else { None },
+        pv.as_ref(),
     );
     if !errs.is_empty() {
         return Err(errs.join("; "));
     }
     // each layer as stored: {path, fill, opacity?}
-    let layers = l.map(|l| {
-        l.iter()
+    let layer_of = |x: &Value| {
+        let mut m = serde_json::Map::new();
+        m.insert("path".into(), x.get("path").cloned().unwrap_or(Value::Null));
+        m.insert("fill".into(), x.get("fill").cloned().unwrap_or(Value::Null));
+        if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
+            m.insert("opacity".into(), op.clone());
+        }
+        Value::Object(m)
+    };
+    let layers: Option<Vec<Value>> = l.map(|l| l.iter().map(layer_of).collect());
+    // each part as stored: {outline, color, layers?, z?}
+    let parts: Option<Vec<Value>> = p.map(|p| {
+        p.iter()
             .map(|x| {
                 let mut m = serde_json::Map::new();
-                m.insert("path".into(), x.get("path").cloned().unwrap_or(Value::Null));
-                m.insert("fill".into(), x.get("fill").cloned().unwrap_or(Value::Null));
-                if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
-                    m.insert("opacity".into(), op.clone());
+                let o = x.get("outline").cloned().unwrap_or(Value::Null);
+                m.insert("outline".into(), match o {
+                    Value::String(s) => json!(s.trim_matches(js::is_space)),
+                    v => v,
+                });
+                m.insert("color".into(), x.get("color").cloned().unwrap_or(Value::Null));
+                if let Some(ls) = x.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty()) {
+                    m.insert("layers".into(), Value::Array(ls.iter().map(layer_of).collect()));
+                }
+                if let Some(z) = x.get("z").filter(|v| v.is_number()) {
+                    m.insert("z".into(), z.clone());
                 }
                 Value::Object(m)
             })
@@ -160,6 +196,7 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         outline: o.filter(|o| !o.is_empty()),
         eyes: if layers.is_some() { e } else { None },
         layers,
+        parts,
     })
 }
 
@@ -212,7 +249,7 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), Avatar::of(b)))) else {
         return refused(&format!("unknown bot {}", template(id)), false);
     };
-    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() {
+    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() || b.get("parts").is_some() {
         match apply_avatar(&cur, &b) {
             Ok(a) => Some(a),
             Err(e) => return refused(&e, false),

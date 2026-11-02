@@ -164,6 +164,8 @@ pub struct Bot {
     pub layers: Option<Vec<Value>>,
     /// a rich avatar's eye colour (with `layers`; `None` is undefined)
     pub eyes: Option<Value>,
+    /// a rich avatar's own pieces `[{outline, color, layers?, z?}]` (custom only)
+    pub parts: Option<Vec<Value>>,
     /// Node's `threadId` (`null` once its chat is gone)
     pub thread_id: Option<String>,
     pub pinned: bool,
@@ -204,6 +206,7 @@ impl Bot {
             outline: None,
             layers: None,
             eyes: None,
+            parts: None,
             thread_id,
             pinned: false,
             section: String::new(),

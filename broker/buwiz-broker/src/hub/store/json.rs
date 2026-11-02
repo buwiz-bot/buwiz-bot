@@ -298,6 +298,7 @@ pub fn bot_set(b: &mut Bot, key: &str, v: Value) {
         "outline" => b.outline = v.as_str().filter(|o| !o.is_empty()).map(str::to_owned),
         "layers" => b.layers = v.as_array().cloned(),
         "eyes" => b.eyes = Some(v),
+        "parts" => b.parts = v.as_array().cloned(),
         "threadId" => b.thread_id = text_of(&v),
         "pinned" => b.pinned = js::truthy(&v),
         "section" => b.section = s(&v),
@@ -640,6 +641,9 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
                             o["eyes"] = e.clone();
                         }
                     }
+                    if let Some(p) = &b.parts {
+                        o["parts"] = Value::Array(p.clone());
+                    }
                     o
                 })
                 .unwrap_or(Value::Null),
@@ -673,6 +677,10 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
                 if let Some(e) = &b.eyes {
                     o.insert("eyes".into(), e.clone());
                 }
+            }
+            // a rich avatar's own pieces: a hat, antlers, a cloud
+            if let Some(p) = &b.parts {
+                o.insert("parts".into(), Value::Array(p.clone()));
             }
             o.insert("threadId".into(), b.thread_id.as_ref().map(|x| json!(x)).unwrap_or(Value::Null));
             o.insert("pinned".into(), json!(b.pinned));

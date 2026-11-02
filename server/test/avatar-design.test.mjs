@@ -336,7 +336,7 @@ test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its la
   const d = await postJson("/avatar/design", { prompt: "a green giant", style: "rich" });
   assert.equal(d.status, 200, d.text);
   assert.equal(d.json.candidates.length, 3);
-  assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && /^#[0-9A-F]{6}$/i.test(c.eyes)));
+  assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && /^#[0-9A-F]{6}$/i.test(typeof c.eyes === "string" ? c.eyes : c.eyes.c)));
   // the checks
   assert.deepEqual(layerErrors([], "#FFFFFF"), ["a rich avatar needs at least one layer (the face)"]);
   assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "red" }], "#FFFFFF").join(";"), /fill must be #RRGGBB/);
@@ -476,4 +476,50 @@ test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and 
   const b = await botOf(id);
   assert.deepEqual([b.layers, b.eyes], [r.layers, moved]);
   assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.eyes, moved);
+});
+
+test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
+  const { MOCK_RICH, parseCandidates, partErrors, previewSvg, validateAvatar } = await import("../src/avatar-shape.mjs");
+  const hat = MOCK_RICH.find((c) => c.parts);
+  assert.ok(hat, "a multi-part mock");
+  assert.deepEqual(validateAvatar(hat), []);
+  const brim = { outline: "M30 40 L70 40 L70 46 L30 46 Z", color: "#E8C85A" };
+  assert.deepEqual(partErrors([brim]), ["part 1: outline's width/height is 6.67; it must be between 0.4 and 2.5"]);
+  const small = { outline: "M44 44 L56 44 L56 56 L44 56 Z", color: "#E8C85A" };
+  assert.deepEqual(partErrors([small]), ["part 1: outline covers 1% of the box; it must cover at least 2%"]);
+  const antler = { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -1 };
+  assert.deepEqual(partErrors([antler]), []);
+  assert.deepEqual(partErrors([{ ...antler, z: 2, color: "brown", layers: [{ path: "M1 1 Z", fill: "#000000" }] }]), [
+    "part 1's color must be #RRGGBB", "part 1: layer 1 encloses no area", "part 1's z must be -1..1",
+  ]);
+  assert.deepEqual(partErrors(Array(7).fill(antler)), ["at most 6 parts"]);
+  assert.deepEqual(partErrors("x"), ["parts must be a list"]);
+  assert.deepEqual(partErrors([5]), ["part 1 must be {outline, color}"]);
+  assert.deepEqual(validateAvatar({ shape: "heart", color: "#FF0000", parts: [antler] }), ["only a custom outline can have parts"]);
+  // parsed (tidied, compact layers), and drawn: behind, the head, the eyes, in front
+  const [c] = parseCandidates(JSON.stringify([{ ...hat, parts: [{ outline: ` ${antler.outline}\n`, colour: "#7a4a22", z: -1, layers: [["M42 32 L58 32 L50 40 Z", "#ffffff"]] }, ...hat.parts, 5] }]));
+  assert.deepEqual(c.parts[0], { outline: antler.outline, color: "#7A4A22", layers: [{ path: "M42 32 L58 32 L50 40 Z", fill: "#FFFFFF" }], z: -1 });
+  assert.equal(c.parts.length, 2);
+  const svg = previewSvg(c);
+  const at = (s) => svg.indexOf(s);
+  assert.ok(at(antler.outline) < at(hat.outline) && at(hat.outline) < at("<rect x=") && at("<rect x=") < at(hat.parts[0].outline), svg);
+  // a bot keeps them
+  const made = await postJson("/bot/new", { name: "Luffy", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.parts, hat.parts);
+  bad(await postJson("/bot/update", { id, parts: [{ ...antler, z: 5 }] }), "part 1's z must be -1..1");
+  await postJson("/bot/update", { id, color: "#222222" });
+  assert.deepEqual((await botOf(id)).parts, hat.parts, "a colour alone keeps them");
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  let b = await botOf(id);
+  assert.deepEqual([b.parts, b.layers, b.eyes], [hat.parts, hat.layers, hat.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.parts, hat.parts);
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes });
+  assert.ok(!("parts" in (b = await botOf(id))), "a new outline without parts drops them");
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: [antler] });
+  assert.deepEqual((await botOf(id)).parts, [antler]);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("parts" in (b = await botOf(id))) && b.shape === "hex");
 });

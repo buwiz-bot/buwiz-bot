@@ -19,8 +19,14 @@ Each candidate:
 Hair and headgear:
 - Hair has volume in the outline itself: it flows past the jaw, or forms a fringe, buns or spikes. A bald circle with a painted hairline does not read as hair.
 - The face patch is smaller than the head, so the hair (the shell colour) frames it on the sides and top.
-- Hats and helmets are the shell: draw the head with its headgear as the outline, and the face as an opening layer in it.
+- Headgear that encloses the head (a full helmet, a hood, a mascot suit) is the shell: draw the head with it as the outline, and the face as an opening layer in it. A hat that sits on the head in another colour is a part (below).
 - Keep the face patch, and anything drawn on it, clear of where the eyes sit: no fringe, stripe or marking over the eyes.
 
+Parts (optional, up to 6): pieces of their own beside the head, each its own 3D volume: {"outline": "M … Z", "color": "#RRGGBB", "layers": [...] (optional), "z": -1..1 (optional)}.
+- Use a part for anything that is a different colour volume from the head: a hat or helmet sitting on the head, a brim, antlers, horns, a big mass of hair in another colour, a floating cloud or symbol.
+- The head stays the main outline, with the face layers and the eyes. A part's outline and layers follow the same rules, in the same 0 0 100 100 box; a part may be small (a brim, an antler) and need not touch the head.
+- z: -1 behind the head, 1 in front of it (default 0, in front). A hat or brim over the forehead is in front; hair falling behind the shoulders is behind.
+- Examples: Luffy is a black-hair head (with the face layer) plus a straw-hat part, yellow with a red band layer, in front. Chopper is a tan head plus a pink hat part with a white cross layer, plus two brown antler parts behind the hat.
+
 Reply with JSON only:
-{"candidates":[{"name":"…","shape":"custom","color":"#RRGGBB","outline":"M … Z","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"eyes":{"c":"#RRGGBB","at":[50,52],"gap":20,"s":1},"why":"…"}]}
+{"candidates":[{"name":"…","shape":"custom","color":"#RRGGBB","outline":"M … Z","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"eyes":{"c":"#RRGGBB","at":[50,52],"gap":20,"s":1},"parts":[{"outline":"M … Z","color":"#RRGGBB","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"z":1}],"why":"…"}]}

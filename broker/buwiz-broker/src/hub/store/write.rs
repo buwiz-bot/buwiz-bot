@@ -114,16 +114,24 @@ pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
             Some(o) if b.shape == "custom" && !o.is_empty() => SqlValue::Text(o.clone()),
             _ => SqlValue::Null,
         },
-        match &b.layers {
-            Some(l) if b.shape == "custom" && !l.is_empty() => {
+        {
+            let has = |v: &Option<Vec<Value>>| v.as_ref().is_some_and(|v| !v.is_empty());
+            if b.shape == "custom" && (has(&b.layers) || has(&b.parts)) {
+                // {layers, eyes, parts?}: JSON.stringify leaves out what is undefined
                 let mut a = serde_json::Map::new();
-                a.insert("layers".into(), Value::Array(l.clone()));
+                if let Some(l) = &b.layers {
+                    a.insert("layers".into(), Value::Array(l.clone()));
+                }
                 if let Some(e) = &b.eyes {
                     a.insert("eyes".into(), e.clone());
                 }
+                if let Some(p) = b.parts.as_ref().filter(|p| !p.is_empty()) {
+                    a.insert("parts".into(), Value::Array(p.clone()));
+                }
                 SqlValue::Text(sql_json(&Value::Object(a)))
+            } else {
+                SqlValue::Null
             }
-            _ => SqlValue::Null,
         },
     ]
 }

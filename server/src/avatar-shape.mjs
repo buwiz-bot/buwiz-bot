@@ -192,7 +192,7 @@ function thinPart(poly) {
 }
 
 /** The problems with an outline's path data, [] when it is a good one. */
-export function outlineErrors(outline) {
+export function outlineErrors(outline, { minArea = 2000 } = {}) {
   if (typeof outline !== "string" || !outline.trim()) return ["a custom shape needs an outline"];
   if (outline.length > OUTLINE_MAX) return [`outline is longer than ${OUTLINE_MAX} characters`];
   if (!OUTLINE_CHARS.test(outline)) return ["outline may hold only M/L/C/Q/Z commands and numbers"];
@@ -212,7 +212,7 @@ export function outlineErrors(outline) {
   if (ends <= 1e-6 && poly.length > 1) poly.pop();
   if (poly.length < 3) return [...errs, "outline encloses no area"];
   const { area, c } = areaCentroid(poly);
-  if (area < 2000) errs.push(`outline covers ${Math.round(area / 100)}% of the box; it must cover at least 20%`);
+  if (area < minArea) errs.push(`outline covers ${Math.round(area / 100)}% of the box; it must cover at least ${minArea / 100}%`);
   const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]);
   const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
   const aspect = h ? w / h : Infinity;
@@ -273,7 +273,7 @@ export function eyeErrors(eyes, outline) {
 /** The problems with a rich avatar's painted layers and eyes: up to 8
  *  closed paths in the outline's 0..100 box, each with a fill (and an
  *  opacity 0..1), and the eyes (eyeErrors). */
-export function layerErrors(layers, eyes, outline) {
+export function layerErrors(layers, eyes, outline, { checkEyes = true } = {}) {
   const errs = [];
   if (!Array.isArray(layers) || !layers.length) return ["a rich avatar needs at least one layer (the face)"];
   if (layers.length > LAYERS_MAX) errs.push(`at most ${LAYERS_MAX} layers`);
@@ -297,7 +297,7 @@ export function layerErrors(layers, eyes, outline) {
     const poly = f.points;
     if (poly.length < 3 || Math.abs(areaCentroid(poly).area) < 4) errs.push(`${n} encloses no area`);
   });
-  errs.push(...eyeErrors(eyes, outline));
+  if (checkEyes) errs.push(...eyeErrors(eyes, outline));
   return errs;
 }
 
@@ -305,7 +305,33 @@ export function layerErrors(layers, eyes, outline) {
  *  eyes?}, [] when it is one the engine can draw. `outline` counts only
  *  for shape "custom"; `layers` (with `eyes`) make it a rich avatar, which
  *  only a custom outline can be. */
-export function validateAvatar({ shape, color, outline, layers, eyes } = {}) {
+export const PARTS_MAX = 6;
+// a part may be a small piece (a brim, an antler): 2% of the box, not 20%
+const PART_MIN_AREA = 200;
+
+/** The problems with a rich avatar's parts: up to 6 pieces of their own
+ *  [{outline, color, layers?, z?}] in the head's 0..100 box, each outline
+ *  checked as the head's is (but from 2% of the box), its layers as the
+ *  head's are (no eyes), `z` -1..1 for front and back. */
+export function partErrors(parts) {
+  if (!Array.isArray(parts)) return ["parts must be a list"];
+  const errs = [];
+  if (parts.length > PARTS_MAX) errs.push(`at most ${PARTS_MAX} parts`);
+  parts.forEach((p, k) => {
+    const n = `part ${k + 1}`;
+    if (!p || typeof p !== "object" || Array.isArray(p)) return errs.push(`${n} must be {outline, color}`);
+    if (typeof p.color !== "string" || !COLOR.test(p.color)) errs.push(`${n}'s color must be #RRGGBB`);
+    errs.push(...outlineErrors(p.outline, { minArea: PART_MIN_AREA }).map((e) => `${n}: ${e}`));
+    if (p.layers !== undefined) {
+      if (!Array.isArray(p.layers)) errs.push(`${n}'s layers must be a list`);
+      else if (p.layers.length) errs.push(...layerErrors(p.layers, undefined, p.outline, { checkEyes: false }).map((e) => `${n}: ${e}`));
+    }
+    if (p.z !== undefined && !(typeof p.z === "number" && p.z >= -1 && p.z <= 1)) errs.push(`${n}'s z must be -1..1`);
+  });
+  return errs;
+}
+
+export function validateAvatar({ shape, color, outline, layers, eyes, parts } = {}) {
   const errs = [];
   if (shape !== "custom" && !KIT_SHAPES.includes(shape))
     errs.push(`shape must be one of ${KIT_SHAPES.join(", ")} or custom`);
@@ -315,6 +341,10 @@ export function validateAvatar({ shape, color, outline, layers, eyes } = {}) {
   if (rich) {
     if (shape !== "custom") errs.push("only a custom outline can have layers");
     else errs.push(...layerErrors(layers, eyes, outline));
+  }
+  if (parts !== undefined) {
+    if (shape !== "custom") errs.push("only a custom outline can have parts");
+    else errs.push(...partErrors(parts));
   }
   return errs;
 }
@@ -362,18 +392,19 @@ export function parseCandidates(text) {
     let shape = String(x.shape || "").trim().toLowerCase();
     if (!shape && outline) shape = "custom";
     const color = String(x.color || x.colour || "").trim().toUpperCase();
-    const layers = Array.isArray(x.layers)
-      ? x.layers
-          .filter((l) => l && typeof l === "object")
-          // the compact form the app uses: [path, fill, opacity?]
-          .map((l) => (Array.isArray(l) ? { path: l[0], fill: l[1], opacity: l[2] } : l))
-          .map((l) => ({
-            path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
-            fill: String(l.fill || l.color || "").trim().toUpperCase(),
-            ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
-          }))
-      : null;
+    const layers = parseLayers(x.layers);
     const eyes = parseEyes(x.eyes);
+    const parts = Array.isArray(x.parts)
+      ? x.parts.filter((p) => p && typeof p === "object" && !Array.isArray(p)).map((p) => {
+          const pl = parseLayers(p.layers);
+          return {
+            outline: typeof p.outline === "string" ? p.outline.trim().replace(/\s+/g, " ") : "",
+            color: String(p.color || p.colour || "").trim().toUpperCase(),
+            ...(pl ? { layers: pl } : {}),
+            ...(typeof p.z === "number" ? { z: p.z } : {}),
+          };
+        })
+      : null;
     return {
       name: String(x.name || "").trim().slice(0, 40),
       shape,
@@ -381,9 +412,24 @@ export function parseCandidates(text) {
       ...(shape === "custom" ? { outline } : {}),
       ...(shape === "custom" && layers ? { layers } : {}),
       ...(shape === "custom" && eyes !== undefined ? { eyes } : {}),
+      ...(shape === "custom" && parts ? { parts } : {}),
       why: String(x.why || "").trim().slice(0, 240),
     };
   });
+}
+
+// A reply's layers, tidied: objects {path, fill (or color), opacity?} or
+// the compact form the app uses, [path, fill, opacity?]; null when none.
+function parseLayers(ls) {
+  if (!Array.isArray(ls)) return null;
+  return ls
+    .filter((l) => l && typeof l === "object")
+    .map((l) => (Array.isArray(l) ? { path: l[0], fill: l[1], opacity: l[2] } : l))
+    .map((l) => ({
+      path: typeof l.path === "string" ? l.path.trim().replace(/\s+/g, " ") : "",
+      fill: String(l.fill || l.color || "").trim().toUpperCase(),
+      ...(typeof l.opacity === "number" ? { opacity: l.opacity } : {}),
+    }));
 }
 
 // A reply's eyes: a colour, or the placement object with its known keys
@@ -560,8 +606,16 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&
  *  rims) where the engine would put them. */
 export function previewSvg(c) {
   const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">`, `<rect width="100" height="100" fill="#3A3A3A"/>`];
-  out.push(`<path d="${esc(c.outline)}" fill="${esc(c.color)}"/>`);
-  for (const l of c.layers || []) out.push(`<path d="${esc(l.path)}" fill="${esc(l.fill)}"${typeof l.opacity === "number" ? ` opacity="${n2(l.opacity)}"` : ""}/>`);
+  const piece = (outline, color, layers) => {
+    out.push(`<path d="${esc(outline)}" fill="${esc(color)}"/>`);
+    for (const l of layers || []) out.push(`<path d="${esc(l.path)}" fill="${esc(l.fill)}"${typeof l.opacity === "number" ? ` opacity="${n2(l.opacity)}"` : ""}/>`);
+  };
+  // the parts in z order: behind the head (z < 0), then the head and its
+  // eyes, then in front (z >= 0, the default)
+  const zOf = (p) => (typeof p.z === "number" ? p.z : 0);
+  const parts = [...(c.parts || [])].sort((a, b) => zOf(a) - zOf(b));
+  for (const p of parts.filter((p) => zOf(p) < 0)) piece(p.outline, p.color, p.layers);
+  piece(c.outline, c.color, c.layers);
   const e = c.eyes;
   const colour = typeof e === "string" ? e : e?.c || "#FFFFFF";
   const { at, w, h, gap } = eyePlacement(c.outline, e);
@@ -575,6 +629,7 @@ export function previewSvg(c) {
     }
     out.push(capsule(x, at[1], w, h, colour));
   }
+  for (const p of parts.filter((p) => zOf(p) >= 0)) piece(p.outline, p.color, p.layers);
   out.push("</svg>");
   return out.join("");
 }
@@ -635,16 +690,23 @@ export const MOCK_RICH = [
   {
     name: "Mask Hero", shape: "custom", color: "#D9232E",
     outline: "M50 10 C74 10 86 26 86 46 C86 66 72 84 58 90 Q50 93 42 90 C28 84 14 66 14 46 C14 26 26 10 50 10 Z",
-    layers: [
-      { path: "M24 40 C30 30 44 32 46 44 C46 54 32 58 26 52 Z", fill: "#111111" },
-      { path: "M76 40 C70 30 56 32 54 44 C54 54 68 58 74 52 Z", fill: "#111111" },
-    ],
-    eyes: "#FFFFFF", why: "A red mask with black eye patches.",
+    layers: [{ path: "M18 38 C30 32 70 32 82 38 L80 54 C66 50 34 50 20 54 Z", fill: "#111111" }],
+    eyes: { c: "#FFFFFF", at: [50, 45], gap: 24, s: 1.1, rim: "#111111", rw: 0.5 },
+    why: "A red mask with a black band; the eyes ringed in black.",
   },
   {
-    name: "Ginger Cat", shape: "custom", color: "#F08A24",
-    outline: "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
-    layers: [{ path: "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", fill: "#FBEBD3" }],
-    eyes: "#2B1D12", why: "An orange cat with a cream muzzle.",
+    name: "Straw Hat", shape: "custom", color: "#1E1E1E",
+    outline: "M20 52 C18 36 32 28 50 28 C68 28 82 36 80 52 C82 70 72 86 50 88 C28 86 18 70 20 52 Z",
+    layers: [{ path: "M28 54 C28 42 72 42 72 54 C74 70 64 84 50 84 C36 84 26 70 28 54 Z", fill: "#F5D7B5" }],
+    eyes: { c: "#1E1E1E", at: [50, 58], gap: 18 },
+    parts: [
+      {
+        outline: "M14 36 C14 30 30 28 34 28 C34 16 42 10 50 10 C58 10 66 16 66 28 C70 28 86 30 86 36 C86 42 70 42 50 42 C30 42 14 42 14 36 Z",
+        color: "#E8C85A",
+        layers: [{ path: "M34 22 L66 22 L66 28 L34 28 Z", fill: "#C8302C" }],
+        z: 1,
+      },
+    ],
+    why: "A black-haired head under a straw hat with a red band.",
   },
 ];

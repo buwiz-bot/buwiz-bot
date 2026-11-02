@@ -148,6 +148,11 @@ fn avatar_validate_matches_nodes() {
         {"shape": "custom", "color": "#1084FE"}, {"shape": "custom", "color": "#1084FE", "outline": MOCK_CAT},
         {"shape": "heart", "color": "#FF263C", "outline": "nonsense"}, {"shape": 5, "color": 7, "outline": 9},
         {"shape": "custom", "color": "#12345G", "outline": "M0 0 Z"},
+        // parts
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -1}]},
+        {"shape": "heart", "color": "#1E1E1E", "parts": []},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": "x"},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [5, null, [], {"outline": "M30 40 L70 40 L70 46 L30 46 Z", "color": "#E8C85A"}, {"outline": "M44 44 L56 44 L56 56 L44 56 Z", "color": "brown", "z": 2, "layers": [{"path": "M1 1 Z", "fill": "#000000"}]}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": "x", "z": null}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": []}]},
         // rich: layers and eyes
         {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#58D63A"},
         {"shape": "heart", "color": "#FF0000", "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#FFFFFF"},
@@ -164,7 +169,7 @@ fn avatar_validate_matches_nodes() {
     let theirs = node("console.log(JSON.stringify(input.map((r) => m.validateAvatar(r))));", &recipes);
     for (r, t) in recipes.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
         let s = |k: &str| r.get(k).and_then(Value::as_str);
-        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"))), *t, "{r}");
+        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"), r.get("parts"))), *t, "{r}");
     }
 }
 
@@ -206,6 +211,7 @@ fn avatar_parse_candidates_and_mocks_match_nodes() {
     // rich replies: layers and eyes carried (custom only), tidied
     let rich_texts = json!([
         json!({"candidates": mock_rich()}).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "color": "#1e1e1e", "parts": [{"outline": " M40 30 L60 30\n L60 50 L40 50 Z ", "colour": "#7a4a22", "z": -1, "layers": [["M42 32 L58 32 L50 40 Z", "#ffffff", 0.5]]}, 5, [], {"color": "#E8C85A", "z": "x", "layers": "x"}]}, {"shape": "blob", "parts": [{"outline": "M1 1 Z", "color": "#000000"}]}]).to_string(),
         json!([{"shape": "custom", "outline": MOCK_CAT, "layers": [{"path": "  M1 2\n L3 4 ", "color": "#abcdef", "opacity": 0.5}, 5, [], {"fill": "#123456", "opacity": "x"}], "eyes": " #ffeedd "}, {"shape": "blob", "layers": [], "eyes": "#FFFFFF"}, {"shape": "custom", "outline": MOCK_CAT, "layers": "x", "eyes": 5}]).to_string(),
     ]);
     let theirs = node("console.log(JSON.stringify(input.map((t) => m.parseCandidates(t))));", &rich_texts);
