@@ -19,13 +19,7 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
         .child(dynamic(|| picture_row().into_element()))
         .child(design_button())
         .child(
-            text(|| {
-                if picture_mode() {
-                    "with the image model".to_owned()
-                } else {
-                    format!("with {}", store().design_model().1)
-                }
-            })
+            text(|| format!("with {}", store().design_model().1))
                 .text_size(px(12.0))
                 .text_color(theme::MUTED),
         )

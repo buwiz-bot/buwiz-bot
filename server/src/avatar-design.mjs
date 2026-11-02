@@ -97,9 +97,9 @@ const oaiContent = (c) =>
  *  `model` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
  *  routed through opencodex as a bot's chosen model is; "" is Design's
  *  default, AVATAR_MODEL (GEN_AVATAR_MODEL), never the chat's. */
-export async function askDesigner(messages, model = "") {
+export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM, maxTokens = 6000 } = {}) {
   if (PROVIDER === "anthropic") {
-    const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: 6000, system: DESIGN_SYSTEM, messages });
+    const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: maxTokens, system, messages });
     const fast = model.endsWith("--fast");
     const m = model ? await modelCtx.run({ model: fast ? model.slice(0, -"--fast".length) : model, fast }, create) : await create();
     return textOf(m);
@@ -109,8 +109,8 @@ export async function askDesigner(messages, model = "") {
     headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: model || AVATAR_MODEL,
-      messages: [{ role: "system", content: DESIGN_SYSTEM }, ...messages.map((m) => ({ ...m, content: oaiContent(m.content) }))],
-      max_tokens: 6000,
+      messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, content: oaiContent(m.content) }))],
+      max_tokens: maxTokens,
     }),
   });
   if (!r.ok) throw new Error(`llm-api ${r.status}: ${await r.text()}`);
@@ -148,29 +148,69 @@ export function pictureRequest({ prompt = "", image = false } = {}) {
   return [style, extra ? `${image ? "Also, from the user" : "The character"}: ${extra}` : ""].filter(Boolean).join("\n\n");
 }
 
-/** POST /avatar/picture {image?, prompt?} → a new picture in AVATAR_DIR:
- *  {uri, name, w, h}. The picture becomes a photo avatar (the crop editor's
- *  Set avatar), so its colours are its own. */
-export async function designPicture({ prompt, image } = {}) {
+const SVG_RULES =
+  'Draw it as one SVG: viewBox="0 0 1024 1024", full-bleed, the background covering every pixel. Flat shapes and simple linear or radial gradients only; no text, no <image>, no filters, no scripts. Reply with only the <svg>…</svg> markup.';
+
+/** POST /avatar/picture {image?, prompt?, model?} → a new picture in
+ *  AVATAR_DIR: {uri, name, w, h, via}. The chosen chat model (the model
+ *  picker's, else Design's default) draws it as SVG, which QuickLook
+ *  rasterizes; when that fails, the image models (the opencodex relay,
+ *  then Gemini) try. The picture becomes a photo avatar (the crop
+ *  editor's Set avatar), so its colours are its own. */
+export async function designPicture({ prompt, image, model } = {}) {
   const text = typeof prompt === "string" ? prompt.trim() : "";
   if (!text && !image) throw new Error("add a picture or describe the character");
   const src = image ? avatarImagePath(image) : null;
   const out = join(AVATAR_DIR, `${Date.now().toString(36)}-bot.png`);
+  let via = "mock";
   if (MOCK) {
-    // no image model: the reference stands in (or a fixed square)
+    // no model: the reference stands in (or a fixed square)
     execFileSync("sips", ["-s", "format", "png", "-Z", "1024", src || MOCK_PICTURE, "--out", out], { stdio: "ignore" });
-  } else if (src) {
-    await editAvatarImage(src, pictureRequest({ prompt: text, image: true }), out);
   } else {
-    await generateImage(pictureRequest({ prompt: text }), out);
+    const ask = pictureRequest({ prompt: text, image: !!src });
+    const errs = [];
+    try {
+      via = await svgPicture(ask, src ? avatarImageBlock(image) : null, typeof model === "string" ? model.trim() : "", out);
+    } catch (e) {
+      errs.push(`${model || AVATAR_MODEL}: ${e?.message || e}`);
+      try {
+        via = src ? await editAvatarImage(src, ask, out) : await generateImage(ask, out);
+      } catch (e2) {
+        errs.push(String(e2?.message || e2));
+        throw new Error(`couldn't draw the picture (${errs.join("; ")})`);
+      }
+    }
   }
   const dims = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", out], { encoding: "utf8" });
   return {
+    via,
     uri: `file://${out}`,
     name: "Bot picture",
     w: Number(/pixelWidth: (\d+)/.exec(dims)?.[1] || 0),
     h: Number(/pixelHeight: (\d+)/.exec(dims)?.[1] || 0),
   };
+}
+
+/** The chat model draws the picture as SVG; QuickLook (WebKit) renders it
+ *  to `out`. → the model's id. */
+async function svgPicture(ask, block, model, out) {
+  const content = [...(block ? [block] : []), { type: "text", text: `${ask}\n\n${SVG_RULES}` }];
+  const reply = await askDesigner([{ role: "user", content }], model, {
+    system: "You are an illustrator who draws clean vector avatars as SVG.",
+    maxTokens: 16000,
+  });
+  const svg = /<svg[\s\S]*<\/svg>/.exec(reply)?.[0];
+  if (!svg) throw new Error("the model returned no SVG");
+  if (/<script|<image|<foreignObject|href\s*=\s*["']https?:/i.test(svg)) throw new Error("the SVG used scripts or outside images");
+  const svgPath = out.replace(/\.png$/, "") + ".svg";
+  writeFileSync(svgPath, svg);
+  try {
+    execFileSync("qlmanage", ["-t", "-s", "1024", "-o", AVATAR_DIR, svgPath], { stdio: "ignore" });
+    execFileSync("mv", [svgPath + ".png", out]);
+  } finally {
+    try { unlinkSync(svgPath); } catch {}
+  }
+  return model || AVATAR_MODEL;
 }
 
 const MOCK_PICTURE = fileURLToPath(new URL("../test/fixtures/avatar-mock.png", import.meta.url));

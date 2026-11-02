@@ -5499,10 +5499,12 @@ impl Store {
     }
 
     /// Picture mode: `POST /avatar/picture` (the style prompt, the
-    /// reference picture, and what the user typed on top) → the crop
-    /// editor's draft, which Set avatar puts on the bot as a photo.
+    /// reference picture, what the user typed on top, and the picked
+    /// model, which draws it) → the crop editor's draft, which Set avatar
+    /// puts on the bot as a photo.
     fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
-        let mut body = serde_json::json!({"prompt": prompt});
+        let model = self.design_model().0;
+        let mut body = serde_json::json!({"prompt": prompt, "model": model});
         if let Some(d) = &image {
             body["image"] = d.uri.clone().into();
         }

@@ -336,17 +336,18 @@ export default async function handle(req, res) {
     });
     return true;
   }
-  // POST /avatar/picture {image?, prompt?} — Picture mode: a "Bot"-style
-  // picture from the image model (the style prompt, plus what the user
-  // typed on top) → {ok, uri, name, w, h}, the crop editor's draft.
+  // POST /avatar/picture {image?, prompt?, model?} — Picture mode: a
+  // "Bot"-style picture (the style prompt, plus what the user typed on
+  // top), drawn by the picked model → {ok, uri, name, w, h, via}, the crop
+  // editor's draft.
   if (req.method === "POST" && req.url === "/avatar/picture") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { prompt, image } = JSON.parse(body || "{}");
-        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image })) }));
+        const { prompt, image, model } = JSON.parse(body || "{}");
+        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image, model })) }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
