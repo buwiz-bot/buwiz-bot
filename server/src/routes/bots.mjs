@@ -340,8 +340,8 @@ export default async function handle(req, res) {
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { prompt, image, name, model, style } = JSON.parse(body || "{}");
-        const candidates = await designAvatar({ prompt, image, name, model, style });
+        const { prompt, image, name, model, style, effort, fast } = JSON.parse(body || "{}");
+        const candidates = await designAvatar({ prompt, image, name, model, style, effort, fast });
         res.end(JSON.stringify({ ok: true, candidates }));
       } catch (e) {
         res.statusCode = 400;
@@ -360,8 +360,8 @@ export default async function handle(req, res) {
     req.on("end", async () => {
       res.setHeader("content-type", "application/json");
       try {
-        const { prompt, image, model } = JSON.parse(body || "{}");
-        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image, model })) }));
+        const { prompt, image, model, effort, fast } = JSON.parse(body || "{}");
+        res.end(JSON.stringify({ ok: true, ...(await designPicture({ prompt, image, model, effort, fast })) }));
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));

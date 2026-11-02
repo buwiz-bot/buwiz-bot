@@ -3,7 +3,7 @@
 // then over the wire to the fake opencodex), and the bot routes' `outline`
 // field, through a broker restart.
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
@@ -269,7 +269,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   const calls = fake.calls();
   assert.equal(calls.length, 2);
   assert.equal(calls[0].path, "/v1/messages");
-  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-opus-5-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "Design's own model, not the chat's");
+  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-haiku-5-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "nothing picked: the chat's default model");
   assert.match(calls[1].body.messages[2].content, /candidate 2 \(Bad\): outline covers/);
   fake.reset();
   fake.script("design-img", [reply([cust("Fox", GOOD.cat, "#FF6700"), kit("A"), cust("B")])]);
@@ -289,7 +289,12 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   fake.reset();
   fake.script("design-default", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
   assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-default]] a fox", model: "" })).status, 200);
-  assert.equal(fake.calls()[0].body.model, "claude-opus-5-5", "the picker's Default is Design's default");
+  assert.equal(fake.calls()[0].body.model, "claude-haiku-5-5", "the picker's Default is the chat's default");
+  // the picker's reasoning effort comes along
+  fake.reset();
+  fake.script("design-effort", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-effort]] a fox", model: "claude-sonnet-5", effort: "high" })).status, 200);
+  assert.deepEqual([fake.calls()[0].body.model, fake.calls()[0].body.output_config], ["claude-sonnet-5", { effort: "high" }]);
   // GEN_AVATAR_MODEL picks Design's model; GEN_MODEL (the chat's) does not
   await server.stop();
   server = await startServer(dir, { env: env({ MOCK: undefined, GEN_MODEL: "claude-haiku-5-5", GEN_AVATAR_MODEL: "claude-opus-5" }) });
@@ -361,4 +366,46 @@ test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its la
   assert.deepEqual((await botOf(id)).layers, r.layers);
   await postJson("/bot/update", { id, shape: "hex" });
   assert.ok(!("layers" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+test("AVD-16 /avatar/picture under MOCK: the reference (or a fixed square) as the draft, in the avatar folder; the same image rules", async () => {
+  const keys = ["ok", "via", "uri", "name", "w", "h"];
+  const plain = await postJson("/avatar/picture", { prompt: "a green giant" });
+  assert.equal(plain.status, 200, plain.text);
+  assert.deepEqual(Object.keys(plain.json), keys);
+  assert.deepEqual({ ...plain.json, uri: "" }, { ok: true, via: "mock", uri: "", name: "Bot picture", w: 64, h: 64 });
+  assert.match(plain.json.uri, new RegExp(`^file://${avatars}/[0-9a-z]+-bot\\.png$`));
+  assert.ok(existsSync(plain.json.uri.slice(7)));
+  const img = join(avatars, "m1.png");
+  const w = await postJson("/avatar/picture", { image: pathToFileURL(img).href });
+  assert.equal(w.status, 200, w.text);
+  assert.deepEqual(readFileSync(w.json.uri.slice(7)), readFileSync(img), "the stub sips copies the reference");
+  bad(await postJson("/avatar/picture", { prompt: "  " }), "add a picture or describe the character");
+  bad(await postJson("/avatar/picture", {}), "add a picture or describe the character");
+  bad(await postJson("/avatar/picture", { image: pathToFileURL(join(dir, "outside.png")).href }), "image must be an avatar image from /avatar/image/pick or /avatar/image/paste");
+});
+
+test("AVD-17 /avatar/picture over the wire: the picked model draws SVG; a refused SVG falls back to the image relay", async () => {
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined }) });
+  fake.reset();
+  fake.script("pic", [say('Here:\n<svg viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="#333"/></svg>')]);
+  const img = join(avatars, "m1.png");
+  const r = await postJson("/avatar/picture", { prompt: "[[script:pic]] make it blue", image: pathToFileURL(img).href, model: "claude-sonnet-5", effort: "high" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual({ ...r.json, uri: "" }, { ok: true, via: "claude-sonnet-5", uri: "", name: "Bot picture", w: 64, h: 64 });
+  assert.ok(existsSync(r.json.uri.slice(7)));
+  assert.ok(!existsSync(r.json.uri.slice(7, -4) + ".svg"), "the SVG is cleaned up");
+  const [call] = fake.calls();
+  assert.deepEqual([call.body.model, call.body.max_tokens, call.body.system, call.body.output_config], ["claude-sonnet-5", 16000, "You are an illustrator who draws clean vector avatars as SVG.", { effort: "high" }]);
+  assert.deepEqual(call.body.messages[0].content[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } });
+  assert.match(call.body.messages[0].content[1].text, /^Turn the subject of the reference picture into a minimal flat "Bot" avatar\.[\s\S]*\n\nAlso, from the user: \[\[script:pic\]\] make it blue\n\nDraw it as one SVG: viewBox="0 0 1024 1024"/);
+  // an SVG with an outside image: the image relay edits the reference instead
+  fake.reset();
+  fake.script("pic-bad", [say('<svg><image href="https://example.com/a.png"/></svg>')]);
+  const f = await postJson("/avatar/picture", { prompt: "[[script:pic-bad]] x", image: pathToFileURL(img).href });
+  assert.equal(f.status, 200, f.text);
+  assert.equal(f.json.via, "chatgpt");
+  assert.equal(fake.calls()[0].body.model, "claude-haiku-5-5", "nothing picked: the chat's default model");
+  assert.ok(fake.requests.some((q) => q.path === "/v1/images/edits"));
 });

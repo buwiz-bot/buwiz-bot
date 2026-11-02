@@ -5463,8 +5463,8 @@ impl Store {
         } else {
             self.active_bot_untracked().map(|b| b.name).unwrap_or_default()
         };
-        let model = self.design_model().0;
-        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model});
+        let (model, effort, fast) = self.design_choice();
+        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model, "effort": effort, "fast": fast});
         if self.design_mode.get_untracked() == "rich" {
             body["style"] = "rich".into();
         }
@@ -5508,7 +5508,7 @@ impl Store {
     /// label; an empty id is "Default", which the broker's Design default
     /// answers.
     pub fn design_model(&'static self) -> (String, String) {
-        let id = if self.bot_modal.get() { self.model.get() } else { self.choice().0 };
+        let id = self.design_choice().0;
         let label = if id.is_empty() {
             "the default model".to_owned()
         } else {
@@ -5520,6 +5520,19 @@ impl Store {
                 .unwrap_or_else(|| pretty_model(&id))
         };
         (id, label)
+    }
+
+    /// The model picker's choice as Design sends it: `(model, effort,
+    /// fast)`, exactly what this bot chats with (its own model, else the
+    /// app-wide one; the Create New Bot sheet takes the app-wide one).
+    pub fn design_choice(&'static self) -> (String, String, bool) {
+        let (model, effort, fast) = if self.bot_modal.get() {
+            (self.model.get(), self.effort.get(), self.fast.get())
+        } else {
+            self.choice()
+        };
+        let model = if model.is_empty() { self.model.get() } else { model };
+        (model, effort, fast)
     }
 
     /// Reset (after its confirm row): the default ball in the primary ink,
@@ -5538,8 +5551,8 @@ impl Store {
     /// model, which draws it) → the crop editor's draft, which Set avatar
     /// puts on the bot as a photo.
     fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
-        let model = self.design_model().0;
-        let mut body = serde_json::json!({"prompt": prompt, "model": model});
+        let (model, effort, fast) = self.design_choice();
+        let mut body = serde_json::json!({"prompt": prompt, "model": model, "effort": effort, "fast": fast});
         if let Some(d) = &image {
             body["image"] = d.uri.clone().into();
         }

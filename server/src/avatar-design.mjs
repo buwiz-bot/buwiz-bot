@@ -97,11 +97,14 @@ const oaiContent = (c) =>
  *  `model` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
  *  routed through opencodex as a bot's chosen model is; "" is Design's
  *  default, AVATAR_MODEL (GEN_AVATAR_MODEL), never the chat's. */
-export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM, maxTokens = 6000 } = {}) {
+export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM, maxTokens = 6000, effort = "", fast: fastPick = false } = {}) {
   if (PROVIDER === "anthropic") {
     const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: maxTokens, system, messages });
-    const fast = model.endsWith("--fast");
-    const m = model ? await modelCtx.run({ model: fast ? model.slice(0, -"--fast".length) : model, fast }, create) : await create();
+    // the picker's choice, routed as chat routes it: its model (an id may
+    // carry --fast), its reasoning effort, its Fast setting
+    const fast = model.endsWith("--fast") || !!fastPick;
+    const base = model.endsWith("--fast") ? model.slice(0, -"--fast".length) : model;
+    const m = model || effort || fast ? await modelCtx.run({ model: base, effort, fast }, create) : await create();
     return textOf(m);
   }
   const r = await fetch(`${BASE_URL}/chat/completions`, {
@@ -118,7 +121,8 @@ export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM
 }
 
 /** POST /avatar/design's body → its candidates. */
-export async function designAvatar({ prompt, image, name, model, style } = {}) {
+export async function designAvatar({ prompt, image, name, model, style, effort, fast } = {}) {
+  const pick = { effort: typeof effort === "string" ? effort : "", fast: !!fast };
   const rich = style === "rich";
   const text = typeof prompt === "string" ? prompt.trim() : "";
   // a picture alone is enough: the model makes its subject into an avatar
@@ -129,7 +133,7 @@ export async function designAvatar({ prompt, image, name, model, style } = {}) {
     { prompt: text, name: typeof name === "string" ? name.trim() : "", image: block, rich },
     {
       ask: (messages) =>
-        askDesigner(messages, typeof model === "string" ? model.trim() : "", rich ? { system: `${DESIGN_SYSTEM}\n\n${RICH_SYSTEM}`, maxTokens: 12000 } : undefined),
+        askDesigner(messages, typeof model === "string" ? model.trim() : "", rich ? { system: `${DESIGN_SYSTEM}\n\n${RICH_SYSTEM}`, maxTokens: 12000, ...pick } : pick),
       // the fallback never fails the request
       pick: (p) => pickKitAvatar(p).catch(() => ({ shape: "blob", color: "#1084FE" })),
     },
@@ -159,7 +163,7 @@ const SVG_RULES =
  *  rasterizes; when that fails, the image models (the opencodex relay,
  *  then Gemini) try. The picture becomes a photo avatar (the crop
  *  editor's Set avatar), so its colours are its own. */
-export async function designPicture({ prompt, image, model } = {}) {
+export async function designPicture({ prompt, image, model, effort, fast } = {}) {
   const text = typeof prompt === "string" ? prompt.trim() : "";
   if (!text && !image) throw new Error("add a picture or describe the character");
   const src = image ? avatarImagePath(image) : null;
@@ -172,7 +176,7 @@ export async function designPicture({ prompt, image, model } = {}) {
     const ask = pictureRequest({ prompt: text, image: !!src });
     const errs = [];
     try {
-      via = await svgPicture(ask, src ? avatarImageBlock(image) : null, typeof model === "string" ? model.trim() : "", out);
+      via = await svgPicture(ask, src ? avatarImageBlock(image) : null, typeof model === "string" ? model.trim() : "", out, { effort: typeof effort === "string" ? effort : "", fast: !!fast });
     } catch (e) {
       errs.push(`${model || AVATAR_MODEL}: ${e?.message || e}`);
       try {
@@ -195,11 +199,12 @@ export async function designPicture({ prompt, image, model } = {}) {
 
 /** The chat model draws the picture as SVG; QuickLook (WebKit) renders it
  *  to `out`. → the model's id. */
-async function svgPicture(ask, block, model, out) {
+async function svgPicture(ask, block, model, out, pick = {}) {
   const content = [...(block ? [block] : []), { type: "text", text: `${ask}\n\n${SVG_RULES}` }];
   const reply = await askDesigner([{ role: "user", content }], model, {
     system: "You are an illustrator who draws clean vector avatars as SVG.",
     maxTokens: 16000,
+    ...pick,
   });
   const svg = /<svg[\s\S]*<\/svg>/.exec(reply)?.[0];
   if (!svg) throw new Error("the model returned no SVG");
