@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // sdk/mini-app/bin/buwiz-plugin-test.mjs — the plugin-side conformance checks
-// of the Buwiz Mini App Protocol 1.0 (spec 17), run against one plugin.
+// of the Buwiz Mini App Protocol 1.0 (its Appendix C), run against one plugin.
 //
 //   npm run plugin-test -- --command node --args sdk/mini-app/template/server.mjs \
 //       --sign-with ~/.config/rox/test.key
@@ -171,7 +171,7 @@ async function rawClient(spec) {
 const callRaw = (conn, name, args) => conn.client.callTool({ name, arguments: args }, undefined, { timeout: CALL_MS });
 
 // What the plugin serves before anything is signed: the manifest and the
-// app sources, read without provisioning (resources are not gated, 7.8).
+// app sources, read without provisioning (resources are not gated, 6.1).
 async function served(spec) {
   const conn = await rawClient(spec);
 
@@ -196,7 +196,7 @@ async function served(spec) {
   }
 }
 
-// Which spec 17.1 ID a verifyManifest failure belongs to.
+// Which Appendix C.1 ID a verifyManifest failure belongs to.
 function manIdOf(e) {
   const msg = String(e?.message || "");
 
@@ -222,18 +222,18 @@ function manIdOf(e) {
 }
 
 const MAN_ROWS = [
-  ["MAN-01", "the manifest is signed by a trusted publisher key; the signature verifies over JCS (4.2)"],
+  ["MAN-01", "the manifest is signed by a trusted publisher key; the signature verifies over JCS (5.2)"],
   ["MAN-03", "the manifest is a JSON object (I-JSON, no duplicate keys)"],
   ["MAN-04", "protocol 1.0.x is accepted by a 1.0 host; version is semver"],
   ["MAN-05", "needs is absent or []"],
   ["MAN-06", "permissions carry only known keys"],
-  ["MAN-07", "every name follows its grammar (3)"],
-  ["MAN-08", "every field is within its Appendix A limit"],
+  ["MAN-07", "every name follows its grammar (4)"],
+  ["MAN-08", "every field is within its limit (24)"],
   ["MAN-11", "no command is named like a built-in"],
   ["MAN-12", "routines carry only known keys (no needs)"],
 ];
 
-// The static import and default-export check of 6.3, with esbuild.
+// The static import and default-export check of 11.2, with esbuild.
 async function staticApp(source, file) {
   const { build } = await import("esbuild");
   const imports = [];
@@ -247,7 +247,7 @@ async function staticApp(source, file) {
   return { imports, exports: Object.values(r.metafile.outputs)[0]?.exports || [], code: r.outputFiles[0].text };
 }
 
-// The raw resolve answer (9.2) held to its shape and caps: what the host
+// The raw resolve answer (15.2) held to its shape and caps: what the host
 // would otherwise cap or refuse silently. → the tickets it carries.
 function checkResolve(m, data) {
   const r = data?.result;
@@ -288,7 +288,7 @@ function checkResolve(m, data) {
   return found;
 }
 
-// A raw `prompt` answer (9.2) held to its rules: a command's only,
+// A raw `prompt` answer (15.2) held to its rules: a command's only,
 // non-blank text of at most PROMPT_MAX characters.
 function checkPromptAnswer(m, kind, data) {
   expect(kind === "command", "a prompt result answers a command, not a scope");
@@ -359,7 +359,7 @@ export async function runPluginTest(o) {
       m = verifyManifest(text, trust()).manifest;
     } catch (e) {
       failedId = manIdOf(e);
-      rows.push({ id: failedId, what: "the manifest verifies (5.2)", status: "fail", note: errText(e) });
+      rows.push({ id: failedId, what: "the manifest verifies (6.2)", status: "fail", note: errText(e) });
     }
 
     for (const [id, what] of MAN_ROWS) {
@@ -420,7 +420,7 @@ export async function runPluginTest(o) {
 
         expect(!r.isError && d?.ok === true, `buwiz.provision answered ${JSON.stringify(d)?.slice(0, 120)}`);
 
-        if (m) expect(d.manifest_sha256 === manifestHash(m), "manifest_sha256 is not sha256 of the served manifest's JCS bytes (5.2 step 7)");
+        if (m) expect(d.manifest_sha256 === manifestHash(m), "manifest_sha256 is not sha256 of the served manifest's JCS bytes (6.2 step 9)");
       }
     });
 
@@ -439,7 +439,7 @@ export async function runPluginTest(o) {
         expect(isInvalid(await callRaw(raw, "buwiz.session.open", reservedArgs({ not_after: Date.now() + 9 * 3600_000 }))), "a certificate over 8 h was not refused");
       });
 
-      await run("RSV-03", `the session certificate for ${app.id} is the request, signed by the plugin key over JCS (4.4)`, async () => {
+      await run("RSV-03", `the session certificate for ${app.id} is the request, signed by the plugin key over JCS (5.5)`, async () => {
         const req = reservedArgs();
         const r = await callRaw(raw, "buwiz.session.open", req);
         const d = resultData(r);
@@ -480,7 +480,7 @@ export async function runPluginTest(o) {
     const sessions = createSessions(plugins);
     let installed = false;
 
-    await run("LCY-01", "install through the broker's gate: provision, verify, tools/list (5.2, 13.1)", async () => {
+    await run("LCY-01", "install through the broker's gate: provision, verify, tools/list (6.2, 9.1)", async () => {
       const i = await plugins.inspect(spec);
 
       await plugins.install({ ...spec, manifest_sha256: i.manifest_sha256 });
@@ -505,7 +505,7 @@ export async function runPluginTest(o) {
   const logs = (raw?.stderr || "") + readLogs(logDir);
   const leaked = seeds.filter(Boolean).some((s) => logs.includes(s) || logs.includes(Buffer.from(s, "base64url").toString("base64").replace(/=+$/, "")));
 
-  rows.push({ id: "RSV-03", what: "the plugin never writes its key to stderr (4.3, P4)", status: leaked || /\[redacted key\]/.test(logs) ? "fail" : "pass", note: leaked ? "a seed appeared in stderr" : "" });
+  rows.push({ id: "RSV-03", what: "the plugin never writes its key to stderr (5.4, P4)", status: leaked || /\[redacted key\]/.test(logs) ? "fail" : "pass", note: leaked ? "a seed appeared in stderr" : "" });
   rmSync(dir, { recursive: true, force: true });
 
   return { plugin: m ? { id: m.id, short: m.short, version: m.version } : null, trust: trustReport, rows, ok: rows.every((r) => r.status !== "fail") };
@@ -577,7 +577,7 @@ function readLogs(logDir) {
 async function appChecks(raw, a, run) {
   let source = null;
 
-  await run("APP-01", `${a.id}: ${a.entry} is one text/x-nsh-tsx content whose fingerprint matches the manifest (6.1, 6.2)`, async () => {
+  await run("APP-01", `${a.id}: ${a.entry} is one text/x-nsh-tsx content whose fingerprint matches the manifest (11.2)`, async () => {
     const { contents = [] } = await raw.client.readResource({ uri: a.entry });
 
     expect(contents.length === 1 && isString(contents[0].text), `${a.entry} answered ${contents.length} contents; exactly one text content is allowed`);
@@ -590,20 +590,20 @@ async function appChecks(raw, a, run) {
   if (source === null) return;
   let s = null;
 
-  await run("APP-02", `${a.id}: compiles as TSX and has a default export (6.3)`, async () => {
+  await run("APP-02", `${a.id}: compiles as TSX and has a default export (11.2)`, async () => {
     s = await staticApp(source, `${a.id}.tsx`).catch((e) => Promise.reject(new Error(`does not compile: ${e.errors?.[0]?.text || errText(e)}`)));
     expect(s.exports.includes("default"), `no default export (exports: ${s.exports.join(", ") || "none"})`);
   });
 
   if (!s) return;
 
-  await run("APP-03", `${a.id}: imports only ${ALLOWED_IMPORTS.join(", ")} (6.3)`, () => {
+  await run("APP-03", `${a.id}: imports only ${ALLOWED_IMPORTS.join(", ")} (11.2)`, () => {
     const bad = s.imports.filter((i) => !ALLOWED_IMPORTS.includes(i));
 
     expect(!bad.length, `unsupported_import: ${bad.join(", ")}`);
   });
 
-  await run("APP-04", `${a.id}: uses no fetch, XMLHttpRequest, WebSocket or web storage (6.3)`, () => {
+  await run("APP-04", `${a.id}: uses no fetch, XMLHttpRequest, WebSocket or web storage (11.2)`, () => {
     const hit = NO_NETWORK.exec(s.code);
 
     expect(!hit, `uses ${hit?.[1]}; apps get data from buwiz.call only`);
@@ -613,7 +613,7 @@ async function appChecks(raw, a, run) {
 // APP-01..04 for a native screen: the host builds it, so there is no
 // source to check; what a host needs of the entry is checked instead.
 async function nativeChecks(m, a, trust, run, skip) {
-  await run("APP-01", `${a.id}: a native screen (no entry, mime, sdk or fingerprint) whose id ${JSON.stringify(a.native?.screen)} is 1 to 64 of a-z 0-9 . _ - (5.5)`, () => {
+  await run("APP-01", `${a.id}: a native screen (no entry, mime, sdk or fingerprint) whose id ${JSON.stringify(a.native?.screen)} is 1 to 64 of a-z 0-9 . _ - (6.8)`, () => {
     expect(["entry", "mime", "sdk", "fingerprint"].every((k) => a[k] === undefined), "a native screen serves no source");
     expect(typeof a.native?.screen === "string" && NATIVE_SCREEN.test(a.native.screen), `the screen id ${JSON.stringify(a.native?.screen)} is not 1 to 64 of a-z 0-9 . _ -`);
   });
@@ -626,7 +626,7 @@ async function nativeChecks(m, a, trust, run, skip) {
   skip("APP-04", `${a.id}: no network globals`, "a native screen has no TSX source; Buwiz Bot builds it");
 }
 
-// A fake Rox: a session key per open, envelopes signed as spec 8.1 says.
+// A fake Rox: a session key per open, envelopes signed as spec 14.1 says.
 async function openAs(sessions, m, app) {
   const ks = generate();
   const req = { plugin: m.id, app: app.id, open_id: random128(), ks_pub: ks.pub, perms_sha256: permsDigest(app.permissions), not_after: Date.now() + 3600_000 };
@@ -644,7 +644,7 @@ function envelope(open, tool, args = {}, signer = open.ks.seed) {
 
 async function brokerChecks(plugins, sessions, m, runAny, skip) {
   // once the broker has stopped the plugin (a bad certificate fails it,
-  // 4.4 step 4), later checks say so instead of failing one by one
+  // 5.5 step 4), later checks say so instead of failing one by one
   const run = (id, what, fn) => {
     const rt = plugins.runtime(m.id);
 
@@ -663,7 +663,7 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   for (const a of withTools) {
     let open = null;
 
-    await run("BRG-03", `${a.id}: a session opens; the broker verifies the certificate (4.4 step 5)`, async () => {
+    await run("BRG-03", `${a.id}: a session opens; the broker verifies the certificate (5.5 step 4)`, async () => {
       open = await openAs(sessions, m, a);
     });
 
@@ -673,7 +673,7 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
 
     for (const tool of a.permissions.tools)
       await run("BRG-03", `${a.id}: a signed call of ${tool} reaches the plugin and is answered`, async () => {
-        // as an app must: the broker takes 20 calls a second per open (8.2)
+        // as an app must: the broker takes 20 calls a second per open (13.2)
         const code = await pace(() => {
           const call = envelope(open, tool);
 
@@ -710,14 +710,14 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
   if (!entries.length) skip("INV-04", "resolve shapes", "the manifest has no commands or scopes");
 
   for (const [kind, e] of entries) {
-    // the tickets this entry's own completion offered (7.6: a chosen one)
+    // the tickets this entry's own completion offered (13.5: a chosen one)
     const offered = [];
     const modes = kind === "scope" ? [["", true], ["sdk-probe", false]] : [["", false], ["sdk-probe", false]];
 
     for (const [value, complete] of modes) {
       let prompt = null;
 
-      await run(kind === "command" ? "INV-05" : "INV-04", `${kind} ${e.name}: ${e.resolve} with value ${JSON.stringify(value)} and complete: ${complete} answers a 9.2 shape within its caps${kind === "command" ? "; an open names an app of this plugin" : ""}`, async () => {
+      await run(kind === "command" ? "INV-05" : "INV-04", `${kind} ${e.name}: ${e.resolve} with value ${JSON.stringify(value)} and complete: ${complete} answers a 15.2 shape within its caps${kind === "command" ? "; an open names an app of this plugin" : ""}`, async () => {
         const r = await resolveRaw(kind, e, value, complete);
 
         if (r.isError) return "answered isError (shown as an error)";
@@ -746,13 +746,13 @@ async function brokerChecks(plugins, sessions, m, runAny, skip) {
         });
     }
 
-    // an attachable scope: a chosen completion resolves to a token (7.6)
+    // an attachable scope: a chosen completion resolves to a token (13.5)
     if (kind === "scope" && e.attach) {
       const choice = offered.find((t) => isV1("ticket", t));
 
       if (!choice) skip("INV-04", `scope ${e.name}: a chosen completion resolves to a token`, "the completion offered no ticket");
       else
-        await run("INV-04", `scope ${e.name}: a chosen completion resolves to a token (7.6)`, async () => {
+        await run("INV-04", `scope ${e.name}: a chosen completion resolves to a token (13.5)`, async () => {
           const res = await sessions.resolve({ plugin: m.id, kind, name: e.name, value: choice, complete: false });
 
           expect(res.result === "token" && isV1("canonicalToken", res.token), `answered ${res.result}`);

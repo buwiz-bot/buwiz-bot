@@ -1,8 +1,8 @@
-// Spec 17.6 (agent and text), RSV-06 and the broker's half of 17.5: the
+// Appendix C.6 (agent and text), RSV-06 and the broker's half of C.5: the
 // server's real agent surface (tools.mjs toolList/execTool, run in this
 // process on a temp data dir) with the fixture installed through the
 // server's own broker (v1/broker.mjs), plus the approved-text rules of
-// 10.2 and routine reads of 5.9.
+// 18.3 and routine reads of 19.1.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { V1, v1Canonical, v1TypedTokens } from "../src/grammar.mjs";

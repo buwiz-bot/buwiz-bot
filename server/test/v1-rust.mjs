@@ -42,7 +42,7 @@ const trustJson = (t) => ({
   approved_plugins: t.approved,
 });
 
-assert.deepEqual(rust("limits", {}).value, JSON.parse(JSON.stringify(node.LIMITS)), "buwiz-broker holds Appendix A's limits");
+assert.deepEqual(rust("limits", {}).value, JSON.parse(JSON.stringify(node.LIMITS)), "buwiz-broker holds section 24's limits");
 
 export const { LIMITS } = node;
 

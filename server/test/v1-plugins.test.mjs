@@ -1,4 +1,4 @@
-// Spec 17.4 (reserved tools) and 17.7 (lifecycle), broker side, plus
+// Appendix C.4 (reserved tools) and C.7 (lifecycle), broker side, plus
 // MAN-09: the fixture plugin under an in-process broker (in-memory db,
 // file keystore, its own trust file). The restart policy runs on a fake
 // clock so backoff and the 10-minute window take milliseconds.
@@ -53,7 +53,7 @@ async function rawFixture(b, args = []) {
 
 const data = (r) => r.structuredContent ?? JSON.parse(r.content[0].text);
 
-// ── 17.4 ─────────────────────────────────────────────────────────────────
+// ── C.4 ──────────────────────────────────────────────────────────────────
 
 test("RSV-01 buwiz.provision is the first request answered; other tools before it fail", async () => {
   const { b, plugins } = setup("rsv01");
@@ -207,7 +207,7 @@ test("install: the review lists every permission (13.1 step 3) and a changed man
   assert.equal(existsSync(join(b.keysDir, `${FX}.key`)), false, "no key is kept for a refused install");
 });
 
-// ── 17.7 ─────────────────────────────────────────────────────────────────
+// ── C.7 ──────────────────────────────────────────────────────────────────
 
 async function update(plugins, b, edit, extra = {}) {
   b.writeManifest(edit);

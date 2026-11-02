@@ -1,11 +1,11 @@
-// v1/sessions.mjs — app opens and the calls they make (spec 4.4, 7.3, 8, 9.2).
+// v1/sessions.mjs — app opens and the calls they make (spec 5.5, 13.2, 14, 15.2).
 //
 // Rox opens an app by asking the broker for a session: the broker relays
 // `buwiz.session.open` to the plugin, verifies the certificate with the
 // plugin key from the install record, and keeps it. From then on every
 // bridge call arrives as Rox's signed envelope and passes the nine checks
-// of 8.2, in the spec's order, before anything reaches the plugin; the
-// plugin then sees `_meta["buwiz/caller"]` (8.4). The broker is the gate for
+// of 14.2, in the spec's order, before anything reaches the plugin; the
+// plugin then sees `_meta["buwiz/caller"]` (16.1). The broker is the gate for
 // calls, so a check failing here means nothing is sent. Ticket titles,
 // resolve tools and app sources go through the same module because they
 // share its validation of plugin answers.
@@ -28,7 +28,7 @@ export const RESULT_MAX = 1024 * 1024;
 // a buwiz.preview call's result (the document); permissions.preview.max_bytes may lower it
 export const PREVIEW_MAX = LIMITS.previewMaxBytes;
 export const SOURCE_MAX = 512 * 1024;
-// a resolve `prompt` answer's text (9.2, 1.1), in characters
+// a resolve `prompt` answer's text (15.2), in characters
 export const PROMPT_MAX = 4000;
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -40,7 +40,7 @@ const cap = (s, n) => {
 
 const firstText = (r) => (r?.content || []).find((c) => c.type === "text")?.text || "";
 
-/** A tool result's size as 7.3 counts it: structured plus text (and an
+/** A tool result's size as 13.2 counts it: structured plus text (and an
  *  embedded resource's text or blob), in bytes. */
 export function resultBytes(r) {
   const piece = (c) => (c.type === "text" ? Buffer.byteLength(c.text || "") : c.type === "resource" ? Buffer.byteLength(String(c.resource?.text ?? c.resource?.blob ?? "")) : 0);
@@ -49,7 +49,7 @@ export function resultBytes(r) {
   return text + (r?.structuredContent === undefined ? 0 : Buffer.byteLength(JSON.stringify(r.structuredContent)));
 }
 
-/** A tool result without `_meta` (8.4, 9.6: never shown past the broker). */
+/** A tool result without `_meta` (16.1, 16.5: never shown past the broker). */
 export function stripMeta(r) {
   const out = { ...r };
 
@@ -60,7 +60,7 @@ export function stripMeta(r) {
 
 /** An open request a plugin made (resolve `open`, `_meta["buwiz/open"]`)
  *  checked against its own manifest `m`: the app is one of its apps (no
- *  other plugin's), props validate (6.6), the ticket follows the grammar.
+ *  other plugin's), props validate (11.5), the ticket follows the grammar.
  *  → the normalized open; throws V1Error. */
 export function checkOpen(m, o) {
   if (!isObject(o)) refuse("invalid_args", "an open must be an object");
@@ -74,7 +74,7 @@ export function checkOpen(m, o) {
 
   if (o.placement !== undefined && !app.placement.includes(o.placement)) refuse("invalid_args", `${app.id} does not declare placement ${String(o.placement).slice(0, 20)}`);
 
-  // 9.8: an answer's small card; anything else is its main card
+  // 16.2: an answer's small card; anything else is its main card
   if (o.size !== undefined && o.size !== "small" && o.size !== "main") refuse("invalid_args", "size must be small or main");
   const props = o.props ?? {};
 
@@ -88,7 +88,7 @@ export function checkOpen(m, o) {
   return out;
 }
 
-/** A resolve tool's `prompt` answer (9.2, protocol 1.1): a starter
+/** A resolve tool's `prompt` answer (15.2): a starter
  *  flow's text, which Rox puts in the composer for the person to edit and
  *  send. Commands only; `text` has something other than spaces, tabs and
  *  line breaks and is at most PROMPT_MAX characters (refused, not cut:
@@ -107,7 +107,7 @@ export function createSessions(plugins) {
   const clock = plugins.clock;
   const opens = new Map(); // open_id → session
 
-  // ── open / close (4.4) ───────────────────────────────────────────────
+  // ── open / close (5.5) ───────────────────────────────────────────────
 
   function checkOpenRequest(b) {
     if (!isObject(b)) refuse("invalid_args", "send {plugin, app, open_id, ks_pub, perms_sha256, not_after}");
@@ -184,12 +184,12 @@ export function createSessions(plugins) {
     return { ok: true };
   }
 
-  // a plugin's opens end with it (disable, uninstall, update: 13.3-13.6)
+  // a plugin's opens end with it (disable, uninstall, update: 9.4-9.6)
   plugins.onClose(async (pluginId) => {
     for (const s of opens.values()) if (s.plugin === pluginId) await close({ open_id: s.open_id });
   });
 
-  // ── the call (8.2) ───────────────────────────────────────────────────
+  // ── the call (14.2) ──────────────────────────────────────────────────
 
   function checkNonce(s, nonce, now) {
     for (const [n, at] of s.nonces) {
@@ -333,7 +333,7 @@ export function createSessions(plugins) {
     return row;
   }
 
-  /** POST /v1/host/tickets/title {plugin, ticket} → {valid, title?} (7.4). */
+  /** POST /v1/host/tickets/title {plugin, ticket} → {valid, title?} (13.3). */
   async function ticketTitle(b) {
     if (!isV1("ticket", b?.ticket)) refuse("invalid_args", "ticket breaks the ticket grammar");
     running(b.plugin);
@@ -360,7 +360,7 @@ export function createSessions(plugins) {
     });
   }
 
-  // a resolve tool's answer as 9.2 allows it
+  // a resolve tool's answer as 15.2 allows it
   function resolved(m, kind, name, data) {
     const r = data?.result;
 
@@ -385,7 +385,7 @@ export function createSessions(plugins) {
   }
 
   /** POST /v1/host/resolve {plugin, kind, name, value, complete, context}
-   *  → the 9.2 result (10 s). */
+   *  → the 15.2 result (10 s). */
   async function resolve(b) {
     if (!isObject(b) || !["command", "scope"].includes(b.kind)) refuse("invalid_args", "kind must be command or scope");
     const row = running(b.plugin);
@@ -411,7 +411,7 @@ export function createSessions(plugins) {
     return { ok: true, ...resolved(m, b.kind, b.name, resultData(r)) };
   }
 
-  /** POST /v1/host/apps/source {plugin, app} → {source, fingerprint} (6.1, 6.2). */
+  /** POST /v1/host/apps/source {plugin, app} → {source, fingerprint} (11.2). */
   async function appSource(b) {
     const row = running(b?.plugin);
     const app = (plugins.manifestOf(row).apps || []).find((a) => a.id === b.app);

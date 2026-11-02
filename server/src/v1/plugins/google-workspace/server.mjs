@@ -3,7 +3,7 @@
 // plugin (stdio MCP), id app.buwiz.google-workspace, short `gws`.
 //
 // v1 routines read mail only through `reads`, from read-only tools of an
-// approved plugin (spec 5.9, Q1); this plugin is that source. It holds no
+// approved plugin (spec 19.1); this plugin is that source. It holds no
 // Google credentials of its own: it proxies to the user's existing Google
 // Workspace MCP server (workspace-mcp, the one v0's gmailAdapter talks to),
 // spawned from GWS_UPSTREAM = {"command", "args", "env"} with the account
@@ -13,7 +13,7 @@
 // that into structured items. A missing or failing upstream is a plain
 // isError result, never a crash.
 //
-// The reserved tools (7.8) follow the fixture: the key in memory only,
+// The reserved tools (10) follow the fixture: the key in memory only,
 // provision first. The plugin has no apps, so session opens are refused,
 // and no tickets, so every ticket is invalid. The manifest is read from
 // GWS_MANIFEST, else manifest.json beside this file (signed at release).
@@ -40,7 +40,7 @@ const UPSTREAM_TIMEOUT_MS = 60_000;
 const SEARCH = "search_gmail_messages";
 const BATCH = "get_gmail_messages_content_batch";
 
-// memory only (4.3): never logged, written or echoed
+// memory only (5.4): never logged, written or echoed
 let key = null;
 
 const manifestText = () => readFileSync(MANIFEST, "utf8");
@@ -50,7 +50,7 @@ const ok = (structured) => ({ content: [{ type: "text", text: JSON.stringify(str
 const fail = (code, message) => ({ isError: true, content: [{ type: "text", text: message }], structuredContent: { code, message } });
 const plainError = (message) => ({ isError: true, content: [{ type: "text", text: message }] });
 
-// ── reserved tools (7.8) ─────────────────────────────────────────────────
+// ── reserved tools (10) ──────────────────────────────────────────────────
 function provision(args) {
   if (args?.key?.alg !== "ed25519" || pubOf(args.key.seed) !== args.pub) return fail("invalid_args", "the key and pub do not match");
 

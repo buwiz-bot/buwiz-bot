@@ -1,5 +1,5 @@
-// v1/agent.mjs — what v1 plugins put in front of the model (spec 9.1, 9.6,
-// 10). Tools keep their own names (`<short>_<tool>`), descriptions get a
+// v1/agent.mjs — what v1 plugins put in front of the model (spec 16, 18).
+// Tools keep their own names (`<short>_<tool>`), descriptions get a
 // `[<short>] ` prefix and a 1024-character cap, and only enabled, running,
 // approved plugins contribute anything: tools, server instructions and
 // scope hints. Disabled tools and reserved `rox.*` names never appear.
@@ -8,7 +8,7 @@
 // the host writes the labelled headers itself. A tool result's `_meta`
 // never reaches the model; a `buwiz/open` in it becomes a card on the job
 // that Rox renders with an Open (or Show) button, and nothing opens by
-// itself (9.7).
+// itself (17).
 import { V1, isV1, v1Canonical } from "../grammar.mjs";
 import { isObject } from "./jcs.mjs";
 import { isApproved } from "./trust.mjs";
@@ -20,7 +20,7 @@ export const TRUNCATED = "…[truncated]";
 const BUILTIN = /^(mcp|office|skill|routine|app|bot)_/;
 
 /** Plugin text for the model: heading markers removed, at most `cap`
- *  characters, cut at a word boundary with the marker (10.2). */
+ *  characters, cut at a word boundary with the marker (18.3). */
 export function approvedText(text, cap) {
   const clean = String(text ?? "").replace(/^[ \t]*#{1,6}[ \t]+/gm, "").trim();
   const cs = [...clean];
@@ -32,19 +32,19 @@ export function approvedText(text, cap) {
   return `${(cut > 0 ? room.slice(0, cut) : room).trimEnd()}${TRUNCATED}`;
 }
 
-// enabled, running and on the approved list as installed (4.1)
+// enabled, running and on the approved list as installed (5.1)
 function contributing(plugins) {
   const trust = plugins.trust();
 
   return plugins.rows().filter((row) => row.enabled && plugins.runtime(row.id).state === "running" && isApproved(trust, row.id, row.publisher_key_id));
 }
 
-// A routine's turn (5.9) sees its own plugin's tools and only the `reads`
+// A routine's turn (19.1) sees its own plugin's tools and only the `reads`
 // tools it names; `surface` is {plugin, routine, reads, writes} then, null
 // otherwise.
 const inSurface = (surface, plugin, name) => !surface || plugin === surface.plugin || (surface.reads || []).some((x) => x.plugin === plugin && x.tools.includes(name));
 
-// 10.1: a tool marked `_meta["buwiz/audience"]` without "agent" serves apps
+// 16.4: a tool marked `_meta["buwiz/audience"]` without "agent" serves apps
 // only (through the bridge); the model never sees or calls it
 const forAgent = (t) => {
   const audience = t._meta?.["buwiz/audience"];
@@ -78,7 +78,7 @@ export const v1ToolPlugin = (plugins, name, surface = null) => v1Tools(plugins, 
 const fold = (r) =>
   (r.content || []).map((c) => (c.type === "text" ? c.text : c.type === "image" ? `[image: ${c.mimeType || "image/png"}]` : JSON.stringify(c))).join("\n") || "(empty)";
 
-// 9.6: a card for the job, never an open; a bad card is dropped and logged
+// 16.2: a card for the job, never an open; a bad card is dropped and logged
 function noteCard(job, plugins, row, open) {
   let card;
 
@@ -126,10 +126,10 @@ export function noteSuggest(job, suggest) {
 
 const readOnly = (plugins, plugin, name) => plugins.runtime(plugin).tools.some((t) => t.name === name && t.annotations?.readOnlyHint === true);
 
-/** A model tool call to a v1 plugin (origin agent, 8.4): {content, is_error}.
+/** A model tool call to a v1 plugin (origin agent, 16.1): {content, is_error}.
  *  In a routine's turn a call to its own plugin names the routine
  *  (`buwiz/caller.routine`), and a tool of it that changes data runs only
- *  when the routine lists it in `writes` (5.9). */
+ *  when the routine lists it in `writes` (19.1). */
 export async function v1AgentCall(plugins, job, name, input) {
   const surface = job?.v1Surface;
   const plugin = v1ToolPlugin(plugins, name, surface);
@@ -159,7 +159,7 @@ export async function v1AgentCall(plugins, job, name, input) {
   return { content: fold(r), is_error: !!r.isError };
 }
 
-// 10.3: the chat's attachments Rox sends with a message ({token, plugin,
+// 18.3: the chat's attachments Rox sends with a message ({token, plugin,
 // scope, title}; only healthy ones), as lines for the model: a canonical
 // token of a contributing plugin whose scope may attach, never a raw id
 function attachedLines(rows, plugins, attachments, used) {
@@ -182,7 +182,7 @@ function attachedLines(rows, plugins, attachments, used) {
 }
 
 /** The system-prompt text v1 plugins add for a user message: approved
- *  server instructions, the chat's attachments (10.3), and the scopes in
+ *  server instructions, the chat's attachments (18.3), and the scopes in
  *  play, from the message's tokens and the attachments. */
 export function v1PromptSection(plugins, prompt = "", attachments = []) {
   const parts = [];
@@ -215,7 +215,7 @@ export function v1PromptSection(plugins, prompt = "", attachments = []) {
   return parts.length ? `\n\n${parts.join("\n\n")}` : "";
 }
 
-/** A routine's prompt with its label (10.2), or null when the plugin may
+/** A routine's prompt with its label (18.3), or null when the plugin may
  *  not contribute text. */
 export function v1RoutinePrompt(plugins, pluginId, routineId) {
   const row = contributing(plugins).find((x) => x.id === pluginId);

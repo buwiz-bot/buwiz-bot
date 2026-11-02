@@ -1,7 +1,7 @@
 # Mini apps for Buwiz Bot: overview
 
 A **plugin** is a stdio MCP server that ships **mini apps** to Buwiz Bot. It serves
-three kinds of thing (spec 1, 5.1, 6.1):
+three kinds of thing (spec 1, 6.1, 11.2):
 
 - **tools**, which apps, the model, slash commands and `@` tokens call;
 - the **manifest**, the resource `buwiz://manifest`: a signed JSON document that
@@ -14,14 +14,14 @@ three kinds of thing (spec 1, 5.1, 6.1):
 
 | Party | Owns | Trusts |
 |---|---|---|
-| **Buwiz Bot** (the host) | The UI, the app sandbox, the `buwiz` bridge object, consent prompts, session keys, per-app storage | The trust store it ships: publisher keys and approved plugin ids (spec 4.1) |
-| **The broker** | Plugin processes, install records, plugin keys, verification of manifests, certificates and every signed call | The same trust store; nothing a plugin says until its manifest verifies (spec 5.2) |
-| **The plugin** (you) | Its tools, its subjects (taxpayers, documents…) and the tickets that stand for them, its apps' source | Only the broker, the one process holding its stdin (spec 8.6) |
+| **Buwiz Bot** (the host) | The UI, the app sandbox, the `buwiz` bridge object, consent prompts, session keys, per-app storage | The trust store it ships: publisher keys and approved plugin ids (spec 5.1) |
+| **The broker** | Plugin processes, install records, plugin keys, verification of manifests, certificates and every signed call | The same trust store; nothing a plugin says until its manifest verifies (spec 6.2) |
+| **The plugin** (you) | Its tools, its subjects (taxpayers, documents…) and the tickets that stand for them, its apps' source | Only the broker, the one process holding its stdin (spec 14.4) |
 
 An app never talks to the plugin directly. It calls `buwiz.call(tool, args)`;
 Buwiz Bot signs the call in native code with a key the app cannot read; the broker
 checks the signature, the session and the app's permissions, then calls the
-tool with `_meta["buwiz/caller"]` saying who asked (spec 8).
+tool with `_meta["buwiz/caller"]` saying who asked (spec 14).
 
 ## The lifecycle in one picture
 
@@ -33,17 +33,17 @@ tool with `_meta["buwiz/caller"]` saying who asked (spec 8).
  install ─────────────────────────▶ spawn ───────────────────────────────▶ start (no key)
                                     buwiz.provision {key seed}  ───────────▶ key kept in memory
                                     ◀─────────────── {ok, manifest_sha256}
-                                    read buwiz://manifest; verify (5.2)
+                                    read buwiz://manifest; verify (6.2)
                                     review screen → user clicks Install
  open an app ─────────────────────▶ session key Ks (Buwiz Bot); buwiz.session.open ▶ checks app + perms digest
                                     ◀─────────────────────── cert signed by plugin key
                                     read buwiz-app://<id>; fingerprint check; compile
- buwiz.call(tool, args) in the app ─▶ envelope signed by Ks; 9 checks (8.2) ─▶ tools/call + _meta["buwiz/caller"]
+ buwiz.call(tool, args) in the app ─▶ envelope signed by Ks; 9 checks (14.2) ─▶ tools/call + _meta["buwiz/caller"]
                                     ◀────────────────────────────── result (`_meta` stripped)
  close ───────────────────────────▶ buwiz.session.close ───────────────────▶ forget the open
- crash ───────────────────────────▶ restart with backoff, provision again, new generation (14.4)
+ crash ───────────────────────────▶ restart with backoff, provision again, new generation (22.3)
  uninstall ───────────────────────▶ buwiz.uninstall ───────────────────────▶ delete tickets and subjects
-                                    delete key, pins, attachments, storage (13.6)
+                                    delete key, pins, attachments, storage (9.6)
 ```
 
 ## What the kit gives you
@@ -51,7 +51,7 @@ tool with `_meta["buwiz/caller"]` saying who asked (spec 8).
 | Path | What |
 |---|---|
 | `sdk/mini-app/template/` | The smallest correct plugin: copy it ([README](../README.md)) |
-| `sdk/mini-app/lib/buwiz-plugin.mjs` | The reserved tools of spec 7.8, done once: `startPlugin`, `ticketStore`, `ok`, `fail` |
+| `sdk/mini-app/lib/buwiz-plugin.mjs` | The reserved tools of spec 10, done once: `startPlugin`, `ticketStore`, `ok`, `fail` |
 | `sdk/mini-app/bin/buwiz-plugin-test.mjs` | The test runner (`npm run plugin-test`), see [testing.md](testing.md) |
 | `src/v1/sign-manifest.mjs` | Fills fingerprints and signs a manifest |
 | `src/v1/fixture/` | The conformance fixture: every feature, used by the broker's own suite |
@@ -60,7 +60,7 @@ tool with `_meta["buwiz/caller"]` saying who asked (spec 8).
 
 - [manifest.md](manifest.md): every field and limit.
 - [bridge.md](bridge.md): the `buwiz` object apps use.
-- [security.md](security.md): what your plugin must do (P1 to P10).
+- [security.md](security.md): what your plugin must do (P1 to P11).
 - [testing.md](testing.md): the runner and what it checks.
 
 Section numbers such as spec 4.1 refer to the

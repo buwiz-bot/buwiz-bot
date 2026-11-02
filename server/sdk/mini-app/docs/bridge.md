@@ -4,35 +4,35 @@ An app imports the bridge with `import { buwiz } from "buwiz"` (it is also the
 global `buwiz`). Its methods are implemented by Buwiz Bot; the app reaches nothing
 else: no `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage` or
 `sessionStorage`, and imports only from `nsh`, `nsh/base` and `buwiz` (spec
-6.3). The module's **default export** is the component Buwiz Bot mounts.
+11.2). The module's **default export** is the component Buwiz Bot mounts.
 
 A method whose permission the manifest does not grant is **absent**
-(`undefined`), not present and failing (spec 7.1, 6.4). Test for it if an
+(`undefined`), not present and failing (spec 12). Test for it if an
 app is shared between manifests: `if (buwiz.copy) …`.
 
 ## Methods
 
 | Member | Permission | Returns | Rejects with | Spec |
 |---|---|---|---|---|
-| `buwiz.props` | always | The open's props, validated against `apps[].props`; read-only | | 6.6 |
-| `buwiz.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 7.2 |
-| `buwiz.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 7.1 |
-| `buwiz.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.5, 7.11 |
-| `buwiz.actions(list)`, `buwiz.onAction(handler)` | always | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 7.12 |
-| `buwiz.meta({text, pill?})` | always | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 7.13 |
-| `buwiz.settle(text)` | always | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 7.14 |
-| `buwiz.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 7.4 |
-| `buwiz.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 7.3 |
-| `buwiz.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 7.5 |
-| `buwiz.open({url})` | `open.external` | Opens an `https` URL of a listed origin after the user agrees | `permission_denied`, `consent_declined`, `not_supported` | 7.5 |
-| `buwiz.attach(scope, value)` | `attach` | `{token, title, attached}` after "Attach … to this chat?" | `permission_denied`, `consent_declined`, `no_chat` | 7.6 |
-| `buwiz.pickFile({extensions?, multiple?})` | `pick_file` | `[{name, size, type, read()}]`, never a path; `[]` on cancel | `permission_denied`, `quota_exceeded`, `closed` (from `read()` after close) | 7.7 |
-| `buwiz.storage.get/set/remove/keys` | `storage` | Strings; private to this app | `quota_exceeded`, `invalid_args` | 11 |
-| `buwiz.copy(text)` | `copy` | Copies to the clipboard | | 5.6 |
-| `buwiz.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `buwiz.call`'s | 7.10 |
+| `buwiz.props` | always | The open's props, validated against `apps[].props`; read-only | | 11.5 |
+| `buwiz.app` | always | `{plugin, app, version, fingerprint, protocol, sdk}` | | 13.1 |
+| `buwiz.viewport` | always | Signal of `{width, height, placement: "full" \| "inline"}` | | 13.1, 13.7 |
+| `buwiz.fit(height)` | always | Inline: Buwiz Bot sizes your card to `height` (points) within `inline.min_height`..`max_height`; full screen: ignored. Returns nothing | throws `invalid_args` for a height that is not a number above 0 | 6.9, 13.4 |
+| `buwiz.actions(list)`, `buwiz.onAction(handler)` | always | Inline: Buwiz Bot draws up to 3 footer buttons under your card; a press calls your handler with the button's `id`. Full screen: checked, then ignored | `invalid_args` | 13.6 |
+| `buwiz.meta({text, pill?})` | always | Inline: a short status in your card's header (`null` removes it). Full screen: ignored | `invalid_args` | 13.6 |
+| `buwiz.settle(text)` | always | Inline: the card collapses to one outcome line and your app unmounts. Full screen: ignored | `invalid_args` | 13.6 |
+| `buwiz.ticket.title(ticket)` | always | The ticket's title, or `null` | `rate_limited` | 13.3 |
+| `buwiz.call(tool, args?)` | `tools` | `structuredContent`, else the text contents joined with `\n` | `permission_denied`, `disabled`, `not_found`, `invalid_args`, `tool_error`, `result_too_large`, `timeout`, `rate_limited`, `plugin_unavailable`, `plugin_restarted`, `closed` | 13.2 |
+| `buwiz.open({app, props?, ticket?})` | `open.apps` | Pushes your app on the full-screen stack; no prompt | `permission_denied`, `not_declared`, `invalid_args` | 13.5 |
+| `buwiz.open({url})` | `open.external` | Opens an `https` URL of a listed origin after the user agrees | `permission_denied`, `consent_declined`, `not_supported` | 13.5, 17 |
+| `buwiz.attach(scope, value)` | `attach` | `{token, title, attached}` after "Attach … to this chat?" | `permission_denied`, `consent_declined`, `no_chat` | 13.5 |
+| `buwiz.pickFile({extensions?, multiple?})` | `pick_file` | `[{name, size, type, read()}]`, never a path; `[]` on cancel | `permission_denied`, `quota_exceeded`, `closed` (from `read()` after close) | 13.5 |
+| `buwiz.storage.get/set/remove/keys` | `storage` | Strings; private to this app | `quota_exceeded`, `invalid_args` | 21 |
+| `buwiz.copy(text)` | `copy` | Copies to the clipboard | | 13.5 |
+| `buwiz.preview({tool, args?, title?})` | `preview` | Shows the document `tool` makes over the app, with Print and Close; resolves once shown | `not_declared`, `invalid_args`, `tool_error`, `result_too_large`, `not_supported`, and `buwiz.call`'s | 13.5 |
 
 Every rejection is a `BuwizError {code, retryable, message, details?}`
-(spec 14.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
+(spec 22.1). Retryable: `rate_limited`, `timeout`, `plugin_unavailable`,
 `plugin_restarted`, `internal`. A tool result with `isError: true` rejects
 with `tool_error` and the first text content (at most 500 chars) as
 `message`, so put the user-facing sentence first.
@@ -122,7 +122,7 @@ second per open, the last always landing; `buwiz.fit` needs no permission
 
 ## Cards that look like Buwiz Bot's: `buwiz.actions`, `buwiz.meta`, `buwiz.settle`
 
-Spec 7.12 to 7.14. An inline card can hand Buwiz Bot its chrome
+Spec 13.6. An inline card can hand Buwiz Bot its chrome
 instead of drawing it, so it looks like Buwiz Bot's own cards (an approval card's
 buttons, its settled line):
 
@@ -174,22 +174,22 @@ buwiz.meta({ text: "Due in 3 days", pill: true });
 ## What your tool receives
 
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
-`_meta["buwiz/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 8.4).
+`_meta["buwiz/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 16.1).
 `origin` is `app` for bridge calls, `agent` for the model, `routine` for a
 routine's query and `resolve` for resolve tools. In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
-`routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-59)). `startPlugin` passes it to
+`routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-67)). `startPlugin` passes it to
 your `run(args, caller)` as `caller`. Use it to authorize (see
 [security.md](security.md)).
 
 To offer the user an app from a tool result, add
 `_meta["buwiz/open"] = {app, props?, ticket?, title, placement?}` to the result
-(spec 9.6). Buwiz Bot shows a card with Open or Show; it never opens by itself.
+(spec 16.2). Buwiz Bot shows a card with Open or Show; it never opens by itself.
 It is ignored on `isError` results and never reaches the model.
 
 ## Resolve tools
 
-A command or scope names a resolve tool (spec 9.2). It receives
+A command or scope names a resolve tool (spec 15.2). It receives
 `{kind: "command" | "scope", name, value, complete, context: {attached}}` and
 answers `structuredContent` with one `result`:
 
@@ -212,12 +212,12 @@ if (args.kind === "command" && !args.value) return ok({ result: "prompt", text: 
 ```
 
 An attachable scope must answer `token` for a value it offered as a choice:
-`buwiz.attach` and the composer rely on it (spec 7.6, 9.3).
+`buwiz.attach` and the composer rely on it (spec 13.5, 15.1).
 
 ## Reserved tools (Buwiz Bot to your plugin)
 
 `lib/buwiz-plugin.mjs` implements these; you only need them if you write your
-own (spec 7.8, 7.9).
+own (spec 10).
 
 | Tool | Input | Answer |
 |---|---|---|
@@ -230,7 +230,7 @@ own (spec 7.8, 7.9).
 
 ## Theme
 
-Buwiz Bot renders your app in Buwiz Bot's own light or dark setting, not the OS's, and switches it live when the user changes it (spec 6.5). Give every color a `dark:` variant: `bg-white dark:bg-[#161616]`, `text-[#1c1c1c] dark:text-[#f5f5f5]`, `border-black/10 dark:border-white/10`. A color without one stays light in a dark Buwiz Bot. The template shows the pattern.
+Buwiz Bot renders your app in Buwiz Bot's own light or dark setting, not the OS's, and switches it live when the user changes it (spec 11.1). Give every color a `dark:` variant: `bg-white dark:bg-[#161616]`, `text-[#1c1c1c] dark:text-[#f5f5f5]`, `border-black/10 dark:border-white/10`. A color without one stays light in a dark Buwiz Bot. The template shows the pattern.
 
 ## Limits
 

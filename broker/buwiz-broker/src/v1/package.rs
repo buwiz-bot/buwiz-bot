@@ -36,7 +36,7 @@ pub struct File {
     pub sha256: String,
 }
 
-/// A declared account (§4).
+/// A declared account (§20.1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Account {
     pub id: String,
@@ -145,7 +145,7 @@ fn protocol_ok(p: &str, host: &str, name: &str) -> Res<()> {
     Ok(())
 }
 
-/// The block's shape (§1's table), signature not checked; `platform`
+/// The block's shape (§7.3's table), signature not checked; `platform`
 /// picks `binary`.
 pub fn parse(raw: &str, host: &str, platform: &str) -> Res<Package> {
     if raw.len() > PLUGIN_JSON_MAX {

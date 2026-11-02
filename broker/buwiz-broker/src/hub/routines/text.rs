@@ -37,7 +37,7 @@ pub fn is_obj(v: Option<&Value>) -> bool {
 
 /// Plugin text for the model: heading markers removed, at most `cap`
 /// characters (code points), cut at a word boundary with the marker
-/// (`approvedText`, 10.2).
+/// (`approvedText`, 18.3).
 pub fn approved_text(text: &str, cap: usize) -> String {
     let clean = strip_headings(text);
     let clean = trim(&clean);

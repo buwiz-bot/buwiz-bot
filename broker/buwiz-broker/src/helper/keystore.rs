@@ -1,4 +1,4 @@
-//! Where plugin private keys live (spec 4.3; server/src/v1/keystore.mjs).
+//! Where plugin private keys live (spec 5.4; server/src/v1/keystore.mjs).
 //!
 //! One ed25519 seed per installed plugin. Default: the macOS login
 //! Keychain, service `com.buwiz.bot.plugin-key`, account = plugin id,

@@ -1,5 +1,5 @@
-//! v1 plugin routines (`v1/routines.mjs`, spec 5.9 "How a routine runs",
-//! "Routine instances"; `v1/broker.mjs`'s `routineTurn`).
+//! v1 plugin routines (`v1/routines.mjs`, spec 19.1 "A run",
+//! 19.2 "params"; `v1/broker.mjs`'s `routineTurn`).
 //!
 //! A routine is declared in a plugin's manifest; what runs is an instance
 //! of it (`v1_instances`): plugin, routine, instance id, the chat it
@@ -1019,7 +1019,7 @@ impl V1 {
     }
 
     /// A call to a plugin from a run: `buwiz/caller` names the routine on a
-    /// call to its own plugin (8.4); the result's structuredContent.
+    /// call to its own plugin (16.1); the result's structuredContent.
     async fn call(&self, plugin: &str, tool: &str, args: Value, mark: Option<Value>) -> Result<Value, String> {
         let mut caller = Map::new();
         caller.insert("origin".into(), json!("routine"));
@@ -1245,7 +1245,7 @@ impl V1 {
         *self.timer.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
     }
 
-    /// 13.6: an uninstalled plugin's routines go with it.
+    /// 9.6: an uninstalled plugin's routines go with it.
     pub fn forget(db: &Db, plugin: &str) {
         let _ = db.with(|db| {
             db.execute("DELETE FROM v1_routines WHERE plugin=?", [plugin])?;
@@ -1267,7 +1267,7 @@ impl V1 {
         self.poll(ctx);
     }
 
-    /// 13.6: an uninstalled plugin's routines go with it, however it was
+    /// 9.6: an uninstalled plugin's routines go with it, however it was
     /// uninstalled (the plugin host's events).
     pub fn listen(&self, ctx: &Arc<HubCtx>) {
         let Some(mut events) = self.plugins.events() else { return };

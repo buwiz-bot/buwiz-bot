@@ -1,4 +1,4 @@
-//! App fingerprints and manifest signatures (spec 6.2, 4.2;
+//! App fingerprints and manifest signatures (spec 11.2, 5.2;
 //! `v1/signing.mjs` and `v1/sign-manifest.mjs`). A manifest signed here is
 //! byte for byte the one Node's `sign-manifest.mjs` writes.
 
