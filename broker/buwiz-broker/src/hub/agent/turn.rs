@@ -49,6 +49,9 @@ fn search_refused(m: &str) -> bool {
 pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Value]) -> Result<String, String> {
     let ctx = &run.ctx;
     let mut messages = ctx.store.read(|s| history(s.thread(&run.turn.thread)));
+    // the user's decisions on this chat's tool cards since the last call, once each
+    messages.extend(crate::hub::policy::take_notes(ctx, &run.thread_id()));
+    run.state().prompt = Some(prompt.to_owned());
     messages.push(json!({"role": "user", "content": user_content(ctx, prompt, extra, ctx_blocks).await}));
     // the chat's attachments and the hints of the `@` scopes in play
     // a stand-in thread (an agent's request) reads its conversation's
@@ -115,6 +118,10 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             }
         };
         let content = msg.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
+        // the server-side web search read outside content this turn
+        if content.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("server_tool_use")) {
+            run.state().external = true;
+        }
         messages.push(json!({"role": "assistant", "content": content}));
         let stop = msg.get("stop_reason").and_then(Value::as_str).unwrap_or("");
         println!(

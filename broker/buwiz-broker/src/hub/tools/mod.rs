@@ -15,6 +15,7 @@
 pub mod activity;
 pub mod artifact;
 pub mod builtin;
+pub mod controls;
 pub mod defs;
 pub mod drive;
 pub mod mcp;
@@ -88,6 +89,10 @@ pub struct RunState {
     pub drive_seen: Vec<(String, Value)>,
     /// the calls the reply's turn keeps (`agent/tool_log.rs`)
     pub tool_log: Vec<Value>,
+    /// the user's message this turn answers (a proposal's "did they ask for it")
+    pub prompt: Option<String>,
+    /// a tool that reads outside content ran this turn (a page, a search, an app)
+    pub external: bool,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -147,9 +152,16 @@ pub fn set_server_search(on: bool) {
     SERVER_SEARCH.store(on, Ordering::SeqCst);
 }
 
-/// `toolList(thread, job)`: the tools a model call offers.
+/// `toolList(thread, job)`: the tools a model call offers, less those switched off for the
+/// acting Bot (`controls::ceiling`).
 pub async fn tool_list(run: &Run) -> Vec<Value> {
+    let offered = offered(run).await;
+    controls::ceiling(run, offered)
+}
+
+async fn offered(run: &Run) -> Vec<Value> {
     let (mcp, deferred) = mcp::surface(run).await;
+    let deferred = controls::ceiling_deferred(run, deferred);
     let load: Vec<Value> = if deferred.is_empty() { Vec::new() } else { vec![mcp::app_tools_load_def(&deferred)] };
     // a v1 routine's turn gets exactly its surface (19.1)
     if run.turn.surface.is_some() {
@@ -171,6 +183,8 @@ pub async fn tool_list(run: &Run) -> Vec<Value> {
     if run.ctx.plugins.is_some() {
         out.extend(miniapps::defs());
     }
+    // the bot controls are Rust's own too, and always on
+    out.extend(controls::defs());
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());
     out.extend(agent.iter().cloned());
@@ -184,10 +198,15 @@ pub async fn tool_list(run: &Run) -> Vec<Value> {
 }
 
 /// `execTool(job, thread, block)`: a tool call's answer; a failure inside a
-/// tool is `tool error: …`.
+/// tool is `tool error: …`. A tool switched off for the acting Bot is refused
+/// (a model can name a tool it was not offered).
 pub async fn exec_tool(run: &Run, block: &Value) -> Out {
     let name = block.get("name").map(js::string_of).unwrap_or_default();
     let input = block.get("input").filter(|i| js::truthy(i)).cloned().unwrap_or_else(|| json!({}));
+    if let Some(no) = controls::refusal(run, &name, &input) {
+        return no;
+    }
+    controls::note_external(run, &name);
     match dispatch(run, &name, &input).await {
         Ok(out) => out,
         Err(e) => Out::err(format!("tool error: {}", js::slice_utf16(&e, 500))),
@@ -213,7 +232,20 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "react" => return builtin::react(run, input),
         "app_tools_load" => return Ok(mcp::app_tools_load(run, input).await),
         "fetch_url" => return builtin::fetch_url(input).await,
-        "shell_run" => return Ok(builtin::shell_run(input).await),
+        "shell_run" => return Ok(controls::shell_run(run, input).await),
+        _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,
+        // F3: switching a skill or a user's server on proposes it
+        "skill_enable" if run.turn.surface.is_none() => {
+            if let Some(out) = controls::skill_enable(run, input) {
+                return Ok(out);
+            }
+        }
+        "mcp_enable" if run.turn.surface.is_none() => {
+            if let Some(out) = controls::mcp_enable(run, input) {
+                return Ok(out);
+            }
+            return mcp::admin(run, name, input).await;
+        }
         "query_source" => return Ok(builtin::query_source(input).await),
         "web_search" => return builtin::web_search(input).await,
         "app_icon" => return artifact::app_icon(run, input).await,
