@@ -186,12 +186,13 @@ pub(crate) fn dispatch(text: &str) -> bool {
     }
     // `@short:login` and the like alone: the host's account command (its
     // card in this chat), never the model's
-    if st.attachments.get_untracked().is_empty() && st.reply_to.get_untracked().is_none() {
-        if let Some((plugin, cmd)) = st.v1.listed.with_untracked(|l| crate::mini_v1::connect::account_command_for(text, l)) {
-            close();
-            st.v1_account_command(&plugin, &cmd, text);
-            return true;
-        }
+    if st.attachments.get_untracked().is_empty()
+        && st.reply_to.get_untracked().is_none()
+        && let Some((plugin, cmd)) = st.v1.listed.with_untracked(|l| crate::mini_v1::connect::account_command_for(text, l))
+    {
+        close();
+        st.v1_account_command(&plugin, &cmd, text);
+        return true;
     }
     // `@… @… attach`: the tokens, attached to this chat
     let words: Vec<&str> = text.split_whitespace().collect();
