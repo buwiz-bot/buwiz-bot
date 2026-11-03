@@ -483,8 +483,116 @@ pub(crate) fn is_primary_ink(color: &str) -> bool {
     crate::mark::norm_color(color) == "#FFFFFF"
 }
 
-/// The `/bot/*` fields for a shape in the app's form.
+/// A bot payload's (or a design's) body in the app's shape form, reading
+/// `shape`, `outline`, and for a rich avatar `layers` (with `color`, the
+/// shell, and `eyes`): `rich:<recipe>`, `outline:<path>` or a kit name.
+pub(crate) fn shape_of(v: &serde_json::Value) -> String {
+    let shape = s(v, "shape");
+    let outline = s(v, "outline");
+    match v.get("layers").and_then(|l| l.as_array()) {
+        Some(ls) if shape == "custom" && !outline.is_empty() && !ls.is_empty() => {
+            let l: Vec<serde_json::Value> = ls
+                .iter()
+                .map(compact_layer)
+                .collect();
+            // eyes: a colour, or {c, at, gap, s, rim, rw} (the design places them)
+            let eyes = match v.get("eyes") {
+                Some(e) if e.is_object() => e.clone(),
+                _ => s(v, "eyes").into(),
+            };
+            let mut recipe = serde_json::json!({"o": outline, "c": s(v, "color"), "l": l, "e": eyes});
+            // extra 3D pieces (a hat, antlers, a floating cloud), each its own
+            // outline, shell colour and layers in the same box
+            if let Some(ps) = v.get("parts").and_then(|p| p.as_array()).filter(|p| !p.is_empty()) {
+                let parts: Vec<serde_json::Value> = ps
+                    .iter()
+                    .map(|p| {
+                        let pl: Vec<serde_json::Value> = p["layers"]
+                            .as_array()
+                            .map(|ls| ls.iter().map(compact_layer).collect())
+                            .unwrap_or_default();
+                        let mut part = serde_json::json!({"o": s(p, "outline"), "c": s(p, "color"), "l": pl, "z": p.get("z").and_then(|z| z.as_f64()).unwrap_or(0.0)});
+                        // its depth vs the head's (a hair shell that wraps the head)
+                        if let Some(d) = p.get("d").and_then(|d| d.as_f64()) {
+                            part["d"] = d.into();
+                        }
+                        part
+                    })
+                    .collect();
+                recipe["p"] = parts.into();
+            }
+            format!("{}{recipe}", crate::avatar::RICH)
+        }
+        _ => body_shape(&shape, &outline),
+    }
+}
+
+/// A failed picture's message: the clipboard's, the broker's, or a plain one.
+fn picture_error(kind: &str, v: &serde_json::Value) -> String {
+    if kind == "paste" {
+        "No image on the clipboard".into()
+    } else if s(v, "error").is_empty() {
+        "Couldn't open that image".into()
+    } else {
+        s(v, "error")
+    }
+}
+
+/// A layer `{path, fill, opacity?, over?}` in the engine's compact form
+/// `[path, fill, opacity]`, with a 4th `"over"` when it draws above the
+/// eyes (a fringe over one eye, an eyepatch).
+fn compact_layer(x: &serde_json::Value) -> serde_json::Value {
+    let mut l = vec![
+        serde_json::Value::from(s(x, "path")),
+        s(x, "fill").into(),
+        x.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0).into(),
+    ];
+    if x.get("over").and_then(|o| o.as_bool()).unwrap_or(false) {
+        l.push("over".into());
+    }
+    l.into()
+}
+
+/// The compact layer back as `{path, fill, opacity, over?}`.
+fn object_layer(x: &serde_json::Value) -> serde_json::Value {
+    let mut l = serde_json::json!({"path": x[0], "fill": x[1], "opacity": x[2]});
+    if x.get(3).and_then(|o| o.as_str()) == Some("over") {
+        l["over"] = true.into();
+    }
+    l
+}
+
+/// The `/bot/*` fields for a shape in the app's form (a rich one brings
+/// its shell colour, layers and eyes).
 pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
+    if let Some(recipe) = shape.strip_prefix(crate::avatar::RICH) {
+        let r: serde_json::Value = serde_json::from_str(recipe).unwrap_or_default();
+        let layers: Vec<serde_json::Value> = r["l"]
+            .as_array()
+            .map(|ls| {
+                ls.iter().map(object_layer).collect()
+            })
+            .unwrap_or_default();
+        let mut out = serde_json::json!({"shape": "custom", "outline": r["o"], "color": r["c"], "layers": layers, "eyes": r["e"]});
+        if let Some(ps) = r["p"].as_array().filter(|p| !p.is_empty()) {
+            out["parts"] = ps
+                .iter()
+                .map(|p| {
+                    let pl: Vec<serde_json::Value> = p["l"]
+                        .as_array()
+                        .map(|ls| ls.iter().map(object_layer).collect())
+                        .unwrap_or_default();
+                    let mut part = serde_json::json!({"outline": p["o"], "color": p["c"], "layers": pl, "z": p["z"]});
+                    if p.get("d").is_some_and(|d| d.is_number()) {
+                        part["d"] = p["d"].clone();
+                    }
+                    part
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+        return out;
+    }
     match shape.strip_prefix(crate::avatar::OUTLINE) {
         Some(path) => serde_json::json!({"shape": "custom", "outline": path}),
         None => serde_json::json!({"shape": shape}),
@@ -2463,6 +2571,9 @@ pub struct Store {
     /// Reset is waiting on "Reset the avatar?": nothing is removed or
     /// reset before the confirm row's button.
     pub design_removing: Signal<Option<usize>>,
+    /// Design's mode: "mark" (3 mark avatars) or "picture" (a "Bot"-style
+    /// picture from the image model, set as a photo avatar).
+    pub design_mode: Signal<&'static str>,
     pub avatar_reset_ask: Signal<bool>,
 
     // ————— Plugins marketplace (App.tsx:1291–1640 + the modal) —————
@@ -2748,6 +2859,7 @@ impl Store {
             design_was: signal(None),
             design_saved: signal(Vec::new()),
             design_removing: signal(None),
+            design_mode: signal("mark"),
             avatar_reset_ask: signal(false),
             plugins_open: signal(false),
             plugin_nav: signal(vec![PluginNav::market()]),
@@ -2858,7 +2970,7 @@ impl Store {
                     .iter()
                     .map(|c| AvatarCand {
                         name: s(c, "name"),
-                        shape: body_shape(&s(c, "shape"), &s(c, "outline")),
+                        shape: shape_of(c),
                         color: s(c, "color"),
                         why: s(c, "why"),
                     })
@@ -3041,7 +3153,7 @@ impl Store {
                         Some(ThreadBot {
                             id: s(b, "id"),
                             name: s(b, "name"),
-                            shape: body_shape(&s(b, "shape"), &s(b, "outline")),
+                            shape: shape_of(b),
                             color: {
                                 let v = s(b, "color");
                                 if v.is_empty() { "#FFFFFF".into() } else { v }
@@ -3068,9 +3180,7 @@ impl Store {
                     },
                     shape: {
                         let a = &b["avatar"];
-                        let v = s(a, "shape");
-                        let (v, o) = if v.is_empty() { (s(b, "shape"), s(b, "outline")) } else { (v, s(a, "outline")) };
-                        body_shape(&v, &o)
+                        if s(a, "shape").is_empty() { shape_of(b) } else { shape_of(a) }
                     },
                     color: {
                         let v = s(&b["avatar"], "color");
@@ -5419,13 +5529,19 @@ impl Store {
         if self.design_busy.get_untracked() || (prompt.is_empty() && image.is_none()) {
             return;
         }
+        if self.design_mode.get_untracked() == "picture" && !self.bot_modal.get_untracked() {
+            return self.design_picture(prompt, image);
+        }
         let name = if self.bot_modal.get_untracked() {
             self.bot_name.get_untracked()
         } else {
             self.active_bot_untracked().map(|b| b.name).unwrap_or_default()
         };
-        let model = self.design_model().0;
-        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model});
+        let (model, effort, fast) = self.design_choice();
+        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model, "effort": effort, "fast": fast});
+        if self.design_mode.get_untracked() == "rich" {
+            body["style"] = "rich".into();
+        }
         if let Some(d) = &image {
             body["image"] = d.uri.clone().into();
         }
@@ -5438,7 +5554,7 @@ impl Store {
                         .iter()
                         .map(|c| AvatarCand {
                             name: s(c, "name"),
-                            shape: body_shape(&s(c, "shape"), &s(c, "outline")),
+                            shape: shape_of(c),
                             color: s(c, "color"),
                             why: s(c, "why"),
                         })
@@ -5466,7 +5582,7 @@ impl Store {
     /// label; an empty id is "Default", which the broker's Design default
     /// answers.
     pub fn design_model(&'static self) -> (String, String) {
-        let id = if self.bot_modal.get() { self.model.get() } else { self.choice().0 };
+        let id = self.design_choice().0;
         let label = if id.is_empty() {
             "the default model".to_owned()
         } else {
@@ -5480,6 +5596,19 @@ impl Store {
         (id, label)
     }
 
+    /// The model picker's choice as Design sends it: `(model, effort,
+    /// fast)`, exactly what this bot chats with (its own model, else the
+    /// app-wide one; the Create New Bot sheet takes the app-wide one).
+    pub fn design_choice(&'static self) -> (String, String, bool) {
+        let (model, effort, fast) = if self.bot_modal.get() {
+            (self.model.get(), self.effort.get(), self.fast.get())
+        } else {
+            self.choice()
+        };
+        let model = if model.is_empty() { self.model.get() } else { model };
+        (model, effort, fast)
+    }
+
     /// Reset (after its confirm row): the default ball in the primary ink,
     /// no photo.
     pub fn reset_avatar(&'static self) {
@@ -5491,27 +5620,79 @@ impl Store {
         );
     }
 
-    /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
-    pub fn design_attach(&'static self, kind: &'static str) {
+    /// Picture mode: `POST /avatar/picture` (the style prompt, the
+    /// reference picture, what the user typed on top, and the picked
+    /// model, which draws it) → the crop editor's draft, which Set avatar
+    /// puts on the bot as a photo.
+    fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
+        let (model, effort, fast) = self.design_choice();
+        let mut body = serde_json::json!({"prompt": prompt, "model": model, "effort": effort, "fast": fast});
+        if let Some(d) = &image {
+            body["image"] = d.uri.clone().into();
+        }
         self.design_err.set(String::new());
+        self.design_busy.set(true);
+        self.avatar_draft.set(None);
         spawn(async move {
-            match client::post_any(&format!("/avatar/image/{kind}"), serde_json::json!({})).await {
-                Some(v) if self::b(&v, "ok") => self.design_image.set(Some(AvatarDraft {
-                    uri: s(&v, "uri"),
-                    name: s(&v, "name"),
-                    w: f64of(&v, "w"),
-                    h: f64of(&v, "h"),
-                })),
-                Some(v) if !self::b(&v, "cancelled") => self.design_err.set(if kind == "paste" {
-                    "No image on the clipboard".into()
-                } else if s(&v, "error").is_empty() {
-                    "Couldn't open that image".into()
+            match client::post_any("/avatar/picture", body).await {
+                Some(v) if self::b(&v, "ok") => {
+                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
+                    self.avatar_draft.set(Some(AvatarDraft {
+                        uri: s(&v, "uri"),
+                        name: s(&v, "name"),
+                        w: f64of(&v, "w"),
+                        h: f64of(&v, "h"),
+                    }));
+                }
+                Some(v) => self.design_err.set(if s(&v, "error").is_empty() {
+                    "Couldn't draw a picture".into()
                 } else {
                     s(&v, "error")
                 }),
-                _ => {}
+                None => self.design_err.set("Couldn't draw a picture".into()),
             }
+            self.design_busy.set(false);
         });
+    }
+
+    /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
+    pub fn design_attach(&'static self, kind: &'static str) {
+        self.design_err.set(String::new());
+        self.picture_request(kind, move |st, path, body| {
+            spawn_detached(async move {
+                match client::post_any(&path, body).await {
+                    Some(v) if self::b(&v, "ok") => st.design_image.set(Some(AvatarDraft {
+                        uri: s(&v, "uri"),
+                        name: s(&v, "name"),
+                        w: f64of(&v, "w"),
+                        h: f64of(&v, "h"),
+                    })),
+                    Some(v) if !self::b(&v, "cancelled") => st.design_err.set(picture_error(kind, &v)),
+                    _ => {}
+                }
+            })
+        });
+    }
+
+    /// Where a picture comes from: "pick" opens the app's own open panel
+    /// (macOS) and imports the chosen file (`POST /avatar/image/import
+    /// {path}`); "paste" (and "pick" elsewhere) asks the broker
+    /// (`POST /avatar/image/<kind>`). `then` posts it.
+    fn picture_request(
+        &'static self,
+        kind: &'static str,
+        then: impl FnOnce(&'static Store, String, serde_json::Value) + Send + 'static,
+    ) {
+        #[cfg(target_os = "macos")]
+        if kind == "pick" {
+            crate::mini_v1::native::pick_image(move |path| {
+                let Some(path) = path else { return };
+                let path = path.to_string_lossy().into_owned();
+                crate::mini_v1::to_store(move |st| then(st, "/avatar/image/import".to_owned(), serde_json::json!({"path": path})));
+            });
+            return;
+        }
+        then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
     }
 
     /// Uses choice `i` and keeps its shape in "Your designs". A choice in
@@ -5556,12 +5737,12 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Adds `c` to the front of "Your designs" (once; at most 24).
+    /// Adds `c` to the front of "Your designs" (once; at most 48).
     fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
             v.retain(|d| d.shape != c.shape);
             v.insert(0, c.clone());
-            v.truncate(24);
+            v.truncate(48);
         });
         self.save_designs();
     }
@@ -5615,29 +5796,22 @@ impl Store {
     /// (App.tsx:1711).
     pub fn pick_avatar(&'static self, kind: &'static str) {
         self.avatar_err.set(String::new());
-        spawn(async move {
-            let j = client::post(&format!("/avatar/image/{kind}"), serde_json::json!({})).await;
-            match j {
-                Some(v) if self::b(&v, "ok") => {
-                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
-                    self.avatar_draft.set(Some(AvatarDraft {
-                        uri: s(&v, "uri"),
-                        name: s(&v, "name"),
-                        w: f64of(&v, "w"),
-                        h: f64of(&v, "h"),
-                    }));
+        self.picture_request(kind, move |st, path, body| {
+            spawn_detached(async move {
+                match client::post_any(&path, body).await {
+                    Some(v) if self::b(&v, "ok") => {
+                        st.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
+                        st.avatar_draft.set(Some(AvatarDraft {
+                            uri: s(&v, "uri"),
+                            name: s(&v, "name"),
+                            w: f64of(&v, "w"),
+                            h: f64of(&v, "h"),
+                        }));
+                    }
+                    Some(v) if !self::b(&v, "cancelled") => st.avatar_err.set(picture_error(kind, &v)),
+                    _ => {}
                 }
-                Some(v) if !self::b(&v, "cancelled") => self.avatar_err.set(
-                    if kind == "paste" {
-                        "No image on the clipboard".into()
-                    } else if s(&v, "error").is_empty() {
-                        "Couldn't open that image".into()
-                    } else {
-                        s(&v, "error")
-                    },
-                ),
-                _ => {}
-            }
+            })
         });
     }
 
@@ -6235,7 +6409,11 @@ impl Store {
         self.bot_modal.set(false);
         let mut body = body_fields(&self.bot_shape.get_untracked());
         body["name"] = name.into();
-        body["color"] = self.bot_color.get_untracked().into();
+        // A rich design brings its own shell colour; the sheet's colour
+        // (the primary ink by default) would paint it white.
+        if body.get("color").is_none() {
+            body["color"] = self.bot_color.get_untracked().into();
+        }
         self.design_reset();
         // Detached: the sheet's owner ends with `bot_modal` above, and a
         // task under it would die before it ran.
@@ -6345,8 +6523,8 @@ impl Store {
                 if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
                     b.name = v.to_owned();
                 }
-                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
-                    b.shape = body_shape(v, patch.get("outline").and_then(|x| x.as_str()).unwrap_or(""));
+                if patch.get("shape").and_then(|x| x.as_str()).is_some() {
+                    b.shape = shape_of(&patch);
                 }
                 if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
                     b.color = v.to_owned();
@@ -6390,8 +6568,8 @@ impl Store {
                 if let Some(v) = patch.get("name").and_then(|x| x.as_str()) {
                     tb.name = v.to_owned();
                 }
-                if let Some(v) = patch.get("shape").and_then(|x| x.as_str()) {
-                    tb.shape = body_shape(v, patch.get("outline").and_then(|x| x.as_str()).unwrap_or(""));
+                if patch.get("shape").and_then(|x| x.as_str()).is_some() {
+                    tb.shape = shape_of(&patch);
                 }
                 if let Some(v) = patch.get("color").and_then(|x| x.as_str()) {
                     tb.color = v.to_owned();

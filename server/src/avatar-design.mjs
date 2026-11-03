@@ -3,13 +3,14 @@
 // look at, and the old kit picker (/avatar/gen). The candidate logic and
 // the checks are avatar-shape.mjs's.
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AVATAR_DIR, AVATAR_MODEL, BASE_URL, MOCK, MODEL, PROVIDER } from "./config.mjs";
 import { anthropic } from "./model.mjs";
+import { editImage, generateImage, keyOf } from "./avatars.mjs";
 import { modelCtx } from "./state.mjs";
-import { DESIGN_SYSTEM, KIT_SHAPES, SWATCHES, designCandidates, mockCandidates } from "./avatar-shape.mjs";
+import { DESIGN_SYSTEM, KIT_SHAPES, MOCK_RICH, RICH_SYSTEM, SWATCHES, designCandidates, mockCandidates } from "./avatar-shape.mjs";
 
 const textOf = (m) => (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
 
@@ -35,7 +36,9 @@ export async function pickKitAvatar(description) {
 
 /** The image block for a `file://` URI that /avatar/image/pick or /paste
  *  returned; throws for anything outside the avatar folder. */
-export function avatarImageBlock(uri) {
+/** The checked path of an avatar image URI (from /avatar/image/pick or
+ *  /avatar/image/paste, inside AVATAR_DIR, no symlink out), or throws. */
+export function avatarImagePath(uri) {
   const refuse = () => {
     throw new Error("image must be an avatar image from /avatar/image/pick or /avatar/image/paste");
   };
@@ -60,6 +63,12 @@ export function avatarImageBlock(uri) {
   }
   // and where it really is: no symlink out
   if (!inside(realpathSync(AVATAR_DIR), real) || !statSync(real).isFile()) refuse();
+  return real;
+}
+
+/** An avatar image URI (see avatarImagePath) as a Messages image block. */
+export function avatarImageBlock(uri) {
+  const real = avatarImagePath(uri);
   let bytes = readFileSync(real);
   // the Messages API takes up to 5 MB an image: a big photo goes down to 1024
   if (bytes.length > 3_500_000) {
@@ -88,11 +97,14 @@ const oaiContent = (c) =>
  *  `model` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
  *  routed through opencodex as a bot's chosen model is; "" is Design's
  *  default, AVATAR_MODEL (GEN_AVATAR_MODEL), never the chat's. */
-export async function askDesigner(messages, model = "") {
+export async function askDesigner(messages, model = "", { system = DESIGN_SYSTEM, maxTokens = 6000, effort = "", fast: fastPick = false } = {}) {
   if (PROVIDER === "anthropic") {
-    const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: 6000, system: DESIGN_SYSTEM, messages });
-    const fast = model.endsWith("--fast");
-    const m = model ? await modelCtx.run({ model: fast ? model.slice(0, -"--fast".length) : model, fast }, create) : await create();
+    const create = () => anthropic.messages.create({ model: AVATAR_MODEL, max_tokens: maxTokens, system, messages });
+    // the picker's choice, routed as chat routes it: its model (an id may
+    // carry --fast), its reasoning effort, its Fast setting
+    const fast = model.endsWith("--fast") || !!fastPick;
+    const base = model.endsWith("--fast") ? model.slice(0, -"--fast".length) : model;
+    const m = model || effort || fast ? await modelCtx.run({ model: base, effort, fast }, create) : await create();
     return textOf(m);
   }
   const r = await fetch(`${BASE_URL}/chat/completions`, {
@@ -100,8 +112,8 @@ export async function askDesigner(messages, model = "") {
     headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: model || AVATAR_MODEL,
-      messages: [{ role: "system", content: DESIGN_SYSTEM }, ...messages.map((m) => ({ ...m, content: oaiContent(m.content) }))],
-      max_tokens: 6000,
+      messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, content: oaiContent(m.content) }))],
+      max_tokens: maxTokens,
     }),
   });
   if (!r.ok) throw new Error(`llm-api ${r.status}: ${await r.text()}`);
@@ -109,16 +121,165 @@ export async function askDesigner(messages, model = "") {
 }
 
 /** POST /avatar/design's body → its candidates. */
-export async function designAvatar({ prompt, image, name, model } = {}) {
-  if (typeof prompt !== "string" || !prompt.trim()) throw new Error("describe the bot or how it should look");
+export async function designAvatar({ prompt, image, name, model, style, effort, fast } = {}) {
+  const pick = { effort: typeof effort === "string" ? effort : "", fast: !!fast };
+  const rich = style === "rich";
+  const text = typeof prompt === "string" ? prompt.trim() : "";
+  // a picture alone is enough: the model makes its subject into an avatar
+  if (!text && !image) throw new Error("describe the bot or add a picture");
   const block = image ? avatarImageBlock(image) : null;
-  if (MOCK) return mockCandidates({ image: !!block });
+  if (MOCK) return rich ? MOCK_RICH.map((c) => ({ ...c })) : mockCandidates({ image: !!block });
   return designCandidates(
-    { prompt: prompt.trim(), name: typeof name === "string" ? name.trim() : "", image: block },
+    { prompt: text, name: typeof name === "string" ? name.trim() : "", image: block, rich },
     {
-      ask: (messages) => askDesigner(messages, typeof model === "string" ? model.trim() : ""),
+      ask: (messages) =>
+        askDesigner(messages, typeof model === "string" ? model.trim() : "", rich ? { system: `${DESIGN_SYSTEM}\n\n${RICH_SYSTEM}`, maxTokens: 12000, ...pick } : pick),
       // the fallback never fails the request
       pick: (p) => pickKitAvatar(p).catch(() => ({ shape: "blob", color: "#1084FE" })),
+      // rich designs get one look at themselves drawn flat (GEN_AVATAR_SELFCHECK=0: none)
+      selfCheck: rich && process.env.GEN_AVATAR_SELFCHECK !== "0",
+      preview: rasterizePreviews,
     },
   );
+}
+
+/** The self-check's previews as PNG image blocks (QuickLook renders each
+ *  SVG at 512), or null when that fails (the SVG text goes instead). */
+export function rasterizePreviews(svgs) {
+  const id = `check-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const files = svgs.map((svg, k) => {
+    const f = join(AVATAR_DIR, `${id}-${k}.svg`);
+    writeFileSync(f, svg);
+    return f;
+  });
+  try {
+    execFileSync("qlmanage", ["-t", "-s", "512", "-o", AVATAR_DIR, ...files], { stdio: "ignore" });
+    return files.map((f) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(`${f}.png`).toString("base64") } }));
+  } catch {
+    return null;
+  } finally {
+    for (const f of files) for (const x of [f, `${f}.png`]) try { unlinkSync(x); } catch {}
+  }
+}
+
+// --- Picture mode: a "Bot"-style picture from the image model ---------------
+
+// The style prompt lives in templates/, like Design's system prompt.
+export const PICTURE_STYLE = readFileSync(new URL("./templates/avatar-picture-style.txt", import.meta.url), "utf8").replace(/\n$/, "");
+
+/** The image model's instructions: the style, then what the user typed on
+ *  top of it (it adds to the style; it never replaces it). With no
+ *  picture, the character is the user's description. */
+export function pictureRequest({ prompt = "", image = false } = {}) {
+  const extra = String(prompt || "").trim();
+  const style = image ? PICTURE_STYLE : PICTURE_STYLE.replace(/^Turn the subject of the reference picture into a minimal flat "Bot" avatar\. Use the picture only to recognise who the subject is; do not copy its pose, framing or background\./, "Draw the character described below as a minimal flat \"Bot\" avatar.");
+  return [style, extra ? `${image ? "Also, from the user" : "The character"}: ${extra}` : ""].filter(Boolean).join("\n\n");
+}
+
+const SVG_RULES =
+  'Draw it as one SVG: viewBox="0 0 1024 1024", full-bleed, the background covering every pixel. Flat shapes and simple linear or radial gradients only; no text, no <image>, no filters, no scripts. Reply with only the <svg>…</svg> markup.';
+
+/** POST /avatar/picture {image?, prompt?, model?} → a new picture in
+ *  AVATAR_DIR: {uri, name, w, h, via}. The chosen chat model (the model
+ *  picker's, else Design's default) draws it as SVG, which QuickLook
+ *  rasterizes; when that fails, the image models (the opencodex relay,
+ *  then Gemini) try. The picture becomes a photo avatar (the crop
+ *  editor's Set avatar), so its colours are its own. */
+export async function designPicture({ prompt, image, model, effort, fast } = {}) {
+  const text = typeof prompt === "string" ? prompt.trim() : "";
+  if (!text && !image) throw new Error("add a picture or describe the character");
+  const src = image ? avatarImagePath(image) : null;
+  const out = join(AVATAR_DIR, `${Date.now().toString(36)}-bot.png`);
+  let via = "mock";
+  if (MOCK) {
+    // no model: the reference stands in (or a fixed square)
+    execFileSync("sips", ["-s", "format", "png", "-Z", "1024", src || MOCK_PICTURE, "--out", out], { stdio: "ignore" });
+  } else {
+    const ask = pictureRequest({ prompt: text, image: !!src });
+    const errs = [];
+    try {
+      via = await svgPicture(ask, src ? avatarImageBlock(image) : null, typeof model === "string" ? model.trim() : "", out, { effort: typeof effort === "string" ? effort : "", fast: !!fast });
+    } catch (e) {
+      errs.push(`${model || AVATAR_MODEL}: ${e?.message || e}`);
+      try {
+        via = src ? await editAvatarImage(src, ask, out) : await generateImage(ask, out);
+      } catch (e2) {
+        errs.push(String(e2?.message || e2));
+        throw new Error(`couldn't draw the picture (${errs.join("; ")})`);
+      }
+    }
+  }
+  const dims = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", out], { encoding: "utf8" });
+  return {
+    via,
+    uri: `file://${out}`,
+    name: "Bot picture",
+    w: Number(/pixelWidth: (\d+)/.exec(dims)?.[1] || 0),
+    h: Number(/pixelHeight: (\d+)/.exec(dims)?.[1] || 0),
+  };
+}
+
+/** The chat model draws the picture as SVG; QuickLook (WebKit) renders it
+ *  to `out`. → the model's id. */
+async function svgPicture(ask, block, model, out, pick = {}) {
+  const content = [...(block ? [block] : []), { type: "text", text: `${ask}\n\n${SVG_RULES}` }];
+  const reply = await askDesigner([{ role: "user", content }], model, {
+    system: "You are an illustrator who draws clean vector avatars as SVG.",
+    maxTokens: 16000,
+    ...pick,
+  });
+  const svg = /<svg[\s\S]*<\/svg>/.exec(reply)?.[0];
+  if (!svg) throw new Error("the model returned no SVG");
+  if (/<script|<image|<foreignObject|href\s*=\s*["']https?:/i.test(svg)) throw new Error("the SVG used scripts or outside images");
+  const svgPath = out.replace(/\.png$/, "") + ".svg";
+  writeFileSync(svgPath, svg);
+  try {
+    execFileSync("qlmanage", ["-t", "-s", "1024", "-o", AVATAR_DIR, svgPath], { stdio: "ignore" });
+    execFileSync("mv", [svgPath + ".png", out]);
+  } finally {
+    try { unlinkSync(svgPath); } catch {}
+  }
+  return model || AVATAR_MODEL;
+}
+
+const MOCK_PICTURE = fileURLToPath(new URL("../test/fixtures/avatar-mock.png", import.meta.url));
+
+/** Edits `src` as `prompt` says into `out`: the opencodex image relay
+ *  first, then Gemini's image model when a key is configured. */
+async function editAvatarImage(src, prompt, out) {
+  const errs = [];
+  try {
+    return await editImage(src, prompt, out);
+  } catch (e) {
+    errs.push(`opencodex: ${e?.message || e}`);
+  }
+  const gem = keyOf("GEMINI_API_KEY");
+  if (gem) {
+    try {
+      const bytes = readFileSync(src);
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${gem}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: bytes.toString("base64") } }] }],
+            generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "1:1" } },
+          }),
+        },
+      );
+      const j = await r.json();
+      const data = j?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
+      if (data) {
+        writeFileSync(out + ".raw", Buffer.from(data, "base64"));
+        execFileSync("sips", ["-s", "format", "png", out + ".raw", "--out", out], { stdio: "ignore" });
+        unlinkSync(out + ".raw");
+        return "gemini";
+      }
+      errs.push(`gemini: ${j?.error?.message || "no image"}`);
+    } catch (e) {
+      errs.push(`gemini: ${e?.message || e}`);
+    }
+  }
+  throw new Error(`no image model could draw it (${errs.join("; ")})`);
 }

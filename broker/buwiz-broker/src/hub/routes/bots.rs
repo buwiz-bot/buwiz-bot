@@ -15,6 +15,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::Bytes;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use super::chat::{answer, card_names, ok, parse, ready, refused, sweep_modules, thrown, trimmed, wrote};
@@ -22,7 +24,7 @@ use crate::helper::local::{command, exec, tools};
 use crate::hub::ctx::HubCtx;
 use crate::hub::library::{avatar_shape, botctx};
 use crate::hub::model::anthropic::parse_llm;
-use crate::hub::model::{openai, Settings};
+use crate::hub::model::{images, openai, Settings};
 use crate::hub::library::groups::{now36, random36, time_id};
 use crate::hub::store::json::{out, template, turns_json, Lookups};
 use crate::hub::store::{bot_defaults, Bot};
@@ -45,15 +47,54 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/attach/pick"), attach_pick);
     routes.route(Verb::Post, P("/avatar/image/"), avatar_image);
     routes.route(Verb::Post, X("/avatar/gen"), avatar_gen);
-    routes.route(Verb::Post, X("/avatar/design"), avatar_design);
+    routes.route(Verb::Post, X("/avatar/design"), |ctx, req| keep_alive(avatar_design(ctx, req)));
+    routes.route(Verb::Post, X("/avatar/picture"), |ctx, req| keep_alive(avatar_picture(ctx, req)));
 }
 
-/// routes/bots.mjs `applyAvatar(bot, {shape, color, outline})`: the
-/// avatar a request leaves a bot with (`cur` its shape, colour and
-/// outline), or the errors joined. A kit shape clears the outline, an
-/// outline without a shape makes it "custom"; only the fields given are
-/// checked.
-fn apply_avatar(cur: (&str, &str, Option<&str>), b: &Value) -> Result<(String, String, Option<String>), String> {
+/// A bot's avatar fields: its shape, colour, a custom shape's outline, and
+/// a rich avatar's layers and eye colour.
+#[derive(Clone, Default)]
+struct Avatar {
+    shape: String,
+    color: String,
+    outline: Option<String>,
+    layers: Option<Vec<Value>>,
+    eyes: Option<Value>,
+    parts: Option<Vec<Value>>,
+}
+
+impl Avatar {
+    fn of(b: &Bot) -> Self {
+        Avatar { shape: b.shape.clone(), color: b.color.clone(), outline: b.outline.clone(), layers: b.layers.clone(), eyes: b.eyes.clone(), parts: b.parts.clone() }
+    }
+
+    fn set(self, b: &mut Bot) {
+        (b.shape, b.color, b.outline, b.layers, b.eyes, b.parts) = (self.shape, self.color, self.outline, self.layers, self.eyes, self.parts);
+    }
+
+    /// The fields as a bot payload carries them, after `color`.
+    fn extend(&self, o: &mut Value) {
+        if let Some(x) = &self.outline {
+            o["outline"] = json!(x);
+        }
+        if let Some(l) = &self.layers {
+            o["layers"] = Value::Array(l.clone());
+            if let Some(e) = &self.eyes {
+                o["eyes"] = e.clone();
+            }
+        }
+        if let Some(p) = &self.parts {
+            o["parts"] = Value::Array(p.clone());
+        }
+    }
+}
+
+/// routes/bots.mjs `applyAvatar(bot, {shape, color, outline, layers,
+/// eyes})`: the avatar a request leaves a bot with (`cur` its own), or the
+/// errors joined. A kit shape clears the outline and layers, an outline
+/// without a shape makes it "custom", a new outline brings its own layers
+/// (or none); only the fields given are checked.
+fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
     let shape = b.get("shape").filter(|v| js::truthy(v));
     let color = b.get("color").filter(|v| js::truthy(v));
     let outline = b.get("outline");
@@ -62,31 +103,110 @@ fn apply_avatar(cur: (&str, &str, Option<&str>), b: &Value) -> Result<(String, S
     let s: Option<&str> = match shape {
         Some(v) => v.as_str(),
         None if has_outline => Some("custom"),
-        None => Some(cur.0),
+        None => Some(&cur.shape),
     };
     let c: Option<&str> = match color {
         Some(v) => v.as_str(),
-        None => Some(cur.1),
+        None => Some(&cur.color),
     };
-    let o: Option<String> = if s == Some("custom") {
+    let custom = s == Some("custom");
+    let o: Option<String> = if custom {
         if has_outline {
             outline.and_then(Value::as_str).map(|o| o.trim_matches(js::is_space).to_owned())
         } else {
-            cur.2.map(str::to_owned)
+            cur.outline.clone()
         }
     } else {
         None
     };
+    // A new outline brings its own layers (or none); otherwise they stay.
+    let sent = b.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty());
+    let keep = !has_outline && custom && cur.layers.as_ref().is_some_and(|l| !l.is_empty());
+    let l: Option<Vec<Value>> = if !custom {
+        None
+    } else if let Some(x) = sent {
+        Some(x.clone())
+    } else if keep {
+        cur.layers.clone()
+    } else {
+        None
+    };
+    let eyes = b.get("eyes");
+    // sent eyes (a colour or a placement) win; else a kept set keeps its own
+    let sent_eyes = eyes.is_some_and(|v| v.is_string() || v.is_object() || v.is_array());
+    let e: Option<Value> = l.as_ref().and_then(|_| if sent_eyes { eyes.cloned() } else if keep { cur.eyes.clone() } else { eyes.cloned() });
+    // parts follow the same rule: a new outline brings its own (or none)
+    let sent_parts = b.get("parts").and_then(Value::as_array).filter(|p| !p.is_empty());
+    let keep_parts = !has_outline && custom && cur.parts.as_ref().is_some_and(|p| !p.is_empty());
+    let p: Option<Vec<Value>> = if !custom {
+        None
+    } else if let Some(x) = sent_parts {
+        Some(x.clone())
+    } else if keep_parts {
+        cur.parts.clone()
+    } else {
+        None
+    };
+    let pv = p.clone().map(Value::Array);
+    let lv = l.clone().map(Value::Array);
     let errs = avatar_shape::validate_avatar(
-        if shape.is_some() || has_outline || s == Some("custom") { s } else { Some("blob") },
+        if shape.is_some() || has_outline || custom { s } else { Some("blob") },
         if color.is_some() { c } else { Some("#1084FE") },
         o.as_deref(),
+        lv.as_ref(),
+        if l.is_some() { e.as_ref() } else { None },
+        pv.as_ref(),
     );
     if !errs.is_empty() {
         return Err(errs.join("; "));
     }
-    let (s, c) = (s.unwrap_or_default().to_owned(), c.unwrap_or_default().to_owned());
-    Ok((s, c, o.filter(|o| !o.is_empty())))
+    // each layer as stored: {path, fill, opacity?}
+    let layer_of = |x: &Value| {
+        let mut m = serde_json::Map::new();
+        m.insert("path".into(), x.get("path").cloned().unwrap_or(Value::Null));
+        m.insert("fill".into(), x.get("fill").cloned().unwrap_or(Value::Null));
+        if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
+            m.insert("opacity".into(), op.clone());
+        }
+        // stored only when true
+        if x.get("over") == Some(&Value::Bool(true)) {
+            m.insert("over".into(), json!(true));
+        }
+        Value::Object(m)
+    };
+    let layers: Option<Vec<Value>> = l.map(|l| l.iter().map(layer_of).collect());
+    // each part as stored: {outline, color, layers?, z?}
+    let parts: Option<Vec<Value>> = p.map(|p| {
+        p.iter()
+            .map(|x| {
+                let mut m = serde_json::Map::new();
+                let o = x.get("outline").cloned().unwrap_or(Value::Null);
+                m.insert("outline".into(), match o {
+                    Value::String(s) => json!(s.trim_matches(js::is_space)),
+                    v => v,
+                });
+                m.insert("color".into(), x.get("color").cloned().unwrap_or(Value::Null));
+                if let Some(ls) = x.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty()) {
+                    m.insert("layers".into(), Value::Array(ls.iter().map(layer_of).collect()));
+                }
+                if let Some(z) = x.get("z").filter(|v| v.is_number()) {
+                    m.insert("z".into(), z.clone());
+                }
+                if let Some(d) = x.get("d").filter(|v| v.is_number()) {
+                    m.insert("d".into(), d.clone());
+                }
+                Value::Object(m)
+            })
+            .collect()
+    });
+    Ok(Avatar {
+        shape: s.unwrap_or_default().to_owned(),
+        color: c.unwrap_or_default().to_owned(),
+        outline: o.filter(|o| !o.is_empty()),
+        eyes: if layers.is_some() { e } else { None },
+        layers,
+        parts,
+    })
 }
 
 async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
@@ -100,7 +220,7 @@ async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Ok(_) => return refused("bot needs a name", false),
         Err(e) => return refused(&e, false),
     };
-    let (shape, color, outline) = match apply_avatar(("blob", "#1084FE", None), &b) {
+    let av = match apply_avatar(&Avatar { shape: "blob".into(), color: "#1084FE".into(), ..Default::default() }, &b) {
         Ok(a) => a,
         Err(e) => return refused(&e, false),
     };
@@ -112,15 +232,15 @@ async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         let tid = t.id.clone();
         let turns = turns_json(&mut t, &l, &gen);
         s.list.insert(0, t);
-        s.bots.push(Bot { outline: outline.clone(), ..Bot::new(&id, &name, &shape, &color, Some(tid.clone())) });
+        let mut bot = Bot::new(&id, &name, &av.shape, &av.color, Some(tid.clone()));
+        av.clone().set(&mut bot);
+        s.bots.push(bot);
         s.active = tid.clone();
         (tid, turns)
     }));
     let (d, i) = bot_defaults(&name);
-    let mut bot = json!({"id": id, "name": name, "shape": shape, "color": color});
-    if let Some(o) = &outline {
-        bot["outline"] = json!(o);
-    }
+    let mut bot = json!({"id": id, "name": name, "shape": av.shape, "color": av.color});
+    av.extend(&mut bot);
     for (k, v) in [("threadId", json!(tid)), ("description", json!(d)), ("instructions", json!(i)), ("memories", json!([])), ("integrations", json!([]))] {
         bot[k] = v;
     }
@@ -135,11 +255,11 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Err(e) => return refused(&e, false),
     };
     let id = b.get("id");
-    let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), (b.shape.clone(), b.color.clone(), b.outline.clone())))) else {
+    let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), Avatar::of(b)))) else {
         return refused(&format!("unknown bot {}", template(id)), false);
     };
-    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() {
-        match apply_avatar((&cur.0, &cur.1, cur.2.as_deref()), &b) {
+    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() || b.get("parts").is_some() {
+        match apply_avatar(&cur, &b) {
             Ok(a) => Some(a),
             Err(e) => return refused(&e, false),
         }
@@ -153,8 +273,8 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let section = b.get("section").map(|v| js::string_of(v).trim_matches(js::is_space).to_owned());
     wrote!(ctx.store.write(|s| {
         let Some(bot) = s.bot_mut(&bot_id) else { return };
-        if let Some((shape, color, outline)) = avatar {
-            (bot.shape, bot.color, bot.outline) = (shape, color, outline);
+        if let Some(av) = avatar {
+            av.set(bot);
         }
         if let Some(name) = name.filter(|n| *n != bot.name) {
             // untouched defaults follow a rename; edited ones stay
@@ -519,6 +639,25 @@ async fn avatar_image(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             }
             picked.rsplit('/').next().unwrap_or(&picked).to_owned()
         }
+        // A file the app's own open panel chose (it stays in front, unlike
+        // AppleScript's chooser): copied in as PNG like a pick.
+        "import" => {
+            let b = match parse(&req.body) {
+                Ok(b) => b,
+                Err(e) => return refused(&e, true),
+            };
+            let path = match b.get("path").and_then(|p| p.as_str()) {
+                Some(p) if std::path::Path::new(p).is_absolute() => p.to_owned(),
+                _ => return refused("import needs an absolute file path", true),
+            };
+            if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+                return refused("image not found", true);
+            }
+            if let Err(e) = exec(&ctx, command("sips", &["-s", "format", "png", &path, "--out", &out_s])).await {
+                return refused(&e, true);
+            }
+            path.rsplit('/').next().unwrap_or(&path).to_owned()
+        }
         "paste" => {
             let script = format!("set f to open for access POSIX file \"{out_s}\" with write permission\n             write (the clipboard as «class PNGf») to f\n             close access f");
             if let Err(e) = osa(&ctx, &script).await {
@@ -593,10 +732,29 @@ fn text_of(m: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// Design's model (config.mjs `AVATAR_MODEL`): `GEN_AVATAR_MODEL`, else
-/// claude-sonnet-5 on Anthropic and the provider's model elsewhere.
+/// Design's model when the picker names none (config.mjs `AVATAR_MODEL`):
+/// `GEN_AVATAR_MODEL`, else the chat default.
 fn avatar_model(settings: &Settings) -> String {
-    std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| if settings.anthropic() { "claude-sonnet-5".into() } else { settings.model.clone() })
+    std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| settings.model.clone())
+}
+
+/// The model picker's choice a Design or Picture request carries:
+/// `{model, effort, fast}` (an id may end in `--fast`).
+#[derive(Clone, Default)]
+struct Pick {
+    model: String,
+    effort: String,
+    fast: bool,
+}
+
+impl Pick {
+    fn of(b: &Value) -> Self {
+        Pick {
+            model: b.get("model").and_then(Value::as_str).map(|m| m.trim_matches(js::is_space).to_owned()).unwrap_or_default(),
+            effort: b.get("effort").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            fast: b.get("fast").is_some_and(js::truthy),
+        }
+    }
 }
 
 /// `/\/(\.|%2e){2}(\/|$)/i`: a `..` segment as sent.
@@ -626,10 +784,10 @@ fn inside(root: &Path, p: &Path) -> bool {
     }
 }
 
-/// avatar-design.mjs `avatarImageBlock(uri)`: the image block for a
+/// avatar-design.mjs `avatarImagePath(uri)`: the checked path of a
 /// `file://` URI /avatar/image/pick or /paste returned; anything outside
-/// the avatar folder is refused.
-async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> {
+/// the avatar folder (as written, or after symlinks) is refused.
+fn avatar_image_path(ctx: &HubCtx, uri: &Value) -> Result<PathBuf, String> {
     let refuse = || "image must be an avatar image from /avatar/image/pick or /avatar/image/paste".to_owned();
     let uri = uri.as_str().filter(|u| u.starts_with("file://") && !dot_dot(u)).ok_or_else(refuse)?;
     // fileURLToPath: a local file URL, no encoded "/"
@@ -648,6 +806,14 @@ async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> 
     if !inside(&real_dir, &real) || !real.is_file() {
         return Err(refuse());
     }
+    Ok(real)
+}
+
+/// avatar-design.mjs `avatarImageBlock(uri)`: the image as a Messages
+/// image block.
+async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> {
+    let real = avatar_image_path(ctx, uri)?;
+    let dir = ctx.store.gen_dir().join("avatars");
     let mut bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
     // the Messages API takes up to 5 MB an image: a big photo goes down to 1024
     if bytes.len() > 3_500_000 {
@@ -672,32 +838,36 @@ async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> 
     Ok(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": base64::engine::general_purpose::STANDARD.encode(&bytes)}}))
 }
 
-/// avatar-design.mjs `askDesigner(messages, model)`: the reply's text.
-/// `chosen` is the picker's id ("gpt-5.5", "claude-haiku-5-5--fast"),
-/// routed through opencodex as a bot's chosen model is; "" is Design's
-/// default ([`avatar_model`]), never the chat's.
-async fn ask_designer(ctx: Arc<HubCtx>, messages: Vec<Value>, chosen: String) -> Result<String, String> {
+/// avatar-design.mjs `askDesigner(messages, model, {effort, fast})`: the
+/// reply's text. The picker's model ("gpt-5.5", "claude-haiku-5-5--fast")
+/// routes through opencodex as a bot's chosen model does; "" is
+/// [`avatar_model`].
+async fn ask_designer(ctx: Arc<HubCtx>, messages: Vec<Value>, pick: Pick, system: String, max_tokens: u32) -> Result<String, String> {
+    let chosen = pick.model.clone();
     let settings = Settings::global();
     if settings.anthropic() {
         let model = ctx.model.clone().ok_or_else(|| "no model client".to_owned())?;
-        let body = json!({"model": avatar_model(settings), "max_tokens": 6000, "system": avatar_shape::design_system(), "messages": messages});
+        let body = json!({"model": avatar_model(settings), "max_tokens": max_tokens, "system": system, "messages": messages});
+        // the picker's choice, routed as chat routes it: its model (an id
+        // may carry --fast), its reasoning effort, its Fast setting
         let mut turn = TurnCtx::default();
-        if !chosen.is_empty() {
-            let fast = chosen.ends_with("--fast");
-            let base = if fast { &chosen[..chosen.len() - "--fast".len()] } else { chosen.as_str() };
-            turn.model = Some(ModelChoice { model: base.to_owned(), effort: String::new(), fast, name: None });
+        let suffixed = chosen.ends_with("--fast");
+        let fast = suffixed || pick.fast;
+        if !chosen.is_empty() || !pick.effort.is_empty() || fast {
+            let base = if suffixed { &chosen[..chosen.len() - "--fast".len()] } else { chosen.as_str() };
+            turn.model = Some(ModelChoice { model: base.to_owned(), effort: pick.effort.clone(), fast, name: None });
         }
         let m = model.create(&turn, body).await.map_err(|e| parse_llm(&e).1.to_owned())?;
         return Ok(text_of(&m));
     }
-    let mut msgs = vec![json!({"role": "system", "content": avatar_shape::design_system()})];
+    let mut msgs = vec![json!({"role": "system", "content": system})];
     for m in &messages {
         let mut m = m.as_object().cloned().unwrap_or_default();
         let c = openai::oai_content(m.get("content"))?;
         m.insert("content".into(), c);
         msgs.push(Value::Object(m));
     }
-    let body = json!({"model": if chosen.is_empty() { avatar_model(settings) } else { chosen }, "messages": msgs, "max_tokens": 6000});
+    let body = json!({"model": if chosen.is_empty() { avatar_model(settings) } else { chosen }, "messages": msgs, "max_tokens": max_tokens});
     let (status, text) = openai::completions(settings, &body).await?;
     if !(200..300).contains(&status) {
         return Err(format!("llm-api {status}: {text}"));
@@ -706,17 +876,20 @@ async fn ask_designer(ctx: Arc<HubCtx>, messages: Vec<Value>, chosen: String) ->
     Ok(openai::choice(&data, &["message", "content"]).filter(|c| js::truthy(c)).map(js::string_of).unwrap_or_default())
 }
 
-/// `POST /avatar/design {prompt, image?, name?, model?}` → `{ok, candidates}`
-/// (avatar-design.mjs `designAvatar`).
+/// `POST /avatar/design {prompt, image?, name?, model?, style?}` → `{ok,
+/// candidates}` (avatar-design.mjs `designAvatar`). A picture alone is
+/// enough; `style: "rich"` asks for layered, multi-colour avatars.
 async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let b = match parse(&req.body) {
         Ok(b) => b,
         Err(e) => return refused(&e, true),
     };
-    let prompt = match b.get("prompt").and_then(Value::as_str).map(|p| p.trim_matches(js::is_space)) {
-        Some(p) if !p.is_empty() => p.to_owned(),
-        _ => return refused("describe the bot or how it should look", true),
-    };
+    let rich = b.get("style").and_then(Value::as_str) == Some("rich");
+    let prompt = b.get("prompt").and_then(Value::as_str).map(|p| p.trim_matches(js::is_space).to_owned()).unwrap_or_default();
+    // a picture alone is enough: the model makes its subject into an avatar
+    if prompt.is_empty() && !b.get("image").is_some_and(js::truthy) {
+        return refused("describe the bot or add a picture", true);
+    }
     let block = match b.get("image").filter(|v| js::truthy(v)) {
         Some(img) => match avatar_image_block(&ctx, img).await {
             Ok(x) => Some(x),
@@ -726,29 +899,307 @@ async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     };
     let settings = Settings::global();
     if settings.mock {
-        let c: Vec<Value> = avatar_shape::mock_candidates(block.is_some()).iter().map(avatar_shape::Candidate::json).collect();
+        let c: Vec<Value> = if rich { avatar_shape::mock_rich() } else { avatar_shape::mock_candidates(block.is_some()).iter().map(avatar_shape::Candidate::json).collect() };
         return ok(&json!({"ok": true, "candidates": c}));
     }
     if settings.anthropic() && ctx.model.is_none() {
         return not_ported();
     }
     let name = b.get("name").and_then(Value::as_str).map(|n| n.trim_matches(js::is_space).to_owned()).unwrap_or_default();
-    let chosen = b.get("model").and_then(Value::as_str).map(|m| m.trim_matches(js::is_space).to_owned()).unwrap_or_default();
+    let chosen = Pick::of(&b);
     let (ask_ctx, pick_ctx) = (ctx.clone(), ctx.clone());
+    let (system, max_tokens) = if rich { (format!("{}\n\n{}", avatar_shape::design_system(), avatar_shape::rich_system()), 12000) } else { (avatar_shape::design_system().to_owned(), 6000) };
     let r = avatar_shape::design_candidates(
         &prompt,
         &name,
         block,
-        |messages| ask_designer(ask_ctx.clone(), messages, chosen.clone()),
+        rich,
+        // rich designs get one look at themselves drawn flat (GEN_AVATAR_SELFCHECK=0: none)
+        rich && std::env::var("GEN_AVATAR_SELFCHECK").ok().as_deref() != Some("0"),
+        |messages| ask_designer(ask_ctx.clone(), messages, chosen.clone(), system.clone(), max_tokens),
         |p: String| {
             let ctx = pick_ctx.clone();
             // the fallback never fails the request
             async move { pick_kit(&ctx, &p).await.ok().flatten().map(|k| k.0).unwrap_or_else(|| "blob".into()) }
         },
+        |svgs| rasterize_previews(ctx.clone(), svgs),
     )
     .await;
     match r {
         Ok(c) => ok(&json!({"ok": true, "candidates": c.iter().map(avatar_shape::Candidate::json).collect::<Vec<_>>()})),
         Err(e) => refused(&e, true),
+    }
+}
+
+/// avatar-design.mjs `rasterizePreviews(svgs)`: the self-check's previews
+/// as PNG image blocks (QuickLook renders each SVG at 512), or `None` when
+/// that fails (the SVG text goes instead).
+async fn rasterize_previews(ctx: Arc<HubCtx>, svgs: Vec<String>) -> Option<Vec<Value>> {
+    use base64::Engine as _;
+    let dir = ctx.store.gen_dir().join("avatars");
+    let id = format!("check-{}-{}", now36(), random36(4));
+    let files: Vec<String> = svgs.iter().enumerate().map(|(k, _)| dir.join(format!("{id}-{k}.svg")).to_string_lossy().into_owned()).collect();
+    let r: Result<Vec<Value>, String> = async {
+        for (f, svg) in files.iter().zip(&svgs) {
+            std::fs::write(f, svg).map_err(|e| e.to_string())?;
+        }
+        let dir_s = dir.to_string_lossy().into_owned();
+        let mut args = vec!["-t", "-s", "512", "-o", dir_s.as_str()];
+        args.extend(files.iter().map(String::as_str));
+        exec(&ctx, command("qlmanage", &args)).await?;
+        files
+            .iter()
+            .map(|f| std::fs::read(format!("{f}.png")).map(|b| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(b)}})).map_err(|e| e.to_string()))
+            .collect()
+    }
+    .await;
+    for f in &files {
+        let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_file(format!("{f}.png"));
+    }
+    r.ok()
+}
+
+/// `GEN_AVATAR_KEEPALIVE_MS` "<wait>[,<every>]": how long a slow design
+/// may run before its answer starts, and how often a space keeps it alive
+/// (10 s and 15 s).
+fn keep_alive_ms() -> (u64, u64) {
+    let v = std::env::var("GEN_AVATAR_KEEPALIVE_MS").unwrap_or_default();
+    let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok().filter(|n| *n > 0.0).map(|n| n as u64));
+    let wait = it.next().flatten();
+    let every = it.next().flatten();
+    (wait.unwrap_or(10_000), every.or(wait).unwrap_or(15_000))
+}
+
+/// routes/bots.mjs `keepAlive`: the app's HTTP client gives up on a
+/// response idle for 60 s, and a rich design or a picture can take longer.
+/// A job done within the wait answers as it is; past it the answer starts
+/// as a 200 at once, a space goes out every interval (JSON parsers skip
+/// leading whitespace), and the job's JSON (an error's `{ok:false,
+/// error}` too) ends it. The job runs on its own task: a client that hangs
+/// up stops the spaces, and the job finishes unheard.
+async fn keep_alive<F>(job: F) -> HubResponse
+where
+    F: std::future::Future<Output = HubResponse> + Send + 'static,
+{
+    let (wait, every) = keep_alive_ms();
+    keep_alive_after(wait, every, job).await
+}
+
+async fn keep_alive_after<F>(wait: u64, every: u64, job: F) -> HubResponse
+where
+    F: std::future::Future<Output = HubResponse> + Send + 'static,
+{
+    let mut job = tokio::spawn(job);
+    tokio::select! {
+        done = &mut job => return match done {
+            Ok(res) => res,
+            Err(e) => thrown(&e.to_string()),
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_millis(wait)) => {}
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+    tokio::spawn(async move {
+        if tx.send(Bytes::from_static(b" ")).await.is_err() {
+            return;
+        }
+        let mut beat = tokio::time::interval(std::time::Duration::from_millis(every));
+        beat.tick().await;
+        let res = loop {
+            tokio::select! {
+                done = &mut job => break done,
+                _ = beat.tick() => {
+                    if tx.send(Bytes::from_static(b" ")).await.is_err() {
+                        return;
+                    }
+                }
+                _ = tx.closed() => return,
+            }
+        };
+        let body = match res {
+            Ok(r) => match r.into_body().collect().await {
+                Ok(b) => b.to_bytes(),
+                Err(e) => Bytes::from(out(&json!({"ok": false, "error": e.to_string()}))),
+            },
+            Err(e) => Bytes::from(out(&json!({"ok": false, "error": e.to_string()}))),
+        };
+        let _ = tx.send(body).await;
+    });
+    let mut res = HubResponse::new(KeptAlive(rx).boxed());
+    res.headers_mut().insert(hyper::header::CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
+    res
+}
+
+/// A body fed from a channel (`keep_alive`'s spaces, then the JSON).
+struct KeptAlive(tokio::sync::mpsc::Receiver<Bytes>);
+
+impl hyper::body::Body for KeptAlive {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, hyper::Error>>> {
+        self.0.poll_recv(cx).map(|chunk| chunk.map(|b| Ok(hyper::body::Frame::data(b))))
+    }
+}
+
+/// MOCK's stand-in picture when there is no reference (test/fixtures/avatar-mock.png).
+const MOCK_PICTURE: &[u8] = include_bytes!("../../../../../server/test/fixtures/avatar-mock.png");
+
+/// `POST /avatar/picture {image?, prompt?, model?}` → `{ok, via, uri, name,
+/// w, h}` (avatar-design.mjs `designPicture`): a "Bot"-style picture in the
+/// avatar folder. The picked model (else Design's default) draws it as
+/// SVG, which QuickLook rasterizes; when that fails, the image models (the
+/// opencodex relay, then Gemini) try.
+async fn avatar_picture(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, true),
+    };
+    match design_picture(&ctx, &b).await {
+        Ok(v) => ok(&v),
+        Err(e) => refused(&e, true),
+    }
+}
+
+async fn design_picture(ctx: &Arc<HubCtx>, b: &Value) -> Result<Value, String> {
+    let text = b.get("prompt").and_then(Value::as_str).map(|p| p.trim_matches(js::is_space).to_owned()).unwrap_or_default();
+    let image = b.get("image").filter(|v| js::truthy(v));
+    if text.is_empty() && image.is_none() {
+        return Err("add a picture or describe the character".into());
+    }
+    let src = match image {
+        Some(i) => Some(avatar_image_path(ctx, i)?),
+        None => None,
+    };
+    let dir = ctx.store.gen_dir().join("avatars");
+    let out = dir.join(format!("{}-bot.png", now36()));
+    let out_s = out.to_string_lossy().into_owned();
+    let settings = Settings::global();
+    let mut via = "mock".to_owned();
+    if settings.mock {
+        // no model: the reference stands in (or a fixed square)
+        let stand_in = match &src {
+            Some(p) => p.clone(),
+            None => {
+                let p = dir.join(format!("{}-mock.png", now36()));
+                std::fs::write(&p, MOCK_PICTURE).map_err(|e| e.to_string())?;
+                p
+            }
+        };
+        let r = exec(ctx, command("sips", &["-s", "format", "png", "-Z", "1024", &stand_in.to_string_lossy(), "--out", &out_s])).await;
+        if src.is_none() {
+            let _ = std::fs::remove_file(&stand_in);
+        }
+        r?;
+    } else {
+        let ask = avatar_shape::picture_request(&text, src.is_some());
+        let raw_model = b.get("model");
+        let chosen = Pick::of(b);
+        let mut errs = Vec::new();
+        let svg = async {
+            let block = match image.filter(|_| src.is_some()) {
+                Some(i) => Some(avatar_image_block(ctx, i).await?),
+                None => None,
+            };
+            svg_picture(ctx, &ask, block, &chosen, &out, &dir).await
+        };
+        match svg.await {
+            Ok(v) => via = v,
+            Err(e) => {
+                let who = raw_model.filter(|m| js::truthy(m)).map(js::string_of).unwrap_or_else(|| avatar_model(settings));
+                errs.push(format!("{who}: {e}"));
+                let local = tools(ctx);
+                let drawn = match &src {
+                    Some(p) => images::edit_avatar_image(settings, local.as_ref(), p, &ask, &out).await,
+                    None => {
+                        let api = ctx.model.clone().ok_or_else(|| "no model client".to_owned())?;
+                        images::generate_image(settings, api.as_ref(), &TurnCtx::default(), local.as_ref(), &ask, &out, &images::ImageOpts::default()).await
+                    }
+                };
+                match drawn {
+                    Ok(v) => via = v,
+                    Err(e2) => {
+                        errs.push(e2);
+                        return Err(format!("couldn't draw the picture ({})", errs.join("; ")));
+                    }
+                }
+            }
+        }
+    }
+    let dims = exec(ctx, command("sips", &["-g", "pixelWidth", "-g", "pixelHeight", &out_s])).await?;
+    Ok(json!({"ok": true, "via": via, "uri": format!("file://{out_s}"), "name": "Bot picture", "w": sips_value(&dims, "pixelWidth"), "h": sips_value(&dims, "pixelHeight")}))
+}
+
+/// avatar-design.mjs `svgPicture`: the model draws the picture as SVG,
+/// QuickLook (WebKit) renders it to `out`. → the model's id.
+async fn svg_picture(ctx: &Arc<HubCtx>, ask: &str, block: Option<Value>, pick: &Pick, out: &Path, dir: &Path) -> Result<String, String> {
+    let chosen = pick.model.as_str();
+    let mut content: Vec<Value> = block.into_iter().collect();
+    content.push(json!({"type": "text", "text": format!("{ask}\n\n{}", avatar_shape::SVG_RULES)}));
+    let reply = ask_designer(ctx.clone(), vec![json!({"role": "user", "content": content})], pick.clone(), "You are an illustrator who draws clean vector avatars as SVG.".into(), 16000).await?;
+    let svg = avatar_shape::picture_svg(&reply)?;
+    let out_s = out.to_string_lossy().into_owned();
+    let svg_path = format!("{}.svg", out_s.strip_suffix(".png").unwrap_or(&out_s));
+    std::fs::write(&svg_path, svg).map_err(|e| e.to_string())?;
+    let r = async {
+        exec(ctx, command("qlmanage", &["-t", "-s", "1024", "-o", &dir.to_string_lossy(), &svg_path])).await?;
+        exec(ctx, command("mv", &[&format!("{svg_path}.png"), &out_s])).await
+    }
+    .await;
+    let _ = std::fs::remove_file(&svg_path);
+    r?;
+    Ok(if chosen.is_empty() { avatar_model(Settings::global()) } else { chosen.to_owned() })
+}
+
+#[cfg(test)]
+mod keep_alive_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    async fn slow(ms: u64, res: HubResponse) -> HubResponse {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        res
+    }
+
+    async fn body(res: HubResponse) -> String {
+        String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_answers_fast_jobs_as_they_are() {
+        let res = keep_alive_after(200, 50, slow(10, refused("describe the bot or add a picture", true))).await;
+        assert_eq!(res.status(), 400);
+        assert_eq!(body(res).await, r#"{"ok":false,"error":"describe the bot or add a picture"}"#);
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_starts_slow_jobs_at_once_and_sends_spaces() {
+        let t0 = Instant::now();
+        let res = keep_alive_after(100, 50, slow(400, ok(&json!({"ok": true, "candidates": []})))).await;
+        assert!(t0.elapsed() < Duration::from_millis(350), "a 200 before the job is done");
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()[hyper::header::CONTENT_TYPE], "application/json");
+        let text = body(res).await;
+        assert!(t0.elapsed() >= Duration::from_millis(400));
+        assert!(text.starts_with("   ") && text.trim_start() == r#"{"ok":true,"candidates":[]}"#, "{text:?}");
+        // a late error is the 200's body
+        let res = keep_alive_after(50, 20, slow(150, refused("no rich design came back", true))).await;
+        assert_eq!(res.status(), 200);
+        let text = body(res).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({"ok": false, "error": "no rich design came back"}));
+    }
+
+    #[tokio::test]
+    async fn avatar_keep_alive_survives_a_client_that_hangs_up() {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let job = async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = done_tx.send(());
+            ok(&json!({"ok": true}))
+        };
+        let res = keep_alive_after(20, 10, job).await;
+        drop(res);
+        // the job still runs to its end, and nothing panics
+        tokio::time::timeout(Duration::from_secs(2), done_rx).await.unwrap().unwrap();
     }
 }

@@ -212,6 +212,25 @@ impl SizeFilter {
     }
 }
 
+/// The app's own open panel for one picture (avatar pictures): it opens
+/// over the app and leaves it in front, unlike AppleScript's chooser,
+/// which hands focus to Finder when it closes. `then` gets the path, or
+/// None on Cancel, on the main thread.
+pub fn pick_image(then: impl FnOnce(Option<PathBuf>) + Send + 'static) {
+    on_main(move || {
+        let mtm = MainThreadMarker::new().expect("on the main thread");
+        let pick = PickRequest {
+            extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff", ".bmp"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            multiple: false,
+            max_bytes: 64 << 20,
+        };
+        then(open_panel(mtm, &pick).into_iter().next());
+    });
+}
+
 /// The native open panel for `pick`: the files chosen, none on Cancel.
 fn open_panel(mtm: MainThreadMarker, pick: &PickRequest) -> Vec<PathBuf> {
     let Some(class) = AnyClass::get(c"NSOpenPanel") else { return Vec::new() };

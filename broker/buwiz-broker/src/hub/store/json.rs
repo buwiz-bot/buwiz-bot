@@ -296,6 +296,9 @@ pub fn bot_set(b: &mut Bot, key: &str, v: Value) {
         "shape" => b.shape = js::string_of(&v),
         "color" => b.color = js::string_of(&v),
         "outline" => b.outline = v.as_str().filter(|o| !o.is_empty()).map(str::to_owned),
+        "layers" => b.layers = v.as_array().cloned(),
+        "eyes" => b.eyes = Some(v),
+        "parts" => b.parts = v.as_array().cloned(),
         "threadId" => b.thread_id = text_of(&v),
         "pinned" => b.pinned = js::truthy(&v),
         "section" => b.section = s(&v),
@@ -632,6 +635,15 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
                     if let Some(x) = &b.outline {
                         o["outline"] = json!(x);
                     }
+                    if let Some(l) = &b.layers {
+                        o["layers"] = Value::Array(l.clone());
+                        if let Some(e) = &b.eyes {
+                            o["eyes"] = e.clone();
+                        }
+                    }
+                    if let Some(p) = &b.parts {
+                        o["parts"] = Value::Array(p.clone());
+                    }
                     o
                 })
                 .unwrap_or(Value::Null),
@@ -658,6 +670,17 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
             // a custom shape's SVG path data (avatar-shape.mjs)
             if let Some(x) = &b.outline {
                 o.insert("outline".into(), json!(x));
+            }
+            // a rich avatar's painted layers and eye colour
+            if let Some(l) = &b.layers {
+                o.insert("layers".into(), Value::Array(l.clone()));
+                if let Some(e) = &b.eyes {
+                    o.insert("eyes".into(), e.clone());
+                }
+            }
+            // a rich avatar's own pieces: a hat, antlers, a cloud
+            if let Some(p) = &b.parts {
+                o.insert("parts".into(), Value::Array(p.clone()));
             }
             o.insert("threadId".into(), b.thread_id.as_ref().map(|x| json!(x)).unwrap_or(Value::Null));
             o.insert("pinned".into(), json!(b.pinned));

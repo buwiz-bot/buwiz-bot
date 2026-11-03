@@ -124,6 +124,9 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             shape: js::string_of(&get("shape")),
             color: js::string_of(&get("color")),
             outline: get("outline").as_str().filter(|o| !o.is_empty()).map(str::to_owned),
+            layers: None,
+            eyes: None,
+            parts: None,
             thread_id: get("thread_id").as_str().map(str::to_owned),
             pinned: js::truthy(&get("pinned")),
             section: s_or("section"),
@@ -144,6 +147,16 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             accepts: None,
             updated_at: None,
         };
+        // the `art` column: {layers, eyes}, when it holds layers
+        if let Some(Ok(Value::Object(a))) = get("art").as_str().filter(|a| !a.is_empty()).map(serde_json::from_str::<Value>) {
+            if let Some(l) = a.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty()) {
+                bot.layers = Some(l.clone());
+                bot.eyes = a.get("eyes").cloned();
+            }
+            if let Some(p) = a.get("parts").and_then(Value::as_array).filter(|p| !p.is_empty()) {
+                bot.parts = Some(p.clone());
+            }
+        }
         if js::truthy(&get("extra")) {
             if let Some(Value::Object(x)) = parse(&get("extra"), "a bot's extra") {
                 for (k, v) in x {

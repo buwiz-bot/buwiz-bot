@@ -33,6 +33,7 @@ pub(crate) use paint::{
 };
 pub(crate) use render::{uh, MarkTree, PaintOpts, UhSize};
 pub(crate) use custom::custom_body;
+pub(crate) use custom::rich_body;
 
 #[allow(unused_imports)]
 pub(crate) use clips::STATES;

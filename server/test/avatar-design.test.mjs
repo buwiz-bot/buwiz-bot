@@ -3,12 +3,13 @@
 // then over the wire to the fake opencodex), and the bot routes' `outline`
 // field, through a broker restart.
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 import { PNG_B64, say, startFakeOpencodex } from "./fixtures/fake-opencodex.mjs";
-import { modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
+import { PORT as TEST_PORT, modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
 import {
   DESIGN_SYSTEM, KIT, KIT_SHAPES, MOCK_OUTLINES, designCandidates, flattenPath, outlineErrors, parseCandidates, validateAvatar,
 } from "../src/avatar-shape.mjs";
@@ -192,8 +193,8 @@ test("AVD-09 POST /avatar/design under MOCK: three valid candidates, a kit one w
   for (const c of w.json.candidates) assert.deepEqual(validateAvatar(c), []);
   // deterministic
   assert.deepEqual((await postJson("/avatar/design", { prompt: "reads my receipts and files my BIR forms", name: "Tax Fox" })).json, r.json);
-  bad(await postJson("/avatar/design", { prompt: "  " }), "describe the bot or how it should look");
-  bad(await postJson("/avatar/design", {}), "describe the bot or how it should look");
+  bad(await postJson("/avatar/design", { prompt: "  " }), "describe the bot or add a picture");
+  bad(await postJson("/avatar/design", {}), "describe the bot or add a picture");
 });
 
 test("AVD-10 /avatar/design takes an image only from inside the avatar folder", async () => {
@@ -269,7 +270,7 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   const calls = fake.calls();
   assert.equal(calls.length, 2);
   assert.equal(calls[0].path, "/v1/messages");
-  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-sonnet-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "Design's own model, not the chat's");
+  assert.deepEqual({ ...calls[0].body, messages: undefined }, { model: "claude-haiku-5-5", max_tokens: 6000, system: DESIGN_SYSTEM, messages: undefined }, "nothing picked: the chat's default model");
   assert.match(calls[1].body.messages[2].content, /candidate 2 \(Bad\): outline covers/);
   fake.reset();
   fake.script("design-img", [reply([cust("Fox", GOOD.cat, "#FF6700"), kit("A"), cust("B")])]);
@@ -289,7 +290,12 @@ test("AVD-12 /avatar/design over the wire: the system prompt, the image block, a
   fake.reset();
   fake.script("design-default", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
   assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-default]] a fox", model: "" })).status, 200);
-  assert.equal(fake.calls()[0].body.model, "claude-sonnet-5", "the picker's Default is Design's default");
+  assert.equal(fake.calls()[0].body.model, "claude-haiku-5-5", "the picker's Default is the chat's default");
+  // the picker's reasoning effort comes along
+  fake.reset();
+  fake.script("design-effort", [reply([kit("A"), cust("B"), cust("C", GOOD.cat)])]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:design-effort]] a fox", model: "claude-sonnet-5", effort: "high" })).status, 200);
+  assert.deepEqual([fake.calls()[0].body.model, fake.calls()[0].body.output_config], ["claude-sonnet-5", { effort: "high" }]);
   // GEN_AVATAR_MODEL picks Design's model; GEN_MODEL (the chat's) does not
   await server.stop();
   server = await startServer(dir, { env: env({ MOCK: undefined, GEN_MODEL: "claude-haiku-5-5", GEN_AVATAR_MODEL: "claude-opus-5" }) });
@@ -321,4 +327,308 @@ test("AVD-14 /avatar/design on the OpenAI-compatible path: chat/completions with
   assert.deepEqual(call.body.messages[0], { role: "system", content: DESIGN_SYSTEM });
   assert.deepEqual(call.body.messages[1].content[0], { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } });
   assert.equal(call.body.messages[1].content[1].type, "text");
+});
+
+test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its layers and eyes, a new outline or a kit shape drops them, across a restart", async () => {
+  const { MOCK_RICH, validateAvatar, layerErrors } = await import("../src/avatar-shape.mjs");
+  for (const c of MOCK_RICH) assert.deepEqual(validateAvatar(c), [], c.name);
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  const d = await postJson("/avatar/design", { prompt: "a green giant", style: "rich" });
+  assert.equal(d.status, 200, d.text);
+  assert.equal(d.json.candidates.length, 3);
+  assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && /^#[0-9A-F]{6}$/i.test(typeof c.eyes === "string" ? c.eyes : c.eyes.c)));
+  // the checks
+  assert.deepEqual(layerErrors([], "#FFFFFF"), ["a rich avatar needs at least one layer (the face)"]);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "red" }], "#FFFFFF").join(";"), /fill must be #RRGGBB/);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "#FF0000", opacity: 2 }], "#FFFFFF").join(";"), /opacity must be 0..1/);
+  assert.match(layerErrors([{ path: "M10 10 H20 V20 Z", fill: "#FF0000" }], "#FFFFFF").join(";"), /only M\/L\/C\/Q\/Z/);
+  assert.match(layerErrors([{ path: "M10 10 L20 10 L20 20 Z", fill: "#FF0000" }], "nope").join(";"), /eyes must be #RRGGBB/);
+  assert.match(validateAvatar({ shape: "heart", color: "#FF0000", layers: MOCK_RICH[0].layers, eyes: "#FFFFFF" }).join(";"), /only a custom outline can have layers/);
+  // stored on a bot
+  const r = MOCK_RICH[0];
+  const made = await postJson("/bot/new", { name: "Giant", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  let b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [r.layers, r.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.layers, r.layers);
+  // a colour alone keeps them
+  await postJson("/bot/update", { id, color: "#225522" });
+  assert.deepEqual((b = await botOf(id)).layers, r.layers);
+  // across a restart
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  assert.deepEqual([(b = await botOf(id)).layers, b.eyes], [r.layers, r.eyes]);
+  // a new outline without layers drops them; so does a kit shape
+  await postJson("/bot/update", { id, outline: GOOD.cat });
+  assert.ok(!("layers" in (b = await botOf(id))) && !("eyes" in b));
+  await postJson("/bot/update", { id, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  assert.deepEqual((await botOf(id)).layers, r.layers);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("layers" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+test("AVD-16 /avatar/picture under MOCK: the reference (or a fixed square) as the draft, in the avatar folder; the same image rules", async () => {
+  const keys = ["ok", "via", "uri", "name", "w", "h"];
+  const plain = await postJson("/avatar/picture", { prompt: "a green giant" });
+  assert.equal(plain.status, 200, plain.text);
+  assert.deepEqual(Object.keys(plain.json), keys);
+  assert.deepEqual({ ...plain.json, uri: "" }, { ok: true, via: "mock", uri: "", name: "Bot picture", w: 64, h: 64 });
+  assert.match(plain.json.uri, new RegExp(`^file://${avatars}/[0-9a-z]+-bot\\.png$`));
+  assert.ok(existsSync(plain.json.uri.slice(7)));
+  const img = join(avatars, "m1.png");
+  const w = await postJson("/avatar/picture", { image: pathToFileURL(img).href });
+  assert.equal(w.status, 200, w.text);
+  assert.deepEqual(readFileSync(w.json.uri.slice(7)), readFileSync(img), "the stub sips copies the reference");
+  bad(await postJson("/avatar/picture", { prompt: "  " }), "add a picture or describe the character");
+  bad(await postJson("/avatar/picture", {}), "add a picture or describe the character");
+  bad(await postJson("/avatar/picture", { image: pathToFileURL(join(dir, "outside.png")).href }), "image must be an avatar image from /avatar/image/pick or /avatar/image/paste");
+});
+
+test("AVD-17 /avatar/picture over the wire: the picked model draws SVG; a refused SVG falls back to the image relay", async () => {
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined }) });
+  fake.reset();
+  fake.script("pic", [say('Here:\n<svg viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="#333"/></svg>')]);
+  const img = join(avatars, "m1.png");
+  const r = await postJson("/avatar/picture", { prompt: "[[script:pic]] make it blue", image: pathToFileURL(img).href, model: "claude-sonnet-5", effort: "high" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual({ ...r.json, uri: "" }, { ok: true, via: "claude-sonnet-5", uri: "", name: "Bot picture", w: 64, h: 64 });
+  assert.ok(existsSync(r.json.uri.slice(7)));
+  assert.ok(!existsSync(r.json.uri.slice(7, -4) + ".svg"), "the SVG is cleaned up");
+  const [call] = fake.calls();
+  assert.deepEqual([call.body.model, call.body.max_tokens, call.body.system, call.body.output_config], ["claude-sonnet-5", 16000, "You are an illustrator who draws clean vector avatars as SVG.", { effort: "high" }]);
+  assert.deepEqual(call.body.messages[0].content[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } });
+  assert.match(call.body.messages[0].content[1].text, /^Turn the subject of the reference picture into a minimal flat "Bot" avatar\.[\s\S]*\n\nAlso, from the user: \[\[script:pic\]\] make it blue\n\nDraw it as one SVG: viewBox="0 0 1024 1024"/);
+  // an SVG with an outside image: the image relay edits the reference instead
+  fake.reset();
+  fake.script("pic-bad", [say('<svg><image href="https://example.com/a.png"/></svg>')]);
+  const f = await postJson("/avatar/picture", { prompt: "[[script:pic-bad]] x", image: pathToFileURL(img).href });
+  assert.equal(f.status, 200, f.text);
+  assert.equal(f.json.via, "chatgpt");
+  assert.equal(fake.calls()[0].body.model, "claude-haiku-5-5", "nothing picked: the chat's default model");
+  assert.ok(fake.requests.some((q) => q.path === "/v1/images/edits"));
+});
+
+test("AVD-18 rich self-check: the designs drawn flat go back to the model once; a fix that passes replaces its candidate, one that fails keeps the first; GEN_AVATAR_SELFCHECK=0 skips it", async () => {
+  const { MOCK_RICH } = await import("../src/avatar-shape.mjs");
+  const say2 = (cands) => say(JSON.stringify({ candidates: cands }));
+  const fixedEyes = { c: "#58D63A", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  const fix = [{ ...MOCK_RICH[0], eyes: fixedEyes }, { ...MOCK_RICH[1], layers: [] }, { ...MOCK_RICH[2], name: "Cat Two" }];
+  // the server from AVD-17 runs with MOCK off
+  fake.reset();
+  fake.script("rich-check", [say2(MOCK_RICH), say2(fix)]);
+  const r = await postJson("/avatar/design", { prompt: "[[script:rich-check]] a green giant", style: "rich" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.candidates.map((c) => c.name), ["Green Giant", "Mask Hero", "Cat Two"]);
+  assert.deepEqual(r.json.candidates[0].eyes, fixedEyes, "a fix that passes replaces its candidate");
+  assert.deepEqual(r.json.candidates[1], MOCK_RICH[1], "a fix without layers keeps the first");
+  const calls = fake.calls();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.max_tokens, 12000);
+  const [first, said, look] = calls[1].body.messages;
+  assert.deepEqual(first, calls[0].body.messages[0]);
+  assert.deepEqual(JSON.parse(said.content), { candidates: MOCK_RICH });
+  assert.deepEqual(look.content.map((b) => b.type), ["text", "image", "text", "image", "text", "image", "text"]);
+  assert.equal(look.content[0].text, "Design 1 (Green Giant):");
+  assert.equal(look.content[1].source.media_type, "image/png");
+  assert.equal(look.content[6].text, 'Here are your three designs drawn flat. For each, does it read as the request "[[script:rich-check]] a green giant"? Fix the outline, layers and eyes where it doesn\'t (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all 3, JSON only.');
+  assert.deepEqual(readdirSync(avatars).filter((f) => f.startsWith("check-")), [], "the previews are cleaned up");
+  // switched off: one call
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_SELFCHECK: "0" }) });
+  fake.reset();
+  fake.script("rich-off", [say2(MOCK_RICH)]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:rich-off]] x", style: "rich" })).status, 200);
+  assert.equal(fake.calls().length, 1);
+});
+
+test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and a restart; compact layers parse; the preview draws them", async () => {
+  const { eyeErrors, parseCandidates, previewSvg, MOCK_RICH, validateAvatar } = await import("../src/avatar-shape.mjs");
+  const r = MOCK_RICH[0];
+  const eyes = { c: "#58D63A", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  assert.deepEqual(validateAvatar({ ...r, eyes }), []);
+  assert.deepEqual(eyeErrors({ c: "red", at: [500, 5], gap: 0, s: 3, rim: 1, rw: 2 }, r.outline), [
+    "eyes.c must be #RRGGBB", "eyes.at must sit inside the outline's box", "eyes.gap must be a number 0..100", "eyes.s must be 0.6..2.2", "eyes.rim must be #RRGGBB", "eyes.rw must be 0..1.2",
+  ]);
+  assert.deepEqual(eyeErrors([1], r.outline), ["eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"]);
+  assert.deepEqual(eyeErrors({ c: "#FFFFFF", at: [1] }, r.outline), ["eyes.at must be [x, y]"]);
+  // the compact layer form, and the placement's colours tidied
+  const [c] = parseCandidates(JSON.stringify([{ shape: "custom", outline: r.outline, color: "#3e8e2f", layers: [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5], ["M1 1 L9 1 L9 9 Z", "#000000"]], eyes: { c: "#58d63a", at: [50, 58], rim: " #111111 ", junk: 1 } }]));
+  assert.deepEqual(c.layers, [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", opacity: 0.5 }, { path: "M1 1 L9 1 L9 9 Z", fill: "#000000" }]);
+  assert.deepEqual(c.eyes, { c: "#58D63A", at: [50, 58], rim: "#111111" });
+  const svg = previewSvg({ ...r, eyes });
+  assert.match(svg, /^<svg [^>]*viewBox="0 0 100 100"/);
+  assert.equal((svg.match(/<rect x=/g) || []).length, 4, "two rims and two eyes");
+  assert.ok(svg.includes('fill="#111111"') && svg.includes('fill="#58D63A"'));
+  // a bot keeps them
+  const made = await postJson("/bot/new", { name: "Placed", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.eyes, eyes);
+  bad(await postJson("/bot/update", { id, eyes: { c: "#58D63A", s: 9 } }), "eyes.s must be 0.6..2.2");
+  // eyes alone update a rich bot
+  const moved = { ...eyes, at: [50, 60] };
+  assert.equal((await postJson("/bot/update", { id, eyes: moved })).status, 200);
+  assert.deepEqual((await botOf(id)).eyes, moved);
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  const b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [r.layers, moved]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.eyes, moved);
+});
+
+test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
+  const { MOCK_RICH, parseCandidates, partErrors, previewSvg, validateAvatar } = await import("../src/avatar-shape.mjs");
+  const hat = MOCK_RICH.find((c) => c.parts);
+  assert.ok(hat, "a multi-part mock");
+  assert.deepEqual(validateAvatar(hat), []);
+  const brim = { outline: "M30 40 L70 40 L70 46 L30 46 Z", color: "#E8C85A" };
+  assert.deepEqual(partErrors([brim]), ["part 1: outline's width/height is 6.67; it must be between 0.4 and 2.5"]);
+  const small = { outline: "M44 44 L56 44 L56 56 L44 56 Z", color: "#E8C85A" };
+  assert.deepEqual(partErrors([small]), ["part 1: outline covers 1% of the box; it must cover at least 2%"]);
+  const antler = { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -1, d: 1.1 };
+  assert.deepEqual(partErrors([antler]), []);
+  assert.deepEqual(partErrors([{ ...antler, z: 2, color: "brown", layers: [{ path: "M1 1 Z", fill: "#000000" }] }]), [
+    "part 1's color must be #RRGGBB", "part 1: layer 1 encloses no area", "part 1's z must be -1..1",
+  ]);
+  assert.deepEqual(partErrors(Array(7).fill(antler)), ["at most 6 parts"]);
+  assert.deepEqual(partErrors([{ ...antler, d: 0.04 }, { ...antler, d: 1.6 }, { ...antler, d: "1" }]), ["part 1's d must be 0.05..1.6", "part 3's d must be 0.05..1.6"]);
+  assert.deepEqual(partErrors("x"), ["parts must be a list"]);
+  assert.deepEqual(partErrors([5]), ["part 1 must be {outline, color}"]);
+  assert.deepEqual(validateAvatar({ shape: "heart", color: "#FF0000", parts: [antler] }), ["only a custom outline can have parts"]);
+  // parsed (tidied, compact layers), and drawn: behind, the head, the eyes, in front
+  const [c] = parseCandidates(JSON.stringify([{ ...hat, parts: [{ outline: ` ${antler.outline}\n`, colour: "#7a4a22", z: -1, d: 1.1, layers: [["M42 32 L58 32 L50 40 Z", "#ffffff"]] }, ...hat.parts, 5] }]));
+  assert.deepEqual(c.parts[0], { outline: antler.outline, color: "#7A4A22", layers: [{ path: "M42 32 L58 32 L50 40 Z", fill: "#FFFFFF" }], z: -1, d: 1.1 });
+  assert.equal(c.parts.length, 2);
+  const svg = previewSvg(c);
+  const at = (s) => svg.indexOf(s);
+  assert.ok(at(antler.outline) < at(hat.outline) && at(hat.outline) < at("<rect x=") && at("<rect x=") < at(hat.parts[0].outline), svg);
+  // a bot keeps them
+  const made = await postJson("/bot/new", { name: "Luffy", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.parts, hat.parts);
+  bad(await postJson("/bot/update", { id, parts: [{ ...antler, z: 5 }] }), "part 1's z must be -1..1");
+  await postJson("/bot/update", { id, color: "#222222" });
+  assert.deepEqual((await botOf(id)).parts, hat.parts, "a colour alone keeps them");
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  let b = await botOf(id);
+  assert.deepEqual([b.parts, b.layers, b.eyes], [hat.parts, hat.layers, hat.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.parts, hat.parts);
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes });
+  assert.ok(!("parts" in (b = await botOf(id))), "a new outline without parts drops them");
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: [antler] });
+  assert.deepEqual((await botOf(id)).parts, [antler]);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("parts" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+test("AVD-21 /avatar/image/import copies a file the app's open panel chose into the avatar folder", async () => {
+  const src = join(dir, "picked-by-panel.png");
+  writeFileSync(src, Buffer.from(PNG_B64, "base64"));
+  const r = await postJson("/avatar/image/import", { path: src });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.name, "picked-by-panel.png");
+  assert.match(r.json.uri, /^file:\/\/.*\/avatars\/[^/]+\.png$/);
+  bad(await postJson("/avatar/image/import", { path: "relative.png" }), "import needs an absolute file path");
+  bad(await postJson("/avatar/image/import", { path: join(dir, "nope.png") }), "image not found");
+  bad(await postJson("/avatar/image/import", { path: dir }), "image not found");
+});
+
+// One POST, timed: when the status line arrived, when the body ended.
+function timedPost(path, obj) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path, headers: { "content-type": "application/json" } }, (res) => {
+      const head = Date.now() - t0;
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (text += c));
+      res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"], head, end: Date.now() - t0, text }));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify(obj));
+  });
+}
+
+test("AVD-22 slow designs and pictures keep the answer alive: a 200 at once, spaces, then the JSON (a late error too); fast ones answer as before", async () => {
+  const { MOCK_RICH } = await import("../src/avatar-shape.mjs");
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_KEEPALIVE_MS: "200,100", GEN_AVATAR_SELFCHECK: "0" }) });
+  const slow = (text, wait = 900) => ({ ...say(text), wait });
+  fake.reset();
+  fake.script("slow-rich", [slow(JSON.stringify({ candidates: MOCK_RICH }))]);
+  const r = await timedPost("/avatar/design", { prompt: "[[script:slow-rich]] a hero", style: "rich" });
+  assert.equal(r.status, 200);
+  assert.equal(r.type, "application/json");
+  assert.ok(r.head < 700 && r.end >= 900, `the status line came first (${r.head}ms), the body when the work was done (${r.end}ms)`);
+  assert.match(r.text, /^ {3,}\{/, "spaces, then the JSON");
+  const j = JSON.parse(r.text);
+  assert.equal(j.ok, true);
+  assert.deepEqual(j.candidates.map((c) => c.name), MOCK_RICH.map((c) => c.name));
+  // a late error: still a 200, its body {ok:false, error}
+  fake.reset();
+  fake.script("slow-none", [slow("no json", 400), slow("still none", 400)]);
+  const e = await timedPost("/avatar/design", { prompt: "[[script:slow-none]] a hero", style: "rich" });
+  assert.equal(e.status, 200);
+  assert.match(e.text, /^ +\{/);
+  assert.deepEqual(JSON.parse(e.text), { ok: false, error: "no rich design came back that the engine can draw; try again or another model" });
+  // a slow picture
+  fake.reset();
+  fake.script("slow-pic", [slow('<svg viewBox="0 0 1024 1024"><rect width="1024" height="1024"/></svg>')]);
+  const p = await timedPost("/avatar/picture", { prompt: "[[script:slow-pic]] a hero" });
+  assert.equal(p.status, 200);
+  assert.match(p.text, /^ +\{"ok":true,"via":"claude-haiku-5-5"/);
+  // fast ones: as before, no spaces, their own status codes
+  const bad400 = await timedPost("/avatar/design", { prompt: "  " });
+  assert.deepEqual([bad400.status, bad400.text], [400, JSON.stringify({ ok: false, error: "describe the bot or add a picture" })]);
+  fake.reset();
+  fake.script("fast-rich", [say(JSON.stringify({ candidates: MOCK_RICH }))]);
+  const f = await timedPost("/avatar/design", { prompt: "[[script:fast-rich]] a hero", style: "rich" });
+  assert.equal(f.status, 200);
+  assert.match(f.text, /^\{"ok":true/);
+  const pic400 = await timedPost("/avatar/picture", {});
+  assert.deepEqual([pic400.status, pic400.text], [400, JSON.stringify({ ok: false, error: "add a picture or describe the character" })]);
+  // a client that hangs up mid-wait: the broker carries on
+  fake.reset();
+  fake.script("slow-gone", [slow(JSON.stringify({ candidates: MOCK_RICH }), 500)]);
+  await new Promise((done) => {
+    const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path: "/avatar/design", headers: { "content-type": "application/json" } }, (res) => {
+      res.once("data", () => (req.destroy(), done()));
+    });
+    req.on("error", () => {});
+    req.end(JSON.stringify({ prompt: "[[script:slow-gone]] x", style: "rich" }));
+  });
+  await new Promise((ok) => setTimeout(ok, 700));
+  assert.equal((await request("GET", "/health")).status, 200, "still up");
+});
+
+test("AVD-23 a shut eye and over-layers: checked, parsed (the compact \"over\"), stored only when true, carried across a restart, drawn by the preview", async () => {
+  const { eyeErrors, layerErrors, parseCandidates, previewSvg, MOCK_RICH } = await import("../src/avatar-shape.mjs");
+  const r = MOCK_RICH[0];
+  assert.deepEqual(eyeErrors({ c: "#FFFFFF", shut: "l" }, r.outline), []);
+  assert.deepEqual(eyeErrors({ c: "#FFFFFF", shut: "left" }, r.outline), ["eyes.shut must be l or r"]);
+  assert.deepEqual(layerErrors([{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: "yes" }], "#FFFFFF", r.outline), ["layer 1's over must be true or false"]);
+  const [c] = parseCandidates(JSON.stringify([{ ...r, eyes: { c: "#58d63a", shut: " L " }, layers: [["M30 40 L50 40 L40 56 Z", "#1e1e1e", 1, "over"], ["M30 60 L70 60 L50 80 Z", "#f5ebd6"], { path: "M60 40 L70 40 L65 50 Z", fill: "#000000", over: false }] }]));
+  assert.deepEqual(c.eyes, { c: "#58D63A", shut: "l" });
+  assert.deepEqual(c.layers, [{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", opacity: 1, over: true }, { path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M60 40 L70 40 L65 50 Z", fill: "#000000" }]);
+  const svg = previewSvg(c);
+  assert.equal((svg.match(/<rect x=/g) || []).length, 1, "one open eye");
+  assert.match(svg, /<path d="M[\d.]+ [\d.]+ Q[^"]+" fill="none" stroke="#58D63A"/, "the shut one, a lid line");
+  assert.ok(svg.indexOf('fill="#1E1E1E" opacity="1"') > svg.indexOf("<rect x="), "the over-layer after the eyes");
+  // stored only when true
+  const layers = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", over: false }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
+  const made = await postJson("/bot/new", { name: "Winky", shape: "custom", color: r.color, outline: r.outline, layers, eyes: { c: "#58D63A", shut: "r" } });
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  const want = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
+  assert.deepEqual(made.json.bot.layers, want);
+  bad(await postJson("/bot/update", { id, eyes: { c: "#58D63A", shut: "x" } }), "eyes.shut must be l or r");
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  const b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [want, { c: "#58D63A", shut: "r" }]);
 });

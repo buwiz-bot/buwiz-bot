@@ -2010,8 +2010,14 @@ fn bot_tab() -> impl IntoElement {
                             if same { theme::BORDER_S } else { AdaptiveColor::TRANSPARENT }
                         })
                         .label(format!("{c} character color"))
+                        // A picture keeps its own colours: the swatches
+                        // rest (dimmed) while the bot wears one.
+                        .opacity(|| if wears_picture() { 0.3f32 } else { 1.0 })
                         .on_press(move || {
                             let Some(b) = store().active_bot_untracked() else { return };
+                            if !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH) {
+                                return;
+                            }
                             store().update_bot(
                                 &b.id,
                                 serde_json::json!({"color": c, "image": "", "crop": serde_json::Value::Null}),
@@ -2033,6 +2039,14 @@ fn bot_tab() -> impl IntoElement {
         )
 }
 
+/// Whether the open bot's colours are its own (tracked): a photo or
+/// picture avatar, or a rich (multi-colour) design.
+fn wears_picture() -> bool {
+    store()
+        .active_bot()
+        .is_some_and(|b| !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH))
+}
+
 /// `Design` — the prompt, an optional picture, and 3 mark avatars to
 /// pick from (`design::panel`); a pick applies to the bot at once.
 fn design_tab() -> impl IntoElement {
@@ -2040,7 +2054,16 @@ fn design_tab() -> impl IntoElement {
         .pt(px(16.0))
         .px_3()
         .pb(px(13.0))
+        .gap_3()
         .child(crate::design::panel(false))
+        // Picture mode's result: the crop editor, then Set avatar.
+        .child(when(
+            || store().design_mode.get() == "picture" && store().avatar_draft.get().is_some(),
+            || {
+                let d = store().avatar_draft.get().unwrap_or_default();
+                crop_editor(d, false).into_element()
+            },
+        ))
 }
 
 /// `Upload` — the dashed drop zone, then the crop with name·size

@@ -14,6 +14,7 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
     view()
         .w_full()
         .gap(px(10.0))
+        .child(mode_switch(for_new))
         .child(prompt_field())
         .child(dynamic(|| picture_row().into_element()))
         .child(design_button())
@@ -22,15 +23,59 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
                 .text_size(px(12.0))
                 .text_color(theme::MUTED),
         )
-        .child(dynamic(move || choices(for_new).into_element()))
+        .child(dynamic(move || if picture_mode() { view().into_element() } else { choices(for_new).into_element() }))
         .child(error_line())
+}
+
+/// Whether Edit Avatar's Design is in Picture mode (tracked).
+fn picture_mode() -> bool {
+    let st = store();
+    st.design_mode.get() == "picture" && !st.bot_modal.get()
+}
+
+/// Mark (3 one-colour avatars that move) | Rich (3 multi-colour ones,
+/// their colours their own) | Picture (a "Bot"-style picture, set as a
+/// photo; Edit Avatar only).
+fn mode_switch(for_new: bool) -> impl IntoElement {
+    let modes: &[(&'static str, &'static str)] =
+        if for_new { &[("mark", "Mark"), ("rich", "Rich")] } else { &[("mark", "Mark"), ("rich", "Rich"), ("picture", "Picture")] };
+    view()
+        .flex_row()
+        .gap(px(4.0))
+        .children(modes.iter().copied().map(|(m, label)| {
+            view()
+                .h(px(24.0))
+                .px(px(10.0))
+                .rounded(px(12.0))
+                .justify_center()
+                .bg(move || if store().design_mode.get() == m { theme::ACTIVE } else { theme::SUBTLE })
+                .child(
+                    text(label)
+                        .text_size(px(12.0))
+                        .text_color(move || if store().design_mode.get() == m { theme::TEXT } else { theme::DIM }),
+                )
+                .label(format!("{label} mode"))
+                .on_press(move || {
+                    let st = store();
+                    st.design_mode.set(m);
+                    st.design_err.set(String::new());
+                    st.avatar_draft.set(None);
+                })
+                .into_element()
+        }))
 }
 
 fn prompt_field() -> impl IntoElement {
     input()
         .value(|| store().design_prompt.get())
         .on_change(|v: &str| store().design_prompt.set(v.to_owned()))
-        .placeholder("Describe the bot, or say what to keep from the picture")
+        .placeholder(|| {
+            if picture_mode() {
+                "Optional: what to add or change (the style is built in)".to_owned()
+            } else {
+                "Describe the bot, or add a picture and leave this empty".to_owned()
+            }
+        })
         .placeholder_color(|| color(theme::GHOST))
         .multiline(|| true)
         .readonly(|| store().design_busy.get())

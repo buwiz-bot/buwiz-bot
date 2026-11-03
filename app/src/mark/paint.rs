@@ -170,6 +170,22 @@ fn paint_node<'a>(
     if let Some(mask) = mask {
         p = p.save().clip_path(&mask_path(mask), FillRule::EvenOdd);
     }
+    // `clip-path="url(#id)"` — the union of a `clipPath`'s paths (rich
+    // bodies clip their decals and eyes to the body this way)
+    let clip = tree
+        .attr("clip-path")
+        .and_then(|c| c.strip_prefix("url(#")?.strip_suffix(')'))
+        .and_then(|id| defs.get(id))
+        .filter(|c| c.tag == "clipPath");
+    if let Some(clip) = clip {
+        let d: String = clip
+            .children
+            .iter()
+            .filter(|c| c.tag == "path")
+            .filter_map(|c| c.attr("d"))
+            .collect();
+        p = p.save().clip_path(&path_of(&d), FillRule::NonZero);
+    }
 
     match tree.tag {
         "svg" | "g" => {
@@ -251,6 +267,9 @@ fn paint_node<'a>(
             }
         }
         _ => {}
+    }
+    if clip.is_some() {
+        p = p.restore();
     }
     if mask.is_some() {
         p = p.restore();

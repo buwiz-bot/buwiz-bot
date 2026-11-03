@@ -148,11 +148,29 @@ fn avatar_validate_matches_nodes() {
         {"shape": "custom", "color": "#1084FE"}, {"shape": "custom", "color": "#1084FE", "outline": MOCK_CAT},
         {"shape": "heart", "color": "#FF263C", "outline": "nonsense"}, {"shape": 5, "color": 7, "outline": 9},
         {"shape": "custom", "color": "#12345G", "outline": "M0 0 Z"},
+        // parts
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -1, "d": 1.1, "layers": [{"path": "M42 32 L58 32 L50 40 Z", "fill": "#FFFFFF", "over": true}, {"path": "M42 32 L58 32 L50 40 Z", "fill": "#FFFFFF", "over": "yes"}]}]},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [{"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 0.05}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 1.6}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 0.04}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": 1.61}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": "1"}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "d": null}]},
+        {"shape": "heart", "color": "#1E1E1E", "parts": []},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": "x"},
+        {"shape": "custom", "color": "#1E1E1E", "outline": MOCK_CAT, "parts": [5, null, [], {"outline": "M30 40 L70 40 L70 46 L30 46 Z", "color": "#E8C85A"}, {"outline": "M44 44 L56 44 L56 56 L44 56 Z", "color": "brown", "z": 2, "layers": [{"path": "M1 1 Z", "fill": "#000000"}]}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": "x", "z": null}, {"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "layers": []}]},
+        // rich: layers and eyes
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#58D63A"},
+        {"shape": "heart", "color": "#FF0000", "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}], "eyes": "#FFFFFF"},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "eyes": "#58D63A"},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [], "eyes": null},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [{"path": "M30 60 L70 60 L50 80 Z", "fill": "#F5EBD6"}]},
+        {"shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "eyes": "nope", "layers": [
+            {"path": "M10 10 L20 10 L20 20 Z", "fill": "red"}, {"path": "M10 10 L20 10 L20 20 Z", "fill": "#FF0000", "opacity": 2},
+            {"path": "M10 10 H20 V20 Z", "fill": "#FF0000"}, {"path": "M10 10 L20 10", "fill": "#FF0000", "opacity": null},
+            5, null, [], {"fill": "#FF0000"}, {"path": "  ", "fill": "#FF0000"}, {"path": "M-9 10 L20 10 L20 20 Z", "fill": "#FF0000", "opacity": 0.5},
+            {"path": "M10 10 L20 10 L20", "fill": "#FF0000"}, {"path": "M10 10 L10.5 10 L10 10.5 Z", "fill": "#ff0000"},
+        ]},
     ]);
     let theirs = node("console.log(JSON.stringify(input.map((r) => m.validateAvatar(r))));", &recipes);
     for (r, t) in recipes.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
         let s = |k: &str| r.get(k).and_then(Value::as_str);
-        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"))), *t, "{r}");
+        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"), r.get("parts"))), *t, "{r}");
     }
 }
 
@@ -183,8 +201,25 @@ fn avatar_parse_candidates_and_mocks_match_nodes() {
     let mocks = node("console.log(JSON.stringify([m.mockCandidates({}), m.mockCandidates({ image: true })]));", &json!(null));
     let ours = json!([mock_candidates(false).iter().map(Candidate::json).collect::<Vec<_>>(), mock_candidates(true).iter().map(Candidate::json).collect::<Vec<_>>()]);
     assert_eq!(ours, mocks);
-    assert_eq!(design_request("files my BIR forms", "Tax Fox", false), node("console.log(JSON.stringify(m.designRequest({ prompt: 'files my BIR forms', name: 'Tax Fox' })));", &json!(null)));
-    assert_eq!(json!(design_request("keep the ears", "", true)), node("console.log(JSON.stringify(m.designRequest({ prompt: 'keep the ears', name: '', image: true })));", &json!(null)));
+    for (prompt, name, image, rich) in [("files my BIR forms", "Tax Fox", false, false), ("keep the ears", "", true, false), ("", "", true, false), ("", "Giant", true, true), ("a green giant", "", false, true)] {
+        let theirs = node(&format!("console.log(JSON.stringify(m.designRequest({{ prompt: {}, name: {}, image: {image}, rich: {rich} }})));", json!(prompt), json!(name)), &json!(null));
+        assert_eq!(json!(design_request(prompt, name, image, rich)), theirs, "{prompt:?} {image} {rich}");
+    }
+    let rich = node("console.log(JSON.stringify([m.RICH_SYSTEM, m.MOCK_RICH, m.MOCK_RICH.map((c) => m.validateAvatar(c))]));", &json!(null));
+    assert_eq!(rich[0], json!(rich_system()));
+    assert_eq!(rich[1], json!(mock_rich()));
+    assert_eq!(rich[2], json!([[], [], []]));
+    // rich replies: layers and eyes carried (custom only), tidied
+    let rich_texts = json!([
+        json!({"candidates": mock_rich()}).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "color": "#1e1e1e", "parts": [{"outline": " M40 30 L60 30\n L60 50 L40 50 Z ", "colour": "#7a4a22", "z": -1, "d": 1.1, "layers": [["M42 32 L58 32 L50 40 Z", "#ffffff", 0.5, "over"], ["M42 32 L58 32 L50 40 Z", "#ffffff", null, "under"], {"path": "M1 1 L9 9 Z", "fill": "#000000", "over": "yes"}]}, 5, [], {"color": "#E8C85A", "z": "x", "d": "x", "layers": "x"}]}, {"shape": "blob", "parts": [{"outline": "M1 1 Z", "color": "#000000"}]}]).to_string(),
+        json!([{"shape": "custom", "outline": MOCK_CAT, "layers": [{"path": "  M1 2\n L3 4 ", "color": "#abcdef", "opacity": 0.5}, 5, [], {"fill": "#123456", "opacity": "x"}], "eyes": {"c": " #ffeedd ", "shut": " R "}}, {"shape": "blob", "layers": [], "eyes": "#FFFFFF"}, {"shape": "custom", "outline": MOCK_CAT, "layers": "x", "eyes": 5}]).to_string(),
+    ]);
+    let theirs = node("console.log(JSON.stringify(input.map((t) => m.parseCandidates(t))));", &rich_texts);
+    for (t, n) in rich_texts.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
+        let ours: Vec<Value> = parse_candidates(t.as_str().unwrap()).iter().map(Candidate::json).collect();
+        assert_eq!(json!(ours), *n, "{t}");
+    }
 }
 
 /// The design loop over scripted replies, in Rust and in Node: the same
@@ -203,16 +238,31 @@ fn avatar_design_candidates_match_nodes() {
         {"prompt": "y", "replies": [wrap(json!([cust("A", MOCK_PEBBLE), cust("B", MOCK_CAT), cust("C", MOCK_RECEIPT)])), wrap(json!([cust("A", MOCK_PEBBLE), cust("B", MOCK_CAT), cust("C", MOCK_RECEIPT)]))]},
         {"prompt": "keep the ears", "image": img, "replies": [wrap(json!([kit("A", "blob", "#1084FE"), cust("B", MOCK_PEBBLE), cust("C", MOCK_CAT)])), wrap(json!([cust("Subject", MOCK_CAT), kit("A", "blob", "#1084FE"), cust("C", MOCK_PEBBLE)]))]},
         {"prompt": "z", "image": img, "replies": ["nothing", "still nothing"]},
+        {"prompt": "", "image": img, "replies": [wrap(json!([kit("A", "blob", "#1084FE"), cust("B", MOCK_PEBBLE), cust("C", MOCK_CAT)])), wrap(json!([cust("Subject", MOCK_CAT), kit("A", "blob", "#1084FE"), cust("C", MOCK_PEBBLE)]))]},
+        // rich: no kit rule; a candidate without layers is retried, then dropped; none left is an error
+        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!(mock_rich()))]},
+        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE), mock_rich()[2]])), wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE)]))]},
+        {"prompt": "x", "rich": true, "image": img, "replies": ["nothing", wrap(json!([cust("Plain", MOCK_PEBBLE)]))]},
+        // the rich self-check: the previews as SVG text, or as image blocks; a passing fix replaces, a failing one keeps
+        {"prompt": "a green giant", "rich": true, "check": true, "replies": [wrap(json!(mock_rich())), wrap(json!([
+            {"name": "Fixed", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5]], "eyes": {"c": "#58d63a", "at": [50, 50], "gap": 20, "s": 1.3, "rim": "#111111", "rw": 0.4}},
+            {"name": "Broken", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [], "eyes": "#FFFFFF"},
+        ]))]},
+        {"prompt": "", "image": img, "rich": true, "check": true, "images": true, "replies": [wrap(json!(mock_rich())), "no json"]},
+        {"prompt": "y", "rich": true, "check": true, "replies": [wrap(json!([mock_rich()[1]]))]},
     ]);
     let theirs = node(
         r##"const out = [];
         for (const c of input) {
           const calls = [], picks = [];
           let n = 0;
-          const cands = await m.designCandidates({ prompt: c.prompt, name: c.name || "", image: c.image || null }, {
+          let cands;
+          try { cands = await m.designCandidates({ prompt: c.prompt, name: c.name || "", image: c.image || null, rich: !!c.rich }, {
+            selfCheck: !!c.check,
+            preview: async (svgs) => (c.images ? svgs.map((_, k) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: "P" + k } })) : null),
             ask: async (msgs) => (calls.push(structuredClone(msgs)), c.replies[n++]),
             pick: async (p) => (picks.push(p), { shape: "cloud", color: "#00BCA6" }),
-          });
+          }); } catch (e) { cands = { error: e.message }; }
           out.push({ cands, calls, picks });
         }
         console.log(JSON.stringify(out));"##,
@@ -226,25 +276,92 @@ fn avatar_design_candidates_match_nodes() {
             c["prompt"].as_str().unwrap(),
             c.get("name").and_then(Value::as_str).unwrap_or(""),
             c.get("image").cloned(),
+            c.get("rich").and_then(Value::as_bool).unwrap_or(false),
+            c.get("check").and_then(Value::as_bool).unwrap_or(false),
             |msgs: Vec<Value>| {
                 let mut calls = calls.lock().unwrap();
                 calls.push(json!(msgs));
-                let r = replies[calls.len() - 1].clone();
+                // a call past the script answers nothing, as Node's undefined reply parses
+                let r = replies.get(calls.len() - 1).cloned().unwrap_or_default();
                 async move { Ok::<_, String>(r) }
             },
             |p: String| {
                 picks.lock().unwrap().push(p);
                 async { "cloud".to_owned() }
             },
+            |svgs: Vec<String>| {
+                let images = c.get("images").is_some();
+                async move { images.then(|| svgs.iter().enumerate().map(|(k, _)| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": format!("P{k}")}})).collect()) }
+            },
         );
-        let cands = futures_lite_block_on(fut).unwrap();
-        let ours = json!({"cands": cands.iter().map(Candidate::json).collect::<Vec<_>>(), "calls": *calls.lock().unwrap(), "picks": *picks.lock().unwrap()});
+        let cands = match futures_lite_block_on(fut) {
+            Ok(c) => json!(c.iter().map(Candidate::json).collect::<Vec<_>>()),
+            Err(e) => json!({"error": e}),
+        };
+        let ours = json!({"cands": cands, "calls": *calls.lock().unwrap(), "picks": *picks.lock().unwrap()});
         assert_eq!(ours, *t, "{}", c["prompt"]);
     }
 }
 
 fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+}
+
+#[test]
+fn avatar_picture_prompts_match_nodes() {
+    let cases = json!([["", true], ["  make it blue  ", true], ["a green giant", false], ["", false]]);
+    let theirs = node(
+        r#"const d = await import("./src/avatar-design.mjs");
+        console.log(JSON.stringify(input.map(([prompt, image]) => d.pictureRequest({ prompt, image })).concat([d.PICTURE_STYLE])));"#,
+        &cases,
+    );
+    let mut ours: Vec<Value> = cases.as_array().unwrap().iter().map(|c| json!(picture_request(c[0].as_str().unwrap(), c[1].as_bool().unwrap()))).collect();
+    ours.push(json!(picture_style()));
+    assert_eq!(json!(ours), theirs);
+    assert!(picture_request("", false).starts_with("Draw the character described below as a minimal flat \"Bot\" avatar.\n\nKeep"));
+}
+
+#[test]
+fn avatar_picture_svg_is_refused_with_scripts_or_outside_images() {
+    assert_eq!(picture_svg("Here: <svg viewBox=\"0 0 1 1\"><rect/></svg> done").unwrap(), "<svg viewBox=\"0 0 1 1\"><rect/></svg>");
+    assert_eq!(picture_svg("no markup").unwrap_err(), "the model returned no SVG");
+    for bad in ["<svg><SCRIPT>x</SCRIPT></svg>", "<svg><image href=\"a.png\"/></svg>", "<svg><foreignObject/></svg>", "<svg><use href = 'https://x/y#a'/></svg>", "<svg><a xlink:HREF=\"http://x\"/></svg>"] {
+        assert_eq!(picture_svg(bad).unwrap_err(), "the SVG used scripts or outside images", "{bad}");
+    }
+    assert!(picture_svg("<svg><use href=\"#a\"/></svg>").is_ok());
+}
+
+#[test]
+fn avatar_eyes_and_previews_match_nodes() {
+    let outline = MOCK_CAT;
+    let eyes = json!([
+        "#58D63A", "red", 5, null, [1], {"c": "#58D63A"}, {"c": "#58D63A", "at": [50, 58], "gap": 20, "s": 1.2, "rim": "#111111", "rw": 0.3},
+        {"c": "red", "at": [500, 5], "gap": 0, "s": 3, "rim": 1, "rw": 2}, {"c": "#FFFFFF", "at": [1]}, {"c": "#FFFFFF", "at": [50, "x"]}, {"c": "#FFFFFF", "gap": null, "s": null},
+        {"c": "#FFFFFF", "at": [18, 14]}, {"c": "#FFFFFF", "at": [17.9, 50]}, {"c": "#FFFFFF", "s": 0.6, "rw": 0, "gap": 100}, {"c": "#FFFFFF", "s": 2.21, "rw": 1.21, "gap": 100.5},
+        {"c": "#FFFFFF", "shut": "l"}, {"c": "#FFFFFF", "shut": "r"}, {"c": "#FFFFFF", "shut": "L"}, {"c": "#FFFFFF", "shut": true}, {"c": "#FFFFFF", "shut": null},
+    ]);
+    let theirs = node(&format!("console.log(JSON.stringify(input.map((e) => m.eyeErrors(e === '__undef' ? undefined : e, {}))));", json!(outline)), &eyes);
+    let ours: Vec<Vec<String>> = eyes.as_array().unwrap().iter().map(|e| eye_errors(Some(e), Some(outline))).collect();
+    assert_eq!(json!(ours), theirs);
+    // previews: the mocks, the default placement and a placed, rimmed set
+    let mut cands: Vec<Value> = mock_rich();
+    let mut placed = mock_rich()[0].clone();
+    placed["eyes"] = json!({"c": "#58D63A", "at": [50, 58], "gap": 22, "s": 1.4, "rim": "#111111", "rw": 0.3});
+    cands.push(placed);
+    // a wink, an over-layer (a fringe over one eye) on the head and on a back part
+    let mut wink = mock_rich()[0].clone();
+    wink["eyes"] = json!({"c": "#58D63A", "at": [50, 58], "gap": 22, "rim": "#111111", "rw": 0.2, "shut": "r"});
+    wink["layers"].as_array_mut().unwrap().push(json!({"path": "M30 46 L48 46 L44 64 Z", "fill": "#1E2A16", "over": true}));
+    wink["parts"] = json!([{"outline": "M14 36 L86 36 L86 60 L14 60 Z", "color": "#1E2A16", "z": -1, "layers": [{"path": "M60 40 L80 40 L70 56 Z", "fill": "#FFFFFF", "over": true}]}]);
+    cands.push(wink);
+    let mut pebble = mock_rich()[2].clone();
+    pebble["outline"] = json!(MOCK_PEBBLE);
+    pebble["eyes"] = json!({"c": "#2B1D12", "s": 0.7});
+    cands.push(pebble);
+    let theirs = node("console.log(JSON.stringify(input.map((c) => m.previewSvg(c))));", &json!(cands));
+    let ours: Vec<String> = cands.iter().map(|c| preview_svg(&parse_candidates(&json!([c]).to_string())[0])).collect();
+    assert_eq!(json!(ours), theirs);
+    assert!(ours[3].contains("fill=\"#111111\"/>"), "{}", ours[3]);
 }
 
 #[test]

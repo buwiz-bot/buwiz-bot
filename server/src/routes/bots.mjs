@@ -1,33 +1,99 @@
 // routes/bots.mjs — extracted from app-server.mjs
 import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { GEN_DIR, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
 import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
 import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, memoryUpdate, setBotProfile } from "../botctx.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
 import { KIT_SHAPES, validateAvatar } from "../avatar-shape.mjs";
-import { designAvatar, pickKitAvatar } from "../avatar-design.mjs";
+import { designAvatar, designPicture, pickKitAvatar } from "../avatar-design.mjs";
 
 // Sets a request's avatar fields on `bot` (a new one or one there): a kit
 // shape clears the outline, an outline without a shape makes it "custom".
 // Only the fields given are checked (a bot's older colour stays as it is).
-function applyAvatar(bot, { shape, color, outline }) {
+function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
   const hasOutline = outline !== undefined && outline !== null && outline !== "";
   const s = shape || (hasOutline ? "custom" : bot.shape);
   const c = color || bot.color;
   const o = s === "custom" ? (hasOutline ? (typeof outline === "string" ? outline.trim() : outline) : bot.outline) : undefined;
+  // A new outline brings its own layers (or none); otherwise they stay.
+  const sentRich = Array.isArray(layers) && layers.length > 0;
+  const keepRich = !hasOutline && s === "custom" && bot.layers?.length;
+  const l = s !== "custom" ? undefined : sentRich ? layers : keepRich ? bot.layers : undefined;
+  // sent eyes (a colour or a placement) win; else a kept set keeps its own
+  const sentEyes = typeof eyes === "string" || (eyes && typeof eyes === "object");
+  const e = l ? (sentEyes ? eyes : keepRich ? bot.eyes : eyes) : undefined;
+  // parts follow the same rule: a new outline brings its own (or none)
+  const sentParts = Array.isArray(parts) && parts.length > 0;
+  const keepParts = !hasOutline && s === "custom" && bot.parts?.length;
+  const p = s !== "custom" ? undefined : sentParts ? parts : keepParts ? bot.parts : undefined;
   const errs = validateAvatar({
     shape: shape || hasOutline || s === "custom" ? s : KIT_SHAPES[0],
     color: color ? c : "#1084FE",
     outline: o,
+    ...(l ? { layers: l, eyes: e } : {}),
+    ...(p ? { parts: p } : {}),
   });
   if (errs.length) throw new Error(errs.join("; "));
   bot.shape = s;
   bot.color = c;
   if (o) bot.outline = o;
   else delete bot.outline;
+  if (l) {
+    bot.layers = l.map((x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}), ...(x.over === true ? { over: true } : {}) }));
+    bot.eyes = e;
+  } else {
+    delete bot.layers;
+    delete bot.eyes;
+  }
+  const layerOf = (x) => ({ path: x.path, fill: x.fill, ...(typeof x.opacity === "number" ? { opacity: x.opacity } : {}), ...(x.over === true ? { over: true } : {}) });
+  if (p)
+    bot.parts = p.map((x) => ({
+      outline: typeof x.outline === "string" ? x.outline.trim() : x.outline,
+      color: x.color,
+      ...(Array.isArray(x.layers) && x.layers.length ? { layers: x.layers.map(layerOf) } : {}),
+      ...(typeof x.z === "number" ? { z: x.z } : {}),
+      ...(typeof x.d === "number" ? { d: x.d } : {}),
+    }));
+  else delete bot.parts;
+}
+
+// GEN_AVATAR_KEEPALIVE_MS "<wait>[,<every>]": how long a slow design may
+// run before its answer starts, and how often a space keeps it alive.
+function keepAliveMs() {
+  const [wait, every] = String(process.env.GEN_AVATAR_KEEPALIVE_MS || "").split(",").map(Number);
+  return [wait > 0 ? wait : 10000, every > 0 ? every : wait > 0 ? wait : 15000];
+}
+
+// Answers `work()` (→ the JSON to send; a throw is a 400 {ok:false}).
+// The app's HTTP client gives up on a response idle for 60s, and a rich
+// design or a picture can take longer: past the wait the answer starts as
+// a 200 at once, a space goes out every interval (JSON parsers skip
+// leading whitespace), and the result (or {ok:false, error}) ends it. A
+// client that hangs up gets nothing more.
+async function keepAlive(res, work) {
+  const [wait, every] = keepAliveMs();
+  const job = Promise.resolve()
+    .then(work)
+    .then((v) => [200, v], (e) => [400, { ok: false, error: String(e?.message || e) }]);
+  let timer;
+  const first = await Promise.race([job, new Promise((ok) => (timer = setTimeout(() => ok(null), wait)))]);
+  clearTimeout(timer);
+  res.setHeader("content-type", "application/json");
+  if (first) {
+    res.statusCode = first[0];
+    return res.end(JSON.stringify(first[1]));
+  }
+  res.statusCode = 200;
+  res.on("error", () => {});
+  const gone = () => res.destroyed || res.writableEnded;
+  res.write(" ");
+  const beat = setInterval(() => (gone() ? clearInterval(beat) : res.write(" ")), every);
+  const [, v] = await job;
+  clearInterval(beat);
+  if (!gone()) res.end(JSON.stringify(v));
 }
 
 export default async function handle(req, res) {
@@ -38,10 +104,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { name, shape, color, outline } = JSON.parse(body || "{}");
+        const { name, shape, color, outline, layers, eyes, parts } = JSON.parse(body || "{}");
         if (!name?.trim()) throw new Error("bot needs a name");
         const av = { shape: "blob", color: "#1084FE" };
-        applyAvatar(av, { shape, color, outline });
+        applyAvatar(av, { shape, color, outline, layers, eyes, parts });
         const tid = `t${nextThreadSeq()}`;
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
         store.list.unshift({ id: tid, uid: uuidv7(), title: name.trim(), turns: [] });
@@ -53,6 +119,8 @@ export default async function handle(req, res) {
           shape: av.shape,
           color: av.color,
           ...(av.outline ? { outline: av.outline } : {}),
+          ...(av.layers ? { layers: av.layers, eyes: av.eyes } : {}),
+          ...(av.parts ? { parts: av.parts } : {}),
           threadId: tid,
           ...botDefaults(name.trim()),
           memories: [],
@@ -76,10 +144,11 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id, name, shape, color, outline, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
+        const { id, name, shape, color, outline, layers, eyes, parts, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
-        if (shape || color || outline !== undefined) applyAvatar(bot, { shape, color, outline });
+        if (shape || color || outline !== undefined || layers !== undefined || eyes !== undefined || parts !== undefined)
+          applyAvatar(bot, { shape, color, outline, layers, eyes, parts });
         if (name?.trim() && name.trim() !== bot.name) {
           // untouched defaults follow a rename; edited ones stay
           const was = botDefaults(bot.name), now = botDefaults(name.trim());
@@ -280,6 +349,16 @@ export default async function handle(req, res) {
           if (!picked) return res.end(JSON.stringify({ ok: false, cancelled: true }));
           name = picked.split("/").pop();
           execFileSync("sips", ["-s", "format", "png", picked, "--out", out], { stdio: "ignore" });
+        } else if (kind === "import") {
+          // a file the app's own open panel chose (it stays in front, unlike
+          // AppleScript's chooser): copied in as PNG like a pick
+          const { path } = JSON.parse(body || "{}");
+          if (typeof path !== "string" || !isAbsolute(path)) throw new Error("import needs an absolute file path");
+          let st;
+          try { st = statSync(path); } catch { throw new Error("image not found"); }
+          if (!st.isFile()) throw new Error("image not found");
+          name = path.split("/").pop();
+          execFileSync("sips", ["-s", "format", "png", path, "--out", out], { stdio: "ignore" });
         } else if (kind === "paste") {
           await osa(
             `set f to open for access POSIX file "${out}" with write permission
@@ -323,17 +402,27 @@ export default async function handle(req, res) {
   if (req.method === "POST" && req.url === "/avatar/design") {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", async () => {
-      res.setHeader("content-type", "application/json");
-      try {
-        const { prompt, image, name, model } = JSON.parse(body || "{}");
-        const candidates = await designAvatar({ prompt, image, name, model });
-        res.end(JSON.stringify({ ok: true, candidates }));
-      } catch (e) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
-      }
-    });
+    req.on("end", () =>
+      keepAlive(res, async () => {
+        const { prompt, image, name, model, style, effort, fast } = JSON.parse(body || "{}");
+        return { ok: true, candidates: await designAvatar({ prompt, image, name, model, style, effort, fast }) };
+      }),
+    );
+    return true;
+  }
+  // POST /avatar/picture {image?, prompt?, model?} — Picture mode: a
+  // "Bot"-style picture (the style prompt, plus what the user typed on
+  // top), drawn by the picked model → {ok, uri, name, w, h, via}, the crop
+  // editor's draft.
+  if (req.method === "POST" && req.url === "/avatar/picture") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () =>
+      keepAlive(res, async () => {
+        const { prompt, image, model, effort, fast } = JSON.parse(body || "{}");
+        return { ok: true, ...(await designPicture({ prompt, image, model, effort, fast })) };
+      }),
+    );
     return true;
   }
   return false;

@@ -87,8 +87,8 @@ pub fn turn_row(seq: usize, u: &Turn) -> Row {
 
 /// A bot's row: name, shape, color, thread_id, ord, pinned, section,
 /// hidden, image, crop, model, effort, fast, label, description,
-/// instructions, memories, integrations, extra, outline (a custom
-/// shape's only, as Node's `persist()` writes it).
+/// instructions, memories, integrations, extra, outline and art (a custom
+/// shape's only, as Node's `persist()` writes them).
 pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
     vec![
         text(&b.name),
@@ -113,6 +113,25 @@ pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
         match &b.outline {
             Some(o) if b.shape == "custom" && !o.is_empty() => SqlValue::Text(o.clone()),
             _ => SqlValue::Null,
+        },
+        {
+            let has = |v: &Option<Vec<Value>>| v.as_ref().is_some_and(|v| !v.is_empty());
+            if b.shape == "custom" && (has(&b.layers) || has(&b.parts)) {
+                // {layers, eyes, parts?}: JSON.stringify leaves out what is undefined
+                let mut a = serde_json::Map::new();
+                if let Some(l) = &b.layers {
+                    a.insert("layers".into(), Value::Array(l.clone()));
+                }
+                if let Some(e) = &b.eyes {
+                    a.insert("eyes".into(), e.clone());
+                }
+                if let Some(p) = b.parts.as_ref().filter(|p| !p.is_empty()) {
+                    a.insert("parts".into(), Value::Array(p.clone()));
+                }
+                SqlValue::Text(sql_json(&Value::Object(a)))
+            } else {
+                SqlValue::Null
+            }
         },
     ]
 }
@@ -200,7 +219,7 @@ pub fn persist(conn: &Connection, s: &mut State) -> Result<(), String> {
         if !old.bots.get(&b.id).is_some_and(|r| same_row(r, row)) {
             let mut r = vec![SqlValue::Text(b.id.clone())];
             r.extend(row.iter().cloned());
-            sql.push(("INSERT OR REPLACE INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,outline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r));
+            sql.push(("INSERT OR REPLACE INTO bots(id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,outline,art) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r));
         }
     }
     for k in ["active", "sections", "seq"] {
@@ -271,9 +290,9 @@ pub(crate) fn read_written(conn: &Connection) -> rusqlite::Result<Written> {
         turns.entry(id).or_default().push(r[1..].to_vec());
     }
     w.turns = turns;
-    let mut st = conn.prepare("SELECT id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,outline FROM bots")?;
+    let mut st = conn.prepare("SELECT id,name,shape,color,thread_id,ord,pinned,section,hidden,image,crop,model,effort,fast,label,description,instructions,memories,integrations,extra,outline,art FROM bots")?;
     let rows = st.query_map([], |r| {
-        let v: Row = (0..21).map(|i| r.get::<_, SqlValue>(i)).collect::<rusqlite::Result<_>>()?;
+        let v: Row = (0..22).map(|i| r.get::<_, SqlValue>(i)).collect::<rusqlite::Result<_>>()?;
         Ok(v)
     })?;
     for r in rows {
