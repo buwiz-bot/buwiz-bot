@@ -2406,6 +2406,32 @@ mod tests {
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
 
+    /// Save that cannot send (a save of the same setup runs, or a check
+    /// fails) tells its caller why, so a card that went busy is never left
+    /// so; nothing is sent.
+    #[test]
+    fn a_save_that_cannot_send_tells_its_caller_why() {
+        let rt = nsh_core::element::Runtime::default();
+        let _entered = rt.enter();
+        let st: &'static Store = Box::leak(Box::new(Store::new()));
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let save = |fields: Vec<connect::SetupField>| {
+            let h = heard.clone();
+            st.v1_save_setup("x.y.z", fields, move |r| h.borrow_mut().push(r));
+        };
+        let field = connect::SetupField::of(&json!({"key": "K", "pattern": "^a", "pattern_hint": "It starts with a"}));
+        st.v1.setup_vals.update(|v| {
+            v.insert("K".to_owned(), "b".to_owned());
+        });
+        save(vec![field.clone()]);
+        st.v1.setup_saving.update(|s| {
+            s.insert("x.y.z".to_owned());
+        });
+        save(vec![field]);
+        assert_eq!(*heard.borrow(), [Err("It starts with a".to_owned()), Err("This setup is being saved already; try again in a moment".to_owned())]);
+        assert!(st.v1.setup_saving.with_untracked(|s| s.contains("x.y.z")), "the running save is left alone");
+    }
+
     #[test]
     fn a_sign_in_that_needs_setup_says_what_is_missing() {
         assert_eq!(signin_error(&RoxError::new("needs_setup", "")), "Add your Google client in Setup");

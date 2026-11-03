@@ -915,18 +915,29 @@ mod tests {
         dir
     }
 
-    /// One Google plugin failing to take the new client stops none of the
-    /// others; the ones that failed are named.
+    /// A mini app's saved Google client re-applies to every installed
+    /// Google plugin: one that cannot take it (`bad`, a connector with
+    /// nothing to run) stops none after it (`good` is rebuilt), and is
+    /// named.
     #[tokio::test]
     async fn a_failed_reapply_stops_none_of_the_others() {
-        let tried = std::sync::Mutex::new(Vec::new());
-        let keys = ["gmail", "drive", "calendar"].map(str::to_owned).to_vec();
-        let failed = each_or_failed(keys, |k| {
-            tried.lock().unwrap().push(k.clone());
-            async move { if k == "gmail" { Err("boom".to_owned()) } else { Ok(()) } }
-        })
-        .await;
-        assert_eq!(*tried.lock().unwrap(), ["gmail", "drive", "calendar"]);
-        assert_eq!(failed, ["gmail"]);
+        let f = fixture("reapply");
+        write(&f.plugins.join("bad/plug/.mcp.json"), r#"{"mcpServers":{"bad-srv":{"env":{"GOOGLE_CLIENT_ID":"${GOOGLE_CLIENT_ID}"}}}}"#);
+        write(&f.plugins.join("good/plug/.mcp.json"), r#"{"mcpServers":{"good-srv":{"command":"good-mcp","env":{"GOOGLE_CLIENT_ID":"${GOOGLE_CLIENT_ID}"}}}}"#);
+        let ctx = f.hub.ctx();
+        for k in ["bad", "good"] {
+            let meta = json!({ "root": format!("{k}/plug"), "mcp": [format!("{k}-srv")] });
+            ctx.db
+                .with(|db| {
+                    db.execute("INSERT INTO installed_plugins(name, meta, created_at) VALUES(?, ?, 1)", [k, &meta.to_string()])?;
+                    db.execute("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at) VALUES(?1, ?1, 'old-mcp', '[]', '{}', 1, 1)", [format!("{k}-srv")])
+                })
+                .unwrap();
+        }
+        let market = Market::load(&root_without_catalog(&f), &f.root.join("data"), 9);
+        assert!(market.plugin_uses_google(ctx, "bad") && market.plugin_uses_google(ctx, "good"));
+        assert_eq!(reapply_google(&market, ctx).await, Ok(vec!["bad".to_owned()]));
+        let command = |id: &str| -> String { ctx.db.with(|db| db.query_row("SELECT command FROM mcp_servers WHERE id=?", [id], |r| r.get(0))).unwrap() };
+        assert_eq!((command("bad-srv"), command("good-srv")), ("old-mcp".to_owned(), "good-mcp".to_owned()), "good re-applied after bad failed");
     }
 }
