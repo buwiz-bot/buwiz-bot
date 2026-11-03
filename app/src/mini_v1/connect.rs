@@ -270,8 +270,11 @@ pub struct SetupField {
     /// Typed under dots; an empty one keeps the stored value.
     pub secret: bool,
     pub hint: String,
-    /// A value is stored (never sent here).
+    /// A value is stored.
     pub set: bool,
+    /// The stored value of a field that is not secret (the Client ID), to
+    /// change it; a secret's never comes.
+    pub value: String,
 }
 
 impl Setup {
@@ -293,6 +296,7 @@ impl SetupField {
             secret: v.get("secret").and_then(Value::as_bool).unwrap_or(false),
             hint: s(v, "hint"),
             set: v.get("set").and_then(Value::as_bool).unwrap_or(false),
+            value: if v.get("secret").and_then(Value::as_bool).unwrap_or(false) { String::new() } else { s(v, "value") },
         }
     }
 }
@@ -316,6 +320,11 @@ pub struct Account {
     /// What Setup lacks before it can sign in ("Add your Google client in
     /// Setup"); "" when nothing.
     pub setup: String,
+    /// Why its last sign-in failed ("" none).
+    pub error: String,
+    /// The setup fixes that failure (the provider refused the client):
+    /// the row offers Change.
+    pub fix_setup: bool,
 }
 
 impl Account {
@@ -329,6 +338,8 @@ impl Account {
             state: Some(s(v, "state")).filter(|l| !l.is_empty()).unwrap_or_else(|| "none".to_owned()),
             required: v.get("required").and_then(Value::as_bool).unwrap_or(false),
             setup: s(v, "setup"),
+            error: s(v, "error"),
+            fix_setup: s(v, "fix") == "setup",
         }
     }
 
@@ -449,6 +460,11 @@ impl Listed {
     /// of the accounts), `None` when it is ready or needs none.
     pub fn setup_missing(&self, provider: &str) -> Option<&Setup> {
         self.setup.iter().find(|x| x.provider == provider && !x.ready)
+    }
+
+    /// Its setup to change from its page (the first; ready or not).
+    pub fn first_setup(&self) -> Option<&Setup> {
+        self.setup.first()
     }
 
     /// The first setup any of its accounts still lacks.
@@ -1086,6 +1102,13 @@ mod tests {
         assert!(l.account_connected("google") && !l.account_connected("drive"));
         assert_eq!(l.signin_label("google"), "default");
         assert_eq!(l.skills, [Skill { name: "triage-inbox".into(), description: "Sort the inbox".into() }]);
+        // a failed sign-in: why, and whether Change (the setup) fixes it
+        let failed = Listed::of(&json!({"id": "x.y.z", "accounts": [
+            {"account": "google", "provider": "google", "state": "none", "error": "Google refused this client. Check the Client ID and Secret.", "fix": "setup"},
+            {"account": "drive", "provider": "google", "state": "none", "error": "Bad code"}]}));
+        assert_eq!((failed.accounts[0].error.as_str(), failed.accounts[0].fix_setup), ("Google refused this client. Check the Client ID and Secret.", true));
+        assert_eq!((failed.accounts[1].error.as_str(), failed.accounts[1].fix_setup), ("Bad code", false));
+        assert!(l.accounts[0].error.is_empty() && !l.accounts[0].fix_setup);
         // a broker that leaves out label and state: the default slot, not signed in
         let bare = Listed::of(&json!({"id": "x.y.z", "accounts": [{"account": "google", "provider": "google"}]}));
         assert_eq!((bare.accounts[0].label.as_str(), bare.accounts[0].state.as_str(), bare.accounts[0].name()), ("default", "none", "google".to_owned()));
@@ -1113,6 +1136,12 @@ mod tests {
         assert!(ready.first_missing_setup().is_none() && ready.setup_missing("google").is_none());
         assert!(Listed::of(&json!({"id": "x.y.z"})).setup.is_empty());
         assert_eq!(SetupField::of(&json!({"key": "K"})).label, "K", "the key labels a field without one");
+        assert_eq!((g.fields[0].value.as_str(), g.fields[1].value.as_str()), ("", ""));
+        let shown = SetupField::of(&json!({"key": "GOOGLE_CLIENT_ID", "set": true, "value": "cid"}));
+        assert_eq!(shown.value, "cid", "the Client ID shows, to be changed");
+        assert_eq!(SetupField::of(&json!({"key": "S", "secret": true, "set": true, "value": "leak"})).value, "", "a secret's value is never kept");
+        assert_eq!(ready.first_setup().map(|x| x.provider.as_str()), Some("google"));
+        assert!(Listed::of(&json!({"id": "x.y.z"})).first_setup().is_none());
     }
 
     #[test]
@@ -1126,6 +1155,9 @@ mod tests {
         assert!(host_api::save_setup(&b, "app.buwiz.gws", &[("a b".to_owned(), "v".to_owned())]).is_err());
         assert!(host_api::save_setup(&b, "app.buwiz.gws", &[("K".to_owned(), "".to_owned())]).is_err(), "nothing typed: nothing to send");
         assert!(b.routes().is_empty());
+        host_api::clear_setup(&b, "app.buwiz.gws").unwrap();
+        assert_eq!(*b.routes.lock().unwrap(), [("POST /v1/host/plugins/app.buwiz.gws/setup".to_owned(), json!({"clear": true}))]);
+        assert!(host_api::clear_setup(&b, "../x").is_err());
     }
 
     #[test]

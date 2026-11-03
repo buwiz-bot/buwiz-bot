@@ -237,6 +237,15 @@ pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> R
     post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"values": values}), SHORT_TIMEOUT)
 }
 
+/// `POST /v1/host/plugins/:id/setup {clear: true}`: Remove, every value
+/// of its setup gone (its provider's sign-ins expire).
+pub fn clear_setup(b: &dyn Broker, plugin: &str) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) {
+        return Err(RoxError::new("invalid_args", "not a plugin id"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"clear": true}), SHORT_TIMEOUT)
+}
+
 /// A setup field's key: `^[A-Za-z_][A-Za-z0-9_.]{0,63}$`.
 pub fn setup_key_ok(k: &str) -> bool {
     let mut c = k.chars();

@@ -3498,14 +3498,16 @@ fn provider_name(provider: &str) -> String {
 /// A packaged mini app's Accounts (§20), as a plugin's: a card per
 /// declared account, a row per signed-in label, then "Add another". While
 /// an account's provider lacks its setup (the shared Google client), its
-/// Setup shows instead: a sign-in could not start without it.
+/// Setup shows instead: a sign-in could not start without it. Once saved,
+/// a compact Setup row above them ("Google client · saved") offers Change
+/// (the fields again) and Remove.
 fn v1_accounts_section(plugin: String) -> impl IntoElement {
     dynamic(move || {
         let Some(p) = store().v1.listed.get().into_iter().find(|x| x.id == plugin) else {
             return view().into_element();
         };
         if let Some(setup) = p.first_missing_setup().cloned() {
-            return v1_setup_section(&plugin, setup);
+            return v1_setup_section(&plugin, setup, false);
         }
         let groups = p.account_groups();
         if groups.is_empty() {
@@ -3513,6 +3515,9 @@ fn v1_accounts_section(plugin: String) -> impl IntoElement {
         }
         let many = groups.len() > 1;
         let mut col = view().gap(px(16.0));
+        if let Some(setup) = p.first_setup().cloned() {
+            col = col.child(if store().v1.setup_edit.get() == plugin { v1_setup_section(&plugin, setup, true) } else { v1_setup_saved(&plugin, &setup) });
+        }
         for (_, rows) in groups {
             let title = rows[0].title.clone();
             let label = if many { format!("Accounts · {title}") } else { "Accounts".to_owned() };
@@ -3527,22 +3532,75 @@ fn v1_accounts_section(plugin: String) -> impl IntoElement {
     })
 }
 
-/// A setup field as the legacy sheet draws it: a stored secret shows as
-/// dots, a stored value says so (the value itself never reaches the app).
+/// A setup field as the legacy sheet draws it: a field that is not secret
+/// prefilled with its stored value (the Client ID), a stored secret as
+/// dots and blank (left blank, the stored one stays).
 pub fn v1_setup_field(f: &crate::mini_v1::connect::SetupField) -> crate::store::PluginField {
-    let placeholder = if f.set && !f.secret { "Saved · type a new one to replace it".to_owned() } else { f.placeholder.clone() };
     crate::store::PluginField {
         key: f.key.clone(),
         label: f.label.clone(),
-        placeholder,
+        placeholder: f.placeholder.clone(),
         required: true,
         secret: f.secret,
         hint: f.hint.clone(),
         options: Vec::new(),
         set: f.set,
-        value: String::new(),
+        value: if f.secret { String::new() } else { f.value.clone() },
         shared: String::new(),
     }
+}
+
+/// What a setup is called on its row ("Google client").
+fn setup_name(provider: &str) -> String {
+    if provider == "google" { "Google client".to_owned() } else { "Setup".to_owned() }
+}
+
+/// A saved setup's row: "Google client · saved", Change (its fields open
+/// above the accounts) and Remove, confirmed in place.
+fn v1_setup_saved(plugin: &str, setup: &crate::mini_v1::connect::Setup) -> AnyElement {
+    let st = store();
+    let name = setup_name(&setup.provider);
+    let confirming = st.v1.setup_confirm.get() == plugin;
+    let (p1, p2, p3) = (plugin.to_owned(), plugin.to_owned(), plugin.to_owned());
+    let mut right = view().flex_row().items_center().gap(px(7.0));
+    if confirming {
+        right = right
+            .child(sm_btn(Btn::DangerSolid, || "Confirm Remove".into(), move || store().v1_clear_setup(&p1)).label(format!("Confirm remove the {name}")))
+            .child(sm_btn(Btn::Ghost, || "Cancel".into(), || store().v1.setup_confirm.set(String::new())).label("Cancel"));
+    } else {
+        right = right
+            .child(
+                sm_btn(Btn::Secondary, || "Change".into(), move || {
+                    store().v1.setup_confirm.set(String::new());
+                    store().v1.setup_err.update(|m| {
+                        m.remove(&p2);
+                    });
+                    store().v1.setup_edit.set(p2.clone());
+                })
+                .label(format!("Change the {name}")),
+            )
+            .child(sm_btn(Btn::Danger, || "Remove".into(), move || store().v1.setup_confirm.set(p3.clone())).label(format!("Remove the {name}")));
+    }
+    let mut row = view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .child(plug_tile(&provider_name(&setup.provider), 20.0))
+        .child(text(format!("{name} · saved")).flex_1().number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+        .child(right);
+    if confirming {
+        row = view().child(row).child(
+            text(format!("Removes the {name} for every plugin that shares it; their sign-ins will need it again."))
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3())
+                .px(px(14.0))
+                .pb(px(10.0)),
+        );
+    }
+    view().child(sec_label("Setup")).child(card().child(row)).into_element()
 }
 
 /// What a provider's setup is, above its fields.
@@ -3556,8 +3614,9 @@ pub fn v1_setup_intro(provider: &str) -> String {
 
 /// A mini app's Setup: the fields its sign-in lacks (typed into
 /// `V1::setup_vals`, secrets under dots) and Save; once saved, the list
-/// reads it as ready and the Accounts with Sign in show instead.
-fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup) -> AnyElement {
+/// reads it as ready and the Accounts with Sign in show instead. `editing`:
+/// a saved setup opened by Change, with Cancel; a save closes it.
+fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing: bool) -> AnyElement {
     let st = store();
     let keys: Vec<String> = setup.fields.iter().map(|f| f.key.clone()).collect();
     let mut col = view().gap(px(14.0)).px(px(14.0)).py(px(12.0)).child(
@@ -3571,8 +3630,19 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup) -> AnyE
         col = col.child(text(err).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()));
     }
     let (p1, p2) = (plugin.to_owned(), plugin.to_owned());
+    let mut buttons = view().flex_row().justify_end().gap(px(8.0));
+    if editing {
+        let ks = keys.clone();
+        buttons = buttons.child(
+            sm_btn(Btn::Ghost, || "Cancel".into(), move || {
+                store().v1.setup_vals.update(|m| m.retain(|k, _| !ks.contains(k)));
+                store().v1.setup_edit.set(String::new());
+            })
+            .label("Cancel"),
+        );
+    }
     col = col.child(
-        view().flex_row().justify_end().child(
+        buttons.child(
             sm_btn(
                 Btn::Primary,
                 move || if store().v1.setup_saving.get().contains(&p1) { "Saving…".into() } else { "Save".into() },
@@ -3581,12 +3651,11 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup) -> AnyE
                     store().v1.setup_err.update(|m| {
                         m.remove(&p);
                     });
-                    store().v1_save_setup(&p2, keys.clone(), move |r| {
-                        if let Err(e) = r {
-                            store().v1.setup_err.update(|m| {
-                                m.insert(p, e);
-                            });
-                        }
+                    store().v1_save_setup(&p2, keys.clone(), move |r| match r {
+                        Ok(()) => store().v1.setup_edit.set(String::new()),
+                        Err(e) => store().v1.setup_err.update(|m| {
+                            m.insert(p, e);
+                        }),
                     })
                 },
             )
@@ -3685,8 +3754,17 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     // the setup a sign-in still lacks, and a refused sign-in's reason (a
     // missing setup shows the Setup section instead of these rows)
     let setup = if a.connected() { String::new() } else { a.setup.clone() };
-    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().unwrap_or_default() };
+    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().filter(|e| !e.is_empty()).unwrap_or_else(|| a.error.clone()) };
     let err = if err == setup { String::new() } else { err };
+    // the provider refused the client: Change opens the setup's fields
+    let fix = (!a.connected() && a.fix_setup).then(|| {
+        let p = plugin.to_owned();
+        sm_btn(Btn::Secondary, || "Change".into(), move || {
+            store().v1.setup_confirm.set(String::new());
+            store().v1.setup_edit.set(p.clone());
+        })
+        .label("Change the Google client")
+    });
     view()
         .px(px(14.0))
         .py(px(10.0))
@@ -3706,6 +3784,7 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
         .when(!err.is_empty(), |v| {
             v.child(text(err.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
         })
+        .when(fix.is_some(), |v| v.child(view().flex_row().pt(px(6.0)).children(fix)))
         .into_element()
 }
 

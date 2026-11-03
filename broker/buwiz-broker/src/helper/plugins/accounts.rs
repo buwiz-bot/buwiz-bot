@@ -17,7 +17,12 @@
 //! sign-in can start, as fields the user fills in. `google` needs the shared
 //! client (`hub::market::catalog::google_fields`, saved in `@google` where
 //! the legacy Google plugins read it too); `oauth:` registers itself and
-//! needs none. The views say only whether a value is set, never the value.
+//! needs none. The views say only whether a value is set, never a secret
+//! (a field that is not secret, the Client ID, shows its value so it can be
+//! changed). A changed or removed value expires every signed-in account of
+//! that provider (its tokens were the old client's); a sign-in the provider
+//! refuses for its client (`invalid_client`, `unauthorized_client`) says so
+//! on the account's row, `fix: "setup"`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -50,6 +55,7 @@ pub const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
 use crate::hub::market::catalog::{google_fields, GOOGLE_GROUP};
 pub const DEFAULT_LABEL: &str = "default";
 pub const NEEDS_GOOGLE_CLIENT: &str = "Add your Google client in Setup";
+pub const GOOGLE_REFUSED_CLIENT: &str = "Google refused this client. Check the Client ID and Secret.";
 const REFRESH_EARLY_MS: f64 = 5.0 * 60.0 * 1000.0;
 const PENDING_FOR: Duration = Duration::from_secs(10 * 60);
 pub const SET: &str = "buwiz.account.set";
@@ -93,16 +99,22 @@ pub(super) struct Accounts {
     cfg: Mutex<AccountsConfig>,
     pending: Mutex<HashMap<String, Pending>>,
     timers: Mutex<HashMap<String, u64>>,
+    /// The last failed sign-in of each token ref: (why, the setup fixes it).
+    errors: Mutex<HashMap<String, (String, bool)>>,
     events: broadcast::Sender<Value>,
 }
 
 impl Accounts {
     pub(super) fn new() -> Self {
-        Self { cfg: Mutex::new(AccountsConfig::default()), pending: Mutex::new(HashMap::new()), timers: Mutex::new(HashMap::new()), events: broadcast::channel(256).0 }
+        Self { cfg: Mutex::new(AccountsConfig::default()), pending: Mutex::new(HashMap::new()), timers: Mutex::new(HashMap::new()), errors: Mutex::new(HashMap::new()), events: broadcast::channel(256).0 }
     }
 
     fn cfg(&self) -> AccountsConfig {
         self.cfg.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn errors(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, bool)>> {
+        self.errors.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
@@ -187,6 +199,19 @@ fn provider_setup(provider: &str) -> Option<(&'static str, Vec<Value>)> {
 
 fn is_set(vals: &Map<String, Value>, key: &str) -> bool {
     vals.get(key).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+}
+
+/// A failed token request: why, and whether the provider refused the
+/// client itself (a wrong Client ID or Secret).
+struct Refused {
+    why: String,
+    bad_client: bool,
+}
+
+impl From<Refused> for String {
+    fn from(r: Refused) -> String {
+        r.why
+    }
 }
 
 /// `buwiz.account.set`'s arguments.
@@ -289,7 +314,9 @@ impl Host {
     /// per signed-in label of each declared account, `{account, label,
     /// provider, title, subject, state, required}`; an account never signed
     /// in is a `default` row in state `none`. A row whose provider's setup
-    /// is missing (`setup_view`) adds `setup` (why sign-in can't start).
+    /// is missing (`setup_view`) adds `setup` (why sign-in can't start); one
+    /// whose last sign-in failed adds `error`, and `fix: "setup"` when the
+    /// provider refused its client.
     pub fn accounts_view(&self, id: &str) -> Value {
         let declared = self.declared_accounts(id);
         if declared.is_empty() {
@@ -303,6 +330,12 @@ impl Host {
                 let mut o = json!({"account": a.id, "label": label, "provider": a.provider, "title": a.label, "subject": subject, "state": state, "required": a.required});
                 if missing {
                     o["setup"] = json!(NEEDS_GOOGLE_CLIENT);
+                }
+                if let Some((why, fix)) = self.accounts.errors().get(&token_ref(id, &a.id, label)).filter(|_| state != "connected") {
+                    o["error"] = json!(why);
+                    if *fix {
+                        o["fix"] = json!("setup");
+                    }
                 }
                 o
             };
@@ -336,7 +369,8 @@ impl Host {
 
     /// The setup a plugin's declared accounts need, one entry per provider
     /// that has any: `{provider, ready, fields: [{key, label, placeholder,
-    /// secret, hint, set}]}`, `ready` when every field is set. No values.
+    /// secret, hint, set, value?}]}`, `ready` when every field is set;
+    /// `value` only for a set field that is not secret.
     pub fn setup_view(&self, id: &str) -> Value {
         let mut out: Vec<Value> = Vec::new();
         for a in self.declared_accounts(id) {
@@ -348,7 +382,12 @@ impl Host {
             let fields: Vec<Value> = fields
                 .into_iter()
                 .map(|mut f| {
-                    f["set"] = json!(is_set(&vals, &js::string_of(&f["key"])));
+                    let key = js::string_of(&f["key"]);
+                    f["set"] = json!(is_set(&vals, &key));
+                    // a value that is no secret shows, so it can be changed
+                    if f["secret"] != true && is_set(&vals, &key) {
+                        f["value"] = vals[&key].clone();
+                    }
                     f
                 })
                 .collect();
@@ -358,12 +397,14 @@ impl Host {
         json!(out)
     }
 
-    /// `POST …/plugins/<id>/setup {values}`: the fields its setup declares,
-    /// trimmed, saved in their provider's shared row (other keys refused,
-    /// nothing saved then); an empty secret keeps the stored one, an empty
-    /// other field clears it. Every plugin sharing the provider hears the
-    /// change. → `{ok, id, setup, accounts}` (no values).
-    pub fn save_setup(&self, id: &str, values: Option<&Value>) -> Res {
+    /// `POST …/plugins/<id>/setup {values, clear?}`: the fields its setup
+    /// declares, trimmed, saved in their provider's shared row (other keys
+    /// refused, nothing saved then); an empty secret keeps the stored one,
+    /// an empty other field clears it; `clear: true` removes every field of
+    /// its setup. A value that changed expires the provider's signed-in
+    /// accounts ([`Host::expire_provider`]). Every plugin sharing the
+    /// provider hears the change. → `{ok, id, setup, accounts}` (no secret).
+    pub async fn save_setup(&self, id: &str, values: Option<&Value>, clear: bool) -> Res {
         self.must_row(id)?;
         let mut providers: Vec<String> = Vec::new();
         for a in self.declared_accounts(id) {
@@ -391,12 +432,18 @@ impl Host {
             };
             sent.push((group, k.clone(), v, secret));
         }
+        if clear {
+            // every field, emptied (a secret too)
+            sent = providers.iter().filter_map(|p| provider_setup(p)).flat_map(|(g, fs)| fs.into_iter().map(move |f| (g, js::string_of(&f["key"]), String::new(), false))).collect();
+        }
         let mut groups: Vec<&'static str> = sent.iter().map(|x| x.0).collect();
         groups.sort_unstable();
         groups.dedup();
         let now = self.clock.now() as i64;
+        let mut changed: Vec<&'static str> = Vec::new();
         for g in groups {
             let mut vals = self.group_vals(g);
+            let before = vals.clone();
             for (_, k, v, secret) in sent.iter().filter(|x| x.0 == g) {
                 if !v.is_empty() {
                     vals.insert(k.clone(), json!(v));
@@ -412,6 +459,12 @@ impl Host {
                     db.execute("INSERT OR REPLACE INTO plugin_settings(plugin, vals, updated_at) VALUES(?,?,?)", params![g, js::stringify(&Value::Object(vals.clone())), now]).map(drop)
                 }
             })?;
+            if sent.iter().filter(|x| x.0 == g).any(|(_, k, ..)| before.get(k) != vals.get(k)) {
+                changed.push(g);
+            }
+        }
+        for p in providers.iter().filter(|p| provider_setup(p).is_some_and(|(g, _)| changed.contains(&g))) {
+            self.expire_provider(p).await;
         }
         for r in self.rows() {
             if r.id == id || self.declared_accounts(&r.id).iter().any(|a| providers.contains(&a.provider)) {
@@ -419,6 +472,24 @@ impl Host {
             }
         }
         Ok(json!({"ok": true, "id": id, "setup": self.setup_view(id), "accounts": self.accounts_view(id)}))
+    }
+
+    /// The client of `provider` changed: every v1 plugin's signed-in
+    /// account of it is `expired` and cleared in the plugin (its tokens were
+    /// the old client's), and sign-ins begun with the old client end.
+    pub async fn expire_provider(&self, provider: &str) {
+        self.accounts.pending().retain(|_, p| p.provider != provider);
+        for row in self.rows() {
+            for r in self.account_rows(&row.id).into_iter().filter(|r| r.provider == provider && r.state == "connected") {
+                self.clear_refresh(&r.token_ref);
+                let now = self.clock.now() as i64;
+                let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET state='expired', updated_at=? WHERE plugin=? AND account=? AND label=?", params![now, r.plugin, r.account, r.label]));
+                let lock = self.lock_of(&r.plugin);
+                let _held = lock.lock().await;
+                self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+                self.account_changed(&r.plugin, &r.account, &r.label, "expired");
+            }
+        }
     }
 
     fn declared_one(&self, plugin: &str, account: &str) -> Res<Account> {
@@ -481,6 +552,7 @@ impl Host {
             scopes,
             until: Instant::now() + PENDING_FOR,
         };
+        self.accounts.errors().remove(&token_ref(plugin, account, &label));
         self.accounts.pending().insert(flow, p);
         let u = url.to_string();
         if open {
@@ -541,6 +613,7 @@ impl Host {
         }
         self.accounts.pending().remove(flow);
         if let Some(e) = error {
+            self.accounts.errors().insert(token_ref(&p.plugin, &p.account, &p.label), (format!("Sign-in failed: {}", js::slice_utf16(e, 200)), false));
             self.emit(&p.plugin);
             return ("failed", js::slice_utf16(e, 200));
         }
@@ -551,13 +624,17 @@ impl Host {
             ("redirect_uri".into(), p.redirect.clone()),
         ];
         let got = self.token_call(&p.token_endpoint, &p.auth_methods, &p.client, params).await;
+        let r = token_ref(&p.plugin, &p.account, &p.label);
         let t = match got {
             Ok(t) => t,
-            Err(why) => {
+            Err(e) => {
+                let why = if e.bad_client && p.provider == "google" { GOOGLE_REFUSED_CLIENT.to_owned() } else { e.why };
+                self.accounts.errors().insert(r, (why.clone(), e.bad_client && p.provider == "google"));
                 self.emit(&p.plugin);
                 return ("failed", why);
             }
         };
+        self.accounts.errors().remove(&r);
         let r = AccountRow {
             plugin: p.plugin.clone(),
             account: p.account.clone(),
@@ -591,12 +668,15 @@ impl Host {
     }
 
     /// A token request; the token response (`id_token` too).
-    async fn token_call(&self, endpoint: &str, methods: &[String], client: &Map<String, Value>, params: Vec<(String, String)>) -> Result<Map<String, Value>, String> {
-        let url = Url::parse(endpoint).map_err(|e| e.to_string())?;
+    async fn token_call(&self, endpoint: &str, methods: &[String], client: &Map<String, Value>, params: Vec<(String, String)>) -> Result<Map<String, Value>, Refused> {
+        let url = Url::parse(endpoint).map_err(|e| Refused { why: e.to_string(), bad_client: false })?;
         let mut md = Map::new();
         md.insert("token_endpoint".into(), json!(endpoint));
         md.insert("token_endpoint_auth_methods_supported".into(), json!(methods));
-        oauth::token_request(&Fetcher::default(), &url, Some(&md), params, Some(client), None).await.map_err(|e| js::slice_utf16(&e.message(), 300))
+        oauth::token_request(&Fetcher::default(), &url, Some(&md), params, Some(client), None).await.map_err(|e| {
+            let bad_client = matches!(&e, oauth::AuthError::OAuth { kind: oauth::Kind::InvalidClient | oauth::Kind::UnauthorizedClient, .. });
+            Refused { why: js::slice_utf16(&e.message(), 300), bad_client }
+        })
     }
 
     /// What the keystore keeps of a token response (`prev`'s refresh token
@@ -764,6 +844,7 @@ impl Host {
             return V1Error::err("not_found", format!("{plugin} has no {account} account {label}"));
         }
         let r = token_ref(plugin, account, &label);
+        self.accounts.errors().remove(&r);
         self.clear_refresh(&r);
         self.drop_tokens(&r).await;
         if remove {
@@ -789,6 +870,7 @@ impl Host {
             self.drop_tokens(&r.token_ref).await;
         }
         self.accounts.pending().retain(|_, p| p.plugin != plugin);
+        self.accounts.errors().retain(|r, _| !r.starts_with(&format!("{plugin}/")));
         let _ = self.sql(|db| db.execute("DELETE FROM v1_accounts WHERE plugin=?", [plugin]));
     }
 }

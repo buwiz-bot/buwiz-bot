@@ -641,6 +641,8 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         app_uninstall_row(n, chat.to_owned(), t.i).into_element()
     } else if let Some(n) = t.account_required.clone() {
         account_required_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.app_setup.clone() {
+        app_setup_row(n, chat.to_owned(), t.i).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -1298,6 +1300,54 @@ fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate
         c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
     }
     c.into_element()
+}
+
+/// The agent's `app_setup`: a mini app's setup fields to change (the
+/// Client ID prefilled from the plugin list, a secret blank to keep it),
+/// Save or Cancel; once answered, "Google client · Saved". The values go
+/// from the fields to the setup route only (whose save settles the card).
+fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        if let Some(done) = n.answered(local.local()) {
+            return app_quiet_line(done);
+        }
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned());
+        let fields = n.fields_from(listed.as_ref());
+        let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
+        let question = if n.title.is_empty() { format!("Change the {}", n.what()) } else { format!("Change the {} of {}", n.what(), n.title) };
+        let mut c = app_card_frame(question.clone())
+            .child(text(question).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(text(crate::plugins::v1_setup_intro(&n.provider)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+        for f in &fields {
+            c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
+        }
+        let (ch1, ch2, p1, p2) = (chat.clone(), chat.clone(), n.plugin.clone(), n.plugin.clone());
+        let ks = keys.clone();
+        let mut buttons = view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(app_card_btn("Save", format!("Save the {}", n.what()), true, move || {
+                let ch = ch1.clone();
+                store().app_card(&ch1, i, |c| c.start());
+                store().v1_save_setup(&p1, keys.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+            }))
+            .child(app_card_btn("Cancel", "Cancel".to_owned(), false, move || {
+                store().v1.setup_vals.update(|m| m.retain(|k, _| !ks.contains(k)));
+                store().app_answer(&ch2, i, "app_setup", &p2, "cancelled")
+            }));
+        if store().v1.setup_saving.with(|s| s.contains(&n.plugin)) {
+            buttons = buttons.child(text("Saving…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        c = c.child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
 }
 
 /// An item's instruction in a routine's thread: what the routine gave the

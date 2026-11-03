@@ -13,7 +13,7 @@
 //! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
 //! a sign-in settles the chat's `account_required` cards for it
 //! (`connected`); the user's Not now settles them `declined`.
-//! `POST /v1/host/plugins/<id>/setup {values}` saves the setup its
+//! `POST /v1/host/plugins/<id>/setup {values, clear?}` saves (or clears) the setup its
 //! accounts' providers need (the shared Google client; never logged, never
 //! answered); an install from a chat's card whose setup is missing puts an
 //! `account_required` card carrying that setup in the chat.
@@ -412,11 +412,14 @@ pub fn ask_setup(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> usize {
     posted
 }
 
-/// `POST /v1/host/plugins/<id>/setup {values}` ([`Host::save_setup`]);
+/// `POST /v1/host/plugins/<id>/setup {values, clear?}` ([`Host::save_setup`]);
+/// the pending `app_setup` cards of the plugin read `saved`;
 /// a saved Google client re-applies to the installed Google plugins'
 /// connectors, as their own Setup's save does.
 pub async fn save_setup(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result<Value, V1Error> {
-    let out = host.save_setup(id, b.get("values"))?;
+    let out = host.save_setup(id, b.get("values"), b.get("clear") == Some(&Value::Bool(true))).await?;
+    // a mini app's `app_setup` cards for it have their answer
+    settle_notices(ctx, None, "app_setup", id, "saved");
     let google = host.declared_accounts(id).iter().any(|a| a.provider == "google");
     if let (true, Some(m)) = (google, ctx.ext.get::<Arc<Market>>()) {
         // the error may quote a materialized config: not logged
@@ -438,7 +441,8 @@ pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
         "app_install" => &["declined"],
         "app_uninstall" => &["uninstalled", "cancelled"],
         "account_required" => &["declined"],
-        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall or account_required"),
+        "app_setup" => &["saved", "cancelled"],
+        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall, account_required or app_setup"),
     };
     if !states.contains(&state) {
         return V1Error::err("invalid_args", format!("{kind} settles as {}", states.join(" or ")));

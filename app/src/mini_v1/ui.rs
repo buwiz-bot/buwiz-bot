@@ -105,6 +105,10 @@ pub struct V1 {
     pub setup_saving: Signal<HashSet<String>>,
     /// A refused setup save's message on a plugin's page, by plugin.
     pub setup_err: Signal<HashMap<String, String>>,
+    /// The plugin whose saved setup its page shows open to change ("" none).
+    pub setup_edit: Signal<String>,
+    /// The plugin whose setup Remove asks to confirm ("" none).
+    pub setup_confirm: Signal<String>,
 }
 
 /// What a refused sign-in says: `needs_setup` is the setup it lacks.
@@ -154,6 +158,8 @@ impl V1 {
             setup_vals: signal(BTreeMap::new()),
             setup_saving: signal(HashSet::new()),
             setup_err: signal(HashMap::new()),
+            setup_edit: signal(String::new()),
+            setup_confirm: signal(String::new()),
         }
     }
 
@@ -1344,7 +1350,8 @@ impl Store {
                         std::thread::sleep(std::time::Duration::from_secs(2));
                         let list = host_api::plugins(&broker()).ok()?;
                         let p = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?;
-                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && x.connected()))
+                        // connected, or the broker's word on why it failed
+                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && (x.connected() || !x.error.is_empty())))
                     })
                     .await
                     .flatten();
@@ -1392,6 +1399,15 @@ impl Store {
                 self.v1_refresh();
             })
         });
+    }
+
+    /// Remove of a plugin's setup (after its confirm): every value gone,
+    /// its provider's sign-ins expire; the page asks for the setup again.
+    pub fn v1_clear_setup(&'static self, plugin: &str) {
+        let p = plugin.to_owned();
+        self.v1.setup_confirm.set(String::new());
+        self.v1.setup_edit.set(String::new());
+        self.v1_job("", move || host_api::clear_setup(&broker(), &p), |_| {});
     }
 
     /// Stops waiting on a sign-in (the browser was closed).

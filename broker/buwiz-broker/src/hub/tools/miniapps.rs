@@ -2,7 +2,9 @@
 //! own, not in `defs.json` (which stays Node's, DEFS-01). `app_install`
 //! fetches and verifies a GitHub release (`helper::release`), inspects it
 //! and posts an `app_install` card in the chat: only the user's Install
-//! installs it. `app_uninstall` posts an `app_uninstall` card the same way;
+//! installs it. `app_uninstall` posts an `app_uninstall` card the same way,
+//! and `app_setup` an `app_setup` card whose fields the user changes a mini
+//! app's setup in (the shared Google client; the model never sees a value);
 //! `app_enable` / `app_disable` act at once; `app_list` lists. A
 //! package's card also names its folder (`package`), skills and accounts.
 
@@ -15,7 +17,7 @@ use crate::hub::routines::store_host::StoreHost;
 use crate::hub::routines::threads;
 use crate::js;
 
-pub const NAMES: [&str; 5] = ["app_install", "app_list", "app_enable", "app_disable", "app_uninstall"];
+pub const NAMES: [&str; 6] = ["app_install", "app_list", "app_enable", "app_disable", "app_uninstall", "app_setup"];
 
 /// The GitHub API base `app_install` reads (tests: a local server).
 #[derive(Clone)]
@@ -45,6 +47,11 @@ pub fn defs() -> Vec<Value> {
             "description": "Ask the user to uninstall a mini app: a card in this chat asks them to confirm. You cannot uninstall it yourself.",
             "input_schema": id_schema("the one to remove"),
         }),
+        json!({
+            "name": "app_setup",
+            "description": "Let the user change, update or fix an installed mini app's setup: its Google client (Client ID and Client Secret), keys or credentials, e.g. when they typed a wrong one or Google refused the client. A card in this chat shows the fields for the user to type into; you never ask for, read or pass the values yourself.",
+            "input_schema": id_schema("the one whose setup to change"),
+        }),
     ]
 }
 
@@ -66,6 +73,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
     match name {
         "app_install" => Ok(install(run, &host, input).await),
         "app_list" => Ok(list(&host)),
+        "app_setup" => Ok(setup(run, &host, &id)),
         "app_enable" | "app_disable" => {
             let r = if name == "app_enable" { host.enable(&id).await } else { host.disable(&id).await };
             Ok(match r {
@@ -84,6 +92,30 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
             Ok(Out::ok(format!("a card in this chat asks the user to confirm uninstalling {title}; you cannot uninstall it yourself")))
         }
     }
+}
+
+/// `app_setup`: an `app_setup` card for `id`'s first setup (its fields,
+/// no values), one pending per chat and plugin, ready or not.
+fn setup(run: &Run, host: &Host, id: &str) -> Out {
+    let Some(row) = host.row(id) else { return Out::err(format!("{} is not installed (app_list shows the ids)", js::slice_utf16(id, 80))) };
+    let title = title_of(&row.manifest(), id);
+    let view = host.setup_view(id);
+    let Some(s) = view.as_array().and_then(|v| v.first()) else { return Out::err(format!("{title} has no setup to change")) };
+    let provider = js::string_of(&s["provider"]);
+    let chat = run.thread_id();
+    let pending = run.ctx.store.read(|st| {
+        st.thread(&chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_setup" && n["id"] == json!(id) && n["state"] == "pending"))
+    });
+    let fields: Vec<Value> =
+        s["fields"].as_array().into_iter().flatten().map(|f| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]})).collect();
+    let n = json!({"kind": "app_setup", "id": id, "plugin": id, "title": title, "provider": provider, "fields": fields, "state": "pending"});
+    if !pending && !post(run, &n) {
+        return Out::err("no chat to show the setup card in".into());
+    }
+    Out::ok(format!(
+        "a card in this chat lets the user change {title}'s {}: they type the values into the card. Never ask for the client ID, secret or any key in the chat, and never repeat one",
+        super::v1::setup_name(&provider)
+    ))
 }
 
 fn list(host: &Host) -> Out {
@@ -704,23 +736,25 @@ mod tests {
         assert_eq!(listed["setup"], view);
 
         // only the declared fields, strings; nothing saved on a refusal
-        let e = b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "OTHER_KEY": "x"}))).unwrap_err();
+        let e = b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "OTHER_KEY": "x"})), false).await.unwrap_err();
         assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", "app.buwiz.fixture's setup has no field OTHER_KEY"));
-        assert_eq!(b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": 5}))).unwrap_err().code, "invalid_args");
-        assert_eq!(b.host.save_setup(FX, Some(&json!(["x"]))).unwrap_err().code, "invalid_args");
-        assert_eq!(b.host.save_setup("app.buwiz.other", Some(&json!({}))).unwrap_err().message, "app.buwiz.other needs no setup");
-        assert_eq!(b.host.save_setup("app.buwiz.none", Some(&json!({}))).unwrap_err().code, "not_found");
+        assert_eq!(b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": 5})), false).await.unwrap_err().code, "invalid_args");
+        assert_eq!(b.host.save_setup(FX, Some(&json!(["x"])), false).await.unwrap_err().code, "invalid_args");
+        assert_eq!(b.host.save_setup("app.buwiz.other", Some(&json!({})), false).await.unwrap_err().message, "app.buwiz.other needs no setup");
+        assert_eq!(b.host.save_setup("app.buwiz.none", Some(&json!({})), false).await.unwrap_err().code, "not_found");
         assert_eq!(stored_google(&b), Value::Null);
 
         let mut events = b.host.events();
         let r = crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_ID": " cid ", "GOOGLE_CLIENT_SECRET": "csec"}})).await.unwrap();
-        assert!(!r.to_string().contains("csec") && !r.to_string().contains("\"cid\""), "no values answered: {r}");
+        assert!(!r.to_string().contains("csec"), "no secret answered: {r}");
+        assert_eq!(r["setup"][0]["fields"][0]["value"], "cid", "the Client ID shows, to be changed");
+        assert!(r["setup"][0]["fields"][1].get("value").is_none());
         assert_eq!((r["setup"][0]["ready"].clone(), set(&r["setup"])), (json!(true), vec![true, true]));
         assert!(r["accounts"][0].get("setup").is_none(), "{r}");
         assert_eq!(events.try_recv().unwrap()["id"], FX, "the plugin's change event");
         assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "csec"}));
         // an empty secret keeps the stored one; the id is replaced
-        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "  "}))).unwrap();
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "  "})), false).await.unwrap();
         assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "csec"}));
         assert!(!b.host.setup_missing("google"));
 
@@ -732,7 +766,7 @@ mod tests {
         assert_eq!(crate::hub::routes::host::settle_signed_in(&b.ctx, FX, "google"), 1);
         assert_eq!(cards(&b.ctx, &chat, "account_required")[0].1["state"], "connected");
         // Not now on a setup card is `declined`
-        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": ""}))).unwrap();
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": ""})), false).await.unwrap();
         assert!(b.host.setup_missing("google"));
         assert_eq!(crate::hub::routes::host::ask_setup(&b.ctx, &b.host, &chat, FX), 1);
         assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap()["settled"], 1);
@@ -751,6 +785,108 @@ mod tests {
         install_pkg(&b, "v1.0.0").await;
         assert!(cards(&b.ctx, &run.thread_id(), "account_required").is_empty());
         assert_eq!(b.host.setup_view(FX)[0]["ready"], true);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// Signs FX's google account in with token `at`.
+    async fn connect(b: &Bed, at: &str) {
+        let (flow, state, _) = sign_in(b).await;
+        token_answer(&b.files, 200, json!({"access_token": at, "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer"}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
+    }
+
+    /// A saved client can change: the same values change nothing, a new
+    /// secret expires the Google sign-ins (cleared in the plugin), and
+    /// `clear` removes both values, the setup missing again.
+    #[tokio::test]
+    async fn a_changed_or_removed_google_client_expires_the_google_sign_ins() {
+        let b = bed_in("setupchange", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        google_client(&b);
+        connect(&b, "at-1").await;
+        assert_eq!(pushed(&b.host).await["google/default"]["sets"], 1);
+        // the same values: nothing changed, still signed in
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "csec"})), false).await.unwrap();
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_SECRET": ""})), false).await.unwrap();
+        assert_eq!(b.host.account_rows(FX)[0].state, "connected");
+        // a new secret: expired and cleared
+        let mut accounts = b.host.account_events();
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_SECRET": "csec-2"})), false).await.unwrap();
+        assert_eq!(b.host.account_rows(FX)[0].state, "expired");
+        assert_eq!(b.host.accounts_view(FX)[0]["state"], "expired");
+        assert_eq!(pushed(&b.host).await, json!({}), "buwiz.account.clear reached the plugin");
+        assert_eq!(accounts.try_recv().unwrap()["state"], "expired");
+        // signed in again, then the client removed
+        connect(&b, "at-2").await;
+        let r = crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"clear": true})).await.unwrap();
+        assert_eq!((r["setup"][0]["ready"].clone(), r["accounts"][0]["state"].clone()), (json!(false), json!("expired")));
+        assert_eq!(stored_google(&b), Value::Null, "both values gone");
+        assert!(b.host.setup_missing("google"));
+        assert_eq!(pushed(&b.host).await, json!({}));
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// Google answering `invalid_client` to the code exchange: the row says
+    /// the client was refused and that the setup fixes it; the next
+    /// sign-in starts clean.
+    #[tokio::test]
+    async fn a_refused_google_client_says_so_on_the_account_row() {
+        let b = bed_in("badclient", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        google_client(&b);
+        let (flow, state, _) = sign_in(&b).await;
+        token_answer(&b.files, 401, json!({"error": "invalid_client", "error_description": "The OAuth client was not found."}));
+        let got = b.host.account_callback(&flow, Some("c"), Some(&state), None).await;
+        assert_eq!(got, ("failed", "Google refused this client. Check the Client ID and Secret.".to_owned()));
+        let row = b.host.accounts_view(FX)[0].clone();
+        assert_eq!((row["error"].clone(), row["fix"].clone()), (json!("Google refused this client. Check the Client ID and Secret."), json!("setup")));
+        // another failure is said as it is, without the setup fix
+        let (flow, state, _) = sign_in(&b).await;
+        assert!(b.host.accounts_view(FX)[0].get("error").is_none(), "a new sign-in starts clean");
+        token_answer(&b.files, 400, json!({"error": "invalid_grant", "error_description": "Bad code"}));
+        b.host.account_callback(&flow, Some("c"), Some(&state), None).await;
+        let row = b.host.accounts_view(FX)[0].clone();
+        assert_eq!((row["error"].clone(), row.get("fix")), (json!("Bad code"), None));
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// `app_setup`: a card with the setup's fields (no values) even when it
+    /// is ready, one while pending; a save settles it `saved`, the user's
+    /// Cancel `cancelled`.
+    #[tokio::test]
+    async fn app_setup_puts_a_card_to_change_the_setup_in_the_chat() {
+        let b = bed_in("appsetup", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        let run = run_in(&b.ctx);
+        let chat = run.thread_id();
+        assert!(defs().iter().any(|d| d["name"] == "app_setup" && d["description"].as_str().unwrap().contains("change, update or fix")));
+        let out = call(&run, "app_setup", json!({"id": FX})).await;
+        assert_eq!(out, Out::ok("a card in this chat lets the user change Fixture's Google client: they type the values into the card. Never ask for the client ID, secret or any key in the chat, and never repeat one".into()));
+        let got = cards(&b.ctx, &chat, "app_setup");
+        assert_eq!(got.len(), 1);
+        let (text, n) = got[0].clone();
+        assert_eq!(text, "Change the Google client of Fixture");
+        assert_eq!((n["id"].clone(), n["provider"].clone(), n["state"].clone()), (json!(FX), json!("google"), json!("pending")));
+        assert!(!n.to_string().contains("csec") && !n.to_string().contains("\"cid\""), "no values in the chat: {n}");
+        assert_eq!(n["fields"].as_array().unwrap().len(), 2);
+        call(&run, "app_setup", json!({"id": FX})).await;
+        assert_eq!(cards(&b.ctx, &chat, "app_setup").len(), 1, "one while pending");
+        assert_eq!(call(&run, "app_setup", json!({"id": "app.buwiz.other"})).await, Out::err("Other has no setup to change".into()));
+        assert_eq!(call(&run, "app_setup", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
+        crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_SECRET": "csec-2"}})).await.unwrap();
+        assert_eq!(cards(&b.ctx, &chat, "app_setup")[0].1["state"], "saved");
+        call(&run, "app_setup", json!({"id": FX})).await;
+        assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "cancelled"})).unwrap()["settled"], 1);
+        assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "declined"})).unwrap_err().code, "invalid_args");
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }
