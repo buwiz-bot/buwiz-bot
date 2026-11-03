@@ -3289,7 +3289,13 @@ fn v1_section() -> impl IntoElement {
 
 fn v1_row(p: crate::mini_v1::connect::Listed) -> impl IntoElement {
     let id = p.id.clone();
-    let status = if p.failed() { danger_ink() } else { ink3() };
+    let status = if p.failed() {
+        danger_ink()
+    } else if p.needs_setup() {
+        warn_ink()
+    } else {
+        ink3()
+    };
     card()
         .flex_row()
         .items_center()

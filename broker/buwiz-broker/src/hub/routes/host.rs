@@ -408,7 +408,8 @@ pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Valu
 ///   the press; an agent's card waits for it), else an `app_accounts` card
 ///   (`mode: login`: who, Add another account, Switch);
 /// - `logout`, `switch`: an `app_accounts` card of that mode (none signed
-///   in: `logout` posts nothing and says so);
+///   in: neither posts, `logout` says so and `switch` says "No Google
+///   account signed in yet", the provider by its own name);
 /// - `setup`: the `app_setup` card.
 ///
 /// → `{ok, posted, kind, message?}`. The card names no subject: the app
@@ -450,9 +451,23 @@ pub fn account_command(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result
     if command == "logout" && !signed_in {
         return Ok(json!({"ok": true, "posted": false, "kind": "app_accounts", "message": format!("No {} is signed in for {title}", a.label)}));
     }
+    if command == "switch" && !signed_in {
+        let message = format!("No {} account signed in yet", provider_title(&a.provider));
+        return Ok(json!({"ok": true, "posted": false, "kind": "app_accounts", "message": message}));
+    }
     let n = json!({"kind": "app_accounts", "id": id, "plugin": id, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "mode": command, "state": "pending"});
     let posted = notice_pending(ctx, chat, "app_accounts", id, Some(command)) || post_in(ctx, chat, &n);
     Ok(json!({"ok": true, "posted": posted, "kind": "app_accounts"}))
+}
+
+/// What a provider is called in a message: "Google", else an `oauth:`
+/// issuer's host (`auth.example.com`).
+fn provider_title(provider: &str) -> String {
+    match provider.strip_prefix("oauth:") {
+        Some(issuer) => url::Url::parse(issuer).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| issuer.to_owned()),
+        None if provider == "google" => "Google".to_owned(),
+        None => provider.to_owned(),
+    }
 }
 
 /// The label a typed `@short:login` signs in again: the one marked active,
@@ -691,5 +706,12 @@ mod tests {
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/command"), Some(Route::Action(_, "command"))));
         assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/use").map(|r| r.2), Some("use"));
+    }
+
+    #[test]
+    fn a_provider_is_called_by_its_own_name() {
+        assert_eq!(provider_title("google"), "Google");
+        assert_eq!(provider_title("oauth:https://auth.example.com/tenant"), "auth.example.com");
+        assert_eq!(provider_title("oauth:http://127.0.0.1:9/"), "127.0.0.1");
     }
 }

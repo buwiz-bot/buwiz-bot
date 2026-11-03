@@ -1141,6 +1141,8 @@ mod tests {
         // the agent's card still waits for the press
         assert!(call(&run, "app_signin", json!({"id": FX})).await.content.as_str().unwrap().contains("the user presses it"));
         assert_eq!(cmd("logout").unwrap(), json!({"ok": true, "posted": false, "kind": "app_accounts", "message": "No Google account is signed in for Fixture"}));
+        assert_eq!(cmd("switch").unwrap(), json!({"ok": true, "posted": false, "kind": "app_accounts", "message": "No Google account signed in yet"}));
+        assert!(cards(&b.ctx, &chat, "app_accounts").is_empty(), "no card to switch with");
         assert_eq!(cmd("setup").unwrap()["kind"], "app_setup");
         assert_eq!(cards(&b.ctx, &chat, "app_setup").len(), 1);
         assert_eq!(cmd("nope").unwrap_err().code, "invalid_args");

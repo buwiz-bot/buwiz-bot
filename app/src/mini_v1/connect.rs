@@ -619,9 +619,11 @@ impl Listed {
         self.accounts.iter().find(|a| a.account == account).map(|a| a.label.clone()).unwrap_or_else(|| "default".to_owned())
     }
 
-    /// The state as the list says it.
+    /// The state as the list says it; running while a setup its accounts
+    /// need is missing: "Needs setup".
     pub fn state_label(&self) -> String {
         match self.state.as_str() {
+            "running" if self.needs_setup() => "Needs setup".to_owned(),
             "running" => "Running".to_owned(),
             "starting" => "Starting…".to_owned(),
             "restarting" => "Restarting…".to_owned(),
@@ -631,6 +633,11 @@ impl Listed {
             "update_available" => "Update available".to_owned(),
             other => other.to_owned(),
         }
+    }
+
+    /// Running, with a setup its accounts need still missing.
+    pub fn needs_setup(&self) -> bool {
+        self.state == "running" && self.first_missing_setup().is_some()
     }
 
     /// Whether the list offers Retry and Open logs (14.4, 14.5).
@@ -1340,6 +1347,13 @@ mod tests {
             "apps": [{"id": "forms", "title": "BIR Forms", "placement": ["full", "inline"]}],
         }));
         assert_eq!((l.publisher.as_str(), l.state_label().as_str(), l.failed()), ("Goldcoders", "Failed", true));
+        // running, but a setup its accounts need is missing: it says so
+        let running = |setup: Value| Listed::of(&json!({"id": "app.buwiz.gws", "state": "running", "enabled": true, "setup": setup}));
+        let missing = running(json!([{"provider": "google", "ready": false, "fields": [{"key": "GOOGLE_CLIENT_ID"}]}]));
+        assert_eq!((missing.state_label().as_str(), missing.needs_setup()), ("Needs setup", true));
+        let ready = running(json!([{"provider": "google", "ready": true, "fields": [{"key": "GOOGLE_CLIENT_ID", "set": true}]}]));
+        assert_eq!((ready.state_label().as_str(), ready.needs_setup()), ("Running", false));
+        assert_eq!(running(json!([])).state_label(), "Running", "no setup to need");
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
         // the lifecycle tools are the broker's: not listed, not counted
         let reserved = Listed::of(&json!({"id": "app.buwiz.books", "tools": [
