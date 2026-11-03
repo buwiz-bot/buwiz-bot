@@ -278,6 +278,16 @@ pub struct SetupField {
     /// The stored value of a field that is not secret (the Client ID), to
     /// change it; a secret's never comes.
     pub value: String,
+    /// Its shape check, the broker's (`pattern` it must match, else
+    /// `pattern_hint`; `not_pattern` it must not, else `not_pattern_hint`).
+    pub pattern: String,
+    pub pattern_hint: String,
+    pub not_pattern: String,
+    pub not_pattern_hint: String,
+    /// The field a value of the other's shape was meant for, and what a
+    /// swap is told.
+    pub swap_with: String,
+    pub swap_hint: String,
 }
 
 /// The line above a setup's fields: what it is for when it is added
@@ -289,6 +299,70 @@ pub fn setup_intro(provider: &str, change: bool) -> &'static str {
         (true, true) => "Change the Google client every Google plugin uses. Leave the secret blank to keep the stored one. Changing it signs Google accounts out.",
         (false, false) => "Signing in needs these values first.",
         (false, true) => "Change these values. Leave a secret blank to keep the stored one. Changing them signs its accounts out.",
+    }
+}
+
+/// What the typed setup values say before they are sent: the two typed
+/// the wrong way round (`swapped`, its message), else each field whose
+/// value fails its shape. Messages never hold a value.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SetupCheck {
+    pub swapped: Option<String>,
+    pub errors: Vec<(String, String)>,
+}
+
+impl SetupCheck {
+    /// Field `key`'s shape error (none while swapped: Swap them fixes both).
+    pub fn field_error(&self, key: &str) -> Option<&str> {
+        self.errors.iter().find(|(k, _)| k == key).map(|(_, e)| e.as_str()).filter(|_| self.swapped.is_none())
+    }
+
+    /// The first thing that keeps Save from sending.
+    pub fn first(&self) -> Option<String> {
+        self.swapped.clone().or_else(|| self.errors.first().map(|(_, e)| e.clone()))
+    }
+}
+
+fn matches(pattern: &str, v: &str) -> bool {
+    regex::Regex::new(pattern).is_ok_and(|r| r.is_match(v))
+}
+
+/// A field's value as it would be saved: typed (trimmed, not blank), else
+/// its stored value when it shows one.
+fn effective(f: &SetupField, typed: &std::collections::BTreeMap<String, String>) -> String {
+    typed.get(&f.key).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).unwrap_or_else(|| f.value.clone())
+}
+
+/// `fields`' shape checks over the values `typed` (by key), as the broker
+/// checks them: only a typed value is checked for its own shape.
+pub fn setup_check(fields: &[SetupField], typed: &std::collections::BTreeMap<String, String>) -> SetupCheck {
+    let mut out = SetupCheck::default();
+    for f in fields.iter().filter(|f| !f.swap_with.is_empty()) {
+        let Some(o) = fields.iter().find(|x| x.key == f.swap_with) else { continue };
+        let (mine, theirs) = (effective(f, typed), effective(o, typed));
+        if !mine.is_empty() && !theirs.is_empty() && !o.pattern.is_empty() && matches(&o.pattern, &mine) && !matches(&o.pattern, &theirs) {
+            out.swapped = Some(if f.swap_hint.is_empty() { "These two values look swapped".to_owned() } else { f.swap_hint.clone() });
+        }
+    }
+    for f in fields {
+        let Some(v) = typed.get(&f.key).map(|v| v.trim()).filter(|v| !v.is_empty()) else { continue };
+        if !f.pattern.is_empty() && !matches(&f.pattern, v) {
+            out.errors.push((f.key.clone(), f.pattern_hint.clone()));
+        } else if !f.not_pattern.is_empty() && matches(&f.not_pattern, v) {
+            out.errors.push((f.key.clone(), f.not_pattern_hint.clone()));
+        }
+    }
+    out
+}
+
+/// Swap them: each field with `swap_with` trades its value as it would be
+/// saved (typed, else shown) with that field's, in `typed`.
+pub fn swap_typed(fields: &[SetupField], typed: &mut std::collections::BTreeMap<String, String>) {
+    for f in fields.iter().filter(|f| !f.swap_with.is_empty()) {
+        let Some(o) = fields.iter().find(|x| x.key == f.swap_with) else { continue };
+        let (mine, theirs) = (effective(f, typed), effective(o, typed));
+        typed.insert(f.key.clone(), theirs);
+        typed.insert(o.key.clone(), mine);
     }
 }
 
@@ -312,6 +386,12 @@ impl SetupField {
             hint: s(v, "hint"),
             set: v.get("set").and_then(Value::as_bool).unwrap_or(false),
             value: if v.get("secret").and_then(Value::as_bool).unwrap_or(false) { String::new() } else { s(v, "value") },
+            pattern: s(v, "pattern"),
+            pattern_hint: s(v, "pattern_hint"),
+            not_pattern: s(v, "not_pattern"),
+            not_pattern_hint: s(v, "not_pattern_hint"),
+            swap_with: s(v, "swap_with"),
+            swap_hint: s(v, "swap_hint"),
         }
     }
 }
@@ -1313,6 +1393,46 @@ mod tests {
         let unmarked = Listed::of(&json!({"id": "x.y.z", "accounts": [{"account": "google", "label": "work", "state": "connected"}]}));
         assert_eq!(unmarked.active_of("google").map(|a| a.label.as_str()), Some("work"));
         assert!(Listed::of(&json!({"id": "x.y.z"})).active_of("google").is_none());
+    }
+
+    #[test]
+    fn the_setup_check_finds_a_swap_and_wrong_shapes_and_swap_them_fixes_it() {
+        use std::collections::BTreeMap;
+        // the broker's google fields, as setup_view sends them
+        let fields: Vec<SetupField> = [
+            json!({"key": "GOOGLE_CLIENT_ID", "pattern": "^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$", "pattern_hint": "A Client ID ends with .apps.googleusercontent.com"}),
+            json!({"key": "GOOGLE_CLIENT_SECRET", "secret": true, "not_pattern": "\\.apps\\.googleusercontent\\.com$", "not_pattern_hint": "This looks like a Client ID: the secret usually starts with GOCSPX-",
+                "swap_with": "GOOGLE_CLIENT_ID", "swap_hint": "The Client ID and Secret look swapped: the Client ID ends with .apps.googleusercontent.com, and the secret usually starts with GOCSPX-."}),
+        ]
+        .iter()
+        .map(SetupField::of)
+        .collect();
+        let cid = concat!("123-abc.apps", ".googleusercontent.com");
+        let typed = |i: &str, s: &str| BTreeMap::from([("GOOGLE_CLIENT_ID".to_owned(), i.to_owned()), ("GOOGLE_CLIENT_SECRET".to_owned(), s.to_owned())]);
+        assert_eq!(setup_check(&fields, &typed(cid, "GOCSPX-x")), SetupCheck::default());
+        assert_eq!(setup_check(&fields, &typed(cid, "an-older-secret")), SetupCheck::default());
+        let mut vals = typed("GOCSPX-x", cid);
+        let c = setup_check(&fields, &vals);
+        assert!(c.swapped.as_deref().unwrap().starts_with("The Client ID and Secret look swapped"));
+        assert!(!c.first().unwrap().contains(cid) && !c.first().unwrap().contains("GOCSPX-x"), "no value in the message");
+        assert_eq!(c.field_error("GOOGLE_CLIENT_ID"), None, "while swapped, only Swap them speaks");
+        swap_typed(&fields, &mut vals);
+        assert_eq!(vals, typed(cid, "GOCSPX-x"), "Swap them trades the two");
+        assert_eq!(setup_check(&fields, &vals).first(), None);
+        // a wrong shape alone is said under its field
+        let c = setup_check(&fields, &typed("my-client", ""));
+        assert_eq!((c.swapped.clone(), c.field_error("GOOGLE_CLIENT_ID")), (None, Some("A Client ID ends with .apps.googleusercontent.com")));
+        let c = setup_check(&fields, &typed(cid, concat!("456-x.apps", ".googleusercontent.com")));
+        assert_eq!(c.field_error("GOOGLE_CLIENT_SECRET"), Some("This looks like a Client ID: the secret usually starts with GOCSPX-"));
+        // a stored Client ID counts for the swap; only typed values for their own shape
+        let mut stored = fields.clone();
+        stored[0].value = "GOCSPX-x".into();
+        let only_secret = BTreeMap::from([("GOOGLE_CLIENT_SECRET".to_owned(), cid.to_owned())]);
+        assert!(setup_check(&stored, &only_secret).swapped.is_some());
+        let mut v = only_secret.clone();
+        swap_typed(&stored, &mut v);
+        assert_eq!(v, typed(cid, "GOCSPX-x"));
+        assert_eq!(setup_check(&fields, &BTreeMap::new()), SetupCheck::default());
     }
 
     #[test]

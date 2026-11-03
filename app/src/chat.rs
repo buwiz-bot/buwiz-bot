@@ -1275,14 +1275,12 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
 /// values go from the fields to the setup route only, never into the
 /// chat, the model or a log; once saved the card offers Sign in.
 fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate::mini_v1::connect::SetupField>, chat: String, i: i64, local: &crate::store::AppCard) -> AnyElement {
-    let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
     let saving = store().v1.setup_saving.with(|s| s.contains(&n.plugin));
     let mut c = app_card_frame(n.setup_question())
         .child(text(n.setup_question()).text_size(px(13.0)).text_color(theme::TEXT))
         .child(text(crate::mini_v1::connect::setup_intro(&n.provider, false)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
-    for f in &fields {
-        c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
-    }
+    c = c.child(crate::plugins::v1_setup_inputs(&fields));
+    let fields2 = fields.clone();
     let (ch1, ch2, p1, p2) = (chat.clone(), chat, n.plugin.clone(), n.plugin.clone());
     let mut buttons = view()
         .flex_row()
@@ -1291,7 +1289,7 @@ fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate
         .child(app_card_btn("Save", format!("Save the setup for {}", n.title), true, move || {
             let ch = ch1.clone();
             store().app_card(&ch1, i, |c| c.start());
-            store().v1_save_setup(&p1, keys.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+            store().v1_save_setup(&p1, fields2.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
         }))
         .child(app_card_btn("Not now", "Not now".to_owned(), false, move || store().app_answer(&ch2, i, "account_required", &p2, "declined")));
     if saving {
@@ -1449,9 +1447,8 @@ fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl 
         let mut c = app_card_frame(question.clone())
             .child(text(question).text_size(px(13.0)).text_color(theme::TEXT))
             .child(text(crate::mini_v1::connect::setup_intro(&n.provider, change)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
-        for f in &fields {
-            c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
-        }
+        c = c.child(crate::plugins::v1_setup_inputs(&fields));
+        let fields2 = fields.clone();
         let (ch1, ch2, p1, p2) = (chat.clone(), chat.clone(), n.plugin.clone(), n.plugin.clone());
         let ks = keys.clone();
         let mut buttons = view()
@@ -1461,7 +1458,7 @@ fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl 
             .child(app_card_btn("Save", format!("Save the {}", n.what()), true, move || {
                 let ch = ch1.clone();
                 store().app_card(&ch1, i, |c| c.start());
-                store().v1_save_setup(&p1, keys.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+                store().v1_save_setup(&p1, fields2.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
             }))
             .child(app_card_btn("Cancel", "Cancel".to_owned(), false, move || {
                 store().v1.setup_vals.update(|m| m.retain(|k, _| !ks.contains(k)));

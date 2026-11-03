@@ -1371,10 +1371,15 @@ impl Store {
     /// to the broker in the request body only (never a log, the chat or
     /// the model); once saved they are cleared here and the list read
     /// again, so its accounts (and Sign in) show. `done` hears the outcome.
-    pub fn v1_save_setup(&'static self, plugin: &str, keys: Vec<String>, done: impl FnOnce(Result<(), String>) + 'static) {
+    pub fn v1_save_setup(&'static self, plugin: &str, fields: Vec<connect::SetupField>, done: impl FnOnce(Result<(), String>) + 'static) {
         if self.v1.setup_saving.with_untracked(|s| s.contains(plugin)) {
             return;
         }
+        // the shapes first: a swap or a wrong shape never leaves the app
+        if let Some(why) = self.v1.setup_vals.with_untracked(|v| connect::setup_check(&fields, v).first()) {
+            return done(Err(why));
+        }
+        let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
         let typed: Vec<(String, String)> =
             self.v1.setup_vals.with_untracked(|m| keys.iter().filter_map(|k| m.get(k).map(|v| (k.clone(), v.clone()))).collect());
         let p = plugin.to_owned();

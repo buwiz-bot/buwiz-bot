@@ -251,6 +251,18 @@ fn account_required(run: &Run, p: &dyn PluginView, row: &Row, r: &Value) -> Opti
     Some(Out { content: json!(line), is_error: Some(true) })
 }
 
+/// A setup field as a chat card carries it: what it asks and its shape
+/// checks, never `set` or a value.
+pub fn card_field(f: &Value) -> Value {
+    let mut o = json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]});
+    for k in ["pattern", "pattern_hint", "not_pattern", "not_pattern_hint", "swap_with", "swap_hint"] {
+        if let Some(v) = f.get(k) {
+            o[k] = v.clone();
+        }
+    }
+    o
+}
+
 /// What a provider's setup is called ("Google client").
 pub fn setup_name(provider: &str) -> String {
     if provider == "google" { "Google client".to_owned() } else { format!("{provider} setup") }
@@ -277,7 +289,7 @@ pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, 
             .as_array()
             .into_iter()
             .flatten()
-            .map(|f| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]}))
+            .map(card_field)
             .collect();
         n["setup"] = json!({"provider": a.provider, "fields": fields});
     }

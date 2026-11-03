@@ -3550,6 +3550,39 @@ pub fn v1_setup_field(f: &crate::mini_v1::connect::SetupField) -> crate::store::
     }
 }
 
+/// A setup's fields (typed into `V1::setup_vals`), each with its shape
+/// error under it as it is typed, and, when the two look swapped, that
+/// message with Swap them, which trades the two typed values. The messages
+/// never hold a value.
+pub fn v1_setup_inputs(fields: &[crate::mini_v1::connect::SetupField]) -> View {
+    let mut col = view().gap(px(14.0));
+    for f in fields {
+        let (key, all) = (f.key.clone(), fields.to_vec());
+        col = col.child(view().gap(px(4.0)).child(setup_field_in(v1_setup_field(f), store().v1.setup_vals)).child(dynamic(move || {
+            let check = store().v1.setup_vals.with(|v| crate::mini_v1::connect::setup_check(&all, v));
+            match check.field_error(&key) {
+                Some(e) => text(e.to_owned()).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).into_element(),
+                None => view().into_element(),
+            }
+        })));
+    }
+    let all = fields.to_vec();
+    col.child(dynamic(move || {
+        let Some(why) = store().v1.setup_vals.with(|v| crate::mini_v1::connect::setup_check(&all, v)).swapped else { return view().into_element() };
+        let fs = all.clone();
+        view()
+            .gap(px(6.0))
+            .child(text(why).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()))
+            .child(
+                view().flex_row().child(
+                    sm_btn(Btn::Secondary, || "Swap them".into(), move || store().v1.setup_vals.update(|m| crate::mini_v1::connect::swap_typed(&fs, m)))
+                        .label("Swap the Client ID and Secret"),
+                ),
+            )
+            .into_element()
+    }))
+}
+
 /// What a setup is called on its row ("Google client").
 fn setup_name(provider: &str) -> String {
     if provider == "google" { "Google client".to_owned() } else { "Setup".to_owned() }
@@ -3613,9 +3646,8 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing
     let mut col = view().gap(px(14.0)).px(px(14.0)).py(px(12.0)).child(
         text(crate::mini_v1::connect::setup_intro(&setup.provider, editing)).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()),
     );
-    for f in &setup.fields {
-        col = col.child(setup_field_in(v1_setup_field(f), st.v1.setup_vals));
-    }
+    col = col.child(v1_setup_inputs(&setup.fields));
+    let fields = setup.fields.clone();
     let err = st.v1.setup_err.get().get(plugin).cloned().unwrap_or_default();
     if !err.is_empty() {
         col = col.child(text(err).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()));
@@ -3642,7 +3674,7 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing
                     store().v1.setup_err.update(|m| {
                         m.remove(&p);
                     });
-                    store().v1_save_setup(&p2, keys.clone(), move |r| match r {
+                    store().v1_save_setup(&p2, fields.clone(), move |r| match r {
                         Ok(()) => store().v1.setup_edit.set(String::new()),
                         Err(e) => store().v1.setup_err.update(|m| {
                             m.insert(p, e);

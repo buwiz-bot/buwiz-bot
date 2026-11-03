@@ -127,7 +127,7 @@ pub fn setup_card(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> Result<(St
     let Some(s) = view.as_array().and_then(|v| v.first()) else { return Err(format!("{title} has no setup to change")) };
     let provider = js::string_of(&s["provider"]);
     let fields: Vec<Value> =
-        s["fields"].as_array().into_iter().flatten().map(|f| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]})).collect();
+        s["fields"].as_array().into_iter().flatten().map(super::v1::card_field).collect();
     let n = json!({"kind": "app_setup", "id": id, "plugin": id, "title": title, "provider": provider, "fields": fields, "state": "pending"});
     let shown = notice_pending(ctx, chat, "app_setup", id, None) || post_in(ctx, chat, &n);
     Ok((title, provider, shown))
@@ -349,6 +349,9 @@ mod tests {
     use crate::hub::types::TurnCtx;
 
     const FX: &str = "app.buwiz.fixture";
+    /// Dummy Google client IDs of the right shape.
+    const CID: &str = concat!("123-abc.apps", ".googleusercontent.com");
+    const CID2: &str = concat!("456-def.apps", ".googleusercontent.com");
 
     /// path → (status, location, body)
     type Files = Arc<Mutex<HashMap<String, (u16, String, Vec<u8>)>>>;
@@ -702,7 +705,7 @@ mod tests {
     fn google_client(b: &Bed) {
         let c = rusqlite::Connection::open(&b.db).unwrap();
         c.execute_batch("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)").unwrap();
-        c.execute("INSERT OR REPLACE INTO plugin_settings VALUES('@google', ?, 1)", [r#"{"GOOGLE_CLIENT_ID":"cid","GOOGLE_CLIENT_SECRET":"csec"}"#]).unwrap();
+        c.execute("INSERT OR REPLACE INTO plugin_settings VALUES('@google', ?, 1)", [json!({"GOOGLE_CLIENT_ID": CID, "GOOGLE_CLIENT_SECRET": "csec"}).to_string()]).unwrap();
     }
 
     fn accounts_config(b: &Bed, opened: &Arc<Mutex<Vec<String>>>) {
@@ -761,7 +764,7 @@ mod tests {
         assert_eq!(flow, "account:app.buwiz.fixture/google/default");
         let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
         assert_eq!(u.host_str(), Some("accounts.example.test"));
-        assert_eq!((q["client_id"].as_str(), q["access_type"].as_str(), q["prompt"].as_str(), q["code_challenge_method"].as_str(), q["response_type"].as_str()), ("cid", "offline", "consent", "S256", "code"));
+        assert_eq!((q["client_id"].as_str(), q["access_type"].as_str(), q["prompt"].as_str(), q["code_challenge_method"].as_str(), q["response_type"].as_str()), (CID, "offline", "consent", "S256", "code"));
         assert_eq!(q["scope"], "https://www.googleapis.com/auth/gmail.readonly openid email");
         assert!(opened.lock().unwrap().is_empty(), "open: false opens nothing");
         assert_eq!(b.host.accounts_view(FX), json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": null, "state": "none", "required": true}]));
@@ -774,7 +777,7 @@ mod tests {
         assert!(!b.host.account_pending(&flow));
         let (_, body) = b.log.lock().unwrap().iter().rev().find(|(r, _)| r == "POST /token").cloned().unwrap();
         let form: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
-        assert_eq!((form["grant_type"].as_str(), form["code"].as_str(), form["client_id"].as_str(), form["client_secret"].as_str()), ("authorization_code", "code-1", "cid", "csec"));
+        assert_eq!((form["grant_type"].as_str(), form["code"].as_str(), form["client_id"].as_str(), form["client_secret"].as_str()), ("authorization_code", "code-1", CID, "csec"));
         assert_eq!(form["redirect_uri"], "http://127.0.0.1:8787/oauth/callback/account%3Aapp.buwiz.fixture%2Fgoogle%2Fdefault");
         assert_eq!(buwiz_protocol::keys::sha256_hex(form["code_verifier"].as_bytes()).len(), 64);
         let tok = |t: &str| buwiz_protocol::keys::sha256_hex(t.as_bytes())[..12].to_owned();
@@ -871,7 +874,9 @@ mod tests {
         let fields = n["setup"]["fields"].as_array().unwrap();
         assert_eq!(n["setup"]["provider"], "google");
         assert_eq!(fields.iter().map(|f| (js::string_of(&f["key"]), f["secret"] == true)).collect::<Vec<_>>(), [("GOOGLE_CLIENT_ID".into(), false), ("GOOGLE_CLIENT_SECRET".into(), true)]);
-        assert!(fields.iter().all(|f| f.as_object().unwrap().keys().eq(["key", "label", "placeholder", "secret", "hint"].iter())), "{fields:?}");
+        // what it asks and its shape checks: never `set` or a value
+        assert!(fields.iter().all(|f| f.as_object().unwrap().keys().take(5).eq(["key", "label", "placeholder", "secret", "hint"].iter()) && f.get("set").is_none() && f.get("value").is_none()), "{fields:?}");
+        assert_eq!(fields[0]["pattern_hint"], "A Client ID ends with .apps.googleusercontent.com");
         assert_eq!((n["id"].clone(), n["account"].clone(), n["state"].clone()), (json!(FX), json!("google"), json!("pending")));
         // another install of it: still the one card
         assert_eq!(crate::hub::routes::host::ask_setup(&b.ctx, &b.host, &chat, FX), 0);
@@ -884,7 +889,7 @@ mod tests {
         assert_eq!(listed["setup"], view);
 
         // only the declared fields, strings; nothing saved on a refusal
-        let e = b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "OTHER_KEY": "x"})), false).await.unwrap_err();
+        let e = b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": CID, "OTHER_KEY": "x"})), false).await.unwrap_err();
         assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", "app.buwiz.fixture's setup has no field OTHER_KEY"));
         assert_eq!(b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": 5})), false).await.unwrap_err().code, "invalid_args");
         assert_eq!(b.host.save_setup(FX, Some(&json!(["x"])), false).await.unwrap_err().code, "invalid_args");
@@ -893,22 +898,22 @@ mod tests {
         assert_eq!(stored_google(&b), Value::Null);
 
         let mut events = b.host.events();
-        let r = crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_ID": " cid ", "GOOGLE_CLIENT_SECRET": "csec"}})).await.unwrap();
+        let r = crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_ID": format!(" {CID} "), "GOOGLE_CLIENT_SECRET": "csec"}})).await.unwrap();
         assert!(!r.to_string().contains("csec"), "no secret answered: {r}");
-        assert_eq!(r["setup"][0]["fields"][0]["value"], "cid", "the Client ID shows, to be changed");
+        assert_eq!(r["setup"][0]["fields"][0]["value"], CID, "the Client ID shows, to be changed");
         assert!(r["setup"][0]["fields"][1].get("value").is_none());
         assert_eq!((r["setup"][0]["ready"].clone(), set(&r["setup"])), (json!(true), vec![true, true]));
         assert!(r["accounts"][0].get("setup").is_none(), "{r}");
         assert_eq!(events.try_recv().unwrap()["id"], FX, "the plugin's change event");
-        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "csec"}));
+        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": CID, "GOOGLE_CLIENT_SECRET": "csec"}));
         // an empty secret keeps the stored one; the id is replaced
-        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "  "})), false).await.unwrap();
-        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "csec"}));
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": CID2, "GOOGLE_CLIENT_SECRET": "  "})), false).await.unwrap();
+        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": CID2, "GOOGLE_CLIENT_SECRET": "csec"}));
         assert!(!b.host.setup_missing("google"));
 
         // the sign-in it offers next settles the card
         let (flow, state, u) = sign_in(&b).await;
-        assert!(u.query_pairs().any(|(k, v)| k == "client_id" && v == "cid-2"));
+        assert!(u.query_pairs().any(|(k, v)| k == "client_id" && v == CID2));
         token_answer(&b.files, 200, json!({"access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600, "token_type": "Bearer"}));
         assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
         assert_eq!(crate::hub::routes::host::settle_signed_in(&b.ctx, FX, "google"), 1);
@@ -957,7 +962,7 @@ mod tests {
         connect(&b, "at-1").await;
         assert_eq!(pushed(&b.host).await["google/default"]["sets"], 1);
         // the same values: nothing changed, still signed in
-        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "csec"})), false).await.unwrap();
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": CID, "GOOGLE_CLIENT_SECRET": "csec"})), false).await.unwrap();
         b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_SECRET": ""})), false).await.unwrap();
         assert_eq!(b.host.account_rows(FX)[0].state, "connected");
         // a new secret: expired and cleared
@@ -1024,7 +1029,7 @@ mod tests {
         let (text, n) = got[0].clone();
         assert_eq!(text, "Change the Google client of Fixture");
         assert_eq!((n["id"].clone(), n["provider"].clone(), n["state"].clone()), (json!(FX), json!("google"), json!("pending")));
-        assert!(!n.to_string().contains("csec") && !n.to_string().contains("\"cid\""), "no values in the chat: {n}");
+        assert!(!n.to_string().contains("csec") && !n.to_string().contains(CID), "no values in the chat: {n}");
         assert_eq!(n["fields"].as_array().unwrap().len(), 2);
         call(&run, "app_setup", json!({"id": FX})).await;
         assert_eq!(cards(&b.ctx, &chat, "app_setup").len(), 1, "one while pending");
@@ -1080,7 +1085,7 @@ mod tests {
         assert_eq!(call(&run, "app_signin", json!({"id": FX})).await, Out::ok("Fixture's Google account is already connected as u@example.com; nothing to do".into()));
         assert_eq!(cards(&b.ctx, &chat, "account_required").len(), 2);
         assert!(list().await.contains("accounts: google/default connected as u@example.com"));
-        assert!(!list().await.contains("csec") && !list().await.contains("\"cid"));
+        assert!(!list().await.contains("csec") && !list().await.contains(CID));
         assert_eq!(call(&run, "app_signin", json!({"id": FX, "account": "github"})).await, Out::err("Fixture declares no account github (app_list shows them)".into()));
         assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.other"})).await, Out::err("Other has no account to sign in to".into()));
         assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
@@ -1171,6 +1176,52 @@ mod tests {
         assert_eq!(pushed_labels(&b).await, ["google/default"]);
         b.host.account_signout(FX, "google", &json!({"label": "default"})).await.unwrap();
         assert!(pushed_labels(&b).await.is_empty() && b.host.active_label(FX, "google").is_none());
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A swapped Client ID and Secret are refused and nothing is saved; a
+    /// wrong-shaped one is said under its field; a client stored in the
+    /// wrong shape (before the checks) never reaches Google and brings the
+    /// setup back.
+    #[tokio::test]
+    async fn a_swapped_or_wrong_shaped_google_client_is_refused_and_a_stored_one_is_guarded() {
+        let b = bed_in("shape", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        accounts_config(&b, &opened);
+        install_pkg(&b, "v1.0.0").await;
+        let save = async |v: Value| crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": v})).await;
+        let e = save(json!({"GOOGLE_CLIENT_ID": "GOCSPX-abc", "GOOGLE_CLIENT_SECRET": CID})).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", "The Client ID and Secret look swapped: the Client ID ends with .apps.googleusercontent.com, and the secret usually starts with GOCSPX-."));
+        assert_eq!(stored_google(&b), Value::Null, "nothing saved");
+        assert_eq!(save(json!({"GOOGLE_CLIENT_ID": "my-client"})).await.unwrap_err().message, "A Client ID ends with .apps.googleusercontent.com");
+        let e = save(json!({"GOOGLE_CLIENT_ID": CID, "GOOGLE_CLIENT_SECRET": CID2})).await.unwrap_err();
+        assert_eq!(e.message, "This looks like a Client ID: the secret usually starts with GOCSPX-");
+        assert!(!e.message.contains(CID2));
+        assert_eq!(stored_google(&b), Value::Null);
+        save(json!({"GOOGLE_CLIENT_ID": CID, "GOOGLE_CLIENT_SECRET": "an-older-secret"})).await.unwrap();
+        assert!(!b.host.setup_missing("google"));
+        // only the secret, swapped against the stored ID: refused too
+        assert!(save(json!({"GOOGLE_CLIENT_SECRET": CID2})).await.is_err());
+
+        // a client stored the wrong way round, before the checks
+        let c = rusqlite::Connection::open(&b.db).unwrap();
+        c.execute("UPDATE plugin_settings SET vals=? WHERE plugin='@google'", [json!({"GOOGLE_CLIENT_ID": "GOCSPX-abc", "GOOGLE_CLIENT_SECRET": CID}).to_string()]).unwrap();
+        let e = b.host.account_signin(FX, "google", &json!({})).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("needs_setup", "The saved Google Client ID is not a Client ID. Change it in Setup."));
+        assert!(opened.lock().unwrap().is_empty(), "Google never opened");
+        let view = b.host.setup_view(FX);
+        assert_eq!((view[0]["ready"].clone(), view[0]["error"].clone()), (json!(false), json!("The saved Google Client ID is not a Client ID. Change it in Setup.")));
+        assert!(b.host.setup_missing("google"));
+        assert_eq!(b.host.accounts_view(FX)[0]["setup"], "The saved Google Client ID is not a Client ID. Change it in Setup.");
+        let run = run_in(&b.ctx);
+        let chat = run.thread_id();
+        let r = crate::hub::routes::host::account_command(&b.ctx, &b.host, FX, &json!({"chat": chat, "command": "login"})).unwrap();
+        assert_eq!(r["kind"], "account_required");
+        let card = cards(&b.ctx, &chat, "account_required").pop().unwrap().1;
+        assert_eq!(card["setup"]["fields"][0]["pattern"], crate::hub::market::catalog::GOOGLE_CLIENT_ID_PATTERN, "the card carries the checks");
+        assert!(!card.to_string().contains("GOCSPX-abc") && !card.to_string().contains(CID), "no values in the chat");
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

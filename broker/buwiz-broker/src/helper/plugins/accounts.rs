@@ -217,6 +217,40 @@ fn provider_setup(provider: &str) -> Option<(&'static str, Vec<Value>)> {
     (provider == "google").then(|| (GOOGLE_GROUP, google_fields().into_iter().collect()))
 }
 
+/// Whether `v` matches `pattern` (a field's own; a bad one never does).
+fn matches(pattern: &str, v: &str) -> bool {
+    regex_lite::Regex::new(pattern).is_ok_and(|r| r.is_match(v))
+}
+
+/// Why `v` (trimmed, not empty) fails field `f`'s shape check, if it does.
+pub fn shape_error(f: &Value, v: &str) -> Option<String> {
+    let s = |k: &str| f.get(k).and_then(Value::as_str);
+    if s("pattern").is_some_and(|p| !matches(p, v)) {
+        return Some(s("pattern_hint").unwrap_or("This value has the wrong shape").to_owned());
+    }
+    if s("not_pattern").is_some_and(|p| matches(p, v)) {
+        return Some(s("not_pattern_hint").unwrap_or("This value has the wrong shape").to_owned());
+    }
+    None
+}
+
+/// `values` (key → trimmed value, as they would be stored) entered the
+/// wrong way round: a field with `swap_with` whose value has the other
+/// field's shape while the other's fails it. → its `swap_hint`.
+pub fn swapped(fields: &[Value], values: &Map<String, Value>) -> Option<String> {
+    let val = |k: &str| values.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    for f in fields {
+        let Some(other) = f.get("swap_with").and_then(Value::as_str) else { continue };
+        let Some(o) = fields.iter().find(|x| x["key"] == json!(other)) else { continue };
+        let (Some(mine), Some(theirs)) = (val(&js::string_of(&f["key"])), val(other)) else { continue };
+        let Some(p) = o.get("pattern").and_then(Value::as_str) else { continue };
+        if matches(p, mine) && !matches(p, theirs) {
+            return Some(f.get("swap_hint").and_then(Value::as_str).unwrap_or("These two values look swapped").to_owned());
+        }
+    }
+    None
+}
+
 fn is_set(vals: &Map<String, Value>, key: &str) -> bool {
     vals.get(key).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
 }
@@ -398,7 +432,7 @@ impl Host {
             let row = |label: &str, subject: Option<&str>, state: &str| {
                 let mut o = json!({"account": a.id, "label": label, "provider": a.provider, "title": a.label, "subject": subject, "state": state, "required": a.required});
                 if missing {
-                    o["setup"] = json!(NEEDS_GOOGLE_CLIENT);
+                    o["setup"] = json!(self.stored_setup_error(&a.provider).unwrap_or_else(|| NEEDS_GOOGLE_CLIENT.to_owned()));
                 }
                 if let Some((why, fix)) = self.accounts.errors().get(&token_ref(id, &a.id, label)).filter(|_| state != "connected") {
                     o["error"] = json!(why);
@@ -432,17 +466,32 @@ impl Host {
     }
 
     /// Whether `provider`'s sign-in still lacks setup: a field of its
-    /// setup without a value.
+    /// setup without a value, or a stored one of the wrong shape.
     pub fn setup_missing(&self, provider: &str) -> bool {
         let Some((group, fields)) = provider_setup(provider) else { return false };
         let vals = self.group_vals(group);
-        fields.iter().any(|f| !is_set(&vals, &js::string_of(&f["key"])))
+        fields.iter().any(|f| !is_set(&vals, &js::string_of(&f["key"]))) || self.stored_setup_error(provider).is_some()
+    }
+
+    /// A stored value of `provider`'s setup that fails its shape (saved
+    /// before the checks): what to tell the user, never the value.
+    pub fn stored_setup_error(&self, provider: &str) -> Option<String> {
+        let (group, fields) = provider_setup(provider)?;
+        let vals = self.group_vals(group);
+        fields.iter().find_map(|f| {
+            let v = vals.get(&js::string_of(&f["key"])).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())?;
+            shape_error(f, v)?;
+            let what = if f["secret"] == true { "is not a Client Secret" } else { "is not a Client ID" };
+            let label = js::string_of(&f["label"]);
+            Some(format!("The saved {} {what}. Change it in Setup.", if label.is_empty() { js::string_of(&f["key"]) } else { label }))
+        })
     }
 
     /// The setup a plugin's declared accounts need, one entry per provider
     /// that has any: `{provider, ready, fields: [{key, label, placeholder,
-    /// secret, hint, set, value?}]}`, `ready` when every field is set;
-    /// `value` only for a set field that is not secret.
+    /// secret, hint, set, value?, pattern…}]}`, `ready` when every field is
+    /// set in its shape (a stored one of the wrong shape: not ready, with
+    /// `error`); `value` only for a set field that is not secret.
     pub fn setup_view(&self, id: &str) -> Value {
         let mut out: Vec<Value> = Vec::new();
         for a in self.declared_accounts(id) {
@@ -463,8 +512,13 @@ impl Host {
                     f
                 })
                 .collect();
-            let ready = fields.iter().all(|f| f["set"] == true);
-            out.push(json!({"provider": a.provider, "ready": ready, "fields": fields}));
+            let error = self.stored_setup_error(&a.provider);
+            let ready = fields.iter().all(|f| f["set"] == true) && error.is_none();
+            let mut entry = json!({"provider": a.provider, "ready": ready, "fields": fields});
+            if let Some(e) = error {
+                entry["error"] = json!(e);
+            }
+            out.push(entry);
         }
         json!(out)
     }
@@ -503,6 +557,24 @@ impl Host {
                 _ => return V1Error::err("invalid_args", format!("{} must be a string", js::slice_utf16(k, 80))),
             };
             sent.push((group, k.clone(), v, secret));
+        }
+        // the shapes, before anything is saved: swapped, then each value
+        if !clear {
+            for p in &providers {
+                let Some((g, fields)) = provider_setup(p) else { continue };
+                let mut after = self.group_vals(g);
+                for (_, k, v, _) in sent.iter().filter(|x| x.0 == g && !x.2.is_empty()) {
+                    after.insert(k.clone(), json!(v));
+                }
+                if let Some(why) = swapped(&fields, &after) {
+                    return V1Error::err("invalid_args", why);
+                }
+                for (_, k, v, _) in sent.iter().filter(|x| x.0 == g && !x.2.is_empty()) {
+                    if let Some(why) = fields.iter().find(|f| f["key"] == json!(k)).and_then(|f| shape_error(f, v)) {
+                        return V1Error::err("invalid_args", why);
+                    }
+                }
+            }
         }
         if clear {
             // every field, emptied (a secret too)
@@ -585,6 +657,10 @@ impl Host {
         let mut scopes = decl.scopes.clone();
         let (mut url, token_endpoint, auth_methods, client, extra) = if decl.provider == "google" {
             let Some(client) = self.google_client() else { return V1Error::err("needs_setup", NEEDS_GOOGLE_CLIENT) };
+            // a client of the wrong shape (saved before the checks) never reaches Google
+            if let Some(why) = self.stored_setup_error("google") {
+                return V1Error::err("needs_setup", why);
+            }
             for s in ["openid", "email"] {
                 if !scopes.iter().any(|x| x == s) {
                     scopes.push(s.into());
@@ -1004,6 +1080,28 @@ mod tests {
         assert_eq!(label_of(&json!({"label": "a b"})).unwrap_err().code, "invalid_args");
         assert_eq!(label_of(&json!({"label": 5})).unwrap_err().code, "invalid_args");
         assert_eq!(flow_id("app.buwiz.x", "google", "default"), "account:app.buwiz.x/google/default");
+    }
+
+    #[test]
+    fn the_google_fields_check_the_client_shapes_and_a_swap() {
+        let [id, secret] = google_fields();
+        let cid = concat!("123-abc.apps", ".googleusercontent.com");
+        assert_eq!(shape_error(&id, cid), None);
+        for bad in ["GOCSPX-abc", concat!("123-abc.apps", ".googleusercontent.com.evil"), "abc.apps.googleusercontent.com", "123-ABC.apps.googleusercontent.com", ""] {
+            assert_eq!(shape_error(&id, bad).as_deref(), Some("A Client ID ends with .apps.googleusercontent.com"), "{bad}");
+        }
+        for ok in ["GOCSPX-abc_123", "an-older-secret"] {
+            assert_eq!(shape_error(&secret, ok), None, "{ok}");
+        }
+        assert_eq!(shape_error(&secret, cid).as_deref(), Some("This looks like a Client ID: the secret usually starts with GOCSPX-"));
+        let fields = [id, secret];
+        let vals = |i: &str, s: &str| json!({"GOOGLE_CLIENT_ID": i, "GOOGLE_CLIENT_SECRET": s}).as_object().unwrap().clone();
+        let swap = swapped(&fields, &vals("GOCSPX-abc", cid)).unwrap();
+        assert_eq!(swap, "The Client ID and Secret look swapped: the Client ID ends with .apps.googleusercontent.com, and the secret usually starts with GOCSPX-.");
+        assert!(!swap.contains("GOCSPX-abc") && !swap.contains(cid), "no value in the message");
+        assert_eq!(swapped(&fields, &vals(cid, "GOCSPX-abc")), None);
+        assert_eq!(swapped(&fields, &vals(cid, cid)), None, "both IDs: the secret's own check says so");
+        assert_eq!(swapped(&fields, &vals("GOCSPX-abc", "")), None);
     }
 
     #[test]

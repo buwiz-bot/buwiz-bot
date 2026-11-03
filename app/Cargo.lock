@@ -684,6 +684,7 @@ dependencies = [
  "objc2-app-kit",
  "pele",
  "ra-jit-live",
+ "regex",
  "rusqlite",
  "security-framework",
  "serde",

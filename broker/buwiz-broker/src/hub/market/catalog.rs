@@ -139,15 +139,28 @@ fn is_secret_key(k: &str) -> bool {
     re(&R, r"(?i)KEY|TOKEN|SECRET|PASSWORD|PAT\b").is_match(k)
 }
 
+/// A Google OAuth client ID's shape.
+pub const GOOGLE_CLIENT_ID_PATTERN: &str = r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$";
+/// What a Client ID and Secret entered the wrong way round are told.
+pub const GOOGLE_SWAPPED: &str = "The Client ID and Secret look swapped: the Client ID ends with .apps.googleusercontent.com, and the secret usually starts with GOCSPX-.";
+
 /// The shared Google client's fields (`{key, label, placeholder, secret,
 /// hint}`), saved in [`GOOGLE_GROUP`]: a Google plugin's Setup and a mini
-/// app's `google` account setup ask for the same two.
+/// app's `google` account setup ask for the same two. Their shape checks
+/// travel with them (trimmed value): `pattern` it must match, else
+/// `pattern_hint`; `not_pattern` it must not match, else
+/// `not_pattern_hint`; `swap_with` the field a value of the other's shape
+/// was meant for (`swap_hint` when both are). Older secrets need not start
+/// with `GOCSPX-`; one shaped like a Client ID never passes.
 pub fn google_fields() -> [Value; 2] {
     [
         json!({ "key": "GOOGLE_CLIENT_ID", "label": "Google Client ID", "placeholder": "xxxxxxxx.apps.googleusercontent.com", "secret": false,
-            "hint": "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app." }),
+            "hint": "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app.",
+            "pattern": GOOGLE_CLIENT_ID_PATTERN, "pattern_hint": "A Client ID ends with .apps.googleusercontent.com" }),
         json!({ "key": "GOOGLE_CLIENT_SECRET", "label": "Google Client Secret", "placeholder": "GOCSPX-…", "secret": true,
-            "hint": "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin." }),
+            "hint": "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin.",
+            "not_pattern": r"\.apps\.googleusercontent\.com$", "not_pattern_hint": "This looks like a Client ID: the secret usually starts with GOCSPX-",
+            "swap_with": "GOOGLE_CLIENT_ID", "swap_hint": GOOGLE_SWAPPED }),
     ]
 }
 
