@@ -246,6 +246,55 @@ pub struct Listed {
     pub accounts: Vec<Account>,
     /// Its package's skills (§7.2); empty for a bare binary.
     pub skills: Vec<Skill>,
+    /// The setup its accounts' providers need before a sign-in (the shared
+    /// Google client), one per provider; empty when none.
+    pub setup: Vec<Setup>,
+}
+
+/// What a provider's sign-in needs first (`setup` of the plugin list):
+/// its fields and whether each is set, never a value.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Setup {
+    pub provider: String,
+    /// Every field is set.
+    pub ready: bool,
+    pub fields: Vec<SetupField>,
+}
+
+/// One field of a [`Setup`] (or of a chat card's).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SetupField {
+    pub key: String,
+    pub label: String,
+    pub placeholder: String,
+    /// Typed under dots; an empty one keeps the stored value.
+    pub secret: bool,
+    pub hint: String,
+    /// A value is stored (never sent here).
+    pub set: bool,
+}
+
+impl Setup {
+    pub fn of(v: &Value) -> Setup {
+        Setup {
+            provider: s(v, "provider"),
+            ready: v.get("ready").and_then(Value::as_bool).unwrap_or(false),
+            fields: list(v, "fields").iter().map(SetupField::of).filter(|f| !f.key.is_empty()).collect(),
+        }
+    }
+}
+
+impl SetupField {
+    pub fn of(v: &Value) -> SetupField {
+        SetupField {
+            key: s(v, "key"),
+            label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| s(v, "key")),
+            placeholder: s(v, "placeholder"),
+            secret: v.get("secret").and_then(Value::as_bool).unwrap_or(false),
+            hint: s(v, "hint"),
+            set: v.get("set").and_then(Value::as_bool).unwrap_or(false),
+        }
+    }
 }
 
 /// One account row of a package (§20): only its state and who
@@ -392,7 +441,19 @@ impl Listed {
                 .map(|k| Skill { name: s(k, "name"), description: s(k, "description") })
                 .filter(|k| !k.name.is_empty())
                 .collect(),
+            setup: list(v, "setup").iter().map(Setup::of).filter(|x| !x.provider.is_empty() && !x.fields.is_empty()).collect(),
         }
+    }
+
+    /// The setup `provider` still lacks (its page shows the fields instead
+    /// of the accounts), `None` when it is ready or needs none.
+    pub fn setup_missing(&self, provider: &str) -> Option<&Setup> {
+        self.setup.iter().find(|x| x.provider == provider && !x.ready)
+    }
+
+    /// The first setup any of its accounts still lacks.
+    pub fn first_missing_setup(&self) -> Option<&Setup> {
+        self.setup.iter().find(|x| !x.ready)
     }
 
     /// Its accounts by manifest id, in the broker's order: (id, rows).
@@ -1028,6 +1089,43 @@ mod tests {
         // a broker that leaves out label and state: the default slot, not signed in
         let bare = Listed::of(&json!({"id": "x.y.z", "accounts": [{"account": "google", "provider": "google"}]}));
         assert_eq!((bare.accounts[0].label.as_str(), bare.accounts[0].state.as_str(), bare.accounts[0].name()), ("default", "none", "google".to_owned()));
+    }
+
+    #[test]
+    fn a_plugins_setup_lists_its_fields_and_whether_each_is_set() {
+        let l = Listed::of(&json!({"id": "app.buwiz.google-workspace", "setup": [
+            {"provider": "google", "ready": false, "fields": [
+                {"key": "GOOGLE_CLIENT_ID", "label": "Google Client ID", "placeholder": "x.apps.googleusercontent.com", "secret": false, "hint": "Shared", "set": true},
+                {"key": "GOOGLE_CLIENT_SECRET", "label": "Google Client Secret", "placeholder": "GOCSPX-…", "secret": true, "hint": "", "set": false},
+                {"label": "no key"},
+            ]},
+            {"provider": "oauth:https://auth.example.com", "ready": true, "fields": [{"key": "K"}]},
+            {"provider": "empty", "ready": false, "fields": []},
+        ]}));
+        assert_eq!(l.setup.len(), 2, "a setup without fields is dropped");
+        let g = l.setup_missing("google").expect("the Google client is missing");
+        assert_eq!(g.fields.len(), 2);
+        assert_eq!((g.fields[0].key.as_str(), g.fields[0].secret, g.fields[0].set), ("GOOGLE_CLIENT_ID", false, true));
+        assert_eq!((g.fields[1].label.as_str(), g.fields[1].secret, g.fields[1].set), ("Google Client Secret", true, false));
+        assert!(l.setup_missing("oauth:https://auth.example.com").is_none(), "ready");
+        assert_eq!(l.first_missing_setup().map(|x| x.provider.as_str()), Some("google"));
+        let ready = Listed::of(&json!({"id": "x.y.z", "setup": [{"provider": "google", "ready": true, "fields": [{"key": "K", "set": true}]}]}));
+        assert!(ready.first_missing_setup().is_none() && ready.setup_missing("google").is_none());
+        assert!(Listed::of(&json!({"id": "x.y.z"})).setup.is_empty());
+        assert_eq!(SetupField::of(&json!({"key": "K"})).label, "K", "the key labels a field without one");
+    }
+
+    #[test]
+    fn the_setup_save_sends_only_typed_values_to_its_route() {
+        let b = Lifecycle::default();
+        let typed = vec![("GOOGLE_CLIENT_ID".to_owned(), " cid ".to_owned()), ("GOOGLE_CLIENT_SECRET".to_owned(), "  ".to_owned())];
+        host_api::save_setup(&b, "app.buwiz.google-workspace", &typed).unwrap();
+        assert_eq!(*b.routes.lock().unwrap(), [("POST /v1/host/plugins/app.buwiz.google-workspace/setup".to_owned(), json!({"values": {"GOOGLE_CLIENT_ID": "cid"}}))]);
+        let b = Lifecycle::default();
+        assert!(host_api::save_setup(&b, "../x", &typed).is_err());
+        assert!(host_api::save_setup(&b, "app.buwiz.gws", &[("a b".to_owned(), "v".to_owned())]).is_err());
+        assert!(host_api::save_setup(&b, "app.buwiz.gws", &[("K".to_owned(), "".to_owned())]).is_err(), "nothing typed: nothing to send");
+        assert!(b.routes().is_empty());
     }
 
     #[test]

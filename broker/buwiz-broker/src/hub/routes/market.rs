@@ -353,6 +353,18 @@ async fn reapply(m: &Market, ctx: &HubCtx, key: &str) -> Result<(), String> {
     ctx.db.with(|db| db.execute("UPDATE installed_plugins SET meta=? WHERE name=?", rusqlite::params![js::stringify(&meta), key])).map(|_| ())
 }
 
+/// The shared Google client was saved elsewhere (a mini app's setup):
+/// every installed Google plugin's connectors take it again.
+pub async fn reapply_google(m: &Market, ctx: &HubCtx) -> Result<(), String> {
+    for r in rows(ctx, "SELECT name FROM installed_plugins", &[])? {
+        let k = string(r.get("name"));
+        if m.plugin_uses_google(ctx, &k) {
+            reapply(m, ctx, &k).await?;
+        }
+    }
+    Ok(())
+}
+
 /// `accountNote`: what's missing, or how a connected account signs in.
 fn account_note(m: &Market, ctx: &HubCtx, key: &str, server: &str, row: &Map<String, Value>, st: &Value) -> String {
     let Some(mat) = m.materialize(ctx, key, server, None) else { return String::new() };

@@ -165,7 +165,21 @@ async fn install(run: &Run, host: &Host, input: &Value) -> Out {
     if !post(run, &n) {
         return Out::err("no chat to show the install card in".into());
     }
-    Out::ok(format!("a card in this chat asks the user to review and Install {title} {}; you cannot install it yourself", f.version))
+    // the setup its accounts lack: asked for in a card after the install
+    let mut lacks: Vec<String> = Vec::new();
+    for a in n["accounts"].as_array().into_iter().flatten() {
+        let p = js::string_of(&a["provider"]);
+        let name = super::v1::setup_name(&p);
+        if host.setup_missing(&p) && !lacks.contains(&name) {
+            lacks.push(name);
+        }
+    }
+    let after = if lacks.is_empty() {
+        String::new()
+    } else {
+        format!(". Once installed it needs the user's {}: a card in this chat asks for it. Never ask for the client ID, secret or any key in the chat: the user types them into the card only", lacks.join(" and "))
+    };
+    Out::ok(format!("a card in this chat asks the user to review and Install {title} {}; you cannot install it yourself{after}", f.version))
 }
 
 #[cfg(test)]
@@ -637,6 +651,106 @@ mod tests {
         assert!(!b.dir.join("v1/apps").join(FX).exists(), "the app's folder went");
         assert!(b.host.account_rows(FX).is_empty());
         assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap(), None);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    fn cards(ctx: &HubCtx, chat: &str, kind: &str) -> Vec<(String, Value)> {
+        ctx.store.read(|s| {
+            s.thread(chat).unwrap().turns.iter().filter_map(|u| u.notice.clone().filter(|n| n["kind"] == kind).map(|n| (u.text.clone().unwrap_or_default(), n))).collect()
+        })
+    }
+
+    fn stored_google(b: &Bed) -> Value {
+        use rusqlite::OptionalExtension as _;
+        let c = rusqlite::Connection::open(&b.db).unwrap();
+        c.execute_batch("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)").unwrap();
+        let v: Option<String> = c.query_row("SELECT vals FROM plugin_settings WHERE plugin='@google'", [], |r| r.get(0)).optional().unwrap();
+        v.map(|v| serde_json::from_str::<Value>(&v).unwrap()).unwrap_or(Value::Null)
+    }
+
+    /// No shared Google client: the install asks for it in the chat (one
+    /// card carrying the fields, no values), the views list the fields
+    /// with only whether each is set, the save takes only those fields and
+    /// keeps a stored secret on an empty one, and the sign-in settles the
+    /// card.
+    #[tokio::test]
+    async fn a_package_without_its_google_client_asks_for_setup_in_the_chat_and_saves_it() {
+        let b = bed_in("setup", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        let run = run_in(&b.ctx);
+        let chat = run.thread_id();
+        let out = call(&run, "app_install", json!({"url": "https://github.com/o/r/releases/tag/v1.0.0"})).await;
+        assert!(out.content.as_str().unwrap().ends_with("you cannot install it yourself. Once installed it needs the user's Google client: a card in this chat asks for it. Never ask for the client ID, secret or any key in the chat: the user types them into the card only"), "{out:?}");
+        install_pkg(&b, "v1.0.0").await;
+        let asked = cards(&b.ctx, &chat, "account_required");
+        assert_eq!(asked.len(), 1, "one setup card: {asked:?}");
+        let (text, n) = asked[0].clone();
+        assert_eq!(text, "Set up Google for Fixture");
+        let fields = n["setup"]["fields"].as_array().unwrap();
+        assert_eq!(n["setup"]["provider"], "google");
+        assert_eq!(fields.iter().map(|f| (js::string_of(&f["key"]), f["secret"] == true)).collect::<Vec<_>>(), [("GOOGLE_CLIENT_ID".into(), false), ("GOOGLE_CLIENT_SECRET".into(), true)]);
+        assert!(fields.iter().all(|f| f.as_object().unwrap().keys().eq(["key", "label", "placeholder", "secret", "hint"].iter())), "{fields:?}");
+        assert_eq!((n["id"].clone(), n["account"].clone(), n["state"].clone()), (json!(FX), json!("google"), json!("pending")));
+        // another install of it: still the one card
+        assert_eq!(crate::hub::routes::host::ask_setup(&b.ctx, &b.host, &chat, FX), 0);
+
+        let set = |v: &Value| v[0]["fields"].as_array().unwrap().iter().map(|f| f["set"] == true).collect::<Vec<_>>();
+        let view = b.host.setup_view(FX);
+        assert_eq!((view[0]["provider"].clone(), view[0]["ready"].clone(), set(&view)), (json!("google"), json!(false), vec![false, false]));
+        assert_eq!(view[0]["fields"][1]["label"], "Google Client Secret");
+        let listed = crate::hub::routines::plugins::describe(&b.host, &b.host.row(FX).unwrap(), &|_, _| json!({}));
+        assert_eq!(listed["setup"], view);
+
+        // only the declared fields, strings; nothing saved on a refusal
+        let e = b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid", "OTHER_KEY": "x"}))).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("invalid_args", "app.buwiz.fixture's setup has no field OTHER_KEY"));
+        assert_eq!(b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": 5}))).unwrap_err().code, "invalid_args");
+        assert_eq!(b.host.save_setup(FX, Some(&json!(["x"]))).unwrap_err().code, "invalid_args");
+        assert_eq!(b.host.save_setup("app.buwiz.other", Some(&json!({}))).unwrap_err().message, "app.buwiz.other needs no setup");
+        assert_eq!(b.host.save_setup("app.buwiz.none", Some(&json!({}))).unwrap_err().code, "not_found");
+        assert_eq!(stored_google(&b), Value::Null);
+
+        let mut events = b.host.events();
+        let r = crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_ID": " cid ", "GOOGLE_CLIENT_SECRET": "csec"}})).await.unwrap();
+        assert!(!r.to_string().contains("csec") && !r.to_string().contains("\"cid\""), "no values answered: {r}");
+        assert_eq!((r["setup"][0]["ready"].clone(), set(&r["setup"])), (json!(true), vec![true, true]));
+        assert!(r["accounts"][0].get("setup").is_none(), "{r}");
+        assert_eq!(events.try_recv().unwrap()["id"], FX, "the plugin's change event");
+        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid", "GOOGLE_CLIENT_SECRET": "csec"}));
+        // an empty secret keeps the stored one; the id is replaced
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "  "}))).unwrap();
+        assert_eq!(stored_google(&b), json!({"GOOGLE_CLIENT_ID": "cid-2", "GOOGLE_CLIENT_SECRET": "csec"}));
+        assert!(!b.host.setup_missing("google"));
+
+        // the sign-in it offers next settles the card
+        let (flow, state, u) = sign_in(&b).await;
+        assert!(u.query_pairs().any(|(k, v)| k == "client_id" && v == "cid-2"));
+        token_answer(&b.files, 200, json!({"access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600, "token_type": "Bearer"}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
+        assert_eq!(crate::hub::routes::host::settle_signed_in(&b.ctx, FX, "google"), 1);
+        assert_eq!(cards(&b.ctx, &chat, "account_required")[0].1["state"], "connected");
+        // Not now on a setup card is `declined`
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_ID": ""}))).unwrap();
+        assert!(b.host.setup_missing("google"));
+        assert_eq!(crate::hub::routes::host::ask_setup(&b.ctx, &b.host, &chat, FX), 1);
+        assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap()["settled"], 1);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_package_whose_google_client_is_set_installs_without_a_setup_card() {
+        let b = bed_in("setupdone", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        google_client(&b);
+        let run = run_in(&b.ctx);
+        let out = call(&run, "app_install", json!({"url": "https://github.com/o/r/releases/tag/v1.0.0"})).await;
+        assert!(out.content.as_str().unwrap().ends_with("you cannot install it yourself"), "{out:?}");
+        install_pkg(&b, "v1.0.0").await;
+        assert!(cards(&b.ctx, &run.thread_id(), "account_required").is_empty());
+        assert_eq!(b.host.setup_view(FX)[0]["ready"], true);
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

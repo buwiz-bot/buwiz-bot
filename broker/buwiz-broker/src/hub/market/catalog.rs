@@ -139,6 +139,18 @@ fn is_secret_key(k: &str) -> bool {
     re(&R, r"(?i)KEY|TOKEN|SECRET|PASSWORD|PAT\b").is_match(k)
 }
 
+/// The shared Google client's fields (`{key, label, placeholder, secret,
+/// hint}`), saved in [`GOOGLE_GROUP`]: a Google plugin's Setup and a mini
+/// app's `google` account setup ask for the same two.
+pub fn google_fields() -> [Value; 2] {
+    [
+        json!({ "key": "GOOGLE_CLIENT_ID", "label": "Google Client ID", "placeholder": "xxxxxxxx.apps.googleusercontent.com", "secret": false,
+            "hint": "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app." }),
+        json!({ "key": "GOOGLE_CLIENT_SECRET", "label": "Google Client Secret", "placeholder": "GOCSPX-…", "secret": true,
+            "hint": "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin." }),
+    ]
+}
+
 pub fn is_google_key(k: &str) -> bool {
     k == "GOOGLE_CLIENT_ID" || k == "GOOGLE_CLIENT_SECRET"
 }
@@ -513,12 +525,7 @@ impl Market {
             }
         }
         if servers.values().any(shares_google) {
-            for f in [
-                json!({ "key": "GOOGLE_CLIENT_ID", "label": "Google Client ID", "placeholder": "xxxxxxxx.apps.googleusercontent.com", "secret": false,
-                    "hint": "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app." }),
-                json!({ "key": "GOOGLE_CLIENT_SECRET", "label": "Google Client Secret", "placeholder": "GOCSPX-…", "secret": true,
-                    "hint": "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin." }),
-            ] {
+            for f in google_fields() {
                 let k = f["key"].as_str().unwrap().to_owned();
                 if !seen.contains(&k) {
                     seen.push(k);

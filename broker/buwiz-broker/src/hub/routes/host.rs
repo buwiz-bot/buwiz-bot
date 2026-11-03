@@ -13,6 +13,10 @@
 //! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
 //! a sign-in settles the chat's `account_required` cards for it
 //! (`connected`); the user's Not now settles them `declined`.
+//! `POST /v1/host/plugins/<id>/setup {values}` saves the setup its
+//! accounts' providers need (the shared Google client; never logged, never
+//! answered); an install from a chat's card whose setup is missing puts an
+//! `account_required` card carrying that setup in the chat.
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
 //!
@@ -41,9 +45,13 @@ use serde_json::{json, Value};
 
 use crate::helper::plugins::Host;
 use crate::hub::ctx::HubCtx;
+use crate::hub::market::catalog::Market;
+use crate::hub::routes::market::reapply_google;
+use crate::hub::routines::threads::notice_text;
 use crate::hub::routines::store_host::settle_notices;
 use crate::hub::routines::v1::V1;
 use crate::hub::routines::Routines;
+use crate::hub::tools::v1::{account_card, card_pending};
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
@@ -200,7 +208,7 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
             (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
             (_, None) => Err(V1Error::new("plugin_unavailable", "this broker hosts no v1 plugins")),
             (Ok(id), Some(host)) => match host.row(&id) {
-                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id)})),
+                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id), "setup": host.setup_view(&id)})),
                 None => Err(V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(&id, 80)))),
             },
         };
@@ -249,14 +257,14 @@ impl Route {
         if let Some(p) = POSTS.iter().find(|p| **p == path) {
             return Some(Route::Post(p));
         }
-        // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools)$/
+        // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools|setup)$/
         let rest = path.strip_prefix("/v1/host/plugins/")?;
         if let [id, "accounts", account, op] = rest.split('/').collect::<Vec<_>>().as_slice() {
             let op = ["signin", "signout", "remove"].into_iter().find(|o| o == op)?;
             return (!id.is_empty() && !account.is_empty()).then(|| Route::Account((*id).to_owned(), (*account).to_owned(), op));
         }
         let (id, action) = rest.split_once('/')?;
-        let action = ["enable", "disable", "uninstall", "tools"].into_iter().find(|a| *a == action)?;
+        let action = ["enable", "disable", "uninstall", "tools", "setup"].into_iter().find(|a| *a == action)?;
         (!id.is_empty()).then(|| Route::Action(id.to_owned(), action))
     }
 
@@ -305,6 +313,7 @@ impl Route {
                         V1::forget(&ctx.db, &id);
                         Ok(out)
                     }
+                    "setup" => save_setup(ctx, host, &id, b).await,
                     _ => host.set_tool(&id, b.get("tool"), b.get("disabled")),
                 }
             }
@@ -360,11 +369,60 @@ pub fn with_env_from(host: &Host, b: &Value) -> Result<Value, V1Error> {
 }
 
 /// `POST /v1/host/plugins/install` with `env_from`; once it installed,
-/// every pending `app_install` card for the id reads `installed`.
+/// every pending `app_install` card for the id reads `installed`, and each
+/// chat that had one is asked for the setup the plugin lacks
+/// ([`ask_setup`]).
 pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
     let out = host.install(&with_env_from(host, b)?).await?;
     if let Some(id) = out.get("id").and_then(Value::as_str) {
+        let chats = ctx.store.read(|s| {
+            let asks = |t: &&crate::hub::store::Thread| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_install" && n["id"] == json!(id) && n["state"] == "pending");
+            s.list.iter().filter(asks).map(|t| t.id.clone()).collect::<Vec<_>>()
+        });
         settle_notices(ctx, None, "app_install", id, "installed");
+        for chat in chats {
+            ask_setup(ctx, host, &chat, id);
+        }
+    }
+    Ok(out)
+}
+
+/// In chat `chat`, an `account_required` card carrying the setup (fields,
+/// no values) for each account of `id` whose provider's setup is missing,
+/// unless a pending one asks already; → how many it posted.
+pub fn ask_setup(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> usize {
+    let Some(row) = host.row(id) else { return 0 };
+    let title = row.manifest().get("title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| id.to_owned());
+    let setup = host.setup_view(id);
+    let mut posted = 0;
+    for a in host.declared_accounts(id) {
+        if !host.setup_missing(&a.provider) || card_pending(ctx, chat, id, &a.id) {
+            continue;
+        }
+        let n = account_card(id, &title, &a, &setup);
+        match ctx.store.append_turn(chat, crate::hub::store::Turn::notice(&notice_text(&n), n)) {
+            Ok(Some(_)) => posted += 1,
+            Ok(None) => {}
+            Err(e) => eprintln!("buwiz-broker: notices: the store's write: {e}"),
+        }
+    }
+    if posted > 0 {
+        ctx.store.write_index();
+    }
+    posted
+}
+
+/// `POST /v1/host/plugins/<id>/setup {values}` ([`Host::save_setup`]);
+/// a saved Google client re-applies to the installed Google plugins'
+/// connectors, as their own Setup's save does.
+pub async fn save_setup(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result<Value, V1Error> {
+    let out = host.save_setup(id, b.get("values"))?;
+    let google = host.declared_accounts(id).iter().any(|a| a.provider == "google");
+    if let (true, Some(m)) = (google, ctx.ext.get::<Arc<Market>>()) {
+        // the error may quote a materialized config: not logged
+        if reapply_google(m, ctx).await.is_err() {
+            eprintln!("  v1 {id}: setup saved; the Google plugins' connectors did not all update");
+        }
     }
     Ok(out)
 }
@@ -514,5 +572,6 @@ mod tests {
         assert!(Route::of("/v1/host/plugins/app.buwiz.gws/accounts/google/delete").is_none());
         assert!(Route::of("/v1/host/plugins//accounts/google/signin").is_none());
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/enable"), Some(Route::Action(_, "enable"))));
+        assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
     }
 }

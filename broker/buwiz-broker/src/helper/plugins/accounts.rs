@@ -12,6 +12,12 @@
 //! `oauth:<issuer>` (RFC 8414 discovery, RFC 7591 registration per
 //! sign-in). Both are PKCE S256 in the system browser with the front
 //! door's loopback redirect, `/oauth/callback/account:<plugin>/<account>/<label>`.
+//!
+//! Setup (`setup_view`, `save_setup`): what a provider needs before its
+//! sign-in can start, as fields the user fills in. `google` needs the shared
+//! client (`hub::market::catalog::google_fields`, saved in `@google` where
+//! the legacy Google plugins read it too); `oauth:` registers itself and
+//! needs none. The views say only whether a value is set, never the value.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -41,8 +47,7 @@ pub(super) const SCHEMA: &str = "
 
 pub const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
-/// `plugin_settings`' shared Google client (`hub::market::catalog::GOOGLE_GROUP`).
-const GOOGLE_GROUP: &str = "@google";
+use crate::hub::market::catalog::{google_fields, GOOGLE_GROUP};
 pub const DEFAULT_LABEL: &str = "default";
 pub const NEEDS_GOOGLE_CLIENT: &str = "Add your Google client in Setup";
 const REFRESH_EARLY_MS: f64 = 5.0 * 60.0 * 1000.0;
@@ -174,6 +179,16 @@ fn random_state() -> String {
     buwiz_protocol::keys::random::<16>().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The setup `provider`'s sign-in needs: the `plugin_settings` row it is
+/// saved in and its fields; `None` for a provider that needs none.
+fn provider_setup(provider: &str) -> Option<(&'static str, Vec<Value>)> {
+    (provider == "google").then(|| (GOOGLE_GROUP, google_fields().into_iter().collect()))
+}
+
+fn is_set(vals: &Map<String, Value>, key: &str) -> bool {
+    vals.get(key).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+}
+
 /// `buwiz.account.set`'s arguments.
 fn set_args(r: &AccountRow, t: &Value) -> Value {
     json!({
@@ -273,20 +288,20 @@ impl Host {
     /// The accounts section of the plugin's snapshot (no tokens): one row
     /// per signed-in label of each declared account, `{account, label,
     /// provider, title, subject, state, required}`; an account never signed
-    /// in is a `default` row in state `none`. A Google row the shared
-    /// client is missing for adds `setup` (why sign-in can't start).
+    /// in is a `default` row in state `none`. A row whose provider's setup
+    /// is missing (`setup_view`) adds `setup` (why sign-in can't start).
     pub fn accounts_view(&self, id: &str) -> Value {
         let declared = self.declared_accounts(id);
         if declared.is_empty() {
             return json!([]);
         }
         let rows = self.account_rows(id);
-        let google = declared.iter().any(|a| a.provider == "google") && self.google_client().is_some();
         let mut out = Vec::new();
         for a in &declared {
+            let missing = self.setup_missing(&a.provider);
             let row = |label: &str, subject: Option<&str>, state: &str| {
                 let mut o = json!({"account": a.id, "label": label, "provider": a.provider, "title": a.label, "subject": subject, "state": state, "required": a.required});
-                if a.provider == "google" && !google {
+                if missing {
                     o["setup"] = json!(NEEDS_GOOGLE_CLIENT);
                 }
                 o
@@ -300,6 +315,110 @@ impl Host {
             }
         }
         json!(out)
+    }
+
+    /// A `plugin_settings` row's values (`{}` when none).
+    fn group_vals(&self, group: &str) -> Map<String, Value> {
+        let vals: Option<String> = self.sql(|db| db.query_row("SELECT vals FROM plugin_settings WHERE plugin=?", [group], |r| r.get::<_, Option<String>>(0)).optional()).ok().flatten().flatten();
+        match super::parse(vals.as_deref().unwrap_or(""), json!({})) {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        }
+    }
+
+    /// Whether `provider`'s sign-in still lacks setup: a field of its
+    /// setup without a value.
+    pub fn setup_missing(&self, provider: &str) -> bool {
+        let Some((group, fields)) = provider_setup(provider) else { return false };
+        let vals = self.group_vals(group);
+        fields.iter().any(|f| !is_set(&vals, &js::string_of(&f["key"])))
+    }
+
+    /// The setup a plugin's declared accounts need, one entry per provider
+    /// that has any: `{provider, ready, fields: [{key, label, placeholder,
+    /// secret, hint, set}]}`, `ready` when every field is set. No values.
+    pub fn setup_view(&self, id: &str) -> Value {
+        let mut out: Vec<Value> = Vec::new();
+        for a in self.declared_accounts(id) {
+            if out.iter().any(|x| x["provider"] == json!(a.provider)) {
+                continue;
+            }
+            let Some((group, fields)) = provider_setup(&a.provider) else { continue };
+            let vals = self.group_vals(group);
+            let fields: Vec<Value> = fields
+                .into_iter()
+                .map(|mut f| {
+                    f["set"] = json!(is_set(&vals, &js::string_of(&f["key"])));
+                    f
+                })
+                .collect();
+            let ready = fields.iter().all(|f| f["set"] == true);
+            out.push(json!({"provider": a.provider, "ready": ready, "fields": fields}));
+        }
+        json!(out)
+    }
+
+    /// `POST …/plugins/<id>/setup {values}`: the fields its setup declares,
+    /// trimmed, saved in their provider's shared row (other keys refused,
+    /// nothing saved then); an empty secret keeps the stored one, an empty
+    /// other field clears it. Every plugin sharing the provider hears the
+    /// change. → `{ok, id, setup, accounts}` (no values).
+    pub fn save_setup(&self, id: &str, values: Option<&Value>) -> Res {
+        self.must_row(id)?;
+        let mut providers: Vec<String> = Vec::new();
+        for a in self.declared_accounts(id) {
+            if provider_setup(&a.provider).is_some() && !providers.contains(&a.provider) {
+                providers.push(a.provider);
+            }
+        }
+        if providers.is_empty() {
+            return V1Error::err("invalid_args", format!("{id} needs no setup"));
+        }
+        let values = match values {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(m)) => m.clone(),
+            Some(_) => return V1Error::err("invalid_args", "values must map field keys to strings"),
+        };
+        // (group, key, value, secret) of each value sent, checked before any is saved
+        let mut sent: Vec<(&'static str, String, String, bool)> = Vec::new();
+        for (k, v) in &values {
+            let found = providers.iter().filter_map(|p| provider_setup(p)).find_map(|(g, fs)| fs.into_iter().find(|f| f["key"] == json!(k)).map(|f| (g, f["secret"] == true)));
+            let Some((group, secret)) = found else { return V1Error::err("invalid_args", format!("{id}'s setup has no field {}", js::slice_utf16(k, 80))) };
+            let v = match v {
+                Value::Null => String::new(),
+                Value::String(s) => s.trim_matches(js::is_space).to_owned(),
+                _ => return V1Error::err("invalid_args", format!("{} must be a string", js::slice_utf16(k, 80))),
+            };
+            sent.push((group, k.clone(), v, secret));
+        }
+        let mut groups: Vec<&'static str> = sent.iter().map(|x| x.0).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        let now = self.clock.now() as i64;
+        for g in groups {
+            let mut vals = self.group_vals(g);
+            for (_, k, v, secret) in sent.iter().filter(|x| x.0 == g) {
+                if !v.is_empty() {
+                    vals.insert(k.clone(), json!(v));
+                } else if !secret {
+                    vals.shift_remove(k);
+                }
+            }
+            self.sql(|db| {
+                db.execute_batch("CREATE TABLE IF NOT EXISTS plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER)")?;
+                if vals.is_empty() {
+                    db.execute("DELETE FROM plugin_settings WHERE plugin=?", [g]).map(drop)
+                } else {
+                    db.execute("INSERT OR REPLACE INTO plugin_settings(plugin, vals, updated_at) VALUES(?,?,?)", params![g, js::stringify(&Value::Object(vals.clone())), now]).map(drop)
+                }
+            })?;
+        }
+        for r in self.rows() {
+            if r.id == id || self.declared_accounts(&r.id).iter().any(|a| providers.contains(&a.provider)) {
+                self.emit(&r.id);
+            }
+        }
+        Ok(json!({"ok": true, "id": id, "setup": self.setup_view(id), "accounts": self.accounts_view(id)}))
     }
 
     fn declared_one(&self, plugin: &str, account: &str) -> Res<Account> {

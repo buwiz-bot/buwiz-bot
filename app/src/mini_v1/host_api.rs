@@ -222,6 +222,27 @@ pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, 
     post(b, &account_route(plugin, account, action), json!({"label": label}), SHORT_TIMEOUT)
 }
 
+/// `POST /v1/host/plugins/:id/setup {values}`: the setup fields typed in
+/// (trimmed; empty ones left out, so a stored value stays). The values go
+/// in this body only: never into a log, the chat or the model.
+pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !typed.iter().all(|(k, _)| setup_key_ok(k)) {
+        return Err(RoxError::new("invalid_args", "not a setup field of a plugin"));
+    }
+    let values: serde_json::Map<String, Value> =
+        typed.iter().map(|(k, v)| (k.clone(), v.trim())).filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k, json!(v))).collect();
+    if values.is_empty() {
+        return Err(RoxError::new("invalid_args", "Enter the values first"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"values": values}), SHORT_TIMEOUT)
+}
+
+/// A setup field's key: `^[A-Za-z_][A-Za-z0-9_.]{0,63}$`.
+pub fn setup_key_ok(k: &str) -> bool {
+    let mut c = k.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && k.len() <= 64 && c.all(|x| x.is_ascii_alphanumeric() || x == '_' || x == '.')
+}
+
 /// What the person does to a routine (5.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutineAction {

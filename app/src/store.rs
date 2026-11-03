@@ -327,7 +327,9 @@ impl AppUninstallNotice {
 
 /// A `notice` turn the broker posts when a tool needs a missing account
 /// (`account_required`): Sign in or Not now; once that account is
-/// connected, a quiet line.
+/// connected, a quiet line. While the account's provider lacks its setup
+/// (the shared Google client) the card asks for the setup's fields first,
+/// then offers Sign in.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct AccountRequiredNotice {
     pub plugin: String,
@@ -340,6 +342,9 @@ pub struct AccountRequiredNotice {
     pub text: String,
     /// `pending` or `declined`.
     pub state: String,
+    /// The setup's fields the broker said it lacked when it posted the
+    /// card (no values); empty when it lacked none.
+    pub setup: Vec<crate::mini_v1::connect::SetupField>,
 }
 
 impl AccountRequiredNotice {
@@ -356,7 +361,35 @@ impl AccountRequiredNotice {
             provider: s(v, "provider"),
             text,
             state: notice_state(v),
+            setup: v
+                .get("setup")
+                .and_then(|x| x.get("fields"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(crate::mini_v1::connect::SetupField::of)
+                .filter(|f| !f.key.is_empty())
+                .collect(),
         })
+    }
+
+    /// The fields the card asks for before Sign in, None once the setup is
+    /// there: this card saved them (`saved`, Sign in next), else the plugin
+    /// list's word when it lists the plugin (`listed`), else the card's own.
+    pub fn setup_fields(&self, listed: Option<&crate::mini_v1::connect::Listed>, saved: bool) -> Option<Vec<crate::mini_v1::connect::SetupField>> {
+        if saved {
+            return None;
+        }
+        match listed {
+            Some(p) => p.setup_missing(&self.provider).map(|x| x.fields.clone()),
+            None => (!self.setup.is_empty()).then(|| self.setup.clone()),
+        }
+    }
+
+    /// "Add your Google client to use Google Workspace".
+    pub fn setup_question(&self) -> String {
+        let what = if self.provider == "google" { "your Google client".to_owned() } else { format!("the setup for {}", self.label) };
+        if self.title.is_empty() { format!("Add {what}") } else { format!("Add {what} to use {}", self.title) }
     }
 
     /// "Sign in to Google account to use Google Workspace".
@@ -8069,6 +8102,36 @@ mod tests {
         assert_eq!(by_id.account_required.unwrap().plugin, "x.y.z", "the plugin from its id");
         let no_label = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google"}}));
         assert_eq!(no_label.account_required.unwrap().question(), "Sign in to google");
+    }
+
+    #[test]
+    fn an_account_required_notice_with_setup_asks_for_it_until_the_list_has_it() {
+        use super::Turn;
+        use crate::mini_v1::connect::Listed;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Set up Google for Google Workspace",
+            "notice": {"kind": "account_required", "plugin": "app.buwiz.google-workspace", "title": "Google Workspace",
+                "account": "google", "label": "Google account", "provider": "google", "state": "pending",
+                "setup": {"provider": "google", "fields": [
+                    {"key": "GOOGLE_CLIENT_ID", "label": "Google Client ID", "placeholder": "x", "secret": false, "hint": "h"},
+                    {"key": "GOOGLE_CLIENT_SECRET", "label": "Google Client Secret", "placeholder": "y", "secret": true, "hint": ""}]}}}));
+        let n = t.account_required.expect("a setup card");
+        assert_eq!(n.setup.iter().map(|f| (f.key.as_str(), f.secret)).collect::<Vec<_>>(), [("GOOGLE_CLIENT_ID", false), ("GOOGLE_CLIENT_SECRET", true)]);
+        assert_eq!(n.setup_question(), "Add your Google client to use Google Workspace");
+        // not listed (yet): the card's own fields until it saved them
+        assert_eq!(n.setup_fields(None, false).map(|f| f.len()), Some(2));
+        assert_eq!(n.setup_fields(None, true), None, "saved here: Sign in next");
+        // listed: the list's word, with which field is set
+        let missing = Listed::of(&serde_json::json!({"id": "app.buwiz.google-workspace", "setup": [{"provider": "google", "ready": false,
+            "fields": [{"key": "GOOGLE_CLIENT_ID", "set": true}, {"key": "GOOGLE_CLIENT_SECRET", "secret": true, "set": false}]}]}));
+        let f = n.setup_fields(Some(&missing), false).expect("still missing on the list");
+        assert_eq!(f.iter().map(|x| x.set).collect::<Vec<_>>(), [true, false]);
+        assert_eq!(n.setup_fields(Some(&missing), true), None, "saved here, before the list reads it again");
+        let ready = Listed::of(&serde_json::json!({"id": "app.buwiz.google-workspace", "setup": [{"provider": "google", "ready": true, "fields": [{"key": "K", "set": true}]}]}));
+        assert_eq!(n.setup_fields(Some(&ready), false), None, "set up elsewhere: Sign in");
+        // a card posted without setup asks for it once the list says it is missing
+        let plain = super::AccountRequiredNotice { setup: Vec::new(), ..n.clone() };
+        assert!(plain.setup_fields(None, false).is_none() && plain.setup_fields(Some(&missing), false).is_some());
+        assert_eq!(super::AccountRequiredNotice { title: String::new(), provider: "oauth:x".into(), ..n }.setup_question(), "Add the setup for Google account");
     }
 
     #[test]

@@ -1228,7 +1228,9 @@ fn app_uninstall_row(n: crate::store::AppUninstallNotice, chat: String, i: i64) 
 
 /// A tool that needs a missing account (`account_required`): Sign in
 /// (the broker opens the browser) or Not now; once the plugin list has the
-/// account connected, the quiet line "<label> · Connected".
+/// account connected, the quiet line "<label> · Connected". While the
+/// account's provider lacks its setup, the card asks for its fields first
+/// ([`account_setup_card`]); once saved, Sign in.
 fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i: i64) -> impl IntoElement {
     let c1 = chat.clone();
     let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
@@ -1238,6 +1240,9 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
         let connected = listed.as_ref().is_some_and(|p| p.account_connected(&n.account));
         if let Some(done) = n.answered(local.local(), connected) {
             return app_quiet_line(done);
+        }
+        if let Some(fields) = n.setup_fields(listed.as_ref(), local.local() == Some("saved")) {
+            return account_setup_card(&n, fields, chat.clone(), i, &local);
         }
         let label = listed.as_ref().map(|p| p.signin_label(&n.account)).unwrap_or_else(|| "default".to_owned());
         let signing = store().v1.signing.with(|s| s.contains(&crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label)));
@@ -1259,6 +1264,40 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
         }
         c.into_element()
     }))
+}
+
+/// An `account_required` card's setup step: the fields its sign-in lacks
+/// (the plugin page's, secrets under dots) with Save and Not now. The
+/// values go from the fields to the setup route only, never into the
+/// chat, the model or a log; once saved the card offers Sign in.
+fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate::mini_v1::connect::SetupField>, chat: String, i: i64, local: &crate::store::AppCard) -> AnyElement {
+    let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
+    let saving = store().v1.setup_saving.with(|s| s.contains(&n.plugin));
+    let mut c = app_card_frame(n.setup_question())
+        .child(text(n.setup_question()).text_size(px(13.0)).text_color(theme::TEXT))
+        .child(text(crate::plugins::v1_setup_intro(&n.provider)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+    for f in &fields {
+        c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
+    }
+    let (ch1, ch2, p1, p2) = (chat.clone(), chat, n.plugin.clone(), n.plugin.clone());
+    let mut buttons = view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(app_card_btn("Save", format!("Save the setup for {}", n.title), true, move || {
+            let ch = ch1.clone();
+            store().app_card(&ch1, i, |c| c.start());
+            store().v1_save_setup(&p1, keys.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+        }))
+        .child(app_card_btn("Not now", "Not now".to_owned(), false, move || store().app_answer(&ch2, i, "account_required", &p2, "declined")));
+    if saving {
+        buttons = buttons.child(text("Saving…").text_size(px(12.0)).text_color(theme::MUTED));
+    }
+    c = c.child(buttons);
+    if !local.error.is_empty() {
+        c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+    }
+    c.into_element()
 }
 
 /// An item's instruction in a routine's thread: what the routine gave the

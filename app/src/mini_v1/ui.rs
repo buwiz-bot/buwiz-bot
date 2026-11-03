@@ -11,7 +11,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -97,6 +97,14 @@ pub struct V1 {
     pub signing: Signal<HashSet<String>>,
     /// A refused sign-in's message, by [`signing_key`], under its row.
     pub account_err: Signal<HashMap<String, String>>,
+    /// The setup fields typed so far, by key (a plugin page's and a chat
+    /// card's: the shared Google client is one), sent only in the setup
+    /// request ([`Store::v1_save_setup`]) and cleared once saved.
+    pub setup_vals: Signal<BTreeMap<String, String>>,
+    /// Plugins whose setup is being saved.
+    pub setup_saving: Signal<HashSet<String>>,
+    /// A refused setup save's message on a plugin's page, by plugin.
+    pub setup_err: Signal<HashMap<String, String>>,
 }
 
 /// What a refused sign-in says: `needs_setup` is the setup it lacks.
@@ -143,6 +151,9 @@ impl V1 {
             preview: signal(None),
             signing: signal(HashSet::new()),
             account_err: signal(HashMap::new()),
+            setup_vals: signal(BTreeMap::new()),
+            setup_saving: signal(HashSet::new()),
+            setup_err: signal(HashMap::new()),
         }
     }
 
@@ -1344,6 +1355,40 @@ impl Store {
                 self.v1.signing.update(|s| {
                     s.remove(&key);
                 });
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// Save of a plugin's setup: the values typed into `keys`' fields go
+    /// to the broker in the request body only (never a log, the chat or
+    /// the model); once saved they are cleared here and the list read
+    /// again, so its accounts (and Sign in) show. `done` hears the outcome.
+    pub fn v1_save_setup(&'static self, plugin: &str, keys: Vec<String>, done: impl FnOnce(Result<(), String>) + 'static) {
+        if self.v1.setup_saving.with_untracked(|s| s.contains(plugin)) {
+            return;
+        }
+        let typed: Vec<(String, String)> =
+            self.v1.setup_vals.with_untracked(|m| keys.iter().filter_map(|k| m.get(k).map(|v| (k.clone(), v.clone()))).collect());
+        let p = plugin.to_owned();
+        self.v1.setup_saving.update(|s| {
+            s.insert(p.clone());
+        });
+        Owner::detached().run(|| {
+            spawn(async move {
+                let p2 = p.clone();
+                let r = crate::vault::off_main(move || host_api::save_setup(&broker(), &p2, &typed)).await;
+                self.v1.setup_saving.update(|s| {
+                    s.remove(&p);
+                });
+                match r {
+                    Some(Ok(_)) => {
+                        self.v1.setup_vals.update(|m| m.retain(|k, _| !keys.contains(k)));
+                        done(Ok(()));
+                    }
+                    Some(Err(e)) => done(Err(e.message)),
+                    None => done(Err("Couldn't save the setup.".to_owned())),
+                }
                 self.v1_refresh();
             })
         });

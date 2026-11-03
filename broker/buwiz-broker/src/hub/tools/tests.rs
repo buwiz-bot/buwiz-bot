@@ -40,6 +40,8 @@ struct Fake {
     approved: Mutex<bool>,
     instructions: String,
     calls: Mutex<Vec<(String, Value, Option<Value>)>>,
+    /// What `PluginView::setup` answers for FX.
+    setup: Mutex<Value>,
 }
 
 fn row(id: &str, short: &str, manifest: Value, tools: Vec<Value>) -> Row {
@@ -95,7 +97,7 @@ impl Fake {
             json!({"id": GWS, "short": "gws", "title": "Google Workspace"}),
             vec![tool("gws_search_mail", "Search mail", json!({"annotations": {"readOnlyHint": true}})), tool("gws_read_mail", "Read mail", json!({}))],
         );
-        Arc::new(Fake { rows: Mutex::new(vec![fx, gws]), approved: Mutex::new(true), instructions: instructions.into(), calls: Mutex::new(Vec::new()) })
+        Arc::new(Fake { rows: Mutex::new(vec![fx, gws]), approved: Mutex::new(true), instructions: instructions.into(), calls: Mutex::new(Vec::new()), setup: Mutex::new(json!([])) })
     }
 
     fn set_tool(&self, name: &str, off: bool) {
@@ -161,6 +163,9 @@ impl PluginView for Arc<Fake> {
     fn declared_accounts(&self, id: &str) -> Vec<crate::v1::package::Account> {
         let google = crate::v1::package::Account { id: "google".into(), provider: "google".into(), label: "Google account".into(), scopes: Vec::new(), required: true };
         if id == FX { vec![google] } else { Vec::new() }
+    }
+    fn setup(&self, id: &str) -> Value {
+        if id == FX { self.setup.lock().unwrap().clone() } else { json!([]) }
     }
 }
 
@@ -584,6 +589,39 @@ async fn account_required_puts_one_sign_in_card_in_the_chat() {
     ctx.store.write(|s| s.thread_mut(&chat).unwrap().turns.last_mut().unwrap().notice.as_mut().unwrap()["state"] = json!("pending")).unwrap();
     assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap()["settled"], 1);
     assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "dismissed"})).unwrap_err().code, "invalid_args");
+}
+
+/// account_required while the provider's setup is missing: the card
+/// carries the setup's fields (no values) and the model hears that the
+/// user enters them in the card, never in the chat.
+#[tokio::test]
+async fn account_required_without_the_google_client_asks_for_setup_first() {
+    let fake = Fake::new("");
+    {
+        let mut rows = fake.rows.lock().unwrap();
+        let r = rows.iter_mut().find(|r| r.id == FX).unwrap();
+        let mut tools: Vec<Value> = serde_json::from_str(&r.tools).unwrap();
+        tools.push(tool("fx_mail", "Read mail", json!({})));
+        r.tools = json!(tools).to_string();
+    }
+    let field = |k: &str, secret: bool| json!({"key": k, "label": k, "placeholder": "", "secret": secret, "hint": "h", "set": false});
+    *fake.setup.lock().unwrap() = json!([{"provider": "google", "ready": false, "fields": [field("GOOGLE_CLIENT_ID", false), field("GOOGLE_CLIENT_SECRET", true)]}]);
+    let ctx = with_plugins("acctsetup", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    let chat = run.thread_id();
+    let r = call(&run, "fx_mail", json!({})).await;
+    let line = "Fixture needs the user to add their Google client and sign in to their Google account first: a card in this chat asks them for it. Never ask for the client ID, secret or any key in the chat: the user types them into the card only. You cannot sign in for them; try again after they have.";
+    assert_eq!(r, Out { content: json!(line), is_error: Some(true) });
+    let (text, n) = ctx.store.read(|s| s.thread(&chat).unwrap().turns.iter().rev().find_map(|u| u.notice.clone().map(|n| (u.text.clone().unwrap_or_default(), n)))).unwrap();
+    assert_eq!(text, "Set up Google for Fixture");
+    let strip = |f: Value| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"], "hint": f["hint"]});
+    assert_eq!(n["setup"], json!({"provider": "google", "fields": [strip(field("GOOGLE_CLIENT_ID", false)), strip(field("GOOGLE_CLIENT_SECRET", true))]}));
+    assert_eq!((n["kind"].clone(), n["state"].clone()), (json!("account_required"), json!("pending")));
+    // set up: the same pending card stands, the line is the sign-in's
+    *fake.setup.lock().unwrap() = json!([{"provider": "google", "ready": true, "fields": []}]);
+    let again = call(&run, "fx_mail", json!({})).await;
+    assert!(again.content.as_str().unwrap().starts_with("Fixture needs the user to sign in to their Google account first: a card"), "{again:?}");
+    assert_eq!(crate::hub::routes::host::settle_signed_in(&ctx, FX, "google"), 1);
 }
 
 /// A missing nsh answers "": generate_app refuses and saves nothing (it

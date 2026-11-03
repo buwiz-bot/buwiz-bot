@@ -14,7 +14,8 @@ use crate::js;
 
 /// The notice's one line: "<name> ran · 2 new items" / "<name> failed: …";
 /// a consent card's question (`noticeText`); a mini app's install,
-/// uninstall or sign-in (`account_required`) card's.
+/// uninstall or sign-in (`account_required`, "Set up …" while it carries
+/// the setup the sign-in lacks) card's.
 pub fn notice_text(n: &Value) -> String {
     let s = |k: &str| n.get(k).map(js::string_of).unwrap_or_default();
     let list = |k: &str| n.get(k).and_then(Value::as_array).filter(|l| !l.is_empty()).map(|l| l.iter().map(js::string_of).collect::<Vec<_>>());
@@ -23,6 +24,10 @@ pub fn notice_text(n: &Value) -> String {
         Some("app_uninstall") => return format!("Uninstall {}? It removes its pins, attachments and data.", s("title")),
         Some("account_required") => {
             let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
+            // the setup it lacks comes first (its card asks for the fields)
+            if n.get("setup").is_some_and(Value::is_object) {
+                return format!("Set up {to} for {}", s("title"));
+            }
             return format!("Sign in to {to} for {}", s("title"));
         }
         _ => {}

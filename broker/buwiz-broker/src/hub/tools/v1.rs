@@ -6,7 +6,9 @@
 //! and its `buwiz/suggest` the reply's next steps, never shown to the model.
 //! A package tool that answers `{code: "account_required", account}` for an
 //! account its package declares puts a sign-in card (`account_required`)
-//! in the chat.
+//! in the chat; when the account's provider still lacks its setup (the
+//! shared Google client), the card carries that setup's fields and asks
+//! for them first.
 
 use std::sync::Arc;
 
@@ -218,7 +220,8 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
 
 /// §20.4: a failed call whose data is `{code: "account_required",
 /// account}`, `account` one the package declares: one pending sign-in card
-/// per chat and account, and a line for the model.
+/// per chat and account (with the setup it lacks, [`account_card`]), and a
+/// line for the model, which never asks for the setup's values itself.
 fn account_required(run: &Run, p: &dyn PluginView, row: &Row, r: &Value) -> Option<Out> {
     let data = crate::helper::plugins::result_data(r);
     if data.get("code").and_then(Value::as_str) != Some("account_required") {
@@ -228,13 +231,57 @@ fn account_required(run: &Run, p: &dyn PluginView, row: &Row, r: &Value) -> Opti
     let a = p.declared_accounts(&row.id).into_iter().find(|a| a.id == account)?;
     let title = row.manifest().get("title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| row.id.clone());
     let chat = run.thread_id();
-    let pending = run.ctx.store.read(|s| {
-        s.thread(&chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "account_required" && n["id"] == json!(row.id) && n["account"] == json!(a.id) && n["state"] == "pending"))
-    });
-    let n = json!({"kind": "account_required", "id": row.id, "plugin": row.id, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "state": "pending"});
+    let pending = card_pending(&run.ctx, &chat, &row.id, &a.id);
+    let n = account_card(&row.id, &title, &a, &p.setup(&row.id));
     let asked = pending || super::miniapps::post(run, &n);
-    let how = if asked { ": a card in this chat asks them to" } else { "" };
-    Some(Out { content: json!(format!("{title} needs the user to sign in to their {} first{how}. You cannot sign in for them; try again after they have.", a.label)), is_error: Some(true) })
+    let line = match n.get("setup") {
+        Some(_) => {
+            let how = if asked { ": a card in this chat asks them for it" } else { "" };
+            format!(
+                "{title} needs the user to add their {} and sign in to their {} first{how}. Never ask for the client ID, secret or any key in the chat: the user types them into the card only. You cannot sign in for them; try again after they have.",
+                setup_name(&a.provider),
+                a.label
+            )
+        }
+        None => {
+            let how = if asked { ": a card in this chat asks them to" } else { "" };
+            format!("{title} needs the user to sign in to their {} first{how}. You cannot sign in for them; try again after they have.", a.label)
+        }
+    };
+    Some(Out { content: json!(line), is_error: Some(true) })
+}
+
+/// What a provider's setup is called ("Google client").
+pub fn setup_name(provider: &str) -> String {
+    if provider == "google" { "Google client".to_owned() } else { format!("{provider} setup") }
+}
+
+/// Whether chat `chat` has a pending `account_required` card of `plugin`'s
+/// `account`.
+pub fn card_pending(ctx: &HubCtx, chat: &str, plugin: &str, account: &str) -> bool {
+    ctx.store.read(|s| {
+        s.thread(chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "account_required" && n["id"] == json!(plugin) && n["account"] == json!(account) && n["state"] == "pending"))
+    })
+}
+
+/// An `account_required` card for `plugin`'s account `a`; `setup` is the
+/// plugin's setup view (`PluginView::setup`): when `a`'s provider is not
+/// ready, the card adds `setup: {provider, fields: [{key, label,
+/// placeholder, secret, hint}]}`, the fields the card asks for before Sign
+/// in (never a value).
+pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, setup: &Value) -> Value {
+    let mut n = json!({"kind": "account_required", "id": plugin, "plugin": plugin, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "state": "pending"});
+    let missing = setup.as_array().into_iter().flatten().find(|s| s["provider"] == json!(a.provider) && s["ready"] == false);
+    if let Some(s) = missing {
+        let fields: Vec<Value> = s["fields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|f| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]}))
+            .collect();
+        n["setup"] = json!({"provider": a.provider, "fields": fields});
+    }
+    n
 }
 
 /// `@short:scope:value` tokens a message types (grammar.mjs `typedToken`,
