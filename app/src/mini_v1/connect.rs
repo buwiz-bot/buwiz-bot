@@ -259,9 +259,12 @@ pub struct Listed {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Setup {
     pub provider: String,
-    /// Every field is set.
+    /// Every field is set, each in its shape.
     pub ready: bool,
     pub fields: Vec<SetupField>,
+    /// Why a stored value is no good ("The saved Google Client ID is not a
+    /// Client ID…"), shown above its fields; "" when none.
+    pub error: String,
 }
 
 /// One field of a [`Setup`] (or of a chat card's).
@@ -323,10 +326,6 @@ impl SetupCheck {
     }
 }
 
-fn matches(pattern: &str, v: &str) -> bool {
-    regex::Regex::new(pattern).is_ok_and(|r| r.is_match(v))
-}
-
 /// A field's value as it would be saved: typed (trimmed, not blank), else
 /// its stored value when it shows one.
 fn effective(f: &SetupField, typed: &std::collections::BTreeMap<String, String>) -> String {
@@ -336,23 +335,27 @@ fn effective(f: &SetupField, typed: &std::collections::BTreeMap<String, String>)
 /// `fields`' shape checks over the values `typed` (by key), as the broker
 /// checks them: only a typed value is checked for its own shape.
 pub fn setup_check(fields: &[SetupField], typed: &std::collections::BTreeMap<String, String>) -> SetupCheck {
-    let mut out = SetupCheck::default();
-    for f in fields.iter().filter(|f| !f.swap_with.is_empty()) {
-        let Some(o) = fields.iter().find(|x| x.key == f.swap_with) else { continue };
-        let (mine, theirs) = (effective(f, typed), effective(o, typed));
-        if !mine.is_empty() && !theirs.is_empty() && !o.pattern.is_empty() && matches(&o.pattern, &mine) && !matches(&o.pattern, &theirs) {
-            out.swapped = Some(if f.swap_hint.is_empty() { "These two values look swapped".to_owned() } else { f.swap_hint.clone() });
-        }
-    }
-    for f in fields {
+    // the broker's rules, run here as they are typed (`buwiz_protocol::setup`)
+    let rules: Vec<Value> = fields.iter().map(SetupField::rules).collect();
+    let as_saved: serde_json::Map<String, Value> = fields.iter().map(|f| (f.key.clone(), json!(effective(f, typed)))).collect();
+    let mut out = SetupCheck { swapped: buwiz_protocol::setup::swapped(&rules, &as_saved), errors: Vec::new() };
+    for (f, r) in fields.iter().zip(&rules) {
         let Some(v) = typed.get(&f.key).map(|v| v.trim()).filter(|v| !v.is_empty()) else { continue };
-        if !f.pattern.is_empty() && !matches(&f.pattern, v) {
-            out.errors.push((f.key.clone(), f.pattern_hint.clone()));
-        } else if !f.not_pattern.is_empty() && matches(&f.not_pattern, v) {
-            out.errors.push((f.key.clone(), f.not_pattern_hint.clone()));
+        if let Some(why) = buwiz_protocol::setup::shape_error(r, v) {
+            out.errors.push((f.key.clone(), why));
         }
     }
     out
+}
+
+/// Whether Save may send now: not while a save of the same setup runs,
+/// nor with a check failing; → why not (the caller's card hears it, so it
+/// is never left busy).
+pub fn save_gate(saving: bool, check: &SetupCheck) -> Result<(), String> {
+    if saving {
+        return Err("This setup is being saved already; try again in a moment".to_owned());
+    }
+    check.first().map_or(Ok(()), Err)
 }
 
 /// Swap them: each field with `swap_with` trades its value as it would be
@@ -372,11 +375,18 @@ impl Setup {
             provider: s(v, "provider"),
             ready: v.get("ready").and_then(Value::as_bool).unwrap_or(false),
             fields: list(v, "fields").iter().map(SetupField::of).filter(|f| !f.key.is_empty()).collect(),
+            error: s(v, "error"),
         }
     }
 }
 
 impl SetupField {
+    /// Its checks as the broker's field carries them.
+    fn rules(&self) -> Value {
+        json!({"key": self.key, "pattern": self.pattern, "pattern_hint": self.pattern_hint, "not_pattern": self.not_pattern,
+            "not_pattern_hint": self.not_pattern_hint, "swap_with": self.swap_with, "swap_hint": self.swap_hint})
+    }
+
     pub fn of(v: &Value) -> SetupField {
         SetupField {
             key: s(v, "key"),
@@ -667,10 +677,13 @@ pub enum SigninWait {
 /// `account`'s `label` sign-in as `listed` (None: not read) says it is.
 pub fn signin_wait(listed: Option<&Listed>, account: &str, label: &str) -> SigninWait {
     let Some(p) = listed else { return SigninWait::Waiting };
+    // pending first: signing in again keeps an existing label connected
+    // until the flow ends, and a failed re-sign-in leaves it connected with
+    // the reason
     match p.accounts.iter().find(|a| a.account == account && a.label == label) {
-        Some(a) if a.connected() => SigninWait::Connected,
-        Some(a) if !a.error.is_empty() && !a.pending => SigninWait::Failed(a.error.clone()),
         Some(a) if a.pending => SigninWait::Waiting,
+        Some(a) if !a.error.is_empty() => SigninWait::Failed(a.error.clone()),
+        Some(a) if a.connected() => SigninWait::Connected,
         _ => SigninWait::Gone,
     }
 }
@@ -860,12 +873,18 @@ pub fn release_source(line: &str) -> bool {
 }
 
 /// Add…: a release source ([`release_source`]) fetched and reviewed by the
-/// broker; one the broker can't read as a repository, or a command line,
-/// inspected as a command.
+/// broker; one the broker can't read as a repository, a multi-word line
+/// with no such release, or a command line, inspected as a command.
 pub fn add(b: &dyn Broker, line: &str) -> Result<Review, RoxError> {
     if release_source(line) {
         match host_api::fetch_release(b, line) {
             Err(e) if e.code == "invalid_args" => {}
+            // plain words with no such release ("fx mcp", "node server"): a
+            // command line with arguments; neither: the release's answer
+            Err(e) if e.code == "not_found" && line.trim().contains(char::is_whitespace) => {
+                let Some((env, command, args)) = command_line(line) else { return Err(e) };
+                return inspect(b, &command, &args, env).map_err(|_| e);
+            }
             Ok(v) => {
                 let args: Vec<String> = list(&v, "args").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
                 let env = v.get("env").filter(|e| e.as_object().is_some_and(|o| !o.is_empty())).cloned();
@@ -1062,10 +1081,16 @@ mod tests {
         fn request(&self, method: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, RoxError> {
             self.routes.lock().unwrap().push((format!("{method} {route}"), body.clone().unwrap_or(Value::Null)));
             match route {
-                "/v1/host/plugins/inspect" => Ok(inspect_answer(Value::Null)),
+                "/v1/host/plugins/inspect" => match body.as_ref().and_then(|b| b.get("command")).and_then(Value::as_str) {
+                    Some("nosuch") => Err(RoxError::new("plugin_unavailable", "spawn nosuch: No such file or directory")),
+                    _ => Ok(inspect_answer(Value::Null)),
+                },
+                // as the broker answers: plain words are a name (buwiz-app/<slug>); one with no release, not_found
                 "/v1/host/plugins/fetch" => match body.as_ref().and_then(|b| b.get("source")).and_then(Value::as_str) {
-                    Some("word") => Err(RoxError::new("not_found", "buwiz-app/word has no release yet")),
-                    Some("python3 server") => Err(RoxError::new("invalid_args", "not a GitHub repository")),
+                    Some(n @ ("word" | "fx mcp" | "python3 server" | "nosuch arg")) => {
+                        Err(RoxError::new("not_found", format!("buwiz-app/{} has no release yet", n.replace(' ', "-"))))
+                    }
+                    Some("a.b") => Err(RoxError::new("invalid_args", "not a GitHub repository")),
                     _ => {
                         let mut v = inspect_answer(Value::Null);
                         v["command"] = json!("/data/v1/apps/app.buwiz.fixture/1.1.0/bin/fx");
@@ -1113,9 +1138,19 @@ mod tests {
         assert_eq!(b.routes(), ["POST /v1/host/plugins/fetch"]);
         assert_eq!(add(&b, "word").unwrap_err().message, "buwiz-app/word has no release yet");
         // not a repository to the broker: inspected as a command
+        // a command with plain-word arguments reads as a name too: no such
+        // release, so it is inspected as the command line it is
         let b = Lifecycle::default();
         assert_eq!(add(&b, "python3 server").unwrap().command, "python3");
         assert_eq!(b.routes(), ["POST /v1/host/plugins/fetch", "POST /v1/host/plugins/inspect"]);
+        let r = add(&Lifecycle::default(), "fx mcp").unwrap();
+        assert_eq!((r.command.as_str(), r.args.clone()), ("fx", vec!["mcp".to_owned()]));
+        // neither a release nor a command that starts: the release's word
+        assert_eq!(add(&Lifecycle::default(), "nosuch arg").unwrap_err().message, "buwiz-app/nosuch-arg has no release yet");
+        // a single word with no release stays the name's answer, no spawn
+        let b = Lifecycle::default();
+        assert_eq!(add(&b, "word").unwrap_err().code, "not_found");
+        assert_eq!(b.routes(), ["POST /v1/host/plugins/fetch"]);
         let b = Lifecycle::default();
         add(&b, "node /path/to/plugin.mjs").unwrap();
         assert_eq!(b.routes(), ["POST /v1/host/plugins/inspect"]);
@@ -1380,6 +1415,10 @@ mod tests {
         let ready = Listed::of(&json!({"id": "x.y.z", "setup": [{"provider": "google", "ready": true, "fields": [{"key": "K", "set": true}]}]}));
         assert!(ready.first_missing_setup().is_none() && ready.setup_missing("google").is_none());
         assert!(Listed::of(&json!({"id": "x.y.z"})).setup.is_empty());
+        // a stored value of the wrong shape: not ready, and why
+        let bad = Listed::of(&json!({"id": "x.y.z", "setup": [{"provider": "google", "ready": false, "error": "The saved Google Client ID is not a Client ID. Change it in Setup.", "fields": [{"key": "K", "set": true}]}]}));
+        assert_eq!(bad.setup_missing("google").map(|x| x.error.as_str()), Some("The saved Google Client ID is not a Client ID. Change it in Setup."));
+        assert_eq!(l.setup_missing("google").map(|x| x.error.as_str()), Some(""));
         assert_eq!(SetupField::of(&json!({"key": "K"})).label, "K", "the key labels a field without one");
         assert_eq!((g.fields[0].value.as_str(), g.fields[1].value.as_str()), ("", ""));
         let shown = SetupField::of(&json!({"key": "GOOGLE_CLIENT_ID", "set": true, "value": "cid"}));
@@ -1430,6 +1469,12 @@ mod tests {
         assert_eq!(signin_wait(Some(&at(json!([{"account": "google", "label": "default", "state": "connected"}]))), "google", "default"), SigninWait::Connected);
         let failed = at(json!([{"account": "google", "label": "default", "state": "none", "error": "Sign-in failed: access_denied"}]));
         assert_eq!(signin_wait(Some(&failed), "google", "default"), SigninWait::Failed("Sign-in failed: access_denied".into()));
+        // signing in again to a connected label: wait until its flow ends
+        let again = at(json!([{"account": "google", "label": "default", "state": "connected", "pending": true}]));
+        assert_eq!(signin_wait(Some(&again), "google", "default"), SigninWait::Waiting);
+        // a failed re-sign-in: still connected, with the reason
+        let failed_again = at(json!([{"account": "google", "label": "default", "state": "connected", "error": "Google refused this client. Check the Client ID and Secret."}]));
+        assert_eq!(signin_wait(Some(&failed_again), "google", "default"), SigninWait::Failed("Google refused this client. Check the Client ID and Secret.".into()));
         // refused while the flow still waits: keep waiting
         let refused = at(json!([{"account": "google", "label": "default", "state": "none", "pending": true, "error": "The sign-in answer did not match. Sign in again."}]));
         assert_eq!(signin_wait(Some(&refused), "google", "default"), SigninWait::Waiting);
@@ -1500,6 +1545,10 @@ mod tests {
         swap_typed(&stored, &mut v);
         assert_eq!(v, typed(cid, "GOCSPX-x"));
         assert_eq!(setup_check(&fields, &BTreeMap::new()), SetupCheck::default());
+        // Save sends only when no save of it runs and the checks pass
+        assert_eq!(save_gate(false, &SetupCheck::default()), Ok(()));
+        assert_eq!(save_gate(true, &SetupCheck::default()).unwrap_err(), "This setup is being saved already; try again in a moment");
+        assert!(save_gate(false, &setup_check(&fields, &typed("GOCSPX-x", cid))).unwrap_err().starts_with("The Client ID and Secret look swapped"));
     }
 
     #[test]

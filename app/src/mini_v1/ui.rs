@@ -1381,11 +1381,10 @@ impl Store {
     /// the model); once saved they are cleared here and the list read
     /// again, so its accounts (and Sign in) show. `done` hears the outcome.
     pub fn v1_save_setup(&'static self, plugin: &str, fields: Vec<connect::SetupField>, done: impl FnOnce(Result<(), String>) + 'static) {
-        if self.v1.setup_saving.with_untracked(|s| s.contains(plugin)) {
-            return;
-        }
-        // the shapes first: a swap or a wrong shape never leaves the app
-        if let Some(why) = self.v1.setup_vals.with_untracked(|v| connect::setup_check(&fields, v).first()) {
+        // a save of it running, or a swap or wrong shape: never sent, and the
+        // caller hears why (a card that ran start() is never left busy)
+        let saving = self.v1.setup_saving.with_untracked(|s| s.contains(plugin));
+        if let Err(why) = self.v1.setup_vals.with_untracked(|v| connect::save_gate(saving, &connect::setup_check(&fields, v))) {
             return done(Err(why));
         }
         let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();

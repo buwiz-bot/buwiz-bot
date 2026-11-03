@@ -345,6 +345,8 @@ pub struct AccountRequiredNotice {
     /// The setup's fields the broker said it lacked when it posted the
     /// card (no values); empty when it lacked none.
     pub setup: Vec<crate::mini_v1::connect::SetupField>,
+    /// Why the stored setup is no good, as the card was posted ("" none).
+    pub setup_error: String,
 }
 
 impl AccountRequiredNotice {
@@ -370,7 +372,18 @@ impl AccountRequiredNotice {
                 .map(crate::mini_v1::connect::SetupField::of)
                 .filter(|f| !f.key.is_empty())
                 .collect(),
+            setup_error: v.get("setup").map(|x| s(x, "error")).unwrap_or_default(),
         })
+    }
+
+    /// Why the setup it asks for is no good (a stored value of the wrong
+    /// shape): the plugin list's word when it lists the plugin, else the
+    /// card's own; "" none.
+    pub fn setup_error(&self, listed: Option<&crate::mini_v1::connect::Listed>) -> String {
+        match listed {
+            Some(p) => p.setup_missing(&self.provider).map(|x| x.error.clone()).unwrap_or_default(),
+            None => self.setup_error.clone(),
+        }
     }
 
     /// The fields the card asks for before Sign in, None once the setup is
@@ -508,7 +521,12 @@ impl AppSetupNotice {
 
     /// "Google client", what it changes.
     pub fn what(&self) -> String {
-        if self.provider == "google" { "Google client".to_owned() } else { "Setup".to_owned() }
+        buwiz_protocol::setup::setup_name(&self.provider)
+    }
+
+    /// Why the stored setup is no good, from the plugin list ("" none).
+    pub fn error_from(&self, listed: Option<&crate::mini_v1::connect::Listed>) -> String {
+        listed.and_then(|p| p.setup.iter().find(|x| x.provider == self.provider)).map(|x| x.error.clone()).unwrap_or_default()
     }
 
     /// The fields to show: the plugin list's (with the Client ID to prefill)
@@ -523,6 +541,7 @@ impl AppSetupNotice {
         match local.unwrap_or(&self.state) {
             "saved" => Some(format!("{} · Saved", self.what())),
             "cancelled" => Some(format!("{} · Not changed", self.what())),
+            "removed" => Some(format!("{} · Removed", self.what())),
             _ => None,
         }
     }
@@ -8719,6 +8738,10 @@ mod tests {
         assert_eq!(n.answered(None), None, "it asks");
         assert_eq!(n.answered(Some("saved")).as_deref(), Some("Google client · Saved"));
         assert_eq!(n.answered(Some("cancelled")).as_deref(), Some("Google client · Not changed"));
+        assert_eq!(n.answered(Some("removed")).as_deref(), Some("Google client · Removed"), "settled by a Remove");
+        let bad = Listed::of(&serde_json::json!({"id": "app.buwiz.google-workspace", "setup": [{"provider": "google", "ready": false, "error": "The saved Google Client ID is not a Client ID. Change it in Setup.", "fields": [{"key": "K"}]}]}));
+        assert_eq!(n.error_from(Some(&bad)), "The saved Google Client ID is not a Client ID. Change it in Setup.");
+        assert_eq!(n.error_from(None), "");
         assert_eq!(super::AppSetupNotice { state: "saved".into(), ..n.clone() }.answered(None).as_deref(), Some("Google client · Saved"));
         // the list's fields prefill the Client ID; the card's own without it
         let listed = Listed::of(&serde_json::json!({"id": "app.buwiz.google-workspace", "setup": [{"provider": "google", "ready": true,
@@ -8742,6 +8765,12 @@ mod tests {
         let n = t.account_required.expect("a setup card");
         assert_eq!(n.setup.iter().map(|f| (f.key.as_str(), f.secret)).collect::<Vec<_>>(), [("GOOGLE_CLIENT_ID", false), ("GOOGLE_CLIENT_SECRET", true)]);
         assert_eq!(n.setup_question(), "Add your Google client to use Google Workspace");
+        assert_eq!(n.setup_error(None), "", "the card was posted with no stored value wrong");
+        let card_err = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google", "provider": "google",
+            "setup": {"provider": "google", "error": "The saved Google Client ID is not a Client ID. Change it in Setup.", "fields": [{"key": "K"}]}}})).account_required.unwrap();
+        assert_eq!(card_err.setup_error(None), "The saved Google Client ID is not a Client ID. Change it in Setup.");
+        let listed_bad = Listed::of(&serde_json::json!({"id": "x.y.z", "setup": [{"provider": "google", "ready": false, "error": "Listed reason", "fields": [{"key": "K"}]}]}));
+        assert_eq!(card_err.setup_error(Some(&listed_bad)), "Listed reason", "the list's word wins");
         // not listed (yet): the card's own fields until it saved them
         assert_eq!(n.setup_fields(None, false).map(|f| f.len()), Some(2));
         assert_eq!(n.setup_fields(None, true), None, "saved here: Sign in next");

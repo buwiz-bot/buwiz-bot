@@ -3584,9 +3584,7 @@ pub fn v1_setup_inputs(fields: &[crate::mini_v1::connect::SetupField]) -> View {
 }
 
 /// What a setup is called on its row ("Google client").
-fn setup_name(provider: &str) -> String {
-    if provider == "google" { "Google client".to_owned() } else { "Setup".to_owned() }
-}
+use buwiz_protocol::setup::setup_name;
 
 /// A saved setup's row: "Google client · saved", Change (its fields open
 /// above the accounts) and Remove, confirmed in place.
@@ -3646,6 +3644,10 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing
     let mut col = view().gap(px(14.0)).px(px(14.0)).py(px(12.0)).child(
         text(crate::mini_v1::connect::setup_intro(&setup.provider, editing)).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()),
     );
+    // a stored value of the wrong shape: why the setup is asked for again
+    if !setup.error.is_empty() {
+        col = col.child(text(setup.error.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()));
+    }
     col = col.child(v1_setup_inputs(&setup.fields));
     let fields = setup.fields.clone();
     let err = st.v1.setup_err.get().get(plugin).cloned().unwrap_or_default();

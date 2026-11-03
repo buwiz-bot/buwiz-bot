@@ -1292,6 +1292,11 @@ fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate
     let mut c = app_card_frame(n.setup_question())
         .child(text(n.setup_question()).text_size(px(13.0)).text_color(theme::TEXT))
         .child(text(crate::mini_v1::connect::setup_intro(&n.provider, false)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+    // a stored value of the wrong shape: why it asks again
+    let why = n.setup_error(store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned()).as_ref());
+    if !why.is_empty() {
+        c = c.child(text(why).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(3));
+    }
     c = c.child(crate::plugins::v1_setup_inputs(&fields));
     let fields2 = fields.clone();
     let (ch1, ch2, p1, p2) = (chat.clone(), chat, n.plugin.clone(), n.plugin.clone());
@@ -1460,6 +1465,10 @@ fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl 
         let mut c = app_card_frame(question.clone())
             .child(text(question).text_size(px(13.0)).text_color(theme::TEXT))
             .child(text(crate::mini_v1::connect::setup_intro(&n.provider, change)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+        let why = n.error_from(listed.as_ref());
+        if !why.is_empty() {
+            c = c.child(text(why).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(3));
+        }
         c = c.child(crate::plugins::v1_setup_inputs(&fields));
         let fields2 = fields.clone();
         let (ch1, ch2, p1, p2) = (chat.clone(), chat.clone(), n.plugin.clone(), n.plugin.clone());
