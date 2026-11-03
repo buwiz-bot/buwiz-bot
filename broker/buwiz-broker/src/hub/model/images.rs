@@ -176,6 +176,42 @@ pub async fn edit_image(settings: &Settings, local: &dyn LocalTools, src: &Path,
     Ok("chatgpt".to_owned())
 }
 
+/// avatar-design.mjs `editAvatarImage(src, prompt, out)`: the opencodex
+/// image relay first, then Gemini's image model when a key is configured.
+pub async fn edit_avatar_image(settings: &Settings, local: &dyn LocalTools, src: &Path, prompt: &str, out: &Path) -> Result<String, String> {
+    let mut errs: Vec<String> = Vec::new();
+    match edit_image(settings, local, src, prompt, out, "1024x1024").await {
+        Ok(v) => return Ok(v),
+        Err(e) => errs.push(format!("opencodex: {e}")),
+    }
+    let gem = key_of(local, "GEMINI_API_KEY").await;
+    if !gem.is_empty() {
+        let tried: Result<Option<String>, String> = async {
+            let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+            let body = json!({
+                "contents": [{ "parts": [{ "text": prompt }, { "inlineData": { "mimeType": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(bytes) } }] }],
+                "generationConfig": { "responseModalities": ["IMAGE"], "imageConfig": { "aspectRatio": "1:1" } },
+            });
+            let (_, text) = post_json(&format!("{GEMINI}?key={gem}"), &[("content-type", "application/json")], &body).await?;
+            let j: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            let data = j.pointer("/candidates/0/content/parts").and_then(Value::as_array).and_then(|ps| ps.iter().find_map(|p| p.get("inlineData").filter(|d| crate::js::truthy(d)))).and_then(|d| d.get("data")).filter(|d| crate::js::truthy(d)).map(crate::js::string_of);
+            match data {
+                Some(d) => {
+                    save_png(local, out, &d).await?;
+                    Ok(None)
+                }
+                None => Ok(Some(error_or(Some(&j), "no image".to_owned()))),
+            }
+        }
+        .await;
+        match tried {
+            Ok(None) => return Ok("gemini".to_owned()),
+            Ok(Some(e)) | Err(e) => errs.push(format!("gemini: {e}")),
+        }
+    }
+    Err(format!("no image model could draw it ({})", errs.join("; ")))
+}
+
 /// `generateImage`'s options.
 #[derive(Clone, Debug)]
 pub struct ImageOpts {

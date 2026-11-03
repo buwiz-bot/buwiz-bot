@@ -303,7 +303,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                 ),
                 "prompt" => st.group_prompt.set(Some(crate::store::GroupPrompt::New(None))),
                 "plus" => crate::composer::plus_menu().set(Some((140.0, 620.0))),
-                "bot" => st.bot_modal.set(true),
+                "bot" => st.open_bot_modal(),
                 "palette" => st.palette.set(true),
                 o if o.starts_with("appdetails:") => st.open_app_details(&o["appdetails:".len()..]),
                 "lightbox" => st.open_lightbox(

@@ -17,6 +17,7 @@ mod bodies;
 #[cfg(test)]
 mod brand;
 mod clips;
+mod custom;
 mod paint;
 mod render;
 mod rest_data;
@@ -31,6 +32,8 @@ pub(crate) use paint::{
     draw_fx, gaze_advance, gaze_set, paint_rest, paint_tree, rest_bytes, GazeState,
 };
 pub(crate) use render::{uh, MarkTree, PaintOpts, UhSize};
+pub(crate) use custom::custom_body;
+pub(crate) use custom::rich_body;
 
 #[allow(unused_imports)]
 pub(crate) use clips::STATES;
@@ -2602,7 +2605,8 @@ impl Director {
 // public tables
 // ---------------------------------------------------------------------------
 
-/// `YN` — a user-facing shape name to the internal body.
+/// `YN` — a user-facing shape name to the internal body (a registered
+/// [`custom_body`] name maps to itself).
 pub(crate) fn yn(e: &str) -> &'static str {
     match e {
         "blob" => "sphere",
@@ -2622,7 +2626,8 @@ pub(crate) fn yn(e: &str) -> &'static str {
         "house" => "house",
         "star6" => "star6",
         "hex" => "hex",
-        _ => "sphere",
+        // a name `custom_body` returned (on this thread)
+        _ => custom::interned(e).unwrap_or("sphere"),
     }
 }
 

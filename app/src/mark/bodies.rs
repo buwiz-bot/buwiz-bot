@@ -17,12 +17,13 @@ use std::rc::Rc;
 
 use super::atlas_data::{AtlasEntry, ATLAS, ATLAS_K, ATLAS_STEP};
 use super::clips::HEART_OUTLINE;
+use super::custom::{self, BakedNodes};
 use super::{Eye, V2, V3};
 
 /// `x` — every body path lives in a 228.5px box centered here.
 pub(crate) const X: f64 = 114.2705;
 const TAU: f64 = std::f64::consts::PI * 2.0;
-const BV: f64 = 228.44;
+pub(super) const BV: f64 = 228.44;
 
 fn te(e: f64) -> f64 {
     (e * 100.0).round() / 100.0
@@ -396,7 +397,7 @@ fn dv_path(e: f64, t: f64, n: f64) -> String {
 }
 
 /// `us` — the path-string parser/sampler: flattens `d` to points every ≤`t`px.
-fn us(e: &str, t: f64) -> Vec<V2> {
+pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
     // JS tokenizes `/[MLCQZmlcqz]|-?\d*\.?\d+(?:e[-+]?\d+)?/g`.
     let mut toks: Vec<String> = Vec::new();
     let b = e.as_bytes();
@@ -718,7 +719,7 @@ fn qv(e: &str, t: f64, n: f64, r: f64) -> String {
 }
 
 /// `Hv` — normalization (scale to `Bv`, recenter).
-fn hv(e: &[V2]) -> (f64, f64, f64) {
+pub(super) fn hv(e: &[V2]) -> (f64, f64, f64) {
     let (mut t, mut n, mut r, mut o) = (
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -771,8 +772,17 @@ impl Outline {
 }
 
 /// `hc` — bake an outline record from path data.
-fn hc(e: &str) -> Outline {
-    let t = vv_norm(e, &us(e, 4.0));
+pub(super) fn hc(e: &str) -> Outline {
+    outline_of(vv_norm(e, &us(e, 4.0)))
+}
+
+/// `hc` without `Vv`'s recentring: a part of a multi-part body keeps the
+/// place its shared frame gives it.
+pub(super) fn hc_raw(e: &str) -> Outline {
+    outline_of(e.to_owned())
+}
+
+fn outline_of(t: String) -> Outline {
     let n = us(&t, 4.0);
     let z = zv(&n, 160);
     let mut a = 0.0f64;
@@ -834,7 +844,10 @@ thread_local! {
 }
 
 /// `Zr` — the cached outline of a named body.
-fn zr_outline(e: &'static str) -> Rc<Outline> {
+pub(super) fn zr_outline(e: &'static str) -> Rc<Outline> {
+    if let Some(body) = custom::find(e) {
+        return body.outline.clone();
+    }
     ZL_CACHE.with(|c| {
         c.borrow_mut()
             .entry(e)
@@ -980,7 +993,7 @@ fn kh(e: &'static str) -> Rc<dyn Fn(f64) -> f64> {
 }
 
 /// `Jt` — an outline ring as normalized 3D points (z=0).
-fn jt(e: &[V2]) -> Vec<V3> {
+pub(super) fn jt(e: &[V2]) -> Vec<V3> {
     e.iter()
         .map(|&[t, n]| [(t - X) / X, -(n - X) / X, 0.0])
         .collect()
@@ -1218,13 +1231,13 @@ fn hn(e: f64, face_z: f64) -> BodyInfo {
 }
 
 /// `sS`/`iS` — the loft: lathed rings from a 2D ring + the surface function.
-struct LoftRings {
-    rings: Vec<Vec<V3>>,
+pub(super) struct LoftRings {
+    pub rings: Vec<Vec<V3>>,
     center: V2,
     depth: f64,
 }
 
-fn ss(e: &[V3], t: f64) -> LoftRings {
+pub(super) fn ss(e: &[V3], t: f64) -> LoftRings {
     const ZL: usize = 160;
     const DL: usize = 16;
     const HH: f64 = 0.72;
@@ -1447,7 +1460,7 @@ fn body_info(e: &str) -> Option<BodyInfo> {
         }
         "house" => hn(1.17, UV),
         "star6" => hn(1.4976, 0.3),
-        _ => return None,
+        _ => return custom::find(e).map(|b| hl(b.size, b.loft_points.clone(), b.depth)),
     })
 }
 
@@ -1481,8 +1494,8 @@ pub(crate) struct Rot {
 }
 
 const AS: f64 = 0.2; // `aS`
-const CS: f64 = 0.36; // `cS`
-const US: f64 = 1.18; // `uS`
+pub(super) const CS: f64 = 0.36; // `cS`
+pub(super) const US: f64 = 1.18; // `uS`
 
 /// `pc` — the projection radius of a body at display size `t`.
 fn pc(e: &BodyInfo, t: f64) -> f64 {
@@ -1811,15 +1824,15 @@ pub(crate) struct EyeLoops {
     pub shift_y: f64,
 }
 
-struct AvEye {
-    width: f64,
-    height: f64,
-    gap: f64,
-    shift_y: f64,
+pub(super) struct AvEye {
+    pub width: f64,
+    pub height: f64,
+    pub gap: f64,
+    pub shift_y: f64,
 }
 
 /// `av` — per-body eye box metrics.
-fn av(e: &str) -> Option<AvEye> {
+pub(super) fn av(e: &str) -> Option<AvEye> {
     let (width, height, gap, shift_y) = match e {
         "cloud" => (0.21294, 0.46683, 0.470016, 0.07),
         "square" => (0.2553258426966292, 0.559752808988764, 0.529408, 0.12),
@@ -1845,7 +1858,15 @@ fn av(e: &str) -> Option<AvEye> {
         "dome" => (0.2132, 0.4674, 0.47872, 0.10599813600185524),
         "arch" => (0.1924, 0.4218, 0.448, 0.16),
         "leaf" => (0.1872, 0.4104, 0.448, 0.04),
-        _ => return None,
+        _ => {
+            let b = custom::find(e)?;
+            let rich = custom::rich(e);
+            let eye = rich
+                .as_ref()
+                .and_then(|r| r.eye_box.as_ref())
+                .map_or(&b.eyes, |(eye, _)| eye);
+            (eye.width, eye.height, eye.gap, eye.shift_y)
+        }
     };
     Some(AvEye {
         width,
@@ -2267,7 +2288,7 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
     let r = n.width / OV;
     let o = n.height / SV;
     let s = n.gap / IS;
-    if t.iter()
+    let mut loops = if t.iter()
         .all(|a| lc(a) && a.fill_ring.as_ref().is_none_or(|r| r.is_empty()))
     {
         let e0 = ml(&t[0]);
@@ -2278,7 +2299,16 @@ pub(crate) fn cv(e: &str, t: &[Eye; 2]) -> EyeLoops {
             loops: lv_eyes(t, r, s, o, n.shift_y),
             shift_y: 0.0,
         }
+    };
+    if let Some(b) = custom::find(e) {
+        let x = custom::rich(e)
+            .and_then(|r| r.eye_box.as_ref().map(|(_, x)| *x))
+            .unwrap_or(b.eye_x);
+        for p in loops.loops.iter_mut().flatten() {
+            p[0] += x;
+        }
     }
+    loops
 }
 
 /// `gc` — loops as `M..Z` path data.
@@ -2310,6 +2340,24 @@ pub(crate) struct Atlas {
     pub step: f64,
     pub k: usize,
     pub bytes: Vec<u8>,
+    /// A custom body's nodes, solved on first use (`bytes` is then empty).
+    pub baked: Option<BakedNodes>,
+}
+
+impl Atlas {
+    /// Node `index`'s `k + 2` values in byte units: center x/y, then radii.
+    pub(super) fn node(&self, index: usize) -> Rc<[f64]> {
+        match &self.baked {
+            Some(b) => b.node(index),
+            None => {
+                let base = index * (self.k + 2);
+                self.bytes[base..base + self.k + 2]
+                    .iter()
+                    .map(|&b| b as f64)
+                    .collect()
+            }
+        }
+    }
 }
 
 /// `atob` — base64 decode (the `A-Za-z0-9+/` alphabet, `=` padding).
@@ -2346,11 +2394,15 @@ fn decode_atlas(entry: &AtlasEntry, step: f64, k: usize) -> Atlas {
         step,
         k,
         bytes: b64(entry.r),
+        baked: None,
     }
 }
 
 /// The decoded atlas for a body (`atlases` cache, `null` when none).
-fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
+pub(super) fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
+    if let Some(b) = custom::find(body) {
+        return Some(b.atlas.clone());
+    }
     ATLAS_CACHE.with(|c| {
         if let Some(a) = c.borrow().get(body) {
             return a.clone();
@@ -2365,7 +2417,7 @@ fn atlas_of(body: &'static str) -> Option<Rc<Atlas>> {
 }
 
 /// `rows` — `yS`'s rotation at roll 0 as rows (x,y,view axes).
-fn rows(yaw: f64, pitch: f64) -> [f64; 9] {
+pub(super) fn rows(yaw: f64, pitch: f64) -> [f64; 9] {
     let cy = yaw.cos();
     let sy = yaw.sin();
     let cp = pitch.cos();
@@ -2418,16 +2470,17 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
         let phi = (ax * r[3] + ay * r[4] + az * r[5])
             .atan2(ax * r[0] + ay * r[1] + az * r[2]);
         let flip = a.mirror && node_yaw < 0.0;
-        let base = (row as usize * cols
-            + if a.mirror {
-                (node_yaw.abs() / step).round() as usize
-            } else {
-                jj as usize
-            })
-            * (kk + 2);
-        let ncx = (a.bytes[base] as f64 / 255.0 * 2.0 - 1.0) * a.c
+        let node = a.node(
+            row as usize * cols
+                + if a.mirror {
+                    (node_yaw.abs() / step).round() as usize
+                } else {
+                    jj as usize
+                },
+        );
+        let ncx = (node[0] / 255.0 * 2.0 - 1.0) * a.c
             * if flip { -1.0 } else { 1.0 };
-        let ncy = (a.bytes[base + 1] as f64 / 255.0 * 2.0 - 1.0) * a.c;
+        let ncy = (node[1] / 255.0 * 2.0 - 1.0) * a.c;
         cx += w * (ncx * phi.cos() + ncy * phi.sin());
         cy += w * (ncy * phi.cos() - ncx * phi.sin());
         for (i, radius) in radii.iter_mut().enumerate() {
@@ -2441,8 +2494,7 @@ fn atlas_outline(a: &Atlas, n: f64, yaw: f64, pitch: f64, roll: f64) -> String {
             }
             let i0 = (f.floor() as usize) % kk;
             let fr = f - f.floor();
-            *radius += w * (a.bytes[base + 2 + i0] as f64 * (1.0 - fr)
-                + a.bytes[base + 2 + (i0 + 1) % kk] as f64 * fr);
+            *radius += w * (node[2 + i0] * (1.0 - fr) + node[2 + (i0 + 1) % kk] * fr);
         }
     }
     let c = n / 2.0;
@@ -2474,19 +2526,203 @@ pub(crate) fn im(body: &'static str, rot: &Rot, n: f64) -> Vec<String> {
     }
 }
 
+/// A body point (body units) after a pose's rotation: x right, y up, z
+/// toward the viewer.
+pub(crate) fn view(rot: &Rot, p: V3) -> V3 {
+    ys(
+        rot.yaw * std::f64::consts::PI / 180.0,
+        rot.pitch * std::f64::consts::PI / 180.0,
+        rot.roll * std::f64::consts::PI / 180.0,
+    )(p)
+}
+
+/// The projection radius (sprite px per body unit) of a body at sprite
+/// size `n`.
+pub(crate) fn sprite_radius(body: &'static str, n: f64) -> f64 {
+    cs(body).map_or(0.0, |info| pc(&info, n))
+}
+
+/// A rich body's decal loops (body units on its front, y up) lifted onto
+/// the loft surface and projected with the eyes' projector, in sprite
+/// space. Where a loop runs onto the part of the front turned away from the
+/// viewer, or off the body, it is cut at the limb (the facing boundary) or
+/// the rim, so back-facing paint never shows; a loop wholly turned away is
+/// dropped.
+pub(crate) fn decal_loops(body: &'static str, rot: &Rot, n: f64, loops: &[Vec<V2>], off: &[Vec<bool>]) -> Vec<Vec<V2>> {
+    let Some(info) = cs(body) else {
+        return vec![];
+    };
+    let Some(Seat::Loft { surface_z }) = &info.seat else {
+        return vec![];
+    };
+    let pr = xh(&info, rot, n);
+    const H: f64 = 0.004;
+    // a point's surface position and how much its normal faces the viewer
+    let lift = |p: V2| -> (V2, f64) {
+        let z = surface_z(p[0], p[1]);
+        let dx = (surface_z(p[0] + H, p[1]) - surface_z(p[0] - H, p[1])) / (2.0 * H);
+        let dy = (surface_z(p[0], p[1] + H) - surface_z(p[0], p[1] - H)) / (2.0 * H);
+        let g = (dx * dx + dy * dy + 1.0).sqrt();
+        let facing = (pr.rotate)([-dx / g, -dy / g, 1.0 / g])[2];
+        (pr.project([p[0], p[1], z]), facing)
+    };
+    let mut out = Vec::new();
+    for (l, off) in loops.iter().zip(off) {
+        // a point off the body (a layer drawn past the outline) counts as
+        // turned away, so its loop is cut at the rim instead of lying flat
+        let lifted: Vec<(V2, f64)> = l
+            .iter()
+            .zip(off)
+            .map(|(&p, &off)| {
+                let (q, f) = lift(p);
+                (q, if off { -1.0 } else { f })
+            })
+            .collect();
+        let Some(start) = lifted.iter().position(|(_, f)| *f > 0.0) else {
+            continue;
+        };
+        let m = l.len();
+        let mut ring: Vec<V2> = Vec::with_capacity(m);
+        // where the loop last went behind the limb (in front coordinates)
+        let mut exit: Option<V2> = None;
+        for k in 0..m {
+            let i = (start + k) % m;
+            let j = (i + 1) % m;
+            let (fa, fb) = (lifted[i].1, lifted[j].1);
+            if fa > 0.0 {
+                ring.push(lifted[i].0);
+            }
+            if (fa > 0.0) != (fb > 0.0) {
+                let t = fa / (fa - fb);
+                let c = [l[i][0] + (l[j][0] - l[i][0]) * t, l[i][1] + (l[j][1] - l[i][1]) * t];
+                match exit.take() {
+                    None if fa > 0.0 => {
+                        ring.push(lift(c).0);
+                        exit = Some(c);
+                    }
+                    Some(e) => {
+                        // follow the limb back: along the chord between the
+                        // two crossings, each point that isn't on the
+                        // visible front is pulled in toward the dome's top
+                        // (the body centre, visible in every pose that
+                        // shows the front) to where the front comes into
+                        // view: the limb or the rim
+                        let visible = |q: V2| surface_z(q[0], q[1]) > 1e-9 && lift(q).1 > 0.0;
+                        let steps = ((c[0] - e[0]).hypot(c[1] - e[1]) / 0.03).ceil() as usize;
+                        for s in 1..steps {
+                            let t = s as f64 / steps as f64;
+                            let q = [e[0] + (c[0] - e[0]) * t, e[1] + (c[1] - e[1]) * t];
+                            let q = if visible(q) {
+                                q
+                            } else {
+                                let (mut lo, mut hi) = (0.0f64, 1.0f64);
+                                for _ in 0..12 {
+                                    let m = (lo + hi) / 2.0;
+                                    if visible([q[0] * (1.0 - m), q[1] * (1.0 - m)]) {
+                                        hi = m;
+                                    } else {
+                                        lo = m;
+                                    }
+                                }
+                                [q[0] * (1.0 - hi), q[1] * (1.0 - hi)]
+                            };
+                            ring.push(lift(q).0);
+                        }
+                        ring.push(lift(c).0);
+                    }
+                    None => ring.push(lift(c).0),
+                }
+            }
+        }
+        if ring.len() >= 3 {
+            out.push(ring);
+        }
+    }
+    out
+}
+
 /// `$h`'s output: the body sprite path(s) + the eye paths.
 pub(crate) struct ShOut {
     pub body: Vec<String>,
     pub eyes: Vec<String>,
+    /// A rich body's eye rims (empty for every other body).
+    pub rims: Vec<String>,
+}
+
+/// A closed loop moved `d` outward along its vertex normals (the eye
+/// loops are small and smooth, so this stays clean).
+fn outset(l: &[V2], d: f64) -> Vec<V2> {
+    let n = l.len();
+    if n < 3 {
+        return l.to_vec();
+    }
+    let area: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (l[i], l[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let side = if area >= 0.0 { 1.0 } else { -1.0 };
+    (0..n)
+        .map(|i| {
+            let (a, b) = (l[(i + n - 1) % n], l[(i + 1) % n]);
+            let (tx, ty) = (b[0] - a[0], b[1] - a[1]);
+            let len = tx.hypot(ty).max(1e-12);
+            // outward of a counter-clockwise loop is the tangent turned right
+            [l[i][0] + ty / len * d * side, l[i][1] - tx / len * d * side]
+        })
+        .collect()
 }
 
 /// `$h` — the raster step of `EM`/`PM`: sprite-space body + eye paths.
 pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye; 2]>) -> ShOut {
+    let mut rims = vec![];
     let o = match eyes {
         Some(r) => {
             let info = cs(body);
             match info {
-                Some(info) => gs(&info, rot, n, &cv(body, r)),
+                Some(info) => {
+                    // a rich body's shut eye: always the closed lid of the
+                    // resting eye, wherever gaze moves the open one (an
+                    // expression that widens the eyes doesn't fatten it)
+                    let shut = custom::rich(body).and_then(|rich| rich.shut);
+                    let shut_eyes;
+                    let r = match shut {
+                        Some(i) => {
+                            let mut e = r.clone();
+                            let mut rest = super::Face::new().eyes()[i].clone();
+                            rest.off = e[i].off;
+                            e[i] = super::cl(&rest, 1.0);
+                            shut_eyes = e;
+                            &shut_eyes
+                        }
+                        None => r,
+                    };
+                    let mut loops = cv(body, r);
+                    // a rich body's eyes under an over-layer are not drawn
+                    if let Some(hidden) = custom::rich(body).map(|rich| rich.hidden)
+                        && hidden.iter().any(|h| *h)
+                    {
+                        let mid = loops.loops.iter().flatten().map(|p| p[0]).sum::<f64>()
+                            / loops.loops.iter().map(|l| l.len()).sum::<usize>().max(1) as f64;
+                        for l in &mut loops.loops {
+                            let x = l.iter().map(|p| p[0]).sum::<f64>() / l.len().max(1) as f64;
+                            if hidden[if x < mid { 0 } else { 1 }] {
+                                l.clear();
+                            }
+                        }
+                    }
+                    // a rich body's rims: each eye loop grown outward,
+                    // seated and projected exactly like the eye
+                    if let Some((_, d)) = custom::rich(body).and_then(|r| r.rim.clone()) {
+                        let grown = EyeLoops {
+                            loops: loops.loops.iter().map(|l| outset(l, d)).collect(),
+                            shift_y: loops.shift_y,
+                        };
+                        rims = gs(&info, rot, n, &grown);
+                    }
+                    gs(&info, rot, n, &loops)
+                }
                 None => vec![],
             }
         }
@@ -2495,5 +2731,6 @@ pub(crate) fn dollar_h(body: &'static str, rot: &Rot, n: f64, eyes: Option<&[Eye
     ShOut {
         body: im(body, rot, n),
         eyes: o.iter().map(|s| gc(std::slice::from_ref(s))).collect(),
+        rims: rims.iter().map(|s| gc(std::slice::from_ref(s))).collect(),
     }
 }

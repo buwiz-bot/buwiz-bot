@@ -189,8 +189,43 @@ impl BlobEdit {
 // `BotBlob`
 // ---------------------------------------------------------------------------
 
-/// `BotBlobProps` — `shape` is the picker name (`blob`, `cloud`, …),
-/// `state` a `STATES` name, `paused` pins the resting pose.
+/// A designed body's shape string: `outline:` then its SVG path data (the
+/// broker's `shape: "custom"` + `outline`, folded into one string so every
+/// place that passes a shape around carries the outline with it).
+pub(crate) const OUTLINE: &str = "outline:";
+
+/// A rich (multi-colour) body's shape string: `rich:` then its recipe as
+/// compact JSON `{"o": outline, "c": shell, "l": [[path, fill, opacity]],
+/// "e": eyes}` (`mark::rich_body`). Its colours are its own: the colour
+/// picker doesn't apply.
+pub(crate) const RICH: &str = "rich:";
+
+/// The mark body for a shape string: a picker name, or `outline:<path>`
+/// (registered once; a path the engine can't use draws the ball).
+pub(crate) fn body_of(shape: &str) -> &'static str {
+    if let Some(recipe) = shape.strip_prefix(RICH) {
+        return mark::rich_body(recipe).unwrap_or("sphere");
+    }
+    match shape.strip_prefix(OUTLINE) {
+        Some(path) => mark::custom_body(path).unwrap_or("sphere"),
+        None => mark::yn(shape),
+    }
+}
+
+/// Whether the engine can draw `shape` as itself.
+pub(crate) fn drawable(shape: &str) -> bool {
+    if let Some(recipe) = shape.strip_prefix(RICH) {
+        return mark::rich_body(recipe).is_ok();
+    }
+    match shape.strip_prefix(OUTLINE) {
+        Some(path) => mark::custom_body(path).is_ok(),
+        None => mark::BOT_SHAPES.contains(&shape),
+    }
+}
+
+/// `BotBlobProps` — `shape` is the picker name (`blob`, `cloud`, …) or
+/// `outline:<path>`, `state` a `STATES` name, `paused` pins the resting
+/// pose.
 pub(crate) struct BotBlobProps {
     pub shape: String,
     pub color: String,
@@ -256,7 +291,7 @@ struct Inner {
 
 impl Inner {
     fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
-        let body = mark::yn(&props.shape);
+        let body = body_of(&props.shape);
         let seed = props
             .seed
             .as_deref()
@@ -309,7 +344,7 @@ impl Inner {
         let now = Instant::now();
         let mut dirty = false;
         if props.shape != self.last_shape {
-            self.mark.set_body(mark::yn(&props.shape), false);
+            self.mark.set_body(body_of(&props.shape), false);
             if props.morph_shape {
                 self.grace_until = now + Duration::from_millis(1400);
             }
@@ -645,4 +680,63 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
                 .scale(move || 0.6 + 0.4 * zp3(i))
                 .into_element()
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{body_of, drawable, OUTLINE};
+    use crate::store::{body_fields, body_shape};
+
+    const CAT: &str = "M16 46L20 10L40 27Q50 24 60 27L80 10L84 46Q90 62 84 75Q72 92 50 92Q28 92 16 75Q10 62 16 46Z";
+
+    #[test]
+    fn a_designed_outline_round_trips_between_the_broker_and_the_app() {
+        let shape = body_shape("custom", CAT);
+        assert_eq!(shape, format!("{OUTLINE}{CAT}"));
+        assert_eq!(body_fields(&shape), serde_json::json!({"shape": "custom", "outline": CAT}));
+        assert_eq!(body_fields("heart"), serde_json::json!({"shape": "heart"}));
+        assert_eq!(body_shape("heart", ""), "heart");
+        assert_eq!(body_shape("custom", ""), "blob");
+        assert_eq!(body_shape("", ""), "blob");
+    }
+
+    #[test]
+    fn a_rich_design_round_trips_and_draws_its_own_body() {
+        use crate::store::shape_of;
+        let v = serde_json::json!({
+            "shape": "custom", "outline": CAT, "color": "#F08A24", "eyes": "#2B1D12",
+            "layers": [{"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3"}],
+        });
+        let shape = shape_of(&v);
+        assert!(shape.starts_with(super::RICH), "{shape}");
+        assert!(drawable(&shape));
+        let body = body_of(&shape);
+        assert!(body.starts_with("rich:"), "{body}");
+        assert_eq!(shape_of(&body_fields(&shape)), shape, "fields → shape is the same design");
+        // with extra 3D parts (a hat), and placed eyes, the round trip holds
+        let mut with_parts = v.clone();
+        with_parts["eyes"] = serde_json::json!({"c": "#111111", "at": [50, 64], "gap": 24, "s": 1.2, "rim": "#FFFFFF", "rw": 0.6});
+        with_parts["parts"] = serde_json::json!([{"outline": CAT, "color": "#F2C062", "z": 0.1, "d": 1.1,
+            "layers": [{"path": "M30 20 L70 20 L70 27 L30 27 Z", "fill": "#E0393A", "opacity": 1.0}]}]);
+        with_parts["layers"] = serde_json::json!([{"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3", "opacity": 1.0, "over": true}]);
+        with_parts["eyes"]["shut"] = "r".into();
+        let shape = shape_of(&with_parts);
+        assert!(shape.contains("\"p\":"), "{shape}");
+        assert_eq!(shape_of(&body_fields(&shape)), shape);
+        // no layers: the plain outline
+        assert_eq!(shape_of(&serde_json::json!({"shape": "custom", "outline": CAT})), format!("{OUTLINE}{CAT}"));
+    }
+
+    #[test]
+    fn a_designed_outline_draws_its_own_body_and_a_bad_one_draws_the_ball() {
+        let shape = format!("{OUTLINE}{CAT}");
+        assert!(drawable(&shape));
+        let body = body_of(&shape);
+        assert_ne!(body, "sphere");
+        assert_eq!(body_of(&shape), body);
+        assert!(!drawable("outline:M0 0Z"));
+        assert_eq!(body_of("outline:M0 0Z"), "sphere");
+        assert_eq!(body_of("heart"), "heartChubby");
+        assert!(drawable("heart") && !drawable("nonsense"));
+    }
 }

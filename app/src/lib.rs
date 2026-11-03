@@ -21,6 +21,7 @@ mod chat;
 mod client;
 mod composer;
 mod ctx;
+mod design;
 mod dotgrid;
 mod files;
 mod history;

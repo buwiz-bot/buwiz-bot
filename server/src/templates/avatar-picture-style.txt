@@ -1,0 +1,9 @@
+Turn the subject of the reference picture into a minimal flat "Bot" avatar. Use the picture only to recognise who the subject is; do not copy its pose, framing or background.
+
+Keep what makes the subject recognisable: the colour and outline of its hair or head, its ears, horns or headgear, and any signature accessory on the head. For a person, the hair colour and hairstyle carry the identity; for an animal, a mascot or a character in a helmet or mask, its main colour and the shape of its head and ears do.
+
+The face becomes one large, smooth, rounded cream-white area with a very soft oval blush on each cheek. The subject's own colours stay in the hair, ears, outline and decorations; never wash the whole avatar out to white.
+
+The eyes are two tall, solid, rounded capsules, the same size and parallel to each other, about three times as tall as they are wide, coloured like the subject's eyes or its signature colour. There is no mouth and no nose: the two capsule eyes on a plain face are the whole expression.
+
+Square format on a flat charcoal background. Frame it as a very close crop of the head, filling about 85-90% of the square, entering from the lower left and tilted about 20 degrees clockwise. The head runs off the left and bottom edges and slightly off the top, with both eyes fully visible and a little charcoal showing in the upper right corner. No weapons, frames, circles, text, logos or particles.
