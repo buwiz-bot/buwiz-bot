@@ -15,4 +15,5 @@ pub mod ids;
 pub mod jcs;
 pub mod keys;
 pub mod proof;
+pub mod setup;
 pub mod tokens;

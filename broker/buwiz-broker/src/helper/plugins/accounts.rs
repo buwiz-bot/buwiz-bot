@@ -217,39 +217,9 @@ fn provider_setup(provider: &str) -> Option<(&'static str, Vec<Value>)> {
     (provider == "google").then(|| (GOOGLE_GROUP, google_fields().into_iter().collect()))
 }
 
-/// Whether `v` matches `pattern` (a field's own; a bad one never does).
-fn matches(pattern: &str, v: &str) -> bool {
-    regex_lite::Regex::new(pattern).is_ok_and(|r| r.is_match(v))
-}
-
-/// Why `v` (trimmed, not empty) fails field `f`'s shape check, if it does.
-pub fn shape_error(f: &Value, v: &str) -> Option<String> {
-    let s = |k: &str| f.get(k).and_then(Value::as_str);
-    if s("pattern").is_some_and(|p| !matches(p, v)) {
-        return Some(s("pattern_hint").unwrap_or("This value has the wrong shape").to_owned());
-    }
-    if s("not_pattern").is_some_and(|p| matches(p, v)) {
-        return Some(s("not_pattern_hint").unwrap_or("This value has the wrong shape").to_owned());
-    }
-    None
-}
-
-/// `values` (key → trimmed value, as they would be stored) entered the
-/// wrong way round: a field with `swap_with` whose value has the other
-/// field's shape while the other's fails it. → its `swap_hint`.
-pub fn swapped(fields: &[Value], values: &Map<String, Value>) -> Option<String> {
-    let val = |k: &str| values.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
-    for f in fields {
-        let Some(other) = f.get("swap_with").and_then(Value::as_str) else { continue };
-        let Some(o) = fields.iter().find(|x| x["key"] == json!(other)) else { continue };
-        let (Some(mine), Some(theirs)) = (val(&js::string_of(&f["key"])), val(other)) else { continue };
-        let Some(p) = o.get("pattern").and_then(Value::as_str) else { continue };
-        if matches(p, mine) && !matches(p, theirs) {
-            return Some(f.get("swap_hint").and_then(Value::as_str).unwrap_or("These two values look swapped").to_owned());
-        }
-    }
-    None
-}
+/// A field's shape checks and a swap (`buwiz_protocol::setup`, the app's
+/// too).
+pub use buwiz_protocol::setup::{shape_error, swapped};
 
 fn is_set(vals: &Map<String, Value>, key: &str) -> bool {
     vals.get(key).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
@@ -338,19 +308,42 @@ impl Host {
         let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET active=(label=?) WHERE plugin=? AND account=?", [label, plugin, account]));
     }
 
-    /// Pushes `r`'s tokens to the running plugin (refreshed first when due;
-    /// a failed refresh: expired) and keeps them fresh. The caller holds the
-    /// plugin's lock.
-    async fn push_label(&self, r: &AccountRow) {
-        let Some(mut t) = self.tokens(&r.token_ref).await else { return self.set_account_state(r, "expired") };
+    /// Pushes `r`'s tokens to the running plugin (refreshed first when due)
+    /// and keeps them fresh; `false` when it had none or the refresh
+    /// failed (it is `expired` then). The caller holds the plugin's lock.
+    async fn push_label(&self, r: &AccountRow) -> bool {
+        let Some(mut t) = self.tokens(&r.token_ref).await else {
+            self.set_account_state(r, "expired");
+            return false;
+        };
         if self.due(&t) {
             match self.refresh_account(r).await {
                 Ok(fresh) => t = fresh,
-                Err(_) => return self.set_account_state(r, "expired"),
+                Err(_) => {
+                    self.set_account_state(r, "expired");
+                    return false;
+                }
             }
         }
         self.push_live(&r.plugin, SET, set_args(r, &t)).await;
         self.schedule_refresh(r, &t);
+        true
+    }
+
+    /// The active label of `plugin`'s `account` is gone (signed out,
+    /// expired): the next connected one becomes active and is pushed, each
+    /// that cannot be pushed expired in turn; → the one pushed. The caller
+    /// holds the plugin's lock.
+    async fn promote_next(&self, plugin: &str, account: &str) -> Option<String> {
+        while let Some(n) = self.active_label(plugin, account) {
+            self.set_active(plugin, account, &n);
+            let Some(r) = self.account_row(plugin, account, &n) else { return None };
+            if self.push_label(&r).await {
+                self.account_changed(plugin, account, &n, "connected");
+                return Some(n);
+            }
+        }
+        None
     }
 
     /// `POST …/accounts/<account>/use {label}`: `label` (signed in) becomes
@@ -368,7 +361,11 @@ impl Host {
         if let Some(prev) = before.filter(|p| *p != label) {
             self.push_live(plugin, CLEAR, json!({"account": account, "label": prev})).await;
         }
-        self.push_label(&r).await;
+        if !self.push_label(&r).await {
+            // its tokens could not be pushed (expired now): another one is
+            let next = self.promote_next(plugin, account).await;
+            return Err(V1Error::new("needs_signin", format!("{label} needs a sign-in again{}", next.map(|n| format!("; {n} is active")).unwrap_or_default())));
+        }
         self.account_changed(plugin, account, &label, "connected");
         Ok(json!({"ok": true, "account": account, "label": label, "active": true}))
     }
@@ -439,7 +436,8 @@ impl Host {
                 if self.accounts.pending().contains_key(&flow_id(id, &a.id, label)) {
                     o["pending"] = json!(true);
                 }
-                if let Some((why, fix)) = self.accounts.errors().get(&token_ref(id, &a.id, label)).filter(|_| state != "connected") {
+                // a failed sign-in's reason, a connected label's too (its re-sign-in failed)
+                if let Some((why, fix)) = self.accounts.errors().get(&token_ref(id, &a.id, label)) {
                     o["error"] = json!(why);
                     if *fix {
                         o["fix"] = json!("setup");
@@ -999,10 +997,12 @@ impl Host {
             Err(why) => {
                 eprintln!("  v1 {}: account {}/{}: refresh failed: {}", r.plugin, r.account, r.label, js::slice_utf16(&why, 200));
                 let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET state='expired' WHERE plugin=? AND account=? AND label=?", [&r.plugin, &r.account, &r.label]));
+                self.account_changed(&r.plugin, &r.account, &r.label, "expired");
+                // the active one expired: cleared, and the next connected one pushed
                 if active {
                     self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+                    self.promote_next(&r.plugin, &r.account).await;
                 }
-                self.account_changed(&r.plugin, &r.account, &r.label, "expired");
             }
         }
     }
@@ -1047,20 +1047,11 @@ impl Host {
             self.push_live(plugin, CLEAR, json!({"account": account, "label": label})).await;
             // the active one signed out: another connected label is
             if was_active {
-                if let Some(n) = self.active_label(plugin, account) {
-                    self.set_active(plugin, account, &n);
-                    if let Some(r) = self.account_row(plugin, account, &n) {
-                        self.push_label(&r).await;
-                    }
-                    next = Some(n);
-                }
+                next = self.promote_next(plugin, account).await;
             }
         }
         let state = if remove { "removed" } else { "none" };
         self.account_changed(plugin, account, &label, state);
-        if let Some(n) = &next {
-            self.account_changed(plugin, account, n, "connected");
-        }
         Ok(json!({"ok": true, "account": account, "label": label, "state": state, "active": next}))
     }
 

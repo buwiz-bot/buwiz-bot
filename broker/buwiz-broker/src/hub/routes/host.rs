@@ -443,8 +443,7 @@ pub fn account_command(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result
         // the typed command is the press: with the setup there, the app
         // starts this sign-in at once (the card, pending or new, shows it)
         if n.get("setup").is_none() {
-            let label = host.account_rows(id).into_iter().find(|r| r.account == a.id).map(|r| r.label).unwrap_or_else(|| "default".to_owned());
-            out["signin"] = json!({"account": a.id, "label": label});
+            out["signin"] = json!({"account": a.id, "label": signin_label(host, id, &a.id)});
         }
         return Ok(out);
     }
@@ -454,6 +453,15 @@ pub fn account_command(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result
     let n = json!({"kind": "app_accounts", "id": id, "plugin": id, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "mode": command, "state": "pending"});
     let posted = notice_pending(ctx, chat, "app_accounts", id, Some(command)) || post_in(ctx, chat, &n);
     Ok(json!({"ok": true, "posted": posted, "kind": "app_accounts"}))
+}
+
+/// The label a typed `@short:login` signs in again: the one marked active,
+/// else `default` when it has a row, else the one used last, else
+/// `default`.
+fn signin_label(host: &Host, id: &str, account: &str) -> String {
+    let rows: Vec<_> = host.account_rows(id).into_iter().filter(|r| r.account == account).collect();
+    let pick = rows.iter().find(|r| r.active).or_else(|| rows.iter().find(|r| r.label == "default")).or_else(|| rows.iter().max_by_key(|r| r.updated_at));
+    pick.map(|r| r.label.clone()).unwrap_or_else(|| "default".to_owned())
 }
 
 /// `POST /v1/host/plugins/fetch {source}`: Connect Apps' Add… of a mini
@@ -507,18 +515,27 @@ pub fn ask_setup(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> usize {
 }
 
 /// `POST /v1/host/plugins/<id>/setup {values, clear?}` ([`Host::save_setup`]);
-/// the pending `app_setup` cards of the plugin read `saved`;
+/// the pending `app_setup` cards of the plugin read `saved` (`removed`
+/// for a Remove);
 /// a saved Google client re-applies to the installed Google plugins'
-/// connectors, as their own Setup's save does.
+/// connectors, as their own Setup's save does; any that did not update are
+/// named in `not_updated` (and the log), the save stands.
 pub async fn save_setup(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result<Value, V1Error> {
-    let out = host.save_setup(id, b.get("values"), b.get("clear") == Some(&Value::Bool(true))).await?;
-    // a mini app's `app_setup` cards for it have their answer
-    settle_notices(ctx, None, "app_setup", id, "saved");
+    let clear = b.get("clear") == Some(&Value::Bool(true));
+    let out = host.save_setup(id, b.get("values"), clear).await?;
+    // a mini app's `app_setup` cards for it have their answer: a Remove's is no save
+    settle_notices(ctx, None, "app_setup", id, if clear { "removed" } else { "saved" });
     let google = host.declared_accounts(id).iter().any(|a| a.provider == "google");
+    let mut out = out;
     if let (true, Some(m)) = (google, ctx.ext.get::<Arc<Market>>()) {
-        // the error may quote a materialized config: not logged
-        if reapply_google(m, ctx).await.is_err() {
-            eprintln!("  v1 {id}: setup saved; the Google plugins' connectors did not all update");
+        // the errors may quote a materialized config: only the names are said
+        match reapply_google(m, ctx).await {
+            Ok(failed) if failed.is_empty() => {}
+            Ok(failed) => {
+                eprintln!("  v1 {id}: setup saved; these Google plugins' connectors did not update: {}", failed.join(", "));
+                out["not_updated"] = json!(failed);
+            }
+            Err(_) => eprintln!("  v1 {id}: setup saved; the installed Google plugins could not be read"),
         }
     }
     Ok(out)

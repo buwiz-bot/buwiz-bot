@@ -354,15 +354,26 @@ async fn reapply(m: &Market, ctx: &HubCtx, key: &str) -> Result<(), String> {
 }
 
 /// The shared Google client was saved elsewhere (a mini app's setup):
-/// every installed Google plugin's connectors take it again.
-pub async fn reapply_google(m: &Market, ctx: &HubCtx) -> Result<(), String> {
-    for r in rows(ctx, "SELECT name FROM installed_plugins", &[])? {
-        let k = string(r.get("name"));
-        if m.plugin_uses_google(ctx, &k) {
-            reapply(m, ctx, &k).await?;
+/// every installed Google plugin's connectors take it again, each tried
+/// whatever the one before did; → the plugins that did not update.
+pub async fn reapply_google(m: &Market, ctx: &HubCtx) -> Result<Vec<String>, String> {
+    let keys: Vec<String> = rows(ctx, "SELECT name FROM installed_plugins", &[])?.into_iter().map(|r| string(r.get("name"))).filter(|k| m.plugin_uses_google(ctx, k)).collect();
+    Ok(each_or_failed(keys, |k| async move { reapply(m, ctx, &k).await }).await)
+}
+
+/// `f` for every key, a failure stopping none; → the keys that failed.
+async fn each_or_failed<F, Fut>(keys: Vec<String>, mut f: F) -> Vec<String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let mut failed = Vec::new();
+    for k in keys {
+        if f(k.clone()).await.is_err() {
+            failed.push(k);
         }
     }
-    Ok(())
+    failed
 }
 
 /// `accountNote`: what's missing, or how a connected account signs in.
@@ -902,5 +913,20 @@ mod tests {
         let dir = f.root.join("server-empty");
         std::fs::create_dir_all(dir.join("plugins")).unwrap();
         dir
+    }
+
+    /// One Google plugin failing to take the new client stops none of the
+    /// others; the ones that failed are named.
+    #[tokio::test]
+    async fn a_failed_reapply_stops_none_of_the_others() {
+        let tried = std::sync::Mutex::new(Vec::new());
+        let keys = ["gmail", "drive", "calendar"].map(str::to_owned).to_vec();
+        let failed = each_or_failed(keys, |k| {
+            tried.lock().unwrap().push(k.clone());
+            async move { if k == "gmail" { Err("boom".to_owned()) } else { Ok(()) } }
+        })
+        .await;
+        assert_eq!(*tried.lock().unwrap(), ["gmail", "drive", "calendar"]);
+        assert_eq!(failed, ["gmail"]);
     }
 }

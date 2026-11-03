@@ -264,9 +264,7 @@ pub fn card_field(f: &Value) -> Value {
 }
 
 /// What a provider's setup is called ("Google client").
-pub fn setup_name(provider: &str) -> String {
-    if provider == "google" { "Google client".to_owned() } else { format!("{provider} setup") }
-}
+pub use buwiz_protocol::setup::setup_name;
 
 /// Whether chat `chat` has a pending `account_required` card of `plugin`'s
 /// `account`.
@@ -279,8 +277,8 @@ pub fn card_pending(ctx: &HubCtx, chat: &str, plugin: &str, account: &str) -> bo
 /// An `account_required` card for `plugin`'s account `a`; `setup` is the
 /// plugin's setup view (`PluginView::setup`): when `a`'s provider is not
 /// ready, the card adds `setup: {provider, fields: [{key, label,
-/// placeholder, secret, hint}]}`, the fields the card asks for before Sign
-/// in (never a value).
+/// placeholder, secret, hint}], error?}`, the fields the card asks for
+/// before Sign in (never a value) and why a stored one is no good.
 pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, setup: &Value) -> Value {
     let mut n = json!({"kind": "account_required", "id": plugin, "plugin": plugin, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "state": "pending"});
     let missing = setup.as_array().into_iter().flatten().find(|s| s["provider"] == json!(a.provider) && s["ready"] == false);
@@ -292,6 +290,10 @@ pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, 
             .map(card_field)
             .collect();
         n["setup"] = json!({"provider": a.provider, "fields": fields});
+        // why a stored value is no good, when that is why it asks
+        if let Some(e) = s.get("error").filter(|e| js::truthy(e)) {
+            n["setup"]["error"] = e.clone();
+        }
     }
     n
 }

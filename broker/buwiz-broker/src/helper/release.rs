@@ -100,6 +100,16 @@ fn bare_name(s: &str) -> Option<Source> {
     (fine && name_ok(&slug, &['_'])).then(|| Source { owner: FIRST_PARTY_ORG.to_owned(), repo: slug, tag: tag.map(str::to_owned) })
 }
 
+/// A version tag's other style: `v1.2` for `1.2`, `1.2` for `v1.2`; None
+/// for a tag that is no version.
+fn other_tag(t: &str) -> Option<String> {
+    match t.strip_prefix('v') {
+        Some(d) if d.starts_with(|c: char| c.is_ascii_digit()) => Some(d.to_owned()),
+        None if t.starts_with(|c: char| c.is_ascii_digit()) => Some(format!("v{t}")),
+        _ => None,
+    }
+}
+
 /// This build's platform as release indexes name it (`macos-aarch64`).
 pub fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
@@ -330,11 +340,18 @@ fn complete(dir: &Path, ix: &Index) -> bool {
 pub async fn fetch(api: &str, src: &Source, trust: &Trust, data: &Path) -> Result<Fetched, String> {
     let plain = api.starts_with("http://");
     let api = api.trim_end_matches('/');
-    let at = match &src.tag {
+    let at = |tag: Option<&str>| match tag {
         Some(t) => format!("{api}/repos/{}/{}/releases/tags/{t}", src.owner, src.repo),
         None => format!("{api}/repos/{}/{}/releases/latest", src.owner, src.repo),
     };
-    let body = small(&at, "application/vnd.github+json", plain, SMALL_MAX).await.map_err(|e| {
+    let mut got = small(&at(src.tag.as_deref()), "application/vnd.github+json", plain, SMALL_MAX).await;
+    // a version tag in the other style: `1.2` is often tagged `v1.2`, and back
+    if let (Err(e), Some(other)) = (&got, src.tag.as_deref().and_then(other_tag)) {
+        if e.ends_with("answered 404") {
+            got = small(&at(Some(&other)), "application/vnd.github+json", plain, SMALL_MAX).await;
+        }
+    }
+    let body = got.map_err(|e| {
         if e.ends_with("answered 404") {
             match &src.tag {
                 Some(t) => format!("{}/{} has no release {t}", src.owner, src.repo),
@@ -529,6 +546,7 @@ pub(crate) mod tests {
         assert_eq!(parse_url("someone/word").unwrap().owner, "someone");
         assert_eq!(parse_url("https://github.com/someone/word/releases/tag/v3").unwrap(), Source { owner: "someone".into(), repo: "word".into(), tag: Some("v3".into()) });
         assert!(parse_url("word!").is_err() && parse_url("w ord.x").is_err());
+        assert_eq!((other_tag("1.2").as_deref(), other_tag("v1.2").as_deref(), other_tag("latest"), other_tag("vx")), (Some("v1.2"), Some("1.2"), None, None));
     }
 
     #[test]

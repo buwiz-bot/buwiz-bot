@@ -594,6 +594,9 @@ mod tests {
         let ok = Out::ok("a card in this chat asks the user to review and Install Fixture 1.0.0; you cannot install it yourself".into());
         assert_eq!(call(&run, "app_install", json!({"url": "Google Workspace"})).await, ok);
         assert_eq!(call(&run, "app_install", json!({"url": "word@v1.0.0"})).await, ok);
+        // a version without its `v` finds the release tagged with one
+        assert_eq!(call(&run, "app_install", json!({"url": "word 1.0.0"})).await, ok);
+        assert_eq!(call(&run, "app_install", json!({"url": "word@1.0.0"})).await, ok);
         assert_eq!(call(&run, "app_install", json!({"url": "o/r"})).await, ok, "owner/repo as given");
         assert_eq!(call(&run, "app_install", json!({"url": "word"})).await, Out::err("app_install: buwiz-app/word has no release yet".into()));
         assert_eq!(call(&run, "app_install", json!({"url": "word 2.0"})).await, Out::err("app_install: buwiz-app/word has no release 2.0".into()));
@@ -1037,6 +1040,11 @@ mod tests {
         assert_eq!(call(&run, "app_setup", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
         crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"values": {"GOOGLE_CLIENT_SECRET": "csec-2"}})).await.unwrap();
         assert_eq!(cards(&b.ctx, &chat, "app_setup")[0].1["state"], "saved");
+        // a Remove settles it removed, not saved
+        call(&run, "app_setup", json!({"id": FX})).await;
+        crate::hub::routes::host::save_setup(&b.ctx, &b.host, FX, &json!({"clear": true})).await.unwrap();
+        assert_eq!(cards(&b.ctx, &chat, "app_setup").last().unwrap().1["state"], "removed");
+        google_client(&b);
         call(&run, "app_setup", json!({"id": FX})).await;
         assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "cancelled"})).unwrap()["settled"], 1);
         assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "declined"})).unwrap_err().code, "invalid_args");
@@ -1225,6 +1233,9 @@ mod tests {
         assert!(r.get("signin").is_none(), "the setup first: no sign-in starts");
         let card = cards(&b.ctx, &chat, "account_required").pop().unwrap().1;
         assert_eq!(card["setup"]["fields"][0]["pattern"], crate::hub::market::catalog::GOOGLE_CLIENT_ID_PATTERN, "the card carries the checks");
+        let a = b.host.declared_accounts(FX).remove(0);
+        let fresh = crate::hub::tools::v1::account_card(FX, "Fixture", &a, &b.host.setup_view(FX));
+        assert_eq!(fresh["setup"]["error"], "The saved Google Client ID is not a Client ID. Change it in Setup.", "a card says why it asks again");
         assert!(!card.to_string().contains("GOCSPX-abc") && !card.to_string().contains(CID), "no values in the chat");
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -1253,12 +1264,79 @@ mod tests {
         assert_eq!(b.host.account_callback(&flow, None, Some(&state), Some("access_denied")).await.0, "failed");
         let r = row("default").unwrap();
         assert_eq!((r.get("pending"), r["error"].clone()), (None, json!("Sign-in failed: access_denied")));
+        // signing a connected label in again: pending on it; a failure leaves it connected, with the reason
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let (flow, state, _) = sign_in(&b).await;
+        let r = row("default").unwrap();
+        assert_eq!((r["state"].clone(), r["pending"].clone()), (json!("connected"), json!(true)));
+        token_answer(&b.files, 400, json!({"error": "invalid_grant", "error_description": "Bad code"}));
+        b.host.account_callback(&flow, Some("c"), Some(&state), None).await;
+        let r = row("default").unwrap();
+        assert_eq!((r["state"].clone(), r.get("pending"), r["error"].clone()), (json!("connected"), None, json!("Bad code")));
         // a new label's sign-in has a row while it waits
         b.host.account_signin(FX, "google", &json!({"open": false, "label": "work"})).await.unwrap();
         assert_eq!((row("work").unwrap()["pending"].clone(), row("work").unwrap()["state"].clone()), (json!(true), json!("none")));
         // signed out (the flow dropped): no row left for it
         b.host.account_signout(FX, "google", &json!({"label": "work"})).await.unwrap();
         assert!(row("work").is_none());
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// The active label can't be pushed (its refresh fails, or its tokens
+    /// are gone when it is picked): it expires, and the next connected
+    /// label becomes active and is pushed, never one shown Active unpushed.
+    #[tokio::test]
+    async fn an_active_label_that_cannot_be_pushed_hands_over_to_the_next_one() {
+        let b = bed_in("handover", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        assert_eq!(pushed_labels(&b).await, ["google/work"]);
+        // work's refresh will fail (no refresh token), default's will not
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        let mut w = keys.get_token("app.buwiz.fixture/google/work").unwrap().unwrap();
+        w.as_object_mut().unwrap().remove("refresh_token");
+        keys.put_token("app.buwiz.fixture/google/work", &w).unwrap();
+        token_answer(&b.files, 200, json!({"access_token": "at-d2", "expires_in": 3600, "token_type": "Bearer"}));
+        // each step fires one timer: default's refresh, then work's
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true));
+        until("default refreshed", async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count() >= 3).await;
+        assert!(b.host.clock.manual_step(None, true));
+        until("default pushed in work's place", async || pushed_labels(&b).await == ["google/default"]).await;
+        assert_eq!(b.host.account_rows(FX).iter().find(|r| r.label == "work").unwrap().state, "expired");
+        assert_eq!(b.host.active_label(FX, "google").as_deref(), Some("default"));
+        // Use this on a label whose tokens are gone: refused, default stays pushed
+        connect_as(&b, "work", "at-w2", "w@example.com").await;
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        keys.remove_token("app.buwiz.fixture/google/work").unwrap();
+        let e = b.host.account_use(FX, "google", &json!({"label": "work"})).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("needs_signin", "work needs a sign-in again; default is active"));
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A typed `@fx:login` with nobody signed in signs in again the label
+    /// marked active, not the first by name.
+    #[tokio::test]
+    async fn a_typed_login_signs_in_the_active_label_again() {
+        let b = bed_in("loginlabel", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        connect_as(&b, "alpha", "at-a", "a@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        // a changed client signs every label out (expired)
+        b.host.save_setup(FX, Some(&json!({"GOOGLE_CLIENT_SECRET": "csec-2"})), false).await.unwrap();
+        assert!(b.host.active_label(FX, "google").is_none());
+        let chat = run_in(&b.ctx).thread_id();
+        let r = crate::hub::routes::host::account_command(&b.ctx, &b.host, FX, &json!({"chat": chat, "command": "login"})).unwrap();
+        assert_eq!(r["signin"], json!({"account": "google", "label": "work"}));
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }
