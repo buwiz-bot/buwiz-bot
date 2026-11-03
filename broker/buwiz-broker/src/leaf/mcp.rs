@@ -527,17 +527,7 @@ impl McpRoutes {
         let id = url::form_urlencoded::parse(format!("x={}", raw.replace('+', "%2B")).as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default();
         let param = |k: &str| url::form_urlencoded::parse(q.as_bytes()).find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
         if let Some(host) = self.plugins.as_ref().filter(|h| h.account_pending(&id)) {
-            let (result, why) = host.account_callback(&id, param("code").as_deref(), param("state").as_deref(), param("error").as_deref()).await;
-            return match result {
-                "connected" => html(200, "Signed in"),
-                "refused" => html(400, "Authentication failed"),
-                _ => {
-                    if !why.is_empty() {
-                        eprintln!("  v1 {id}: sign-in failed: {}", js::slice_utf16(&why, 200));
-                    }
-                    html(200, "Sign-in failed")
-                }
-            };
+            return account_answer(host, url).await;
         }
         let r = self.mcp.auth_finish(&id, param("code").as_deref(), param("state").as_deref(), param("error").as_deref()).await;
         match r.get("result").and_then(Value::as_str) {
@@ -583,6 +573,34 @@ impl McpRoutes {
         let until = self.passes.lock().unwrap_or_else(|e| e.into_inner()).remove(pass);
         until.is_some_and(|u| u > Instant::now())
     }
+}
+
+/// `GET /oauth/callback/account:<plugin>/<account>/<label>?code=…`: a mini
+/// app account's sign-in coming back, finished by the plugin host: the
+/// Connected page, or why not (an unknown or stale flow is refused).
+async fn account_answer(host: &Host, url: &str) -> Answer {
+    let (path, q) = url.split_once('?').unwrap_or((url, ""));
+    let raw = path.strip_prefix("/oauth/callback/").unwrap_or_default();
+    let id = url::form_urlencoded::parse(format!("x={}", raw.replace('+', "%2B")).as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default();
+    let param = |k: &str| url::form_urlencoded::parse(q.as_bytes()).find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+    let (result, why) = host.account_callback(&id, param("code").as_deref(), param("state").as_deref(), param("error").as_deref()).await;
+    match result {
+        "connected" => html(200, "Connected"),
+        "refused" => html(400, "Authentication failed"),
+        _ => {
+            if !why.is_empty() {
+                eprintln!("  v1 {id}: sign-in failed: {}", js::slice_utf16(&why, 200));
+            }
+            html(200, "Sign-in failed")
+        }
+    }
+}
+
+/// The account sign-in callback (`/oauth/callback/account:…`) for the
+/// front door: answered by the plugin host whatever else this broker
+/// hosts (the MCP routes or not).
+pub async fn serve_account_callback(host: &Host, url: &str) -> Response<Body> {
+    respond(account_answer(host, url).await, None)
 }
 
 /// `r.a || r.b || ""` over string fields.

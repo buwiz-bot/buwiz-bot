@@ -44,6 +44,10 @@ fn start(name: &str, hub: bool) -> Broker {
 }
 
 fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
+    start_env(name, hub, no_node, &[])
+}
+
+fn start_env(name: &str, hub: bool, no_node: bool, env: &[(&str, &str)]) -> Broker {
     let port = free_port();
     let log = std::env::temp_dir().join(format!("buwiz-broker-hub-{name}-{}-{port}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
@@ -77,6 +81,7 @@ fn start_with(name: &str, hub: bool, no_node: bool) -> Broker {
     if no_node {
         cmd.env("BUWIZ_BROKER_NO_NODE", "1");
     }
+    cmd.env_remove("BUWIZ_BROKER_V1_HOST").env_remove("BUWIZ_BROKER_MCP_HOST").env("BUWIZ_TRUST_FILE", data.join("trust.json")).envs(env.iter().copied());
     let broker = Broker { child: cmd.spawn().unwrap(), port, log, data };
     let deadline = Instant::now() + Duration::from_secs(15);
     while request(port, "GET", "/health", b"").map(|(s, _)| s != 200).unwrap_or(true) {
@@ -251,4 +256,21 @@ fn hub_proves_itself_with_its_host_token_and_asks_for_none() {
     assert_eq!(request(b.port, "GET", "/v1/host/plugins", b"").unwrap().0, 401);
     assert_eq!(b.seen(), Vec::<String>::new(), "Node saw the proof");
     let _ = std::fs::remove_dir_all(&b.data);
+}
+
+/// A mini app account's sign-in callback reaches the v1 plugin host with
+/// the MCP host off: the line's (`BUWIZ_BROKER_V1_HOST=1`) or the hub's
+/// own. A flow it never started is refused with its page, not the hub's
+/// 501.
+#[test]
+fn an_account_callback_reaches_the_plugin_host_without_the_mcp_host() {
+    let path = "/oauth/callback/account:app.buwiz.fixture%2Fgoogle%2Fdefault?code=c&state=s";
+    for (name, env) in [("acct-line", &[("BUWIZ_BROKER_V1_HOST", "1"), ("BUWIZ_BROKER_MCP_HOST", "0")][..]), ("acct-hub", &[][..])] {
+        let keys = format!("file:{}", std::env::temp_dir().join(format!("buwiz-broker-hub-{name}-keys-{}", std::process::id())).display());
+        let env: Vec<(&str, &str)> = env.iter().copied().chain([("BUWIZ_KEYSTORE", keys.as_str())]).collect();
+        let b = start_env(name, true, true, &env);
+        let (status, body) = request(b.port, "GET", path, b"").unwrap();
+        assert_eq!(status, 400, "{name}: {body}");
+        assert!(body.contains("Authentication failed") && !body.contains("not_ported"), "{name}: {body}");
+    }
 }

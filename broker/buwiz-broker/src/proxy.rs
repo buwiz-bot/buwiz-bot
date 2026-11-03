@@ -32,12 +32,15 @@ pub struct FrontDoor {
     mcp: Option<leaf::mcp::McpRoutes>,
     /// the brain's routes, with `BUWIZ_BROKER_HUB=1` (plan D30)
     hub: Option<Arc<Hub>>,
+    /// the v1 plugin host whose account sign-ins come back on
+    /// `/oauth/callback/account:…`, MCP host or not
+    accounts: Option<Arc<crate::helper::plugins::Host>>,
     client: Client<HttpConnector, Incoming>,
 }
 
 impl FrontDoor {
     pub fn new(node: Arc<Node>, leaf: Option<Leaf>) -> Self {
-        Self { node, leaf, line: None, mcp: None, hub: None, client: Client::builder(TokioExecutor::new()).build_http() }
+        Self { node, leaf, line: None, mcp: None, hub: None, accounts: None, client: Client::builder(TokioExecutor::new()).build_http() }
     }
 
     pub fn with_line(mut self, line: Arc<Line>) -> Self {
@@ -47,6 +50,12 @@ impl FrontDoor {
 
     pub fn with_mcp(mut self, routes: leaf::mcp::McpRoutes) -> Self {
         self.mcp = Some(routes);
+        self
+    }
+
+    /// The plugin host a mini app account's sign-in callback reaches.
+    pub fn with_accounts(mut self, host: Arc<crate::helper::plugins::Host>) -> Self {
+        self.accounts = Some(host);
         self
     }
 
@@ -62,6 +71,11 @@ impl FrontDoor {
         let (res, side) = match req.uri().path() {
             "/health" => (self.health(), "rust"),
             "/meta" => (self.meta(), "rust"),
+            // a mini app account's sign-in: the plugin host's, whatever else is hosted
+            p if method == Method::GET && p.starts_with("/oauth/callback/account:") && self.accounts.is_some() => match &self.accounts {
+                Some(host) => (leaf::mcp::serve_account_callback(host, req.uri().path_and_query().map(|q| q.as_str()).unwrap_or(p)).await, "rust"),
+                None => (self.forward(req).await, "node"),
+            },
             p if p.starts_with("/v1/line/") => match &self.line {
                 Some(line) => (line.serve(req).await, "rust"),
                 None => (json(StatusCode::NOT_FOUND, serde_json::json!({ "ok": false, "error": "this broker hosts no v1 plugins" })), "rust"),
