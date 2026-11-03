@@ -403,7 +403,9 @@ pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Valu
 /// whose package declares accounts, for `account` (its first by default),
 /// as a card in chat `chat`, unless the same one is pending there:
 /// - `login`: the `account_required` card (with the setup while it is
-///   missing) when none is signed in, else an `app_accounts` card
+///   missing) when none is signed in, and, the setup there, `signin:
+///   {account, label}` for the app to start at once (the typed command is
+///   the press; an agent's card waits for it), else an `app_accounts` card
 ///   (`mode: login`: who, Add another account, Switch);
 /// - `logout`, `switch`: an `app_accounts` card of that mode (none signed
 ///   in: `logout` posts nothing and says so);
@@ -437,7 +439,14 @@ pub fn account_command(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result
     if command == "login" && (!signed_in || host.setup_missing(&a.provider)) {
         let n = account_card(id, &title, &a, &host.setup_view(id));
         let posted = card_pending(ctx, chat, id, &a.id) || post_in(ctx, chat, &n);
-        return Ok(json!({"ok": true, "posted": posted, "kind": "account_required"}));
+        let mut out = json!({"ok": true, "posted": posted, "kind": "account_required"});
+        // the typed command is the press: with the setup there, the app
+        // starts this sign-in at once (the card, pending or new, shows it)
+        if n.get("setup").is_none() {
+            let label = host.account_rows(id).into_iter().find(|r| r.account == a.id).map(|r| r.label).unwrap_or_else(|| "default".to_owned());
+            out["signin"] = json!({"account": a.id, "label": label});
+        }
+        return Ok(out);
     }
     if command == "logout" && !signed_in {
         return Ok(json!({"ok": true, "posted": false, "kind": "app_accounts", "message": format!("No {} is signed in for {title}", a.label)}));

@@ -1126,9 +1126,12 @@ mod tests {
         assert!(describe("app.buwiz.other").get("account_commands").is_none(), "no accounts, no commands");
         let cmd = |c: &str| account_command(&b.ctx, &b.host, FX, &json!({"chat": chat, "command": c}));
         // nobody signed in: login is the sign-in card, logout says so
-        assert_eq!(cmd("login").unwrap(), json!({"ok": true, "posted": true, "kind": "account_required"}));
-        cmd("login").unwrap();
+        // the typed command is the press: the app starts the sign-in it names
+        assert_eq!(cmd("login").unwrap(), json!({"ok": true, "posted": true, "kind": "account_required", "signin": {"account": "google", "label": "default"}}));
+        assert_eq!(cmd("login").unwrap()["signin"]["label"], "default", "a pending card: started again, the same card");
         assert_eq!(cards(&b.ctx, &chat, "account_required").len(), 1, "one while pending");
+        // the agent's card still waits for the press
+        assert!(call(&run, "app_signin", json!({"id": FX})).await.content.as_str().unwrap().contains("the user presses it"));
         assert_eq!(cmd("logout").unwrap(), json!({"ok": true, "posted": false, "kind": "app_accounts", "message": "No Google account is signed in for Fixture"}));
         assert_eq!(cmd("setup").unwrap()["kind"], "app_setup");
         assert_eq!(cards(&b.ctx, &chat, "app_setup").len(), 1);
@@ -1219,6 +1222,7 @@ mod tests {
         let chat = run.thread_id();
         let r = crate::hub::routes::host::account_command(&b.ctx, &b.host, FX, &json!({"chat": chat, "command": "login"})).unwrap();
         assert_eq!(r["kind"], "account_required");
+        assert!(r.get("signin").is_none(), "the setup first: no sign-in starts");
         let card = cards(&b.ctx, &chat, "account_required").pop().unwrap().1;
         assert_eq!(card["setup"]["fields"][0]["pattern"], crate::hub::market::catalog::GOOGLE_CLIENT_ID_PATTERN, "the card carries the checks");
         assert!(!card.to_string().contains("GOCSPX-abc") && !card.to_string().contains(CID), "no values in the chat");

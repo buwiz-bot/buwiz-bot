@@ -1415,8 +1415,19 @@ impl Store {
             return crate::toast::show("Open a chat to run it in");
         }
         let (p, c, sent) = (plugin.to_owned(), cmd.to_owned(), sent.to_owned());
+        let p2 = p.clone();
         self.v1_job("", move || host_api::account_command(&broker(), &p, &chat, &c), move |v| {
             let st = store();
+            // typed, so pressed: the sign-in starts now, its card shows it
+            if let Some((account, label)) = connect::signin_of(&v) {
+                let key = signing_key(&p2, &account, &label);
+                st.v1_signin(&p2, &account, &label, move |e| {
+                    store().v1.account_err.update(|m| {
+                        m.insert(key, signin_error(&e));
+                    });
+                    crate::toast::show(signin_error(&e));
+                });
+            }
             if st.draft.get_untracked().trim() == sent.trim() {
                 st.draft.set(String::new());
             }
@@ -1434,6 +1445,13 @@ impl Store {
         self.v1.setup_confirm.set(String::new());
         self.v1.setup_edit.set(String::new());
         self.v1_job("", move || host_api::clear_setup(&broker(), &p), |_| {});
+    }
+
+    /// Open again on a sign-in that waits: the broker opens the browser for
+    /// a fresh flow; the wait already running goes on.
+    pub fn v1_signin_again(&'static self, plugin: &str, account: &str, label: &str) {
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.to_owned());
+        self.v1_job("", move || host_api::account_action(&broker(), &p, &a, &l, host_api::AccountAction::SignIn), |_| {});
     }
 
     /// Stops waiting on a sign-in (the browser was closed).

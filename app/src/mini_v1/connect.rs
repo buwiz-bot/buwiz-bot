@@ -634,6 +634,15 @@ pub fn account_command_for(text: &str, listed: &[Listed]) -> Option<(String, Str
     listed.iter().find(|p| p.short == short && p.account_commands.iter().any(|c| c == cmd)).map(|p| (p.id.clone(), cmd.to_owned()))
 }
 
+/// The sign-in an account command's answer asks the app to start at once
+/// (`signin: {account, label}`: `@short:login` typed with the setup there,
+/// the typed command being the press): (account, label).
+pub fn signin_of(answer: &Value) -> Option<(String, String)> {
+    let s = answer.get("signin")?;
+    let (a, l) = (s.get("account")?.as_str()?, s.get("label").and_then(Value::as_str).unwrap_or("default"));
+    (super::host_api::account_id_ok(a) && super::host_api::account_label_ok(l)).then(|| (a.to_owned(), l.to_owned()))
+}
+
 /// What an account command row says in the composer's popup.
 pub fn account_command_detail(cmd: &str) -> &'static str {
     match cmd {
@@ -1379,6 +1388,15 @@ mod tests {
             ]
         );
         assert!(host_api::account_command(&b, "app.buwiz.gws", "c1", "status").is_err() && host_api::account_command(&b, "../x", "c1", "login").is_err());
+    }
+
+    #[test]
+    fn a_typed_login_starts_the_sign_in_its_answer_names() {
+        assert_eq!(signin_of(&json!({"ok": true, "kind": "account_required", "signin": {"account": "google", "label": "work"}})), Some(("google".into(), "work".into())));
+        assert_eq!(signin_of(&json!({"signin": {"account": "google"}})), Some(("google".into(), "default".into())));
+        assert_eq!(signin_of(&json!({"ok": true, "kind": "account_required"})), None, "setup first, or an agent's card: no start");
+        assert_eq!(signin_of(&json!({"signin": {"account": "../x", "label": "default"}})), None);
+        assert_eq!(signin_of(&json!({"signin": {"account": "google", "label": "a b"}})), None);
     }
 
     #[test]

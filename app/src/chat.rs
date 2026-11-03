@@ -1251,16 +1251,22 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
         let label = listed.as_ref().map(|p| p.signin_label(&n.account)).unwrap_or_else(|| "default".to_owned());
         let signing = store().v1.signing.with(|s| s.contains(&crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label)));
         let (ch1, ch2, n1, n2) = (chat.clone(), chat.clone(), n.clone(), n.clone());
-        let mut buttons = view()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
-            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
-                store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
-            }));
+        let mut buttons = view().flex_row().items_center().gap_2();
         if signing {
-            buttons = buttons.child(text("Waiting for the sign-in in your browser…").text_size(px(12.0)).text_color(theme::MUTED));
+            // waiting on the browser: open it again, or stop waiting
+            let to = if n.provider == "google" { "Google".to_owned() } else { n.label.clone() };
+            let key = crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label);
+            let (p, a, l) = (n.plugin.clone(), n.account.clone(), label.clone());
+            buttons = buttons
+                .child(text(format!("Waiting for {to} in your browser…")).text_size(px(12.0)).text_color(theme::MUTED))
+                .child(app_card_btn("Open again", "Open the sign-in again".to_owned(), true, move || store().v1_signin_again(&p, &a, &l)))
+                .child(app_card_btn("Cancel", "Stop waiting for the sign-in".to_owned(), false, move || store().v1_signin_cancel(&key)));
+        } else {
+            buttons = buttons
+                .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
+                .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                    store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
+                }));
         }
         let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
         if !local.error.is_empty() {
