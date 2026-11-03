@@ -645,6 +645,8 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         app_setup_row(n, chat.to_owned(), t.i).into_element()
     } else if let Some(n) = t.app_accounts.clone() {
         app_accounts_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.tools_change.clone() {
+        crate::tools::notice_row(n, chat.to_owned()).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -671,7 +673,7 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
 // ---------------------------------------------------------------------------
 
 /// A small accent action in a centered notice line ("Open", "Resume").
-fn notice_act(word: &'static str, aria: String, on: impl Fn() + 'static) -> impl IntoElement {
+pub(crate) fn notice_act(word: &'static str, aria: String, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
     view()
         .label(aria)
