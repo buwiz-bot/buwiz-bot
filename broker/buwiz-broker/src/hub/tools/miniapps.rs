@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use super::{Out, Run};
 use crate::helper::plugins::{parse, Host};
 use crate::helper::release;
+use crate::hub::ctx::HubCtx;
 use crate::hub::routines::store_host::StoreHost;
 use crate::hub::routines::threads;
 use crate::js;
@@ -35,8 +36,8 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "app_install",
-            "description": "Offer to install a mini app from its GitHub release: send the repository (https://github.com/<owner>/<repo>, optionally /releases/tag/<tag>, or <owner>/<repo>). The release is downloaded and verified against the trusted publishers, then a card in this chat asks the user to review it and press Install. You cannot install it yourself, and you never ask for or pass its settings or secrets: the card asks the user for them.",
-            "input_schema": {"type": "object", "properties": {"url": {"type": "string", "description": "https://github.com/<owner>/<repo>[/releases/tag/<tag>] or <owner>/<repo>"}}, "required": ["url"]},
+            "description": "Offer to install a mini app from its GitHub release. Send its name (\"word\", \"Google Workspace\", optionally with a version: \"word@v1.0.0\"), which means https://github.com/buwiz-app/<name> (lowercased, spaces as -), or a repository URL (https://github.com/<owner>/<repo>, optionally /releases/tag/<tag>) or <owner>/<repo>, which is used as given. The release is downloaded and verified against the trusted publishers, then a card in this chat asks the user to review it and press Install. You cannot install it yourself, and you never ask for or pass its settings or secrets: the card asks the user for them.",
+            "input_schema": {"type": "object", "properties": {"url": {"type": "string", "description": "a mini app's name (buwiz-app/<name>), https://github.com/<owner>/<repo>[/releases/tag/<tag>] or <owner>/<repo>"}}, "required": ["url"]},
         }),
         json!({
             "name": "app_list",
@@ -207,25 +208,30 @@ fn list(host: &Host) -> Out {
     Out::ok(lines.join("\n"))
 }
 
-async fn install(run: &Run, host: &Host, input: &Value) -> Out {
-    let url = input.get("url").filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default();
-    let src = match release::parse_url(&url) {
-        Ok(s) => s,
-        Err(e) => return Out::err(e),
-    };
-    run.set_job("connecting", "Fetching the mini app");
-    let api = run.ctx.ext.get::<GithubApi>().map(|g| g.0.clone()).unwrap_or_else(|| release::GITHUB_API.to_owned());
-    let f = match release::fetch(&api, &src, &host.trust(), &run.ctx.data).await {
-        Ok(f) => f,
-        Err(e) => return Out::err(format!("app_install: {e}")),
-    };
+/// A release fetched, verified and inspected for `url` (a mini app's name,
+/// a GitHub URL or `owner/repo`, [`release::parse_url`]): the release, the
+/// spec to install it with (`package` its folder) and the inspection.
+pub async fn fetch_reviewed(ctx: &HubCtx, host: &Host, url: &str) -> Result<(release::Fetched, Value, Value), String> {
+    let src = release::parse_url(url)?;
+    let api = ctx.ext.get::<GithubApi>().map(|g| g.0.clone()).unwrap_or_else(|| release::GITHUB_API.to_owned());
+    let f = release::fetch(&api, &src, &host.trust(), &ctx.data).await?;
     let mut spec = f.spec();
     if f.package.is_some() {
         spec["package"] = json!(f.dir.display().to_string());
     }
-    let i = match host.inspect(&spec).await {
-        Ok(i) => i,
-        Err(e) => return Out::err(format!("app_install: the release did not pass inspection: {}: {}", e.code, e.message)),
+    let i = host.inspect(&spec).await.map_err(|e| format!("the release did not pass inspection: {}: {}", e.code, e.message))?;
+    Ok((f, spec, i))
+}
+
+async fn install(run: &Run, host: &Host, input: &Value) -> Out {
+    let url = input.get("url").filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default();
+    if let Err(e) = release::parse_url(&url) {
+        return Out::err(e);
+    }
+    run.set_job("connecting", "Fetching the mini app");
+    let (f, spec, i) = match fetch_reviewed(&run.ctx, host, &url).await {
+        Ok(x) => x,
+        Err(e) => return Out::err(format!("app_install: {e}")),
     };
     let m = &i["manifest"];
     let title = title_of(m, &f.id);
@@ -499,7 +505,7 @@ mod tests {
         assert!(bad.content.as_str().unwrap().contains("fx-bin does not match the index's sha256"), "{bad:?}");
         assert!(at.join("fx-bin").exists());
         let none = call(&run, "app_install", json!({"url": "o/nothing"})).await;
-        assert_eq!(none, Out::err("app_install: o/nothing has no published release".into()));
+        assert_eq!(none, Out::err("app_install: o/nothing has no release yet".into()));
 
         // the user's Install: env_from fills the key the card did not
         let body = json!({"command": n["command"], "args": n["args"], "env": n["env"], "manifest_sha256": n["manifest_sha256"], "env_from": "app.buwiz.other", "env_from_keys": ["FX_TOKEN"]});
@@ -529,6 +535,39 @@ mod tests {
         assert_eq!(last_notice(&ctx, &chat).1["state"], "cancelled");
         assert_eq!(settle(&ctx, &json!({"chat": chat, "kind": "app_uninstall", "id": FX, "state": "uninstalled"})).unwrap()["settled"], 0, "only pending ones");
         host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare name is `buwiz-app/<slug>`, a URL or `owner/repo` as given,
+    /// for the tool and Connect Apps' fetch route alike; a repository
+    /// without a release says so.
+    #[tokio::test]
+    async fn a_bare_name_installs_from_the_first_party_org() {
+        let (ctx, host, files, dir, base) = bed("bare").await;
+        publish(&files, &base, "v1.0.0", None);
+        {
+            let mut f = files.lock().unwrap();
+            let rel = f["/repos/o/r/releases/latest"].clone();
+            f.insert(format!("/repos/{}/google-workspace/releases/latest", release::FIRST_PARTY_ORG), rel.clone());
+            f.insert(format!("/repos/{}/word/releases/tags/v1.0.0", release::FIRST_PARTY_ORG), rel);
+        }
+        let run = run_in(&ctx);
+        assert!(defs()[0]["description"].as_str().unwrap().contains("https://github.com/buwiz-app/<name>"));
+        let ok = Out::ok("a card in this chat asks the user to review and Install Fixture 1.0.0; you cannot install it yourself".into());
+        assert_eq!(call(&run, "app_install", json!({"url": "Google Workspace"})).await, ok);
+        assert_eq!(call(&run, "app_install", json!({"url": "word@v1.0.0"})).await, ok);
+        assert_eq!(call(&run, "app_install", json!({"url": "o/r"})).await, ok, "owner/repo as given");
+        assert_eq!(call(&run, "app_install", json!({"url": "word"})).await, Out::err("app_install: buwiz-app/word has no release yet".into()));
+        assert_eq!(call(&run, "app_install", json!({"url": "word 2.0"})).await, Out::err("app_install: buwiz-app/word has no release 2.0".into()));
+        // Connect Apps' Add…: the same forms through the host route
+        let r = crate::hub::routes::host::fetch_release(&ctx, &host, &json!({"source": "google workspace"})).await.unwrap();
+        assert_eq!((r["manifest"]["id"].clone(), r["version"].clone()), (json!(FX), json!("1.0.0")));
+        assert_eq!(r["source"], "https://github.com/buwiz-app/google-workspace/releases/tag/v1.0.0");
+        assert!(r["command"].as_str().unwrap().ends_with("fx-bin") && r["manifest_sha256"].as_str().unwrap().len() == 64, "{r}");
+        let e = crate::hub::routes::host::fetch_release(&ctx, &host, &json!({"source": "word"})).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("not_found", "buwiz-app/word has no release yet"));
+        assert_eq!(crate::hub::routes::host::fetch_release(&ctx, &host, &json!({"source": "not a/name/x"})).await.unwrap_err().code, "invalid_args");
+        assert!(!host.rows().iter().any(|r| r.id == FX), "nothing installed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

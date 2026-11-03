@@ -124,6 +124,13 @@ pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value
     post(b, "/v1/host/plugins/inspect", body, Duration::from_secs(30))
 }
 
+/// `POST /v1/host/plugins/fetch {source}`: a mini app's name, GitHub URL or
+/// `owner/repo`, its release fetched, verified and inspected (nothing is
+/// installed): the inspection with `command`, `args`, `env`, `package`.
+pub fn fetch_release(b: &dyn Broker, source: &str) -> Result<Value, RoxError> {
+    post(b, "/v1/host/plugins/fetch", json!({"source": source.trim()}), Duration::from_secs(120))
+}
+
 /// `POST /v1/host/plugins/install`: installs what was reviewed (refused
 /// when the manifest's hash differs).
 pub fn install(

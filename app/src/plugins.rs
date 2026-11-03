@@ -3974,7 +3974,7 @@ fn v1_install_page() -> impl IntoElement {
                 return pane()
                     .gap(px(10.0))
                     .child(
-                        text("The command that starts the plugin (stdio), with its arguments; VAR=value words before it are its environment.")
+                        text("A mini app's name (word, Google Workspace: from github.com/buwiz-app), a GitHub repository (https://github.com/<owner>/<repo> or <owner>/<repo>), or the command that starts a plugin (stdio) with its arguments; VAR=value words before it are its environment.")
                             .text_size(px(13.0))
                             .text_color(ink3()),
                     )
@@ -3982,7 +3982,7 @@ fn v1_install_page() -> impl IntoElement {
                         view().h(px(32.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(10.0)).justify_center().child(
                             input()
                                 .value(|| store().v1.form.get())
-                                .placeholder("node /path/to/plugin.mjs")
+                                .placeholder("google-workspace, owner/repo or node /path/to/plugin.mjs")
                                 .placeholder_color(|| color(tc(0.4)))
                                 .text_size(px(13.0))
                                 .text_color(theme::TEXT)

@@ -1249,10 +1249,10 @@ impl Store {
     /// review shows next (nothing is installed yet).
     pub fn v1_inspect(&'static self) {
         let line = self.v1.form.get_untracked();
-        let Some((env, command, args)) = connect::command_line(&line) else {
-            return crate::toast::show("Enter the plugin's command");
-        };
-        self.v1_job("Checking the plugin…", move || connect::inspect(&broker(), &command, &args, env), move |r| {
+        if line.trim().is_empty() || (!connect::release_source(&line) && connect::command_line(&line).is_none()) {
+            return crate::toast::show("Enter a mini app's name, a GitHub repository or the plugin's command");
+        }
+        self.v1_job("Checking the plugin…", move || connect::add(&broker(), &line), move |r| {
             store().v1.review.set(Some(r));
         });
     }

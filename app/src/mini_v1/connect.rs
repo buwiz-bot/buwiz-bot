@@ -556,6 +556,8 @@ pub struct Review {
     /// An update's added permissions (13.2); empty when none.
     pub added: Vec<String>,
     pub manifest_sha256: String,
+    /// A package's folder (a GitHub release's), sent back with Install.
+    pub package: Option<String>,
 }
 
 impl Review {
@@ -579,6 +581,7 @@ impl Review {
             downgrade: u.and_then(|u| u.get("downgrade")).and_then(Value::as_bool).unwrap_or(false),
             added: u.map(|u| strings(u, "added_permissions")).unwrap_or_default(),
             manifest_sha256: s(inspect, "manifest_sha256"),
+            package: None,
         }
     }
 
@@ -686,6 +689,38 @@ pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value
     Ok(Review { env, ..Review::of(&v, command, args) })
 }
 
+/// Whether Add… reads `line` as a release to fetch rather than a command
+/// line: `https://github.com/…`, one `owner/repo` word, or words with no
+/// path, `=` or quote in them (a mini app's name, `Google Workspace`).
+pub fn release_source(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("https://github.com/") {
+        return true;
+    }
+    let one_word = !t.contains(char::is_whitespace);
+    !t.is_empty() && !t.contains(['=', '"', '\'', '\\']) && !t.starts_with(['.', '/', '~']) && (t.matches('/').count() == 0 || (one_word && t.matches('/').count() == 1))
+}
+
+/// Add…: a release source ([`release_source`]) fetched and reviewed by the
+/// broker; one the broker can't read as a repository, or a command line,
+/// inspected as a command.
+pub fn add(b: &dyn Broker, line: &str) -> Result<Review, RoxError> {
+    if release_source(line) {
+        match host_api::fetch_release(b, line) {
+            Err(e) if e.code == "invalid_args" => {}
+            Ok(v) => {
+                let args: Vec<String> = list(&v, "args").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+                let env = v.get("env").filter(|e| e.as_object().is_some_and(|o| !o.is_empty())).cloned();
+                let package = Some(s(&v, "package")).filter(|p| !p.is_empty());
+                return Ok(Review { env, package, ..Review::of(&v, &s(&v, "command"), &args) });
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let Some((env, command, args)) = command_line(line) else { return Err(RoxError::new("invalid_args", "Enter a mini app's name, a GitHub repository or the plugin's command")) };
+    inspect(b, &command, &args, env)
+}
+
 /// How an install or update ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Installed {
@@ -714,6 +749,9 @@ pub fn install_body(review: &Review) -> Value {
     }
     if review.downgrade {
         body["allow_downgrade"] = json!(true);
+    }
+    if let Some(p) = &review.package {
+        body["package"] = json!(p);
     }
     body
 }
@@ -867,6 +905,18 @@ mod tests {
             self.routes.lock().unwrap().push((format!("{method} {route}"), body.clone().unwrap_or(Value::Null)));
             match route {
                 "/v1/host/plugins/inspect" => Ok(inspect_answer(Value::Null)),
+                "/v1/host/plugins/fetch" => match body.as_ref().and_then(|b| b.get("source")).and_then(Value::as_str) {
+                    Some("word") => Err(RoxError::new("not_found", "buwiz-app/word has no release yet")),
+                    Some("python3 server") => Err(RoxError::new("invalid_args", "not a GitHub repository")),
+                    _ => {
+                        let mut v = inspect_answer(Value::Null);
+                        v["command"] = json!("/data/v1/apps/app.buwiz.fixture/1.1.0/bin/fx");
+                        v["args"] = json!(["mcp"]);
+                        v["env"] = json!({"FX_MANIFEST": "/data/m.json"});
+                        v["package"] = json!("/data/v1/apps/app.buwiz.fixture/1.1.0");
+                        Ok(v)
+                    }
+                },
                 "/v1/host/plugins/install" => match &self.refuse {
                     Some(e) => Err(e.clone()),
                     None => {
@@ -887,6 +937,31 @@ mod tests {
         fn routes(&self) -> Vec<String> {
             self.routes.lock().unwrap().iter().map(|r| r.0.clone()).collect()
         }
+    }
+
+    #[test]
+    fn add_fetches_a_name_or_repository_and_inspects_a_command_line() {
+        for src in ["word", "Google Workspace", "word@v1.0.0", "owner/repo", "https://github.com/o/r/releases/tag/v1", "python3 server"] {
+            assert!(release_source(src), "{src}");
+        }
+        for cmd in ["node /path/to/plugin.mjs", "FX=1 node x.mjs", "/apps/fx mcp", "./fx", "~/fx", "'/Applications/Buwiz Bot.app/x'", "a/b c"] {
+            assert!(!release_source(cmd), "{cmd}");
+        }
+        let b = Lifecycle::default();
+        let r = add(&b, "Google Workspace").unwrap();
+        assert_eq!((r.command.as_str(), r.args.clone(), r.package.as_deref()), ("/data/v1/apps/app.buwiz.fixture/1.1.0/bin/fx", vec!["mcp".to_owned()], Some("/data/v1/apps/app.buwiz.fixture/1.1.0")));
+        assert_eq!(r.env, Some(json!({"FX_MANIFEST": "/data/m.json"})));
+        assert_eq!(install_body(&r)["package"], "/data/v1/apps/app.buwiz.fixture/1.1.0", "Install sends the package back");
+        assert_eq!(b.routes(), ["POST /v1/host/plugins/fetch"]);
+        assert_eq!(add(&b, "word").unwrap_err().message, "buwiz-app/word has no release yet");
+        // not a repository to the broker: inspected as a command
+        let b = Lifecycle::default();
+        assert_eq!(add(&b, "python3 server").unwrap().command, "python3");
+        assert_eq!(b.routes(), ["POST /v1/host/plugins/fetch", "POST /v1/host/plugins/inspect"]);
+        let b = Lifecycle::default();
+        add(&b, "node /path/to/plugin.mjs").unwrap();
+        assert_eq!(b.routes(), ["POST /v1/host/plugins/inspect"]);
+        assert!(install_body(&Review::default()).get("package").is_none());
     }
 
     #[test]

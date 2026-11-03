@@ -236,6 +236,7 @@ enum Route {
 const POSTS: &[&str] = &[
     "/v1/host/plugins/inspect",
     "/v1/host/plugins/install",
+    "/v1/host/plugins/fetch",
     "/v1/host/notices/settle",
     "/v1/host/apps/source",
     "/v1/host/sessions/open",
@@ -289,7 +290,11 @@ impl Route {
                 }
                 if let Some(op) = path.strip_prefix("/v1/host/plugins/") {
                     let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
-                    return if op == "inspect" { host.inspect(b).await } else { install_plugin(ctx, host, b).await };
+                    return match op {
+                        "inspect" => host.inspect(b).await,
+                        "fetch" => fetch_release(ctx, host, b).await,
+                        _ => install_plugin(ctx, host, b).await,
+                    };
                 }
                 let ss = ctx.sessions.as_ref().ok_or_else(no_host)?;
                 match *path {
@@ -385,6 +390,31 @@ pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Valu
         }
     }
     Ok(out)
+}
+
+/// `POST /v1/host/plugins/fetch {source}`: Connect Apps' Add… of a mini
+/// app's name, GitHub URL or `owner/repo` (`app_install`'s forms): the
+/// release fetched and verified, then inspected; → the inspection with
+/// what Install sends back (`command`, `args`, `env`, `package`) and
+/// `source`, `version`, `needs_env`. Nothing is installed.
+pub async fn fetch_release(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let source = b.get("source").and_then(Value::as_str).unwrap_or_default();
+    if let Err(e) = crate::helper::release::parse_url(source) {
+        return V1Error::err("invalid_args", e);
+    }
+    let (f, spec, mut i) = crate::hub::tools::miniapps::fetch_reviewed(ctx, host, source).await.map_err(|e| {
+        let code = if e.contains(" has no release") { "not_found" } else { "plugin_unavailable" };
+        V1Error::new(code, e)
+    })?;
+    for k in ["command", "args", "env", "package"] {
+        if let Some(v) = spec.get(k) {
+            i[k] = v.clone();
+        }
+    }
+    i["source"] = json!(f.source);
+    i["version"] = json!(f.version);
+    i["needs_env"] = json!(f.needs_env);
+    Ok(i)
 }
 
 /// In chat `chat`, an `account_required` card carrying the setup (fields,

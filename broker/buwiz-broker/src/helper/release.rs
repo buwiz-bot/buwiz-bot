@@ -48,11 +48,18 @@ fn name_ok(s: &str, extra: &[char]) -> bool {
     !s.is_empty() && s.len() <= 100 && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || extra.contains(&c))
 }
 
+/// The GitHub organization a bare mini app name is looked up in.
+pub const FIRST_PARTY_ORG: &str = "buwiz-app";
+
 /// `https://github.com/<owner>/<repo>` (optionally `/releases/tag/<tag>`,
-/// a trailing `/` or `.git`) or `<owner>/<repo>`.
+/// a trailing `/` or `.git`) or `<owner>/<repo>`, used as given; or a bare
+/// name ([`bare_name`]): `https://github.com/buwiz-app/<slug>`.
 pub fn parse_url(url: &str) -> Result<Source, String> {
-    let bad = || format!("not a GitHub repository: {} (send https://github.com/<owner>/<repo> or <owner>/<repo>)", url.chars().take(120).collect::<String>());
+    let bad = || format!("not a GitHub repository: {} (send a mini app's name, https://github.com/<owner>/<repo> or <owner>/<repo>)", url.chars().take(120).collect::<String>());
     let s = url.trim();
+    if !s.contains('/') && !s.contains(':') {
+        return bare_name(s).ok_or_else(bad);
+    }
     let path = match s.strip_prefix("https://github.com/") {
         Some(p) => p,
         None if !s.contains(':') && !s.starts_with('/') => s,
@@ -70,6 +77,27 @@ pub fn parse_url(url: &str) -> Result<Source, String> {
         return Err(bad());
     }
     Ok(Source { owner: owner.to_owned(), repo: repo.to_owned(), tag: tag.map(str::to_owned) })
+}
+
+/// A bare name: letters, digits, `-`, `_` and spaces, then optionally a
+/// version as `@<tag>` or ` <tag>` (`word`, `Google Workspace`, `word@v1.0.0`,
+/// `word 1.2`); the repo is its slug in [`FIRST_PARTY_ORG`], lowercased with
+/// spaces as `-` ("Google Workspace" is `google-workspace`).
+fn bare_name(s: &str) -> Option<Source> {
+    let version = |t: &str| {
+        let d = t.strip_prefix('v').unwrap_or(t);
+        d.starts_with(|c: char| c.is_ascii_digit()) && name_ok(t, &['.', '_', '+'])
+    };
+    let (name, tag) = match s.split_once('@') {
+        Some((n, t)) => (n.trim(), Some(t.trim()).filter(|t| version(t))?.into()),
+        None => match s.rsplit_once(' ') {
+            Some((n, t)) if version(t.trim()) => (n.trim(), Some(t.trim())),
+            _ => (s, None),
+        },
+    };
+    let fine = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ');
+    let slug = name.split_whitespace().collect::<Vec<_>>().join("-").to_ascii_lowercase();
+    (fine && name_ok(&slug, &['_'])).then(|| Source { owner: FIRST_PARTY_ORG.to_owned(), repo: slug, tag: tag.map(str::to_owned) })
 }
 
 /// This build's platform as release indexes name it (`macos-aarch64`).
@@ -308,7 +336,10 @@ pub async fn fetch(api: &str, src: &Source, trust: &Trust, data: &Path) -> Resul
     };
     let body = small(&at, "application/vnd.github+json", plain, SMALL_MAX).await.map_err(|e| {
         if e.ends_with("answered 404") {
-            format!("{}/{} has no published release{}", src.owner, src.repo, src.tag.as_ref().map(|t| format!(" {t}")).unwrap_or_default())
+            match &src.tag {
+                Some(t) => format!("{}/{} has no release {t}", src.owner, src.repo),
+                None => format!("{}/{} has no release yet", src.owner, src.repo),
+            }
         } else {
             e
         }
@@ -473,13 +504,31 @@ pub(crate) mod tests {
             "https://github.com/a/b/releases/tag/x%2F..",
             "a/b/releases/tag/v1",
             "/a/b",
-            "a",
             "",
+            "a.b",
+            "word@latest",
+            "word@",
             "https://github.com/a/b?x=1",
             "git@github.com:a/b.git",
         ] {
             assert!(parse_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_bare_name_is_a_first_party_repository() {
+        let src = |repo: &str, tag: Option<&str>| Ok(Source { owner: FIRST_PARTY_ORG.into(), repo: repo.into(), tag: tag.map(str::to_owned) });
+        assert_eq!(parse_url("word"), src("word", None));
+        assert_eq!(parse_url(" Google Workspace "), src("google-workspace", None));
+        assert_eq!(parse_url("google_workspace"), src("google_workspace", None));
+        assert_eq!(parse_url("word@v1.0.0"), src("word", Some("v1.0.0")));
+        assert_eq!(parse_url("Google  Workspace v1.2"), src("google-workspace", Some("v1.2")));
+        assert_eq!(parse_url("word 2"), src("word", Some("2")));
+        assert_eq!(parse_url("Ebir Forms"), src("ebir-forms", None), "a word is no version");
+        // a URL or owner/repo is used as given
+        assert_eq!(parse_url("someone/word").unwrap().owner, "someone");
+        assert_eq!(parse_url("https://github.com/someone/word/releases/tag/v3").unwrap(), Source { owner: "someone".into(), repo: "word".into(), tag: Some("v3".into()) });
+        assert!(parse_url("word!").is_err() && parse_url("w ord.x").is_err());
     }
 
     #[test]
