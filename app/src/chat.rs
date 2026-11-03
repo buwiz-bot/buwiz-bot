@@ -1269,8 +1269,15 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
                 }));
         }
         let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
-        if !local.error.is_empty() {
-            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        // a refusal here, else why the last sign-in failed (Sign in again)
+        let key = crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label);
+        let row_err = listed.as_ref().and_then(|p| p.accounts.iter().find(|a| a.account == n.account && a.label == label).map(|a| a.error.clone())).unwrap_or_default();
+        let err = Some(local.error.clone())
+            .filter(|e| !e.is_empty())
+            .or_else(|| store().v1.account_err.with(|m| m.get(&key).cloned()).filter(|e| !e.is_empty()))
+            .unwrap_or(row_err);
+        if !err.is_empty() && !signing {
+            c = c.child(text(err).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
         }
         c.into_element()
     }))

@@ -416,7 +416,8 @@ impl Host {
     /// per signed-in label of each declared account, `{account, label,
     /// provider, title, subject, state, required}`; an account never signed
     /// in is a `default` row in state `none`; a signed-in row says whether
-    /// it is the `active` label. A row whose provider's setup
+    /// it is the `active` label; a row whose sign-in waits on its callback
+    /// is `pending` (a new label's has a row of its own). A row whose provider's setup
     /// is missing (`setup_view`) adds `setup` (why sign-in can't start); one
     /// whose last sign-in failed adds `error`, and `fix: "setup"` when the
     /// provider refused its client.
@@ -434,6 +435,10 @@ impl Host {
                 if missing {
                     o["setup"] = json!(self.stored_setup_error(&a.provider).unwrap_or_else(|| NEEDS_GOOGLE_CLIENT.to_owned()));
                 }
+                // a sign-in waiting on its callback (gone after a restart or once finished)
+                if self.accounts.pending().contains_key(&flow_id(id, &a.id, label)) {
+                    o["pending"] = json!(true);
+                }
                 if let Some((why, fix)) = self.accounts.errors().get(&token_ref(id, &a.id, label)).filter(|_| state != "connected") {
                     o["error"] = json!(why);
                     if *fix {
@@ -445,6 +450,15 @@ impl Host {
             let mine: Vec<&AccountRow> = rows.iter().filter(|r| r.account == a.id).collect();
             if mine.is_empty() {
                 out.push(row(DEFAULT_LABEL, None, "none"));
+            }
+            // a new label's sign-in under way, or its failure, before it has a row
+            let prefix = format!("{id}/{}/", a.id);
+            let mut fresh: Vec<String> = self.accounts.pending().values().filter(|p| p.plugin == id && p.account == a.id).map(|p| p.label.clone()).collect();
+            fresh.extend(self.accounts.errors().keys().filter_map(|k| k.strip_prefix(&prefix).map(str::to_owned)));
+            fresh.sort();
+            fresh.dedup();
+            for l in fresh.into_iter().filter(|l| !mine.iter().any(|r| r.label == *l) && !(mine.is_empty() && l == DEFAULT_LABEL)) {
+                out.push(row(&l, None, "none"));
             }
             let active = self.active_label(id, &a.id);
             for r in mine {
@@ -757,6 +771,9 @@ impl Host {
             return ("refused", String::new());
         }
         if code.is_some() && state != Some(p.state.as_str()) {
+            // a stale or forged answer: the flow stays; the row says so
+            self.accounts.errors().insert(token_ref(&p.plugin, &p.account, &p.label), ("The sign-in answer did not match. Sign in again.".to_owned(), false));
+            self.emit(&p.plugin);
             return ("refused", String::new());
         }
         self.accounts.pending().remove(flow);

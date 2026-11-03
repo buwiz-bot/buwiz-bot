@@ -422,6 +422,9 @@ pub struct Account {
     pub fix_setup: bool,
     /// The active label of its account: the one the plugin gets.
     pub active: bool,
+    /// A sign-in of it waits on its callback at the broker (gone after a
+    /// broker restart, or once it finished).
+    pub pending: bool,
 }
 
 impl Account {
@@ -438,6 +441,7 @@ impl Account {
             error: s(v, "error"),
             fix_setup: s(v, "fix") == "setup",
             active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
+            pending: v.get("pending").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -641,6 +645,34 @@ pub fn signin_of(answer: &Value) -> Option<(String, String)> {
     let s = answer.get("signin")?;
     let (a, l) = (s.get("account")?.as_str()?, s.get("label").and_then(Value::as_str).unwrap_or("default"));
     (super::host_api::account_id_ok(a) && super::host_api::account_label_ok(l)).then(|| (a.to_owned(), l.to_owned()))
+}
+
+/// How long the app waits on a sign-in: the broker's pending flow's life
+/// (`PENDING_FOR`, 10 minutes), then its card offers Sign in again.
+pub const SIGNIN_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// What the plugin list says of a sign-in being waited on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SigninWait {
+    /// Still pending at the broker (or the list could not be read).
+    Waiting,
+    Connected,
+    /// The callback failed: why (the row's error).
+    Failed(String),
+    /// No flow left (the broker restarted, or it ended without a word):
+    /// Sign in again.
+    Gone,
+}
+
+/// `account`'s `label` sign-in as `listed` (None: not read) says it is.
+pub fn signin_wait(listed: Option<&Listed>, account: &str, label: &str) -> SigninWait {
+    let Some(p) = listed else { return SigninWait::Waiting };
+    match p.accounts.iter().find(|a| a.account == account && a.label == label) {
+        Some(a) if a.connected() => SigninWait::Connected,
+        Some(a) if !a.error.is_empty() && !a.pending => SigninWait::Failed(a.error.clone()),
+        Some(a) if a.pending => SigninWait::Waiting,
+        _ => SigninWait::Gone,
+    }
 }
 
 /// What an account command row says in the composer's popup.
@@ -1388,6 +1420,23 @@ mod tests {
             ]
         );
         assert!(host_api::account_command(&b, "app.buwiz.gws", "c1", "status").is_err() && host_api::account_command(&b, "../x", "c1", "login").is_err());
+    }
+
+    #[test]
+    fn a_sign_in_waits_while_pending_and_ends_when_done_failed_or_gone() {
+        let at = |rows: Value| Listed::of(&json!({"id": "x.y.z", "accounts": rows}));
+        assert_eq!(signin_wait(None, "google", "default"), SigninWait::Waiting, "the list unread (the broker restarting)");
+        assert_eq!(signin_wait(Some(&at(json!([{"account": "google", "label": "default", "state": "none", "pending": true}]))), "google", "default"), SigninWait::Waiting);
+        assert_eq!(signin_wait(Some(&at(json!([{"account": "google", "label": "default", "state": "connected"}]))), "google", "default"), SigninWait::Connected);
+        let failed = at(json!([{"account": "google", "label": "default", "state": "none", "error": "Sign-in failed: access_denied"}]));
+        assert_eq!(signin_wait(Some(&failed), "google", "default"), SigninWait::Failed("Sign-in failed: access_denied".into()));
+        // refused while the flow still waits: keep waiting
+        let refused = at(json!([{"account": "google", "label": "default", "state": "none", "pending": true, "error": "The sign-in answer did not match. Sign in again."}]));
+        assert_eq!(signin_wait(Some(&refused), "google", "default"), SigninWait::Waiting);
+        // the broker restarted: the flow is gone, Sign in again
+        assert_eq!(signin_wait(Some(&at(json!([{"account": "google", "label": "default", "state": "none"}]))), "google", "default"), SigninWait::Gone);
+        assert_eq!(signin_wait(Some(&at(json!([]))), "google", "work"), SigninWait::Gone, "a new label's row went with its flow");
+        assert_eq!(SIGNIN_WAIT, std::time::Duration::from_secs(600));
     }
 
     #[test]

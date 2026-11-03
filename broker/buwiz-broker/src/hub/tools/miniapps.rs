@@ -767,7 +767,7 @@ mod tests {
         assert_eq!((q["client_id"].as_str(), q["access_type"].as_str(), q["prompt"].as_str(), q["code_challenge_method"].as_str(), q["response_type"].as_str()), (CID, "offline", "consent", "S256", "code"));
         assert_eq!(q["scope"], "https://www.googleapis.com/auth/gmail.readonly openid email");
         assert!(opened.lock().unwrap().is_empty(), "open: false opens nothing");
-        assert_eq!(b.host.accounts_view(FX), json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": null, "state": "none", "required": true}]));
+        assert_eq!(b.host.accounts_view(FX), json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": null, "state": "none", "required": true, "pending": true}]));
         assert!(b.host.account_pending(&flow));
         assert_eq!(b.host.account_callback(&flow, Some("code-1"), Some("wrong"), None).await.0, "refused");
         assert_eq!(b.host.account_callback("account:app.buwiz.fixture/google/other", Some("code-1"), Some(&state), None).await.0, "refused");
@@ -1226,6 +1226,39 @@ mod tests {
         let card = cards(&b.ctx, &chat, "account_required").pop().unwrap().1;
         assert_eq!(card["setup"]["fields"][0]["pattern"], crate::hub::market::catalog::GOOGLE_CLIENT_ID_PATTERN, "the card carries the checks");
         assert!(!card.to_string().contains("GOCSPX-abc") && !card.to_string().contains(CID), "no values in the chat");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// The accounts view says which sign-in waits on its callback (a new
+    /// label's too, in a row of its own), so the app can stop waiting when
+    /// the flow is gone (a restart, a finish); a callback that fails, or
+    /// comes back refused, leaves its reason on the row.
+    #[tokio::test]
+    async fn a_waiting_sign_in_is_pending_on_its_row_and_a_failed_or_refused_one_says_why() {
+        let b = bed_in("pending", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        let row = |label: &str| b.host.accounts_view(FX).as_array().unwrap().iter().find(|r| r["label"] == label).cloned();
+        assert!(row("default").unwrap().get("pending").is_none());
+        let (flow, state, _) = sign_in(&b).await;
+        assert_eq!(row("default").unwrap()["pending"], true);
+        // a stale answer: refused, the row says so, the flow still waits
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some("stale"), None).await.0, "refused");
+        assert_eq!(row("default").unwrap()["error"], "The sign-in answer did not match. Sign in again.");
+        assert_eq!(row("default").unwrap()["pending"], true);
+        // the user closed Google's page with an error: failed, no longer pending
+        assert_eq!(b.host.account_callback(&flow, None, Some(&state), Some("access_denied")).await.0, "failed");
+        let r = row("default").unwrap();
+        assert_eq!((r.get("pending"), r["error"].clone()), (None, json!("Sign-in failed: access_denied")));
+        // a new label's sign-in has a row while it waits
+        b.host.account_signin(FX, "google", &json!({"open": false, "label": "work"})).await.unwrap();
+        assert_eq!((row("work").unwrap()["pending"].clone(), row("work").unwrap()["state"].clone()), (json!(true), json!("none")));
+        // signed out (the flow dropped): no row left for it
+        b.host.account_signout(FX, "google", &json!({"label": "work"})).await.unwrap();
+        assert!(row("work").is_none());
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

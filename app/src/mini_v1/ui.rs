@@ -1317,8 +1317,10 @@ impl Store {
     }
 
     /// Sign in: the broker opens the browser; the row says "Signing in…"
-    /// until the list has it connected (checked every 2 s, 5 min at most)
-    /// or Cancel. `failed` hears a refusal.
+    /// until the list has it connected, failed (its error under the row and
+    /// the card) or gone (the broker restarted and forgot it), checked every
+    /// 2 s for as long as the broker keeps the flow ([`connect::SIGNIN_WAIT`]),
+    /// or Cancel; then Sign in shows again. `failed` hears a refusal.
     pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(RoxError) + 'static) {
         let key = signing_key(plugin, account, label.trim());
         if self.v1.signing.with_untracked(|s| s.contains(&key)) {
@@ -1341,22 +1343,29 @@ impl Store {
                     });
                     return failed(e);
                 }
-                for _ in 0..150 {
+                for _ in 0..connect::SIGNIN_WAIT.as_secs() / 2 {
                     if !self.v1.signing.with_untracked(|s| s.contains(&key)) {
                         break;
                     }
                     let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
-                    let done = crate::vault::off_main(move || {
+                    let now = crate::vault::off_main(move || {
                         std::thread::sleep(std::time::Duration::from_secs(2));
-                        let list = host_api::plugins(&broker()).ok()?;
-                        let p = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?;
-                        // connected, or the broker's word on why it failed
-                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && (x.connected() || !x.error.is_empty())))
+                        // unread (the broker away): wait on; read, the plugin's rows (none: gone)
+                        let listed = host_api::plugins(&broker()).ok().map(|l| l.iter().map(connect::Listed::of).find(|x| x.id == p2).unwrap_or_default());
+                        connect::signin_wait(listed.as_ref(), &a2, &l2)
                     })
                     .await
-                    .flatten();
-                    if done == Some(true) {
-                        break;
+                    .unwrap_or(connect::SigninWait::Waiting);
+                    match now {
+                        connect::SigninWait::Waiting => {}
+                        connect::SigninWait::Failed(why) => {
+                            let k = key.clone();
+                            self.v1.account_err.update(|m| {
+                                m.insert(k, why);
+                            });
+                            break;
+                        }
+                        _ => break,
                     }
                 }
                 self.v1.signing.update(|s| {
