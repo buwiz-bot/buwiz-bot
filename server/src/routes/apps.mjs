@@ -546,7 +546,8 @@ export default async function handle(req, res) {
   const stateName = () => {
     const u = new URL(req.url, "http://x");
     const p = u.pathname.replace(/^\/state\/?/, "");
-    return u.searchParams.get("name") || decodeURIComponent(p);
+    // the path wins: a widget granted /state/<name> must not re-aim it with ?name=
+    return decodeURIComponent(p) || u.searchParams.get("name") || "";
   };
   if (req.method === "GET" && req.url.startsWith("/state")) {
     const name = stateName();

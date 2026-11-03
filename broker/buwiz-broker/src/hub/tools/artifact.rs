@@ -80,11 +80,15 @@ pub fn image_file_of(ctx: &HubCtx, name: &str, v: Option<f64>) -> Option<String>
     Some(text[at..at + n].to_owned())
 }
 
+/// A tool's answer when nsh can't be run: nothing was checked, so nothing
+/// was saved.
+const NSH_UNAVAILABLE: &str = "nsh could not run (is NSH set to the nsh CLI?): the module was not checked, and nothing was saved.";
+
 /// `imageModule(file, prompt, w, h)`: an image card's module.
 pub fn image_module(file: &str, w: u32, h: u32) -> String {
     let ar = if w > 0 && h > 0 { format!(", aspectRatio: {:.4}", w as f64 / h as f64) } else { String::new() };
     format!(
-        "import {{ signal, Text, View }} from \"nsh\";\nimport {{ Image }} from \"nsh/image\";\n\nexport default function R() {{\n  const failed = signal(false);\n  return (\n    <View class=\"gap-2\">\n      <If when={{!failed()}}>\n        <Image src=\"asset:/generated/assets/{file}\" resizeMode=\"cover\" onError={{() => failed.set(true)}} style={{{{ width: \"100%\"{ar}, borderRadius: 12 }}}} />\n      </If>\n      <If when={{failed()}}>\n        <Text class=\"text-sm text-zinc-500\">image failed to load</Text>\n      </If>\n    </View>\n  );\n}}\n"
+        "import {{ Image, signal, Text, View }} from \"nsh\";\n\nexport default function R() {{\n  const failed = signal(false);\n  return (\n    <View class=\"gap-2\">\n      <If when={{!failed()}}>\n        <Image src=\"asset:/generated/assets/{file}\" onError={{() => failed.set(true)}} style={{{{ objectFit: \"cover\", width: \"100%\"{ar}, borderRadius: 12 }}}} />\n      </If>\n      <If when={{failed()}}>\n        <Text class=\"text-sm text-zinc-500\">image failed to load</Text>\n      </If>\n    </View>\n  );\n}}\n"
     )
 }
 
@@ -249,14 +253,14 @@ pub async fn generate_app(run: &Run, input: &Value) -> Result<Out, String> {
         }
     }
     let nsh = ctx.nsh.clone().unwrap_or_else(|| Arc::new(pipeline::nsh::NshCli::from_env()));
-    match pipeline::nsh::check_candidate(nsh.as_ref(), &dirs.stage, &name).await {
-        // BUG-compatible: a missing nsh answers "", which reads as a pass
-        // here (`if (err)`), unlike the legacy path's `err === null`
-        Err(e) if !e.is_empty() => {
-            drop_turn(run, &id);
-            return Ok(Out::err(format!("nsh check rejected {name}:\n{}\nFix the module and call generate_app again with the corrected code.", js::slice_utf16(&e, 3000))));
+    // a missing nsh answers "": that is no pass (Node's `if (err)` took it
+    // for one and saved modules nothing had compiled), so nothing is saved
+    if let Err(e) = pipeline::nsh::check_candidate(nsh.as_ref(), &dirs.stage, &name).await {
+        drop_turn(run, &id);
+        if e.is_empty() {
+            return Ok(Out::err(NSH_UNAVAILABLE.into()));
         }
-        _ => {}
+        return Ok(Out::err(format!("nsh check rejected {name}:\n{}\nFix the module and call generate_app again with the corrected code.", js::slice_utf16(&e, 3000))));
     }
     // revising off a specific version branches; default parent is the head
     let head_before = if rev.is_some() { versions::head_of(ctx, &name)? } else { None };
@@ -466,7 +470,21 @@ pub async fn generate_image(run: &Run, input: &Value) -> Result<Out, String> {
         Some(e) => versions::head_of(ctx, e)?,
         None => None,
     };
-    let (v, _) = versions::write_version(ctx, &name, &image_module(&file, w, h), parent, Some(&prompt), None)?;
+    // the card's module passes the same check an app does before a
+    // version is written
+    let module = image_module(&file, w, h);
+    let dirs = Dirs::of(&ctx.data);
+    let _ = std::fs::create_dir_all(&dirs.stage);
+    std::fs::write(dirs.stage.join(format!("{name}.tsx")), &module).map_err(|e| e.to_string())?;
+    let nsh = ctx.nsh.clone().unwrap_or_else(|| Arc::new(pipeline::nsh::NshCli::from_env()));
+    if let Err(e) = pipeline::nsh::check_candidate(nsh.as_ref(), &dirs.stage, &name).await {
+        drop_turn(run, &id);
+        if e.is_empty() {
+            return Ok(Out::err(NSH_UNAVAILABLE.into()));
+        }
+        return Ok(Out::err(format!("nsh check rejected the image card {name}:\n{}", js::slice_utf16(&e, 3000))));
+    }
+    let (v, _) = versions::write_version(ctx, &name, &module, parent, Some(&prompt), None)?;
     art["via"] = json!(backend);
     ctx.store.touch(|s| {
         if let Some(u) = s.thread_mut(&run.turn.thread).and_then(|t| t.turns.iter_mut().find(|u| u.id.as_deref() == Some(id.as_str()))) {
@@ -617,6 +635,9 @@ mod tests {
         assert_eq!(pin_state_key("const S = \"tipcalc\"; fetch(`/state/${S}`)", "R7"), "const S = \"R7\"; fetch(`/state/${S}`)");
         assert_eq!(pin_state_key("const KEY='my-app'", "R7"), "const KEY=\"R7\"");
         assert_eq!(pin_state_key("const S = \"Tip\"", "R7"), "const S = \"Tip\"");
-        assert!(image_module("img-1.png", 1536, 1024).contains("style={{ width: \"100%\", aspectRatio: 1.5000, borderRadius: 12 }}"));
+        // the text the installed nsh 0.3 builds and checks: Image from
+        // "nsh" (nsh/image is gone), objectFit in the style (no resizeMode)
+        assert_eq!(image_module("img-1.png", 1536, 1024), "import { Image, signal, Text, View } from \"nsh\";\n\nexport default function R() {\n  const failed = signal(false);\n  return (\n    <View class=\"gap-2\">\n      <If when={!failed()}>\n        <Image src=\"asset:/generated/assets/img-1.png\" onError={() => failed.set(true)} style={{ objectFit: \"cover\", width: \"100%\", aspectRatio: 1.5000, borderRadius: 12 }} />\n      </If>\n      <If when={failed()}>\n        <Text class=\"text-sm text-zinc-500\">image failed to load</Text>\n      </If>\n    </View>\n  );\n}\n");
+        assert!(image_module("img-1.png", 0, 0).contains("style={{ objectFit: \"cover\", width: \"100%\", borderRadius: 12 }}"));
     }
 }

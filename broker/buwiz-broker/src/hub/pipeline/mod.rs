@@ -113,8 +113,8 @@ export default function R() {
     <View class="items-center gap-3 py-2">
       <Text class="text-5xl font-bold text-zinc-900">{n()}</Text>
       <View class="flex-row gap-3">
-        <View onPress={() => n.update((v) => v - 1)} activeOpacity={0.6} class="rounded-lg bg-zinc-200 px-5 py-2"><Text class="text-lg">−</Text></View>
-        <View onPress={() => n.update((v) => v + 1)} activeOpacity={0.6} class="rounded-lg bg-blue-600 px-5 py-2"><Text class="text-lg font-semibold text-white">+</Text></View>
+        <View onPress={() => n.update((v) => v - 1)} activeStyle={{ opacity: 0.6 }} class="rounded-lg bg-zinc-200 px-5 py-2"><Text class="text-lg">−</Text></View>
+        <View onPress={() => n.update((v) => v + 1)} activeStyle={{ opacity: 0.6 }} class="rounded-lg bg-blue-600 px-5 py-2"><Text class="text-lg font-semibold text-white">+</Text></View>
       </View>
     </View>
   );
@@ -142,7 +142,8 @@ export default function R() {
   );
 }
 "##;
-const FORM: &str = r##"import { Input, signal, Text, View } from "nsh";
+const FORM: &str = r##"import { signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 export default function R() {
   const name = signal("");
@@ -151,9 +152,9 @@ export default function R() {
   return (
     <View class="gap-2 py-1">
       <Text class="text-sm font-semibold text-zinc-800">Book a table</Text>
-      <Input value={name()} onChangeText={(t) => name.set(t)} placeholder="Name" class="rounded-lg border border-zinc-300 px-3 py-2 text-sm" />
-      <Input value={when()} onChangeText={(t) => when.set(t)} placeholder="Friday, 8 pm" class="rounded-lg border border-zinc-300 px-3 py-2 text-sm" />
-      <View onPress={() => sent.set(true)} activeOpacity={0.7} class="items-center rounded-lg bg-blue-600 py-2">
+      <Input value={name()} onChange={(e) => name.set(e.value)} placeholder="Name" class="rounded-lg border border-zinc-300 px-3 py-2 text-sm" />
+      <Input value={when()} onChange={(e) => when.set(e.value)} placeholder="Friday, 8 pm" class="rounded-lg border border-zinc-300 px-3 py-2 text-sm" />
+      <View onPress={() => sent.set(true)} activeStyle={{ opacity: 0.7 }} class="items-center rounded-lg bg-blue-600 py-2">
         <Text class="text-sm font-semibold text-white">Reserve</Text>
       </View>
       <If when={sent()}><Text class="text-xs text-green-600">Reserved for {name() || "—"}, {when() || "—"} ✓</Text></If>
@@ -170,7 +171,7 @@ export default function R() {
   return (
     <View class="gap-1 py-1">
       <Each of={items0}>{(t, i) => (
-        <View onPress={() => done.update((d) => d.map((v, j) => (j === i() ? !v : v)))} activeOpacity={0.6} class="flex-row items-center gap-2 py-1">
+        <View onPress={() => done.update((d) => d.map((v, j) => (j === i() ? !v : v)))} activeStyle={{ opacity: 0.6 }} class="flex-row items-center gap-2 py-1">
           <View classList={{ "bg-blue-600 border-blue-600": done()[i()] }} class="h-4 w-4 rounded border border-zinc-400" />
           <Text classList={{ "line-through text-zinc-400": done()[i()] }} class="text-sm text-zinc-800">{t()}</Text>
         </View>
@@ -203,7 +204,7 @@ export default function R() {
     <View class="gap-2 py-1">
       <Text class="text-sm text-zinc-700">"##;
 const DEFAULT_TAIL: &str = r##"}</Text>
-      <View onPress={() => liked.update((v) => !v)} activeOpacity={0.6} class="self-start rounded-lg bg-zinc-100 px-3 py-1.5">
+      <View onPress={() => liked.update((v) => !v)} activeStyle={{ opacity: 0.6 }} class="self-start rounded-lg bg-zinc-100 px-3 py-1.5">
         <Text class="text-sm">{liked() ? "♥ liked" : "♡ like"}</Text>
       </View>
     </View>
@@ -254,16 +255,18 @@ pub(crate) mod tests {
         assert_eq!(error_card(&format!("{}y", "x".repeat(700))), card(&format!("\"{}\"", "x".repeat(600))));
     }
 
-    /// pipeline.test.mjs MOCK_SHA
+    /// pipeline.test.mjs MOCK_SHA, re-pinned for nsh 0.3's homes and props
+    /// (`Input` from nsh/base, `onChange`, `activeStyle`); each text passes
+    /// the installed `nsh build` and `nsh check`, so Node's pins differ now
     #[test]
     fn pipe_11_mock_modules_by_keyword_hash_as_nodes() {
         let cases = [
-            ("a counter please", "32cfaa8d3fa97ce47f96dd138b94271df0aa3e90fd10a831958caa1960889aca"),
+            ("a counter please", "961b8c52909ea93990415791cfa725b0d7e4288641df72ea3468e4e82fe701f1"),
             ("weekly bar chart", "fcd7e40baffef91d8048b1cc81105a15c46a31d5e891a2f03f4694c8cf5123ca"),
-            ("a booking form", "181ebbb3fb053ddb896af1f3c88d4f172515bfe47365187cff8834c7baa1cad7"),
-            ("my todo list", "265528ef17ed5b5d13f02d04225c2c0b3d96aca746a4e07887ee12c9db62df68"),
+            ("a booking form", "078d37b92de0886615b5c8ba3b243076ee999b806a55077f8532cd1ca8c79230"),
+            ("my todo list", "ad4529f26c24509473ff7c765ade1f951e75bd05eac0e07e75e27c894b205ac1"),
             ("NVDA stock price", "38c1b59447738dfd11a76c7ae0f26bfce317dae18579df1ceda2a1eaf7cdaf5c"),
-            ("a quote: \"hi\" \\ there", "2a7c5fef082d0816ce152a024a7fae6be1f9e8a9cc3b3c25de6663cb0b50717b"),
+            ("a quote: \"hi\" \\ there", "9b380a5c537667b422e8cc37e31f0ed27d14f6a8472738e0d8e1fe4fdc7c7b57"),
         ];
         for (prompt, want) in cases {
             assert_eq!(sha(&mock_module(prompt)), want, "{prompt}");

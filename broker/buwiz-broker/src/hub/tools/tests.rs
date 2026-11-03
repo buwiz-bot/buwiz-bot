@@ -585,3 +585,23 @@ async fn account_required_puts_one_sign_in_card_in_the_chat() {
     assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap()["settled"], 1);
     assert_eq!(crate::hub::routes::host::settle(&ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "dismissed"})).unwrap_err().code, "invalid_args");
 }
+
+/// A missing nsh answers "": generate_app refuses and saves nothing (it
+/// once read that as a pass and stored modules nothing had compiled).
+#[tokio::test]
+async fn generate_app_refuses_when_nsh_cannot_run() {
+    let dir = std::env::temp_dir().join(format!("rox-tools-no-nsh-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
+    ctx.store.load().unwrap();
+    ctx.nsh = Some(Arc::new(crate::hub::pipeline::nsh::tests::stub(&dir.join("stubs.log"), "missing")));
+    let ctx = Arc::new(ctx);
+    let run = run_in(&ctx, TurnCtx::default());
+    let code = "import { Text } from \"nsh\";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}\n";
+    let out = call(&run, "generate_app", json!({"title": "Hi", "code": code})).await;
+    assert_eq!(out.is_error, Some(true), "{:?}", out.content);
+    assert!(out.content.as_str().unwrap_or_default().starts_with("nsh could not run"), "{:?}", out.content);
+    assert!(!ctx.store.gen_dir().join("R1.tsx").exists());
+    let versions: i64 = ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM versions", [], |r| r.get(0))).unwrap();
+    assert_eq!(versions, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}

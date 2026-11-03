@@ -732,7 +732,7 @@ async fn catalog(ctx: Arc<HubCtx>, _: HubRequest) -> HubResponse {
         if src.contains("/data/") {
             kinds.push("api");
         }
-        if src.contains("nsh/keymap") {
+        if imports_keymap(&src) {
             kinds.push("keys");
         }
         if kinds.is_empty() {
@@ -804,9 +804,29 @@ async fn widget_meta(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// The module imports nsh's `keymap`: from "nsh" (nsh 0.3) or the removed
+/// "nsh/keymap". (nsh/base exports another function of that name.)
+fn imports_keymap(src: &str) -> bool {
+    static KEYMAP: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+    KEYMAP
+        .get_or_init(|| regex_lite::Regex::new(r#"import\s*\{[^}]*\bkeymap\b[^}]*\}\s*from\s*["']nsh(?:/keymap)?["']"#).expect("the keymap pattern"))
+        .is_match(src)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_keys_kind_reads_keymap_from_nsh_and_the_old_module() {
+        assert!(imports_keymap("import { cleanup, keymap, signal } from \"nsh\";\nkeymap.bind({});"));
+        assert!(imports_keymap("import {\n  keymap,\n  Text,\n} from 'nsh';"));
+        assert!(imports_keymap("import { keymap } from \"nsh/keymap\";"));
+        // nsh/base's keymap is another function; a mention is no import
+        assert!(!imports_keymap("import { keymap } from \"nsh/base\";"));
+        assert!(!imports_keymap("import { Text } from \"nsh\";\n// keymap later\nconst keymapish = 1;"));
+        assert!(!imports_keymap("import { keymapper } from \"nsh\";"));
+    }
 
     #[test]
     fn apps_locale_compare_orders_as_icu_root() {

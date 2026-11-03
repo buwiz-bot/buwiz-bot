@@ -1441,6 +1441,8 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
                         .text_color(theme::MUTED),
                 ),
         )
+        // a pop-out this row asked for that failed
+        .child(view().px_2().child(crate::widgets::popout_err_text(a0.app.clone(), 4)))
 }
 
 /// A library row's second line: the kind and what is known of it —
@@ -1728,6 +1730,10 @@ fn app_actions() -> View {
                 store().popout(&m.name);
             }),
         )
+        .child(dynamic(|| match store().detail_meta.get() {
+            Some(m) => crate::widgets::popout_err_text(m.name, 0).into_element(),
+            None => view().into_element(),
+        }))
         .child(when(
             || !store().detail_meta.get().map(|m| m.published).unwrap_or(true),
             || {

@@ -478,4 +478,26 @@ mod tests {
         assert_eq!(clean_color(Some(&json!("red"))), "");
         assert!(time_id("g").starts_with('g'));
     }
+
+    #[test]
+    fn a_v1_app_row_is_removed() {
+        use crate::hub::traits::Clock;
+        let dir = std::env::temp_dir().join(format!("rox-groups-v1-{}-{}", std::process::id(), time_id("t")));
+        std::fs::create_dir_all(dir.join("widgets")).unwrap();
+        let ctx = HubCtx::new(dir.clone(), Clock::manual());
+        ctx.store.load().unwrap();
+        let v1 = "v1:app.buwiz.ebirforms/forms";
+        ctx.db
+            .with(|c| {
+                c.execute("INSERT INTO groups(id,name,color,ord,collapsed,created_at) VALUES('g1','G','#aabbcc',0,0,0)", [])?;
+                c.execute("INSERT INTO group_items(group_id,kind,ref,ord,title) VALUES('g1','app',?,0,'Forms')", [v1])?;
+                c.execute("INSERT INTO group_items(group_id,kind,ref,ord) VALUES('g1','app','mcp:apps/hello',1)", [])?;
+                Ok(())
+            })
+            .unwrap();
+        group_item(&ctx, &json!({"id": "g1", "kind": "app", "ref": v1, "op": "remove"})).unwrap();
+        let rows: Vec<(String, String)> = ctx.db.with(|c| item_rows(c, "g1")).unwrap().into_iter().map(|it| (it.0, it.1)).collect();
+        assert_eq!(rows, [("app".to_owned(), "mcp:apps/hello".to_owned())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -204,18 +204,21 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
         .child({
             let err_app = art.app.clone();
             let err_app2 = art.app.clone();
+            // the whole message, at reading size: a load or run error is
+            // all the owner gets of an app that shows nothing
             view().mt_1().child(when(
                 move || !store().mini_err(&err_app).get().is_empty(),
                 move || {
                     let err = store().mini_err(&err_app2).get();
                     text(format!("widget: {err}"))
-                        .text_size(px(10.0))
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
                         .text_color(theme::DOWN)
-                        .number_of_lines(2)
                         .into_element()
                 },
             ))
         })
+        .child(popout_err_text(art.app.clone(), 0))
         // No action row: the card's actions live in its ⋯ menu
         // (`ctx::card_items`), as Grok's do. Only a failed build offers
         // Retry in place.
@@ -281,6 +284,24 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                     )
                 }),
         )
+}
+
+/// Module key `app`'s last pop-out failure (`Store::popout_err`), in red
+/// under the row, pane or card that asked; `lines` caps it (0 = all).
+pub(crate) fn popout_err_text(app: String, lines: u32) -> impl IntoElement {
+    let app2 = app.clone();
+    when(
+        move || !store().popout_err(&app).get().is_empty(),
+        move || {
+            text(store().popout_err(&app2).get())
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(theme::DOWN)
+                .when(lines > 0, |t| t.number_of_lines(lines))
+                .mt_1()
+                .into_element()
+        },
+    )
 }
 
 fn card_action(

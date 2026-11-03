@@ -1,6 +1,5 @@
-import { mount, Text, View } from "nsh";
+import { colorScheme, mount, Text, View } from "nsh";
 import { isAvailable, Window } from "nsh/desktop";
-import { colorScheme } from "nsh/device";
 import R, * as mod from "${rel}";
 // Sizing contract: `export const popoutSize = { w, h }` fixes both axes
 // (canvas apps, games); `export const popoutWidth` sets the width and
@@ -11,14 +10,17 @@ const capH = ${capH};
 // The hidden title bar still paints the traffic lights over the top ~26pt —
 // the strip is real chrome: pad the module below it, add it to the frame.
 const STRIP = 26;
+// The version badge's text ("" for none), typed wide so the check reads
+// the test below as a test, not as an always-true or always-false literal.
+const BADGE: string = ${JSON.stringify(badge)};
 if (isAvailable) {
   Window.setTitle("widget · " + ${JSON.stringify(popName)});
-  Window.setTitleBar("hidden", 32); // natural height: the lights land at AppKit's own (9,9) spot
+  Window.setTitleBar({ style: "hidden", height: 32 }); // natural height: the lights land at AppKit's own (9,9) spot
   // A regular window level: aerospace keeps it out of the tile grid (a
   // free-standing window), but it stacks normally — it can sit behind
   // other windows and comes forward when focused, not pinned on top.
   Window.setLevel("normal");
-  Window.setFrame({ width: wantW, height: ${wantH} + STRIP });
+  Window.setFrame({ size: { width: wantW, height: ${wantH} + STRIP } });
   // A spawned host process has no activation context — without this the
   // window orders in behind the front app, never key (grayed lights).
   Window.orderFront();
@@ -26,9 +28,10 @@ if (isAvailable) {
 // The window hugs the widget's real height — with manners. A resize is
 // applied only once the measured height has been stable for ~150ms, so a
 // transient "loading" or empty render can never collapse it; a change
-// under 12pt is wobble, not layout. anchorTop keeps the top edge fixed —
-// the window grows and shrinks at its bottom edge. popoutSize-h modules
-// opt out of hugging entirely: their frame is exactly what they asked.
+// under 12pt is wobble, not layout. A height set without an origin keeps
+// the top edge fixed — the window grows and shrinks at its bottom edge.
+// popoutSize-h modules opt out of hugging entirely: their frame is exactly
+// what they asked.
 let lastH = ${hintH ? wantH : 0}, pendingH = 0, pendingT = 0, timer: any = null;
 const hug = (raw: number) => {
   if (!isAvailable || exact?.h) return;
@@ -47,7 +50,7 @@ const hug = (raw: number) => {
       return;
     }
     lastH = pendingH;
-    Window.setFrame({ height: pendingH + STRIP, anchorTop: true, animated: true });
+    Window.setFrame({ size: { height: pendingH + STRIP }, animated: true });
   }, 150);
 };
 mount(() => (
@@ -61,13 +64,13 @@ mount(() => (
     }}
   >
     <View style={{ paddingTop: STRIP }}>
-      <View onLayout={(e) => hug(e.height)}>
+      <View onLayout={(e) => hug(e.bounds.size.height)}>
         <R />
       </View>
     </View>
     {/* The version badge, top right in the title strip: which version
         of the app this window runs. */}
-    {${JSON.stringify(badge)} ? (
+    {BADGE ? (
       <View
         style={{
           position: "absolute", top: 6, right: 8, height: 17, paddingHorizontal: 7,
@@ -81,7 +84,7 @@ mount(() => (
             color: colorScheme() === "dark" ? "rgba(245,245,245,0.75)" : "rgba(28,28,28,0.65)",
           }}
         >
-          {${JSON.stringify(badge)}}
+          {BADGE}
         </Text>
       </View>
     ) : null}

@@ -328,6 +328,30 @@ pub(crate) fn compile_error(error: &str) -> String {
     format!("it failed to compile: {first}")
 }
 
+/// What a v0 card's load or run error shows (`store.mini_err`): the
+/// engine's message without its stack frames (`at f (file:1:2)`), or
+/// `None` for the font warning the v1 path skips too.
+pub(crate) fn run_error(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("at "))
+        .collect();
+    let first = lines.first().copied().unwrap_or("no details");
+    if first.starts_with("font failed") {
+        return None;
+    }
+    let mut message = lines.join("\n");
+    if message.is_empty() {
+        message = first.to_owned();
+    }
+    // a runaway message stays a card's worth of text
+    if message.chars().count() > 600 {
+        message = message.chars().take(600).collect::<String>() + "…";
+    }
+    Some(format!("it stopped: {message}"))
+}
+
 thread_local! {
     /// The full-screen apps ✕ / ⌘W / ⌘[ took off, latest last: ⌘] puts
     /// them back, until another app opens.
@@ -579,16 +603,56 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
     .into_element()
 }
 
-/// Denies capability-gated access for generated widgets: network, web views,
-/// clipboard, picker, status bar, open URLs, host functions, files, processes
-/// and sockets. NSH does not yet gate `nsh/desktop` window/menu commands or
-/// `os.homedir()`.
+/// Denies capability-gated access for anything that is neither a generated
+/// widget nor an MCP app: network, web views, clipboard, picker, status bar,
+/// open URLs, host functions, files, processes and sockets. NSH does not yet
+/// gate `nsh/desktop` window/menu commands or `os.homedir()`.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn widget_policy() -> nsh_engine::Policy {
+pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
     nsh_engine::Policy {
         declared: Some(nsh_core::access::Capabilities::default()),
         ..nsh_engine::Policy::default()
     }
+}
+
+/// A generated widget keeps its state at the server (the generator's
+/// contract): GET `/state/<name>` restores it, POST saves it. This grants
+/// those two on the server's HTTP origin (`client::backend()`) for the
+/// widget's own name only — the base name, `R28` for `R28@v2` — as an exact
+/// path, so `/state/R280` and `/state/R28/x` stay out; nothing else. Any
+/// other name, or an origin-configuration error, gets [`deny_all_policy`].
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn widget_policy(module: &str) -> nsh_engine::Policy {
+    widget_state_policy(module).unwrap_or_else(|_| deny_all_policy())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn widget_state_policy(module: &str) -> Result<nsh_engine::Policy, String> {
+    let name = crate::store::app_name(module);
+    // the server's state names (`/^[\w.-]+$/`), and not `.` / `..`, which
+    // a URL path resolves away
+    if name.is_empty()
+        || name.bytes().all(|b| b == b'.')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    {
+        return Err(format!("no state name for module {module:?}"));
+    }
+    let (host, port) = mcp_app_server_host_port()?;
+    let mut grant = nsh_core::access::HttpGrant::default();
+    grant.host = nsh_core::access::HostPattern::new(&host)?;
+    grant.methods = vec!["GET".into(), "POST".into()];
+    grant.schemes = vec!["http".into()];
+    grant.port = Some(port);
+    grant.paths = vec![format!("/state/{name}")];
+
+    let mut declared = nsh_core::access::Capabilities::default();
+    declared.network.http.push(grant);
+    Ok(nsh_engine::Policy {
+        declared: Some(declared),
+        ..nsh_engine::Policy::default()
+    })
 }
 
 /// The app server's routes an MCP app may call: its tools (`/mcp/call`),
@@ -646,13 +710,13 @@ fn mcp_app_server_host_port() -> Result<(String, u16), String> {
 }
 
 /// The module key, not the server-supplied title, selects the bundle policy.
-/// Any origin-configuration error for an MCP app falls back to deny-all.
+/// Any origin-configuration error falls back to deny-all.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn mini_bundle(module: &str, js: String) -> nsh_engine::Bundle {
     let policy = if module.starts_with("mcp:") {
-        mcp_app_policy().unwrap_or_else(|_| widget_policy())
+        mcp_app_policy().unwrap_or_else(|_| deny_all_policy())
     } else {
-        widget_policy()
+        widget_policy(module)
     };
     nsh_engine::Bundle::source(js).with_policy(policy)
 }
@@ -1473,6 +1537,20 @@ mod imp {
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
             }
+            // a load or run error shows under the card (`mini_err`, with
+            // Retry), not as an empty box; the v1 path above has its own
+            let key = module.clone();
+            self.view.set_error_handler(move |text| {
+                if let Some(message) = super::run_error(text) {
+                    let key = key.clone();
+                    crate::mini_v1::to_store(move |st| {
+                        let err = st.mini_err(&key);
+                        if err.get_untracked() != message {
+                            err.set(message);
+                        }
+                    });
+                }
+            });
             self.view
                 .load(nsh_platform_macos::App::Js(super::mini_bundle(&module, js)));
         }
@@ -1677,8 +1755,41 @@ export default function R() {
     }
 
     #[test]
-    fn widget_policy_grants_nothing() {
+    fn widget_policy_grants_only_its_own_state() {
         let access = super::mini_bundle("R1", String::new()).policy.access();
+        // its own state, GET to restore and POST to save
+        assert!(access.allows_http("GET", "http://127.0.0.1:8787/state/R1"));
+        assert!(access.allows_http("POST", "http://127.0.0.1:8787/state/R1"));
+        // a pinned version keeps the base name's state
+        let pinned = super::mini_bundle("R1@v2", String::new()).policy.access();
+        assert!(pinned.allows_http("GET", "http://127.0.0.1:8787/state/R1"));
+        assert!(pinned.allows_http("POST", "http://127.0.0.1:8787/state/R1"));
+        assert!(!pinned.allows_http("GET", "http://127.0.0.1:8787/state/R1@v2"));
+        for access in [&access, &pinned] {
+            // no other state key: the path matches exactly
+            for path in ["/state/R10", "/state/R1x", "/state/R1/", "/state/R1/x", "/state/R2", "/state/R1@v2", "/state/r1", "/state/%52%31", "/state/../state/R1", "/state/", "/state", "/statefoo"] {
+                assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
+                assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
+            }
+            // only GET and POST
+            for method in ["PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] {
+                assert!(!access.allows_http(method, "http://127.0.0.1:8787/state/R1"), "{method}");
+            }
+            // no other origin
+            assert!(!access.allows_http("GET", "https://127.0.0.1:8787/state/R1"));
+            assert!(!access.allows_http("GET", "http://localhost:8787/state/R1"));
+            assert!(!access.allows_http("GET", "http://127.0.0.1:8788/state/R1"));
+            assert!(!access.allows_http("GET", "http://127.0.0.1/state/R1"));
+            assert!(!access.allows_http("GET", "http://attacker.example:8787/state/R1"));
+            // no other route
+            for path in ["/", "/threads", "/data/linear/issues", "/mcp/call", "/file/raw/x", "/popout", "/chat"] {
+                assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
+                assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
+            }
+            assert!(!access.allows_websocket("ws://127.0.0.1:8787/"));
+            assert!(!access.allows_websocket("ws://127.0.0.1:8787/threads"));
+            assert!(!access.allows_media("http://127.0.0.1:8787/file/raw/x"));
+        }
         assert!(!access.allows_http("GET", "http://127.0.0.1:8787/threads"));
         assert!(!access.allows_http("POST", "https://attacker.example/"));
         assert!(!access.allows_media("https://attacker.example/x.png"));
@@ -1692,10 +1803,11 @@ export default function R() {
         assert!(!access.allows_host("anything"));
         assert!(!access.allows_process("sh"));
         assert!(!access.allows_socket("127.0.0.1", 8787));
-        assert!(super::widget_policy().harden);
+        assert!(super::widget_policy("R1").harden);
 
-        // a v1 app never runs on this policy: it gets its own (mini_v1)
-        for module in ["file:/x", "", "v1:app.buwiz.fixture/board"] {
+        // a module key that is no state name gets nothing (a v1 app never
+        // runs on this policy: it gets its own, mini_v1)
+        for module in ["file:/x", "", "v1:app.buwiz.fixture/board", ".", "..", "@v2", "a/b", "R1?name=R2", "R 1"] {
             let policy = super::mini_bundle(module, String::new()).policy;
             assert_eq!(
                 policy.declared,
@@ -1735,6 +1847,19 @@ export default function R() {
             .expect_err("broken JSX");
         let shown = super::compile_error(&err);
         assert!(shown.starts_with("it failed to compile: ") && !shown.contains('\n'), "{shown}");
+    }
+
+    #[test]
+    fn a_run_error_shows_its_message_without_the_stack() {
+        assert_eq!(
+            super::run_error("ReferenceError: could not load module `nsh/device`\n    at <eval> (R9.js:3:1)\n    at f (R9.js:9:2)\n"),
+            Some("it stopped: ReferenceError: could not load module `nsh/device`".to_owned())
+        );
+        assert_eq!(super::run_error("Error: a\nb\n"), Some("it stopped: Error: a\nb".to_owned()));
+        assert_eq!(super::run_error(""), Some("it stopped: no details".to_owned()));
+        assert_eq!(super::run_error("font failed to load: X"), None);
+        let long = super::run_error(&"x".repeat(2000)).unwrap_or_default();
+        assert!(long.ends_with('…') && long.chars().count() < 700, "{}", long.len());
     }
 
     #[test]
@@ -1780,6 +1905,36 @@ export default function R() {
         assert!(!access.allows_host("anything"));
         assert!(!access.allows_process("sh"));
         assert!(policy.harden);
+    }
+
+    const WIDGET_STATE: &str = r#"
+import { signal, Text } from "nsh";
+
+const S = "http://127.0.0.1:8787/state/";
+const go = (url, init) => fetch(url, init).then(() => "ok", () => "no");
+
+export default function R() {
+  const result = signal("waiting");
+  Promise.all([
+    go(S + "R996"),
+    go(S + "R996", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }),
+    go(S + "R9960"),
+    go(S + "R995", { method: "POST", body: "{}" }),
+    go(S + "R996", { method: "DELETE" }),
+  ]).then((all) => result.set(all.join(" ")));
+  return <Text>{result()}</Text>;
+}
+"#;
+
+    #[test]
+    fn a_widget_reaches_its_own_state_and_no_other() {
+        let js = super::compile_widget("R996", WIDGET_STATE).expect("compile widget");
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R996@v3", js));
+        run_until_text(&engine, &rx, "ok ok no no no");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["http://127.0.0.1:8787/state/R996", "http://127.0.0.1:8787/state/R996"]
+        );
     }
 
     #[test]
