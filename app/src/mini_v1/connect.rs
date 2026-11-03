@@ -277,6 +277,18 @@ pub struct SetupField {
     pub value: String,
 }
 
+/// The line above a setup's fields: what it is for when it is added
+/// (`change` false: the sign-in needs it), what changing it does when it is
+/// already saved (the page's Change, an `app_setup` card).
+pub fn setup_intro(provider: &str, change: bool) -> &'static str {
+    match (provider == "google", change) {
+        (true, false) => "Signing in needs your Google client first. It is shared by every Google plugin: saving it here updates all of them.",
+        (true, true) => "Change the Google client every Google plugin uses. Leave the secret blank to keep the stored one. Changing it signs Google accounts out.",
+        (false, false) => "Signing in needs these values first.",
+        (false, true) => "Change these values. Leave a secret blank to keep the stored one. Changing them signs its accounts out.",
+    }
+}
+
 impl Setup {
     pub fn of(v: &Value) -> Setup {
         Setup {
@@ -1142,6 +1154,11 @@ mod tests {
         assert_eq!(SetupField::of(&json!({"key": "S", "secret": true, "set": true, "value": "leak"})).value, "", "a secret's value is never kept");
         assert_eq!(ready.first_setup().map(|x| x.provider.as_str()), Some("google"));
         assert!(Listed::of(&json!({"id": "x.y.z"})).first_setup().is_none());
+        // adding it says the sign-in needs it; changing it, what a change does
+        assert!(setup_intro("google", false).starts_with("Signing in needs your Google client first"));
+        let change = setup_intro("google", true);
+        assert!(!change.contains("Signing in needs") && change.contains("Leave the secret blank") && change.ends_with("Changing it signs Google accounts out."));
+        assert!(setup_intro("oauth:x", true).starts_with("Change these values"));
     }
 
     #[test]

@@ -1277,7 +1277,7 @@ fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate
     let saving = store().v1.setup_saving.with(|s| s.contains(&n.plugin));
     let mut c = app_card_frame(n.setup_question())
         .child(text(n.setup_question()).text_size(px(13.0)).text_color(theme::TEXT))
-        .child(text(crate::plugins::v1_setup_intro(&n.provider)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+        .child(text(crate::mini_v1::connect::setup_intro(&n.provider, false)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
     for f in &fields {
         c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
     }
@@ -1316,11 +1316,13 @@ fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl 
         }
         let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned());
         let fields = n.fields_from(listed.as_ref());
+        // a ready setup is changed, not added
+        let change = listed.as_ref().is_none_or(|p| p.setup_missing(&n.provider).is_none());
         let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
         let question = if n.title.is_empty() { format!("Change the {}", n.what()) } else { format!("Change the {} of {}", n.what(), n.title) };
         let mut c = app_card_frame(question.clone())
             .child(text(question).text_size(px(13.0)).text_color(theme::TEXT))
-            .child(text(crate::plugins::v1_setup_intro(&n.provider)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+            .child(text(crate::mini_v1::connect::setup_intro(&n.provider, change)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
         for f in &fields {
             c = c.child(crate::plugins::setup_field_in(crate::plugins::v1_setup_field(f), store().v1.setup_vals));
         }

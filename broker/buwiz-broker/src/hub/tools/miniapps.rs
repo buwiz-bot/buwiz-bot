@@ -5,7 +5,10 @@
 //! installs it. `app_uninstall` posts an `app_uninstall` card the same way,
 //! and `app_setup` an `app_setup` card whose fields the user changes a mini
 //! app's setup in (the shared Google client; the model never sees a value);
-//! `app_enable` / `app_disable` act at once; `app_list` lists. A
+//! `app_signin` posts the `account_required` Sign in card for an account
+//! (with the setup it lacks), or says who is signed in already;
+//! `app_enable` / `app_disable` act at once; `app_list` lists, with each
+//! app's setup readiness and accounts (never a value or token). A
 //! package's card also names its folder (`package`), skills and accounts.
 
 use serde_json::{json, Value};
@@ -17,7 +20,7 @@ use crate::hub::routines::store_host::StoreHost;
 use crate::hub::routines::threads;
 use crate::js;
 
-pub const NAMES: [&str; 6] = ["app_install", "app_list", "app_enable", "app_disable", "app_uninstall", "app_setup"];
+pub const NAMES: [&str; 7] = ["app_install", "app_list", "app_enable", "app_disable", "app_uninstall", "app_setup", "app_signin"];
 
 /// The GitHub API base `app_install` reads (tests: a local server).
 #[derive(Clone)]
@@ -37,7 +40,7 @@ pub fn defs() -> Vec<Value> {
         }),
         json!({
             "name": "app_list",
-            "description": "List the installed mini apps: id, title, version, state and whether each is enabled.",
+            "description": "List the installed mini apps: id, title, version, state, whether each is enabled, its setup (ready or missing, per provider) and its accounts (state and who is signed in). Read it to tell \"needs setup\" (app_setup or the sign-in card asks for it) from \"needs sign-in\" (app_signin) from \"connected\".",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({"name": "app_enable", "description": "Switch an installed mini app on (it starts and is verified again).", "input_schema": id_schema("the one to switch on")}),
@@ -51,6 +54,14 @@ pub fn defs() -> Vec<Value> {
             "name": "app_setup",
             "description": "Let the user change, update or fix an installed mini app's setup: its Google client (Client ID and Client Secret), keys or credentials, e.g. when they typed a wrong one or Google refused the client. A card in this chat shows the fields for the user to type into; you never ask for, read or pass the values yourself.",
             "input_schema": id_schema("the one whose setup to change"),
+        }),
+        json!({
+            "name": "app_signin",
+            "description": "Sign the user in, log them in, connect or reconnect their Google account (or another account) for an installed mini app: a card in this chat shows Sign in, which the user presses (the browser opens); when the setup it needs (the Google client) is missing, the card asks for that first. Already connected: it says who is signed in and posts nothing. You cannot sign in for them.",
+            "input_schema": {"type": "object", "properties": {
+                "id": {"type": "string", "description": "The mini app's id (app_list shows them), e.g. app.buwiz.google-workspace"},
+                "account": {"type": "string", "description": "The account's id from app_list (e.g. google); its first account when left out"},
+            }, "required": ["id"]},
         }),
     ]
 }
@@ -74,6 +85,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "app_install" => Ok(install(run, &host, input).await),
         "app_list" => Ok(list(&host)),
         "app_setup" => Ok(setup(run, &host, &id)),
+        "app_signin" => Ok(signin(run, &host, &id, input.get("account").and_then(Value::as_str).filter(|a| !a.is_empty()))),
         "app_enable" | "app_disable" => {
             let r = if name == "app_enable" { host.enable(&id).await } else { host.disable(&id).await };
             Ok(match r {
@@ -118,6 +130,68 @@ fn setup(run: &Run, host: &Host, id: &str) -> Out {
     ))
 }
 
+/// `app_signin`: the `account_required` card of `id`'s `account` (its
+/// first by default) in this chat, one while pending, carrying the setup
+/// when it is missing; a connected account is answered with who it is.
+fn signin(run: &Run, host: &Host, id: &str, account: Option<&str>) -> Out {
+    let Some(row) = host.row(id) else { return Out::err(format!("{} is not installed (app_list shows the ids)", js::slice_utf16(id, 80))) };
+    let title = title_of(&row.manifest(), id);
+    let declared = host.declared_accounts(id);
+    let a = match account {
+        Some(want) => declared.into_iter().find(|a| a.id == want),
+        None => declared.into_iter().next(),
+    };
+    let Some(a) = a else {
+        return Out::err(match account {
+            Some(want) => format!("{title} declares no account {} (app_list shows them)", js::slice_utf16(want, 40)),
+            None => format!("{title} has no account to sign in to"),
+        });
+    };
+    let rows = host.account_rows(id);
+    if let Some(r) = rows.iter().find(|r| r.account == a.id && r.state == "connected") {
+        let who = if r.subject.is_empty() { String::new() } else { format!(" as {}", r.subject) };
+        return Out::ok(format!("{title}'s {} is already connected{who}; nothing to do", a.label));
+    }
+    let chat = run.thread_id();
+    let n = super::v1::account_card(id, &title, &a, &host.setup_view(id));
+    if !super::v1::card_pending(&run.ctx, &chat, id, &a.id) && !post(run, &n) {
+        return Out::err("no chat to show the sign-in card in".into());
+    }
+    if n.get("setup").is_some() {
+        return Out::ok(format!(
+            "a card in this chat asks the user to add their {} and then press Sign in for their {}: they type the values into the card. Never ask for the client ID, secret or any key in the chat. You cannot sign in for them",
+            super::v1::setup_name(&a.provider),
+            a.label
+        ));
+    }
+    Out::ok(format!("a card in this chat shows Sign in for {title}'s {}: the user presses it and signs in in their browser. You cannot sign in for them", a.label))
+}
+
+/// `app_list`'s state of a mini app: its setup per provider and its
+/// accounts (`account/label state [subject]`); "" when it has neither.
+fn state_of(host: &Host, id: &str) -> String {
+    let mut parts = Vec::new();
+    let setup: Vec<String> =
+        host.setup_view(id).as_array().into_iter().flatten().map(|s| format!("{} {}", super::v1::setup_name(&js::string_of(&s["provider"])), if s["ready"] == true { "ready" } else { "missing" })).collect();
+    if !setup.is_empty() {
+        parts.push(format!("setup: {}", setup.join(", ")));
+    }
+    let accounts: Vec<String> = host
+        .accounts_view(id)
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            let who = a.get("subject").and_then(Value::as_str).filter(|x| !x.is_empty()).map(|x| format!(" as {x}")).unwrap_or_default();
+            format!("{}/{} {}{who}", js::string_of(&a["account"]), js::string_of(&a["label"]), js::string_of(&a["state"]))
+        })
+        .collect();
+    if !accounts.is_empty() {
+        parts.push(format!("accounts: {}", accounts.join(", ")));
+    }
+    parts.iter().map(|p| format!(" · {p}")).collect()
+}
+
 fn list(host: &Host) -> Out {
     let rows = host.rows();
     if rows.is_empty() {
@@ -127,7 +201,7 @@ fn list(host: &Host) -> Out {
         .iter()
         .map(|r| {
             let state = host.runtime_view(&r.id).state;
-            format!("{} — {} · {} · {state} · {}", r.id, title_of(&r.manifest(), &r.id), r.version, if r.enabled { "enabled" } else { "disabled" })
+            format!("{} — {} · {} · {state} · {}{}", r.id, title_of(&r.manifest(), &r.id), r.version, if r.enabled { "enabled" } else { "disabled" }, state_of(host, &r.id))
         })
         .collect();
     Out::ok(lines.join("\n"))
@@ -887,6 +961,55 @@ mod tests {
         call(&run, "app_setup", json!({"id": FX})).await;
         assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "cancelled"})).unwrap()["settled"], 1);
         assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_setup", "id": FX, "state": "declined"})).unwrap_err().code, "invalid_args");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// `app_signin` and `app_list`: the list tells needs-setup from
+    /// needs-sign-in from connected; the tool posts the sign-in card (with
+    /// the setup while it is missing), one while pending, and posts none
+    /// once connected.
+    #[tokio::test]
+    async fn app_signin_posts_the_sign_in_card_and_app_list_says_the_setup_and_accounts() {
+        let b = bed_in("appsignin", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        let run = run_in(&b.ctx);
+        let chat = run.thread_id();
+        let list = || async { call(&run, "app_list", json!({})).await.content.as_str().unwrap().to_owned() };
+        assert!(list().await.contains(&format!("{FX} — Fixture · 1.0.0 · running · enabled · setup: Google client missing · accounts: google/default none")), "{}", list().await);
+        assert!(defs().iter().any(|d| d["name"] == "app_signin" && d["description"].as_str().unwrap().contains("log them in")));
+        // the install's setup card is the pending one: no second card
+        let before = cards(&b.ctx, &chat, "account_required").len();
+        let out = call(&run, "app_signin", json!({"id": FX})).await;
+        assert_eq!(out, Out::ok("a card in this chat asks the user to add their Google client and then press Sign in for their Google account: they type the values into the card. Never ask for the client ID, secret or any key in the chat. You cannot sign in for them".into()));
+        assert_eq!(cards(&b.ctx, &chat, "account_required").len(), before);
+        assert_eq!(before, 1);
+        assert!(cards(&b.ctx, &chat, "account_required")[0].1.get("setup").is_some());
+        // set up, the card declined: a plain Sign in card
+        google_client(&b);
+        settle(&b.ctx, &json!({"chat": chat, "kind": "account_required", "id": FX, "state": "declined"})).unwrap();
+        assert!(list().await.contains("setup: Google client ready · accounts: google/default none"));
+        let out = call(&run, "app_signin", json!({"id": FX, "account": "google"})).await;
+        assert_eq!(out, Out::ok("a card in this chat shows Sign in for Fixture's Google account: the user presses it and signs in in their browser. You cannot sign in for them".into()));
+        let got = cards(&b.ctx, &chat, "account_required");
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[1].0.as_str(), got[1].1.get("setup")), ("Sign in to Google for Fixture", None));
+        call(&run, "app_signin", json!({"id": FX})).await;
+        assert_eq!(cards(&b.ctx, &chat, "account_required").len(), 2, "one while pending");
+        // connected: who, and no card
+        let (flow, state, _) = sign_in(&b).await;
+        token_answer(&b.files, 200, json!({"access_token": "at", "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer", "id_token": jwt(json!({"email": "u@example.com"}))}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&state), None).await.0, "connected");
+        assert_eq!(crate::hub::routes::host::settle_signed_in(&b.ctx, FX, "google"), 1);
+        assert_eq!(call(&run, "app_signin", json!({"id": FX})).await, Out::ok("Fixture's Google account is already connected as u@example.com; nothing to do".into()));
+        assert_eq!(cards(&b.ctx, &chat, "account_required").len(), 2);
+        assert!(list().await.contains("accounts: google/default connected as u@example.com"));
+        assert!(!list().await.contains("csec") && !list().await.contains("\"cid"));
+        assert_eq!(call(&run, "app_signin", json!({"id": FX, "account": "github"})).await, Out::err("Fixture declares no account github (app_list shows them)".into()));
+        assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.other"})).await, Out::err("Other has no account to sign in to".into()));
+        assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

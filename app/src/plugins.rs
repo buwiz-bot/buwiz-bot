@@ -3603,15 +3603,6 @@ fn v1_setup_saved(plugin: &str, setup: &crate::mini_v1::connect::Setup) -> AnyEl
     view().child(sec_label("Setup")).child(card().child(row)).into_element()
 }
 
-/// What a provider's setup is, above its fields.
-pub fn v1_setup_intro(provider: &str) -> String {
-    if provider == "google" {
-        "Signing in needs your Google client first. It is shared by every Google plugin: saving it here updates all of them. Stored secrets show as dots; leave one blank to keep it.".to_owned()
-    } else {
-        "Signing in needs these values first.".to_owned()
-    }
-}
-
 /// A mini app's Setup: the fields its sign-in lacks (typed into
 /// `V1::setup_vals`, secrets under dots) and Save; once saved, the list
 /// reads it as ready and the Accounts with Sign in show instead. `editing`:
@@ -3620,7 +3611,7 @@ fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing
     let st = store();
     let keys: Vec<String> = setup.fields.iter().map(|f| f.key.clone()).collect();
     let mut col = view().gap(px(14.0)).px(px(14.0)).py(px(12.0)).child(
-        text(v1_setup_intro(&setup.provider)).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()),
+        text(crate::mini_v1::connect::setup_intro(&setup.provider, editing)).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()),
     );
     for f in &setup.fields {
         col = col.child(setup_field_in(v1_setup_field(f), st.v1.setup_vals));
