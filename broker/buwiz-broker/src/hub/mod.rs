@@ -16,6 +16,7 @@ pub mod library;
 pub mod market;
 pub mod model;
 pub mod pipeline;
+pub mod policy;
 pub mod render;
 pub mod routes;
 pub mod store;

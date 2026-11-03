@@ -28,6 +28,12 @@ licenses: calcom (MIT, Cal.com), neon (Apache-2.0, Neon) and
 google-workspace (MIT, taylorwilsdon/google_workspace_mcp); each folder's
 plugin.json names its license and author.
 
+broker/buwiz-broker/src/hub/policy/shell.rs ports the shell reader of
+opengrok-server's crates/opengrok-policy (src/shell.rs), and
+broker/buwiz-broker/src/hub/policy/gate.rs and policy/tests.rs port parts
+of its src/local_exec.rs and their tests, Copyright (c) the opengrok-server
+authors, used under the MIT License (text below).
+
 server/tools/oxlint/anti-slop/ is vendored from
 https://github.com/dmmulroy/anti-slop (commit 13909c9), Copyright (c) 2026
 Dillon Mulroy, under the MIT License (server/tools/oxlint/anti-slop/LICENSE).

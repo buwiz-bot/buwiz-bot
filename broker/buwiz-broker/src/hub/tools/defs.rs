@@ -85,17 +85,23 @@ pub fn builtin_names() -> impl Iterator<Item = &'static str> {
 /// `baseSystem()`: the agent's prompt with the skill sections and the
 /// widget contract (`linear`: whether a Linear key is set).
 pub fn base_system(ctx: &HubCtx, linear: bool) -> String {
+    base_system_for(ctx, linear, &|_| false)
+}
+
+/// [`base_system`] without the private skills a Bot has switched off (`off` takes an id).
+pub fn base_system_for(ctx: &HubCtx, linear: bool, off: &dyn Fn(&str) -> bool) -> String {
     let d = defs();
     let plugins = ctx.ext.get::<Arc<Market>>().map(|m| crate::hub::market::install::plugin_skills_inject(m, ctx)).unwrap_or_default();
-    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject(ctx), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", linear))
+    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject_for(ctx, off), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", linear))
 }
 
 /// `agentSystem(thread)`: the base prompt plus, in a bot's thread, the
 /// bot's own section.
 pub async fn agent_system(ctx: &HubCtx, turn: &TurnCtx) -> String {
     let linear = crate::hub::routes::leftovers::linear_key(ctx).await.is_some();
-    let bot = ctx.store.read(|s| botctx::bot_section(botctx::bot_of(s, turn)));
-    format!("{}{bot}", base_system(ctx, linear))
+    let (bot, id) = ctx.store.read(|s| (botctx::bot_section(botctx::bot_of(s, turn)), botctx::bot_of(s, turn).map(|b| b.id.clone())));
+    let off = id.map(|b| crate::hub::policy::off_keys(ctx, &b)).unwrap_or_default();
+    format!("{}{bot}", base_system_for(ctx, linear, &|skill| off.contains(&format!("skill:{skill}"))))
 }
 
 #[cfg(test)]
