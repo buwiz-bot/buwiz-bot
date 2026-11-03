@@ -117,16 +117,39 @@ struct Builtin {
     run: fn(&str),
 }
 
-const BUILTINS: &[Builtin] = &[Builtin {
-    name: "status",
-    args: ":demo | :<state> | :off",
-    description: "Play the agent status states",
-    // `/status` (the demo) and `/status:<state>` (App.tsx:574)
-    run: |rest| {
-        let arg = rest.strip_prefix(':').map(str::trim).unwrap_or(if rest.trim().is_empty() { "demo" } else { rest.trim() });
-        store().mock_status(arg)
+const BUILTINS: &[Builtin] = &[
+    Builtin {
+        name: "status",
+        args: ":demo | :<state> | :off",
+        description: "Play the agent status states",
+        // `/status` (the demo) and `/status:<state>` (App.tsx:574)
+        run: |rest| {
+            let arg = rest.strip_prefix(':').map(str::trim).unwrap_or(if rest.trim().is_empty() { "demo" } else { rest.trim() });
+            store().mock_status(arg)
+        },
     },
-}];
+    Builtin {
+        name: "tools",
+        args: "",
+        description: "This Bot's tools and this Mac's command rules",
+        // the sheet, on This Bot for the chat's Bot (no model call)
+        run: |_| crate::tools::open_sheet(),
+    },
+];
+
+/// The built-ins whose names start with `q`, as popup rows.
+fn builtin_rows(q: &str) -> Vec<PopRow> {
+    BUILTINS
+        .iter()
+        .filter(|b| b.name.starts_with(q))
+        .map(|b| PopRow {
+            pick: Pick::Builtin(b.name),
+            label: format!("/{}", b.name),
+            hint: b.args.to_owned(),
+            detail: b.description.to_owned(),
+        })
+        .collect()
+}
 
 /// `GET /mcp/manifest`, then `then`.
 fn load_manifest(then: impl FnOnce() + 'static) {
@@ -560,16 +583,7 @@ pub(crate) fn slash_menu(t: &str) -> bool {
     }
     refresh();
     let q = q.to_lowercase();
-    let mut rows: Vec<PopRow> = BUILTINS
-        .iter()
-        .filter(|b| b.name.starts_with(&q))
-        .map(|b| PopRow {
-            pick: Pick::Builtin(b.name),
-            label: format!("/{}", b.name),
-            hint: b.args.to_owned(),
-            detail: b.description.to_owned(),
-        })
-        .collect();
+    let mut rows: Vec<PopRow> = builtin_rows(&q);
     store().mcp_manifest.with_untracked(|ms| {
         for m in ms {
             for c in m.commands.iter().filter(|c| c.name.to_lowercase().starts_with(&q)) {
@@ -992,6 +1006,16 @@ mod tests {
     /// choices, never a generated app or file.
     fn data_only(rows: &[PopRow]) -> bool {
         rows.iter().all(|r| matches!(r.pick, Pick::Server(_) | Pick::Scope(..) | Pick::Value(..) | Pick::Choice(..) | Pick::V1Choice(..)))
+    }
+
+    #[test]
+    fn tools_is_a_builtin_the_slash_menu_lists() {
+        let rows = super::builtin_rows("to");
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/tools"]);
+        assert!(rows[0].pick == Pick::Builtin("tools"));
+        assert!(super::builtin_rows("").iter().any(|r| r.label == "/tools"), "`/` alone lists it");
+        // it opens the sheet (`tools::sheet_for` is tested there)
+        assert_eq!(super::BUILTINS.iter().find(|b| b.name == "tools").map(|b| b.args), Some(""));
     }
 
     #[test]
