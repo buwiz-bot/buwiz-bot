@@ -41,6 +41,10 @@ pub trait PluginView: Send + Sync {
     fn declared_accounts(&self, _id: &str) -> Vec<crate::v1::package::Account> {
         Vec::new()
     }
+    /// The setup its accounts' providers need (`Host::setup_view`, no values).
+    fn setup(&self, _id: &str) -> Value {
+        json!([])
+    }
 }
 
 impl PluginView for Arc<Host> {
@@ -68,6 +72,9 @@ impl PluginView for Arc<Host> {
     }
     fn declared_accounts(&self, id: &str) -> Vec<crate::v1::package::Account> {
         Host::declared_accounts(self, id)
+    }
+    fn setup(&self, id: &str) -> Value {
+        self.setup_view(id)
     }
 }
 
@@ -176,7 +183,9 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
 
 /// The plugin as GET /v1/host/plugins lists it (`describe`); `info` is a
 /// routine's user state (v1 routines' `info`). A package's record
-/// adds `package` (its folder), `skills` and `accounts` (no tokens).
+/// adds `package` (its folder), `skills`, `accounts` (no tokens), the
+/// `setup` they need (no values) and, with accounts, the host's
+/// `account_commands` (`@short:login`, …).
 pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value) -> Value {
     let m = row.manifest();
     let rt = p.runtime(&row.id);
@@ -251,6 +260,11 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
         let skills: Vec<Value> = parse(&row.skills, json!([])).as_array().into_iter().flatten().map(|s| json!({"name": s.get("name"), "description": s.get("description")})).collect();
         out.insert("skills".into(), json!(skills));
         out.insert("accounts".into(), p.accounts(&row.id));
+        out.insert("setup".into(), p.setup(&row.id));
+        // the host's `@short:` account commands, for a package with accounts
+        if !p.declared_accounts(&row.id).is_empty() {
+            out.insert("account_commands".into(), json!(crate::v1::manifest::ACCOUNT_COMMANDS));
+        }
     }
     Value::Object(out)
 }

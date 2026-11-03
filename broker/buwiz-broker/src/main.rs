@@ -160,6 +160,13 @@ async fn main() {
         None => door,
     };
     let hub_ctx = hub.as_ref().map(|h| h.ctx().clone());
+    // a mini app account's sign-in callback reaches whichever plugin host
+    // there is (the line's, else the hub's own), MCP host or not
+    let accounts = line.as_ref().filter(|_| hosts.contains(&"v1")).map(|l| l.host().clone()).or_else(|| hub_ctx.as_ref().and_then(|c| c.plugins.clone()));
+    let door = match accounts {
+        Some(host) => door.with_accounts(host),
+        None => door,
+    };
     let door = Arc::new(match hub {
         Some(hub) => door.with_hub(hub),
         None => door,

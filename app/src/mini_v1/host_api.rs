@@ -124,6 +124,13 @@ pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value
     post(b, "/v1/host/plugins/inspect", body, Duration::from_secs(30))
 }
 
+/// `POST /v1/host/plugins/fetch {source}`: a mini app's name, GitHub URL or
+/// `owner/repo`, its release fetched, verified and inspected (nothing is
+/// installed): the inspection with `command`, `args`, `env`, `package`.
+pub fn fetch_release(b: &dyn Broker, source: &str) -> Result<Value, RoxError> {
+    post(b, "/v1/host/plugins/fetch", json!({"source": source.trim()}), Duration::from_secs(120))
+}
+
 /// `POST /v1/host/plugins/install`: installs what was reviewed (refused
 /// when the manifest's hash differs).
 pub fn install(
@@ -185,6 +192,8 @@ pub enum AccountAction {
     SignIn,
     SignOut,
     Remove,
+    /// Makes a signed-in label the active one (the one the plugin gets).
+    Use,
 }
 
 /// The account routes, in one place: `/v1/host/plugins/:id/accounts/:account/{signin,signout,remove}`.
@@ -193,6 +202,7 @@ pub fn account_route(plugin: &str, account: &str, action: AccountAction) -> Stri
         AccountAction::SignIn => "signin",
         AccountAction::SignOut => "signout",
         AccountAction::Remove => "remove",
+        AccountAction::Use => "use",
     };
     format!("/v1/host/plugins/{plugin}/accounts/{account}/{verb}")
 }
@@ -220,6 +230,46 @@ pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, 
         return Err(RoxError::new("invalid_args", "not an account of a plugin"));
     }
     post(b, &account_route(plugin, account, action), json!({"label": label}), SHORT_TIMEOUT)
+}
+
+/// `POST /v1/host/plugins/:id/setup {values}`: the setup fields typed in
+/// (trimmed; empty ones left out, so a stored value stays). The values go
+/// in this body only: never into a log, the chat or the model.
+pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !typed.iter().all(|(k, _)| setup_key_ok(k)) {
+        return Err(RoxError::new("invalid_args", "not a setup field of a plugin"));
+    }
+    let values: serde_json::Map<String, Value> =
+        typed.iter().map(|(k, v)| (k.clone(), v.trim())).filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k, json!(v))).collect();
+    if values.is_empty() {
+        return Err(RoxError::new("invalid_args", "Enter the values first"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"values": values}), SHORT_TIMEOUT)
+}
+
+/// `POST /v1/host/plugins/:id/command {chat, command}`: an account command
+/// typed alone (`@gws:login`), its card posted in chat `chat` by the broker
+/// (it never reaches the model): `{ok, posted, kind, message?}`.
+pub fn account_command(b: &dyn Broker, plugin: &str, chat: &str, command: &str) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !super::tokens::ACCOUNT_COMMANDS.contains(&command) {
+        return Err(RoxError::new("invalid_args", "not an account command of a plugin"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/command"), json!({"chat": chat, "command": command}), SHORT_TIMEOUT)
+}
+
+/// `POST /v1/host/plugins/:id/setup {clear: true}`: Remove, every value
+/// of its setup gone (its provider's sign-ins expire).
+pub fn clear_setup(b: &dyn Broker, plugin: &str) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) {
+        return Err(RoxError::new("invalid_args", "not a plugin id"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"clear": true}), SHORT_TIMEOUT)
+}
+
+/// A setup field's key: `^[A-Za-z_][A-Za-z0-9_.]{0,63}$`.
+pub fn setup_key_ok(k: &str) -> bool {
+    let mut c = k.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && k.len() <= 64 && c.all(|x| x.is_ascii_alphanumeric() || x == '_' || x == '.')
 }
 
 /// What the person does to a routine (5.9).

@@ -10,6 +10,8 @@ publish = false
 base64 = "0.22"
 ed25519-dalek = "2.2"
 getrandom = "0.2"
+# a mini app setup field's shape check (`setup`), the broker's and the app's
+regex-lite = "0.1"
 rusqlite = "0.32"
 serde = "1"
 serde_json = "1"

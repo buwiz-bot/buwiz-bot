@@ -641,6 +641,10 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         app_uninstall_row(n, chat.to_owned(), t.i).into_element()
     } else if let Some(n) = t.account_required.clone() {
         account_required_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.app_setup.clone() {
+        app_setup_row(n, chat.to_owned(), t.i).into_element()
+    } else if let Some(n) = t.app_accounts.clone() {
+        app_accounts_row(n, chat.to_owned(), t.i).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
@@ -1228,7 +1232,9 @@ fn app_uninstall_row(n: crate::store::AppUninstallNotice, chat: String, i: i64) 
 
 /// A tool that needs a missing account (`account_required`): Sign in
 /// (the broker opens the browser) or Not now; once the plugin list has the
-/// account connected, the quiet line "<label> · Connected".
+/// account connected, the quiet line "<label> · Connected". While the
+/// account's provider lacks its setup, the card asks for its fields first
+/// ([`account_setup_card`]); once saved, Sign in.
 fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i: i64) -> impl IntoElement {
     let c1 = chat.clone();
     let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
@@ -1239,21 +1245,251 @@ fn account_required_row(n: crate::store::AccountRequiredNotice, chat: String, i:
         if let Some(done) = n.answered(local.local(), connected) {
             return app_quiet_line(done);
         }
+        if let Some(fields) = n.setup_fields(listed.as_ref(), local.local() == Some("saved")) {
+            return account_setup_card(&n, fields, chat.clone(), i, &local);
+        }
         let label = listed.as_ref().map(|p| p.signin_label(&n.account)).unwrap_or_else(|| "default".to_owned());
         let signing = store().v1.signing.with(|s| s.contains(&crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label)));
         let (ch1, ch2, n1, n2) = (chat.clone(), chat.clone(), n.clone(), n.clone());
+        let mut buttons = view().flex_row().items_center().gap_2();
+        if signing {
+            // waiting on the browser: open it again, or stop waiting
+            let to = if n.provider == "google" { "Google".to_owned() } else { n.label.clone() };
+            let key = crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label);
+            let (p, a, l) = (n.plugin.clone(), n.account.clone(), label.clone());
+            buttons = buttons
+                .child(text(format!("Waiting for {to} in your browser…")).text_size(px(12.0)).text_color(theme::MUTED))
+                .child(app_card_btn("Open again", "Open the sign-in again".to_owned(), true, move || store().v1_signin_again(&p, &a, &l)))
+                .child(app_card_btn("Cancel", "Stop waiting for the sign-in".to_owned(), false, move || store().v1_signin_cancel(&key)));
+        } else {
+            buttons = buttons
+                .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
+                .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
+                    store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
+                }));
+        }
+        let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
+        // a refusal here, else why the last sign-in failed (Sign in again)
+        let key = crate::mini_v1::ui::signing_key(&n.plugin, &n.account, &label);
+        let row_err = listed.as_ref().and_then(|p| p.accounts.iter().find(|a| a.account == n.account && a.label == label).map(|a| a.error.clone())).unwrap_or_default();
+        let err = Some(local.error.clone())
+            .filter(|e| !e.is_empty())
+            .or_else(|| store().v1.account_err.with(|m| m.get(&key).cloned()).filter(|e| !e.is_empty()))
+            .unwrap_or(row_err);
+        if !err.is_empty() && !signing {
+            c = c.child(text(err).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
+}
+
+/// An `account_required` card's setup step: the fields its sign-in lacks
+/// (the plugin page's, secrets under dots) with Save and Not now. The
+/// values go from the fields to the setup route only, never into the
+/// chat, the model or a log; once saved the card offers Sign in.
+fn account_setup_card(n: &crate::store::AccountRequiredNotice, fields: Vec<crate::mini_v1::connect::SetupField>, chat: String, i: i64, local: &crate::store::AppCard) -> AnyElement {
+    let saving = store().v1.setup_saving.with(|s| s.contains(&n.plugin));
+    let mut c = app_card_frame(n.setup_question())
+        .child(text(n.setup_question()).text_size(px(13.0)).text_color(theme::TEXT))
+        .child(text(crate::mini_v1::connect::setup_intro(&n.provider, false)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+    // a stored value of the wrong shape: why it asks again
+    let why = n.setup_error(store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned()).as_ref());
+    if !why.is_empty() {
+        c = c.child(text(why).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(3));
+    }
+    c = c.child(crate::plugins::v1_setup_inputs(&fields));
+    let fields2 = fields.clone();
+    let (ch1, ch2, p1, p2) = (chat.clone(), chat, n.plugin.clone(), n.plugin.clone());
+    let mut buttons = view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(app_card_btn("Save", format!("Save the setup for {}", n.title), true, move || {
+            let ch = ch1.clone();
+            store().app_card(&ch1, i, |c| c.start());
+            store().v1_save_setup(&p1, fields2.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+        }))
+        .child(app_card_btn("Not now", "Not now".to_owned(), false, move || store().app_answer(&ch2, i, "account_required", &p2, "declined")));
+    if saving {
+        buttons = buttons.child(text("Saving…").text_size(px(12.0)).text_color(theme::MUTED));
+    }
+    c = c.child(buttons);
+    if !local.error.is_empty() {
+        c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+    }
+    c.into_element()
+}
+
+/// An account command's card (`app_accounts`): by its mode, who is signed
+/// in with Add another account and Switch (`login`), Sign out confirmed
+/// here (`logout`), or the signed-in accounts with Use this (`switch`);
+/// who is signed in comes from the plugin list, live.
+fn app_accounts_row(n: crate::store::AppAccountsNotice, chat: String, i: i64) -> impl IntoElement {
+    use crate::mini_v1::host_api::AccountAction;
+    let c1 = chat.clone();
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        if let Some(done) = n.answered(local.local()) {
+            return app_quiet_line(done);
+        }
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned()).unwrap_or_default();
+        let connected: Vec<crate::mini_v1::connect::Account> = listed.connected_of(&n.account).into_iter().cloned().collect();
+        let active = listed.active_of(&n.account).cloned();
+        let mode = n.mode_now(local.picked.as_deref()).to_owned();
+        let who = active.as_ref().map(|a| if a.subject.is_empty() { a.label.clone() } else { a.subject.clone() });
+        let heading = n.heading(&mode, who.as_deref(), connected.len());
+        let mut c = app_card_frame(heading.clone()).child(text(heading).text_size(px(13.0)).text_color(theme::TEXT));
+        let plugin = n.plugin.clone();
+        let account = n.account.clone();
+        let close_btn = |caption: &'static str| {
+            let (ch, p) = (chat.clone(), plugin.clone());
+            app_card_btn(caption, caption.to_owned(), false, move || store().app_answer(&ch, i, "app_accounts", &p, "cancelled"))
+        };
+        let goto = |caption: &'static str, to: &'static str| {
+            let ch = chat.clone();
+            app_card_btn(caption, caption.to_owned(), false, move || store().app_card(&ch, i, |c| c.picked = Some(to.to_owned())))
+        };
+        let row_of = |a: &crate::mini_v1::connect::Account| {
+            let who = if a.subject.is_empty() { a.label.clone() } else { format!("{} · {}", a.label, a.subject) };
+            view().flex_row().items_center().gap_2().child(text(who).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(1).flex_shrink(1.0))
+        };
+        let mut buttons = view().flex_row().items_center().gap_2();
+        match mode.as_str() {
+            "logout" => {
+                for a in &connected {
+                    let (ch, p, acc, l) = (chat.clone(), plugin.clone(), account.clone(), a.label.clone());
+                    let out = app_card_btn("Sign out", format!("Sign out {}", a.name()), true, move || {
+                        store().v1_account(&p, &acc, &l, AccountAction::SignOut);
+                        store().app_answer(&ch, i, "app_accounts", &p, "done")
+                    });
+                    c = c.child(if connected.len() == 1 { view().child(out) } else { row_of(a).child(out) });
+                }
+                buttons = buttons.child(close_btn(if connected.is_empty() { "Close" } else { "Cancel" }));
+            }
+            "switch" => {
+                for a in &connected {
+                    let mut r = row_of(a);
+                    if active.as_ref().is_some_and(|x| x.label == a.label) {
+                        r = r.child(text("Active").text_size(px(12.0)).text_color(theme::MUTED));
+                    } else {
+                        let (ch, p, acc, l) = (chat.clone(), plugin.clone(), account.clone(), a.label.clone());
+                        r = r.child(app_card_btn("Use this", format!("Use {}", a.name()), true, move || {
+                            store().v1_account(&p, &acc, &l, AccountAction::Use);
+                            store().app_answer(&ch, i, "app_accounts", &p, "done")
+                        }));
+                    }
+                    c = c.child(r);
+                }
+                buttons = buttons.child(goto("Add another account", "add")).child(close_btn("Close"));
+            }
+            "add" => {
+                let (c2, c3) = (chat.clone(), chat.clone());
+                c = c.child(
+                    view().h(px(32.0)).rounded(px(8.0)).bg(theme::HOVER).px(px(10.0)).justify_center().child(
+                        input()
+                            .label("Account label")
+                            .placeholder("Label this account, e.g. work or personal")
+                            .value(move || store().app_typed.with(|l| l.iter().find(|(c, at, k, _)| *c == c2 && *at == i && k == "label").map(|x| x.3.clone()).unwrap_or_default()))
+                            .auto_correct(false)
+                            .text_size(px(13.0))
+                            .text_color(theme::TEXT)
+                            .h(px(32.0))
+                            .on_change(move |t: &str| {
+                                let (ch, t) = (c3.clone(), t.to_owned());
+                                store().app_typed.update(|l| match l.iter_mut().find(|(c, at, k, _)| *c == ch && *at == i && k == "label") {
+                                    Some(x) => x.3 = t,
+                                    None => l.push((ch, i, "label".to_owned(), t)),
+                                });
+                            }),
+                    ),
+                );
+                let (ch, p, acc) = (chat.clone(), plugin.clone(), account.clone());
+                buttons = buttons
+                    .child(app_card_btn("Sign in", "Sign in with this label".to_owned(), true, move || {
+                        let label = store().app_typed.with_untracked(|l| l.iter().find(|(c, at, k, _)| *c == ch && *at == i && k == "label").map(|x| x.3.trim().to_owned())).unwrap_or_default();
+                        if !crate::mini_v1::host_api::account_label_ok(&label) {
+                            let why = format!("{} (1 to 60, a letter or digit first)", crate::mini_v1::host_api::LABEL_RULE);
+                            return store().app_card(&ch, i, |c| c.error = why);
+                        }
+                        store().app_card(&ch, i, |c| c.error.clear());
+                        let ch2 = ch.clone();
+                        store().v1_signin(&p, &acc, &label, move |e| store().app_card(&ch2, i, |c| c.finish(Err(crate::mini_v1::ui::signin_error(&e)))));
+                    }))
+                    .child(goto("Cancel", if n.mode == "switch" { "switch" } else { "login" }));
+            }
+            _ => {
+                if active.is_some() {
+                    buttons = buttons.child(goto("Add another account", "add")).child(goto("Switch", "switch"));
+                } else {
+                    let (ch, p, acc, l) = (chat.clone(), plugin.clone(), account.clone(), listed.signin_label(&account));
+                    buttons = buttons.child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || {
+                        let ch2 = ch.clone();
+                        store().app_card(&ch, i, |c| c.error.clear());
+                        store().v1_signin(&p, &acc, &l, move |e| store().app_card(&ch2, i, |c| c.finish(Err(crate::mini_v1::ui::signin_error(&e)))));
+                    }));
+                }
+                buttons = buttons.child(close_btn("Close"));
+            }
+        }
+        let signing = store().v1.signing.with(|s| s.iter().any(|k| k.starts_with(&format!("{plugin}|{account}/"))));
+        if signing {
+            buttons = buttons.child(text("Waiting for the sign-in in your browser…").text_size(px(12.0)).text_color(theme::MUTED));
+        }
+        c = c.child(buttons);
+        if !local.error.is_empty() {
+            c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
+        }
+        c.into_element()
+    }))
+}
+
+/// The agent's `app_setup`: a mini app's setup fields to change (the
+/// Client ID prefilled from the plugin list, a secret blank to keep it),
+/// Save or Cancel; once answered, "Google client · Saved". The values go
+/// from the fields to the setup route only (whose save settles the card).
+fn app_setup_row(n: crate::store::AppSetupNotice, chat: String, i: i64) -> impl IntoElement {
+    let c1 = chat.clone();
+    let card = move || store().app_cards.with(|l| l.iter().find(|c| c.chat == c1 && c.i == i).cloned()).unwrap_or_default();
+    view().flex_row().w_full().justify_center().child(dynamic(move || {
+        let local = card();
+        if let Some(done) = n.answered(local.local()) {
+            return app_quiet_line(done);
+        }
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == n.plugin).cloned());
+        let fields = n.fields_from(listed.as_ref());
+        // a ready setup is changed, not added
+        let change = listed.as_ref().is_none_or(|p| p.setup_missing(&n.provider).is_none());
+        let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
+        let question = if n.title.is_empty() { format!("Change the {}", n.what()) } else { format!("Change the {} of {}", n.what(), n.title) };
+        let mut c = app_card_frame(question.clone())
+            .child(text(question).text_size(px(13.0)).text_color(theme::TEXT))
+            .child(text(crate::mini_v1::connect::setup_intro(&n.provider, change)).text_size(px(12.0)).text_color(theme::MUTED).number_of_lines(4));
+        let why = n.error_from(listed.as_ref());
+        if !why.is_empty() {
+            c = c.child(text(why).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(3));
+        }
+        c = c.child(crate::plugins::v1_setup_inputs(&fields));
+        let fields2 = fields.clone();
+        let (ch1, ch2, p1, p2) = (chat.clone(), chat.clone(), n.plugin.clone(), n.plugin.clone());
+        let ks = keys.clone();
         let mut buttons = view()
             .flex_row()
             .items_center()
             .gap_2()
-            .child(app_card_btn("Sign in", format!("Sign in to {}", n.label), true, move || store().account_card_signin(&ch1, i, &n1)))
-            .child(app_card_btn("Not now", "Not now".to_owned(), false, move || {
-                store().app_answer(&ch2, i, "account_required", &n2.plugin, "declined")
+            .child(app_card_btn("Save", format!("Save the {}", n.what()), true, move || {
+                let ch = ch1.clone();
+                store().app_card(&ch1, i, |c| c.start());
+                store().v1_save_setup(&p1, fields2.clone(), move |r| store().app_card(&ch, i, |c| c.finish(r.map(|()| "saved"))));
+            }))
+            .child(app_card_btn("Cancel", "Cancel".to_owned(), false, move || {
+                store().v1.setup_vals.update(|m| m.retain(|k, _| !ks.contains(k)));
+                store().app_answer(&ch2, i, "app_setup", &p2, "cancelled")
             }));
-        if signing {
-            buttons = buttons.child(text("Waiting for the sign-in in your browser…").text_size(px(12.0)).text_color(theme::MUTED));
+        if store().v1.setup_saving.with(|s| s.contains(&n.plugin)) {
+            buttons = buttons.child(text("Saving…").text_size(px(12.0)).text_color(theme::MUTED));
         }
-        let mut c = app_card_frame(n.question()).child(text(n.question()).text_size(px(13.0)).text_color(theme::TEXT)).child(buttons);
+        c = c.child(buttons);
         if !local.error.is_empty() {
             c = c.child(text(local.error.clone()).text_size(px(12.0)).text_color(theme::DOWN).number_of_lines(4));
         }

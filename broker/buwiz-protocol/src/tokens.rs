@@ -146,6 +146,21 @@ pub enum Route {
 /// The built-in commands (3.1 rule 1).
 pub const BUILTINS: &[&str] = &["status"];
 
+/// The host's account commands under a plugin's `@short:` namespace
+/// (`@gws:login`), for every plugin whose package declares accounts; no
+/// plugin may announce a scope of these names.
+pub const ACCOUNT_COMMANDS: &[&str] = &["login", "logout", "switch", "setup"];
+
+/// A message that is only `@short:command` (trimmed), `command` one of
+/// [`ACCOUNT_COMMANDS`]: (short, command). The host runs it; it never
+/// reaches the model.
+pub fn account_command(text: &str) -> Option<(&str, &str)> {
+    let t = text.trim();
+    let (short, cmd) = t.strip_prefix('@')?.split_once(':')?;
+    let short_ok = !short.is_empty() && short.len() <= 16 && short.starts_with(|c: char| c.is_ascii_lowercase()) && short.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    (short_ok && ACCOUNT_COMMANDS.contains(&cmd)).then_some((short, cmd))
+}
+
 /// Where `/[short:]name` goes among `plugins` (3.1).
 pub fn route(cmd: &Slash, plugins: &[Commands]) -> Route {
     let declares = |p: &&Commands| p.enabled && p.commands.iter().any(|c| c == cmd.name);
@@ -553,5 +568,17 @@ mod tests {
         assert_eq!(prompt_draft("", text), text);
         assert_eq!(prompt_draft("  \n", text), text);
         assert_eq!(prompt_draft("note to self  \n", "Draft it"), "note to self\n\nDraft it");
+    }
+
+    #[test]
+    fn an_account_command_is_a_short_and_a_command_alone() {
+        assert_eq!(account_command("@gws:login"), Some(("gws", "login")));
+        assert_eq!(account_command("  @gws:switch "), Some(("gws", "switch")));
+        for c in ACCOUNT_COMMANDS {
+            assert_eq!(account_command(&format!("@books2:{c}")), Some(("books2", *c)));
+        }
+        for no in ["@gws:login now", "log in @gws:login", "@gws:login:x", "@gws:Login", "@GWS:login", "@gws:", "gws:login", "@gws:item:x", "@:login"] {
+            assert_eq!(account_command(no), None, "{no}");
+        }
     }
 }

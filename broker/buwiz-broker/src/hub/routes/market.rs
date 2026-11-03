@@ -353,6 +353,29 @@ async fn reapply(m: &Market, ctx: &HubCtx, key: &str) -> Result<(), String> {
     ctx.db.with(|db| db.execute("UPDATE installed_plugins SET meta=? WHERE name=?", rusqlite::params![js::stringify(&meta), key])).map(|_| ())
 }
 
+/// The shared Google client was saved elsewhere (a mini app's setup):
+/// every installed Google plugin's connectors take it again, each tried
+/// whatever the one before did; → the plugins that did not update.
+pub async fn reapply_google(m: &Market, ctx: &HubCtx) -> Result<Vec<String>, String> {
+    let keys: Vec<String> = rows(ctx, "SELECT name FROM installed_plugins", &[])?.into_iter().map(|r| string(r.get("name"))).filter(|k| m.plugin_uses_google(ctx, k)).collect();
+    Ok(each_or_failed(keys, |k| async move { reapply(m, ctx, &k).await }).await)
+}
+
+/// `f` for every key, a failure stopping none; → the keys that failed.
+async fn each_or_failed<F, Fut>(keys: Vec<String>, mut f: F) -> Vec<String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let mut failed = Vec::new();
+    for k in keys {
+        if f(k.clone()).await.is_err() {
+            failed.push(k);
+        }
+    }
+    failed
+}
+
 /// `accountNote`: what's missing, or how a connected account signs in.
 fn account_note(m: &Market, ctx: &HubCtx, key: &str, server: &str, row: &Map<String, Value>, st: &Value) -> String {
     let Some(mat) = m.materialize(ctx, key, server, None) else { return String::new() };
@@ -890,5 +913,31 @@ mod tests {
         let dir = f.root.join("server-empty");
         std::fs::create_dir_all(dir.join("plugins")).unwrap();
         dir
+    }
+
+    /// A mini app's saved Google client re-applies to every installed
+    /// Google plugin: one that cannot take it (`bad`, a connector with
+    /// nothing to run) stops none after it (`good` is rebuilt), and is
+    /// named.
+    #[tokio::test]
+    async fn a_failed_reapply_stops_none_of_the_others() {
+        let f = fixture("reapply");
+        write(&f.plugins.join("bad/plug/.mcp.json"), r#"{"mcpServers":{"bad-srv":{"env":{"GOOGLE_CLIENT_ID":"${GOOGLE_CLIENT_ID}"}}}}"#);
+        write(&f.plugins.join("good/plug/.mcp.json"), r#"{"mcpServers":{"good-srv":{"command":"good-mcp","env":{"GOOGLE_CLIENT_ID":"${GOOGLE_CLIENT_ID}"}}}}"#);
+        let ctx = f.hub.ctx();
+        for k in ["bad", "good"] {
+            let meta = json!({ "root": format!("{k}/plug"), "mcp": [format!("{k}-srv")] });
+            ctx.db
+                .with(|db| {
+                    db.execute("INSERT INTO installed_plugins(name, meta, created_at) VALUES(?, ?, 1)", [k, &meta.to_string()])?;
+                    db.execute("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at) VALUES(?1, ?1, 'old-mcp', '[]', '{}', 1, 1)", [format!("{k}-srv")])
+                })
+                .unwrap();
+        }
+        let market = Market::load(&root_without_catalog(&f), &f.root.join("data"), 9);
+        assert!(market.plugin_uses_google(ctx, "bad") && market.plugin_uses_google(ctx, "good"));
+        assert_eq!(reapply_google(&market, ctx).await, Ok(vec!["bad".to_owned()]));
+        let command = |id: &str| -> String { ctx.db.with(|db| db.query_row("SELECT command FROM mcp_servers WHERE id=?", [id], |r| r.get(0))).unwrap() };
+        assert_eq!((command("bad-srv"), command("good-srv")), ("old-mcp".to_owned(), "good-mcp".to_owned()), "good re-applied after bad failed");
     }
 }

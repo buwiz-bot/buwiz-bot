@@ -95,6 +95,8 @@ pub enum Pick {
     V1Command(String),
     /// One of a v1 resolve's choices: (plugin, kind, name, value).
     V1Choice(String, &'static str, String, String),
+    /// The host's account command of a v1 plugin, `@<short>:<command>`.
+    V1Account(String, String),
 }
 
 /// A popup row: what it does, its name, a muted hint (a command's args)
@@ -181,6 +183,16 @@ pub(crate) fn dispatch(text: &str) -> bool {
             (b.run)(rest);
             return true;
         }
+    }
+    // `@short:login` and the like alone: the host's account command (its
+    // card in this chat), never the model's
+    if st.attachments.get_untracked().is_empty()
+        && st.reply_to.get_untracked().is_none()
+        && let Some((plugin, cmd)) = st.v1.listed.with_untracked(|l| crate::mini_v1::connect::account_command_for(text, l))
+    {
+        close();
+        st.v1_account_command(&plugin, &cmd, text);
+        return true;
     }
     // `@… @… attach`: the tokens, attached to this chat
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -598,15 +610,18 @@ pub(crate) fn slash_menu(t: &str) -> bool {
 pub(crate) fn server_menu(q: &str) {
     refresh();
     let plugins = store().v1.entries.get_untracked();
-    let rows = store().mcp_manifest.with_untracked(|ms| server_rows(q, ms, &plugins));
+    let accounts: Vec<String> = store().v1.listed.with_untracked(|l| l.iter().filter(|p| !p.account_commands.is_empty()).map(|p| p.short.clone()).collect());
+    let rows = store().mcp_manifest.with_untracked(|ms| server_rows(q, ms, &plugins, &accounts));
     show(rows, String::new());
 }
 
 /// The `@<q>` rows: the MCP servers and enabled v1 plugins with `@`
 /// scopes whose name starts with `q` or whose title has it, a v1 plugin
 /// replacing an MCP server of its short. A server announcing only apps
-/// is no row: its apps are not data.
-fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::PluginEntry]) -> Vec<PopRow> {
+/// is no row: its apps are not data. A plugin of `accounts` (the shorts
+/// whose package declares accounts) is a row for its account commands
+/// even without scopes.
+fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::PluginEntry], accounts: &[String]) -> Vec<PopRow> {
     let q = q.to_lowercase();
     let mut rows: Vec<PopRow> = ms
         .iter()
@@ -620,15 +635,14 @@ fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::Plugin
         })
         .collect();
     // v1 plugins with scopes, by their short
-    for p in plugins.iter().filter(|p| p.enabled && !p.scopes.is_empty()) {
+    for p in plugins.iter().filter(|p| p.enabled && (!p.scopes.is_empty() || accounts.contains(&p.short))) {
         if p.short.starts_with(&q) || p.title.to_lowercase().contains(&q) {
             rows.retain(|r| r.pick != Pick::Server(p.short.clone()));
-            rows.push(PopRow {
-                pick: Pick::Server(p.short.clone()),
-                label: format!("@{}", p.short),
-                hint: p.title.clone(),
-                detail: p.scopes.iter().map(|s| js(s, "name")).collect::<Vec<_>>().join(", "),
-            });
+            let mut names: Vec<String> = p.scopes.iter().map(|s| js(s, "name")).collect();
+            if accounts.contains(&p.short) {
+                names.extend(crate::mini_v1::tokens::ACCOUNT_COMMANDS.iter().map(|c| c.to_string()));
+            }
+            rows.push(PopRow { pick: Pick::Server(p.short.clone()), label: format!("@{}", p.short), hint: p.title.clone(), detail: names.join(", ") });
         }
     }
     rows
@@ -645,7 +659,12 @@ pub(crate) fn token_menu(tail: &str) -> bool {
             Some((scope, value)) => {
                 store().v1_complete(server, scope, value);
             }
-            None => show(v1_scope_rows(&p, rest), String::new()),
+            None => {
+                let mut rows = v1_scope_rows(&p, rest);
+                let cmds = store().v1.listed.with_untracked(|l| l.iter().find(|x| x.id == p.id).map(|x| x.account_commands.clone())).unwrap_or_default();
+                rows.extend(v1_account_rows(&p.short, rest, &cmds));
+                show(rows, String::new())
+            }
         }
         return true;
     }
@@ -701,6 +720,21 @@ fn v1_scope_rows(p: &crate::mini_v1::load::PluginEntry, q: &str) -> Vec<PopRow> 
             label: format!("@{}:{n}", p.short),
             hint: String::new(),
             detail: d,
+        })
+        .collect()
+}
+
+/// `@<short>:<q>` rows of the host's account commands `cmds` starting
+/// with `q` (`@gws:login`, …).
+fn v1_account_rows(short: &str, q: &str, cmds: &[String]) -> Vec<PopRow> {
+    let q = q.to_lowercase();
+    cmds.iter()
+        .filter(|c| c.starts_with(&q))
+        .map(|c| PopRow {
+            pick: Pick::V1Account(short.to_owned(), c.clone()),
+            label: format!("@{short}:{c}"),
+            hint: String::new(),
+            detail: crate::mini_v1::connect::account_command_detail(c).to_owned(),
         })
         .collect()
 }
@@ -801,6 +835,16 @@ pub(crate) fn pick(row: &PopRow) {
         Pick::Command(_, name) => command(name.as_str()),
         Pick::Server(id) => replace_tail(&format!("{id}:")),
         Pick::Scope(server, scope) => replace_tail(&format!("{server}:{scope}:")),
+        Pick::V1Account(short, cmd) => {
+            // typed in full already: Enter runs it
+            if st.draft.get_untracked().trim() == format!("@{short}:{cmd}") {
+                close();
+                st.send();
+                return;
+            }
+            replace_tail(&format!("{short}:{cmd}"));
+            close();
+        }
         Pick::Value(server, scope, value) => {
             let tok = format!("@{server}:{scope}:{value}");
             // a value extending a picked `…/` part (a taxpayer, then a
@@ -914,7 +958,7 @@ pub(crate) fn tab() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Entry, Enter, Manifest, Pick, PopRow, on_enter, parse_token, server_rows, v1_scope_rows, value_rows};
+    use super::{Entry, Enter, Manifest, Pick, PopRow, on_enter, parse_token, server_rows, v1_account_rows, v1_scope_rows, value_rows};
     use crate::mini_v1::load::PluginEntry;
     use serde_json::json;
 
@@ -959,7 +1003,7 @@ mod tests {
             plugin("off", "Disabled", false, &["thing"]),
             plugin("viewer", "Viewer", true, &[]),
         ];
-        let rows = server_rows("", &ms, &ps);
+        let rows = server_rows("", &ms, &ps, &[]);
         let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         // an apps-only server, a disabled plugin and one without scopes are no rows
         assert_eq!(labels, ["@bir", "@ebirforms", "@books"]);
@@ -972,14 +1016,28 @@ mod tests {
     fn at_query_filters_servers_and_a_v1_plugin_replaces_its_mcp_namesake() {
         let ms = [manifest("books", &["legacy"], &[]), manifest("gallery", &[], &["books"])];
         let ps = [plugin("books", "Books", true, &["person"]), plugin("ebirforms", "eBIR Forms", true, &["taxprofile"])];
-        let rows = server_rows("bo", &ms, &ps);
+        let rows = server_rows("bo", &ms, &ps, &[]);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].pick == Pick::Server("books".to_owned()));
         assert_eq!(rows[0].detail, "person");
         // a title match counts too
-        let rows = server_rows("bir", &ms, &ps);
+        let rows = server_rows("bir", &ms, &ps, &[]);
         assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@ebirforms"]);
-        assert!(server_rows("zzz", &ms, &ps).is_empty());
+        assert!(server_rows("zzz", &ms, &ps, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_plugin_with_accounts_offers_its_account_commands_under_its_short() {
+        let ps = [plugin("gws", "Google Workspace", true, &[]), plugin("viewer", "Viewer", true, &[]), plugin("books", "Books", true, &["person"])];
+        let rows = server_rows("", &[], &ps, &["gws".to_owned()]);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@gws", "@books"], "no scopes but accounts: a row; neither: none");
+        assert_eq!(rows[0].detail, "login, logout, switch, setup");
+        let cmds: Vec<String> = ["login", "logout", "switch", "setup"].iter().map(|c| c.to_string()).collect();
+        let all = v1_account_rows("gws", "", &cmds);
+        assert_eq!(all.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@gws:login", "@gws:logout", "@gws:switch", "@gws:setup"]);
+        assert!(all[0].pick == Pick::V1Account("gws".to_owned(), "login".to_owned()));
+        assert_eq!(v1_account_rows("gws", "lo", &cmds).len(), 2);
+        assert!(v1_account_rows("gws", "", &[]).is_empty(), "a plugin without accounts offers none");
     }
 
     #[test]
@@ -1005,7 +1063,7 @@ mod tests {
         assert_eq!(rows[1].hint, "");
         assert!(data_only(&rows));
         let ms = [manifest("bir", &["taxpayer"], &[])];
-        assert!(data_only(&server_rows("", &ms, &[p])));
+        assert!(data_only(&server_rows("", &ms, &[p], &[])));
     }
 
     #[test]

@@ -14,6 +14,7 @@ const DROP_ROW: f32 = 40.0;
 const DROP_HEAD: f32 = 30.0;
 const DROP_MAX: f32 = 330.0;
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use nsh_base::input;
@@ -2640,6 +2641,12 @@ fn setup_page() -> impl IntoElement {
 }
 
 fn setup_field(f: crate::store::PluginField) -> impl IntoElement {
+    setup_field_in(f, store().setup_vals)
+}
+
+/// A setup field whose typed text lives in `vals` (by key): a legacy
+/// plugin's sheet's, or a mini app's setup (`V1::setup_vals`).
+pub fn setup_field_in(f: crate::store::PluginField, vals: Signal<BTreeMap<String, String>>) -> impl IntoElement {
     let key = f.key.clone();
     let mut label = view().flex_row().child(
         text(f.label.clone())
@@ -2671,7 +2678,7 @@ fn setup_field(f: crate::store::PluginField) -> impl IntoElement {
             .justify_center()
             .child(
                 input()
-                    .value(move || store().setup_vals.get().get(&k1).cloned().unwrap_or_else(|| stored.clone()))
+                    .value(move || vals.get().get(&k1).cloned().unwrap_or_else(|| stored.clone()))
                     .placeholder(placeholder)
                     .placeholder_color(|| color(tc(0.4)))
                     .text_size(px(13.0))
@@ -2680,7 +2687,7 @@ fn setup_field(f: crate::store::PluginField) -> impl IntoElement {
                     .h(px(32.0))
                     .on_change(move |t: &str| {
                         let (k, t) = (k2.clone(), t.to_owned());
-                        store().setup_vals.update(|m| {
+                        vals.update(|m| {
                             m.insert(k, t);
                         });
                     }),
@@ -2688,7 +2695,7 @@ fn setup_field(f: crate::store::PluginField) -> impl IntoElement {
             .when(secret, move |v| {
                 v.child(
                     text(move || {
-                        let n = store().setup_vals.get().get(&k3).map(|s| s.chars().count()).unwrap_or(0);
+                        let n = vals.get().get(&k3).map(|s| s.chars().count()).unwrap_or(0);
                         "•".repeat(n)
                     })
                     .absolute()
@@ -3282,7 +3289,13 @@ fn v1_section() -> impl IntoElement {
 
 fn v1_row(p: crate::mini_v1::connect::Listed) -> impl IntoElement {
     let id = p.id.clone();
-    let status = if p.failed() { danger_ink() } else { ink3() };
+    let status = if p.failed() {
+        danger_ink()
+    } else if p.needs_setup() {
+        warn_ink()
+    } else {
+        ink3()
+    };
     card()
         .flex_row()
         .items_center()
@@ -3489,18 +3502,28 @@ fn provider_name(provider: &str) -> String {
 }
 
 /// A packaged mini app's Accounts (§20), as a plugin's: a card per
-/// declared account, a row per signed-in label, then "Add another".
+/// declared account, a row per signed-in label, then "Add another". While
+/// an account's provider lacks its setup (the shared Google client), its
+/// Setup shows instead: a sign-in could not start without it. Once saved,
+/// a compact Setup row above them ("Google client · saved") offers Change
+/// (the fields again) and Remove.
 fn v1_accounts_section(plugin: String) -> impl IntoElement {
     dynamic(move || {
         let Some(p) = store().v1.listed.get().into_iter().find(|x| x.id == plugin) else {
             return view().into_element();
         };
+        if let Some(setup) = p.first_missing_setup().cloned() {
+            return v1_setup_section(&plugin, setup, false);
+        }
         let groups = p.account_groups();
         if groups.is_empty() {
             return view().into_element();
         }
         let many = groups.len() > 1;
         let mut col = view().gap(px(16.0));
+        if let Some(setup) = p.first_setup().cloned() {
+            col = col.child(if store().v1.setup_edit.get() == plugin { v1_setup_section(&plugin, setup, true) } else { v1_setup_saved(&plugin, &setup) });
+        }
         for (_, rows) in groups {
             let title = rows[0].title.clone();
             let label = if many { format!("Accounts · {title}") } else { "Accounts".to_owned() };
@@ -3513,6 +3536,164 @@ fn v1_accounts_section(plugin: String) -> impl IntoElement {
         }
         col.into_element()
     })
+}
+
+/// A setup field as the legacy sheet draws it: a field that is not secret
+/// prefilled with its stored value (the Client ID), a stored secret as
+/// dots and blank (left blank, the stored one stays).
+pub fn v1_setup_field(f: &crate::mini_v1::connect::SetupField) -> crate::store::PluginField {
+    crate::store::PluginField {
+        key: f.key.clone(),
+        label: f.label.clone(),
+        placeholder: f.placeholder.clone(),
+        required: true,
+        secret: f.secret,
+        hint: f.hint.clone(),
+        options: Vec::new(),
+        set: f.set,
+        value: if f.secret { String::new() } else { f.value.clone() },
+        shared: String::new(),
+    }
+}
+
+/// A setup's fields (typed into `V1::setup_vals`), each with its shape
+/// error under it as it is typed, and, when the two look swapped, that
+/// message with Swap them, which trades the two typed values. The messages
+/// never hold a value.
+pub fn v1_setup_inputs(fields: &[crate::mini_v1::connect::SetupField]) -> View {
+    let mut col = view().gap(px(14.0));
+    for f in fields {
+        let (key, all) = (f.key.clone(), fields.to_vec());
+        col = col.child(view().gap(px(4.0)).child(setup_field_in(v1_setup_field(f), store().v1.setup_vals)).child(dynamic(move || {
+            let check = store().v1.setup_vals.with(|v| crate::mini_v1::connect::setup_check(&all, v));
+            match check.field_error(&key) {
+                Some(e) => text(e.to_owned()).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).into_element(),
+                None => view().into_element(),
+            }
+        })));
+    }
+    let all = fields.to_vec();
+    col.child(dynamic(move || {
+        let Some(why) = store().v1.setup_vals.with(|v| crate::mini_v1::connect::setup_check(&all, v)).swapped else { return view().into_element() };
+        let fs = all.clone();
+        view()
+            .gap(px(6.0))
+            .child(text(why).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()))
+            .child(
+                view().flex_row().child(
+                    sm_btn(Btn::Secondary, || "Swap them".into(), move || store().v1.setup_vals.update(|m| crate::mini_v1::connect::swap_typed(&fs, m)))
+                        .label("Swap the Client ID and Secret"),
+                ),
+            )
+            .into_element()
+    }))
+}
+
+/// What a setup is called on its row ("Google client").
+use buwiz_protocol::setup::setup_name;
+
+/// A saved setup's row: "Google client · saved", Change (its fields open
+/// above the accounts) and Remove, confirmed in place.
+fn v1_setup_saved(plugin: &str, setup: &crate::mini_v1::connect::Setup) -> AnyElement {
+    let st = store();
+    let name = setup_name(&setup.provider);
+    let confirming = st.v1.setup_confirm.get() == plugin;
+    let (p1, p2, p3) = (plugin.to_owned(), plugin.to_owned(), plugin.to_owned());
+    let mut right = view().flex_row().items_center().gap(px(7.0));
+    if confirming {
+        right = right
+            .child(sm_btn(Btn::DangerSolid, || "Confirm Remove".into(), move || store().v1_clear_setup(&p1)).label(format!("Confirm remove the {name}")))
+            .child(sm_btn(Btn::Ghost, || "Cancel".into(), || store().v1.setup_confirm.set(String::new())).label("Cancel"));
+    } else {
+        right = right
+            .child(
+                sm_btn(Btn::Secondary, || "Change".into(), move || {
+                    store().v1.setup_confirm.set(String::new());
+                    store().v1.setup_err.update(|m| {
+                        m.remove(&p2);
+                    });
+                    store().v1.setup_edit.set(p2.clone());
+                })
+                .label(format!("Change the {name}")),
+            )
+            .child(sm_btn(Btn::Danger, || "Remove".into(), move || store().v1.setup_confirm.set(p3.clone())).label(format!("Remove the {name}")));
+    }
+    let mut row = view()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .child(plug_tile(&provider_name(&setup.provider), 20.0))
+        .child(text(format!("{name} · saved")).flex_1().number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+        .child(right);
+    if confirming {
+        row = view().child(row).child(
+            text(format!("Removes the {name} for every plugin that shares it; their sign-ins will need it again."))
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(ink3())
+                .px(px(14.0))
+                .pb(px(10.0)),
+        );
+    }
+    view().child(sec_label("Setup")).child(card().child(row)).into_element()
+}
+
+/// A mini app's Setup: the fields its sign-in lacks (typed into
+/// `V1::setup_vals`, secrets under dots) and Save; once saved, the list
+/// reads it as ready and the Accounts with Sign in show instead. `editing`:
+/// a saved setup opened by Change, with Cancel; a save closes it.
+fn v1_setup_section(plugin: &str, setup: crate::mini_v1::connect::Setup, editing: bool) -> AnyElement {
+    let st = store();
+    let keys: Vec<String> = setup.fields.iter().map(|f| f.key.clone()).collect();
+    let mut col = view().gap(px(14.0)).px(px(14.0)).py(px(12.0)).child(
+        text(crate::mini_v1::connect::setup_intro(&setup.provider, editing)).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()),
+    );
+    // a stored value of the wrong shape: why the setup is asked for again
+    if !setup.error.is_empty() {
+        col = col.child(text(setup.error.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()));
+    }
+    col = col.child(v1_setup_inputs(&setup.fields));
+    let fields = setup.fields.clone();
+    let err = st.v1.setup_err.get().get(plugin).cloned().unwrap_or_default();
+    if !err.is_empty() {
+        col = col.child(text(err).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()));
+    }
+    let (p1, p2) = (plugin.to_owned(), plugin.to_owned());
+    let mut buttons = view().flex_row().justify_end().gap(px(8.0));
+    if editing {
+        let ks = keys.clone();
+        buttons = buttons.child(
+            sm_btn(Btn::Ghost, || "Cancel".into(), move || {
+                store().v1.setup_vals.update(|m| m.retain(|k, _| !ks.contains(k)));
+                store().v1.setup_edit.set(String::new());
+            })
+            .label("Cancel"),
+        );
+    }
+    col = col.child(
+        buttons.child(
+            sm_btn(
+                Btn::Primary,
+                move || if store().v1.setup_saving.get().contains(&p1) { "Saving…".into() } else { "Save".into() },
+                move || {
+                    let p = p2.clone();
+                    store().v1.setup_err.update(|m| {
+                        m.remove(&p);
+                    });
+                    store().v1_save_setup(&p2, fields.clone(), move |r| match r {
+                        Ok(()) => store().v1.setup_edit.set(String::new()),
+                        Err(e) => store().v1.setup_err.update(|m| {
+                            m.insert(p, e);
+                        }),
+                    })
+                },
+            )
+            .label("Save the setup"),
+        ),
+    );
+    view().child(sec_label("Setup")).child(card().child(col)).into_element()
 }
 
 fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyElement {
@@ -3559,6 +3740,9 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     let signing = st.v1.signing.get().contains(&key);
     let (status, ink) = if signing {
         ("Signing in…", ink3())
+    } else if a.connected() && a.active {
+        // the one the plugin gets
+        ("Active", ok_ink())
     } else {
         (a.status(), match a.state.as_str() {
             "connected" => ok_ink(),
@@ -3577,7 +3761,13 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
         sm_btn(Btn::Secondary, || "Sign in".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
             .label(format!("Sign in to {name}"))
     };
-    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink)).child(button);
+    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
+    // another signed-in label: Use this makes it the one the plugin gets
+    if a.connected() && !a.active && !signing {
+        let (p, acc, l) = (plugin.to_owned(), a.account.clone(), a.label.clone());
+        right = right.child(sm_btn(Btn::Secondary, || "Use this".into(), move || store().v1_account(&p, &acc, &l, AccountAction::Use)).label(format!("Use {name}")));
+    }
+    let mut right = right.child(button);
     // Remove is the row menu's, as a plugin's; a slot never signed in has none
     if a.state != "none" || a.label != "default" {
         let (k, n) = (edit_key, name.clone());
@@ -3601,12 +3791,20 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     if !a.subject.is_empty() {
         who = who.child(text(a.subject.clone()).number_of_lines(1).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()));
     }
-    // the setup a sign-in still lacks (no shared Google client), and a
-    // refused sign-in's reason; the shared client is set in a Google
-    // plugin's Setup, so there is no Setup button here
+    // the setup a sign-in still lacks, and a refused sign-in's reason (a
+    // missing setup shows the Setup section instead of these rows)
     let setup = if a.connected() { String::new() } else { a.setup.clone() };
-    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().unwrap_or_default() };
+    let err = if a.connected() { String::new() } else { st.v1.account_err.get().get(&key).cloned().filter(|e| !e.is_empty()).unwrap_or_else(|| a.error.clone()) };
     let err = if err == setup { String::new() } else { err };
+    // the provider refused the client: Change opens the setup's fields
+    let fix = (!a.connected() && a.fix_setup).then(|| {
+        let p = plugin.to_owned();
+        sm_btn(Btn::Secondary, || "Change".into(), move || {
+            store().v1.setup_confirm.set(String::new());
+            store().v1.setup_edit.set(p.clone());
+        })
+        .label("Change the Google client")
+    });
     view()
         .px(px(14.0))
         .py(px(10.0))
@@ -3626,6 +3824,7 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
         .when(!err.is_empty(), |v| {
             v.child(text(err.clone()).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(danger_ink()).pt(px(4.0)))
         })
+        .when(fix.is_some(), |v| v.child(view().flex_row().pt(px(6.0)).children(fix)))
         .into_element()
 }
 
@@ -3824,7 +4023,7 @@ fn v1_install_page() -> impl IntoElement {
                 return pane()
                     .gap(px(10.0))
                     .child(
-                        text("The command that starts the plugin (stdio), with its arguments; VAR=value words before it are its environment.")
+                        text("A mini app's name (word, Google Workspace: from github.com/buwiz-app), a GitHub repository (https://github.com/<owner>/<repo> or <owner>/<repo>), or the command that starts a plugin (stdio) with its arguments; VAR=value words before it are its environment.")
                             .text_size(px(13.0))
                             .text_color(ink3()),
                     )
@@ -3832,7 +4031,7 @@ fn v1_install_page() -> impl IntoElement {
                         view().h(px(32.0)).rounded(px(8.0)).bg(tc(0.04)).px(px(10.0)).justify_center().child(
                             input()
                                 .value(|| store().v1.form.get())
-                                .placeholder("node /path/to/plugin.mjs")
+                                .placeholder("google-workspace, owner/repo or node /path/to/plugin.mjs")
                                 .placeholder_color(|| color(tc(0.4)))
                                 .text_size(px(13.0))
                                 .text_color(theme::TEXT)

@@ -372,6 +372,7 @@ impl Host {
             }
         }
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
+        accounts::migrate(&db).map_err(|e| e.to_string())?;
         let (events, _) = broadcast::channel(1024);
         Ok(Arc::new_cyclic(|me| Host {
             db: Mutex::new(db),

@@ -11,7 +11,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -97,6 +97,18 @@ pub struct V1 {
     pub signing: Signal<HashSet<String>>,
     /// A refused sign-in's message, by [`signing_key`], under its row.
     pub account_err: Signal<HashMap<String, String>>,
+    /// The setup fields typed so far, by key (a plugin page's and a chat
+    /// card's: the shared Google client is one), sent only in the setup
+    /// request ([`Store::v1_save_setup`]) and cleared once saved.
+    pub setup_vals: Signal<BTreeMap<String, String>>,
+    /// Plugins whose setup is being saved.
+    pub setup_saving: Signal<HashSet<String>>,
+    /// A refused setup save's message on a plugin's page, by plugin.
+    pub setup_err: Signal<HashMap<String, String>>,
+    /// The plugin whose saved setup its page shows open to change ("" none).
+    pub setup_edit: Signal<String>,
+    /// The plugin whose setup Remove asks to confirm ("" none).
+    pub setup_confirm: Signal<String>,
 }
 
 /// What a refused sign-in says: `needs_setup` is the setup it lacks.
@@ -143,6 +155,11 @@ impl V1 {
             preview: signal(None),
             signing: signal(HashSet::new()),
             account_err: signal(HashMap::new()),
+            setup_vals: signal(BTreeMap::new()),
+            setup_saving: signal(HashSet::new()),
+            setup_err: signal(HashMap::new()),
+            setup_edit: signal(String::new()),
+            setup_confirm: signal(String::new()),
         }
     }
 
@@ -1232,10 +1249,10 @@ impl Store {
     /// review shows next (nothing is installed yet).
     pub fn v1_inspect(&'static self) {
         let line = self.v1.form.get_untracked();
-        let Some((env, command, args)) = connect::command_line(&line) else {
-            return crate::toast::show("Enter the plugin's command");
-        };
-        self.v1_job("Checking the plugin…", move || connect::inspect(&broker(), &command, &args, env), move |r| {
+        if line.trim().is_empty() || (!connect::release_source(&line) && connect::command_line(&line).is_none()) {
+            return crate::toast::show("Enter a mini app's name, a GitHub repository or the plugin's command");
+        }
+        self.v1_job("Checking the plugin…", move || connect::add(&broker(), &line), move |r| {
             store().v1.review.set(Some(r));
         });
     }
@@ -1300,8 +1317,10 @@ impl Store {
     }
 
     /// Sign in: the broker opens the browser; the row says "Signing in…"
-    /// until the list has it connected (checked every 2 s, 5 min at most)
-    /// or Cancel. `failed` hears a refusal.
+    /// until the list has it connected, failed (its error under the row and
+    /// the card) or gone (the broker restarted and forgot it), checked every
+    /// 2 s for as long as the broker keeps the flow ([`connect::SIGNIN_WAIT`]),
+    /// or Cancel; then Sign in shows again. `failed` hears a refusal.
     pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(RoxError) + 'static) {
         let key = signing_key(plugin, account, label.trim());
         if self.v1.signing.with_untracked(|s| s.contains(&key)) {
@@ -1324,21 +1343,29 @@ impl Store {
                     });
                     return failed(e);
                 }
-                for _ in 0..150 {
+                for _ in 0..connect::SIGNIN_WAIT.as_secs() / 2 {
                     if !self.v1.signing.with_untracked(|s| s.contains(&key)) {
                         break;
                     }
                     let (p2, a2, l2) = (p.clone(), a.clone(), l.clone());
-                    let done = crate::vault::off_main(move || {
+                    let now = crate::vault::off_main(move || {
                         std::thread::sleep(std::time::Duration::from_secs(2));
-                        let list = host_api::plugins(&broker()).ok()?;
-                        let p = list.iter().map(connect::Listed::of).find(|x| x.id == p2)?;
-                        Some(p.accounts.iter().any(|x| x.account == a2 && x.label == l2 && x.connected()))
+                        // unread (the broker away): wait on; read, the plugin's rows (none: gone)
+                        let listed = host_api::plugins(&broker()).ok().map(|l| l.iter().map(connect::Listed::of).find(|x| x.id == p2).unwrap_or_default());
+                        connect::signin_wait(listed.as_ref(), &a2, &l2)
                     })
                     .await
-                    .flatten();
-                    if done == Some(true) {
-                        break;
+                    .unwrap_or(connect::SigninWait::Waiting);
+                    match now {
+                        connect::SigninWait::Waiting => {}
+                        connect::SigninWait::Failed(why) => {
+                            let k = key.clone();
+                            self.v1.account_err.update(|m| {
+                                m.insert(k, why);
+                            });
+                            break;
+                        }
+                        _ => break,
                     }
                 }
                 self.v1.signing.update(|s| {
@@ -1347,6 +1374,92 @@ impl Store {
                 self.v1_refresh();
             })
         });
+    }
+
+    /// Save of a plugin's setup: the values typed into `keys`' fields go
+    /// to the broker in the request body only (never a log, the chat or
+    /// the model); once saved they are cleared here and the list read
+    /// again, so its accounts (and Sign in) show. `done` hears the outcome.
+    pub fn v1_save_setup(&'static self, plugin: &str, fields: Vec<connect::SetupField>, done: impl FnOnce(Result<(), String>) + 'static) {
+        // a save of it running, or a swap or wrong shape: never sent, and the
+        // caller hears why (a card that ran start() is never left busy)
+        let saving = self.v1.setup_saving.with_untracked(|s| s.contains(plugin));
+        if let Err(why) = self.v1.setup_vals.with_untracked(|v| connect::save_gate(saving, &connect::setup_check(&fields, v))) {
+            return done(Err(why));
+        }
+        let keys: Vec<String> = fields.iter().map(|f| f.key.clone()).collect();
+        let typed: Vec<(String, String)> =
+            self.v1.setup_vals.with_untracked(|m| keys.iter().filter_map(|k| m.get(k).map(|v| (k.clone(), v.clone()))).collect());
+        let p = plugin.to_owned();
+        self.v1.setup_saving.update(|s| {
+            s.insert(p.clone());
+        });
+        Owner::detached().run(|| {
+            spawn(async move {
+                let p2 = p.clone();
+                let r = crate::vault::off_main(move || host_api::save_setup(&broker(), &p2, &typed)).await;
+                self.v1.setup_saving.update(|s| {
+                    s.remove(&p);
+                });
+                match r {
+                    Some(Ok(_)) => {
+                        self.v1.setup_vals.update(|m| m.retain(|k, _| !keys.contains(k)));
+                        done(Ok(()));
+                    }
+                    Some(Err(e)) => done(Err(e.message)),
+                    None => done(Err("Couldn't save the setup.".to_owned())),
+                }
+                self.v1_refresh();
+            })
+        });
+    }
+
+    /// An account command typed alone (`@gws:login`, `sent`): the broker
+    /// posts its card in the open chat; it never reaches the model. The
+    /// draft clears once posted unless the user typed on.
+    pub fn v1_account_command(&'static self, plugin: &str, cmd: &str, sent: &str) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            return crate::toast::show("Open a chat to run it in");
+        }
+        let (p, c, sent) = (plugin.to_owned(), cmd.to_owned(), sent.to_owned());
+        let p2 = p.clone();
+        self.v1_job("", move || host_api::account_command(&broker(), &p, &chat, &c), move |v| {
+            let st = store();
+            // typed, so pressed: the sign-in starts now, its card shows it
+            if let Some((account, label)) = connect::signin_of(&v) {
+                let key = signing_key(&p2, &account, &label);
+                st.v1_signin(&p2, &account, &label, move |e| {
+                    store().v1.account_err.update(|m| {
+                        m.insert(key, signin_error(&e));
+                    });
+                    crate::toast::show(signin_error(&e));
+                });
+            }
+            if st.draft.get_untracked().trim() == sent.trim() {
+                st.draft.set(String::new());
+            }
+            if let Some(m) = v.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+                crate::toast::show(m.to_owned());
+            }
+            st.refresh_turns();
+        });
+    }
+
+    /// Remove of a plugin's setup (after its confirm): every value gone,
+    /// its provider's sign-ins expire; the page asks for the setup again.
+    pub fn v1_clear_setup(&'static self, plugin: &str) {
+        let p = plugin.to_owned();
+        self.v1.setup_confirm.set(String::new());
+        self.v1.setup_edit.set(String::new());
+        self.v1_job("", move || host_api::clear_setup(&broker(), &p), |_| {});
+    }
+
+    /// Open again on a sign-in that waits: the broker opens the browser for
+    /// a fresh flow; the wait already running goes on.
+    pub fn v1_signin_again(&'static self, plugin: &str, account: &str, label: &str) {
+        let (p, a, l) = (plugin.to_owned(), account.to_owned(), label.to_owned());
+        self.v1_job("", move || host_api::account_action(&broker(), &p, &a, &l, host_api::AccountAction::SignIn), |_| {});
     }
 
     /// Stops waiting on a sign-in (the browser was closed).
@@ -2292,6 +2405,32 @@ mod tests {
     use super::*;
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+    /// Save that cannot send (a save of the same setup runs, or a check
+    /// fails) tells its caller why, so a card that went busy is never left
+    /// so; nothing is sent.
+    #[test]
+    fn a_save_that_cannot_send_tells_its_caller_why() {
+        let rt = nsh_core::element::Runtime::default();
+        let _entered = rt.enter();
+        let st: &'static Store = Box::leak(Box::new(Store::new()));
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let save = |fields: Vec<connect::SetupField>| {
+            let h = heard.clone();
+            st.v1_save_setup("x.y.z", fields, move |r| h.borrow_mut().push(r));
+        };
+        let field = connect::SetupField::of(&json!({"key": "K", "pattern": "^a", "pattern_hint": "It starts with a"}));
+        st.v1.setup_vals.update(|v| {
+            v.insert("K".to_owned(), "b".to_owned());
+        });
+        save(vec![field.clone()]);
+        st.v1.setup_saving.update(|s| {
+            s.insert("x.y.z".to_owned());
+        });
+        save(vec![field]);
+        assert_eq!(*heard.borrow(), [Err("It starts with a".to_owned()), Err("This setup is being saved already; try again in a moment".to_owned())]);
+        assert!(st.v1.setup_saving.with_untracked(|s| s.contains("x.y.z")), "the running save is left alone");
+    }
 
     #[test]
     fn a_sign_in_that_needs_setup_says_what_is_missing() {

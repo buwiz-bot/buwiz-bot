@@ -14,15 +14,32 @@ use crate::js;
 
 /// The notice's one line: "<name> ran · 2 new items" / "<name> failed: …";
 /// a consent card's question (`noticeText`); a mini app's install,
-/// uninstall or sign-in (`account_required`) card's.
+/// uninstall or sign-in (`account_required`, "Set up …" while it carries
+/// the setup the sign-in lacks) card's, and a setup change's (`app_setup`).
 pub fn notice_text(n: &Value) -> String {
     let s = |k: &str| n.get(k).map(js::string_of).unwrap_or_default();
     let list = |k: &str| n.get(k).and_then(Value::as_array).filter(|l| !l.is_empty()).map(|l| l.iter().map(js::string_of).collect::<Vec<_>>());
     match n.get("kind").and_then(Value::as_str) {
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its pins, attachments and data.", s("title")),
+        Some("app_accounts") => {
+            let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
+            return match s("mode").as_str() {
+                "logout" => format!("Sign out of {to} for {}?", s("title")),
+                "switch" => format!("Switch the {to} account for {}", s("title")),
+                _ => format!("Your {to} account for {}", s("title")),
+            };
+        }
+        Some("app_setup") => {
+            let what = if s("provider") == "google" { "Google client".to_owned() } else { "setup".to_owned() };
+            return format!("Change the {what} of {}", s("title"));
+        }
         Some("account_required") => {
             let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
+            // the setup it lacks comes first (its card asks for the fields)
+            if n.get("setup").is_some_and(Value::is_object) {
+                return format!("Set up {to} for {}", s("title"));
+            }
             return format!("Sign in to {to} for {}", s("title"));
         }
         _ => {}
@@ -141,5 +158,8 @@ mod tests {
         assert_eq!(notice_text(&install), "Install X 1.1.0 from https://github.com/o/r/releases/tag/v1.1.0?");
         let uninstall = json!({"kind": "app_uninstall", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "state": "pending"});
         assert_eq!(notice_text(&uninstall), "Uninstall X? It removes its pins, attachments and data.");
+        assert_eq!(notice_text(&json!({"kind": "app_setup", "id": "app.buwiz.x", "title": "X", "provider": "google"})), "Change the Google client of X");
+        let acc = |mode: &str| notice_text(&json!({"kind": "app_accounts", "id": "app.buwiz.x", "title": "X", "provider": "google", "mode": mode}));
+        assert_eq!((acc("login"), acc("logout"), acc("switch")), ("Your Google account for X".into(), "Sign out of Google for X?".into(), "Switch the Google account for X".into()));
     }
 }

@@ -13,6 +13,14 @@
 //! `POST /v1/host/plugins/<id>/accounts/<account>/{signin,signout,remove}`;
 //! a sign-in settles the chat's `account_required` cards for it
 //! (`connected`); the user's Not now settles them `declined`.
+//! `POST /v1/host/plugins/<id>/command {chat, command, account?}` runs an
+//! `@short:login|logout|switch|setup` account command typed alone (it never
+//! reaches the model) by posting its card in the chat;
+//! `…/accounts/<account>/use {label}` makes a signed-in label the active one.
+//! `POST /v1/host/plugins/<id>/setup {values, clear?}` saves (or clears) the setup its
+//! accounts' providers need (the shared Google client; never logged, never
+//! answered); an install from a chat's card whose setup is missing puts an
+//! `account_required` card carrying that setup in the chat.
 //! `POST /v1/hooks/<instance>/<secret>`, a routine's webhook, takes no
 //! token: the secret is the key.
 //!
@@ -41,9 +49,13 @@ use serde_json::{json, Value};
 
 use crate::helper::plugins::Host;
 use crate::hub::ctx::HubCtx;
+use crate::hub::market::catalog::Market;
+use crate::hub::routes::market::reapply_google;
+use crate::hub::routines::threads::notice_text;
 use crate::hub::routines::store_host::settle_notices;
 use crate::hub::routines::v1::V1;
 use crate::hub::routines::Routines;
+use crate::hub::tools::v1::{account_card, card_pending};
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
@@ -200,7 +212,7 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
             (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
             (_, None) => Err(V1Error::new("plugin_unavailable", "this broker hosts no v1 plugins")),
             (Ok(id), Some(host)) => match host.row(&id) {
-                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id)})),
+                Some(_) => Ok(json!({"ok": true, "id": id, "accounts": host.accounts_view(&id), "setup": host.setup_view(&id)})),
                 None => Err(V1Error::new("not_found", format!("{} is not installed", js::slice_utf16(&id, 80)))),
             },
         };
@@ -228,6 +240,7 @@ enum Route {
 const POSTS: &[&str] = &[
     "/v1/host/plugins/inspect",
     "/v1/host/plugins/install",
+    "/v1/host/plugins/fetch",
     "/v1/host/notices/settle",
     "/v1/host/apps/source",
     "/v1/host/sessions/open",
@@ -249,14 +262,14 @@ impl Route {
         if let Some(p) = POSTS.iter().find(|p| **p == path) {
             return Some(Route::Post(p));
         }
-        // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools)$/
+        // /^\/v1\/host\/plugins\/([^/]+)\/(enable|disable|uninstall|tools|setup)$/
         let rest = path.strip_prefix("/v1/host/plugins/")?;
         if let [id, "accounts", account, op] = rest.split('/').collect::<Vec<_>>().as_slice() {
-            let op = ["signin", "signout", "remove"].into_iter().find(|o| o == op)?;
+            let op = ["signin", "signout", "remove", "use"].into_iter().find(|o| o == op)?;
             return (!id.is_empty() && !account.is_empty()).then(|| Route::Account((*id).to_owned(), (*account).to_owned(), op));
         }
         let (id, action) = rest.split_once('/')?;
-        let action = ["enable", "disable", "uninstall", "tools"].into_iter().find(|a| *a == action)?;
+        let action = ["enable", "disable", "uninstall", "tools", "setup", "command"].into_iter().find(|a| *a == action)?;
         (!id.is_empty()).then(|| Route::Action(id.to_owned(), action))
     }
 
@@ -281,7 +294,11 @@ impl Route {
                 }
                 if let Some(op) = path.strip_prefix("/v1/host/plugins/") {
                     let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
-                    return if op == "inspect" { host.inspect(b).await } else { install_plugin(ctx, host, b).await };
+                    return match op {
+                        "inspect" => host.inspect(b).await,
+                        "fetch" => fetch_release(ctx, host, b).await,
+                        _ => install_plugin(ctx, host, b).await,
+                    };
                 }
                 let ss = ctx.sessions.as_ref().ok_or_else(no_host)?;
                 match *path {
@@ -305,6 +322,8 @@ impl Route {
                         V1::forget(&ctx.db, &id);
                         Ok(out)
                     }
+                    "setup" => save_setup(ctx, host, &id, b).await,
+                    "command" => account_command(ctx, host, &id, b),
                     _ => host.set_tool(&id, b.get("tool"), b.get("disabled")),
                 }
             }
@@ -314,6 +333,7 @@ impl Route {
                 match *op {
                     "signin" => host.account_signin(&id, &account, b).await,
                     "signout" => host.account_signout(&id, &account, b).await,
+                    "use" => host.account_use(&id, &account, b).await,
                     _ => host.account_remove(&id, &account, b).await,
                 }
             }
@@ -360,11 +380,178 @@ pub fn with_env_from(host: &Host, b: &Value) -> Result<Value, V1Error> {
 }
 
 /// `POST /v1/host/plugins/install` with `env_from`; once it installed,
-/// every pending `app_install` card for the id reads `installed`.
+/// every pending `app_install` card for the id reads `installed`, and each
+/// chat that had one is asked for the setup the plugin lacks
+/// ([`ask_setup`]).
 pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
     let out = host.install(&with_env_from(host, b)?).await?;
     if let Some(id) = out.get("id").and_then(Value::as_str) {
+        let chats = ctx.store.read(|s| {
+            let asks = |t: &&crate::hub::store::Thread| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_install" && n["id"] == json!(id) && n["state"] == "pending");
+            s.list.iter().filter(asks).map(|t| t.id.clone()).collect::<Vec<_>>()
+        });
         settle_notices(ctx, None, "app_install", id, "installed");
+        for chat in chats {
+            ask_setup(ctx, host, &chat, id);
+        }
+    }
+    Ok(out)
+}
+
+/// `POST /v1/host/plugins/<id>/command {chat, command, account?}`: an
+/// account command (`login`, `logout`, `switch`, `setup`) of a plugin
+/// whose package declares accounts, for `account` (its first by default),
+/// as a card in chat `chat`, unless the same one is pending there:
+/// - `login`: the `account_required` card (with the setup while it is
+///   missing) when none is signed in, and, the setup there, `signin:
+///   {account, label}` for the app to start at once (the typed command is
+///   the press; an agent's card waits for it), else an `app_accounts` card
+///   (`mode: login`: who, Add another account, Switch);
+/// - `logout`, `switch`: an `app_accounts` card of that mode (none signed
+///   in: neither posts, `logout` says so and `switch` says "No Google
+///   account signed in yet", the provider by its own name);
+/// - `setup`: the `app_setup` card.
+///
+/// → `{ok, posted, kind, message?}`. The card names no subject: the app
+/// draws who is signed in from the plugin list.
+pub fn account_command(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result<Value, V1Error> {
+    let str_of = |k: &str| b.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+    let (Some(chat), Some(command)) = (str_of("chat"), str_of("command")) else { return V1Error::err("invalid_args", "send {chat, command}") };
+    if !crate::v1::manifest::ACCOUNT_COMMANDS.contains(&command) {
+        return V1Error::err("invalid_args", format!("command must be one of {}", crate::v1::manifest::ACCOUNT_COMMANDS.join(", ")));
+    }
+    let Some(row) = host.row(id) else { return V1Error::err("not_found", format!("{} is not installed", js::slice_utf16(id, 80))) };
+    if ctx.store.read(|s| s.thread(chat).is_none()) {
+        return V1Error::err("not_found", format!("no chat {}", js::slice_utf16(chat, 80)));
+    }
+    let declared = host.declared_accounts(id);
+    let a = match str_of("account") {
+        Some(want) => declared.into_iter().find(|a| a.id == want),
+        None => declared.into_iter().next(),
+    };
+    let Some(a) = a else { return V1Error::err("invalid_args", format!("{id} has no such account")) };
+    let title = row.manifest().get("title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| id.to_owned());
+    use crate::hub::tools::miniapps::{notice_pending, post_in, setup_card};
+    if command == "setup" {
+        let (_, _, posted) = setup_card(ctx, host, chat, id).map_err(|e| V1Error::new("invalid_args", e))?;
+        return Ok(json!({"ok": true, "posted": posted, "kind": "app_setup"}));
+    }
+    let signed_in = host.active_label(id, &a.id).is_some();
+    if command == "login" && (!signed_in || host.setup_missing(&a.provider)) {
+        let n = account_card(id, &title, &a, &host.setup_view(id));
+        let posted = card_pending(ctx, chat, id, &a.id) || post_in(ctx, chat, &n);
+        let mut out = json!({"ok": true, "posted": posted, "kind": "account_required"});
+        // the typed command is the press: with the setup there, the app
+        // starts this sign-in at once (the card, pending or new, shows it)
+        if n.get("setup").is_none() {
+            out["signin"] = json!({"account": a.id, "label": signin_label(host, id, &a.id)});
+        }
+        return Ok(out);
+    }
+    if command == "logout" && !signed_in {
+        return Ok(json!({"ok": true, "posted": false, "kind": "app_accounts", "message": format!("No {} is signed in for {title}", a.label)}));
+    }
+    if command == "switch" && !signed_in {
+        let message = format!("No {} account signed in yet", provider_title(&a.provider));
+        return Ok(json!({"ok": true, "posted": false, "kind": "app_accounts", "message": message}));
+    }
+    let n = json!({"kind": "app_accounts", "id": id, "plugin": id, "title": title, "account": a.id, "provider": a.provider, "label": a.label, "mode": command, "state": "pending"});
+    let posted = notice_pending(ctx, chat, "app_accounts", id, Some(command)) || post_in(ctx, chat, &n);
+    Ok(json!({"ok": true, "posted": posted, "kind": "app_accounts"}))
+}
+
+/// What a provider is called in a message: "Google", else an `oauth:`
+/// issuer's host (`auth.example.com`).
+fn provider_title(provider: &str) -> String {
+    match provider.strip_prefix("oauth:") {
+        Some(issuer) => url::Url::parse(issuer).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| issuer.to_owned()),
+        None if provider == "google" => "Google".to_owned(),
+        None => provider.to_owned(),
+    }
+}
+
+/// The label a typed `@short:login` signs in again: the one marked active,
+/// else `default` when it has a row, else the one used last, else
+/// `default`.
+fn signin_label(host: &Host, id: &str, account: &str) -> String {
+    let rows: Vec<_> = host.account_rows(id).into_iter().filter(|r| r.account == account).collect();
+    let pick = rows.iter().find(|r| r.active).or_else(|| rows.iter().find(|r| r.label == "default")).or_else(|| rows.iter().max_by_key(|r| r.updated_at));
+    pick.map(|r| r.label.clone()).unwrap_or_else(|| "default".to_owned())
+}
+
+/// `POST /v1/host/plugins/fetch {source}`: Connect Apps' Add… of a mini
+/// app's name, GitHub URL or `owner/repo` (`app_install`'s forms): the
+/// release fetched and verified, then inspected; → the inspection with
+/// what Install sends back (`command`, `args`, `env`, `package`) and
+/// `source`, `version`, `needs_env`. Nothing is installed.
+pub async fn fetch_release(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
+    let source = b.get("source").and_then(Value::as_str).unwrap_or_default();
+    if let Err(e) = crate::helper::release::parse_url(source) {
+        return V1Error::err("invalid_args", e);
+    }
+    let (f, spec, mut i) = crate::hub::tools::miniapps::fetch_reviewed(ctx, host, source).await.map_err(|e| {
+        let code = if e.contains(" has no release") { "not_found" } else { "plugin_unavailable" };
+        V1Error::new(code, e)
+    })?;
+    for k in ["command", "args", "env", "package"] {
+        if let Some(v) = spec.get(k) {
+            i[k] = v.clone();
+        }
+    }
+    i["source"] = json!(f.source);
+    i["version"] = json!(f.version);
+    i["needs_env"] = json!(f.needs_env);
+    Ok(i)
+}
+
+/// In chat `chat`, an `account_required` card carrying the setup (fields,
+/// no values) for each account of `id` whose provider's setup is missing,
+/// unless a pending one asks already; → how many it posted.
+pub fn ask_setup(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> usize {
+    let Some(row) = host.row(id) else { return 0 };
+    let title = row.manifest().get("title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| id.to_owned());
+    let setup = host.setup_view(id);
+    let mut posted = 0;
+    for a in host.declared_accounts(id) {
+        if !host.setup_missing(&a.provider) || card_pending(ctx, chat, id, &a.id) {
+            continue;
+        }
+        let n = account_card(id, &title, &a, &setup);
+        match ctx.store.append_turn(chat, crate::hub::store::Turn::notice(&notice_text(&n), n)) {
+            Ok(Some(_)) => posted += 1,
+            Ok(None) => {}
+            Err(e) => eprintln!("buwiz-broker: notices: the store's write: {e}"),
+        }
+    }
+    if posted > 0 {
+        ctx.store.write_index();
+    }
+    posted
+}
+
+/// `POST /v1/host/plugins/<id>/setup {values, clear?}` ([`Host::save_setup`]);
+/// the pending `app_setup` cards of the plugin read `saved` (`removed`
+/// for a Remove);
+/// a saved Google client re-applies to the installed Google plugins'
+/// connectors, as their own Setup's save does; any that did not update are
+/// named in `not_updated` (and the log), the save stands.
+pub async fn save_setup(ctx: &HubCtx, host: &Host, id: &str, b: &Value) -> Result<Value, V1Error> {
+    let clear = b.get("clear") == Some(&Value::Bool(true));
+    let out = host.save_setup(id, b.get("values"), clear).await?;
+    // a mini app's `app_setup` cards for it have their answer: a Remove's is no save
+    settle_notices(ctx, None, "app_setup", id, if clear { "removed" } else { "saved" });
+    let google = host.declared_accounts(id).iter().any(|a| a.provider == "google");
+    let mut out = out;
+    if let (true, Some(m)) = (google, ctx.ext.get::<Arc<Market>>()) {
+        // the errors may quote a materialized config: only the names are said
+        match reapply_google(m, ctx).await {
+            Ok(failed) if failed.is_empty() => {}
+            Ok(failed) => {
+                eprintln!("  v1 {id}: setup saved; these Google plugins' connectors did not update: {}", failed.join(", "));
+                out["not_updated"] = json!(failed);
+            }
+            Err(_) => eprintln!("  v1 {id}: setup saved; the installed Google plugins could not be read"),
+        }
     }
     Ok(out)
 }
@@ -380,7 +567,9 @@ pub fn settle(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
         "app_install" => &["declined"],
         "app_uninstall" => &["uninstalled", "cancelled"],
         "account_required" => &["declined"],
-        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall or account_required"),
+        "app_setup" => &["saved", "cancelled"],
+        "app_accounts" => &["done", "cancelled"],
+        _ => return V1Error::err("invalid_args", "kind must be app_install, app_uninstall, account_required, app_setup or app_accounts"),
     };
     if !states.contains(&state) {
         return V1Error::err("invalid_args", format!("{kind} settles as {}", states.join(" or ")));
@@ -514,5 +703,15 @@ mod tests {
         assert!(Route::of("/v1/host/plugins/app.buwiz.gws/accounts/google/delete").is_none());
         assert!(Route::of("/v1/host/plugins//accounts/google/signin").is_none());
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/enable"), Some(Route::Action(_, "enable"))));
+        assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
+        assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/command"), Some(Route::Action(_, "command"))));
+        assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/use").map(|r| r.2), Some("use"));
+    }
+
+    #[test]
+    fn a_provider_is_called_by_its_own_name() {
+        assert_eq!(provider_title("google"), "Google");
+        assert_eq!(provider_title("oauth:https://auth.example.com/tenant"), "auth.example.com");
+        assert_eq!(provider_title("oauth:http://127.0.0.1:9/"), "127.0.0.1");
     }
 }
