@@ -646,8 +646,16 @@ fn skills_save(ctx: &HubCtx, req: HubRequest) -> HubResponse {
     }
 }
 
-/// `POST /skills/state`.
+/// The old switch routes answer only the app: they must carry the host token.
+fn locked() -> HubResponse {
+    raw(StatusCode::UNAUTHORIZED, "application/json", r#"{"ok":false,"code":"unauthorized","message":"X-Buwiz-Host is missing or wrong"}"#)
+}
+
+/// `POST /skills/state` (the app's, with the host token).
 fn skills_state(ctx: &HubCtx, req: HubRequest) -> HubResponse {
+    if !crate::hub::routes::host::authorized(&req.headers) {
+        return locked();
+    }
     let text = if req.body.is_empty() { "{}".as_bytes() } else { &req.body[..] };
     match serde_json::from_slice::<Value>(text).ok().filter(|b| !b.is_null()).map(|b| skills::set_state(ctx, &b)) {
         Some(Ok(())) => raw(StatusCode::OK, "application/json", r#"{"ok":true}"#),
@@ -659,6 +667,9 @@ fn skills_state(ctx: &HubCtx, req: HubRequest) -> HubResponse {
 /// down with no answer (its parse is outside any try); Rust answers 400
 /// `{"ok":false}` instead (D8).
 fn skills_delete(ctx: &HubCtx, req: HubRequest) -> HubResponse {
+    if !crate::hub::routes::host::authorized(&req.headers) {
+        return locked();
+    }
     let text = if req.body.is_empty() { "{}".as_bytes() } else { &req.body[..] };
     match serde_json::from_slice::<Value>(text).ok().filter(|b| !b.is_null()).map(|b| skills::delete(ctx, &b)) {
         Some(Ok(())) => raw(StatusCode::OK, "application/json", r#"{"ok":true}"#),
@@ -755,6 +766,19 @@ mod tests {
     fn installed(f: &Fixture, key: &str) -> Option<Value> {
         let meta: Option<String> = f.hub.ctx().db.with(|db| db.query_row("SELECT meta FROM installed_plugins WHERE name=?", [key], |r| r.get(0)).optional()).unwrap();
         meta.map(|m| serde_json::from_str(&m).unwrap())
+    }
+
+    /// Bot controls: the skill switches answer only a request carrying the host token.
+    #[tokio::test]
+    async fn the_skill_switch_routes_answer_401_without_the_host_token() {
+        let f = fixture("locked");
+        f.hub.ctx().db.with(|db| db.execute("INSERT INTO skills(id,name,enabled) VALUES('s','S',0)", [])).unwrap();
+        for url in ["/skills/state", "/skills/delete"] {
+            let (status, v) = post(&f, url, json!({ "id": "s", "enabled": true })).await;
+            assert_eq!((status, v["code"].as_str()), (401, Some("unauthorized")), "{url}");
+        }
+        let on: i64 = f.hub.ctx().db.with(|db| db.query_row("SELECT enabled FROM skills WHERE id='s'", [], |r| r.get(0))).unwrap();
+        assert_eq!(on, 0, "unchanged");
     }
 
     #[tokio::test]
