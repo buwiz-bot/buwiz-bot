@@ -292,7 +292,7 @@ pub(crate) static COMMANDS: &[Command] = &[
     cmd("composer.focus", "Focus the message field", Scope::Global, &["mod+l"], |_| crate::composer::focus()),
     always(cmd("app.escape", "Close / leave the field", Scope::Global, &["escape"], |_| escape())),
     cmd("chat.new", "New chat", Scope::Global, &["mod+shift+n"], |_| store().new_thread()),
-    cmd("bot.new", "New bot", Scope::Global, &["mod+n"], |_| store().bot_modal.set(true)),
+    cmd("bot.new", "New bot", Scope::Global, &["mod+n"], |_| store().open_bot_modal()),
     cmd("sidebar.toggle", "Show / hide the sidebar", Scope::Global, &["mod+b"], |_| {
         store().side_shown.update(|v| *v = !*v)
     }),

@@ -1792,7 +1792,7 @@ fn empty_pane() -> impl IntoElement {
 // ————————————————————————— the avatar editor —————————————————————————
 
 /// `avatarEditing`'s floating card under the pane avatar — 297 wide,
-/// Bot | Generate | Upload tabs (App.tsx:3163). Rendered from `pane()`.
+/// Bot | Design | Upload tabs (App.tsx:3163; Design replaces Generate). Rendered from `pane()`.
 pub(crate) fn editor_overlay() -> impl IntoElement {
     dynamic(|| {
         let st = store();
@@ -1825,7 +1825,8 @@ pub(crate) fn editor_overlay() -> impl IntoElement {
     })
 }
 
-/// The Bot|Generate|Upload pills + Reset (App.tsx:3181).
+/// The Bot|Design|Upload pills + Reset, or Revert after a Design pick
+/// (App.tsx:3181).
 fn editor_tabs() -> impl IntoElement {
     view()
         .flex_row()
@@ -1833,7 +1834,7 @@ fn editor_tabs() -> impl IntoElement {
         .pt(px(9.0))
         .px_2()
         .gap(px(2.0))
-        .children(["bot", "generate", "upload"].into_iter().map(|tb| {
+        .children(["bot", "design", "upload"].into_iter().map(|tb| {
             view()
                 .rounded(px(999.0))
                 .px_2()
@@ -1877,13 +1878,22 @@ fn editor_tabs() -> impl IntoElement {
                     .justify_center()
                     .label("Reset avatar")
                     .child(text("Reset").text_size(px(13.0)).text_color(theme::DIM))
-                    .on_press(|| {
-                        let Some(b) = store().active_bot_untracked() else { return };
-                        store().update_bot(
-                            &b.id,
-                            serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
-                        );
-                    })
+                    // Asks first: the confirm row on the Bot tab resets.
+                    .on_press(|| store().avatar_reset_ask.set(true))
+                    .into_element()
+            },
+        ))
+        .child(when(
+            || store().avatar_edit_tab.get() == "design" && store().design_was.get().is_some(),
+            || {
+                view()
+                    .h(px(22.0))
+                    .px_2()
+                    .rounded(px(8.0))
+                    .justify_center()
+                    .label("Revert avatar")
+                    .child(text("Revert").text_size(px(13.0)).text_color(theme::DIM))
+                    .on_press(|| store().design_revert())
                     .into_element()
             },
         ))
@@ -1893,14 +1903,14 @@ fn editor_tabs() -> impl IntoElement {
 /// zone (App.tsx:3214).
 fn editor_body() -> impl IntoElement {
     match store().avatar_edit_tab.get().as_str() {
-        "generate" => generate_tab().into_element(),
+        "design" => design_tab().into_element(),
         "upload" => upload_tab().into_element(),
         _ => bot_tab().into_element(),
     }
 }
 
-/// `Bot` — 48pt shapes five per row, 32pt swatches six per row
-/// (App.tsx:3215).
+/// `Bot` — "Your designs" (`design::saved`), then 48pt shapes five per
+/// row, 32pt swatches six per row (App.tsx:3215).
 fn bot_tab() -> impl IntoElement {
     let st = store();
     view()
@@ -1908,6 +1918,19 @@ fn bot_tab() -> impl IntoElement {
         .px_3()
         .pb(px(20.0))
         .gap(px(26.0))
+        .child(when(
+            || store().avatar_reset_ask.get(),
+            || {
+                crate::design::confirm_row(
+                    "Reset this bot to the default avatar?".to_owned(),
+                    "Reset",
+                    || store().reset_avatar(),
+                    || store().avatar_reset_ask.set(false),
+                )
+                .into_element()
+            },
+        ))
+        .child(crate::design::saved(false))
         .child(
             view()
                 .flex_row()
@@ -1945,14 +1968,24 @@ fn bot_tab() -> impl IntoElement {
                                     .into_element()
                             },
                         ))
-                        // App.tsx:3248 — the adaptive swatch raw; the
-                        // painter resolves `inkOf` per theme.
-                        .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
-                            shape: sh.into(),
-                            color: "#FFFFFF".to_owned(),
-                            size: 44.0,
-                            paused: true,
-                            ..Default::default()
+                        // In the bot's colour (the primary ink raw when it
+                        // wears a photo; the painter resolves `inkOf` per
+                        // theme), like the Create New Bot grid; re-drawn
+                        // when the colour changes.
+                        .child(dynamic(move || {
+                            let color = store()
+                                .active_bot()
+                                .filter(|b| b.image.is_empty())
+                                .map(|b| b.color)
+                                .unwrap_or_else(|| "#FFFFFF".to_owned());
+                            crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+                                shape: sh.into(),
+                                color,
+                                size: 44.0,
+                                paused: true,
+                                ..Default::default()
+                            })
+                            .into_element()
                         }))
                         .into_element()
                 })),
@@ -1983,8 +2016,14 @@ fn bot_tab() -> impl IntoElement {
                             if same { theme::BORDER_S } else { AdaptiveColor::TRANSPARENT }
                         })
                         .label(format!("{c} character color"))
+                        // A picture keeps its own colours: the swatches
+                        // rest (dimmed) while the bot wears one.
+                        .opacity(|| if wears_picture() { 0.3f32 } else { 1.0 })
                         .on_press(move || {
                             let Some(b) = store().active_bot_untracked() else { return };
+                            if !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH) {
+                                return;
+                            }
                             store().update_bot(
                                 &b.id,
                                 serde_json::json!({"color": c, "image": "", "crop": serde_json::Value::Null}),
@@ -2006,93 +2045,31 @@ fn bot_tab() -> impl IntoElement {
         )
 }
 
-/// `Generate` — the prompt, the pulsing placeholder, or the crop
-/// (App.tsx:3261).
-fn generate_tab() -> impl IntoElement {
+/// Whether the open bot's colours are its own (tracked): a photo or
+/// picture avatar, or a rich (multi-colour) design.
+fn wears_picture() -> bool {
+    store()
+        .active_bot()
+        .is_some_and(|b| !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH))
+}
+
+/// `Design` — the prompt, an optional picture, and 3 mark avatars to
+/// pick from (`design::panel`); a pick applies to the bot at once.
+fn design_tab() -> impl IntoElement {
     view()
-        .pt(px(20.0))
+        .pt(px(16.0))
         .px_3()
         .pb(px(13.0))
         .gap_3()
+        .child(crate::design::panel(false))
+        // Picture mode's result: the crop editor, then Set avatar.
         .child(when(
-            || store().avatar_draft.get().is_none(),
-            || {
-                view()
-                    .gap_3()
-                    .child(
-                        input()
-                            .value(|| store().avatar_gen_prompt.get())
-                            .on_change(|v: &str| store().avatar_gen_prompt.set(v.to_owned()))
-                            .placeholder("Describe your avatar…")
-                            .placeholder_color(|| color(theme::GHOST))
-                            .multiline(|| !store().avatar_gen_busy.get())
-                            .readonly(|| store().avatar_gen_busy.get())
-                            .h(move || px(if store().avatar_gen_busy.get() { 32.0 } else { 174.0 }))
-                            .text_size(px(14.0))
-                            .text_color(theme::TEXT)
-                            .bg(theme::CARD2)
-                            .py_2()
-                            .px(px(10.0))
-                            .rounded(px(10.0))
-                            .border_1()
-                            .border_color(theme::BORDER_S),
-                    )
-                    .child(when(
-                        || store().avatar_gen_busy.get(),
-                        || {
-                            view()
-                                .items_center()
-                                .py_3()
-                                .child(
-                                    view()
-                                        .size(px(84.0))
-                                        .rounded(px(42.0))
-                                        .bg(Hsla::from_str("#2a2a2a").unwrap_or(theme::CARD2.dark)),
-                                )
-                                .into_element()
-                        },
-                    ))
-                    .child(
-                        view()
-                            .h(px(30.0))
-                            .rounded(px(10.0))
-                            .items_center()
-                            .justify_center()
-                            .bg(move || {
-                                if store().avatar_gen_busy.get() {
-                                    theme::HOVER.dark
-                                } else if !store().avatar_gen_prompt.get().trim().is_empty() {
-                                    theme::TEXT.dark
-                                } else {
-                                    theme::GHOST.dark
-                                }
-                            })
-                            .child(
-                                text(move || {
-                                    if store().avatar_gen_busy.get() { "Generating…" } else { "Generate" }
-                                })
-                                .text_size(px(13.0))
-                                .text_color(move || {
-                                    if store().avatar_gen_busy.get() {
-                                        theme::MUTED.dark
-                                    } else {
-                                        theme::CARD2.dark
-                                    }
-                                }),
-                            )
-                            .on_press(|| store().generate_avatar()),
-                    )
-                    .into_element()
-            },
-        ))
-        .child(when(
-            || store().avatar_draft.get().is_some(),
+            || store().design_mode.get() == "picture" && store().avatar_draft.get().is_some(),
             || {
                 let d = store().avatar_draft.get().unwrap_or_default();
                 crop_editor(d, false).into_element()
             },
         ))
-        .child(editor_err())
 }
 
 /// `Upload` — the dashed drop zone, then the crop with name·size
@@ -2290,7 +2267,7 @@ fn crop_editor(d: crate::store::AvatarDraft, show_name: bool) -> impl IntoElemen
                         .bg(theme::TEXT)
                         .items_center()
                         .justify_center()
-                        .child(text("Set avatar").text_size(px(13.0)).text_color(theme::CARD2))
+                        .child(text("Set avatar").text_size(px(13.0)).text_color(theme::MENU_BG))
                         .on_press(|| store().set_avatar()),
                 ),
         )

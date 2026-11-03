@@ -18,6 +18,8 @@
 //       server_tool_use, web_search_tool_result. Streamed, text arrives in
 //       two deltas and a tool's input in `chunks` input_json_delta pieces;
 //       `delay` ms between events lets a test look at the chat mid-stream.
+//   A step's `wait` (ms) holds its whole answer back that long (a slow
+//       model, streamed or not).
 //   {status, error?, headers?}        an HTTP error (429/500 retry quickly:
 //       retry-after-ms 1); `error` is the error message
 //   {die: true}                       a stream that closes before its first
@@ -212,9 +214,14 @@ export async function startFakeOpencodex({ port = 0 } = {}) {
       const rec = { method: req.method, path, headers, body, stream: !!body?.stream };
 
       requests.push(rec);
+      let wait = 0;
       const json = (status, obj, extra = {}) => {
-        res.writeHead(status, { "content-type": "application/json", ...extra });
-        res.end(JSON.stringify(obj));
+        const send = () => {
+          res.writeHead(status, { "content-type": "application/json", ...extra });
+          res.end(JSON.stringify(obj));
+        };
+        if (wait) setTimeout(send, wait);
+        else send();
       };
 
       if (req.method === "GET" && path.endsWith("/v1/models")) {
@@ -243,6 +250,7 @@ export async function startFakeOpencodex({ port = 0 } = {}) {
       } else step = name ? next(name, rec) : say("ok");
 
       rec.script = name;
+      wait = step.wait || 0;
 
       if (step.status) {
         const err = { type: "error", error: { type: step.status === 429 ? "rate_limit_error" : step.status >= 500 ? "api_error" : "invalid_request_error", message: step.error || `status ${step.status}` } };
@@ -277,7 +285,7 @@ export async function startFakeOpencodex({ port = 0 } = {}) {
       if (rec.stream) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
 
-        return sse(res, step, model);
+        return wait ? setTimeout(() => sse(res, step, model), wait) : sse(res, step, model);
       }
 
       return json(200, finalMessage(step, model));

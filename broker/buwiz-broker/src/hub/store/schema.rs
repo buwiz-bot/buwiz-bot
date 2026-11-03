@@ -88,6 +88,10 @@ const TRIED: &[&str] = &[
     "ALTER TABLE bots ADD COLUMN instructions TEXT",
     "ALTER TABLE bots ADD COLUMN memories TEXT",
     "ALTER TABLE bots ADD COLUMN integrations TEXT",
+    // a custom avatar shape's SVG path data (NULL for a kit shape)
+    "ALTER TABLE bots ADD COLUMN outline TEXT",
+    // a rich avatar's painted layers and eye colour, as JSON {layers, eyes}
+    "ALTER TABLE bots ADD COLUMN art TEXT",
     "ALTER TABLE threads ADD COLUMN hidden INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN routine TEXT",

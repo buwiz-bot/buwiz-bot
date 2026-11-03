@@ -158,6 +158,14 @@ pub struct Bot {
     pub name: String,
     pub shape: String,
     pub color: String,
+    /// a custom shape's SVG path data (avatar-shape.mjs); `None` for a kit shape
+    pub outline: Option<String>,
+    /// a rich avatar's painted layers `[{path, fill, opacity?}]` (custom only)
+    pub layers: Option<Vec<Value>>,
+    /// a rich avatar's eye colour (with `layers`; `None` is undefined)
+    pub eyes: Option<Value>,
+    /// a rich avatar's own pieces `[{outline, color, layers?, z?}]` (custom only)
+    pub parts: Option<Vec<Value>>,
     /// Node's `threadId` (`null` once its chat is gone)
     pub thread_id: Option<String>,
     pub pinned: bool,
@@ -195,6 +203,10 @@ impl Bot {
             name: name.into(),
             shape: shape.into(),
             color: color.into(),
+            outline: None,
+            layers: None,
+            eyes: None,
+            parts: None,
             thread_id,
             pinned: false,
             section: String::new(),

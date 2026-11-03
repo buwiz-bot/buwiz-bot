@@ -170,6 +170,22 @@ fn paint_node<'a>(
     if let Some(mask) = mask {
         p = p.save().clip_path(&mask_path(mask), FillRule::EvenOdd);
     }
+    // `clip-path="url(#id)"` — the union of a `clipPath`'s paths (rich
+    // bodies clip their decals and eyes to the body this way)
+    let clip = tree
+        .attr("clip-path")
+        .and_then(|c| c.strip_prefix("url(#")?.strip_suffix(')'))
+        .and_then(|id| defs.get(id))
+        .filter(|c| c.tag == "clipPath");
+    if let Some(clip) = clip {
+        let d: String = clip
+            .children
+            .iter()
+            .filter(|c| c.tag == "path")
+            .filter_map(|c| c.attr("d"))
+            .collect();
+        p = p.save().clip_path(&path_of(&d), FillRule::NonZero);
+    }
 
     match tree.tag {
         "svg" | "g" => {
@@ -252,6 +268,9 @@ fn paint_node<'a>(
         }
         _ => {}
     }
+    if clip.is_some() {
+        p = p.restore();
+    }
     if mask.is_some() {
         p = p.restore();
     }
@@ -322,8 +341,13 @@ fn b64(data: &str) -> Vec<u8> {
 }
 
 /// `restOf(shape)` — decoded resting frames (`None` when unbaked),
-/// decoded once per shape: a resting mark repaints on every gaze step.
+/// decoded once per shape: a resting mark repaints on every gaze step. A
+/// custom body (`outline:<path>` or its `custom:` name) bakes its own on
+/// first use.
 pub(crate) fn rest_bytes(shape: &str) -> Option<std::rc::Rc<[u8]>> {
+    if let Some(bytes) = super::custom::rest_bytes(shape) {
+        return Some(bytes);
+    }
     let (name, data) = REST.iter().find(|(n, _)| *n == shape)?;
     Some(RESTS.with(|c| c.borrow_mut().entry(name).or_insert_with(|| b64(data).into()).clone()))
 }

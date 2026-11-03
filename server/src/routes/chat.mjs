@@ -101,7 +101,7 @@ export default async function handle(req, res) {
             archived: !!t.archived,
             lastApp: [...t.turns].reverse().find((x) => x.name)?.name || "",
             bot: bot
-              ? { id: bot.id, name: bot.name, shape: bot.shape, color: bot.color }
+              ? { id: bot.id, name: bot.name, shape: bot.shape, color: bot.color, ...(bot.outline ? { outline: bot.outline } : {}), ...(bot.layers ? { layers: bot.layers, eyes: bot.eyes } : {}), ...(bot.parts ? { parts: bot.parts } : {}) }
               : null,
             // a v1 routine's own thread — not a sidebar row (v1/routine-threads.mjs)
             ...(t.routine ? { routine: t.routine } : {}),
@@ -119,6 +119,12 @@ export default async function handle(req, res) {
             name: b.name,
             shape: b.shape,
             color: b.color,
+            // a custom shape's SVG path data (avatar-shape.mjs)
+            ...(b.outline ? { outline: b.outline } : {}),
+            // a rich avatar's painted layers and eye colour
+            ...(b.layers ? { layers: b.layers, eyes: b.eyes } : {}),
+            // a rich avatar's own pieces: a hat, antlers, a cloud
+            ...(b.parts ? { parts: b.parts } : {}),
             threadId: b.threadId,
             pinned: !!b.pinned,
             section: b.section || "",
