@@ -192,6 +192,8 @@ pub enum AccountAction {
     SignIn,
     SignOut,
     Remove,
+    /// Makes a signed-in label the active one (the one the plugin gets).
+    Use,
 }
 
 /// The account routes, in one place: `/v1/host/plugins/:id/accounts/:account/{signin,signout,remove}`.
@@ -200,6 +202,7 @@ pub fn account_route(plugin: &str, account: &str, action: AccountAction) -> Stri
         AccountAction::SignIn => "signin",
         AccountAction::SignOut => "signout",
         AccountAction::Remove => "remove",
+        AccountAction::Use => "use",
     };
     format!("/v1/host/plugins/{plugin}/accounts/{account}/{verb}")
 }
@@ -242,6 +245,16 @@ pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> R
         return Err(RoxError::new("invalid_args", "Enter the values first"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"values": values}), SHORT_TIMEOUT)
+}
+
+/// `POST /v1/host/plugins/:id/command {chat, command}`: an account command
+/// typed alone (`@gws:login`), its card posted in chat `chat` by the broker
+/// (it never reaches the model): `{ok, posted, kind, message?}`.
+pub fn account_command(b: &dyn Broker, plugin: &str, chat: &str, command: &str) -> Result<Value, RoxError> {
+    if !super::perms::plugin_id_ok(plugin) || !super::tokens::ACCOUNT_COMMANDS.contains(&command) {
+        return Err(RoxError::new("invalid_args", "not an account command of a plugin"));
+    }
+    post(b, &format!("/v1/host/plugins/{plugin}/command"), json!({"chat": chat, "command": command}), SHORT_TIMEOUT)
 }
 
 /// `POST /v1/host/plugins/:id/setup {clear: true}`: Remove, every value

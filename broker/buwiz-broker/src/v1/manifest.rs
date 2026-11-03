@@ -93,6 +93,9 @@ pub fn limits_json() -> Value {
 const RESERVED_ID_PREFIXES: &[&str] = &["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"];
 const RESERVED_SHORTS: &[&str] = &["buwiz", "app", "chat", "mcp", "nsh", "all", "office", "skill", "routine", "bot"];
 const RESERVED_COMMANDS: &[&str] = &["status"];
+/// The host's account commands under a plugin's `@short:` (`@gws:login`),
+/// added for every plugin whose package declares accounts.
+pub use buwiz_protocol::tokens::ACCOUNT_COMMANDS;
 
 type Res<T = ()> = Result<T, V1Error>;
 
@@ -353,6 +356,9 @@ fn scopes(m: &Map<String, Value>, short: &str) -> Res {
         let at = format!("scopes[{i}]");
         let o = obj(Some(s), &at)?;
         name(o.get("name"), "scope", &format!("{at}.name"))?;
+        if let Some(n) = o.get("name").and_then(Value::as_str).filter(|n| ACCOUNT_COMMANDS.contains(n)) {
+            return Err(invalid(&format!("{at}.name"), format!("@<short>:{n} is an account command of Buwiz Bot")));
+        }
         text(o.get("description"), &format!("{at}.description"), 0, Some(L::SCOPE_DESCRIPTION), true)?;
         own_tool(o.get("resolve"), short, &format!("{at}.resolve"))?;
         boolean(o, "attach", &at)?;
@@ -1189,6 +1195,9 @@ mod tests {
         assert!(RESERVED_ID_PREFIXES.iter().any(|p| "com.buwiz.bot.x".starts_with(p)) && !RESERVED_ID_PREFIXES.iter().any(|p| "app.buwiz.ebirforms".starts_with(p)));
         assert_eq!(refused(|m| m["needs"] = json!(["gmail"])).code, "not_supported");
         assert_eq!(refused(|m| m["commands"][0]["name"] = json!("status")).message, "commands[0].name: /status is a built-in command");
+        for n in ACCOUNT_COMMANDS {
+            assert_eq!(refused(|m| m["scopes"][0]["name"] = json!(n)).message, format!("scopes[0].name: @<short>:{n} is an account command of Buwiz Bot"));
+        }
         assert_eq!(
             refused(|m| m["apps"][1]["permissions"]["camera"] = json!(true)).message,
             "apps[1].permissions.camera: is not a known key here (refused: unknown keys in access grants fail closed)"

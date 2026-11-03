@@ -249,6 +249,9 @@ pub struct Listed {
     /// The setup its accounts' providers need before a sign-in (the shared
     /// Google client), one per provider; empty when none.
     pub setup: Vec<Setup>,
+    /// The host's account commands under its `@short:` (`login`, `logout`,
+    /// `switch`, `setup`), for a package with accounts; empty otherwise.
+    pub account_commands: Vec<String>,
 }
 
 /// What a provider's sign-in needs first (`setup` of the plugin list):
@@ -337,6 +340,8 @@ pub struct Account {
     /// The setup fixes that failure (the provider refused the client):
     /// the row offers Change.
     pub fix_setup: bool,
+    /// The active label of its account: the one the plugin gets.
+    pub active: bool,
 }
 
 impl Account {
@@ -352,6 +357,7 @@ impl Account {
             setup: s(v, "setup"),
             error: s(v, "error"),
             fix_setup: s(v, "fix") == "setup",
+            active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -465,6 +471,7 @@ impl Listed {
                 .filter(|k| !k.name.is_empty())
                 .collect(),
             setup: list(v, "setup").iter().map(Setup::of).filter(|x| !x.provider.is_empty() && !x.fields.is_empty()).collect(),
+            account_commands: list(v, "account_commands").iter().filter_map(Value::as_str).filter(|c| super::tokens::ACCOUNT_COMMANDS.contains(c)).map(str::to_owned).collect(),
         }
     }
 
@@ -496,6 +503,17 @@ impl Listed {
         out
     }
 
+    /// The connected sign-ins of `account`, the active one marked.
+    pub fn connected_of(&self, account: &str) -> Vec<&Account> {
+        self.accounts.iter().filter(|a| a.account == account && a.connected()).collect()
+    }
+
+    /// The active sign-in of `account` (none signed in: None).
+    pub fn active_of(&self, account: &str) -> Option<&Account> {
+        let c = self.connected_of(account);
+        c.iter().find(|a| a.active).or(c.first()).copied()
+    }
+
     /// Whether any sign-in of `account` is connected.
     pub fn account_connected(&self, account: &str) -> bool {
         self.accounts.iter().any(|a| a.account == account && a.connected())
@@ -524,6 +542,25 @@ impl Listed {
     /// Whether the list offers Retry and Open logs (14.4, 14.5).
     pub fn failed(&self) -> bool {
         self.state == "failed"
+    }
+}
+
+/// A message that is only `@short:login` (or `logout`, `switch`, `setup`)
+/// for a listed plugin that offers it: (plugin id, command). Any other
+/// message, or a short whose plugin declares no accounts: None (it goes to
+/// the model as typed).
+pub fn account_command_for(text: &str, listed: &[Listed]) -> Option<(String, String)> {
+    let (short, cmd) = super::tokens::account_command(text)?;
+    listed.iter().find(|p| p.short == short && p.account_commands.iter().any(|c| c == cmd)).map(|p| (p.id.clone(), cmd.to_owned()))
+}
+
+/// What an account command row says in the composer's popup.
+pub fn account_command_detail(cmd: &str) -> &'static str {
+    match cmd {
+        "login" => "Sign in to its account",
+        "logout" => "Sign out of its account",
+        "switch" => "Switch to another signed-in account",
+        _ => "Change its setup (the Google client)",
     }
 }
 
@@ -1234,6 +1271,48 @@ mod tests {
         let change = setup_intro("google", true);
         assert!(!change.contains("Signing in needs") && change.contains("Leave the secret blank") && change.ends_with("Changing it signs Google accounts out."));
         assert!(setup_intro("oauth:x", true).starts_with("Change these values"));
+    }
+
+    #[test]
+    fn an_account_command_alone_is_the_hosts_for_a_plugin_with_accounts_only() {
+        let listed = vec![
+            Listed::of(&json!({"id": "app.buwiz.google-workspace", "short": "gws", "account_commands": ["login", "logout", "switch", "setup", "bogus"]})),
+            Listed::of(&json!({"id": "app.buwiz.ebirforms", "short": "ebirforms"})),
+        ];
+        assert_eq!(listed[0].account_commands, ["login", "logout", "switch", "setup"]);
+        for c in ["login", "logout", "switch", "setup"] {
+            assert_eq!(account_command_for(&format!(" @gws:{c} "), &listed), Some(("app.buwiz.google-workspace".to_owned(), c.to_owned())));
+        }
+        // with other text, another plugin's or no accounts: the model's, as typed
+        for to_model in ["@gws:login please", "log me in @gws:login", "@ebirforms:login", "@books:login", "@gws:taxform:x", "@gws:bogus"] {
+            assert_eq!(account_command_for(to_model, &listed), None, "{to_model}");
+        }
+        // the route it posts, and the use route
+        let b = Lifecycle::default();
+        host_api::account_command(&b, "app.buwiz.google-workspace", "c1", "switch").unwrap();
+        host_api::account_action(&b, "app.buwiz.google-workspace", "google", "work", host_api::AccountAction::Use).unwrap();
+        assert_eq!(
+            *b.routes.lock().unwrap(),
+            [
+                ("POST /v1/host/plugins/app.buwiz.google-workspace/command".to_owned(), json!({"chat": "c1", "command": "switch"})),
+                ("POST /v1/host/plugins/app.buwiz.google-workspace/accounts/google/use".to_owned(), json!({"label": "work"})),
+            ]
+        );
+        assert!(host_api::account_command(&b, "app.buwiz.gws", "c1", "status").is_err() && host_api::account_command(&b, "../x", "c1", "login").is_err());
+    }
+
+    #[test]
+    fn the_active_sign_in_is_the_marked_one_else_the_first_connected() {
+        let l = Listed::of(&json!({"id": "x.y.z", "accounts": [
+            {"account": "google", "label": "default", "state": "connected", "subject": "d@example.com", "active": false},
+            {"account": "google", "label": "work", "state": "connected", "subject": "w@example.com", "active": true},
+            {"account": "google", "label": "old", "state": "expired"},
+        ]}));
+        assert_eq!(l.connected_of("google").iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["default", "work"]);
+        assert_eq!(l.active_of("google").map(|a| a.subject.as_str()), Some("w@example.com"));
+        let unmarked = Listed::of(&json!({"id": "x.y.z", "accounts": [{"account": "google", "label": "work", "state": "connected"}]}));
+        assert_eq!(unmarked.active_of("google").map(|a| a.label.as_str()), Some("work"));
+        assert!(Listed::of(&json!({"id": "x.y.z"})).active_of("google").is_none());
     }
 
     #[test]

@@ -3700,6 +3700,9 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     let signing = st.v1.signing.get().contains(&key);
     let (status, ink) = if signing {
         ("Signing in…", ink3())
+    } else if a.connected() && a.active {
+        // the one the plugin gets
+        ("Active", ok_ink())
     } else {
         (a.status(), match a.state.as_str() {
             "connected" => ok_ink(),
@@ -3718,7 +3721,13 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
         sm_btn(Btn::Secondary, || "Sign in".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
             .label(format!("Sign in to {name}"))
     };
-    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink)).child(button);
+    let mut right = view().flex_row().items_center().gap(px(7.0)).child(status_text(status, ink));
+    // another signed-in label: Use this makes it the one the plugin gets
+    if a.connected() && !a.active && !signing {
+        let (p, acc, l) = (plugin.to_owned(), a.account.clone(), a.label.clone());
+        right = right.child(sm_btn(Btn::Secondary, || "Use this".into(), move || store().v1_account(&p, &acc, &l, AccountAction::Use)).label(format!("Use {name}")));
+    }
+    let mut right = right.child(button);
     // Remove is the row menu's, as a plugin's; a slot never signed in has none
     if a.state != "none" || a.label != "default" {
         let (k, n) = (edit_key, name.clone());

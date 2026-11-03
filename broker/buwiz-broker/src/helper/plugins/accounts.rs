@@ -13,6 +13,13 @@
 //! sign-in). Both are PKCE S256 in the system browser with the front
 //! door's loopback redirect, `/oauth/callback/account:<plugin>/<account>/<label>`.
 //!
+//! Several labels of an account can be signed in; one is active (`active`
+//! in `v1_accounts`, else `default`, else the first connected): only it is
+//! pushed with `buwiz.account.set`, the others are cleared in the plugin
+//! while their tokens stay fresh in the keystore. A new sign-in is active;
+//! `…/accounts/<account>/use {label}` switches; signing out the active one
+//! makes another connected label active.
+//!
 //! Setup (`setup_view`, `save_setup`): what a provider needs before its
 //! sign-in can start, as fields the user fills in. `google` needs the shared
 //! client (`hub::market::catalog::google_fields`, saved in `@google` where
@@ -46,9 +53,19 @@ pub(super) const SCHEMA: &str = "
   CREATE TABLE IF NOT EXISTS v1_accounts(
     plugin TEXT NOT NULL, account TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL,
     subject TEXT NOT NULL DEFAULT '', token_ref TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'none',
-    scopes TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(plugin, account, label));
 ";
+
+/// `v1_accounts` from before `active`: the column added (no label active,
+/// so `default` or the first connected one is).
+pub(super) fn migrate(db: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let has: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('v1_accounts') WHERE name='active'", [], |r| r.get(0))?;
+    if has == 0 {
+        db.execute_batch("ALTER TABLE v1_accounts ADD COLUMN active INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
 
 pub const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
@@ -136,6 +153,8 @@ pub struct AccountRow {
     pub state: String,
     pub scopes: Vec<String>,
     pub updated_at: i64,
+    /// Marked the active label of its account ([`Host::active_label`]).
+    pub active: bool,
 }
 
 impl AccountRow {
@@ -151,6 +170,7 @@ impl AccountRow {
             state: r.get("state")?,
             scopes: serde_json::from_str(&scopes).unwrap_or_default(),
             updated_at: r.get::<_, f64>("updated_at")? as i64,
+            active: r.get::<_, i64>("active").unwrap_or(0) != 0,
         })
     }
 }
@@ -264,11 +284,59 @@ impl Host {
         let now = self.clock.now() as i64;
         self.sql(|db| {
             db.execute(
-                "INSERT OR REPLACE INTO v1_accounts(plugin,account,label,provider,subject,token_ref,state,scopes,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                params![r.plugin, r.account, r.label, r.provider, r.subject, r.token_ref, r.state, js::stringify(&json!(r.scopes)), now],
+                "INSERT OR REPLACE INTO v1_accounts(plugin,account,label,provider,subject,token_ref,state,scopes,updated_at,active) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                params![r.plugin, r.account, r.label, r.provider, r.subject, r.token_ref, r.state, js::stringify(&json!(r.scopes)), now, r.active as i64],
             )
         })?;
         Ok(())
+    }
+
+    /// The active label of `plugin`'s `account`: the connected one marked
+    /// active, else `default` when connected, else the first connected.
+    pub fn active_label(&self, plugin: &str, account: &str) -> Option<String> {
+        let rows: Vec<AccountRow> = self.account_rows(plugin).into_iter().filter(|r| r.account == account && r.state == "connected").collect();
+        let pick = rows.iter().find(|r| r.active).or_else(|| rows.iter().find(|r| r.label == DEFAULT_LABEL)).or(rows.first());
+        pick.map(|r| r.label.clone())
+    }
+
+    /// Marks `label` the active one of `plugin`'s `account` (the others not).
+    fn set_active(&self, plugin: &str, account: &str, label: &str) {
+        let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET active=(label=?) WHERE plugin=? AND account=?", [label, plugin, account]));
+    }
+
+    /// Pushes `r`'s tokens to the running plugin (refreshed first when due;
+    /// a failed refresh: expired) and keeps them fresh. The caller holds the
+    /// plugin's lock.
+    async fn push_label(&self, r: &AccountRow) {
+        let Some(mut t) = self.tokens(&r.token_ref).await else { return self.set_account_state(r, "expired") };
+        if self.due(&t) {
+            match self.refresh_account(r).await {
+                Ok(fresh) => t = fresh,
+                Err(_) => return self.set_account_state(r, "expired"),
+            }
+        }
+        self.push_live(&r.plugin, SET, set_args(r, &t)).await;
+        self.schedule_refresh(r, &t);
+    }
+
+    /// `POST …/accounts/<account>/use {label}`: `label` (signed in) becomes
+    /// the active one: pushed, and the one before cleared in the plugin.
+    pub async fn account_use(&self, plugin: &str, account: &str, b: &Value) -> Res {
+        self.declared_one(plugin, account)?;
+        let label = label_of(b)?;
+        let Some(r) = self.account_row(plugin, account, &label).filter(|r| r.state == "connected") else {
+            return V1Error::err("not_found", format!("{plugin} has no signed-in {account} account {label}"));
+        };
+        let before = self.active_label(plugin, account);
+        self.set_active(plugin, account, &label);
+        let lock = self.lock_of(plugin);
+        let _held = lock.lock().await;
+        if let Some(prev) = before.filter(|p| *p != label) {
+            self.push_live(plugin, CLEAR, json!({"account": account, "label": prev})).await;
+        }
+        self.push_label(&r).await;
+        self.account_changed(plugin, account, &label, "connected");
+        Ok(json!({"ok": true, "account": account, "label": label, "active": true}))
     }
 
     fn set_account_state(&self, r: &AccountRow, state: &str) {
@@ -313,7 +381,8 @@ impl Host {
     /// The accounts section of the plugin's snapshot (no tokens): one row
     /// per signed-in label of each declared account, `{account, label,
     /// provider, title, subject, state, required}`; an account never signed
-    /// in is a `default` row in state `none`. A row whose provider's setup
+    /// in is a `default` row in state `none`; a signed-in row says whether
+    /// it is the `active` label. A row whose provider's setup
     /// is missing (`setup_view`) adds `setup` (why sign-in can't start); one
     /// whose last sign-in failed adds `error`, and `fix: "setup"` when the
     /// provider refused its client.
@@ -343,8 +412,11 @@ impl Host {
             if mine.is_empty() {
                 out.push(row(DEFAULT_LABEL, None, "none"));
             }
+            let active = self.active_label(id, &a.id);
             for r in mine {
-                out.push(row(&r.label, Some(r.subject.as_str()).filter(|s| !s.is_empty()), &r.state));
+                let mut o = row(&r.label, Some(r.subject.as_str()).filter(|s| !s.is_empty()), &r.state);
+                o["active"] = json!(active.as_deref() == Some(r.label.as_str()));
+                out.push(o);
             }
         }
         json!(out)
@@ -645,6 +717,7 @@ impl Host {
             state: "connected".into(),
             scopes: scopes_of(t.get("scope")).unwrap_or(p.scopes.clone()),
             updated_at: 0,
+            active: true,
         };
         let mut blob = self.blob(&t, None);
         if p.provider != "google" {
@@ -659,8 +732,14 @@ impl Host {
         if let Err(e) = self.put_account(&r) {
             return ("failed", e.message);
         }
+        // the new sign-in is the active one: the account's other labels leave the plugin
+        let others: Vec<String> = self.account_rows(&p.plugin).into_iter().filter(|x| x.account == p.account && x.label != p.label && x.state == "connected").map(|x| x.label).collect();
+        self.set_active(&p.plugin, &p.account, &p.label);
         let lock = self.lock_of(&p.plugin);
         let _held = lock.lock().await;
+        for l in others {
+            self.push_live(&p.plugin, CLEAR, json!({"account": p.account, "label": l})).await;
+        }
         self.push_live(&p.plugin, SET, set_args(&r, &blob)).await;
         self.schedule_refresh(&r, &blob);
         self.account_changed(&r.plugin, &r.account, &r.label, "connected");
@@ -743,10 +822,17 @@ impl Host {
     }
 
     /// After provision (the gate's connection): `buwiz.account.set` for
-    /// each connected account, refreshed first when it is within 5 minutes
-    /// of expiry (a failed refresh: expired, nothing pushed).
+    /// each account's active label, refreshed first when it is within 5
+    /// minutes of expiry (a failed refresh: expired, nothing pushed); the
+    /// other connected labels are only kept fresh.
     pub(super) async fn push_accounts(&self, id: &str, conn: &Conn, pkg: &Package) -> Result<(), V1Error> {
         for r in self.account_rows(id).into_iter().filter(|r| r.state == "connected" && pkg.accounts.iter().any(|a| a.id == r.account)) {
+            if self.active_label(id, &r.account).as_deref() != Some(r.label.as_str()) {
+                if let Some(t) = self.tokens(&r.token_ref).await {
+                    self.schedule_refresh(&r, &t);
+                }
+                continue;
+            }
             let Some(mut t) = self.tokens(&r.token_ref).await else {
                 self.set_account_state(&r, "expired");
                 continue;
@@ -807,16 +893,22 @@ impl Host {
         let lock = self.lock_of(&r.plugin);
         let _held = lock.lock().await;
         let Some(r) = self.account_row(&r.plugin, &r.account, &r.label).filter(|x| x.state == "connected") else { return };
+        // every connected label stays fresh; only the active one is pushed
+        let active = self.active_label(&r.plugin, &r.account).as_deref() == Some(r.label.as_str());
         match self.refresh_account(&r).await {
             Ok(t) => {
-                self.push_live(&r.plugin, SET, set_args(&r, &t)).await;
+                if active {
+                    self.push_live(&r.plugin, SET, set_args(&r, &t)).await;
+                }
                 self.schedule_refresh(&r, &t);
                 self.account_changed(&r.plugin, &r.account, &r.label, "connected");
             }
             Err(why) => {
                 eprintln!("  v1 {}: account {}/{}: refresh failed: {}", r.plugin, r.account, r.label, js::slice_utf16(&why, 200));
                 let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET state='expired' WHERE plugin=? AND account=? AND label=?", [&r.plugin, &r.account, &r.label]));
-                self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+                if active {
+                    self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+                }
                 self.account_changed(&r.plugin, &r.account, &r.label, "expired");
             }
         }
@@ -837,6 +929,7 @@ impl Host {
     async fn end_account(&self, plugin: &str, account: &str, b: &Value, remove: bool) -> Res {
         self.declared_one(plugin, account)?;
         let label = label_of(b)?;
+        let was_active = self.active_label(plugin, account).as_deref() == Some(label.as_str());
         let flow = flow_id(plugin, account, &label);
         let was_pending = self.accounts.pending().remove(&flow).is_some();
         let row = self.account_row(plugin, account, &label);
@@ -853,14 +946,29 @@ impl Host {
             let now = self.clock.now() as i64;
             self.sql(|db| db.execute("UPDATE v1_accounts SET state='none', updated_at=? WHERE plugin=? AND account=? AND label=?", params![now, plugin, account, label]))?;
         }
+        let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET active=0 WHERE plugin=? AND account=? AND label=?", [plugin, account, &label]));
+        let mut next = None;
         if row.is_some() {
             let lock = self.lock_of(plugin);
             let _held = lock.lock().await;
             self.push_live(plugin, CLEAR, json!({"account": account, "label": label})).await;
+            // the active one signed out: another connected label is
+            if was_active {
+                if let Some(n) = self.active_label(plugin, account) {
+                    self.set_active(plugin, account, &n);
+                    if let Some(r) = self.account_row(plugin, account, &n) {
+                        self.push_label(&r).await;
+                    }
+                    next = Some(n);
+                }
+            }
         }
         let state = if remove { "removed" } else { "none" };
         self.account_changed(plugin, account, &label, state);
-        Ok(json!({"ok": true, "account": account, "label": label, "state": state}))
+        if let Some(n) = &next {
+            self.account_changed(plugin, account, n, "connected");
+        }
+        Ok(json!({"ok": true, "account": account, "label": label, "state": state, "active": next}))
     }
 
     /// Uninstall: every account's tokens, rows, timers and sign-ins.
@@ -899,6 +1007,16 @@ mod tests {
     }
 
     #[test]
+    fn an_accounts_table_from_before_active_gains_the_column() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE v1_accounts(plugin TEXT NOT NULL, account TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '', token_ref TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'none', scopes TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL, PRIMARY KEY(plugin, account, label)); INSERT INTO v1_accounts(plugin,account,label,provider,token_ref,state,updated_at) VALUES('p','google','default','google','r','connected',1)").unwrap();
+        migrate(&db).unwrap();
+        migrate(&db).unwrap();
+        let r = db.query_row("SELECT * FROM v1_accounts", [], AccountRow::from_sql).unwrap();
+        assert_eq!((r.label.as_str(), r.state.as_str(), r.active), ("default", "connected", false));
+    }
+
+    #[test]
     fn set_args_carry_the_token_and_never_the_refresh_token() {
         let r = AccountRow {
             plugin: "p".into(),
@@ -910,6 +1028,7 @@ mod tests {
             state: "connected".into(),
             scopes: vec!["s".into()],
             updated_at: 0,
+            active: true,
         };
         let a = set_args(&r, &json!({"access_token": "at", "refresh_token": "rt", "expires_at": 9}));
         assert_eq!(a, json!({"account": "google", "label": "default", "provider": "google", "subject": "u@x", "scopes": ["s"], "access_token": "at", "token_type": "Bearer", "expires_at": 9}));

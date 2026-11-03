@@ -183,8 +183,9 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
 
 /// The plugin as GET /v1/host/plugins lists it (`describe`); `info` is a
 /// routine's user state (v1 routines' `info`). A package's record
-/// adds `package` (its folder), `skills`, `accounts` (no tokens) and the
-/// `setup` they need (no values).
+/// adds `package` (its folder), `skills`, `accounts` (no tokens), the
+/// `setup` they need (no values) and, with accounts, the host's
+/// `account_commands` (`@short:login`, …).
 pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value) -> Value {
     let m = row.manifest();
     let rt = p.runtime(&row.id);
@@ -260,6 +261,10 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
         out.insert("skills".into(), json!(skills));
         out.insert("accounts".into(), p.accounts(&row.id));
         out.insert("setup".into(), p.setup(&row.id));
+        // the host's `@short:` account commands, for a package with accounts
+        if !p.declared_accounts(&row.id).is_empty() {
+            out.insert("account_commands".into(), json!(crate::v1::manifest::ACCOUNT_COMMANDS));
+        }
     }
     Value::Object(out)
 }

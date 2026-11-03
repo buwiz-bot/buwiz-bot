@@ -22,6 +22,14 @@ pub fn notice_text(n: &Value) -> String {
     match n.get("kind").and_then(Value::as_str) {
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its pins, attachments and data.", s("title")),
+        Some("app_accounts") => {
+            let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
+            return match s("mode").as_str() {
+                "logout" => format!("Sign out of {to} for {}?", s("title")),
+                "switch" => format!("Switch the {to} account for {}", s("title")),
+                _ => format!("Your {to} account for {}", s("title")),
+            };
+        }
         Some("app_setup") => {
             let what = if s("provider") == "google" { "Google client".to_owned() } else { "setup".to_owned() };
             return format!("Change the {what} of {}", s("title"));
@@ -151,5 +159,7 @@ mod tests {
         let uninstall = json!({"kind": "app_uninstall", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "state": "pending"});
         assert_eq!(notice_text(&uninstall), "Uninstall X? It removes its pins, attachments and data.");
         assert_eq!(notice_text(&json!({"kind": "app_setup", "id": "app.buwiz.x", "title": "X", "provider": "google"})), "Change the Google client of X");
+        let acc = |mode: &str| notice_text(&json!({"kind": "app_accounts", "id": "app.buwiz.x", "title": "X", "provider": "google", "mode": mode}));
+        assert_eq!((acc("login"), acc("logout"), acc("switch")), ("Your Google account for X".into(), "Sign out of Google for X?".into(), "Switch the Google account for X".into()));
     }
 }

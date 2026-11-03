@@ -414,6 +414,73 @@ impl AccountRequiredNotice {
     }
 }
 
+/// A `notice` turn of an account command typed alone (`app_accounts`,
+/// `@gws:login|logout|switch`): who is signed in (from the plugin list:
+/// the card names no one), Add another account, Switch, Sign out or Use
+/// this as its `mode` asks; once answered, a quiet line.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct AppAccountsNotice {
+    pub plugin: String,
+    pub title: String,
+    pub account: String,
+    /// The manifest's account label ("Google account").
+    pub label: String,
+    pub provider: String,
+    /// `login`, `logout` or `switch`.
+    pub mode: String,
+    pub text: String,
+    /// `pending`, `done` or `cancelled`.
+    pub state: String,
+}
+
+impl AppAccountsNotice {
+    fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        let plugin = Some(s(v, "plugin")).filter(|p| !p.is_empty()).unwrap_or_else(|| s(v, "id"));
+        let mode = s(v, "mode");
+        if !v.is_object() || s(v, "kind") != "app_accounts" || plugin.is_empty() || s(v, "account").is_empty() || !["login", "logout", "switch"].contains(&mode.as_str()) {
+            return None;
+        }
+        Some(Self {
+            plugin,
+            title: s(v, "title"),
+            account: s(v, "account"),
+            label: Some(s(v, "label")).filter(|l| !l.is_empty()).unwrap_or_else(|| s(v, "account")),
+            provider: s(v, "provider"),
+            mode,
+            text,
+            state: notice_state(v),
+        })
+    }
+
+    /// The mode shown: the card's, or the one its buttons moved to here
+    /// (`local`: Switch on a login card, Add another account).
+    pub fn mode_now<'a>(&'a self, local: Option<&'a str>) -> &'a str {
+        local.filter(|m| ["login", "logout", "switch", "add"].contains(m)).unwrap_or(&self.mode)
+    }
+
+    /// Its heading, by mode, `who` the active sign-in's subject.
+    pub fn heading(&self, mode: &str, who: Option<&str>, signed_in: usize) -> String {
+        match (mode, who) {
+            ("logout", Some(w)) if signed_in == 1 => format!("Sign out {w}?"),
+            ("logout", _) if signed_in == 0 => format!("No {} is signed in", self.label),
+            ("logout", _) => format!("Sign out of a {}", self.label),
+            ("switch", _) => format!("Switch the {} for {}", self.label, self.title),
+            ("add", _) => format!("Add another {}", self.label),
+            (_, Some(w)) => format!("Signed in as {w}"),
+            _ => format!("Sign in to {} to use {}", self.label, self.title),
+        }
+    }
+
+    /// The quiet line it becomes, None while it asks.
+    pub fn answered(&self, local: Option<&str>) -> Option<String> {
+        match local.unwrap_or(&self.state) {
+            "done" => Some(format!("{} · Done", self.label)),
+            "cancelled" => Some(format!("{} · Closed", self.label)),
+            _ => None,
+        }
+    }
+}
+
 /// A `notice` turn of the agent's `app_setup`: the fields of a mini app's
 /// setup (the shared Google client) to change, Save or Cancel; once
 /// answered, a quiet line. The notice holds no value: the fields prefill
@@ -964,6 +1031,7 @@ pub struct Turn {
     /// A `notice` turn asking to sign in to a mini app's account.
     pub account_required: Option<AccountRequiredNotice>,
     pub app_setup: Option<AppSetupNotice>,
+    pub app_accounts: Option<AppAccountsNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -2088,6 +2156,7 @@ impl Turn {
             app_uninstall: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppUninstallNotice::of(n, s(v, "text")))).flatten(),
             account_required: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AccountRequiredNotice::of(n, s(v, "text")))).flatten(),
             app_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppSetupNotice::of(n, s(v, "text")))).flatten(),
+            app_accounts: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppAccountsNotice::of(n, s(v, "text")))).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -8151,6 +8220,31 @@ mod tests {
         assert_eq!(by_id.account_required.unwrap().plugin, "x.y.z", "the plugin from its id");
         let no_label = Turn::of(&serde_json::json!({"role": "notice", "notice": {"kind": "account_required", "plugin": "x.y.z", "account": "google"}}));
         assert_eq!(no_label.account_required.unwrap().question(), "Sign in to google");
+    }
+
+    #[test]
+    fn an_app_accounts_notice_says_who_by_mode_until_done_or_closed() {
+        use super::Turn;
+        let card = |mode: &str| {
+            Turn::of(&serde_json::json!({"role": "notice", "text": "x", "notice": {"kind": "app_accounts", "id": "app.buwiz.google-workspace", "title": "Google Workspace",
+                "account": "google", "label": "Google account", "provider": "google", "mode": mode, "state": "pending"}}))
+            .app_accounts
+        };
+        let login = card("login").expect("a login card");
+        assert!(card("nope").is_none(), "an unknown mode is no card");
+        assert_eq!(login.heading("login", Some("u@example.com"), 1), "Signed in as u@example.com");
+        assert_eq!(login.heading("login", None, 0), "Sign in to Google account to use Google Workspace");
+        let logout = card("logout").unwrap();
+        assert_eq!(logout.heading("logout", Some("u@example.com"), 1), "Sign out u@example.com?");
+        assert_eq!(logout.heading("logout", Some("u@example.com"), 2), "Sign out of a Google account");
+        assert_eq!(logout.heading("logout", None, 0), "No Google account is signed in");
+        assert_eq!(card("switch").unwrap().heading("switch", Some("u"), 2), "Switch the Google account for Google Workspace");
+        assert_eq!(login.heading("add", None, 1), "Add another Google account");
+        // Switch and Add another account move a login card here
+        assert_eq!((login.mode_now(None), login.mode_now(Some("switch")), login.mode_now(Some("add")), login.mode_now(Some("done"))), ("login", "switch", "add", "login"));
+        assert_eq!(login.answered(None), None);
+        assert_eq!(login.answered(Some("done")).as_deref(), Some("Google account · Done"));
+        assert_eq!(super::AppAccountsNotice { state: "cancelled".into(), ..login }.answered(None).as_deref(), Some("Google account · Closed"));
     }
 
     #[test]

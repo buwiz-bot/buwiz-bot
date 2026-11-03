@@ -1401,6 +1401,27 @@ impl Store {
         });
     }
 
+    /// An account command typed alone (`@gws:login`, `sent`): the broker
+    /// posts its card in the open chat; it never reaches the model. The
+    /// draft clears once posted unless the user typed on.
+    pub fn v1_account_command(&'static self, plugin: &str, cmd: &str, sent: &str) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            return crate::toast::show("Open a chat to run it in");
+        }
+        let (p, c, sent) = (plugin.to_owned(), cmd.to_owned(), sent.to_owned());
+        self.v1_job("", move || host_api::account_command(&broker(), &p, &chat, &c), move |v| {
+            let st = store();
+            if st.draft.get_untracked().trim() == sent.trim() {
+                st.draft.set(String::new());
+            }
+            if let Some(m) = v.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+                crate::toast::show(m.to_owned());
+            }
+            st.refresh_turns();
+        });
+    }
+
     /// Remove of a plugin's setup (after its confirm): every value gone,
     /// its provider's sign-ins expire; the page asks for the setup again.
     pub fn v1_clear_setup(&'static self, plugin: &str) {

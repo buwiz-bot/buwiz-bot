@@ -107,22 +107,55 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
     }
 }
 
-/// `app_setup`: an `app_setup` card for `id`'s first setup (its fields,
-/// no values), one pending per chat and plugin, ready or not.
-fn setup(run: &Run, host: &Host, id: &str) -> Out {
-    let Some(row) = host.row(id) else { return Out::err(format!("{} is not installed (app_list shows the ids)", js::slice_utf16(id, 80))) };
+/// Chat `chat`'s card of `kind` for `id` (and `mode`, when it has one) still
+/// pending.
+pub fn notice_pending(ctx: &HubCtx, chat: &str, kind: &str, id: &str, mode: Option<&str>) -> bool {
+    ctx.store.read(|st| {
+        st.thread(chat).is_some_and(|t| {
+            t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == kind && n["id"] == json!(id) && n["state"] == "pending" && mode.is_none_or(|m| n["mode"] == m))
+        })
+    })
+}
+
+/// An `app_setup` card for `id`'s first setup (its fields, no values) in
+/// chat `chat`, unless one is pending there: → (title, provider, whether
+/// it is in the chat), or why there is none.
+pub fn setup_card(ctx: &HubCtx, host: &Host, chat: &str, id: &str) -> Result<(String, String, bool), String> {
+    let Some(row) = host.row(id) else { return Err(format!("{} is not installed (app_list shows the ids)", js::slice_utf16(id, 80))) };
     let title = title_of(&row.manifest(), id);
     let view = host.setup_view(id);
-    let Some(s) = view.as_array().and_then(|v| v.first()) else { return Out::err(format!("{title} has no setup to change")) };
+    let Some(s) = view.as_array().and_then(|v| v.first()) else { return Err(format!("{title} has no setup to change")) };
     let provider = js::string_of(&s["provider"]);
-    let chat = run.thread_id();
-    let pending = run.ctx.store.read(|st| {
-        st.thread(&chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_setup" && n["id"] == json!(id) && n["state"] == "pending"))
-    });
     let fields: Vec<Value> =
         s["fields"].as_array().into_iter().flatten().map(|f| json!({"key": f["key"], "label": f["label"], "placeholder": f["placeholder"], "secret": f["secret"] == true, "hint": f["hint"]})).collect();
     let n = json!({"kind": "app_setup", "id": id, "plugin": id, "title": title, "provider": provider, "fields": fields, "state": "pending"});
-    if !pending && !post(run, &n) {
+    let shown = notice_pending(ctx, chat, "app_setup", id, None) || post_in(ctx, chat, &n);
+    Ok((title, provider, shown))
+}
+
+/// A card in chat `chat`; `false` when the chat is gone.
+pub fn post_in(ctx: &HubCtx, chat: &str, n: &Value) -> bool {
+    match ctx.store.append_turn(chat, crate::hub::store::Turn::notice(&threads::notice_text(n), n.clone())) {
+        Ok(Some(_)) => {
+            ctx.store.write_index();
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            eprintln!("buwiz-broker: notices: the store's write: {e}");
+            true
+        }
+    }
+}
+
+/// `app_setup`: an `app_setup` card for `id`'s first setup (its fields,
+/// no values), one pending per chat and plugin, ready or not.
+fn setup(run: &Run, host: &Host, id: &str) -> Out {
+    let (title, provider, shown) = match setup_card(&run.ctx, host, &run.thread_id(), id) {
+        Ok(x) => x,
+        Err(e) => return Out::err(e),
+    };
+    if !shown {
         return Out::err("no chat to show the setup card in".into());
     }
     Out::ok(format!(
@@ -149,7 +182,8 @@ fn signin(run: &Run, host: &Host, id: &str, account: Option<&str>) -> Out {
         });
     };
     let rows = host.account_rows(id);
-    if let Some(r) = rows.iter().find(|r| r.account == a.id && r.state == "connected") {
+    let active = host.active_label(id, &a.id);
+    if let Some(r) = rows.iter().find(|r| r.account == a.id && r.state == "connected" && active.as_deref() == Some(r.label.as_str())) {
         let who = if r.subject.is_empty() { String::new() } else { format!(" as {}", r.subject) };
         return Out::ok(format!("{title}'s {} is already connected{who}; nothing to do", a.label));
     }
@@ -184,7 +218,8 @@ fn state_of(host: &Host, id: &str) -> String {
         .flatten()
         .map(|a| {
             let who = a.get("subject").and_then(Value::as_str).filter(|x| !x.is_empty()).map(|x| format!(" as {x}")).unwrap_or_default();
-            format!("{}/{} {}{who}", js::string_of(&a["account"]), js::string_of(&a["label"]), js::string_of(&a["state"]))
+            let active = if a["active"] == true { " (active)" } else { "" };
+            format!("{}/{} {}{who}{active}", js::string_of(&a["account"]), js::string_of(&a["label"]), js::string_of(&a["state"]))
         })
         .collect();
     if !accounts.is_empty() {
@@ -751,7 +786,7 @@ mod tests {
         assert_eq!(keys.get_token("app.buwiz.fixture/google/default").unwrap().unwrap()["refresh_token"], "rt-1");
         // the views carry no token
         let listed = crate::hub::routines::plugins::describe(&b.host, &b.host.row(FX).unwrap(), &|_, _| json!({}));
-        assert_eq!(listed["accounts"], json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": "u@example.com", "state": "connected", "required": true}]));
+        assert_eq!(listed["accounts"], json!([{"account": "google", "label": "default", "provider": "google", "title": "Google account", "subject": "u@example.com", "state": "connected", "required": true, "active": true}]));
         assert_eq!(listed["package"], json!(at.display().to_string()));
         assert_eq!(listed["skills"], json!([{"name": "triage", "description": "Triage the inbox"}]));
         let text = listed.to_string();
@@ -1049,6 +1084,93 @@ mod tests {
         assert_eq!(call(&run, "app_signin", json!({"id": FX, "account": "github"})).await, Out::err("Fixture declares no account github (app_list shows them)".into()));
         assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.other"})).await, Out::err("Other has no account to sign in to".into()));
         assert_eq!(call(&run, "app_signin", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// Signs FX's google account in under `label` (token `at`).
+    async fn connect_as(b: &Bed, label: &str, at: &str, who: &str) {
+        let r = b.host.account_signin(FX, "google", &json!({"open": false, "label": label})).await.unwrap();
+        let u = url::Url::parse(r["url"].as_str().unwrap()).unwrap();
+        let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let flow = js::decode_uri_component(q["redirect_uri"].strip_prefix("http://127.0.0.1:8787/oauth/callback/").unwrap()).unwrap();
+        token_answer(&b.files, 200, json!({"access_token": at, "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer", "id_token": jwt(json!({"email": who}))}));
+        assert_eq!(b.host.account_callback(&flow, Some("c"), Some(&q["state"]), None).await.0, "connected");
+    }
+
+    async fn pushed_labels(b: &Bed) -> Vec<String> {
+        pushed(&b.host).await.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    /// `@fx:login|logout|switch|setup`: offered for a package with
+    /// accounts only, each a card in the chat; several signed-in labels
+    /// with one active, only it pushed: a new sign-in, a switch and a
+    /// sign-out of the active one each move it, the others cleared.
+    #[tokio::test]
+    async fn account_commands_post_their_cards_and_only_the_active_label_is_pushed() {
+        use crate::hub::routes::host::account_command;
+        let b = bed_in("acctcmd", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        let run = run_in(&b.ctx);
+        let chat = run.thread_id();
+        let describe = |id: &str| crate::hub::routines::plugins::describe(&b.host, &b.host.row(id).unwrap(), &|_, _| json!({}));
+        assert_eq!(describe(FX)["account_commands"], json!(["login", "logout", "switch", "setup"]));
+        assert!(describe("app.buwiz.other").get("account_commands").is_none(), "no accounts, no commands");
+        let cmd = |c: &str| account_command(&b.ctx, &b.host, FX, &json!({"chat": chat, "command": c}));
+        // nobody signed in: login is the sign-in card, logout says so
+        assert_eq!(cmd("login").unwrap(), json!({"ok": true, "posted": true, "kind": "account_required"}));
+        cmd("login").unwrap();
+        assert_eq!(cards(&b.ctx, &chat, "account_required").len(), 1, "one while pending");
+        assert_eq!(cmd("logout").unwrap(), json!({"ok": true, "posted": false, "kind": "app_accounts", "message": "No Google account is signed in for Fixture"}));
+        assert_eq!(cmd("setup").unwrap()["kind"], "app_setup");
+        assert_eq!(cards(&b.ctx, &chat, "app_setup").len(), 1);
+        assert_eq!(cmd("nope").unwrap_err().code, "invalid_args");
+        assert_eq!(account_command(&b.ctx, &b.host, "app.buwiz.other", &json!({"chat": chat, "command": "login"})).unwrap_err().code, "invalid_args");
+        assert_eq!(account_command(&b.ctx, &b.host, FX, &json!({"chat": "t404", "command": "login"})).unwrap_err().code, "not_found");
+
+        // two sign-ins: the newer is active, alone in the plugin
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        assert_eq!(pushed_labels(&b).await, ["google/work"], "the other label is cleared");
+        let view = b.host.accounts_view(FX);
+        assert_eq!(view.as_array().unwrap().iter().map(|r| (js::string_of(&r["label"]), r["active"] == true)).collect::<Vec<_>>(), [("default".into(), false), ("work".into(), true)]);
+        assert!(call(&run, "app_list", json!({})).await.content.as_str().unwrap().contains("accounts: google/default connected as d@example.com, google/work connected as w@example.com (active)"));
+        assert_eq!(call(&run, "app_signin", json!({"id": FX})).await.content, json!("Fixture's Google account is already connected as w@example.com; nothing to do"));
+        // switch
+        assert_eq!(b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap()["label"], "default");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        assert_eq!(b.host.active_label(FX, "google").as_deref(), Some("default"));
+        assert_eq!(b.host.account_use(FX, "google", &json!({"label": "nobody"})).await.unwrap_err().code, "not_found");
+        // a new process gets only the active one
+        b.host.disable(FX).await.unwrap();
+        b.host.enable(FX).await.unwrap();
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+
+        // signed in: login, logout and switch are app_accounts cards of their mode
+        for (c, text) in [("login", "Your Google account for Fixture"), ("logout", "Sign out of Google for Fixture?"), ("switch", "Switch the Google account for Fixture")] {
+            assert_eq!(cmd(c).unwrap(), json!({"ok": true, "posted": true, "kind": "app_accounts"}));
+            let (t, n) = cards(&b.ctx, &chat, "app_accounts").pop().unwrap();
+            assert_eq!((t.as_str(), n["mode"].clone(), n["account"].clone(), n["state"].clone()), (text, json!(c), json!("google"), json!("pending")));
+            assert!(!n.to_string().contains("example.com"), "no subject in the card: {n}");
+        }
+        cmd("switch").unwrap();
+        assert_eq!(cards(&b.ctx, &chat, "app_accounts").len(), 3, "one of each mode while pending");
+        assert_eq!(settle(&b.ctx, &json!({"chat": chat, "kind": "app_accounts", "id": FX, "state": "done"})).unwrap()["settled"], 3);
+
+        // the active one signed out: the other is active and pushed
+        let out = b.host.account_signout(FX, "google", &json!({"label": "default"})).await.unwrap();
+        assert_eq!(out["active"], "work");
+        assert_eq!(pushed_labels(&b).await, ["google/work"]);
+        // a non-active one signed out: nothing moves
+        connect_as(&b, "default", "at-d2", "d@example.com").await;
+        b.host.account_signout(FX, "google", &json!({"label": "work"})).await.unwrap();
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        b.host.account_signout(FX, "google", &json!({"label": "default"})).await.unwrap();
+        assert!(pushed_labels(&b).await.is_empty() && b.host.active_label(FX, "google").is_none());
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }
