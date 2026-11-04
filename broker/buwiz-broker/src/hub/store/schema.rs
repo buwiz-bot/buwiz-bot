@@ -103,6 +103,30 @@ const TRIED: &[&str] = &[
     group_id TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, thread TEXT,
     ord INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(group_id, kind, ref));",
     "ALTER TABLE group_items ADD COLUMN title TEXT",
+    // Bot controls (hub/policy): a Bot's tool switches (no row is on), the
+    // Mac's shell mode (no row is bypass) and rules, what the shell ran
+    // (7 days), the changes with their undo (24 h), and the notes a Bot
+    // reads of the user's decisions on its next model call
+    "CREATE TABLE IF NOT EXISTS bot_tools(
+    bot_id TEXT, key TEXT, enabled INTEGER, actor TEXT, at INTEGER, PRIMARY KEY(bot_id, key));
+  CREATE TABLE IF NOT EXISTS shell_mode(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT, actor TEXT, at INTEGER);
+  CREATE TABLE IF NOT EXISTS shell_rule(
+    id TEXT PRIMARY KEY, kind TEXT CHECK(kind IN ('allow','block')), pattern TEXT, risk TEXT,
+    path TEXT, actor TEXT, at INTEGER, UNIQUE(kind, pattern));
+  CREATE TABLE IF NOT EXISTS shell_activity(at INTEGER, bot_id TEXT, command TEXT, result TEXT, outcome TEXT);
+  CREATE TABLE IF NOT EXISTS policy_change(
+    id TEXT PRIMARY KEY, at INTEGER, actor TEXT, bot_id TEXT, text TEXT, undo TEXT, target TEXT);
+  CREATE TABLE IF NOT EXISTS policy_note(id TEXT PRIMARY KEY, at INTEGER, thread TEXT, text TEXT);",
+    // what the model reads of a change (an Undo's "Put back." says what it
+    // put back), and the last change each thread's model was told of
+    "ALTER TABLE policy_change ADD COLUMN said TEXT",
+    "CREATE TABLE IF NOT EXISTS policy_seen(thread TEXT PRIMARY KEY, last TEXT, at INTEGER)",
+    // the thread a change was made in: a Bot's change reaches the other threads
+    "ALTER TABLE policy_change ADD COLUMN thread TEXT",
+    // an Undo's row names the change it undid: Recent changes marks that one
+    "ALTER TABLE policy_change ADD COLUMN undoes TEXT",
+    // a command the Bot ran after outside content, which the user did not name
+    "ALTER TABLE shell_activity ADD COLUMN unasked INTEGER",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

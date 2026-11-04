@@ -93,6 +93,11 @@ fn skill_row(ctx: &HubCtx, input: &Value) -> Result<Option<Row>, String> {
     Ok(None)
 }
 
+/// The id of the skill a tool's `{id, name}` names, if one does (`skill_enable`'s proposal).
+pub fn find_id(ctx: &HubCtx, input: &Value) -> Option<String> {
+    skill_row(ctx, input).ok().flatten().map(|r| r.id)
+}
+
 fn text(content: String) -> ToolResult {
     ToolResult { content: Value::String(content), is_error: false }
 }
@@ -165,12 +170,18 @@ fn admin(ctx: &HubCtx, tool: &str, input: &Value) -> Result<ToolResult, String> 
 /// `privateSkillsInject()`: the enabled skills' bodies for the agent's
 /// system prompt.
 pub fn private_skills_inject(ctx: &HubCtx) -> String {
+    private_skills_inject_for(ctx, &|_| false)
+}
+
+/// [`private_skills_inject`] without the skills `off` names (a Bot's `skill:<id>` off).
+pub fn private_skills_inject_for(ctx: &HubCtx, off: &dyn Fn(&str) -> bool) -> String {
     let rows = ctx.db.with(|db| {
-        let mut st = db.prepare("SELECT name, description, body FROM skills WHERE enabled=1 ORDER BY created_at")?;
-        let r = st.query_map([], |r| Ok((cell(r.get_ref(0)?), cell(r.get_ref(1)?), cell(r.get_ref(2)?))))?;
+        let mut st = db.prepare("SELECT name, description, body, id FROM skills WHERE enabled=1 ORDER BY created_at")?;
+        let r = st.query_map([], |r| Ok((cell(r.get_ref(0)?), cell(r.get_ref(1)?), cell(r.get_ref(2)?), r.get::<_, Option<String>>(3)?.unwrap_or_default())))?;
         r.collect::<rusqlite::Result<Vec<_>>>()
     });
     let Ok(rows) = rows else { return String::new() };
+    let rows: Vec<_> = rows.into_iter().filter(|r| !off(&r.3)).map(|(n, d, b, _)| (n, d, b)).collect();
     if rows.is_empty() {
         return String::new();
     }

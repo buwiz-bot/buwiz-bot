@@ -16,6 +16,7 @@ pub mod library;
 pub mod market;
 pub mod model;
 pub mod pipeline;
+pub mod policy;
 pub mod render;
 pub mod routes;
 pub mod store;
@@ -172,7 +173,10 @@ impl Hub {
         let origin = req.headers.get(ORIGIN).cloned();
         let path = req.path().to_owned();
         // a preflight: Node's 204 (only with no Node; else Node answers it)
-        let mut res = if req.method == Method::OPTIONS {
+        let mut res = if routes::host::locked_out(&req.method, &path, &req.headers) {
+            // what widens a Bot's reach answers only the app (the host token)
+            routes::host::unauthorized()
+        } else if req.method == Method::OPTIONS {
             let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}).boxed());
             *res.status_mut() = StatusCode::NO_CONTENT;
             res
@@ -258,6 +262,36 @@ mod tests {
         // names): Node's last resort
         for (m, url) in [(Method::POST, "/threads"), (Method::GET, "/files/other/a.png")] {
             assert_eq!(text(hub.answer(req(m, url)).await).await, (404, "not found".to_owned()));
+        }
+    }
+
+    /// Bot controls: the routes that add or switch on what a Bot can run answer 401 without
+    /// the host token (a Bot's shell can reach the port, not the token); their neighbours,
+    /// another verb and the token itself get through.
+    #[tokio::test]
+    async fn the_routes_that_widen_a_bots_reach_answer_401_without_the_host_token() {
+        let hub = hub(|routes, _| {
+            for p in routes::host::LOCKED.into_iter().chain(["/plugins/inspect", "/plugins/uninstall", "/chat"]) {
+                routes.route(Verb::Any, Pattern::Exact(p), says("in"));
+            }
+        });
+        let with = |method: Method, url: &str, token: &str| {
+            let mut r = req(method, url);
+            r.headers.insert("x-buwiz-host", HeaderValue::from_str(token).unwrap());
+            r
+        };
+        for p in routes::host::LOCKED {
+            // each is one of the hub's own POST routes
+            assert!(matches!(routes::classify(&Method::POST, p).map(|e| e.owner), Some(routes::Owner::Hub(_))), "{p}");
+            for r in [req(Method::POST, p), req(Method::POST, &format!("{p}?x=1")), with(Method::POST, p, "a-guess"), with(Method::POST, p, "")] {
+                let (status, body) = text(hub.answer(r).await).await;
+                assert_eq!((status, body.contains("\"unauthorized\"")), (401, true), "{p}");
+            }
+            assert_eq!(text(hub.answer(with(Method::POST, p, routes::host::TEST_TOKEN)).await).await.0, 200, "{p} with the token");
+            assert_eq!(text(hub.answer(req(Method::GET, p)).await).await.0, 200, "GET {p} reads");
+        }
+        for p in ["/plugins/inspect", "/plugins/uninstall", "/chat"] {
+            assert_eq!(text(hub.answer(req(Method::POST, p)).await).await.0, 200, "{p} stays open");
         }
     }
 

@@ -92,8 +92,10 @@ fn trim_end(s: &str) -> &str {
     s.trim_end_matches(js::is_space)
 }
 
-/// `shell_run`: `zsh -lc <command>` on this Mac, capped.
-pub async fn shell_run(input: &Value) -> Out {
+/// `shell_run`: `zsh -lc <command>` on this Mac, capped, in the sandbox that keeps it from
+/// the broker's token and database under `data` (`policy::sandbox`); without `sandbox-exec`
+/// it does not run. The gate (`controls::shell_run`) has judged it.
+pub async fn shell_run(data: &std::path::Path, input: &Value) -> Out {
     let command = input.get("command").filter(|c| js::truthy(c)).map(js::string_of).unwrap_or_default();
     let command = command.trim_matches(js::is_space).to_owned();
     if command.is_empty() {
@@ -105,8 +107,11 @@ pub async fn shell_run(input: &Value) -> Out {
         Some(c) => js::string_of(c),
         None => std::env::var("HOME").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "/".into()),
     };
-    let mut cmd = tokio::process::Command::new("/bin/zsh");
-    cmd.args(["-lc", &command]).current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let mut cmd = match crate::hub::policy::sandbox::command(data, &command, &[]) {
+        Ok(c) => c,
+        Err(e) => return Out::err(e),
+    };
+    cmd.current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let (code, stdout, stderr) = match cmd.spawn() {
         Err(e) => (Some(if e.kind() == std::io::ErrorKind::NotFound { "ENOENT".to_owned() } else { e.to_string() }), Vec::new(), Vec::new()),
         Ok(child) => match tokio::time::timeout(Duration::from_millis(ms as u64), child.wait_with_output()).await {
@@ -255,10 +260,11 @@ mod tests {
 
     #[tokio::test]
     async fn builtin_shell_run_reports_output_and_exit() {
-        let r = shell_run(&json!({"command": "echo out; echo err >&2; exit 3", "cwd": "/"})).await;
+        let data = std::env::temp_dir().join(format!("buwiz-shell-run-{}", std::process::id()));
+        let r = shell_run(&data, &json!({"command": "echo out; echo err >&2; exit 3", "cwd": "/"})).await;
         assert_eq!(r, Out { content: json!("out\nerr\n(exit 3)"), is_error: Some(true) });
-        let r = shell_run(&json!({"command": "true", "cwd": "/"})).await;
+        let r = shell_run(&data, &json!({"command": "true", "cwd": "/"})).await;
         assert_eq!(r, Out { content: json!("(no output)"), is_error: Some(false) });
-        assert_eq!(shell_run(&json!({"command": "  "})).await, Out::err("shell_run needs a command".into()));
+        assert_eq!(shell_run(&data, &json!({"command": "  "})).await, Out::err("shell_run needs a command".into()));
     }
 }

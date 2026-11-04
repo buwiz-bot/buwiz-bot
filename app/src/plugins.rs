@@ -2302,7 +2302,7 @@ fn plugin_tools_section(plugin: String) -> impl IntoElement {
 }
 
 /// `toolSwitch` — Grok Bot's 26×16 switch: blue track, 12pt knob.
-pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() + 'static) -> impl IntoElement {
+pub(crate) fn tool_switch(on: impl Fn() -> bool + 'static, on_toggle: impl Fn() + 'static) -> View {
     let on2 = std::rc::Rc::new(on);
     let on3 = on2.clone();
     view()

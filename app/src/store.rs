@@ -325,6 +325,87 @@ impl AppUninstallNotice {
     }
 }
 
+/// A `notice` turn the broker posts when a Bot changes its tools or this
+/// Mac's command rules (`tools_change`, `tools.rs`): a widen waits for the
+/// user's click (`pending`), a tighten is `applied` with an 8 s receipt.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct ToolsChangeNotice {
+    /// The proposal (`p_…`).
+    pub id: String,
+    pub bot: String,
+    pub bot_name: String,
+    /// `tool_on`, `tool_off`, `rule_add`, `rule_remove` or `mode`.
+    pub op: String,
+    pub key: String,
+    pub label: String,
+    pub rule: Option<ToolsRule>,
+    /// `only`, `bypass` (`ask` in PR 2).
+    pub mode: String,
+    /// 2: the first button asks again.
+    pub steps: u8,
+    /// The Bot asked after reading outside content the user didn't name.
+    pub unrequested: bool,
+    /// Why an allow would not take effect ("blocked by `rm`").
+    pub inert: String,
+    /// `pending`, `applied`, `declined`, `superseded`, `expired`, `stale`.
+    pub state: String,
+    /// When it was applied (ms).
+    pub at: i64,
+    pub undo: String,
+    /// The receipt sentence, once applied.
+    pub receipt: String,
+    /// The turn's own text.
+    pub text: String,
+}
+
+/// A notice's command rule.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct ToolsRule {
+    /// `allow` or `block`.
+    pub kind: String,
+    pub pattern: String,
+    /// `ro`, `pc` or `any`.
+    pub risk: String,
+    pub path: String,
+}
+
+impl ToolsChangeNotice {
+    pub(crate) fn of(v: &serde_json::Value, text: String) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "tools_change" || s(v, "id").is_empty() {
+            return None;
+        }
+        let rule = v.get("rule").filter(|r| r.is_object()).map(|r| ToolsRule {
+            kind: s(r, "kind"),
+            pattern: s(r, "pattern"),
+            risk: s(r, "risk"),
+            path: s(r, "path"),
+        });
+        Some(Self {
+            id: s(v, "id"),
+            bot: s(v, "bot"),
+            bot_name: s(v, "botName"),
+            op: s(v, "op"),
+            key: s(v, "key"),
+            label: s(v, "label"),
+            rule,
+            mode: s(v, "mode"),
+            steps: if v.get("steps").and_then(|x| x.as_i64()) == Some(2) { 2 } else { 1 },
+            unrequested: v.get("unrequested").and_then(|x| x.as_bool()).unwrap_or(false),
+            inert: s(v, "inert"),
+            state: notice_state(v),
+            at: v.get("at").and_then(|x| x.as_i64()).unwrap_or(0),
+            undo: s(v, "undo"),
+            receipt: s(v, "text"),
+            text,
+        })
+    }
+
+    /// The Bot's name, or "This Bot" when the notice has none.
+    pub fn who(&self) -> &str {
+        if self.bot_name.is_empty() { "This Bot" } else { &self.bot_name }
+    }
+}
+
 /// A `notice` turn the broker posts when a tool needs a missing account
 /// (`account_required`): Sign in or Not now; once that account is
 /// connected, a quiet line. While the account's provider lacks its setup
@@ -1205,6 +1286,8 @@ pub struct Turn {
     pub account_required: Option<AccountRequiredNotice>,
     pub app_setup: Option<AppSetupNotice>,
     pub app_accounts: Option<AppAccountsNotice>,
+    /// A `notice` turn about a Bot's tools or this Mac's rules.
+    pub tools_change: Option<ToolsChangeNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -1946,6 +2029,8 @@ pub enum PaletteAct {
     /// The current bot's details: view (false) or edit (true).
     BotDetails(bool),
     Settings,
+    /// The Tools sheet for the open chat's Bot.
+    Tools,
     NewChat,
     Theme(&'static str),
     /// A mini app in a sidebar group: open it in its window.
@@ -2330,6 +2415,7 @@ impl Turn {
             account_required: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AccountRequiredNotice::of(n, s(v, "text")))).flatten(),
             app_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppSetupNotice::of(n, s(v, "text")))).flatten(),
             app_accounts: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppAccountsNotice::of(n, s(v, "text")))).flatten(),
+            tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -2681,6 +2767,9 @@ pub struct Store {
     pub link_ask: Signal<Option<crate::links::LinkAsk>>,
     /// What Rox keeps for v1 plugins (`mini_v1::ui`).
     pub v1: crate::mini_v1::ui::V1,
+    /// The Tools sheet and full view, and the `tools_change` cards'
+    /// answers (`tools.rs`).
+    pub tools: crate::tools::Tools,
     /// The draft was rewritten for v1 plugins already: the next `send`
     /// sends it as it is.
     pub v1_resolved: std::cell::Cell<bool>,
@@ -3000,6 +3089,7 @@ impl Store {
             main_pick: signal(None),
             link_ask: signal(None),
             v1: crate::mini_v1::ui::V1::new(),
+            tools: crate::tools::Tools::new(),
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
@@ -3963,6 +4053,8 @@ impl Store {
             items.push(action("Bot Details (current)", &b.name, "panel", false, PaletteAct::BotDetails(false)));
             items.push(action("Edit Bot Details (current)", &b.name, "edit", false, PaletteAct::BotDetails(true)));
         }
+        let bot = self.active_bot().map(|b| b.name).unwrap_or_else(|| "This Mac".to_owned());
+        items.push(action("Bot tools…", &bot, "settings", false, PaletteAct::Tools));
         items.push(action("Settings", "Keyboard shortcuts", "settings", false, PaletteAct::Settings));
         items.push(action("Theme: System", "Settings · Appearance", "systemTheme", pref == "system", PaletteAct::Theme("system")));
         items.push(action("Theme: Light", "Settings · Appearance", "sun", pref == "light", PaletteAct::Theme("light")));
@@ -3997,6 +4089,7 @@ impl Store {
             PaletteAct::BotModal => self.open_bot_modal(),
             PaletteAct::BotDetails(edit) => crate::botdetails::open_current(edit),
             PaletteAct::Settings => crate::settings::toggle(),
+            PaletteAct::Tools => crate::tools::open_sheet(),
             PaletteAct::NewChat => self.new_thread(),
             PaletteAct::Theme(t) => self.set_theme(t),
             PaletteAct::App(app) => self.popout(&app),

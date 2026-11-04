@@ -30,6 +30,12 @@
 //! this broker from a stranger on its port before a saved login leaves it
 //! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
 //!
+//! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
+//! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
+//! answer}` (yes or no on a pending `tools_change` card), the person's own edits `POST
+//! /v1/host/tools/set {bot, key, enabled}`, `/v1/host/shell/mode {mode}` and
+//! `/v1/host/shell/rules {op, kind, pattern}`, and `POST /v1/host/tools/undo {undo}`.
+//!
 //! The agents' `/v1/host/agents/*` routes (5.6, track E) answer 501 here
 //! until that track registers them; it checks the token with
 //! [`authorized`].
@@ -123,8 +129,37 @@ fn prove(rs: &Routines, req: &HubRequest) -> HubResponse {
 
 /// Whether `headers` carry this process's host token (constant time).
 pub fn authorized(headers: &HeaderMap) -> bool {
+    let got = headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default();
+    #[cfg(test)]
+    if got == TEST_TOKEN.as_bytes() {
+        return true;
+    }
     let want = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
-    same(headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
+    same(got, want.as_bytes())
+}
+
+/// The token unit tests send to a locked route (the process token is random and changes
+/// whenever a test starts routines).
+#[cfg(test)]
+pub const TEST_TOKEN: &str = "unit-test-host-token";
+
+/// The routes outside `/v1/host/` that add, install or switch on what a Bot can run: an MCP
+/// server (`/mcp/servers` adds or edits one with any command; `/mcp/server/state`,
+/// `/mcp/tools/state` and `/mcp/server/delete` are the leaf's, locked there), a market
+/// plugin (`/plugins/install`; `/plugins/connect` adds and enables its server;
+/// `/plugins/settings` changes the env its servers run with) and a skill (`/skills`
+/// creates or rewrites one; `/skills/state`, `/skills/delete`). The app sends the host
+/// token to them; a Bot's shell, which can reach the port but not the token, gets 401.
+pub const LOCKED: [&str; 7] = ["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete"];
+
+/// Whether a request is a POST to a [`LOCKED`] route without this broker's host token.
+pub fn locked_out(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    method == Method::POST && LOCKED.contains(&path) && !authorized(headers)
+}
+
+/// The answer to a locked route asked without the token.
+pub fn unauthorized() -> HubResponse {
+    types::json(StatusCode::UNAUTHORIZED, &json!({"ok": false, "code": "unauthorized", "message": "X-Buwiz-Host is missing or wrong"}))
 }
 
 fn authorized_by(rs: &Routines, headers: &HeaderMap) -> bool {
@@ -140,6 +175,7 @@ pub fn status_of(code: &str) -> StatusCode {
         "plugin_unavailable" | "plugin_restarted" => StatusCode::SERVICE_UNAVAILABLE,
         "timeout" => StatusCode::GATEWAY_TIMEOUT,
         "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
+        "stale" | "exists" => StatusCode::CONFLICT,
         "internal" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     }
@@ -207,6 +243,11 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     if req.method == Method::GET && path == "/v1/host/events" {
         return events(&ctx);
     }
+    if req.method == Method::GET && path == "/v1/host/tools" {
+        let query = req.url.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let bot = url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "bot").map(|(_, v)| v.into_owned());
+        return sent(&path, crate::hub::policy::host_view(&ctx, bot.as_deref()));
+    }
     if let Some(raw) = path.strip_prefix("/v1/host/plugins/").and_then(|r| r.strip_suffix("/accounts")).filter(|r| req.method == Method::GET && !r.is_empty() && !r.contains('/')) {
         let out = match (js::decode_uri_component(raw), ctx.plugins.as_ref()) {
             (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
@@ -255,6 +296,11 @@ const POSTS: &[&str] = &[
     "/v1/host/routines/update",
     "/v1/host/routines/delete",
     "/v1/host/routines/hook",
+    "/v1/host/tools/answer",
+    "/v1/host/tools/set",
+    "/v1/host/tools/undo",
+    "/v1/host/shell/mode",
+    "/v1/host/shell/rules",
 ];
 
 impl Route {
@@ -278,6 +324,15 @@ impl Route {
         let v1 = &rs.v1;
         match self {
             Route::Post(path) => {
+                use crate::hub::policy;
+                match *path {
+                    "/v1/host/tools/answer" => return policy::answer(ctx, b),
+                    "/v1/host/tools/set" => return policy::host_set(ctx, b),
+                    "/v1/host/tools/undo" => return policy::host_undo(ctx, b),
+                    "/v1/host/shell/mode" => return policy::host_mode(ctx, b),
+                    "/v1/host/shell/rules" => return policy::host_rules(ctx, b),
+                    _ => {}
+                }
                 if let Some(op) = path.strip_prefix("/v1/host/routines/") {
                     return match op {
                         "approve" => v1.approve(ctx, b),
@@ -706,6 +761,11 @@ mod tests {
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/command"), Some(Route::Action(_, "command"))));
         assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/use").map(|r| r.2), Some("use"));
+        for p in ["/v1/host/tools/answer", "/v1/host/tools/set", "/v1/host/tools/undo", "/v1/host/shell/mode", "/v1/host/shell/rules"] {
+            assert!(matches!(Route::of(p), Some(Route::Post(x)) if x == p), "{p}");
+        }
+        assert!(Route::of("/v1/host/tools/apply").is_none(), "no route applies a change unasked");
+        assert_eq!((status_of("stale"), status_of("exists"), status_of("refused")), (StatusCode::CONFLICT, StatusCode::CONFLICT, StatusCode::BAD_REQUEST));
     }
 
     #[test]

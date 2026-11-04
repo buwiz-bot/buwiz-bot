@@ -41,6 +41,8 @@ pub(crate) enum Scope {
     /// The file viewer showing a spreadsheet.
     ViewerTable,
     Viewer,
+    /// The Tools sheet or its full view (`tools.rs`).
+    Tools,
     /// A server's mini app full screen.
     MiniApp,
     Lightbox,
@@ -56,7 +58,7 @@ pub(crate) enum Scope {
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 17] = [
+pub(crate) const ORDER: [Scope; 18] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
@@ -66,6 +68,7 @@ pub(crate) const ORDER: [Scope; 17] = [
     Scope::Doc,
     Scope::ViewerTable,
     Scope::Viewer,
+    Scope::Tools,
     Scope::MiniApp,
     Scope::Lightbox,
     Scope::PluginsSearch,
@@ -88,6 +91,7 @@ impl Scope {
             Scope::Doc => "$document",
             Scope::ViewerTable => "$spreadsheet",
             Scope::Viewer => "$viewer",
+            Scope::Tools => "$tools",
             Scope::MiniApp => "$mini-app",
             Scope::Lightbox => "$lightbox",
             Scope::PluginsSearch => "$plugins-search",
@@ -116,6 +120,7 @@ impl Scope {
             Scope::Doc => s.doc,
             Scope::ViewerTable => s.table && !s.office,
             Scope::Viewer => s.viewer,
+            Scope::Tools => s.tools,
             Scope::MiniApp => s.mini_full,
             Scope::Lightbox => s.lightbox,
             Scope::PluginsSearch => s.plugins && s.plugins_drop,
@@ -126,6 +131,7 @@ impl Scope {
                 !s.palette
                     && !s.viewer
                     && !s.mini_full
+                    && !s.tools
                     && !s.lightbox
                     && !s.plugins
                     && !s.settings
@@ -155,6 +161,8 @@ pub(crate) struct Shown {
     office: bool,
     viewer: bool,
     mini_full: bool,
+    /// The Tools sheet or full view.
+    tools: bool,
     lightbox: bool,
     plugins: bool,
     plugins_drop: bool,
@@ -186,6 +194,7 @@ impl Shown {
             office: crate::office::showing(),
             viewer: viewing.is_some(),
             mini_full: !st.mini_full.with(Vec::is_empty),
+            tools: crate::tools::is_open(),
             lightbox: !st.light_items.get().is_empty(),
             plugins: st.plugins_open.get(),
             plugins_drop: st.drop_open(),
@@ -412,6 +421,9 @@ pub(crate) static COMMANDS: &[Command] = &[
     // ⌘W, not Escape: Escape leaves the app's own fields mid-filing. The
     // viewer over the apps closes first, then the top app.
     cmd("mini.close", "Close the mini app", Scope::MiniApp, &["mod+w"], |_| store().mini_close_top()),
+    // ——— Tools ———
+    cmd("tools.close", "Close Tools", Scope::Tools, &["mod+w"], |_| crate::tools::close()),
+    cmd("tools.back", "Back to the chat", Scope::Tools, &["mod+["], |_| crate::tools::close()),
     cmd("viewer.print", "Print", Scope::Viewer, &["mod+p"], |_| crate::files::viewer_print()),
     cmd("viewer.save", "Save as a new version (Office)", Scope::Viewer, &["mod+s"], |_| crate::files::viewer_save()),
     cmd("viewer.download", "Download", Scope::Viewer, &["mod+shift+s"], |_| {
@@ -606,7 +618,9 @@ fn drop_step(d: i64) {
 /// the message field.
 fn escape() {
     let st = store();
+    let tools = untracked(crate::tools::is_open);
     let anything = st.palette.get_untracked()
+        || tools
         || st.bot_modal.get_untracked()
         || st.vers_pop.get_untracked().is_some()
         || st.app_details.get_untracked().is_some()
@@ -621,6 +635,10 @@ fn escape() {
         st.close_palette();
     }
     st.bot_modal.set(false);
+    // the Tools form or confirm, else the sheet or full view
+    if tools {
+        crate::tools::escape();
+    }
     st.vers_pop.set(None);
     st.app_details.set(None);
     st.main_pick.set(None);
@@ -1333,7 +1351,7 @@ pub fn register_keys(components: &nsh_platform_macos::Components) {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMANDS, Command, HOST_KEYS, Scope, Shown, app_owns_keys, host_keys_in, owner_in, parse};
+    use super::{COMMANDS, Command, HOST_KEYS, ORDER, Scope, Shown, app_owns_keys, host_keys_in, owner_in, parse};
 
     /// Who takes a chord: a command of Rox's, the hosted app, or nobody.
     #[derive(Debug, PartialEq)]
@@ -1379,6 +1397,11 @@ mod tests {
 
     fn full_app() -> Shown {
         Shown { mini_full: true, ..Shown::default() }
+    }
+
+    /// The Tools sheet or full view over the chat.
+    fn tools() -> Shown {
+        Shown { tools: true, ..Shown::default() }
     }
 
     /// The chat, no modal over it: an inline card's keys come after Rox's.
@@ -1453,6 +1476,7 @@ mod tests {
             (Scope::Doc, word()),
             (Scope::ViewerTable, Shown { viewer: true, table: true, ..Shown::default() }),
             (Scope::Viewer, Shown { viewer: true, ..Shown::default() }),
+            (Scope::Tools, tools()),
             (Scope::MiniApp, full_app()),
         ]
     }
@@ -1522,6 +1546,22 @@ mod tests {
             assert_eq!(dispatch(&full_app(), chord, EDITOR, true), Taker::Rox(id), "{chord}");
         }
         assert_eq!(host_keys_in(defaults).len(), HOST_KEYS.len());
+    }
+
+    #[test]
+    fn tools_takes_cmd_w_and_cmd_bracket_and_leaves_the_chat_closed() {
+        assert!(ORDER.contains(&Scope::Tools));
+        assert_eq!(tools().open(), [Scope::Tools, Scope::Global], "the chat is not open under it");
+        assert_eq!(dispatch(&tools(), "mod+w", &[], false), Taker::Rox("tools.close"));
+        assert_eq!(dispatch(&tools(), "mod+[", &[], false), Taker::Rox("tools.back"));
+        assert_eq!(dispatch(&tools(), "escape", &[], false), Taker::Rox("app.escape"));
+        // over a full-screen app: Tools first, and the app owns no keys
+        let over_app = Shown { tools: true, ..full_app() };
+        assert!(!app_owns_keys(&over_app));
+        assert_eq!(dispatch(&over_app, "mod+w", &[], false), Taker::Rox("tools.close"));
+        assert_eq!(dispatch(&over_app, "mod+b", &["mod+b"], false), Taker::Rox("sidebar.toggle"));
+        // closed: ⌘[ is history again
+        assert_eq!(dispatch(&chat(), "mod+[", &[], false), Taker::Rox("history.back"));
     }
 
     #[test]

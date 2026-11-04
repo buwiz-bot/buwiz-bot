@@ -48,6 +48,14 @@ pub fn route(method: &Method, url: &str) -> bool {
     }
 }
 
+/// The switch routes that need `X-Buwiz-Host` (the Bot's shell cannot flip them with curl).
+pub const LOCKED: [&str; 3] = ["/mcp/tools/state", "/mcp/server/state", "/mcp/server/delete"];
+
+/// Whether `url` is a locked switch route asked without this broker's host token.
+pub fn locked_out(url: &str, headers: &hyper::HeaderMap) -> bool {
+    LOCKED.contains(&url.split('?').next().unwrap_or("")) && !crate::hub::routes::host::authorized(headers)
+}
+
 pub struct McpRoutes {
     mcp: Arc<McpHost>,
     allowed: Vec<String>,
@@ -154,6 +162,10 @@ impl McpRoutes {
         }
         let method = req.method().clone();
         let url = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_owned();
+        // the old switch routes answer only the app (bot controls): the host token or 401
+        if locked_out(&url, req.headers()) {
+            return respond(Answer::json(401, r#"{"ok":false,"code":"unauthorized","message":"X-Buwiz-Host is missing or wrong"}"#), origin);
+        }
         let body = match req.into_body().collect().await {
             Ok(b) => String::from_utf8_lossy(&b.to_bytes()).into_owned(),
             Err(_) => String::new(),
@@ -611,6 +623,19 @@ fn first_truthy(r: &Value, keys: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_switch_routes_are_locked_without_the_host_token() {
+        let mut h = hyper::HeaderMap::new();
+        for url in ["/mcp/tools/state", "/mcp/server/state", "/mcp/server/delete?x=1"] {
+            assert!(locked_out(url, &h), "{url}");
+        }
+        assert!(!locked_out("/mcp/call", &h) && !locked_out("/mcp/servers", &h));
+        h.insert("x-buwiz-host", "".parse().unwrap());
+        assert!(locked_out("/mcp/server/state", &h), "an empty token never matches");
+        h.insert("x-buwiz-host", "a-guess".parse().unwrap());
+        assert!(locked_out("/mcp/server/state", &h));
+    }
 
     #[test]
     fn links_are_checked_as_market_mjs_checks_them() {
