@@ -1928,6 +1928,103 @@ mod tests {
         assert!(!form_state(FormKind::Block, "  ").can_save);
     }
 
+    /// The engine, headless: the labels of the views alive once nothing
+    /// has come for a while after `wait`.
+    mod mounted {
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use nsh_core::element::Root;
+        use nsh_core::prelude::*;
+        use nsh_core::{ApproxTextEngine, MountBatch, MountItem, NodeId};
+        use nsh_engine::{App, Engine, EngineConfig, MountSink};
+
+        struct Sink(mpsc::Sender<MountBatch>);
+
+        impl MountSink for Sink {
+            fn submit(&self, batch: MountBatch) {
+                let _ = self.0.send(batch);
+            }
+        }
+
+        pub(super) fn live_labels<C: Component<Props = ()> + 'static>() -> Vec<String> {
+            let (tx, rx) = mpsc::channel();
+            let mut config = EngineConfig::new(App::Rust(Root::new::<C>(|| ())));
+            config.viewport = Size::new(px(900.0), px(900.0));
+            let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
+            let mut labels: HashMap<NodeId, String> = HashMap::new();
+            let mut live = std::collections::HashSet::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while let Ok(batch) = rx.recv_timeout(Duration::from_millis(1200)) {
+                for item in &batch.items {
+                    match item {
+                        MountItem::Create { id, .. } => {
+                            live.insert(*id);
+                        }
+                        MountItem::Delete { id } => {
+                            live.remove(id);
+                        }
+                        MountItem::AccessibilityLabel { id, label } => {
+                            if let Some(l) = label {
+                                labels.insert(*id, l.to_string());
+                            }
+                        }
+                        MountItem::ViewProps { id, props } => {
+                            if let Some(l) = props.accessibility.label.as_deref() {
+                                labels.insert(*id, l.to_owned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if Instant::now() > deadline {
+                    break;
+                }
+            }
+            labels.into_iter().filter(|(id, _)| live.contains(id)).map(|(_, l)| l).collect()
+        }
+    }
+
+    /// The transcript's rows as `chat.rs` binds them (a keyed list, each
+    /// cell's own turn compared), the turns read again after a card was
+    /// answered in another window or made moot in the sheet.
+    #[component]
+    fn RefreshedCard() -> impl IntoElement {
+        let at = now_ms();
+        let pending = Turn::of(&json!({"i": 1, "role": "notice", "text": "x", "notice": {"kind": "tools_change", "id": "p_9", "bot": "b1", "botName": "Hex", "op": "tool_on", "key": "shell", "label": "Shell", "state": "pending", "at": at}}));
+        let rows = signal(vec![pending.clone()]);
+        // the next turns refresh has it settled elsewhere
+        spawn(async move {
+            timer(std::time::Duration::from_millis(300)).await;
+            let mut t = pending.clone();
+            if let Some(n) = t.tools_change.as_mut() {
+                n.state = "stale".into();
+            }
+            rows.set(vec![t]);
+        });
+        view().size_full().child(
+            virtual_list(
+                move || rows.with(|t| t.len()),
+                move |at| {
+                    let row = computed(move || rows.with(|t| t.get(at.index()).cloned()));
+                    view().child(dynamic(move || match row.get().and_then(|t| t.tools_change) {
+                        Some(n) => notice_row(n, "c1".into()).into_element(),
+                        None => view().into_element(),
+                    }))
+                },
+            )
+            .keys(move || rows.with(|t| t.iter().map(|t| t.i.to_string()).collect::<Vec<_>>()))
+            .size_full(),
+        )
+    }
+
+    #[test]
+    fn a_card_answered_elsewhere_goes_on_the_next_refresh() {
+        let labels = mounted::live_labels::<RefreshedCard>();
+        assert!(!labels.iter().any(|l| l.contains("back on for Hex")), "{labels:?}");
+    }
+
     #[test]
     fn tools_opens_the_sheet_on_this_bot_for_the_chats_bot() {
         let (open, tab) = sheet_for(Some(("b1".into(), "Hex".into())));

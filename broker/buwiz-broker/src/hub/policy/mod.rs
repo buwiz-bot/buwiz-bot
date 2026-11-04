@@ -424,7 +424,18 @@ pub fn commit(ctx: &HubCtx, change: &Change, actor: &str, thread: Option<&str>) 
     let text = change.receipt(ctx);
     let id = format!("u_{}", uuidv7());
     record(ctx, &Recorded { id: &id, actor, thread, said: None, undoes: None }, change, &text, Some(&inverse))?;
+    settle_moot(ctx);
     Ok((id, text))
+}
+
+/// Pending cards whose change is in effect now (made in the sheet, or on another card) become
+/// `stale` in every chat, so each chat's next turns read drops them.
+fn settle_moot(ctx: &HubCtx) {
+    edit_notices(ctx, None, |n| n["state"] == "pending" && change_of(n).filter(Change::widens).is_some_and(|c| c.noop(ctx)), |u| {
+        if let Some(n) = u.notice.as_mut() {
+            n["state"] = json!("stale");
+        }
+    });
 }
 
 fn bot_of_change(c: &Change) -> Option<&str> {
@@ -493,7 +504,9 @@ pub fn undo(ctx: &HubCtx, id: &str) -> Result<(), String> {
     inverse.apply(ctx, "human")?;
     db(ctx, |c| c.execute("UPDATE policy_change SET undo=NULL WHERE id=?", [id]))?;
     let said = format!("Undid a change. {}", inverse.receipt(ctx));
-    record(ctx, &Recorded { id: &format!("u_{}", uuidv7()), actor: "human", thread: None, said: Some(&said), undoes: Some(id) }, &inverse, PUT_BACK, None)
+    record(ctx, &Recorded { id: &format!("u_{}", uuidv7()), actor: "human", thread: None, said: Some(&said), undoes: Some(id) }, &inverse, PUT_BACK, None)?;
+    settle_moot(ctx);
+    Ok(())
 }
 
 /// Recent changes (24 h), newest first: `[{at, actor, text, undo?, undone?}]`, `undo` while

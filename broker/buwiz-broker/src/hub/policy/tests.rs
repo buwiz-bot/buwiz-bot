@@ -800,6 +800,26 @@ async fn a_bots_changes_reach_the_other_threads_but_never_its_own() {
 }
 
 #[tokio::test]
+async fn a_card_whose_change_is_made_elsewhere_settles_in_every_chat() {
+    let b = bed("moot");
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": false})).unwrap();
+    host_mode(&b.ctx, &json!({"mode": "only"})).unwrap();
+    let run = run_in(&b.ctx, &b.hex);
+    let web = call(&run, "tools_set", json!({"key": "web", "enabled": true})).await["proposal"].clone();
+    let bypass = call(&run, "shell_mode_set", json!({"mode": "bypass"})).await["proposal"].clone();
+    let other = run_in(&b.ctx, &b.plain);
+    let there = call(&other, "shell_mode_set", json!({"mode": "bypass"})).await["proposal"].clone();
+    let state = |chat: &str, id: &Value| notices(&b.ctx, chat).into_iter().find(|n| &n["id"] == id).unwrap()["state"].clone();
+    // the sheet turns the web on: that card goes, the others wait
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": true})).unwrap();
+    assert_eq!((state(&b.hex, &web), state(&b.hex, &bypass), state(&b.plain, &there)), (json!("stale"), json!("pending"), json!("pending")));
+    // a yes on one chat's card settles the same change's card in the other
+    let a = answer(&b.ctx, &json!({"chat": b.plain, "id": there, "answer": "yes"})).unwrap();
+    assert_eq!(a["notice"]["state"], "applied");
+    assert_eq!((state(&b.plain, &there), state(&b.hex, &bypass)), (json!("applied"), json!("stale")));
+}
+
+#[tokio::test]
 async fn an_undo_marks_the_row_it_undid_instead_of_adding_one() {
     let b = bed("undone");
     told(&b.ctx, &b.plain, None);
