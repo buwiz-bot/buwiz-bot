@@ -1048,6 +1048,7 @@ async fn tools_set_takes_a_state_and_the_host_route_sets_chats() {
     told(&b.ctx, &b.hex, Some("hex"));
     host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "off"})).unwrap();
     assert!(told(&b.ctx, &other, None).iter().any(|t| t.ends_with("Plain chats can't use web search now.")));
+    assert_eq!(host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "ask"})).unwrap()["text"], "Plain chats ask you before using web search.");
     assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
 }
 

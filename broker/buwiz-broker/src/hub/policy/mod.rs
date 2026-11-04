@@ -499,7 +499,7 @@ impl Change {
                 match (bot.is_empty(), state) {
                     (true, _) => format!("{what} is on for every Bot."),
                     (false, Pos::On) => format!("{} can use {what} again.", bot_name(ctx, bot)),
-                    (false, Pos::Ask) => format!("{} asks you before using {what}.", bot_name(ctx, bot)),
+                    (false, Pos::Ask) => format!("{} {} you before using {what}.", bot_name(ctx, bot), if bot == CHATS { "ask" } else { "asks" }),
                     (false, Pos::Off) => format!("{} can't use {what} now.", bot_name(ctx, bot)),
                 }
             }
