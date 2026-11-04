@@ -340,7 +340,11 @@ impl Change {
             }
             Change::RuleAdd { kind, pattern, .. } if kind == "allow" => format!("Always allowed on this Mac: `{pattern}`."),
             Change::RuleAdd { pattern, .. } => format!("Blocked on this Mac: `{pattern}`."),
-            Change::RuleRemove { kind, pattern } if kind == "allow" => format!("Removed `{pattern}` from Always allowed. Those commands ask first again."),
+            // read after it applies: the mode it leaves
+            Change::RuleRemove { kind, pattern } if kind == "allow" => match mode(ctx) {
+                Mode::Bypass => format!("Removed `{pattern}` from Always allowed. It still runs while Bypass is on."),
+                Mode::Only => format!("Removed `{pattern}` from Always allowed. Bots can't run it now unless you allow it again."),
+            },
             Change::RuleRemove { pattern, .. } => format!("Stopped blocking `{pattern}` on this Mac."),
             Change::Mode(Mode::Only) => "Mode: Only allowed commands. Unlisted commands are refused.".into(),
             Change::Mode(Mode::Bypass) => "Mode: Bypass. Every command runs without asking. Blocks still apply.".into(),

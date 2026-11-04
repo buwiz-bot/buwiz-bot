@@ -394,9 +394,15 @@ async fn each_tighten_applies_with_a_receipt_and_its_undo_puts_it_back() {
     let r = call(&run, "shell_rule_remove", json!({"kind": "allow", "pattern": "git status"})).await;
     assert_eq!(r["status"], "removed");
     assert!(rules(&b.ctx, "allow").is_empty());
-    assert_eq!(notices(&b.ctx, &b.hex).pop().unwrap()["text"], "Removed `git status` from Always allowed. Those commands ask first again.");
+    assert_eq!(notices(&b.ctx, &b.hex).pop().unwrap()["text"], "Removed `git status` from Always allowed. It still runs while Bypass is on.");
     host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
     assert_eq!(rules(&b.ctx, "allow")[0].risk.as_deref(), Some("ro"), "put back as it was");
+    // in mode only, the words say it is refused now
+    Change::Mode(Mode::Only).apply(&b.ctx, "human").unwrap();
+    let r = host_rules(&b.ctx, &json!({"op": "remove", "kind": "allow", "pattern": "git status"})).unwrap();
+    assert_eq!(r["text"], "Removed `git status` from Always allowed. Bots can't run it now unless you allow it again.");
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    Change::Mode(Mode::Bypass).apply(&b.ctx, "human").unwrap();
     let r = call(&run, "shell_rule_add", json!({"kind": "deny", "pattern": "rm -rf *"})).await;
     assert_eq!((r["status"].clone(), r["pattern"].clone()), (json!("added"), json!("rm -rf")));
     assert!(r["note"].as_str().unwrap().contains("saved as `rm -rf`"));
@@ -676,7 +682,7 @@ async fn the_sheets_changes_reach_each_threads_next_call_once() {
     host_rules(&b.ctx, &json!({"op": "add", "kind": "allow", "pattern": "claude"})).unwrap();
     host_rules(&b.ctx, &json!({"op": "remove", "kind": "allow", "pattern": "claude"})).unwrap();
     host_mode(&b.ctx, &json!({"mode": "bypass"})).unwrap();
-    let line = "[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Always allowed on this Mac: `claude`. Removed `claude` from Always allowed. Those commands ask first again. Mode: Bypass. Every command runs without asking. Blocks still apply.";
+    let line = "[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Always allowed on this Mac: `claude`. Removed `claude` from Always allowed. Bots can't run it now unless you allow it again. Mode: Bypass. Every command runs without asking. Blocks still apply.";
     assert_eq!(told(&b.ctx, &b.hex, Some("hex")), [line]);
     assert_eq!(told(&b.ctx, &b.plain, None), [line]);
     // once: the marker moved

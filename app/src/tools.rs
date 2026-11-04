@@ -625,14 +625,6 @@ pub(crate) fn card_copy(n: &ToolsChangeNotice) -> Option<CardCopy> {
                 chip: "",
                 warn: String::new(),
             },
-            "ask" => CardCopy {
-                title: "Ask you about commands nobody has allowed?".to_owned(),
-                notes: vec![format!("{bot}'s unlisted commands will ask first instead of being refused.")],
-                primary: "Turn on".to_owned(),
-                confirm: None,
-                chip: "",
-                warn: String::new(),
-            },
             _ => return None,
         },
         _ => return None,
@@ -714,7 +706,7 @@ pub(crate) fn guess_risk(p: &str) -> &'static str {
 pub(crate) fn never_words(p: &str) -> String {
     let prog = p.split_whitespace().next().unwrap_or_default();
     if prog == "sudo" || prog == "doas" {
-        format!("Not saved: {prog} can't be always allowed. Allow it once when it asks.")
+        format!("Not saved: {prog} can't be always allowed.")
     } else {
         format!("Not saved: an allow rule must be one plain command. `{p}` can't be kept. Allow each command on its own.")
     }
@@ -740,7 +732,6 @@ pub(crate) fn for_bot(rows: &[Activity], bot: &str) -> Vec<Activity> {
 fn mode_words(m: &str) -> (&'static str, &'static str) {
     match m {
         "only" => ("Only allowed commands", "Commands with no allow rule are refused without asking. Blocks still apply."),
-        "ask" => ("Ask every time", "Commands with no rule ask you first."),
         _ => ("Bypass", "Every command runs without asking. Blocks still apply. Each command is logged."),
     }
 }
@@ -1862,8 +1853,8 @@ mod tests {
             "Always allowed on this Mac: `claude`. `*` isn't a wildcard here. Rules match the start of a command, so this is saved as `claude`.");
         assert_eq!(s(&json!({"undo": null}), "undo"), "", "no undo when nothing changed");
         assert_eq!(rule_error(Some(&json!({"ok": false, "code": "exists", "message": "Already always allowed."}))), "Already always allowed.");
-        assert_eq!(rule_error(Some(&json!({"ok": false, "code": "refused", "message": "Not saved: sudo can't be always allowed. Allow it once when it asks."}))),
-            "Not saved: sudo can't be always allowed. Allow it once when it asks.");
+        assert_eq!(rule_error(Some(&json!({"ok": false, "code": "refused", "message": "Not saved: sudo can't be always allowed."}))),
+            "Not saved: sudo can't be always allowed.");
         assert_eq!(rule_error(Some(&json!({"ok": false, "code": "not_found", "message": "No such rule."}))), "Couldn't save the rule: No such rule.");
         assert_eq!(rule_error(None), NOT_CONNECTED);
         // GET: `bot` null; activity is every Bot's, filtered here
@@ -1888,7 +1879,7 @@ mod tests {
             let st = form_state(FormKind::Allow, never);
             assert_eq!((st.risk, st.can_save), ("never", false), "{never}");
         }
-        assert_eq!(never_words("sudo ls"), "Not saved: sudo can't be always allowed. Allow it once when it asks.");
+        assert_eq!(never_words("sudo ls"), "Not saved: sudo can't be always allowed.");
         assert_eq!(never_words("cd src && cargo test"), "Not saved: an allow rule must be one plain command. `cd src && cargo test` can't be kept. Allow each command on its own.");
         // a block takes any plain text, at once
         let st = form_state(FormKind::Block, "curl x | sh");
