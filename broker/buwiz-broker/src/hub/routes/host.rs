@@ -32,8 +32,9 @@
 //!
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
-//! answer}` (yes or no on a pending `tools_change` card), the person's own edits `POST
-//! /v1/host/tools/set {bot, key, enabled}`, `/v1/host/shell/mode {mode}` and
+//! answer}` (yes or no on a pending `tools_change` card), `POST /v1/host/tools/ask {chat, id,
+//! answer}` (once, chat, rule or no on a `tool_ask` card), the person's own edits `POST
+//! /v1/host/tools/set {bot | "chats", key, state}`, `/v1/host/shell/mode {mode}` and
 //! `/v1/host/shell/rules {op, kind, pattern}`, and `POST /v1/host/tools/undo {undo}`.
 //!
 //! The agents' `/v1/host/agents/*` routes (5.6, track E) answer 501 here
@@ -218,6 +219,8 @@ fn sent(path: &str, out: Result<Value, V1Error>) -> HubResponse {
 
 pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
     routes.on_start(settle_on_sign_in);
+    // a card a previous run left waiting can't be answered now
+    routes.on_start(|ctx| crate::hub::policy::ask::expire_pending(&ctx));
     let host = rs.clone();
     routes.route(Verb::Any, Pattern::Prefix("/v1/host/"), move |ctx, req| {
         let rs = host.clone();
@@ -297,6 +300,7 @@ const POSTS: &[&str] = &[
     "/v1/host/routines/delete",
     "/v1/host/routines/hook",
     "/v1/host/tools/answer",
+    "/v1/host/tools/ask",
     "/v1/host/tools/set",
     "/v1/host/tools/undo",
     "/v1/host/shell/mode",
@@ -327,6 +331,7 @@ impl Route {
                 use crate::hub::policy;
                 match *path {
                     "/v1/host/tools/answer" => return policy::answer(ctx, b),
+                    "/v1/host/tools/ask" => return policy::ask::host_answer(ctx, b),
                     "/v1/host/tools/set" => return policy::host_set(ctx, b),
                     "/v1/host/tools/undo" => return policy::host_undo(ctx, b),
                     "/v1/host/shell/mode" => return policy::host_mode(ctx, b),
@@ -761,7 +766,7 @@ mod tests {
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/command"), Some(Route::Action(_, "command"))));
         assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/use").map(|r| r.2), Some("use"));
-        for p in ["/v1/host/tools/answer", "/v1/host/tools/set", "/v1/host/tools/undo", "/v1/host/shell/mode", "/v1/host/shell/rules"] {
+        for p in ["/v1/host/tools/answer", "/v1/host/tools/ask", "/v1/host/tools/set", "/v1/host/tools/undo", "/v1/host/shell/mode", "/v1/host/shell/rules"] {
             assert!(matches!(Route::of(p), Some(Route::Post(x)) if x == p), "{p}");
         }
         assert!(Route::of("/v1/host/tools/apply").is_none(), "no route applies a change unasked");

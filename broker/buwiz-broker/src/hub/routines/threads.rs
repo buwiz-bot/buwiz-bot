@@ -20,6 +20,7 @@ pub fn notice_text(n: &Value) -> String {
     let s = |k: &str| n.get(k).map(js::string_of).unwrap_or_default();
     let list = |k: &str| n.get(k).and_then(Value::as_array).filter(|l| !l.is_empty()).map(|l| l.iter().map(js::string_of).collect::<Vec<_>>());
     match n.get("kind").and_then(Value::as_str) {
+        Some("tool_ask") => return s("title"),
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its pins, attachments and data.", s("title")),
         Some("app_accounts") => {

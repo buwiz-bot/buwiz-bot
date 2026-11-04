@@ -1,7 +1,8 @@
-//! Bot controls (PR 1): which tools a Bot has, what the shell may run on this Mac, and the
-//! cards that change them.
+//! Bot controls: which tools a Bot (or every plain chat, the Chats profile) has, what the
+//! shell may run on this Mac, and the cards that change them.
 //!
-//! - Store: `bot_tools` (no row is on), `shell_mode` (no row is `bypass`), `shell_rule`,
+//! - Store: `bot_tools` (a switch is on, ask or off; no row is the profile's default,
+//!   [`default_pos`]), `shell_mode` (no row is `bypass`), `shell_rule`,
 //!   `shell_activity` (7 days, clipped and masked), `policy_change` (30 days for the notes,
 //!   24 h in Recent changes and for Undo; each with the JSON of its inverse and the thread a
 //!   Bot made it in), `policy_note` (what a Bot reads of the user's decisions on its next
@@ -11,8 +12,11 @@
 //!   proposes a widen: a `tools_change` notice in the chat that a person answers through
 //!   `POST /v1/host/tools/answer`. Nothing a model tool calls applies a widen.
 //! - The gate (`gate.rs`, its shell reader `shell.rs`) and the sandbox (`sandbox.rs`) judge
-//!   and run `shell_run`; `keys.rs` maps each tool to the switch it belongs to.
+//!   and run `shell_run`; `keys.rs` maps each tool to the switch it belongs to and says
+//!   whether a call only reads; `ask.rs` parks a call on a switch at Ask until the user
+//!   answers its `tool_ask` card.
 
+pub mod ask;
 pub mod gate;
 pub mod keys;
 pub mod sandbox;
@@ -46,6 +50,57 @@ pub const NOT_IN_EFFECT: &str = "Not in effect until the user confirms.";
 pub const SAID_NO: &str = "The user said no to this. Ask them in words first.";
 /// What a chat without a Bot is called on its cards.
 pub const NO_BOT_NAME: &str = "The assistant";
+/// The owner id of the profile every plain chat shares (never a Bot's id: those are
+/// `b_…`), and what its cards and receipts call it.
+pub const CHATS: &str = "@chats";
+pub const CHATS_NAME: &str = "Chats";
+
+/// A switch's position: on, ask before a call that changes something or reaches someone,
+/// or off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pos {
+    On,
+    Ask,
+    Off,
+}
+
+impl Pos {
+    pub fn parse(s: &str) -> Option<Pos> {
+        match s {
+            "on" => Some(Pos::On),
+            "ask" => Some(Pos::Ask),
+            "off" => Some(Pos::Off),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Pos::On => "on",
+            Pos::Ask => "ask",
+            Pos::Off => "off",
+        }
+    }
+
+    /// How much it lets through: a move up is a widen.
+    fn rank(self) -> u8 {
+        match self {
+            Pos::Off => 0,
+            Pos::Ask => 1,
+            Pos::On => 2,
+        }
+    }
+}
+
+/// A switch's position with no row: a Bot's are on; the Chats profile has the web and
+/// office documents on and everything else at Ask.
+pub fn default_pos(owner: &str, key: &str) -> Pos {
+    if owner != CHATS || matches!(key, "web" | "office") {
+        Pos::On
+    } else {
+        Pos::Ask
+    }
+}
 
 /// `Date.now()` on the hub's clock.
 pub fn now(ctx: &HubCtx) -> i64 {
@@ -58,25 +113,46 @@ fn db<T>(ctx: &HubCtx, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result
 
 // ---- the store ----
 
-/// Whether `bot`'s `key` is on (no row is on).
-pub fn tool_on(ctx: &HubCtx, bot: &str, key: &str) -> bool {
-    let r: Option<i64> = db(ctx, |c| c.query_row("SELECT enabled FROM bot_tools WHERE bot_id=? AND key=?", [bot, key], |r| r.get(0)).optional()).ok().flatten();
-    r != Some(0)
+/// A row's position: its `state`, else (a row from before it) `enabled`.
+fn pos_of(enabled: Option<i64>, state: Option<String>) -> Pos {
+    state.as_deref().and_then(Pos::parse).unwrap_or(if enabled == Some(0) { Pos::Off } else { Pos::On })
 }
 
-/// `bot`'s stored switches: key → (on, actor, at).
-pub fn tool_rows(ctx: &HubCtx, bot: &str) -> Vec<(String, bool, String, i64)> {
+/// `owner`'s `key` (a Bot's id or [`CHATS`]): its row, else the profile's default.
+pub fn tool_state(ctx: &HubCtx, owner: &str, key: &str) -> Pos {
+    let r: Option<(Option<i64>, Option<String>)> = db(ctx, |c| c.query_row("SELECT enabled, state FROM bot_tools WHERE bot_id=? AND key=?", [owner, key], |r| Ok((r.get(0)?, r.get(1)?))).optional()).ok().flatten();
+    match r {
+        Some((e, s)) => pos_of(e, s),
+        // the unit tests of what came before Ask run their plain chats with every switch on;
+        // the ones of Ask ask for the real defaults
+        #[cfg(test)]
+        None if owner == CHATS && ctx.ext.get::<RealChatsDefaults>().is_none() => Pos::On,
+        None => default_pos(owner, key),
+    }
+}
+
+/// In `ctx.ext`: a unit test's plain chats have the Chats profile's real defaults.
+#[cfg(test)]
+pub struct RealChatsDefaults;
+
+/// Whether `bot`'s `key` is not off.
+pub fn tool_on(ctx: &HubCtx, bot: &str, key: &str) -> bool {
+    tool_state(ctx, bot, key) != Pos::Off
+}
+
+/// `owner`'s stored switches: key → (position, actor, at).
+pub fn tool_rows(ctx: &HubCtx, owner: &str) -> Vec<(String, Pos, String, i64)> {
     db(ctx, |c| {
-        let mut q = c.prepare("SELECT key, enabled, actor, at FROM bot_tools WHERE bot_id=?")?;
-        let r = q.query_map([bot], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<i64>>(3)?.unwrap_or(0))))?;
+        let mut q = c.prepare("SELECT key, enabled, state, actor, at FROM bot_tools WHERE bot_id=?")?;
+        let r = q.query_map([owner], |r| Ok((r.get::<_, String>(0)?, pos_of(r.get(1)?, r.get(2)?), r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get::<_, Option<i64>>(4)?.unwrap_or(0))))?;
         r.collect()
     })
     .unwrap_or_default()
 }
 
-/// The keys switched off for `bot`.
-pub fn off_keys(ctx: &HubCtx, bot: &str) -> HashSet<String> {
-    tool_rows(ctx, bot).into_iter().filter(|r| !r.1).map(|r| r.0).collect()
+/// The keys switched off for `owner` (no default is off).
+pub fn off_keys(ctx: &HubCtx, owner: &str) -> HashSet<String> {
+    tool_rows(ctx, owner).into_iter().filter(|r| r.1 == Pos::Off).map(|r| r.0).collect()
 }
 
 /// The Mac's shell mode.
@@ -117,6 +193,12 @@ pub fn judge(ctx: &HubCtx, command: &str) -> gate::Verdict {
     gate::decide(mode(ctx), &patterns(ctx, "allow"), &patterns(ctx, "block"), command)
 }
 
+/// [`judge`] under `mode` instead of the stored one (a switch at Ask reads the rules as mode
+/// `only` does).
+pub fn judge_in(ctx: &HubCtx, mode: Mode, command: &str) -> gate::Verdict {
+    gate::decide(mode, &patterns(ctx, "allow"), &patterns(ctx, "block"), command)
+}
+
 /// The allow `pattern`'s inert line ("blocked by `rm`"), when a block overrides it.
 pub fn inert_of(ctx: &HubCtx, pattern: &str) -> Option<String> {
     gate::inert_by(&patterns(ctx, "block"), pattern).map(|b| format!("blocked by `{b}`"))
@@ -142,31 +224,54 @@ fn bot_name(ctx: &HubCtx, bot: &str) -> String {
     if bot.is_empty() {
         return NO_BOT_NAME.to_owned();
     }
+    if bot == CHATS {
+        return CHATS_NAME.to_owned();
+    }
     ctx.store.read(|s| s.bot(bot).map(|b| b.name.clone())).unwrap_or_else(|| bot.to_owned())
 }
 
-/// Activity, newest first: `[{at, bot, botName, command, outcome, result, unasked}]` (the
-/// last 7 days). `outcome` is `ran` (exit 0), `failed` (it ran; `result` is `exit 1`, `exit
-/// timeout` and the like), `refused_block` or `refused_mode`.
+/// An asked call into Activity: `what` (the command, or the card's title), the `tool`, and
+/// its answer: `allowed`, `allowed_chat`, `declined`, `expired` or `needs_ok` (no one was
+/// there to ask).
+pub fn log_ask(ctx: &HubCtx, bot: Option<&str>, what: &str, tool: &str, outcome: &str) {
+    let at = now(ctx);
+    let what = gate::mask_and_clip(what);
+    let r = db(ctx, |c| {
+        c.execute("DELETE FROM shell_activity WHERE at < ?", [at - WEEK])?;
+        c.execute("INSERT INTO shell_activity(at, bot_id, command, result, outcome, unasked, tool) VALUES(?,?,?,?,?,0,?)", rusqlite::params![at, bot, what, "", outcome, tool])
+    });
+    if let Err(e) = r {
+        eprintln!("buwiz-broker: ask activity: {e}");
+    }
+}
+
+/// Activity, newest first: `[{at, bot, botName, command, outcome, result, unasked, tool}]`
+/// (the last 7 days). `outcome` is `ran` (exit 0), `failed` (it ran; `result` is `exit 1`,
+/// `exit timeout` and the like), `refused_block` or `refused_mode` for a command; an asked
+/// call's answer ([`log_ask`]) for a row with a `tool`.
 pub fn activity(ctx: &HubCtx, bot: Option<&str>) -> Vec<Value> {
     let since = now(ctx) - WEEK;
-    type Row = (i64, Option<String>, String, String, String, bool);
+    type Row = (i64, Option<String>, String, String, String, bool, String);
     let rows: Vec<Row> = db(ctx, |c| {
-        let mut q = c.prepare("SELECT at, bot_id, command, outcome, result, unasked FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
+        let mut q = c.prepare("SELECT at, bot_id, command, outcome, result, unasked, tool FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
         let r = q.query_map([since], |r| {
             let text = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
-            Ok((r.get(0)?, r.get(1)?, text(2)?, text(3)?, text(4)?, r.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0))
+            Ok((r.get(0)?, r.get(1)?, text(2)?, text(3)?, text(4)?, r.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0, text(6)?))
         })?;
         r.collect()
     })
     .unwrap_or_default();
     rows.into_iter()
         .filter(|r| bot.is_none_or(|b| r.1.as_deref() == Some(b)))
-        .map(|(at, b, command, outcome, result, unasked)| {
+        .map(|(at, b, command, outcome, result, unasked, tool)| {
             let b = b.unwrap_or_default();
             // a row from before `failed`: a run that did not exit 0
             let outcome = if outcome == "ran" && result.starts_with("exit ") && result != "exit 0" { "failed".to_owned() } else { outcome };
-            json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome, "result": result, "unasked": unasked})
+            let mut v = json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome, "result": result, "unasked": unasked});
+            if !tool.is_empty() {
+                v["tool"] = json!(tool);
+            }
+            v
         })
         .collect()
 }
@@ -237,8 +342,10 @@ fn unseen_changes(ctx: &HubCtx, thread: &str, bot: Option<&str>, told: &HashSet<
     let Some(newest) = rows.last().map(|r| r.0.clone()) else { return (Vec::new(), Vec::new()) };
     let _ = db(ctx, |c| c.execute("UPDATE policy_seen SET last=?, at=? WHERE thread=?", rusqlite::params![newest, at, thread]));
     let (mut user, mut bots) = (Vec::new(), Vec::new());
+    // a plain chat's switches are the Chats profile's
+    let me = bot.unwrap_or(CHATS);
     for (id, b, text, actor) in rows {
-        if text.is_empty() || told.contains(id.as_str()) || b.as_deref().is_some_and(|b| bot != Some(b)) {
+        if text.is_empty() || told.contains(id.as_str()) || b.as_deref().is_some_and(|b| b != me) {
             continue;
         }
         match actor.strip_prefix("bot:") {
@@ -254,8 +361,9 @@ fn unseen_changes(ctx: &HubCtx, thread: &str, bot: Option<&str>, told: &HashSet<
 /// One change to a Bot's tools or the Mac's shell rules.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
-    /// `bot` empty: only the switch every Bot shares (a skill's or server's, F3)
-    Tool { bot: String, key: String, enabled: bool },
+    /// `bot` a Bot's id or [`CHATS`]; empty: only the switch every Bot shares (a skill's or
+    /// server's, F3). `from` is the position it moves from (read when it was made).
+    Tool { bot: String, key: String, state: Pos, from: Pos },
     RuleAdd { kind: String, pattern: String, risk: Option<String>, path: Option<String> },
     RuleRemove { kind: String, pattern: String },
     Mode(Mode),
@@ -264,7 +372,7 @@ pub enum Change {
 impl Change {
     pub fn to_json(&self) -> Value {
         match self {
-            Change::Tool { bot, key, enabled } => json!({"op": "tool", "bot": bot, "key": key, "enabled": enabled}),
+            Change::Tool { bot, key, state, from } => json!({"op": "tool", "bot": bot, "key": key, "state": state.as_str(), "from": from.as_str(), "enabled": *state != Pos::Off}),
             Change::RuleAdd { kind, pattern, risk, path } => json!({"op": "rule_add", "kind": kind, "pattern": pattern, "risk": risk, "path": path}),
             Change::RuleRemove { kind, pattern } => json!({"op": "rule_remove", "kind": kind, "pattern": pattern}),
             Change::Mode(m) => json!({"op": "mode", "mode": m.as_str()}),
@@ -274,7 +382,16 @@ impl Change {
     pub fn from_json(v: &Value) -> Option<Change> {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         Some(match v.get("op")?.as_str()? {
-            "tool" => Change::Tool { bot: s("bot").unwrap_or_default(), key: s("key")?, enabled: v.get("enabled")?.as_bool()? },
+            "tool" => {
+                // a row from before `state`: on or off
+                let state = match s("state").as_deref().and_then(Pos::parse) {
+                    Some(p) => p,
+                    None if v.get("enabled")?.as_bool()? => Pos::On,
+                    None => Pos::Off,
+                };
+                let from = s("from").as_deref().and_then(Pos::parse).unwrap_or(if state == Pos::Off { Pos::On } else { Pos::Off });
+                Change::Tool { bot: s("bot").unwrap_or_default(), key: s("key")?, state, from }
+            }
             "rule_add" => Change::RuleAdd { kind: s("kind")?, pattern: s("pattern")?, risk: s("risk"), path: s("path") },
             "rule_remove" => Change::RuleRemove { kind: s("kind")?, pattern: s("pattern")? },
             "mode" => Change::Mode(Mode::from_stored(&s("mode")?)),
@@ -291,10 +408,24 @@ impl Change {
         }
     }
 
-    /// Whether it lets more through: a tool on, an allow added, a block removed, bypass.
+    /// `owner`'s switch `key` to `state`, from where it is now.
+    pub fn tool(ctx: &HubCtx, owner: &str, key: &str, state: Pos) -> Change {
+        // a skill, server or mini app off for every Bot is off here too (F3)
+        let from = if state != Pos::Off && !shared_on(ctx, key) {
+            Pos::Off
+        } else if owner.is_empty() {
+            Pos::On
+        } else {
+            tool_state(ctx, owner, key)
+        };
+        Change::Tool { bot: owner.to_owned(), key: key.to_owned(), state, from }
+    }
+
+    /// Whether it lets more through: a switch toward on, an allow added, a block removed,
+    /// bypass.
     pub fn widens(&self) -> bool {
         match self {
-            Change::Tool { enabled, .. } => *enabled,
+            Change::Tool { state, from, .. } => state.rank() > from.rank(),
             Change::RuleAdd { kind, .. } => kind == "allow",
             Change::RuleRemove { kind, .. } => kind == "block",
             Change::Mode(m) => *m == Mode::Bypass,
@@ -304,9 +435,9 @@ impl Change {
     /// Whether it is in effect already.
     pub fn noop(&self, ctx: &HubCtx) -> bool {
         match self {
-            Change::Tool { bot, key, enabled } => {
-                let mine = bot.is_empty() || tool_on(ctx, bot, key) == *enabled;
-                mine && (!*enabled || shared_on(ctx, key))
+            Change::Tool { bot, key, state, .. } => {
+                let mine = bot.is_empty() || tool_state(ctx, bot, key) == *state;
+                mine && (*state == Pos::Off || shared_on(ctx, key))
             }
             Change::RuleAdd { kind, pattern, .. } => rule(ctx, kind, pattern).is_some(),
             Change::RuleRemove { kind, pattern } => rule(ctx, kind, pattern).is_none(),
@@ -317,7 +448,7 @@ impl Change {
     /// The change that puts it back, read before it applies.
     fn inverse(&self, ctx: &HubCtx) -> Change {
         match self {
-            Change::Tool { bot, key, enabled } => Change::Tool { bot: bot.clone(), key: key.clone(), enabled: !*enabled },
+            Change::Tool { bot, key, state, from } => Change::Tool { bot: bot.clone(), key: key.clone(), state: *from, from: *state },
             Change::RuleAdd { kind, pattern, .. } => Change::RuleRemove { kind: kind.clone(), pattern: pattern.clone() },
             Change::RuleRemove { kind, pattern } => {
                 let r = rule(ctx, kind, pattern);
@@ -330,13 +461,14 @@ impl Change {
     fn apply(&self, ctx: &HubCtx, actor: &str) -> Result<(), String> {
         let at = now(ctx);
         match self {
-            Change::Tool { bot, key, enabled } => {
+            Change::Tool { bot, key, state, .. } => {
+                let enabled = *state != Pos::Off;
                 if !bot.is_empty() {
-                    db(ctx, |c| c.execute("INSERT OR REPLACE INTO bot_tools(bot_id, key, enabled, actor, at) VALUES(?,?,?,?,?)", rusqlite::params![bot, key, *enabled as i64, actor, at]))?;
+                    db(ctx, |c| c.execute("INSERT OR REPLACE INTO bot_tools(bot_id, key, enabled, state, actor, at) VALUES(?,?,?,?,?,?)", rusqlite::params![bot, key, enabled as i64, state.as_str(), actor, at]))?;
                 }
                 // turning a skill, server or mini app on for a Bot turns it on where it is off
                 // for all (F3)
-                if *enabled {
+                if enabled {
                     if let Some(id) = key.strip_prefix("skill:") {
                         db(ctx, |c| c.execute("UPDATE skills SET enabled=1 WHERE id=?", [id]))?;
                     } else if let Some(id) = key.strip_prefix("mcp:") {
@@ -362,12 +494,13 @@ impl Change {
     /// The receipt sentence (spec section 7).
     pub fn receipt(&self, ctx: &HubCtx) -> String {
         match self {
-            Change::Tool { bot, key, enabled } => {
+            Change::Tool { bot, key, state, .. } => {
                 let what = keys::phrase_of(ctx, key);
-                match (bot.is_empty(), enabled) {
+                match (bot.is_empty(), state) {
                     (true, _) => format!("{what} is on for every Bot."),
-                    (false, true) => format!("{} can use {what} again.", bot_name(ctx, bot)),
-                    (false, false) => format!("{} can't use {what} now.", bot_name(ctx, bot)),
+                    (false, Pos::On) => format!("{} can use {what} again.", bot_name(ctx, bot)),
+                    (false, Pos::Ask) => format!("{} asks you before using {what}.", bot_name(ctx, bot)),
+                    (false, Pos::Off) => format!("{} can't use {what} now.", bot_name(ctx, bot)),
                 }
             }
             Change::RuleAdd { kind, pattern, .. } if kind == "allow" => format!("Always allowed on this Mac: `{pattern}`."),
@@ -386,10 +519,14 @@ impl Change {
     /// The note the Bot reads when a person says yes (`true`) or no to it.
     fn decision(&self, ctx: &HubCtx, yes: bool) -> String {
         match (self, yes) {
-            (Change::Tool { bot, key, enabled }, _) => {
+            (Change::Tool { bot, key, state, .. }, _) => {
                 let what = keys::phrase_of(ctx, key);
                 let who = if bot.is_empty() { "every Bot".to_owned() } else { bot_name(ctx, bot) };
-                let turn = if *enabled { "on" } else { "off" };
+                let turn = match state {
+                    Pos::On => "on",
+                    Pos::Ask => "to Ask",
+                    Pos::Off => "off",
+                };
                 if yes {
                     format!("The user turned {turn} {what} for {who}.")
                 } else {
@@ -571,7 +708,8 @@ pub fn recent(ctx: &HubCtx) -> Vec<Value> {
 
 fn op_of(c: &Change) -> &'static str {
     match c {
-        Change::Tool { enabled: true, .. } => "tool_on",
+        Change::Tool { state: Pos::On, .. } => "tool_on",
+        Change::Tool { state: Pos::Ask, .. } => "tool_ask",
         Change::Tool { .. } => "tool_off",
         Change::RuleAdd { .. } => "rule_add",
         Change::RuleRemove { .. } => "rule_remove",
@@ -584,7 +722,16 @@ pub fn change_of(n: &Value) -> Option<Change> {
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     let rule = n.get("rule").cloned().unwrap_or(Value::Null);
     Some(match n.get("op")?.as_str()? {
-        op @ ("tool_on" | "tool_off") => Change::Tool { bot: s(n, "bot").unwrap_or_default(), key: s(n, "key")?, enabled: op == "tool_on" },
+        op @ ("tool_on" | "tool_ask" | "tool_off") => {
+            let state = match op {
+                "tool_on" => Pos::On,
+                "tool_ask" => Pos::Ask,
+                _ => Pos::Off,
+            };
+            // a card from before `from`: on was off, off was on
+            let from = s(n, "from").as_deref().and_then(Pos::parse).unwrap_or(if state == Pos::Off { Pos::On } else { Pos::Off });
+            Change::Tool { bot: s(n, "bot").unwrap_or_default(), key: s(n, "key")?, state, from }
+        }
         "rule_add" => Change::RuleAdd { kind: s(&rule, "kind")?, pattern: s(&rule, "pattern")?, risk: s(&rule, "risk"), path: s(&rule, "path") },
         "rule_remove" => Change::RuleRemove { kind: s(&rule, "kind")?, pattern: s(&rule, "pattern")? },
         "mode" => Change::Mode(Mode::from_stored(&s(n, "mode")?)),
@@ -597,9 +744,10 @@ fn notice_of(ctx: &HubCtx, change: &Change, bot: &str, state: &str) -> Value {
     let mut n = json!({"kind": "tools_change", "id": format!("p_{}", uuidv7()), "bot": bot, "botName": bot_name(ctx, bot), "op": op_of(change)});
     let mut steps = 1;
     match change {
-        Change::Tool { key, .. } => {
+        Change::Tool { key, from, .. } => {
             n["key"] = json!(key);
             n["label"] = json!(keys::label_of(ctx, key).map(|l| l.0).unwrap_or_else(|| key.clone()));
+            n["from"] = json!(from.as_str());
         }
         Change::RuleAdd { kind, pattern, risk, path } => {
             let mut r = json!({"kind": kind, "pattern": pattern});
@@ -643,6 +791,7 @@ fn notice_of(ctx: &HubCtx, change: &Change, bot: &str, state: &str) -> Value {
 fn title_of(ctx: &HubCtx, change: &Change, bot: &str) -> String {
     let who = bot_name(ctx, bot);
     match change {
+        Change::Tool { key, state: Pos::Ask, .. } => format!("Let {who} use {} again, asking you first?", keys::phrase_of(ctx, key)),
         Change::Tool { key, .. } => format!("Turn {} back on for {who}?", keys::phrase_of(ctx, key)),
         Change::RuleAdd { pattern, .. } => format!("Always allow `{pattern}` on this Mac?"),
         Change::RuleRemove { pattern, .. } => format!("Stop blocking `{pattern}` on this Mac?"),
@@ -796,7 +945,7 @@ pub fn answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     }
     let at = n["at"].as_i64().unwrap_or(0);
     let gone = match &change {
-        Change::Tool { bot, key, .. } => (!bot.is_empty() && ctx.store.read(|s| s.bot(bot).is_none())) || !keys::known(ctx, key),
+        Change::Tool { bot, key, .. } => (!bot.is_empty() && bot != CHATS && ctx.store.read(|s| s.bot(bot).is_none())) || !keys::known(ctx, key),
         Change::RuleAdd { kind, pattern, .. } => kind == "allow" && matches!(gate::risk(pattern, &ctx.data), gate::Risk::Never(_)),
         _ => false,
     };
@@ -823,19 +972,36 @@ fn applied(ctx: &HubCtx, change: &Change) -> Result<Value, V1Error> {
     Ok(json!({"ok": true, "text": text, "undo": undo}))
 }
 
-/// `POST /v1/host/tools/set {bot, key, enabled}`.
+/// The profile a request names: a Bot's id, or `chats` (or [`CHATS`]) for every plain chat.
+pub fn owner_of(name: &str) -> &str {
+    if name == "chats" {
+        CHATS
+    } else {
+        name
+    }
+}
+
+/// `POST /v1/host/tools/set {bot | "chats", key, state}` (`state` on, ask or off; the old
+/// `enabled` is on or off). The person's click: a widen applies too.
 pub fn host_set(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
-    let (Some(bot), Some(key), Some(enabled)) = (b.get("bot").and_then(Value::as_str).filter(|s| !s.is_empty()), b.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()), b.get("enabled").and_then(Value::as_bool)) else {
-        return V1Error::err("invalid_args", "send {bot, key, enabled}");
+    let state = match (b.get("state").and_then(Value::as_str), b.get("enabled").and_then(Value::as_bool)) {
+        (Some(s), _) => Pos::parse(s),
+        (None, Some(true)) => Some(Pos::On),
+        (None, Some(false)) => Some(Pos::Off),
+        (None, None) => None,
     };
-    if ctx.store.read(|s| s.bot(bot).is_none()) {
+    let (Some(bot), Some(key), Some(state)) = (b.get("bot").and_then(Value::as_str).filter(|s| !s.is_empty()), b.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()), state) else {
+        return V1Error::err("invalid_args", "send {bot (a Bot's id, or \"chats\"), key, state: \"on\", \"ask\" or \"off\"}");
+    };
+    let owner = owner_of(bot);
+    if owner != CHATS && ctx.store.read(|s| s.bot(owner).is_none()) {
         return V1Error::err("not_found", format!("no Bot {}", crate::js::slice_utf16(bot, 80)));
     }
     if !keys::known(ctx, key) {
         return V1Error::err("not_found", format!("no tool switch {}", crate::js::slice_utf16(key, 80)));
     }
-    // the Bot's threads read it on their next call (`take_notes`)
-    applied(ctx, &Change::Tool { bot: bot.to_owned(), key: key.to_owned(), enabled })
+    // the profile's threads read it on their next call (`take_notes`)
+    applied(ctx, &Change::tool(ctx, owner, key, state))
 }
 
 /// `POST /v1/host/shell/mode {mode}`.
@@ -903,17 +1069,31 @@ pub fn mac_json(ctx: &HubCtx) -> Value {
     json!({"mode": mode(ctx).as_str(), "allow": allow, "block": blocks.iter().map(|p| json!({"pattern": p})).collect::<Vec<_>>()})
 }
 
-/// `GET /v1/host/tools?bot=<id>`.
+/// `owner`'s rows as `GET /v1/host/tools` answers them.
+pub fn profile_rows(ctx: &HubCtx, owner: &str) -> Vec<Value> {
+    keys::all_keys(ctx, owner)
+        .iter()
+        .map(|k| {
+            let mut v = keys::row_json(ctx, k, tool_state(ctx, owner, k));
+            // a plain chat can't message agents yet: no sender to send as
+            if owner == CHATS && k == "agents" {
+                v["sub"] = json!("Not in plain chats yet. Message agents from a Bot's chat.");
+            }
+            v
+        })
+        .collect()
+}
+
+/// `GET /v1/host/tools?bot=<id>`: that Bot's switches; without a Bot (or `bot=chats`), the
+/// Chats profile's (`profile: "chats"`, `bot` null).
 pub fn host_view(ctx: &HubCtx, bot: Option<&str>) -> Result<Value, V1Error> {
     sweep_expired(ctx);
-    let (who, tools) = match bot.filter(|b| !b.is_empty()) {
+    let (who, profile, tools) = match bot.filter(|b| !b.is_empty()).map(owner_of).filter(|b| *b != CHATS) {
         Some(id) => {
             let Some(name) = ctx.store.read(|s| s.bot(id).map(|b| b.name.clone())) else { return V1Error::err("not_found", format!("no Bot {}", crate::js::slice_utf16(id, 80))) };
-            let off = off_keys(ctx, id);
-            let tools: Vec<Value> = keys::all_keys(ctx, id).iter().map(|k| keys::row_json(ctx, k, !off.contains(k))).collect();
-            (json!({"id": id, "name": name}), tools)
+            (json!({"id": id, "name": name}), "bot", profile_rows(ctx, id))
         }
-        None => (Value::Null, Vec::new()),
+        None => (Value::Null, "chats", profile_rows(ctx, CHATS)),
     };
-    Ok(json!({"ok": true, "bot": who, "tools": tools, "mac": mac_json(ctx), "activity": activity(ctx, None), "recent": recent(ctx)}))
+    Ok(json!({"ok": true, "bot": who, "profile": profile, "tools": tools, "mac": mac_json(ctx), "activity": activity(ctx, None), "recent": recent(ctx)}))
 }

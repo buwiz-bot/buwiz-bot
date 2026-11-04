@@ -187,7 +187,10 @@ async fn names(run: &Run) -> Vec<String> {
     tool_list(run).await.iter().map(|t| t["name"].as_str().unwrap_or("").to_owned()).collect()
 }
 
+/// One call, as its own turn would make it: what an earlier call read doesn't make this one
+/// ask (`policy::ask` has its own tests).
 async fn call(run: &Run, name: &str, input: Value) -> Out {
+    run.state().external = false;
     exec_tool(run, &json!({"name": name, "input": input})).await
 }
 

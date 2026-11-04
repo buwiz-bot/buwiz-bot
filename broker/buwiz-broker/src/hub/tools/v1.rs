@@ -89,6 +89,11 @@ pub fn v1_tools(p: &dyn PluginView, taken: &[String], surface: Option<&Value>) -
     out
 }
 
+/// Plugin `plugin`'s own definition of its tool `name` (with its `annotations`).
+pub fn tool_def(ctx: &HubCtx, plugin: &str, name: &str) -> Option<Value> {
+    view(ctx).runtime(plugin).tools.into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(name))
+}
+
 /// `v1ToolPlugin(plugins, name, surface)`: the plugin serving `name`.
 pub fn tool_plugin(p: &dyn PluginView, name: &str, surface: Option<&Value>) -> Option<String> {
     v1_tools(p, &[], surface).into_iter().find(|(_, t)| t["name"] == name).map(|(p, _)| p)

@@ -140,6 +140,14 @@ async fn ensure(ctx: &HubCtx, id: &str) -> Option<(Vec<Value>, bool)> {
     Some((tools, blocked))
 }
 
+/// The MCP definition of the model tool `name` (`mcp_<server>_<tool>`), as its server lists
+/// it (with its `annotations`).
+pub async fn tool_def(ctx: &HubCtx, name: &str) -> Option<Value> {
+    let (server, tool) = parse_mcp_name(name)?;
+    let (tools, _) = ensure(ctx, &server).await?;
+    tools.into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(tool.as_str()))
+}
+
 /// A deferred app: `{id, name, count, sample}`.
 pub type Deferred = Value;
 

@@ -153,7 +153,7 @@ pub fn set_server_search(on: bool) {
 }
 
 /// `toolList(thread, job)`: the tools a model call offers, less those switched off for the
-/// acting Bot (`controls::ceiling`).
+/// turn's profile (the acting Bot's, else Chats: `controls::ceiling`).
 pub async fn tool_list(run: &Run) -> Vec<Value> {
     let offered = offered(run).await;
     controls::ceiling(run, offered)
@@ -169,7 +169,14 @@ async fn offered(run: &Run) -> Vec<Value> {
     }
     let office = office::tools(&run.ctx);
     let bot = run.ctx.store.read(|s| botctx::bot_of(s, &run.turn).is_some());
-    let own: &[Value] = if bot { defs::bot_tools() } else { &[] };
+    // a plain chat has the memory tools of the bot tools (its memory is every plain chat's)
+    let memory: Vec<Value>;
+    let own: &[Value] = if bot {
+        defs::bot_tools()
+    } else {
+        memory = defs::bot_tools().iter().filter(|t| t["name"].as_str().is_some_and(|n| n.starts_with("memory_"))).cloned().collect();
+        &memory
+    };
     // a routine's own turn doesn't make, change or run routines
     let routine: &[Value] = if run.turn.routine.is_some() { &[] } else { defs::routine_tools() };
     // an agent's own turns message and make agents (agents-tools.mjs)
@@ -198,12 +205,16 @@ async fn offered(run: &Run) -> Vec<Value> {
 }
 
 /// `execTool(job, thread, block)`: a tool call's answer; a failure inside a
-/// tool is `tool error: …`. A tool switched off for the acting Bot is refused
-/// (a model can name a tool it was not offered).
+/// tool is `tool error: …`. A tool switched off for the turn's profile is refused
+/// (a model can name a tool it was not offered); a write that must ask first waits for
+/// the user's answer (`controls::ask_first`).
 pub async fn exec_tool(run: &Run, block: &Value) -> Out {
     let name = block.get("name").map(js::string_of).unwrap_or_default();
     let input = block.get("input").filter(|i| js::truthy(i)).cloned().unwrap_or_else(|| json!({}));
     if let Some(no) = controls::refusal(run, &name, &input) {
+        return no;
+    }
+    if let Some(no) = controls::ask_first(run, &name, &input).await {
         return no;
     }
     controls::note_external(run, &name);

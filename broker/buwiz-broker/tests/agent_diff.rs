@@ -152,6 +152,8 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
         buwiz_broker::hub::agent::install(routes, ctx);
     });
     let hub = Arc::new(hub);
+    // Node has no Ask: the Chats profile's shell on, as every plain chat's was before it
+    buwiz_broker::hub::policy::host_set(hub.ctx(), &json!({"bot": "chats", "key": "shell", "state": "on"})).unwrap();
 
     for (i, run) in scenarios["runs"].as_array().unwrap().iter().enumerate() {
         let thread = call(&hub, Method::POST, "/thread/new", &json!({})).await["id"].clone();
@@ -169,10 +171,14 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
         let prompt = run["prompt"].as_str().unwrap();
         assert_eq!(got.as_array().map(Vec::len), want["calls"].as_array().map(Vec::len), "{prompt}: the number of model calls (the job: {st}, Rust sent {got})");
         for (k, (g, w)) in got.as_array().unwrap().iter().zip(want["calls"].as_array().unwrap()).enumerate() {
-            // the bot controls are Rust's own tools (Node's path is not live): not in Node's list
+            // the bot controls are Rust's own tools (Node's path is not live), and so is a plain
+            // chat's memory: not in Node's list
             let mut g = g.clone();
             if let Some(tools) = g.pointer_mut("/body/tools").and_then(Value::as_array_mut) {
-                tools.retain(|t| !buwiz_broker::hub::tools::controls::NAMES.contains(&t["name"].as_str().unwrap_or("")));
+                tools.retain(|t| {
+                    let name = t["name"].as_str().unwrap_or("");
+                    !buwiz_broker::hub::tools::controls::NAMES.contains(&name) && !name.starts_with("memory_")
+                });
             }
             let g = &g;
             assert_eq!(g, w, "{prompt}: model call {k}");
