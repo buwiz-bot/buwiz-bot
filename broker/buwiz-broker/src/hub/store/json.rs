@@ -207,6 +207,7 @@ impl Turn {
             "links" => self.links = Some(v),
             "suggest" => self.suggest = Some(v),
             "tools" => self.tools = Some(v),
+            "stop" => self.stop = text_of(&v),
             "v1Attachments" => self.v1_attachments = Some(v),
             "routine" => self.routine = Some(v),
             "notice" => self.notice = Some(v),
@@ -246,7 +247,8 @@ impl Turn {
             || t(&self.routine)
             || t(&self.notice)
             || t(&self.message)
-            || t(&self.agent);
+            || t(&self.agent)
+            || self.stop.as_deref().is_some_and(|s| !s.is_empty());
         if !any {
             return None;
         }
@@ -271,6 +273,9 @@ impl Turn {
             if on {
                 m.insert(k.into(), v.clone().unwrap_or(Value::Null));
             }
+        }
+        if let Some(s) = self.stop.as_deref().filter(|s| !s.is_empty()) {
+            m.insert("stop".into(), json!(s));
         }
         Some(sql_json(&Value::Object(m)))
     }

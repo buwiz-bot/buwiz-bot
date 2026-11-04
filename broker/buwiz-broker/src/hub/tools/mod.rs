@@ -89,6 +89,9 @@ pub struct RunState {
     pub drive_seen: Vec<(String, Value)>,
     /// the calls the reply's turn keeps (`agent/tool_log.rs`)
     pub tool_log: Vec<Value>,
+    /// the model's last call ended in a refusal: the reply's turn says so
+    /// (`stop: "refusal"` in its meta)
+    pub refused: bool,
     /// the user's message this turn answers (a proposal's "did they ask for it")
     pub prompt: Option<String>,
     /// a tool that reads outside content ran this turn (a page, a search, an app)
