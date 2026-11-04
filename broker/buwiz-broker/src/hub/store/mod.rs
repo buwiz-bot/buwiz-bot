@@ -98,6 +98,9 @@ pub struct Turn {
     /// what the reply's tools returned (`agent/tool_log.rs`): Rust's own,
     /// read back only into the model's history, never sent to the app
     pub tools: Option<Value>,
+    /// why the model's last call stopped, kept only when it matters
+    /// (`"refusal"`: the next refusal in the chat says to start a new one)
+    pub stop: Option<String>,
     pub v1_attachments: Option<Value>,
     pub routine: Option<Value>,
     pub notice: Option<Value>,

@@ -88,6 +88,9 @@ pub struct RunState {
     pub drive_seen: Vec<(String, Value)>,
     /// the calls the reply's turn keeps (`agent/tool_log.rs`)
     pub tool_log: Vec<Value>,
+    /// the model's last call ended in a refusal: the reply's turn says so
+    /// (`stop: "refusal"` in its meta)
+    pub refused: bool,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
