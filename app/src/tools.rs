@@ -3,7 +3,7 @@
 //! - The `tools_change` card in the chat (`chat.rs` draws it with
 //!   [`notice_row`]): a Bot's widen waits for a click (`pending`); a change
 //!   that went through (`applied`) leaves one centered receipt line with
-//!   Undo for 8 s, then nothing. Declined, superseded, expired and stale
+//!   Undo for 8 s from when this app first drew it, then nothing. Declined, superseded, expired and stale
 //!   notices draw nothing.
 //! - The `/tools` sheet ([`sheet_layer`], 560 wide over a scrim) and its full
 //!   view ([`full_layer`], a stack layer like the mini apps), with the tabs
@@ -30,6 +30,9 @@ use crate::theme;
 pub(crate) const RECEIPT_MS: i64 = 8_000;
 /// How long "Put back." shows after an Undo.
 pub(crate) const PUT_BACK_MS: i64 = 3_000;
+/// A notice first drawn here this long after its change is history (a
+/// reload, a restart): no receipt.
+pub(crate) const HISTORY_MS: i64 = 5 * 60_000;
 
 const NOT_CONNECTED: &str = "Not connected to an agent server yet";
 const STALE_ANSWER: &str = "That changed since you looked. Ask Hex again.";
@@ -265,6 +268,9 @@ pub struct Tools {
     pub(crate) receipt: Signal<Option<Receipt>>,
     /// The chat's cards by proposal id.
     pub(crate) cards: Signal<HashMap<String, CardLocal>>,
+    /// When this app first drew each notice (ms), by notice id: a receipt
+    /// counts from there, not from the change.
+    pub(crate) seen: std::cell::RefCell<HashMap<String, i64>>,
     /// Now (ms), ticking while a receipt shows.
     pub(crate) clock: Signal<i64>,
 }
@@ -286,6 +292,7 @@ impl Tools {
             busy: signal(None),
             receipt: signal(None),
             cards: signal(HashMap::new()),
+            seen: std::cell::RefCell::new(HashMap::new()),
             clock: signal(0),
         }
     }
@@ -309,6 +316,19 @@ pub(crate) fn now_ms() -> i64 {
 /// Whether a receipt made at `at` still shows at `now`.
 pub(crate) fn receipt_fresh(at: i64, now: i64) -> bool {
     at > 0 && now >= at - 1_000 && now - at < RECEIPT_MS
+}
+
+/// When an applied notice's receipt starts: its change's time `at`, or
+/// when this app first drew it (`seen`) if that came later, so a reply
+/// that outlasts the 8 s still leaves it to see; 0 (none) for a notice
+/// first drawn over [`HISTORY_MS`] after its change.
+pub(crate) fn receipt_start(at: i64, seen: i64) -> i64 {
+    if at <= 0 || seen - at > HISTORY_MS { 0 } else { at.max(seen) }
+}
+
+/// When this app first drew notice `id` (now, the first time).
+fn first_seen(id: &str) -> i64 {
+    *tools().seen.borrow_mut().entry(id.to_owned()).or_insert_with(now_ms)
 }
 
 /// The draining bar's share left (1 at `at`, 0 at 8 s).
@@ -631,8 +651,9 @@ pub(crate) enum Shows {
     Nothing,
 }
 
-/// [`Shows`] for `n` as the answer here left it, at `now`.
-pub(crate) fn shows(n: &ToolsChangeNotice, local: Option<&CardLocal>, now: i64) -> Shows {
+/// [`Shows`] for `n` as the answer here left it, first drawn here at
+/// `seen`, at `now`.
+pub(crate) fn shows(n: &ToolsChangeNotice, local: Option<&CardLocal>, seen: i64, now: i64) -> Shows {
     let n = local.and_then(|l| l.settled.as_ref()).unwrap_or(n);
     if let Some(l) = local.filter(|l| l.undone_at > 0) {
         if now - l.undone_at < PUT_BACK_MS {
@@ -642,10 +663,10 @@ pub(crate) fn shows(n: &ToolsChangeNotice, local: Option<&CardLocal>, now: i64) 
     }
     match n.state.as_str() {
         "pending" if card_copy(n).is_some() => Shows::Card,
-        "applied" if receipt_fresh(n.at, now) => {
+        "applied" if receipt_fresh(receipt_start(n.at, seen), now) => {
             // the receipt sentence: the notice's, else the turn's (the same once applied)
             let text = if n.receipt.is_empty() { n.text.clone() } else { n.receipt.clone() };
-            if text.is_empty() { Shows::Nothing } else { Shows::Receipt { text, undo: n.undo.clone(), at: n.at } }
+            if text.is_empty() { Shows::Nothing } else { Shows::Receipt { text, undo: n.undo.clone(), at: receipt_start(n.at, seen) } }
         }
         _ => Shows::Nothing,
     }
@@ -824,16 +845,18 @@ fn card_local(id: &str, f: impl FnOnce(&mut CardLocal)) {
 
 /// The row `chat.rs` draws for a `tools_change` notice in chat `chat`.
 pub(crate) fn notice_row(n: ToolsChangeNotice, chat: String) -> impl IntoElement {
-    // a receipt fresh at mount (a Bot's tighten just now) ticks
-    if n.state == "applied" && receipt_fresh(n.at, now_ms()) {
-        watch(n.at + RECEIPT_MS);
+    // a receipt fresh at mount (a Bot's tighten, drawn here just now) ticks
+    let seen = first_seen(&n.id);
+    let start = receipt_start(n.at, seen);
+    if n.state == "applied" && receipt_fresh(start, now_ms()) {
+        watch(start + RECEIPT_MS);
     }
     let n2 = n.clone();
     let what = computed(move || {
         let local = local_of(&n2.id);
-        let s = shows(&n2, local.as_ref(), now_ms());
+        let s = shows(&n2, local.as_ref(), seen, now_ms());
         // the clock only matters while something is timed
-        if matches!(s, Shows::Receipt { .. } | Shows::Undone { .. }) { shows(&n2, local.as_ref(), clock()) } else { s }
+        if matches!(s, Shows::Receipt { .. } | Shows::Undone { .. }) { shows(&n2, local.as_ref(), seen, clock()) } else { s }
     });
     view().flex_row().w_full().justify_center().child(dynamic(move || match what.get() {
         Shows::Nothing => view().into_element(),
@@ -1672,7 +1695,7 @@ mod tests {
     #[test]
     fn only_a_pending_widen_is_a_card() {
         let now = 1_000_000;
-        let card = |extra: Value| shows(&notice(extra), None, now);
+        let card = |extra: Value| shows(&notice(extra), None, now, now);
         assert_eq!(card(json!({"op": "tool_on", "key": "shell"})), Shows::Card);
         assert_eq!(card(json!({"op": "rule_add", "rule": {"kind": "allow", "pattern": "git status", "risk": "ro"}})), Shows::Card);
         assert_eq!(card(json!({"op": "rule_remove", "rule": {"kind": "block", "pattern": "rm -rf"}})), Shows::Card);
@@ -1687,7 +1710,7 @@ mod tests {
         // answered here: as the answer left it
         let n = notice(json!({"op": "tool_on", "key": "shell"}));
         let local = CardLocal { settled: Some(ToolsChangeNotice { state: "declined".into(), ..n.clone() }), ..Default::default() };
-        assert_eq!(shows(&n, Some(&local), now), Shows::Nothing);
+        assert_eq!(shows(&n, Some(&local), now, now), Shows::Nothing);
     }
 
     #[test]
@@ -1695,24 +1718,53 @@ mod tests {
         let at = 1_793_745_245_000;
         let n = notice(json!({"op": "tool_off", "key": "shell", "state": "applied", "at": at, "undo": "u_1", "text": "Hex can't use the shell now."}));
         let receipt = Shows::Receipt { text: "Hex can't use the shell now.".into(), undo: "u_1".into(), at };
-        assert_eq!(shows(&n, None, at), receipt);
-        assert_eq!(shows(&n, None, at + 7_999), receipt);
-        assert_eq!(shows(&n, None, at + 8_000), Shows::Nothing, "gone after 8 s");
-        assert_eq!(shows(&n, None, at + 86_400_000), Shows::Nothing, "a reload shows nothing");
-        assert_eq!(shows(&ToolsChangeNotice { at: 0, ..n.clone() }, None, at), Shows::Nothing, "no time, no receipt");
+        assert_eq!(shows(&n, None, at, at), receipt);
+        assert_eq!(shows(&n, None, at, at + 7_999), receipt);
+        assert_eq!(shows(&n, None, at, at + 8_000), Shows::Nothing, "gone after 8 s");
+        assert_eq!(shows(&n, None, at, at + 86_400_000), Shows::Nothing, "a reload shows nothing");
+        assert_eq!(shows(&ToolsChangeNotice { at: 0, ..n.clone() }, None, at, at), Shows::Nothing, "no time, no receipt");
         assert!((drain(at, at) - 1.0).abs() < 1e-6);
         assert!((drain(at, at + 4_000) - 0.5).abs() < 1e-6);
         assert_eq!(drain(at, at + 9_000), 0.0);
         // Undo: "Put back." for 3 s, then nothing
         let undone = CardLocal { undone_at: at + 2_000, ..Default::default() };
-        assert_eq!(shows(&n, Some(&undone), at + 2_500), Shows::Undone { text: "Put back.".into(), error: false });
-        assert_eq!(shows(&n, Some(&undone), at + 5_000), Shows::Nothing);
+        assert_eq!(shows(&n, Some(&undone), at, at + 2_500), Shows::Undone { text: "Put back.".into(), error: false });
+        assert_eq!(shows(&n, Some(&undone), at, at + 5_000), Shows::Nothing);
         let refused = CardLocal { undone_at: at + 2_000, undo_error: STALE_UNDO.into(), ..Default::default() };
-        assert_eq!(shows(&n, Some(&refused), at + 2_500), Shows::Undone { text: STALE_UNDO.into(), error: true });
+        assert_eq!(shows(&n, Some(&refused), at, at + 2_500), Shows::Undone { text: STALE_UNDO.into(), error: true });
         // a yes answered here: the receipt from the answer's notice
         let p = notice(json!({"op": "tool_on", "key": "shell"}));
         let yes = CardLocal { settled: Some(ToolsChangeNotice { state: "applied".into(), at, undo: String::new(), receipt: "Hex can use the shell again.".into(), ..p.clone() }), ..Default::default() };
-        assert_eq!(shows(&p, Some(&yes), at + 100), Shows::Receipt { text: "Hex can use the shell again.".into(), undo: String::new(), at });
+        assert_eq!(shows(&p, Some(&yes), at, at + 100), Shows::Receipt { text: "Hex can use the shell again.".into(), undo: String::new(), at });
+    }
+
+    #[test]
+    fn the_receipt_counts_from_when_it_is_first_drawn_here() {
+        let at = 1_793_745_245_000;
+        let n = notice(json!({"op": "tool_off", "key": "web", "state": "applied", "at": at, "undo": "u_1", "text": "Hex can't use the web now."}));
+        let receipt = |start: i64| Shows::Receipt { text: "Hex can't use the web now.".into(), undo: "u_1".into(), at: start };
+        // drawn 20 s after the change (the reply outlasted it): 8 s from then
+        let seen = at + 20_000;
+        assert_eq!(receipt_start(at, seen), seen);
+        assert_eq!(shows(&n, None, seen, seen), receipt(seen));
+        assert_eq!(shows(&n, None, seen, seen + 7_999), receipt(seen));
+        assert_eq!(shows(&n, None, seen, seen + 8_000), Shows::Nothing);
+        // drawn an hour later (a reload, a restart): history, no receipt
+        let seen = at + 3_600_000;
+        assert_eq!(receipt_start(at, seen), 0);
+        assert_eq!(shows(&n, None, seen, seen), Shows::Nothing);
+        assert_eq!(shows(&n, None, seen, seen + 1_000), Shows::Nothing);
+        assert_eq!(shows(&n, None, at + HISTORY_MS + 1, at + HISTORY_MS + 1), Shows::Nothing);
+        // drawn at once: from the change, as before
+        assert_eq!(receipt_start(at, at), at);
+        assert_eq!(shows(&n, None, at, at + 7_999), receipt(at));
+        assert_eq!(shows(&n, None, at, at + 8_000), Shows::Nothing);
+        // the clocks a little apart: still from the change
+        assert_eq!(shows(&n, None, at - 500, at), receipt(at));
+        // Undo after a late first sight: "Put back." for 3 s
+        let undone = CardLocal { undone_at: at + 22_000, ..Default::default() };
+        assert_eq!(shows(&n, Some(&undone), at + 20_000, at + 23_000), Shows::Undone { text: "Put back.".into(), error: false });
+        assert_eq!(shows(&n, Some(&undone), at + 20_000, at + 25_000), Shows::Nothing);
     }
 
     #[test]
@@ -1784,13 +1836,13 @@ mod tests {
         // every notice has `at`; only an applied one is a receipt
         let at = 1_793_745_245_000;
         let pending = notice(json!({"op": "tool_on", "key": "shell", "at": at}));
-        assert_eq!(shows(&pending, None, at + 10), Shows::Card);
+        assert_eq!(shows(&pending, None, at, at + 10), Shows::Card);
         let declined = notice(json!({"op": "tool_on", "key": "shell", "at": at, "state": "declined"}));
-        assert_eq!(shows(&declined, None, at + 10), Shows::Nothing);
+        assert_eq!(shows(&declined, None, at, at + 10), Shows::Nothing);
         // the receipt falls back to the turn's text (the same once applied)
         let mut applied = notice(json!({"op": "tool_off", "key": "shell", "at": at, "state": "applied"}));
         applied.text = "Hex can't use the shell now.".into();
-        assert_eq!(shows(&applied, None, at + 10), Shows::Receipt { text: "Hex can't use the shell now.".into(), undo: String::new(), at });
+        assert_eq!(shows(&applied, None, at, at + 10), Shows::Receipt { text: "Hex can't use the shell now.".into(), undo: String::new(), at });
         // a chat with no Bot
         let n = notice(json!({"bot": "", "botName": "The assistant", "op": "tool_on", "key": "web", "label": "Web search and fetch"}));
         assert_eq!(card_copy(&n).unwrap().title, "Turn Web search and fetch back on for The assistant?");
@@ -1800,7 +1852,7 @@ mod tests {
             "details": {"notice": {"kind": "tools_change", "id": "p_1", "op": "tool_on", "state": "superseded", "at": at}}});
         assert_eq!(refusal(&v, ""), STALE_ANSWER);
         assert_eq!(stale_notice(&v, &base).state, "superseded");
-        assert_eq!(shows(&stale_notice(&v, &base), None, at), Shows::Nothing);
+        assert_eq!(shows(&stale_notice(&v, &base), None, at, at), Shows::Nothing);
         let still = json!({"ok": false, "code": "stale", "details": {"notice": {"kind": "tools_change", "id": "p_1", "state": "pending"}}});
         assert_eq!(stale_notice(&still, &base).state, "stale");
         assert_eq!(stale_notice(&json!({"ok": false, "code": "stale"}), &base).state, "stale");
