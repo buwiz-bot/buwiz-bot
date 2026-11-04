@@ -11,7 +11,7 @@ use super::plugin_needs::{PluginNeedKind, PluginNeedsSpec};
 use super::transport::{self, Sent, UserFormReply};
 use super::{Kind, key_of, kind_of};
 
-const WIRE: &str = "/Volumes/goldcoders/OSS/nativechat/fixtures/wire";
+const WIRE: &str = "/Volumes/goldcoders/hexuria/nativechat/fixtures/wire";
 
 /// Every JSON file under `WIRE/<dir>`, or `None` when the fixtures are
 /// not on this machine.

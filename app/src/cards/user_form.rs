@@ -1619,7 +1619,7 @@ fn link_btn(label: impl Into<String>, on: impl Fn() + 'static) -> impl IntoEleme
 mod tests {
     use super::*;
 
-    const WIRE: &str = "/Volumes/goldcoders/OSS/nativechat/fixtures/wire";
+    const WIRE: &str = "/Volumes/goldcoders/hexuria/nativechat/fixtures/wire";
 
     /// A fixture under nativechat's `fixtures/wire`; `None` (the test
     /// skips) where that checkout is missing.
