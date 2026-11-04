@@ -75,6 +75,10 @@ pub const DOWN: AdaptiveColor = tone(hsla(0.02, 0.85, 0.50, 1.0), hsla(0.02, 0.8
 pub const DOWN_TINT: AdaptiveColor = tone(hsla(0.02, 0.85, 0.50, 0.14), hsla(0.02, 0.85, 0.62, 0.14));
 pub const ACCENT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 1.0), hsla(0.60, 0.99, 0.63, 1.0));
 pub const ACCENT_TINT: AdaptiveColor = tone(hsla(0.60, 0.99, 0.55, 0.15), hsla(0.60, 0.99, 0.63, 0.15));
+/// A caution: a Bot asked for access after reading outside content, a
+/// rule that runs any code.
+pub const WARN: AdaptiveColor = tone(hsla(0.09, 0.95, 0.36, 1.0), hsla(0.105, 0.95, 0.62, 1.0));
+pub const WARN_TINT: AdaptiveColor = tone(hsla(0.105, 0.95, 0.50, 0.15), hsla(0.105, 0.95, 0.60, 0.13));
 
 /// The generation placeholder's dot grid (`dotgrid.rs`): a resting dot is
 /// a faint speck of the ink; a filled one is Rox's blue (#3b82f6).

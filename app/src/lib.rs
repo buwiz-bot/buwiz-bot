@@ -50,6 +50,7 @@ mod statusfx;
 mod store;
 mod theme;
 mod toast;
+mod tools;
 mod vault;
 mod versions;
 mod widgets;

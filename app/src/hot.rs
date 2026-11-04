@@ -407,8 +407,11 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         // the full-screen apps; a v1 app's print preview, the viewer (a
         // print preview an app opened) and ⌘K show over them
         .child(crate::mini::full_layer())
+        // Tools: the full view over the apps, the `/tools` sheet over it
+        .child(crate::tools::full_layer())
         .child(crate::mini_v1::ui::preview_layer())
         .child(files::layer())
+        .child(crate::tools::sheet_layer())
         .child(palette::layer())
         .child(files::lightbox_layer())
         .child(plugins::layer())

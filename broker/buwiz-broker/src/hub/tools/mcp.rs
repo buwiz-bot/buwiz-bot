@@ -392,6 +392,11 @@ fn server_of(ctx: &HubCtx, input: &Value) -> Option<Row> {
     row(ctx, "WHERE name=?", &[&n]).or_else(|| row(ctx, "WHERE id=?", &[&slug]))
 }
 
+/// The id of the server a tool's `{id, name}` names, if one does (`mcp_enable`'s proposal).
+pub fn server_id(ctx: &HubCtx, input: &Value) -> Option<String> {
+    server_of(ctx, input).map(|r| s(&r, "id"))
+}
+
 /// `mcp_install` / `mcp_uninstall` / `mcp_enable` / `mcp_disable` / `mcp_list`.
 pub async fn admin(run: &Run, tool: &str, input: &Value) -> Result<Out, String> {
     let ctx = &run.ctx;

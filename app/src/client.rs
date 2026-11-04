@@ -63,10 +63,29 @@ pub(crate) fn token_in(path: &std::path::Path) -> Option<String> {
     Some(token.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
+/// The routes outside `/v1/host/` locked to the host token: a Bot's shell
+/// must not add, install or switch on a server, plugin or skill through
+/// them (the old switch routes, `/mcp/servers`, the market's install,
+/// connect and settings, and `/skills`). Their GETs, which read, get the
+/// token too.
+const LOCKED: [&str; 10] = [
+    "/mcp/tools/state",
+    "/mcp/server/state",
+    "/mcp/server/delete",
+    "/skills/state",
+    "/skills/delete",
+    "/skills",
+    "/mcp/servers",
+    "/plugins/install",
+    "/plugins/connect",
+    "/plugins/settings",
+];
+
 /// Whether `path` is one of the broker's host-internal routes, which carry
-/// the host token.
+/// the host token: `/v1/host/…` and the locked routes.
 pub(crate) fn is_host_route(path: &str) -> bool {
-    path.starts_with("/v1/host/")
+    let bare = path.split(['?', '#']).next().unwrap_or_default();
+    path.starts_with("/v1/host/") || LOCKED.contains(&bare)
 }
 
 fn req(method: &str, path: &str) -> HttpRequest {
@@ -91,6 +110,14 @@ pub async fn get(path: &str) -> Option<serde_json::Value> {
     if !res.ok() {
         return None;
     }
+    serde_json::from_str(&res.text()).ok()
+}
+
+/// [`get`], but an error status's JSON body comes back too (`{ok:false,
+/// code, message}`); `None` only when the broker can't be reached or
+/// answers no JSON.
+pub async fn get_any(path: &str) -> Option<serde_json::Value> {
+    let res = fetch(req("GET", path)).await.ok()?;
     serde_json::from_str(&res.text()).ok()
 }
 
@@ -206,6 +233,24 @@ mod tests {
         assert!(super::is_host_route("/v1/host/plugins"));
         assert!(!super::is_host_route("/v1/hostx"));
         assert!(!super::is_host_route("/mcp/call"));
+    }
+
+    /// The old switch routes carry the token too (the broker answers 401
+    /// without it); their neighbours do not.
+    #[test]
+    fn the_locked_old_switch_routes_are_host_routes() {
+        for p in ["/mcp/tools/state", "/mcp/server/state", "/mcp/server/delete", "/skills/state", "/skills/delete", "/skills/state?x=1"] {
+            assert!(super::is_host_route(p), "{p}");
+        }
+        // what adds or installs a server, plugin or skill
+        for p in ["/mcp/servers", "/skills", "/plugins/install", "/plugins/connect", "/plugins/settings"] {
+            assert!(super::is_host_route(p), "{p}");
+        }
+        for p in ["/mcp/tools", "/plugins/inspect", "/plugins/uninstall", "/plugins/catalog", "/mcp/tools/state/x", "/skills/statex", "/mcp/server/deleted", "/chat"] {
+            assert!(!super::is_host_route(p), "{p}");
+        }
+        assert!(super::is_host_route("/v1/host/tools?bot=b1"));
+        assert!(super::is_host_route("/v1/host/tools/answer"));
     }
 
     /// A broker from before the move still on `Grok Shell`: the token is

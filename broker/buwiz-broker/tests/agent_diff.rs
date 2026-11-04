@@ -169,6 +169,12 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
         let prompt = run["prompt"].as_str().unwrap();
         assert_eq!(got.as_array().map(Vec::len), want["calls"].as_array().map(Vec::len), "{prompt}: the number of model calls (the job: {st}, Rust sent {got})");
         for (k, (g, w)) in got.as_array().unwrap().iter().zip(want["calls"].as_array().unwrap()).enumerate() {
+            // the bot controls are Rust's own tools (Node's path is not live): not in Node's list
+            let mut g = g.clone();
+            if let Some(tools) = g.pointer_mut("/body/tools").and_then(Value::as_array_mut) {
+                tools.retain(|t| !buwiz_broker::hub::tools::controls::NAMES.contains(&t["name"].as_str().unwrap_or("")));
+            }
+            let g = &g;
             assert_eq!(g, w, "{prompt}: model call {k}");
         }
         let phases: Vec<Value> = st["events"].as_array().unwrap().iter().map(|e| e["phase"].clone()).collect();
