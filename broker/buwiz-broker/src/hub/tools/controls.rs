@@ -153,7 +153,7 @@ fn propose(run: &Run, bot: &Option<(String, String)>, change: &Change, named: im
 
 /// Applies the tighten `change` and posts its receipt card; → `{status, …, undo}`.
 fn tighten(run: &Run, bot: &Option<(String, String)>, change: &Change, status: Value) -> Out {
-    match policy::commit(&run.ctx, change, &actor(bot)) {
+    match policy::commit(&run.ctx, change, &actor(bot), Some(&run.thread_id())) {
         Ok((undo, text)) => {
             policy::post_applied(&run.ctx, &run.thread_id(), bot.as_ref().map(|b| b.0.as_str()).unwrap_or(""), change, &undo, &text);
             let mut v = status;

@@ -121,6 +121,8 @@ const TRIED: &[&str] = &[
     // put back), and the last change each thread's model was told of
     "ALTER TABLE policy_change ADD COLUMN said TEXT",
     "CREATE TABLE IF NOT EXISTS policy_seen(thread TEXT PRIMARY KEY, last TEXT, at INTEGER)",
+    // the thread a change was made in: a Bot's change reaches the other threads
+    "ALTER TABLE policy_change ADD COLUMN thread TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

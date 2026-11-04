@@ -718,7 +718,7 @@ async fn the_sheets_changes_reach_each_threads_next_call_once() {
     answer(&b.ctx, &json!({"chat": b.hex, "id": p, "answer": "yes"})).unwrap();
     assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nThe user set this Mac to Bypass: every command runs without asking; blocks still apply."]);
     assert!(told(&b.ctx, &b.plain, None)[0].ends_with("the user changed: Mode: Bypass. Every command runs without asking. Blocks still apply."));
-    // a Bot's own change is not news to anyone
+    // a Bot's own change is not news in its own thread
     call(&run, "tools_set", json!({"key": "memory", "enabled": false})).await;
     assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
     // a thread first called later starts there
@@ -729,6 +729,78 @@ async fn the_sheets_changes_reach_each_threads_next_call_once() {
         id
     });
     assert!(told(&b.ctx, &late.unwrap(), None).is_empty());
+}
+
+#[tokio::test]
+async fn a_bots_changes_reach_the_other_threads_but_never_its_own() {
+    let b = bed("botmade");
+    let (hex2, kit) = b
+        .ctx
+        .store
+        .write(|s| {
+            let t = s.fresh_thread("Hex again");
+            let hex2 = t.id.clone();
+            s.list.push(t);
+            let k = s.fresh_thread("Kit");
+            let kit = k.id.clone();
+            s.bots.push(Bot::new("kit", "Kit", "blob", "#FFFFFF", Some(k.id.clone())));
+            s.list.push(k);
+            (hex2, kit)
+        })
+        .unwrap();
+    let all = |b: &Bed| [told(&b.ctx, &b.hex, Some("hex")), told(&b.ctx, &hex2, Some("hex")), told(&b.ctx, &b.plain, None), told(&b.ctx, &kit, Some("kit"))];
+    let none: [Vec<String>; 4] = Default::default();
+    assert_eq!(all(&b), none, "markers start now");
+    let run = run_in(&b.ctx, &b.hex);
+    let head = "[Buwiz Bot, the app (not a message from the user):]\n";
+    // a Bot's own switch: that Bot's other threads, not the one it was made in
+    call(&run, "tools_set", json!({"key": "memory", "enabled": false})).await;
+    let mine = format!("{head}Since your last message, in other chats: Hex made this change: Hex can't use its memory now.");
+    assert_eq!(all(&b), [vec![], vec![mine], vec![], vec![]]);
+    // a Mac-wide change: every other thread
+    call(&run, "shell_rule_add", json!({"kind": "block", "pattern": "rm"})).await;
+    let mac = format!("{head}Since your last message, in other chats: Hex made this change: Blocked on this Mac: `rm`.");
+    assert_eq!(all(&b), [vec![], vec![mac.clone()], vec![mac.clone()], vec![mac]]);
+    // the user's and a Bot's in one call: a line each
+    host_rules(&b.ctx, &json!({"op": "add", "kind": "allow", "pattern": "ls"})).unwrap();
+    call(&run, "shell_rule_remove", json!({"kind": "allow", "pattern": "ls"})).await;
+    assert_eq!(
+        told(&b.ctx, &b.plain, None),
+        [
+            format!("{head}Since your last message, the user changed: Always allowed on this Mac: `ls`."),
+            format!("{head}Since your last message, in other chats: Hex made this change: Removed `ls` from Always allowed. It still runs while Bypass is on."),
+        ]
+    );
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), [format!("{head}Since your last message, the user changed: Always allowed on this Mac: `ls`.")]);
+    // the thread is on the row
+    let t: Option<String> = b.ctx.db.with(|c| c.query_row("SELECT thread FROM policy_change WHERE actor='bot:hex' ORDER BY id DESC LIMIT 1", [], |r| r.get(0))).unwrap();
+    assert_eq!(t.as_deref(), Some(b.hex.as_str()));
+}
+
+#[tokio::test]
+async fn changes_keep_30_days_for_the_notes_but_24_h_for_recent_and_undo() {
+    let b = bed("keep");
+    told(&b.ctx, &b.hex, Some("hex"));
+    told(&b.ctx, &b.plain, None);
+    let r = host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "rm"})).unwrap();
+    // a thread idle for two days still hears of it
+    step(&b.ctx, (2 * DAY) as f64);
+    assert_eq!(told(&b.ctx, &b.plain, None), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Blocked on this Mac: `rm`."]);
+    // Recent changes and Undo stay 24 h
+    assert!(recent(&b.ctx).is_empty());
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap_err().code, "stale");
+    let rows = |b: &Bed| -> i64 { b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM policy_change", [], |r| r.get(0))).unwrap() };
+    let marked = |b: &Bed, t: &str| -> i64 { b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM policy_seen WHERE thread=?", [t], |r| r.get(0))).unwrap() };
+    host_mode(&b.ctx, &json!({"mode": "only"})).unwrap();
+    assert_eq!(rows(&b), 2, "kept under 30 days");
+    // past 30 days a row goes on the next write, and so does a gone thread's marker
+    step(&b.ctx, (KEEP - DAY) as f64);
+    b.ctx.store.write(|s| s.list.retain(|t| t.id != b.plain)).unwrap();
+    assert_eq!(marked(&b, &b.plain), 1);
+    host_mode(&b.ctx, &json!({"mode": "bypass"})).unwrap();
+    let blocks: i64 = b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM policy_change WHERE target='rule:block:rm'", [], |r| r.get(0))).unwrap();
+    assert_eq!((rows(&b), blocks), (2, 0), "the 31-day-old row pruned, the 29-day-old kept");
+    assert_eq!((marked(&b, &b.plain), marked(&b, &b.hex)), (0, 1));
 }
 
 #[tokio::test]
