@@ -96,6 +96,9 @@ pub(crate) struct Activity {
     pub outcome: String,
     /// How a run ended (`exit 0`, `exit 1`, `exit timeout`…).
     pub result: String,
+    /// The Bot ran it after reading outside content, and the user's
+    /// message didn't name it: the "unasked" tag.
+    pub unasked: bool,
 }
 
 /// One "Recent changes" row (24 h).
@@ -105,6 +108,8 @@ pub(crate) struct Recent {
     pub actor: String,
     pub text: String,
     pub undo: String,
+    /// An Undo put it back: dimmed, "Undone", no Undo.
+    pub undone: bool,
 }
 
 /// `GET /v1/host/tools`.
@@ -158,11 +163,19 @@ impl Data {
             block: list(&mac, "block").iter().map(|r| s(r, "pattern")).filter(|p| !p.is_empty()).collect(),
             activity: list(v, "activity")
                 .iter()
-                .map(|a| Activity { at: ms(a, "at"), bot: s(a, "bot"), bot_name: s(a, "botName"), command: s(a, "command"), outcome: s(a, "outcome"), result: s(a, "result") })
+                .map(|a| Activity {
+                    at: ms(a, "at"),
+                    bot: s(a, "bot"),
+                    bot_name: s(a, "botName"),
+                    command: s(a, "command"),
+                    outcome: s(a, "outcome"),
+                    result: s(a, "result"),
+                    unasked: a.get("unasked").and_then(Value::as_bool).unwrap_or(false),
+                })
                 .collect(),
             recent: list(v, "recent")
                 .iter()
-                .map(|r| Recent { at: ms(r, "at"), actor: s(r, "actor"), text: s(r, "text"), undo: s(r, "undo") })
+                .map(|r| Recent { at: ms(r, "at"), actor: s(r, "actor"), text: s(r, "text"), undo: s(r, "undo"), undone: r.get("undone").and_then(Value::as_bool).unwrap_or(false) })
                 .filter(|r| !r.text.is_empty())
                 .collect(),
         })
@@ -1615,7 +1628,10 @@ fn recent_section() -> impl IntoElement {
             let mut line = row()
                 .child(text(crate::store::checked_at(r.at as f64)).w(px(72.0)).text_size(px(11.5)).text_color(theme::FAINT))
                 .child(view().flex_1().child(rich(&r.text, 12.5, FontWeight::NORMAL, theme::DIM)));
-            if !r.undo.is_empty() {
+            if r.undone {
+                // put back by an Undo: the row stays, dimmed, without its Undo
+                line = line.opacity(0.5).child(text("Undone").px(px(8.0)).text_size(px(12.0)).text_color(theme::FAINT));
+            } else if !r.undo.is_empty() {
                 let u = r.undo.clone();
                 line = line.child(link("Undo".to_owned(), theme::ACCENT, move || undo_in_sheet(u.clone())));
             }
@@ -1642,13 +1658,14 @@ fn activity_tab() -> impl IntoElement {
                 "failed" => theme::WARN,
                 _ => theme::DOWN,
             };
-            v = v.child(
-                row()
-                    .child(text(crate::store::checked_at(a.at as f64)).w(px(72.0)).text_size(px(11.5)).text_color(theme::FAINT))
-                    .child(text(if a.bot_name.is_empty() { a.bot.clone() } else { a.bot_name.clone() }).w(px(72.0)).number_of_lines(1).text_size(px(12.0)).text_color(theme::DIM))
-                    .child(text(a.command.clone()).flex_1().number_of_lines(1).font_family("Menlo").text_size(px(12.0)).text_color(theme::TEXT))
-                    .child(text(outcome_words(&a.outcome, &a.result)).text_size(px(11.5)).text_color(ink)),
-            );
+            let mut line = row()
+                .child(text(crate::store::checked_at(a.at as f64)).w(px(72.0)).text_size(px(11.5)).text_color(theme::FAINT))
+                .child(text(if a.bot_name.is_empty() { a.bot.clone() } else { a.bot_name.clone() }).w(px(72.0)).number_of_lines(1).text_size(px(12.0)).text_color(theme::DIM))
+                .child(text(a.command.clone()).flex_1().number_of_lines(1).font_family("Menlo").text_size(px(12.0)).text_color(theme::TEXT));
+            if a.unasked {
+                line = line.child(chip("unasked", true));
+            }
+            v = v.child(line.child(text(outcome_words(&a.outcome, &a.result)).text_size(px(11.5)).text_color(ink)));
         }
         v.into_element()
     })
@@ -1814,7 +1831,7 @@ mod tests {
             "tools": [{"key": "shell", "label": "Shell on this Mac", "sub": "shell_run", "on": false}, {"key": "web", "label": "Web search and fetch", "on": true}],
             "mac": {"mode": "only", "allow": [{"pattern": "git status", "risk": "ro"}, {"pattern": "rm x", "risk": "any", "inert": "blocked by `rm`"}], "block": [{"pattern": "rm"}]},
             "activity": [{"at": 5, "bot": "b1", "botName": "Hex", "command": "git status", "outcome": "ran"}],
-            "recent": [{"at": 6, "actor": "human", "text": "Blocked on this Mac: `rm`.", "undo": "u_2"}]});
+            "recent": [{"at": 6, "actor": "human", "text": "Blocked on this Mac: `rm`.", "undo": "u_2"}, {"at": 5, "actor": "human", "text": "Mode: Bypass.", "undone": true}]});
         let d = Data::of(&v).unwrap();
         assert_eq!((d.bot_id.as_str(), d.bot_name.as_str(), d.mode.as_str()), ("b1", "Hex", "only"));
         assert_eq!(d.on_count(), (1, 2));
@@ -1826,11 +1843,15 @@ mod tests {
             {"at": 7, "bot": "b1", "command": "cat x", "outcome": "failed", "result": "exit 1"},
             {"at": 6, "bot": "b1", "command": "sleep 99", "outcome": "failed", "result": "exit timeout"},
             {"at": 5, "bot": "b1", "command": "nope", "outcome": "failed", "result": "exit ENOENT"},
-            {"at": 4, "bot": "b1", "command": "ls", "outcome": "ran", "result": "exit 0"}]})).unwrap();
+            {"at": 4, "bot": "b1", "command": "ls", "outcome": "ran", "result": "exit 0", "unasked": true}]})).unwrap();
         let words: Vec<String> = ran.activity.iter().map(|a| outcome_words(&a.outcome, &a.result)).collect();
         assert_eq!(words, ["Failed · exit 1", "Failed · timed out", "Failed", "Ran"]);
+        // the "unasked" tag: only where the broker marks it
+        assert_eq!(ran.activity.iter().map(|a| a.unasked).collect::<Vec<_>>(), [false, false, false, true]);
         assert_eq!(outcome_words("refused_block", ""), "Refused by a block");
-        assert_eq!(d.recent[0].undo, "u_2");
+        assert_eq!((d.recent[0].undo.as_str(), d.recent[0].undone), ("u_2", false));
+        // an undone change keeps its row, marked, with no Undo
+        assert_eq!((d.recent[1].undo.as_str(), d.recent[1].undone), ("", true));
         // no Bot: no tools; no mode: bypass
         let d = Data::of(&json!({"ok": true, "tools": [], "mac": {}})).unwrap();
         assert!(d.tools.is_empty() && d.bot_id.is_empty());

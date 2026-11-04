@@ -123,6 +123,10 @@ const TRIED: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS policy_seen(thread TEXT PRIMARY KEY, last TEXT, at INTEGER)",
     // the thread a change was made in: a Bot's change reaches the other threads
     "ALTER TABLE policy_change ADD COLUMN thread TEXT",
+    // an Undo's row names the change it undid: Recent changes marks that one
+    "ALTER TABLE policy_change ADD COLUMN undoes TEXT",
+    // a command the Bot ran after outside content, which the user did not name
+    "ALTER TABLE shell_activity ADD COLUMN unasked INTEGER",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

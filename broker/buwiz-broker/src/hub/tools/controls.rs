@@ -331,6 +331,8 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
     if line.is_empty() {
         return builtin::shell_run(&ctx.data, input).await;
     }
+    // as a proposal's `unrequested`: after outside content, and the user did not name it
+    let unasked = run.state().external && !words_name(&last_user(run), line);
     let (outcome, refusal) = match policy::judge(ctx, line) {
         Verdict::Run => ("ran", None),
         Verdict::Blocked { rule } => ("refused_block", Some((gate::BLOCKED.to_owned(), format!("blocked by `{rule}`")))),
@@ -341,7 +343,7 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
         Verdict::TooLong => ("refused_mode", Some((format!("This command is {} bytes; the gate reads at most {} and refuses a longer one. Split it into shorter commands.", line.len(), gate::MAX_JUDGED_BYTES), "too long".to_owned()))),
     };
     if let Some((why, result)) = refusal {
-        policy::log_activity(ctx, bot.as_deref(), line, &result, outcome);
+        policy::log_activity(ctx, bot.as_deref(), line, &result, outcome, unasked);
         return Out::err(why);
     }
     let r = builtin::shell_run(&ctx.data, input).await;
@@ -353,7 +355,7 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
     };
     // it ran but did not succeed (a sandbox denial is an exit 1 like any other)
     let outcome = if r.is_error == Some(true) { "failed" } else { outcome };
-    policy::log_activity(ctx, bot.as_deref(), line, &result, outcome);
+    policy::log_activity(ctx, bot.as_deref(), line, &result, outcome, unasked);
     r
 }
 

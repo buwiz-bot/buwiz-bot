@@ -122,14 +122,16 @@ pub fn inert_of(ctx: &HubCtx, pattern: &str) -> Option<String> {
     gate::inert_by(&patterns(ctx, "block"), pattern).map(|b| format!("blocked by `{b}`"))
 }
 
-/// One `shell_run` call into Activity (pruned to 7 days).
-pub fn log_activity(ctx: &HubCtx, bot: Option<&str>, command: &str, result: &str, outcome: &str) {
+/// One `shell_run` call into Activity (pruned to 7 days). `unasked`: the Bot ran it after
+/// reading outside content, and the user's message did not name it (a proposal's
+/// `unrequested`).
+pub fn log_activity(ctx: &HubCtx, bot: Option<&str>, command: &str, result: &str, outcome: &str, unasked: bool) {
     let at = now(ctx);
     let cmd = gate::mask_and_clip(command);
     let result = gate::clip(&gate::mask_and_clip(result), 200);
     let r = db(ctx, |c| {
         c.execute("DELETE FROM shell_activity WHERE at < ?", [at - WEEK])?;
-        c.execute("INSERT INTO shell_activity(at, bot_id, command, result, outcome) VALUES(?,?,?,?,?)", rusqlite::params![at, bot, cmd, result, outcome])
+        c.execute("INSERT INTO shell_activity(at, bot_id, command, result, outcome, unasked) VALUES(?,?,?,?,?,?)", rusqlite::params![at, bot, cmd, result, outcome, unasked as i64])
     });
     if let Err(e) = r {
         eprintln!("buwiz-broker: shell activity: {e}");
@@ -143,26 +145,28 @@ fn bot_name(ctx: &HubCtx, bot: &str) -> String {
     ctx.store.read(|s| s.bot(bot).map(|b| b.name.clone())).unwrap_or_else(|| bot.to_owned())
 }
 
-/// Activity, newest first: `[{at, bot, botName, command, outcome, result}]` (the last 7
-/// days). `outcome` is `ran` (exit 0), `failed` (it ran; `result` is `exit 1`, `exit timeout`
-/// and the like), `refused_block` or `refused_mode`.
+/// Activity, newest first: `[{at, bot, botName, command, outcome, result, unasked}]` (the
+/// last 7 days). `outcome` is `ran` (exit 0), `failed` (it ran; `result` is `exit 1`, `exit
+/// timeout` and the like), `refused_block` or `refused_mode`.
 pub fn activity(ctx: &HubCtx, bot: Option<&str>) -> Vec<Value> {
     let since = now(ctx) - WEEK;
-    let rows: Vec<(i64, Option<String>, String, String, String)> = db(ctx, |c| {
-        let mut q = c.prepare("SELECT at, bot_id, command, outcome, result FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
+    type Row = (i64, Option<String>, String, String, String, bool);
+    let rows: Vec<Row> = db(ctx, |c| {
+        let mut q = c.prepare("SELECT at, bot_id, command, outcome, result, unasked FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
         let r = q.query_map([since], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get::<_, Option<String>>(4)?.unwrap_or_default()))
+            let text = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
+            Ok((r.get(0)?, r.get(1)?, text(2)?, text(3)?, text(4)?, r.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0))
         })?;
         r.collect()
     })
     .unwrap_or_default();
     rows.into_iter()
         .filter(|r| bot.is_none_or(|b| r.1.as_deref() == Some(b)))
-        .map(|(at, b, command, outcome, result)| {
+        .map(|(at, b, command, outcome, result, unasked)| {
             let b = b.unwrap_or_default();
             // a row from before `failed`: a run that did not exit 0
             let outcome = if outcome == "ran" && result.starts_with("exit ") && result != "exit 0" { "failed".to_owned() } else { outcome };
-            json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome, "result": result})
+            json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome, "result": result, "unasked": unasked})
         })
         .collect()
 }
@@ -419,7 +423,7 @@ pub fn commit(ctx: &HubCtx, change: &Change, actor: &str, thread: Option<&str>) 
     change.apply(ctx, actor)?;
     let text = change.receipt(ctx);
     let id = format!("u_{}", uuidv7());
-    record(ctx, &Recorded { id: &id, actor, thread, said: None }, change, &text, Some(&inverse))?;
+    record(ctx, &Recorded { id: &id, actor, thread, said: None, undoes: None }, change, &text, Some(&inverse))?;
     Ok((id, text))
 }
 
@@ -437,6 +441,8 @@ struct Recorded<'a> {
     thread: Option<&'a str>,
     /// what the model reads of it, when not `text`
     said: Option<&'a str>,
+    /// an Undo's row: the change it undid (Recent changes marks that one instead)
+    undoes: Option<&'a str>,
 }
 
 fn record(ctx: &HubCtx, r: &Recorded, change: &Change, text: &str, undo: Option<&Change>) -> Result<(), String> {
@@ -444,8 +450,8 @@ fn record(ctx: &HubCtx, r: &Recorded, change: &Change, text: &str, undo: Option<
     db(ctx, |c| {
         c.execute("DELETE FROM policy_change WHERE at < ?", [at - KEEP])?;
         c.execute(
-            "INSERT INTO policy_change(id, at, actor, bot_id, text, said, undo, target, thread) VALUES(?,?,?,?,?,?,?,?,?)",
-            rusqlite::params![r.id, at, r.actor, bot_of_change(change), text, r.said, undo.map(|u| u.to_json().to_string()), change.target(), r.thread],
+            "INSERT INTO policy_change(id, at, actor, bot_id, text, said, undo, target, thread, undoes) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![r.id, at, r.actor, bot_of_change(change), text, r.said, undo.map(|u| u.to_json().to_string()), change.target(), r.thread, r.undoes],
         )
     })?;
     forget_gone_threads(ctx);
@@ -487,30 +493,42 @@ pub fn undo(ctx: &HubCtx, id: &str) -> Result<(), String> {
     inverse.apply(ctx, "human")?;
     db(ctx, |c| c.execute("UPDATE policy_change SET undo=NULL WHERE id=?", [id]))?;
     let said = format!("Undid a change. {}", inverse.receipt(ctx));
-    record(ctx, &Recorded { id: &format!("u_{}", uuidv7()), actor: "human", thread: None, said: Some(&said) }, &inverse, PUT_BACK, None)
+    record(ctx, &Recorded { id: &format!("u_{}", uuidv7()), actor: "human", thread: None, said: Some(&said), undoes: Some(id) }, &inverse, PUT_BACK, None)
 }
 
-/// Recent changes (24 h), newest first: `[{at, actor, text, undo?}]`, `undo` while it is
-/// still possible.
+/// Recent changes (24 h), newest first: `[{at, actor, text, undo?, undone?}]`, `undo` while
+/// it is still possible. An Undo adds no row: the change it undid says `undone: true`.
 pub fn recent(ctx: &HubCtx) -> Vec<Value> {
     let since = now(ctx) - DAY;
-    let rows: Vec<(String, i64, String, String, Option<String>, Option<String>)> = db(ctx, |c| {
-        let mut q = c.prepare("SELECT id, at, actor, text, undo, target FROM policy_change WHERE at >= ? ORDER BY id DESC LIMIT 100")?;
-        let r = q.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get(4)?, r.get(5)?)))?;
+    type Row = (String, i64, String, String, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<Row> = db(ctx, |c| {
+        let mut q = c.prepare("SELECT id, at, actor, text, undo, target, undoes FROM policy_change WHERE at >= ? ORDER BY id DESC LIMIT 100")?;
+        let r = q.query_map([since], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get(4)?, r.get(5)?, r.get(6)?))
+        })?;
         r.collect()
     })
     .unwrap_or_default();
+    let undone: HashSet<String> = rows.iter().filter_map(|r| r.6.clone()).collect();
     let mut seen: HashSet<String> = HashSet::new();
     rows.into_iter()
-        .map(|(id, at, actor, text, inv, target)| {
-            // newest first: only a target's latest change can still be undone
+        .filter_map(|(id, at, actor, text, inv, target, undoes)| {
+            // newest first: only a target's latest change can still be undone (an Undo's
+            // own row counts, though it is not listed; one from before `undoes` neither)
             let latest = target.is_some_and(|t| seen.insert(t));
-            let undoable = latest && inv.as_deref().and_then(|i| serde_json::from_str::<Value>(i).ok()).as_ref().and_then(Change::from_json).is_some_and(|c| !c.noop(ctx));
+            if undoes.is_some() || text == PUT_BACK {
+                return None;
+            }
             let mut v = json!({"at": at, "actor": actor, "text": text});
+            if undone.contains(&id) {
+                v["undone"] = json!(true);
+                return Some(v);
+            }
+            let undoable = latest && inv.as_deref().and_then(|i| serde_json::from_str::<Value>(i).ok()).as_ref().and_then(Change::from_json).is_some_and(|c| !c.noop(ctx));
             if undoable {
                 v["undo"] = json!(id);
             }
-            v
+            Some(v)
         })
         .collect()
 }

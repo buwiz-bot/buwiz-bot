@@ -624,8 +624,30 @@ async fn shell_run_goes_through_the_gate_and_into_activity() {
     let n: i64 = b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM shell_activity", [], |r| r.get(0))).unwrap();
     assert_eq!(n, 1, "pruned");
     // a row logged before `failed` existed reads as failed by its exit
-    log_activity(&b.ctx, Some("hex"), "touch x", "exit 1", "ran");
+    log_activity(&b.ctx, Some("hex"), "touch x", "exit 1", "ran", false);
     assert_eq!((activity(&b.ctx, None)[0]["outcome"].clone(), activity(&b.ctx, None)[1]["outcome"].clone()), (json!("failed"), json!("ran")));
+}
+
+#[tokio::test]
+async fn a_command_the_user_did_not_ask_for_after_outside_content_is_unasked() {
+    let b = bed("unasked");
+    let run = run_in(&b.ctx, &b.hex);
+    let shell = |cmd: &'static str| {
+        let block = json!({"name": "shell_run", "input": {"command": cmd, "cwd": "/"}});
+        let run = &run;
+        async move { exec_tool(run, &block).await }
+    };
+    run.state().prompt = Some("say hi with echo".into());
+    shell("echo hi").await;
+    run.state().external = true;
+    shell("echo again").await;
+    shell("true").await;
+    host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "uname"})).unwrap();
+    shell("uname").await;
+    let a = activity(&b.ctx, None);
+    let marks: Vec<(String, bool)> = a.iter().map(|r| (crate::js::string_of(&r["command"]), r["unasked"] == true)).collect();
+    // newest first: a refused one is marked too; the named program never is
+    assert_eq!(marks, [("uname".into(), true), ("true".into(), true), ("echo again".into(), false), ("echo hi".into(), false)]);
 }
 
 #[tokio::test]
@@ -775,6 +797,23 @@ async fn a_bots_changes_reach_the_other_threads_but_never_its_own() {
     // the thread is on the row
     let t: Option<String> = b.ctx.db.with(|c| c.query_row("SELECT thread FROM policy_change WHERE actor='bot:hex' ORDER BY id DESC LIMIT 1", [], |r| r.get(0))).unwrap();
     assert_eq!(t.as_deref(), Some(b.hex.as_str()));
+}
+
+#[tokio::test]
+async fn an_undo_marks_the_row_it_undid_instead_of_adding_one() {
+    let b = bed("undone");
+    told(&b.ctx, &b.plain, None);
+    let r = host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "rm"})).unwrap();
+    host_mode(&b.ctx, &json!({"mode": "only"})).unwrap();
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    let rec = recent(&b.ctx);
+    assert_eq!(rec.len(), 2, "{rec:?}");
+    assert_eq!(rec[0]["text"], "Mode: Only allowed commands. Unlisted commands are refused.");
+    assert!(rec[0]["undo"].is_string() && rec[0].get("undone").is_none());
+    assert_eq!(rec[1], json!({"at": rec[1]["at"], "actor": "human", "text": "Blocked on this Mac: `rm`.", "undone": true}));
+    // the model still reads what the Undo put back
+    let t = told(&b.ctx, &b.plain, None);
+    assert!(t[0].ends_with("Mode: Only allowed commands. Unlisted commands are refused. Undid a change. Stopped blocking `rm` on this Mac."), "{t:?}");
 }
 
 #[tokio::test]
