@@ -746,7 +746,16 @@ mod tests {
         Fixture { hub, root, plugins: data.join("plugins") }
     }
 
+    /// A POST from the app: with the host token (the locked routes want it).
     async fn post(f: &Fixture, url: &str, body: Value) -> (u16, Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-buwiz-host", crate::hub::routes::host::TEST_TOKEN.parse().unwrap());
+        let req = HubRequest { method: Method::POST, url: url.into(), headers, body: Bytes::from(body.to_string()), params: Vec::new() };
+        send(f, req).await
+    }
+
+    /// A POST from a Bot's shell: no host token.
+    async fn post_bare(f: &Fixture, url: &str, body: Value) -> (u16, Value) {
         let req = HubRequest { method: Method::POST, url: url.into(), headers: HeaderMap::new(), body: Bytes::from(body.to_string()), params: Vec::new() };
         send(f, req).await
     }
@@ -768,17 +777,21 @@ mod tests {
         meta.map(|m| serde_json::from_str(&m).unwrap())
     }
 
-    /// Bot controls: the skill switches answer only a request carrying the host token.
+    /// Bot controls: the skill switches, a new skill and the plugin installs answer only a
+    /// request carrying the host token.
     #[tokio::test]
     async fn the_skill_switch_routes_answer_401_without_the_host_token() {
         let f = fixture("locked");
         f.hub.ctx().db.with(|db| db.execute("INSERT INTO skills(id,name,enabled) VALUES('s','S',0)", [])).unwrap();
-        for url in ["/skills/state", "/skills/delete"] {
-            let (status, v) = post(&f, url, json!({ "id": "s", "enabled": true })).await;
+        for url in ["/skills/state", "/skills/delete", "/skills", "/plugins/install", "/plugins/connect", "/plugins/settings"] {
+            let (status, v) = post_bare(&f, url, json!({ "id": "s", "enabled": true })).await;
             assert_eq!((status, v["code"].as_str()), (401, Some("unauthorized")), "{url}");
         }
         let on: i64 = f.hub.ctx().db.with(|db| db.query_row("SELECT enabled FROM skills WHERE id='s'", [], |r| r.get(0))).unwrap();
         assert_eq!(on, 0, "unchanged");
+        let skills: i64 = f.hub.ctx().db.with(|db| db.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))).unwrap();
+        let plugins: i64 = f.hub.ctx().db.with(|db| db.query_row("SELECT COUNT(*) FROM installed_plugins", [], |r| r.get(0))).unwrap();
+        assert_eq!((skills, plugins), (1, 0), "nothing made");
     }
 
     #[tokio::test]

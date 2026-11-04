@@ -63,12 +63,26 @@ pub(crate) fn token_in(path: &std::path::Path) -> Option<String> {
     Some(token.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
-/// The old switch routes, locked to the host token like `/v1/host/`: a
-/// Bot's shell must not turn a tool, server or skill back on through them.
-const LOCKED: [&str; 5] = ["/mcp/tools/state", "/mcp/server/state", "/mcp/server/delete", "/skills/state", "/skills/delete"];
+/// The routes outside `/v1/host/` locked to the host token: a Bot's shell
+/// must not add, install or switch on a server, plugin or skill through
+/// them (the old switch routes, `/mcp/servers`, the market's install,
+/// connect and settings, and `/skills`). Their GETs, which read, get the
+/// token too.
+const LOCKED: [&str; 10] = [
+    "/mcp/tools/state",
+    "/mcp/server/state",
+    "/mcp/server/delete",
+    "/skills/state",
+    "/skills/delete",
+    "/skills",
+    "/mcp/servers",
+    "/plugins/install",
+    "/plugins/connect",
+    "/plugins/settings",
+];
 
 /// Whether `path` is one of the broker's host-internal routes, which carry
-/// the host token: `/v1/host/…` and the locked old switch routes.
+/// the host token: `/v1/host/…` and the locked routes.
 pub(crate) fn is_host_route(path: &str) -> bool {
     let bare = path.split(['?', '#']).next().unwrap_or_default();
     path.starts_with("/v1/host/") || LOCKED.contains(&bare)
@@ -228,7 +242,11 @@ mod tests {
         for p in ["/mcp/tools/state", "/mcp/server/state", "/mcp/server/delete", "/skills/state", "/skills/delete", "/skills/state?x=1"] {
             assert!(super::is_host_route(p), "{p}");
         }
-        for p in ["/mcp/tools", "/mcp/servers", "/skills", "/mcp/tools/state/x", "/skills/statex", "/mcp/server/deleted"] {
+        // what adds or installs a server, plugin or skill
+        for p in ["/mcp/servers", "/skills", "/plugins/install", "/plugins/connect", "/plugins/settings"] {
+            assert!(super::is_host_route(p), "{p}");
+        }
+        for p in ["/mcp/tools", "/plugins/inspect", "/plugins/uninstall", "/plugins/catalog", "/mcp/tools/state/x", "/skills/statex", "/mcp/server/deleted", "/chat"] {
             assert!(!super::is_host_route(p), "{p}");
         }
         assert!(super::is_host_route("/v1/host/tools?bot=b1"));

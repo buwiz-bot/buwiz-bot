@@ -129,8 +129,37 @@ fn prove(rs: &Routines, req: &HubRequest) -> HubResponse {
 
 /// Whether `headers` carry this process's host token (constant time).
 pub fn authorized(headers: &HeaderMap) -> bool {
+    let got = headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default();
+    #[cfg(test)]
+    if got == TEST_TOKEN.as_bytes() {
+        return true;
+    }
     let want = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
-    same(headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
+    same(got, want.as_bytes())
+}
+
+/// The token unit tests send to a locked route (the process token is random and changes
+/// whenever a test starts routines).
+#[cfg(test)]
+pub const TEST_TOKEN: &str = "unit-test-host-token";
+
+/// The routes outside `/v1/host/` that add, install or switch on what a Bot can run: an MCP
+/// server (`/mcp/servers` adds or edits one with any command; `/mcp/server/state`,
+/// `/mcp/tools/state` and `/mcp/server/delete` are the leaf's, locked there), a market
+/// plugin (`/plugins/install`; `/plugins/connect` adds and enables its server;
+/// `/plugins/settings` changes the env its servers run with) and a skill (`/skills`
+/// creates or rewrites one; `/skills/state`, `/skills/delete`). The app sends the host
+/// token to them; a Bot's shell, which can reach the port but not the token, gets 401.
+pub const LOCKED: [&str; 7] = ["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete"];
+
+/// Whether a request is a POST to a [`LOCKED`] route without this broker's host token.
+pub fn locked_out(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    method == Method::POST && LOCKED.contains(&path) && !authorized(headers)
+}
+
+/// The answer to a locked route asked without the token.
+pub fn unauthorized() -> HubResponse {
+    types::json(StatusCode::UNAUTHORIZED, &json!({"ok": false, "code": "unauthorized", "message": "X-Buwiz-Host is missing or wrong"}))
 }
 
 fn authorized_by(rs: &Routines, headers: &HeaderMap) -> bool {
