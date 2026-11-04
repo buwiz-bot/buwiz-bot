@@ -1,7 +1,7 @@
 //! The wire parser and the reply rules against nativechat's recorded
-//! frames (`fixtures/wire`). Skipped when that checkout is not there.
+//! frames (`fixtures/wire`). Skipped in CI, which has no copy.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
@@ -11,18 +11,12 @@ use super::plugin_needs::{PluginNeedKind, PluginNeedsSpec};
 use super::transport::{self, Sent, UserFormReply};
 use super::{Kind, key_of, kind_of};
 
-const WIRE: &str = "/Volumes/goldcoders/hexuria/nativechat/fixtures/wire";
-
-/// Every JSON file under `WIRE/<dir>`, or `None` when the fixtures are
-/// not on this machine.
+/// Every JSON file under `dir` of the wire fixtures, or `None` in CI, where
+/// they aren't there ([`super::wire_dir`]).
 fn fixtures(dir: &str) -> Option<Vec<(PathBuf, Value)>> {
-    let root = Path::new(WIRE).join(dir);
-    if !root.is_dir() {
-        eprintln!("skipped: no {}", root.display());
-        return None;
-    }
+    let root = super::wire_dir()?.join(dir);
     let mut out: Vec<(PathBuf, Value)> = std::fs::read_dir(&root)
-        .ok()?
+        .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .map(|p| {
@@ -35,11 +29,8 @@ fn fixtures(dir: &str) -> Option<Vec<(PathBuf, Value)>> {
 }
 
 fn fixture(path: &str) -> Option<Value> {
-    let p = Path::new(WIRE).join(path);
-    let raw = std::fs::read_to_string(&p).ok().or_else(|| {
-        eprintln!("skipped: no {}", p.display());
-        None
-    })?;
+    let p = super::wire_dir()?.join(path);
+    let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     Some(serde_json::from_str(&raw).unwrap())
 }
 

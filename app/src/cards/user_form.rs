@@ -1619,17 +1619,18 @@ fn link_btn(label: impl Into<String>, on: impl Fn() + 'static) -> impl IntoEleme
 mod tests {
     use super::*;
 
-    const WIRE: &str = "/Volumes/goldcoders/hexuria/nativechat/fixtures/wire";
-
     /// A fixture under nativechat's `fixtures/wire`; `None` (the test
-    /// skips) where that checkout is missing.
+    /// skips) in CI ([`crate::cards::wire_dir`]).
     fn fixture(rel: &str) -> Option<Value> {
-        let text = std::fs::read_to_string(format!("{WIRE}/{rel}")).ok()?;
+        let path = crate::cards::wire_dir()?.join(rel);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         Some(serde_json::from_str(&text).expect("fixture json"))
     }
 
     fn fixtures_in(dir: &str) -> Vec<(String, Value)> {
-        let Ok(rd) = std::fs::read_dir(format!("{WIRE}/{dir}")) else { return Vec::new() };
+        let Some(root) = crate::cards::wire_dir() else { return Vec::new() };
+        let path = root.join(dir);
+        let rd = std::fs::read_dir(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let mut out: Vec<(String, Value)> = rd
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))

@@ -1,16 +1,17 @@
 #!/bin/bash
 # A test Buwiz Bot: its own data dir, its own TMPDIR (so its dev hook file is its
 # own), its own gpui-agent port and token, its window on AeroSpace
-# workspace 3 (the owner's own Bot is on 4). The focus stays where it was (the window that had it gets it
-# back) and the visible workspace never changes. Prints the pid; drive it
+# workspace 3 (the owner's own Bot is on 4). The focus stays where it was
+# (the window that had it gets it back) and the visible workspace never
+# changes. Prints the pid; drive it
 # with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
 # never lists its window within 30 seconds.
 #   scripts/buwiz-test [--name <name>] <app binary> <instance dir> <agent port> [VAR=value ...]
 #   scripts/buwiz-test --bundle-only [--name <name>] <app binary> <instance dir>
 #     (makes the test bundle below, prints its path, starts nothing)
 # e.g. BUWIZ_BACKEND=http://127.0.0.1:8798 BUWIZ_HOST_TOKEN_FILE=<data>/host-token
-# Start that broker from server/ with BUWIZ_BROKER_HUB=1 and --no-node, as the
-# Bot does: without them Node answers in MOCK mode, replies are canned and
+# Start that broker with BUWIZ_BROKER_HUB=1 and --no-node, as the Bot does:
+# without them Node answers in MOCK mode, replies are canned and
 # /v1/host/tools gives a 405.
 # (scripts/test-rox is its old name.) Every variable it sets, and every
 # ROX_<X>=value given, goes in by its Buwiz name and its old ROX_ one, so a
