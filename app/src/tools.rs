@@ -1461,7 +1461,7 @@ fn rules_section() -> impl IntoElement {
         if d.block.is_empty() {
             v = v.child(empty("Nothing is blocked.".to_owned()));
         }
-        for p in d.block.iter().cloned() {
+        for p in d.block.iter() {
             let id = format!("block:{p}");
             let removing = busy.as_deref() == Some(id.as_str());
             let ask = asking.as_deref() == Some(p.as_str());
@@ -2082,10 +2082,8 @@ mod tests {
                         MountItem::Delete { id } => {
                             live.remove(id);
                         }
-                        MountItem::AccessibilityLabel { id, label } => {
-                            if let Some(l) = label {
-                                labels.insert(*id, l.to_string());
-                            }
+                        MountItem::AccessibilityLabel { id, label: Some(l) } => {
+                            labels.insert(*id, l.to_string());
                         }
                         MountItem::ViewProps { id, props } => {
                             if let Some(l) = props.accessibility.label.as_deref() {
