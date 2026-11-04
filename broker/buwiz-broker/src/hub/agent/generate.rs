@@ -65,6 +65,9 @@ fn reply_turn(run: &Run, text: &str) -> Option<Turn> {
         return None;
     }
     let mut t = Turn::ai(text, &run.label());
+    if run.state().refused {
+        t.stop = Some("refusal".into());
+    }
     t.links = links;
     t.suggest = suggest;
     Some(t)

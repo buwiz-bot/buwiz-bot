@@ -2,6 +2,7 @@
 //! calls, the last with `tool_choice: none`; `pause_turn` polls again; a
 //! refused server web search turns on the client one, and a stream that
 //! fails before its first event turns streaming off, both for the process.
+//! A refused call ends the turn with a reply saying so.
 
 use serde_json::{json, Value};
 
@@ -38,6 +39,27 @@ fn history(t: Option<&Thread>) -> Vec<Value> {
         .collect()
 }
 
+/// What a reply the model refused says (after any text it wrote first).
+pub const DECLINED: &str = "The model declined to answer this. Try rewording it, or start a new chat if it keeps happening.";
+/// … when the thread's previous reply was refused too.
+pub const DECLINED_AGAIN: &str = "The model keeps declining in this chat. Start a new chat to continue.";
+
+/// Whether the thread's last reply (read before the turn's first call)
+/// ended in a refusal.
+fn refused_before(t: Option<&Thread>) -> bool {
+    t.and_then(|t| t.turns.iter().rev().find(|u| u.role == "ai")).is_some_and(|u| u.stop.as_deref() == Some("refusal"))
+}
+
+/// A refused call's reply: its text so far, then the line saying so.
+fn declined(said: &str, again: bool) -> String {
+    let line = if again { DECLINED_AGAIN } else { DECLINED };
+    if said.is_empty() {
+        line.to_owned()
+    } else {
+        format!("{said}\n\n{line}")
+    }
+}
+
 /// `/web_search|server_tool|tool_use/i`.
 fn search_refused(m: &str) -> bool {
     let l = m.to_lowercase();
@@ -48,7 +70,7 @@ fn search_refused(m: &str) -> bool {
 /// answered only with tools). `Err` is Node's thrown `llm-api …`.
 pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Value]) -> Result<String, String> {
     let ctx = &run.ctx;
-    let mut messages = ctx.store.read(|s| history(s.thread(&run.turn.thread)));
+    let (mut messages, refused) = ctx.store.read(|s| (history(s.thread(&run.turn.thread)), refused_before(s.thread(&run.turn.thread))));
     // the user's decisions on this chat's tool cards and the changes the user made since the
     // last call, once each
     let bot = ctx.store.read(|s| crate::hub::library::botctx::bot_of(s, &run.turn).map(|b| b.id.clone()));
@@ -134,6 +156,15 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
         // pause_turn: a server-side tool (web_search) is still mid-run
         if stop == "pause_turn" {
             continue;
+        }
+        // refusal: the safety layer stopped the reply; it ends the turn with
+        // what was written and a line saying so, never more calls
+        if stop == "refusal" {
+            let said = crate::hub::model::text_of(&msg).trim_matches(js::is_space).to_owned();
+            run.state().refused = true;
+            drop_pending(run);
+            reply = declined(&said, refused);
+            break;
         }
         let uses: Vec<&Value> = content.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")).collect();
         let said = crate::hub::model::text_of(&msg).trim_matches(js::is_space).to_owned();
@@ -352,6 +383,76 @@ mod tests {
         chat(&ctx, &thread, "And?").await;
         let sent = crate::js::stringify(&bodies.lock().unwrap()[2]["messages"]);
         assert!(sent.contains(&format!("Checking.\\n\\n{}", tool_log::HEADER)) && sent.contains("\\\"penalty\\\":1500"), "{sent}");
+        let _ = std::fs::remove_dir_all(ctx.data.clone());
+    }
+
+    /// The thread's last turn, and its meta read back by a restart.
+    fn last_turn(ctx: &std::sync::Arc<crate::hub::ctx::HubCtx>, thread: &str) -> (Turn, Turn) {
+        let now = ctx.store.read(|s| s.thread(thread).unwrap().turns.last().cloned().unwrap());
+        let again = crate::hub::ctx::HubCtx::new(ctx.data.clone(), crate::hub::traits::Clock::manual());
+        again.store.load().unwrap();
+        let stored = again.store.read(|s| s.thread(thread).unwrap().turns.last().cloned().unwrap());
+        (now, stored)
+    }
+
+    #[tokio::test]
+    async fn turn_a_refusal_with_no_text_says_the_model_declined() {
+        let (ctx, bodies, thread) = scripted_hub(vec![message(json!([]), "refusal")]);
+        chat(&ctx, &thread, "Something it refuses").await;
+        let (said, stored) = last_turn(&ctx, &thread);
+        assert_eq!((said.role.as_str(), said.text.as_deref(), said.stop.as_deref()), ("ai", Some(DECLINED), Some("refusal")));
+        assert_eq!(stored.text.as_deref(), Some(DECLINED));
+        assert!(stored.meta_json().unwrap().contains(r#""stop":"refusal""#));
+        // no more calls after the refusal
+        assert_eq!(bodies.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(ctx.data.clone());
+    }
+
+    #[tokio::test]
+    async fn turn_a_refusal_after_partial_text_keeps_it() {
+        let (ctx, bodies, thread) = scripted_hub(vec![calls(), message(json!([{"type": "text", "text": "Your penalty is"}]), "refusal")]);
+        chat(&ctx, &thread, "What is my penalty?").await;
+        let (said, stored) = last_turn(&ctx, &thread);
+        assert_eq!(said.text.as_deref(), Some(format!("Your penalty is\n\n{DECLINED}").as_str()));
+        assert_eq!(said.stop.as_deref(), Some("refusal"));
+        // the tool calls before the refusal stay on the reply's turn
+        assert_eq!(said.tools.as_ref().and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(stored.stop.as_deref(), Some("refusal"));
+        assert_eq!(bodies.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(ctx.data.clone());
+    }
+
+    #[tokio::test]
+    async fn turn_a_second_refusal_in_a_row_says_to_start_a_new_chat() {
+        let answers = vec![message(json!([]), "refusal"), message(json!([]), "refusal"), message(json!([{"type": "text", "text": "Sure."}]), "end_turn"), message(json!([]), "refusal")];
+        let (ctx, _, thread) = scripted_hub(answers);
+        chat(&ctx, &thread, "one").await;
+        chat(&ctx, &thread, "two").await;
+        let (said, stored) = last_turn(&ctx, &thread);
+        assert_eq!((said.text.as_deref(), said.stop.as_deref()), (Some(DECLINED_AGAIN), Some("refusal")));
+        assert_eq!(stored.stop.as_deref(), Some("refusal"));
+        // a reply in between: the next refusal is a first one again
+        chat(&ctx, &thread, "three").await;
+        assert_eq!(last_turn(&ctx, &thread).0.stop, None);
+        chat(&ctx, &thread, "four").await;
+        assert_eq!(last_turn(&ctx, &thread).0.text.as_deref(), Some(DECLINED));
+        let _ = std::fs::remove_dir_all(ctx.data.clone());
+    }
+
+    #[tokio::test]
+    async fn turn_a_routines_refused_turn_records_the_same_reply() {
+        let (ctx, bodies, thread) = scripted_hub(vec![message(json!([]), "refusal"), message(json!([]), "refusal")]);
+        let turn = crate::hub::types::TurnCtx { thread: thread.clone(), ..Default::default() };
+        let run = crate::hub::tools::Run::new(ctx.clone(), turn, ctx.jobs.create(&thread, Value::Null, None, false), std::sync::Arc::new(crate::hub::model::Settings::from(|_| None)));
+        super::super::generate::background_turn(&run, "Daily check", "Run the daily check", &json!({})).await.unwrap();
+        assert_eq!(last_turn(&ctx, &thread).0.text.as_deref(), Some(DECLINED));
+        // an agent's request after it: the answer is the refusal line (the
+        // second in a row), one call, no loop
+        let turn = crate::hub::types::TurnCtx { thread: thread.clone(), ..Default::default() };
+        let run = crate::hub::tools::Run::new(ctx.clone(), turn, ctx.jobs.create(&thread, Value::Null, None, false), std::sync::Arc::new(crate::hub::model::Settings::from(|_| None)));
+        let answer = super::super::generate::request_reply(&run, "Help me").await.unwrap();
+        assert_eq!(answer, DECLINED_AGAIN);
+        assert_eq!(bodies.lock().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(ctx.data.clone());
     }
 }
