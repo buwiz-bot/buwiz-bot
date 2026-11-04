@@ -603,9 +603,16 @@ async fn shell_run_goes_through_the_gate_and_into_activity() {
     assert_eq!(shell("echo a && pwd").await, Out::err("`pwd` is not allowed on this Mac. Ask the user, or propose a rule with shell_rule_add.".into()));
     let secret = format!("echo API_TOKEN=abc {}", "hi there ".repeat(30));
     shell(&secret).await;
+    // a run that exits non-zero (the sandbox's denial among them) failed, with its exit
+    host_rules(&b.ctx, &json!({"op": "add", "kind": "allow", "pattern": "cat"})).unwrap();
+    let token = b.ctx.data.join("host-token");
+    std::fs::write(&token, "secret").unwrap();
+    assert_eq!(shell(&format!("cat '{}'", token.display())).await.is_error, Some(true));
     let a = activity(&b.ctx, None);
     let outcomes: Vec<String> = a.iter().map(|r| crate::js::string_of(&r["outcome"])).collect();
-    assert_eq!(outcomes, ["ran", "refused_mode", "ran", "refused_mode", "refused_block", "ran"]);
+    assert_eq!(outcomes, ["failed", "ran", "refused_mode", "ran", "refused_mode", "refused_block", "ran"]);
+    assert_eq!((a[0]["result"].clone(), a[1]["result"].clone(), a[2]["result"].clone()), (json!("exit 1"), json!("exit 0"), json!("not allowed")));
+    let a: Vec<Value> = a.into_iter().skip(1).collect();
     assert_eq!(a[0]["bot"], "hex");
     assert_eq!(a[0]["botName"], "Hex");
     let shown = crate::js::string_of(&a[0]["command"]);
@@ -616,6 +623,9 @@ async fn shell_run_goes_through_the_gate_and_into_activity() {
     assert_eq!(activity(&b.ctx, None).len(), 1);
     let n: i64 = b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM shell_activity", [], |r| r.get(0))).unwrap();
     assert_eq!(n, 1, "pruned");
+    // a row logged before `failed` existed reads as failed by its exit
+    log_activity(&b.ctx, Some("hex"), "touch x", "exit 1", "ran");
+    assert_eq!((activity(&b.ctx, None)[0]["outcome"].clone(), activity(&b.ctx, None)[1]["outcome"].clone()), (json!("failed"), json!("ran")));
 }
 
 #[tokio::test]

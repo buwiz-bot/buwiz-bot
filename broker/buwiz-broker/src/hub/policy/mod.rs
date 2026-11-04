@@ -140,20 +140,26 @@ fn bot_name(ctx: &HubCtx, bot: &str) -> String {
     ctx.store.read(|s| s.bot(bot).map(|b| b.name.clone())).unwrap_or_else(|| bot.to_owned())
 }
 
-/// Activity, newest first: `[{at, bot, botName, command, outcome}]` (the last 7 days).
+/// Activity, newest first: `[{at, bot, botName, command, outcome, result}]` (the last 7
+/// days). `outcome` is `ran` (exit 0), `failed` (it ran; `result` is `exit 1`, `exit timeout`
+/// and the like), `refused_block` or `refused_mode`.
 pub fn activity(ctx: &HubCtx, bot: Option<&str>) -> Vec<Value> {
     let since = now(ctx) - WEEK;
-    let rows: Vec<(i64, Option<String>, String, String)> = db(ctx, |c| {
-        let mut q = c.prepare("SELECT at, bot_id, command, outcome FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
-        let r = q.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<String>>(3)?.unwrap_or_default())))?;
+    let rows: Vec<(i64, Option<String>, String, String, String)> = db(ctx, |c| {
+        let mut q = c.prepare("SELECT at, bot_id, command, outcome, result FROM shell_activity WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT 200")?;
+        let r = q.query_map([since], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get::<_, Option<String>>(4)?.unwrap_or_default()))
+        })?;
         r.collect()
     })
     .unwrap_or_default();
     rows.into_iter()
         .filter(|r| bot.is_none_or(|b| r.1.as_deref() == Some(b)))
-        .map(|(at, b, command, outcome)| {
+        .map(|(at, b, command, outcome, result)| {
             let b = b.unwrap_or_default();
-            json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome})
+            // a row from before `failed`: a run that did not exit 0
+            let outcome = if outcome == "ran" && result.starts_with("exit ") && result != "exit 0" { "failed".to_owned() } else { outcome };
+            json!({"at": at, "bot": b, "botName": bot_name(ctx, &b), "command": command, "outcome": outcome, "result": result})
         })
         .collect()
 }

@@ -351,6 +351,8 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
         _ if r.is_error == Some(true) => "failed".to_owned(),
         _ => "exit 0".to_owned(),
     };
+    // it ran but did not succeed (a sandbox denial is an exit 1 like any other)
+    let outcome = if r.is_error == Some(true) { "failed" } else { outcome };
     policy::log_activity(ctx, bot.as_deref(), line, &result, outcome);
     r
 }

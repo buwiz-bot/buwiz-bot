@@ -94,6 +94,8 @@ pub(crate) struct Activity {
     pub bot_name: String,
     pub command: String,
     pub outcome: String,
+    /// How a run ended (`exit 0`, `exit 1`, `exit timeout`…).
+    pub result: String,
 }
 
 /// One "Recent changes" row (24 h).
@@ -156,7 +158,7 @@ impl Data {
             block: list(&mac, "block").iter().map(|r| s(r, "pattern")).filter(|p| !p.is_empty()).collect(),
             activity: list(v, "activity")
                 .iter()
-                .map(|a| Activity { at: ms(a, "at"), bot: s(a, "bot"), bot_name: s(a, "botName"), command: s(a, "command"), outcome: s(a, "outcome") })
+                .map(|a| Activity { at: ms(a, "at"), bot: s(a, "bot"), bot_name: s(a, "botName"), command: s(a, "command"), outcome: s(a, "outcome"), result: s(a, "result") })
                 .collect(),
             recent: list(v, "recent")
                 .iter()
@@ -712,13 +714,18 @@ pub(crate) fn never_words(p: &str) -> String {
     }
 }
 
-/// An Activity row's outcome.
-pub(crate) fn outcome_words(o: &str) -> &'static str {
+/// An Activity row's outcome; `result` is how a run ended (`exit 1`).
+pub(crate) fn outcome_words(o: &str, result: &str) -> String {
     match o {
-        "ran" => "Ran",
-        "refused_block" => "Refused by a block",
-        "refused_mode" => "Refused: mode is Only allowed commands",
-        _ => "",
+        "ran" => "Ran".to_owned(),
+        "failed" => match result.strip_prefix("exit ") {
+            Some(n) if n.parse::<i64>().is_ok() => format!("Failed · exit {n}"),
+            Some("timeout") => "Failed · timed out".to_owned(),
+            _ => "Failed".to_owned(),
+        },
+        "refused_block" => "Refused by a block".to_owned(),
+        "refused_mode" => "Refused: mode is Only allowed commands".to_owned(),
+        _ => String::new(),
     }
 }
 
@@ -1630,13 +1637,17 @@ fn activity_tab() -> impl IntoElement {
             return v.child(empty(format!("No commands from {who} on this Mac yet."))).into_element();
         }
         for a in rows {
-            let ink = if a.outcome == "ran" { theme::UP } else { theme::DOWN };
+            let ink = match a.outcome.as_str() {
+                "ran" => theme::UP,
+                "failed" => theme::WARN,
+                _ => theme::DOWN,
+            };
             v = v.child(
                 row()
                     .child(text(crate::store::checked_at(a.at as f64)).w(px(72.0)).text_size(px(11.5)).text_color(theme::FAINT))
                     .child(text(if a.bot_name.is_empty() { a.bot.clone() } else { a.bot_name.clone() }).w(px(72.0)).number_of_lines(1).text_size(px(12.0)).text_color(theme::DIM))
                     .child(text(a.command.clone()).flex_1().number_of_lines(1).font_family("Menlo").text_size(px(12.0)).text_color(theme::TEXT))
-                    .child(text(outcome_words(&a.outcome)).text_size(px(11.5)).text_color(ink)),
+                    .child(text(outcome_words(&a.outcome, &a.result)).text_size(px(11.5)).text_color(ink)),
             );
         }
         v.into_element()
@@ -1809,7 +1820,16 @@ mod tests {
         assert_eq!(d.on_count(), (1, 2));
         assert_eq!(d.allow[1].inert, "blocked by `rm`");
         assert_eq!(d.block, ["rm"]);
-        assert_eq!((d.activity[0].bot_name.as_str(), outcome_words(&d.activity[0].outcome)), ("Hex", "Ran"));
+        assert_eq!((d.activity[0].bot_name.as_str(), outcome_words(&d.activity[0].outcome, &d.activity[0].result)), ("Hex", "Ran".to_owned()));
+        // a run that exited non-zero failed, with its exit
+        let ran = Data::of(&json!({"ok": true, "tools": [], "mac": {}, "activity": [
+            {"at": 7, "bot": "b1", "command": "cat x", "outcome": "failed", "result": "exit 1"},
+            {"at": 6, "bot": "b1", "command": "sleep 99", "outcome": "failed", "result": "exit timeout"},
+            {"at": 5, "bot": "b1", "command": "nope", "outcome": "failed", "result": "exit ENOENT"},
+            {"at": 4, "bot": "b1", "command": "ls", "outcome": "ran", "result": "exit 0"}]})).unwrap();
+        let words: Vec<String> = ran.activity.iter().map(|a| outcome_words(&a.outcome, &a.result)).collect();
+        assert_eq!(words, ["Failed · exit 1", "Failed · timed out", "Failed", "Ran"]);
+        assert_eq!(outcome_words("refused_block", ""), "Refused by a block");
         assert_eq!(d.recent[0].undo, "u_2");
         // no Bot: no tools; no mode: bypass
         let d = Data::of(&json!({"ok": true, "tools": [], "mac": {}})).unwrap();
