@@ -136,6 +136,8 @@ pub(crate) struct Data {
     pub block: Vec<String>,
     pub activity: Vec<Activity>,
     pub recent: Vec<Recent>,
+    /// Plain chats' memories (id, text), on Chats only.
+    pub memories: Vec<(String, String)>,
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -197,7 +199,13 @@ impl Data {
                 .map(|r| Recent { at: ms(r, "at"), actor: s(r, "actor"), text: s(r, "text"), undo: s(r, "undo"), undone: r.get("undone").and_then(Value::as_bool).unwrap_or(false) })
                 .filter(|r| !r.text.is_empty())
                 .collect(),
+            memories: list(v, "memories").iter().map(|m| (s(m, "id"), s(m, "text"))).filter(|m| !m.0.is_empty()).collect(),
         })
+    }
+
+    /// Without memory `id` (a ✕, before the read after).
+    pub(crate) fn forget(&mut self, id: &str) {
+        self.memories.retain(|m| m.0 != id);
     }
 
     /// "n of m on".
@@ -648,6 +656,30 @@ pub(crate) fn card_copy(n: &ToolsChangeNotice) -> Option<CardCopy> {
                 notes: vec!["Commands that start with it could run again, for every Bot.".to_owned()],
                 primary: "Stop blocking".to_owned(),
                 confirm: two.then(|| (format!("Yes, stop blocking {}.", r.pattern), "Stop blocking".to_owned())),
+                chip: "",
+                warn: String::new(),
+            }
+        }
+        // off to Ask: a widen too
+        "tool_ask" => {
+            let what = tool_words(n);
+            CardCopy {
+                title: format!("Let {bot} use {what} again, asking you first?"),
+                notes: vec![format!("{bot} asks you before each call that changes something or reaches someone.")],
+                primary: "Turn on with Ask".to_owned(),
+                confirm: None,
+                chip: "",
+                warn: String::new(),
+            }
+        }
+        // the switch every Bot shares, asked from a plain chat (F3)
+        "tool_on" if n.bot.is_empty() => {
+            let what = tool_words(n);
+            CardCopy {
+                title: format!("Turn {what} back on?"),
+                notes: vec![format!("{what} is on for every Bot again.")],
+                primary: "Turn on".to_owned(),
+                confirm: two.then(|| (format!("Yes, turn {what} on."), "Turn on".to_owned())),
                 chip: "",
                 warn: String::new(),
             }
@@ -1605,9 +1637,45 @@ fn bot_tab() -> impl IntoElement {
             if !d.tools.iter().any(|t| t.key.starts_with("mcp:") || t.key.starts_with("v1:")) {
                 v = v.child(empty("No connected apps. Connect one in Plugins.".to_owned()));
             }
+            if chats {
+                v = v.child(memories_section(&d.memories));
+            }
             v.into_element()
         }))
         .into_element()
+}
+
+/// Plain chats' memories, each with a ✕ that forgets it at once.
+fn memories_section(ms: &[(String, String)]) -> impl IntoElement {
+    let mut v = view().child(heading("MEMORIES".to_owned()));
+    if ms.is_empty() {
+        return v.child(empty(NO_MEMORIES.to_owned()));
+    }
+    for (id, t) in ms.iter().cloned() {
+        let aria = format!("Remove memory: {t}");
+        v = v.child(row().child(text(t).flex_1().text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT)).child(link("✕".to_owned(), aria, theme::MUTED, move || forget_memory(&id))));
+    }
+    v
+}
+
+/// The Memories list's empty state.
+pub(crate) const NO_MEMORIES: &str = "No memories yet.";
+
+/// `POST /v1/host/tools/memory/remove`: gone from the list at once; the read
+/// after puts it right.
+fn forget_memory(id: &str) {
+    tools().data.update(|d| {
+        if let Some(d) = d.as_mut() {
+            d.forget(id);
+        }
+    });
+    let id = id.to_owned();
+    crate::store::spawn_detached(async move {
+        if let Err(e) = call("/v1/host/tools/memory/remove", json!({"id": id}), "").await {
+            tools().error.set(e);
+        }
+        load();
+    });
 }
 
 /// A row's On / Ask / Off control, named "Web, ask".
@@ -2293,8 +2361,13 @@ mod tests {
         applied.text = "Hex can't use the shell now.".into();
         assert_eq!(shows(&applied, None, at, at + 10), Shows::Receipt { text: "Hex can't use the shell now.".into(), undo: String::new(), at });
         // a chat with no Bot
-        let n = notice(json!({"bot": "", "botName": "The assistant", "op": "tool_on", "key": "web", "label": "Web search and fetch"}));
-        assert_eq!(card_copy(&n).unwrap().title, "Turn Web search and fetch back on for The assistant?");
+        let n = notice(json!({"bot": "", "botName": "A plain chat", "op": "tool_on", "key": "web", "label": "Web search and fetch"}));
+        assert_eq!(card_copy(&n).unwrap().title, "Turn Web search and fetch back on?");
+        let n = notice(json!({"bot": "@chats", "botName": "Plain chats", "op": "tool_on", "key": "web", "label": "Web"}));
+        assert_eq!(card_copy(&n).unwrap().title, "Turn Web back on for Plain chats?");
+        let n = notice(json!({"bot": "@chats", "botName": "Plain chats", "op": "tool_ask", "from": "off", "key": "memory", "label": "Memory"}));
+        assert_eq!(card_copy(&n).unwrap().title, "Let Plain chats use Memory again, asking you first?");
+        assert_eq!(shows(&n, None, 1, 1), Shows::Card);
         // stale: the notice as it is now, never pending
         let base = notice(json!({"op": "tool_on", "key": "shell"}));
         let v = json!({"ok": false, "code": "stale", "message": STALE_ANSWER,
@@ -2476,7 +2549,7 @@ mod tests {
     }
 
     fn ask(extra: Value) -> ToolAskNotice {
-        let mut n = json!({"kind": "tool_ask", "id": "a_1", "bot": "", "botName": "The assistant", "chat": "t1", "at": 1_793_745_245_000i64});
+        let mut n = json!({"kind": "tool_ask", "id": "a_1", "bot": "", "botName": "A plain chat", "chat": "t1", "at": 1_793_745_245_000i64});
         for (k, v) in extra.as_object().unwrap() {
             n[k] = v.clone();
         }
@@ -2503,7 +2576,7 @@ mod tests {
         assert_eq!(ask_copy(&ask(json!({"key": "mcp:x", "tool": "mcp_x_send"}))).title, "Let it use mcp_x_send?");
         // parsing: state and answer; another kind is no ask card
         let n = ask(json!({"state": "allowed", "answer": "chat"}));
-        assert_eq!((n.state.as_str(), n.answer.as_str(), n.bot_name.as_str()), ("allowed", "chat", "The assistant"));
+        assert_eq!((n.state.as_str(), n.answer.as_str(), n.bot_name.as_str()), ("allowed", "chat", "A plain chat"));
         assert_eq!(ask(json!({})).state, "pending");
         assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tools_change", "id": "p_1"}})).tool_ask.is_none());
         assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tool_ask"}})).tool_ask.is_none());
@@ -2554,6 +2627,25 @@ mod tests {
     }
 
     #[test]
+    fn the_chats_tab_lists_plain_chats_memories() {
+        let d = Data::of(&json!({"ok": true, "bot": null, "profile": "chats", "mac": {}, "tools": []})).unwrap();
+        assert!(d.memories.is_empty(), "none sent: the empty state");
+        assert_eq!(NO_MEMORIES, "No memories yet.");
+        let m = Data::of(&json!({"ok": true, "bot": null, "profile": "chats", "mac": {}, "tools": [],
+            "memories": [{"id": "m1", "text": "The user likes tea."}, {"id": "m2", "text": "The user likes coffee."}, {"text": "no id"}]})).unwrap();
+        assert_eq!(m.memories, [("m1".to_owned(), "The user likes tea.".to_owned()), ("m2".to_owned(), "The user likes coffee.".to_owned())]);
+    }
+
+    #[test]
+    fn a_memorys_remove_takes_it_out_at_once() {
+        let mut m = Data::of(&json!({"ok": true, "tools": [], "mac": {}, "memories": [{"id": "m1", "text": "tea"}, {"id": "m2", "text": "coffee"}]})).unwrap();
+        m.forget("m1");
+        assert_eq!(m.memories, [("m2".to_owned(), "coffee".to_owned())]);
+        m.forget("nope");
+        assert_eq!(m.memories.len(), 1);
+    }
+
+    #[test]
     fn a_plain_chats_first_tab_is_chats_with_three_positions() {
         assert_eq!((first_tab_name(true), first_tab_name(false)), ("Chats", "This Bot"));
         let d = Data::of(&json!({"ok": true, "bot": null, "profile": "chats", "mac": {},
@@ -2568,7 +2660,7 @@ mod tests {
         assert_eq!(d.on_count(), (4, 5));
         // Activity's asked calls
         let a = Data::of(&json!({"ok": true, "tools": [], "mac": {}, "activity": [
-            {"at": 1, "bot": "", "botName": "The assistant", "command": "Save this to memory?", "outcome": "allowed_chat", "tool": "memory_add"},
+            {"at": 1, "bot": "", "botName": "A plain chat", "command": "Save this to memory?", "outcome": "allowed_chat", "tool": "memory_add"},
             {"at": 2, "bot": "", "command": "Make a routine?", "outcome": "declined", "tool": "routine_create"}]})).unwrap();
         assert_eq!(a.activity[0].tool, "memory_add");
         let words: Vec<String> = ["allowed", "allowed_chat", "declined", "expired", "needs_ok"].iter().map(|o| outcome_words(o, "")).collect();

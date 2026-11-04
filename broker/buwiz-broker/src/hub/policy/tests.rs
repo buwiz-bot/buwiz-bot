@@ -1020,10 +1020,10 @@ async fn tools_set_takes_a_state_and_the_host_route_sets_chats() {
     assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::Off);
     assert_eq!(call(&plain, "tools_set", json!({"key": "memory", "state": "ask"})).await["status"], "proposed");
     let p = notices(&b.ctx, &b.plain).pop().unwrap();
-    assert_eq!((p["bot"].clone(), p["botName"].clone(), p["op"].clone(), p["from"].clone()), (json!(CHATS), json!("Chats"), json!("tool_ask"), json!("off")));
+    assert_eq!((p["bot"].clone(), p["botName"].clone(), p["op"].clone(), p["from"].clone()), (json!(CHATS), json!("Plain chats"), json!("tool_ask"), json!("off")));
     // the person's route: {bot: "chats", key, state}, a widen at once
     let r = host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "on"})).unwrap();
-    assert_eq!(r["text"], "Chats can use its memory again.");
+    assert_eq!(r["text"], "Plain chats can use memory again.");
     assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::On);
     host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
     assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::Off);
@@ -1047,7 +1047,7 @@ async fn tools_set_takes_a_state_and_the_host_route_sets_chats() {
     told(&b.ctx, &other, None);
     told(&b.ctx, &b.hex, Some("hex"));
     host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "off"})).unwrap();
-    assert!(told(&b.ctx, &other, None).iter().any(|t| t.ends_with("Chats can't use the web now.")));
+    assert!(told(&b.ctx, &other, None).iter().any(|t| t.ends_with("Plain chats can't use web search now.")));
     assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
 }
 
@@ -1160,7 +1160,7 @@ async fn reads_never_ask_and_off_still_refuses() {
     // Web off in Chats: refused; at Ask a search still runs (a read)
     host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "off"})).unwrap();
     let r = exec_tool(&plain, &json!({"name": "fetch_url", "input": {"url": "http://127.0.0.1:9/"}})).await;
-    assert_eq!(crate::js::string_of(&r.content), "web is off for these chats. Only the user can turn it on; tools_set proposes it.");
+    assert_eq!(crate::js::string_of(&r.content), "web is off for plain chats. Only the user can turn it on; tools_set proposes it.");
     assert!(!names(&tool_list(&plain).await).contains(&"fetch_url".to_owned()));
     host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "ask"})).unwrap();
     let r = exec_tool(&plain, &json!({"name": "fetch_url", "input": {"url": "http://127.0.0.1:9/"}})).await;
@@ -1207,21 +1207,34 @@ async fn outside_content_makes_every_guarded_write_ask_even_on_and_with_a_grant(
 }
 
 #[tokio::test]
-async fn a_turn_with_no_one_to_ask_refuses() {
+async fn a_routine_takes_ask_as_on_but_no_one_answers_the_guard_or_an_agents_request() {
     let b = bed("nobody");
-    for turn in [TurnCtx { thread: b.plain.clone(), routine: Some("r1".into()), ..TurnCtx::default() }, TurnCtx { thread: b.plain.clone(), acting_bot: Some("hex".into()), ..TurnCtx::default() }] {
+    let turn_of = |t: TurnCtx| {
         let job = b.ctx.jobs.create(&b.plain, Value::Null, None, false);
-        let run = Run::new(b.ctx.clone(), turn, job, Arc::new(Settings::from(|_| None)));
-        run.state().external = true;
-        let r = exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await;
-        assert_eq!(r, Out::err(ask::NOBODY.into()));
-    }
-    // a routine's turn in a plain chat: memory is at Ask
-    let job = b.ctx.jobs.create(&b.plain, Value::Null, None, false);
-    let run = Run::new(b.ctx.clone(), TurnCtx { thread: b.plain.clone(), routine: Some("r1".into()), ..TurnCtx::default() }, job, Arc::new(Settings::from(|_| None)));
+        Run::new(b.ctx.clone(), t, job, Arc::new(Settings::from(|_| None)))
+    };
+    let routine = || TurnCtx { thread: b.plain.clone(), routine: Some("r1".into()), ..TurnCtx::default() };
+    let request = || TurnCtx { thread: b.plain.clone(), acting_bot: Some("hex".into()), ..TurnCtx::default() };
+    // a routine's run in a plain chat: memory and the shell at Ask run, no card
+    let run = turn_of(routine());
+    assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await.content).starts_with("remembered"));
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await.content, json!("hi"));
+    assert!(asks(&b.ctx, &b.plain).is_empty());
+    // off still refuses
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "off"})).unwrap();
+    assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "y"}})).await.content).contains("is off for plain chats"));
+    // after outside content the guard asks, and no one is there: refused
+    run.state().external = true;
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
+    // an agent's request keeps refusing Ask, and the guard
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "memory", "state": "ask"})).unwrap();
+    let run = turn_of(request());
     assert_eq!(exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await, Out::err(ask::NOBODY.into()));
+    run.state().external = true;
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
     assert!(asks(&b.ctx, &b.plain).is_empty() && asks(&b.ctx, &b.hex).is_empty(), "no card");
-    assert!(activity(&b.ctx, None).iter().take(3).all(|r| r["outcome"] == "needs_ok"));
+    let outcomes: Vec<Value> = activity(&b.ctx, None).iter().filter(|r| r.get("tool").is_some()).map(|r| r["outcome"].clone()).collect();
+    assert_eq!(outcomes, [json!("needs_ok"), json!("needs_ok"), json!("needs_ok")]);
 }
 
 #[test]
@@ -1266,4 +1279,25 @@ async fn an_mcp_tool_marked_read_only_runs_at_ask_and_the_rest_ask() {
     let r = exec_tool(&run, &json!({"name": "mcp_ro_echo", "input": {"x": 1}})).await;
     assert_eq!(r, Out::err(ask::NO_ANSWER.into()), "the rest ask (and no answer came)");
     assert_eq!(asks(&ctx, &chat)[0]["key"], "mcp:ro");
+}
+
+#[tokio::test]
+async fn the_chats_view_lists_plain_chats_memories_and_a_click_forgets_one() {
+    let b = bed("memories");
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "on"})).unwrap();
+    let plain = run_in(&b.ctx, &b.plain);
+    for t in ["I like tea", "I like coffee"] {
+        exec_tool(&plain, &json!({"name": "memory_add", "input": {"text": t}})).await;
+    }
+    let v = host_view(&b.ctx, None).unwrap();
+    let ms = v["memories"].as_array().unwrap().clone();
+    assert_eq!(ms.iter().map(|m| m["text"].clone()).collect::<Vec<_>>(), [json!("I like tea"), json!("I like coffee")]);
+    assert!(host_view(&b.ctx, Some("hex")).unwrap().get("memories").is_none(), "a Bot's view has none");
+    assert_eq!(host_memory_remove(&b.ctx, &json!({"id": ms[0]["id"]})).unwrap()["ok"], true);
+    assert_eq!(chats_memories(&b.ctx), ["I like coffee"]);
+    assert_eq!(host_memory_remove(&b.ctx, &json!({"id": ms[0]["id"]})).unwrap_err().code, "not_found");
+    assert_eq!(host_memory_remove(&b.ctx, &json!({})).unwrap_err().code, "invalid_args");
+    // the next call's system prompt has only what is left
+    let section = crate::hub::library::botctx::chats_section(&b.ctx);
+    assert!(section.contains("- I like coffee") && !section.contains("tea"), "{section}");
 }

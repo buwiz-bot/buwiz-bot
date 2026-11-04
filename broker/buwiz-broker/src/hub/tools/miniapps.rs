@@ -564,7 +564,7 @@ mod tests {
         assert_eq!((p["status"].clone(), p["key"].clone()), (json!("proposed"), json!(format!("v1:{FX}"))));
         assert!(!host.row(FX).unwrap().enabled, "not applied");
         let (title, n) = last_notice(&ctx, &chat);
-        assert_eq!((title.as_str(), n["op"].clone(), n["state"].clone()), ("Turn Fixture back on for The assistant?", json!("tool_on"), json!("pending")));
+        assert_eq!((title.as_str(), n["op"].clone(), n["state"].clone()), ("Turn Fixture back on?", json!("tool_on"), json!("pending")));
         let a = crate::hub::policy::answer(&ctx, &json!({"chat": chat, "id": p["proposal"], "answer": "yes"})).unwrap();
         assert_eq!(a["notice"]["text"], "Fixture is on for every Bot.");
         for _ in 0..100 {

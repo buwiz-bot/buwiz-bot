@@ -301,6 +301,7 @@ const POSTS: &[&str] = &[
     "/v1/host/routines/hook",
     "/v1/host/tools/answer",
     "/v1/host/tools/ask",
+    "/v1/host/tools/memory/remove",
     "/v1/host/tools/set",
     "/v1/host/tools/undo",
     "/v1/host/shell/mode",
@@ -332,6 +333,7 @@ impl Route {
                 match *path {
                     "/v1/host/tools/answer" => return policy::answer(ctx, b),
                     "/v1/host/tools/ask" => return policy::ask::host_answer(ctx, b),
+                    "/v1/host/tools/memory/remove" => return policy::host_memory_remove(ctx, b),
                     "/v1/host/tools/set" => return policy::host_set(ctx, b),
                     "/v1/host/tools/undo" => return policy::host_undo(ctx, b),
                     "/v1/host/shell/mode" => return policy::host_mode(ctx, b),
@@ -766,7 +768,7 @@ mod tests {
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/setup"), Some(Route::Action(_, "setup"))));
         assert!(matches!(Route::of("/v1/host/plugins/app.buwiz.gws/command"), Some(Route::Action(_, "command"))));
         assert_eq!(of("/v1/host/plugins/app.buwiz.gws/accounts/google/use").map(|r| r.2), Some("use"));
-        for p in ["/v1/host/tools/answer", "/v1/host/tools/ask", "/v1/host/tools/set", "/v1/host/tools/undo", "/v1/host/shell/mode", "/v1/host/shell/rules"] {
+        for p in ["/v1/host/tools/answer", "/v1/host/tools/ask", "/v1/host/tools/memory/remove", "/v1/host/tools/set", "/v1/host/tools/undo", "/v1/host/shell/mode", "/v1/host/shell/rules"] {
             assert!(matches!(Route::of(p), Some(Route::Post(x)) if x == p), "{p}");
         }
         assert!(Route::of("/v1/host/tools/apply").is_none(), "no route applies a change unasked");

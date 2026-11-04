@@ -31,12 +31,12 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "tools_list",
-            "description": "List the tool switches of this Bot (in a plain chat: of the Chats profile every plain chat shares): shell, web, apps, office, routines, memory, agents, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
+            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({
             "name": "tools_set",
-            "description": "Set one of this Bot's tools (in a plain chat: the Chats profile's) to on, ask or off. Toward off (on to ask, on or ask to off) applies at once (the user can undo it). Toward on never applies: a card in this chat asks the user, and it stays as it is until they confirm. You can change only this Bot's own tools.",
+            "description": "Set one of this Bot's tools (in a plain chat: Plain chats') to on, ask or off. Toward off (on to ask, on or ask to off) applies at once (the user can undo it). Toward on never applies: a card in this chat asks the user, and it stays as it is until they confirm. You can change only this Bot's own tools.",
             "input_schema": {"type": "object", "properties": {
                 "key": {"type": "string", "description": "a key tools_list shows, e.g. shell, web, skill:<id>, mcp:<server>"},
                 "state": {"type": "string", "enum": ["on", "ask", "off"]},
@@ -140,8 +140,19 @@ fn key_for(run: &Run, name: &str, input: &Value) -> Option<String> {
 pub fn refusal(run: &Run, name: &str, input: &Value) -> Option<Out> {
     let off = off(run)?;
     let key = key_for(run, name, input)?;
-    let whose = if acting(run).is_some() { "this Bot" } else { "these chats" };
+    let whose = if acting(run).is_some() { "this Bot" } else { "plain chats" };
     off.contains(&key).then(|| Out::err(format!("{key} is off for {whose}. Only the user can turn it on; tools_set proposes it.")))
+}
+
+/// `pos` as this turn reads it: a routine's run takes Ask as On (the user allowed the
+/// routine when it was made); an agent's request does not.
+fn effective(run: &Run, pos: Pos) -> Pos {
+    let routine = run.turn.routine.is_some() || run.turn.surface.is_some();
+    if pos == Pos::Ask && routine && run.turn.acting_bot.is_none() {
+        Pos::On
+    } else {
+        pos
+    }
 }
 
 /// Whether the call `name` only reads: by its name, else as its MCP server or v1 plugin
@@ -168,7 +179,7 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
         return None;
     }
     let key = key_for(run, name, input)?;
-    let pos = policy::tool_state(ctx, &profile(run), &key);
+    let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
@@ -324,7 +335,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
                 })
                 .collect();
             if bot.is_none() {
-                return Ok(out(json!({"profile": "chats", "note": "This chat has no Bot: these are the switches every plain chat shares.", "tools": tools, "mac": counts})));
+                return Ok(out(json!({"profile": "chats", "note": "This chat has no Bot: these are Plain chats' switches, shared by every plain chat.", "tools": tools, "mac": counts})));
             }
             Ok(out(json!({"profile": "bot", "bot": bname, "tools": tools, "mac": counts})))
         }
@@ -342,7 +353,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
                     return Ok(refused(format!("{} can't change another Bot's tools from here.", b.1)));
                 }
             } else if input.get("bot").is_some_and(|x| !x.is_null() && js::string_of(x) != "chats") {
-                return Ok(refused("A plain chat can change only the Chats profile's tools."));
+                return Ok(refused("A plain chat can change only the Plain chats switches."));
             }
             if !keys::known(ctx, &key) {
                 return Ok(refused(format!("no tool switch {} (tools_list shows the keys)", js::slice_utf16(&key, 80))));
@@ -478,7 +489,7 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
     // as a proposal's `unrequested`: after outside content, and the user did not name it
     let external = run.state().external;
     let unasked = external && !words_name(&last_user(run), line);
-    let pos = policy::tool_state(ctx, &profile(run), "shell");
+    let pos = effective(run, policy::tool_state(ctx, &profile(run), "shell"));
     let mut verdict = if pos == Pos::Ask { policy::judge_in(ctx, Mode::Only, line) } else { policy::judge(ctx, line) };
     // at Ask, a line without an allow asks (or runs, where this chat was allowed the shell)
     let mut ask = external && verdict == Verdict::Run;

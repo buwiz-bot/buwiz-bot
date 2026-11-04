@@ -148,6 +148,16 @@ pub fn guarded(key: &str) -> bool {
     matches!(key, "shell" | "agents" | "routines" | "memory" | "apps") || key.starts_with("mcp:") || key.starts_with("v1:")
 }
 
+/// [`phrase_of`] for `owner`'s switch: the Plain chats profile's read "web search",
+/// "memory".
+pub fn phrase_for(ctx: &HubCtx, owner: &str, key: &str) -> String {
+    match (owner == super::CHATS, key) {
+        (true, "web") => "web search".into(),
+        (true, "memory") => "memory".into(),
+        _ => phrase_of(ctx, key),
+    }
+}
+
 /// Every key This Bot lists for `bot` (or Chats for [`super::CHATS`]): the groups, then
 /// each private skill, each MCP server the profile sees and each v1 plugin.
 pub fn all_keys(ctx: &HubCtx, bot: &str) -> Vec<String> {

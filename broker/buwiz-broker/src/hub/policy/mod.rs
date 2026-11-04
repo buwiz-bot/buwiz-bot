@@ -48,12 +48,12 @@ pub const PUT_BACK: &str = "Put back.";
 /// The proposal note the model reads.
 pub const NOT_IN_EFFECT: &str = "Not in effect until the user confirms.";
 pub const SAID_NO: &str = "The user said no to this. Ask them in words first.";
-/// What a chat without a Bot is called on its cards.
-pub const NO_BOT_NAME: &str = "The assistant";
+/// What a chat without a Bot is called on its cards, in Activity and in the notes.
+pub const NO_BOT_NAME: &str = "A plain chat";
 /// The owner id of the profile every plain chat shares (never a Bot's id: those are
 /// `b_…`), and what its cards and receipts call it.
 pub const CHATS: &str = "@chats";
-pub const CHATS_NAME: &str = "Chats";
+pub const CHATS_NAME: &str = "Plain chats";
 
 /// A switch's position: on, ask before a call that changes something or reaches someone,
 /// or off.
@@ -495,7 +495,7 @@ impl Change {
     pub fn receipt(&self, ctx: &HubCtx) -> String {
         match self {
             Change::Tool { bot, key, state, .. } => {
-                let what = keys::phrase_of(ctx, key);
+                let what = keys::phrase_for(ctx, bot, key);
                 match (bot.is_empty(), state) {
                     (true, _) => format!("{what} is on for every Bot."),
                     (false, Pos::On) => format!("{} can use {what} again.", bot_name(ctx, bot)),
@@ -520,7 +520,7 @@ impl Change {
     fn decision(&self, ctx: &HubCtx, yes: bool) -> String {
         match (self, yes) {
             (Change::Tool { bot, key, state, .. }, _) => {
-                let what = keys::phrase_of(ctx, key);
+                let what = keys::phrase_for(ctx, bot, key);
                 let who = if bot.is_empty() { "every Bot".to_owned() } else { bot_name(ctx, bot) };
                 let turn = match state {
                     Pos::On => "on",
@@ -791,8 +791,10 @@ fn notice_of(ctx: &HubCtx, change: &Change, bot: &str, state: &str) -> Value {
 fn title_of(ctx: &HubCtx, change: &Change, bot: &str) -> String {
     let who = bot_name(ctx, bot);
     match change {
-        Change::Tool { key, state: Pos::Ask, .. } => format!("Let {who} use {} again, asking you first?", keys::phrase_of(ctx, key)),
-        Change::Tool { key, .. } => format!("Turn {} back on for {who}?", keys::phrase_of(ctx, key)),
+        Change::Tool { bot, key, state: Pos::Ask, .. } => format!("Let {who} use {} again, asking you first?", keys::phrase_for(ctx, bot, key)),
+        // the switch every Bot shares, from a plain chat (F3)
+        Change::Tool { bot, key, .. } if bot.is_empty() => format!("Turn {} back on?", keys::phrase_of(ctx, key)),
+        Change::Tool { bot, key, .. } => format!("Turn {} back on for {who}?", keys::phrase_for(ctx, bot, key)),
         Change::RuleAdd { pattern, .. } => format!("Always allow `{pattern}` on this Mac?"),
         Change::RuleRemove { pattern, .. } => format!("Stop blocking `{pattern}` on this Mac?"),
         Change::Mode(_) => format!("Let {who} run every command on this Mac without asking?"),
@@ -1075,9 +1077,9 @@ pub fn profile_rows(ctx: &HubCtx, owner: &str) -> Vec<Value> {
         .iter()
         .map(|k| {
             let mut v = keys::row_json(ctx, k, tool_state(ctx, owner, k));
-            // a plain chat can't message agents yet: no sender to send as
+            // a plain chat messages agents as you, and makes none
             if owner == CHATS && k == "agents" {
-                v["sub"] = json!("Not in plain chats yet. Message agents from a Bot's chat.");
+                v["sub"] = json!("Messages your agents as you.");
             }
             v
         })
@@ -1095,5 +1097,22 @@ pub fn host_view(ctx: &HubCtx, bot: Option<&str>) -> Result<Value, V1Error> {
         }
         None => (Value::Null, "chats", profile_rows(ctx, CHATS)),
     };
-    Ok(json!({"ok": true, "bot": who, "profile": profile, "tools": tools, "mac": mac_json(ctx), "activity": activity(ctx, None), "recent": recent(ctx)}))
+    let mut v = json!({"ok": true, "bot": who, "profile": profile, "tools": tools, "mac": mac_json(ctx), "activity": activity(ctx, None), "recent": recent(ctx)});
+    // plain chats' memories, which the Chats tab lists
+    if profile == "chats" {
+        let ms: Vec<Value> = crate::hub::library::botctx::chats_memories(ctx).iter().map(|m| json!({"id": m["id"], "text": m["text"]})).collect();
+        v["memories"] = json!(ms);
+    }
+    Ok(v)
+}
+
+/// `POST /v1/host/tools/memory/remove {id}`: the person forgets one of plain chats'
+/// memories, at once.
+pub fn host_memory_remove(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
+    let Some(id) = b.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) else { return V1Error::err("invalid_args", "send {id}") };
+    match crate::hub::library::botctx::chats_memory_remove(ctx, id) {
+        Ok(true) => Ok(json!({"ok": true, "text": "Forgot it."})),
+        Ok(false) => V1Error::err("not_found", "no such memory"),
+        Err(e) => Err(V1Error::new("internal", e)),
+    }
 }

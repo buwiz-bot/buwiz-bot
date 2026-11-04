@@ -369,6 +369,21 @@ pub fn chats_memories(ctx: &HubCtx) -> Vec<Value> {
     data.and_then(|d| serde_json::from_str::<Value>(&d).ok()).and_then(|v| v.as_array().cloned()).unwrap_or_default()
 }
 
+fn save_chats_memories(ctx: &HubCtx, ms: &[Value]) -> Result<(), String> {
+    ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO kv(name, data) VALUES(?,?)", [CHATS_MEMORY, &js::stringify(&json!(ms))]).map(|_| ()))
+}
+
+/// Forgets plain chats' memory `id`: whether it was there.
+pub fn chats_memory_remove(ctx: &HubCtx, id: &str) -> Result<bool, String> {
+    let mut ms = chats_memories(ctx);
+    let before = ms.len();
+    ms.retain(|m| m.get("id").and_then(Value::as_str) != Some(id));
+    if ms.len() == before {
+        return Ok(false);
+    }
+    save_chats_memories(ctx, &ms).map(|_| true)
+}
+
 /// The system prompt's memories section of a plain chat ("" with none).
 pub fn chats_section(ctx: &HubCtx) -> String {
     let ms = chats_memories(ctx);
@@ -381,7 +396,7 @@ pub fn chats_section(ctx: &HubCtx) -> String {
 /// `memory_add`, `memory_list` and `memory_remove` in a plain chat.
 fn chats_memory_tool(ctx: &HubCtx, name: &str, input: &Value) -> ToolResult {
     let mut ms = chats_memories(ctx);
-    let save = |ms: &Vec<Value>| ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO kv(name, data) VALUES(?,?)", [CHATS_MEMORY, &js::stringify(&json!(ms))]).map(|_| ()));
+    let save = |ms: &Vec<Value>| save_chats_memories(ctx, ms);
     match name {
         "memory_add" => {
             let t = clip(input.get("text"), 1000);
@@ -422,7 +437,7 @@ fn chats_memory_tool(ctx: &HubCtx, name: &str, input: &Value) -> ToolResult {
 /// chats' memories.
 pub fn tool_bot(ctx: &HubCtx, turn: &TurnCtx, name: &str, input: &Value) -> ToolResult {
     let Some(bot_id) = ctx.store.read(|s| bot_of(s, turn).map(|b| b.id.clone())) else {
-        if name.starts_with("memory_") && turn.routine.is_none() && turn.surface.is_none() {
+        if name.starts_with("memory_") && turn.surface.is_none() {
             return chats_memory_tool(ctx, name, input);
         }
         return fails(format!("{name} only works in a bot's thread"));
