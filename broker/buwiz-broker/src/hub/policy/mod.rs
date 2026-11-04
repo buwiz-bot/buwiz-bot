@@ -334,12 +334,15 @@ impl Change {
                 if !bot.is_empty() {
                     db(ctx, |c| c.execute("INSERT OR REPLACE INTO bot_tools(bot_id, key, enabled, actor, at) VALUES(?,?,?,?,?)", rusqlite::params![bot, key, *enabled as i64, actor, at]))?;
                 }
-                // turning a skill or server on for a Bot turns it on where it is off for all (F3)
+                // turning a skill, server or mini app on for a Bot turns it on where it is off
+                // for all (F3)
                 if *enabled {
                     if let Some(id) = key.strip_prefix("skill:") {
                         db(ctx, |c| c.execute("UPDATE skills SET enabled=1 WHERE id=?", [id]))?;
                     } else if let Some(id) = key.strip_prefix("mcp:") {
                         db(ctx, |c| c.execute("UPDATE mcp_servers SET enabled=1 WHERE id=?", [id]))?;
+                    } else if let Some(id) = key.strip_prefix("v1:") {
+                        enable_app(ctx, id);
                     }
                 }
             }
@@ -404,7 +407,22 @@ impl Change {
     }
 }
 
-/// Whether the switch every Bot shares for `key` is on (a skill's, a server's; others have none).
+/// Switches mini app `id` on for every Bot: it starts and is verified again (in a task: the
+/// plugin host's enable waits for the process).
+fn enable_app(ctx: &HubCtx, id: &str) {
+    let (Some(host), Ok(rt)) = (ctx.plugins.clone(), tokio::runtime::Handle::try_current()) else { return };
+    let id = id.to_owned();
+    rt.spawn(async move {
+        match host.enable(&id).await {
+            Ok(v) if v.get("ok") == Some(&Value::Bool(true)) => {}
+            Ok(v) => eprintln!("buwiz-broker: mini app {id} did not start: {}", crate::js::string_of(&v["state"])),
+            Err(e) => eprintln!("buwiz-broker: mini app {id}: {}", e.message),
+        }
+    });
+}
+
+/// Whether the switch every Bot shares for `key` is on (a skill's, a server's, a mini app's;
+/// others have none).
 fn shared_on(ctx: &HubCtx, key: &str) -> bool {
     let q = |sql: &str, id: &str| db(ctx, |c| c.query_row(sql, [id], |r| r.get::<_, Option<i64>>(0)).optional()).ok().flatten().flatten();
     if let Some(id) = key.strip_prefix("skill:") {
@@ -412,6 +430,9 @@ fn shared_on(ctx: &HubCtx, key: &str) -> bool {
     }
     if let Some(id) = key.strip_prefix("mcp:") {
         return q("SELECT enabled FROM mcp_servers WHERE id=?", id) != Some(0);
+    }
+    if let Some(id) = key.strip_prefix("v1:") {
+        return crate::hub::tools::v1::view(ctx).row(id).is_none_or(|r| r.enabled);
     }
     true
 }

@@ -7,7 +7,9 @@
 //! app's setup in (the shared Google client; the model never sees a value);
 //! `app_signin` posts the `account_required` Sign in card for an account
 //! (with the setup it lacks), or says who is signed in already;
-//! `app_enable` / `app_disable` act at once; `app_list` lists, with each
+//! `app_disable` acts at once, and `app_enable` on a mini app that is off
+//! only proposes it (`controls::app_enable`: a card the user answers;
+//! here it starts one that is on already); `app_list` lists, with each
 //! app's setup readiness and accounts (never a value or token). A
 //! package's card also names its folder (`package`), skills and accounts.
 
@@ -44,7 +46,7 @@ pub fn defs() -> Vec<Value> {
             "description": "List the installed mini apps: id, title, version, state, whether each is enabled, its setup (ready or missing, per provider) and its accounts (state and who is signed in). Read it to tell \"needs setup\" (app_setup or the sign-in card asks for it) from \"needs sign-in\" (app_signin) from \"connected\".",
             "input_schema": {"type": "object", "properties": {}},
         }),
-        json!({"name": "app_enable", "description": "Switch an installed mini app on (it starts and is verified again).", "input_schema": id_schema("the one to switch on")}),
+        json!({"name": "app_enable", "description": "Switch an installed mini app on for every Bot (it starts and is verified again). When it is off this never applies: a card in this chat asks the user, and it stays off until they confirm. One that is on already starts again.", "input_schema": id_schema("the one to switch on")}),
         json!({"name": "app_disable", "description": "Switch an installed mini app off: its process stops; its data and settings stay.", "input_schema": id_schema("the one to switch off")}),
         json!({
             "name": "app_uninstall",
@@ -556,6 +558,23 @@ mod tests {
         let listed = call(&run, "app_list", json!({})).await;
         assert!(listed.content.as_str().unwrap().contains(&format!("{FX} — Fixture · 1.0.0 · running · enabled")), "{listed:?}");
         assert_eq!(call(&run, "app_disable", json!({"id": FX})).await, Out::ok(format!("{FX} is off: its tools are withheld")));
+        // on again for every Bot is a widen: a card asks, nothing applies until the user's yes
+        let p = call(&run, "app_enable", json!({"id": FX})).await;
+        let p: Value = serde_json::from_str(p.content.as_str().unwrap()).unwrap();
+        assert_eq!((p["status"].clone(), p["key"].clone()), (json!("proposed"), json!(format!("v1:{FX}"))));
+        assert!(!host.row(FX).unwrap().enabled, "not applied");
+        let (title, n) = last_notice(&ctx, &chat);
+        assert_eq!((title.as_str(), n["op"].clone(), n["state"].clone()), ("Turn Fixture back on for The assistant?", json!("tool_on"), json!("pending")));
+        let a = crate::hub::policy::answer(&ctx, &json!({"chat": chat, "id": p["proposal"], "answer": "yes"})).unwrap();
+        assert_eq!(a["notice"]["text"], "Fixture is on for every Bot.");
+        for _ in 0..100 {
+            if host.row(FX).unwrap().enabled {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(host.row(FX).unwrap().enabled, "the user's yes switched it on");
+        // on already: it starts again, as before
         assert_eq!(call(&run, "app_enable", json!({"id": FX})).await, Out::ok(format!("{FX} is on: its tools return next step")));
         assert_eq!(call(&run, "app_enable", json!({"id": "app.buwiz.none"})).await.is_error, Some(true));
 

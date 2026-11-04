@@ -1,7 +1,7 @@
 //! The bot controls' model tools (Rust's own, not in `defs.json`): `tools_list`,
 //! `tools_set`, `shell_rules`, `shell_find_program`, `shell_rule_add`, `shell_rule_remove`
 //! and `shell_mode_set`; the ceiling `tool_list` and `exec_tool` apply; the gate in front of
-//! `shell_run`; and `skill_enable` / `mcp_enable`, which propose (F3).
+//! `shell_run`; and `skill_enable` / `mcp_enable` / `app_enable`, which propose (F3).
 //!
 //! A Bot acts only on its own switches (the acting Bot, `botctx::bot_of`). A tighten
 //! applies at once and posts its receipt card; a widen only ever posts a pending card
@@ -369,6 +369,22 @@ pub fn skill_enable(run: &Run, input: &Value) -> Option<Out> {
     let change = Change::Tool { bot: bot.as_ref().map(|b| b.0.clone()).unwrap_or_default(), key: key.clone(), enabled: true };
     if change.noop(ctx) {
         return Some(Out::ok(format!("skill \"{id}\" enabled — instructions apply")));
+    }
+    Some(propose(run, &bot, &change, |t| keys::names_key(ctx, &key, t), json!({"key": key})))
+}
+
+/// `app_enable` (F3): a mini app off for every Bot, or for this Bot, becomes a `tool_on`
+/// proposal for `v1:<id>`. `None` leaves the call to the mini app tools (one not installed,
+/// one on already, which they start again).
+pub fn app_enable(run: &Run, input: &Value) -> Option<Out> {
+    let ctx = &run.ctx;
+    let id = input.get("id").filter(|v| !v.is_null()).map(js::string_of)?;
+    super::v1::view(ctx).row(&id)?;
+    let bot = acting(run);
+    let key = format!("v1:{id}");
+    let change = Change::Tool { bot: bot.as_ref().map(|b| b.0.clone()).unwrap_or_default(), key: key.clone(), enabled: true };
+    if change.noop(ctx) {
+        return None;
     }
     Some(propose(run, &bot, &change, |t| keys::names_key(ctx, &key, t), json!({"key": key})))
 }

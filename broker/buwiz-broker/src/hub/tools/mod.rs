@@ -234,7 +234,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "fetch_url" => return builtin::fetch_url(input).await,
         "shell_run" => return Ok(controls::shell_run(run, input).await),
         _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,
-        // F3: switching a skill or a user's server on proposes it
+        // F3: switching a skill, a user's server or a mini app on proposes it
         "skill_enable" if run.turn.surface.is_none() => {
             if let Some(out) = controls::skill_enable(run, input) {
                 return Ok(out);
@@ -245,6 +245,13 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
                 return Ok(out);
             }
             return mcp::admin(run, name, input).await;
+        }
+        // and a mini app, which is on for every Bot
+        "app_enable" if run.turn.surface.is_none() && ctx.plugins.is_some() => {
+            if let Some(out) = controls::app_enable(run, input) {
+                return Ok(out);
+            }
+            return miniapps::tool(run, name, input).await;
         }
         "query_source" => return Ok(builtin::query_source(input).await),
         "web_search" => return builtin::web_search(input).await,
