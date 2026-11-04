@@ -3,8 +3,9 @@
 //!
 //! - Store: `bot_tools` (no row is on), `shell_mode` (no row is `bypass`), `shell_rule`,
 //!   `shell_activity` (7 days, clipped and masked), `policy_change` (24 h, each with the JSON
-//!   of its inverse) and `policy_note` (what a Bot reads of the user's decisions on its next
-//!   model call). Tables in `store/schema.rs`.
+//!   of its inverse), `policy_note` (what a Bot reads of the user's decisions on its next
+//!   model call) and `policy_seen` (the last change each thread's model was told of). Tables
+//!   in `store/schema.rs`.
 //! - A [`Change`] tightens or widens. A model tool applies a tighten at once and only ever
 //!   proposes a widen: a `tools_change` notice in the chat that a person answers through
 //!   `POST /v1/host/tools/answer`. Nothing a model tool calls applies a widen.
@@ -161,27 +162,62 @@ pub fn activity(ctx: &HubCtx, bot: Option<&str>) -> Vec<Value> {
 
 /// A note `thread`'s next model call reads (and drops).
 pub fn note(ctx: &HubCtx, thread: &str, text: &str) {
+    note_as(ctx, thread, &uuidv7(), text);
+}
+
+/// [`note`] with the id of the change it tells of (`u_…`), so the change is not told again.
+fn note_as(ctx: &HubCtx, thread: &str, id: &str, text: &str) {
     let Some(t) = ctx.store.read(|s| s.thread(thread).map(|t| t.id.clone())) else { return };
     let at = now(ctx);
     let _ = db(ctx, |c| {
         c.execute("DELETE FROM policy_note WHERE at < ?", [at - DAY])?;
-        c.execute("INSERT INTO policy_note(id, at, thread, text) VALUES(?,?,?,?)", rusqlite::params![uuidv7(), at, t, text])
+        c.execute("INSERT INTO policy_note(id, at, thread, text) VALUES(?,?,?,?)", rusqlite::params![id, at, t, text])
     });
 }
 
-/// `thread`'s notes, oldest first, as model messages (each once): the form agent messages
-/// take (`agents/run.rs` `history_for`).
-pub fn take_notes(ctx: &HubCtx, thread: &str) -> Vec<Value> {
-    let texts: Vec<(String, String)> = db(ctx, |c| {
-        let mut q = c.prepare("SELECT id, text FROM policy_note WHERE thread=? ORDER BY at, id")?;
+/// `thread`'s notes, oldest first, then one line of the changes the user made since its
+/// last call (the sheet's included), as model messages (each once): the form agent messages
+/// take (`agents/run.rs` `history_for`). `bot` is the Bot answering there (`None` in a
+/// chat without one): another Bot's switches are not its business.
+pub fn take_notes(ctx: &HubCtx, thread: &str, bot: Option<&str>) -> Vec<Value> {
+    let notes: Vec<(String, String)> = db(ctx, |c| {
+        let mut q = c.prepare("SELECT id, text FROM policy_note WHERE thread=? ORDER BY at, rowid")?;
         let r = q.query_map([thread], |r| Ok((r.get(0)?, r.get(1)?)))?;
         r.collect()
     })
     .unwrap_or_default();
-    for (id, _) in &texts {
+    for (id, _) in &notes {
         let _ = db(ctx, |c| c.execute("DELETE FROM policy_note WHERE id=?", [id]));
     }
-    texts.into_iter().map(|(_, t)| json!({"role": "user", "content": format!("[Buwiz Bot, the app (not a message from the user):]\n{t}")})).collect()
+    let told: HashSet<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+    let unseen = unseen_changes(ctx, thread, bot, &told);
+    let mut texts: Vec<String> = notes.iter().map(|n| n.1.clone()).collect();
+    if !unseen.is_empty() {
+        texts.push(format!("Since your last message, the user changed: {}", unseen.join(" ")));
+    }
+    texts.into_iter().map(|t| json!({"role": "user", "content": format!("[Buwiz Bot, the app (not a message from the user):]\n{t}")})).collect()
+}
+
+/// What the user changed since `thread`'s marker (oldest first): the Mac's for every thread,
+/// a Bot's switches only for that Bot's. The marker moves past them; a thread without one
+/// starts now, with no backlog. A change in `told` (a card answer's note) is not repeated.
+fn unseen_changes(ctx: &HubCtx, thread: &str, bot: Option<&str>, told: &HashSet<&str>) -> Vec<String> {
+    let at = now(ctx);
+    let last: Option<String> = db(ctx, |c| c.query_row("SELECT last FROM policy_seen WHERE thread=?", [thread], |r| r.get(0)).optional()).ok().flatten();
+    let Some(last) = last else {
+        let _ = db(ctx, |c| c.execute("INSERT OR REPLACE INTO policy_seen(thread, last, at) VALUES(?,?,?)", rusqlite::params![thread, format!("u_{}", uuidv7()), at]));
+        return Vec::new();
+    };
+    // ids are `u_` and a v7 uuid: in the order they were made
+    let rows: Vec<(String, Option<String>, String)> = db(ctx, |c| {
+        let mut q = c.prepare("SELECT id, bot_id, COALESCE(said, text) FROM policy_change WHERE id > ? AND actor='human' ORDER BY id")?;
+        let r = q.query_map([&last], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default())))?;
+        r.collect()
+    })
+    .unwrap_or_default();
+    let Some(newest) = rows.last().map(|r| r.0.clone()) else { return Vec::new() };
+    let _ = db(ctx, |c| c.execute("UPDATE policy_seen SET last=?, at=? WHERE thread=?", rusqlite::params![newest, at, thread]));
+    rows.into_iter().filter(|(id, b, text)| !text.is_empty() && !told.contains(id.as_str()) && b.as_deref().is_none_or(|b| bot == Some(b))).map(|r| r.2).collect()
 }
 
 // ---- changes ----
@@ -353,7 +389,7 @@ pub fn commit(ctx: &HubCtx, change: &Change, actor: &str) -> Result<(String, Str
     change.apply(ctx, actor)?;
     let text = change.receipt(ctx);
     let id = format!("u_{}", uuidv7());
-    record(ctx, &id, actor, change, &text, Some(&inverse))?;
+    record(ctx, &id, actor, change, &text, None, Some(&inverse))?;
     Ok((id, text))
 }
 
@@ -364,13 +400,14 @@ fn bot_of_change(c: &Change) -> Option<&str> {
     }
 }
 
-fn record(ctx: &HubCtx, id: &str, actor: &str, change: &Change, text: &str, undo: Option<&Change>) -> Result<(), String> {
+/// `said`: what the model reads of it, when not `text`.
+fn record(ctx: &HubCtx, id: &str, actor: &str, change: &Change, text: &str, said: Option<&str>, undo: Option<&Change>) -> Result<(), String> {
     let at = now(ctx);
     db(ctx, |c| {
         c.execute("DELETE FROM policy_change WHERE at < ?", [at - DAY])?;
         c.execute(
-            "INSERT INTO policy_change(id, at, actor, bot_id, text, undo, target) VALUES(?,?,?,?,?,?,?)",
-            rusqlite::params![id, at, actor, bot_of_change(change), text, undo.map(|u| u.to_json().to_string()), change.target()],
+            "INSERT INTO policy_change(id, at, actor, bot_id, text, said, undo, target) VALUES(?,?,?,?,?,?,?,?)",
+            rusqlite::params![id, at, actor, bot_of_change(change), text, said, undo.map(|u| u.to_json().to_string()), change.target()],
         )
     })
     .map(|_| ())
@@ -396,7 +433,8 @@ pub fn undo(ctx: &HubCtx, id: &str) -> Result<(), String> {
     }
     inverse.apply(ctx, "human")?;
     db(ctx, |c| c.execute("UPDATE policy_change SET undo=NULL WHERE id=?", [id]))?;
-    record(ctx, &format!("u_{}", uuidv7()), "human", &inverse, PUT_BACK, None)
+    let said = format!("Undid a change. {}", inverse.receipt(ctx));
+    record(ctx, &format!("u_{}", uuidv7()), "human", &inverse, PUT_BACK, Some(&said), None)
 }
 
 /// Recent changes (24 h), newest first: `[{at, actor, text, undo?}]`, `undo` while it is
@@ -666,7 +704,7 @@ pub fn answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     n["undo"] = json!(undo);
     n["text"] = json!(text);
     set_notice(ctx, chat, id, &n, Some(&text));
-    note(ctx, &thread, &change.decision(ctx, true));
+    note_as(ctx, &thread, &undo, &change.decision(ctx, true));
     Ok(json!({"ok": true, "notice": n}))
 }
 
@@ -685,17 +723,14 @@ pub fn host_set(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     let (Some(bot), Some(key), Some(enabled)) = (b.get("bot").and_then(Value::as_str).filter(|s| !s.is_empty()), b.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()), b.get("enabled").and_then(Value::as_bool)) else {
         return V1Error::err("invalid_args", "send {bot, key, enabled}");
     };
-    let Some(thread) = ctx.store.read(|s| s.bot(bot).map(|x| x.thread_id.clone())) else { return V1Error::err("not_found", format!("no Bot {}", crate::js::slice_utf16(bot, 80))) };
+    if ctx.store.read(|s| s.bot(bot).is_none()) {
+        return V1Error::err("not_found", format!("no Bot {}", crate::js::slice_utf16(bot, 80)));
+    }
     if !keys::known(ctx, key) {
         return V1Error::err("not_found", format!("no tool switch {}", crate::js::slice_utf16(key, 80)));
     }
-    let change = Change::Tool { bot: bot.to_owned(), key: key.to_owned(), enabled };
-    let was = change.noop(ctx);
-    let out = applied(ctx, &change)?;
-    if let (false, Some(t)) = (was, thread) {
-        note(ctx, &t, &change.decision(ctx, true));
-    }
-    Ok(out)
+    // the Bot's threads read it on their next call (`take_notes`)
+    applied(ctx, &Change::Tool { bot: bot.to_owned(), key: key.to_owned(), enabled })
 }
 
 /// `POST /v1/host/shell/mode {mode}`.

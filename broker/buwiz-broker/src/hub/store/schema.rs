@@ -117,6 +117,10 @@ const TRIED: &[&str] = &[
   CREATE TABLE IF NOT EXISTS policy_change(
     id TEXT PRIMARY KEY, at INTEGER, actor TEXT, bot_id TEXT, text TEXT, undo TEXT, target TEXT);
   CREATE TABLE IF NOT EXISTS policy_note(id TEXT PRIMARY KEY, at INTEGER, thread TEXT, text TEXT);",
+    // what the model reads of a change (an Undo's "Put back." says what it
+    // put back), and the last change each thread's model was told of
+    "ALTER TABLE policy_change ADD COLUMN said TEXT",
+    "CREATE TABLE IF NOT EXISTS policy_seen(thread TEXT PRIMARY KEY, last TEXT, at INTEGER)",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

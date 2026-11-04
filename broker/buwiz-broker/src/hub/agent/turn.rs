@@ -49,8 +49,10 @@ fn search_refused(m: &str) -> bool {
 pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Value]) -> Result<String, String> {
     let ctx = &run.ctx;
     let mut messages = ctx.store.read(|s| history(s.thread(&run.turn.thread)));
-    // the user's decisions on this chat's tool cards since the last call, once each
-    messages.extend(crate::hub::policy::take_notes(ctx, &run.thread_id()));
+    // the user's decisions on this chat's tool cards and the changes the user made since the
+    // last call, once each
+    let bot = ctx.store.read(|s| crate::hub::library::botctx::bot_of(s, &run.turn).map(|b| b.id.clone()));
+    messages.extend(crate::hub::policy::take_notes(ctx, &run.thread_id(), bot.as_deref()));
     run.state().prompt = Some(prompt.to_owned());
     messages.push(json!({"role": "user", "content": user_content(ctx, prompt, extra, ctx_blocks).await}));
     // the chat's attachments and the hints of the `@` scopes in play

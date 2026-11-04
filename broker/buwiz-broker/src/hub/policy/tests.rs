@@ -501,13 +501,13 @@ async fn answers_apply_or_decline_once_and_the_bot_is_told() {
     assert_eq!(a["notice"]["state"], "declined");
     assert_eq!(mode(&b.ctx), Mode::Only);
     // the Bot reads one note per decision on its next call, once
-    let notes = take_notes(&b.ctx, &b.hex);
+    let notes = take_notes(&b.ctx, &b.hex, Some("hex"));
     let texts: Vec<String> = notes.iter().map(|m| crate::js::string_of(&m["content"])).collect();
     assert_eq!(texts.len(), 2);
     assert!(texts[0].ends_with("The user allowed `claude` on this Mac."), "{texts:?}");
     assert!(texts[1].ends_with("The user said no to Bypass on this Mac."), "{texts:?}");
     assert_eq!(notes[0]["role"], "user");
-    assert!(take_notes(&b.ctx, &b.hex).is_empty());
+    assert!(take_notes(&b.ctx, &b.hex, Some("hex")).is_empty());
     // after Not now: no new proposal for it in this thread for 24 h, unless the user names it
     let r = call(&run, "shell_mode_set", json!({"mode": "bypass"})).await;
     assert_eq!((r["status"].clone(), r["why"].clone()), (json!("refused"), json!(SAID_NO)));
@@ -521,7 +521,7 @@ async fn answers_apply_or_decline_once_and_the_bot_is_told() {
     // turning a tool on: the human note names the Bot
     let p = call(&run, "tools_set", json!({"key": "web", "enabled": true})).await["proposal"].clone();
     answer(&b.ctx, &json!({"chat": chat, "id": p, "answer": "no"})).unwrap();
-    let t = take_notes(&b.ctx, &b.hex);
+    let t = take_notes(&b.ctx, &b.hex, Some("hex"));
     assert!(crate::js::string_of(&t.last().unwrap()["content"]).ends_with("The user said no to turning on the web for Hex."));
     // a bad answer, an unknown card
     assert_eq!(answer(&b.ctx, &json!({"chat": chat, "id": p, "answer": "maybe"})).unwrap_err().code, "invalid_args");
@@ -645,10 +645,74 @@ async fn unrequested_after_outside_content_and_the_human_routes() {
     assert_eq!(host_set(&b.ctx, &json!({"bot": "hex", "key": "nope", "enabled": false})).unwrap_err().code, "not_found");
     assert_eq!(host_mode(&b.ctx, &json!({"mode": "ask"})).unwrap_err().code, "invalid_args");
     // the sheet's own switch tells the Bot
-    take_notes(&b.ctx, &b.hex);
+    take_notes(&b.ctx, &b.hex, Some("hex"));
     host_set(&b.ctx, &json!({"bot": "hex", "key": "shell", "enabled": true})).unwrap();
-    let t = take_notes(&b.ctx, &b.hex);
-    assert!(crate::js::string_of(&t[0]["content"]).ends_with("The user turned on the shell for Hex."));
+    let t = take_notes(&b.ctx, &b.hex, Some("hex"));
+    assert_eq!(t.len(), 1);
+    assert!(crate::js::string_of(&t[0]["content"]).ends_with("Since your last message, the user changed: Hex can use the shell again."), "{t:?}");
+}
+
+fn told(ctx: &HubCtx, thread: &str, bot: Option<&str>) -> Vec<String> {
+    take_notes(ctx, thread, bot).iter().map(|m| crate::js::string_of(&m["content"])).collect()
+}
+
+#[tokio::test]
+async fn the_sheets_changes_reach_each_threads_next_call_once() {
+    let b = bed("seen");
+    let other = b.ctx.store.write(|s| {
+        let t = s.fresh_thread("Kit");
+        let id = t.id.clone();
+        s.bots.push(Bot::new("kit", "Kit", "blob", "#FFFFFF", Some(t.id.clone())));
+        s.list.push(t);
+        id
+    });
+    let other = other.unwrap();
+    // a change before a thread's first call is no backlog
+    host_mode(&b.ctx, &json!({"mode": "only"})).unwrap();
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    assert!(told(&b.ctx, &other, Some("kit")).is_empty());
+    // the Mac's changes reach every thread, a chat without a Bot too
+    host_rules(&b.ctx, &json!({"op": "add", "kind": "allow", "pattern": "claude"})).unwrap();
+    host_rules(&b.ctx, &json!({"op": "remove", "kind": "allow", "pattern": "claude"})).unwrap();
+    host_mode(&b.ctx, &json!({"mode": "bypass"})).unwrap();
+    let line = "[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Always allowed on this Mac: `claude`. Removed `claude` from Always allowed. Those commands ask first again. Mode: Bypass. Every command runs without asking. Blocks still apply.";
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), [line]);
+    assert_eq!(told(&b.ctx, &b.plain, None), [line]);
+    // once: the marker moved
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    // a Bot's switch reaches only that Bot's threads (Kit's marker moves past it)
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": false})).unwrap();
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Hex can't use the web now."]);
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    let kit = told(&b.ctx, &other, Some("kit"));
+    assert_eq!(kit.len(), 1, "{kit:?}");
+    assert!(kit[0].contains("Always allowed on this Mac: `claude`.") && !kit[0].contains("web"), "{kit:?}");
+    // an Undo says what it put back
+    let r = host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": true})).unwrap();
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Hex can use the web again. Undid a change. Hex can't use the web now."]);
+    // a card answered in this thread is told once, as its note; other threads get the change
+    let run = run_in(&b.ctx, &b.hex);
+    host_mode(&b.ctx, &json!({"mode": "only"})).unwrap();
+    told(&b.ctx, &b.hex, Some("hex"));
+    told(&b.ctx, &b.plain, None);
+    let p = call(&run, "shell_mode_set", json!({"mode": "bypass"})).await["proposal"].clone();
+    answer(&b.ctx, &json!({"chat": b.hex, "id": p, "answer": "yes"})).unwrap();
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nThe user set this Mac to Bypass: every command runs without asking; blocks still apply."]);
+    assert!(told(&b.ctx, &b.plain, None)[0].ends_with("the user changed: Mode: Bypass. Every command runs without asking. Blocks still apply."));
+    // a Bot's own change is not news to anyone
+    call(&run, "tools_set", json!({"key": "memory", "enabled": false})).await;
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
+    // a thread first called later starts there
+    let late = b.ctx.store.write(|s| {
+        let t = s.fresh_thread("late");
+        let id = t.id.clone();
+        s.list.push(t);
+        id
+    });
+    assert!(told(&b.ctx, &late.unwrap(), None).is_empty());
 }
 
 #[tokio::test]
