@@ -491,6 +491,80 @@ async fn a2a_the_agent_tools_in_an_agents_own_turns_only_no_making_agents_while_
     assert_eq!(routine.content, json!("agents_list works only in an agent's own turns"));
 }
 
+// ————— the user, from a chat without a Bot (PR 2) —————
+
+impl World {
+    /// A chat without a Bot: its `t<n>` id.
+    fn plain(&self) -> String {
+        self.ctx.store.write(|s| {
+            let t = s.fresh_thread("plain");
+            let id = t.id.clone();
+            s.list.push(t);
+            id
+        }).unwrap()
+    }
+
+    fn thread(&self, id: &str) -> Vec<Turn> {
+        self.ctx.store.read(|s| s.thread(id).unwrap().turns.clone())
+    }
+}
+
+#[tokio::test]
+async fn a_plain_chat_sends_as_the_user_and_the_reply_comes_back_to_that_chat() {
+    let stub = Stub { answer: Mutex::new(Some("Hi back: {text}".into())), ..Default::default() };
+    let w = world_with(&["Piccolo", "Boss"], stub, Vec::new());
+    let (plain, other) = (w.plain(), w.plain());
+    // every Bot takes the user's messages, whatever it accepts from agents
+    w.set_bot("boss", |b| b.accepts = Some(json!("none")));
+    let turn = TurnCtx { thread: plain.clone(), ..Default::default() };
+    assert!(w.ctx.store.read(|s| tools::offered(s, &turn)));
+    let listed: Value = serde_json::from_str(tools::call(&w.hub, &w.ctx, &turn, "agents_list", &json!({})).content.as_str().unwrap()).unwrap();
+    assert_eq!(listed.as_array().unwrap().iter().map(|b| b["name"].clone()).collect::<Vec<_>>(), [json!("Piccolo"), json!("Boss")]);
+    let r = tools::call(&w.hub, &w.ctx, &turn, "agent_send", &json!({"to": "Boss", "subject": "Hello", "text": "hi"}));
+    assert!(!r.is_error, "{r:?}");
+    let sent: Value = serde_json::from_str(r.content.as_str().unwrap()).unwrap();
+    let conv = w.conv(&sent["conversation"]);
+    let msg = conv.turns.iter().find_map(|u| u.message.clone()).unwrap();
+    assert_eq!(msg["from"], json!({"kind": "user", "id": format!("chat:{plain}"), "name": "You"}));
+    assert_eq!(msg["expects_reply"], json!(true), "from a plain chat the answer comes back");
+    // the conversation's notice is in the plain chat, and in Boss's
+    let notice = w.thread(&plain).into_iter().rev().find(|u| notice_kind(u) == Some("agents")).unwrap();
+    assert_eq!(notice.text.as_deref(), Some("You → Boss · Hello"));
+    assert!(w.chat("boss").iter().any(|u| notice_kind(u) == Some("agents")));
+    // Boss answers; the reply goes to the user, in that chat only
+    w.settle().await;
+    let t = w.conv(&sent["conversation"]);
+    let reply = t.turns.iter().filter_map(|u| u.message.clone()).find(|m| m["from"]["id"] == json!("boss")).unwrap();
+    assert_eq!((reply["text"].clone(), reply["to"][0]["kind"].clone(), reply["in_reply_to"].clone()), (json!("Hi back: hi"), json!("user"), sent["id"].clone()));
+    let ran = w.stub.ran.lock().unwrap().clone();
+    assert!(ran.iter().any(|(kind, who, text, _)| kind == "reply" && *who == format!("chat:{plain}") && text == "Hi back: hi"), "{ran:?}");
+    assert_eq!(w.ctx.store.read(|s| Party::user(&plain).chat(s).map(str::to_owned)), Some(plain.clone()), "a reply wakes that chat");
+    assert!(!w.thread(&other).iter().any(|u| notice_kind(u) == Some("agents")), "no other chat hears of it");
+    // the recipient reads it as the user's, through their assistant
+    let prompt = peer_prompt(&msg, false);
+    assert!(prompt.starts_with(&format!("A message from the user, sent from one of their chats without a Bot (chat:{plain}), in your conversation \"Hello\".")), "{prompt}");
+    // reading works; making or ending agents doesn't, from a plain chat
+    let read = tools::call(&w.hub, &w.ctx, &turn, "agent_read", &json!({"conversation": sent["conversation"]}));
+    assert!(!read.is_error && read.content.as_str().unwrap().contains("Hi back: hi"));
+    let made = tools::call(&w.hub, &w.ctx, &turn, "agent_create", &json!({"name": "X", "purpose": "y", "temporary": true}));
+    assert_eq!(made.content, json!("agent_create works only in a Bot's chat"));
+}
+
+#[test]
+fn a_bots_messages_are_as_before_and_it_reaches_the_user_only_in_their_conversation() {
+    let w = world();
+    let plain = w.plain();
+    let sent = w.send("piccolo", json!({"to": ["boss"], "subject": "Q", "text": "t"})).unwrap();
+    let msg = w.conv(&sent["conversation"]).turns.iter().find_map(|u| u.message.clone()).unwrap();
+    assert_eq!(msg["from"], json!({"kind": "agent", "id": "piccolo", "name": "Piccolo"}));
+    // an agent's accepts still holds for agents
+    w.set_bot("ada", |b| b.accepts = Some(json!(["boss"])));
+    assert_eq!(code(w.send("piccolo", json!({"to": ["ada"], "subject": "Q", "text": "t"}))), "not_allowed");
+    // a Bot can't write to a plain chat out of the blue
+    assert_eq!(code(w.send("piccolo", json!({"to": [format!("chat:{plain}")], "subject": "Q", "text": "t"}))), "not_allowed");
+    assert!(w.list("piccolo").as_array().unwrap().iter().all(|b| b["id"] != json!(format!("chat:{plain}"))));
+}
+
 // ————— agents-external.test.mjs —————
 
 fn env(fields: Value) -> String {

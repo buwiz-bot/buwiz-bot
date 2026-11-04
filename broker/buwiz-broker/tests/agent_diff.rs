@@ -171,13 +171,13 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
         let prompt = run["prompt"].as_str().unwrap();
         assert_eq!(got.as_array().map(Vec::len), want["calls"].as_array().map(Vec::len), "{prompt}: the number of model calls (the job: {st}, Rust sent {got})");
         for (k, (g, w)) in got.as_array().unwrap().iter().zip(want["calls"].as_array().unwrap()).enumerate() {
-            // the bot controls are Rust's own tools (Node's path is not live), and so is a plain
-            // chat's memory: not in Node's list
+            // the bot controls are Rust's own tools (Node's path is not live), and so are a plain
+            // chat's memory and agent tools: not in Node's list
             let mut g = g.clone();
             if let Some(tools) = g.pointer_mut("/body/tools").and_then(Value::as_array_mut) {
                 tools.retain(|t| {
                     let name = t["name"].as_str().unwrap_or("");
-                    !buwiz_broker::hub::tools::controls::NAMES.contains(&name) && !name.starts_with("memory_")
+                    !buwiz_broker::hub::tools::controls::NAMES.contains(&name) && !name.starts_with("memory_") && !buwiz_broker::hub::agents::tools::USER_NAMES.contains(&name)
                 });
             }
             let g = &g;

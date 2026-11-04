@@ -179,8 +179,17 @@ async fn offered(run: &Run) -> Vec<Value> {
     };
     // a routine's own turn doesn't make, change or run routines
     let routine: &[Value] = if run.turn.routine.is_some() { &[] } else { defs::routine_tools() };
-    // an agent's own turns message and make agents (agents-tools.mjs)
-    let agent: &[Value] = if run.turn.routine.is_some() || run.turn.surface.is_some() || !bot { &[] } else { defs::agent_tools() };
+    // an agent's own turns message and make agents (agents-tools.mjs); a plain chat's
+    // user messages them, but makes none
+    let user_agent: Vec<Value>;
+    let agent: &[Value] = if run.turn.routine.is_some() || run.turn.surface.is_some() {
+        &[]
+    } else if bot {
+        defs::agent_tools()
+    } else {
+        user_agent = defs::agent_tools().iter().filter(|t| t["name"].as_str().is_some_and(|n| crate::hub::agents::tools::USER_NAMES.contains(&n))).cloned().collect();
+        &user_agent
+    };
     let mut out = Vec::new();
     if server_search() {
         out.push(json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3}));
