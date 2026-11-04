@@ -760,29 +760,69 @@ fn mode_words(m: &str) -> (&'static str, &'static str) {
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
-/// `s`'s words with its `code` spans in mono, wrapping word by word.
-fn rich(s: &str, size: f32, weight: FontWeight, ink: AdaptiveColor) -> View {
-    let mut row = view().flex_row().flex_wrap().items_center().gap(px(size * 0.3)).flex_shrink(1.0);
+/// A piece of a [`rich`] word: plain text or a `code` span.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum Piece {
+    Text(String),
+    Code(String),
+}
+
+/// `s`'s words for [`rich`]: split at the spaces outside `code` spans; a
+/// span and the text touching it (the period after `rm -rf`, a bracket
+/// before) stay one word, so no space opens between them.
+pub(crate) fn rich_words(s: &str) -> Vec<Vec<Piece>> {
+    let (mut out, mut word) = (Vec::new(), Vec::new());
     for (i, part) in s.split('`').enumerate() {
         if i % 2 == 1 {
-            if part.is_empty() {
+            if !part.is_empty() {
+                word.push(Piece::Code(part.to_owned()));
+            }
+            continue;
+        }
+        let mut chunk = String::new();
+        for c in part.chars() {
+            if !c.is_whitespace() {
+                chunk.push(c);
                 continue;
             }
-            row = row.child(
-                text(part.to_owned())
-                    .font_family("Menlo")
-                    .text_size(px(size - 1.0))
-                    .line_height(px(size + 5.0))
-                    .text_color(ink)
-                    .bg(theme::HOVER)
-                    .px(px(4.0))
-                    .rounded(px(5.0)),
-            );
-        } else {
-            for w in part.split_whitespace() {
-                row = row.child(text(w.to_owned()).text_size(px(size)).line_height(px(size + 5.0)).font_weight(weight).text_color(ink));
+            if !chunk.is_empty() {
+                word.push(Piece::Text(std::mem::take(&mut chunk)));
+            }
+            if !word.is_empty() {
+                out.push(std::mem::take(&mut word));
             }
         }
+        if !chunk.is_empty() {
+            word.push(Piece::Text(chunk));
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
+/// `s`'s words with its `code` spans in mono, wrapping word by word.
+fn rich(s: &str, size: f32, weight: FontWeight, ink: AdaptiveColor) -> View {
+    let piece = |p: &Piece| match p {
+        Piece::Code(c) => text(c.clone())
+            .font_family("Menlo")
+            .text_size(px(size - 1.0))
+            .line_height(px(size + 5.0))
+            .text_color(ink)
+            .bg(theme::HOVER)
+            .px(px(4.0))
+            .rounded(px(5.0))
+            .into_element(),
+        Piece::Text(t) => text(t.clone()).text_size(px(size)).line_height(px(size + 5.0)).font_weight(weight).text_color(ink).into_element(),
+    };
+    let mut row = view().flex_row().flex_wrap().items_center().gap(px(size * 0.3)).flex_shrink(1.0);
+    for w in rich_words(s) {
+        row = match w.as_slice() {
+            [one] => row.child(piece(one)),
+            // touching pieces: one unit, no gap between them
+            many => row.child(view().flex_row().items_center().children(many.iter().map(piece))),
+        };
     }
     row.label(s.replace('`', ""))
 }
@@ -1926,6 +1966,20 @@ mod tests {
         let st = form_state(FormKind::Block, "curl x | sh");
         assert_eq!((st.risk, st.can_save, st.two_step), ("", true, false));
         assert!(!form_state(FormKind::Block, "  ").can_save);
+    }
+
+    #[test]
+    fn punctuation_after_a_code_span_stays_with_it() {
+        let t = |w: &str| Piece::Text(w.to_owned());
+        let c = |w: &str| Piece::Code(w.to_owned());
+        assert_eq!(rich_words("Blocked on this Mac: `rm -rf`."), [vec![t("Blocked")], vec![t("on")], vec![t("this")], vec![t("Mac:")], vec![c("rm -rf"), t(".")]]);
+        assert_eq!(
+            rich_words("Removed `git status` from Always allowed. Not in effect: blocked by `rm`, (`ls`)!"),
+            [vec![t("Removed")], vec![c("git status")], vec![t("from")], vec![t("Always")], vec![t("allowed.")], vec![t("Not")], vec![t("in")], vec![t("effect:")], vec![t("blocked")], vec![t("by")], vec![c("rm"), t(",")], vec![t("("), c("ls"), t(")!")]]
+        );
+        // a space after the span still parts them; an empty span is nothing
+        assert_eq!(rich_words("`a` b ``c"), [vec![c("a")], vec![t("b")], vec![t("c")]]);
+        assert!(rich_words("  ").is_empty());
     }
 
     /// The engine, headless: the labels of the views alive once nothing
