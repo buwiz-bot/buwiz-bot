@@ -1,5 +1,10 @@
-//! Bot tools and this Mac's command rules (bot controls, PR 1).
+//! Bot tools and this Mac's command rules (bot controls, PR 1), and asking
+//! before acting (PR 2).
 //!
+//! - The `tool_ask` card ([`ask_row`]): a call waits for the user's OK
+//!   (Allow, Allow in this chat, Not now, and Always allow `<prefix>` for
+//!   the shell). Answered, it leaves one line for 8 s from when this app
+//!   first drew it; an expired one says no answer came.
 //! - The `tools_change` card in the chat (`chat.rs` draws it with
 //!   [`notice_row`]): a Bot's widen waits for a click (`pending`); a change
 //!   that went through (`applied`) leaves one centered receipt line with
@@ -23,7 +28,7 @@ use serde_json::{Value, json};
 
 use crate::cards::{self, Btn};
 use crate::live::store;
-use crate::store::ToolsChangeNotice;
+use crate::store::{ToolAskNotice, ToolsChangeNotice};
 use crate::theme;
 
 /// How long an applied change's receipt shows.
@@ -63,19 +68,22 @@ pub(crate) struct Open {
 }
 
 /// What `/tools` and ⌘K's "Bot tools…" open: the sheet for the chat's
-/// Bot (id, name), on This Bot.
+/// Bot (id, name), on This Bot; in a plain chat, on Chats.
 pub(crate) fn sheet_for(bot: Option<(String, String)>) -> (Open, Tab) {
     let (bot, name) = bot.unwrap_or_default();
     (Open { kind: Kind::Sheet, bot, name }, Tab::Bot)
 }
 
-/// One switch row of This Bot.
+/// One switch row of This Bot or Chats.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub(crate) struct ToolRow {
     pub key: String,
     pub label: String,
     pub sub: String,
+    /// Not off.
     pub on: bool,
+    /// `on`, `ask` or `off`.
+    pub state: String,
 }
 
 /// One "Always allowed" rule.
@@ -99,6 +107,8 @@ pub(crate) struct Activity {
     /// The Bot ran it after reading outside content, and the user's
     /// message didn't name it: the "unasked" tag.
     pub unasked: bool,
+    /// An asked call's tool ("" for a command that ran or was refused).
+    pub tool: String,
 }
 
 /// One "Recent changes" row (24 h).
@@ -117,6 +127,8 @@ pub(crate) struct Recent {
 pub(crate) struct Data {
     pub bot_id: String,
     pub bot_name: String,
+    /// `bot`, or `chats` (every plain chat's switches).
+    pub profile: String,
     pub tools: Vec<ToolRow>,
     /// `only` or `bypass`.
     pub mode: String,
@@ -149,9 +161,15 @@ impl Data {
         Ok(Data {
             bot_id: s(&bot, "id"),
             bot_name: s(&bot, "name"),
+            profile: s(v, "profile"),
             tools: list(v, "tools")
                 .iter()
-                .map(|t| ToolRow { key: s(t, "key"), label: s(t, "label"), sub: s(t, "sub"), on: t.get("on").and_then(Value::as_bool).unwrap_or(true) })
+                .map(|t| {
+                    let on = t.get("on").and_then(Value::as_bool).unwrap_or(true);
+                    // a broker before Ask: on or off
+                    let state = Some(s(t, "state")).filter(|x| matches!(x.as_str(), "on" | "ask" | "off")).unwrap_or_else(|| if on { "on" } else { "off" }.to_owned());
+                    ToolRow { key: s(t, "key"), label: s(t, "label"), sub: s(t, "sub"), on: state != "off", state }
+                })
                 .filter(|t| !t.key.is_empty())
                 .collect(),
             mode: Some(s(&mac, "mode")).filter(|m| !m.is_empty()).unwrap_or_else(|| "bypass".to_owned()),
@@ -171,6 +189,7 @@ impl Data {
                     outcome: s(a, "outcome"),
                     result: s(a, "result"),
                     unasked: a.get("unasked").and_then(Value::as_bool).unwrap_or(false),
+                    tool: s(a, "tool"),
                 })
                 .collect(),
             recent: list(v, "recent")
@@ -182,8 +201,14 @@ impl Data {
     }
 
     /// "n of m on".
+    #[cfg(test)]
     pub(crate) fn on_count(&self) -> (usize, usize) {
         (self.tools.iter().filter(|t| t.on).count(), self.tools.len())
+    }
+
+    /// How many are on, and how many at Ask.
+    pub(crate) fn state_count(&self) -> (usize, usize) {
+        (self.tools.iter().filter(|t| t.state == "on").count(), self.tools.iter().filter(|t| t.state == "ask").count())
     }
 }
 
@@ -245,6 +270,15 @@ pub(crate) struct CardLocal {
     pub undo_error: String,
 }
 
+/// A `tool_ask` card's state here, before the chat reloads.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub(crate) struct AskLocal {
+    pub busy: bool,
+    pub error: String,
+    /// The notice as the answer left it.
+    pub settled: Option<ToolAskNotice>,
+}
+
 /// The add form of This Mac.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FormKind {
@@ -283,6 +317,8 @@ pub struct Tools {
     pub(crate) receipt: Signal<Option<Receipt>>,
     /// The chat's cards by proposal id.
     pub(crate) cards: Signal<HashMap<String, CardLocal>>,
+    /// The chat's `tool_ask` cards by id.
+    pub(crate) asks: Signal<HashMap<String, AskLocal>>,
     /// When this app first drew each notice (ms), by notice id: a receipt
     /// counts from there, not from the change.
     pub(crate) seen: std::cell::RefCell<HashMap<String, i64>>,
@@ -307,6 +343,7 @@ impl Tools {
             busy: signal(None),
             receipt: signal(None),
             cards: signal(HashMap::new()),
+            asks: signal(HashMap::new()),
             seen: std::cell::RefCell::new(HashMap::new()),
             clock: signal(0),
         }
@@ -738,6 +775,12 @@ pub(crate) fn outcome_words(o: &str, result: &str) -> String {
         },
         "refused_block" => "Refused by a block".to_owned(),
         "refused_mode" => "Refused: mode is Only allowed commands".to_owned(),
+        // an asked call's answer
+        "allowed" => "Allowed".to_owned(),
+        "allowed_chat" => "Allowed in this chat".to_owned(),
+        "declined" => "Not now".to_owned(),
+        "expired" => "No answer".to_owned(),
+        "needs_ok" => "Needs your OK".to_owned(),
         _ => String::new(),
     }
 }
@@ -1076,6 +1119,217 @@ fn card_undo(id: &str, undo: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// The chat's ask card (`tool_ask`)
+// ---------------------------------------------------------------------------
+
+/// What an expired card says.
+pub(crate) const NO_ANSWER: &str = "No answer, so this didn't run.";
+/// The outside-content line.
+pub(crate) const READ_A_PAGE: &str = "This chat read a web page this turn.";
+
+/// A pending ask card's words: the title, its lines, the payload, the
+/// outside-content line, and its buttons (label, answer), the main one last.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct AskCopy {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub preview: String,
+    pub external: String,
+    pub buttons: Vec<(String, &'static str)>,
+}
+
+pub(crate) fn ask_copy(n: &ToolAskNotice) -> AskCopy {
+    let mut buttons = vec![("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat")];
+    if n.key == "shell" && !n.prefix.is_empty() {
+        buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
+    }
+    buttons.push(("Allow".to_owned(), "once"));
+    let title = if n.title.is_empty() { format!("Let it use {}?", n.tool) } else { n.title.clone() };
+    AskCopy { title, lines: n.lines.clone(), preview: n.preview.clone(), external: if n.external { READ_A_PAGE.to_owned() } else { String::new() }, buttons }
+}
+
+/// The one line an answered card leaves.
+pub(crate) fn answered_words(answer: &str) -> &'static str {
+    match answer {
+        "chat" => "Allowed in this chat.",
+        "rule" => "Allowed, and always allowed from now on.",
+        "no" => "Not now.",
+        _ => "Allowed.",
+    }
+}
+
+/// What an ask card draws now.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum AskShows {
+    Card,
+    /// The answer's line, for 8 s from `at`.
+    Line { text: String, at: i64 },
+    Expired,
+    Nothing,
+}
+
+/// [`AskShows`] for `n` as the answer here left it, first drawn here at
+/// `seen`, at `now`.
+pub(crate) fn ask_shows(n: &ToolAskNotice, local: Option<&AskLocal>, seen: i64, now: i64) -> AskShows {
+    let n = local.and_then(|l| l.settled.as_ref()).unwrap_or(n);
+    match n.state.as_str() {
+        "pending" => AskShows::Card,
+        "allowed" | "declined" => {
+            let start = receipt_start(n.at, seen);
+            let answer = if n.answer.is_empty() { if n.state == "declined" { "no" } else { "once" } } else { n.answer.as_str() };
+            if receipt_fresh(start, now) { AskShows::Line { text: answered_words(answer).to_owned(), at: start } } else { AskShows::Nothing }
+        }
+        "expired" => AskShows::Expired,
+        _ => AskShows::Nothing,
+    }
+}
+
+fn ask_local(id: &str) -> Option<AskLocal> {
+    tools().asks.with(|m| m.get(id).cloned())
+}
+
+fn set_ask_local(id: &str, f: impl FnOnce(&mut AskLocal)) {
+    tools().asks.update(|m| f(m.entry(id.to_owned()).or_default()));
+}
+
+/// The row `chat.rs` draws for a `tool_ask` notice in chat `chat`.
+pub(crate) fn ask_row(n: ToolAskNotice, chat: String) -> impl IntoElement {
+    let seen = first_seen(&n.id);
+    let start = receipt_start(n.at, seen);
+    if n.state != "pending" && receipt_fresh(start, now_ms()) {
+        watch(start + RECEIPT_MS);
+    }
+    let n2 = n.clone();
+    let what = computed(move || {
+        let local = ask_local(&n2.id);
+        let s = ask_shows(&n2, local.as_ref(), seen, now_ms());
+        if matches!(s, AskShows::Line { .. }) { ask_shows(&n2, local.as_ref(), seen, clock()) } else { s }
+    });
+    view().flex_row().w_full().justify_center().child(dynamic(move || match what.get() {
+        AskShows::Nothing => view().into_element(),
+        AskShows::Card => ask_card(&n, &chat).into_element(),
+        AskShows::Line { text, at } => receipt_line(text, None, at, false).into_element(),
+        AskShows::Expired => view().py(px(6.0)).child(text(NO_ANSWER).text_size(px(13.0)).text_color(theme::MUTED)).into_element(),
+    }))
+}
+
+/// A pending ask card: the title, the payload in a box, the outside-content
+/// line, then Not now, Allow in this chat, Always allow (the shell), Allow.
+fn ask_card(n: &ToolAskNotice, chat: &str) -> impl IntoElement {
+    let copy = ask_copy(n);
+    let local = ask_local(&n.id).unwrap_or_default();
+    let (c0, i0) = (chat.to_owned(), n.clone());
+    let mut c = cards::shell(&format!("ask-card-{}", n.id)).label(copy.title.replace('`', "")).child(
+        view()
+            .flex_row()
+            .items_start()
+            .gap_2()
+            .child(rich(&copy.title, 14.0, FontWeight::SEMIBOLD, theme::TEXT).flex_1())
+            .child(cards::close_x("Not now", move || answer_ask(&c0, &i0, "no"))),
+    );
+    for l in &copy.lines {
+        c = c.child(rich(l, 12.0, FontWeight::NORMAL, theme::DIM));
+    }
+    if !copy.preview.is_empty() {
+        c = c.child(
+            view()
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(theme::HOVER)
+                .label(format!("What it sends: {}", copy.preview))
+                .child(text(copy.preview.clone()).font_family("Menlo").text_size(px(12.0)).line_height(px(17.0)).text_color(theme::TEXT).number_of_lines(12)),
+        );
+    }
+    if !copy.external.is_empty() {
+        c = c.child(warn_band(copy.external.clone()));
+    }
+    let mut buttons = view().flex_row().flex_wrap().items_center().justify_end().gap_2();
+    let last = copy.buttons.len().saturating_sub(1);
+    for (i, (label, ans)) in copy.buttons.iter().enumerate() {
+        let (c1, i1, ans) = (chat.to_owned(), n.clone(), *ans);
+        let kind = if i == last { Btn::Primary } else { Btn::Secondary };
+        buttons = buttons.child(cards::btn(kind, &label.replace('`', ""), move || answer_ask(&c1, &i1, ans)));
+    }
+    c = c.child(buttons);
+    if local.busy {
+        c = c.child(text("Sending…").text_size(px(12.0)).text_color(theme::MUTED));
+    }
+    if !local.error.is_empty() {
+        c = c.child(cards::error_line(local.error.clone()));
+    }
+    c.into_element()
+}
+
+/// The notice an answer leaves here: the broker's (its `at` the click here),
+/// else `base` settled by `answer`.
+pub(crate) fn ask_settled(v: Option<&Value>, base: &ToolAskNotice, answer: &str, now: i64) -> ToolAskNotice {
+    let mut n = v.and_then(|v| v.get("notice")).and_then(ToolAskNotice::of).unwrap_or_else(|| ToolAskNotice {
+        state: if answer == "no" { "declined" } else { "allowed" }.to_owned(),
+        answer: answer.to_owned(),
+        ..base.clone()
+    });
+    if n.state == "pending" {
+        n.state = "expired".to_owned();
+    }
+    // the line counts from the click here
+    n.at = now;
+    n
+}
+
+/// A `stale` answer's notice as the broker has it now, else `base` expired;
+/// never pending.
+pub(crate) fn ask_stale(v: &Value, base: &ToolAskNotice) -> ToolAskNotice {
+    match v.get("details").and_then(|d| d.get("notice")).and_then(ToolAskNotice::of) {
+        Some(n) if n.state != "pending" => n,
+        _ => ToolAskNotice { state: "expired".to_owned(), ..base.clone() },
+    }
+}
+
+/// `POST /v1/host/tools/ask`: the card goes at once to its line; a refusal
+/// brings it back with the words.
+fn answer_ask(chat: &str, base: &ToolAskNotice, answer: &'static str) {
+    if ask_local(&base.id).is_some_and(|l| l.busy) {
+        return;
+    }
+    let (chat, id, base) = (chat.to_owned(), base.id.clone(), base.clone());
+    set_ask_local(&id, |l| {
+        l.busy = true;
+        l.error.clear();
+    });
+    crate::store::spawn_detached(async move {
+        let r = crate::client::post_any("/v1/host/tools/ask", json!({"chat": chat, "id": id, "answer": answer})).await;
+        let now = now_ms();
+        match r {
+            Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
+                let n = ask_settled(Some(&v), &base, answer, now);
+                watch(now + RECEIPT_MS);
+                set_ask_local(&id, |l| {
+                    l.busy = false;
+                    l.settled = Some(n);
+                });
+            }
+            // no longer waiting: as the broker has it now
+            Some(v) if s(&v, "code") == "stale" => {
+                let n = ask_stale(&v, &base);
+                set_ask_local(&id, |l| {
+                    l.busy = false;
+                    l.settled = Some(n);
+                });
+            }
+            other => {
+                let e = other.map(|v| refusal(&v, "")).unwrap_or_else(|| NOT_CONNECTED.to_owned());
+                set_ask_local(&id, |l| {
+                    l.busy = false;
+                    l.error = e;
+                });
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // The sheet and the full view
 // ---------------------------------------------------------------------------
 
@@ -1214,7 +1468,11 @@ fn tabs() -> impl IntoElement {
         .pb(px(8.0))
         .border_b(px(0.5))
         .border_b_color(theme::BORDER_F)
-        .child(tab(Tab::Bot, "This Bot"))
+        .child(dynamic(move || {
+            // a plain chat's first tab is the profile every plain chat shares
+            let chats = tools().open.with(|o| o.as_ref().is_some_and(|o| o.bot.is_empty()));
+            tab(Tab::Bot, first_tab_name(chats)).into_element()
+        }))
         .child(tab(Tab::Mac, "This Mac"))
         .child(tab(Tab::Activity, "Activity"))
 }
@@ -1304,29 +1562,40 @@ fn row() -> View {
     view().flex_row().items_center().gap_2().py(px(8.0)).border_b(px(0.5)).border_b_color(theme::BORDER_F)
 }
 
-/// This Bot: one switch per tool key.
+/// The first tab's name: "Chats" in a plain chat, else "This Bot".
+pub(crate) fn first_tab_name(chats: bool) -> &'static str {
+    if chats { "Chats" } else { "This Bot" }
+}
+
+/// The first tab's heading: "THESE CHATS  ·  n on  ·  m ask".
+pub(crate) fn profile_heading(chats: bool, on: usize, ask: usize) -> String {
+    format!("{}  ·  {on} on  ·  {ask} ask", if chats { "THESE CHATS" } else { "THIS BOT" })
+}
+
+/// The three positions, as the control shows them.
+pub(crate) const POSITIONS: [(&str, &str); 3] = [("on", "On"), ("ask", "Ask"), ("off", "Off")];
+
+/// This Bot (or Chats): one On / Ask / Off control per tool key. A click
+/// applies at once, a looser position too: it is the person's own.
 fn bot_tab() -> impl IntoElement {
     let open_bot = tools().open.with_untracked(|o| o.as_ref().map(|o| o.bot.clone()).unwrap_or_default());
-    if open_bot.is_empty() {
-        return view()
-            .child(empty("This chat has no Bot. Open a Bot's chat to change its tools, or change This Mac's rules here.".to_owned()))
-            .into_element();
-    }
+    let chats = open_bot.is_empty();
+    let owner = if chats { "chats".to_owned() } else { open_bot };
     view()
         .child(error_note())
         .child(dynamic(move || {
             let d = tools().data.get().unwrap_or_default();
-            let (on, all) = d.on_count();
-            let mut v = view().child(heading(format!("THIS BOT  ·  {on} of {all} on")));
+            let (on, ask) = d.state_count();
+            let mut v = view().child(heading(profile_heading(chats, on, ask)));
+            if chats {
+                v = v.child(empty("Every chat without a Bot shares these. Ask: you OK each call that changes something or reaches someone; reads still run.".to_owned()));
+            }
             for t in d.tools.iter().cloned() {
-                let (key, bot, want) = (t.key.clone(), open_bot.clone(), !t.on);
-                let shown = t.on;
                 let mut name = view().flex_1().child(text(t.label.clone()).text_size(px(13.0)).text_color(theme::TEXT));
                 if !t.sub.is_empty() {
                     name = name.child(text(t.sub.clone()).text_size(px(11.5)).text_color(theme::FAINT).number_of_lines(1));
                 }
-                let named = switch_name(&t.label, shown);
-                v = v.child(row().child(name).child(crate::plugins::tool_switch(move || shown, move || set_tool(&bot, &key, want)).label(named)));
+                v = v.child(row().child(name).child(position_control(&owner, &t)));
             }
             if !d.tools.iter().any(|t| t.key.starts_with("mcp:") || t.key.starts_with("v1:")) {
                 v = v.child(empty("No connected apps. Connect one in Plugins.".to_owned()));
@@ -1336,22 +1605,56 @@ fn bot_tab() -> impl IntoElement {
         .into_element()
 }
 
-/// A switch's accessible name: "Web, on".
-pub(crate) fn switch_name(label: &str, on: bool) -> String {
-    format!("{label}, {}", if on { "on" } else { "off" })
+/// A row's On / Ask / Off control, named "Web, ask".
+fn position_control(owner: &str, t: &ToolRow) -> impl IntoElement {
+    let mut seg = view().flex_row().gap(px(2.0)).p(px(2.0)).rounded(px(8.0)).bg(theme::HOVER).label(switch_name(&t.label, &t.state));
+    for (state, word) in POSITIONS {
+        let picked = t.state == state;
+        let (owner, key) = (owner.to_owned(), t.key.clone());
+        let hov = signal(false);
+        seg = seg.child(
+            view()
+                .label(position_name(&t.label, word))
+                .px(px(9.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(move || if picked { theme::MAIN } else if hov.get() { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                .on_press(move || {
+                    if !picked {
+                        set_tool(&owner, &key, state);
+                    }
+                })
+                .child(text(word).text_size(px(12.0)).text_color(if picked { theme::TEXT } else { theme::MUTED })),
+        );
+    }
+    seg
 }
 
-fn set_tool(bot: &str, key: &str, enabled: bool) {
+/// A control's accessible name: "Web, ask".
+pub(crate) fn switch_name(label: &str, state: &str) -> String {
+    format!("{label}, {state}")
+}
+
+/// One position's button: "Web: Ask".
+pub(crate) fn position_name(label: &str, word: &str) -> String {
+    format!("{label}: {word}")
+}
+
+/// `owner` a Bot's id or `chats`.
+fn set_tool(owner: &str, key: &str, state: &'static str) {
     if tools().busy.get_untracked().is_some() {
         return;
     }
-    // the switch moves at once; the read after puts it right
+    // the control moves at once; the read after puts it right
     tools().data.update(|d| {
         if let Some(t) = d.as_mut().and_then(|d| d.tools.iter_mut().find(|t| t.key == key)) {
-            t.on = enabled;
+            t.state = state.to_owned();
+            t.on = state != "off";
         }
     });
-    edit(key.to_owned(), "/v1/host/tools/set", json!({"bot": bot, "key": key, "enabled": enabled}), |e| e, |_| ());
+    edit(key.to_owned(), "/v1/host/tools/set", json!({"bot": owner, "key": key, "state": state}), |e| e, |_| ());
 }
 
 /// This Mac: the mode, the rules, the add form, the recent changes.
@@ -1753,21 +2056,24 @@ fn activity_tab() -> impl IntoElement {
         let d = tools().data.get().unwrap_or_default();
         let bot = tools().open.with(|o| o.as_ref().map(|o| o.bot.clone()).unwrap_or_default());
         let rows = for_bot(&d.activity, &bot);
-        let mut v = view().child(error_note()).child(heading("RECENT COMMANDS  ·  KEPT 7 DAYS".to_owned()));
+        let mut v = view().child(error_note()).child(heading("RECENT COMMANDS AND ASKS  ·  KEPT 7 DAYS".to_owned()));
         if rows.is_empty() {
             let who = Some(bot_name()).filter(|n| !n.is_empty()).unwrap_or_else(|| "any Bot".to_owned());
             return v.child(empty(format!("No commands from {who} on this Mac yet."))).into_element();
         }
         for a in rows {
             let ink = match a.outcome.as_str() {
-                "ran" => theme::UP,
-                "failed" => theme::WARN,
+                "ran" | "allowed" | "allowed_chat" => theme::UP,
+                "failed" | "expired" | "needs_ok" => theme::WARN,
                 _ => theme::DOWN,
             };
+            // an asked call that isn't a command reads as words
+            let mono = a.tool.is_empty() || a.tool == "shell_run";
+            let cmd = text(a.command.clone()).flex_1().number_of_lines(1).text_size(px(12.0)).text_color(theme::TEXT);
             let mut line = row()
                 .child(text(crate::store::checked_at(a.at as f64)).w(px(72.0)).text_size(px(11.5)).text_color(theme::FAINT))
                 .child(text(if a.bot_name.is_empty() { a.bot.clone() } else { a.bot_name.clone() }).w(px(72.0)).number_of_lines(1).text_size(px(12.0)).text_color(theme::DIM))
-                .child(text(a.command.clone()).flex_1().number_of_lines(1).font_family("Menlo").text_size(px(12.0)).text_color(theme::TEXT));
+                .child(if mono { cmd.font_family("Menlo") } else { cmd });
             if a.unasked {
                 line = line.child(chip("unasked", true));
             }
@@ -2157,9 +2463,111 @@ mod tests {
     }
 
     #[test]
-    fn each_switch_says_its_tool_and_whether_it_is_on() {
-        assert_eq!(switch_name("Web", true), "Web, on");
-        assert_eq!(switch_name("Shell on this Mac", false), "Shell on this Mac, off");
+    fn each_control_says_its_tool_and_its_position() {
+        assert_eq!(switch_name("Web", "ask"), "Web, ask");
+        assert_eq!(switch_name("Shell on this Mac", "off"), "Shell on this Mac, off");
+        assert_eq!(position_name("Web", "Ask"), "Web: Ask");
+        assert_eq!(POSITIONS.map(|p| p.1), ["On", "Ask", "Off"]);
+    }
+
+    fn ask(extra: Value) -> ToolAskNotice {
+        let mut n = json!({"kind": "tool_ask", "id": "a_1", "bot": "", "botName": "The assistant", "chat": "t1", "at": 1_793_745_245_000i64});
+        for (k, v) in extra.as_object().unwrap() {
+            n[k] = v.clone();
+        }
+        Turn::of(&json!({"role": "notice", "text": "x", "notice": n})).tool_ask.expect("an ask card")
+    }
+
+    #[test]
+    fn an_ask_card_says_what_will_happen_for_each_kind_of_tool() {
+        let send = ask_copy(&ask(json!({"key": "agents", "tool": "agent_send", "title": "Send a message to Bigmom?", "lines": ["Subject: hi"], "preview": "hi Bigmom"})));
+        assert_eq!((send.title.as_str(), send.lines.clone(), send.preview.as_str(), send.external.as_str()), ("Send a message to Bigmom?", vec!["Subject: hi".to_owned()], "hi Bigmom", ""));
+        let words = |c: &AskCopy| c.buttons.iter().map(|b| (b.0.clone(), b.1)).collect::<Vec<_>>();
+        assert_eq!(words(&send), [("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat"), ("Allow".to_owned(), "once")]);
+        let routine = ask_copy(&ask(json!({"key": "routines", "tool": "routine_create", "title": "Make the routine \"Daily sales\"?", "lines": ["Every 24 h"], "preview": "Sum the sales"})));
+        assert_eq!(routine.title, "Make the routine \"Daily sales\"?");
+        let memory = ask_copy(&ask(json!({"key": "memory", "tool": "memory_add", "title": "Save this to memory?", "preview": "I like tea"})));
+        assert_eq!((memory.title.as_str(), memory.preview.as_str()), ("Save this to memory?", "I like tea"));
+        // the shell: Always allow its prefix, and the outside-content line
+        let shell = ask_copy(&ask(json!({"key": "shell", "tool": "shell_run", "title": "Run `git push` on this Mac?", "preview": "git push", "prefix": "git push", "external": true})));
+        assert_eq!(shell.title, "Run `git push` on this Mac?");
+        assert_eq!(shell.external, "This chat read a web page this turn.");
+        assert_eq!(words(&shell), [("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat"), ("Always allow `git push`".to_owned(), "rule"), ("Allow".to_owned(), "once")]);
+        // a shell card with no rule to offer, a card with no title
+        assert_eq!(ask_copy(&ask(json!({"key": "shell", "tool": "shell_run", "title": "Run `ls && rm x` on this Mac?"}))).buttons.len(), 3);
+        assert_eq!(ask_copy(&ask(json!({"key": "mcp:x", "tool": "mcp_x_send"}))).title, "Let it use mcp_x_send?");
+        // parsing: state and answer; another kind is no ask card
+        let n = ask(json!({"state": "allowed", "answer": "chat"}));
+        assert_eq!((n.state.as_str(), n.answer.as_str(), n.bot_name.as_str()), ("allowed", "chat", "The assistant"));
+        assert_eq!(ask(json!({})).state, "pending");
+        assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tools_change", "id": "p_1"}})).tool_ask.is_none());
+        assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tool_ask"}})).tool_ask.is_none());
+    }
+
+    #[test]
+    fn an_answered_card_collapses_to_one_line_for_8_s_from_first_sight() {
+        let at = 1_793_745_245_000;
+        let p = ask(json!({"at": at}));
+        assert_eq!(ask_shows(&p, None, at, at + 60_000), AskShows::Card, "pending waits");
+        let line = |a: &str| AskShows::Line { text: answered_words(a).to_owned(), at };
+        let allowed = ask(json!({"state": "allowed", "answer": "once", "at": at}));
+        assert_eq!(ask_shows(&allowed, None, at, at), line("once"));
+        assert_eq!(ask_shows(&allowed, None, at, at + 7_999), line("once"));
+        assert_eq!(ask_shows(&allowed, None, at, at + 8_000), AskShows::Nothing);
+        assert_eq!(answered_words("once"), "Allowed.");
+        assert_eq!(answered_words("chat"), "Allowed in this chat.");
+        assert_eq!(answered_words("no"), "Not now.");
+        let declined = ask(json!({"state": "declined", "at": at}));
+        assert_eq!(ask_shows(&declined, None, at, at + 10), line("no"));
+        // first drawn 20 s later: 8 s from then; a reload an hour later: nothing
+        assert_eq!(ask_shows(&allowed, None, at + 20_000, at + 27_000), AskShows::Line { text: "Allowed.".into(), at: at + 20_000 });
+        assert_eq!(ask_shows(&allowed, None, at + 3_600_000, at + 3_600_000), AskShows::Nothing);
+        // expired says so, and stays
+        assert_eq!(ask_shows(&ask(json!({"state": "expired", "at": at})), None, at, at + 86_400_000), AskShows::Expired);
+        assert_eq!(NO_ANSWER, "No answer, so this didn't run.");
+    }
+
+    #[test]
+    fn the_answer_flow_settles_the_card_here() {
+        let now = 1_793_745_300_000;
+        let base = ask(json!({"key": "memory"}));
+        // the broker's notice, its line counted from the click here
+        let v = json!({"ok": true, "notice": {"kind": "tool_ask", "id": "a_1", "state": "allowed", "answer": "chat", "at": 5}});
+        let n = ask_settled(Some(&v), &base, "chat", now);
+        assert_eq!((n.state.as_str(), n.answer.as_str(), n.at), ("allowed", "chat", now));
+        let local = AskLocal { settled: Some(n), ..Default::default() };
+        assert_eq!(ask_shows(&base, Some(&local), now, now + 100), AskShows::Line { text: "Allowed in this chat.".into(), at: now });
+        // no notice in the answer: settled by the answer
+        let n = ask_settled(Some(&json!({"ok": true})), &base, "no", now);
+        assert_eq!((n.state.as_str(), n.answer.as_str()), ("declined", "no"));
+        // stale: as the broker has it, never pending
+        let stale = json!({"ok": false, "code": "stale", "details": {"notice": {"kind": "tool_ask", "id": "a_1", "state": "expired"}}});
+        assert_eq!(ask_stale(&stale, &base).state, "expired");
+        assert_eq!(ask_stale(&json!({"ok": false, "code": "stale"}), &base).state, "expired");
+        let still = json!({"ok": false, "code": "stale", "details": {"notice": {"kind": "tool_ask", "id": "a_1", "state": "pending"}}});
+        assert_eq!(ask_stale(&still, &base).state, "expired");
+    }
+
+    #[test]
+    fn a_plain_chats_first_tab_is_chats_with_three_positions() {
+        assert_eq!((first_tab_name(true), first_tab_name(false)), ("Chats", "This Bot"));
+        let d = Data::of(&json!({"ok": true, "bot": null, "profile": "chats", "mac": {},
+            "tools": [{"key": "web", "label": "Web", "on": true, "state": "on"}, {"key": "shell", "label": "Shell on this Mac", "on": true, "state": "ask"},
+                {"key": "memory", "label": "Memory", "on": true, "state": "ask"}, {"key": "agents", "label": "Other agents", "on": false, "state": "off"},
+                {"key": "office", "label": "Office documents", "on": true}]})).unwrap();
+        assert_eq!(d.profile, "chats");
+        assert_eq!(d.tools.iter().map(|t| t.state.as_str()).collect::<Vec<_>>(), ["on", "ask", "ask", "off", "on"], "a row without a state reads its on");
+        let (on, asks) = d.state_count();
+        assert_eq!(profile_heading(true, on, asks), "THESE CHATS  ·  2 on  ·  2 ask");
+        assert_eq!(profile_heading(false, 7, 0), "THIS BOT  ·  7 on  ·  0 ask");
+        assert_eq!(d.on_count(), (4, 5));
+        // Activity's asked calls
+        let a = Data::of(&json!({"ok": true, "tools": [], "mac": {}, "activity": [
+            {"at": 1, "bot": "", "botName": "The assistant", "command": "Save this to memory?", "outcome": "allowed_chat", "tool": "memory_add"},
+            {"at": 2, "bot": "", "command": "Make a routine?", "outcome": "declined", "tool": "routine_create"}]})).unwrap();
+        assert_eq!(a.activity[0].tool, "memory_add");
+        let words: Vec<String> = ["allowed", "allowed_chat", "declined", "expired", "needs_ok"].iter().map(|o| outcome_words(o, "")).collect();
+        assert_eq!(words, ["Allowed", "Allowed in this chat", "Not now", "No answer", "Needs your OK"]);
     }
 
     #[test]
