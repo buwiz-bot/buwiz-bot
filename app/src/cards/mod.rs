@@ -256,7 +256,9 @@ pub(crate) fn waiting_label(turns: &[Turn]) -> Option<&'static str> {
     if cards().any(|c| matches!(&*c.card, Card::Approval(_)) && c.is_open()) {
         return Some("Waiting for approval");
     }
-    cards().any(|c| matches!(&*c.card, Card::UserForm(_)) && c.is_open()).then_some("Waiting for you")
+    let form = cards().any(|c| matches!(&*c.card, Card::UserForm(_)) && c.is_open());
+    // a call parked on a `tool_ask` card the user hasn't answered here yet
+    (form || turns.iter().filter_map(|t| t.tool_ask.as_ref()).any(crate::tools::ask_waits)).then_some("Waiting for you")
 }
 
 /// A new message in the chat: its open approvals, choices and forms are

@@ -331,7 +331,9 @@ struct Bed {
 
 fn bed(label: &str) -> Bed {
     let dir = temp(label);
-    let ctx = HubCtx::new(dir, Clock::manual());
+    let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.ext.insert(RealChatsDefaults);
+    crate::hub::library::botctx::register(&mut ctx);
     ctx.clock.manual_step(Some(START), false);
     ctx.store.load().unwrap();
     let (hex, plain) = ctx
@@ -474,10 +476,11 @@ async fn each_widen_proposes_and_never_applies() {
     let ns = notices(&b.ctx, &b.hex);
     let claudes: Vec<&Value> = ns.iter().filter(|n| n["rule"]["pattern"] == "claude").collect();
     assert_eq!(claudes.iter().map(|n| n["state"].clone()).collect::<Vec<_>>(), [json!("superseded"), json!("pending")]);
-    // in a plain chat there is no Bot to switch
+    // a plain chat switches the Chats profile (PR 2)
     let plain = run_in(&b.ctx, &b.plain);
     let r = call(&plain, "tools_set", json!({"key": "shell", "enabled": false})).await;
-    assert_eq!(r["status"], "refused");
+    assert_eq!(r["status"], "off");
+    assert_eq!(tool_state(&b.ctx, CHATS, "shell"), Pos::Off);
     // a pending card older than 24 h expires
     step(&b.ctx, DAY as f64 + 1.0);
     sweep_expired(&b.ctx);
@@ -631,11 +634,20 @@ async fn shell_run_goes_through_the_gate_and_into_activity() {
 #[tokio::test]
 async fn a_command_the_user_did_not_ask_for_after_outside_content_is_unasked() {
     let b = bed("unasked");
-    let run = run_in(&b.ctx, &b.hex);
+    let run = Arc::new(run_in(&b.ctx, &b.hex));
+    // after outside content a command asks first (PR 2): the user allows each here
     let shell = |cmd: &'static str| {
         let block = json!({"name": "shell_run", "input": {"command": cmd, "cwd": "/"}});
-        let run = &run;
-        async move { exec_tool(run, &block).await }
+        let (run, ctx, chat) = (run.clone(), b.ctx.clone(), b.hex.clone());
+        async move {
+            let external = run.state().external;
+            let t = tokio::spawn(async move { exec_tool(&run, &block).await });
+            if external {
+                let n = pending_ask(&ctx, &chat).await;
+                answer_card(&ctx, &chat, &n["id"], "once").unwrap();
+            }
+            t.await.unwrap()
+        }
     };
     run.state().prompt = Some("say hi with echo".into());
     shell("echo hi").await;
@@ -643,8 +655,9 @@ async fn a_command_the_user_did_not_ask_for_after_outside_content_is_unasked() {
     shell("echo again").await;
     shell("true").await;
     host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "uname"})).unwrap();
-    shell("uname").await;
-    let a = activity(&b.ctx, None);
+    // a block refuses without asking
+    exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "uname", "cwd": "/"}})).await;
+    let a: Vec<Value> = activity(&b.ctx, None).into_iter().filter(|r| r.get("tool").is_none()).collect();
     let marks: Vec<(String, bool)> = a.iter().map(|r| (crate::js::string_of(&r["command"]), r["unasked"] == true)).collect();
     // newest first: a refused one is marked too; the named program never is
     assert_eq!(marks, [("uname".into(), true), ("true".into(), true), ("echo again".into(), false), ("echo hi".into(), false)]);
@@ -671,14 +684,14 @@ async fn unrequested_after_outside_content_and_the_human_routes() {
     host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "git"})).unwrap();
     let v = host_view(&b.ctx, Some("hex")).unwrap();
     assert_eq!(v["bot"], json!({"id": "hex", "name": "Hex"}));
-    assert_eq!(v["tools"][0], json!({"key": "shell", "label": "Shell on this Mac", "sub": "Runs commands on this Mac. This Mac's rules still apply.", "on": false}));
+    assert_eq!(v["tools"][0], json!({"key": "shell", "label": "Shell on this Mac", "sub": "Runs commands on this Mac. This Mac's rules still apply.", "on": false, "state": "off"}));
     assert_eq!(v["mac"]["allow"], json!([{"pattern": "git status", "risk": "ro", "inert": "blocked by `git`"}]));
     assert_eq!(v["mac"]["block"], json!([{"pattern": "git"}]));
     assert_eq!(v["mac"]["mode"], "bypass");
     let recent = v["recent"].as_array().unwrap();
     assert_eq!(recent[0]["text"], "Blocked on this Mac: `git`.");
     assert!(recent[0]["undo"].is_string() && recent[0]["actor"] == "human");
-    assert_eq!(host_view(&b.ctx, None).unwrap()["tools"], json!([]));
+    assert_eq!(host_view(&b.ctx, None).unwrap()["profile"], "chats", "no Bot: the Chats profile");
     assert_eq!(host_view(&b.ctx, Some("nobody")).unwrap_err().code, "not_found");
     assert_eq!(host_set(&b.ctx, &json!({"bot": "hex", "key": "nope", "enabled": false})).unwrap_err().code, "not_found");
     assert_eq!(host_mode(&b.ctx, &json!({"mode": "ask"})).unwrap_err().code, "invalid_args");
@@ -899,4 +912,393 @@ async fn skill_enable_and_mcp_enable_propose_and_disable_acts_as_before() {
     assert!(prompt(&ctx).contains("### Tone"));
     host_set(&ctx, &json!({"bot": "hex", "key": "skill:tone", "enabled": false})).unwrap();
     assert!(!prompt(&ctx).contains("### Tone"));
+}
+
+// ---- asking before acting (PR 2) ----
+
+/// A [`bed`] whose cards wait `wait` for an answer.
+fn bed_waiting(label: &str, wait: std::time::Duration) -> Bed {
+    let dir = temp(label);
+    let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.ext.insert(ask::AskWait(wait));
+    ctx.ext.insert(RealChatsDefaults);
+    crate::hub::library::botctx::register(&mut ctx);
+    ctx.clock.manual_step(Some(START), false);
+    ctx.store.load().unwrap();
+    let (hex, plain) = ctx
+        .store
+        .write(|s| {
+            let t = s.fresh_thread("Hex");
+            let hex = t.id.clone();
+            s.bots.push(Bot::new("hex", "Hex", "blob", "#FFFFFF", Some(t.id.clone())));
+            s.list.push(t);
+            let p = s.fresh_thread("plain");
+            let plain = p.id.clone();
+            s.list.push(p);
+            (hex, plain)
+        })
+        .unwrap();
+    Bed { ctx: Arc::new(ctx), hex, plain }
+}
+
+fn asks(ctx: &HubCtx, chat: &str) -> Vec<Value> {
+    ctx.store.read(|s| s.thread(chat).unwrap().turns.iter().filter_map(|u| u.notice.clone()).filter(|n| n["kind"] == "tool_ask").collect())
+}
+
+/// The card `chat` waits on, once it is posted.
+async fn pending_ask(ctx: &HubCtx, chat: &str) -> Value {
+    for _ in 0..500 {
+        if let Some(n) = asks(ctx, chat).into_iter().find(|n| n["state"] == "pending") {
+            return n;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("no pending card in {chat}");
+}
+
+/// Calls `name` in `thread` (a task: it may wait on a card).
+fn spawn_call(ctx: &Arc<HubCtx>, thread: &str, name: &str, input: Value) -> tokio::task::JoinHandle<Out> {
+    let run = run_in(ctx, thread);
+    let block = json!({"name": name, "input": input});
+    tokio::spawn(async move { exec_tool(&run, &block).await })
+}
+
+fn answer_card(ctx: &HubCtx, chat: &str, id: &Value, ans: &str) -> Result<Value, crate::v1::V1Error> {
+    ask::host_answer(ctx, &json!({"chat": chat, "id": id, "answer": ans}))
+}
+
+fn chats_memories(ctx: &HubCtx) -> Vec<String> {
+    crate::hub::library::botctx::chats_memories(ctx).iter().map(|m| crate::js::string_of(&m["text"])).collect()
+}
+
+#[test]
+fn positions_default_by_profile_and_a_row_before_state_reads_as_enabled() {
+    assert_eq!((default_pos(CHATS, "web"), default_pos(CHATS, "office"), default_pos(CHATS, "memory"), default_pos(CHATS, "shell"), default_pos(CHATS, "mcp:x")), (Pos::On, Pos::On, Pos::Ask, Pos::Ask, Pos::Ask));
+    assert_eq!((default_pos("hex", "shell"), default_pos("hex", "agents")), (Pos::On, Pos::On));
+    let b = bed("positions");
+    b.ctx.db.with(|c| c.execute("INSERT INTO bot_tools(bot_id, key, enabled, actor, at) VALUES('hex','web',0,'human',1)", [])).unwrap();
+    assert_eq!(tool_state(&b.ctx, "hex", "web"), Pos::Off, "a PR 1 row is off");
+    // on to ask and ask to off tighten; off to ask and ask to on widen
+    let ch = |from, state| Change::Tool { bot: "hex".into(), key: "web".into(), state, from };
+    assert!(!ch(Pos::On, Pos::Ask).widens() && !ch(Pos::Ask, Pos::Off).widens() && !ch(Pos::On, Pos::Off).widens());
+    assert!(ch(Pos::Off, Pos::Ask).widens() && ch(Pos::Ask, Pos::On).widens() && ch(Pos::Off, Pos::On).widens());
+    // an undo written by PR 1 still reads
+    assert_eq!(Change::from_json(&json!({"op": "tool", "bot": "hex", "key": "web", "enabled": true})), Some(ch(Pos::Off, Pos::On)));
+    assert_eq!(Change::from_json(&ch(Pos::On, Pos::Ask).to_json()), Some(ch(Pos::On, Pos::Ask)));
+}
+
+#[tokio::test]
+async fn tools_set_takes_a_state_and_the_host_route_sets_chats() {
+    let b = bed("states");
+    let run = run_in(&b.ctx, &b.hex);
+    // on to ask: a tighten, at once, with its receipt and undo
+    let r = call(&run, "tools_set", json!({"key": "web", "state": "ask"})).await;
+    assert_eq!(r["status"], "ask");
+    assert_eq!(tool_state(&b.ctx, "hex", "web"), Pos::Ask);
+    let n = notices(&b.ctx, &b.hex).pop().unwrap();
+    assert_eq!((n["op"].clone(), n["state"].clone(), n["text"].clone()), (json!("tool_ask"), json!("applied"), json!("Hex asks you before using the web.")));
+    // ask to on: a card, not applied
+    let r = call(&run, "tools_set", json!({"key": "web", "state": "on"})).await;
+    assert_eq!(r["status"], "proposed");
+    assert_eq!(tool_state(&b.ctx, "hex", "web"), Pos::Ask);
+    let p = notices(&b.ctx, &b.hex).pop().unwrap();
+    assert_eq!((p["op"].clone(), p["from"].clone()), (json!("tool_on"), json!("ask")));
+    answer(&b.ctx, &json!({"chat": b.hex, "id": p["id"], "answer": "yes"})).unwrap();
+    assert_eq!(tool_state(&b.ctx, "hex", "web"), Pos::On);
+    // the old enabled still works
+    assert_eq!(call(&run, "tools_set", json!({"key": "web", "enabled": false})).await["status"], "off");
+    // tools_list shows the state and the profile
+    let l = call(&run, "tools_list", json!({})).await;
+    assert_eq!((l["profile"].clone(), l["bot"].clone()), (json!("bot"), json!("Hex")));
+    assert_eq!(l["tools"].as_array().unwrap().iter().find(|t| t["key"] == "web").unwrap()["state"], "off");
+    // a plain chat changes the Chats profile: memory ask to off at once, off to ask a card
+    let plain = run_in(&b.ctx, &b.plain);
+    let l = call(&plain, "tools_list", json!({})).await;
+    assert_eq!(l["profile"], "chats");
+    assert_eq!(l["tools"].as_array().unwrap().iter().find(|t| t["key"] == "memory").unwrap()["state"], "ask");
+    assert_eq!(call(&plain, "tools_set", json!({"key": "memory", "state": "off"})).await["status"], "off");
+    assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::Off);
+    assert_eq!(call(&plain, "tools_set", json!({"key": "memory", "state": "ask"})).await["status"], "proposed");
+    let p = notices(&b.ctx, &b.plain).pop().unwrap();
+    assert_eq!((p["bot"].clone(), p["botName"].clone(), p["op"].clone(), p["from"].clone()), (json!(CHATS), json!("Plain chats"), json!("tool_ask"), json!("off")));
+    // the person's route: {bot: "chats", key, state}, a widen at once
+    let r = host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "on"})).unwrap();
+    assert_eq!(r["text"], "Plain chats can use memory again.");
+    assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::On);
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(tool_state(&b.ctx, CHATS, "memory"), Pos::Off);
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "shell", "enabled": false})).unwrap();
+    assert_eq!(tool_state(&b.ctx, "hex", "shell"), Pos::Off);
+    assert_eq!(host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "maybe"})).unwrap_err().code, "invalid_args");
+    // the Chats view
+    let v = host_view(&b.ctx, None).unwrap();
+    assert_eq!((v["profile"].clone(), v["bot"].clone()), (json!("chats"), Value::Null));
+    let row = |k: &str| v["tools"].as_array().unwrap().iter().find(|t| t["key"] == k).unwrap().clone();
+    assert_eq!(row("web"), json!({"key": "web", "label": "Web", "sub": "Reads web pages and searches the web.", "on": true, "state": "on"}));
+    assert_eq!((row("shell")["state"].clone(), row("memory")["state"].clone(), row("memory")["on"].clone()), (json!("ask"), json!("off"), json!(false)));
+    assert_eq!(host_view(&b.ctx, Some("chats")).unwrap()["profile"], "chats");
+    // a plain chat's change is news in the other plain chats, never in a Bot's
+    let other = b.ctx.store.write(|s| {
+        let t = s.fresh_thread("other");
+        let id = t.id.clone();
+        s.list.push(t);
+        id
+    }).unwrap();
+    told(&b.ctx, &other, None);
+    told(&b.ctx, &b.hex, Some("hex"));
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "off"})).unwrap();
+    assert!(told(&b.ctx, &other, None).iter().any(|t| t.ends_with("Plain chats can't use web search now.")));
+    assert_eq!(host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "ask"})).unwrap()["text"], "Plain chats ask you before using web search.");
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty());
+}
+
+#[tokio::test]
+async fn each_answer_runs_once_grants_the_chat_declines_or_saves_a_rule() {
+    let b = bed("asks");
+    // once: memory in a plain chat asks (Chats' memory is at Ask), then runs
+    let t = spawn_call(&b.ctx, &b.plain, "memory_add", json!({"text": "I like tea"}));
+    let n = pending_ask(&b.ctx, &b.plain).await;
+    assert_eq!((n["title"].clone(), n["preview"].clone(), n["key"].clone(), n["tool"].clone(), n["bot"].clone()), (json!("Save this to memory?"), json!("I like tea"), json!("memory"), json!("memory_add"), json!("")));
+    assert!(n["id"].as_str().unwrap().starts_with("a_") && n.get("external").is_none());
+    let turn_text = b.ctx.store.read(|s| s.thread(&b.plain).unwrap().turns.iter().rev().find(|u| u.notice.as_ref().is_some_and(|x| x["id"] == n["id"])).and_then(|u| u.text.clone()));
+    assert_eq!(turn_text.as_deref(), Some("Save this to memory?"));
+    let a = answer_card(&b.ctx, &b.plain, &n["id"], "once").unwrap();
+    assert_eq!((a["notice"]["state"].clone(), a["notice"]["answer"].clone()), (json!("allowed"), json!("once")));
+    assert!(crate::js::string_of(&t.await.unwrap().content).starts_with("remembered"));
+    assert_eq!(chats_memories(&b.ctx), ["I like tea"]);
+    // only once
+    assert_eq!(answer_card(&b.ctx, &b.plain, &n["id"], "once").unwrap_err().code, "stale");
+    // chat: runs, and later writes in this chat run without a card
+    let t = spawn_call(&b.ctx, &b.plain, "memory_add", json!({"text": "I like coffee"}));
+    let n = pending_ask(&b.ctx, &b.plain).await;
+    answer_card(&b.ctx, &b.plain, &n["id"], "chat").unwrap();
+    t.await.unwrap();
+    let before = asks(&b.ctx, &b.plain).len();
+    let r = exec_tool(&run_in(&b.ctx, &b.plain), &json!({"name": "memory_add", "input": {"text": "I like cocoa"}})).await;
+    assert!(crate::js::string_of(&r.content).starts_with("remembered"));
+    assert_eq!(asks(&b.ctx, &b.plain).len(), before, "no card after Allow in this chat");
+    assert_eq!(chats_memories(&b.ctx), ["I like tea", "I like coffee", "I like cocoa"]);
+    // only in this chat: another plain chat asks again
+    let other = b.ctx.store.write(|s| {
+        let t = s.fresh_thread("other");
+        let id = t.id.clone();
+        s.list.push(t);
+        id
+    }).unwrap();
+    let t = spawn_call(&b.ctx, &other, "memory_add", json!({"text": "I like milk"}));
+    let n = pending_ask(&b.ctx, &other).await;
+    // no: it doesn't run, and the model is told not to retry
+    let a = answer_card(&b.ctx, &other, &n["id"], "no").unwrap();
+    assert_eq!((a["notice"]["state"].clone(), a["notice"]["answer"].clone()), (json!("declined"), json!("no")));
+    let r = t.await.unwrap();
+    assert_eq!(r, Out::err(ask::NOT_NOW.into()));
+    assert_eq!(chats_memories(&b.ctx).len(), 3);
+    // rule: the shell (at Ask in Chats) saves the allow, then runs
+    let t = spawn_call(&b.ctx, &b.plain, "shell_run", json!({"command": "echo hi", "cwd": "/"}));
+    let n = pending_ask(&b.ctx, &b.plain).await;
+    assert_eq!((n["title"].clone(), n["prefix"].clone(), n["preview"].clone()), (json!("Run `echo hi` on this Mac?"), json!("echo"), json!("echo hi")));
+    assert_eq!(answer_card(&b.ctx, &b.plain, &n["id"], "chat_nope").unwrap_err().code, "invalid_args");
+    answer_card(&b.ctx, &b.plain, &n["id"], "rule").unwrap();
+    assert_eq!(t.await.unwrap(), Out { content: json!("hi"), is_error: Some(false) });
+    assert_eq!(rules(&b.ctx, "allow").iter().map(|r| r.pattern.clone()).collect::<Vec<_>>(), ["echo"]);
+    // now `echo` runs at Ask without a card; another command asks
+    let before = asks(&b.ctx, &b.plain).len();
+    assert_eq!(exec_tool(&run_in(&b.ctx, &b.plain), &json!({"name": "shell_run", "input": {"command": "echo again", "cwd": "/"}})).await.content, json!("again"));
+    assert_eq!(asks(&b.ctx, &b.plain).len(), before);
+    // a block still refuses without asking
+    host_rules(&b.ctx, &json!({"op": "add", "kind": "block", "pattern": "rm"})).unwrap();
+    assert_eq!(exec_tool(&run_in(&b.ctx, &b.plain), &json!({"name": "shell_run", "input": {"command": "rm -rf /tmp/x", "cwd": "/"}})).await, Out::err(gate::BLOCKED.into()));
+    assert_eq!(asks(&b.ctx, &b.plain).len(), before);
+    // a rule only for a shell card
+    let t = spawn_call(&b.ctx, &other, "memory_add", json!({"text": "x"}));
+    let n = pending_ask(&b.ctx, &other).await;
+    assert_eq!(answer_card(&b.ctx, &other, &n["id"], "rule").unwrap_err().code, "invalid_args");
+    answer_card(&b.ctx, &other, &n["id"], "no").unwrap();
+    t.await.unwrap();
+    // Activity keeps each answer
+    let outcomes: Vec<String> = activity(&b.ctx, None).iter().filter(|r| r.get("tool").is_some()).map(|r| crate::js::string_of(&r["outcome"])).collect();
+    assert_eq!(outcomes, ["declined", "allowed", "declined", "allowed_chat", "allowed"]);
+}
+
+#[tokio::test]
+async fn an_unanswered_card_expires_and_a_restart_expires_what_was_left() {
+    let b = bed_waiting("expire", std::time::Duration::from_millis(150));
+    let r = exec_tool(&run_in(&b.ctx, &b.plain), &json!({"name": "memory_add", "input": {"text": "tea"}})).await;
+    assert_eq!(r, Out::err(ask::NO_ANSWER.into()));
+    assert!(chats_memories(&b.ctx).is_empty());
+    let n = asks(&b.ctx, &b.plain).pop().unwrap();
+    assert_eq!(n["state"], "expired");
+    // a late click: no answer is taken
+    let e = answer_card(&b.ctx, &b.plain, &n["id"], "once").unwrap_err();
+    assert_eq!((e.code.as_str(), e.message.as_str()), ("stale", ask::NO_ANSWER));
+    assert_eq!(activity(&b.ctx, None)[0]["outcome"], "expired");
+    // a card a previous run left pending: expired on start, and a click is stale
+    let left = json!({"kind": "tool_ask", "id": "a_left", "bot": "", "key": "memory", "tool": "memory_add", "title": "Save this to memory?", "state": "pending", "at": 1});
+    crate::hub::tools::miniapps::post_in(&b.ctx, &b.plain, &left);
+    assert_eq!(answer_card(&b.ctx, &b.plain, &json!("a_left"), "once").unwrap_err().code, "stale", "nothing waits on it");
+    let left2 = json!({"kind": "tool_ask", "id": "a_left2", "bot": "", "key": "memory", "tool": "memory_add", "title": "Save this to memory?", "state": "pending", "at": 1});
+    crate::hub::tools::miniapps::post_in(&b.ctx, &b.plain, &left2);
+    ask::expire_pending(&b.ctx);
+    assert!(asks(&b.ctx, &b.plain).iter().all(|n| n["state"] == "expired"));
+}
+
+#[tokio::test]
+async fn reads_never_ask_and_off_still_refuses() {
+    let b = bed_waiting("reads", std::time::Duration::from_millis(100));
+    let plain = run_in(&b.ctx, &b.plain);
+    let r = exec_tool(&plain, &json!({"name": "memory_list", "input": {}})).await;
+    assert_eq!(crate::js::string_of(&r.content), "no memories yet");
+    exec_tool(&plain, &json!({"name": "fetch_url", "input": {"url": "http://127.0.0.1:9/"}})).await;
+    exec_tool(&plain, &json!({"name": "routine_list", "input": {}})).await;
+    assert!(asks(&b.ctx, &b.plain).is_empty(), "no card for a read");
+    for name in ["memory_list", "routine_list", "agents_list", "agent_read", "web_search", "fetch_url", "query_source", "launch_app", "view_code", "app_list", "office_open", "office_read_text"] {
+        assert!(keys::is_read_name(name), "{name}");
+    }
+    for name in ["memory_add", "memory_remove", "routine_create", "routine_run", "agent_send", "agent_create", "app_install", "app_enable", "app_details_update", "set_version", "promote_app", "office_create", "office_edit", "office_export", "mcp_x_y", "who_knows"] {
+        assert!(!keys::is_read_name(name), "{name}");
+    }
+    assert!(keys::declared_read(&json!({"annotations": {"readOnlyHint": true}})) && !keys::declared_read(&json!({"annotations": {"readOnlyHint": false}})) && !keys::declared_read(&json!({})));
+    // Web off in Chats: refused; at Ask a search still runs (a read)
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "off"})).unwrap();
+    let r = exec_tool(&plain, &json!({"name": "fetch_url", "input": {"url": "http://127.0.0.1:9/"}})).await;
+    assert_eq!(crate::js::string_of(&r.content), "web is off for plain chats. Only the user can turn it on; tools_set proposes it.");
+    assert!(!names(&tool_list(&plain).await).contains(&"fetch_url".to_owned()));
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "web", "state": "ask"})).unwrap();
+    let r = exec_tool(&plain, &json!({"name": "fetch_url", "input": {"url": "http://127.0.0.1:9/"}})).await;
+    assert!(!crate::js::string_of(&r.content).contains("is off"));
+    assert!(asks(&b.ctx, &b.plain).is_empty());
+}
+
+#[tokio::test]
+async fn outside_content_makes_every_guarded_write_ask_even_on_and_with_a_grant() {
+    let b = bed("guard");
+    // a Bot, its memory on: after a page, a write asks, and says why
+    let run = Arc::new(run_in(&b.ctx, &b.hex));
+    run.state().external = true;
+    let r2 = run.clone();
+    let t = tokio::spawn(async move { exec_tool(&r2, &json!({"name": "memory_add", "input": {"text": "tea"}})).await });
+    let n = pending_ask(&b.ctx, &b.hex).await;
+    assert_eq!((n["external"].clone(), n["bot"].clone(), n["botName"].clone()), (json!(true), json!("hex"), json!("Hex")));
+    answer_card(&b.ctx, &b.hex, &n["id"], "chat").unwrap();
+    assert!(crate::js::string_of(&t.await.unwrap().content).starts_with("remembered"));
+    // the grant doesn't lift the guard
+    let r2 = run.clone();
+    let t = tokio::spawn(async move { exec_tool(&r2, &json!({"name": "memory_add", "input": {"text": "coffee"}})).await });
+    let n = pending_ask(&b.ctx, &b.hex).await;
+    answer_card(&b.ctx, &b.hex, &n["id"], "no").unwrap();
+    assert_eq!(t.await.unwrap(), Out::err(ask::NOT_NOW.into()));
+    // nor does the shell on: a command that would run asks
+    let r2 = run.clone();
+    let t = tokio::spawn(async move { exec_tool(&r2, &json!({"name": "shell_run", "input": {"command": "ls", "cwd": "/"}})).await });
+    let n = pending_ask(&b.ctx, &b.hex).await;
+    assert_eq!((n["title"].clone(), n["external"].clone()), (json!("Run `ls` on this Mac?"), json!(true)));
+    answer_card(&b.ctx, &b.hex, &n["id"], "once").unwrap();
+    assert_eq!(t.await.unwrap().is_error, Some(false));
+    // an unguarded key (office) and a read don't ask; off still refuses without a card
+    let before = asks(&b.ctx, &b.hex).len();
+    exec_tool(&run, &json!({"name": "memory_list", "input": {}})).await;
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "memory", "state": "off"})).unwrap();
+    assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await.content).contains("is off for this Bot"));
+    assert_eq!(asks(&b.ctx, &b.hex).len(), before);
+    // without outside content, a Bot's on switch never asks
+    let quiet = run_in(&b.ctx, &b.hex);
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "memory", "state": "on"})).unwrap();
+    assert!(crate::js::string_of(&exec_tool(&quiet, &json!({"name": "memory_add", "input": {"text": "milk"}})).await.content).starts_with("remembered"));
+    assert_eq!(asks(&b.ctx, &b.hex).len(), before);
+}
+
+#[tokio::test]
+async fn a_routine_takes_ask_as_on_but_no_one_answers_the_guard_or_an_agents_request() {
+    let b = bed("nobody");
+    let turn_of = |t: TurnCtx| {
+        let job = b.ctx.jobs.create(&b.plain, Value::Null, None, false);
+        Run::new(b.ctx.clone(), t, job, Arc::new(Settings::from(|_| None)))
+    };
+    let routine = || TurnCtx { thread: b.plain.clone(), routine: Some("r1".into()), ..TurnCtx::default() };
+    let request = || TurnCtx { thread: b.plain.clone(), acting_bot: Some("hex".into()), ..TurnCtx::default() };
+    // a routine's run in a plain chat: memory and the shell at Ask run, no card
+    let run = turn_of(routine());
+    assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await.content).starts_with("remembered"));
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await.content, json!("hi"));
+    assert!(asks(&b.ctx, &b.plain).is_empty());
+    // off still refuses
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "off"})).unwrap();
+    assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "y"}})).await.content).contains("is off for plain chats"));
+    // after outside content the guard asks, and no one is there: refused
+    run.state().external = true;
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
+    // an agent's request keeps refusing Ask, and the guard
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "memory", "state": "ask"})).unwrap();
+    let run = turn_of(request());
+    assert_eq!(exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await, Out::err(ask::NOBODY.into()));
+    run.state().external = true;
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
+    assert!(asks(&b.ctx, &b.plain).is_empty() && asks(&b.ctx, &b.hex).is_empty(), "no card");
+    let outcomes: Vec<Value> = activity(&b.ctx, None).iter().filter(|r| r.get("tool").is_some()).map(|r| r["outcome"].clone()).collect();
+    assert_eq!(outcomes, [json!("needs_ok"), json!("needs_ok"), json!("needs_ok")]);
+}
+
+#[test]
+fn the_shell_card_offers_the_programs_rule() {
+    let b = bed("prefix");
+    let p = |l: &str| ask::prefix_of(&b.ctx, l);
+    assert_eq!((p("git push origin main"), p("ls -la"), p("npm run build"), p("git --version")), (Some("git push".into()), Some("ls".into()), Some("npm run".into()), Some("git".into())));
+    assert_eq!((p("ls && rm x"), p("sudo ls"), p("bash -c x")), (None, None, None));
+}
+
+#[tokio::test]
+async fn an_mcp_tool_marked_read_only_runs_at_ask_and_the_rest_ask() {
+    let Some(node) = std::env::var("PATH").ok().and_then(|p| p.split(':').map(|d| std::path::Path::new(d).join("node")).find(|p| p.exists())) else { return };
+    let b0 = bed_waiting("mcp-ro", std::time::Duration::from_millis(150));
+    let dir = b0.ctx.data.clone();
+    drop(b0);
+    // the apps fixture with one more tool, marked read-only
+    let src = std::fs::read_to_string(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server/test/fixtures/mcp-apps-server.mjs")).unwrap();
+    let marked = src.replacen("const TOOLS = [", "const TOOLS = [\n  { name: \"peek\", description: \"Read only\", inputSchema: { type: \"object\" }, annotations: { readOnlyHint: true } },", 1);
+    assert_ne!(src, marked);
+    let script = dir.join("ro-server.mjs");
+    std::fs::write(&script, marked).unwrap();
+    let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
+    ctx.ext.insert(ask::AskWait(std::time::Duration::from_millis(150)));
+    ctx.ext.insert(RealChatsDefaults);
+    ctx.store.load().unwrap();
+    ctx.mcp = Some(crate::helper::mcp_servers::McpHost::new(&dir.join("generated").join("app.db"), 8798).unwrap());
+    ctx.db
+        .with(|c| c.execute("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at) VALUES('ro','ro',?,?,'{}',1,1)", rusqlite::params![node.display().to_string(), json!([script.display().to_string()]).to_string()]))
+        .unwrap();
+    let ctx = Arc::new(ctx);
+    let chat = ctx.store.write(|s| {
+        let t = s.fresh_thread("plain");
+        let id = t.id.clone();
+        s.list.push(t);
+        id
+    }).unwrap();
+    let run = run_in(&ctx, &chat);
+    let r = exec_tool(&run, &json!({"name": "mcp_ro_peek", "input": {"x": 1}})).await;
+    assert!(crate::js::string_of(&r.content).contains("\"tool\":\"peek\""), "{r:?}");
+    assert!(asks(&ctx, &chat).is_empty(), "a read-only tool runs at Ask");
+    let r = exec_tool(&run, &json!({"name": "mcp_ro_echo", "input": {"x": 1}})).await;
+    assert_eq!(r, Out::err(ask::NO_ANSWER.into()), "the rest ask (and no answer came)");
+    assert_eq!(asks(&ctx, &chat)[0]["key"], "mcp:ro");
+}
+
+#[tokio::test]
+async fn the_chats_view_lists_plain_chats_memories_and_a_click_forgets_one() {
+    let b = bed("memories");
+    host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "on"})).unwrap();
+    let plain = run_in(&b.ctx, &b.plain);
+    for t in ["I like tea", "I like coffee"] {
+        exec_tool(&plain, &json!({"name": "memory_add", "input": {"text": t}})).await;
+    }
+    let v = host_view(&b.ctx, None).unwrap();
+    let ms = v["memories"].as_array().unwrap().clone();
+    assert_eq!(ms.iter().map(|m| m["text"].clone()).collect::<Vec<_>>(), [json!("I like tea"), json!("I like coffee")]);
+    assert!(host_view(&b.ctx, Some("hex")).unwrap().get("memories").is_none(), "a Bot's view has none");
+    assert_eq!(host_memory_remove(&b.ctx, &json!({"id": ms[0]["id"]})).unwrap()["ok"], true);
+    assert_eq!(chats_memories(&b.ctx), ["I like coffee"]);
+    assert_eq!(host_memory_remove(&b.ctx, &json!({"id": ms[0]["id"]})).unwrap_err().code, "not_found");
+    assert_eq!(host_memory_remove(&b.ctx, &json!({})).unwrap_err().code, "invalid_args");
+    // the next call's system prompt has only what is left
+    let section = crate::hub::library::botctx::chats_section(&b.ctx);
+    assert!(section.contains("- I like coffee") && !section.contains("tea"), "{section}");
 }

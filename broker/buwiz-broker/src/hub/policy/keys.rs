@@ -1,6 +1,7 @@
 //! A Bot's tool switches: each model tool's key (`shell`, `web`, `apps`, `office`,
 //! `routines`, `memory`, `agents`, `skill:<id>`, `mcp:<server>`, `v1:<plugin>`), or none for
-//! a tool that is always on, and the rows This Bot shows.
+//! a tool that is always on; whether a call only reads (a switch at Ask asks only before a
+//! call that changes something or reaches someone); and the rows This Bot and Chats show.
 
 use serde_json::{json, Value};
 
@@ -103,8 +104,62 @@ pub fn phrase_of(ctx: &HubCtx, key: &str) -> String {
     }
 }
 
-/// Every key This Bot lists for `bot`: the groups, then each private skill, each MCP server
-/// the Bot sees and each v1 plugin.
+/// The tools that only read, by name: they run under Ask without a card.
+const READS: &[&str] = &[
+    "memory_list",
+    "routine_list",
+    "agents_list",
+    "agent_conversations",
+    "agent_read",
+    "web_search",
+    "fetch_url",
+    "query_source",
+    // opening or reading a mini app or a card
+    "app_list",
+    "launch_app",
+    "close_app",
+    "view_code",
+    // these only post a card the user fills in or answers
+    "app_setup",
+    "app_signin",
+];
+
+/// The words after `office_` of a document tool that only reads.
+const OFFICE_READS: &[&str] = &["open", "read", "get", "list", "view", "inspect", "find", "search", "info", "describe", "outline", "preview"];
+
+/// Whether `name` only reads, by its name: the [`READS`] table and the office tools that
+/// open or read a document. Every other tool counts as a write; an MCP server's or a v1
+/// plugin's says so itself (`annotations.readOnlyHint`, [`declared_read`]).
+pub fn is_read_name(name: &str) -> bool {
+    if READS.contains(&name) {
+        return true;
+    }
+    name.strip_prefix("office_").and_then(|v| v.split('_').next()).is_some_and(|v| OFFICE_READS.contains(&v))
+}
+
+/// Whether a tool's MCP definition declares it only reads (`annotations.readOnlyHint`).
+pub fn declared_read(def: &Value) -> bool {
+    def.pointer("/annotations/readOnlyHint") == Some(&Value::Bool(true))
+}
+
+/// Whether a write in `key` asks after the turn read outside content, even when its switch
+/// is on.
+pub fn guarded(key: &str) -> bool {
+    matches!(key, "shell" | "agents" | "routines" | "memory" | "apps") || key.starts_with("mcp:") || key.starts_with("v1:")
+}
+
+/// [`phrase_of`] for `owner`'s switch: the Plain chats profile's read "web search",
+/// "memory".
+pub fn phrase_for(ctx: &HubCtx, owner: &str, key: &str) -> String {
+    match (owner == super::CHATS, key) {
+        (true, "web") => "web search".into(),
+        (true, "memory") => "memory".into(),
+        _ => phrase_of(ctx, key),
+    }
+}
+
+/// Every key This Bot lists for `bot` (or Chats for [`super::CHATS`]): the groups, then
+/// each private skill, each MCP server the profile sees and each v1 plugin.
 pub fn all_keys(ctx: &HubCtx, bot: &str) -> Vec<String> {
     let mut out: Vec<String> = GROUPS.iter().map(|g| (*g).to_owned()).collect();
     let skills = ctx.db.with(|c| {
@@ -138,8 +193,8 @@ pub fn names_key(ctx: &HubCtx, key: &str, text: &str) -> bool {
     words.iter().any(|w| !w.is_empty() && t.contains(w.as_str()))
 }
 
-/// This Bot's row for `key` as `GET /v1/host/tools` answers it.
-pub fn row_json(ctx: &HubCtx, key: &str, on: bool) -> Value {
+/// A profile's row for `key` as `GET /v1/host/tools` answers it (`on`: not off).
+pub fn row_json(ctx: &HubCtx, key: &str, state: super::Pos) -> Value {
     let (label, sub) = label_of(ctx, key).unwrap_or_else(|| (key.to_owned(), String::new()));
-    json!({"key": key, "label": label, "sub": sub, "on": on})
+    json!({"key": key, "label": label, "sub": sub, "on": state != super::Pos::Off, "state": state.as_str()})
 }

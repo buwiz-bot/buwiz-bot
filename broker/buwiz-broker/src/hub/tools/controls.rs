@@ -3,9 +3,14 @@
 //! and `shell_mode_set`; the ceiling `tool_list` and `exec_tool` apply; the gate in front of
 //! `shell_run`; and `skill_enable` / `mcp_enable` / `app_enable`, which propose (F3).
 //!
-//! A Bot acts only on its own switches (the acting Bot, `botctx::bot_of`). A tighten
-//! applies at once and posts its receipt card; a widen only ever posts a pending card
-//! (`policy::propose`) that a person answers. No input applies a widen.
+//! A Bot acts only on its own switches (the acting Bot, `botctx::bot_of`); a plain chat on
+//! the Chats profile every plain chat shares (`policy::CHATS`). A tighten applies at once
+//! and posts its receipt card; a widen only ever posts a pending card (`policy::propose`)
+//! that a person answers. No input applies a widen.
+//!
+//! [`ask_first`] (and [`shell_run`] for the shell) parks a call that changes something or
+//! reaches someone while its switch is at Ask, or after the turn read outside content, until
+//! the user answers its `tool_ask` card (`policy::ask`).
 
 use std::collections::HashSet;
 
@@ -13,8 +18,9 @@ use serde_json::{json, Value};
 
 use super::{builtin, Out, Run};
 use crate::hub::library::botctx;
+use crate::hub::policy::ask::{self as asking, Asking};
 use crate::hub::policy::gate::{self, Mode, Risk, Verdict};
-use crate::hub::policy::{self, keys, sandbox, Ask, Change};
+use crate::hub::policy::{self, keys, sandbox, Ask, Change, Pos, CHATS};
 use crate::js;
 
 pub const NAMES: [&str; 7] = ["tools_list", "tools_set", "shell_rules", "shell_find_program", "shell_rule_add", "shell_rule_remove", "shell_mode_set"];
@@ -25,16 +31,16 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "tools_list",
-            "description": "List this Bot's tool switches (shell, web, apps, office, routines, memory, agents, skill:<id>, mcp:<server>, v1:<plugin>), on or off and who changed each, and this Mac's shell mode with its rule counts.",
+            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({
             "name": "tools_set",
-            "description": "Switch one of this Bot's tools. Off applies at once (the user can undo it). On never applies: a card in this chat asks the user, and it stays off until they confirm. You can change only this Bot's own tools.",
+            "description": "Set one of this Bot's tools (in a plain chat: Plain chats') to on, ask or off. Toward off (on to ask, on or ask to off) applies at once (the user can undo it). Toward on never applies: a card in this chat asks the user, and it stays as it is until they confirm. You can change only this Bot's own tools.",
             "input_schema": {"type": "object", "properties": {
                 "key": {"type": "string", "description": "a key tools_list shows, e.g. shell, web, skill:<id>, mcp:<server>"},
-                "enabled": {"type": "boolean"},
-            }, "required": ["key", "enabled"]},
+                "state": {"type": "string", "enum": ["on", "ask", "off"]},
+            }, "required": ["key", "state"]},
         }),
         json!({
             "name": "shell_rules",
@@ -82,7 +88,8 @@ fn acting(run: &Run) -> Option<(String, String)> {
 }
 
 fn actor(bot: &Option<(String, String)>) -> String {
-    format!("bot:{}", bot.as_ref().map(|b| b.0.as_str()).unwrap_or(""))
+    // a plain chat's model acts as "the assistant", whichever profile it changes
+    format!("bot:{}", bot.as_ref().map(|b| b.0.as_str()).filter(|b| *b != CHATS).unwrap_or(""))
 }
 
 /// The user's last message in this turn (or the thread's last).
@@ -93,15 +100,19 @@ fn last_user(run: &Run) -> String {
     run.ctx.store.read(|s| s.thread(&run.turn.thread).and_then(|t| t.turns.iter().rev().find(|u| u.role == "user").and_then(|u| u.text.clone()))).unwrap_or_default()
 }
 
-/// The keys off for this turn's Bot; `None` with no acting Bot (no ceiling).
-pub fn off(run: &Run) -> Option<HashSet<String>> {
-    let (bot, _) = acting(run)?;
-    Some(policy::off_keys(&run.ctx, &bot))
+/// The profile this turn's switches are: the acting Bot's, else the Chats profile.
+pub fn profile(run: &Run) -> String {
+    acting(run).map(|b| b.0).unwrap_or_else(|| CHATS.to_owned())
 }
 
-/// `tools` without those whose key is off for the acting Bot.
+/// The keys off for this turn's profile; `None` when none is.
+pub fn off(run: &Run) -> Option<HashSet<String>> {
+    Some(policy::off_keys(&run.ctx, &profile(run))).filter(|o| !o.is_empty())
+}
+
+/// `tools` without those whose key is off for the turn's profile.
 pub fn ceiling(run: &Run, tools: Vec<Value>) -> Vec<Value> {
-    let Some(off) = off(run).filter(|o| !o.is_empty()) else { return tools };
+    let Some(off) = off(run) else { return tools };
     tools
         .into_iter()
         .filter(|t| {
@@ -113,15 +124,141 @@ pub fn ceiling(run: &Run, tools: Vec<Value>) -> Vec<Value> {
 
 /// The deferred apps whose key is on for the acting Bot.
 pub fn ceiling_deferred(run: &Run, deferred: Vec<Value>) -> Vec<Value> {
-    let Some(off) = off(run).filter(|o| !o.is_empty()) else { return deferred };
+    let Some(off) = off(run) else { return deferred };
     deferred.into_iter().filter(|d| keys::key_of_app(&run.ctx, &js::string_of(&d["id"])).is_none_or(|k| !off.contains(&k))).collect()
 }
 
-/// The refusal for a call to a tool switched off for the acting Bot.
+fn key_for(run: &Run, name: &str, input: &Value) -> Option<String> {
+    if name == "app_tools_load" {
+        keys::key_of_app(&run.ctx, &input.get("app").map(js::string_of).unwrap_or_default())
+    } else {
+        keys::key_of(&run.ctx, name, run.turn.surface.as_ref())
+    }
+}
+
+/// The refusal for a call to a tool switched off for the turn's profile.
 pub fn refusal(run: &Run, name: &str, input: &Value) -> Option<Out> {
-    let off = off(run).filter(|o| !o.is_empty())?;
-    let key = if name == "app_tools_load" { keys::key_of_app(&run.ctx, &input.get("app").map(js::string_of).unwrap_or_default()) } else { keys::key_of(&run.ctx, name, run.turn.surface.as_ref()) }?;
-    off.contains(&key).then(|| Out::err(format!("{key} is off for this Bot. Only the user can turn it on; tools_set proposes it.")))
+    let off = off(run)?;
+    let key = key_for(run, name, input)?;
+    let whose = if acting(run).is_some() { "this Bot" } else { "plain chats" };
+    off.contains(&key).then(|| Out::err(format!("{key} is off for {whose}. Only the user can turn it on; tools_set proposes it.")))
+}
+
+/// `pos` as this turn reads it: a routine's run takes Ask as On (the user allowed the
+/// routine when it was made); an agent's request does not.
+fn effective(run: &Run, pos: Pos) -> Pos {
+    let routine = run.turn.routine.is_some() || run.turn.surface.is_some();
+    if pos == Pos::Ask && routine && run.turn.acting_bot.is_none() {
+        Pos::On
+    } else {
+        pos
+    }
+}
+
+/// Whether the call `name` only reads: by its name, else as its MCP server or v1 plugin
+/// declares it (`readOnlyHint`). Everything else is a write.
+async fn reads(run: &Run, name: &str, key: &str) -> bool {
+    if keys::is_read_name(name) {
+        return true;
+    }
+    if key.starts_with("mcp:") {
+        return super::mcp::tool_def(&run.ctx, name).await.is_some_and(|d| keys::declared_read(&d));
+    }
+    if let Some(plugin) = key.strip_prefix("v1:") {
+        return super::v1::tool_def(&run.ctx, plugin, name).is_some_and(|d| keys::declared_read(&d));
+    }
+    false
+}
+
+/// Before any call but the shell's (its own gate asks, [`shell_run`]): a write on a switch
+/// at Ask, without a grant for this chat, or any write in a guarded key after outside
+/// content, waits for the user's OK. → the model's answer when it doesn't run.
+pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
+    let ctx = &run.ctx;
+    if name == "shell_run" || name == "app_tools_load" {
+        return None;
+    }
+    let key = key_for(run, name, input)?;
+    let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
+    if pos == Pos::Off || reads(run, name, &key).await {
+        return None;
+    }
+    let external = run.state().external && keys::guarded(&key);
+    if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
+        return None;
+    }
+    let (title, lines, preview) = describe(run, name, &key, input);
+    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None };
+    asking::ask(run, a).await.err().map(Out::err)
+}
+
+fn clip(s: &str, n: usize) -> String {
+    js::slice_utf16(s, n).to_owned()
+}
+
+/// A tool card's title (what will happen), its lines and its payload.
+fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<String>, String) {
+    let ctx = &run.ctx;
+    let s = |k: &str| input.get(k).filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default();
+    let quoted = |v: String| if v.is_empty() { String::new() } else { format!(" \"{}\"", clip(&v, 80)) };
+    let payload = || {
+        let p = js::stringify_pretty(input);
+        if p == "{}" {
+            String::new()
+        } else {
+            clip(&p, 2000)
+        }
+    };
+    let routine_name = |id: &str| -> String {
+        let n = ctx.db.with(|c| c.query_row("SELECT name FROM routines WHERE id=?", [id], |r| r.get::<_, Option<String>>(0))).ok().flatten();
+        n.filter(|n| !n.is_empty()).unwrap_or_else(|| id.to_owned())
+    };
+    match name {
+        "agent_send" => {
+            let to: Vec<String> = match input.get("to") {
+                Some(Value::Array(a)) => a.iter().map(js::string_of).collect(),
+                Some(Value::String(t)) if t == "*" => vec!["all your agents".to_owned()],
+                Some(v) if !v.is_null() => vec![js::string_of(v)],
+                _ => vec!["the agents in this conversation".to_owned()],
+            };
+            let to: Vec<String> = to.into_iter().map(|t| ctx.store.read(|st| st.bot(&t).map(|b| b.name.clone())).unwrap_or(t)).collect();
+            let mut lines = Vec::new();
+            if !s("subject").is_empty() {
+                lines.push(format!("Subject: {}", clip(&s("subject"), 120)));
+            }
+            (format!("Send a message to {}?", to.join(", ")), lines, clip(&s("text"), 4000))
+        }
+        "agent_create" => (format!("Make the agent{}?", quoted(s("name"))), vec![s("purpose")].into_iter().filter(|l| !l.is_empty()).collect(), clip(&s("first_message"), 4000)),
+        "agent_remove" => (format!("End the helper{}?", quoted(s("id"))), Vec::new(), String::new()),
+        "memory_add" => ("Save this to memory?".into(), Vec::new(), clip(&s("text"), 1000)),
+        "memory_remove" => ("Remove this from memory?".into(), Vec::new(), s("id")),
+        "routine_create" => {
+            let n = [s("name"), s("label"), s("routine")].into_iter().find(|n| !n.is_empty()).unwrap_or_default();
+            let mut lines = Vec::new();
+            if let Some(every) = input.get("every_s").and_then(Value::as_f64).filter(|e| *e > 0.0) {
+                lines.push(if every >= 3600.0 { format!("Every {} h", js::number((every / 3600.0 * 10.0).round() / 10.0)) } else { format!("Every {} min", js::number((every / 60.0).round())) });
+            }
+            let preview = if s("prompt").is_empty() { payload() } else { clip(&s("prompt"), 4000) };
+            (if n.is_empty() { "Make a routine?".into() } else { format!("Make the routine{}?", quoted(n)) }, lines, preview)
+        }
+        "routine_update" => (format!("Change the routine{}?", quoted(routine_name(&s("id")))), Vec::new(), payload()),
+        "routine_delete" => (format!("Delete the routine{}?", quoted(routine_name(&s("id")))), Vec::new(), String::new()),
+        "routine_run" => (format!("Run the routine{} now?", quoted(routine_name(&s("id")))), Vec::new(), String::new()),
+        "app_install" => ("Install a mini app?".into(), Vec::new(), payload()),
+        "app_enable" => (format!("Switch on the mini app{}?", quoted(s("id"))), Vec::new(), String::new()),
+        "app_disable" => (format!("Switch off the mini app{}?", quoted(s("id"))), Vec::new(), String::new()),
+        "app_uninstall" => (format!("Uninstall the mini app{}?", quoted(s("id"))), Vec::new(), String::new()),
+        "office_create" => {
+            let file = s("path").rsplit('/').next().unwrap_or("").to_owned();
+            (format!("Make the document{}?", quoted(file)), Vec::new(), String::new())
+        }
+        _ if name.starts_with("office_") => ("Change a document?".into(), vec![format!("Tool: {name}")], payload()),
+        _ if key == "apps" => (format!("Change the card{}?", quoted(s("name"))), vec![format!("Tool: {name}")], payload()),
+        _ => {
+            let label = keys::label_of(ctx, key).map(|l| l.0).unwrap_or_else(|| key.to_owned());
+            (format!("Let it use {label}?"), vec![format!("Tool: {name}")], payload())
+        }
+    }
 }
 
 /// Whether a tool that reads outside content (a page, a search, an app) ran this turn.
@@ -183,39 +320,54 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "tools_list" => {
             let mac = policy::mac_json(ctx);
             let counts = json!({"mode": mac["mode"], "allow": mac["allow"].as_array().map_or(0, Vec::len), "block": mac["block"].as_array().map_or(0, Vec::len)});
-            let Some((id, bname)) = bot else { return Ok(out(json!({"bot": Value::Null, "tools": [], "note": "This chat has no Bot, so it has no tool switches.", "mac": counts}))) };
+            let (id, bname) = bot.clone().unwrap_or_else(|| (CHATS.to_owned(), String::new()));
+            let me = actor(&bot);
             let rows = policy::tool_rows(ctx, &id);
             let tools: Vec<Value> = keys::all_keys(ctx, &id)
                 .into_iter()
                 .map(|k| {
                     let row = rows.iter().find(|r| r.0 == k);
-                    let mut v = json!({"key": k, "on": row.is_none_or(|r| r.1)});
+                    let mut v = json!({"key": k, "state": policy::tool_state(ctx, &id, &k).as_str()});
                     if let Some(r) = row {
-                        v["changedBy"] = json!(if r.2 == "human" { "the user".to_owned() } else if r.2 == format!("bot:{id}") { "you".to_owned() } else { r.2.clone() });
+                        v["changedBy"] = json!(if r.2 == "human" { "the user".to_owned() } else if r.2 == me { "you".to_owned() } else { r.2.clone() });
                     }
                     v
                 })
                 .collect();
-            Ok(out(json!({"bot": bname, "tools": tools, "mac": counts})))
+            if bot.is_none() {
+                return Ok(out(json!({"profile": "chats", "note": "This chat has no Bot: these are Plain chats' switches, shared by every plain chat.", "tools": tools, "mac": counts})));
+            }
+            Ok(out(json!({"profile": "bot", "bot": bname, "tools": tools, "mac": counts})))
         }
         "tools_set" => {
-            let Some(b) = bot.clone() else { return Ok(refused("This chat has no Bot. Open a Bot's chat to change its tools.")) };
             let key = s("key");
-            let Some(enabled) = input.get("enabled").and_then(Value::as_bool) else { return Ok(refused("send enabled: true or false")) };
-            if input.get("bot").is_some_and(|x| js::string_of(x) != b.0) {
-                return Ok(refused(format!("{} can't change another Bot's tools from here.", b.1)));
+            let state = match (input.get("state").and_then(Value::as_str), input.get("enabled").and_then(Value::as_bool)) {
+                (Some(st), _) => Pos::parse(st),
+                (None, Some(e)) => Some(if e { Pos::On } else { Pos::Off }),
+                _ => None,
+            };
+            let Some(state) = state else { return Ok(refused("send state: on, ask or off")) };
+            let owner = profile(run);
+            if let Some(b) = &bot {
+                if input.get("bot").is_some_and(|x| js::string_of(x) != b.0) {
+                    return Ok(refused(format!("{} can't change another Bot's tools from here.", b.1)));
+                }
+            } else if input.get("bot").is_some_and(|x| !x.is_null() && js::string_of(x) != "chats") {
+                return Ok(refused("A plain chat can change only the Plain chats switches."));
             }
             if !keys::known(ctx, &key) {
                 return Ok(refused(format!("no tool switch {} (tools_list shows the keys)", js::slice_utf16(&key, 80))));
             }
-            let change = Change::Tool { bot: b.0.clone(), key: key.clone(), enabled };
+            let change = Change::tool(ctx, &owner, &key, state);
             if change.noop(ctx) {
-                return Ok(out(json!({"status": if enabled { "on" } else { "off" }, "key": key, "note": "Already so."})));
+                return Ok(out(json!({"status": state.as_str(), "key": key, "note": "Already so."})));
             }
-            if enabled {
-                return Ok(propose(run, &bot, &change, |t| keys::names_key(ctx, &key, t), json!({})));
+            // a card names the profile it changes: the Bot, or Chats
+            let whose = Some(bot.clone().unwrap_or_else(|| (CHATS.to_owned(), policy::CHATS_NAME.to_owned())));
+            if change.widens() {
+                return Ok(propose(run, &whose, &change, |t| keys::names_key(ctx, &key, t), json!({})));
             }
-            Ok(tighten(run, &bot, &change, json!({"status": "off", "key": key})))
+            Ok(tighten(run, &whose, &change, json!({"status": state.as_str(), "key": key})))
         }
         "shell_rules" => {
             let mac = policy::mac_json(ctx);
@@ -321,8 +473,11 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
     }
 }
 
-/// `shell_run` through the gate: refused by a block (any mode) or, in mode `only`, for a
-/// part without an allow; else run in the sandbox. Every call goes into Activity.
+/// `shell_run` through the gate: refused by a block (any mode) or, with the switch on and
+/// in mode `only`, for a part without an allow; else run in the sandbox. With the switch at
+/// Ask a line every part of which has an allow runs, and any other asks (unless this chat
+/// was allowed the shell); after outside content every line that would run asks. Every
+/// call goes into Activity.
 pub async fn shell_run(run: &Run, input: &Value) -> Out {
     let ctx = &run.ctx;
     let command = input.get("command").filter(|c| js::truthy(c)).map(js::string_of).unwrap_or_default();
@@ -332,8 +487,37 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
         return builtin::shell_run(&ctx.data, input).await;
     }
     // as a proposal's `unrequested`: after outside content, and the user did not name it
-    let unasked = run.state().external && !words_name(&last_user(run), line);
-    let (outcome, refusal) = match policy::judge(ctx, line) {
+    let external = run.state().external;
+    let unasked = external && !words_name(&last_user(run), line);
+    let pos = effective(run, policy::tool_state(ctx, &profile(run), "shell"));
+    let mut verdict = if pos == Pos::Ask { policy::judge_in(ctx, Mode::Only, line) } else { policy::judge(ctx, line) };
+    // at Ask, a line without an allow asks (or runs, where this chat was allowed the shell)
+    let mut ask = external && verdict == Verdict::Run;
+    if pos == Pos::Ask && matches!(verdict, Verdict::NotAllowed { .. }) {
+        ask = external || !asking::granted(ctx, &run.thread_id(), "shell");
+        verdict = Verdict::Run;
+    }
+    if ask {
+        let shown = gate::mask_and_clip(line);
+        let mut lines = Vec::new();
+        if let Some(cwd) = input.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+            lines.push(format!("In {cwd}"));
+        }
+        let a = Asking {
+            bot: bot.clone().unwrap_or_default(),
+            key: "shell".into(),
+            tool: "shell_run".into(),
+            title: format!("Run `{}` on this Mac?", gate::clip(&shown, 80)),
+            lines,
+            preview: gate::clip(line, 2000),
+            external,
+            prefix: asking::prefix_of(ctx, line),
+        };
+        if let Err(e) = asking::ask(run, a).await {
+            return Out::err(e);
+        }
+    }
+    let (outcome, refusal) = match verdict {
         Verdict::Run => ("ran", None),
         Verdict::Blocked { rule } => ("refused_block", Some((gate::BLOCKED.to_owned(), format!("blocked by `{rule}`")))),
         Verdict::NotAllowed { part } => {
@@ -366,7 +550,7 @@ pub fn skill_enable(run: &Run, input: &Value) -> Option<Out> {
     let id = crate::hub::market::skills::find_id(ctx, input)?;
     let bot = acting(run);
     let key = format!("skill:{id}");
-    let change = Change::Tool { bot: bot.as_ref().map(|b| b.0.clone()).unwrap_or_default(), key: key.clone(), enabled: true };
+    let change = Change::tool(ctx, bot.as_ref().map(|b| b.0.as_str()).unwrap_or(""), &key, Pos::On);
     if change.noop(ctx) {
         return Some(Out::ok(format!("skill \"{id}\" enabled — instructions apply")));
     }
@@ -382,7 +566,7 @@ pub fn app_enable(run: &Run, input: &Value) -> Option<Out> {
     super::v1::view(ctx).row(&id)?;
     let bot = acting(run);
     let key = format!("v1:{id}");
-    let change = Change::Tool { bot: bot.as_ref().map(|b| b.0.clone()).unwrap_or_default(), key: key.clone(), enabled: true };
+    let change = Change::tool(ctx, bot.as_ref().map(|b| b.0.as_str()).unwrap_or(""), &key, Pos::On);
     if change.noop(ctx) {
         return None;
     }
@@ -400,7 +584,7 @@ pub fn mcp_enable(run: &Run, input: &Value) -> Option<Out> {
     }
     let bot = acting(run);
     let key = format!("mcp:{id}");
-    let change = Change::Tool { bot: bot.as_ref().map(|b| b.0.clone()).unwrap_or_default(), key: key.clone(), enabled: true };
+    let change = Change::tool(ctx, bot.as_ref().map(|b| b.0.as_str()).unwrap_or(""), &key, Pos::On);
     if change.noop(ctx) {
         return None;
     }

@@ -127,6 +127,11 @@ const TRIED: &[&str] = &[
     "ALTER TABLE policy_change ADD COLUMN undoes TEXT",
     // a command the Bot ran after outside content, which the user did not name
     "ALTER TABLE shell_activity ADD COLUMN unasked INTEGER",
+    // a switch's position (on, ask, off; a row without one is its `enabled`), the keys a
+    // person allowed for the rest of one chat, and the tool of an asked call in Activity
+    "ALTER TABLE bot_tools ADD COLUMN state TEXT",
+    "CREATE TABLE IF NOT EXISTS ask_grant(thread TEXT, key TEXT, at INTEGER, PRIMARY KEY(thread, key))",
+    "ALTER TABLE shell_activity ADD COLUMN tool TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

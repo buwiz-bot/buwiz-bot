@@ -359,9 +359,89 @@ fn fails(content: String) -> ToolResult {
     ToolResult { content: json!(content), is_error: true }
 }
 
-/// `toolBot(thread, name, input)`.
+/// Where the plain chats' memories are kept (`kv`): every plain chat shares them, as it
+/// shares the Chats profile's tool switches.
+const CHATS_MEMORY: &str = "chats_memories";
+
+/// The plain chats' memories, oldest first.
+pub fn chats_memories(ctx: &HubCtx) -> Vec<Value> {
+    let data: Option<String> = ctx.db.with(|c| c.query_row("SELECT data FROM kv WHERE name=?", [CHATS_MEMORY], |r| r.get(0)).optional()).ok().flatten();
+    data.and_then(|d| serde_json::from_str::<Value>(&d).ok()).and_then(|v| v.as_array().cloned()).unwrap_or_default()
+}
+
+fn save_chats_memories(ctx: &HubCtx, ms: &[Value]) -> Result<(), String> {
+    ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO kv(name, data) VALUES(?,?)", [CHATS_MEMORY, &js::stringify(&json!(ms))]).map(|_| ()))
+}
+
+/// Forgets plain chats' memory `id`: whether it was there.
+pub fn chats_memory_remove(ctx: &HubCtx, id: &str) -> Result<bool, String> {
+    let mut ms = chats_memories(ctx);
+    let before = ms.len();
+    ms.retain(|m| m.get("id").and_then(Value::as_str) != Some(id));
+    if ms.len() == before {
+        return Ok(false);
+    }
+    save_chats_memories(ctx, &ms).map(|_| true)
+}
+
+/// The system prompt's memories section of a plain chat ("" with none).
+pub fn chats_section(ctx: &HubCtx) -> String {
+    let ms = chats_memories(ctx);
+    if ms.is_empty() {
+        return String::new();
+    }
+    format!("\n\n## Memories\nThings the user asked you to keep (shared by their chats without a Bot; memory_add / memory_list / memory_remove keep them):\n{}", ms.iter().map(|m| format!("- {}", mem_text(m))).collect::<Vec<_>>().join("\n"))
+}
+
+/// `memory_add`, `memory_list` and `memory_remove` in a plain chat.
+fn chats_memory_tool(ctx: &HubCtx, name: &str, input: &Value) -> ToolResult {
+    let mut ms = chats_memories(ctx);
+    let save = |ms: &Vec<Value>| save_chats_memories(ctx, ms);
+    match name {
+        "memory_add" => {
+            let t = clip(input.get("text"), 1000);
+            if t.is_empty() {
+                return fails("memory needs text".into());
+            }
+            if let Some(dup) = ms.iter().find(|m| mem_text(m).to_lowercase() == t.to_lowercase()) {
+                return says(format!("remembered ({})", js::string_of(&dup["id"])));
+            }
+            let m = json!({"id": uuidv7(), "text": t, "at": now_ms()});
+            ms.push(m.clone());
+            if ms.len() > 200 {
+                let n = ms.len() - 200;
+                ms.drain(..n);
+            }
+            match save(&ms) {
+                Ok(()) => says(format!("remembered ({})", js::string_of(&m["id"]))),
+                Err(e) => fails(e),
+            }
+        }
+        "memory_list" => says(if ms.is_empty() { "no memories yet".into() } else { ms.iter().map(|m| format!("{} — {}", js::string_of(&m["id"]), mem_text(m))).collect::<Vec<_>>().join("\n") }),
+        _ => {
+            let id = input.get("id").filter(|v| js::truthy(v)).map(js::string_of).unwrap_or_default();
+            let before = ms.len();
+            ms.retain(|m| m.get("id").and_then(Value::as_str) != Some(id.as_str()));
+            if ms.len() == before {
+                return fails(format!("no memory {id}"));
+            }
+            match save(&ms) {
+                Ok(()) => says(format!("forgot {}", template(input.get("id")))),
+                Err(e) => fails(e),
+            }
+        }
+    }
+}
+
+/// `toolBot(thread, name, input)`; in a plain chat, only the memory tools, on the plain
+/// chats' memories.
 pub fn tool_bot(ctx: &HubCtx, turn: &TurnCtx, name: &str, input: &Value) -> ToolResult {
-    let Some(bot_id) = ctx.store.read(|s| bot_of(s, turn).map(|b| b.id.clone())) else { return fails(format!("{name} only works in a bot's thread")) };
+    let Some(bot_id) = ctx.store.read(|s| bot_of(s, turn).map(|b| b.id.clone())) else {
+        if name.starts_with("memory_") && turn.surface.is_none() {
+            return chats_memory_tool(ctx, name, input);
+        }
+        return fails(format!("{name} only works in a bot's thread"));
+    };
     let edit = |f: &mut dyn FnMut(&mut Bot) -> Result<String, String>| -> ToolResult {
         match ctx.store.write(|s| s.bot_mut(&bot_id).map(&mut *f)) {
             Ok(Some(Ok(text))) => says(text),

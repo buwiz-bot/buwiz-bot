@@ -131,8 +131,8 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "tools",
         args: "",
-        description: "This Bot's tools and this Mac's command rules",
-        // the sheet, on This Bot for the chat's Bot (no model call)
+        description: "This Bot's (or these chats') tools and this Mac's command rules",
+        // the sheet, on This Bot for the chat's Bot, on Chats in a plain chat (no model call)
         run: |_| crate::tools::open_sheet(),
     },
 ];

@@ -78,8 +78,9 @@ fn fail<T>(code: &str, message: impl Into<String>) -> Result<T, AgentError> {
     Err(AgentError::new(code, message))
 }
 
-/// A participant: a bot, or an outside endpoint `ext:<id>` with the bot it
-/// belongs to (`owner`).
+/// A participant: a bot, an outside endpoint `ext:<id>` with the bot it
+/// belongs to (`owner`), or the user writing from a chat without a Bot
+/// (`chat:<thread>`, [`Party::user`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Party {
     pub id: String,
@@ -92,13 +93,35 @@ impl Party {
         Party { id: b.id.clone(), name: b.name.clone(), owner: None }
     }
 
+    /// "You", from plain chat `thread`.
+    pub fn user(thread: &str) -> Self {
+        Party { id: format!("{USER_PREFIX}{thread}"), name: USER_NAME.into(), owner: None }
+    }
+
     pub fn external(&self) -> bool {
         self.owner.is_some()
+    }
+
+    /// The user, from a chat without a Bot.
+    pub fn is_user(&self) -> bool {
+        self.id.starts_with(USER_PREFIX)
+    }
+
+    /// The chat a participant reads its notices and replies in: its own
+    /// for the user, the Bot's for an agent, none for an endpoint.
+    pub(crate) fn chat<'a>(&'a self, s: &'a State) -> Option<&'a str> {
+        match (self.external(), self.id.strip_prefix(USER_PREFIX)) {
+            (true, _) => None,
+            (_, Some(t)) => Some(t),
+            _ => s.bot(&self.id).and_then(|b| b.thread_id.as_deref()),
+        }
     }
 
     fn kind(&self) -> &'static str {
         if self.external() {
             "external"
+        } else if self.is_user() {
+            "user"
         } else {
             "agent"
         }
@@ -108,6 +131,11 @@ impl Party {
         json!({"kind": self.kind(), "id": self.id, "name": self.name})
     }
 }
+
+/// The id prefix of the user writing from a plain chat.
+pub const USER_PREFIX: &str = "chat:";
+/// What the user is called on the messages they send from a plain chat.
+pub const USER_NAME: &str = "You";
 
 /// An outside endpoint as a participant sees it (`externals.get(id)`).
 #[derive(Clone, Debug, PartialEq)]
@@ -397,6 +425,9 @@ impl Agents {
 
     /// A participant: a bot, or an outside endpoint `ext:<id>`.
     pub fn party(&self, s: &State, id: &str) -> Option<Party> {
+        if let Some(t) = id.strip_prefix(USER_PREFIX) {
+            return s.thread(t).map(|_| Party::user(t));
+        }
         match id.strip_prefix("ext:") {
             Some(ep) => self.eps.get(ep).map(|e| Party { id: format!("ext:{}", e.id), name: e.name, owner: Some(e.bot) }),
             None => s.bot(id).map(Party::of),
@@ -405,8 +436,12 @@ impl Agents {
 
     /// The agents `caller` may message: live, not itself, taking messages
     /// from it; a temporary helper only to its parent. An outside sender
-    /// reaches the one agent its endpoint belongs to.
+    /// reaches the one agent its endpoint belongs to; the user every live
+    /// agent but the helpers (every agent takes the user's messages).
     pub fn reachable<'a>(&self, s: &'a State, caller: &Party) -> Vec<&'a Bot> {
+        if caller.is_user() {
+            return s.bots.iter().filter(|b| live(b) && !has_helper(b)).collect();
+        }
         match &caller.owner {
             Some(owner) => s.bots.iter().filter(|b| &b.id == owner && live(b) && accepts(b, &caller.id)).collect(),
             None => {
@@ -452,6 +487,10 @@ impl Agents {
             }
         };
         let Some(key) = key.filter(|k| !trim(k).is_empty()) else { return fail("invalid_args", "each of `to` is an agent id or name") };
+        // the user, answered in their chat (only in a conversation they are in: `send`)
+        if key.starts_with(USER_PREFIX) {
+            return self.party(s, &key).ok_or_else(|| AgentError::new("invalid_args", "no such chat"));
+        }
         if key.starts_with("ext:") {
             let Some(ep) = self.party(s, &key) else { return fail("invalid_args", format!("no outside endpoint {}", clip(Some(&json!(key)), 40))) };
             if ep.owner.as_deref() != Some(caller.id.as_str()) {
@@ -475,10 +514,7 @@ impl Agents {
     /// The conversation's notice in `p`'s chat: a new line, or the last one
     /// updated in place within the merge window (spec 6).
     fn notice_in(&self, s: &mut State, p: &Party, ti: usize, msg: &Value) {
-        if p.external() {
-            return;
-        }
-        let Some(ci) = thread_index(s, s.bot(&p.id).and_then(|b| b.thread_id.as_deref())) else { return };
+        let Some(ci) = thread_index(s, p.chat(s)) else { return };
         let (conv, tid, tuid, subject) = {
             let t = &s.list[ti];
             let m = mark(t).cloned().unwrap_or_default();
@@ -511,9 +547,10 @@ impl Agents {
         s.list[ci].turns.push(Turn { id: Some(id), ..Turn::notice(&text, n) });
     }
 
-    /// `{…n, at: now()}` as a notice in bot `id`'s chat.
+    /// `{…n, at: now()}` as a notice in participant `id`'s chat.
     fn notice(&self, s: &mut State, id: &str, n: &Value) {
-        let Some(ci) = thread_index(s, s.bot(id).and_then(|b| b.thread_id.as_deref())) else { return };
+        let Some(p) = self.party(s, id) else { return };
+        let Some(ci) = thread_index(s, p.chat(s)) else { return };
         let mut n = n.clone();
         n["at"] = ms(self.now());
         let text = notice_text(&n);
@@ -600,6 +637,9 @@ impl Agents {
                 let mut to: Vec<Party> = Vec::new();
                 for r in a {
                     let p = self.recipient(s, caller, r)?;
+                    if p.is_user() && !ti.is_some_and(|i| includes(&s.list[i], &p.id)) {
+                        return fail("not_allowed", "the user is answered only in a conversation they started");
+                    }
                     // a Set of the objects: a bot is one object, an endpoint a new one each time
                     if p.external() || !to.iter().any(|x| !x.external() && x.id == p.id) {
                         to.push(p);
@@ -611,7 +651,7 @@ impl Agents {
                 .iter()
                 .filter(|p| p.as_str() != Some(caller.id.as_str()))
                 .filter_map(|p| self.party(s, &js::string_of(p)))
-                .filter(|p| p.external() || s.bot(&p.id).is_some_and(live))
+                .filter(|p| p.external() || p.is_user() || s.bot(&p.id).is_some_and(live))
                 .collect(),
             None if caller.external() => self.reachable(s, caller).into_iter().map(Party::of).collect(),
             _ => return fail("invalid_args", "give `to`: a list of agents, or \"*\" for all of them"),
@@ -745,7 +785,7 @@ impl Agents {
             for u in &t.turns {
                 for id in u.pending.as_ref().and_then(Value::as_array).into_iter().flatten() {
                     let Some(p) = self.party(s, &js::string_of(id)) else { continue };
-                    if p.external() || s.bot(&p.id).is_some_and(live) {
+                    if p.external() || p.is_user() || s.bot(&p.id).is_some_and(live) {
                         out.push(Delivery { to: p, msg: u.message.clone().unwrap_or(Value::Null), thread: t.id.clone() });
                     }
                 }

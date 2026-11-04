@@ -1,8 +1,9 @@
 //! The agent tools (agents-tools.mjs, drafts/agent-messaging.md §4): in an
 //! agent's chat and in its delivery turns, never in a routine's run. The
 //! caller is the bot the turn answers as (`turn.acting_bot`, Node's
-//! `job.agentBot`), else the thread's own; `turn.agent_hop` counts relays
-//! (§3). Their schemas (`AGENT_TOOLS`, `tools.json`, dumped from Node) are
+//! `job.agentBot`), else the thread's own; in a chat without a Bot, the user
+//! from that chat (`Party::user`), who lists, sends and reads but makes no
+//! agents. `turn.agent_hop` counts relays (§3). Their schemas (`AGENT_TOOLS`, `tools.json`, dumped from Node) are
 //! the tool loop's to offer, with [`offered`] saying when.
 
 use std::sync::{Arc, OnceLock};
@@ -23,10 +24,15 @@ pub fn defs() -> &'static Value {
     DEFS.get_or_init(|| serde_json::from_str(include_str!("tools.json")).expect("the agent tools' definitions"))
 }
 
-/// `agentToolsFor(thread, job)`: an agent's turns only, never a routine's.
+/// `agentToolsFor(thread, job)`: an agent's turns or a plain chat's, never a
+/// routine's.
 pub fn offered(s: &State, turn: &TurnCtx) -> bool {
-    turn.routine.is_none() && turn.surface.is_none() && (turn.acting_bot.is_some() || s.thread_bot(&turn.thread).is_some())
+    turn.routine.is_none() && turn.surface.is_none() && (turn.acting_bot.is_some() || s.thread(&turn.thread).is_some())
 }
+
+/// The tools a plain chat's user has: not `agent_create` nor `agent_remove`
+/// (a helper needs a Bot to belong to).
+pub const USER_NAMES: [&str; 4] = ["agents_list", "agent_send", "agent_conversations", "agent_read"];
 
 fn result(content: String, is_error: bool) -> ToolResult {
     ToolResult { content: Value::String(content), is_error }
@@ -36,12 +42,21 @@ fn result(content: String, is_error: bool) -> ToolResult {
 pub fn call(hub: &Arc<AgentsHub>, ctx: &Arc<HubCtx>, turn: &TurnCtx, name: &str, input: &Value) -> ToolResult {
     let caller = ctx.store.read(|s| match &turn.acting_bot {
         Some(id) => s.bot(id).map(Party::of),
-        None => s.thread_bot(&turn.thread).map(Party::of),
+        None => s.thread_bot(&turn.thread).map(Party::of).or_else(|| s.thread(&turn.thread).map(|t| Party::user(&t.id))),
     });
     let Some(caller) = caller.filter(|_| turn.routine.is_none() && turn.surface.is_none()) else {
         return result(format!("{name} works only in an agent's own turns"), true);
     };
     let hop = turn.agent_hop.map_or(0, |h| h + 1);
+    if caller.is_user() && !USER_NAMES.contains(&name) {
+        return result(format!("{name} works only in a Bot's chat"), true);
+    }
+    // from a plain chat the answer comes back unless the message says otherwise
+    let mut input = input.clone();
+    if caller.is_user() && name == "agent_send" && input.get("expects_reply").is_none() {
+        input["expects_reply"] = Value::Bool(true);
+    }
+    let input = &input;
     let a = &hub.agents;
     let out: Result<Value, AgentError> = match name {
         "agents_list" => Ok(ctx.store.read(|s| a.list(s, &caller))),

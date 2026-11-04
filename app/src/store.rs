@@ -358,6 +358,58 @@ pub struct ToolsChangeNotice {
     pub text: String,
 }
 
+/// A `notice` turn the broker posts when a call must wait for the user's OK
+/// (`tool_ask`, `tools.rs`): a switch at Ask, or a write after the turn read
+/// outside content.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct ToolAskNotice {
+    /// The card (`a_…`).
+    pub id: String,
+    pub bot: String,
+    pub bot_name: String,
+    /// The switch it asks under (`shell`, `memory`, `mcp:<server>`…).
+    pub key: String,
+    pub tool: String,
+    /// What will happen: "Send a message to Bigmom?".
+    pub title: String,
+    pub lines: Vec<String>,
+    /// The exact payload.
+    pub preview: String,
+    /// The turn read outside content.
+    pub external: bool,
+    /// The shell's "Always allow `<prefix>`" ("" for none).
+    pub prefix: String,
+    /// `pending`, `allowed`, `declined` or `expired`.
+    pub state: String,
+    /// `once`, `chat`, `rule` or `no`, once answered.
+    pub answer: String,
+    /// When it was asked, then answered (ms).
+    pub at: i64,
+}
+
+impl ToolAskNotice {
+    pub(crate) fn of(v: &serde_json::Value) -> Option<Self> {
+        if !v.is_object() || s(v, "kind") != "tool_ask" || s(v, "id").is_empty() {
+            return None;
+        }
+        Some(Self {
+            id: s(v, "id"),
+            bot: s(v, "bot"),
+            bot_name: s(v, "botName"),
+            key: s(v, "key"),
+            tool: s(v, "tool"),
+            title: s(v, "title"),
+            lines: list(v, "lines").iter().filter_map(|l| l.as_str().map(str::to_owned)).filter(|l| !l.is_empty()).collect(),
+            preview: s(v, "preview"),
+            external: v.get("external").and_then(|x| x.as_bool()).unwrap_or(false),
+            prefix: s(v, "prefix"),
+            state: notice_state(v),
+            answer: s(v, "answer"),
+            at: v.get("at").and_then(|x| x.as_i64()).unwrap_or(0),
+        })
+    }
+}
+
 /// A notice's command rule.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct ToolsRule {
@@ -1288,6 +1340,8 @@ pub struct Turn {
     pub app_accounts: Option<AppAccountsNotice>,
     /// A `notice` turn about a Bot's tools or this Mac's rules.
     pub tools_change: Option<ToolsChangeNotice>,
+    /// A `notice` turn asking the user's OK for one call.
+    pub tool_ask: Option<ToolAskNotice>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -2416,6 +2470,7 @@ impl Turn {
             app_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppSetupNotice::of(n, s(v, "text")))).flatten(),
             app_accounts: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppAccountsNotice::of(n, s(v, "text")))).flatten(),
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
+            tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {

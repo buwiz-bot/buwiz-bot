@@ -100,8 +100,10 @@ pub fn base_system_for(ctx: &HubCtx, linear: bool, off: &dyn Fn(&str) -> bool) -
 pub async fn agent_system(ctx: &HubCtx, turn: &TurnCtx) -> String {
     let linear = crate::hub::routes::leftovers::linear_key(ctx).await.is_some();
     let (bot, id) = ctx.store.read(|s| (botctx::bot_section(botctx::bot_of(s, turn)), botctx::bot_of(s, turn).map(|b| b.id.clone())));
-    let off = id.map(|b| crate::hub::policy::off_keys(ctx, &b)).unwrap_or_default();
-    format!("{}{bot}", base_system_for(ctx, linear, &|skill| off.contains(&format!("skill:{skill}"))))
+    // a plain chat: the Chats profile's switches, and the memories every plain chat shares
+    let mine = if id.is_some() { bot } else { botctx::chats_section(ctx) };
+    let off = crate::hub::policy::off_keys(ctx, id.as_deref().unwrap_or(crate::hub::policy::CHATS));
+    format!("{}{mine}", base_system_for(ctx, linear, &|skill| off.contains(&format!("skill:{skill}"))))
 }
 
 #[cfg(test)]
