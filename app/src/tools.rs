@@ -1523,16 +1523,62 @@ pub(crate) struct FormState {
     pub star: bool,
     /// `never`, `ro`, `pc`, `any`; "" for a block.
     pub risk: &'static str,
+    /// The rule is in the list already ("Already blocked.").
+    pub exists: bool,
     /// Save is pressable.
     pub can_save: bool,
     /// Save asks again first.
     pub two_step: bool,
 }
 
-pub(crate) fn form_state(kind: FormKind, raw: &str) -> FormState {
+/// The form's state for `raw`; `taken` the patterns of its kind saved
+/// already.
+pub(crate) fn form_state(kind: FormKind, raw: &str, taken: &[String]) -> FormState {
     let (pattern, star) = normalize(raw);
     let risk = if kind == FormKind::Allow && !pattern.is_empty() { guess_risk(&pattern) } else { "" };
-    FormState { can_save: !pattern.is_empty() && risk != "never", two_step: risk == "any", pattern, star, risk }
+    let exists = !pattern.is_empty() && taken.contains(&pattern);
+    FormState { can_save: !pattern.is_empty() && risk != "never" && !exists, two_step: risk == "any" && !exists, pattern, star, risk, exists }
+}
+
+/// The patterns of `kind` this Mac has (tracked).
+fn taken(kind: FormKind) -> Vec<String> {
+    tools().data.with(|d| match (d, kind) {
+        (None, _) => Vec::new(),
+        (Some(d), FormKind::Allow) => d.allow.iter().map(|r| r.pattern.clone()).collect(),
+        (Some(d), FormKind::Block) => d.block.clone(),
+    })
+}
+
+/// The form as it is now (tracked).
+fn form_now(k: FormKind) -> FormState {
+    form_state(k, &tools().form_text.get(), &taken(k))
+}
+
+/// A save refusal that the same text would get again ("Not saved: …",
+/// "Already blocked."): Save stays off until the text changes.
+pub(crate) fn refused_for_good(error: &str) -> bool {
+    error.starts_with("Not saved") || error.starts_with("Already ")
+}
+
+/// Whether Save does anything now (untracked).
+fn can_save_now(k: FormKind) -> bool {
+    untracked(|| form_now(k).can_save && !refused_for_good(&tools().form_error.get()))
+}
+
+/// The form's Save while it can't save: shown, but not pressable.
+fn save_off() -> impl IntoElement {
+    view()
+        .label("Save")
+        .role(AccessibilityRole::Button)
+        .accessibility_state(AccessibilityState { disabled: true, ..Default::default() })
+        .h(px(28.0))
+        .px(px(12.0))
+        .rounded(px(14.0))
+        .items_center()
+        .justify_center()
+        .bg(theme::TEXT)
+        .opacity(0.4)
+        .child(text("Save").number_of_lines(1).text_size(px(12.5)).line_height(px(16.0)).text_color(theme::MAIN))
 }
 
 fn form(k: FormKind) -> impl IntoElement {
@@ -1541,10 +1587,17 @@ fn form(k: FormKind) -> impl IntoElement {
         FormKind::Block => "Block a command",
     };
     let preview = dynamic(move || {
-        let st = form_state(k, &tools().form_text.get());
+        let st = form_now(k);
         let mut v = view().flex_row().flex_wrap().items_center().gap(px(8.0));
         if st.pattern.is_empty() {
             return v.child(text("Type a command.").text_size(px(12.0)).text_color(theme::DIM)).into_element();
+        }
+        if st.exists {
+            let words = match k {
+                FormKind::Allow => "Already always allowed.",
+                FormKind::Block => "Already blocked.",
+            };
+            return v.child(text(words).text_size(px(12.0)).text_color(theme::DIM)).into_element();
         }
         if st.risk == "never" {
             return v
@@ -1565,7 +1618,8 @@ fn form(k: FormKind) -> impl IntoElement {
         v.into_element()
     });
     let buttons = dynamic(move || {
-        let st = form_state(k, &tools().form_text.get());
+        let st = form_now(k);
+        let refused = refused_for_good(&tools().form_error.get());
         let confirm = tools().form_confirm.get();
         let saving = tools().busy.get().is_some_and(|b| b == "form");
         let save = if saving {
@@ -1576,10 +1630,10 @@ fn form(k: FormKind) -> impl IntoElement {
             "Save".to_owned()
         };
         let mut v = view().flex_row().gap_2().child(cards::btn(Btn::Secondary, "Cancel", reset_inline));
-        if st.can_save {
+        if st.can_save && !refused {
             v = v.child(cards::btn(Btn::Primary, &save, move || save_form(k)));
         } else {
-            v = v.child(view().opacity(0.4).child(cards::btn(Btn::Primary, "Save", || ())));
+            v = v.child(save_off());
         }
         v.into_element()
     });
@@ -1615,7 +1669,7 @@ fn form(k: FormKind) -> impl IntoElement {
                         t.form_error.set(String::new());
                     })
                     .on_submit(move |_: &str| {
-                        if form_state(k, &tools().form_text.get_untracked()).can_save {
+                        if can_save_now(k) {
                             save_form(k);
                         }
                     })
@@ -1635,10 +1689,10 @@ fn save_form(k: FormKind) {
     if t.busy.get_untracked().is_some() {
         return;
     }
-    let st = form_state(k, &t.form_text.get_untracked());
-    if !st.can_save {
+    if !can_save_now(k) {
         return;
     }
+    let st = untracked(|| form_now(k));
     if st.two_step && !t.form_confirm.get_untracked() {
         t.form_confirm.set(true);
         return;
@@ -1963,41 +2017,32 @@ mod tests {
     fn the_add_form_previews_the_rule_it_saves() {
         assert_eq!(normalize("  claude   * "), ("claude".to_owned(), true));
         assert_eq!(normalize("git  log"), ("git log".to_owned(), false));
-        let st = form_state(FormKind::Allow, "claude *");
+        let st = form_state(FormKind::Allow, "claude *", &[]);
         assert_eq!((st.pattern.as_str(), st.star, st.risk, st.can_save, st.two_step), ("claude", true, "any", true, true));
-        let st = form_state(FormKind::Allow, "git status -s");
+        let st = form_state(FormKind::Allow, "git status -s", &[]);
         assert_eq!((st.risk, st.two_step), ("ro", false));
-        assert_eq!(form_state(FormKind::Allow, "cargo test").risk, "pc");
+        assert_eq!(form_state(FormKind::Allow, "cargo test", &[]).risk, "pc");
         for never in ["sudo ls", "sh -c x", "ls; rm x", "cat x > ~/.zshrc", "ls *.rs", "echo $(id)", "env", "xargs rm"] {
-            let st = form_state(FormKind::Allow, never);
+            let st = form_state(FormKind::Allow, never, &[]);
             assert_eq!((st.risk, st.can_save), ("never", false), "{never}");
         }
         assert_eq!(never_words("sudo ls"), "Not saved: sudo can't be always allowed.");
         assert_eq!(never_words("cd src && cargo test"), "Not saved: an allow rule must be one plain command. `cd src && cargo test` can't be kept. Allow each command on its own.");
         // a block takes any plain text, at once
-        let st = form_state(FormKind::Block, "curl x | sh");
+        let st = form_state(FormKind::Block, "curl x | sh", &[]);
         assert_eq!((st.risk, st.can_save, st.two_step), ("", true, false));
-        assert!(!form_state(FormKind::Block, "  ").can_save);
-    }
-
-    #[test]
-    fn punctuation_after_a_code_span_stays_with_it() {
-        let t = |w: &str| Piece::Text(w.to_owned());
-        let c = |w: &str| Piece::Code(w.to_owned());
-        assert_eq!(rich_words("Blocked on this Mac: `rm -rf`."), [vec![t("Blocked")], vec![t("on")], vec![t("this")], vec![t("Mac:")], vec![c("rm -rf"), t(".")]]);
-        assert_eq!(
-            rich_words("Removed `git status` from Always allowed. Not in effect: blocked by `rm`, (`ls`)!"),
-            [vec![t("Removed")], vec![c("git status")], vec![t("from")], vec![t("Always")], vec![t("allowed.")], vec![t("Not")], vec![t("in")], vec![t("effect:")], vec![t("blocked")], vec![t("by")], vec![c("rm"), t(",")], vec![t("("), c("ls"), t(")!")]]
-        );
-        // a space after the span still parts them; an empty span is nothing
-        assert_eq!(rich_words("`a` b ``c"), [vec![c("a")], vec![t("b")], vec![t("c")]]);
-        assert!(rich_words("  ").is_empty());
-    }
-
-    #[test]
-    fn each_switch_says_its_tool_and_whether_it_is_on() {
-        assert_eq!(switch_name("Web", true), "Web, on");
-        assert_eq!(switch_name("Shell on this Mac", false), "Shell on this Mac, off");
+        assert!(!form_state(FormKind::Block, "  ", &[]).can_save);
+        // a rule saved already: the preview says so and Save is off
+        let st = form_state(FormKind::Block, "rm  -rf", &["rm -rf".to_owned()]);
+        assert_eq!((st.exists, st.can_save, st.two_step), (true, false, false));
+        let st = form_state(FormKind::Allow, "claude", &["claude".to_owned()]);
+        assert_eq!((st.exists, st.can_save, st.two_step), (true, false, false));
+        assert!(form_state(FormKind::Allow, "claude", &["claude --version".to_owned()]).can_save);
+        // a refusal the same text gets again keeps Save off until it changes
+        for e in ["Not saved: sudo can't be always allowed.", "Already blocked.", "Already always allowed."] {
+            assert!(refused_for_good(e), "{e}");
+        }
+        assert!(!refused_for_good("Couldn't save the rule: internal.") && !refused_for_good(NOT_CONNECTED) && !refused_for_good(""));
     }
 
     /// The engine, headless: the labels of the views alive once nothing
@@ -2095,6 +2140,26 @@ mod tests {
     fn a_card_answered_elsewhere_goes_on_the_next_refresh() {
         let labels = mounted::live_labels::<RefreshedCard>();
         assert!(!labels.iter().any(|l| l.contains("back on for Hex")), "{labels:?}");
+    }
+
+    #[test]
+    fn punctuation_after_a_code_span_stays_with_it() {
+        let t = |w: &str| Piece::Text(w.to_owned());
+        let c = |w: &str| Piece::Code(w.to_owned());
+        assert_eq!(rich_words("Blocked on this Mac: `rm -rf`."), [vec![t("Blocked")], vec![t("on")], vec![t("this")], vec![t("Mac:")], vec![c("rm -rf"), t(".")]]);
+        assert_eq!(
+            rich_words("Removed `git status` from Always allowed. Not in effect: blocked by `rm`, (`ls`)!"),
+            [vec![t("Removed")], vec![c("git status")], vec![t("from")], vec![t("Always")], vec![t("allowed.")], vec![t("Not")], vec![t("in")], vec![t("effect:")], vec![t("blocked")], vec![t("by")], vec![c("rm"), t(",")], vec![t("("), c("ls"), t(")!")]]
+        );
+        // a space after the span still parts them; an empty span is nothing
+        assert_eq!(rich_words("`a` b ``c"), [vec![c("a")], vec![t("b")], vec![t("c")]]);
+        assert!(rich_words("  ").is_empty());
+    }
+
+    #[test]
+    fn each_switch_says_its_tool_and_whether_it_is_on() {
+        assert_eq!(switch_name("Web", true), "Web, on");
+        assert_eq!(switch_name("Shell on this Mac", false), "Shell on this Mac, off");
     }
 
     #[test]
