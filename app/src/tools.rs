@@ -1184,6 +1184,11 @@ pub(crate) fn ask_shows(n: &ToolAskNotice, local: Option<&AskLocal>, seen: i64, 
     }
 }
 
+/// Whether a call waits on `n`: pending, and not answered here.
+pub(crate) fn ask_waits(n: &ToolAskNotice) -> bool {
+    n.state == "pending" && !ask_local(&n.id).is_some_and(|l| l.settled.is_some())
+}
+
 fn ask_local(id: &str) -> Option<AskLocal> {
     tools().asks.with(|m| m.get(id).cloned())
 }

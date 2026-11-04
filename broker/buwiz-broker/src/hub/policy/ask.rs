@@ -107,6 +107,15 @@ pub struct Asking {
     pub prefix: Option<String>,
 }
 
+/// What Activity calls an asked call: the command for the shell, else the card's title.
+fn shown<'a>(tool: &str, title: &'a str, preview: &'a str) -> &'a str {
+    if tool == "shell_run" && !preview.is_empty() {
+        preview
+    } else {
+        title
+    }
+}
+
 /// Whether someone can answer a card in this turn: not a routine's, a v1 surface's or an
 /// agent's request.
 pub fn present(turn: &TurnCtx) -> bool {
@@ -181,7 +190,8 @@ struct Parked {
     chat: String,
     id: String,
     bot: Option<String>,
-    title: String,
+    /// what Activity calls it ([`shown`])
+    what: String,
     tool: String,
 }
 
@@ -189,7 +199,7 @@ impl Drop for Parked {
     fn drop(&mut self) {
         if waiting().remove(&self.id).is_some() {
             settle(&self.ctx, &self.chat, &self.id, "expired", None);
-            log_ask(&self.ctx, self.bot.as_deref(), &self.title, &self.tool, "expired");
+            log_ask(&self.ctx, self.bot.as_deref(), &self.what, &self.tool, "expired");
         }
     }
 }
@@ -200,7 +210,7 @@ pub async fn ask(run: &Run, a: Asking) -> Result<Answer, String> {
     let ctx = &run.ctx;
     let bot = (!a.bot.is_empty()).then(|| a.bot.clone());
     if !present(&run.turn) {
-        log_ask(ctx, bot.as_deref(), &a.title, &a.tool, "needs_ok");
+        log_ask(ctx, bot.as_deref(), shown(&a.tool, &a.title, &a.preview), &a.tool, "needs_ok");
         return Err(NOBODY.into());
     }
     let chat = run.thread_id();
@@ -218,7 +228,7 @@ pub async fn ask(run: &Run, a: Asking) -> Result<Answer, String> {
     }
     let (tx, mut rx) = oneshot::channel();
     waiting().insert(id.clone(), tx);
-    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), bot, title: a.title.clone(), tool: a.tool.clone() };
+    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), bot, what: shown(&a.tool, &a.title, &a.preview).to_owned(), tool: a.tool.clone() };
     if !crate::hub::tools::miniapps::post_in(ctx, &chat, &n) {
         waiting().remove(&id);
         return Err("There is no chat to ask the user in, so this didn't run.".into());
@@ -306,7 +316,8 @@ pub fn host_answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     let state = if answer == Answer::No { "declined" } else { "allowed" };
     let n = settle(ctx, chat, id, state, Some(answer)).unwrap_or(n);
     let bot = n["bot"].as_str().filter(|b| !b.is_empty());
-    log_ask(ctx, bot, &js::string_of(&n["title"]), &js::string_of(&n["tool"]), answer.outcome());
+    let tool = js::string_of(&n["tool"]);
+    log_ask(ctx, bot, shown(&tool, &js::string_of(&n["title"]), &js::string_of(&n["preview"])), &tool, answer.outcome());
     if tx.send(answer).is_err() {
         // the turn stopped as the answer came
         let n = settle(ctx, chat, id, "expired", None).unwrap_or(n);
