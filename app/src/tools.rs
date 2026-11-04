@@ -850,11 +850,11 @@ fn warn_band(words: String) -> impl IntoElement {
         .child(text(words).flex_1().text_size(px(12.0)).line_height(px(17.0)).text_color(theme::WARN))
 }
 
-/// A small text button ("Remove", "Undo").
-fn link(word: String, ink: AdaptiveColor, on: impl Fn() + 'static) -> impl IntoElement {
+/// A small text button ("Remove", "Undo"); `aria` names what it acts on.
+fn link(word: String, aria: String, ink: AdaptiveColor, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
     view()
-        .label(word.clone())
+        .label(aria)
         .px(px(8.0))
         .py(px(3.0))
         .rounded(px(7.0))
@@ -1325,7 +1325,8 @@ fn bot_tab() -> impl IntoElement {
                 if !t.sub.is_empty() {
                     name = name.child(text(t.sub.clone()).text_size(px(11.5)).text_color(theme::FAINT).number_of_lines(1));
                 }
-                v = v.child(row().child(name).child(crate::plugins::tool_switch(move || shown, move || set_tool(&bot, &key, want))));
+                let named = switch_name(&t.label, shown);
+                v = v.child(row().child(name).child(crate::plugins::tool_switch(move || shown, move || set_tool(&bot, &key, want)).label(named)));
             }
             if !d.tools.iter().any(|t| t.key.starts_with("mcp:") || t.key.starts_with("v1:")) {
                 v = v.child(empty("No connected apps. Connect one in Plugins.".to_owned()));
@@ -1333,6 +1334,11 @@ fn bot_tab() -> impl IntoElement {
             v.into_element()
         }))
         .into_element()
+}
+
+/// A switch's accessible name: "Web, on".
+pub(crate) fn switch_name(label: &str, on: bool) -> String {
+    format!("{label}, {}", if on { "on" } else { "off" })
 }
 
 fn set_tool(bot: &str, key: &str, enabled: bool) {
@@ -1447,7 +1453,8 @@ fn rules_section() -> impl IntoElement {
                 acts = acts.child(chip(label, r.risk == "any"));
             }
             let p = r.pattern.clone();
-            acts = acts.child(link(if removing { "Removing…".to_owned() } else { "Remove".to_owned() }, theme::MUTED, move || remove_rule("allow", &p)));
+            let aria = format!("Remove {} from Always allowed", r.pattern);
+            acts = acts.child(link(if removing { "Removing…".to_owned() } else { "Remove".to_owned() }, aria, theme::MUTED, move || remove_rule("allow", &p)));
             v = v.child(row().child(name).child(acts));
         }
         v = v.child(heading(format!("BLOCKED ({})", d.block.len())));
@@ -1466,7 +1473,8 @@ fn rules_section() -> impl IntoElement {
                 ("Remove".to_owned(), theme::MUTED)
             };
             let p2 = p.clone();
-            v = v.child(row().child(view().flex_1().child(rich(&format!("`{p}`"), 13.0, FontWeight::NORMAL, theme::TEXT))).child(link(word, ink, move || {
+            let aria = if ask { format!("Stop blocking {p}?") } else { format!("Remove the block on {p}") };
+            v = v.child(row().child(view().flex_1().child(rich(&format!("`{p}`"), 13.0, FontWeight::NORMAL, theme::TEXT))).child(link(word, aria, ink, move || {
                 if tools().rm_ask.get_untracked().as_deref() == Some(p2.as_str()) {
                     tools().rm_ask.set(None);
                     remove_rule("block", &p2);
@@ -1593,6 +1601,10 @@ fn form(k: FormKind) -> impl IntoElement {
                         FormKind::Block => "e.g. rm -rf",
                     })
                     .auto_focus(true)
+                    .label(match k {
+                        FormKind::Allow => "Command to always allow",
+                        FormKind::Block => "Command to block",
+                    })
                     .placeholder_color(|| color(theme::GHOST))
                     .text_size(px(13.0))
                     .text_color(theme::TEXT)
@@ -1673,7 +1685,7 @@ fn recent_section() -> impl IntoElement {
                 line = line.opacity(0.5).child(text("Undone").px(px(8.0)).text_size(px(12.0)).text_color(theme::FAINT));
             } else if !r.undo.is_empty() {
                 let u = r.undo.clone();
-                line = line.child(link("Undo".to_owned(), theme::ACCENT, move || undo_in_sheet(u.clone())));
+                line = line.child(link("Undo".to_owned(), format!("Undo: {}", r.text.replace('`', "")), theme::ACCENT, move || undo_in_sheet(u.clone())));
             }
             v = v.child(line);
         }
@@ -1980,6 +1992,12 @@ mod tests {
         // a space after the span still parts them; an empty span is nothing
         assert_eq!(rich_words("`a` b ``c"), [vec![c("a")], vec![t("b")], vec![t("c")]]);
         assert!(rich_words("  ").is_empty());
+    }
+
+    #[test]
+    fn each_switch_says_its_tool_and_whether_it_is_on() {
+        assert_eq!(switch_name("Web", true), "Web, on");
+        assert_eq!(switch_name("Shell on this Mac", false), "Shell on this Mac, off");
     }
 
     /// The engine, headless: the labels of the views alive once nothing
