@@ -340,6 +340,15 @@ async fn a_model_that_cant_see_gets_no_tools_and_a_plain_reason() {
 }
 
 #[test]
+fn a_bare_model_name_finds_its_providers_entry() {
+    let known = std::collections::HashMap::from([("anthropic-apikey/claude-x".to_owned(), false), ("a/split".to_owned(), true), ("b/split".to_owned(), false), ("plain".to_owned(), true)]);
+    assert_eq!(sight_in(&known, "claude-x"), Some(false), "a blind default model mustn't count as unknown");
+    assert_eq!(sight_in(&known, "plain"), Some(true));
+    assert_eq!(sight_in(&known, "split"), None);
+    assert_eq!(sight_in(&known, "nobody"), None);
+}
+
+#[test]
 fn the_catalog_says_who_sees() {
     let known = sight_of(&json!({"data": [
         {"id": "a", "capabilities": {"supports_vision": true}},

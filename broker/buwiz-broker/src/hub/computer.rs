@@ -519,10 +519,10 @@ impl Computers {
     pub async fn sees(&self, opencodex: &str, model: &str) -> Option<bool> {
         let fresh = |t: &Instant| t.elapsed() < SIGHT_TTL;
         if let Some((_, known)) = self.sight.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(t, _)| fresh(t)) {
-            return known.get(model).copied();
+            return sight_in(known, model);
         }
         let catalog = super::model::images::get_json(&format!("{opencodex}/v1/models")).await.ok().map(|j| sight_of(&j)).unwrap_or_default();
-        let answer = catalog.get(model).copied();
+        let answer = sight_in(&catalog, model);
         *self.sight.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), catalog));
         answer
     }
@@ -613,6 +613,17 @@ fn sight_of(catalog: &Value) -> HashMap<String, bool> {
             Some((m.get("id")?.as_str()?.to_owned(), sees))
         })
         .collect()
+}
+
+/// What the catalog says of `model`: by its id, else, for a bare name, by a provider's
+/// `<provider>/<model>` entry. Providers that disagree count as not knowing.
+fn sight_in(known: &HashMap<String, bool>, model: &str) -> Option<bool> {
+    if let Some(sees) = known.get(model) {
+        return Some(*sees);
+    }
+    let mut named = known.iter().filter(|(id, _)| id.rsplit('/').next() == Some(model)).map(|(_, sees)| *sees);
+    let first = named.next()?;
+    named.all(|sees| sees == first).then_some(first)
 }
 
 /// `cmp_` and hex: what [`Computers::make`] writes.
