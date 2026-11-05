@@ -17,7 +17,7 @@
 //! the recipe registers. Drawing it is a painter's pass per pose:
 //!
 //! 1. A face that looks away is dropped. Every surface is closed (a hat's
-//!    profile runs on up inside its crown), so one always stands in front.
+//!    profile runs back under it to the axis), so one always stands in front.
 //! 2. Every face is near or far: in front of the plane through the head's
 //!    centre that faces the viewer, or behind it. Far faces draw before the
 //!    head and near ones after it, so one brim passes in front of the head
@@ -109,8 +109,8 @@ const FINE: Detail = Detail {
     shell_cols: 48,
     shell_max_cols: 72,
     scallop_cols: 4,
-    lobe_rows: 6,
-    lobe_cols: 10,
+    lobe_rows: 8,
+    lobe_cols: 12,
     tube_sides: 10,
     tube_steps: 3,
 };
@@ -122,8 +122,8 @@ const COARSE: Detail = Detail {
     shell_cols: 28,
     shell_max_cols: 36,
     scallop_cols: 2,
-    lobe_rows: 4,
-    lobe_cols: 7,
+    lobe_rows: 5,
+    lobe_cols: 8,
     tube_sides: 6,
     tube_steps: 2,
 };
@@ -136,9 +136,6 @@ const LIGHT: V3 = [-0.42, 0.72, 0.55];
 /// Faces at least this lit take the lit tone, and at least [`MID`] the mid.
 const LIT: f64 = 0.38;
 const MID: f64 = -0.12;
-/// How far past its edges a face draws (sprite px), so neighbouring faces of
-/// different tones leave no hairline between them.
-const BLEED: f64 = 0.55;
 /// Faces turned less than this (the cosine) from their neighbour shade as
 /// one smooth surface; past it the edge is a crease.
 const CREASE: f64 = 0.6;
@@ -303,8 +300,8 @@ enum Kind {
         tilt: V3,
         profile: Vec<V2>,
         oval: f64,
-        /// How many points its top rises to, and how far down the valleys
-        /// between them cut (0..1 of its height): a crown's points.
+        /// How many points what's above height 0 rises to, and how far down
+        /// the valleys between them cut (0..1): a crown's points.
         teeth: Option<(usize, f64)>,
     },
     Shell {
@@ -1000,7 +997,6 @@ impl Builder<'_> {
             // a whole number of columns per point, a tip and a valley on them
             cols = n * (cols / n).max(2).next_multiple_of(2);
         }
-        let floor = profile.iter().fold(f64::INFINITY, |a, p| a.min(p[1]));
         let profile = &cut_profile(profile, self.detail.lathe_row)[..];
         let mut rows = Vec::with_capacity(profile.len());
         for p in profile {
@@ -1010,10 +1006,8 @@ impl Builder<'_> {
                         let a = -PI + TAU * j as f64 / cols as f64;
                         let h = match teeth {
                             None => p[1],
-                            Some((n, cut)) => {
-                                let tip = scallop_at(n, true, a.to_degrees());
-                                floor + (p[1] - floor) * (1.0 - cut * (1.0 - tip))
-                            }
+                            Some((n, cut)) if p[1] > 0.0 => p[1] * (1.0 - cut * (1.0 - scallop_at(n, true, a.to_degrees()))),
+                            Some(_) => p[1],
                         };
                         let q = apply(&m, [p[0] * a.sin(), h, p[0] * a.cos() * oval]);
                         add(origin, scale(q, self.k))
@@ -1345,7 +1339,9 @@ impl Scene {
 
     /// The solids at `rot`, `r` px per body unit, centred on `mid`, each
     /// point through `map`: what draws behind the head and what in front.
-    pub(crate) fn draw(&self, rot: &Rot, r: f64, mid: V2, map: &dyn Fn(V2) -> V2) -> (Vec<SolidPaint>, Vec<SolidPaint>) {
+    /// `bleed` is how far past its edges a face draws, in mapped px, so
+    /// that neighbouring faces of different tones leave no hairline.
+    pub(crate) fn draw(&self, rot: &Rot, r: f64, mid: V2, map: &dyn Fn(V2) -> V2, bleed: f64) -> (Vec<SolidPaint>, Vec<SolidPaint>) {
         let x_axis = bodies::view(rot, [1.0, 0.0, 0.0]);
         let y_axis = bodies::view(rot, [0.0, 1.0, 0.0]);
         let z_axis = bodies::view(rot, [0.0, 0.0, 1.0]);
@@ -1401,7 +1397,7 @@ impl Scene {
             }
             // each colour of the group together, the one the last path has
             // first so it can carry on into it; then the marks over them
-            for list in [&mut group, &mut marks] {
+            for (is_marks, list) in [(false, &mut group), (true, &mut marks)] {
                 let last = out.last().map(|l| l.key);
                 list.sort_by_key(|(k, _)| (Some(*k) != last, *k));
                 for (key, ring) in list.drain(..) {
@@ -1413,7 +1409,7 @@ impl Scene {
                         });
                     }
                     if let Some(l) = out.last_mut() {
-                        push_loop(&mut l.loops, ring);
+                        push_loop(&mut l.loops, ring, if is_marks { Some(bleed) } else { None }, bleed);
                     }
                 }
             }
@@ -1480,8 +1476,9 @@ fn cut(ring: &[V2], value: &[f64], at: f64) -> (Valued, Valued) {
 }
 
 /// `ring`, wound one way (so a path of many fills their union) and grown
-/// by [`BLEED`]; nothing if it's edge-on.
-fn push_loop(loops: &mut Vec<Vec<V2>>, mut ring: Vec<V2>) {
+/// by `bleed`; nothing if it's edge-on. A sliver of a surface grows less, so
+/// it doesn't show as a speck; a mark's pieces close up whatever they are.
+fn push_loop(loops: &mut Vec<Vec<V2>>, mut ring: Vec<V2>, fixed: Option<f64>, bleed: f64) {
     let a = area(&ring);
     if a.abs() < 0.02 {
         return;
@@ -1489,8 +1486,7 @@ fn push_loop(loops: &mut Vec<Vec<V2>>, mut ring: Vec<V2>) {
     if a < 0.0 {
         ring.reverse();
     }
-    // a sliver grows less: it mustn't show as a speck
-    let grow = BLEED.min(a.abs().sqrt() * 0.35);
+    let grow = fixed.unwrap_or(bleed.min(a.abs().sqrt() * 0.35));
     let n = ring.len() as f64;
     let c = ring.iter().fold([0.0, 0.0], |c, p| [c[0] + p[0] / n, c[1] + p[1] / n]);
     for p in &mut ring {
@@ -1601,7 +1597,7 @@ mod tests {
     }
 
     fn draw(rich: &custom::Rich, rot: &Rot) -> (Vec<SolidPaint>, Vec<SolidPaint>) {
-        rich.solids.as_ref().unwrap().at_size(100.0).draw(rot, 100.0, [200.0, 200.0], &|p| p)
+        rich.solids.as_ref().unwrap().at_size(100.0).draw(rot, 100.0, [200.0, 200.0], &|p| p, 0.5)
     }
 
     /// Whole-figure box of what's drawn.
@@ -1674,7 +1670,7 @@ mod tests {
             let (mut wrong, mut covered) = (0, 0);
             for (yaw, pitch) in [(0.0, 0.0), (30.0, 15.0), (75.0, -20.0), (135.0, 40.0), (200.0, -45.0), (290.0, 60.0), (345.0, -70.0)] {
                 let rot = pose(yaw, pitch);
-                let (behind, front) = scene.draw(&rot, 100.0, [0.0, 0.0], &|p| p);
+                let (behind, front) = scene.draw(&rot, 100.0, [0.0, 0.0], &|p| p, 0.5);
                 let m = [bodies::view(&rot, [1.0, 0.0, 0.0]), bodies::view(&rot, [0.0, 1.0, 0.0]), bodies::view(&rot, [0.0, 0.0, 1.0])];
                 let turn = |p: V3| add(add(scale(m[0], p[0]), scale(m[1], p[1])), scale(m[2], p[2]));
                 let back = |p: V3| [dot(m[0], p), dot(m[1], p), dot(m[2], p)];
@@ -1807,7 +1803,7 @@ mod tests {
     /// its back: no eyes, the solids still there.
     #[test]
     fn a_body_with_solids_moves_and_shows_its_back() {
-        use super::super::{axq, Director};
+        use super::super::Director;
         let (name, _) = body(serde_json::json!([hair(), brim_hat()]));
         let tab = shared_tables();
         let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 7);
@@ -1823,9 +1819,9 @@ mod tests {
                 assert!(count(&t, "data-solid") > 5, "frame {f}");
             }
         }
-        // the two branches of `uh` draw the same solids
+        // round the back
         let mut frame = mark.frame();
-        frame.quat = axq([0.0, 1.0, 0.0], 170f64.to_radians());
+        frame.turn = [0.0, 170.0, 0.0];
         frame.morph = None;
         let extent = 52.48 * 0.92 / 0.6;
         let t = uh(
@@ -1838,6 +1834,30 @@ mod tests {
         );
         assert_eq!(count(&t, "data-eye"), 0, "the eyes are round the front");
         assert!(count(&t, "data-solid") > 5);
+    }
+
+    /// A turn is smooth all the way round: nothing jumps at side-on, where
+    /// the kit's pose folds, with the head pitched and rolled too.
+    #[test]
+    fn a_full_turn_has_no_jump() {
+        use super::super::render::turned;
+        for (pitch, roll) in [(0.0, 0.0), (12.0, 0.0), (-20.0, 6.0), (35.0, -8.0)] {
+            let at = |yaw: f64| {
+                let r = turned([pitch, yaw, roll]);
+                [bodies::view(&r, [0.0, 0.0, 1.0]), bodies::view(&r, [1.0, 0.0, 0.0]), bodies::view(&r, [0.0, 1.0, 0.0])]
+            };
+            let mut last = at(0.0);
+            let mut yaw = 0.25;
+            while yaw <= 720.0 {
+                let now = at(yaw);
+                let step = (0..3).map(|i| length(sub(now[i], last[i]))).fold(0.0, f64::max);
+                // a quarter degree of turn, and the half degree `sd` steps
+                // off the edge
+                assert!(step < 0.03, "pitch {pitch} roll {roll} yaw {yaw}: {step}");
+                last = now;
+                yaw += 0.25;
+            }
+        }
     }
 
     /// A recipe without solids is as it was: nothing of this module touches
@@ -1913,7 +1933,7 @@ mod tests {
     fn the_heaviest_recipe_stays_bounded() {
         let mut lobes = afro();
         lobes["lobes"] = serde_json::json!([32, 12, 1]);
-        let list = serde_json::json!([lobes, lobes, lobes]);
+        let list = serde_json::json!([lobes, lobes]);
         let t = std::time::Instant::now();
         let (_, rich) = body(list);
         let d = draw(&rich, &pose(30.0, 20.0));

@@ -127,8 +127,8 @@ fn load(path: &str) -> (&'static str, Value) {
 
 /// The rotation that turns a mark `yaw` then `pitch` degrees.
 fn posed(frame: &mut Frame, yaw: f64, pitch: f64) {
-    let (y, p) = (yaw * MN, pitch * MN);
-    frame.quat = ca(axq([1.0, 0.0, 0.0], p), axq([0.0, 1.0, 0.0], y));
+    frame.quat = ib(pitch * MN, yaw * MN, 0.0);
+    frame.turn = [pitch, yaw, 0.0];
 }
 
 fn spin(path: &str, out: &str, box_: f64) {

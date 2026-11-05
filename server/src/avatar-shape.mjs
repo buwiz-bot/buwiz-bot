@@ -340,7 +340,7 @@ export const SOLIDS_MAX = 10;
 const SOLID = {
   profile: 40, path: 12, branches: 6, marks: 8, edge: 24, scallops: 18, lobes: 32,
   // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
-  faces: 8000, row: 4, cols: 76, shellFaces: 7 * 72, lobeFaces: 60, tubeSteps: 3, tubeSides: 10,
+  faces: 8000, row: 4, cols: 76, shellFaces: 7 * 72, lobeFaces: 96, tubeSteps: 3, tubeSides: 10,
   box: [-60, 160], radius: 60,
 };
 
@@ -469,7 +469,10 @@ export function validateAvatar({ shape, color, outline, layers, eyes, parts, sol
   }
   if (solids !== undefined) {
     if (shape !== "custom") errs.push("only a custom outline can have solids");
-    else errs.push(...solidErrors(solids));
+    else {
+      errs.push(...solidErrors(solids));
+      if (Array.isArray(solids) && solids.length && !rich) errs.push("solids need a rich avatar: at least one layer (the face)");
+    }
   }
   return errs;
 }

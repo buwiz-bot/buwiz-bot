@@ -514,6 +514,7 @@ test("AVD-21 solids: checked (kinds, limits, cost), parsed, stored and carried a
   const tall = Array.from({ length: 40 }, (_, i) => [i === 0 || i === 39 ? 0 : 100, i % 2 ? 100 : -100]);
   assert.match(solidErrors(Array(10).fill({ ...lathe, marks: undefined, teeth: undefined, profile: tall }))[0], /^the solids cost \d+ faces, at most 8000$/);
   assert.deepEqual(validateAvatar({ shape: "heart", color: "#FF0000", solids }), ["only a custom outline can have solids"]);
+  assert.deepEqual(validateAvatar({ shape: "custom", color: "#FF0000", outline: hat.outline, solids }), ["solids need a rich avatar: at least one layer (the face)"]);
   // a design keeps them
   const [c] = parseCandidates(JSON.stringify([{ ...hat, solids }]));
   assert.deepEqual(c.solids, solids);

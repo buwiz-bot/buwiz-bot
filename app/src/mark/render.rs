@@ -304,21 +304,18 @@ fn ch(e: &super::V4, t: f64) -> Rot {
     }
 }
 
-/// The exact rotation as `{yaw,pitch,roll}` degrees, in the order the
-/// projector applies them, yaw running all the way round. `Ch` folds a mark
-/// turned past side-on back to its front, which suits a body with the same
-/// look on both sides but not one with solids: it has a back to show.
-fn turned(e: &super::V4) -> Rot {
-    let n = cr(*e);
-    let (pitch, yaw, roll) = if n[7].abs() > 0.99999 {
-        (n[7].signum() * std::f64::consts::FRAC_PI_2, 0.0, n[3].atan2(n[0]))
-    } else {
-        (n[7].asin(), (-n[6]).atan2(n[8]), (-n[1]).atan2(n[4]))
-    };
+/// A mark's pose from its own angles (`Frame::turn`: pitch, yaw, roll in
+/// degrees), yaw running all the way round. `Ch` reads them back out of the
+/// quaternion, where a mark turned past side-on folds back to its front:
+/// that suits a body that looks the same from both sides but not one with
+/// solids, which has a back to show. The same pose as `Ch` while the front
+/// faces the viewer.
+pub(super) fn turned(angles: V3) -> Rot {
+    let [pitch, yaw, roll] = angles;
     Rot {
-        yaw: sd(yaw * DOLLAR_O),
-        pitch: sd(pitch * DOLLAR_O),
-        roll: roll * DOLLAR_O,
+        yaw: sd((yaw + 180.0).rem_euclid(360.0) - 180.0),
+        pitch: sd(pitch),
+        roll,
     }
 }
 
@@ -1704,7 +1701,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
     let rich = custom::rich(body);
     // a rich body draws at the exact pose: its decals have no sprite cache
     let o = match &rich {
-        Some(rich) if rich.solids.is_some() => turned(&e.quat),
+        Some(rich) if rich.solids.is_some() => turned(e.turn),
         _ => ch(&e.quat, if rich.is_some() { 0.0 } else { rh(t, e.zoom) }),
     };
     let sh = bodies::dollar_h(body, &o, r, e.eyes.as_ref());
@@ -1751,7 +1748,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
         _ => None,
     };
     let rich_solids = match (&rich, &e.eyes) {
-        (Some(rich), Some(_)) => solid_draws(rich, body, &o, r, n, &d),
+        (Some(rich), Some(_)) => solid_draws(rich, body, &o, r, n, &d, 1.0),
         _ => None,
     };
     ShapeRec {
@@ -3392,11 +3389,16 @@ fn part_draws(rich: &custom::Rich, rot: &Rot, s: f64, map: &dyn Fn(V2) -> V2) ->
 /// A rich body's solids at a pose: behind the head, and in front of it.
 type SolidDraws = (Vec<SolidPaint>, Vec<SolidPaint>);
 
+/// How far past its edges a solid's face draws, in px on screen: enough to
+/// close the hairlines between faces at any size.
+const SOLID_BLEED: f64 = 0.35;
+
 /// A rich body's solids at `rot` in an `s` px sprite shown `shown` px
-/// across, each point mapped by `map`.
-fn solid_draws(rich: &custom::Rich, body: &'static str, rot: &Rot, s: f64, shown: f64, map: &dyn Fn(V2) -> V2) -> Option<SolidDraws> {
+/// across, each point mapped by `map` into a space `px` units to the screen
+/// px.
+fn solid_draws(rich: &custom::Rich, body: &'static str, rot: &Rot, s: f64, shown: f64, map: &dyn Fn(V2) -> V2, px: f64) -> Option<SolidDraws> {
     let scene = rich.solids.as_ref()?.at_size(shown);
-    Some(scene.draw(rot, bodies::sprite_radius(body, s), [s / 2.0, s / 2.0], map))
+    Some(scene.draw(rot, bodies::sprite_radius(body, s), [s / 2.0, s / 2.0], map, SOLID_BLEED * px))
 }
 
 /// `main` with the solids around it.
@@ -3454,7 +3456,7 @@ fn layered(
 fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts, n: f64, id: &str, extent: f64) -> MarkTree {
     let o = ((n * e.zoom / H_UND).round() as i64).max(8) as f64;
     let s = o.max(IH);
-    let rot = if rich.solids.is_some() { turned(&e.quat) } else { ch(&e.quat, 0.0) };
+    let rot = if rich.solids.is_some() { turned(e.turn) } else { ch(&e.quat, 0.0) };
     let sh = bodies::dollar_h(body, &rot, s, e.eyes.as_ref());
     let [u, l, d, f] = oh(e, n, o, s);
     let shade = ink_shade(t, body);
@@ -3506,7 +3508,7 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
         drawn = layered(drawn, &parts, &order, id, shade, bodies::gc, &mut defs);
     }
     if e.eyes.is_some()
-        && let Some(solids) = solid_draws(rich, body, &rot, s, o, &|p| p)
+        && let Some(solids) = solid_draws(rich, body, &rot, s, o, &|p| p, s / o)
     {
         drawn = around(drawn, &solids, shade);
     }

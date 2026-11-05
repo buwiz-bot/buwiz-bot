@@ -415,6 +415,7 @@ fn solids_are_checked_like_node() {
     assert_eq!(e.len(), 1, "{e:?}");
     assert!(e[0].starts_with("the solids cost ") && e[0].ends_with(" faces, at most 8000"), "{e:?}");
     assert_eq!(validate_avatar(Some("heart"), Some("#FF0000"), None, None, None, None, Some(&json!([tube]))), ["only a custom outline can have solids"]);
+    assert_eq!(validate_avatar(Some("custom"), Some("#FF0000"), Some(MOCK_CAT), None, None, None, Some(&json!([tube]))), ["solids need a rich avatar: at least one layer (the face)"]);
 }
 
 /// A design keeps its solids, and only a custom one has them.
