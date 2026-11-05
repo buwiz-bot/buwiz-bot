@@ -708,6 +708,28 @@ async fn the_shell_cant_reach_a_server_on_a_unix_socket() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `ssh localhost` and Screen Sharing answer with a shell or the screen, outside the sandbox.
+/// Nothing may listen on 22 here, so the rule runs on a server of the test's own.
+#[tokio::test(flavor = "multi_thread")]
+async fn this_macs_own_ssh_and_screen_are_shut() {
+    let (service, dev) = (tiny_server().await, tiny_server().await);
+    let profile = format!("(version 1)(allow default){}", sandbox::local_rule(service));
+    let run = |url: String| {
+        let mut cmd = tokio::process::Command::new(sandbox::SANDBOX_EXEC);
+        cmd.arg("-p").arg(&profile).arg("/usr/bin/curl").args(["-s", "-m", "5"]).arg(url);
+        cmd
+    };
+    for host in ["127.0.0.1", "localhost"] {
+        assert!(!run(format!("http://{host}:{service}/")).output().await.unwrap().status.success(), "{host}");
+    }
+    assert_eq!(run(format!("http://127.0.0.1:{dev}/")).output().await.unwrap().stdout, b"ok");
+    let p = sandbox::profile(std::path::Path::new("/tmp/d"), &[], std::path::Path::new("/nowhere")).unwrap();
+    for port in sandbox::LOCAL_SERVICES {
+        assert!(p.contains(&sandbox::local_rule(port)), "{port}");
+    }
+    assert!(sandbox::LOCAL_SERVICES.contains(&22) && !p.contains("\"*:22\""), "git hosts stay reachable on 22");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_cant_stand_in_for_its_broker_or_signal_it() {
     let data = temp("sandbox-bind");

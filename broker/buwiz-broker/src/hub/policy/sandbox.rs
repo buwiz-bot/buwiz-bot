@@ -164,6 +164,11 @@ pub fn profile(data: &Path, ports: &[u16], home: &Path) -> Option<String> {
     Some(out)
 }
 
+/// Shuts `port` on this Mac alone.
+pub fn local_rule(port: u16) -> String {
+    format!("(deny network-outbound (remote ip \"localhost:{port}\"))")
+}
+
 /// The rules that keep the shell inside: see the module's words. `local` is what it may not
 /// reach on this Mac alone.
 fn escapes(home: &Path, local: &[u16]) -> Option<String> {
@@ -172,9 +177,7 @@ fn escapes(home: &Path, local: &[u16]) -> Option<String> {
     out.push_str("(deny lsopen)(deny appleevent-send)(deny signal)(allow signal (target same-sandbox))");
     out.push_str(&format!("(deny process-exec* (regex #\"{NO_EXEC}\") (regex #\"/lsregister$\"))"));
     out.push_str(&format!("(deny network-outbound (remote unix-socket))(allow network-outbound (regex #\"{UNIX_SOCKETS}\"))"));
-    for port in local {
-        out.push_str(&format!("(deny network-outbound (remote ip \"localhost:{port}\"))"));
-    }
+    out.extend(local.iter().map(|port| local_rule(*port)));
     out.push_str(&format!("(deny file-read* file-write* (regex #\"{KEYCHAIN_FILES}\"))"));
     out.push_str(&format!("(deny file-write* (regex #\"{RUNS_LATER_FOLDERS}\") (regex #\"{RUNS_LATER_FILES}\") (regex #\"{GIT_HOOKS}\")"));
     for name in STARTUP_FILES {
