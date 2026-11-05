@@ -57,7 +57,7 @@ impl Reading {
 
 const FIELDS: [&str; 8] = ["textfield", "search", "combobox", "checkbox", "switch", "radio", "slider", "spinbutton"];
 const OTHER_CONTROLS: [&str; 5] = ["link", "tab", "option", "menuitem", "treeitem"];
-const TEXT: [&str; 4] = ["text", "heading", "status", "alert"];
+const TEXT: [&str; 5] = ["text", "note", "heading", "status", "alert"];
 
 /// The longest a label may be, and the most digits it may hold: a TIN or a
 /// phone number has more.
@@ -95,6 +95,11 @@ fn inside<'a>(n: &'a Seen, texts: &mut Vec<&'a str>) -> bool {
     })
 }
 
+/// Whether a `note` is in `n`: its words can repeat a name, but never give one.
+fn holds_note(n: &Seen) -> bool {
+    n.children.iter().any(|c| c.role == "note" || holds_note(c))
+}
+
 /// A button's label, or `None` for a button that may be a row.
 fn button_label(n: &Seen) -> Option<&str> {
     let mut texts = Vec::new();
@@ -104,7 +109,7 @@ fn button_label(n: &Seen) -> Option<&str> {
     let name = n.name.trim();
     let label = match texts[..] {
         [] => name,
-        [text] if name.is_empty() || name == text => text,
+        [text] if name == text || (name.is_empty() && !holds_note(n)) => text,
         _ => return None,
     };
     plain(label).then_some(label)
@@ -384,6 +389,54 @@ pub(crate) mod tests {
             assert_eq!(out(&[seen("b", "textfield", s, None, vec![])])[0].2, "", "{s}");
         }
         assert_eq!(out(&[button("a", "Add 2026")])[0].2, "Add 2026");
+    }
+
+    /// A person's data on a button as Books and eBIRForms hide it: fixed
+    /// words as the label, the data as the text and the value.
+    fn labelled(id: &str, label: &str, data: &str) -> Seen {
+        seen(id, "button", label, Some(data), vec![text(&format!("{id}t"), data)])
+    }
+
+    #[test]
+    fn a_fixed_label_keeps_a_one_text_row_out_with_its_name_and_value() {
+        let got = readable(&[labelled("a", "Choose this employee", NAME)], Reading::Structure);
+        assert_eq!((got[0].name.as_str(), got[0].value.as_ref()), ("", None));
+        assert_eq!(got[0].id.as_str(), "button.unnamed-1");
+        assert!(!serde_json::to_string(&got).unwrap().to_lowercase().contains("fakerson"));
+    }
+
+    /// Nothing in the tree tells a row with one text from a button: the
+    /// account options a draft needs are such rows, and have to stay named.
+    /// So a one-text row an app forgot to label goes out by its text, and
+    /// only the two below keep a row's name out.
+    #[test]
+    fn only_a_second_text_or_a_fixed_label_keeps_a_rows_name_out() {
+        let one_text = button("a", NAME);
+        let two_texts = seen("b", "button", "", None, vec![text("c", NAME), text("d", "›")]);
+        let named = labelled("e", "Show payments", NAME);
+        assert_eq!(out(&[one_text, two_texts, named]).iter().map(|g| g.2.as_str()).collect::<Vec<_>>(), [NAME, "", ""]);
+    }
+
+    /// Rows a scroll view has out of its viewport count as visible, so a
+    /// long list goes out whole: it's their being unnamed that keeps the
+    /// names in.
+    #[test]
+    fn a_row_scrolled_out_of_view_goes_out_unnamed_like_the_rest() {
+        let list: Vec<Seen> = (0..40).map(|i| labelled(&format!("r{i}"), "Show payments", &format!("{NAME} {i}"))).collect();
+        assert!(list.iter().all(|n| n.visible));
+        let got = readable(&[seen("s", "scroll", "", None, list)], Reading::Structure);
+        assert_eq!(got.len(), 40);
+        assert!(got.iter().all(|n| n.name.is_empty() && n.id.as_str().starts_with("button.unnamed-")));
+    }
+
+    #[test]
+    fn a_note_counts_as_text_in_a_button() {
+        let note = |id: &str, s: &str| seen(id, "note", "", Some(s), vec![]);
+        let got = out(&[seen("a", "button", "Open Juan", None, vec![note("b", "Juan")]), seen("c", "button", "Save", None, vec![note("d", "Save")])]);
+        assert_eq!(got.iter().map(|g| g.2.as_str()).collect::<Vec<_>>(), ["", "Save"]);
+        assert!(out(&[note("e", NAME)]).is_empty(), "and says nothing by itself");
+        let nameless = seen("f", "button", "", None, vec![note("g", NAME)]);
+        assert_eq!(out(&[nameless])[0].2, "", "a note is never a button's label");
     }
 
     #[test]
