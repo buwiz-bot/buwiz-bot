@@ -433,6 +433,12 @@ async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if let Err(e) = sweep_modules(&ctx, &names) {
         return refused(&e, false);
     }
+    // its screen goes with it, and the computer with its last Bot
+    if let Some(computers) = crate::hub::computer::Computers::of(&ctx) {
+        if let Err(e) = computers.detach(&ctx, &bot_id).await {
+            return refused(&e.sentence(), false);
+        }
+    }
     wrote!(ctx.store.write(|s| {
         s.bots.retain(|b| b.id != bot_id);
         s.list.retain(|t| Some(&t.id) != thread.as_ref());

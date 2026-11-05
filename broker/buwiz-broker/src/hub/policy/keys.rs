@@ -6,11 +6,11 @@
 use serde_json::{json, Value};
 
 use crate::hub::ctx::HubCtx;
-use crate::hub::tools::{defs, mcp, miniapps, ui, v1};
+use crate::hub::tools::{computer, defs, mcp, miniapps, ui, v1};
 use crate::js;
 
 /// The group keys, in the order This Bot lists them.
-pub const GROUPS: [&str; 9] = ["shell", "web", "apps", "office", "routines", "memory", "agents", "screens", ui::ACT_KEY];
+pub const GROUPS: [&str; 11] = ["shell", "web", "apps", "office", "routines", "memory", "agents", "screens", ui::ACT_KEY, computer::KEY, computer::ROUTINES_KEY];
 
 /// The tools that switch with `apps` beside the mini app tools: the artifact tools.
 const APP_TOOLS: [&str; 8] = ["app_icon", "app_details_update", "launch_app", "close_app", "promote_app", "demote_app", "set_version", "view_code"];
@@ -23,6 +23,7 @@ fn group_of(name: &str) -> Option<&'static str> {
         "fetch_url" | "web_search" | "query_source" => Some("web"),
         ui::NAME => Some("screens"),
         ui::ACT => Some(ui::ACT_KEY),
+        _ if computer::NAMES.contains(&name) => Some(computer::KEY),
         _ if miniapps::NAMES.contains(&name) || APP_TOOLS.contains(&name) => Some("apps"),
         _ if name.starts_with("office_") => Some("office"),
         _ if defs::has(defs::routine_tools(), name) => Some("routines"),
@@ -73,6 +74,8 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         "agents" => return fixed("Other agents", "Messages and makes other agents."),
         "screens" => return fixed("Mini app screens", "Reads the names of the buttons and fields on open mini app screens."),
         ui::ACT_KEY => return fixed("Act on mini app screens", "Presses buttons and fills fields on the mini app screen on top, up to saving a draft. What only you can do waits on a card for your OK, each time."),
+        computer::KEY => return fixed("Its computer", "Uses its own screen on its computer, once you've woken it. That computer is walled off from this Mac."),
+        computer::ROUTINES_KEY => return fixed("Computer in routines", "Lets this Bot's routines wake its computer and use it with nobody watching."),
         _ => {}
     }
     if let Some(id) = key.strip_prefix("skill:") {
@@ -106,6 +109,8 @@ pub fn phrase_of(ctx: &HubCtx, key: &str) -> String {
         "agents" => "other agents".into(),
         "screens" => "mini app screens".into(),
         ui::ACT_KEY => "acting on mini app screens".into(),
+        computer::KEY => "its computer".into(),
+        computer::ROUTINES_KEY => "its computer in routines".into(),
         _ => label_of(ctx, key).map(|(l, _)| l).unwrap_or_else(|| key.to_owned()),
     }
 }
@@ -138,7 +143,7 @@ const OFFICE_READS: &[&str] = &["open", "read", "get", "list", "view", "inspect"
 /// open or read a document. Every other tool counts as a write; an MCP server's or a v1
 /// plugin's says so itself (`annotations.readOnlyHint`, [`declared_read`]).
 pub fn is_read_name(name: &str) -> bool {
-    if READS.contains(&name) {
+    if READS.contains(&name) || computer::READS.contains(&name) {
         return true;
     }
     name.strip_prefix("office_").and_then(|v| v.split('_').next()).is_some_and(|v| OFFICE_READS.contains(&v))
@@ -168,7 +173,8 @@ pub fn phrase_for(ctx: &HubCtx, owner: &str, key: &str) -> String {
 /// Every key This Bot lists for `bot` (or Chats for [`super::CHATS`]): the groups, then
 /// each private skill, each MCP server the profile sees and each v1 plugin.
 pub fn all_keys(ctx: &HubCtx, bot: &str) -> Vec<String> {
-    let mut out: Vec<String> = GROUPS.iter().map(|g| (*g).to_owned()).collect();
+    // a plain chat has no computer: it belongs to a Bot
+    let mut out: Vec<String> = GROUPS.iter().filter(|g| bot != super::CHATS || !g.starts_with(computer::KEY)).map(|g| (*g).to_owned()).collect();
     let skills = ctx.db.with(|c| {
         let mut q = c.prepare("SELECT id FROM skills ORDER BY created_at")?;
         let r = q.query_map([], |r| r.get::<_, String>(0))?;

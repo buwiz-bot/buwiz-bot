@@ -101,6 +101,10 @@ fn line_end(c: char) -> bool {
 
 /// `/^mcp:[a-z0-9-]+\/[A-Za-z0-9._-]+(\|\{.*\})?$/s`
 fn app_ref(r: &str) -> bool {
+    // a Bot's computer, pinned like a mini app (`hub/computer.rs`)
+    if r.strip_prefix("computer:").is_some_and(|bot| !bot.is_empty() && bot.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))) {
+        return true;
+    }
     let Some(rest) = r.strip_prefix("mcp:") else { return false };
     let Some((server, rest)) = rest.split_once('/') else { return false };
     if server.is_empty() || !server.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {

@@ -18,6 +18,9 @@ async fn fetch_follow(url: &str, headers: &[(&str, &str)], ms: u64) -> Result<ht
     let mut u = Url::parse(url).map_err(|_| format!("Failed to parse URL from {url}"))?;
     let go = async {
         for _ in 0..=20 {
+            if a_computers_port(&u) {
+                return Err("fetch failed".to_owned());
+            }
             let mut req = http::Req::get(u.clone());
             for (k, v) in headers {
                 req = req.header(k, v);
@@ -34,6 +37,18 @@ async fn fetch_follow(url: &str, headers: &[(&str, &str)], ms: u64) -> Result<ht
         Err("fetch failed".to_owned())
     };
     tokio::time::timeout(Duration::from_millis(ms), go).await.map_err(|_| "The operation was aborted due to timeout".to_owned())?
+}
+
+/// Whether `u` is one of this Mac's computers' control or viewer ports: this tool runs in the
+/// broker, outside the shell's sandbox, so the same range is closed here.
+fn a_computers_port(u: &Url) -> bool {
+    let local = match u.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        None => false,
+    };
+    local && u.port().is_some_and(|p| (buwiz_computer::PORT_FIRST..=buwiz_computer::PORT_LAST).contains(&p))
 }
 
 /// `s.replace(/<tag[\s\S]*?<\/tag>/gi, "")`.
