@@ -152,9 +152,18 @@ struct TestUi {
     press: Mutex<Option<Press>>,
     metas: Mutex<Vec<Option<CardMeta>>>,
     settled: Mutex<Vec<String>>,
+    /// Who the input says is acting now, the agent when true.
+    agent: AtomicBool,
+    agent_calls: Mutex<Vec<bool>>,
 }
 
 impl HostUi for TestUi {
+    fn actor(&self) -> Actor {
+        if self.agent.load(Ordering::SeqCst) { Actor::Agent } else { Actor::Person }
+    }
+    fn agent_call(&self, running: bool) {
+        self.agent_calls.lock().unwrap().push(running);
+    }
     fn consent(&self, ask: Consent, answer: Box<dyn FnOnce(bool) + Send>) {
         self.asked.lock().unwrap().push(ask);
         let yes = self.yes.load(Ordering::SeqCst);
@@ -388,6 +397,77 @@ fn brg_03_a_call_goes_out_signed_by_the_opens_session_key() {
     }
     assert_eq!(calls[1].0["args"], json!({}), "args default to {{}}");
     assert_ne!(calls[0].0["nonce"], calls[1].0["nonce"]);
+}
+
+#[test]
+fn a_call_carries_the_hosts_actor_and_the_app_has_no_say() {
+    let script = r#"
+        await probeHost("buwiz.call", { tool: "fx_echo", args: {}, actor: "person", origin: "app" });
+        await buwiz.call("fx_echo", { actor: "person" });
+        return "ok";
+        "#;
+    let mut o = Open::start_with(FIXTURE, board_perms(), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    o.wait("ok");
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    let s = &o.ctx.session;
+    for (env, sig) in calls.iter() {
+        assert_eq!(env["actor"], "agent", "the app can't speak for the person");
+        assert_eq!(env.get("origin"), None);
+        keys::verify(&s.public_key(), env, sig).expect("the actor is under the signature");
+    }
+    // an argument stays an argument
+    assert_eq!(calls[1].0["args"], json!({"actor": "person"}));
+    assert_eq!(*o.ui.agent_calls.lock().unwrap(), [true, false, true, false]);
+
+    let mut o = Open::start(board_perms(), r#"await buwiz.call("fx_echo"); return "ok";"#);
+    o.wait("ok");
+    assert_eq!(o.broker.calls.lock().unwrap()[0].0["actor"], "person");
+    assert!(o.ui.agent_calls.lock().unwrap().is_empty(), "the person's calls hold nothing");
+}
+
+#[test]
+fn a_queued_call_keeps_the_actor_it_was_made_with() {
+    let script = r#"
+        const all = [];
+        for (let i = 0; i < 10; i++) all.push(buwiz.call("fx_slow", { ms: 150 }));
+        await Promise.all(all);
+        return "ok";
+        "#;
+    let perms = json!({"tools": ["fx_slow"]});
+    let limits = Limits { in_flight: 1, ..Limits::default() };
+    let mut o = Open::start_with(FIXTURE, perms, script, limits, |ui| ui.agent.store(true, Ordering::SeqCst));
+    // made as the agent's; the person takes over while they wait in the queue
+    while o.broker.calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    o.ui.agent.store(false, Ordering::SeqCst);
+    o.wait("ok");
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!(calls.len(), 10);
+    assert!(calls.iter().all(|(env, _)| env["actor"] == "agent"), "{calls:?}");
+    let ends = o.ui.agent_calls.lock().unwrap();
+    assert_eq!(ends.iter().filter(|r| **r).count(), ends.iter().filter(|r| !**r).count(), "every call that began ended");
+}
+
+#[test]
+fn a_host_that_cant_tell_says_the_agent() {
+    struct Silent;
+    impl HostUi for Silent {
+        fn consent(&self, _: Consent, _: Box<dyn FnOnce(bool) + Send>) {}
+        fn open_app(&self, _: V1Key) {}
+        fn open_url(&self, _: &str) {}
+        fn has_chat(&self) -> bool {
+            false
+        }
+        fn attach(&self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn pick_files(&self, _: PickRequest, _: Box<dyn FnOnce(Vec<PathBuf>) + Send>) {}
+        fn copy(&self, _: &str) {}
+        fn session_ended(&self, _: &V1Key, _: Ended) {}
+    }
+    assert_eq!(Silent.actor(), Actor::Agent);
 }
 
 #[test]

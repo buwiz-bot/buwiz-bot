@@ -32,6 +32,14 @@ export const SOURCE_MAX = 512 * 1024;
 export const PROMPT_MAX = 4000;
 const HEX64 = /^[0-9a-f]{64}$/;
 
+/** What a signed call's `caller.origin` says (16.1): `app`, the person's own act through the
+ *  app, only for `actor: "person"`, or for a tool that plainly only reads (the app's screen
+ *  reading for itself, whoever is acting). Anything else is the agent's: no actor, a word
+ *  this broker doesn't know. The signed value is never copied out. */
+export function originOf(actor, tool) {
+  return actor === "person" || tool?.annotations?.readOnlyHint === true ? "app" : "agent";
+}
+
 const cap = (s, n) => {
   const cs = [...String(s ?? "")];
 
@@ -307,7 +315,8 @@ export function createSessions(plugins) {
     let r;
 
     try {
-      const caller = { origin: "app", plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
+      const tool = rt.tools.find((t) => t.name === envelope.tool);
+      const caller = { origin: originOf(envelope.actor, tool), plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
 
       r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "buwiz/caller": caller } });
     } finally {

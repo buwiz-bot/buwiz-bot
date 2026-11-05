@@ -116,8 +116,13 @@ fi
 
 # The builds.
 if [ -z "${BUWIZ_BOT_BIN:-}" ]; then
-  cargo_release "$ROOT/app" "$APP_TARGET" --bin "$BIN_NAME"
+  # no default features: no gpui-agent server (app/Cargo.toml's dev-agent)
+  cargo_release "$ROOT/app" "$APP_TARGET" --bin "$BIN_NAME" --no-default-features
   BUWIZ_BOT_BIN="$APP_TARGET/release/$BIN_NAME"
+fi
+# a prebuilt binary too: a shipped Bot opens no agent port
+if LC_ALL=C grep -q 'gpui-agent: serving' "$BUWIZ_BOT_BIN"; then
+  die "$BUWIZ_BOT_BIN has the gpui-agent server in it: build with --no-default-features"
 fi
 if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
   cargo_release "$ROOT/broker" "$BROKER_TARGET" -p buwiz-broker

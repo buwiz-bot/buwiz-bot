@@ -285,6 +285,36 @@ async fn sandboxed(data: &std::path::Path, script: &str) -> (bool, String) {
 }
 
 #[tokio::test]
+async fn the_sandbox_denies_a_dev_bots_automation_files_wherever_they_are() {
+    let data = temp("sandbox-agent");
+    let elsewhere = temp("sandbox-agent-tmp");
+    let kept = elsewhere.join("kept");
+    std::fs::create_dir_all(&kept).unwrap();
+    for name in ["buwiz-gpui-agent-token", "rox-gpui-agent-token", "buwiz-agent-menu", "rox-agent-menu"] {
+        let file = kept.join(name);
+        std::fs::write(&file, "secret-stand-in").unwrap();
+        let (ok, out) = sandboxed(&data, &format!("cat '{}'", file.display())).await;
+        assert!(!ok && !out.contains("secret-stand-in"), "{name}: {out}");
+        let (ok, _) = sandboxed(&data, &format!("echo cmd > '{}'", file.display())).await;
+        assert!(!ok, "{name} written");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "secret-stand-in");
+        // not by another name either
+        let (ok, out) = sandboxed(&data, &format!("ln '{0}' '{1}/hard' && cat '{1}/hard'", file.display(), kept.display())).await;
+        assert!(!ok && !out.contains("secret-stand-in"), "{name} through a hard link: {out}");
+        let (ok, out) = sandboxed(&data, &format!("ln -sf '{0}' '{1}/soft' && cat '{1}/soft'", file.display(), kept.display())).await;
+        assert!(!ok && !out.contains("secret-stand-in"), "{name} through a link: {out}");
+    }
+    // moving its folder doesn't free it: a path rule would stop matching here
+    let moved = elsewhere.join("moved");
+    let (ok, out) = sandboxed(&data, &format!("mv '{}' '{1}' && cat '{1}/buwiz-gpui-agent-token'", kept.display(), moved.display())).await;
+    assert!(!ok && !out.contains("secret-stand-in"), "{out}");
+    // the rule is the file's name, not its neighbours
+    std::fs::write(elsewhere.join("my-agent-menu"), "fine").unwrap();
+    let (ok, out) = sandboxed(&data, &format!("cat '{}'", elsewhere.join("my-agent-menu").display())).await;
+    assert!(ok && out.contains("fine"), "{out}");
+}
+
+#[tokio::test]
 async fn the_sandbox_denies_the_token_and_the_database_but_not_the_files_folder() {
     let data = temp("sandbox");
     std::fs::write(data.join("host-token"), "secret-token").unwrap();

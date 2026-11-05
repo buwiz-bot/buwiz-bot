@@ -38,6 +38,25 @@ pub const PROMPT_MAX: usize = 4000;
 type Res<T = Value> = Result<T, V1Error>;
 
 /// `[...s].slice(0, n).join("")`: the first `n` code points.
+/// What a signed call's `caller.origin` says (16.1): `"app"`, the person's own act through the
+/// app, only for `"actor": "person"`. Anything else (`"agent"`, no actor, a word this broker
+/// doesn't know) is the agent's. The signed value picks between these two and is never copied
+/// out, so the Bot can't claim `routine`, `resolve` or anything else.
+///
+/// A read goes out as the app's whoever is acting: the app's screen is reading for itself, its
+/// answer stays in the app, and plugins refuse an agent their screens' own tools, so calling it
+/// the agent's would break the screen under the agent's press. `readOnlyHint` is the plugin's
+/// word on its own tool, which it enforces itself, so it gives the plugin nothing it didn't
+/// have. Without a clear `true`, a tool counts as a write.
+fn origin_of(actor: Option<&Value>, tool: Option<&Value>) -> &'static str {
+    let read = tool.and_then(|t| t.pointer("/annotations/readOnlyHint")) == Some(&json!(true));
+    if actor == Some(&json!("person")) || read {
+        "app"
+    } else {
+        "agent"
+    }
+}
+
 fn cap(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -413,7 +432,8 @@ impl Sessions {
         queued.fetch_add(1, Ordering::SeqCst);
         let permit = slots.acquire_owned().await;
         queued.fetch_sub(1, Ordering::SeqCst);
-        let caller = json!({"origin": "app", "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
+        let origin = origin_of(get(envelope, "actor"), tools.iter().find(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str())));
+        let caller = json!({"origin": origin, "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
         let r = self.host.call_tool(&plugin, &tool, &args, Some(&json!({"buwiz/caller": caller})), None).await;
         drop(permit);
         let r = r?;
@@ -613,6 +633,27 @@ fn resolved(m: &Value, kind: &str, name: Option<&Value>, data: &Value) -> Res {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_persons_act_or_a_read_is_the_apps() {
+        use super::origin_of;
+        let write = json!({"name": "fx_save", "annotations": {"readOnlyHint": false}});
+        let read = json!({"name": "fx_list", "annotations": {"readOnlyHint": true}});
+        let bare = json!({"name": "fx_bare"});
+        let vague = json!({"name": "fx_vague", "annotations": {"readOnlyHint": "true"}});
+        let person = json!("person");
+        assert_eq!(origin_of(Some(&person), Some(&write)), "app");
+        assert_eq!(origin_of(Some(&person), Some(&read)), "app");
+        assert_eq!(origin_of(Some(&json!("agent")), Some(&read)), "app");
+        for tool in [&write, &bare, &vague] {
+            assert_eq!(origin_of(Some(&json!("agent")), Some(tool)), "agent");
+            assert_eq!(origin_of(None, Some(tool)), "agent", "no actor is the agent's");
+            for claim in [json!("app"), json!("routine"), json!("Person"), json!(true), json!(["person"]), Value::Null] {
+                assert_eq!(origin_of(Some(&claim), Some(tool)), "agent", "{claim}");
+            }
+        }
+        assert_eq!(origin_of(Some(&json!("agent")), None), "agent");
+    }
+
     use super::*;
 
     #[test]

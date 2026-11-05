@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, originOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -43,6 +43,18 @@ test("BRG-02 a tool the user disabled is refused on the app path (disabled)", as
   assert.equal(await codeOf(call(board, "fx_echo")), "disabled");
   await plugins.setTool(FX, "fx_echo", false);
   assert.equal((await call(board, "fx_echo")).ok, true);
+});
+
+test("only the person's act or a plain read is origin app; the rest is the agent's", () => {
+  const write = { name: "fx_save", annotations: { readOnlyHint: false } };
+  const read = { name: "fx_search", annotations: { readOnlyHint: true } };
+
+  assert.equal(originOf("person", write), "app");
+  assert.equal(originOf("agent", read), "app");
+
+  for (const tool of [write, { name: "fx_bare" }, { name: "fx_vague", annotations: { readOnlyHint: "true" } }, undefined]) {
+    for (const actor of ["agent", undefined, null, "app", "routine", "Person", true, ["person"]]) assert.equal(originOf(actor, tool), "agent");
+  }
 });
 
 test("BRG-03 a validly signed call with a fresh nonce succeeds; the plugin sees buwiz/caller", async () => {

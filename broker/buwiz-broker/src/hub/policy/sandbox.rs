@@ -1,7 +1,7 @@
 //! The shell's sandbox: `shell_run` and `shell_find_program` run under `sandbox-exec` with a
 //! profile that keeps the Bot's shell away from what would let it change its own rules or act
-//! as the app: the host token, app.db (with its -wal, -shm and -journal) and the data dir's
-//! root. The files folder (`generated/files`) stays open: replies read and write there. The
+//! as the app: the host token, app.db (with its -wal, -shm and -journal), the data dir's root
+//! and a dev Bot's automation files ([`AUTOMATION_FILES`]). The files folder (`generated/files`) stays open: replies read and write there. The
 //! policy lives in app.db, so there is no separate policy file to deny.
 
 use std::path::{Path, PathBuf};
@@ -12,6 +12,14 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// Why the shell cannot run when `sandbox-exec` is missing (it fails closed).
 pub const NO_SANDBOX: &str = "shell_run can't run: /usr/bin/sandbox-exec is missing, so commands can't be sandboxed on this Mac.";
+
+/// A dev or test Bot's gpui-agent token and its agent-menu hook, wherever they are, by file name
+/// (today's and the Rox names, as `app/bundle-dev.sh` and `app/src/hot.rs` write and read them):
+/// either one lets the shell press the Bot's buttons. By name, because the Bot keeps them in
+/// `$(getconf DARWIN_USER_TEMP_DIR)` or a test instance's folder, a broker told nothing by the
+/// Bot (it strips `GPUI_AGENT*`, and one it finds running outlives it) can't know the folder,
+/// and a path rule ends when the shell renames a parent folder.
+pub const AUTOMATION_FILES: &str = "/(buwiz|rox)-(gpui-agent-token|agent-menu)$";
 
 /// A path as an SBPL string; `None` for one the profile cannot quote safely.
 fn quoted(p: &Path) -> Option<String> {
@@ -48,7 +56,7 @@ pub fn profile(data: &Path) -> Option<String> {
     if data.is_absolute() && !roots.contains(&data.to_path_buf()) {
         roots.push(data.to_path_buf());
     }
-    let mut out = String::from("(version 1)(allow default)");
+    let mut out = format!("(version 1)(allow default)(deny file-read* file-write* (regex #\"{AUTOMATION_FILES}\"))");
     for root in &roots {
         let r = quoted(root)?;
         let text = root.to_str()?.trim_end_matches('/');

@@ -10,6 +10,11 @@
 //! and bumps `remount`, which the dynamic reads. [`live::init`] anchors the
 //! app's store under the root owner so the whole model survives remounts.
 
+// A shipped Bot opens no gpui-agent port: this crate's own debug_assertions
+// (not the dependencies', which dev builds turn off) tell a release build.
+#[cfg(all(feature = "dev-agent", not(debug_assertions)))]
+compile_error!("a release build has no gpui-agent server: build with --no-default-features");
+
 mod agents;
 mod appdetails;
 mod avatar;

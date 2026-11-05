@@ -176,7 +176,10 @@ buwiz.meta({ text: "Due in 3 days", pill: true });
 A bridge call reaches your tool as `tools/call` with the arguments as sent and
 `_meta["buwiz/caller"]` = `{origin, plugin, app, open_id, ts}` (spec 16.1).
 `origin` is `app` for bridge calls, `agent` for the model, `routine` for a
-routine's query and `resolve` for resolve tools. In a routine's turn the
+routine's query and `resolve` for resolve tools. A bridge call made while the
+agent, not the person, is driving your screen comes as `agent` too, unless the
+tool has `readOnlyHint: true`: your screen's own reads keep working, and a tool
+you keep for apps refuses its writes. In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
 `routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-67)). `startPlugin` passes it to
 your `run(args, caller)` as `caller`. Use it to authorize (see

@@ -215,3 +215,10 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "AppView::set_key_precedence: a full-screen mini app's keymap ahead of Buwiz Bot's, inline cards' after it"
+
+[[topic]]
+branch = "feat/agent-hub"
+kind = "feature"
+pr = 0
+status = "local"
+note = "gpui-agent-server splits the listener off the in-process tree and actions; provenance tells the app whose hands input came from. Agent Hub S2; on top of rox, not cut from main yet"
