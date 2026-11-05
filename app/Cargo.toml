@@ -76,7 +76,7 @@ nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-featur
 # The same AppKit crate nsh uses, with the print classes (the file viewer's
 # Print); features merge into nsh's copy.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSFont", "NSAlert", "NSApplication", "NSButton", "NSEvent", "NSWindow", "NSPanel", "NSScrollView"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSLayoutManager", "NSTextContainer", "NSFont", "NSAlert", "NSApplication", "NSButton", "NSEvent", "NSWindow", "NSPanel", "NSScrollView"] }
 # Saved site logins' secrets: Keychain generic passwords (`vault/keychain.rs`).
 security-framework = "3.7"
 # A v1 mini app's bridge answers from the main thread (file dialog,
@@ -113,3 +113,8 @@ debug-assertions = false
 nsh-core = { path = "../nsh/crates/nsh-core" }
 nsh-macros = { path = "../nsh/crates/nsh-macros" }
 nsh-engine = { path = "../nsh/crates/nsh-engine" }
+
+# AppKit's views live on the main thread, and libtest's threads aren't it.
+[[test]]
+name = "card_scroll"
+harness = false

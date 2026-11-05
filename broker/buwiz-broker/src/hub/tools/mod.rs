@@ -265,7 +265,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "react" => return builtin::react(run, input),
         "app_tools_load" => return Ok(mcp::app_tools_load(run, input).await),
         "fetch_url" => return builtin::fetch_url(input).await,
-        ui::NAME if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::look(ctx).await),
+        ui::NAME if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::look(run).await),
         ui::ACT if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::act(run, input).await),
         "shell_run" => return Ok(controls::shell_run(run, input).await),
         _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,

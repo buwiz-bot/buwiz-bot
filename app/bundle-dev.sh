@@ -154,9 +154,10 @@ TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token"
 ( umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > "\$TOKEN_FILE" )
 ( umask 077 && cp "\$TOKEN_FILE" "\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token" )
 # BUWIZ_FPS by its old name too: the binary may be a build from before it
+# The Bot reads the token from the file: the environment is open to any
+# process of this user, and the shell's sandbox shuts the file, not that.
 export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 BUWIZ_FPS=0 ROX_FPS=0
-GPUI_AGENT_TOKEN="\$(cat "\$TOKEN_FILE")"
-export GPUI_AGENT_TOKEN
+export GPUI_AGENT_ADDR="\${GPUI_AGENT_ADDR:-127.0.0.1:17421}" GPUI_AGENT_TOKEN_FILE="\$TOKEN_FILE"
 BIN="\$(dirname "\$0")/buwiz-bot-bin"
 [ -x "\$BIN" ] || BIN="$BIN"
 exec "\$BIN" "\$@"

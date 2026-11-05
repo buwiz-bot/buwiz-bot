@@ -227,7 +227,10 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
             ("NSH_CHUNK_DIR", data.join("chunks").into()),
         ])
         .collect();
-    let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "GPUI_AGENT_ACTOR", "PORT"];
+    let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_TOKEN_FILE", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "PORT"];
+    // a release binary doesn't name it: `scripts/release/build.sh` checks
+    #[cfg(feature = "dev-agent")]
+    env_remove.push("GPUI_AGENT_ACTOR");
     env_remove.extend(buwiz_protocol::env::with_old("BUWIZ_PUBLIC_PORT"));
     let log = crate::identity::logs_dir(home).join("broker.log");
     Launch { program: broker.to_owned(), args, env, env_remove, data, log }
@@ -491,6 +494,7 @@ mod tests {
             ]
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
+        assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN_FILE"));
         assert!(l.env_remove.contains(&"BUWIZ_PUBLIC_PORT") && l.env_remove.contains(&"ROX_PUBLIC_PORT"));
         assert_eq!(l.data, PathBuf::from(data));
         assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Buwiz Bot/broker.log"));

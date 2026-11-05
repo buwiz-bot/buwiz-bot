@@ -281,6 +281,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Any process of this user reads the Bot's environment, past the shell's
+    /// sandbox: the test channel's token goes by file. Read as text, because
+    /// the test that runs the script skips without the office fonts.
+    #[test]
+    fn the_test_channels_token_stays_out_of_the_bots_environment() {
+        for script in [include_str!("../bundle-dev.sh"), include_str!("../../scripts/buwiz-test")] {
+            assert!(script.contains("GPUI_AGENT_TOKEN_FILE="));
+            assert!(!script.contains("GPUI_AGENT_TOKEN=") && !script.contains("export GPUI_AGENT_TOKEN\n"));
+        }
+    }
+
+    /// What a shipped Bot must not hold, checked on the binary by the release
+    /// script, and kept out of a build with no `dev-agent` by what's compiled.
+    #[test]
+    fn the_release_script_checks_for_every_test_setting() {
+        let build = include_str!("../../scripts/release/build.sh");
+        for setting in ["BUWIZ_HUB_POSTED_ALLOW", "GPUI_AGENT_ACTOR", "BUWIZ_HUB_FULL_TEXT"] {
+            assert!(build.contains(setting), "{setting}");
+        }
+        let launch = crate::broker::launch(Path::new("/b"), Path::new("/h"), 1);
+        assert_eq!(launch.env_remove.contains(&"GPUI_AGENT_ACTOR"), cfg!(feature = "dev-agent"));
+    }
+
     /// `app/bundle-dev.sh` against a scratch bundle, with stand-in
     /// binaries: the bundle has the new id, the buwiz scheme alone and the new
     /// executable. Skipped (said so) without the icon font or server/'s

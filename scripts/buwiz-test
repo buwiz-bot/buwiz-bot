@@ -99,7 +99,7 @@ for a in "$@"; do
 done
 env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
   GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
-  GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/buwiz-gpui-agent-token")" ${VARS[@]+"${VARS[@]}"} \
+  GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN_FILE="$R/buwiz-gpui-agent-token" ${VARS[@]+"${VARS[@]}"} \
   nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
 echo "$P" > "$R/pid"

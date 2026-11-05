@@ -22,6 +22,15 @@ pub struct Node {
     pub version: std::sync::OnceLock<String>,
 }
 
+/// The port the running Node listens on: 0 for none.
+static RUNNING_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// The port this process's Node listens on now, if one runs: the shell's sandbox keeps it from
+/// that port as from the broker's own.
+pub fn running_port() -> Option<u16> {
+    Some(RUNNING_PORT.load(Ordering::SeqCst)).filter(|p| *p != 0)
+}
+
 impl Node {
     /// No Node: nothing is started or forwarded to.
     pub fn absent() -> Self {
@@ -149,6 +158,7 @@ pub async fn supervise(config: Config, node: Arc<Node>) {
         let started = Instant::now();
         node.pid.store(child.id().map(|p| p as i32).unwrap_or(0), Ordering::SeqCst);
         node.port.store(port, Ordering::SeqCst);
+        RUNNING_PORT.store(port, Ordering::SeqCst);
         let watch = {
             let node = node.clone();
             tokio::spawn(async move {

@@ -9,7 +9,8 @@
 //! - Until an agent has acted, every call is the person's.
 //! - An agent's action, on any surface, makes every surface the agent's:
 //!   what it presses may open another surface, and a menu item it fires
-//!   has none. A surface opened later starts as the agent's too.
+//!   has none. A surface opened later starts as the agent's too. The broker
+//!   opening a screen for the model is such an action ([`agent_opened`]).
 //! - A surface comes back to the person only by the person's own press or
 //!   key in that surface, once the agent is quiet ([`quiet`]). Typing in
 //!   the chat gives nothing in a mini app back.
@@ -166,6 +167,12 @@ pub fn agent_write(running: bool) {
     with(|a| if running { a.write_began() } else { a.write_ended(Instant::now()) });
 }
 
+/// The broker is opening a screen for the model: the agent is acting, though
+/// no input of nsh's says so.
+pub fn agent_opened() {
+    with(|a| a.agent_acted(Instant::now()));
+}
+
 /// Starts listening to nsh's input. On the main thread, before the first
 /// window, so no action goes unheard.
 #[cfg(target_os = "macos")]
@@ -191,6 +198,15 @@ mod tests {
 
     fn watched() -> Attribution {
         Attribution { watching: true, ..Attribution::default() }
+    }
+
+    /// What it does to this process's input: the rest of a surface's life is
+    /// the tests here, on an [`Attribution`] of their own.
+    #[test]
+    fn a_screen_the_broker_opens_for_the_model_counts_as_the_agent_acting() {
+        with(|a| a.last_action = None);
+        agent_opened();
+        assert!(with(|a| a.last_action.is_some()));
     }
 
     #[test]

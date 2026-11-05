@@ -258,6 +258,8 @@ pub fn rev(nodes: &[Seen]) -> u64 {
             n.role.hash(h);
             n.name.hash(h);
             n.enabled.hash(h);
+            n.checked.hash(h);
+            n.states.iter().any(|s| s == "selected").hash(h);
             if words || in_control {
                 n.value.hash(h);
             }
@@ -322,6 +324,25 @@ pub(crate) mod tests {
             seen("n15", "listbox", "RDO", None, vec![seen("n16", "option", "", None, vec![text("n17", NAME)])]),
             seen("n18", "mystery", NAME, Some(TIN), vec![]),
         ]
+    }
+
+    /// A person toggling a choice leaves every word on the screen as it was.
+    #[test]
+    fn a_checked_or_selected_state_changes_the_rev() {
+        let radio = || seen("n1", "radio", "Monthly", None, vec![]);
+        let base = rev(&[radio()]);
+        let mut checked = radio();
+        checked.checked = Some(true);
+        assert_ne!(rev(&[checked.clone()]), base);
+        let mut unchecked = radio();
+        unchecked.checked = Some(false);
+        assert_ne!(rev(&[unchecked]), rev(&[checked]));
+        let mut selected = radio();
+        selected.states.push("selected".to_owned());
+        assert_ne!(rev(&[selected]), base);
+        let mut other = radio();
+        other.states.push("expanded".to_owned());
+        assert_eq!(rev(&[other]), base, "what a press doesn't choose stays out");
     }
 
     fn out(nodes: &[Seen]) -> Vec<(String, String, String)> {
