@@ -65,10 +65,10 @@ const SUPPORT: &str = "/Application Support$";
 
 /// The Mach services the shell may look up: what name lookups, DNS, TLS trust and logging need.
 /// Every other one is shut. Left out on purpose: `com.apple.cfprefsd.*`, which writes preference
-/// files for its caller, past every file rule here, and `com.apple.metadata.mds`, whose index
-/// answers for files the shell may not read.
-pub const MACH_SERVICES: [&str; 14] = [
-    "com.apple.system.notification_center",
+/// files for its caller, past every file rule here, `com.apple.metadata.mds`, whose index
+/// answers for files the shell may not read, and `com.apple.system.notification_center`, whose
+/// notifications start launchd jobs outside the sandbox.
+pub const MACH_SERVICES: [&str; 13] = [
     "com.apple.system.opendirectoryd.libinfo",
     "com.apple.system.opendirectoryd.membership",
     "com.apple.system.logger",
@@ -94,8 +94,9 @@ pub const UNIX_SOCKETS: &str = r"^(/private/var/run/(mDNSResponder|syslog)|/priv
 pub const NO_EXEC: &str = r"^(/usr/bin|/bin|/usr/sbin|/sbin|/usr/local/bin|/opt/homebrew/bin|/opt/homebrew/Cellar/[^/]+/[^/]+/bin)/(open|osascript|osacompile|security|launchctl|at|atq|atrm|batch|crontab|tmux|screen|automator|shortcuts|sfltool)$";
 
 /// Folders whose files something outside the sandbox runs or obeys later, by name, wherever they
-/// are. Agent hooks and settings, login items, ssh's config, and what comes first on a PATH.
-pub const RUNS_LATER_FOLDERS: &str = r"/(\.ssh|\.claude|\.codex|\.cursor|\.gemini|\.aider|\.continue|\.hammerspoon|\.husky|\.config/(claude|opencode|fish|git|gh|karabiner|aerospace|shell)|\.cargo/bin|\.local/bin|Library/(LaunchAgents|LaunchDaemons|StartupItems|ScriptingAdditions|Services|Workflows|Application Scripts)|Library/Application Support/com\.apple\.backgroundtaskmanagementagent|opt/homebrew/bin|usr/local/bin|usr/lib/cron|var/at)(/|$)";
+/// are. The plug-in folders macOS loads by itself, agent hooks and settings, login items, ssh's
+/// config, and what comes first on a PATH.
+pub const RUNS_LATER_FOLDERS: &str = r"/(Library/(QuickLook|Spotlight|Input Methods|Scripts|Audio/Plug-Ins|Screen Savers|PDF Services|Services|Keyboard Layouts|Internet Plug-Ins|Application Scripts|Workflows|ColorPickers|Contextual Menu Items|Widgets)|\.ssh|\.claude|\.codex|\.cursor|\.gemini|\.aider|\.continue|\.hammerspoon|\.husky|\.config/(claude|opencode|fish|git|gh|karabiner|aerospace|shell)|\.cargo/bin|\.local/bin|Library/(LaunchAgents|LaunchDaemons|StartupItems|ScriptingAdditions|Services|Workflows|Application Scripts)|Library/Application Support/com\.apple\.backgroundtaskmanagementagent|opt/homebrew/bin|usr/local/bin|usr/lib/cron|var/at)(/|$)";
 
 /// Files of the same kind, by name, wherever they are. Each home folder's own may be links:
 /// [`profile`] closes what they lead to as well.
