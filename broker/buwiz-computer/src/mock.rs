@@ -186,8 +186,8 @@ impl Provider for MockProvider {
         Ok(self.screens.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
-    async fn recover(&self, spec: &Spec) -> Result<Option<Machine>> {
-        self.note(format!("recover {}", spec.id));
+    async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
+        self.note(format!("recover {} {last:?}", spec.id));
         let found = self.recoverable.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Ok(found.map(|reach| Machine {
             provider: ProviderKind::Docker,
@@ -200,7 +200,7 @@ impl Provider for MockProvider {
         }))
     }
 
-    async fn sweep(&self, id: &str) -> Result<()> {
+    async fn sweep(&self, id: &str, _: Option<&Reach>) -> Result<()> {
         self.note(format!("sweep {id}"));
         Ok(())
     }

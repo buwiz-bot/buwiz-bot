@@ -139,6 +139,8 @@ const TRIED: &[&str] = &[
     bot_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', screen TEXT, attached_at INTEGER);",
     // no Bot is left at it: it goes as soon as its provider answers
     "ALTER TABLE computers ADD COLUMN gone_at INTEGER",
+    // where it is, no secret in it: its files can be found with its record lost
+    "ALTER TABLE computers ADD COLUMN reach TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

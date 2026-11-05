@@ -267,7 +267,7 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         assert_ne!(new, old);
         assert_eq!(Computers::seat(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
         fresh.sleep_the_idle(&b.ctx).await;
-        assert!(b.mock.calls().contains(&format!("recover {old}")), "it looked for what's left first: {:?}", b.mock.calls());
+        assert!(b.mock.calls().iter().any(|c| c.starts_with(&format!("recover {old} Some(Container"))), "it looked for what's left first, by name: {:?}", b.mock.calls());
         assert_eq!(Computers::ids(&b.ctx), [new]);
     }
 }
@@ -441,6 +441,74 @@ async fn only_a_person_deleting_the_last_bot_removes_a_computer() {
     b.computers.leave(&b.ctx, &b.bea.0).await.unwrap();
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(!b.mock.calls().contains(&"destroy".to_owned()));
+}
+
+#[tokio::test]
+async fn two_bots_leaving_together_cant_both_pass_as_not_the_last() {
+    let b = bed("two-leave");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    // both get as far as they can before either goes through
+    let hold = b.computers.seating.lock().await;
+    let (one, two) = (b.computers.clone(), b.computers.clone());
+    let (c1, c2, ann, bea) = (b.ctx.clone(), b.ctx.clone(), b.ann.0.clone(), b.bea.0.clone());
+    let first = tokio::spawn(async move { one.leave(&c1, &ann).await });
+    let second = tokio::spawn(async move { two.leave(&c2, &bea).await });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    drop(hold);
+    let (first, second) = (first.await.unwrap(), second.await.unwrap());
+    assert!(first.is_ok() != second.is_ok(), "one goes, and the other is the last: {first:?} {second:?}");
+    assert_eq!(Computers::ids(&b.ctx), [id], "it was removed with nobody asked");
+}
+
+#[tokio::test]
+async fn a_wake_in_flight_keeps_the_sweep_off_and_a_retired_computer_doesnt_wake() {
+    let b = bed("wake-race");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.sleep(&b.ctx, &id, Sleep::Deep).await.unwrap();
+    b.mock.hold.store(true, Ordering::SeqCst);
+    b.computers.click(&b.ctx, &b.ann.0).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(!b.mock.calls().contains(&"destroy".to_owned()), "removed under a wake, which would put it back: {:?}", b.mock.calls());
+    b.mock.hold.store(false, Ordering::SeqCst);
+    for _ in 0..400 {
+        if !b.computers.now().waking.contains(&id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(b.mock.calls().contains(&"destroy".to_owned()), "and the next look removes it: {:?}", b.mock.calls());
+
+    // marked before a wake starts: it doesn't start
+    let b = bed("wake-retired");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.mark_retired(&b.ctx, &id);
+    b.mock.calls.lock().unwrap().clear();
+    assert_eq!(b.computers.wake_and_wait(&b.ctx, &id).await, Err(Problem::Gone));
+    assert!(!b.mock.calls().contains(&"wake".to_owned()), "{:?}", b.mock.calls());
+}
+
+#[tokio::test]
+async fn removing_a_new_computer_doesnt_hold_the_seats() {
+    let b = bed("seat-lock");
+    b.mock.hang_destroy.store(true, Ordering::SeqCst);
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computer_seats RENAME TO seats_away", [])).unwrap();
+    let (me, ctx, bot) = (b.computers.clone(), b.ctx.clone(), b.ann.0.clone());
+    let click = tokio::spawn(async move { me.click(&ctx, &bot).await });
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        if !Computers::ids_where(&b.ctx, "gone_at IS NOT NULL").is_empty() {
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(b.computers.seating.try_lock().is_ok(), "a hung removal holds up every Bot");
+    b.mock.hang_destroy.store(false, Ordering::SeqCst);
+    assert!(click.await.unwrap().is_err());
+    b.ctx.db.with(|c| c.execute("ALTER TABLE seats_away RENAME TO computer_seats", [])).unwrap();
 }
 
 #[tokio::test]

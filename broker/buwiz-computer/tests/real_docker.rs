@@ -219,9 +219,17 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
 
     // a lost record: found by its label, with new secrets
     let dir = a.dir.clone();
-    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir }).await.unwrap().expect("it's still there");
+    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone() }, None).await.unwrap().expect("it's still there");
     assert_eq!(found.reach, a.reach);
     assert_ne!(found.token, a.token);
     p.wake(&found).await.unwrap();
     assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both");
+
+    // record and containers both lost: the files are found by name
+    docker(&["rm", "-f", &na, &format!("{na}-wall")]);
+    assert_eq!(p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone() }, None).await.unwrap(), None, "a label needs a container");
+    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir }, Some(&a.reach)).await.unwrap().expect("its volumes are there");
+    p.wake(&found).await.unwrap();
+    assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both", "the files were left behind");
+    println!("record and containers lost: files kept");
 }

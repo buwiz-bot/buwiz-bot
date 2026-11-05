@@ -439,14 +439,16 @@ pub trait Provider: Send + Sync {
     /// just made that holds nothing yet.
     async fn destroy(&self, machine: &Machine) -> Result<()>;
 
-    /// [`Provider::destroy`] of computer `id` when its saved record is lost. The same rule.
-    async fn sweep(&self, _id: &str) -> Result<()> {
+    /// [`Provider::destroy`] of computer `id` when its saved record is lost. The same rule. `last`
+    /// is where it was, when that's still known.
+    async fn sweep(&self, _id: &str, _last: Option<&Reach>) -> Result<()> {
         Ok(())
     }
 
     /// A record for computer `spec.id` from what's left of it, with new secrets, when its saved
-    /// one is lost: its files are still there. `None` when nothing of it is found.
-    async fn recover(&self, _spec: &Spec) -> Result<Option<Machine>> {
+    /// one is lost: its files are still there. `last` is where it was, when that's still known, so
+    /// its files can be found with nothing else left. `None` when nothing of it is found.
+    async fn recover(&self, _spec: &Spec, _last: Option<&Reach>) -> Result<Option<Machine>> {
         Ok(None)
     }
 
