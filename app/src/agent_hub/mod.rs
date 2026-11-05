@@ -22,8 +22,10 @@
 //! is never pressed: a name is what says what a press does, and what's left
 //! unnamed may be a row of data. The way from a Hub id to nsh's is made
 //! from that same read, in the Bot, so all that's taken from the model is
-//! the id. Only an action that went through, and whose answer carries the
-//! screen, moves [`Looked`] on: after any other the model saw nothing new.
+//! the id. The screen is read again in the step that presses, in nsh, so
+//! what moved while nsh found the node gets no press. Only an action that
+//! went through, and whose answer carries the screen, moves [`Looked`] on:
+//! after any other the model saw nothing new.
 //!
 //! The input goes through [`AppView::act`], which tells
 //! [`crate::mini_v1::attribution`] the agent is acting, so what it starts
@@ -31,10 +33,10 @@
 //! where the call is made, not here: a button doesn't say what it runs, its
 //! tool does ([`press::check_tool`], in the bridge).
 //!
-//! An action reaches a screen only for the Bot whose chat opened it: an open
-//! keeps its Bot ([`Open::bot`]), the message says whose turn it is, and they
-//! have to match. That word only narrows, so the broker saying it costs
-//! nothing: it could already refuse.
+//! A look shows, and an action reaches, a screen only for the Bot whose chat
+//! opened it: an open keeps its Bot ([`Open::bot`]), the message says whose
+//! turn it is, and they have to match ([`mine`]). That word only narrows, so
+//! the broker saying it costs nothing: it could already refuse.
 //!
 //! A call that needs the person waits in the bridge ([`hold`]): its card goes
 //! up over the top screen ([`card`]) and comes down when the person answers,
@@ -58,7 +60,7 @@ use std::{
 
 use buwiz_agent::{AgentId, Envelope, Op, PlatformKind, Response, Target, UiTree};
 use buwiz_protocol::ui;
-use nsh_platform_macos::{AppView, UiAct, ui_tree::UiNode as Seen};
+use nsh_platform_macos::{AppView, SCREEN_CHANGED, UiAct, ui_tree::UiNode as Seen};
 use serde_json::json;
 
 use crate::mini_v1::{
@@ -345,6 +347,17 @@ fn owned(s: &Surface, acting: &Option<String>) -> Result<(), No> {
     Err(No::policy(says("{} was opened from another chat, so this Bot can't act on it and nothing was pressed. Open it from this chat.", &s.name)))
 }
 
+/// `surfaces` a turn of `bot` may know of: the rule [`owned`] holds an action to.
+fn mine(surfaces: Vec<Surface>, bot: &Option<String>) -> Vec<Surface> {
+    surfaces.into_iter().filter(|s| owned(s, bot).is_ok()).collect()
+}
+
+/// How an action's failure refuses: a screen that moved is a refusal the person
+/// reads too.
+fn failed(error: &str, label: &str) -> No {
+    if error.starts_with(SCREEN_CHANGED) { No::policy(CHANGED) } else { No::model(unready(error, label)) }
+}
+
 /// What an action's failure says: nsh's errors start with a code.
 fn unready(error: &str, label: &str) -> String {
     let said = match error.split(':').next().unwrap_or_default() {
@@ -382,7 +395,7 @@ fn wait_for_calls() {
 }
 
 /// Answers an action, once what it started has shown.
-fn finish(id: String, target: Target, label: String, done: Result<(), String>, n: u64, looks: u64) {
+fn finish(id: String, target: Target, label: String, done: Result<(), String>, n: u64, looks: u64, bot: Option<String>) {
     std::thread::spawn(move || {
         wait_for_calls();
         to_store(move |st| {
@@ -396,9 +409,9 @@ fn finish(id: String, target: Target, label: String, done: Result<(), String>, n
                 let lines = |list: &[Held]| list.iter().map(|held| refused_line(held, &label)).collect::<Vec<String>>();
                 let (declined, refused) = (lines(&declined), lines(&refused));
                 let held: Vec<_> = press::take_outcomes().into_iter().map(|(tool, outcome)| json!({"tool": tool, "outcome": outcome})).collect();
-                let now = surfaces();
+                let now = mine(surfaces(), &bot);
                 if let (Err(e), true) = (&done, refused.is_empty() && declined.is_empty()) {
-                    return refuse(id, target, No::model(unready(e, &label)));
+                    return refuse(id, target, failed(e, &label));
                 }
                 LOOKED.set(look_after(done.is_ok(), current, LOOKS.get() != looks, LOOKED.get(), looked_now(&now, &stack)));
                 let mut r = Response::ok(id, target);
@@ -408,6 +421,11 @@ fn finish(id: String, target: Target, label: String, done: Result<(), String>, n
             });
         });
     });
+}
+
+/// Whether open `n` still reads as `rev`. On the main thread.
+fn unmoved(n: u64, rev: u64) -> bool {
+    surfaces().iter().any(|s| s.n == n && filter::rev(&s.nodes) == rev)
 }
 
 /// Runs `op` on `target` for the Bot `bot`, if the screen as it is now lets it.
@@ -429,7 +447,8 @@ fn act(id: String, target: Target, op: Op, bot: Option<String>, stack: Vec<Strin
     press::take_refused();
     press::take_outcomes();
     let (label, looks) = (plan.label.clone(), LOOKS.get());
-    view.act(&plan.node, plan.act, move |done| finish(id, target, label, done, n, looks));
+    let (open, rev) = (now[plan.at].n, filter::rev(&now[plan.at].nodes));
+    view.act(&plan.node, plan.act, move || unmoved(open, rev), move |done| finish(id, target, label, done, n, looks, bot));
 }
 
 /// Answers `request`, for the agent whatever it says it is. A look or an
@@ -447,7 +466,7 @@ fn answer(request: Envelope) {
             if !matches!(op, Op::Snapshot { .. }) {
                 return act(id, target, op, bot, stack);
             }
-            let now = surfaces();
+            let now = mine(surfaces(), &bot);
             LOOKS.set(LOOKS.get() + 1);
             LOOKED.set(looked_now(&now, &stack));
             let mut r = Response::ok(id, target);
@@ -492,6 +511,7 @@ fn watch_card(once: OnceId, n: u64, rev: u64) {
                     if let Some(gone) = card_gone(&now, &stack, n, rev.load(std::sync::atomic::Ordering::Relaxed)) {
                         card::end(&once, gone);
                     }
+                    card::note_scroll(&once);
                     let _ = tx.send(card::is_up(&once));
                 });
             });
@@ -531,7 +551,9 @@ pub fn start() {
         let broker = HttpBroker::configured();
         loop {
             let _ = broker.stream(STREAM, |name, data| {
-                if name == "ui" {
+                if name == ui::AGENT_OPENED {
+                    attribution::agent_opened();
+                } else if name == "ui" {
                     match serde_json::from_str::<Envelope>(data) {
                         Ok(request) => answer(request),
                         Err(_) => log::warn!("agent hub: the broker sent something that is no request"),
@@ -700,6 +722,45 @@ mod tests {
         assert!(owned(&s, &hex).is_err(), "a Bot on a plain chat's screen");
         s.bot = None;
         assert!(owned(&s, &None).is_err() && owned(&s, &hex).is_err(), "not known is no");
+    }
+
+    fn of(key: &str, target: &str, bot: Option<Option<&str>>) -> Surface {
+        let mut s = surface(key, target, target, target, entry_form());
+        s.bot = bot.map(|b| b.map(str::to_owned));
+        s
+    }
+
+    fn seen_by(bot: Option<&str>) -> Vec<String> {
+        let s = vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("bigmom"))), of(LIST, "plain", Some(None)), of("v1:x/y", "unknown", None)];
+        mine(s, &bot.map(str::to_owned)).iter().map(|s| s.target.clone()).collect()
+    }
+
+    /// The same rule as acting: a Bot sees its own, a plain chat its own, and
+    /// a screen not known yet is nobody's.
+    #[test]
+    fn a_look_sees_only_what_its_own_chat_opened() {
+        assert_eq!(seen_by(Some("hex")), ["books"]);
+        assert_eq!(seen_by(Some("bigmom")), ["ebirforms"]);
+        assert_eq!(seen_by(None), ["plain"]);
+        assert!(seen_by(Some("nobody")).is_empty());
+    }
+
+    /// The top screen is another Bot's: nothing of it, and nothing to act on.
+    #[test]
+    fn a_look_under_another_bots_top_screen_gets_no_top() {
+        let s = mine(vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("bigmom")))], &Some("hex".to_owned()));
+        let st = stack(&[ENTRY, FORM]);
+        assert_eq!(looked(&s, &st), None);
+        let got = trees(&s, &st, Reading::Structure);
+        assert_eq!(got.iter().map(|t| t.target.as_str()).collect::<Vec<_>>(), ["books"]);
+        assert_eq!(screen_of(&got, "screen.books").states[0], "covered");
+    }
+
+    #[test]
+    fn a_screen_that_moved_before_the_press_is_refused_as_changed_and_the_person_reads_it() {
+        let no = failed(&format!("{SCREEN_CHANGED}: before the press"), "Post");
+        assert_eq!(no, No::policy(CHANGED));
+        assert!(!failed("target_gone: n9", "Post").tell);
     }
 
     fn gone(s: &[Surface], st: &[String], rev: u64) -> Option<&'static str> {

@@ -4,11 +4,14 @@
 //! can't cover it, and it has no node in nsh's tree: nothing the AI or a
 //! test channel reads or presses there reaches it. Its text is the [`Card`]
 //! and nothing else, every line of it, in a view that scrolls when there are
-//! too many to fit, and it offers only Not now and Allow.
+//! too many to fit, and it offers only Not now and Allow. A card that doesn't
+//! fit keeps Allow off until its last line has been on screen ([`note_scroll`]):
+//! a yes covers what the person could read. One that fits has it on at once.
 //!
 //! Allow is the person's own hand or nothing: its action makes a
 //! [`PersonYes`] only for a mouse release AppKit is handing it now, on that
-//! button, in the sheet, from no process ([`by_hand`]). So a synthesized
+//! button, in the sheet, from no process, on a card read to its end
+//! ([`by_hand`]). So a synthesized
 //! click, which reaches nsh's views and no other, an accessibility press,
 //! which has no mouse event, and an event a process posted, which names that
 //! process, do nothing. No key presses Allow: Esc is Not now, and Return does
@@ -52,6 +55,8 @@ const ROW_HEIGHT: f64 = 18.0;
 const ROW_UNITS: usize = 26;
 /// How old the event may be when the button's action fires.
 const FRESH: f64 = 1.0;
+/// How close to the text's end counts as there, in points: less than a line.
+const END_SLACK: f64 = 2.0;
 
 type Done = Box<dyn FnOnce(Answer) + Send>;
 
@@ -62,6 +67,10 @@ struct Up {
     parent: Retained<NSWindow>,
     _target: Retained<Buttons>,
     done: Done,
+    allow: Retained<NSButton>,
+    scroll: Retained<NSScrollView>,
+    /// The text's end has been on screen.
+    read: bool,
 }
 
 thread_local! {
@@ -104,13 +113,50 @@ struct Press {
     on_button: bool,
     /// The process that posted it: 0 for none. `None` when it can't be told.
     source: Option<i64>,
+    /// The card has been read to its end.
+    read: bool,
 }
 
 /// Whether `p` is a person's press of the button: a mouse release, just now,
-/// in the sheet, on the button, that no process posted.
+/// in the sheet, on the button, on a card read to its end, that no process
+/// posted.
 fn by_hand(p: Press, posted_counts: bool) -> bool {
     let hardware = p.source == Some(0) || (posted_counts && p.source.is_some());
-    p.release && (0.0..FRESH).contains(&p.age) && p.in_sheet && p.on_button && hardware
+    p.release && (0.0..FRESH).contains(&p.age) && p.in_sheet && p.on_button && p.read && hardware
+}
+
+/// Whether the text's end shows: `shown_to` is how far down it the view
+/// reaches, and `height` how tall it stands.
+fn end_shows(shown_to: f64, height: f64) -> bool {
+    shown_to >= height - END_SLACK
+}
+
+/// How tall `scroll`'s text stands, laid out now: the view's own frame grows
+/// only when AppKit gets to it, and a card that reads as short has Allow on.
+fn laid_out_height(scroll: &NSScrollView) -> Option<f64> {
+    let text = scroll.documentView()?.downcast::<NSTextView>().ok()?;
+    // SAFETY: both belong to `text`, which outlives them here.
+    let (manager, container) = unsafe { (text.layoutManager()?, text.textContainer()?) };
+    manager.ensureLayoutForTextContainer(&container);
+    Some(manager.usedRectForTextContainer(&container).size.height + 2.0 * text.textContainerInset().height)
+}
+
+/// Whether the end of `scroll`'s text is on screen. What can't be measured
+/// isn't.
+fn at_end(scroll: &NSScrollView) -> bool {
+    let shown = scroll.documentVisibleRect();
+    laid_out_height(scroll).is_some_and(|height| end_shows(shown.origin.y + shown.size.height, height))
+}
+
+/// Whether a card of `lines` has Allow on as it goes up, and whether it does
+/// once its view is scrolled to the end: for the test on real AppKit views,
+/// which have to be on the main thread (`tests/card_scroll.rs`).
+pub fn allow_on(mtm: MainThreadMarker, lines: &[String]) -> Option<(bool, bool)> {
+    let view = lines_view(mtm, lines, text_height(lines).min(TEXT_MAX_HEIGHT))?;
+    let first = at_end(&view);
+    let text = view.documentView()?;
+    text.scrollPoint(NSPoint::new(0.0, laid_out_height(&view)?));
+    Some((first, at_end(&view)))
 }
 
 /// The process that posted `event`: 0 for hardware.
@@ -140,7 +186,8 @@ fn pressed(sender: &NSButton) {
     let at = sender.convertPoint_fromView(event.locationInWindow(), None);
     let age = NSProcessInfo::processInfo().systemUptime() - event.timestamp();
     let (source, state) = source_of(&event);
-    let press = Press { release: event.r#type() == NSEventType::LeftMouseUp, age, in_sheet, on_button: NSPointInRect(at, sender.bounds()), source };
+    let read = UP.with_borrow(|u| u.as_ref().is_some_and(|up| up.read));
+    let press = Press { release: event.r#type() == NSEventType::LeftMouseUp, age, in_sheet, on_button: NSPointInRect(at, sender.bounds()), source, read };
     if by_hand(press, posted_counts()) {
         end_up(|_| true, Answer::Allow(PersonYes::by_hand()));
     } else {
@@ -186,14 +233,16 @@ pub fn show(once: OnceId, card: &Card, window: &NSWindow, done: Done) {
     }
     let height = text_height(&card.lines);
     let Some(view) = lines_view(mtm, &card.lines, height.min(TEXT_MAX_HEIGHT)) else { return done(Answer::NoCard) };
+    let read = at_end(&view);
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
     alert.setMessageText(&NSString::from_str(&card.title));
-    let scrolls = if height > TEXT_MAX_HEIGHT { " Scroll to read all of it." } else { "" };
+    let scrolls = if read { "" } else { " Scroll to the end to allow it." };
     let about = format!("The AI pressed this in {}. Nothing goes out unless you allow it.{scrolls}", card.app);
     alert.setInformativeText(&NSString::from_str(&about));
     alert.setAccessoryView(Some(&view));
     let target = Buttons::new(mtm);
+    let mut allow = None;
     for (title, tag, key) in [("Not now", NOT_NOW, "\u{1b}"), ("Allow", ALLOW, "")] {
         let button = alert.addButtonWithTitle(&NSString::from_str(title));
         button.setTag(tag);
@@ -203,9 +252,25 @@ pub fn show(once: OnceId, card: &Card, window: &NSWindow, done: Done) {
             button.setTarget(Some(&target));
             button.setAction(Some(sel!(pressed:)));
         }
+        if tag == ALLOW {
+            button.setEnabled(read);
+            allow = Some(button);
+        }
     }
+    let Some(allow) = allow else { return done(Answer::NoCard) };
     alert.beginSheetModalForWindow_completionHandler(window, None);
-    UP.set(Some(Up { once, alert, parent: window.retain(), _target: target, done }));
+    UP.set(Some(Up { once, alert, parent: window.retain(), _target: target, done, allow, scroll: view, read }));
+}
+
+/// Looks whether the end of the card of `once` is on screen, and turns Allow
+/// on when it is: it stays on. Main thread, as the card is watched.
+pub fn note_scroll(once: &OnceId) {
+    UP.with_borrow_mut(|u| {
+        if let Some(up) = u.as_mut().filter(|up| up.once == *once && !up.read && at_end(&up.scroll)) {
+            up.read = true;
+            up.allow.setEnabled(true);
+        }
+    });
 }
 
 /// Whether the card of `once` is up. Main thread.
@@ -240,7 +305,7 @@ mod tests {
     }
 
     fn hand() -> Press {
-        Press { release: true, age: 0.01, in_sheet: true, on_button: true, source: Some(0) }
+        Press { release: true, age: 0.01, in_sheet: true, on_button: true, source: Some(0), read: true }
     }
 
     #[test]
@@ -252,6 +317,21 @@ mod tests {
         assert!(!by_hand(Press { age: -1.0, ..hand() }, false));
         assert!(!by_hand(Press { in_sheet: false, ..hand() }, false), "a click in the window under the sheet");
         assert!(!by_hand(Press { on_button: false, ..hand() }, false), "released off the button");
+    }
+
+    #[test]
+    fn a_press_on_a_card_not_read_to_its_end_is_no_hand() {
+        assert!(!by_hand(Press { read: false, ..hand() }, false));
+        assert!(!by_hand(Press { read: false, source: Some(17897), ..hand() }, true), "not the test setting's either");
+    }
+
+    #[test]
+    fn the_end_shows_only_at_the_end() {
+        assert!(end_shows(300.0, 300.0), "a card that fits");
+        assert!(end_shows(400.0, 300.0), "a card shorter than its view");
+        assert!(!end_shows(300.0, 1440.0), "a long one, from the top");
+        assert!(!end_shows(1420.0, 1440.0), "a line short");
+        assert!(end_shows(1439.5, 1440.0), "the last line, to the rounding");
     }
 
     #[test]

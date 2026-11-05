@@ -154,6 +154,16 @@ impl UiLink {
         answer.ok_or_else(|| "The Bot didn't answer.".to_owned())
     }
 
+    /// The broker is opening a screen for the model. The Bot takes that as the agent acting, so
+    /// nothing that opens now goes out as the person's. With no Bot there is no one to tell, and
+    /// no screen of the Bot's to mark.
+    pub fn agent_opened(&self) {
+        let bot = self.bot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(bot) = bot {
+            let _ = bot.try_send(Bytes::from_static(ui_time::AGENT_OPENED_EVENT));
+        }
+    }
+
     /// Claims the one action in flight; `None` while another runs.
     fn claim(&self, plugin: Option<String>) -> Option<(Claim<'_>, mpsc::Receiver<PressAsk>)> {
         let mut acting = self.acting.lock().unwrap_or_else(|e| e.into_inner());
@@ -190,10 +200,12 @@ impl UiLink {
     }
 }
 
-fn request(id: String) -> Result<Envelope, String> {
+/// A look for the turn of `bot`: the Bot answers with what that chat opened and nothing else.
+fn request(id: String, bot_id: Option<String>) -> Result<Envelope, String> {
     let mut e = Envelope::new(id, bot()?, Op::Snapshot { since: None, format: None, fingerprints: None });
     let who = ActorId::parse("agent.broker").map_err(|e| e.to_string())?;
     e.caller = Some(Caller::Agent { who, approval: None });
+    e.bot = bot_id;
     Ok(e)
 }
 
@@ -316,9 +328,10 @@ fn render(r: &Response) -> Result<Value, String> {
 }
 
 /// `ui_look`.
-pub async fn look(ctx: &HubCtx) -> Out {
+pub async fn look(run: &Run) -> Out {
+    let ctx = &run.ctx;
     let id = format!("ui-{}", ctx.ui.next.fetch_add(1, Ordering::Relaxed));
-    let answer = match request(id) {
+    let answer = match request(id, controls::screen_bot(run)) {
         Ok(e) => ctx.ui.ask(&e, WAIT).await,
         Err(e) => Err(e),
     };
@@ -444,7 +457,7 @@ mod tests {
     }
 
     async fn asked(link: &std::sync::Arc<UiLink>) -> Result<Response, String> {
-        link.ask(&request("ui-t".into()).unwrap(), Duration::from_secs(2)).await
+        link.ask(&request("ui-t".into(), None).unwrap(), Duration::from_secs(2)).await
     }
 
     #[tokio::test]
@@ -465,7 +478,7 @@ mod tests {
 
     #[test]
     fn no_value_reaches_the_model_whatever_an_answer_carries() {
-        let e = request("ui-t".into()).unwrap();
+        let e = request("ui-t".into(), None).unwrap();
         let got = render(&page_answer(&e)).unwrap();
         assert!(!js::stringify(&got).contains("not for the model"));
         assert_eq!(got["screens"][1]["nodes"][1], json!({"id": "field.tin", "role": "textfield", "name": "TIN", "enabled": false, "focused": true}));
@@ -476,7 +489,7 @@ mod tests {
         let link = std::sync::Arc::new(UiLink::default());
         assert_eq!(asked(&link).await.unwrap_err(), "The Bot isn't connected to the broker.");
         let _stream = link.attach();
-        let e = request("ui-t".into()).unwrap();
+        let e = request("ui-t".into(), None).unwrap();
         assert_eq!(link.ask(&e, Duration::from_millis(30)).await.unwrap_err(), "The Bot didn't answer.");
         assert!(link.waiting.lock().unwrap().is_empty());
         assert!(!link.reply(Response::ok("ui-t", e.target)), "a late answer finds nothing");
@@ -490,6 +503,29 @@ mod tests {
         while let Some(chunk) = old.recv().await {
             assert_eq!(&chunk[..], b": ping\n\n");
         }
+    }
+
+    #[test]
+    fn a_look_says_whose_turn_it_is() {
+        assert_eq!(request("ui-t".into(), Some("hex".into())).unwrap().bot.as_deref(), Some("hex"));
+        assert_eq!(request("ui-t".into(), None).unwrap().bot, None, "a plain chat's");
+    }
+
+    #[tokio::test]
+    async fn opening_a_screen_for_the_model_tells_the_bot() {
+        let link = UiLink::default();
+        link.agent_opened();
+        let mut stream = link.attach();
+        link.agent_opened();
+        let heard = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let chunk = stream.recv().await.expect("a chunk");
+                if chunk[..] != b": ping\n\n"[..] {
+                    return chunk;
+                }
+            }
+        });
+        assert_eq!(&heard.await.expect("the Bot hears it")[..], ui_time::AGENT_OPENED_EVENT);
     }
 
     fn asked_of(input: Value) -> Result<Envelope, String> {
@@ -591,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_refusal_and_a_bad_answer_are_errors() {
-        let e = request("ui-t".into()).unwrap();
+        let e = request("ui-t".into(), None).unwrap();
         assert_eq!(render(&Response::err("ui-t", e.target.clone(), "no")).unwrap_err(), "no");
         let mut r = Response::ok("ui-t", e.target);
         r.result = Some(json!({"apps": [{"target": "not valid", "nodes": []}]}));

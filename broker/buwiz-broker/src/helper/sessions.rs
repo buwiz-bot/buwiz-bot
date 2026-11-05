@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use super::plugins::{parse, result_data, Host};
@@ -94,18 +95,26 @@ pub fn press_describe(t: &Value) -> Option<&str> {
     t.pointer("/_meta/buwiz~1press/describe").and_then(Value::as_str)
 }
 
-/// Whether `press` is the record of a person's yes to the AI's press. Only the Bot can send it:
-/// it is under the session's signature, and the Bot makes one only from a person's real press on
-/// its card.
-fn approved_press(press: Option<&Value>) -> bool {
-    press.is_some_and(|p| matches!(serde_json::from_value(p.clone()), Ok(buwiz_agent::PressedBy::AiApproved { .. })))
+/// `sha256:` over `args`' JCS bytes, as the Bot binds a press to them.
+fn args_hash(args: &Value) -> Option<String> {
+    let digest = Sha256::digest(signed_bytes(args).ok()?);
+    Some(format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
 
-/// Whether a signed call may reach `tool`: the person's may, and a read. A write for anyone else
-/// needs a tool open to agents, or one that opted in with the record of the person's yes,
-/// however the Bot came to send it.
-fn may_reach(actor: Option<&Value>, tool: Option<&Value>, press: Option<&Value>) -> bool {
-    origin_of(actor, tool) == "app" || tool.is_some_and(open_to_agents) || (tool.is_some_and(press_opted_in) && approved_press(press))
+/// Whether `press` is the record of a person's yes to the AI's press with these `args`. Only the
+/// Bot can send it: it is under the session's signature, and the Bot makes one only from a
+/// person's real press on its card. A yes covers the call it was shown, so other arguments under
+/// the same record are nobody's yes.
+fn approved_press(press: Option<&Value>, args: &Value) -> bool {
+    let record = press.and_then(|p| serde_json::from_value(p.clone()).ok());
+    matches!(record, Some(buwiz_agent::PressedBy::AiApproved { args_hash: hash, .. }) if args_hash(args).as_deref() == Some(hash.as_str()))
+}
+
+/// Whether a signed call with `args` may reach `tool`: the person's may, and a read. A write for
+/// anyone else needs a tool open to agents, or one that opted in with the record of the person's
+/// yes to these arguments, however the Bot came to send it.
+fn may_reach(actor: Option<&Value>, tool: Option<&Value>, press: Option<&Value>, args: &Value) -> bool {
+    origin_of(actor, tool) == "app" || tool.is_some_and(open_to_agents) || (tool.is_some_and(press_opted_in) && approved_press(press, args))
 }
 
 /// `[...s].slice(0, n).join("")`: the first `n` code points.
@@ -480,7 +489,7 @@ impl Sessions {
             return V1Error::err("not_found", format!("{plugin} has no tool {tool}"));
         }
         let def = tools.iter().find(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str()));
-        if !may_reach(get(envelope, "actor"), def, get(envelope, "press")) {
+        if !may_reach(get(envelope, "actor"), def, get(envelope, "press"), &args) {
             return V1Error::err("permission_denied", format!("{tool} is a person's to run"));
         }
         let open_id = tpl(get(envelope, "open_id"));
@@ -759,29 +768,37 @@ mod tests {
         let bare = json!({"name": "fx_bare"});
         let open = json!({"name": "fx_draft", "_meta": {"buwiz/audience": ["app", "agent"]}});
         let read = json!({"name": "fx_list", "annotations": {"readOnlyHint": true}, "_meta": {"buwiz/audience": ["app"]}});
-        assert!(may_reach(Some(&agent), Some(&open), None) && may_reach(Some(&agent), Some(&read), None));
-        assert!(!may_reach(Some(&agent), Some(&app), None) && !may_reach(Some(&agent), Some(&bare), None) && !may_reach(None, Some(&bare), None));
-        assert!(!may_reach(Some(&agent), None, None));
-        assert!(may_reach(Some(&person), Some(&app), None) && may_reach(Some(&person), Some(&bare), None));
+        let args = json!({});
+        assert!(may_reach(Some(&agent), Some(&open), None, &args) && may_reach(Some(&agent), Some(&read), None, &args));
+        assert!(!may_reach(Some(&agent), Some(&app), None, &args) && !may_reach(Some(&agent), Some(&bare), None, &args) && !may_reach(None, Some(&bare), None, &args));
+        assert!(!may_reach(Some(&agent), None, None, &args));
+        assert!(may_reach(Some(&person), Some(&app), None, &args) && may_reach(Some(&person), Some(&bare), None, &args));
     }
 
     #[test]
     fn a_person_only_tool_takes_the_record_of_a_yes_only_if_it_opted_in() {
         use super::may_reach;
         let agent = json!("agent");
-        let hash = format!("sha256:{}", "a1".repeat(32));
-        let yes = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "press-0001", "args_hash": hash, "shown_hash": hash, "at": 1});
+        let shown = format!("sha256:{}", "a1".repeat(32));
+        let args = json!({"month": "2026-10", "client_request_id": "close-1"});
+        // the Bot's test pins the same bytes (hold.rs, the_args_hash_is_the_jcs_sha256_every_side_computes)
+        let hash = "sha256:cbf98bde1bdab782a73d98e6aa94663ac6786ef8d0e054ec61dd0cbb12a11830";
+        assert_eq!(super::args_hash(&args).as_deref(), Some(hash));
+        let yes = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "press-0001", "args_hash": hash, "shown_hash": shown, "at": 1});
         let plain = json!({"by": "ai", "who": "agent.broker"});
         let forged = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "press-0001"});
         let opted = json!({"name": "fx_post", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "effect": "post"}}});
         let not = json!({"name": "fx_void", "_meta": {"buwiz/audience": ["app"]}});
         let word = json!({"name": "fx_x", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": "true", "effect": "post"}}});
-        assert!(may_reach(Some(&agent), Some(&opted), Some(&yes)));
-        assert!(!may_reach(Some(&agent), Some(&opted), None), "no record");
-        assert!(!may_reach(Some(&agent), Some(&opted), Some(&plain)), "the AI's press with no yes");
-        assert!(!may_reach(Some(&agent), Some(&opted), Some(&forged)), "a record that isn't the protocol's");
-        assert!(!may_reach(Some(&agent), Some(&not), Some(&yes)), "a tool that didn't opt in");
-        assert!(!may_reach(Some(&agent), Some(&word), Some(&yes)), "only a clear true opts in");
+        assert!(may_reach(Some(&agent), Some(&opted), Some(&yes), &args));
+        assert!(!may_reach(Some(&agent), Some(&opted), None, &args), "no record");
+        assert!(!may_reach(Some(&agent), Some(&opted), Some(&plain), &args), "the AI's press with no yes");
+        assert!(!may_reach(Some(&agent), Some(&opted), Some(&forged), &args), "a record that isn't the protocol's");
+        assert!(!may_reach(Some(&agent), Some(&not), Some(&yes), &args), "a tool that didn't opt in");
+        assert!(!may_reach(Some(&agent), Some(&word), Some(&yes), &args), "only a clear true opts in");
+        let other = json!({"month": "2026-11", "client_request_id": "close-1"});
+        assert!(!may_reach(Some(&agent), Some(&opted), Some(&yes), &other), "a yes to other arguments");
+        assert!(!may_reach(Some(&agent), Some(&opted), Some(&yes), &json!({"amount": 1.5})), "arguments with no exact bytes");
     }
 
     use super::*;

@@ -21,6 +21,11 @@ pub const ACT_LIMIT: Duration = Duration::from_secs(INPUT.as_secs() + CALLS_WAIT
 /// How long the broker waits for an action's answer.
 pub const ACT_WAIT: Duration = Duration::from_secs(ACT_LIMIT.as_secs() + 10);
 
+/// The event on the Bot's stream that says the broker is opening a screen for the model.
+pub const AGENT_OPENED: &str = "agent_opened";
+/// That event as it goes down the stream.
+pub const AGENT_OPENED_EVENT: &[u8] = b"event: agent_opened\ndata: {}\n\n";
+
 const _: () = assert!(PRESS_WAIT.as_secs() < PRESS_ROUTE.as_secs());
 const _: () = assert!(CALLS_WAIT.as_secs() > PRESS_ROUTE.as_secs() + 3 * CALL.as_secs() + HOLD.as_secs());
 const _: () = assert!(ACT_LIMIT.as_secs() > INPUT.as_secs() + CALLS_WAIT.as_secs());
