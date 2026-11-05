@@ -46,8 +46,10 @@ const NOT_NOW: isize = 0;
 const TEXT_WIDTH: f64 = 360.0;
 const TEXT_MAX_HEIGHT: f64 = 300.0;
 const ROW_HEIGHT: f64 = 18.0;
-/// Characters to a row at [`TEXT_WIDTH`], low on purpose: too tall is safe.
-const ROW_CHARS: usize = 44;
+/// Narrow characters to a row at [`TEXT_WIDTH`], for the widest Latin capitals.
+/// Low on purpose: a card a little too tall is safe, and one that looks shorter
+/// than it is would leave out the hint to scroll.
+const ROW_UNITS: usize = 26;
 /// How old the event may be when the button's action fires.
 const FRESH: f64 = 1.0;
 
@@ -155,23 +157,25 @@ fn end_up(pick: impl Fn(&OnceId) -> bool, answer: Answer) {
 
 /// About how tall `lines` stand at [`TEXT_WIDTH`].
 fn text_height(lines: &[String]) -> f64 {
-    let rows: usize = lines.iter().map(|l| l.chars().count().div_ceil(ROW_CHARS).max(1)).sum();
+    let units = |l: &String| l.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>();
+    let rows: usize = lines.iter().map(|l| units(l).div_ceil(ROW_UNITS).max(1)).sum();
     rows as f64 * ROW_HEIGHT + 8.0
 }
 
 /// The card's lines, all of them, in a view that scrolls past `height`.
-fn lines_view(mtm: MainThreadMarker, lines: &[String], height: f64) -> Retained<NSScrollView> {
+/// `None` when it can't hold them: then there is no card.
+fn lines_view(mtm: MainThreadMarker, lines: &[String], height: f64) -> Option<Retained<NSScrollView>> {
     let scroll = NSTextView::scrollableTextView(mtm);
     scroll.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(TEXT_WIDTH, height)));
     scroll.setDrawsBackground(false);
-    if let Some(text) = scroll.documentView().and_then(|v| v.downcast::<NSTextView>().ok()) {
-        text.setDrawsBackground(false);
-        text.setEditable(false);
-        text.setSelectable(false);
-        text.setFont(Some(&NSFont::systemFontOfSize(13.0)));
-        text.setString(&NSString::from_str(&lines.join("\n")));
-    }
-    scroll
+    let text = scroll.documentView()?.downcast::<NSTextView>().ok()?;
+    text.setDrawsBackground(false);
+    text.setEditable(false);
+    text.setSelectable(false);
+    text.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+    let all = lines.join("\n");
+    text.setString(&NSString::from_str(&all));
+    (text.string().to_string() == all).then_some(scroll)
 }
 
 /// Shows `card` on `window`; `done` hears the answer, once. Main thread.
@@ -180,14 +184,15 @@ pub fn show(once: OnceId, card: &Card, window: &NSWindow, done: Done) {
     if UP.with_borrow(Option::is_some) {
         return done(Answer::Changed);
     }
+    let height = text_height(&card.lines);
+    let Some(view) = lines_view(mtm, &card.lines, height.min(TEXT_MAX_HEIGHT)) else { return done(Answer::NoCard) };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
     alert.setMessageText(&NSString::from_str(&card.title));
-    let height = text_height(&card.lines);
     let scrolls = if height > TEXT_MAX_HEIGHT { " Scroll to read all of it." } else { "" };
     let about = format!("The AI pressed this in {}. Nothing goes out unless you allow it.{scrolls}", card.app);
     alert.setInformativeText(&NSString::from_str(&about));
-    alert.setAccessoryView(Some(&lines_view(mtm, &card.lines, height.min(TEXT_MAX_HEIGHT))));
+    alert.setAccessoryView(Some(&view));
     let target = Buttons::new(mtm);
     for (title, tag, key) in [("Not now", NOT_NOW, "\u{1b}"), ("Allow", ALLOW, "")] {
         let button = alert.addButtonWithTitle(&NSString::from_str(title));
@@ -221,8 +226,17 @@ mod tests {
     fn a_tall_card_stands_taller_than_a_short_one_and_a_long_line_counts_its_rows() {
         let line = |n: usize| "x".repeat(n);
         assert!(text_height(&[line(10)]) < TEXT_MAX_HEIGHT);
-        assert_eq!(text_height(&[line(ROW_CHARS * 3)]), text_height(&[line(1), line(1), line(1)]));
+        assert_eq!(text_height(&[line(ROW_UNITS * 3)]), text_height(&[line(1), line(1), line(1)]));
         assert!(text_height(&vec![line(10); 50]) > TEXT_MAX_HEIGHT);
+    }
+
+    /// Wide glyphs take more of a row: their rows count double, so a card of
+    /// them reads as tall and gets its hint.
+    #[test]
+    fn wide_glyphs_stand_taller_than_their_count() {
+        let wide = |n: usize| "東".repeat(n);
+        assert_eq!(text_height(&[wide(ROW_UNITS)]), text_height(&["x".repeat(ROW_UNITS * 2)]));
+        assert!(text_height(&vec![wide(ROW_UNITS * 2); 5]) > TEXT_MAX_HEIGHT, "what doesn't fit says so");
     }
 
     fn hand() -> Press {

@@ -16,16 +16,18 @@
 //!   the card holds and the yes has to cover what the call does.
 //! - [`release`] is the only way to a press record, and it takes a
 //!   [`PersonYes`], which only a real press on the card makes (`card.rs`).
-//!   It retires the id first, so an Allow works once whatever follows. The
-//!   `Caller` and `Approval` are built here, and [`authorize_press`] decides
-//!   on the hashes of what is about to go out against what the person saw.
+//!   It retires the id first, so an Allow works once whatever follows. It
+//!   compares what is about to go out with what the person saw itself, for
+//!   every held call: [`authorize_press`] looks at an approval only for what
+//!   needs a person, and a held draft doesn't. The `Caller` and `Approval` are
+//!   built here, and whatever went through a card carries the person's yes.
 //!
 //! Nothing here is signed apart: an approval never leaves the process
 //! except inside the call's own envelope, under the session key.
 
 use std::sync::Mutex;
 
-use buwiz_agent::{ActorId, Approval, Caller, ContentHash, Effect, OnceId, PressAction, Refused, SafeU64, authorize_press};
+use buwiz_agent::{ActorId, Approval, Caller, ContentHash, Effect, OnceId, PressAction, PressedBy, Refused, SafeU64, authorize_press};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -86,6 +88,16 @@ pub fn args_hash(args: &Value) -> Option<ContentHash> {
     hash_of(&jcs::signed_bytes(args).ok()?)
 }
 
+/// Whether `c` changes how a line reads without showing: control characters,
+/// bidi overrides and isolates, zero-width and other format characters, and
+/// the line separators, which would start a line nobody counted.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c as u32,
+            0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F
+            | 0xFE00..=0xFE0F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE0FFF)
+}
+
 impl Card {
     /// Its hash: what the person saw, word for word.
     pub fn hash(&self) -> Option<ContentHash> {
@@ -93,10 +105,11 @@ impl Card {
     }
 
     /// A card of `title` and `lines`, if it can be shown whole: no ticket,
-    /// nothing empty, nothing past the sheet.
+    /// nothing empty, nothing past the sheet, and nothing that reads other
+    /// than it is ([`hidden`]).
     fn whole(app: &str, title: String, lines: Vec<String>) -> Option<Card> {
         let fits = title.chars().count() <= MAX_TITLE && !lines.is_empty() && lines.len() <= MAX_LINES && lines.iter().all(|l| !l.is_empty() && l.chars().count() <= MAX_LINE);
-        let shown = !title.is_empty() && fits && !lines.iter().chain([&title]).any(|l| l.contains("tkt_"));
+        let shown = !title.is_empty() && fits && !lines.iter().chain([&title]).any(|l| l.contains("tkt_") || l.chars().any(hidden));
         shown.then(|| Card { app: app.to_owned(), title, lines })
     }
 
@@ -187,22 +200,31 @@ pub fn retire(once: &OnceId) {
 pub fn release(yes: PersonYes, once: &OnceId, mut action: PressAction, args: &Value, shown: Option<ContentHash>, now_ms: i64) -> Result<Value, Refused> {
     let PersonYes(()) = yes;
     let open = lock().take_if(|o| o.once == *once).ok_or(Refused::NoOpenPress)?;
+    let seen = open.shown.ok_or(Refused::NoOpenPress)?;
+    if args_hash(args).as_ref() != Some(&open.args_hash) {
+        return Err(Refused::ApprovalWrongArgs);
+    }
+    if shown.as_ref() != Some(&seen) {
+        return Err(Refused::ApprovalWrongShown);
+    }
     action.once = Some(open.once.clone());
-    action.args_hash = args_hash(args);
-    action.shown_hash = shown;
+    action.args_hash = Some(open.args_hash.clone());
+    action.shown_hash = Some(seen.clone());
+    let approved_by = ActorId::parse(PERSON).map_err(|_| Refused::ApprovalNotPerson)?;
+    let at = u64::try_from(now_ms).ok().and_then(|ms| SafeU64::try_from(ms).ok()).ok_or(Refused::NoOpenPress)?;
     let approval = Approval {
         target: action.target.clone(),
         action: action.id.clone(),
-        once: open.once,
-        approved_by: ActorId::parse(PERSON).map_err(|_| Refused::ApprovalNotPerson)?,
-        args_hash: open.args_hash,
-        shown_hash: open.shown.ok_or(Refused::NoOpenPress)?,
-        at: u64::try_from(now_ms).ok().and_then(|ms| SafeU64::try_from(ms).ok()).ok_or(Refused::NoOpenPress)?,
+        once: open.once.clone(),
+        approved_by: approved_by.clone(),
+        args_hash: open.args_hash.clone(),
+        shown_hash: seen.clone(),
+        at,
     };
     let Some(Caller::Agent { who, .. }) = press::caller() else { return Err(Refused::UnknownCaller) };
-    let caller = Caller::Agent { who, approval: Some(approval) };
-    let allowed = authorize_press(Some(&action), Some(&caller))?;
-    Ok(json!(allowed.pressed))
+    let caller = Caller::Agent { who: who.clone(), approval: Some(approval) };
+    authorize_press(Some(&action), Some(&caller))?;
+    Ok(json!(PressedBy::AiApproved { who, approved_by, once: open.once, args_hash: open.args_hash, shown_hash: seen, at }))
 }
 
 /// Whether the effect may be shown from its bare arguments.
@@ -385,10 +407,49 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_draft_allowed_on_the_card_goes_out_as_the_ais_press() {
+    fn a_draft_allowed_on_the_card_carries_the_persons_yes() {
         let _one = serial();
         let once = opened(&entry());
         let got = release(yes(), &once, post(Effect::Draft), &entry(), card().hash(), 1).unwrap();
-        assert_eq!(got, json!({"by": "ai", "who": "agent.broker"}));
+        assert_eq!(got["by"], "ai_approved");
+        assert_eq!(got["approved_by"], "person.owner");
+        assert_eq!(got["once"], json!(once.as_str()));
+        assert_eq!(got["args_hash"], json!(args_hash(&entry()).unwrap().as_str()));
+        assert_eq!(got["shown_hash"], json!(card().hash().unwrap().as_str()));
+        assert!(serde_json::from_value::<PressedBy>(got).is_ok(), "the broker takes it");
+    }
+
+    /// `authorize_press` doesn't look at an approval on a draft, so this is
+    /// `release`'s own to refuse.
+    #[test]
+    fn a_held_draft_with_a_changed_card_or_other_arguments_is_refused() {
+        let _one = serial();
+        let once = opened(&entry());
+        let changed = Card { lines: vec!["Rent, ₱9,350.00".into()], ..card() };
+        assert_eq!(release(yes(), &once, post(Effect::Draft), &entry(), changed.hash(), 1), Err(Refused::ApprovalWrongShown));
+        assert_eq!(release(yes(), &once, post(Effect::Draft), &entry(), card().hash(), 1), Err(Refused::NoOpenPress), "spent");
+        let once = opened(&entry());
+        let other = json!({"entry": "ticket-2", "client_request_id": "post-1"});
+        assert_eq!(release(yes(), &once, post(Effect::Draft), &other, card().hash(), 1), Err(Refused::ApprovalWrongArgs));
+        let once = opened(&entry());
+        assert_eq!(release(yes(), &once, post(Effect::Draft), &entry(), None, 1), Err(Refused::ApprovalWrongShown), "no card now");
+    }
+
+    #[test]
+    fn a_filing_is_refused_with_a_card_and_a_yes() {
+        let _one = serial();
+        let once = opened(&entry());
+        assert_eq!(release(yes(), &once, post(Effect::File), &entry(), card().hash(), 1), Err(Refused::FilingNotForAgents));
+    }
+
+    #[test]
+    fn a_line_that_reads_other_than_it_is_is_no_card() {
+        let good = |t: &str| Card::from_plugin("Books", &json!({"title": "t", "lines": [t]})).is_some();
+        assert!(good("Rent, ₱1,350.00 — café, 東京"));
+        for bad in ["\u{202E}00.053,1₱", "a\u{2066}b", "a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b", "a\u{AD}b", "a\u{2028}b", "a\nb", "a\tb", "a\u{1}b", "a\u{E0041}b", "a\u{FE0F}b"] {
+            assert!(!good(bad), "{bad:?}");
+        }
+        assert_eq!(Card::from_plugin("Books", &json!({"title": "a\u{202E}b", "lines": ["x"]})), None, "the title too");
+        assert_eq!(Card::from_args("eBIRForms", &json!({"note": "a\u{202E}b"})), None);
     }
 }

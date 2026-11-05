@@ -199,7 +199,8 @@ an argument it can't show. Only the person's own press of Allow lets the call go
 reaches you as `origin: "agent"` with `press` =
 `{by: "ai_approved", who, approved_by, once, args_hash, shown_hash, at}`. Check
 `args_hash` (`sha256:` over the arguments' JCS bytes) against the arguments you
-got. A write open to agents can name `describe` alone, for the same card at Ask.
+got. A write open to agents can name `describe` alone, for the same card at Ask, and
+a call allowed there carries the same record.
 
 In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry

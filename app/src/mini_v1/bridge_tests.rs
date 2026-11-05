@@ -652,11 +652,12 @@ fn a_draft_whose_plugin_refuses_its_card_doesnt_fall_back_on_its_arguments() {
 }
 
 #[test]
-fn a_draft_at_ask_shows_its_values_on_the_same_card_and_goes_out_as_the_ais() {
+fn a_draft_at_ask_shows_its_values_on_the_same_card_and_carries_the_persons_yes() {
     let (mut o, _one) = held_open("fx_ask", Some(by_hand), Limits::default());
     o.wait("sent");
     assert_eq!(o.ui.cards.lock().unwrap()[0].lines, ["Entry: ticket-1"]);
-    assert_eq!(sent_of(&o, "fx_ask")[0]["press"], json!({"by": "ai", "who": "agent.broker"}));
+    let sent = sent_of(&o, "fx_ask");
+    assert_eq!((sent[0]["press"]["by"].as_str(), sent[0]["press"]["approved_by"].as_str()), (Some("ai_approved"), Some("person.owner")));
 }
 
 /// Whatever the person presses in that time takes nothing back.
