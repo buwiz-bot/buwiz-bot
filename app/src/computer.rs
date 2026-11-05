@@ -98,8 +98,104 @@ struct Pane {
 
 thread_local! {
     static PANE: Signal<Pane> = Owner::detached().run(|| keep("computer.pane", Pane::default));
-    /// The open Record's id, by Bot.
-    static RECORDING: Signal<Option<(String, u64)>> = Owner::detached().run(|| keep("computer.recording", || None));
+    /// The open recordings: each Bot's own, so one Bot's doesn't strand another's.
+    static RECORDING: Signal<Recordings> = Owner::detached().run(|| keep("computer.recording", Recordings::default));
+    /// A Bot delete waiting for a person's answer.
+    static DELETE_ASK: Signal<Option<DeleteAsk>> = Owner::detached().run(|| keep("computer.delete-ask", || None));
+}
+
+/// The recording under way on each Bot's screen: its id, by Bot.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Recordings(std::collections::HashMap<String, u64>);
+
+impl Recordings {
+    fn of(&self, bot: &str) -> Option<u64> {
+        self.0.get(bot).copied()
+    }
+
+    fn started(&mut self, bot: &str, id: u64) {
+        self.0.insert(bot.to_owned(), id);
+    }
+
+    fn stopped(&mut self, bot: &str) {
+        self.0.remove(bot);
+    }
+}
+
+/// A Bot delete that takes more than the Bot, as a person is to read it first.
+#[derive(Clone, Debug, PartialEq)]
+struct DeleteAsk {
+    bot: String,
+    name: String,
+    words: String,
+}
+
+/// What goes with Bot `name`, from its computer's status (`None`: the broker didn't say). `None`
+/// back when nothing does, and the delete needs no asking.
+pub(crate) fn delete_warning(status: Option<&Value>, name: &str) -> Option<String> {
+    let Some(status) = status else {
+        return Some(format!("If {name} has a computer, it goes too, with everything on it. This can't be undone."));
+    };
+    status.get("computer")?;
+    let bots = Status::parse(status).bots;
+    let others: Vec<&str> = bots.iter().map(|(_, n)| n.as_str()).filter(|n| *n != name).collect();
+    Some(if others.is_empty() {
+        format!("Its computer goes too, with everything on it: its files, downloads and recordings. This can't be undone.")
+    } else {
+        format!("It leaves the computer it shares with {}, which keeps running with what {name} left on it.", others.join(", "))
+    })
+}
+
+/// "Delete" on a Bot: at once, unless a computer goes with it.
+pub(crate) fn ask_delete(bot: String) {
+    let name = store().bots.with_untracked(|l| l.iter().find(|b| b.id == bot).map(|b| b.name.clone())).unwrap_or_else(|| "This Bot".to_owned());
+    spawn_detached(async move {
+        let status = client::get_any(&route(&bot, "")).await;
+        match delete_warning(status.as_ref(), &name) {
+            Some(words) => DELETE_ASK.with(|s| s.set(Some(DeleteAsk { bot, name, words }))),
+            None => store().delete_bot(bot),
+        }
+    });
+}
+
+/// The question over the whole window, with its two answers.
+pub(crate) fn delete_layer() -> impl IntoElement {
+    when(
+        || DELETE_ASK.with(|s| s.with(Option::is_some)),
+        || {
+            let ask = DELETE_ASK.with(|s| s.get_untracked()).unwrap_or(DeleteAsk { bot: String::new(), name: String::new(), words: String::new() });
+            let bot = ask.bot.clone();
+            view()
+                .absolute()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .bg(tc("#00000080"))
+                .child(
+                    view()
+                        .test_id("computer-delete-ask")
+                        .w(px(360.0))
+                        .p(px(18.0))
+                        .gap_2()
+                        .rounded(px(14.0))
+                        .bg(tc("#232323"))
+                        .child(text(format!("Delete {}?", ask.name)).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(tc("#f5f5f5")))
+                        .child(text(ask.words).number_of_lines(6).text_size(px(13.0)).text_color(tc("#f5f5f5c8")))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap_2()
+                                .pt(px(8.0))
+                                .child(small_button("computer-delete-cancel", "Cancel", || DELETE_ASK.with(|s| s.set(None))))
+                                .child(small_button("computer-delete-yes", "Delete", move || {
+                                    DELETE_ASK.with(|s| s.set(None));
+                                    store().delete_bot(bot.clone());
+                                })),
+                        ),
+                )
+                .into_element()
+        },
+    )
 }
 
 fn pane_signal() -> Signal<Pane> {
@@ -399,11 +495,8 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                     .child(text(move || state.with(|s| s.message.clone())).number_of_lines(6).text_size(px(13.0)).text_color(tc("#f5f5f5c8")).pt(px(8.0)))
                     .on_press(move || {
                         if !matches!(state.with_untracked(|s| s.state.clone()).as_str(), "waking" | "awake") {
-                            let bot = press.clone();
                             state.update(|s| s.state = "waking".to_owned());
-                            spawn_detached(async move {
-                                let _ = client::post_any(&route(&bot, "/wake"), json!({})).await;
-                            });
+                            wake(press.clone());
                         }
                     })
                     .into_element()
@@ -421,7 +514,7 @@ pub(crate) fn record_button(key: &str) -> impl IntoElement {
     let bot = bot_of_key(key).unwrap_or_default();
     let recording = RECORDING.with(|s| *s);
     let b = bot.clone();
-    let on = move || recording.with(|r| r.as_ref().is_some_and(|(who, _)| *who == b));
+    let on = move || recording.with(|r| r.of(&b).is_some());
     let shown = on.clone();
     view()
         .test_id("computer-record")
@@ -435,7 +528,7 @@ pub(crate) fn record_button(key: &str) -> impl IntoElement {
         .child(text(move || if shown() { "Stop".to_owned() } else { "Record".to_owned() }).text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
         .on_press(move || {
             let bot = bot.clone();
-            let was = recording.get_untracked().filter(|(who, _)| *who == bot).map(|(_, id)| id);
+            let was = recording.with_untracked(|r| r.of(&bot));
             spawn_detached(async move {
                 let path = route(&bot, "/record");
                 match was {
@@ -443,12 +536,14 @@ pub(crate) fn record_button(key: &str) -> impl IntoElement {
                         // a stop that failed leaves it recording: the button stays, to try again
                         let reply = client::post_any(&path, json!({"action": "stop", "id": id})).await;
                         if stopped(reply.as_ref()) {
-                            recording.set(None);
+                            recording.update(|r| r.stopped(&bot));
                         }
                     }
                     None => {
                         let id = client::post_any(&path, json!({"action": "start"})).await.and_then(|v| v.get("id").and_then(Value::as_u64));
-                        recording.set(id.map(|id| (bot, id)));
+                        if let Some(id) = id {
+                            recording.update(|r| r.started(&bot, id));
+                        }
                     }
                 }
             });
@@ -496,6 +591,27 @@ mod tests {
         assert!(stopped(Some(&json!({"ok": true, "path": "x.mp4"}))));
         assert!(!stopped(Some(&json!({"ok": false, "message": "no"}))));
         assert!(!stopped(None));
+    }
+
+    #[test]
+    fn each_bot_keeps_its_own_recording() {
+        let mut r = Recordings::default();
+        r.started("ann", 1);
+        r.started("bea", 2);
+        assert_eq!((r.of("ann"), r.of("bea")), (Some(1), Some(2)), "Bea's start stranded Ann's");
+        r.stopped("bea");
+        assert_eq!((r.of("ann"), r.of("bea")), (Some(1), None));
+    }
+
+    #[test]
+    fn deleting_a_bot_says_what_goes_with_it() {
+        let alone = json!({"computer": "c", "bots": [{"id": "1", "name": "Ann"}]});
+        let words = delete_warning(Some(&alone), "Ann").unwrap();
+        assert!(words.contains("computer goes too") && words.contains("files") && words.contains("recordings") && words.contains("can't be undone"), "{words}");
+        let shared = json!({"computer": "c", "bots": [{"id": "1", "name": "Ann"}, {"id": "2", "name": "Bea"}]});
+        assert!(delete_warning(Some(&shared), "Ann").unwrap().contains("shares with Bea"));
+        assert_eq!(delete_warning(Some(&json!({"state": "absent"})), "Ann"), None, "no computer, nothing to warn of");
+        assert!(delete_warning(None, "Ann").unwrap().contains("If Ann has a computer"), "not knowing is a warning");
     }
 
     #[test]

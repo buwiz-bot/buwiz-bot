@@ -7201,7 +7201,8 @@ impl Store {
 
     /// `deleteBot` — `POST /bot/delete`, then refresh threads + turns.
     pub fn delete_bot(&'static self, id: String) {
-        spawn(async move {
+        // detached: the question it answers closes as this starts, and its task with it
+        spawn_detached(async move {
             let _ = client::post("/bot/delete", serde_json::json!({"id": id})).await;
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);

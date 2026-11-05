@@ -27,6 +27,10 @@ pub struct MockProvider {
     pub poison_save: AtomicBool,
     /// `create` takes this long, for tests of two at once
     pub create_ms: std::sync::atomic::AtomicU64,
+    /// `look` fails with this
+    pub look_problem: Mutex<Option<Problem>>,
+    /// `screen_up` fails with this
+    pub screen_problem: Mutex<Option<Problem>>,
     /// `guard` fails with this
     pub unsafe_now: Mutex<Option<Problem>>,
     /// what `resolve` answers for a path, instead of the path itself
@@ -37,7 +41,7 @@ pub struct MockProvider {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
     }
 }
 
@@ -107,6 +111,13 @@ impl Provider for MockProvider {
         })
     }
 
+    async fn look(&self, machine: &Machine) -> Result<(Power, Machine)> {
+        if let Some(p) = self.look_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
+        Ok((self.power(machine).await?, machine.clone()))
+    }
+
     async fn power(&self, _: &Machine) -> Result<Power> {
         Ok(self.power.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
@@ -137,6 +148,9 @@ impl Provider for MockProvider {
 
     async fn screen_up(&self, _: &Machine, bot: &str) -> Result<Screen> {
         self.awake()?;
+        if let Some(p) = self.screen_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
         self.note(format!("screen_up {bot}"));
         let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
         let at = screens.iter().position(|b| b == bot).unwrap_or_else(|| {

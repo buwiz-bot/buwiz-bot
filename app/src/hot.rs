@@ -410,6 +410,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(crate::mini::full_layer())
         // Tools: the full view over the apps, the `/tools` sheet over it
         .child(crate::tools::full_layer())
+        .child(crate::computer::delete_layer())
         .child(crate::mini_v1::ui::preview_layer())
         .child(files::layer())
         .child(crate::tools::sheet_layer())
@@ -814,6 +815,11 @@ fn agent_menu(line: &str) {
         if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
             crate::mini_v1::native::on_main(move || mouse_click(x, y));
         }
+        return;
+    }
+    // `botdel <id>`: what a Bot's Delete in its menu does
+    if let Some(id) = line.strip_prefix("botdel ") {
+        crate::computer::ask_delete(id.trim().to_owned());
         return;
     }
     // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)

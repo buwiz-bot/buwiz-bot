@@ -1,25 +1,28 @@
-//! The local Docker provider: one container per computer, driven through the `docker` CLI.
+//! The local Docker provider: two containers per computer, driven through the `docker` CLI.
 //!
-//! - **Ports** are published on loopback only, from a range the Bot's shell is kept off
-//!   ([`crate::PORT_FIRST`]). A `docker start` can pick new ones, so they are read back each wake.
+//! - **The wall comes first.** On Docker Desktop a container reaches the Mac's loopback through
+//!   the host gateway, broker included. A box's home persists, so a model can leave something in
+//!   its autostart to run at the next start. So the box never owns its network: a small holder
+//!   container does (`<name>-wall`, a `sleep`), and the box joins it. The holder starts, the wall
+//!   goes up in its network as root from outside ([`WALL`]), and only then does the box start.
+//!   No process of the box ever runs without the wall, and the box keeps no capability to take
+//!   it down. If it can't go up, the box doesn't start.
+//! - **Ports** are published by the holder, on loopback only, from a range the Bot's shell is
+//!   kept off ([`crate::PORT_FIRST`]). They are read for each request.
 //! - **Secrets** never go on an argument list, where any process's `ps` reads them: the container
 //!   gets file paths, in a folder it mounts read-only. They are put there before every start
 //!   (the box exits without them, so a plain `docker restart` fails safe) and taken away once it
-//!   answers. The image would unlink them as it reads them and says it couldn't: a mount the box
-//!   can write is a place to plant things in a Mac folder, so this side does the removing.
-//! - **Walled off from this Mac.** On Docker Desktop a container reaches the Mac's loopback
-//!   through the host gateway, broker included. So every start, and the first use of a computer
-//!   this broker didn't start, puts routes and rules in the container's network, as root, from
-//!   outside it: see [`WALL`]. The box keeps no capability to take them out. If that fails the
-//!   computer is stopped. A few hundred milliseconds of a start pass before the wall is up,
-//!   which is before anyone can use it but not before what's in the box's own autostart runs.
+//!   answers, or the start is abandoned ([`Staged`]). The image would unlink them as it reads them
+//!   and says it couldn't: a mount the box can write is a place to plant things in a Mac folder,
+//!   so this side does the removing.
 //! - **Sleep** is `docker pause`: it comes back at once with everything open. Deep sleep is
-//!   `docker stop`: the memory is free, and the files stay on the volumes.
+//!   `docker stop`: the memory is free, and the files stay on the volumes. The holder stays up
+//!   through both, a `sleep` and little else.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -52,6 +55,8 @@ const DOCKER_PATIENCE: Duration = Duration::from_secs(60);
 /// How long a start gets to answer.
 const WAKE_PATIENCE: Duration = Duration::from_secs(120);
 const STOP_SECONDS: &str = "5";
+const IFCONFIG: &str = "/sbin/ifconfig";
+const PORT_TRIES: usize = 4;
 
 /// Where Docker Desktop puts its CLI: an app started from Finder has a bare `PATH`.
 const DOCKER_DIRS: [&str; 4] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin", "~/.docker/bin"];
@@ -122,13 +127,15 @@ pub struct DockerProvider {
     prefix: String,
     /// the program, when it isn't found the usual way (tests)
     program: Option<PathBuf>,
-    /// by container: the start of it the wall went up on
+    /// where to read this Mac's addresses (tests)
+    ifconfig: PathBuf,
+    /// by computer: the start of its network the wall went up on
     walled: Mutex<HashMap<String, String>>,
 }
 
 impl DockerProvider {
     pub fn new(image: impl Into<String>, prefix: impl Into<String>) -> Self {
-        Self { image: image.into(), prefix: prefix.into(), program: None, walled: Mutex::new(HashMap::new()) }
+        Self { image: image.into(), prefix: prefix.into(), program: None, ifconfig: PathBuf::from(IFCONFIG), walled: Mutex::new(HashMap::new()) }
     }
 
     /// From `BUWIZ_COMPUTER_IMAGE` and `BUWIZ_COMPUTER_PREFIX`.
@@ -140,6 +147,12 @@ impl DockerProvider {
     /// Runs `program` as `docker`.
     pub fn with_program(mut self, program: PathBuf) -> Self {
         self.program = Some(program);
+        self
+    }
+
+    /// Reads this Mac's addresses with `program`.
+    pub fn with_ifconfig(mut self, program: PathBuf) -> Self {
+        self.ifconfig = program;
         self
     }
 
@@ -168,7 +181,7 @@ impl DockerProvider {
     }
 
     async fn inspect(&self, name: &str) -> Result<Inspected> {
-        Inspected::parse(&self.docker(&["inspect", "--type", "container", name], None).await?)
+        Inspected::parse(&self.docker(&["inspect", "--type", "container", name, &holder(name)], None).await?)
     }
 
     /// What this request's [`Provider::look`] saw, else a read now.
@@ -190,18 +203,17 @@ impl DockerProvider {
         connect(&found, machine)
     }
 
-    /// `docker start`, walled off and answering. The secrets are there only for the start.
+    /// `docker start`, answering. The secrets are there only for the start, and go however it
+    /// ends, a dropped future included.
     async fn start(&self, machine: &Machine, name: &str) -> Result<()> {
-        let dir = secret_dir(&machine.dir);
-        stage_secrets(&dir, machine)?;
+        let staged = Staged::new(secret_dir(&machine.dir), machine)?;
         let up = self.start_staged(machine, name).await;
-        clear_secrets(&dir);
+        drop(staged);
         up
     }
 
     async fn start_staged(&self, machine: &Machine, name: &str) -> Result<()> {
         self.docker(&["start", name], None).await?;
-        self.wall_or_stop(name).await?;
         let plain = connect(&self.inspect(name).await?, machine)?;
         let deadline = Instant::now() + WAKE_PATIENCE;
         while !plain.ready().await {
@@ -217,27 +229,59 @@ impl DockerProvider {
         Ok(())
     }
 
-    /// The wall, or the computer stops. Whatever Docker said, a box that isn't walled off doesn't
-    /// stay up.
-    async fn wall_or_stop(&self, name: &str) -> Result<()> {
-        match self.wall(name).await {
+    /// Its network up and walled, before anything of the box runs in it. Whatever is running
+    /// there stops if that fails.
+    async fn net_up(&self, name: &str, found: &Inspected) -> Result<()> {
+        let walled = self.walled.lock().unwrap_or_else(|e| e.into_inner()).get(name) == Some(&found.started);
+        if found.net_running && walled {
+            return Ok(());
+        }
+        let up = async {
+            if !found.net_running {
+                self.start_holder(name).await?;
+            }
+            self.wall(name).await
+        };
+        match up.await {
             Ok(started) => {
                 self.walled.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_owned(), started);
                 Ok(())
             }
             Err(e) => {
                 self.walled.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
-                let _ = self.docker(&["unpause", name], None).await;
-                let _ = self.docker(&["stop", "-t", "0", name], None).await;
+                self.halt(name, found).await;
                 Err(e)
             }
         }
     }
 
-    /// The start of `name` the wall is now up on.
+    /// Docker picks each port from the range as it starts, and can lose a race for one just freed.
+    async fn start_holder(&self, name: &str) -> Result<()> {
+        let net = holder(name);
+        for _ in 1..PORT_TRIES {
+            match self.docker(&["start", &net], None).await {
+                Err(Problem::Failed(why)) if why.contains("ports are not available") => tokio::time::sleep(Duration::from_millis(300)).await,
+                done => return done.map(|_| ()),
+            }
+        }
+        self.docker(&["start", &net], None).await.map(|_| ())
+    }
+
+    /// The box down, whatever state it's in.
+    async fn halt(&self, name: &str, found: &Inspected) {
+        if found.status == "paused" {
+            let _ = self.docker(&["unpause", name], None).await;
+        }
+        if matches!(found.status.as_str(), "paused" | "running") {
+            let _ = self.docker(&["stop", "-t", "0", name], None).await;
+        }
+    }
+
+    /// Puts the wall up in `name`'s network: the start of that network it's up on.
     async fn wall(&self, name: &str) -> Result<String> {
-        let macs = mac_addresses().await;
-        let mut args = vec!["exec", "--user", "0", "--privileged", name, "python3", "-c", WALL];
+        let macs = mac_addresses(&self.ifconfig).await?;
+        let net = holder(name);
+        let mut args = vec!["exec", "--user", "0", "--privileged", &net, "python3", "-c", WALL];
         args.extend(macs.iter().map(String::as_str));
         match self.docker(&args, None).await {
             Ok(_) => Ok(self.inspect(name).await?.started),
@@ -247,11 +291,21 @@ impl DockerProvider {
     }
 }
 
+/// The container that owns `name`'s network.
+fn holder(name: &str) -> String {
+    format!("{name}-wall")
+}
+
 /// This Mac's own IPv4 addresses, loopback aside, as `ifconfig` lists them: a box must not reach
-/// what listens on them, whatever kind of address they are.
-async fn mac_addresses() -> Vec<String> {
-    let out = Command::new("/sbin/ifconfig").stdin(Stdio::null()).stderr(Stdio::null()).output().await;
-    out.map(|o| parse_inets(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+/// what listens on them, whatever kind of address they are. Not being able to tell is a failure:
+/// the wall would go up with holes. A Mac with no network has none, and that's a fine answer.
+async fn mac_addresses(ifconfig: &Path) -> Result<Vec<String>> {
+    let failed = || Problem::Unwalled("this Mac's own addresses can't be read".to_owned());
+    let out = Command::new(ifconfig).stdin(Stdio::null()).stderr(Stdio::null()).output().await.map_err(|_| failed())?;
+    if !out.status.success() {
+        return Err(failed());
+    }
+    Ok(parse_inets(&String::from_utf8_lossy(&out.stdout)))
 }
 
 fn parse_inets(ifconfig: &str) -> Vec<String> {
@@ -270,9 +324,33 @@ fn connect(found: &Inspected, machine: &Machine) -> Result<BoxGuest> {
     Ok(BoxGuest::connect(&format!("http://{}", port(EXEC_PORT)?), &format!("http://{}", port(HOST_PORT)?), machine.token.clone()))
 }
 
-/// The `docker create` arguments of a new computer: no secret among them.
-fn create_args(image: &str, name: &str, network: &str, id: &str, secrets: &Path) -> Vec<String> {
-    let mut args: Vec<String> = ["create", "--name", name, "--network", network, "--label"].map(str::to_owned).to_vec();
+/// The `docker create` arguments of the container that owns a computer's network: `sleep`, the
+/// published ports, and IPv6 off.
+fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> {
+    let net = holder(name);
+    let mut args: Vec<String> = ["create", "--name", &net, "--network", network, "--label"].map(str::to_owned).to_vec();
+    args.push(format!("{LABEL}=1"));
+    args.push("--label".to_owned());
+    args.push(format!("{LABEL}.id={id}"));
+    for a in ["--memory", "64m", "--pids-limit", "64", "--security-opt", "no-new-privileges", "--sysctl", "net.ipv6.conf.all.disable_ipv6=1"] {
+        args.push(a.to_owned());
+    }
+    for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS) {
+        args.push("-p".to_owned());
+        args.push(format!("127.0.0.1:{PORT_FIRST}-{DOCKER_PORT_LAST}:{port}"));
+    }
+    for a in ["--entrypoint", "sleep", image, "infinity"] {
+        args.push(a.to_owned());
+    }
+    args
+}
+
+/// The `docker create` arguments of a new computer: no secret among them, and no network of its
+/// own.
+fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> Vec<String> {
+    let mut args: Vec<String> = ["create", "--name", name, "--network"].map(str::to_owned).to_vec();
+    args.push(format!("container:{}", holder(name)));
+    args.push("--label".to_owned());
     args.push(format!("{LABEL}=1"));
     args.push("--label".to_owned());
     args.push(format!("{LABEL}.id={id}"));
@@ -283,18 +361,12 @@ fn create_args(image: &str, name: &str, network: &str, id: &str, secrets: &Path)
     args.push("--mount".to_owned());
     args.push(format!("type=bind,source={},target={SECRET_MOUNT},readonly", secrets.display()));
     // Chromium needs more than Docker's 64 MiB; no setuid program may lift the box's user
-    for a in ["--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges", "--sysctl", "net.ipv6.conf.all.disable_ipv6=1"] {
+    for a in ["--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges"] {
         args.push(a.to_owned());
-    }
-    for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS) {
-        args.push("-p".to_owned());
-        args.push(format!("127.0.0.1:{PORT_FIRST}-{DOCKER_PORT_LAST}:{port}"));
     }
     for env in [
         format!("BOX_TOKEN_FILE={SECRET_MOUNT}/{TOKEN_FILE}"),
         format!("BOX_VIEWER_PASSWORD_FILE={SECRET_MOUNT}/{VIEWER_FILE}"),
-        // the old image's name for the same password
-        format!("BOX_VNC_PASSWORD_FILE={SECRET_MOUNT}/{VIEWER_FILE}"),
         "BOX_DESKTOP=1".to_owned(),
         "BOX_DESKTOP_REQUIRED=1".to_owned(),
         "BOX_CHROME=0".to_owned(),
@@ -321,10 +393,35 @@ fn io_problem(e: std::io::Error) -> Problem {
     Problem::Failed(format!("its folder: {e}"))
 }
 
+/// A folder only this user reads, whatever the umask: `create_dir` modes are filtered by it, and
+/// the folder may already be there.
+fn private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).map_err(io_problem)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io_problem)
+}
+
+/// The secrets, on disk for as long as this lives: dropped, however a start ends, they're gone.
+struct Staged(PathBuf);
+
+impl Staged {
+    fn new(dir: PathBuf, machine: &Machine) -> Result<Self> {
+        let staged = Self(dir);
+        stage_secrets(&staged.0, machine)?;
+        Ok(staged)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        clear_secrets(&self.0);
+    }
+}
+
 fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(io_problem)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    private_dir(dir)?;
     for (file, secret) in [(TOKEN_FILE, &machine.token), (VIEWER_FILE, &machine.viewer_password)] {
         let path = dir.join(file);
         // whatever is there goes, link or not, and this is a new file: a link is never followed
@@ -348,9 +445,11 @@ impl DockerProvider {
     /// The container and its volumes. Already gone is fine.
     async fn remove(&self, name: &str) -> Result<()> {
         self.walled.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
-        match self.docker(&["rm", "-f", "-v", name], None).await {
-            Ok(_) | Err(Problem::Gone) => {}
-            Err(e) => return Err(e),
+        for container in [name.to_owned(), holder(name)] {
+            match self.docker(&["rm", "-f", "-v", &container], None).await {
+                Ok(_) | Err(Problem::Gone) => {}
+                Err(e) => return Err(e),
+            }
         }
         for volume in [format!("{name}-workspace"), format!("{name}-home")] {
             match self.docker(&["volume", "rm", &volume], None).await {
@@ -381,10 +480,14 @@ impl Provider for DockerProvider {
         self.ensure_network().await?;
         let name = format!("{}-{}", self.prefix, random_hex(4)?);
         let start = secret_dir(&spec.dir);
-        std::fs::create_dir_all(&start).map_err(io_problem)?;
-        let args = create_args(&self.image, &name, &self.network(), &spec.id, &start);
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.docker(&refs, None).await?;
+        private_dir(&start)?;
+        let net = holder_args(&self.image, &name, &self.network(), &spec.id);
+        self.docker(&net.iter().map(String::as_str).collect::<Vec<_>>(), None).await?;
+        let args = create_args(&self.image, &name, &spec.id, &start);
+        if let Err(e) = self.docker(&args.iter().map(String::as_str).collect::<Vec<_>>(), None).await {
+            let _ = self.remove(&name).await;
+            return Err(e);
+        }
         Ok(Machine {
             provider: ProviderKind::Docker,
             reach: Reach::Container { name },
@@ -415,14 +518,19 @@ impl Provider for DockerProvider {
     async fn wake(&self, machine: &Machine) -> Result<Woke> {
         let name = container(machine)?;
         let found = self.inspect(name).await?;
+        let up = matches!(found.status.as_str(), "paused" | "running");
+        // the network went away under a running box: only a fresh start joins the new one
+        if up && !found.net_running {
+            self.halt(name, &found).await;
+        }
+        // first the wall, then anything of the box
+        self.net_up(name, &found).await?;
         match found.status.as_str() {
-            "paused" => {
+            "paused" if found.net_running => {
                 self.docker(&["unpause", name], None).await?;
-                // a pause keeps the network: the wall of this start still stands, if it went up
-                self.guard(&Machine { seen: Some(found), ..machine.clone() }).await?;
                 Ok(Woke::Resumed)
             }
-            "running" => self.wall_or_stop(name).await.map(|()| Woke::Started),
+            "running" if found.net_running => Ok(Woke::Started),
             _ => self.start(machine, name).await.map(|()| Woke::Started),
         }
     }
@@ -449,7 +557,10 @@ impl Provider for DockerProvider {
     async fn sweep(&self, id: &str) -> Result<()> {
         let filter = format!("label={LABEL}.id={id}");
         let names = self.docker(&["ps", "-a", "--filter", &filter, "--format", "{{.Names}}"], None).await?;
-        for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
+        let mut boxes: Vec<&str> = names.lines().map(str::trim).filter(|n| !n.is_empty()).map(|n| n.strip_suffix("-wall").unwrap_or(n)).collect();
+        boxes.sort_unstable();
+        boxes.dedup();
+        for name in boxes {
             self.remove(name).await?;
         }
         Ok(())
@@ -457,11 +568,12 @@ impl Provider for DockerProvider {
 
     async fn guard(&self, machine: &Machine) -> Result<()> {
         let name = container(machine)?;
-        let started = self.seen(machine).await?.started;
-        if self.walled.lock().unwrap_or_else(|e| e.into_inner()).get(name) == Some(&started) {
-            return Ok(());
+        let found = self.seen(machine).await?;
+        if !found.net_running {
+            self.halt(name, &found).await;
+            return Err(Problem::Unwalled("its network went away".to_owned()));
         }
-        self.wall_or_stop(name).await
+        self.net_up(name, &found).await
     }
 
     async fn screens(&self, machine: &Machine) -> Result<Vec<String>> {
@@ -543,10 +655,12 @@ impl Inspected {
     pub fn parse(json: &str) -> Result<Self> {
         let v: Value = serde_json::from_str(json).map_err(|e| Problem::Failed(format!("docker inspect: {e}")))?;
         let entry = v.get(0).ok_or(Problem::Gone)?;
+        let net = v.get(1).ok_or(Problem::Gone)?;
         let status = entry.pointer("/State/Status").and_then(Value::as_str).unwrap_or_default().to_owned();
-        let started = entry.pointer("/State/StartedAt").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let started = net.pointer("/State/StartedAt").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let net_running = net.pointer("/State/Status").and_then(Value::as_str) == Some("running");
         let mut ports = HashMap::new();
-        for (spec, bindings) in entry.pointer("/NetworkSettings/Ports").and_then(Value::as_object).into_iter().flatten() {
+        for (spec, bindings) in net.pointer("/NetworkSettings/Ports").and_then(Value::as_object).into_iter().flatten() {
             let Some(guest) = spec.strip_suffix("/tcp").and_then(|p| p.parse::<u16>().ok()) else { continue };
             // loopback, or nothing: a binding anywhere else isn't ours to use
             let found = bindings.as_array().into_iter().flatten().find(|b| b.get("HostIp").and_then(Value::as_str) == Some("127.0.0.1"));
@@ -554,7 +668,7 @@ impl Inspected {
                 ports.insert(guest, format!("127.0.0.1:{port}"));
             }
         }
-        Ok(Self { status, started, ports })
+        Ok(Self { status, started, net_running, ports })
     }
 
     pub fn published(&self, guest_port: u16) -> Option<String> {
@@ -569,10 +683,20 @@ fn home_dir(dir: &str) -> PathBuf {
     }
 }
 
-/// `docker`: on `PATH`, else where Docker Desktop keeps it.
+/// `PATH` with Docker's folders on it, worked out once: an app from Finder has a bare one, and
+/// its credential helpers sit next to it.
+fn docker_path() -> &'static std::ffi::OsStr {
+    static P: OnceLock<std::ffi::OsString> = OnceLock::new();
+    P.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).chain(DOCKER_DIRS.map(home_dir)).collect();
+        std::env::join_paths(dirs).unwrap_or(path)
+    })
+}
+
+/// `docker`: on [`docker_path`].
 fn find_docker() -> PathBuf {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).chain(DOCKER_DIRS.map(home_dir)).map(|d| d.join("docker")).find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("docker"))
+    std::env::split_paths(docker_path()).map(|d| d.join("docker")).find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("docker"))
 }
 
 struct Raw {
@@ -583,12 +707,7 @@ struct Raw {
 
 async fn run_docker(program: &Path, args: &[&str], stdin: Option<&[u8]>, patience: Duration) -> Result<Raw> {
     let mut command = Command::new(program);
-    // its credential helpers sit next to it
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let dirs: Vec<PathBuf> = std::env::split_paths(&path).chain(DOCKER_DIRS.map(home_dir)).collect();
-    if let Ok(joined) = std::env::join_paths(dirs) {
-        command.env("PATH", joined);
-    }
+    command.env("PATH", docker_path());
     command.args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = command.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -654,12 +773,17 @@ mod tests {
     }
 
     #[test]
-    fn create_publishes_on_loopback_in_the_range_with_no_secret_on_the_command_line() {
-        let args = create_args("img:1", "c2-x", "c2-net", "cmp_1", Path::new("/d/start")).join(" ");
+    fn the_holder_publishes_on_loopback_in_the_range_and_the_box_only_joins_it() {
+        let net = holder_args("img:1", "c2-x", "c2-net", "cmp_1").join(" ");
         for port in [1337, 1340, 6901, 6902, 6905] {
-            assert!(args.contains(&format!("-p 127.0.0.1:47000-47199:{port}")), "{args}");
+            assert!(net.contains(&format!("-p 127.0.0.1:47000-47199:{port}")), "{net}");
         }
-        assert!(!args.contains("0.0.0.0"), "{args}");
+        assert!(!net.contains("0.0.0.0"), "{net}");
+        assert!(net.contains("--name c2-x-wall") && net.contains("--entrypoint sleep img:1 infinity"), "{net}");
+        assert!(net.contains("disable_ipv6=1") && !net.contains("BOX_"), "{net}");
+        let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start")).join(" ");
+        assert!(args.contains("--network container:c2-x-wall"), "{args}");
+        assert!(!args.contains("-p "), "a box in another's network publishes nothing: {args}");
         assert!(args.contains("BOX_TOKEN_FILE=/run/buwiz-computer/token"), "{args}");
         assert!(args.contains("target=/run/buwiz-computer,readonly"), "the box can't plant anything there: {args}");
         assert!(args.contains("BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer"), "{args}");
@@ -669,7 +793,7 @@ mod tests {
 
     #[test]
     fn only_a_loopback_binding_counts() {
-        let json = r#"[{"State":{"Status":"running"},"NetworkSettings":{"Ports":{
+        let json = r#"[{"State":{"Status":"running"}},{"State":{"Status":"running","StartedAt":"T1"},"NetworkSettings":{"Ports":{
             "1337/tcp":[{"HostIp":"127.0.0.1","HostPort":"47001"}],
             "1340/tcp":[{"HostIp":"0.0.0.0","HostPort":"47002"}],
             "6901/tcp":null}}}]"#;
@@ -713,60 +837,136 @@ mod tests {
         assert_eq!(p.check().await.unwrap_err(), Problem::ImageMissing("img:1".into()));
     }
 
-    #[tokio::test]
-    async fn the_secrets_are_gone_after_a_start_that_failed() {
-        let dir = tmp("start");
-        let program = fake_docker(&dir, "case \"$1\" in inspect) echo '[{\"State\":{\"Status\":\"exited\"}}]';; start) ls \"$(dirname \"$0\")/start\" >> \"$(dirname \"$0\")/seen\"; echo 'boom' >&2; exit 1;; esac");
-        let p = DockerProvider::new("img:1", "c2").with_program(program);
-        let m = machine(&dir);
-        assert_eq!(p.wake(&m).await.unwrap_err(), Problem::Failed("boom".into()));
-        assert_eq!(std::fs::read_to_string(dir.join("seen")).unwrap(), "token\nviewer\n", "they were there for the start");
-        assert_eq!(std::fs::read_dir(dir.join("start")).unwrap().count(), 0, "and aren't now");
+    /// `docker inspect`'s answer: the box as `status`, its network up since `started`.
+    fn inspected(status: &str, net: &str, started: &str) -> String {
+        format!(r#"[{{"State":{{"Status":"{status}"}}}},{{"State":{{"Status":"{net}","StartedAt":"{started}"}},"NetworkSettings":{{"Ports":{{"1337/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47001"}}],"1340/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47002"}}],"6902/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47003"}}]}}}}}}]"#)
     }
 
-    #[tokio::test]
-    async fn a_computer_that_cant_be_walled_off_is_stopped() {
-        let dir = tmp("wall");
-        let program = fake_docker(&dir, "case \"$1\" in inspect) echo '[{\"State\":{\"Status\":\"exited\"}}]';; exec) echo 'no python3' >&2; exit 1;; esac");
-        let p = DockerProvider::new("img:1", "c2").with_program(program);
-        let e = p.wake(&machine(&dir)).await.unwrap_err();
-        assert_eq!(e.code(), "unwalled");
-        let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
-        assert!(calls.contains("stop -t 0 c2-x"), "{calls}");
-    }
-
-    const RUNNING: &str = r#"[{"State":{"Status":"running","StartedAt":"T1"}}]"#;
-
-    fn running_docker(dir: &Path, exec: &str) -> DockerProvider {
-        let body = format!("case \"$1\" in inspect) cat \"{}/state\";; exec) {exec};; esac", dir.display());
-        std::fs::write(dir.join("state"), RUNNING).unwrap();
-        DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body))
+    /// A provider whose `docker` answers `inspect` from the file `state`, and `exec` and `start`
+    /// as told. A good `ifconfig` beside it.
+    fn faked(dir: &Path, state: &str, exec: &str, start: &str) -> DockerProvider {
+        let body = format!("case \"$1\" in inspect) cat \"{}/state\";; exec) {exec};; start) {start};; esac", dir.display());
+        std::fs::write(dir.join("state"), state).unwrap();
+        DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body)).with_ifconfig(PathBuf::from("/usr/bin/true"))
     }
 
     fn calls(dir: &Path) -> String {
         std::fs::read_to_string(dir.join("calls")).unwrap_or_default()
     }
 
+    fn at(dir: &Path, word: &str) -> usize {
+        calls(dir).find(word).unwrap_or_else(|| panic!("no {word} in {}", calls(dir)))
+    }
+
+    const WALL_CALL: &str = "exec --user 0 --privileged c2-x-wall";
+
+    #[tokio::test]
+    async fn nothing_of_the_box_runs_before_the_wall_is_up() {
+        let dir = tmp("order");
+        let p = faked(&dir, &inspected("exited", "exited", "T1"), "true", "case \"$2\" in *-wall) ;; *) exit 1;; esac");
+        let _ = p.wake(&machine(&dir)).await;
+        assert!(at(&dir, "start c2-x-wall") < at(&dir, WALL_CALL), "{}", calls(&dir));
+        assert!(at(&dir, WALL_CALL) < at(&dir, "start c2-x\n"), "the box started before its wall: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_port_lost_to_a_race_is_tried_again() {
+        let dir = tmp("port-race");
+        let once = format!("case \"$2\" in *-wall) [ -e \"{0}/tried\" ] || {{ touch \"{0}/tried\"; echo 'Error response from daemon: ports are not available: exposing port TCP 127.0.0.1:47001' >&2; exit 1; }};; *) exit 1;; esac", dir.display());
+        let p = faked(&dir, &inspected("exited", "exited", "T1"), "true", &once);
+        let _ = p.wake(&machine(&dir)).await;
+        assert_eq!(calls(&dir).matches("start c2-x-wall").count(), 2, "{}", calls(&dir));
+        assert!(calls(&dir).contains(WALL_CALL), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_wall_that_fails_means_the_box_never_starts() {
+        let dir = tmp("no-wall");
+        let p = faked(&dir, &inspected("exited", "running", "T1"), "echo no >&2; exit 1", "true");
+        assert_eq!(p.wake(&machine(&dir)).await.unwrap_err().code(), "unwalled");
+        assert!(!calls(&dir).contains("start c2-x\n"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn addresses_that_cant_be_read_stop_the_wall() {
+        let dir = tmp("no-ifconfig");
+        for bad in ["/usr/bin/false", "/nonexistent/ifconfig"] {
+            let p = faked(&dir, &inspected("exited", "running", "T1"), "true", "true").with_ifconfig(PathBuf::from(bad));
+            assert_eq!(p.wake(&machine(&dir)).await.unwrap_err().code(), "unwalled", "{bad}");
+            assert!(!calls(&dir).contains(WALL_CALL) && !calls(&dir).contains("start c2-x\n"), "{}", calls(&dir));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_secrets_are_gone_after_a_start_that_failed() {
+        let dir = tmp("start");
+        let start = "ls \"$(dirname \"$0\")/start\" >> \"$(dirname \"$0\")/seen\"; echo boom >&2; exit 1";
+        let p = faked(&dir, &inspected("exited", "running", "T1"), "true", start);
+        assert_eq!(p.wake(&machine(&dir)).await.unwrap_err(), Problem::Failed("boom".into()));
+        assert_eq!(std::fs::read_to_string(dir.join("seen")).unwrap(), "token\nviewer\n", "they were there for the start");
+        assert_eq!(std::fs::read_dir(dir.join("start")).unwrap().count(), 0, "and aren't now");
+    }
+
+    #[tokio::test]
+    async fn the_secrets_are_gone_after_a_start_that_was_abandoned() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp("cancel");
+        let p = faked(&dir, &inspected("exited", "running", "T1"), "true", "sleep 30");
+        let m = machine(&dir);
+        let mut wake = Box::pin(p.wake(&m));
+        // until the start is under way, with the secrets on disk, then let it go
+        for _ in 0..500 {
+            if tokio::time::timeout(Duration::from_millis(10), &mut wake).await.is_ok() {
+                panic!("it can't finish: start sleeps");
+            }
+            if dir.join("start/viewer").exists() && calls(&dir).contains("start c2-x\n") {
+                break;
+            }
+        }
+        assert!(dir.join("start/viewer").exists());
+        drop(wake);
+        assert_eq!(std::fs::read_dir(dir.join("start")).unwrap().count(), 0, "a dropped start left the secrets on disk");
+        assert_eq!(std::fs::metadata(dir.join("start")).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn the_secrets_folder_is_private_whatever_the_umask_made_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp("private").join("start");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
     #[tokio::test]
     async fn a_box_this_broker_didnt_start_is_walled_on_first_use_and_once() {
         let dir = tmp("first-use");
-        let p = running_docker(&dir, "true");
+        let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true");
         let m = machine(&dir);
         p.guard(&m).await.unwrap();
         p.guard(&m).await.unwrap();
-        assert_eq!(calls(&dir).matches("exec --user 0 --privileged").count(), 1, "{}", calls(&dir));
-        // restarted behind this broker's back: a new network, so a new wall
-        std::fs::write(dir.join("state"), RUNNING.replace("T1", "T2")).unwrap();
+        assert_eq!(calls(&dir).matches(WALL_CALL).count(), 1, "{}", calls(&dir));
+        // its network came up again: a new one, so a new wall
+        std::fs::write(dir.join("state"), inspected("running", "running", "T2")).unwrap();
         p.guard(&m).await.unwrap();
-        assert_eq!(calls(&dir).matches("exec --user 0 --privileged").count(), 2);
+        assert_eq!(calls(&dir).matches(WALL_CALL).count(), 2);
     }
 
     #[tokio::test]
     async fn a_guard_that_cant_wall_stops_the_box() {
         let dir = tmp("guard-fail");
-        let p = running_docker(&dir, "echo 'OCI runtime exec failed: exec: \"python3\": executable file not found in $PATH' >&2; exit 127");
+        let p = faked(&dir, &inspected("running", "running", "T1"), "echo 'OCI runtime exec failed: exec: \"python3\": executable file not found in $PATH' >&2; exit 127", "true");
         let e = p.guard(&machine(&dir)).await.unwrap_err();
         assert_eq!(e.code(), "unwalled", "a missing python3 isn't a gone computer");
+        assert!(calls(&dir).contains("stop -t 0 c2-x"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_box_whose_network_went_is_stopped() {
+        let dir = tmp("net-gone");
+        let p = faked(&dir, &inspected("running", "exited", "T1"), "true", "true");
+        assert_eq!(p.guard(&machine(&dir)).await.unwrap_err().code(), "unwalled");
         assert!(calls(&dir).contains("stop -t 0 c2-x"), "{}", calls(&dir));
     }
 
@@ -774,11 +974,28 @@ mod tests {
     async fn every_wake_that_cant_wall_stops_the_box() {
         for status in ["running", "paused"] {
             let dir = tmp(status);
-            let p = running_docker(&dir, "echo no >&2; exit 1");
-            std::fs::write(dir.join("state"), RUNNING.replace("running", status)).unwrap();
+            let p = faked(&dir, &inspected(status, "running", "T1"), "echo no >&2; exit 1", "true");
             assert_eq!(p.wake(&machine(&dir)).await.unwrap_err().code(), "unwalled", "{status}");
             assert!(calls(&dir).contains("stop -t 0 c2-x"), "{status}: {}", calls(&dir));
         }
+    }
+
+    #[tokio::test]
+    async fn a_paused_computer_wakes_without_a_start() {
+        let dir = tmp("pause");
+        let p = faked(&dir, &inspected("paused", "running", "T1"), "true", "true");
+        assert_eq!(p.wake(&machine(&dir)).await.unwrap(), Woke::Resumed);
+        assert!(calls(&dir).contains("unpause c2-x") && !calls(&dir).contains("start c2-x"), "{}", calls(&dir));
+        assert!(at(&dir, WALL_CALL) < at(&dir, "unpause c2-x"), "the wall comes first here too: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_failed_second_create_leaves_no_holder() {
+        let dir = tmp("create");
+        let body = "case \"$1 $2 $3\" in version*|image*|network*) ;; 'create --name c2-'*-wall) ;; create*) echo nope >&2; exit 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        assert!(p.create(&Spec { id: "cmp_1".into(), dir: dir.clone() }).await.is_err());
+        assert!(calls(&dir).contains("-wall") && calls(&dir).lines().any(|l| l.starts_with("rm -f -v") && l.ends_with("-wall")), "{}", calls(&dir));
     }
 
     #[tokio::test]
@@ -797,8 +1014,7 @@ mod tests {
     #[tokio::test]
     async fn one_look_serves_a_request_and_the_next_request_looks_again() {
         let dir = tmp("ports");
-        let p = running_docker(&dir, "true");
-        std::fs::write(dir.join("state"), r#"[{"State":{"Status":"running","StartedAt":"T1"},"NetworkSettings":{"Ports":{"1337/tcp":[{"HostIp":"127.0.0.1","HostPort":"47001"}],"1340/tcp":[{"HostIp":"127.0.0.1","HostPort":"47002"}],"6902/tcp":[{"HostIp":"127.0.0.1","HostPort":"47003"}]}}}]"#).unwrap();
+        let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true");
         let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/a".into(), profile: None };
         p.guard(&machine(&dir)).await.unwrap();
         let inspects = || calls(&dir).matches("inspect").count();
@@ -814,6 +1030,12 @@ mod tests {
     }
 
     #[test]
+    fn dockers_path_is_worked_out_once() {
+        assert!(std::ptr::eq(docker_path(), docker_path()));
+        assert!(std::env::split_paths(docker_path()).any(|d| d == Path::new("/usr/local/bin")));
+    }
+
+    #[test]
     fn what_was_seen_is_never_saved() {
         let dir = PathBuf::from("/tmp/x");
         let m = Machine { seen: Some(Seen::default()), ..machine(&dir) };
@@ -825,16 +1047,6 @@ mod tests {
     fn this_macs_addresses_are_read_from_ifconfig() {
         let out = "lo0: flags\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags\n\tinet6 fe80::1%en0\n\tinet 203.0.113.9 netmask 0xffffff00 broadcast 203.0.113.255\n";
         assert_eq!(parse_inets(out), ["203.0.113.9"]);
-    }
-
-    #[tokio::test]
-    async fn a_paused_computer_wakes_without_a_start() {
-        let dir = tmp("pause");
-        let program = fake_docker(&dir, "case \"$1\" in inspect) echo '[{\"State\":{\"Status\":\"paused\"}}]';; esac");
-        let p = DockerProvider::new("img:1", "c2").with_program(program);
-        assert_eq!(p.wake(&machine(&dir)).await.unwrap(), Woke::Resumed);
-        let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
-        assert!(calls.contains("unpause c2-x") && !calls.contains("start c2-x"), "{calls}");
     }
 
     #[test]

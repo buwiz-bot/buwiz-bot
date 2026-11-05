@@ -25,6 +25,8 @@ const TICKET_LIFE: Duration = Duration::from_secs(60);
 const COOKIE: &str = "buwiz_viewer";
 const MAX_HEAD: usize = 32 * 1024;
 const HEAD_PATIENCE: Duration = Duration::from_secs(15);
+/// How long the gate waits after an accept failed.
+const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
 struct Session {
     bot: String,
@@ -86,11 +88,29 @@ impl Gate {
 }
 
 async fn serve(listener: TcpListener, sessions: Arc<Mutex<Sessions>>) {
-    while let Ok((socket, _)) = listener.accept().await {
-        let sessions = sessions.clone();
-        tokio::spawn(async move {
-            let _ = connection(socket, sessions).await;
-        });
+    keep_accepting(|| listener.accept(), sessions, ACCEPT_PAUSE).await;
+}
+
+/// Serves what `accept` brings, for good: one bad accept, such as running out of file
+/// descriptors, doesn't end every viewer to come.
+async fn keep_accepting<F, Fut>(mut accept: F, sessions: Arc<Mutex<Sessions>>, pause: Duration)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<(TcpStream, std::net::SocketAddr)>>,
+{
+    loop {
+        match accept().await {
+            Ok((socket, _)) => {
+                let sessions = sessions.clone();
+                tokio::spawn(async move {
+                    let _ = connection(socket, sessions).await;
+                });
+            }
+            Err(e) => {
+                eprintln!("buwiz-computer: the viewer gate couldn't accept: {e}");
+                tokio::time::sleep(pause).await;
+            }
+        }
     }
 }
 
@@ -297,6 +317,30 @@ mod tests {
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 200"));
         gate.close("b_1");
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 403"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_accept_doesnt_end_the_gate() {
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let addr = listener.local_addr().unwrap();
+        let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (l, t) = (listener.clone(), tries.clone());
+        let accept = move || {
+            let (l, n) = (l.clone(), t.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+            async move {
+                if n == 0 {
+                    return Err(std::io::Error::other("no more file descriptors"));
+                }
+                l.accept().await
+            }
+        };
+        tokio::spawn(keep_accepting(accept, Arc::new(Mutex::new(Sessions::default())), Duration::from_millis(1)));
+        // answered at all means the loop came back: an unknown session is a 404
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(b"GET /nothing HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        let mut out = String::new();
+        tokio::time::timeout(Duration::from_secs(2), s.read_to_string(&mut out)).await.expect("the gate is gone").unwrap();
+        assert!(out.starts_with("HTTP/1.1 404"), "{out}");
     }
 
     #[tokio::test]

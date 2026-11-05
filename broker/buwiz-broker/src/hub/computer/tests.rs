@@ -316,6 +316,32 @@ async fn a_bot_that_leaves_a_sleeping_computer_loses_its_screen_at_the_next_wake
 }
 
 #[tokio::test]
+async fn a_join_that_fails_leaves_no_seat() {
+    let b = bed("join");
+    let id = awake(&b, &b.ann.0).await;
+    let down = Problem::ProviderDown("Docker".into());
+    *b.mock.look_problem.lock().unwrap() = Some(down.clone());
+    assert_eq!(b.computers.attach(&b.ctx, &b.bea.0, &id).await, Err(down.clone()));
+    assert!(Computers::seat(&b.ctx, &b.bea.0).is_none(), "seated at a computer it can't use");
+    *b.mock.look_problem.lock().unwrap() = None;
+    *b.mock.screen_problem.lock().unwrap() = Some(down.clone());
+    assert_eq!(b.computers.attach(&b.ctx, &b.bea.0, &id).await, Err(down));
+    assert!(Computers::seat(&b.ctx, &b.bea.0).is_none());
+    *b.mock.screen_problem.lock().unwrap() = None;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    assert!(Computers::seat(&b.ctx, &b.bea.0).unwrap().screen.is_some());
+}
+
+#[tokio::test]
+async fn a_seat_that_cant_be_saved_gives_its_screen_back() {
+    let b = bed("join-seat");
+    let id = awake(&b, &b.ann.0).await;
+    b.ctx.db.with(|c| c.execute_batch("CREATE TRIGGER no_seat BEFORE INSERT ON computer_seats BEGIN SELECT RAISE(ABORT, 'disk full'); END;")).unwrap();
+    assert!(b.computers.attach(&b.ctx, &b.bea.0, &id).await.is_err());
+    assert!(b.mock.calls().contains(&"screen_down b_bea".to_owned()), "{:?}", b.mock.calls());
+}
+
+#[tokio::test]
 async fn a_computer_id_is_never_a_path() {
     let b = bed("id");
     awake(&b, &b.ann.0).await;

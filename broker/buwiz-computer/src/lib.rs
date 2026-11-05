@@ -159,8 +159,11 @@ pub struct Machine {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Seen {
     pub status: String,
-    /// when this start of it began: changes with every start, whoever made it
+    /// when the network it sits in came up: the wall stands for that long, however often the
+    /// computer itself starts
     pub started: String,
+    /// whether that network is up
+    pub net_running: bool,
     /// guest port → `127.0.0.1:port`
     pub ports: std::collections::HashMap<u16, String>,
 }

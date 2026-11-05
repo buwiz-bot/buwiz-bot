@@ -418,17 +418,18 @@ impl Computers {
         if Self::seats(ctx, computer).len() as i64 >= MAX_SEATS {
             return Err(Problem::Failed(format!("a computer has room for {MAX_SEATS} Bots")));
         }
-        Self::add_seat(ctx, bot, computer, "member")?;
+        // the seat comes last: a Bot that can't use the computer isn't seated at it
         let provider = self.provider_of(&machine);
         let (power, machine) = provider.look(&machine).await?;
-        if power == Power::Awake {
-            match provider.screen_up(&machine, bot).await {
-                Ok(screen) => Self::set_screen(ctx, bot, Some(&screen)),
-                Err(e) => {
-                    let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot]));
-                    return Err(e);
-                }
+        let screen = if power == Power::Awake { Some(provider.screen_up(&machine, bot).await?) } else { None };
+        if let Err(e) = Self::add_seat(ctx, bot, computer, "member") {
+            if screen.is_some() {
+                let _ = provider.screen_down(&machine, bot).await;
             }
+            return Err(e);
+        }
+        if let Some(screen) = screen {
+            Self::set_screen(ctx, bot, Some(&screen));
         }
         Ok(())
     }

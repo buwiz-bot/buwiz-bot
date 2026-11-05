@@ -99,9 +99,38 @@ async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     let alive = p.run(m, &a, "pgrep -c chromium", 10_000).await.unwrap();
     assert_ne!(alive.stdout.trim(), "0", "a light sleep keeps what's open");
     assert!(p.screenshot(m, &a).await.is_ok(), "published ports answer through the wall");
+    // what a model could leave in the box's home: it runs at the next start, and the wall is
+    // already up, because the box's network is older than the box. The Mac's loopback listens here.
+    let plant = format!(
+        r#"mkdir -p ~/.config/autostart; printf '%s\n' {autostart} > ~/.config/autostart/c2probe.desktop; printf '%s\n' {script} > ~/c2probe.py"#,
+        autostart = "'[Desktop Entry]' 'Type=Application' 'Name=c2probe' 'Exec=python3 /home/box/c2probe.py'",
+        script = shell_lines(&format!("import socket,time\nout=open('/workspace/c2probe.log','a')\nout.write('ran\\n')\nfor host,port in [('host.docker.internal',{port}),('192.168.65.254',{port}),('gateway.docker.internal',{port}),('example.com',443)]:\n    s=socket.socket();s.settimeout(3)\n    try:\n        s.connect((socket.gethostbyname(host),port));out.write(host+' REACHED\\n')\n    except Exception:\n        out.write(host+' blocked\\n')\nout.write('done\\n')\nout.close()\n")),
+    );
+    let planted = p.run(m, &a, &plant, 10_000).await.unwrap();
+    assert_eq!(planted.exit_code, Some(0), "{}", planted.stderr);
     p.sleep(m, Sleep::Deep).await.unwrap();
     assert_eq!(p.power(m).await.unwrap(), Power::Asleep);
     p.wake(m).await.unwrap();
     let up = p.screen_up(m, "c2t_a").await.unwrap();
     assert_eq!(up.display, a.display, "a Bot keeps its screen's number");
+    let mut log = String::new();
+    for _ in 0..60 {
+        log = p.run(m, &a, "cat /workspace/c2probe.log 2>/dev/null", 5000).await.unwrap().stdout;
+        if log.contains("done") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    println!("what the planted autostart reached:\n{log}");
+    assert!(log.contains("ran") && log.contains("done"), "the planted file never ran: {log}");
+    for host in ["host.docker.internal", "192.168.65.254", "gateway.docker.internal"] {
+        assert!(log.contains(&format!("{host} blocked")), "{log}");
+    }
+    assert!(log.contains("example.com REACHED"), "it had the internet, so it did run with a network: {log}");
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(100), mac.accept()).await.is_err(), "the Mac's listener heard from the box");
+}
+
+/// `text`'s lines as shell words for `printf '%s\n'`.
+fn shell_lines(text: &str) -> String {
+    text.lines().map(|l| format!("'{}'", l.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
 }
