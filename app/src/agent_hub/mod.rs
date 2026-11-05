@@ -650,6 +650,21 @@ mod tests {
         assert_eq!(planned(&s, &st, &click("button.save-draft"), l).unwrap_err(), CHANGED);
     }
 
+    /// A list row as a plain group: the entry's text beside its button, not in it.
+    fn row(id: &str, entry: &str) -> Seen {
+        seen(id, "group", "", None, vec![text(&format!("{id}t"), entry), button(&format!("{id}b"), "Void")])
+    }
+
+    #[test]
+    fn a_new_entry_beside_an_unchanged_button_refuses() {
+        let (_, st, l) = ready(vec![row("r1", "Entry 12"), row("r2", "Entry 13")]);
+        let s = [surface(ENTRY, "books", "books", "Books", vec![row("r1", "Entry 14"), row("r2", "Entry 13")])];
+        let same: Vec<String> = filter::readable(&s[0].nodes, Reading::Structure).into_iter().map(|n| n.id.to_string()).collect();
+        assert_eq!(same, ["button.void", "button.void-2"], "the same to the model");
+        assert_eq!(planned(&s, &st, &click("button.void"), l).unwrap_err(), CHANGED);
+        assert_eq!(planned(&s, &st, &click("button.void-2"), l).unwrap_err(), CHANGED);
+    }
+
     #[test]
     fn another_open_with_the_same_screen_refuses() {
         let (mut s, st, l) = ready(entry_form());

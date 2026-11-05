@@ -235,22 +235,25 @@ pub fn mapped(nodes: &[Seen], reading: Reading) -> Vec<(UiNode, &Seen)> {
         .collect()
 }
 
-/// What makes a screen this screen, as a number that never leaves the Bot:
-/// its controls and what they say, hidden from the model or not, so a row
-/// swapped under an id that stayed the same counts as a change, and what a
-/// person can edit, so their typing does. An action's own typing doesn't get
-/// in its way: its answer is a new look. Left out: a value nobody edits, a
-/// live total or a progress bar, or nothing could ever be pressed while it
-/// moves, and a passing status line.
+/// What makes a screen this screen, as a number that never leaves the Bot.
+/// It covers every visible node's role, name and state, all the words on
+/// the screen, hidden from the model or not, and what a field holds. So a row
+/// swapped under an id that stayed the same counts as a change, whether its
+/// words are inside its button or beside it, and so does a person typing. An
+/// action's own typing doesn't get in its way: its answer is a new look.
+/// Left out: `status` and `alert` nodes, which pass by themselves, and values
+/// that aren't text and that an app moves on its own, a slider or a progress
+/// bar. Words that tick, a clock in the page, refuse as changed: the safe way
+/// round.
 pub fn rev(nodes: &[Seen]) -> u64 {
     fn hash(nodes: &[Seen], in_control: bool, h: &mut DefaultHasher) {
         for n in nodes.iter().filter(|n| n.visible && !["status", "alert"].contains(&n.role.as_str())) {
             let role = n.role.as_str();
-            let editable = FIELDS.contains(&role) && n.enabled;
+            let words = TEXT.contains(&role) || (FIELDS.contains(&role) && role != "slider");
             n.role.hash(h);
             n.name.hash(h);
             n.enabled.hash(h);
-            if editable || in_control {
+            if words || in_control {
                 n.value.hash(h);
             }
             n.children.len().hash(h);
@@ -461,13 +464,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_value_nobody_edits_doesnt_change_the_screen() {
-        let screen = |total: &str, done: &str, locked: &str| {
-            let mut off = seen("l", "textfield", "Locked", Some(locked), vec![]);
-            off.enabled = false;
-            vec![text("t", total), seen("p", "progressbar", "Upload", Some(done), vec![]), off]
+    fn a_value_that_isnt_text_doesnt_change_the_screen() {
+        let screen = |level: &str, done: &str| vec![seen("s", "slider", "Volume", Some(level), vec![]), seen("p", "progressbar", "Upload", Some(done), vec![])];
+        assert_eq!(rev(&screen("10", "10")), rev(&screen("80", "90")));
+    }
+
+    #[test]
+    fn words_in_the_page_change_the_screen_even_a_ticking_clock() {
+        assert_ne!(rev(&[text("t", "10:41")]), rev(&[text("t", "10:42")]));
+        let locked = |v: &str| {
+            let mut n = seen("l", "textfield", "Locked", Some(v), vec![]);
+            n.enabled = false;
+            vec![n]
         };
-        assert_eq!(rev(&screen("1,000.00", "10", "a")), rev(&screen("1,250.00", "90", "b")));
+        assert_ne!(rev(&locked("a")), rev(&locked("b")), "words in a field that is switched off too");
     }
 
     #[test]
