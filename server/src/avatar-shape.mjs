@@ -340,7 +340,7 @@ export const SOLIDS_MAX = 10;
 const SOLID = {
   profile: 40, path: 12, branches: 6, marks: 8, edge: 24, scallops: 18, lobes: 32,
   // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
-  faces: 8000, row: 4, cols: 76, shellFaces: 7 * 72, lobeFaces: 96, tubeSteps: 3, tubeSides: 10,
+  faces: 8000, row: 5, cols: 68, shellFaces: 6 * 54, lobeFaces: 84, tubeSteps: 3, tubeSides: 8,
   box: [-60, 160], radius: 60,
 };
 

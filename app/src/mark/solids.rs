@@ -103,15 +103,15 @@ struct Detail {
 }
 
 const FINE: Detail = Detail {
-    lathe_cols: 40,
-    lathe_row: 4.0,
-    shell_rows: 7,
-    shell_cols: 48,
-    shell_max_cols: 72,
+    lathe_cols: 32,
+    lathe_row: 5.0,
+    shell_rows: 6,
+    shell_cols: 40,
+    shell_max_cols: 54,
     scallop_cols: 4,
-    lobe_rows: 8,
+    lobe_rows: 7,
     lobe_cols: 12,
-    tube_sides: 10,
+    tube_sides: 8,
     tube_steps: 3,
 };
 /// For a small avatar: a sidebar's has about 30pt to show it in.
@@ -1486,7 +1486,7 @@ fn push_loop(loops: &mut Vec<Vec<V2>>, mut ring: Vec<V2>, fixed: Option<f64>, bl
     if a < 0.0 {
         ring.reverse();
     }
-    let grow = fixed.unwrap_or(bleed.min(a.abs().sqrt() * 0.35));
+    let grow = fixed.unwrap_or(bleed.min(a.abs().sqrt() * 0.5));
     let n = ring.len() as f64;
     let c = ring.iter().fold([0.0, 0.0], |c, p| [c[0] + p[0] / n, c[1] + p[1] / n]);
     for p in &mut ring {

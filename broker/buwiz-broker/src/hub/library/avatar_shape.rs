@@ -561,12 +561,12 @@ const SOLID_SCALLOPS: usize = 18;
 const SOLID_LOBES: usize = 32;
 // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
 const SOLID_FACES: usize = 8000;
-const SOLID_ROW: f64 = 4.0;
-const SOLID_COLS: usize = 76;
-const SOLID_SHELL_FACES: usize = 7 * 72;
-const SOLID_LOBE_FACES: usize = 96;
+const SOLID_ROW: f64 = 5.0;
+const SOLID_COLS: usize = 68;
+const SOLID_SHELL_FACES: usize = 6 * 54;
+const SOLID_LOBE_FACES: usize = 84;
 const SOLID_TUBE_STEPS: usize = 3;
-const SOLID_TUBE_SIDES: usize = 10;
+const SOLID_TUBE_SIDES: usize = 8;
 const SOLID_BOX: (f64, f64) = (-60.0, 160.0);
 const SOLID_RADIUS: f64 = 60.0;
 

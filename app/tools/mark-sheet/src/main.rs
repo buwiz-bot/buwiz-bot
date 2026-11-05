@@ -6,6 +6,8 @@
 //! `mark-sheet dump <design.json> <out file>`: every frame of a fixed run
 //! as one text file, to compare two builds byte for byte.
 //! `mark-sheet time <design.json>...`: microseconds per frame.
+//! `mark-sheet paths <design.json> <out file> <box px>`: a turn's paths as
+//! text, for timing a rasterizer.
 //!
 //! A design is the JSON the app saves: `outline`, `color`, `layers`,
 //! `eyes`, `parts`, `solids`.
@@ -227,6 +229,34 @@ fn dump(path: &str, out: &str) {
     std::fs::write(out, text).unwrap();
 }
 
+/// The paths of `count` poses of a full turn, one `fill d` line each, a
+/// blank line between frames: for timing the rasterizer.
+fn paths(path: &str, out: &str, box_: f64) {
+    fn walk(t: &MarkTree, text: &mut String) {
+        if t.tag == "path"
+            && let (Some(d), Some(f)) = (t.attr("d"), t.attr("fill"))
+        {
+            text.push_str(&format!("{f} {d}\n"));
+        }
+        for c in &t.children {
+            walk(c, text);
+        }
+    }
+    let (body, _) = load(path);
+    let tab = shared_tables();
+    let mark = Mark::new(&tab, Some(body), 1.0, false, false, 7);
+    let mut frame = mark.frame();
+    let mut text = String::new();
+    for i in 0..24 {
+        posed(&mut frame, i as f64 * 15.0, 12.0);
+        let t = draw(&frame, &tab, box_);
+        text.push_str(&format!("# {}\n", t.attr("viewBox").unwrap_or("")));
+        walk(&t, &mut text);
+        text.push('\n');
+    }
+    std::fs::write(out, text).unwrap();
+}
+
 /// Build-and-tree time per frame through a full turn, and the size of the
 /// trees.
 fn time(paths: &[String]) {
@@ -239,19 +269,26 @@ fn time(paths: &[String]) {
         let mut frame = mark.frame();
         for box_ in [22.96, 52.48] {
             let mut count = (0usize, 0usize);
-            let t = std::time::Instant::now();
+            let (mut tree_us, mut paint_us) = (0.0, 0.0);
             let n = 720;
             for i in 0..n {
                 posed(&mut frame, i as f64, 12.0);
+                let t = std::time::Instant::now();
                 let tree = draw(&frame, &tab, box_);
+                tree_us += t.elapsed().as_secs_f64() * 1e6;
+                let t = std::time::Instant::now();
+                std::hint::black_box(paint_tree(nsh_core::prelude::Painter::new(), &tree, 0.0, 0.0, box_ * 1.53));
+                paint_us += t.elapsed().as_secs_f64() * 1e6;
                 let c = paths_in(&tree);
                 count = (count.0 + c.0, count.1 + c.1);
             }
+            let k = n as f64;
             println!(
-                "{path}: register {built:?}, box {box_}: {:.0} us/frame, {:.0} paths, {:.0} path bytes",
-                t.elapsed().as_micros() as f64 / n as f64,
-                count.0 as f64 / n as f64,
-                count.1 as f64 / n as f64,
+                "{path}: register {built:?}, box {box_}: tree {:.0} us, paint {:.0} us, {:.0} paths, {:.0} path bytes",
+                tree_us / k,
+                paint_us / k,
+                count.0 as f64 / k,
+                count.1 as f64 / k,
             );
         }
     }
@@ -272,6 +309,7 @@ fn main() {
         Some("spin") => spin(&a[2], &a[3], a.get(4).map_or(300.0, |s| s.parse().unwrap())),
         Some("dump") => dump(&a[2], &a[3]),
         Some("time") => time(&a[2..]),
+        Some("paths") => paths(&a[2], &a[3], a[4].parse().unwrap()),
         _ => eprintln!("mark-sheet spin|dump|time ..."),
     }
 }

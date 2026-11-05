@@ -3391,7 +3391,7 @@ type SolidDraws = (Vec<SolidPaint>, Vec<SolidPaint>);
 
 /// How far past its edges a solid's face draws, in px on screen: enough to
 /// close the hairlines between faces at any size.
-const SOLID_BLEED: f64 = 0.35;
+const SOLID_BLEED: f64 = 0.5;
 
 /// A rich body's solids at `rot` in an `s` px sprite shown `shown` px
 /// across, each point mapped by `map` into a space `px` units to the screen
