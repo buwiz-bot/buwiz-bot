@@ -105,6 +105,8 @@ pub struct Asking {
     pub external: bool,
     /// the shell's "Always allow `<prefix>`"
     pub prefix: Option<String>,
+    /// a press on a screen: the answer covers this one call, and leaves no grant
+    pub once: bool,
 }
 
 /// What Activity calls an asked call: the command for the shell, else the card's title.
@@ -226,6 +228,9 @@ pub async fn ask(run: &Run, a: Asking) -> Result<Answer, String> {
     if let Some(p) = &a.prefix {
         n["prefix"] = json!(p);
     }
+    if a.once {
+        n["once"] = json!(true);
+    }
     let (tx, mut rx) = oneshot::channel();
     waiting().insert(id.clone(), tx);
     let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), bot, what: shown(&a.tool, &a.title, &a.preview).to_owned(), tool: a.tool.clone() };
@@ -282,6 +287,9 @@ pub fn host_answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     let Some(n) = find(ctx, chat, id) else { return V1Error::err("not_found", "no such card in this chat") };
     if n["state"] != "pending" {
         return Err(V1Error::new("stale", NO_ANSWER).with_details(json!({"notice": n})));
+    }
+    if answer == Answer::Chat && n["once"] == true {
+        return V1Error::err("invalid_args", "a press on a screen is allowed one call at a time");
     }
     let key = js::string_of(&n["key"]);
     let thread = ctx.store.read(|s| s.thread(chat).map(|t| t.id.clone())).unwrap_or_default();

@@ -46,6 +46,7 @@ use std::{
 };
 
 use buwiz_agent::{AgentId, Envelope, Op, PlatformKind, Response, Target, UiTree};
+use buwiz_protocol::ui;
 use nsh_platform_macos::{AppView, UiAct, ui_tree::UiNode as Seen};
 use serde_json::json;
 
@@ -64,11 +65,8 @@ const REPLY: &str = "/v1/host/ui/reply";
 /// How long what an action started has to show: its calls have to be over
 /// for this long.
 const QUIET: Duration = Duration::from_millis(250);
-/// How long an action's answer waits for its calls at most: a person may
-/// have to answer the broker's card for one.
-const CALLS_WAIT: Duration = Duration::from_secs(30);
-/// How long an action counts as running, however its end went missing.
-const ACT_LIMIT: Duration = Duration::from_secs(40);
+const CALLS_WAIT: Duration = ui::CALLS_WAIT;
+const ACT_LIMIT: Duration = ui::ACT_LIMIT;
 
 /// A running open.
 struct Open {

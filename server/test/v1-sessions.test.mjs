@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt, originOf, pressOf } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, mayReach, originOf, pressOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -277,4 +277,19 @@ test("a press record goes out with every call of the agent's, in exactly the pro
     null,
   ];
   for (const b of bad) assert.equal(pressOf("agent", b), undefined, JSON.stringify(b));
+});
+
+test("a write that isn't the person's reaches only a tool open to agents", () => {
+  const app = { name: "fx_save", _meta: { "buwiz/audience": ["app"] } };
+  const bare = { name: "fx_bare" };
+  const open = { name: "fx_draft", _meta: { "buwiz/audience": ["app", "agent"] } };
+  const read = { name: "fx_list", annotations: { readOnlyHint: true }, _meta: { "buwiz/audience": ["app"] } };
+  assert.equal(mayReach("agent", open), true);
+  assert.equal(mayReach("agent", read), true);
+  for (const t of [app, bare, { name: "fx_word", _meta: { "buwiz/audience": "agent" } }, undefined]) {
+    assert.equal(mayReach("agent", t), false);
+    assert.equal(mayReach(undefined, t), false, "no actor is the agent's");
+  }
+  assert.equal(mayReach("person", app), true);
+  assert.equal(mayReach("person", bare), true);
 });

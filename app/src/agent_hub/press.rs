@@ -10,31 +10,20 @@
 //!   is a refusal: a keybinding, an invoke (an x,y press, a viewport), a
 //!   screenshot, a shutdown, and any mutating op on `bot`, the Bot's own
 //!   window, where the person's Allow will be.
-//! - A tool's effect comes from what the broker lists for it
-//!   ([`tool_effect`]), the reverse of `for_agent` in the broker's
-//!   `hub/tools/v1.rs`: anything not shown to be open to agents is the
-//!   person's. A tool that says it only reads stays open to the screen that
-//!   made the call, whatever its audience: its answer stays in the app.
-//!
-//! - A write open to agents still answers to the Bot's switches: the broker
-//!   decides it, for the `ui_act` in flight (`POST /v1/host/ui/press`), as it
-//!   does the model's direct call of that tool: off refuses, Ask asks. With
-//!   no action in flight or no answer, it is refused.
+//! - A tool's effect, and for a write whether the Bot's switches let it go,
+//!   is the broker's word on the live tool list (`POST /v1/host/ui/press`),
+//!   asked on every call of the agent's: a read passes, a write open to
+//!   agents is judged in the turn of the `ui_act` in flight, as the model's
+//!   direct call is, and anything else is the person's. No word is a no:
+//!   nothing is kept here to fall back on.
 //!
 //! No approval exists yet (S4), so an agent's press on a person-only tool
 //! is refused at the bridge, before anything is signed or sent.
-//!
-//! What a plugin lists is kept per generation ([`tool_list`]). A list gone
-//! stale can't let anything through: the broker checks the live one again,
-//! both for the switch and on the signed call.
 
-use std::{
-    collections::HashMap,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::sync::Mutex;
 
 use buwiz_agent::{ActorId, AgentId, Allowed, Caller, Effect, Op, PressAction, Refused, Target, authorize_press};
+use buwiz_protocol::ui;
 use serde_json::{Value, json};
 
 use crate::mini_v1::{RoxError, host_api};
@@ -44,13 +33,8 @@ const AGENT: &str = "agent.broker";
 
 /// The most refusals kept for the answer to one action.
 const KEPT: usize = 16;
-/// Where the broker decides a press, and how long it may take: a person may
-/// have to answer, and a bridge call lasts 30 s.
+/// Where the broker decides a press.
 const PRESS: &str = "/v1/host/ui/press";
-const PRESS_WAIT: Duration = Duration::from_secs(27);
-/// How long a plugin's tools are kept, whatever its generation: a plugin
-/// can list new tools without restarting.
-const TOOLS_KEPT: Duration = Duration::from_secs(30);
 
 /// The agent, as the Hub knows it: no approval, and nothing from a message.
 pub fn caller() -> Option<Caller> {
@@ -99,18 +83,13 @@ pub fn op_refused(target: &Target, op: &Op) -> String {
     }
 }
 
-/// What `tool` does, from `listed`: the tools of its plugin, as
-/// `GET /v1/host/plugins` gives them. Unlisted, or no clear word that it is
-/// open to agents, is [`Effect::Write`]: the person's.
-pub fn tool_effect(listed: &[Value], tool: &str) -> Effect {
-    let Some(def) = listed.iter().find(|t| t.get("name").and_then(Value::as_str) == Some(tool)) else {
-        return Effect::Write;
-    };
-    if def.get("readOnly") == Some(&Value::Bool(true)) {
-        return Effect::Read;
+/// The broker's word for what a tool does; anything else is the person's.
+fn effect_of(word: Option<&str>) -> Effect {
+    match word {
+        Some("read") => Effect::Read,
+        Some("draft") => Effect::Draft,
+        _ => Effect::Write,
     }
-    let open = def.get("audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("agent")));
-    if open { Effect::Draft } else { Effect::Write }
 }
 
 /// `tool` as an action's id: its letters, `-` for the rest.
@@ -125,71 +104,26 @@ pub fn tool_refused(app: &str) -> String {
     format!("Only a person can do this in {app}, and this press came from the AI, so nothing was sent. To go ahead, press it yourself.")
 }
 
-/// A plugin's tools as last listed.
-struct Listed {
-    generation: u64,
-    at: Instant,
-    tools: Vec<Value>,
-}
-
-static TOOLS: Mutex<Option<HashMap<String, Listed>>> = Mutex::new(None);
-
-/// `plugin` is gone or stopped: its tools aren't kept.
-pub fn forget_tools(plugin: &str) {
-    if let Some(kept) = TOOLS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        kept.remove(plugin);
-    }
-}
-
-/// `plugin`'s tools: kept ones if they are of `generation`, its current
-/// one, and recent; else the broker's, kept when the broker names their
-/// generation. `None` when the broker doesn't answer.
-fn tool_list(broker: &dyn host_api::Broker, plugin: &str, generation: Option<u64>) -> Option<Vec<Value>> {
-    let mut kept = TOOLS.lock().unwrap_or_else(|e| e.into_inner());
-    if let (Some(g), Some(k)) = (generation, kept.as_ref().and_then(|m| m.get(plugin)))
-        && k.generation == g
-        && k.at.elapsed() < TOOLS_KEPT
-    {
-        return Some(k.tools.clone());
-    }
-    let rows = host_api::plugins(broker).ok()?;
-    let row = rows.iter().find(|r| r.get("id").and_then(Value::as_str) == Some(plugin))?;
-    let tools = row.get("tools").and_then(Value::as_array)?.clone();
-    let map = kept.get_or_insert_with(HashMap::new);
-    match row.get("generation").and_then(Value::as_u64) {
-        Some(generation) => map.insert(plugin.to_owned(), Listed { generation, at: Instant::now(), tools: tools.clone() }),
-        None => map.remove(plugin),
-    };
-    Some(tools)
-}
-
-/// What the broker says of a write open to agents, for the `ui_act` in
-/// flight: `Err` holds the sentence.
-fn switch_allows(broker: &dyn host_api::Broker, plugin: &str, tool: &str) -> Result<(), String> {
-    let said = "The Bot couldn't check this press, so nothing was sent.";
-    match broker.request("POST", PRESS, Some(json!({"plugin": plugin, "tool": tool})), PRESS_WAIT) {
-        Ok(v) if v.get("allow") == Some(&Value::Bool(true)) => Ok(()),
-        Ok(v) => Err(v.get("said").and_then(Value::as_str).unwrap_or(said).to_owned()),
-        Err(_) => Err(said.to_owned()),
-    }
-}
-
 /// Decides a call of `tool` made under an agent's press: the press record
 /// to sign with it, or the refusal. Nothing else may go out for a call of
 /// the agent's: asked before signing, this is what holds it back.
-/// `generation` is the plugin's current one.
-pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str, generation: Option<u64>) -> Result<Value, RoxError> {
-    let effect = tool_list(broker, plugin, generation).map_or(Effect::Write, |t| tool_effect(&t, tool));
+pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str) -> Result<Value, RoxError> {
+    let held = |held: Held, said: String| {
+        note_refused(held);
+        RoxError::new("permission_denied", said)
+    };
+    let unchecked = || "The Bot couldn't check this press, so nothing was sent.".to_owned();
+    let Ok(word) = broker.request("POST", PRESS, Some(json!({"plugin": plugin, "tool": tool})), ui::PRESS_ROUTE) else {
+        return Err(held(Held::Said(unchecked()), unchecked()));
+    };
+    let effect = effect_of(word.get("effect").and_then(Value::as_str));
     let action = Target::parse(short).ok().zip(tool_id(tool)).map(|(target, id)| PressAction { target, id, effect, once: None });
     let Ok(allowed) = authorize_press(action.as_ref(), caller().as_ref()) else {
-        note_refused(Held::Person);
-        return Err(RoxError::new("permission_denied", tool_refused(title)));
+        return Err(held(Held::Person, tool_refused(title)));
     };
-    if effect != Effect::Read
-        && let Err(said) = switch_allows(broker, plugin, tool)
-    {
-        note_refused(Held::Said(said.clone()));
-        return Err(RoxError::new("permission_denied", said));
+    if word.get("allow") != Some(&Value::Bool(true)) {
+        let said = word.get("said").and_then(Value::as_str).map_or_else(unchecked, str::to_owned);
+        return Err(held(Held::Said(said.clone()), said));
     }
     Ok(json!(allowed.pressed))
 }
@@ -303,130 +237,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_tool_is_the_persons_unless_it_says_it_is_open_to_agents_or_only_reads() {
-        let listed = [
-            json!({"name": "fx_draft", "audience": ["app", "agent"]}),
-            json!({"name": "fx_read", "readOnly": true}),
-            json!({"name": "fx_read_for_apps", "readOnly": true, "audience": ["app"]}),
-            json!({"name": "fx_app", "audience": ["app"]}),
-            json!({"name": "fx_bare"}),
-            json!({"name": "fx_empty", "audience": []}),
-            json!({"name": "fx_word", "audience": "agent"}),
-            json!({"name": "fx_vague", "readOnly": "true"}),
-        ];
-        let effect = |name| tool_effect(&listed, name);
-        assert_eq!(effect("fx_draft"), Effect::Draft);
-        assert_eq!(effect("fx_read"), Effect::Read);
-        assert_eq!(effect("fx_read_for_apps"), Effect::Read);
-        for name in ["fx_app", "fx_bare", "fx_empty", "fx_word", "fx_vague", "fx_not_listed"] {
-            assert_eq!(effect(name), Effect::Write, "{name}");
+    fn a_word_the_bot_doesnt_know_is_the_persons() {
+        assert_eq!(effect_of(Some("read")), Effect::Read);
+        assert_eq!(effect_of(Some("draft")), Effect::Draft);
+        for word in [Some("write"), Some("Read"), Some("file"), Some(""), None] {
+            assert_eq!(effect_of(word), Effect::Write, "{word:?}");
         }
     }
 
-    /// Answers `/v1/host/plugins`, or fails, and the switch as told.
-    struct Listing {
-        list: Option<Value>,
-        press: Result<Value, ()>,
-        lists: std::sync::atomic::AtomicUsize,
-        presses: std::sync::atomic::AtomicUsize,
-    }
+    /// Answers `/v1/host/ui/press` as told, or fails.
+    struct Word(Option<Value>);
 
-    #[allow(non_snake_case)]
-    fn Listing(list: Option<Value>) -> Listing {
-        Listing { list, press: Ok(json!({"allow": true})), lists: Default::default(), presses: Default::default() }
-    }
-
-    impl host_api::Broker for Listing {
-        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
-            use std::sync::atomic::Ordering::SeqCst;
-            let down = || RoxError::new("unavailable", "no broker");
-            if route == PRESS {
-                self.presses.fetch_add(1, SeqCst);
-                return self.press.clone().map_err(|()| down());
-            }
-            assert_eq!(route, "/v1/host/plugins");
-            self.lists.fetch_add(1, SeqCst);
-            self.list.clone().ok_or_else(down)
+    impl host_api::Broker for Word {
+        fn request(&self, _: &str, route: &str, body: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+            assert_eq!(route, PRESS);
+            let body = body.unwrap();
+            assert_eq!((body["plugin"].as_str(), body["tool"].as_str()), (Some("app.buwiz.books"), Some("fx_tool")));
+            self.0.clone().ok_or_else(|| RoxError::new("unavailable", "no broker"))
         }
     }
 
-    fn check(b: &Listing, tool: &str) -> Result<Value, RoxError> {
-        check_tool(b, "app.buwiz.books", "books", "Books", tool, None)
+    fn check(word: Option<Value>) -> Result<Value, RoxError> {
+        check_tool(&Word(word), "app.buwiz.books", "books", "Books", "fx_tool")
     }
 
-    fn draft_list(plugin: &str, generation: u64, audience: Value) -> Option<Value> {
-        Some(json!({"plugins": [{"id": plugin, "generation": generation, "tools": [{"name": "fx_draft", "audience": audience}, {"name": "fx_read", "readOnly": true}]}]}))
+    const PRESSED: fn() -> Value = || json!({"by": "ai", "who": "agent.broker"});
+
+    #[test]
+    fn a_read_or_an_allowed_draft_goes_out_with_the_press_record() {
+        assert_eq!(check(Some(json!({"allow": true, "effect": "read"}))).unwrap(), PRESSED());
+        assert_eq!(check(Some(json!({"allow": true, "effect": "draft"}))).unwrap(), PRESSED());
     }
 
     #[test]
-    fn a_read_goes_out_with_the_press_record_and_asks_no_switch() {
-        let b = Listing(Some(json!({"plugins": [{"id": "app.buwiz.books", "tools": [{"name": "books_app_month_pack", "readOnly": true, "audience": ["app"]}]}]})));
-        assert_eq!(check(&b, "books_app_month_pack").unwrap(), json!({"by": "ai", "who": "agent.broker"}));
-        assert_eq!(b.presses.load(std::sync::atomic::Ordering::SeqCst), 0);
+    fn with_no_clear_yes_nothing_goes_out_not_even_a_read() {
+        let e = check(None).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("permission_denied", "The Bot couldn't check this press, so nothing was sent."));
+        assert!(check(Some(json!({"effect": "read"}))).is_err());
+        assert!(check(Some(json!({"allow": "true", "effect": "read"}))).is_err());
     }
 
     #[test]
-    fn a_write_open_to_agents_answers_to_the_brokers_switch() {
-        let list = || Some(json!({"plugins": [{"id": "app.buwiz.books", "tools": [{"name": "books_entry_draft", "audience": ["app", "agent"]}]}]}));
-        let mut off = Listing(list());
-        off.press = Ok(json!({"allow": false, "said": "Books is off for this Bot, so nothing was sent."}));
-        assert_eq!(check(&off, "books_entry_draft").unwrap_err().message, "Books is off for this Bot, so nothing was sent.");
-        let mut gone = Listing(list());
-        gone.press = Err(());
-        assert_eq!(check(&gone, "books_entry_draft").unwrap_err().message, "The Bot couldn't check this press, so nothing was sent.");
-        let mut bare = Listing(list());
-        bare.press = Ok(json!({}));
-        assert!(check(&bare, "books_entry_draft").is_err(), "no clear yes is a no");
+    fn the_brokers_sentence_goes_to_the_person() {
+        let e = check(Some(json!({"allow": false, "effect": "draft", "said": "Books is off here."}))).unwrap_err();
+        assert_eq!(e.message, "Books is off here.");
     }
 
     #[test]
-    fn a_plugins_tools_are_fetched_once_a_generation() {
-        use std::sync::atomic::Ordering::SeqCst;
-        let plugin = "app.buwiz.cachefx";
-        let check = |b: &Listing, g| check_tool(b, plugin, "cachefx", "Fx", "fx_draft", Some(g));
-        let b = Listing(draft_list(plugin, 4, json!(["agent"])));
-        for _ in 0..3 {
-            check(&b, 4).unwrap();
-        }
-        assert_eq!(b.lists.load(SeqCst), 1);
-        assert_eq!(b.presses.load(SeqCst), 3, "the switch is the broker's, every time");
-        // a new generation reads again, and its answer holds
-        let b = Listing(draft_list(plugin, 5, json!(["app"])));
-        assert!(check(&b, 5).is_err());
-        assert_eq!(b.lists.load(SeqCst), 1);
-    }
-
-    #[test]
-    fn kept_tools_go_when_their_plugin_stops_and_a_stale_list_stops_at_the_broker() {
-        use std::sync::atomic::Ordering::SeqCst;
-        let plugin = "app.buwiz.stalefx";
-        let check = |b: &Listing| check_tool(b, plugin, "stalefx", "Fx", "fx_draft", Some(1));
-        check(&Listing(draft_list(plugin, 1, json!(["agent"]))), ).unwrap();
-        // the plugin narrowed the tool in the same generation: the kept list says open, the live
-        // check doesn't
-        let mut stale = Listing(draft_list(plugin, 1, json!(["app"])));
-        stale.press = Ok(json!({"allow": false, "said": "no"}));
-        assert!(check(&stale).is_err());
-        assert_eq!(stale.lists.load(SeqCst), 0, "it was the kept list");
-        forget_tools(plugin);
-        let fresh = Listing(draft_list(plugin, 1, json!(["app"])));
-        assert!(check(&fresh).is_err());
-        assert_eq!(fresh.lists.load(SeqCst), 1);
-    }
-
-    #[test]
-    fn a_tool_open_to_agents_goes_out_with_the_press_record() {
-        let b = Listing(Some(json!({"plugins": [{"id": "app.buwiz.books", "tools": [{"name": "books_entry_draft", "audience": ["app", "agent"]}]}]})));
-        assert_eq!(check(&b, "books_entry_draft").unwrap(), json!({"by": "ai", "who": "agent.broker"}));
-    }
-
-    #[test]
-    fn with_no_audience_or_no_answer_the_press_is_refused_in_a_plain_sentence() {
-        let bare = Listing(Some(json!({"plugins": [{"id": "app.buwiz.books", "tools": [{"name": "books_app_post_entry"}]}]})));
-        let other = Listing(Some(json!({"plugins": [{"id": "app.buwiz.other", "tools": [{"name": "books_app_post_entry", "audience": ["agent"]}]}]})));
-        for b in [bare, other, Listing(None)] {
-            let e = check(&b, "books_app_post_entry").unwrap_err();
-            assert_eq!(e.code, "permission_denied");
+    fn a_write_or_a_word_nobody_knows_is_a_person_only_refusal_even_if_it_says_allow() {
+        for word in [json!({"allow": true, "effect": "write"}), json!({"allow": true}), json!({"allow": true, "effect": "file"}), json!({"allow": false, "effect": "write"})] {
+            let e = check(Some(word)).unwrap_err();
             assert_eq!(e.message, "Only a person can do this in Books, and this press came from the AI, so nothing was sent. To go ahead, press it yourself.");
         }
         assert!(take_refused().contains(&Held::Person));

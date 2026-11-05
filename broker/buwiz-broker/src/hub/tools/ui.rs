@@ -15,10 +15,12 @@
 //! for: the Bot takes nothing else from a message, not even its `caller`. What the Bot refuses
 //! the model reads as a sentence, and a real refusal the person reads too, in the chat ([`act`]).
 //!
-//! One thing only this side can decide: whether the Bot's switches let a write through. While an
-//! action runs, each write it leads to comes back here (`POST /v1/host/ui/press`, [`UiLink::press`])
-//! and is judged in that action's turn, as the model's direct call of that tool is: off refuses,
-//! Ask asks. With no action in flight there is no turn to judge it in, and it is refused.
+//! What only this side can decide: each call of the agent's comes here first
+//! (`POST /v1/host/ui/press`, [`press_word`]), against the live tool list. A read passes, so a
+//! screen stays alive. A write open to agents is judged in the turn of the action in flight, on
+//! the app that action is on, as the model's direct call of that tool is: off refuses, Ask asks,
+//! and its card covers that one call. Anything else is the person's. With no action in flight
+//! there is no turn to judge a write in, and it is refused.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +28,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use buwiz_agent::{ActorId, AgentId, Caller, DeliveryMode, Envelope, Op, Response, Target, UiNode, UiTree};
+use buwiz_protocol::ui as ui_time;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
@@ -43,10 +46,8 @@ pub const ACT_KEY: &str = "screen_actions";
 
 /// How long the Bot has to answer: it reads the tree on its main thread.
 const WAIT: Duration = Duration::from_secs(10);
-/// How long an action has: its press, the app settling, and the calls it starts.
-const ACT_WAIT: Duration = Duration::from_secs(45);
-/// How long a press may wait for its answer, a person's included: a Bot's call lasts 30 s.
-const PRESS_WAIT: Duration = Duration::from_secs(25);
+const ACT_WAIT: Duration = ui_time::ACT_WAIT;
+const PRESS_WAIT: Duration = ui_time::PRESS_WAIT;
 const NOBODY: &str = "Nobody answered in time, so this press was refused and nothing was sent.";
 const PING: Duration = Duration::from_secs(25);
 
@@ -79,8 +80,15 @@ pub struct UiLink {
     bot: Mutex<Option<mpsc::Sender<Bytes>>>,
     waiting: Mutex<HashMap<String, oneshot::Sender<Response>>>,
     next: AtomicU64,
-    /// The action in flight: where its presses go.
-    acting: Mutex<Option<mpsc::Sender<PressAsk>>>,
+    /// The action in flight.
+    acting: Mutex<Option<Acting>>,
+}
+
+/// The action in flight: the plugin of the app it is on, and where its presses go.
+#[derive(Clone)]
+struct Acting {
+    plugin: Option<String>,
+    presses: mpsc::Sender<PressAsk>,
 }
 
 /// A write an action led to, waiting for its turn's word.
@@ -131,13 +139,13 @@ impl UiLink {
     }
 
     /// Claims the one action in flight; `None` while another runs.
-    fn claim(&self) -> Option<(Claim<'_>, mpsc::Receiver<PressAsk>)> {
+    fn claim(&self, plugin: Option<String>) -> Option<(Claim<'_>, mpsc::Receiver<PressAsk>)> {
         let mut acting = self.acting.lock().unwrap_or_else(|e| e.into_inner());
         if acting.is_some() {
             return None;
         }
-        let (tx, rx) = mpsc::channel(8);
-        *acting = Some(tx);
+        let (presses, rx) = mpsc::channel(8);
+        *acting = Some(Acting { plugin, presses });
         Some((Claim(self), rx))
     }
 
@@ -145,6 +153,10 @@ impl UiLink {
     pub async fn press(&self, plugin: &str, tool: &str) -> Result<(), String> {
         let acting = self.acting.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let acting = acting.ok_or("No action of the AI's is running, so this press was refused and nothing was sent.")?;
+        if acting.plugin.as_deref() != Some(plugin) {
+            return Err("That press isn't in the mini app the AI is acting on, so it was refused and nothing was sent.".to_owned());
+        }
+        let acting = acting.presses;
         let (answer, heard) = oneshot::channel();
         let ask = PressAsk { plugin: plugin.to_owned(), tool: tool.to_owned(), answer };
         let lost = "The Bot couldn't check this press, so nothing was sent.";
@@ -186,6 +198,36 @@ fn act_request(id: String, input: &Value) -> Result<Envelope, String> {
     let who = ActorId::parse("agent.broker").map_err(|e| e.to_string())?;
     e.caller = Some(Caller::Agent { who, approval: None });
     Ok(e)
+}
+
+/// Whether `plugin` and `tool` have the shape of a plugin's id and a tool's name.
+fn well_formed(plugin: &str, tool: &str) -> bool {
+    let ok = |s: &str, more: &[u8]| !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || more.contains(&b));
+    ok(plugin, b".-") && ok(tool, b"._-")
+}
+
+/// `POST /v1/host/ui/press {plugin, tool}`: the answer to a call of the agent's, from the live
+/// tool list. `None` for what isn't a plugin and a tool.
+pub async fn press_word(ctx: &HubCtx, plugin: &str, tool: &str) -> Option<Value> {
+    if !well_formed(plugin, tool) {
+        return None;
+    }
+    let def = v1::tool_def(ctx, plugin, tool);
+    if def.as_ref().is_some_and(keys::declared_read) {
+        return Some(json!({"allow": true, "effect": "read"}));
+    }
+    if !def.as_ref().is_some_and(crate::helper::sessions::open_to_agents) {
+        return Some(json!({"allow": false, "effect": "write"}));
+    }
+    Some(match ctx.ui.press(plugin, tool).await {
+        Ok(()) => json!({"allow": true, "effect": "draft"}),
+        Err(said) => json!({"allow": false, "effect": "draft", "said": said}),
+    })
+}
+
+/// The plugin of the app `short` names, if one is installed.
+fn plugin_of(ctx: &HubCtx, short: &str) -> Option<String> {
+    v1::view(ctx).rows().into_iter().find(|r| r.short == short).map(|r| r.id)
 }
 
 /// Whether a write the action led to may go out, as this turn's direct call of the tool would.
@@ -286,7 +328,7 @@ pub async fn act(run: &Run, input: &Value) -> Out {
         Ok(e) => e,
         Err(why) => return Out::err(why),
     };
-    let Some((_claim, mut presses)) = ui.claim() else {
+    let Some((_claim, mut presses)) = ui.claim(plugin_of(&run.ctx, e.target.as_str())) else {
         return Out::err("The AI's last action is still running, so nothing was pressed.".to_owned());
     };
     let asked = ui.ask(&e, ACT_WAIT);
@@ -455,10 +497,28 @@ mod tests {
     async fn with_no_action_in_flight_a_press_is_refused() {
         let link = UiLink::default();
         assert!(link.press("app.buwiz.books", "books_entry_draft").await.unwrap_err().contains("No action"));
-        let (claim, _rx) = link.claim().unwrap();
-        assert!(link.claim().is_none(), "one at a time");
+        let (claim, _rx) = link.claim(None).unwrap();
+        assert!(link.claim(None).is_none(), "one at a time");
         drop(claim);
-        assert!(link.claim().is_some(), "the claim ends with its action");
+        assert!(link.claim(None).is_some(), "the claim ends with its action");
+    }
+
+    #[tokio::test]
+    async fn a_press_naming_another_plugin_than_the_action_is_refused() {
+        let link = UiLink::default();
+        let (_claim, _rx) = link.claim(Some("app.buwiz.books".into())).unwrap();
+        assert!(link.press("app.buwiz.ebirforms", "ebirforms_form_save_draft").await.unwrap_err().contains("isn't in the mini app"));
+        let unknown = UiLink::default();
+        let (_claim, _rx) = unknown.claim(None).unwrap();
+        assert!(unknown.press("app.buwiz.books", "books_entry_draft").await.is_err(), "an action on no known plugin leads to no write");
+    }
+
+    #[test]
+    fn a_press_has_to_name_a_plugin_and_a_tool() {
+        assert!(well_formed("app.buwiz.books", "books_entry_draft"));
+        for (p, t) in [("", "x"), ("x", ""), ("a b", "x"), ("x", "a/b"), ("x", "a;b"), (&*"p".repeat(129), "x"), ("x", &*"t".repeat(129))] {
+            assert!(!well_formed(p, t), "{p} {t}");
+        }
     }
 
     #[test]

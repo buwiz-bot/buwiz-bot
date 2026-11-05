@@ -236,23 +236,29 @@ pub fn mapped(nodes: &[Seen], reading: Reading) -> Vec<(UiNode, &Seen)> {
 }
 
 /// What makes a screen this screen, as a number that never leaves the Bot:
-/// what shows, hidden from the model or not, so a row swapped under an id
-/// that stayed the same, or a person typing in a field, counts as a change.
-/// An action's own typing doesn't get in its way: its answer is a new look.
-/// Left out: a passing status line.
+/// its controls and what they say, hidden from the model or not, so a row
+/// swapped under an id that stayed the same counts as a change, and what a
+/// person can edit, so their typing does. An action's own typing doesn't get
+/// in its way: its answer is a new look. Left out: a value nobody edits, a
+/// live total or a progress bar, or nothing could ever be pressed while it
+/// moves, and a passing status line.
 pub fn rev(nodes: &[Seen]) -> u64 {
-    fn hash(nodes: &[Seen], h: &mut DefaultHasher) {
+    fn hash(nodes: &[Seen], in_control: bool, h: &mut DefaultHasher) {
         for n in nodes.iter().filter(|n| n.visible && !["status", "alert"].contains(&n.role.as_str())) {
+            let role = n.role.as_str();
+            let editable = FIELDS.contains(&role) && n.enabled;
             n.role.hash(h);
             n.name.hash(h);
             n.enabled.hash(h);
-            n.value.hash(h);
+            if editable || in_control {
+                n.value.hash(h);
+            }
             n.children.len().hash(h);
-            hash(&n.children, h);
+            hash(&n.children, in_control || is_control(role), h);
         }
     }
     let mut h = DefaultHasher::new();
-    hash(nodes, &mut h);
+    hash(nodes, false, &mut h);
     h.finish()
 }
 
@@ -452,6 +458,16 @@ pub(crate) mod tests {
         let mut off = button("b", "Void");
         off.enabled = false;
         assert_ne!(rev(&[button("b", "Void")]), rev(&[off]));
+    }
+
+    #[test]
+    fn a_value_nobody_edits_doesnt_change_the_screen() {
+        let screen = |total: &str, done: &str, locked: &str| {
+            let mut off = seen("l", "textfield", "Locked", Some(locked), vec![]);
+            off.enabled = false;
+            vec![text("t", total), seen("p", "progressbar", "Upload", Some(done), vec![]), off]
+        };
+        assert_eq!(rev(&screen("1,000.00", "10", "a")), rev(&screen("1,250.00", "90", "b")));
     }
 
     #[test]

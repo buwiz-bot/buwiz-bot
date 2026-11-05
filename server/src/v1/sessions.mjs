@@ -59,6 +59,14 @@ export function pressOf(actor, press) {
   return ai || approved ? press : undefined;
 }
 
+/** Whether a signed call may reach `tool`: the person's may, and a read. A write for anyone else
+ *  needs a tool whose `buwiz/audience` names `agent`, however the Bot came to send it. */
+export function mayReach(actor, tool) {
+  if (originOf(actor, tool) === "app") return true;
+  const audience = tool?._meta?.["buwiz/audience"];
+  return Array.isArray(audience) && audience.includes("agent");
+}
+
 const cap = (s, n) => {
   const cs = [...String(s ?? "")];
 
@@ -329,6 +337,7 @@ export function createSessions(plugins) {
     if (Buffer.byteLength(canonicalize(args)) > ARGS_MAX) refuse("invalid_args", `args are over ${ARGS_MAX} bytes`);
 
     if (!rt.tools.some((t) => t.name === envelope.tool)) refuse("not_found", `${s.plugin} has no tool ${envelope.tool}`);
+    if (!mayReach(envelope.actor, rt.tools.find((t) => t.name === envelope.tool))) refuse("permission_denied", `${envelope.tool} is a person's to run`);
     rate(s);
     await slot(s);
     let r;

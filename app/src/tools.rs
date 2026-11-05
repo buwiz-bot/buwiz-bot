@@ -1171,7 +1171,10 @@ pub(crate) struct AskCopy {
 }
 
 pub(crate) fn ask_copy(n: &ToolAskNotice) -> AskCopy {
-    let mut buttons = vec![("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat")];
+    let mut buttons = vec![("Not now".to_owned(), "no")];
+    if !n.once {
+        buttons.push(("Allow in this chat".to_owned(), "chat"));
+    }
     if n.key == "shell" && !n.prefix.is_empty() {
         buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
     }
@@ -2572,6 +2575,9 @@ mod tests {
         // a shell card with no rule to offer, a card with no title
         assert_eq!(ask_copy(&ask(json!({"key": "shell", "tool": "shell_run", "title": "Run `ls && rm x` on this Mac?"}))).buttons.len(), 3);
         assert_eq!(ask_copy(&ask(json!({"key": "mcp:x", "tool": "mcp_x_send"}))).title, "Let it use mcp_x_send?");
+        // a press on a screen: that one call, or not
+        let press = ask_copy(&ask(json!({"key": "v1:app.buwiz.books", "tool": "books_entry_draft", "once": true})));
+        assert_eq!(press.buttons, [("Not now".to_owned(), "no"), ("Allow".to_owned(), "once")]);
         // parsing: state and answer; another kind is no ask card
         let n = ask(json!({"state": "allowed", "answer": "chat"}));
         assert_eq!((n.state.as_str(), n.answer.as_str(), n.bot_name.as_str()), ("allowed", "chat", "A plain chat"));

@@ -1403,11 +1403,3 @@ fn the_backoff_doubles_after_the_third_failure_and_is_capped() {
     assert_eq!(interval_ms(&row(3600.0, 8.0)), 86_400_000.0, "min(base·2^k, max(base, day))");
     assert_eq!(interval_ms(&row(604_800.0, 8.0)), 604_800_000.0);
 }
-
-#[test]
-fn the_plugin_list_says_a_tools_audience_as_declared_and_invents_none() {
-    let draft = json!({"name": "fx_draft", "_meta": {"buwiz/audience": ["app", "agent"]}});
-    assert_eq!(super::plugins::listed_tool(&draft, &[])["audience"], json!(["app", "agent"]));
-    let bare = super::plugins::listed_tool(&json!({"name": "fx_bare"}), &[]);
-    assert!(bare.get("audience").is_none(), "{bare}");
-}

@@ -379,6 +379,8 @@ pub struct ToolAskNotice {
     pub external: bool,
     /// The shell's "Always allow `<prefix>`" ("" for none).
     pub prefix: String,
+    /// A press on a screen: Allow covers this one call.
+    pub once: bool,
     /// `pending`, `allowed`, `declined` or `expired`.
     pub state: String,
     /// `once`, `chat`, `rule` or `no`, once answered.
@@ -403,6 +405,7 @@ impl ToolAskNotice {
             preview: s(v, "preview"),
             external: v.get("external").and_then(|x| x.as_bool()).unwrap_or(false),
             prefix: s(v, "prefix"),
+            once: v.get("once").and_then(|x| x.as_bool()).unwrap_or(false),
             state: notice_state(v),
             answer: s(v, "answer"),
             at: v.get("at").and_then(|x| x.as_i64()).unwrap_or(0),

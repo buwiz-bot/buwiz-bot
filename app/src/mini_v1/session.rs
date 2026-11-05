@@ -307,11 +307,6 @@ pub fn verify_cert(answer: &Value, ask: &host_api::SessionAsk, now: i64) -> Resu
     Ok(not_after)
 }
 
-/// `plugin`'s current generation, if one was seen.
-pub fn generation_of(plugin: &str) -> Option<u64> {
-    GENERATIONS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(plugin).copied()
-}
-
 /// Records `generation` as `plugin`'s current one.
 fn seen_generation(plugin: &str, generation: u64) {
     let mut g = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
@@ -325,9 +320,6 @@ pub fn on_plugin_event(event: &Value) -> usize {
     let Some(plugin) = event.get("id").or_else(|| event.get("plugin")).and_then(Value::as_str) else { return 0 };
     let generation = event.get("generation").and_then(Value::as_u64);
     let gone = matches!(event.get("state").and_then(Value::as_str), Some("disabled" | "uninstalled" | "failed"));
-    if gone {
-        crate::agent_hub::press::forget_tools(plugin);
-    }
     let changed = {
         let mut g = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
         let g = g.get_or_insert_with(HashMap::new);

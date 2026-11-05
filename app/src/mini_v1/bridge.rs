@@ -637,7 +637,7 @@ impl OpenContext {
             return Ok(None);
         }
         let p = &self.prepared.plugin;
-        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool, super::session::generation_of(&p.id));
+        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool);
         if let Err(e) = &press {
             log::info!("mini v1: {}/{} an agent's press on {tool}: {}", p.id, self.prepared.key.app, e.code);
         }

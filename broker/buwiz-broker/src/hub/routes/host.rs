@@ -32,7 +32,7 @@
 //!
 //! The Agent Hub (`hub::tools::ui`): `GET /v1/host/ui/stream` carries a look's request to the
 //! Bot, `POST /v1/host/ui/reply` brings its answer back, `POST /v1/host/ui/press {plugin, tool}`
-//! asks whether the Bot's switches let a write an action led to go out (`{allow, said?}`).
+//! asks of each call an agent's press leads to whether it may go out (`{allow, effect, said?}`).
 //!
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
@@ -770,17 +770,17 @@ fn ui_reply(ctx: &HubCtx, body: &[u8]) -> HubResponse {
     }
 }
 
-/// `POST /v1/host/ui/press {plugin, tool}`: judged in the turn of the action in flight.
+/// `POST /v1/host/ui/press {plugin, tool}`: `hub::tools::ui::press_word`.
 async fn ui_press(ctx: &HubCtx, body: &[u8]) -> HubResponse {
-    let Some(b) = read_body(body) else { return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}") };
+    let bad = || refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}");
+    let Some(b) = read_body(body) else { return bad() };
     let (Some(plugin), Some(tool)) = (b.get("plugin").and_then(Value::as_str), b.get("tool").and_then(Value::as_str)) else {
-        return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}");
+        return bad();
     };
-    let answer = match ctx.ui.press(plugin, tool).await {
-        Ok(()) => json!({"ok": true, "allow": true}),
-        Err(said) => json!({"ok": true, "allow": false, "said": said}),
-    };
-    types::json(StatusCode::OK, &answer)
+    match crate::hub::tools::ui::press_word(ctx, plugin, tool).await {
+        Some(word) => types::json(StatusCode::OK, &word),
+        None => bad(),
+    }
 }
 
 /// A response body fed from a channel (the event stream).

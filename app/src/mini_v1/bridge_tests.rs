@@ -118,14 +118,11 @@ impl host_api::Broker for FakeBroker {
                 self.running.fetch_sub(1, Ordering::SeqCst);
                 Ok(json!({"ok": true, "result": result}))
             }
-            "/v1/host/plugins" => Ok(json!({"plugins": [{"id": FIXTURE, "tools": [
-                {"name": "fx_echo", "audience": ["app", "agent"]},
-                {"name": "fx_slow", "audience": ["app", "agent"]},
-                {"name": "fx_read", "readOnly": true, "audience": ["app"]},
-                {"name": "fx_app", "audience": ["app"]},
-                {"name": "fx_bare"},
-            ]}]})),
-            "/v1/host/ui/press" => Ok(json!({"allow": true})),
+            "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
+                Some("fx_echo" | "fx_slow") => json!({"allow": true, "effect": "draft"}),
+                Some("fx_read") => json!({"allow": true, "effect": "read"}),
+                _ => json!({"allow": false, "effect": "write"}),
+            }),
             "/v1/host/tickets/title" => Ok(json!({"valid": body["ticket"] == TICKET, "title": "Dela Cruz Jane"})),
             "/v1/host/resolve" => Ok(json!({"result": "token", "ticket": TICKET, "title": "Item One"})),
             "/v1/host/sessions/close" => {

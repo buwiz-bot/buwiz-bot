@@ -184,31 +184,33 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
         return None;
     }
     let key = key_for(run, name, input)?;
-    let outside = if key == ui::ACT_KEY { run.state().beyond_screens } else { run.state().external };
-    ask_with(run, name, input, key, outside).await
+    let press = key == ui::ACT_KEY;
+    let outside = if press { run.state().beyond_screens } else { run.state().external };
+    ask_with(run, name, input, key, outside, press).await
 }
 
 /// [`ask_first`] for a write of plugin tool `name` that a press on a screen led to: the look the
-/// press needed doesn't make it ask, or every press would.
+/// press needed doesn't make it ask, or every press would. A press stands alone (O2): no grant
+/// in this chat covers it, and its card leaves none.
 pub async fn ask_press(run: &Run, name: &str) -> Option<Out> {
     let input = json!({});
     let key = key_for(run, name, &input)?;
     let outside = run.state().beyond_screens;
-    ask_with(run, name, &input, key, outside).await
+    ask_with(run, name, &input, key, outside, true).await
 }
 
-async fn ask_with(run: &Run, name: &str, input: &Value, key: String, outside: bool) -> Option<Out> {
+async fn ask_with(run: &Run, name: &str, input: &Value, key: String, outside: bool, press: bool) -> Option<Out> {
     let ctx = &run.ctx;
     let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
     let external = outside && keys::guarded(&key);
-    if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
+    if !external && (pos == Pos::On || (!press && asking::granted(ctx, &run.thread_id(), &key))) {
         return None;
     }
     let (title, lines, preview) = describe(run, name, &key, input);
-    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None };
+    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None, once: press };
     asking::ask(run, a).await.err().map(Out::err)
 }
 
@@ -540,6 +542,7 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
             preview: gate::clip(line, 2000),
             external,
             prefix: asking::prefix_of(ctx, line),
+            once: false,
         };
         if let Err(e) = asking::ask(run, a).await {
             return Out::err(e);

@@ -765,6 +765,83 @@ async fn a_press_on_a_tool_not_open_to_agents_stops_at_the_live_list() {
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+/// A Bot that answers each ask card as told, as a person does.
+fn answering(ctx: &Arc<HubCtx>, chat: &str, answer: &'static str) {
+    use crate::hub::policy::ask::host_answer;
+    let (ctx, chat) = (ctx.clone(), chat.to_owned());
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let pending = cards(&ctx, &chat).into_iter().filter(|n| n["kind"] == "tool_ask" && n["state"] == "pending").collect::<Vec<_>>();
+            for n in pending {
+                let _ = host_answer(&ctx, &json!({"chat": chat, "id": n["id"], "answer": answer}));
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn one_allow_on_a_press_covers_that_call_and_no_other() {
+    let (ctx, run) = press_bed("press-once", "ask", std::time::Duration::from_millis(400));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "once");
+    assert_eq!(pressed(&run).await["done"], true);
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let asked = |c: &[Value]| c.iter().filter(|n| n["kind"] == "tool_ask").count();
+    assert_eq!(asked(&cards(&ctx, &chat)), 1);
+    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")), "no standing grant");
+    // the next write asks again
+    assert_eq!(pressed(&run).await["done"], true);
+    assert_eq!(asked(&cards(&ctx, &chat)), 2);
+    // and so does the model's direct call
+    exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await;
+    assert_eq!(asked(&cards(&ctx, &chat)), 3);
+}
+
+#[tokio::test]
+async fn a_press_card_refuses_allow_in_this_chat_and_grants_nothing() {
+    let (ctx, run) = press_bed("press-chat", "ask", std::time::Duration::from_millis(120));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "chat");
+    assert_eq!(pressed(&run).await["done"], false, "no answer it could take came");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
+    let card = cards(&ctx, &chat).into_iter().find(|n| n["kind"] == "tool_ask").unwrap();
+    assert_eq!(card["once"], true);
+}
+
+#[tokio::test]
+async fn a_grant_from_a_direct_call_doesnt_cover_a_press() {
+    let (ctx, run) = press_bed("press-grant", "ask", std::time::Duration::from_millis(400));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "chat");
+    assert_ne!(exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await.is_error, Some(true), "the direct call takes it");
+    assert!(crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
+    // as a turn of its own would be: what that call read doesn't make ui_act ask
+    run.state().beyond_screens = false;
+    let got = pressed(&run).await;
+    assert_eq!(got["done"], false, "{got}");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn the_press_route_judges_on_the_live_list() {
+    use super::ui::press_word;
+    let (ctx, run) = press_bed("press-word", "on", std::time::Duration::from_millis(50));
+    // a read passes with no action in flight: a screen stays alive
+    assert_eq!(press_word(&ctx, FX, "fx_search").await.unwrap(), json!({"allow": true, "effect": "read"}));
+    for tool in ["fx_app_only", "fx_echo", "fx_no_such_tool"] {
+        assert_eq!(press_word(&ctx, FX, tool).await.unwrap(), json!({"allow": false, "effect": "write"}), "{tool}");
+    }
+    let word = press_word(&ctx, FX, "fx_draft").await.unwrap();
+    assert_eq!((word["allow"].clone(), word["effect"].clone()), (json!(false), json!("draft")), "no action in flight");
+    assert!(press_word(&ctx, "not a plugin", "fx_draft").await.is_none());
+    let _ = run;
+}
+
 #[tokio::test]
 async fn query_source_counts_as_outside_content() {
     let fake = Fake::new("");
