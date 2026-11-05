@@ -1131,6 +1131,13 @@ pub struct RoxBot {
     pub accepts: String,
 }
 
+impl RoxBot {
+    /// The colour its effects and accents take (see [`crate::avatar::accent_of`]).
+    pub(crate) fn accent(&self) -> String {
+        crate::avatar::accent_of(&self.shape, &self.color).to_owned()
+    }
+}
+
 /// A file the user attached or a turn produced (`attachments`, `files`).
 #[derive(Clone, PartialEq, Default)]
 pub struct Attach {
@@ -6041,6 +6048,11 @@ impl Store {
         self.design_keep(&c);
         let own = !is_primary_ink(&c.color);
         self.design_use(c, for_new, own);
+    }
+
+    /// The Create New Bot draft's accent (see [`crate::avatar::accent_of`]).
+    pub(crate) fn draft_accent(&self) -> String {
+        crate::avatar::accent_of(&self.bot_shape.get(), &self.bot_color.get()).to_owned()
     }
 
     /// Puts design `c`'s shape (and its colour, with `with_color`) on the

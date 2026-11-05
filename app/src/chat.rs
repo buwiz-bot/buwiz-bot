@@ -2183,7 +2183,7 @@ fn files_section(t: &Turn) -> impl IntoElement {
     let tint = theme::bubble_fill_of(
         &store()
             .active_bot_untracked()
-            .map(|b| b.color)
+            .map(|b| b.accent())
             .unwrap_or_default(),
     );
     let media: Vec<Attach> = files

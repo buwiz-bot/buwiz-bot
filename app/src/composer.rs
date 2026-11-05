@@ -51,7 +51,7 @@ fn composer_tall() -> bool {
 fn send_fill() -> AdaptiveColor {
     let bot_color = store()
         .active_bot()
-        .and_then(|b| b.color.parse::<Hsla>().ok());
+        .and_then(|b| b.accent().parse::<Hsla>().ok());
     let neutral = match &bot_color {
         None => true,
         Some(c) => {
@@ -69,7 +69,7 @@ fn send_fill() -> AdaptiveColor {
 fn send_ink() -> AdaptiveColor {
     let bot_color = store()
         .active_bot()
-        .and_then(|b| b.color.parse::<Hsla>().ok());
+        .and_then(|b| b.accent().parse::<Hsla>().ok());
     let neutral = match &bot_color {
         None => true,
         Some(c) => {

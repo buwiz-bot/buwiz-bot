@@ -243,6 +243,9 @@ pub(crate) struct PaintOpts {
     pub cutout: bool,
     pub ink_paint: Option<String>,
     pub spot_paint: Option<String>,
+    /// How far the avatar is darkened (hover, edit). A rich body takes it
+    /// here because its colours aren't the ink.
+    pub shade: f64,
 }
 
 fn zr(e: V3) -> String {
@@ -1742,7 +1745,7 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
         _ => vec![],
     };
     // the extra parts show while the eyes do (a status morph past halfway
-    // takes them away with the eyes; the main shell stays)
+    // takes them away with the eyes, and `ve` turns the shell to the ink)
     let rich_parts = match (&rich, &e.eyes) {
         (Some(rich), Some(_)) if !rich.parts.is_empty() => Some(part_draws(rich, &o, r, &d)),
         _ => None,
@@ -3004,12 +3007,12 @@ struct Be {
     rich_solids: Option<SolidDraws>,
     /// The heaviest body's shell and eye colours when it is rich.
     rich: Option<(String, String)>,
-    /// A rich body in the blend (whose shade memory `ink_shade` reads).
-    rich_body: Option<&'static str>,
     head: Option<We>,
     parts: Vec<Part>,
     mark_scale: f64,
     zoom: f64,
+    /// The face still shows: a status morph past halfway takes it away.
+    faced: bool,
 }
 
 fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
@@ -3047,7 +3050,6 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
         rich_parts: if single { r[0].0.rich_parts.clone() } else { None },
         rich_solids: if single { r[0].0.rich_solids.clone() } else { None },
         rich: r.first().and_then(|(l, _)| l.rich.clone()),
-        rich_body: rich_of(e),
         size: t,
         center: o,
         body: match &c {
@@ -3067,6 +3069,7 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
         parts: c.as_ref().map(|c| c.parts.clone()).unwrap_or_default(),
         mark_scale: u,
         zoom: c.as_ref().map(|c| c.zoom).unwrap_or(1.0),
+        faced: e.eyes.is_some(),
     }
 }
 
@@ -3074,10 +3077,14 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
 fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
     let o = e.size;
     let s = e.center;
-    let shade = e.rich_body.map_or(0.0, |b| ink_shade(t, b));
+    let shade = t.shade;
+    // A morph isn't the avatar any more, so it leaves the recipe's colours.
+    // A rich body turns to the ink as its face goes: a blend of the two would
+    // pass through mud, and that frame changes everything anyway.
+    let ink = cc(t);
     let i = match &e.rich {
-        Some((shell, _)) => shaded(shell, shade),
-        None => cc(t),
+        Some((shell, _)) if e.faced => shaded(shell, shade),
+        _ => ink.clone(),
     };
     let a = ga(&e.body);
     let c: String = e.eyes.iter().map(|e| ga(e)).collect::<Vec<_>>().join("");
@@ -3197,7 +3204,7 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
                     -X
                 ),
             )],
-            e.parts.iter().map(|m| ue(m, &i)).collect(),
+            e.parts.iter().map(|m| ue(m, &ink)).collect(),
         )]
     };
     let p = o / 2.0 + (YT2 - X) * e.mark_scale;
@@ -3236,73 +3243,6 @@ fn he(e: &Frame, t: &PaintOpts, n: f64, r: &str, o: f64, s: f64, tab: &Tables) -
 // ---------------------------------------------------------------------------
 // `Uh`
 // ---------------------------------------------------------------------------
-
-thread_local! {
-    /// The last undarkened ink each rich body was drawn with.
-    static PLAIN_INK: RefCell<HashMap<&'static str, [f64; 3]>> = RefCell::new(HashMap::new());
-}
-
-fn hex_rgb(c: &str) -> Option<[f64; 3]> {
-    let h = c.trim().trim_start_matches('#');
-    if h.len() != 6 {
-        return None;
-    }
-    let v = u32::from_str_radix(h, 16).ok()?;
-    Some([(v >> 16) as f64, ((v >> 8) & 255) as f64, (v & 255) as f64])
-}
-
-/// How much the avatar darkened its ink (the hover/edit shade, `darken`'s
-/// `k`) for a rich `body`, read back from `ink_paint`: a darkened ink is
-/// `rgb(..)`, matched against the ink this body last drew undarkened (the
-/// avatar always draws it plain before a hover), else against the picker
-/// colours. 0 when the ink isn't darkened or the amount can't be read
-/// (black ink).
-fn ink_shade(t: &PaintOpts, body: &'static str) -> f64 {
-    let paint = t.ink_paint.as_deref().unwrap_or("").trim();
-    if let Some(plain) = hex_rgb(paint) {
-        PLAIN_INK.with(|m| m.borrow_mut().insert(body, plain));
-        return 0.0;
-    }
-    let Some(rgb) = paint.strip_prefix("rgb(").and_then(|p| p.strip_suffix(')')) else {
-        return 0.0;
-    };
-    let got: Vec<f64> = rgb.split(',').filter_map(|v| v.trim().parse().ok()).collect();
-    if got.len() != 3 {
-        return 0.0;
-    }
-    let known = PLAIN_INK.with(|m| m.borrow().get(body).copied());
-    let palette: Vec<[f64; 3]> = super::BOT_COLORS.iter().filter_map(|c| hex_rgb(c)).collect();
-    let mut best = (f64::INFINITY, 0.0);
-    for base in known.into_iter().chain(palette) {
-        let (top, i) = base
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (*c, i))
-            .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
-        if top <= 0.0 {
-            continue;
-        }
-        let k = (1.0 - got[i] / top).clamp(0.0, 1.0);
-        let err: f64 = (0..3).map(|c| ((base[c] * (1.0 - k)).round() - got[c]).abs()).sum();
-        // the remembered ink wins ties with the palette
-        if err < best.0 - 1e-9 {
-            best = (err, k);
-        }
-    }
-    if best.0 <= 3.0 {
-        best.1
-    } else {
-        0.0
-    }
-}
-
-/// The body a blend's rich paint comes from (for its shade memory).
-fn rich_of(e: &Frame) -> Option<&'static str> {
-    e.bodies
-        .iter()
-        .map(|b| b.body)
-        .find(|b| custom::rich(b).is_some())
-}
 
 /// A recipe colour under the avatar's shade.
 fn shaded(c: &str, k: f64) -> String {
@@ -3459,7 +3399,7 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
     let rot = if rich.solids.is_some() { turned(e.turn) } else { ch(&e.quat, 0.0) };
     let sh = bodies::dollar_h(body, &rot, s, e.eyes.as_ref());
     let [u, l, d, f] = oh(e, n, o, s);
-    let shade = ink_shade(t, body);
+    let shade = t.shade;
     let mut inside = Vec::new();
     if e.eyes.is_some() {
         let decals: Vec<DecalRec> = rich

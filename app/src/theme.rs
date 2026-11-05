@@ -164,7 +164,7 @@ pub(crate) fn bubble_fill_for(chat: &str) -> AdaptiveColor {
     let st = crate::live::store();
     let bot = st.threads.with(|t| t.iter().find(|t| t.id == chat).and_then(|t| t.bot.clone()));
     let color = bot
-        .and_then(|tb| st.bots.with(|b| b.iter().find(|b| b.id == tb.id).map(|b| b.color.clone())))
+        .and_then(|tb| st.bots.with(|b| b.iter().find(|b| b.id == tb.id).map(|b| b.accent())))
         .unwrap_or_default();
     bubble_fill_of(&color)
 }
