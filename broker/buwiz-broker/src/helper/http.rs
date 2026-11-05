@@ -84,6 +84,8 @@ pub struct Resp {
     pub status: u16,
     pub headers: HeaderMap,
     pub url: Url,
+    /// the address the connection really went to
+    pub peer: Option<std::net::SocketAddr>,
     body: Incoming,
 }
 
@@ -151,7 +153,8 @@ pub async fn send(req: &Req) -> Result<Resp, String> {
     let request = b.body(body).map_err(failed)?;
     let res: Response<Incoming> = client().request(request).await.map_err(|e| failed(source_of(&e)))?;
     let (parts, body) = res.into_parts();
-    Ok(Resp { status: parts.status.as_u16(), headers: parts.headers, url: req.url.clone(), body })
+    let peer = parts.extensions.get::<hyper_util::client::legacy::connect::HttpInfo>().map(|i| i.remote_addr());
+    Ok(Resp { status: parts.status.as_u16(), headers: parts.headers, url: req.url.clone(), peer, body })
 }
 
 /// The innermost cause, as Node prints a fetch failure's `cause`.

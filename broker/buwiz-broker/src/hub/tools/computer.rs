@@ -2,10 +2,11 @@
 //! They act on the screen of the acting Bot's seat, inside that computer, and never on this Mac.
 //!
 //! The screen comes from the Bot, and no input names a computer, a screen or a Bot, so these
-//! tools can't reach another Bot's screen, and files stay in the Bot's own folder. That is the
-//! tools' reach, not a wall: inside a box every screen is one user, so anything running a command
-//! there can reach them all. So `computer_run` is off on a shared computer until the box says its
-//! commands stay on their screen, and work that must stay apart needs separate computers.
+//! tools can't reach another Bot's screen, and files stay in the Bot's own folder, links followed
+//! inside the box. That is the tools' reach, not a wall: inside a box every screen is one user, so
+//! anything running a command there can reach them all. So `computer_run` is off on a shared
+//! computer, whatever the box says of itself (a process in it can answer for its services), and
+//! work that must stay apart needs separate computers.
 //!
 //! One switch, `computer`, on by default for a Bot: unlike the shell, what runs here is walled off
 //! from the person's Mac and files. What keeps a person in charge is that the model can't make or
@@ -15,6 +16,9 @@
 //! A routine is different, because no one is there to click: its turn has these tools only when
 //! a person turned `computer_routines` on, which starts off and which only a person can widen. It
 //! may then wake the computer. At Ask it is refused, since nobody can answer the card.
+//!
+//! Pictures are what these tools run on, so a model that can't see gets none of them, and is told
+//! why ([`prompt`]). They go as JPEG, and a turn keeps only the latest few (`agent/turn.rs`).
 //!
 //! What these tools read is outside content (a page on that screen can say anything): it counts as
 //! such for the switches that ask after outside content.
@@ -89,10 +93,40 @@ fn routine_allowed(run: &Run, bot: &str) -> bool {
     run.turn.routine.is_none() || policy::tool_state(&run.ctx, bot, ROUTINES_KEY) == Pos::On
 }
 
-/// Whether this turn is offered the tools: its Bot sits at a computer, and it isn't a routine
-/// nobody let in. A computer nobody made has nothing to offer.
-pub fn offered(run: &Run) -> bool {
-    bot(run).is_some_and(|b| Computers::seat(&run.ctx, &b).is_some() && routine_allowed(run, &b))
+/// The turn's model, as a catalog names it.
+fn model_of(run: &Run) -> String {
+    run.turn.model.as_ref().map(|m| m.model.clone()).filter(|m| !m.is_empty()).unwrap_or_else(|| run.settings.model.clone())
+}
+
+/// Whether this turn's model sees images. A model the catalog doesn't name counts as seeing, as
+/// does any when there is no catalog: a key straight to a provider has none, and refusing there
+/// would lose the computer on models that can use it.
+async fn sees(run: &Run) -> bool {
+    match Computers::of(&run.ctx) {
+        Some(c) => c.sees(&run.settings.opencodex, &model_of(run)).await != Some(false),
+        None => false,
+    }
+}
+
+const BLIND: &str = "This model can't see images, so it can't use the computer. Pick a model that sees images for this Bot.";
+
+/// Whether this turn is offered the tools: its Bot sits at a computer, it isn't a routine nobody
+/// let in, and its model can see the screen. A computer nobody made has nothing to offer.
+pub async fn offered(run: &Run) -> bool {
+    let seated = bot(run).is_some_and(|b| Computers::seat(&run.ctx, &b).is_some() && routine_allowed(run, &b));
+    seated && sees(run).await
+}
+
+/// What the system prompt says of the computer: how to use it, or why this model can't.
+pub async fn prompt(run: &Run) -> String {
+    let seated = bot(run).is_some_and(|b| Computers::seat(&run.ctx, &b).is_some() && routine_allowed(run, &b));
+    if !seated {
+        String::new()
+    } else if sees(run).await {
+        "\n\nYour computer: the screen is for acting. To read a page or a file, use a text route where one exists (fetch_url, computer_read_file, computer_run), because each screenshot is costly and only the latest few stay with you.".to_owned()
+    } else {
+        format!("\n\nYour computer: if asked to use it, say this in your own words: {BLIND}")
+    }
 }
 
 fn no(problem: &Problem) -> Out {
@@ -114,13 +148,22 @@ pub fn own_path(folder: &str, path: &str) -> Option<String> {
     safe.then(|| format!("{folder}/{rest}"))
 }
 
+/// `path` in `folder` as the computer resolves it, links followed; `None` when that leaves the
+/// folder.
+async fn inside(live: &Live, path: &str) -> Result<Option<String>, Problem> {
+    let Some(rel) = own_path(&live.screen.folder, path) else { return Ok(None) };
+    let real = live.provider.resolve(&live.machine, &rel).await?;
+    Ok(real.starts_with(&format!("/workspace/{}/", live.screen.folder)).then_some(real))
+}
+
 /// The screen as blocks: the facts for the model, then the picture.
 async fn look(live: &Live, facts: Value) -> Out {
     match live.provider.screenshot(&live.machine, &live.screen).await {
         Ok(shot) => {
-            let data = base64::engine::general_purpose::STANDARD.encode(&shot.png);
+            let (bytes, media) = shot.for_model();
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let facts = live.machine.scrub(&js::stringify(&facts));
-            Out { content: json!([{"type": "text", "text": facts}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}]), is_error: None }
+            Out { content: json!([{"type": "text", "text": facts}, {"type": "image", "source": {"type": "base64", "media_type": media, "data": data}}]), is_error: None }
         }
         Err(p) => no(&p),
     }
@@ -141,6 +184,9 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     let Some(computers) = Computers::of(&run.ctx) else { return Out::err("This broker has no computers.".to_owned()) };
     if !routine_allowed(run, &bot) {
         return Out::err("A routine can use the computer only when a person turns that on.".to_owned());
+    }
+    if !sees(run).await {
+        return Out::err(BLIND.to_owned());
     }
     let ctx = &run.ctx;
     run.set_job("connecting", "Working on its computer");
@@ -202,9 +248,9 @@ async fn act(run: &Run, live: &Live, name: &str, input: &Value) -> Out {
         }
         "computer_run" => {
             let Some(command) = text(input, "command") else { return Out::err("computer_run needs command".to_owned()) };
-            // on a shared computer a command could reach the other Bots' screens, until the box
-            // keeps each screen's commands to its own user
-            if Computers::seats(&run.ctx, &live.computer).len() > 1 && !provider.commands_stay_on_their_screen(machine).await {
+            // on a shared computer a command could reach the other Bots' screens, and nothing the
+            // box says of itself changes that: its services can be impersonated from inside
+            if Computers::seats(&run.ctx, &live.computer).len() > 1 {
                 return Out::err("computer_run is off on a computer several Bots share: a command could reach their screens. Use the screen, or ask for a computer of your own.".to_owned());
             }
             let timeout = input.get("timeout_s").and_then(Value::as_u64).unwrap_or(30).clamp(1, 600);
@@ -230,14 +276,22 @@ async fn act(run: &Run, live: &Live, name: &str, input: &Value) -> Out {
             }
         }
         "computer_read_file" => {
-            let Some(path) = text(input, "path").and_then(|p| own_path(&screen.folder, p)) else { return Out::err("computer_read_file reads inside your own folder on the computer".to_owned()) };
+            let path = match inside(live, text(input, "path").unwrap_or_default()).await {
+                Ok(Some(p)) => p,
+                Ok(None) => return Out::err("computer_read_file reads inside your own folder on the computer".to_owned()),
+                Err(p) => return no(&p),
+            };
             match provider.read_file(machine, &path).await {
                 Ok(bytes) => Out::ok(machine.scrub(&js::slice_utf16(&String::from_utf8_lossy(&bytes), MAX_TEXT))),
                 Err(p) => no(&p),
             }
         }
         "computer_write_file" => {
-            let Some(path) = text(input, "path").and_then(|p| own_path(&screen.folder, p)) else { return Out::err("computer_write_file writes inside your own folder on the computer".to_owned()) };
+            let path = match inside(live, text(input, "path").unwrap_or_default()).await {
+                Ok(Some(p)) => p,
+                Ok(None) => return Out::err("computer_write_file writes inside your own folder on the computer".to_owned()),
+                Err(p) => return no(&p),
+            };
             let content = text(input, "content").unwrap_or_default();
             match provider.write_file(machine, &path, content.as_bytes()).await {
                 Ok(()) => Out::ok(js::stringify(&json!({"saved": path, "bytes": content.len()}))),

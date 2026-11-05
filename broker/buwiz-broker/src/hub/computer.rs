@@ -44,6 +44,8 @@ const DEEP_ENV: &str = "BUWIZ_COMPUTER_DEEP_SECS";
 /// Idle this long, it sleeps. Asleep this long, it lets go of its memory.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 const DEEP: Duration = Duration::from_secs(2 * 60 * 60);
+/// How long opencodex's word on which models see images holds: every model call asks.
+const SIGHT_TTL: Duration = Duration::from_secs(60);
 
 /// A Bot's place at a computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +74,8 @@ pub struct Computers {
     machines: Mutex<HashMap<String, Machine>>,
     idle: Duration,
     deep: Duration,
+    /// which models see images, as opencodex says, and when it said
+    sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
 }
 
 /// What a tool acts with: the computer, and the screen of the Bot it was found for.
@@ -92,7 +96,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP) }
+        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), sight: Mutex::default() }
     }
 
     pub fn of(ctx: &HubCtx) -> Option<Arc<Self>> {
@@ -135,35 +139,54 @@ impl Computers {
             .unwrap_or_default()
     }
 
-    fn ids(ctx: &HubCtx) -> Vec<String> {
+    fn ids_where(ctx: &HubCtx, clause: &str) -> Vec<String> {
         ctx.db
             .with(|c| {
-                let mut q = c.prepare("SELECT id FROM computers ORDER BY created_at, id")?;
+                let mut q = c.prepare(&format!("SELECT id FROM computers WHERE {clause} ORDER BY created_at, id"))?;
                 let rows = q.query_map([], |r| r.get(0))?;
                 rows.collect()
             })
             .unwrap_or_default()
     }
 
+    fn ids(ctx: &HubCtx) -> Vec<String> {
+        Self::ids_where(ctx, "gone_at IS NULL")
+    }
+
+    /// Whether `id` is a computer this broker has: never a path anyone sent.
+    fn known(ctx: &HubCtx, id: &str) -> bool {
+        valid_id(id) && Self::ids(ctx).iter().any(|i| i == id)
+    }
+
     fn dir(ctx: &HubCtx, id: &str) -> PathBuf {
         ctx.data.join("computers").join(id)
     }
 
+    /// Whole or not at all: the record goes to a new file, then takes the old one's place.
     fn save_machine(ctx: &HubCtx, id: &str, machine: &Machine) -> Result<(), Problem> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let path = Self::dir(ctx, id).join("machine.json");
+        let failed = |e: std::io::Error| Problem::Failed(e.to_string());
+        let (path, next) = (Self::dir(ctx, id).join("machine.json"), Self::dir(ctx, id).join("machine.json.new"));
         let text = serde_json::to_vec(machine).map_err(|e| Problem::Failed(e.to_string()))?;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| Problem::Failed(e.to_string()))?;
-        f.write_all(&text).map_err(|e| Problem::Failed(e.to_string()))
+        let _ = std::fs::remove_file(&next);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next).map_err(failed)?;
+        f.write_all(&text).map_err(failed)?;
+        f.sync_all().map_err(failed)?;
+        std::fs::rename(&next, &path).map_err(failed)
     }
 
+    /// The saved record. Missing or unreadable is [`Problem::Gone`]: the computer can't be
+    /// reached without it, and a click makes a new one.
     fn machine(&self, ctx: &HubCtx, id: &str) -> Result<Machine, Problem> {
+        if !valid_id(id) {
+            return Err(Problem::Gone);
+        }
         if let Some(m) = self.machines.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
             return Ok(m.clone());
         }
         let text = std::fs::read(Self::dir(ctx, id).join("machine.json")).map_err(|_| Problem::Gone)?;
-        let m: Machine = serde_json::from_slice(&text).map_err(|_| Problem::Failed("its saved record can't be read".to_owned()))?;
+        let m: Machine = serde_json::from_slice(&text).map_err(|_| Problem::Gone)?;
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), m.clone());
         Ok(m)
     }
@@ -186,8 +209,8 @@ impl Computers {
 
     // ---- wake and sleep ----
 
-    /// A new computer with `bot` at it. It is made asleep.
-    async fn create_for(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
+    /// A new computer, asleep, with no Bot at it yet.
+    async fn make(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
         let id = format!("cmp_{}", buwiz_computer::random_hex(8)?);
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
@@ -203,24 +226,21 @@ impl Computers {
         Self::save_machine(ctx, &id, &machine)?;
         let at = policy::now(ctx);
         ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, last_used) VALUES(?,?,?,?,?)", rusqlite::params![id, machine.provider.as_str(), at, bot, at])).map_err(db_problem)?;
-        Self::add_seat(ctx, bot, &id, "member")?;
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), machine);
         Ok(id)
     }
 
-    /// A person clicked: makes the computer if `bot` has none, and starts waking it. Comes back
-    /// at once; the status says how it goes.
+    /// A person clicked: makes the computer if `bot` has none, or if its record is lost (the Bots
+    /// at it move to the new one), and starts waking it. Comes back at once; the status says how
+    /// it goes.
     pub async fn click(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
         self.now().problems.remove(bot);
-        let id = match Self::seat(ctx, bot) {
-            Some(seat) => seat.computer,
-            None => match self.create_for(ctx, bot).await {
-                Ok(id) => id,
-                Err(e) => {
-                    self.now().problems.insert(bot.to_owned(), e.clone());
-                    return Err(e);
-                }
-            },
+        let id = match self.computer_for_click(ctx, bot).await {
+            Ok(id) => id,
+            Err(e) => {
+                self.now().problems.insert(bot.to_owned(), e.clone());
+                return Err(e);
+            }
         };
         if !self.now().waking.insert(id.clone()) {
             return Ok(());
@@ -230,6 +250,21 @@ impl Computers {
             let _ = me.finish_wake(&ctx, &id).await;
         });
         Ok(())
+    }
+
+    async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
+        let Some(seat) = Self::seat(ctx, bot) else {
+            let id = self.make(ctx, bot).await?;
+            Self::add_seat(ctx, bot, &id, "member")?;
+            return Ok(id);
+        };
+        if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
+            return Ok(seat.computer);
+        }
+        let id = self.make(ctx, bot).await?;
+        ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])).map_err(db_problem)?;
+        self.retire(ctx, &seat.computer).await;
+        Ok(id)
     }
 
     /// Up, with every Bot's screen. `id` is in `waking`.
@@ -259,7 +294,14 @@ impl Computers {
         let machine = self.machine(ctx, id)?;
         let provider = self.provider_of(&machine);
         provider.wake(&machine).await?;
-        for seat in Self::seats(ctx, id) {
+        let seats = Self::seats(ctx, id);
+        // a Bot that left while it slept has its screen and slot taken down here
+        for bot in provider.screens(&machine).await.unwrap_or_default() {
+            if !seats.iter().any(|s| s.bot == bot) {
+                let _ = provider.screen_down(&machine, &bot).await;
+            }
+        }
+        for seat in seats {
             let screen = provider.screen_up(&machine, &seat.bot).await?;
             Self::set_screen(ctx, &seat.bot, Some(&screen));
         }
@@ -288,6 +330,9 @@ impl Computers {
 
     /// One look at every computer: the ones nobody needs go to sleep, then deeper.
     pub async fn sleep_the_idle(&self, ctx: &HubCtx) {
+        for id in Self::ids_where(ctx, "gone_at IS NOT NULL") {
+            self.finish_retire(ctx, &id).await;
+        }
         let at = policy::now(ctx);
         for id in Self::ids(ctx) {
             if self.now().waking.contains(&id) {
@@ -321,6 +366,9 @@ impl Computers {
         if Self::seat(ctx, bot).is_some() {
             return Err(Problem::Failed("this Bot already has a computer".to_owned()));
         }
+        if !Self::known(ctx, computer) {
+            return Err(Problem::Gone);
+        }
         let machine = self.machine(ctx, computer)?;
         if Self::seats(ctx, computer).len() as i64 >= MAX_SEATS {
             return Err(Problem::Failed(format!("a computer has room for {MAX_SEATS} Bots")));
@@ -340,44 +388,102 @@ impl Computers {
     }
 
     /// `bot` leaves its computer. The last Bot's leaving removes the computer and what it kept.
+    /// This never waits on the provider: with Docker off a Bot still goes, and what's left of its
+    /// computer is removed when Docker is back.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
         let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
-        let machine = self.machine(ctx, &seat.computer)?;
-        let provider = self.provider_of(&machine);
         if let Some(gate) = self.gate().await {
             gate.close(bot);
         }
-        let last = Self::seats(ctx, &seat.computer).len() <= 1;
-        if last {
-            provider.destroy(&machine).await?;
-        } else if provider.power(&machine).await == Ok(Power::Awake) {
-            let _ = provider.screen_down(&machine, bot).await;
+        if Self::seats(ctx, &seat.computer).len() <= 1 {
+            self.retire(ctx, &seat.computer).await;
+            return Ok(());
         }
         ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
-        if last {
-            ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [&seat.computer])).map_err(db_problem)?;
-            self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(&seat.computer);
-            let _ = std::fs::remove_dir_all(Self::dir(ctx, &seat.computer));
+        // asleep, its screen comes down at the next wake (`wake_all`)
+        if let Ok(machine) = self.machine(ctx, &seat.computer) {
+            let provider = self.provider_of(&machine);
+            if provider.power(&machine).await == Ok(Power::Awake) {
+                let _ = provider.screen_down(&machine, bot).await;
+            }
         }
         Ok(())
+    }
+
+    /// `id` has no Bots left: it's marked, then removed as soon as the provider can.
+    async fn retire(&self, ctx: &HubCtx, id: &str) {
+        let at = policy::now(ctx);
+        let _ = ctx.db.with(|c| {
+            c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id])?;
+            c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id])
+        });
+        self.finish_retire(ctx, id).await;
+    }
+
+    async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
+        let removed = match self.machine(ctx, id) {
+            Ok(m) => self.provider_of(&m).destroy(&m).await,
+            Err(_) => self.provider.sweep(id).await,
+        };
+        if matches!(removed, Ok(()) | Err(Problem::NotBuilt(_) | Problem::Gone)) {
+            let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+            self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+            self.now().problems.remove(id);
+            if valid_id(id) {
+                let _ = std::fs::remove_dir_all(Self::dir(ctx, id));
+            }
+        }
     }
 
     // ---- reading ----
 
     /// `bot`'s computer ready to act on, or why not. Only an awake computer is: the model doesn't
-    /// wake one.
+    /// wake one. Nothing gets past here on a computer with a recorded problem, or one whose
+    /// provider's guard fails; that guard is how a box from before this broker's start gets its
+    /// wall before anyone uses it.
     pub async fn live(&self, ctx: &HubCtx, bot: &str) -> Result<Live, Problem> {
         let seat = Self::seat(ctx, bot).ok_or(Problem::Asleep)?;
-        if self.now().waking.contains(&seat.computer) {
-            return Err(Problem::Asleep);
+        {
+            let now = self.now();
+            if now.waking.contains(&seat.computer) {
+                return Err(Problem::Asleep);
+            }
+            if let Some(p) = now.problems.get(&seat.computer) {
+                return Err(p.clone());
+            }
         }
         let machine = self.machine(ctx, &seat.computer)?;
         let provider = self.provider_of(&machine);
         match (provider.power(&machine).await?, seat.screen) {
-            (Power::Awake, Some(screen)) => Ok(Live { provider, machine, computer: seat.computer, screen }),
+            (Power::Awake, Some(screen)) => {
+                if let Err(p) = provider.guard(&machine).await {
+                    self.now().problems.insert(seat.computer.clone(), p.clone());
+                    return Err(p);
+                }
+                Ok(Live { provider, machine, computer: seat.computer, screen })
+            }
             (Power::Absent, _) => Err(Problem::Gone),
             _ => Err(Problem::Asleep),
         }
+    }
+
+    /// Whether `model` sees images, as opencodex's catalog says. `None` when it doesn't say: a
+    /// catalog that can't be reached, or a model not in it.
+    pub async fn sees(&self, opencodex: &str, model: &str) -> Option<bool> {
+        let fresh = |t: &Instant| t.elapsed() < SIGHT_TTL;
+        if let Some((_, known)) = self.sight.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(t, _)| fresh(t)) {
+            return known.get(model).copied();
+        }
+        let catalog = super::model::images::get_json(&format!("{opencodex}/v1/models")).await.ok().map(|j| sight_of(&j)).unwrap_or_default();
+        let answer = catalog.get(model).copied();
+        *self.sight.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), catalog));
+        answer
+    }
+
+    /// Pins the catalog (tests).
+    #[cfg(test)]
+    pub fn set_sight(&self, known: HashMap<String, bool>) {
+        *self.sight.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), known));
     }
 
     /// The Computer tab's status for `bot`. No secret, no address.
@@ -448,6 +554,23 @@ impl Computers {
             .collect();
         json!({"computers": rows})
     }
+}
+
+/// Which models of opencodex's catalog see images.
+fn sight_of(catalog: &Value) -> HashMap<String, bool> {
+    let models = catalog.get("data").and_then(Value::as_array).into_iter().flatten();
+    models
+        .filter_map(|m| {
+            let caps = m.get("capabilities")?;
+            let sees = caps.get("supports_vision").and_then(Value::as_bool).or_else(|| Some(caps.get("input_modalities")?.as_array()?.iter().any(|x| x == "image")))?;
+            Some((m.get("id")?.as_str()?.to_owned(), sees))
+        })
+        .collect()
+}
+
+/// `cmp_` and hex: what [`Computers::make`] writes.
+fn valid_id(id: &str) -> bool {
+    id.strip_prefix("cmp_").is_some_and(|h| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn millis(d: Duration) -> i64 {

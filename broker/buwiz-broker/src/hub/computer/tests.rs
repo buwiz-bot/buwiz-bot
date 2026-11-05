@@ -33,6 +33,8 @@ fn bed(label: &str) -> Bed {
     ctx.store.load().unwrap();
     let mock = Arc::new(MockProvider::default());
     let computers = Arc::new(Computers::new(mock.clone()));
+    // no catalog: nothing here asks a real opencodex
+    computers.set_sight(std::collections::HashMap::new());
     ctx.ext.insert(computers.clone());
     let (a, b) = ctx
         .store
@@ -123,6 +125,12 @@ async fn a_problem_is_a_sentence_in_the_status() {
     awake(&b, &b.ann.0).await;
 }
 
+/// Every test bed sees: no opencodex is there to ask.
+#[test]
+fn a_model_no_catalog_names_counts_as_seeing() {
+    assert_eq!(sight_of(&json!({})).get("x"), None);
+}
+
 #[tokio::test]
 async fn two_bots_share_a_computer_and_each_has_its_own_screen() {
     let b = bed("share");
@@ -181,7 +189,7 @@ fn a_path_stays_in_the_folder() {
 }
 
 #[tokio::test]
-async fn commands_wait_for_the_box_to_keep_them_to_their_screen_on_a_shared_computer() {
+async fn commands_stay_off_on_a_shared_computer() {
     let b = bed("shared-run");
     let id = awake(&b, &b.ann.0).await;
     let r = run(&b, &b.ann.1, None);
@@ -190,8 +198,150 @@ async fn commands_wait_for_the_box_to_keep_them_to_their_screen_on_a_shared_comp
     let o = call(&r, "computer_run", json!({"command": "ls"})).await;
     assert_eq!(o.is_error, Some(true));
     assert!(words(&o).contains("several Bots share"), "{}", words(&o));
-    b.mock.separate.store(true, Ordering::SeqCst);
-    assert_eq!(call(&r, "computer_run", json!({"command": "ls"})).await.is_error, None);
+    assert_eq!(b.mock.calls().iter().filter(|c| c.ends_with(" ls")).count(), 1, "the refused one never ran");
+}
+
+#[tokio::test]
+async fn a_box_is_guarded_before_any_use_after_a_broker_start() {
+    let b = bed("guard");
+    awake(&b, &b.ann.0).await;
+    let again = Computers::new(b.mock.clone());
+    b.mock.calls.lock().unwrap().clear();
+    again.live(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!(b.mock.calls(), ["guard"]);
+}
+
+#[tokio::test]
+async fn a_box_that_fails_its_guard_is_refused_and_stays_refused() {
+    let b = bed("unsafe");
+    awake(&b, &b.ann.0).await;
+    *b.mock.unsafe_now.lock().unwrap() = Some(Problem::Unwalled("no python3".into()));
+    let r = run(&b, &b.ann.1, None);
+    let o = call(&r, "computer_screenshot", json!({})).await;
+    assert!(words(&o).contains("couldn't be walled off"), "{}", words(&o));
+    // even once the check would pass: a person has to wake it again
+    *b.mock.unsafe_now.lock().unwrap() = None;
+    b.mock.set_power(Power::Awake);
+    assert_eq!(b.computers.live(&b.ctx, &b.ann.0).await.err().map(|p| p.code()), Some("unwalled"));
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["state"], "error");
+    awake(&b, &b.ann.0).await;
+    assert!(b.computers.live(&b.ctx, &b.ann.0).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_link_out_of_the_folder_is_refused_for_reads_and_writes() {
+    let b = bed("link");
+    awake(&b, &b.ann.0).await;
+    let (folder, r) = (format!("agents/{}", b.ann.0), run(&b, &b.ann.1, None));
+    b.mock.links.lock().unwrap().insert(format!("{folder}/out"), format!("/workspace/agents/{}/x", b.bea.0));
+    b.mock.calls.lock().unwrap().clear();
+    assert_eq!(call(&r, "computer_read_file", json!({"path": "out"})).await.is_error, Some(true));
+    assert_eq!(call(&r, "computer_write_file", json!({"path": "out", "content": "x"})).await.is_error, Some(true));
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("read ") || c.starts_with("write ")), "{:?}", b.mock.calls());
+    assert_eq!(call(&r, "computer_read_file", json!({"path": "fine"})).await.is_error, None);
+}
+
+#[tokio::test]
+async fn a_lost_record_doesnt_strand_a_bot() {
+    for broken in [None, Some("{\"provider")] {
+        let b = bed("lost");
+        let old = awake(&b, &b.ann.0).await;
+        b.computers.attach(&b.ctx, &b.bea.0, &old).await.unwrap();
+        let path = Computers::dir(&b.ctx, &old).join("machine.json");
+        match broken {
+            Some(text) => std::fs::write(&path, text).unwrap(),
+            None => std::fs::remove_file(&path).unwrap(),
+        }
+        let fresh = Computers::new(b.mock.clone());
+        let fresh = Arc::new(fresh);
+        assert_eq!(fresh.live(&b.ctx, &b.ann.0).await.err(), Some(Problem::Gone));
+        assert_eq!(fresh.status(&b.ctx, &b.ann.0).await["code"], "gone");
+        fresh.click(&b.ctx, &b.ann.0).await.unwrap();
+        for _ in 0..400 {
+            if fresh.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let new = Computers::seat(&b.ctx, &b.ann.0).unwrap().computer;
+        assert_ne!(new, old);
+        assert_eq!(Computers::seat(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
+        assert!(b.mock.calls().contains(&format!("sweep {old}")), "what's left of the old one goes: {:?}", b.mock.calls());
+        assert_eq!(Computers::ids(&b.ctx), [new]);
+    }
+}
+
+#[tokio::test]
+async fn leaving_with_the_record_lost_is_leaving() {
+    let b = bed("lost-leave");
+    let id = awake(&b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
+    let fresh = Computers::new(b.mock.clone());
+    fresh.detach(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(Computers::seat(&b.ctx, &b.ann.0).is_none());
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_bot_goes_with_docker_off_and_the_computer_follows_when_it_is_back() {
+    let b = bed("docker-off");
+    let id = awake(&b, &b.ann.0).await;
+    *b.mock.problem.lock().unwrap() = Some(Problem::ProviderDown("Docker".into()));
+    b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(Computers::seat(&b.ctx, &b.ann.0).is_none());
+    assert_eq!(Computers::ids(&b.ctx), Vec::<String>::new());
+    assert_eq!(Computers::ids_where(&b.ctx, "gone_at IS NOT NULL"), std::slice::from_ref(&id), "it's still owed a removal");
+    *b.mock.problem.lock().unwrap() = None;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+    assert!(!Computers::dir(&b.ctx, &id).exists());
+}
+
+#[tokio::test]
+async fn a_bot_that_leaves_a_sleeping_computer_loses_its_screen_at_the_next_wake() {
+    let b = bed("leave-asleep");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    b.computers.detach(&b.ctx, &b.bea.0).await.unwrap();
+    awake(&b, &b.ann.0).await;
+    assert!(b.mock.calls().contains(&"screen_down b_bea".to_owned()), "{:?}", b.mock.calls());
+    assert_eq!(*b.mock.screens.lock().unwrap(), ["b_ann"]);
+}
+
+#[tokio::test]
+async fn a_computer_id_is_never_a_path() {
+    let b = bed("id");
+    awake(&b, &b.ann.0).await;
+    for bad in ["../../etc", "cmp_../x", "cmp_", "/tmp/x", "cmp_zz"] {
+        assert_eq!(b.computers.attach(&b.ctx, &b.bea.0, bad).await, Err(Problem::Gone), "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn a_model_that_cant_see_gets_no_tools_and_a_plain_reason() {
+    let b = bed("blind");
+    awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    b.computers.set_sight(std::collections::HashMap::from([(r.settings.model.clone(), false)]));
+    assert_eq!(offered(&r).await, Vec::<String>::new());
+    assert!(tools::prompt(&r).await.contains("can't see images"));
+    let o = call(&r, "computer_screenshot", json!({})).await;
+    assert!(words(&o).contains("can't see images"), "{}", words(&o));
+    b.computers.set_sight(std::collections::HashMap::from([(r.settings.model.clone(), true)]));
+    assert_eq!(offered(&r).await.len(), NAMES.len());
+    assert!(tools::prompt(&r).await.contains("the screen is for acting"));
+}
+
+#[test]
+fn the_catalog_says_who_sees() {
+    let known = sight_of(&json!({"data": [
+        {"id": "a", "capabilities": {"supports_vision": true}},
+        {"id": "b", "capabilities": {"input_modalities": ["text"]}},
+        {"id": "c", "capabilities": {"input_modalities": ["text", "image"]}},
+        {"id": "d"},
+    ]}));
+    assert_eq!((known.get("a"), known.get("b"), known.get("c"), known.get("d")), (Some(&true), Some(&false), Some(&true), None));
 }
 
 #[tokio::test]
@@ -384,7 +534,7 @@ async fn an_action_answers_with_the_settled_screen_for_every_provider() {
     let o = call(&r, "computer_click", json!({"x": 1, "y": 1})).await;
     let blocks = o.content.as_array().unwrap();
     assert_eq!(blocks[1]["type"], "image");
-    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/jpeg");
     let facts: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
     assert!(facts.get("waited_ms").is_some() && facts.get("timed_out").is_some(), "{facts}");
 }
@@ -431,7 +581,7 @@ async fn a_route_answers_only_the_apps_token() {
 fn fetch_url_cant_reach_a_computers_ports() {
     let port = buwiz_computer::PORT_FIRST + 3;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    for host in ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"] {
+    for host in ["127.0.0.1", "localhost", "LOCALHOST", "127.1", "[::1]", "0.0.0.0"] {
         let url = format!("http://{host}:{port}/v1/health");
         let out = runtime.block_on(crate::hub::tools::builtin::fetch_url(&json!({"url": url})));
         assert_eq!(out.unwrap_err(), "fetch failed", "{host}");

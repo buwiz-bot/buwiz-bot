@@ -215,7 +215,7 @@ async fn offered(run: &Run) -> Vec<Value> {
         out.push(ui::def());
         out.push(ui::act_def());
     }
-    if computer::offered(run) {
+    if computer::offered(run).await {
         out.extend(computer::defs());
     }
     out.extend(routine.iter().cloned());

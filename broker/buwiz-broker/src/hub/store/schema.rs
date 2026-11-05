@@ -137,6 +137,8 @@ const TRIED: &[&str] = &[
     id TEXT PRIMARY KEY, provider TEXT NOT NULL, created_at INTEGER, created_for TEXT, last_used INTEGER, slept_at INTEGER);
   CREATE TABLE IF NOT EXISTS computer_seats(
     bot_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', screen TEXT, attached_at INTEGER);",
+    // no Bot is left at it: it goes as soon as its provider answers
+    "ALTER TABLE computers ADD COLUMN gone_at INTEGER",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

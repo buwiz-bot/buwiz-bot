@@ -12,7 +12,7 @@ use super::user_content::user_content;
 use crate::hub::model::anthropic::{llm, parse_llm};
 use crate::hub::model::{agent_stream, set_agent_stream, sse};
 use crate::hub::store::{Thread, Turn};
-use crate::hub::tools::{activity, defs, exec_tool, server_search, set_server_search, tool_list, ui, Out, Run};
+use crate::hub::tools::{activity, computer, defs, exec_tool, server_search, set_server_search, tool_list, ui, Out, Run};
 use crate::js;
 
 /// The thread's last ten turns as the model reads them (notices left out),
@@ -90,7 +90,7 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
     let mut steps = Steps::default();
     let mut answered = false;
     let mut rounds = ROUNDS;
-    for i in 0..SCREEN_ROUNDS {
+    for i in 0..COMPUTER_ROUNDS {
         if i >= rounds {
             break;
         }
@@ -106,7 +106,7 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             let mut params = json!({
                 "model": run.settings.model,
                 "max_tokens": run.settings.max_tokens,
-                "system": format!("{}{scope}", defs::agent_system(ctx, &run.turn).await),
+                "system": format!("{}{scope}{}", defs::agent_system(ctx, &run.turn).await, computer::prompt(run).await),
                 "tools": tool_list(run).await,
                 "messages": messages.clone(),
             });
@@ -205,6 +205,7 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             results.push(r.result_block(u.get("id").unwrap_or(&Value::Null)));
         }
         messages.push(json!({"role": "user", "content": results}));
+        drop_old_screens(&mut messages);
         drop_pending(run);
         if stop == "max_tokens" {
             break;
@@ -223,12 +224,35 @@ const ROUNDS: usize = 8;
 /// each picker, whose options show only after it opens, so its steps can't go in one call.
 const SCREEN_ROUNDS: usize = 32;
 
+/// The model calls of a turn that acts on a computer. A form of ten fields is a click and a type
+/// for each, a look and a send: about 25 calls, and this is that twice over, for what doesn't go
+/// right the first time. Old pictures are dropped, so the length doesn't grow what each call sends.
+const COMPUTER_ROUNDS: usize = 48;
+/// The screenshots a turn keeps in what it sends: enough to compare before and after.
+const KEPT_SCREENS: usize = 3;
+const DROPPED_SCREEN: &str = "[an older screenshot was dropped]";
+
 /// The turn's rounds after tool `name` answered `r`.
 fn rounds_after(rounds: usize, name: &str, r: &Out) -> usize {
-    if name == ui::ACT && r.is_error != Some(true) {
-        SCREEN_ROUNDS
+    let worked = r.is_error != Some(true);
+    if worked && computer::NAMES.contains(&name) && !computer::READS.contains(&name) {
+        rounds.max(COMPUTER_ROUNDS)
+    } else if worked && name == ui::ACT {
+        rounds.max(SCREEN_ROUNDS)
     } else {
         rounds
+    }
+}
+
+/// All but the latest [`KEPT_SCREENS`] pictures in tool results become a line of text. A person's
+/// own images are in their messages, not in tool results, and stay.
+fn drop_old_screens(messages: &mut [Value]) {
+    let results = messages.iter_mut().rev().filter_map(|m| m.get_mut("content")?.as_array_mut()).flatten();
+    let tool_results = results.filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
+    let blocks = tool_results.filter_map(|r| r.get_mut("content")?.as_array_mut()).flat_map(|c| c.iter_mut().rev());
+    let pictures = blocks.filter(|b| b.get("type").and_then(Value::as_str) == Some("image"));
+    for old in pictures.skip(KEPT_SCREENS) {
+        *old = json!({"type": "text", "text": DROPPED_SCREEN});
     }
 }
 
@@ -271,13 +295,49 @@ fn step_line(ctx: &crate::hub::ctx::HubCtx, u: &Value) -> String {
         ui::NAME => "Looked at the screen".to_owned(),
         ui::ACT if input.get("action").and_then(Value::as_str) == Some("click") => format!("Pressed \"{}\"", node(&input)),
         ui::ACT => format!("Filled in \"{}\"", node(&input)),
+        _ if computer::NAMES.contains(&name.as_str()) => computer_line(&name, &input),
         _ => activity::tool_activity(ctx, &name, &input).1,
+    }
+}
+
+/// A computer tool in plain words. What's typed or run stays out: a line says what happened, for
+/// a person who asked for it, and typing can be a password.
+fn computer_line(name: &str, input: &Value) -> String {
+    let word = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default();
+    match name {
+        "computer_open_url" => format!("Opened {} on its computer", js::slice_utf16(word("url"), 120)),
+        "computer_write_file" => format!("Saved {} on its computer", js::slice_utf16(word("path"), 120)),
+        "computer_read_file" => format!("Read {} on its computer", js::slice_utf16(word("path"), 120)),
+        "computer_run" => "Ran a command on its computer".to_owned(),
+        "computer_type" | "computer_key" => "Typed on its computer".to_owned(),
+        "computer_screenshot" | "computer_wait" => "Looked at its computer".to_owned(),
+        _ => "Used its computer's screen".to_owned(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_keeps_only_its_latest_screens() {
+        let shot = |n: u32| json!({"role": "user", "content": [{"type": "tool_result", "content": [{"type": "text", "text": n.to_string()}, {"type": "image", "source": {"data": n}}]}]});
+        let person = json!({"role": "user", "content": [{"type": "image", "source": {"data": "mine"}}]});
+        let mut messages = vec![person.clone(), shot(1), shot(2), shot(3), shot(4), shot(5)];
+        drop_old_screens(&mut messages);
+        assert_eq!(messages[0], person, "a person's own picture stays");
+        let picture = |m: &Value| m["content"][0]["content"][1]["type"] == "image";
+        assert_eq!(messages[1..].iter().map(picture).collect::<Vec<_>>(), [false, false, true, true, true]);
+        assert_eq!(messages[1]["content"][0]["content"][0]["text"], "1", "what the tool said stays");
+        assert_eq!(messages[1]["content"][0]["content"][1]["text"], DROPPED_SCREEN);
+    }
+
+    #[test]
+    fn a_computer_step_says_what_happened_and_never_what_was_typed() {
+        assert_eq!(computer_line("computer_type", &json!({"text": "hunter2"})), "Typed on its computer");
+        assert_eq!(computer_line("computer_run", &json!({"command": "cat secret"})), "Ran a command on its computer");
+        assert_eq!(computer_line("computer_open_url", &json!({"url": "https://a.example"})), "Opened https://a.example on its computer");
+    }
 
     #[test]
     fn turn_history_reads_cards_and_drops_notices() {
@@ -485,6 +545,10 @@ mod tests {
         assert_eq!(rounds_after(ROUNDS, ui::ACT, &Out::err("off".into())), ROUNDS);
         assert_eq!(rounds_after(ROUNDS, ui::NAME, &Out::ok("{}".into())), ROUNDS);
         assert_eq!(rounds_after(SCREEN_ROUNDS, "fx_echo", &Out::ok("{}".into())), SCREEN_ROUNDS);
+        assert_eq!(rounds_after(ROUNDS, "computer_click", &Out::ok("{}".into())), COMPUTER_ROUNDS);
+        assert_eq!(rounds_after(ROUNDS, "computer_click", &Out::err("asleep".into())), ROUNDS);
+        assert_eq!(rounds_after(ROUNDS, "computer_screenshot", &Out::ok("{}".into())), ROUNDS, "a look alone isn't acting");
+        assert_eq!(rounds_after(COMPUTER_ROUNDS, ui::ACT, &Out::ok("{}".into())), COMPUTER_ROUNDS, "a screen doesn't lower it");
     }
 
     #[test]
