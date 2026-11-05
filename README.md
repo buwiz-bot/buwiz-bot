@@ -96,13 +96,13 @@ of the desktop port.
 
 ```sh
 open -a ~/Applications/Buwiz\ Bot.app  # the dev bundle (app/bundle-dev.sh) turns automation on
-scripts/buwiz-agent snapshot          # click, type, screenshot, invoke …
+scripts/buwiz-drive snapshot          # click, type, screenshot, invoke …
 ```
 
 The dev launcher makes a new random token at every launch and keeps it in
 `$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token`, readable only by you
 (and, for now, under its old name `rox-gpui-agent-token` too);
-`scripts/buwiz-agent` passes it to `gpui-agent` through the environment, never
+`scripts/buwiz-drive` passes it to `gpui-agent` through the environment, never
 on a command line; `scripts/rox-agent`, its old name, still works. To run
 a bare build with automation, do the same:
 `GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=<random>
