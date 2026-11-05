@@ -401,6 +401,9 @@ function solidCost(s) {
  *  from stalling the renderer (app/src/mark/solids.rs, which checks the same). */
 /** A solid as a bot stores it: the fields of its kind and nothing else. */
 export function solidOf(s) {
+  // a solid that isn't one goes on as it came: `solidErrors` says what's wrong with it
+  if (s === null || typeof s !== "object" || !SOLID_KEYS[s.kind]) return s;
+  if (s.marks !== undefined && !(Array.isArray(s.marks) && s.marks.every((m) => m && typeof m === "object"))) return s;
   const keep = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
   return {
     ...keep(s, ["kind", "color", ...SOLID_KEYS[s.kind]]),
