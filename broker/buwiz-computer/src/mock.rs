@@ -27,6 +27,12 @@ pub struct MockProvider {
     pub poison_save: AtomicBool,
     /// `create` takes this long, for tests of two at once
     pub create_ms: std::sync::atomic::AtomicU64,
+    /// `create` fails with this, part way
+    pub create_problem: Mutex<Option<Problem>>,
+    /// `destroy` never returns while set: a hung Docker
+    pub hang_destroy: AtomicBool,
+    /// what `recover` finds
+    pub recoverable: Mutex<Option<Reach>>,
     /// `look` fails with this
     pub look_problem: Mutex<Option<Problem>>,
     /// `screen_up` fails with this
@@ -41,7 +47,7 @@ pub struct MockProvider {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
     }
 }
 
@@ -94,6 +100,9 @@ impl Provider for MockProvider {
 
     async fn create(&self, spec: &Spec) -> Result<Machine> {
         self.check().await?;
+        if let Some(p) = self.create_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(self.create_ms.load(Ordering::SeqCst))).await;
         self.note(format!("create {}", spec.id));
         self.set_power(Power::Asleep);
@@ -124,6 +133,9 @@ impl Provider for MockProvider {
 
     async fn wake(&self, _: &Machine) -> Result<Woke> {
         self.check().await?;
+        if *self.power.lock().unwrap_or_else(|e| e.into_inner()) == Power::Absent {
+            self.note("rebuild".to_owned());
+        }
         self.note("wake".to_owned());
         while self.hold.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -141,6 +153,9 @@ impl Provider for MockProvider {
 
     async fn destroy(&self, _: &Machine) -> Result<()> {
         self.check().await?;
+        while self.hang_destroy.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         self.note("destroy".to_owned());
         self.set_power(Power::Absent);
         Ok(())
@@ -169,6 +184,20 @@ impl Provider for MockProvider {
 
     async fn screens(&self, _: &Machine) -> Result<Vec<String>> {
         Ok(self.screens.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    async fn recover(&self, spec: &Spec) -> Result<Option<Machine>> {
+        self.note(format!("recover {}", spec.id));
+        let found = self.recoverable.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        Ok(found.map(|reach| Machine {
+            provider: ProviderKind::Docker,
+            reach,
+            image: Some("mock:1".to_owned()),
+            token: Secret::new(TOKEN),
+            viewer_password: Secret::new(PASSWORD),
+            dir: spec.dir.clone(),
+            seen: None,
+        }))
     }
 
     async fn sweep(&self, id: &str) -> Result<()> {

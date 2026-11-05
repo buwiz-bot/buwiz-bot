@@ -134,3 +134,93 @@ async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
 fn shell_lines(text: &str) -> String {
     text.lines().map(|l| format!("'{}'", l.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
 }
+
+fn docker(args: &[&str]) -> String {
+    let out = std::process::Command::new("docker").args(args).output().expect("docker");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn name_of(m: &buwiz_computer::Machine) -> String {
+    match &m.reach {
+        buwiz_computer::Reach::Container { name } => name.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Connects from `from`'s source port, or any, as a process in the box could.
+fn reach(host: &str, port: u16, from: u16) -> String {
+    format!("python3 -c \"import socket;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.settimeout(3);s.bind(('',{from}));\ntry:\n    s.connect(('{host}',{port}));print('REACHED')\nexcept Exception as e:\n    print('blocked',type(e).__name__)\"")
+}
+
+/// A network with no inter-container block of its own, so what's measured is the wall.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn files_outlive_lost_containers_and_a_peer_cant_be_reached() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let p = DockerProvider::new(image, "c2u");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    docker(&["network", "create", "c2u-net"]);
+    let dirs: Vec<PathBuf> = ["cmp_c2ua", "cmp_c2ub"].iter().map(|d| std::env::temp_dir().join(format!("{d}-{}", std::process::id())).join(d)).collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let a = p.create(&Spec { id: "cmp_c2ua".into(), dir: dirs[0].clone() }).await.unwrap();
+    let b = p.create(&Spec { id: "cmp_c2ub".into(), dir: dirs[1].clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let (a, b) = (a.clone(), b.clone());
+        async move {
+            let p = DockerProvider::new(std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned()), "c2u");
+            lost_and_peers(&p, &a, &b).await
+        }
+    })
+    .await;
+    p.destroy(&a).await.unwrap();
+    p.destroy(&b).await.unwrap();
+    docker(&["network", "rm", "c2u-net"]);
+    for d in &dirs {
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+    outcome.unwrap();
+}
+
+async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buwiz_computer::Machine) {
+    p.wake(a).await.unwrap();
+    p.wake(b).await.unwrap();
+    let (na, nb) = (name_of(a), name_of(b));
+    let screen = p.screen_up(a, "c2u_a").await.unwrap();
+
+    // the capabilities, as Docker holds them; the wall went up anyway
+    assert!(docker(&["inspect", &format!("{na}-wall"), "--format", "{{.HostConfig.CapDrop}}"]).contains("ALL"));
+    let caps = docker(&["inspect", &na, "--format", "{{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}}"]);
+    assert!(caps.contains("NET_RAW") && !caps.contains("NET_ADMIN"), "{caps}");
+
+    // a peer on the same network, from any port and from an exempt one
+    let peer = docker(&["inspect", &format!("{nb}-wall"), "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"]);
+    assert!(!peer.is_empty());
+    let (any, exempt) = (reach(&peer, 1337, 0), reach(&peer, 1337, 6905));
+    for (what, cmd) in [("any port", any), ("exempt port", exempt)] {
+        let out = p.run(a, &screen, &cmd, 10_000).await.unwrap();
+        println!("to a peer from {what}: {}", out.stdout.trim());
+        assert!(out.stdout.contains("blocked"), "{what}: {} {}", out.stdout, out.stderr);
+    }
+
+    // files, through every way a container can go
+    for (what, gone) in [("holder", vec![format!("{na}-wall")]), ("box", vec![na.clone()]), ("both", vec![na.clone(), format!("{na}-wall")])] {
+        p.write_file(a, "kept.txt", what.as_bytes()).await.unwrap();
+        for g in &gone {
+            docker(&["rm", "-f", g]);
+        }
+        assert_ne!(p.power(a).await.unwrap() == Power::Absent, what == "holder", "only a missing box is a missing computer: {what}");
+        p.wake(a).await.unwrap();
+        assert_eq!(p.read_file(a, "kept.txt").await.unwrap(), what.as_bytes(), "{what}: the files went");
+        println!("{what} removed by hand: files kept");
+    }
+
+    // a lost record: found by its label, with new secrets
+    let dir = a.dir.clone();
+    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir }).await.unwrap().expect("it's still there");
+    assert_eq!(found.reach, a.reach);
+    assert_ne!(found.token, a.token);
+    p.wake(&found).await.unwrap();
+    assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both");
+}

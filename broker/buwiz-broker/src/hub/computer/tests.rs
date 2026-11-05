@@ -266,7 +266,8 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         let new = Computers::seat(&b.ctx, &b.ann.0).unwrap().computer;
         assert_ne!(new, old);
         assert_eq!(Computers::seat(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
-        assert!(b.mock.calls().contains(&format!("sweep {old}")), "what's left of the old one goes: {:?}", b.mock.calls());
+        fresh.sleep_the_idle(&b.ctx).await;
+        assert!(b.mock.calls().contains(&format!("recover {old}")), "it looked for what's left first: {:?}", b.mock.calls());
         assert_eq!(Computers::ids(&b.ctx), [new]);
     }
 }
@@ -279,6 +280,7 @@ async fn leaving_with_the_record_lost_is_leaving() {
     let fresh = Computers::new(b.mock.clone());
     fresh.detach(&b.ctx, &b.ann.0).await.unwrap();
     assert!(Computers::seat(&b.ctx, &b.ann.0).is_none());
+    fresh.sleep_the_idle(&b.ctx).await;
     assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
 }
 
@@ -414,17 +416,84 @@ async fn a_resumed_computer_only_brings_up_the_screens_it_lacks() {
 }
 
 #[tokio::test]
-async fn a_computer_whose_container_is_gone_is_made_again_on_a_click() {
+async fn a_computer_whose_container_is_gone_keeps_its_files_on_a_click() {
     let b = bed("absent");
-    let old = awake(&b, &b.ann.0).await;
-    b.computers.attach(&b.ctx, &b.bea.0, &old).await.unwrap();
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
     b.mock.set_power(Power::Absent);
     assert_eq!(b.computers.live(&b.ctx, &b.ann.0).await.err(), Some(Problem::Gone));
-    let new = awake(&b, &b.ann.0).await;
-    assert_ne!(new, old, "the record still read, and there was nothing to wake");
-    assert_eq!(Computers::seat(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
-    assert_eq!(Computers::ids(&b.ctx), [new]);
-    assert!(!Computers::dir(&b.ctx, &old).exists());
+    b.mock.calls.lock().unwrap().clear();
+    assert_eq!(awake(&b, &b.ann.0).await, id, "the same computer, rebuilt");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    let calls = b.mock.calls();
+    assert!(calls.contains(&"rebuild".to_owned()), "{calls:?}");
+    assert!(!calls.iter().any(|c| c == "destroy" || c.starts_with("sweep")), "a click removed a computer's files: {calls:?}");
+}
+
+#[tokio::test]
+async fn only_a_person_deleting_the_last_bot_removes_a_computer() {
+    let b = bed("leave");
+    let id = awake(&b, &b.ann.0).await;
+    let refused = b.computers.leave(&b.ctx, &b.ann.0).await;
+    assert!(refused.is_err(), "leaving would delete its files with no question asked");
+    assert_eq!(Computers::seat(&b.ctx, &b.ann.0).map(|s| s.computer), Some(id.clone()));
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    b.computers.leave(&b.ctx, &b.bea.0).await.unwrap();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(!b.mock.calls().contains(&"destroy".to_owned()));
+}
+
+#[tokio::test]
+async fn a_hung_docker_doesnt_hold_up_other_bots() {
+    let b = bed("hung");
+    let id = awake(&b, &b.ann.0).await;
+    b.mock.hang_destroy.store(true, Ordering::SeqCst);
+    let quick = |f| tokio::time::timeout(Duration::from_secs(2), f);
+    quick(b.computers.detach(&b.ctx, &b.ann.0)).await.expect("detach waited on the provider").unwrap();
+    assert_eq!(Computers::ids_where(&b.ctx, "gone_at IS NOT NULL"), std::slice::from_ref(&id));
+    // while the removal hangs, in the sweep, a click goes through
+    let ctx = b.ctx.clone();
+    let sweeper = b.computers.clone();
+    let sweep = tokio::spawn(async move { sweeper.sleep_the_idle(&ctx).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(2), b.computers.click(&b.ctx, &b.bea.0)).await.expect("a click waited behind a removal").unwrap();
+    b.mock.hang_destroy.store(false, Ordering::SeqCst);
+    sweep.await.unwrap();
+    assert!(b.mock.calls().contains(&"destroy".to_owned()));
+}
+
+#[tokio::test]
+async fn a_computer_that_fails_part_way_is_swept_by_its_id() {
+    let b = bed("part-way");
+    *b.mock.create_problem.lock().unwrap() = Some(Problem::Failed("the second create failed".into()));
+    assert!(b.computers.click(&b.ctx, &b.ann.0).await.is_err());
+    let id = Computers::ids_where(&b.ctx, "gone_at IS NOT NULL").pop().expect("a holder would be left with nothing to find it");
+    *b.mock.create_problem.lock().unwrap() = None;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(b.mock.calls().contains(&format!("sweep {id}")), "{:?}", b.mock.calls());
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_lost_record_is_rebuilt_from_what_is_left_and_no_files_go() {
+    let b = bed("recover");
+    let old = awake(&b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &old).join("machine.json")).unwrap();
+    *b.mock.recoverable.lock().unwrap() = Some(buwiz_computer::Reach::Container { name: "mock-kept".into() });
+    b.mock.calls.lock().unwrap().clear();
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.set_sight(std::collections::HashMap::new());
+    fresh.click(&b.ctx, &b.ann.0).await.unwrap();
+    for _ in 0..400 {
+        if fresh.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(Computers::seat(&b.ctx, &b.ann.0).unwrap().computer, old);
+    fresh.sleep_the_idle(&b.ctx).await;
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("sweep") || c == "destroy" || c.starts_with("create")), "{:?}", b.mock.calls());
+    assert!(Computers::dir(&b.ctx, &old).join("machine.json").exists());
 }
 
 #[tokio::test]
@@ -496,6 +565,7 @@ async fn a_bot_delete_takes_its_computer_with_it() {
     let body = bytes::Bytes::from(json!({"id": b.ann.0}).to_string());
     let req = HubRequest { method: hyper::Method::POST, url: "/bot/delete".into(), headers: hyper::HeaderMap::new(), body, params: Vec::new() };
     assert_eq!(crate::hub::routes::bots::bot_delete(b.ctx.clone(), req).await.status(), StatusCode::OK);
+    b.computers.sleep_the_idle(&b.ctx).await;
     assert!(b.mock.calls().contains(&"destroy".to_owned()));
     assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
 }
@@ -557,6 +627,7 @@ async fn the_last_bot_leaving_removes_the_computer_and_an_earlier_one_doesnt() {
     assert!(b.mock.calls().contains(&"screen_down b_ann".to_owned()) && !b.mock.calls().contains(&"destroy".to_owned()));
     assert!(Computers::seat(&b.ctx, &b.ann.0).is_none());
     b.computers.detach(&b.ctx, &b.bea.0).await.unwrap();
+    b.computers.sleep_the_idle(&b.ctx).await;
     assert!(b.mock.calls().contains(&"destroy".to_owned()));
     assert!(!Computers::dir(&b.ctx, &id).exists());
     assert_eq!(Computers::ids(&b.ctx), Vec::<String>::new());

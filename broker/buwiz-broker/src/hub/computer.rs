@@ -14,6 +14,10 @@
 //! sandbox closes. They aren't in app.db, and no route answers with them: the app gets a one-time
 //! ticket ([`buwiz_computer::Gate`]).
 //!
+//! Files outlive everything but a person's delete: a box or holder gone missing is rebuilt on the
+//! same volumes when it next wakes, and a lost record is rebuilt from what's left. A computer is
+//! only ever removed for a person who deleted its last Bot, or just made and empty.
+//!
 //! What C6 hangs here: a seat's `role` (`member` today; a Bot lent another's computer would be
 //! a `guest`, with what it may do decided by that side's switches) and a screen's `folder`, the
 //! per-agent place artifacts are collected from.
@@ -223,7 +227,14 @@ impl Computers {
         let machine = match made {
             Ok(m) => m,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&dir);
+                // past its checks it may have left a part behind, and with no record nothing
+                // would find it: the sweep does, by its label
+                if !matches!(e, Problem::ProviderDown(_) | Problem::ProviderMissing(_) | Problem::ImageMissing(_) | Problem::NotBuilt(_)) {
+                    let at = policy::now(ctx);
+                    let _ = ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, gone_at) VALUES(?,?,?,?,?)", rusqlite::params![id, self.provider.kind().as_str(), at, bot, at]));
+                } else {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
                 return Err(e);
             }
         };
@@ -271,27 +282,34 @@ impl Computers {
         let Some(seat) = Self::seat(ctx, bot) else {
             let id = self.make(ctx, bot).await?;
             if let Err(e) = Self::add_seat(ctx, bot, &id, "member") {
-                self.retire(ctx, &id).await;
+                // just made: nothing is on it
+                self.mark_retired(ctx, &id);
+                self.finish_retire(ctx, &id).await;
                 return Err(e);
             }
             return Ok(id);
         };
-        // its record lost, or the record kept and the computer itself gone: there's nothing to
-        // wake, and a person was told a click makes a new one
-        let lost = match self.machine(ctx, &seat.computer) {
-            Err(Problem::Gone) => true,
-            Ok(m) => self.provider_of(&m).power(&m).await == Ok(Power::Absent),
-            Err(_) => false,
-        };
-        if !lost {
+        // a record that reads is all it takes: the wake rebuilds whatever went, on the same files
+        if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
             return Ok(seat.computer);
         }
+        // its record is lost: what's left of the computer gets a new one, files and all
+        let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
+        if let Some(machine) = self.provider.recover(&spec).await? {
+            std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
+            Self::save_machine(ctx, &seat.computer, &machine)?;
+            self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(seat.computer.clone(), machine);
+            self.now().problems.remove(&seat.computer);
+            return Ok(seat.computer);
+        }
+        // nothing of it is left to find
         let id = self.make(ctx, bot).await?;
         if let Err(e) = ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])) {
-            self.retire(ctx, &id).await;
+            self.mark_retired(ctx, &id);
+            self.finish_retire(ctx, &id).await;
             return Err(db_problem(e));
         }
-        self.retire(ctx, &seat.computer).await;
+        self.mark_retired(ctx, &seat.computer);
         Ok(id)
     }
 
@@ -434,36 +452,52 @@ impl Computers {
         Ok(())
     }
 
-    /// `bot` leaves its computer. The last Bot's leaving removes the computer and what it kept.
-    /// This never waits on the provider: with Docker off a Bot still goes, and what's left of its
-    /// computer is removed when Docker is back.
+    /// A person took `bot` off a computer others stay at. The last Bot can't leave this way: that
+    /// would delete the computer's files, and only deleting the Bot says so and asks.
+    pub async fn leave(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
+        if let Some(seat) = Self::seat(ctx, bot) {
+            if Self::seats(ctx, &seat.computer).len() <= 1 {
+                return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
+            }
+        }
+        self.detach(ctx, bot).await
+    }
+
+    /// `bot` is off its computer: a person deleted it, or it left one others stay at. The last
+    /// Bot's going marks the computer for removal, and the sweep removes it and what it kept
+    /// ([`Computers::sleep_the_idle`]), so nothing here waits on the provider: with Docker off or
+    /// hung a Bot still goes, and nobody else's click waits behind it.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
-        let _seating = self.seating.lock().await;
-        let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
+        let seat = {
+            let _seating = self.seating.lock().await;
+            let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
+            let last = Self::seats(ctx, &seat.computer).len() <= 1;
+            ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
+            if last {
+                self.mark_retired(ctx, &seat.computer);
+            }
+            (!last).then_some(seat)
+        };
         if let Some(gate) = self.gate().await {
             gate.close(bot);
         }
-        if Self::seats(ctx, &seat.computer).len() <= 1 {
-            self.retire(ctx, &seat.computer).await;
-            return Ok(());
-        }
-        ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
-        // asleep, its screen comes down at the next wake (`wake_all`)
-        if let Ok(machine) = self.machine(ctx, &seat.computer) {
-            let provider = self.provider_of(&machine);
-            if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
-                let _ = provider.screen_down(&machine, bot).await;
+        // asleep, its screen comes down at the next wake (`clear_empty_screens`)
+        if let Some(seat) = seat {
+            if let Ok(machine) = self.machine(ctx, &seat.computer) {
+                let provider = self.provider_of(&machine);
+                if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
+                    let _ = provider.screen_down(&machine, bot).await;
+                }
             }
         }
         Ok(())
     }
 
-    /// `id` has no Bots left: it's marked, then removed as soon as the provider can.
-    async fn retire(&self, ctx: &HubCtx, id: &str) {
+    /// `id` has no Bots left, and a person agreed to that: it goes as soon as the provider can.
+    fn mark_retired(&self, ctx: &HubCtx, id: &str) {
         let at = policy::now(ctx);
         let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id]));
         let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
-        self.finish_retire(ctx, id).await;
     }
 
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
@@ -786,7 +820,7 @@ async fn attach(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 
 async fn detach(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
-    match computers.detach(&ctx, &bot).await {
+    match computers.leave(&ctx, &bot).await {
         Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
         Err(p) => refused(&p),
     }

@@ -164,6 +164,10 @@ pub struct Seen {
     pub started: String,
     /// whether that network is up
     pub net_running: bool,
+    /// its network's holder doesn't exist: the computer's own containers must be made again
+    pub net_missing: bool,
+    /// when the computer itself last started
+    pub box_started: String,
     /// guest port → `127.0.0.1:port`
     pub ports: std::collections::HashMap<u16, String>,
 }
@@ -431,12 +435,19 @@ pub trait Provider: Send + Sync {
 
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()>;
 
-    /// Removes it and everything it kept.
+    /// Removes it and everything it kept. Only for a computer a person agreed to delete, or one
+    /// just made that holds nothing yet.
     async fn destroy(&self, machine: &Machine) -> Result<()>;
 
-    /// Removes whatever is left of computer `id` when its saved record is lost.
+    /// [`Provider::destroy`] of computer `id` when its saved record is lost. The same rule.
     async fn sweep(&self, _id: &str) -> Result<()> {
         Ok(())
+    }
+
+    /// A record for computer `spec.id` from what's left of it, with new secrets, when its saved
+    /// one is lost: its files are still there. `None` when nothing of it is found.
+    async fn recover(&self, _spec: &Spec) -> Result<Option<Machine>> {
+        Ok(None)
     }
 
     /// Before anyone uses an awake computer: whatever must hold for it to be safe to use, checked

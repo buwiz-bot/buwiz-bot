@@ -132,13 +132,13 @@ struct DeleteAsk {
 
 /// What goes with Bot `name`, from its computer's status (`None`: the broker didn't say). `None`
 /// back when nothing does, and the delete needs no asking.
-pub(crate) fn delete_warning(status: Option<&Value>, name: &str) -> Option<String> {
+pub(crate) fn delete_warning(status: Option<&Value>, bot: &str, name: &str) -> Option<String> {
     let Some(status) = status else {
         return Some(format!("If {name} has a computer, it goes too, with everything on it. This can't be undone."));
     };
     status.get("computer")?;
     let bots = Status::parse(status).bots;
-    let others: Vec<&str> = bots.iter().map(|(_, n)| n.as_str()).filter(|n| *n != name).collect();
+    let others: Vec<&str> = bots.iter().filter(|(id, _)| id != bot).map(|(_, n)| n.as_str()).collect();
     Some(if others.is_empty() {
         "Its computer goes too, with everything on it: its files, downloads and recordings. This can't be undone.".to_owned()
     } else {
@@ -151,7 +151,7 @@ pub(crate) fn ask_delete(bot: String) {
     let name = store().bots.with_untracked(|l| l.iter().find(|b| b.id == bot).map(|b| b.name.clone())).unwrap_or_else(|| "This Bot".to_owned());
     spawn_detached(async move {
         let status = client::get_any(&route(&bot, "")).await;
-        match delete_warning(status.as_ref(), &name) {
+        match delete_warning(status.as_ref(), &bot, &name) {
             Some(words) => DELETE_ASK.with(|s| s.set(Some(DeleteAsk { bot, name, words }))),
             None => store().delete_bot(bot),
         }
@@ -606,12 +606,14 @@ mod tests {
     #[test]
     fn deleting_a_bot_says_what_goes_with_it() {
         let alone = json!({"computer": "c", "bots": [{"id": "1", "name": "Ann"}]});
-        let words = delete_warning(Some(&alone), "Ann").unwrap();
+        let words = delete_warning(Some(&alone), "1", "Ann").unwrap();
         assert!(words.contains("computer goes too") && words.contains("files") && words.contains("recordings") && words.contains("can't be undone"), "{words}");
         let shared = json!({"computer": "c", "bots": [{"id": "1", "name": "Ann"}, {"id": "2", "name": "Bea"}]});
-        assert!(delete_warning(Some(&shared), "Ann").unwrap().contains("shares with Bea"));
-        assert_eq!(delete_warning(Some(&json!({"state": "absent"})), "Ann"), None, "no computer, nothing to warn of");
-        assert!(delete_warning(None, "Ann").unwrap().contains("If Ann has a computer"), "not knowing is a warning");
+        assert!(delete_warning(Some(&shared), "1", "Ann").unwrap().contains("shares with Bea"));
+        let twins = json!({"computer": "c", "bots": [{"id": "1", "name": "Ann"}, {"id": "2", "name": "Ann"}]});
+        assert!(delete_warning(Some(&twins), "1", "Ann").unwrap().contains("shares with Ann"), "two Bots can share a name");
+        assert_eq!(delete_warning(Some(&json!({"state": "absent"})), "1", "Ann"), None, "no computer, nothing to warn of");
+        assert!(delete_warning(None, "1", "Ann").unwrap().contains("If Ann has a computer"), "not knowing is a warning");
     }
 
     #[test]
