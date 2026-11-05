@@ -320,6 +320,11 @@ enum Kind {
     },
 }
 
+/// Reads a `#rrggbb`, naming what it's for in the error.
+type Colour<'a> = &'a dyn Fn(Option<&Value>, &str) -> Result<String, String>;
+/// Reads a mark's path as closed loops.
+type Chart<'a> = &'a dyn Fn(&str) -> Result<Vec<Vec<V2>>, String>;
+
 /// One solid of a recipe.
 pub(super) struct Spec {
     kind: Kind,
@@ -378,8 +383,8 @@ impl Spec {
     fn parse(
         v: &Value,
         n: usize,
-        colour: &dyn Fn(Option<&Value>, &str) -> Result<String, String>,
-        chart: &dyn Fn(&str) -> Result<Vec<Vec<V2>>, String>,
+        colour: Colour,
+        chart: Chart,
     ) -> Result<Spec, String> {
         let what = format!("solid {n}");
         if !v.is_object() {
@@ -630,8 +635,8 @@ fn cut_profile(profile: &[V2], row: f64) -> Vec<V2> {
 /// The recipe's solids.
 pub(super) fn parse(
     list: &Value,
-    colour: &dyn Fn(Option<&Value>, &str) -> Result<String, String>,
-    chart: &dyn Fn(&str) -> Result<Vec<Vec<V2>>, String>,
+    colour: Colour,
+    chart: Chart,
 ) -> Result<Vec<Spec>, String> {
     let a = list.as_array().ok_or("the solids (\"s\") must be a list")?;
     if a.len() > MAX_SOLIDS {
@@ -1432,11 +1437,10 @@ impl Scene {
         let mut marks: Vec<((usize, u8), Vec<V2>)> = Vec::new();
         // one step of one half onto the end of `out`
         let mut step = |span: &[usize], half: u8, out: &mut Vec<SolidPaint>| {
-            for i in span[0]..span[1] {
-                if seen[i] != half {
+            for (f, seen) in self.faces[span[0]..span[1]].iter().zip(&seen[span[0]..span[1]]) {
+                if *seen != half {
                     continue;
                 }
-                let f = &self.faces[i];
                 let ring: Vec<V2> = f.corners.iter().map(|c| projected[*c as usize]).collect();
                 toned(f.paint, ring, &f.shading.map(|n| dot(light, n)), &mut group);
                 for frag in &f.fragments {
@@ -1590,7 +1594,7 @@ fn tenths(out: &mut String, v: f64) {
     for i in (0..n).rev() {
         out.push(digits[i] as char);
     }
-    if t % 10 != 0 {
+    if !t.is_multiple_of(10) {
         out.push('.');
         out.push((b'0' + (t % 10) as u8) as char);
     }
