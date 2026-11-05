@@ -43,6 +43,8 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    `cargo +nightly fmt --all`.
 3. Add a `[[topic]]` to `nsh-patches.toml` (status `local`), push the
    branch to `origin`.
+   A topic that can only sit on other fork topics is cut on `buwiz` and names
+   the commit it starts from in `base`.
 4. Rebuild `buwiz` and update Buwiz Bot (below). Done when Buwiz Bot builds and runs on
    the new `buwiz` and `scripts/nsh-fork status` flags nothing for the topic.
 

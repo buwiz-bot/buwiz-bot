@@ -218,21 +218,8 @@ note = "AppView::set_key_precedence: a full-screen mini app's keymap ahead of Bu
 
 [[topic]]
 branch = "feat/agent-hub"
+base = "f1461478d3768fb5da872cb697f0b0a48564ee91"
 kind = "feature"
 pr = 0
 status = "local"
-note = "gpui-agent-server splits the listener off the in-process tree and actions; provenance tells the app whose hands input came from. Agent Hub S2; on top of buwiz, not cut from main yet"
-
-[[topic]]
-branch = "feat/agent-hub-s1"
-kind = "feature"
-pr = 0
-status = "local"
-note = "AppView::ui_tree: the gpui-agent tree for a caller in the process, with no listener. Agent Hub S1; on top of feat/agent-hub, not cut from main yet"
-
-[[topic]]
-branch = "feat/agent-hub-s3"
-kind = "feature"
-pr = 0
-status = "local"
-note = "AppView::act: an action for a caller in the process, with no listener, always an agent's and never activating the app; a text input's node holds what was typed. Agent Hub S3; on top of feat/agent-hub-s1, not cut from main yet"
+note = "The Agent Hub: gpui-agent-server splits the listener off the in-process tree and actions, provenance says whose hands input came from, AppView::ui_tree and AppView::act serve a caller in the process. Kept in the fork: it builds on the gpui-agent topics upstream declined."

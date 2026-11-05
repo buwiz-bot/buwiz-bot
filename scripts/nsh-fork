@@ -146,7 +146,9 @@ def rebuild(push):
         r = ref(t["branch"])
         if r is None:
             raise SystemExit(f"{t['branch']}: no such branch")
-        base = git("merge-base", r, "upstream/main")
+        # A topic cut on the fork branch names its own start in `base`: its
+        # merge base with upstream would replay every commit under it.
+        base = t.get("base") or git("merge-base", r, "upstream/main")
         for c in git("rev-list", "--reverse", "--no-merges", f"{base}..{r}").splitlines():
             if c in picked:
                 continue
