@@ -61,15 +61,16 @@ struct Avatar {
     layers: Option<Vec<Value>>,
     eyes: Option<Value>,
     parts: Option<Vec<Value>>,
+    solids: Option<Vec<Value>>,
 }
 
 impl Avatar {
     fn of(b: &Bot) -> Self {
-        Avatar { shape: b.shape.clone(), color: b.color.clone(), outline: b.outline.clone(), layers: b.layers.clone(), eyes: b.eyes.clone(), parts: b.parts.clone() }
+        Avatar { shape: b.shape.clone(), color: b.color.clone(), outline: b.outline.clone(), layers: b.layers.clone(), eyes: b.eyes.clone(), parts: b.parts.clone(), solids: b.solids.clone() }
     }
 
     fn set(self, b: &mut Bot) {
-        (b.shape, b.color, b.outline, b.layers, b.eyes, b.parts) = (self.shape, self.color, self.outline, self.layers, self.eyes, self.parts);
+        (b.shape, b.color, b.outline, b.layers, b.eyes, b.parts, b.solids) = (self.shape, self.color, self.outline, self.layers, self.eyes, self.parts, self.solids);
     }
 
     /// The fields as a bot payload carries them, after `color`.
@@ -85,6 +86,9 @@ impl Avatar {
         }
         if let Some(p) = &self.parts {
             o["parts"] = Value::Array(p.clone());
+        }
+        if let Some(s) = &self.solids {
+            o["solids"] = Value::Array(s.clone());
         }
     }
 }
@@ -147,7 +151,20 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
     } else {
         None
     };
+    // and solids
+    let sent_solids = b.get("solids").and_then(Value::as_array).filter(|p| !p.is_empty());
+    let keep_solids = !has_outline && custom && cur.solids.as_ref().is_some_and(|p| !p.is_empty());
+    let solids: Option<Vec<Value>> = if !custom {
+        None
+    } else if let Some(x) = sent_solids {
+        Some(x.clone())
+    } else if keep_solids {
+        cur.solids.clone()
+    } else {
+        None
+    };
     let pv = p.clone().map(Value::Array);
+    let sv = solids.clone().map(Value::Array);
     let lv = l.clone().map(Value::Array);
     let errs = avatar_shape::validate_avatar(
         if shape.is_some() || has_outline || custom { s } else { Some("blob") },
@@ -156,6 +173,7 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         lv.as_ref(),
         if l.is_some() { e.as_ref() } else { None },
         pv.as_ref(),
+        sv.as_ref(),
     );
     if !errs.is_empty() {
         return Err(errs.join("; "));
@@ -206,6 +224,7 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         eyes: if layers.is_some() { e } else { None },
         layers,
         parts,
+        solids,
     })
 }
 
@@ -258,7 +277,7 @@ async fn bot_update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let Some((bot_id, cur)) = ctx.store.read(|s| id.and_then(Value::as_str).and_then(|id| s.bot(id)).map(|b| (b.id.clone(), Avatar::of(b)))) else {
         return refused(&format!("unknown bot {}", template(id)), false);
     };
-    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() || b.get("parts").is_some() {
+    let avatar = if b.get("shape").is_some_and(js::truthy) || b.get("color").is_some_and(js::truthy) || b.get("outline").is_some() || b.get("layers").is_some() || b.get("eyes").is_some() || b.get("parts").is_some() || b.get("solids").is_some() {
         match apply_avatar(&cur, &b) {
             Ok(a) => Some(a),
             Err(e) => return refused(&e, false),

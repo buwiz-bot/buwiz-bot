@@ -21,6 +21,7 @@ mod custom;
 mod paint;
 mod render;
 mod rest_data;
+mod solids;
 
 use std::collections::HashMap;
 

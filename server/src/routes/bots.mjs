@@ -13,7 +13,7 @@ import { designAvatar, designPicture, pickKitAvatar } from "../avatar-design.mjs
 // Sets a request's avatar fields on `bot` (a new one or one there): a kit
 // shape clears the outline, an outline without a shape makes it "custom".
 // Only the fields given are checked (a bot's older colour stays as it is).
-function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
+function applyAvatar(bot, { shape, color, outline, layers, eyes, parts, solids }) {
   const hasOutline = outline !== undefined && outline !== null && outline !== "";
   const s = shape || (hasOutline ? "custom" : bot.shape);
   const c = color || bot.color;
@@ -29,12 +29,17 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
   const sentParts = Array.isArray(parts) && parts.length > 0;
   const keepParts = !hasOutline && s === "custom" && bot.parts?.length;
   const p = s !== "custom" ? undefined : sentParts ? parts : keepParts ? bot.parts : undefined;
+  // and solids
+  const sentSolids = Array.isArray(solids) && solids.length > 0;
+  const keepSolids = !hasOutline && s === "custom" && bot.solids?.length;
+  const d = s !== "custom" ? undefined : sentSolids ? solids : keepSolids ? bot.solids : undefined;
   const errs = validateAvatar({
     shape: shape || hasOutline || s === "custom" ? s : KIT_SHAPES[0],
     color: color ? c : "#1084FE",
     outline: o,
     ...(l ? { layers: l, eyes: e } : {}),
     ...(p ? { parts: p } : {}),
+    ...(d ? { solids: d } : {}),
   });
   if (errs.length) throw new Error(errs.join("; "));
   bot.shape = s;
@@ -58,6 +63,8 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes, parts }) {
       ...(typeof x.d === "number" ? { d: x.d } : {}),
     }));
   else delete bot.parts;
+  if (d) bot.solids = d;
+  else delete bot.solids;
 }
 
 // GEN_AVATAR_KEEPALIVE_MS "<wait>[,<every>]": how long a slow design may
@@ -104,10 +111,10 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { name, shape, color, outline, layers, eyes, parts } = JSON.parse(body || "{}");
+        const { name, shape, color, outline, layers, eyes, parts, solids } = JSON.parse(body || "{}");
         if (!name?.trim()) throw new Error("bot needs a name");
         const av = { shape: "blob", color: "#1084FE" };
-        applyAvatar(av, { shape, color, outline, layers, eyes, parts });
+        applyAvatar(av, { shape, color, outline, layers, eyes, parts, solids });
         const tid = `t${nextThreadSeq()}`;
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
         store.list.unshift({ id: tid, uid: uuidv7(), title: name.trim(), turns: [] });
@@ -121,6 +128,7 @@ export default async function handle(req, res) {
           ...(av.outline ? { outline: av.outline } : {}),
           ...(av.layers ? { layers: av.layers, eyes: av.eyes } : {}),
           ...(av.parts ? { parts: av.parts } : {}),
+          ...(av.solids ? { solids: av.solids } : {}),
           threadId: tid,
           ...botDefaults(name.trim()),
           memories: [],
@@ -144,11 +152,11 @@ export default async function handle(req, res) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try {
-        const { id, name, shape, color, outline, layers, eyes, parts, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
+        const { id, name, shape, color, outline, layers, eyes, parts, solids, pinned, section, hidden, image, crop, model, effort, fast, label, description, instructions } = JSON.parse(body || "{}");
         const bot = store.bots.find((b) => b.id === id);
         if (!bot) throw new Error(`unknown bot ${id}`);
-        if (shape || color || outline !== undefined || layers !== undefined || eyes !== undefined || parts !== undefined)
-          applyAvatar(bot, { shape, color, outline, layers, eyes, parts });
+        if (shape || color || outline !== undefined || layers !== undefined || eyes !== undefined || parts !== undefined || solids !== undefined)
+          applyAvatar(bot, { shape, color, outline, layers, eyes, parts, solids });
         if (name?.trim() && name.trim() !== bot.name) {
           // untouched defaults follow a rename; edited ones stay
           const was = botDefaults(bot.name), now = botDefaults(name.trim());

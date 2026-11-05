@@ -170,7 +170,7 @@ fn avatar_validate_matches_nodes() {
     let theirs = node("console.log(JSON.stringify(input.map((r) => m.validateAvatar(r))));", &recipes);
     for (r, t) in recipes.as_array().unwrap().iter().zip(theirs.as_array().unwrap()) {
         let s = |k: &str| r.get(k).and_then(Value::as_str);
-        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"), r.get("parts"))), *t, "{r}");
+        assert_eq!(json!(validate_avatar(s("shape"), s("color"), s("outline"), r.get("layers"), r.get("eyes"), r.get("parts"), r.get("solids"))), *t, "{r}");
     }
 }
 
@@ -371,3 +371,60 @@ fn avatar_to_fixed_rounds_ties_up() {
     assert_eq!(to_fixed2(2.0 / 3.0), "0.67");
     assert_eq!(to_fixed2(f64::INFINITY), "Infinity");
 }
+
+/// Solids: the same checks and words as Node's (AVD-21).
+#[test]
+fn solids_are_checked_like_node() {
+    let lathe = json!({"kind": "lathe", "color": "#F2C062", "at": [50, 40, 0], "tilt": [-7, 0, 3], "oval": 0.9, "teeth": [6, 0.5],
+        "profile": [[0, 20], [20, 18], [30, 0], [44, -3], [30, -5], [0, -5]],
+        "marks": [{"path": "M-180 40 L180 40 L180 55 L-180 55 Z", "fill": "#E0393A"}]});
+    let shell = json!({"kind": "shell", "color": "#151515", "offset": 2.5, "edge": [[-180, 120], [0, 70], [90, 100]], "scallop": [9, 8, 1], "lobes": [12, 9.5, 1]});
+    let tube = json!({"kind": "tube", "color": "#9A5B3A", "path": [[20, 30, 0, 3], [10, 15, 2, 1.5]], "branches": [[[14, 22, 1, 2], [4, 20, 4, 1]]]});
+    assert_eq!(solid_errors(&json!([lathe, shell, tube])), Vec::<String>::new());
+    let with = |base: &Value, key: &str, v: Value| {
+        let mut s = base.clone();
+        s[key] = v;
+        solid_errors(&json!([s]))
+    };
+    assert_eq!(solid_errors(&json!("x")), ["solids must be a list"]);
+    assert_eq!(solid_errors(&json!([5])), ["solid 1 must be {kind, color}"]);
+    assert_eq!(solid_errors(&json!([{"kind": "cube", "color": "#112233"}])), ["solid 1's kind must be lathe, shell or tube"]);
+    assert_eq!(solid_errors(&json!(vec![tube.clone(); 11])), ["at most 10 solids"]);
+    assert_eq!(with(&lathe, "color", json!("red")), ["solid 1's color must be #RRGGBB"]);
+    assert_eq!(with(&lathe, "at", json!([500, 40, 0])), ["solid 1's at is out of range"]);
+    assert_eq!(with(&lathe, "at", json!([50, 40])), ["solid 1's at must be [x, y, z]"]);
+    assert_eq!(with(&lathe, "tilt", json!([0, 0, 400])), ["solid 1's tilt must be [x, y, z] degrees, -180..180"]);
+    assert_eq!(with(&lathe, "oval", json!(9)), ["solid 1's oval must be 0.3..3"]);
+    assert_eq!(with(&lathe, "teeth", json!([2.5, 0.5])), ["solid 1's teeth must be [2..18, 0..1]"]);
+    assert_eq!(with(&lathe, "profile", json!([[1, 2]])), ["solid 1's profile needs 2 to 40 points"]);
+    assert_eq!(with(&lathe, "profile", json!([[10, 2], [20, 3], [30, 4]])), ["solid 1's profile must run axis to axis, or back to its start"]);
+    assert_eq!(with(&lathe, "marks", json!([{"path": "M0 0 L9 0 L9 200 Z", "fill": "#112233"}])), ["solid 1 mark 1's coordinates must stay within -180..180, -5..105"]);
+    assert_eq!(with(&shell, "offset", json!(99)), ["solid 1's offset must be 0..60"]);
+    assert_eq!(with(&shell, "edge", json!([])), ["solid 1's edge needs 1 to 24 points"]);
+    assert_eq!(with(&shell, "edge", json!([[10, 90], [0, 90]])), ["solid 1's edge azimuths must rise"]);
+    assert_eq!(with(&shell, "scallop", json!([40, 5, 0])), ["solid 1's scallop must be [2..18, 0..60, 0 or 1]"]);
+    assert_eq!(with(&shell, "lobes", json!([33, 9, 0])), ["solid 1's lobes must be [1..32, 1..60, -60..60]"]);
+    assert_eq!(with(&tube, "path", json!([[1, 2, 3, 4]])), ["solid 1's path needs 2 to 12 points"]);
+    assert_eq!(with(&tube, "path", json!([[1, 2, 3, 400], [1, 2, 3, 4]])), ["solid 1's path's point is out of range"]);
+    assert_eq!(with(&tube, "branches", json!(vec![tube["path"].clone(); 7])), ["solid 1 has more than 6 branches"]);
+    let tall: Vec<[i64; 2]> = (0..40).map(|i| [if i == 0 || i == 39 { 0 } else { 100 }, if i % 2 == 1 { 100 } else { -100 }]).collect();
+    let mut big = lathe.clone();
+    big["profile"] = json!(tall);
+    big.as_object_mut().unwrap().remove("teeth");
+    let e = solid_errors(&json!(vec![big; 10]));
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(e[0].starts_with("the solids cost ") && e[0].ends_with(" faces, at most 8000"), "{e:?}");
+    assert_eq!(validate_avatar(Some("heart"), Some("#FF0000"), None, None, None, None, Some(&json!([tube]))), ["only a custom outline can have solids"]);
+}
+
+/// A design keeps its solids, and only a custom one has them.
+#[test]
+fn candidates_keep_solids() {
+    let solids = json!([{"kind": "tube", "color": "#9A5B3A", "path": [[20, 30, 0, 3], [10, 15, 2, 1.5]]}]);
+    let reply = json!([{"shape": "custom", "outline": MOCK_CAT, "color": "#1e1e1e", "solids": solids}, {"shape": "blob", "solids": solids}]).to_string();
+    let c = parse_candidates(&reply);
+    assert_eq!(c[0].solids.clone().map(Value::Array), Some(solids.clone()));
+    assert_eq!(c[0].json()["solids"], solids);
+    assert_eq!(c[1].solids, None);
+}
+

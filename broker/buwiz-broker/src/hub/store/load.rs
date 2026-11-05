@@ -127,6 +127,7 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             layers: None,
             eyes: None,
             parts: None,
+            solids: None,
             thread_id: get("thread_id").as_str().map(str::to_owned),
             pinned: js::truthy(&get("pinned")),
             section: s_or("section"),
@@ -155,6 +156,9 @@ fn load_rows(conn: &Connection, gen: &Path) -> rusqlite::Result<State> {
             }
             if let Some(p) = a.get("parts").and_then(Value::as_array).filter(|p| !p.is_empty()) {
                 bot.parts = Some(p.clone());
+            }
+            if let Some(s) = a.get("solids").and_then(Value::as_array).filter(|s| !s.is_empty()) {
+                bot.solids = Some(s.clone());
             }
         }
         if js::truthy(&get("extra")) {

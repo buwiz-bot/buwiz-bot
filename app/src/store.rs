@@ -820,6 +820,12 @@ pub(crate) fn shape_of(v: &serde_json::Value) -> String {
                     .collect();
                 recipe["p"] = parts.into();
             }
+            // real 3D pieces in head space, kept as they are: `save_designs`
+            // writes every design back through `body_fields`, so whatever
+            // doesn't come through here is gone
+            if let Some(ss) = v.get("solids").filter(|s| s.as_array().is_some_and(|s| !s.is_empty())) {
+                recipe["s"] = ss.clone();
+            }
             format!("{}{recipe}", crate::avatar::RICH)
         }
         _ => body_shape(&shape, &outline),
@@ -889,6 +895,9 @@ pub(crate) fn body_fields(shape: &str) -> serde_json::Value {
                 })
                 .collect::<Vec<_>>()
                 .into();
+        }
+        if r["s"].as_array().is_some_and(|s| !s.is_empty()) {
+            out["solids"] = r["s"].clone();
         }
         return out;
     }

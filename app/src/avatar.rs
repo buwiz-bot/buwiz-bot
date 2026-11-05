@@ -727,6 +727,44 @@ mod tests {
         assert_eq!(shape_of(&serde_json::json!({"shape": "custom", "outline": CAT})), format!("{OUTLINE}{CAT}"));
     }
 
+    /// `save_designs` rewrites the whole list from `body_fields`: a solid
+    /// dropped on that road would quietly destroy the avatar. Every field
+    /// of every kind goes through, and the design still draws.
+    #[test]
+    fn solids_survive_the_design_round_trip() {
+        use crate::store::shape_of;
+        let solids = serde_json::json!([
+            {"kind": "lathe", "color": "#F2C062", "at": [50, 40, 0], "tilt": [-7, 0, 3], "oval": 0.9, "teeth": [6, 0.5],
+             "profile": [[0, 20], [20, 18], [30, 0], [44, -3], [30, -5], [0, -5]],
+             "marks": [{"path": "M-180 40 L180 40 L180 55 L-180 55 Z", "fill": "#E0393A"}]},
+            {"kind": "shell", "color": "#151515", "offset": 2.5, "edge": [[-180, 120], [0, 70], [90, 100]],
+             "scallop": [9, 8, 1], "lobes": [12, 9.5, 1]},
+            {"kind": "tube", "color": "#9A5B3A", "path": [[20, 30, 0, 3], [10, 15, 2, 1.5]],
+             "branches": [[[14, 22, 1, 2], [4, 20, 4, 1]]]},
+        ]);
+        let design = serde_json::json!({
+            "shape": "custom", "outline": CAT, "color": "#F6D1AE", "eyes": "#111111",
+            "layers": [{"path": "M40 70 L60 70 L60 74 L40 74 Z", "fill": "#A8503A"}], "solids": solids,
+        });
+        let shape = shape_of(&design);
+        assert!(drawable(&shape), "{shape}");
+        let saved = body_fields(&shape);
+        assert_eq!(saved["solids"], solids, "body_fields keeps them whole");
+        assert_eq!(shape_of(&saved), shape, "the saved design is the same design");
+        // through the list's JSON, as `/state/buwiz-avatar-designs` holds it
+        let stored: serde_json::Value = serde_json::from_str(&serde_json::json!({"designs": [saved]}).to_string()).unwrap();
+        assert_eq!(shape_of(&stored["designs"][0]), shape);
+        // no solids: the key isn't there, and the recipe has none
+        let mut plain = design.clone();
+        plain.as_object_mut().unwrap().remove("solids");
+        let shape = shape_of(&plain);
+        assert!(!shape.contains("\"s\":"), "{shape}");
+        assert!(body_fields(&shape).get("solids").is_none());
+        // an empty list is no solids
+        plain["solids"] = serde_json::json!([]);
+        assert_eq!(shape_of(&plain), shape);
+    }
+
     #[test]
     fn a_designed_outline_draws_its_own_body_and_a_bad_one_draws_the_ball() {
         let shape = format!("{OUTLINE}{CAT}");
