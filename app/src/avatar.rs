@@ -200,6 +200,14 @@ pub(crate) const OUTLINE: &str = "outline:";
 /// picker doesn't apply.
 pub(crate) const RICH: &str = "rich:";
 
+/// The colour effects and accents take from an avatar. A rich avatar paints
+/// itself from its recipe, and its `color` is only that recipe's main colour,
+/// often skin, so what isn't the body takes the primary ink instead. A plain
+/// shape keeps the colour the person gave it.
+pub(crate) fn accent_of<'a>(shape: &str, color: &'a str) -> &'a str {
+    if shape.starts_with(RICH) { "#FFFFFF" } else { color }
+}
+
 /// The mark body for a shape string: a picker name, or `outline:<path>`
 /// (registered once; a path the engine can't use draws the ball).
 pub(crate) fn body_of(shape: &str) -> &'static str {
@@ -443,9 +451,10 @@ impl Inner {
         // `inkOf` (blob.tsx:70): "#FFFFFF" is the adaptive swatch — black on
         // light themes. Reading `dark()` inside the painter subscribes it
         // to the env memo, so a theme flip repaints.
-        let ink = mark::ink_of(&props.color, !dark());
+        let ink = mark::ink_of(accent_of(&props.shape, &props.color), !dark());
+        let shade = 0.7 * self.ek;
         let ink_paint = if self.ek > 0.001 {
-            mark::darken(&ink, 0.7 * self.ek)
+            mark::darken(&ink, shade)
         } else {
             ink.clone()
         };
@@ -464,6 +473,7 @@ impl Inner {
                 cutout: true,
                 ink_paint: Some(ink_paint),
                 spot_paint: None,
+                shade,
             },
             extent,
             "m",
@@ -684,8 +694,21 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
 
 #[cfg(test)]
 mod tests {
-    use super::{body_of, drawable, OUTLINE};
+    use super::{accent_of, body_of, drawable, OUTLINE, RICH};
+    use crate::mark;
     use crate::store::{body_fields, body_shape};
+
+    /// Effects leave a rich avatar's colour alone and take the primary ink;
+    /// a plain shape keeps the colour the person gave it.
+    #[test]
+    fn accents_come_from_the_primary_ink_on_a_rich_avatar() {
+        let rich = format!("{RICH}{{}}");
+        assert_eq!(accent_of(&rich, "#F6D1AE"), "#FFFFFF");
+        assert_eq!(mark::ink_of(accent_of(&rich, "#F6D1AE"), true), "#000000");
+        assert_eq!(mark::ink_of(accent_of(&rich, "#F6D1AE"), false), "#FFFFFF");
+        assert_eq!(accent_of(&rich, "#FC2C3E"), accent_of(&rich, "#14C370"));
+        assert_eq!(accent_of("blob", "#FC2C3E"), "#FC2C3E");
+    }
 
     const CAT: &str = "M16 46L20 10L40 27Q50 24 60 27L80 10L84 46Q90 62 84 75Q72 92 50 92Q28 92 16 75Q10 62 16 46Z";
 

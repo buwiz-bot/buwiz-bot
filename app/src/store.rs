@@ -782,6 +782,20 @@ pub(crate) fn is_primary_ink(color: &str) -> bool {
     crate::mark::norm_color(color) == "#FFFFFF"
 }
 
+/// Going from a rich avatar to a body that isn't one. The colour it leaves is
+/// its recipe's shell, often skin, and nobody picked it, so the new body takes
+/// the primary ink unless it brings a colour of its own.
+fn leaves_rich(was: &str, now: &str) -> bool {
+    was.starts_with(crate::avatar::RICH) && !now.starts_with(crate::avatar::RICH)
+}
+
+/// [`leaves_rich`] for a bot patch going to a bot wearing `was`.
+fn reset_leaving_rich(was: &str, patch: &mut serde_json::Value) {
+    if patch.get("shape").is_some() && patch.get("color").is_none() && leaves_rich(was, &shape_of(patch)) {
+        patch["color"] = "#FFFFFF".into();
+    }
+}
+
 /// A bot payload's (or a design's) body in the app's shape form, reading
 /// `shape`, `outline`, and for a rich avatar `layers` (with `color`, the
 /// shell, and `eyes`): `rich:<recipe>`, `outline:<path>` or a kit name.
@@ -1129,6 +1143,13 @@ pub struct RoxBot {
     pub helper: Option<crate::agents::HelperOf>,
     /// Whom it takes messages from: `all`, `none` or `some` (a list).
     pub accepts: String,
+}
+
+impl RoxBot {
+    /// The colour its effects and accents take (see [`crate::avatar::accent_of`]).
+    pub(crate) fn accent(&self) -> String {
+        crate::avatar::accent_of(&self.shape, &self.color).to_owned()
+    }
 }
 
 /// A file the user attached or a turn produced (`attachments`, `files`).
@@ -6032,9 +6053,10 @@ impl Store {
         then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
     }
 
-    /// Uses choice `i` and keeps its shape in "Your designs". A choice in
-    /// the primary ink keeps the bot's colour; one the prompt coloured
-    /// brings its colour.
+    /// Uses choice `i` and keeps its shape in "Your designs". A plain choice
+    /// in the primary ink keeps the bot's colour; one the prompt coloured
+    /// brings its colour, and a rich one always does: that field is its
+    /// shell (`shape_of`), which only draws the avatar.
     pub fn design_pick(&'static self, i: usize, for_new: bool) {
         let Some(c) = self.design_cands.get_untracked().get(i).cloned() else { return };
         self.design_picked.set(Some(i));
@@ -6043,16 +6065,30 @@ impl Store {
         self.design_use(c, for_new, own);
     }
 
+    /// Puts a body on the Create New Bot draft, with its colour if it brings
+    /// one (see [`leaves_rich`]).
+    pub(crate) fn draft_body(&self, shape: String, color: Option<String>) {
+        let color = color.or_else(|| {
+            leaves_rich(&self.bot_shape.get_untracked(), &shape).then(|| "#FFFFFF".to_owned())
+        });
+        self.bot_shape.set(shape);
+        if let Some(c) = color {
+            self.bot_color.set(c);
+        }
+    }
+
+    /// The Create New Bot draft's accent (see [`crate::avatar::accent_of`]).
+    pub(crate) fn draft_accent(&self) -> String {
+        crate::avatar::accent_of(&self.bot_shape.get(), &self.bot_color.get()).to_owned()
+    }
+
     /// Puts design `c`'s shape (and its colour, with `with_color`) on the
     /// Create New Bot sheet's draft (`for_new`), or on the open bot at once
     /// (its avatar morphs). The first change in an editing session keeps
     /// the bot's old avatar for Revert.
     pub fn design_use(&'static self, c: AvatarCand, for_new: bool, with_color: bool) {
         if for_new {
-            self.bot_shape.set(c.shape);
-            if with_color {
-                self.bot_color.set(c.color);
-            }
+            self.draft_body(c.shape, with_color.then_some(c.color));
             return;
         }
         let Some(b) = self.active_bot_untracked() else { return };
@@ -6842,7 +6878,10 @@ impl Store {
 
     /// `updateBot` — optimistic patch + `POST /bot/update` (App.tsx's
     /// updateBot: pinned/section/hidden/shape/color/model…).
-    pub fn update_bot(&'static self, id: &str, patch: serde_json::Value) {
+    pub fn update_bot(&'static self, id: &str, mut patch: serde_json::Value) {
+        if let Some(b) = self.bots.get_untracked().iter().find(|b| b.id == id) {
+            reset_leaving_rich(&b.shape, &mut patch);
+        }
         self.bots.update(|rows| {
             for b in rows.iter_mut() {
                 if b.id != id {
@@ -9048,5 +9087,50 @@ mod tests {
         // `route_link`: a link card in Rox opens it; the system's (`os`) asks
         assert!(app_opens_unasked(AppOpener::Rox));
         assert!(!app_opens_unasked(AppOpener::Outside));
+    }
+}
+
+#[cfg(test)]
+mod leaving_rich {
+    use super::{body_fields, reset_leaving_rich, shape_of};
+    use serde_json::json;
+
+    const RICH: &str = r##"rich:{"o":"M0 0 L10 0 L10 10 Z","c":"#F6D1AE","l":[{"o":"M1 1 L2 1 L2 2 Z","c":"#111111"}],"e":"#000000"}"##;
+
+    fn patched(was: &str, mut patch: serde_json::Value) -> serde_json::Value {
+        reset_leaving_rich(was, &mut patch);
+        patch
+    }
+
+    /// The shape grid, a saved design and a design choice all patch a plain
+    /// body with no colour, so none of them may keep the recipe's.
+    #[test]
+    fn a_plain_body_takes_the_primary_ink() {
+        assert_eq!(patched(RICH, body_fields("blob"))["color"], "#FFFFFF");
+        assert_eq!(patched(RICH, json!({"shape": "blob", "image": ""}))["color"], "#FFFFFF");
+        assert_eq!(patched(RICH, body_fields("outline:M0 0 L9 9 Z"))["color"], "#FFFFFF");
+    }
+
+    /// Revert and a coloured design bring their own colour.
+    #[test]
+    fn a_body_with_a_colour_keeps_it() {
+        assert_eq!(patched(RICH, json!({"shape": "blob", "color": "#FC2C3E"}))["color"], "#FC2C3E");
+    }
+
+    #[test]
+    fn nothing_else_moves_the_colour() {
+        assert!(patched("blob", body_fields("star")).get("color").is_none());
+        assert!(patched(RICH, json!({"name": "Hex"})).get("color").is_none());
+    }
+
+    /// A rich body's `color` is its shell: `shape_of` rebuilds the recipe
+    /// from it, so a rich patch has to carry it and it can't be dropped.
+    #[test]
+    fn a_rich_patch_keeps_its_shell() {
+        let patch = patched("blob", body_fields(RICH));
+        assert_eq!(patch["color"], "#F6D1AE");
+        assert!(shape_of(&patch).contains("#F6D1AE"));
+        let swap = patched(RICH, body_fields(RICH));
+        assert_eq!(swap["color"], "#F6D1AE");
     }
 }

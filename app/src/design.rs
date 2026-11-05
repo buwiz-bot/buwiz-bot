@@ -166,11 +166,11 @@ fn design_button() -> impl IntoElement {
 fn current_color(for_new: bool) -> String {
     let st = store();
     if for_new {
-        return st.bot_color.get();
+        return st.draft_accent();
     }
     st.active_bot()
         .filter(|b| b.image.is_empty())
-        .map(|b| b.color)
+        .map(|b| b.accent())
         .unwrap_or_else(|| "#FFFFFF".to_owned())
 }
 

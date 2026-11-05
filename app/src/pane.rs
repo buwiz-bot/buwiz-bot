@@ -1948,7 +1948,7 @@ fn bot_tab() -> impl IntoElement {
                             let Some(b) = st.active_bot_untracked() else { return };
                             st.update_bot(
                                 &b.id,
-                                serde_json::json!({"shape": sh, "image": "", "crop": serde_json::Value::Null}),
+                                serde_json::json!({"shape": sh, "image": "", "crop": serde_json::Value::Null})
                             );
                         })
                         .child(when(
@@ -1976,7 +1976,7 @@ fn bot_tab() -> impl IntoElement {
                             let color = store()
                                 .active_bot()
                                 .filter(|b| b.image.is_empty())
-                                .map(|b| b.color)
+                                .map(|b| b.accent())
                                 .unwrap_or_else(|| "#FFFFFF".to_owned());
                             crate::avatar::bot_blob(crate::avatar::BotBlobProps {
                                 shape: sh.into(),

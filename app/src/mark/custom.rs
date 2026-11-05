@@ -1752,6 +1752,7 @@ mod tests {
                 cutout: true,
                 ink_paint: Some("#1884FC".to_owned()),
                 spot_paint: None,
+                shade: 0.0,
             },
             144.0,
             "m",
@@ -2488,12 +2489,17 @@ mod tests {
     const ORANGE_CAT: &str = r##"{"o":"M20 92 C8 80 8 55 14 40 L10 6 L38 26 C46 23 54 23 62 26 L90 6 L86 40 C92 55 92 80 80 92 C64 100 36 100 20 92 Z","c":"#F28C28","l":[["M31 79 C31 69 42 66 50 70 C58 66 69 69 69 79 C69 88 59 92 50 90 C41 92 31 88 31 79 Z","#FBE9CF",1]],"e":"#2A1E14"}"##;
 
     fn render_ink(mark: &Mark, extent: f64, display: f64, ink: &str) -> MarkTree {
+        render_shaded(mark, extent, display, ink, 0.0)
+    }
+
+    fn render_shaded(mark: &Mark, extent: f64, display: f64, ink: &str, shade: f64) -> MarkTree {
         let tab = shared_tables();
         uh(
             &mark.frame(),
             &PaintOpts {
                 cutout: true,
                 ink_paint: Some(ink.to_owned()),
+                shade,
                 ..Default::default()
             },
             extent,
@@ -2574,7 +2580,8 @@ mod tests {
         }
     }
 
-    /// The avatar's ink (the colour picker) changes nothing on a rich body.
+    /// The ink changes nothing on a rich body but its status morphs, and
+    /// the colour picker doesn't reach those (`avatar::accent_of`).
     #[test]
     fn rich_ignores_the_ink() {
         let tab = shared_tables();
@@ -2582,29 +2589,40 @@ mod tests {
         let mut a = 0xcbf29ce484222325u64;
         let mut b = a;
         let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
-        let mut dir = Director::new(&mut mark, "thinking", 2, false, false, None);
-        for f in 0..90 {
-            step(&mut dir, &mut mark);
-            if f % 5 == 0 {
-                hash_tree(&render_ink(&mark, 120.71, 78.72, "#1884FC"), &mut a);
-                hash_tree(&render_ink(&mark, 120.71, 78.72, "#FC2C3E"), &mut b);
+        let mut dir = Director::new(&mut mark, "idle", 2, false, false, None);
+        let mut drawn = 0;
+        for (state, _) in super::super::clips::STATES {
+            dir.set_state_pub(&mut mark, state);
+            for f in 0..90 {
+                step(&mut dir, &mut mark);
+                if f % 5 == 0 && !frame_morph(&mark) {
+                    drawn += 1;
+                    hash_tree(&render_ink(&mark, 120.71, 78.72, "#1884FC"), &mut a);
+                    hash_tree(&render_ink(&mark, 120.71, 78.72, "#FC2C3E"), &mut b);
+                }
             }
         }
+        assert!(drawn > 100, "only {drawn} frames without a morph");
         assert_eq!(a, b);
+        dir.set_state_pub(&mut mark, "idle");
+        for _ in 0..90 {
+            step(&mut dir, &mut mark);
+        }
         let mut ps = Vec::new();
         let tree = render_ink(&mark, 120.71, 78.72, "#1884FC");
         all_paths(&tree, &mut ps);
         assert!(ps.iter().all(|p| p.attr("fill") != Some("#1884FC")));
     }
 
-    /// Hover darkening reaches every colour of a rich body.
+    /// Hover darkening reaches every colour of a rich body, in the black
+    /// ink of a light theme too, where the ink itself can't get darker.
     #[test]
     fn rich_darkens_with_the_edit_shade() {
         let tab = shared_tables();
         let name = rich_body(HULK).unwrap();
         let mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
-        let plain = render_ink(&mark, 120.71, 78.72, "#1884FC");
-        let dark = render_ink(&mark, 120.71, 78.72, &super::super::darken("#1884FC", 0.35));
+        let plain = render_ink(&mark, 120.71, 78.72, "#000000");
+        let dark = render_shaded(&mark, 120.71, 78.72, "#000000", 0.35);
         let fills = |t: &MarkTree| {
             let mut ps = Vec::new();
             all_paths(t, &mut ps);
@@ -2615,6 +2633,86 @@ mod tests {
         assert!(pf.contains(&"#5E9A2E".to_owned()));
         for (p, d) in pf.iter().zip(&df) {
             assert_eq!(*d, super::super::darken(p, 0.35), "{p}");
+        }
+    }
+
+    /// A rich avatar never rests on baked frames: those are one flat ink,
+    /// and its ink is the primary one, so it would rest as a white shape.
+    #[test]
+    fn a_rich_shape_has_no_baked_rest() {
+        let name = rich_body(HERO).unwrap();
+        assert!(super::rich(name).is_some());
+        assert!(rest_bytes(&format!("rich:{HERO}")).is_none());
+    }
+
+    /// A status morph leaves a rich avatar's colours: once it has settled,
+    /// the body and the glyphs are the ink, and no recipe colour shows.
+    #[test]
+    fn a_settled_morph_is_all_ink() {
+        const INK: &str = "#123456";
+        let tab = shared_tables();
+        let name = rich_body(HERO).unwrap();
+        let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
+        let mut dir = Director::new(&mut mark, "idle", 2, false, false, None);
+        let mut settled = 0;
+        for (state, _) in super::super::clips::STATES {
+            dir.set_state_pub(&mut mark, state);
+            for _ in 0..75 {
+                step(&mut dir, &mut mark);
+            }
+            if frame_eyes(&mark) {
+                continue;
+            }
+            settled += 1;
+            let tree = render_ink(&mark, 120.71, 78.72, INK);
+            let mut ps = Vec::new();
+            all_paths(&tree, &mut ps);
+            assert!(ps.iter().any(|p| p.attr("fill") == Some(INK)), "{state}: no ink");
+            for p in ps {
+                for key in ["fill", "stroke"] {
+                    let paint = p.attr(key).unwrap_or("none");
+                    assert!(paint == "none" || paint == INK, "{state}: {key} {paint}");
+                }
+            }
+        }
+        assert!(settled > 10, "only {settled} states settled into a morph");
+    }
+
+    /// A rich body keeps its colours for as long as it has a face, then
+    /// turns to the ink in one frame, never a blend of the two. A head turned
+    /// away has no eyes to draw but keeps its face, so a spin doesn't flash.
+    #[test]
+    fn a_rich_body_turns_to_the_ink_as_its_face_goes() {
+        const INK: &str = "#123456";
+        let shell = serde_json::from_str::<serde_json::Value>(HERO).unwrap()["c"].as_str().unwrap().to_owned();
+        let tab = shared_tables();
+        let name = rich_body(HERO).unwrap();
+        let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
+        let mut dir = Director::new(&mut mark, "idle", 2, false, false, None);
+        let painted = |mark: &Mark, c: &str| {
+            let tree = render_ink(mark, 120.71, 78.72, INK);
+            let mut ps = Vec::new();
+            all_paths(&tree, &mut ps);
+            ps.iter().any(|p| p.attr("fill") == Some(c))
+        };
+        dir.set_state_pub(&mut mark, "thinking");
+        let (mut faced, mut gone) = (0, 0);
+        for _ in 0..45 {
+            step(&mut dir, &mut mark);
+            let face = frame_eyes(&mark);
+            assert_eq!(painted(&mark, &shell), face, "shell, face {face}");
+            assert_eq!(painted(&mark, INK), !face, "ink, face {face}");
+            if face { faced += 1 } else { gone += 1 }
+        }
+        assert!(faced > 0 && gone > 0, "{faced} frames with a face, {gone} without");
+        dir.set_state_pub(&mut mark, "idle");
+        for _ in 0..45 {
+            step(&mut dir, &mut mark);
+        }
+        mark.poke("spin", 1.0);
+        for _ in 0..45 {
+            step(&mut dir, &mut mark);
+            assert!(!painted(&mark, INK), "a spin showed the ink");
         }
     }
 
@@ -2634,14 +2732,13 @@ mod tests {
         let mut out = Vec::new();
         let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 9);
         let mut dir = Director::new(&mut mark, "idle", 9, display < 48.0, true, None);
-        let edit = super::super::darken("#1884FC", 0.7);
         for gy in -2..=2 {
             for gx in -2..=2 {
                 mark.set_gaze(Some([gx as f64 / 2.0, gy as f64 / 2.0]));
                 for f in 0..10 {
                     mark.advance(1.0 / 30.0);
-                    let ink = if (gx + gy) % 2 == 0 { "#1884FC" } else { edit.as_str() };
-                    out.push((format!("rest gaze {gx},{gy} f{f}"), render_ink(&mark, extent, display, ink), frame_eyes(&mark), frame_morph(&mark)));
+                    let shade = if (gx + gy) % 2 == 0 { 0.0 } else { 0.7 };
+                    out.push((format!("rest gaze {gx},{gy} f{f}"), render_shaded(&mark, extent, display, "#1884FC", shade), frame_eyes(&mark), frame_morph(&mark)));
                 }
             }
         }
@@ -2856,7 +2953,9 @@ mod tests {
     /// round 4, from round 3's (0xf3dbe89e8cc1a6cc, 0x333f3d3298421459,
     /// 0x8dbe3467ae0e694c): where a decal crosses the limb, the cut now
     /// follows the visible edge instead of a straight chord (the hero, with
-    /// no layer at the limb, didn't move).
+    /// no layer at the limb, didn't move). It moved again when status morphs
+    /// left the recipe's colours for the ink; the shade is also exact now,
+    /// not read back from a rounded ink (0.7, it used to read 0.6984).
     #[test]
     fn rich_string_eyes_unchanged() {
         for recipe in [HULK, HERO, ORANGE_CAT] {
@@ -2872,7 +2971,7 @@ mod tests {
             }
             got.push(h);
         }
-        assert_eq!(got, vec![0x7d2f008d39e30620, 0x333f3d3298421459, 0xe8c5e4ae8f388eec]);
+        assert_eq!(got, vec![0x66ce053a9137c93f, 0xa9a0f75bc1a08d2f, 0x45e20b9cb4a47847]);
     }
 
     /// The two eye centroids at the front pose in a 255px sprite.
@@ -3224,7 +3323,8 @@ mod tests {
 
     /// Through the avatar run (rest gaze sweep with the edit shade, every
     /// state clip, the pokes, status morphs) the extra parts show in every
-    /// frame with eyes and go with the eyes; the main shell always shows.
+    /// frame with eyes and go with the eyes; the main shell shows with them,
+    /// and only a status morph, past the face, takes it to the ink.
     #[test]
     fn parts_follow_the_eyes() {
         let name = rich_body(LUFFY).unwrap();
@@ -3233,7 +3333,9 @@ mod tests {
                 let mut ps = Vec::new();
                 all_paths(&tree, &mut ps);
                 let hat = ps.iter().any(|p| p.attr("data-part") == Some("1"));
-                assert!(ps.iter().any(|p| p.attr("fill") == Some("#141414") || p.attr("fill").is_some_and(|f| f.starts_with("rgb("))), "{label}: no shell");
+                let shell = ps.iter().any(|p| p.attr("fill") == Some("#141414") || p.attr("fill").is_some_and(|f| f.starts_with("rgb(")));
+                let ink = ps.iter().any(|p| p.attr("fill") == Some("#1884FC"));
+                assert!(shell || (ink && !has_eyes), "{label}: no shell");
                 assert_eq!(hat, has_eyes, "{label} at {display}: hat {hat}, eyes {has_eyes}");
             }
         }

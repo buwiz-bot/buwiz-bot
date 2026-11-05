@@ -157,7 +157,7 @@ fn body() -> impl IntoElement {
 /// The shape grid (`BOT_SHAPES`): 48pt cells in the picked ink; the
 /// ring marks the pick, a fainter one the hover.
 fn shapes() -> impl IntoElement {
-    let color = store().bot_color.get();
+    let color = store().draft_accent();
     view()
         .w(px(272.0))
         .mt_4()
@@ -211,7 +211,7 @@ fn shapes() -> impl IntoElement {
                             st.bot_hover.set(String::new());
                         }
                     })
-                    .on_press(move || store().bot_shape.set(sh3.clone()))
+                    .on_press(move || store().draft_body(sh3.clone(), None))
                     .label(format!("{sh4} character shape"))
             },
         ))
