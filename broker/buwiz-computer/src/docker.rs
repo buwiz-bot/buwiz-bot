@@ -867,6 +867,11 @@ mod tests {
         let _ = p.wake(&machine(&dir)).await;
         assert!(at(&dir, "start c2-x-wall") < at(&dir, WALL_CALL), "{}", calls(&dir));
         assert!(at(&dir, WALL_CALL) < at(&dir, "start c2-x\n"), "the box started before its wall: {}", calls(&dir));
+        // the usual deep wake: its network never went down, and this broker hasn't walled it
+        let dir = tmp("order-up");
+        let p = faked(&dir, &inspected("exited", "running", "T1"), "true", "exit 1");
+        let _ = p.wake(&machine(&dir)).await;
+        assert!(at(&dir, WALL_CALL) < at(&dir, "start c2-x\n"), "the box started before its wall: {}", calls(&dir));
     }
 
     #[tokio::test]

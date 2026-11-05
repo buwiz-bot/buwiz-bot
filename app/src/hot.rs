@@ -817,6 +817,11 @@ fn agent_menu(line: &str) {
         }
         return;
     }
+    // `computer <bot>`: that Bot's computer, full screen, as its tab's Open does
+    if let Some(bot) = line.strip_prefix("computer ") {
+        store().open_mini_token(&crate::computer::key_of(bot.trim()), "Computer", "");
+        return;
+    }
     // `botdel <id>`: what a Bot's Delete in its menu does
     if let Some(id) = line.strip_prefix("botdel ") {
         crate::computer::ask_delete(id.trim().to_owned());
