@@ -61,6 +61,18 @@ const MAX_BRANCHES: usize = 6;
 const MAX_MARKS: usize = 8;
 /// The longest mark path.
 const MAX_MARK_PATH: usize = 4000;
+/// A mark's chart, `u` degrees round and `v` percent along, with the margin
+/// the layers' box has.
+pub(super) const CHART_U: (f64, f64) = (-180.0, 180.0);
+pub(super) const CHART_V: (f64, f64) = (-5.0, 105.0);
+/// How finely a mark's path is sampled, in chart units. Its straight edges
+/// are cut at every cell anyway, so this only has to follow its curves.
+pub(super) const MARK_STEP: f64 = 2.0;
+/// The most sampled points in a mark and in all of a solid's. A short path
+/// can retrace a long edge hundreds of times, and every point is clipped
+/// against every face, so a path's length in characters is no limit.
+const MAX_MARK_POINTS: usize = 1000;
+const MAX_SOLID_MARK_POINTS: usize = 2000;
 /// The most control points in a hairline.
 const MAX_EDGE: usize = 24;
 /// The most scallops around a hairline.
@@ -289,6 +301,8 @@ impl Head {
 /// A mark: closed loops in a surface's chart, `[u, v]`.
 struct Mark {
     loops: Vec<Vec<V2>>,
+    /// Each loop's box, `[u0, v0, u1, v1]`.
+    bounds: Vec<[f64; 4]>,
     fill: String,
 }
 
@@ -540,6 +554,7 @@ impl Spec {
                     return Err(format!("{what} has more than {MAX_MARKS} marks"));
                 }
                 let mut marks = Vec::with_capacity(a.len());
+                let mut total = 0;
                 for (i, m) in a.iter().enumerate() {
                     let name = format!("{what} mark {}", i + 1);
                     let path = m
@@ -551,8 +566,25 @@ impl Spec {
                     if loops.is_empty() {
                         return Err(format!("{name} encloses no area"));
                     }
+                    let points = loops.iter().map(Vec::len).sum::<usize>();
+                    if points > MAX_MARK_POINTS {
+                        return Err(format!("{name} samples to {points} points, at most {MAX_MARK_POINTS}"));
+                    }
+                    total += points;
+                    if total > MAX_SOLID_MARK_POINTS {
+                        return Err(format!("{what}'s marks sample to {total} points, at most {MAX_SOLID_MARK_POINTS}"));
+                    }
+                    let bounds = loops
+                        .iter()
+                        .map(|l| {
+                            l.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
+                                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+                            })
+                        })
+                        .collect();
                     marks.push(Mark {
                         loops,
+                        bounds,
                         fill: colour(m.get("fill"), &name)?,
                     });
                 }
@@ -562,14 +594,17 @@ impl Spec {
         Ok(Spec { kind, color, marks })
     }
 
-    /// What the solid costs, in faces at most: the number [`MAX_FACES`]
-    /// caps, the same sum `avatar-shape` makes.
+    /// What the solid costs, in faces at most and its marks' points: the
+    /// number [`MAX_FACES`] caps, the same sum `avatar-shape` makes.
     fn cost(&self) -> usize {
         let tube = |p: &Vec<TubePoint>| ((p.len() - 1) * FINE.tube_steps + 3) * FINE.tube_sides;
-        match &self.kind {
+        let marks: usize = self.marks.iter().flat_map(|m| &m.loops).map(Vec::len).sum();
+        marks + match &self.kind {
             Kind::Lathe { profile, .. } => (cut_profile(profile, FINE.lathe_row).len() - 1) * (FINE.lathe_cols + 2 * MAX_SCALLOPS),
             Kind::Shell { lobes, .. } => {
-                FINE.shell_rows * FINE.shell_max_cols + lobes.map_or(0, |l| l.0 * FINE.lobe_rows * FINE.lobe_cols)
+                // the most scallops, at their least columns each, is the
+                // widest a shell gets
+                FINE.shell_rows * MAX_SCALLOPS * FINE.scallop_cols + lobes.map_or(0, |l| l.0 * FINE.lobe_rows * FINE.lobe_cols)
             }
             Kind::Tube { path, branches } => tube(path) + branches.iter().map(tube).sum::<usize>(),
         }
@@ -1142,7 +1177,13 @@ impl Builder<'_> {
             edge: edge.to_vec(),
         });
         if let Some((n, radius, lift)) = lobes {
-            for (centre, r) in lobe_places(head, edge, n, radius * self.k, off + lift * self.k) {
+            let places = lobe_places(head, edge, n, radius * self.k, off + lift * self.k);
+            // not an error: a saved design that stops drawing is dropped
+            // from the list, and with it the rest of the avatar
+            if places.is_empty() {
+                log::warn!("a shell's {n} lobes don't fit inside its hairline: drawn without them");
+            }
+            for (centre, r) in places {
                 self.lobe(centre, r, paint);
             }
         }
@@ -1232,6 +1273,11 @@ impl Builder<'_> {
     }
 }
 
+/// Whether a loop's box `[u0, v0, u1, v1]` meets a cell.
+fn touches(b: &[f64; 4], u0: f64, u1: f64, v0: f64, v1: f64) -> bool {
+    b[0] <= u1 && b[2] >= u0 && b[1] <= v1 && b[3] >= v0
+}
+
 /// The chart rectangle of cell (`i`, `j`).
 fn cell(g: &Grid, i: usize, j: usize) -> (f64, f64, f64, f64) {
     (g.u[j], g.u[j + 1], g.v[i], g.v[i + 1])
@@ -1245,7 +1291,9 @@ fn cover(g: &Grid, i: usize, j: usize, marks: &[(usize, &Mark)]) -> Option<usize
     marks
         .iter()
         .rev()
-        .find(|(_, m)| m.loops.iter().any(|l| area(&clip(l, u0, u1, v0, v1)).abs() >= full * 0.999))
+        .find(|(_, m)| {
+            m.loops.iter().zip(&m.bounds).any(|(l, b)| touches(b, u0, u1, v0, v1) && area(&clip(l, u0, u1, v0, v1)).abs() >= full * 0.999)
+        })
         .map(|(p, _)| *p)
 }
 
@@ -1256,7 +1304,10 @@ fn marks_on(g: &Grid, i: usize, j: usize, marks: &[(usize, &Mark)], shading: &[V
     let (u0, u1, v0, v1) = cell(g, i, j);
     let mut out = Vec::new();
     for (paint, m) in marks {
-        for l in &m.loops {
+        for (l, bound) in m.loops.iter().zip(&m.bounds) {
+            if !touches(bound, u0, u1, v0, v1) {
+                continue;
+            }
             let cut = clip(l, u0, u1, v0, v1);
             if cut.len() < 3 || area(&cut).abs() < 1e-6 {
                 continue;
@@ -1277,14 +1328,16 @@ fn marks_on(g: &Grid, i: usize, j: usize, marks: &[(usize, &Mark)], shading: &[V
     out
 }
 
-/// Where a shell's `n` lobes sit: spread evenly over the part of the head
-/// the hairline covers (a spiral lattice, grown until `n` of its points fall
-/// inside), `lift` off the head, with a little size variety.
+/// Where a shell's lobes sit, at most `n`: spread evenly over the part of the
+/// head the hairline covers (a spiral lattice, grown until `n` of its points
+/// fall inside, or as many as ever do), `lift` off the head, with a little
+/// size variety. Empty when none fit.
 fn lobe_places(head: &Head, edge: &[V2], n: usize, radius: f64, lift: f64) -> Vec<(V3, f64)> {
     let golden = PI * (3.0 - 5f64.sqrt());
     let reach = head.radius([0.0, 1.0, 0.0]).max(1e-6);
     // a lobe's centre stays back from the hairline by most of its width
     let margin = (radius / reach).atan().to_degrees() * 0.8;
+    let mut most = Vec::new();
     for total in n..=n * 12 {
         let mut out = Vec::new();
         for i in 0..total {
@@ -1298,10 +1351,14 @@ fn lobe_places(head: &Head, edge: &[V2], n: usize, radius: f64, lift: f64) -> Ve
             }
         }
         if out.len() >= n {
+            out.truncate(n);
             return out;
         }
+        if out.len() > most.len() {
+            most = out;
+        }
     }
-    vec![]
+    most
 }
 
 /// A recipe's solids at each detail.
@@ -1999,6 +2056,98 @@ mod tests {
         v["profile"] = serde_json::json!(tall);
         let e = custom::rich_body(&recipe(serde_json::json!(vec![v; 10]))).unwrap_err();
         assert!(e.contains("faces"), "{e}");
+    }
+
+    /// A short path can retrace one long edge hundreds of times: its length
+    /// in characters says nothing about what it costs. Past the caps it's
+    /// refused at once, and the most the caps allow still registers quickly.
+    #[test]
+    fn retraced_marks_are_refused_or_bounded() {
+        let retrace = |n: usize| {
+            let mut d = String::from("M-180 0");
+            for _ in 0..n {
+                d += "L180 0L180 100L-180 0";
+            }
+            d + "Z"
+        };
+        let hat = |paths: Vec<String>| {
+            let mut v = brim_hat();
+            let marks: Vec<Value> = paths.into_iter().map(|p| serde_json::json!({"path": p, "fill": "#112233"})).collect();
+            v["marks"] = marks.into();
+            v
+        };
+        // under 4000 characters, tens of thousands of points once sampled
+        let long = retrace(170);
+        assert!(long.len() <= 4000, "{}", long.len());
+        let t = std::time::Instant::now();
+        let e = custom::rich_body(&recipe(serde_json::json!([hat(vec![long])]))).unwrap_err();
+        assert!(e.contains("points, at most 1000"), "{e}");
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+        // two marks each under the cap, too many together
+        let e = custom::rich_body(&recipe(serde_json::json!([hat(vec![retrace(2), retrace(2), retrace(2)])]))).unwrap_err();
+        assert!(e.contains("points, at most 2000"), "{e}");
+        // the most the budget allows: every point against every face
+        let mut heavy = hat(vec![retrace(2), retrace(2)]);
+        let wide: Vec<[f64; 2]> = (0..40).map(|i| [if i == 0 || i == 39 { 0.0 } else { 50.0 + (i % 2) as f64 }, 40.0 - 2.0 * i as f64]).collect();
+        heavy["profile"] = serde_json::json!(wide);
+        let t = std::time::Instant::now();
+        let (_, rich) = body(serde_json::json!([heavy]));
+        let built = t.elapsed();
+        draw(&rich, &pose(30.0, 20.0));
+        println!("worst marks: built in {built:?}, drawn by {:?}", t.elapsed());
+        assert!(built.as_secs() < 5, "{built:?}");
+    }
+
+    /// A coordinate far out of the chart never reaches the sampler.
+    #[test]
+    fn a_huge_mark_coordinate_is_refused() {
+        for d in ["M0 0 L1e300 50 L0 90 Z", "M0 0 L9999 50 L0 90 Z", "M0 0 L90 900 L0 90 Z", "M0 0 C1e300 0 1e300 1 0 90 Z", "m0 0 l1e300 50 l0 40 z"] {
+            let mut v = brim_hat();
+            v["marks"] = serde_json::json!([{"path": d, "fill": "#112233"}]);
+            let e = custom::rich_body(&recipe(serde_json::json!([v]))).unwrap_err();
+            assert!(e.contains("coordinates must stay within"), "{d}: {e}");
+        }
+        // the sampler holds on its own, for the outlines that reach it
+        assert!(bodies::us("M0 0 L1e300 0 Z", 0.5).len() < 10000);
+    }
+
+    /// Lobes come to at most what was asked; when none fit the shell is
+    /// still there, with no lobes.
+    #[test]
+    fn lobes_are_at_most_what_was_asked() {
+        let (name, _) = body(serde_json::json!([afro()]));
+        let base = custom::find(name).unwrap();
+        let head = Head::new(&base.loft_points, base.depth);
+        let edge = [[-180.0, 120.0], [0.0, 45.0]];
+        for n in [1, 2, 7, 16, 32] {
+            let got = lobe_places(&head, &edge, n, 0.2, 0.1).len();
+            assert!((1..=n).contains(&got), "{n}: {got}");
+        }
+        assert!(lobe_places(&head, &[[0.0, 6.0]], 8, 0.9, 0.1).is_empty());
+        let mut tight = afro();
+        tight["edge"] = serde_json::json!([[0, 6]]);
+        tight["lobes"] = serde_json::json!([8, 40, 0]);
+        let plain = |lobes: bool| {
+            let mut v = tight.clone();
+            if !lobes {
+                v.as_object_mut().unwrap().remove("lobes");
+            }
+            body(serde_json::json!([v])).1.solids.as_ref().unwrap().fine.faces.len()
+        };
+        assert_eq!(plain(true), plain(false));
+    }
+
+    /// `"s": []` is a recipe with no solids: the same body, not a figure
+    /// refitted around nothing.
+    #[test]
+    fn an_empty_list_is_no_solids() {
+        let without = serde_json::json!({"o": HEAD, "c": "#F6D1AE", "l": [["M40 76 L60 76 L60 79 L40 79 Z", "#A8503A", 1.0]], "e": "#111111"});
+        let mut with = without.clone();
+        with["s"] = serde_json::json!([]);
+        let (a, b) = (custom::rich_body(&without.to_string()).unwrap(), custom::rich_body(&with.to_string()).unwrap());
+        let (a, b) = (custom::find(a).unwrap(), custom::find(b).unwrap());
+        assert!(std::rc::Rc::ptr_eq(&a, &b), "the plain body of the outline, shared");
+        assert!(custom::rich(custom::rich_body(&with.to_string()).unwrap()).unwrap().solids.is_none());
     }
 
     /// The heaviest allowed recipe registers and draws in bounded time.

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 nsh-core = { path = "../../../nsh/crates/nsh-core" }
+log = "0.4"
 serde_json = "1"
 
 [dev-dependencies]

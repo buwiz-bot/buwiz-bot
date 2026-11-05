@@ -511,6 +511,16 @@ test("AVD-21 solids: checked (kinds, limits, cost), parsed, stored and carried a
   assert.deepEqual(one({ ...tube, path: [[1, 2, 3, 4]] }), ["solid 1's path needs 2 to 12 points"]);
   assert.deepEqual(one({ ...tube, path: [[1, 2, 3, 400], [1, 2, 3, 4]] }), ["solid 1's path's point is out of range"]);
   assert.deepEqual(one({ ...tube, branches: Array(7).fill(tube.path) }), ["solid 1 has more than 6 branches"]);
+  // a short path can retrace one edge hundreds of times: what counts is what it samples to
+  const retrace = (n) => `M-180 0${"L180 0L180 100L-180 0".repeat(n)}Z`;
+  assert.ok(retrace(170).length <= 4000);
+  assert.match(one({ ...lathe, marks: [{ path: retrace(170), fill: "#112233" }] })[0], /^solid 1 mark 1 samples to \d+ points, at most 1000$/);
+  assert.match(one({ ...lathe, marks: Array(3).fill({ path: retrace(2), fill: "#112233" }) })[0], /^solid 1's marks sample to \d+ points, at most 2000$/);
+  assert.deepEqual(one({ ...lathe, marks: [{ path: retrace(2), fill: "#112233" }] }), []);
+  assert.deepEqual(one({ ...lathe, marks: [{ path: "M0 0 L1e300 50 L0 90 Z", fill: "#112233" }] }).length, 1, "a huge coordinate is refused");
+  // the widest shell: 18 scallops cut 72 columns
+  assert.deepEqual(solidErrors(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: undefined })), []);
+  assert.match(solidErrors(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: [32, 9, 1] }))[0], /^the solids cost \d+ faces, at most 8000$/);
   const tall = Array.from({ length: 40 }, (_, i) => [i === 0 || i === 39 ? 0 : 100, i % 2 ? 100 : -100]);
   assert.match(solidErrors(Array(10).fill({ ...lathe, marks: undefined, teeth: undefined, profile: tall }))[0], /^the solids cost \d+ faces, at most 8000$/);
   assert.deepEqual(validateAvatar({ shape: "heart", color: "#FF0000", solids }), ["only a custom outline can have solids"]);
@@ -519,9 +529,9 @@ test("AVD-21 solids: checked (kinds, limits, cost), parsed, stored and carried a
   const [c] = parseCandidates(JSON.stringify([{ ...hat, solids }]));
   assert.deepEqual(c.solids, solids);
   // stored whole, and through a restart
-  const made = await postJson("/bot/new", { name: "Solid", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, solids });
+  const made = await postJson("/bot/new", { name: "Solid", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, solids: solids.map((s) => ({ ...s, junk: 1, marks: s.marks?.map((m) => ({ ...m, junk: 1 })) })) });
   const id = made.json.bot.id;
-  assert.deepEqual(made.json.bot.solids, solids);
+  assert.deepEqual(made.json.bot.solids, solids, "only the fields of its kind are stored");
   bad(await postJson("/bot/update", { id, solids: [{ ...shell, offset: 99 }] }), "solid 1's offset must be 0..60");
   await postJson("/bot/update", { id, color: "#112233" });
   assert.deepEqual((await botOf(id)).solids, solids, "a colour alone keeps them");

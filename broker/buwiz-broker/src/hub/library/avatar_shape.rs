@@ -64,6 +64,16 @@ pub struct Flat {
     /// every point the data names, control points too
     pub coords: Vec<P>,
     pub closed: bool,
+    /// the points the mark engine samples it to (a solid's marks)
+    pub sampled: usize,
+}
+
+/// How finely the mark engine samples a solid's marks (app/src/mark/solids.rs).
+const MARK_STEP: f64 = 2.0;
+
+/// What that sampler makes of a segment `len` long.
+fn mark_steps(len: f64) -> usize {
+    (len / MARK_STEP).ceil().clamp(2.0, 4096.0) as usize
 }
 
 /// `d.match(/[MLCQZmlcqz]|-?(?:\d+\.?\d*|\.\d+)/g)`.
@@ -132,6 +142,7 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
     let (mut points, mut coords): (Vec<P>, Vec<P>) = (Vec::new(), Vec::new());
     let (mut cur, mut start): (P, P) = ([0.0, 0.0], [0.0, 0.0]);
     let (mut cmd, mut subpaths, mut closed, mut i) = (String::new(), 0, false, 0usize);
+    let mut sampled = 0usize;
     macro_rules! num {
         () => {{
             match toks.get(i) {
@@ -180,9 +191,14 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                 cur = pt!(rel);
                 start = cur;
                 points.push(cur);
+                sampled += 1;
             }
             "Z" => {
                 closed = true;
+                let back = (start[0] - cur[0]).hypot(start[1] - cur[1]);
+                if back > 0.01 {
+                    sampled += mark_steps(back);
+                }
                 cur = start;
             }
             _ => {
@@ -190,8 +206,10 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                     return Err("outline must be one shape (nothing after Z)".into());
                 }
                 if up == "L" {
+                    let from = cur;
                     cur = pt!(rel);
                     points.push(cur);
+                    sampled += mark_steps((cur[0] - from[0]).hypot(cur[1] - from[1]));
                 } else {
                     let p0 = cur;
                     let n_ctl = if up == "C" { 3 } else { 2 };
@@ -199,6 +217,13 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                     for _ in 0..n_ctl {
                         ctl.push(pt!(rel));
                     }
+                    let mut len = 0.0;
+                    let mut from = p0;
+                    for q in &ctl {
+                        len += (q[0] - from[0]).hypot(q[1] - from[1]);
+                        from = *q;
+                    }
+                    sampled += mark_steps(len);
                     let n = if up == "C" { STEPS_C } else { STEPS_Q };
                     for s in 1..=n {
                         let u = s as f64 / n as f64;
@@ -215,7 +240,7 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
     if points.is_empty() {
         return Err("outline is empty".into());
     }
-    Ok(Flat { points, coords, closed })
+    Ok(Flat { points, coords, closed, sampled })
 }
 
 /// `/\.\d*\./`: a number running into the next ("1.2.3").
@@ -559,11 +584,13 @@ const SOLID_MARKS: usize = 8;
 const SOLID_EDGE: usize = 24;
 const SOLID_SCALLOPS: usize = 18;
 const SOLID_LOBES: usize = 32;
+const SOLID_MARK_POINTS: usize = 1000;
+const SOLID_ALL_MARK_POINTS: usize = 2000;
 // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
 const SOLID_FACES: usize = 8000;
 const SOLID_ROW: f64 = 5.0;
 const SOLID_COLS: usize = 68;
-const SOLID_SHELL_FACES: usize = 6 * 54;
+const SOLID_SHELL_FACES: usize = 6 * 72;
 const SOLID_LOBE_FACES: usize = 84;
 const SOLID_TUBE_STEPS: usize = 3;
 const SOLID_TUBE_SIDES: usize = 8;
@@ -637,6 +664,7 @@ pub fn solid_errors(solids: &Value) -> Vec<String> {
             continue;
         };
         let before = errs.len();
+        let mut mark_points = 0;
         if !s.get("color").and_then(Value::as_str).is_some_and(is_color) {
             errs.push(format!("{n}'s color must be #RRGGBB"));
         }
@@ -721,13 +749,16 @@ pub fn solid_errors(solids: &Value) -> Vec<String> {
                         errs.push(format!("{n} has more than {SOLID_MARKS} marks"));
                     }
                     for (i, m) in marks.iter().enumerate() {
-                        errs.extend(mark_errors(m, &format!("{n} mark {}", i + 1)));
+                        errs.extend(mark_errors(m, &format!("{n} mark {}", i + 1), &mut mark_points));
+                    }
+                    if mark_points > SOLID_ALL_MARK_POINTS {
+                        errs.push(format!("{n}'s marks sample to {mark_points} points, at most {SOLID_ALL_MARK_POINTS}"));
                     }
                 }
             }
         }
         if errs.len() == before {
-            cost += solid_cost(s);
+            cost += solid_cost(s) + mark_points;
         }
     }
     if cost > SOLID_FACES {
@@ -738,7 +769,7 @@ pub fn solid_errors(solids: &Value) -> Vec<String> {
 
 /// One mark of a solid: a closed path in its chart, u -180..180 round it
 /// and v 0..100 along it, with a fill.
-fn mark_errors(m: &Value, n: &str) -> Vec<String> {
+fn mark_errors(m: &Value, n: &str, points: &mut usize) -> Vec<String> {
     let Some(m) = m.as_object() else { return vec![format!("{n} must be {{path, fill}}")] };
     let mut errs = Vec::new();
     if !m.get("fill").and_then(Value::as_str).is_some_and(is_color) {
@@ -769,7 +800,31 @@ fn mark_errors(m: &Value, n: &str) -> Vec<String> {
     if f.points.len() < 3 || area_centroid(&f.points).0 < 0.25 {
         errs.push(format!("{n} encloses no area"));
     }
+    if f.sampled > SOLID_MARK_POINTS {
+        errs.push(format!("{n} samples to {} points, at most {SOLID_MARK_POINTS}", f.sampled));
+    }
+    *points += f.sampled;
     errs
+}
+
+/// `solidOf(s)`: a solid as a bot stores it, the fields of its kind and
+/// nothing else.
+pub fn solid_of(s: &Value) -> Value {
+    let keys: &[&str] = match s.get("kind").and_then(Value::as_str) {
+        Some("lathe") => &["at", "tilt", "oval", "teeth", "profile"],
+        Some("shell") => &["offset", "edge", "scallop", "lobes"],
+        Some("tube") => &["path", "branches"],
+        _ => return s.clone(),
+    };
+    let keep = |from: &Value, names: &[&str]| -> Map<String, Value> {
+        names.iter().filter_map(|k| from.get(*k).map(|v| ((*k).to_owned(), v.clone()))).collect()
+    };
+    let mut o = keep(s, &["kind", "color"]);
+    o.extend(keep(s, keys));
+    if let Some(m) = s.get("marks").and_then(Value::as_array) {
+        o.insert("marks".into(), m.iter().map(|m| Value::Object(keep(m, &["path", "fill"]))).collect());
+    }
+    Value::Object(o)
 }
 
 /// The smallest and largest eye size multiplier, and the thickest rim.
@@ -1050,7 +1105,7 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                 layers: layers.filter(|_| custom),
                 eyes: eyes.filter(|_| custom),
                 parts: parts.filter(|_| custom),
-                solids: x.get("solids").and_then(Value::as_array).filter(|_| custom).cloned(),
+                solids: x.get("solids").and_then(Value::as_array).filter(|_| custom).map(|s| s.iter().map(solid_of).collect()),
                 shape,
                 color,
                 why: js::slice_utf16(js_trim(&or_empty(x.get("why"))), 240),

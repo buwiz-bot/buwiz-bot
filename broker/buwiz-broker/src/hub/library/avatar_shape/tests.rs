@@ -407,6 +407,27 @@ fn solids_are_checked_like_node() {
     assert_eq!(with(&tube, "path", json!([[1, 2, 3, 4]])), ["solid 1's path needs 2 to 12 points"]);
     assert_eq!(with(&tube, "path", json!([[1, 2, 3, 400], [1, 2, 3, 4]])), ["solid 1's path's point is out of range"]);
     assert_eq!(with(&tube, "branches", json!(vec![tube["path"].clone(); 7])), ["solid 1 has more than 6 branches"]);
+    // a short path can retrace one edge hundreds of times: what counts is what it samples to
+    let retrace = |n: usize| format!("M-180 0{}Z", "L180 0L180 100L-180 0".repeat(n));
+    assert!(retrace(170).len() <= 4000);
+    let marked = |paths: Vec<String>| {
+        let m: Vec<Value> = paths.into_iter().map(|p| json!({"path": p, "fill": "#112233"})).collect();
+        with(&lathe, "marks", Value::Array(m))
+    };
+    let e = marked(vec![retrace(170)]);
+    assert!(e[0].starts_with("solid 1 mark 1 samples to ") && e[0].ends_with(" points, at most 1000"), "{e:?}");
+    let e = marked(vec![retrace(2), retrace(2), retrace(2)]);
+    assert!(e[0].starts_with("solid 1's marks sample to ") && e[0].ends_with(" points, at most 2000"), "{e:?}");
+    assert_eq!(marked(vec![retrace(2)]), Vec::<String>::new());
+    assert_eq!(marked(vec!["M0 0 L1e300 50 L0 90 Z".into()]).len(), 1, "a huge coordinate is refused");
+    // the widest shell: 18 scallops cut 72 columns
+    let mut wide = shell.clone();
+    wide["scallop"] = json!([18, 8, 1]);
+    wide.as_object_mut().unwrap().remove("lobes");
+    assert_eq!(solid_errors(&json!(vec![wide.clone(); 10])), Vec::<String>::new());
+    wide["lobes"] = json!([32, 9, 1]);
+    let e = solid_errors(&json!(vec![wide; 10]));
+    assert!(e[0].starts_with("the solids cost ") && e[0].ends_with(" faces, at most 8000"), "{e:?}");
     let tall: Vec<[i64; 2]> = (0..40).map(|i| [if i == 0 || i == 39 { 0 } else { 100 }, if i % 2 == 1 { 100 } else { -100 }]).collect();
     let mut big = lathe.clone();
     big["profile"] = json!(tall);
@@ -416,6 +437,18 @@ fn solids_are_checked_like_node() {
     assert!(e[0].starts_with("the solids cost ") && e[0].ends_with(" faces, at most 8000"), "{e:?}");
     assert_eq!(validate_avatar(Some("heart"), Some("#FF0000"), None, None, None, None, Some(&json!([tube]))), ["only a custom outline can have solids"]);
     assert_eq!(validate_avatar(Some("custom"), Some("#FF0000"), Some(MOCK_CAT), None, None, None, Some(&json!([tube]))), ["solids need a rich avatar: at least one layer (the face)"]);
+}
+
+/// Only the fields of a solid's kind are stored.
+#[test]
+fn solids_are_stored_from_a_fixed_list() {
+    let clean = json!({"kind": "lathe", "color": "#F2C062", "at": [50, 40, 0], "profile": [[0, 20], [30, 0], [0, -5]], "marks": [{"path": "M0 0 L9 0 L9 9 Z", "fill": "#E0393A"}]});
+    let mut dirty = clean.clone();
+    dirty["junk"] = json!(1);
+    dirty["edge"] = json!([[0, 90]]);
+    dirty["marks"][0]["junk"] = json!(1);
+    assert_eq!(solid_of(&dirty), clean);
+    assert_eq!(solid_of(&clean), clean);
 }
 
 /// A design keeps its solids, and only a custom one has them.

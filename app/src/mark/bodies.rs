@@ -396,6 +396,16 @@ fn dv_path(e: f64, t: f64, n: f64) -> String {
     )
 }
 
+/// The most points `us` puts on one segment. An avatar's box is 100 across,
+/// so nothing real comes near it; a huge coordinate must not ask for
+/// `usize::MAX` of them.
+const MAX_SEGMENT_POINTS: f64 = 4096.0;
+
+/// How many steps of `t` a segment `len` long takes in `us`.
+fn sample_steps(len: f64, t: f64) -> usize {
+    (len / t).ceil().max(2.0).min(MAX_SEGMENT_POINTS) as usize
+}
+
 /// `us` — the path-string parser/sampler: flattens `d` to points every ≤`t`px.
 pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
     // JS tokenizes `/[MLCQZmlcqz]|-?\d*\.?\d+(?:e[-+]?\d+)?/g`.
@@ -483,7 +493,7 @@ pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
                 let len = (start[0] - cur[0]).hypot(start[1] - cur[1]);
                 if len > 0.01 {
                     let (a, b2, c0, d0) = (cur[0], cur[1], start[0], start[1]);
-                    let p = (len / t).ceil().max(2.0) as usize;
+                    let p = sample_steps(len, t);
                     for g in 1..=p {
                         let f = g as f64 / p as f64;
                         r.push([a + (c0 - a) * f, b2 + (d0 - b2) * f]);
@@ -504,7 +514,7 @@ pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
                 let h = l!();
                 let (a, b2) = (cur[0], cur[1]);
                 let len = (f - a).hypot(h - b2);
-                let p = (len / t).ceil().max(2.0) as usize;
+                let p = sample_steps(len, t);
                 for g in 1..=p {
                     let q = g as f64 / p as f64;
                     r.push([a + (f - a) * q, b2 + (h - b2) * q]);
@@ -515,7 +525,7 @@ pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
                 let (f, h, p, g) = (l!(), l!(), l!(), l!());
                 let (m, y) = (cur[0], cur[1]);
                 let len = (f - m).hypot(h - y) + (p - f).hypot(g - h);
-                let seg = (len / t).ceil().max(2.0) as usize;
+                let seg = sample_steps(len, t);
                 for w in 1..=seg {
                     let w = w as f64 / seg as f64;
                     let sw = 1.0 - w;
@@ -532,7 +542,7 @@ pub(super) fn us(e: &str, t: f64) -> Vec<V2> {
                 let (w, s2) = (cur[0], cur[1]);
                 let len =
                     (f - w).hypot(h - s2) + (p - f).hypot(g - h) + (m - p).hypot(y - g);
-                let seg = (len / t).ceil().max(2.0) as usize;
+                let seg = sample_steps(len, t);
                 for b2 in 1..=seg {
                     let b2 = b2 as f64 / seg as f64;
                     let v = 1.0 - b2;

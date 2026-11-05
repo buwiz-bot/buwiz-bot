@@ -7,7 +7,7 @@ import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
 import { integrationAdd, integrationRemove, integrationsOf, memoryAdd, memoryRemove, memoryUpdate, setBotProfile } from "../botctx.mjs";
 import { osa, generateAvatarImage } from "../avatars.mjs";
-import { KIT_SHAPES, validateAvatar } from "../avatar-shape.mjs";
+import { KIT_SHAPES, solidOf, validateAvatar } from "../avatar-shape.mjs";
 import { designAvatar, designPicture, pickKitAvatar } from "../avatar-design.mjs";
 
 // Sets a request's avatar fields on `bot` (a new one or one there): a kit
@@ -63,7 +63,7 @@ function applyAvatar(bot, { shape, color, outline, layers, eyes, parts, solids }
       ...(typeof x.d === "number" ? { d: x.d } : {}),
     }));
   else delete bot.parts;
-  if (d) bot.solids = d;
+  if (d) bot.solids = d.map(solidOf);
   else delete bot.solids;
 }
 

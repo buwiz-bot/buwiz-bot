@@ -224,7 +224,7 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
         eyes: if layers.is_some() { e } else { None },
         layers,
         parts,
-        solids,
+        solids: solids.map(|s| s.iter().map(avatar_shape::solid_of).collect()),
     })
 }
 

@@ -1146,11 +1146,24 @@ const SOLID_REACH: f64 = 1.8;
 /// The smallest a figure with solids draws (a wide brim shrinks the head).
 const SOLID_MIN_SIZE: f64 = 0.8;
 
-/// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops.
+/// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
+/// every [`solids::MARK_STEP`]. Every coordinate is checked first: sampling
+/// spends points by length.
 fn chart_loops(path: &str) -> Result<Vec<Vec<V2>>, String> {
     let mut loops = Vec::new();
     for sub in subpaths(path)? {
-        let pts = bodies::us(&sub, 1.0);
+        // absolute by now: every number is a coordinate, x then y
+        let numbers = tokenize(&sub)?.into_iter().filter_map(|t| match t {
+            Token::Number(v) => Some(v),
+            Token::Command(_) => None,
+        });
+        for (i, v) in numbers.enumerate() {
+            let range = if i % 2 == 0 { solids::CHART_U } else { solids::CHART_V };
+            if !(range.0..=range.1).contains(&v) {
+                return Err(format!("coordinates must stay within {}..{}, {}..{}", solids::CHART_U.0, solids::CHART_U.1, solids::CHART_V.0, solids::CHART_V.1));
+            }
+        }
+        let pts = bodies::us(&sub, solids::MARK_STEP);
         if pts.len() >= 3 && signed_area(&pts).abs() >= 0.25 {
             loops.push(pts);
         }
@@ -1587,7 +1600,9 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
     // with parts, every outline shares one frame; without, the main part
     // is the plain custom body of its outline
     let present = |k: &str| v.get(k).filter(|x| !x.is_null());
-    let (base, parts_spec, scene) = match (present("p"), present("s")) {
+    // an empty list of solids is no solids
+    let solid_list = present("s").filter(|s| s.as_array().is_none_or(|a| !a.is_empty()));
+    let (base, parts_spec, scene) = match (present("p"), solid_list) {
         (None, None) => {
             let base_name = custom_body(outline)?;
             (find(base_name).ok_or("the outline didn't register")?, None, None)

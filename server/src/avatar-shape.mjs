@@ -34,6 +34,8 @@ export const OUTLINE_MAX = 4000;
 const COLOR = /^#[0-9A-Fa-f]{6}$/;
 const OUTLINE_CHARS = /^[MLCQZmlcqz0-9.,\-\s]*$/;
 const ARGS = { M: 2, L: 2, C: 6, Q: 4, Z: 0 };
+// how finely the mark engine samples a solid's marks (app/src/mark/solids.rs)
+const MARK_STEP = 2;
 // curve sampling for the geometry checks
 const STEPS = { C: 16, Q: 10 };
 
@@ -47,7 +49,9 @@ export function flattenPath(d) {
   if (tokens.join("").length !== String(d).replace(/[\s,]/g, "").length || /\.\d*\./.test(d))
     throw new Error("outline has a malformed number");
   const points = [], coords = [];
-  let cur = [0, 0], start = [0, 0], cmd = "", subpaths = 0, closed = false, i = 0;
+  let cur = [0, 0], start = [0, 0], cmd = "", subpaths = 0, closed = false, i = 0, sampled = 0;
+  // what the mark engine's sampler makes of a segment `len` long (a solid's marks)
+  const steps = (len) => Math.max(2, Math.min(4096, Math.ceil(len / MARK_STEP)));
   const num = () => {
     const t = tokens[i];
     if (t === undefined || /[A-Za-z]/.test(t)) throw new Error(`outline command ${cmd} is missing numbers`);
@@ -77,18 +81,24 @@ export function flattenPath(d) {
       subpaths++;
       cur = start = pt(rel);
       points.push(cur);
+      sampled += 1;
     } else if (up === "Z") {
       closed = true;
+      const back = Math.hypot(start[0] - cur[0], start[1] - cur[1]);
+      if (back > 0.01) sampled += steps(back);
       cur = start;
     } else {
       if (closed) throw new Error("outline must be one shape (nothing after Z)");
       if (up === "L") {
+        const from = cur;
         cur = pt(rel);
         points.push(cur);
+        sampled += steps(Math.hypot(cur[0] - from[0], cur[1] - from[1]));
       } else {
         const p0 = cur;
         const ctl = [];
         for (let k = 0; k < ARGS[up] / 2; k++) ctl.push(pt(rel));
+        sampled += steps([p0, ...ctl].reduce((len, q, k, a) => (k ? len + Math.hypot(q[0] - a[k - 1][0], q[1] - a[k - 1][1]) : 0), 0));
         const n = STEPS[up];
         for (let s = 1; s <= n; s++) {
           const u = s / n, v = 1 - u;
@@ -104,7 +114,7 @@ export function flattenPath(d) {
     }
   }
   if (!points.length) throw new Error("outline is empty");
-  return { points, coords, subpaths, closed };
+  return { points, coords, subpaths, closed, sampled };
 }
 
 const areaCentroid = (poly) => {
@@ -337,10 +347,16 @@ export function partErrors(parts) {
 }
 
 export const SOLIDS_MAX = 10;
+const SOLID_KEYS = {
+  lathe: ["at", "tilt", "oval", "teeth", "profile"],
+  shell: ["offset", "edge", "scallop", "lobes"],
+  tube: ["path", "branches"],
+};
 const SOLID = {
   profile: 40, path: 12, branches: 6, marks: 8, edge: 24, scallops: 18, lobes: 32,
+  markPoints: 1000, solidMarkPoints: 2000,
   // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
-  faces: 8000, row: 5, cols: 68, shellFaces: 6 * 54, lobeFaces: 84, tubeSteps: 3, tubeSides: 8,
+  faces: 8000, row: 5, cols: 68, shellFaces: 6 * 72, lobeFaces: 84, tubeSteps: 3, tubeSides: 8,
   box: [-60, 160], radius: 60,
 };
 
@@ -383,6 +399,15 @@ function solidCost(s) {
  *  radius], ...] and `branches`. Marks are closed paths in the solid's chart,
  *  u -180..180 round it and v 0..100 along it. The limits keep a bad recipe
  *  from stalling the renderer (app/src/mark/solids.rs, which checks the same). */
+/** A solid as a bot stores it: the fields of its kind and nothing else. */
+export function solidOf(s) {
+  const keep = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+  return {
+    ...keep(s, ["kind", "color", ...SOLID_KEYS[s.kind]]),
+    ...(s.marks !== undefined ? { marks: s.marks.map((m) => keep(m, ["path", "fill"])) } : {}),
+  };
+}
+
 export function solidErrors(solids) {
   if (!Array.isArray(solids)) return ["solids must be a list"];
   const errs = [];
@@ -392,6 +417,7 @@ export function solidErrors(solids) {
     const n = `solid ${k + 1}`;
     if (!s || typeof s !== "object" || Array.isArray(s)) return errs.push(`${n} must be {kind, color}`);
     const before = errs.length;
+    let markPoints = 0;
     if (typeof s.color !== "string" || !COLOR.test(s.color)) errs.push(`${n}'s color must be #RRGGBB`);
     if (s.kind === "lathe") {
       if (!numList(s.at, 3)) errs.push(`${n}'s at must be [x, y, z]`);
@@ -443,10 +469,13 @@ export function solidErrors(solids) {
           }
           if (f.coords.some(([u, v]) => !(u >= -180 && u <= 180 && v >= -5 && v <= 105))) errs.push(`${mn}'s coordinates must stay within -180..180, -5..105`);
           if (f.points.length < 3 || areaCentroid(f.points).area < 0.25) errs.push(`${mn} encloses no area`);
+          if (f.sampled > SOLID.markPoints) errs.push(`${mn} samples to ${f.sampled} points, at most ${SOLID.markPoints}`);
+          markPoints += f.sampled;
         });
+        if (markPoints > SOLID.solidMarkPoints) errs.push(`${n}'s marks sample to ${markPoints} points, at most ${SOLID.solidMarkPoints}`);
       }
     }
-    if (errs.length === before) cost += solidCost(s);
+    if (errs.length === before) cost += solidCost(s) + markPoints;
   });
   if (cost > SOLID.faces) errs.push(`the solids cost ${cost} faces, at most ${SOLID.faces}`);
   return errs;
@@ -542,7 +571,7 @@ export function parseCandidates(text) {
       ...(shape === "custom" && layers ? { layers } : {}),
       ...(shape === "custom" && eyes !== undefined ? { eyes } : {}),
       ...(shape === "custom" && parts ? { parts } : {}),
-      ...(shape === "custom" && Array.isArray(x.solids) ? { solids: x.solids } : {}),
+      ...(shape === "custom" && Array.isArray(x.solids) ? { solids: x.solids.map((s) => (s && SOLID_KEYS[s.kind] ? solidOf(s) : s)) } : {}),
       why: String(x.why || "").trim().slice(0, 240),
     };
   });

@@ -589,6 +589,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 name = "mark-sheet"
 version = "0.0.0"
 dependencies = [
+ "log",
  "nsh-core",
  "serde_json",
  "tiny-skia",
