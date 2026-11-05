@@ -96,11 +96,18 @@ impl Pos {
 /// turned on per Bot, each by itself. A person's data is on it.
 pub const OFF_BY_DEFAULT: [&str; 2] = ["screens", "screen_actions"];
 
-/// A switch's position with no row: [`OFF_BY_DEFAULT`]'s are off; a Bot's others are on;
-/// the Chats profile has the web and office documents on and everything else at Ask.
+/// The switches that start at Ask for every profile: a command runs as the person, so nothing
+/// runs without a person's yes until they turn a Bot's shell On.
+pub const ASK_BY_DEFAULT: [&str; 1] = ["shell"];
+
+/// A switch's position with no row: [`OFF_BY_DEFAULT`]'s are off, [`ASK_BY_DEFAULT`]'s ask; a
+/// Bot's others are on; the Chats profile has the web and office documents on and everything
+/// else at Ask.
 pub fn default_pos(owner: &str, key: &str) -> Pos {
     if OFF_BY_DEFAULT.contains(&key) {
         Pos::Off
+    } else if ASK_BY_DEFAULT.contains(&key) {
+        Pos::Ask
     } else if owner != CHATS || matches!(key, "web" | "office") {
         Pos::On
     } else {

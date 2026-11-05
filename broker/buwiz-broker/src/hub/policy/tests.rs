@@ -815,7 +815,10 @@ fn bed(label: &str) -> Bed {
             (hex, plain)
         })
         .unwrap();
-    Bed { ctx: Arc::new(ctx), hex, plain }
+    // these tests judge what a Bot's shell does once its person has turned it On
+    let ctx = Arc::new(ctx);
+    ctx.db.with(|c| c.execute("INSERT INTO bot_tools(bot_id, key, enabled, actor, at) VALUES('hex','shell',1,'human',1)", [])).unwrap();
+    Bed { ctx, hex, plain }
 }
 
 fn run_in(ctx: &Arc<HubCtx>, thread: &str) -> Run {
@@ -1614,7 +1617,10 @@ fn bed_waiting(label: &str, wait: std::time::Duration) -> Bed {
             (hex, plain)
         })
         .unwrap();
-    Bed { ctx: Arc::new(ctx), hex, plain }
+    // these tests judge what a Bot's shell does once its person has turned it On
+    let ctx = Arc::new(ctx);
+    ctx.db.with(|c| c.execute("INSERT INTO bot_tools(bot_id, key, enabled, actor, at) VALUES('hex','shell',1,'human',1)", [])).unwrap();
+    Bed { ctx, hex, plain }
 }
 
 fn asks(ctx: &HubCtx, chat: &str) -> Vec<Value> {
@@ -1650,7 +1656,7 @@ fn chats_memories(ctx: &HubCtx) -> Vec<String> {
 #[test]
 fn positions_default_by_profile_and_a_row_before_state_reads_as_enabled() {
     assert_eq!((default_pos(CHATS, "web"), default_pos(CHATS, "office"), default_pos(CHATS, "memory"), default_pos(CHATS, "shell"), default_pos(CHATS, "mcp:x")), (Pos::On, Pos::On, Pos::Ask, Pos::Ask, Pos::Ask));
-    assert_eq!((default_pos("hex", "shell"), default_pos("hex", "agents")), (Pos::On, Pos::On));
+    assert_eq!((default_pos("hex", "shell"), default_pos("hex", "agents")), (Pos::Ask, Pos::On), "a command runs as the person, so it asks");
     let b = bed("positions");
     b.ctx.db.with(|c| c.execute("INSERT INTO bot_tools(bot_id, key, enabled, actor, at) VALUES('hex','web',0,'human',1)", [])).unwrap();
     assert_eq!(tool_state(&b.ctx, "hex", "web"), Pos::Off, "a PR 1 row is off");
