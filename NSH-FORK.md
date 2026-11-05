@@ -1,6 +1,6 @@
 # The nsh fork
 
-Buwiz Bot builds on its own copy of Native Shell. **`rox` = upstream `main` + our
+Buwiz Bot builds on its own copy of Native Shell. **`buwiz` = upstream `main` + our
 topics**, nothing else:
 
 | Where | What | Rule |
@@ -8,9 +8,9 @@ topics**, nothing else:
 | `longbridge/nsh` `main` | upstream | we change it only through PRs |
 | `hexuria/nsh` `main` | mirror of upstream `main` | only ever fast-forwarded (`scripts/nsh-fork sync`) |
 | `hexuria/nsh` `pr/<topic>` | one feature or one fix, cut from `main` | follows upstream's `AGENTS.md`; becomes one upstream PR |
-| `hexuria/nsh` `rox` | `main` + the active topics of `nsh-patches.toml` | rebuilt from scratch, never merged into |
-| `rox/nsh` (submodule) | a commit of `rox` | Buwiz Bot's `Cargo.toml` takes nsh's crates from it by path |
-| tags `rox-YYYY-MM-DD` | every `rox` tip before a rebuild | keep old Buwiz Bot commits buildable |
+| `hexuria/nsh` `buwiz` | `main` + the active topics of `nsh-patches.toml` | rebuilt from scratch, never merged into |
+| `nsh` (submodule) | a commit of `buwiz` | Buwiz Bot's `Cargo.toml` takes nsh's crates from it by path |
+| tags `buwiz-YYYY-MM-DD` (older ones `rox-YYYY-MM-DD`) | every `buwiz` tip before a rebuild | keep old Buwiz Bot commits buildable |
 
 `nsh-patches.toml` is the registry: every topic Buwiz Bot carries, its upstream PR
 and its status. `scripts/nsh-fork status` checks it against git and GitHub.
@@ -20,8 +20,8 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 ## Guardrails
 
 - Commit nsh changes on a topic branch. `main` holds upstream's commits
-  only, and `rox` only what a rebuild puts there.
-- Change `rox` with `scripts/nsh-fork rebuild --push`: it tags the old tip
+  only, and `buwiz` only what a rebuild puts there.
+- Change `buwiz` with `scripts/nsh-fork rebuild --push`: it tags the old tip
   before it moves the branch, so every commit Buwiz Bot recorded still fetches.
 - One topic is one upstream PR: one area, its tests, upstream's commit
   style (`macos: Do the thing`), formatted with `cargo +nightly fmt --all`,
@@ -36,15 +36,15 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 
 ## Changing nsh
 
-1. Start from a fresh `main`: `scripts/nsh-fork sync`, then in `rox/nsh`
+1. Start from a fresh `main`: `scripts/nsh-fork sync`, then in `nsh`
    `git switch -c pr/<topic> main` (or a worktree).
 2. Make the change with its test; read upstream's `AGENTS.md` and the
    `docs/dev/` page of the area first. Run the crate's tests, clippy and
    `cargo +nightly fmt --all`.
 3. Add a `[[topic]]` to `nsh-patches.toml` (status `local`), push the
    branch to `origin`.
-4. Rebuild `rox` and update Buwiz Bot (below). Done when Buwiz Bot builds and runs on
-   the new `rox` and `scripts/nsh-fork status` flags nothing for the topic.
+4. Rebuild `buwiz` and update Buwiz Bot (below). Done when Buwiz Bot builds and runs on
+   the new `buwiz` and `scripts/nsh-fork status` flags nothing for the topic.
 
 ## Upstreaming a topic
 
@@ -56,9 +56,9 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    upstream's PR template (`## Public API` for new API, before/after
    numbers for hot paths). A topic that depends on another goes up after it.
 3. Set `pr` and `status = "open"` in the registry.
-4. Answer reviews on the topic branch, then rebuild `rox`.
+4. Answer reviews on the topic branch, then rebuild `buwiz`.
 5. Merged: set `status = "merged"`. The next rebuild leaves it out (upstream
-   `main` has it). Declined: `status = "rox-only"` with the reason in
+   `main` has it). Declined: `status = "buwiz-only"` with the reason in
    `note`, and look for the hook upstream would take instead.
 
 ## Keeping up with upstream
@@ -66,20 +66,20 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
 1. `scripts/nsh-fork sync`, then `scripts/nsh-fork status`.
 2. Topics flagged `rebase`: `scripts/nsh-fork rebase <topic> --push`; fix
    what breaks on the topic itself.
-3. `scripts/nsh-fork rebuild`: builds `rox-new` in `/tmp/rox-nsh-fork`. A
+3. `scripts/nsh-fork rebuild`: builds `buwiz-new` in `/tmp/buwiz-nsh-fork`. A
    conflict stops it there; resolve it once (git `rerere` replays the
    resolution in later rebuilds) and run it again. A topic stacked on
    another (the gpui-agent stack) brings its base's commits in once.
    Merges are skipped: a topic that merges upstream `main` in carries its
    port in ordinary commits after the merge, and resolves the merge as
    the rebuild's picks do.
-4. Check `rox-new`: point the submodule at it, build Buwiz Bot, launch it, then
+4. Check `buwiz-new`: point the submodule at it, build Buwiz Bot, launch it, then
    `scripts/nsh-fork rebuild --push`.
-5. Update Buwiz Bot. Done when Buwiz Bot is committed on the new `rox` commit and runs.
+5. Update Buwiz Bot. Done when Buwiz Bot is committed on the new `buwiz` commit and runs.
 
 ## Updating Buwiz Bot
 
-1. In `rox/nsh`: `git fetch origin && git switch rox && git reset --hard origin/rox`.
+1. In `nsh`: `git fetch origin && git switch buwiz && git reset --hard origin/buwiz`.
 2. Fix Buwiz Bot for upstream's changes (`cd app && cargo build`), launch it and
    smoke-test chats, the palette, Settings, the file viewer and a live mini
    app.
@@ -93,10 +93,10 @@ the server's prompts and the MCP mini apps should import from the new homes.
 
 ## Why it is set up this way
 
-- **Rebuilt, not merged.** `git log main..rox` is exactly what we carry.
-  Merging upstream into `rox` buries the patches in merge history and
+- **Rebuilt, not merged.** `git log main..buwiz` is exactly what we carry.
+  Merging upstream into `buwiz` buries the patches in merge history and
   keeps duplicates around once upstream takes a change in another form.
 - **The registry, not patch matching.** Upstream squash-merges PRs, so git
   cannot tell that a topic landed; the PR number in the registry can.
 - **Tags before every rebuild.** Buwiz Bot's history records submodule commits;
-  a rebuilt `rox` would orphan them without a tag.
+  a rebuilt `buwiz` would orphan them without a tag.

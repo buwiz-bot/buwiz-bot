@@ -1,8 +1,8 @@
 [submodule "nsh"]
 	path = nsh
 	url = https://github.com/hexuria/nsh.git
-	branch = rox
+	branch = buwiz
 [submodule "blaze"]
 	path = blaze
 	url = https://github.com/hexuria/blaze.git
-	branch = rox
+	branch = buwiz

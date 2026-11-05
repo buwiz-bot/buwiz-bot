@@ -1,12 +1,12 @@
 # The nsh changes Buwiz Bot carries: one entry per topic branch on hexuria/nsh.
-# `rox` = `main` + every topic whose status is local, open or rox-only, in
+# `buwiz` = `main` + every topic whose status is local, open or buwiz-only, in
 # this order. How to use it: NSH-FORK.md. `scripts/nsh-fork status` checks it.
 #
 # status: local    on the fork only, no upstream PR yet
 #         open     PR open on longbridge/nsh
 #         merged   upstream has it: dropped at the next rebuild
-#         rox-only upstream declined it (say why in `note`); carried for good
-#         parked   kept as a branch, left out of `rox` (say why in `note`)
+#         buwiz-only upstream declined it (say why in `note`); carried for good
+#         parked   kept as a branch, left out of `buwiz` (say why in `note`)
 
 [[topic]]
 branch = "pr/macos-press-stops-momentum"
@@ -18,7 +18,7 @@ status = "local"
 branch = "pr/gpui-agent"
 kind = "feature"
 pr = 449
-status = "rox-only"
+status = "buwiz-only"
 note = "upstream declined #449 on 2026-10-27 (\"not ready to accept this feature\"); the shared adapter stack below is the candidate hook-sized replacement"
 
 [[topic]]
@@ -124,7 +124,7 @@ note = "AppView::set_error_handler: Buwiz Bot shows a v1 mini app's load, uncaug
 
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
-# verified, carried in `rox`; kept in the fork, not upstreamed. The macOS-only
+# verified, carried in `buwiz`; kept in the fork, not upstreamed. The macOS-only
 # host above moves onto it later (decided: after the stack settled).
 [[topic]]
 branch = "devin/gpui-agent-adapter"
@@ -221,4 +221,4 @@ branch = "feat/agent-hub"
 kind = "feature"
 pr = 0
 status = "local"
-note = "gpui-agent-server splits the listener off the in-process tree and actions; provenance tells the app whose hands input came from. Agent Hub S2; on top of rox, not cut from main yet"
+note = "gpui-agent-server splits the listener off the in-process tree and actions; provenance tells the app whose hands input came from. Agent Hub S2; on top of buwiz, not cut from main yet"

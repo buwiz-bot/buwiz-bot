@@ -2,12 +2,12 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Keeps hexuria/nsh `rox` = longbridge/nsh `main` + the topics in nsh-patches.toml.
+"""Keeps hexuria/nsh `buwiz` = longbridge/nsh `main` + the topics in nsh-patches.toml.
 
-  scripts/nsh-fork status            fork main vs upstream; each topic's PR, rebase need, presence in rox
+  scripts/nsh-fork status            fork main vs upstream; each topic's PR, rebase need, presence in buwiz
   scripts/nsh-fork sync              fast-forward the fork's main to upstream main (never anything else)
-  scripts/nsh-fork rebuild [--push]  rox-new = upstream main + active topics, in a scratch worktree;
-                                     --push tags the old rox tip (rox-YYYY-MM-DD) and moves rox to it
+  scripts/nsh-fork rebuild [--push]  buwiz-new = upstream main + active topics, in a scratch worktree;
+                                     --push tags the old buwiz tip (buwiz-YYYY-MM-DD) and moves buwiz to it
   scripts/nsh-fork rebase TOPIC [--keep-local] [--push]
                                      TOPIC onto upstream main (--push: force-with-lease to the fork;
                                      --keep-local: start from the local branch, with its fixes, not the fork's)
@@ -30,8 +30,8 @@ NSH = ROOT / "nsh"
 UPSTREAM = "https://github.com/longbridge/nsh.git"
 UPSTREAM_REPO = "longbridge/nsh"
 FORK_OWNER = "hexuria"
-WORKTREE = Path("/tmp/rox-nsh-fork")
-ACTIVE = {"local", "open", "rox-only"}
+WORKTREE = Path("/tmp/buwiz-nsh-fork")
+ACTIVE = {"local", "open", "buwiz-only"}
 
 
 def git(*args, cwd=NSH, check=True, quiet=False):
@@ -86,12 +86,12 @@ def status():
     fetch()
     ahead, behind = count("upstream/main..origin/main"), count("origin/main..upstream/main")
     print(f"fork main: {'= upstream' if not (ahead or behind) else f'ahead {ahead}, behind {behind}'}")
-    print(f"rox: {count('upstream/main..origin/rox')} commits over upstream main, "
-          f"{count('origin/rox..upstream/main')} upstream commits not in it\n")
+    print(f"buwiz: {count('upstream/main..origin/buwiz')} commits over upstream main, "
+          f"{count('origin/buwiz..upstream/main')} upstream commits not in it\n")
     # rebuilds cherry-pick with -x: a topic commit whose conflict was
     # resolved differs by patch, not by its trailer
     picked = set(re.findall(r"cherry picked from commit ([0-9a-f]{40})",
-                            git("log", "--format=%B", "upstream/main..origin/rox")))
+                            git("log", "--format=%B", "upstream/main..origin/buwiz")))
     for t in topics():
         r = ref(t["branch"])
         if r is None:
@@ -99,13 +99,13 @@ def status():
             continue
         n_ahead, n_behind = count(f"upstream/main..{r}"), count(f"{r}..upstream/main")
         missing = sum(
-            1 for l in git("cherry", "origin/rox", r).splitlines()
+            1 for l in git("cherry", "origin/buwiz", r).splitlines()
             if l.startswith("+") and l[2:] not in picked
         )
         pr = pr_state(t.get("pr", 0))
         flags = []
         if t["status"] in ACTIVE and missing:
-            flags.append(f"{missing} commit(s) not in rox")
+            flags.append(f"{missing} commit(s) not in buwiz")
         if n_behind:
             flags.append(f"rebase: {n_behind} behind")
         if "MERGED" in pr and t["status"] != "merged":
@@ -135,7 +135,7 @@ def worktree(at):
 def rebuild(push):
     fetch()
     worktree("upstream/main")
-    git("checkout", "-q", "-B", "rox-new", cwd=WORKTREE)
+    git("checkout", "-q", "-B", "buwiz-new", cwd=WORKTREE)
     # A stacked topic holds its base topic's commits: each goes in once.
     # Merges are skipped; a topic's merges must be clean (no resolutions).
     picked = set()
@@ -164,28 +164,28 @@ def rebuild(push):
             git("-c", "core.editor=true", "cherry-pick", "--continue", cwd=WORKTREE)
         print(f"+ {t['branch']}")
     # Topics merged together can leave a line rustfmt splits (two topics'
-    # names in one export list): one rox-only commit formats them.
+    # names in one export list): one buwiz-only commit formats them.
     subprocess.run(["cargo", "+nightly", "fmt", "--all"], cwd=WORKTREE, capture_output=True)
     if git("status", "--porcelain", cwd=WORKTREE):
-        git("commit", "-qam", "rox: Format the lines the merged topics share", cwd=WORKTREE)
+        git("commit", "-qam", "buwiz: Format the lines the merged topics share", cwd=WORKTREE)
     fmt = subprocess.run(["cargo", "+nightly", "fmt", "--all", "--", "--check"], cwd=WORKTREE, capture_output=True)
-    print(f"rox-new: {count('upstream/main..rox-new')} commits; rustfmt {'clean' if fmt.returncode == 0 else 'NOT clean'}")
+    print(f"buwiz-new: {count('upstream/main..buwiz-new')} commits; rustfmt {'clean' if fmt.returncode == 0 else 'NOT clean'}")
     if not push:
         print(f"check it (cargo check / Buwiz Bot build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
         return
-    old = git("rev-parse", "origin/rox")
-    tag = base = "rox-" + datetime.date.today().isoformat()
+    old = git("rev-parse", "origin/buwiz")
+    tag = base = "buwiz-" + datetime.date.today().isoformat()
     n = 1
     while git("tag", "-l", tag) or git("ls-remote", "--tags", "origin", tag):
         n += 1
         tag = f"{base}-{n}"
     if git("tag", "--points-at", old):
-        print(f"old rox tip already tagged: {git('tag', '--points-at', old)}")
+        print(f"old buwiz tip already tagged: {git('tag', '--points-at', old)}")
     else:
         git("tag", tag, old)
         git("push", "origin", tag)
-    git("push", f"--force-with-lease=rox:{old}", "origin", "rox-new:rox")
-    print(f"rox moved; {old[:8]} kept as a tag. Point Buwiz Bot's submodule at it (NSH-FORK.md, 'Updating Buwiz Bot').")
+    git("push", f"--force-with-lease=buwiz:{old}", "origin", "buwiz-new:buwiz")
+    print(f"buwiz moved; {old[:8]} kept as a tag. Point Buwiz Bot's submodule at it (NSH-FORK.md, 'Updating Buwiz Bot').")
 
 
 def rebase(topic, push, keep_local):
