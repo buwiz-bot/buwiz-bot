@@ -479,6 +479,75 @@ test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and 
   assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.eyes, moved);
 });
 
+test("AVD-21 solids: checked (kinds, limits, cost), parsed, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
+  const { MOCK_RICH, parseCandidates, solidErrors, validateAvatar } = await import("../src/avatar-shape.mjs");
+  const hat = MOCK_RICH.find((c) => c.parts);
+  const lathe = { kind: "lathe", color: "#F2C062", at: [50, 40, 0], tilt: [-7, 0, 3], oval: 0.9, teeth: [6, 0.5],
+    profile: [[0, 20], [20, 18], [30, 0], [44, -3], [30, -5], [0, -5]],
+    marks: [{ path: "M-180 40 L180 40 L180 55 L-180 55 Z", fill: "#E0393A" }] };
+  const shell = { kind: "shell", color: "#151515", offset: 2.5, edge: [[-180, 120], [0, 70], [90, 100]], scallop: [9, 8, 1], lobes: [12, 9.5, 1] };
+  const tube = { kind: "tube", color: "#9A5B3A", path: [[20, 30, 0, 3], [10, 15, 2, 1.5]], branches: [[[14, 22, 1, 2], [4, 20, 4, 1]]] };
+  const solids = [lathe, shell, tube];
+  assert.deepEqual(solidErrors(solids), []);
+  assert.deepEqual(solidErrors("x"), ["solids must be a list"]);
+  assert.deepEqual(solidErrors([5]), ["solid 1 must be {kind, color}"]);
+  assert.deepEqual(solidErrors([{ kind: "cube", color: "#112233" }]), ["solid 1's kind must be lathe, shell or tube"]);
+  assert.deepEqual(solidErrors(Array(11).fill(tube)), ["at most 10 solids"]);
+  const one = (s) => solidErrors([s]);
+  assert.deepEqual(one({ ...lathe, color: "red" }), ["solid 1's color must be #RRGGBB"]);
+  assert.deepEqual(one({ ...lathe, at: [500, 40, 0] }), ["solid 1's at is out of range"]);
+  assert.deepEqual(one({ ...lathe, at: [50, 40] }), ["solid 1's at must be [x, y, z]"]);
+  assert.deepEqual(one({ ...lathe, tilt: [0, 0, 400] }), ["solid 1's tilt must be [x, y, z] degrees, -180..180"]);
+  assert.deepEqual(one({ ...lathe, oval: 9 }), ["solid 1's oval must be 0.3..3"]);
+  assert.deepEqual(one({ ...lathe, teeth: [2.5, 0.5] }), ["solid 1's teeth must be [2..18, 0..1]"]);
+  assert.deepEqual(one({ ...lathe, profile: [[1, 2]] }), ["solid 1's profile needs 2 to 40 points"]);
+  assert.deepEqual(one({ ...lathe, profile: [[10, 2], [20, 3], [30, 4]] }), ["solid 1's profile must run axis to axis, or back to its start"]);
+  assert.deepEqual(one({ ...lathe, marks: [{ path: "M0 0 L9 0 L9 200 Z", fill: "#112233" }] }), ["solid 1 mark 1's coordinates must stay within -180..180, -5..105"]);
+  assert.deepEqual(one({ ...shell, offset: 99 }), ["solid 1's offset must be 0..60"]);
+  assert.deepEqual(one({ ...shell, edge: [] }), ["solid 1's edge needs 1 to 24 points"]);
+  assert.deepEqual(one({ ...shell, edge: [[10, 90], [0, 90]] }), ["solid 1's edge azimuths must rise"]);
+  assert.deepEqual(one({ ...shell, scallop: [40, 5, 0] }), ["solid 1's scallop must be [2..18, 0..60, 0 or 1]"]);
+  assert.deepEqual(one({ ...shell, lobes: [33, 9, 0] }), ["solid 1's lobes must be [1..32, 1..60, -60..60]"]);
+  assert.deepEqual(one({ ...tube, path: [[1, 2, 3, 4]] }), ["solid 1's path needs 2 to 12 points"]);
+  assert.deepEqual(one({ ...tube, path: [[1, 2, 3, 400], [1, 2, 3, 4]] }), ["solid 1's path's point is out of range"]);
+  assert.deepEqual(one({ ...tube, branches: Array(7).fill(tube.path) }), ["solid 1 has more than 6 branches"]);
+  // a short path can retrace one edge hundreds of times: what counts is what it samples to
+  const retrace = (n) => `M-180 0${"L180 0L180 100L-180 0".repeat(n)}Z`;
+  assert.ok(retrace(170).length <= 4000);
+  assert.match(one({ ...lathe, marks: [{ path: retrace(170), fill: "#112233" }] })[0], /^solid 1 mark 1 samples to \d+ points, at most 1000$/);
+  assert.match(one({ ...lathe, marks: Array(3).fill({ path: retrace(2), fill: "#112233" }) })[0], /^solid 1's marks sample to \d+ points, at most 2000$/);
+  assert.deepEqual(one({ ...lathe, marks: [{ path: retrace(2), fill: "#112233" }] }), []);
+  assert.deepEqual(one({ ...lathe, marks: [{ path: "M0 0 L1e300 50 L0 90 Z", fill: "#112233" }] }).length, 1, "a huge coordinate is refused");
+  // the widest shell: 18 scallops cut 72 columns
+  assert.deepEqual(solidErrors(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: undefined })), []);
+  assert.match(solidErrors(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: [32, 9, 1] }))[0], /^the solids cost \d+ faces, at most 8000$/);
+  const tall = Array.from({ length: 40 }, (_, i) => [i === 0 || i === 39 ? 0 : 100, i % 2 ? 100 : -100]);
+  assert.match(solidErrors(Array(10).fill({ ...lathe, marks: undefined, teeth: undefined, profile: tall }))[0], /^the solids cost \d+ faces, at most 8000$/);
+  assert.deepEqual(validateAvatar({ shape: "heart", color: "#FF0000", solids }), ["only a custom outline can have solids"]);
+  assert.deepEqual(validateAvatar({ shape: "custom", color: "#FF0000", outline: hat.outline, solids }), ["solids need a rich avatar: at least one layer (the face)"]);
+  // a design keeps them
+  const [c] = parseCandidates(JSON.stringify([{ ...hat, solids }]));
+  assert.deepEqual(c.solids, solids);
+  // stored whole, and through a restart
+  const made = await postJson("/bot/new", { name: "Solid", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, solids: solids.map((s) => ({ ...s, junk: 1, marks: s.marks?.map((m) => ({ ...m, junk: 1 })) })) });
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.solids, solids, "only the fields of its kind are stored");
+  bad(await postJson("/bot/update", { id, solids: [{ ...shell, offset: 99 }] }), "solid 1's offset must be 0..60");
+  await postJson("/bot/update", { id, color: "#112233" });
+  assert.deepEqual((await botOf(id)).solids, solids, "a colour alone keeps them");
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+  let b = await botOf(id);
+  assert.deepEqual([b.solids, b.layers, b.eyes], [solids, hat.layers, hat.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.solids, solids);
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes });
+  assert.ok(!("solids" in (b = await botOf(id))), "a new outline without solids drops them");
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, solids: [tube] });
+  assert.deepEqual((await botOf(id)).solids, [tube]);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("solids" in (b = await botOf(id))) && b.shape === "hex");
+});
+
 test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
   const { MOCK_RICH, parseCandidates, partErrors, previewSvg, validateAvatar } = await import("../src/avatar-shape.mjs");
   const hat = MOCK_RICH.find((c) => c.parts);

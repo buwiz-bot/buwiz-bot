@@ -116,8 +116,8 @@ pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
         },
         {
             let has = |v: &Option<Vec<Value>>| v.as_ref().is_some_and(|v| !v.is_empty());
-            if b.shape == "custom" && (has(&b.layers) || has(&b.parts)) {
-                // {layers, eyes, parts?}: JSON.stringify leaves out what is undefined
+            if b.shape == "custom" && (has(&b.layers) || has(&b.parts) || has(&b.solids)) {
+                // {layers, eyes, parts?, solids?}: JSON.stringify leaves out what is undefined
                 let mut a = serde_json::Map::new();
                 if let Some(l) = &b.layers {
                     a.insert("layers".into(), Value::Array(l.clone()));
@@ -127,6 +127,9 @@ pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
                 }
                 if let Some(p) = b.parts.as_ref().filter(|p| !p.is_empty()) {
                     a.insert("parts".into(), Value::Array(p.clone()));
+                }
+                if let Some(s) = b.solids.as_ref().filter(|s| !s.is_empty()) {
+                    a.insert("solids".into(), Value::Array(s.clone()));
                 }
                 SqlValue::Text(sql_json(&Value::Object(a)))
             } else {

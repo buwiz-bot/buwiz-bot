@@ -1,0 +1,19 @@
+# Draws avatars with the real mark engine, for spin sheets and timing:
+# `src/main.rs` compiles `app/src/mark.rs` in place, so a sheet can't drift
+# from the app. Its own workspace: it isn't part of the app's build.
+[package]
+name = "mark-sheet"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nsh-core = { path = "../../../nsh/crates/nsh-core" }
+log = "0.4"
+serde_json = "1"
+
+[dev-dependencies]
+# `cargo test` here runs the mark engine's own tests in seconds
+tiny-skia = "0.11"
+
+[workspace]

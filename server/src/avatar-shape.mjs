@@ -34,6 +34,8 @@ export const OUTLINE_MAX = 4000;
 const COLOR = /^#[0-9A-Fa-f]{6}$/;
 const OUTLINE_CHARS = /^[MLCQZmlcqz0-9.,\-\s]*$/;
 const ARGS = { M: 2, L: 2, C: 6, Q: 4, Z: 0 };
+// how finely the mark engine samples a solid's marks (app/src/mark/solids.rs)
+const MARK_STEP = 2;
 // curve sampling for the geometry checks
 const STEPS = { C: 16, Q: 10 };
 
@@ -47,7 +49,9 @@ export function flattenPath(d) {
   if (tokens.join("").length !== String(d).replace(/[\s,]/g, "").length || /\.\d*\./.test(d))
     throw new Error("outline has a malformed number");
   const points = [], coords = [];
-  let cur = [0, 0], start = [0, 0], cmd = "", subpaths = 0, closed = false, i = 0;
+  let cur = [0, 0], start = [0, 0], cmd = "", subpaths = 0, closed = false, i = 0, sampled = 0;
+  // what the mark engine's sampler makes of a segment `len` long (a solid's marks)
+  const steps = (len) => Math.max(2, Math.min(4096, Math.ceil(len / MARK_STEP)));
   const num = () => {
     const t = tokens[i];
     if (t === undefined || /[A-Za-z]/.test(t)) throw new Error(`outline command ${cmd} is missing numbers`);
@@ -77,18 +81,24 @@ export function flattenPath(d) {
       subpaths++;
       cur = start = pt(rel);
       points.push(cur);
+      sampled += 1;
     } else if (up === "Z") {
       closed = true;
+      const back = Math.hypot(start[0] - cur[0], start[1] - cur[1]);
+      if (back > 0.01) sampled += steps(back);
       cur = start;
     } else {
       if (closed) throw new Error("outline must be one shape (nothing after Z)");
       if (up === "L") {
+        const from = cur;
         cur = pt(rel);
         points.push(cur);
+        sampled += steps(Math.hypot(cur[0] - from[0], cur[1] - from[1]));
       } else {
         const p0 = cur;
         const ctl = [];
         for (let k = 0; k < ARGS[up] / 2; k++) ctl.push(pt(rel));
+        sampled += steps([p0, ...ctl].reduce((len, q, k, a) => (k ? len + Math.hypot(q[0] - a[k - 1][0], q[1] - a[k - 1][1]) : 0), 0));
         const n = STEPS[up];
         for (let s = 1; s <= n; s++) {
           const u = s / n, v = 1 - u;
@@ -104,7 +114,7 @@ export function flattenPath(d) {
     }
   }
   if (!points.length) throw new Error("outline is empty");
-  return { points, coords, subpaths, closed };
+  return { points, coords, subpaths, closed, sampled };
 }
 
 const areaCentroid = (poly) => {
@@ -336,7 +346,145 @@ export function partErrors(parts) {
   return errs;
 }
 
-export function validateAvatar({ shape, color, outline, layers, eyes, parts } = {}) {
+export const SOLIDS_MAX = 10;
+const SOLID_KEYS = {
+  lathe: ["at", "tilt", "oval", "teeth", "profile"],
+  shell: ["offset", "edge", "scallop", "lobes"],
+  tube: ["path", "branches"],
+};
+const SOLID = {
+  profile: 40, path: 12, branches: 6, marks: 8, edge: 24, scallops: 18, lobes: 32,
+  markPoints: 1000, solidMarkPoints: 2000,
+  // the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
+  faces: 8000, row: 5, cols: 68, shellFaces: 6 * 72, lobeFaces: 84, tubeSteps: 3, tubeSides: 8,
+  box: [-60, 160], radius: 60,
+};
+
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+const numList = (v, n) => Array.isArray(v) && v.length === n && v.every(isNum);
+const inBox = (v) => v >= SOLID.box[0] && v <= SOLID.box[1];
+
+// A tube's or branch's [[x, y, z, radius], ...] (`what` names it).
+function tubePathErrors(path, what) {
+  if (!Array.isArray(path)) return [`${what} must be a list of [x, y, z, radius]`];
+  if (path.length < 2 || path.length > SOLID.path) return [`${what} needs 2 to ${SOLID.path} points`];
+  const errs = [];
+  for (const p of path) {
+    if (!numList(p, 4)) errs.push(`${what}'s point must be a list of 4 numbers`);
+    else if (!p.slice(0, 3).every(inBox) || p[3] < 0 || p[3] > SOLID.radius) errs.push(`${what}'s point is out of range`);
+  }
+  return errs;
+}
+
+// What a solid costs the renderer, in faces at most.
+function solidCost(s) {
+  const tube = (p) => ((p.length - 1) * SOLID.tubeSteps + 3) * SOLID.tubeSides;
+  if (s.kind === "lathe") {
+    let rows = 0;
+    for (let k = 1; k < s.profile.length; k++) {
+      const [a, b] = [s.profile[k - 1], s.profile[k]];
+      rows += Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / SOLID.row));
+    }
+    return rows * SOLID.cols;
+  }
+  if (s.kind === "shell") return SOLID.shellFaces + (s.lobes ? s.lobes[0] * SOLID.lobeFaces : 0);
+  return tube(s.path) + (s.branches || []).reduce((n, p) => n + tube(p), 0);
+}
+
+/** The problems with a rich avatar's solids: up to 10 pieces of real 3D in
+ *  head space, `[{kind, color, marks?, ...}]`. A lathe has `at` [x, y, z],
+ *  `profile` [[radius, height], ...] closed (axis to axis, or back to its
+ *  start), `tilt`, `oval`, `teeth`; a shell `offset`, `edge` [[azimuth,
+ *  degrees from the top], ...], `scallop`, `lobes`; a tube `path` [[x, y, z,
+ *  radius], ...] and `branches`. Marks are closed paths in the solid's chart,
+ *  u -180..180 round it and v 0..100 along it. The limits keep a bad recipe
+ *  from stalling the renderer (app/src/mark/solids.rs, which checks the same). */
+/** A solid as a bot stores it: the fields of its kind and nothing else. */
+export function solidOf(s) {
+  // a solid that isn't one goes on as it came: `solidErrors` says what's wrong with it
+  if (s === null || typeof s !== "object" || !SOLID_KEYS[s.kind]) return s;
+  if (s.marks !== undefined && !(Array.isArray(s.marks) && s.marks.every((m) => m && typeof m === "object"))) return s;
+  const keep = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+  return {
+    ...keep(s, ["kind", "color", ...SOLID_KEYS[s.kind]]),
+    ...(s.marks !== undefined ? { marks: s.marks.map((m) => keep(m, ["path", "fill"])) } : {}),
+  };
+}
+
+export function solidErrors(solids) {
+  if (!Array.isArray(solids)) return ["solids must be a list"];
+  const errs = [];
+  if (solids.length > SOLIDS_MAX) errs.push(`at most ${SOLIDS_MAX} solids`);
+  let cost = 0;
+  solids.forEach((s, k) => {
+    const n = `solid ${k + 1}`;
+    if (!s || typeof s !== "object" || Array.isArray(s)) return errs.push(`${n} must be {kind, color}`);
+    const before = errs.length;
+    let markPoints = 0;
+    if (typeof s.color !== "string" || !COLOR.test(s.color)) errs.push(`${n}'s color must be #RRGGBB`);
+    if (s.kind === "lathe") {
+      if (!numList(s.at, 3)) errs.push(`${n}'s at must be [x, y, z]`);
+      else if (!s.at.every(inBox)) errs.push(`${n}'s at is out of range`);
+      if (s.tilt !== undefined && !(numList(s.tilt, 3) && s.tilt.every((t) => Math.abs(t) <= 180))) errs.push(`${n}'s tilt must be [x, y, z] degrees, -180..180`);
+      if (s.oval !== undefined && !(isNum(s.oval) && s.oval >= 0.3 && s.oval <= 3)) errs.push(`${n}'s oval must be 0.3..3`);
+      if (s.teeth !== undefined && !(numList(s.teeth, 2) && Number.isInteger(s.teeth[0]) && s.teeth[0] >= 2 && s.teeth[0] <= SOLID.scallops && s.teeth[1] >= 0 && s.teeth[1] <= 1)) errs.push(`${n}'s teeth must be [2..${SOLID.scallops}, 0..1]`);
+      const p = s.profile;
+      if (!Array.isArray(p) || p.length < 2 || p.length > SOLID.profile) errs.push(`${n}'s profile needs 2 to ${SOLID.profile} points`);
+      else if (!p.every((q) => numList(q, 2) && q[0] >= 0 && q[0] <= 2 * SOLID.radius && Math.abs(q[1]) <= 2 * SOLID.radius)) errs.push(`${n}'s profile points must be [radius, height], in range`);
+      else {
+        const [a, b] = [p[0], p.at(-1)];
+        if (!((a[0] === b[0] && a[1] === b[1]) || (a[0] === 0 && b[0] === 0))) errs.push(`${n}'s profile must run axis to axis, or back to its start`);
+      }
+    } else if (s.kind === "shell") {
+      if (s.offset !== undefined && !(isNum(s.offset) && s.offset >= 0 && s.offset <= SOLID.radius)) errs.push(`${n}'s offset must be 0..${SOLID.radius}`);
+      const e = s.edge;
+      if (!Array.isArray(e) || e.length < 1 || e.length > SOLID.edge) errs.push(`${n}'s edge needs 1 to ${SOLID.edge} points`);
+      else if (!e.every((q) => numList(q, 2) && Math.abs(q[0]) <= 180 && q[1] >= 5 && q[1] <= 175)) errs.push(`${n}'s edge points must be [-180..180, 5..175]`);
+      else if (e.some((q, i) => i > 0 && e[i - 1][0] >= q[0])) errs.push(`${n}'s edge azimuths must rise`);
+      if (s.scallop !== undefined && !(numList(s.scallop, 3) && Number.isInteger(s.scallop[0]) && s.scallop[0] >= 2 && s.scallop[0] <= SOLID.scallops && s.scallop[1] >= 0 && s.scallop[1] <= 60 && (s.scallop[2] === 0 || s.scallop[2] === 1))) errs.push(`${n}'s scallop must be [2..${SOLID.scallops}, 0..60, 0 or 1]`);
+      if (s.lobes !== undefined && !(numList(s.lobes, 3) && Number.isInteger(s.lobes[0]) && s.lobes[0] >= 1 && s.lobes[0] <= SOLID.lobes && s.lobes[1] >= 1 && s.lobes[1] <= SOLID.radius && Math.abs(s.lobes[2]) <= SOLID.radius)) errs.push(`${n}'s lobes must be [1..${SOLID.lobes}, 1..${SOLID.radius}, -${SOLID.radius}..${SOLID.radius}]`);
+    } else if (s.kind === "tube") {
+      errs.push(...tubePathErrors(s.path, `${n}'s path`));
+      if (s.branches !== undefined) {
+        if (!Array.isArray(s.branches)) errs.push(`${n}'s branches must be a list`);
+        else {
+          if (s.branches.length > SOLID.branches) errs.push(`${n} has more than ${SOLID.branches} branches`);
+          for (const b of s.branches) errs.push(...tubePathErrors(b, `${n}'s branch`));
+        }
+      }
+    } else errs.push(`${n}'s kind must be lathe, shell or tube`);
+    if (s.marks !== undefined) {
+      if (!Array.isArray(s.marks)) errs.push(`${n}'s marks must be a list`);
+      else {
+        if (s.marks.length > SOLID.marks) errs.push(`${n} has more than ${SOLID.marks} marks`);
+        s.marks.forEach((m, i) => {
+          const mn = `${n} mark ${i + 1}`;
+          if (!m || typeof m !== "object") return errs.push(`${mn} must be {path, fill}`);
+          if (typeof m.fill !== "string" || !COLOR.test(m.fill)) errs.push(`${mn}'s fill must be #RRGGBB`);
+          if (typeof m.path !== "string" || !m.path.trim()) return errs.push(`${mn} needs a path`);
+          if (m.path.length > OUTLINE_MAX) return errs.push(`${mn}'s path is longer than ${OUTLINE_MAX} characters`);
+          if (!OUTLINE_CHARS.test(m.path)) return errs.push(`${mn}'s path may hold only M/L/C/Q/Z commands and numbers`);
+          let f;
+          try {
+            f = flattenPath(m.path);
+          } catch (e) {
+            return errs.push(`${mn}: ${e.message}`);
+          }
+          if (f.coords.some(([u, v]) => !(u >= -180 && u <= 180 && v >= -5 && v <= 105))) errs.push(`${mn}'s coordinates must stay within -180..180, -5..105`);
+          if (f.points.length < 3 || areaCentroid(f.points).area < 0.25) errs.push(`${mn} encloses no area`);
+          if (f.sampled > SOLID.markPoints) errs.push(`${mn} samples to ${f.sampled} points, at most ${SOLID.markPoints}`);
+          markPoints += f.sampled;
+        });
+        if (markPoints > SOLID.solidMarkPoints) errs.push(`${n}'s marks sample to ${markPoints} points, at most ${SOLID.solidMarkPoints}`);
+      }
+    }
+    if (errs.length === before) cost += solidCost(s) + markPoints;
+  });
+  if (cost > SOLID.faces) errs.push(`the solids cost ${cost} faces, at most ${SOLID.faces}`);
+  return errs;
+}
+
+export function validateAvatar({ shape, color, outline, layers, eyes, parts, solids } = {}) {
   const errs = [];
   if (shape !== "custom" && !KIT_SHAPES.includes(shape))
     errs.push(`shape must be one of ${KIT_SHAPES.join(", ")} or custom`);
@@ -350,6 +498,13 @@ export function validateAvatar({ shape, color, outline, layers, eyes, parts } = 
   if (parts !== undefined) {
     if (shape !== "custom") errs.push("only a custom outline can have parts");
     else errs.push(...partErrors(parts));
+  }
+  if (solids !== undefined) {
+    if (shape !== "custom") errs.push("only a custom outline can have solids");
+    else {
+      errs.push(...solidErrors(solids));
+      if (Array.isArray(solids) && solids.length && !rich) errs.push("solids need a rich avatar: at least one layer (the face)");
+    }
   }
   return errs;
 }
@@ -419,6 +574,7 @@ export function parseCandidates(text) {
       ...(shape === "custom" && layers ? { layers } : {}),
       ...(shape === "custom" && eyes !== undefined ? { eyes } : {}),
       ...(shape === "custom" && parts ? { parts } : {}),
+      ...(shape === "custom" && Array.isArray(x.solids) ? { solids: x.solids.map((s) => (s && SOLID_KEYS[s.kind] ? solidOf(s) : s)) } : {}),
       why: String(x.why || "").trim().slice(0, 240),
     };
   });

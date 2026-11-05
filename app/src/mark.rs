@@ -21,6 +21,7 @@ mod custom;
 mod paint;
 mod render;
 mod rest_data;
+mod solids;
 
 use std::collections::HashMap;
 
@@ -1757,6 +1758,8 @@ struct BodyBlend {
 /// The mark frame — `frame()`'s output, `Uh`'s input.
 pub(crate) struct Frame {
     pub quat: V4,
+    /// The angles `quat` was built from: pitch, yaw, roll in degrees.
+    pub turn: V3,
     pub zoom: f64,
     pub offset: V2,
     pub squash: V2,
@@ -2388,6 +2391,7 @@ impl Mark {
         let ge = pe(1);
         Frame {
             quat: ib(pe(0) * MN, (ge + ie) * MN, pe(2) * MN),
+            turn: [pe(0), ge + ie, pe(2)],
             zoom: self.h,
             offset: if x == 1.0 { c } else { [c[0] * x, c[1] * x] },
             squash: if x == 1.0 { d } else { [1.0 + (d[0] - 1.0) * x, 1.0 + (d[1] - 1.0) * x] },

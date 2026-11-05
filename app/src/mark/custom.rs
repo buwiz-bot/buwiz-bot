@@ -25,7 +25,7 @@ use std::rc::Rc;
 use super::atlas_data::{ATLAS_K, ATLAS_STEP};
 use super::bodies::{self, Atlas, AvEye, Outline, BV, CS, US, X};
 use super::rest_data::{REST_EN, REST_LAYERS, REST_N};
-use super::{render, shared_tables, Mark, MN, V2, V3};
+use super::{render, shared_tables, solids, Mark, MN, V2, V3};
 
 const TAU: f64 = std::f64::consts::TAU;
 
@@ -961,6 +961,8 @@ pub(crate) struct Rich {
     /// Whether two parts' outlines overlap seen from the front (same
     /// indexing as `layout`).
     pub overlap: Vec<Vec<bool>>,
+    /// The solid accessories (`"s"`), in head space.
+    pub solids: Option<solids::Solids>,
 }
 
 /// An extra part of a rich body.
@@ -1133,9 +1135,41 @@ fn overlaps(a: &[V2], b: &[V2]) -> bool {
     })
 }
 
-/// The main geometry, extra parts and their placement of a multi-part
-/// recipe.
-type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>);
+/// The main geometry, extra parts, their placement and the solids of a
+/// multi-part recipe.
+type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>, Option<solids::Solids>);
+
+/// How far from the frame's centre a figure with solids may reach, in units
+/// of its body size: the most that stays on the avatar's canvas at any
+/// angle.
+const SOLID_REACH: f64 = 1.8;
+/// The smallest a figure with solids draws (a wide brim shrinks the head).
+const SOLID_MIN_SIZE: f64 = 0.8;
+
+/// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
+/// every [`solids::MARK_STEP`]. Every coordinate is checked first: sampling
+/// spends points by length.
+fn chart_loops(path: &str) -> Result<Vec<Vec<V2>>, String> {
+    let mut loops = Vec::new();
+    for sub in subpaths(path)? {
+        // absolute by now: every number is a coordinate, x then y
+        let numbers = tokenize(&sub)?.into_iter().filter_map(|t| match t {
+            Token::Number(v) => Some(v),
+            Token::Command(_) => None,
+        });
+        for (i, v) in numbers.enumerate() {
+            let range = if i % 2 == 0 { solids::CHART_U } else { solids::CHART_V };
+            if !(range.0..=range.1).contains(&v) {
+                return Err(format!("coordinates must stay within {}..{}, {}..{}", solids::CHART_U.0, solids::CHART_U.1, solids::CHART_V.0, solids::CHART_V.1));
+            }
+        }
+        let pts = bodies::us(&sub, solids::MARK_STEP);
+        if pts.len() >= 3 && signed_area(&pts).abs() >= 0.25 {
+            loops.push(pts);
+        }
+    }
+    Ok(loops)
+}
 
 /// A multi-part recipe's main geometry and extra parts: one frame from
 /// the bounding box of every outline (the `Hv` fit of the whole figure),
@@ -1143,10 +1177,14 @@ type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>);
 /// square's), each part its own loft at its place in the frame.
 fn multi_part(
     main: &str,
-    spec: &serde_json::Value,
+    spec: Option<&serde_json::Value>,
+    solid_spec: Option<&serde_json::Value>,
     hash: u64,
 ) -> Result<MultiPart, String> {
-    let list = spec.as_array().ok_or("the parts (\"p\") must be a list")?;
+    let list: &[serde_json::Value] = match spec {
+        None => &[],
+        Some(s) => s.as_array().ok_or("the parts (\"p\") must be a list")?,
+    };
     if list.len() > MAX_PARTS {
         return Err(format!("at most {MAX_PARTS} parts, got {}", list.len()));
     }
@@ -1175,6 +1213,27 @@ fn multi_part(
         y0 = y0.min(p[1]);
         y1 = y1.max(p[1]);
     }
+    let specs = solid_spec
+        .map(|s| solids::parse(s, &|v, what| colour(v, what), &chart_loops))
+        .transpose()?;
+    // solids count toward the frame as seen from the front
+    let reach = specs.as_ref().map(|s| {
+        let (mut hx0, mut hx1, mut hy0, mut hy1) =
+            (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for p in &main_pts {
+            hx0 = hx0.min(p[0]);
+            hx1 = hx1.max(p[0]);
+            hy0 = hy0.min(p[1]);
+            hy1 = hy1.max(p[1]);
+        }
+        solids::reach(s, [hx0, hy0, hx1, hy1])
+    });
+    for p in reach.iter().flatten() {
+        x0 = x0.min(p[0]);
+        x1 = x1.max(p[0]);
+        y0 = y0.min(p[1]);
+        y1 = y1.max(p[1]);
+    }
     let front = FrontMap {
         scale: BV / (x1 - x0).max(y1 - y0),
         center: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
@@ -1186,7 +1245,20 @@ fn multi_part(
         .chain(&part_pts)
         .map(|p| signed_area(p).abs() * unit * unit)
         .sum();
-    let size = (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE);
+    let size = match &reach {
+        None => (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE),
+        // a figure with solids turns in 3D: it fits by its farthest point
+        Some(reach) => {
+            let c = front.center;
+            let far = reach
+                .iter()
+                .copied()
+                .chain(main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [p[0], p[1], 0.0]))
+                .map(|p| (p[0] - c[0]).hypot(p[1] - c[1]).hypot(p[2]))
+                .fold(0.0, f64::max);
+            (SOLID_REACH / (far * unit)).clamp(SOLID_MIN_SIZE, SOLID_REACH)
+        }
+    };
     let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
@@ -1234,7 +1306,10 @@ fn multi_part(
             decals,
         });
     }
-    Ok((base, parts, layout))
+    let scene = specs.map(|s| {
+        solids::Solids::build(&s, &solids::Head::new(&base.loft_points, base.depth), unit, front.center)
+    });
+    Ok((base, parts, layout, scene))
 }
 
 /// The order to draw a rich body's parts in at a pose, back to front, as
@@ -1503,7 +1578,9 @@ fn parse_layers(layers: Option<&serde_json::Value>, base: &CustomBody, part: &st
 /// (`{"o","c","l","z"}`): then every outline shares one frame fitted to the
 /// whole figure, each part is its own loft at its place in it, and the
 /// parts draw in depth order (see [`part_order`]); the top-level outline
-/// is the main part the eyes sit on.
+/// is the main part the eyes sit on. `"s"` adds up to 10 solids in head
+/// space (see [`solids`]), in the same frame, which draw around everything
+/// else.
 ///
 /// The same recipe always returns the same name (`rich:<hash>`). Errors
 /// are short human-readable messages: bad JSON, a missing or bad colour,
@@ -1522,14 +1599,17 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
         .ok_or("the recipe needs an outline (\"o\")")?;
     // with parts, every outline shares one frame; without, the main part
     // is the plain custom body of its outline
-    let (base, parts_spec) = match v.get("p") {
-        None | Some(serde_json::Value::Null) => {
+    let present = |k: &str| v.get(k).filter(|x| !x.is_null());
+    // an empty list of solids is no solids
+    let solid_list = present("s").filter(|s| s.as_array().is_none_or(|a| !a.is_empty()));
+    let (base, parts_spec, scene) = match (present("p"), solid_list) {
+        (None, None) => {
             let base_name = custom_body(outline)?;
-            (find(base_name).ok_or("the outline didn't register")?, None)
+            (find(base_name).ok_or("the outline didn't register")?, None, None)
         }
-        Some(p) => {
-            let (base, parts, layout) = multi_part(outline, p, fnv(key))?;
-            (base, Some((parts, layout)))
+        (p, s) => {
+            let (base, parts, layout, scene) = multi_part(outline, p, s, fnv(key))?;
+            (base, Some((parts, layout)), scene)
         }
     };
     let shell = colour(v.get("c"), "shell")?;
@@ -1619,6 +1699,7 @@ pub(crate) fn rich_body(json: &str) -> Result<&'static str, String> {
                 parts,
                 layout,
                 overlap,
+                solids: scene,
             }),
         )
     });

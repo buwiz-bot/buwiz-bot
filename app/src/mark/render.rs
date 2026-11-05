@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use super::bodies::{self, Rot, X};
 use super::custom;
+use super::solids::{path_data, SolidPaint};
 use super::{
     cr, et, jf, le, ts, wb, ye, Eye, EyeFrame, Frame, M3, MorphSnap, Tables, V2, V3,
 };
@@ -300,6 +301,21 @@ fn ch(e: &super::V4, t: f64) -> Rot {
         yaw: sd(i(o * DOLLAR_O)),
         pitch: sd(i(r * DOLLAR_O)),
         roll: i(s * DOLLAR_O),
+    }
+}
+
+/// A mark's pose from its own angles (`Frame::turn`: pitch, yaw, roll in
+/// degrees), yaw running all the way round. `Ch` reads them back out of the
+/// quaternion, where a mark turned past side-on folds back to its front:
+/// that suits a body that looks the same from both sides but not one with
+/// solids, which has a back to show. The same pose as `Ch` while the front
+/// faces the viewer.
+pub(super) fn turned(angles: V3) -> Rot {
+    let [pitch, yaw, roll] = angles;
+    Rot {
+        yaw: sd((yaw + 180.0).rem_euclid(360.0) - 180.0),
+        pitch: sd(pitch),
+        roll,
     }
 }
 
@@ -1666,6 +1682,7 @@ fn qt2(e: &Frame, t: f64, tab: &Tables) -> ShapeRec {
         decals: vec![],
         rims: vec![],
         rich_parts: None,
+        rich_solids: None,
         rich: None,
         center: s,
         radius: i,
@@ -1683,7 +1700,10 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
     let r = n.max(IH);
     let rich = custom::rich(body);
     // a rich body draws at the exact pose: its decals have no sprite cache
-    let o = ch(&e.quat, if rich.is_some() { 0.0 } else { rh(t, e.zoom) });
+    let o = match &rich {
+        Some(rich) if rich.solids.is_some() => turned(e.turn),
+        _ => ch(&e.quat, if rich.is_some() { 0.0 } else { rh(t, e.zoom) }),
+    };
     let sh = bodies::dollar_h(body, &o, r, e.eyes.as_ref());
     let [a, c, u, l] = oh(e, t, n, r);
     let d = |[f, h]: V2| -> V2 { [a * f + u, c * h + l] };
@@ -1727,10 +1747,15 @@ fn pm(e: &Frame, body: &'static str, t: f64) -> ShapeRec {
         (Some(rich), Some(_)) if !rich.parts.is_empty() => Some(part_draws(rich, &o, r, &d)),
         _ => None,
     };
+    let rich_solids = match (&rich, &e.eyes) {
+        (Some(rich), Some(_)) => solid_draws(rich, body, &o, r, n, &d, 1.0),
+        _ => None,
+    };
     ShapeRec {
         decals,
         rims,
         rich_parts,
+        rich_solids,
         rich: rich.map(|r| (r.shell.clone(), r.eyes.clone())),
         center: [a * r / 2.0 + u, c * r / 2.0 + l],
         radius: e.zoom * t / 2.0,
@@ -1771,6 +1796,8 @@ struct ShapeRec {
     rims: Vec<DecalRec>,
     /// A multi-part rich body's extra parts and draw order.
     rich_parts: Option<(Vec<PartDraw>, Vec<usize>)>,
+    /// A rich body's solids: behind the head, and in front of it.
+    rich_solids: Option<SolidDraws>,
     /// A rich body's shell and eye colours.
     rich: Option<(String, String)>,
     center: V2,
@@ -2973,6 +3000,8 @@ struct Be {
     /// A lone multi-part rich body's extra parts and draw order (not drawn
     /// in a blend between bodies).
     rich_parts: Option<(Vec<PartDraw>, Vec<usize>)>,
+    /// A lone rich body's solids, likewise.
+    rich_solids: Option<SolidDraws>,
     /// The heaviest body's shell and eye colours when it is rich.
     rich: Option<(String, String)>,
     /// A rich body in the blend (whose shade memory `ink_shade` reads).
@@ -3016,6 +3045,7 @@ fn be(e: &Frame, t: f64, n: f64, tab: &Tables) -> Be {
         decals: faded(|l| &l.decals),
         rims: faded(|l| &l.rims),
         rich_parts: if single { r[0].0.rich_parts.clone() } else { None },
+        rich_solids: if single { r[0].0.rich_solids.clone() } else { None },
         rich: r.first().and_then(|(l, _)| l.rich.clone()),
         rich_body: rich_of(e),
         size: t,
@@ -3084,6 +3114,9 @@ fn ve(e: &Be, t: &PaintOpts, n: &str, r: f64) -> MarkTree {
         l.push(re("g", &[("clip-path", format!("url(#{}-clip)", n))], inside));
         if let Some((parts, order)) = &e.rich_parts {
             l = layered(l, parts, order, n, shade, ga_loops, &mut u);
+        }
+        if let Some(solids) = &e.rich_solids {
+            l = around(l, solids, shade);
         }
     } else if !c.is_empty() && t.cutout {
         u.push(re(
@@ -3353,6 +3386,30 @@ fn part_draws(rich: &custom::Rich, rot: &Rot, s: f64, map: &dyn Fn(V2) -> V2) ->
     (draws, custom::part_order(rich, rot))
 }
 
+/// A rich body's solids at a pose: behind the head, and in front of it.
+type SolidDraws = (Vec<SolidPaint>, Vec<SolidPaint>);
+
+/// How far past its edges a solid's face draws, in px on screen: enough to
+/// close the hairlines between faces at any size.
+const SOLID_BLEED: f64 = 0.5;
+
+/// A rich body's solids at `rot` in an `s` px sprite shown `shown` px
+/// across, each point mapped by `map` into a space `px` units to the screen
+/// px.
+fn solid_draws(rich: &custom::Rich, body: &'static str, rot: &Rot, s: f64, shown: f64, map: &dyn Fn(V2) -> V2, px: f64) -> Option<SolidDraws> {
+    let scene = rich.solids.as_ref()?.at_size(shown);
+    Some(scene.draw(rot, bodies::sprite_radius(body, s), [s / 2.0, s / 2.0], map, SOLID_BLEED * px))
+}
+
+/// `main` with the solids around it.
+fn around(main: Vec<MarkTree>, solids: &SolidDraws, shade: f64) -> Vec<MarkTree> {
+    let path = |p: &SolidPaint| r2("path", &[("d", path_data(&p.loops)), ("fill", shaded(&p.fill, shade)), ("data-solid", sv("1"))]);
+    let mut out: Vec<MarkTree> = solids.0.iter().map(path).collect();
+    out.extend(main);
+    out.extend(solids.1.iter().map(path));
+    out
+}
+
 /// The main part's elements (`main`) and the extra parts interleaved in
 /// draw order, each part's decals clipped to its own outline (its
 /// `clipPath` added to `defs`).
@@ -3399,7 +3456,7 @@ fn layered(
 fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts, n: f64, id: &str, extent: f64) -> MarkTree {
     let o = ((n * e.zoom / H_UND).round() as i64).max(8) as f64;
     let s = o.max(IH);
-    let rot = ch(&e.quat, 0.0);
+    let rot = if rich.solids.is_some() { turned(e.turn) } else { ch(&e.quat, 0.0) };
     let sh = bodies::dollar_h(body, &rot, s, e.eyes.as_ref());
     let [u, l, d, f] = oh(e, n, o, s);
     let shade = ink_shade(t, body);
@@ -3449,6 +3506,11 @@ fn rich_atlas(e: &Frame, body: &'static str, rich: &custom::Rich, t: &PaintOpts,
     if !rich.parts.is_empty() {
         let (parts, order) = part_draws(rich, &rot, s, &|p| p);
         drawn = layered(drawn, &parts, &order, id, shade, bodies::gc, &mut defs);
+    }
+    if e.eyes.is_some()
+        && let Some(solids) = solid_draws(rich, body, &rot, s, o, &|p| p, s / o)
+    {
+        drawn = around(drawn, &solids, shade);
     }
     kc(
         n,

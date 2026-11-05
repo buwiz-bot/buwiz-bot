@@ -304,6 +304,7 @@ pub fn bot_set(b: &mut Bot, key: &str, v: Value) {
         "layers" => b.layers = v.as_array().cloned(),
         "eyes" => b.eyes = Some(v),
         "parts" => b.parts = v.as_array().cloned(),
+        "solids" => b.solids = v.as_array().cloned(),
         "threadId" => b.thread_id = text_of(&v),
         "pinned" => b.pinned = js::truthy(&v),
         "section" => b.section = s(&v),
@@ -649,6 +650,9 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
                     if let Some(p) = &b.parts {
                         o["parts"] = Value::Array(p.clone());
                     }
+                    if let Some(s) = &b.solids {
+                        o["solids"] = Value::Array(s.clone());
+                    }
                     o
                 })
                 .unwrap_or(Value::Null),
@@ -686,6 +690,10 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
             // a rich avatar's own pieces: a hat, antlers, a cloud
             if let Some(p) = &b.parts {
                 o.insert("parts".into(), Value::Array(p.clone()));
+            }
+            // and its real 3D ones, in head space
+            if let Some(s) = &b.solids {
+                o.insert("solids".into(), Value::Array(s.clone()));
             }
             o.insert("threadId".into(), b.thread_id.as_ref().map(|x| json!(x)).unwrap_or(Value::Null));
             o.insert("pinned".into(), json!(b.pinned));

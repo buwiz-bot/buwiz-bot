@@ -64,6 +64,16 @@ pub struct Flat {
     /// every point the data names, control points too
     pub coords: Vec<P>,
     pub closed: bool,
+    /// the points the mark engine samples it to (a solid's marks)
+    pub sampled: usize,
+}
+
+/// How finely the mark engine samples a solid's marks (app/src/mark/solids.rs).
+const MARK_STEP: f64 = 2.0;
+
+/// What that sampler makes of a segment `len` long.
+fn mark_steps(len: f64) -> usize {
+    (len / MARK_STEP).ceil().clamp(2.0, 4096.0) as usize
 }
 
 /// `d.match(/[MLCQZmlcqz]|-?(?:\d+\.?\d*|\.\d+)/g)`.
@@ -132,6 +142,7 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
     let (mut points, mut coords): (Vec<P>, Vec<P>) = (Vec::new(), Vec::new());
     let (mut cur, mut start): (P, P) = ([0.0, 0.0], [0.0, 0.0]);
     let (mut cmd, mut subpaths, mut closed, mut i) = (String::new(), 0, false, 0usize);
+    let mut sampled = 0usize;
     macro_rules! num {
         () => {{
             match toks.get(i) {
@@ -180,9 +191,14 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                 cur = pt!(rel);
                 start = cur;
                 points.push(cur);
+                sampled += 1;
             }
             "Z" => {
                 closed = true;
+                let back = (start[0] - cur[0]).hypot(start[1] - cur[1]);
+                if back > 0.01 {
+                    sampled += mark_steps(back);
+                }
                 cur = start;
             }
             _ => {
@@ -190,8 +206,10 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                     return Err("outline must be one shape (nothing after Z)".into());
                 }
                 if up == "L" {
+                    let from = cur;
                     cur = pt!(rel);
                     points.push(cur);
+                    sampled += mark_steps((cur[0] - from[0]).hypot(cur[1] - from[1]));
                 } else {
                     let p0 = cur;
                     let n_ctl = if up == "C" { 3 } else { 2 };
@@ -199,6 +217,13 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
                     for _ in 0..n_ctl {
                         ctl.push(pt!(rel));
                     }
+                    let mut len = 0.0;
+                    let mut from = p0;
+                    for q in &ctl {
+                        len += (q[0] - from[0]).hypot(q[1] - from[1]);
+                        from = *q;
+                    }
+                    sampled += mark_steps(len);
                     let n = if up == "C" { STEPS_C } else { STEPS_Q };
                     for s in 1..=n {
                         let u = s as f64 / n as f64;
@@ -215,7 +240,7 @@ pub fn flatten_path(d: &str) -> Result<Flat, String> {
     if points.is_empty() {
         return Err("outline is empty".into());
     }
-    Ok(Flat { points, coords, closed })
+    Ok(Flat { points, coords, closed, sampled })
 }
 
 /// `/\.\d*\./`: a number running into the next ("1.2.3").
@@ -551,6 +576,257 @@ pub fn part_errors(parts: &Value) -> Vec<String> {
     errs
 }
 
+pub const SOLIDS_MAX: usize = 10;
+const SOLID_PROFILE: usize = 40;
+const SOLID_PATH: usize = 12;
+const SOLID_BRANCHES: usize = 6;
+const SOLID_MARKS: usize = 8;
+const SOLID_EDGE: usize = 24;
+const SOLID_SCALLOPS: usize = 18;
+const SOLID_LOBES: usize = 32;
+const SOLID_MARK_POINTS: usize = 1000;
+const SOLID_ALL_MARK_POINTS: usize = 2000;
+// the mark engine's cost of a solid: faces it cuts at most (app/src/mark/solids.rs)
+const SOLID_FACES: usize = 8000;
+const SOLID_ROW: f64 = 5.0;
+const SOLID_COLS: usize = 68;
+const SOLID_SHELL_FACES: usize = 6 * 72;
+const SOLID_LOBE_FACES: usize = 84;
+const SOLID_TUBE_STEPS: usize = 3;
+const SOLID_TUBE_SIDES: usize = 8;
+const SOLID_BOX: (f64, f64) = (-60.0, 160.0);
+const SOLID_RADIUS: f64 = 60.0;
+
+/// `numList(v, n)`: a list of `n` finite numbers.
+fn num_list(v: Option<&Value>, n: usize) -> Option<Vec<f64>> {
+    let a = v?.as_array()?;
+    if a.len() != n {
+        return None;
+    }
+    a.iter().map(|x| x.as_f64().filter(|x| x.is_finite())).collect()
+}
+
+fn in_box(v: f64) -> bool {
+    (SOLID_BOX.0..=SOLID_BOX.1).contains(&v)
+}
+
+/// `tubePathErrors(path, what)`: a tube's or branch's `[[x, y, z, radius], ...]`.
+fn tube_path_errors(path: Option<&Value>, what: &str) -> Vec<String> {
+    let Some(a) = path.and_then(Value::as_array) else { return vec![format!("{what} must be a list of [x, y, z, radius]")] };
+    if !(2..=SOLID_PATH).contains(&a.len()) {
+        return vec![format!("{what} needs 2 to {SOLID_PATH} points")];
+    }
+    let mut errs = Vec::new();
+    for p in a {
+        match num_list(Some(p), 4) {
+            None => errs.push(format!("{what}'s point must be a list of 4 numbers")),
+            Some(p) if !p[..3].iter().all(|v| in_box(*v)) || !(0.0..=SOLID_RADIUS).contains(&p[3]) => errs.push(format!("{what}'s point is out of range")),
+            _ => {}
+        }
+    }
+    errs
+}
+
+/// `solidCost(s)`: what a checked solid costs the renderer, in faces at most.
+fn solid_cost(s: &Map<String, Value>) -> usize {
+    let list = |k: &str| s.get(k).and_then(Value::as_array);
+    let tube = |p: &Vec<Value>| ((p.len() - 1) * SOLID_TUBE_STEPS + 3) * SOLID_TUBE_SIDES;
+    match s.get("kind").and_then(Value::as_str) {
+        Some("lathe") => {
+            let p: Vec<Vec<f64>> = list("profile").map(|l| l.iter().filter_map(|q| num_list(Some(q), 2)).collect()).unwrap_or_default();
+            let rows: usize = p.windows(2).map(|w| (((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]) / SOLID_ROW).ceil() as usize).max(1)).sum();
+            rows * SOLID_COLS
+        }
+        Some("shell") => SOLID_SHELL_FACES + list("lobes").and_then(|l| l.first()).and_then(Value::as_u64).map_or(0, |n| n as usize * SOLID_LOBE_FACES),
+        _ => list("path").map_or(0, tube) + list("branches").map_or(0, |b| b.iter().filter_map(Value::as_array).map(tube).sum()),
+    }
+}
+
+/// A whole number in `lo..=hi`.
+fn whole(v: f64, lo: usize, hi: usize) -> bool {
+    v.fract() == 0.0 && (lo as f64..=hi as f64).contains(&v)
+}
+
+/// `solidErrors(solids)`: up to 10 pieces of real 3D in head space, `[{kind,
+/// color, marks?, ...}]`, under the limits that keep a bad recipe from
+/// stalling the renderer (app/src/mark/solids.rs checks the same).
+pub fn solid_errors(solids: &Value) -> Vec<String> {
+    let Some(solids) = solids.as_array() else { return vec!["solids must be a list".into()] };
+    let mut errs: Vec<String> = Vec::new();
+    if solids.len() > SOLIDS_MAX {
+        errs.push(format!("at most {SOLIDS_MAX} solids"));
+    }
+    let mut cost = 0;
+    for (k, s) in solids.iter().enumerate() {
+        let n = format!("solid {}", k + 1);
+        let Some(s) = s.as_object() else {
+            errs.push(format!("{n} must be {{kind, color}}"));
+            continue;
+        };
+        let before = errs.len();
+        let mut mark_points = 0;
+        if !s.get("color").and_then(Value::as_str).is_some_and(is_color) {
+            errs.push(format!("{n}'s color must be #RRGGBB"));
+        }
+        match s.get("kind").and_then(Value::as_str) {
+            Some("lathe") => {
+                match num_list(s.get("at"), 3) {
+                    None => errs.push(format!("{n}'s at must be [x, y, z]")),
+                    Some(a) if !a.iter().all(|v| in_box(*v)) => errs.push(format!("{n}'s at is out of range")),
+                    _ => {}
+                }
+                if s.contains_key("tilt") && !num_list(s.get("tilt"), 3).is_some_and(|t| t.iter().all(|t| t.abs() <= 180.0)) {
+                    errs.push(format!("{n}'s tilt must be [x, y, z] degrees, -180..180"));
+                }
+                if s.contains_key("oval") && !s.get("oval").and_then(Value::as_f64).is_some_and(|o| (0.3..=3.0).contains(&o)) {
+                    errs.push(format!("{n}'s oval must be 0.3..3"));
+                }
+                if s.contains_key("teeth") && !num_list(s.get("teeth"), 2).is_some_and(|t| whole(t[0], 2, SOLID_SCALLOPS) && (0.0..=1.0).contains(&t[1])) {
+                    errs.push(format!("{n}'s teeth must be [2..{SOLID_SCALLOPS}, 0..1]"));
+                }
+                match s.get("profile").and_then(Value::as_array).filter(|p| (2..=SOLID_PROFILE).contains(&p.len())) {
+                    None => errs.push(format!("{n}'s profile needs 2 to {SOLID_PROFILE} points")),
+                    Some(p) => {
+                        let q: Option<Vec<Vec<f64>>> = p.iter().map(|q| num_list(Some(q), 2).filter(|q| (0.0..=2.0 * SOLID_RADIUS).contains(&q[0]) && q[1].abs() <= 2.0 * SOLID_RADIUS)).collect();
+                        match q {
+                            None => errs.push(format!("{n}'s profile points must be [radius, height], in range")),
+                            Some(q) => {
+                                let (a, b) = (&q[0], &q[q.len() - 1]);
+                                if !(a == b || (a[0] == 0.0 && b[0] == 0.0)) {
+                                    errs.push(format!("{n}'s profile must run axis to axis, or back to its start"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some("shell") => {
+                if s.contains_key("offset") && !s.get("offset").and_then(Value::as_f64).is_some_and(|o| (0.0..=SOLID_RADIUS).contains(&o)) {
+                    errs.push(format!("{n}'s offset must be 0..{}", js::number(SOLID_RADIUS)));
+                }
+                match s.get("edge").and_then(Value::as_array).filter(|e| (1..=SOLID_EDGE).contains(&e.len())) {
+                    None => errs.push(format!("{n}'s edge needs 1 to {SOLID_EDGE} points")),
+                    Some(e) => {
+                        let q: Option<Vec<Vec<f64>>> = e.iter().map(|q| num_list(Some(q), 2).filter(|q| q[0].abs() <= 180.0 && (5.0..=175.0).contains(&q[1]))).collect();
+                        match q {
+                            None => errs.push(format!("{n}'s edge points must be [-180..180, 5..175]")),
+                            Some(q) if q.windows(2).any(|w| w[0][0] >= w[1][0]) => errs.push(format!("{n}'s edge azimuths must rise")),
+                            _ => {}
+                        }
+                    }
+                }
+                if s.contains_key("scallop") && !num_list(s.get("scallop"), 3).is_some_and(|c| whole(c[0], 2, SOLID_SCALLOPS) && (0.0..=60.0).contains(&c[1]) && (c[2] == 0.0 || c[2] == 1.0)) {
+                    errs.push(format!("{n}'s scallop must be [2..{SOLID_SCALLOPS}, 0..60, 0 or 1]"));
+                }
+                if s.contains_key("lobes") && !num_list(s.get("lobes"), 3).is_some_and(|l| whole(l[0], 1, SOLID_LOBES) && (1.0..=SOLID_RADIUS).contains(&l[1]) && l[2].abs() <= SOLID_RADIUS) {
+                    let r = js::number(SOLID_RADIUS);
+                    errs.push(format!("{n}'s lobes must be [1..{SOLID_LOBES}, 1..{r}, -{r}..{r}]"));
+                }
+            }
+            Some("tube") => {
+                errs.extend(tube_path_errors(s.get("path"), &format!("{n}'s path")));
+                if let Some(b) = s.get("branches") {
+                    match b.as_array() {
+                        None => errs.push(format!("{n}'s branches must be a list")),
+                        Some(b) => {
+                            if b.len() > SOLID_BRANCHES {
+                                errs.push(format!("{n} has more than {SOLID_BRANCHES} branches"));
+                            }
+                            for p in b {
+                                errs.extend(tube_path_errors(Some(p), &format!("{n}'s branch")));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => errs.push(format!("{n}'s kind must be lathe, shell or tube")),
+        }
+        if let Some(m) = s.get("marks") {
+            match m.as_array() {
+                None => errs.push(format!("{n}'s marks must be a list")),
+                Some(marks) => {
+                    if marks.len() > SOLID_MARKS {
+                        errs.push(format!("{n} has more than {SOLID_MARKS} marks"));
+                    }
+                    for (i, m) in marks.iter().enumerate() {
+                        errs.extend(mark_errors(m, &format!("{n} mark {}", i + 1), &mut mark_points));
+                    }
+                    if mark_points > SOLID_ALL_MARK_POINTS {
+                        errs.push(format!("{n}'s marks sample to {mark_points} points, at most {SOLID_ALL_MARK_POINTS}"));
+                    }
+                }
+            }
+        }
+        if errs.len() == before {
+            cost += solid_cost(s) + mark_points;
+        }
+    }
+    if cost > SOLID_FACES {
+        errs.push(format!("the solids cost {cost} faces, at most {SOLID_FACES}"));
+    }
+    errs
+}
+
+/// One mark of a solid: a closed path in its chart, u -180..180 round it
+/// and v 0..100 along it, with a fill.
+fn mark_errors(m: &Value, n: &str, points: &mut usize) -> Vec<String> {
+    let Some(m) = m.as_object() else { return vec![format!("{n} must be {{path, fill}}")] };
+    let mut errs = Vec::new();
+    if !m.get("fill").and_then(Value::as_str).is_some_and(is_color) {
+        errs.push(format!("{n}'s fill must be #RRGGBB"));
+    }
+    let Some(d) = m.get("path").and_then(Value::as_str).filter(|d| !d.trim_matches(js::is_space).is_empty()) else {
+        errs.push(format!("{n} needs a path"));
+        return errs;
+    };
+    if utf16_len(d) > OUTLINE_MAX {
+        errs.push(format!("{n}'s path is longer than {OUTLINE_MAX} characters"));
+        return errs;
+    }
+    if !d.chars().all(is_outline_char) {
+        errs.push(format!("{n}'s path may hold only M/L/C/Q/Z commands and numbers"));
+        return errs;
+    }
+    let f = match flatten_path(d) {
+        Ok(f) => f,
+        Err(e) => {
+            errs.push(format!("{n}: {e}"));
+            return errs;
+        }
+    };
+    if f.coords.iter().any(|[u, v]| !((-180.0..=180.0).contains(u) && (-5.0..=105.0).contains(v))) {
+        errs.push(format!("{n}'s coordinates must stay within -180..180, -5..105"));
+    }
+    if f.points.len() < 3 || area_centroid(&f.points).0 < 0.25 {
+        errs.push(format!("{n} encloses no area"));
+    }
+    if f.sampled > SOLID_MARK_POINTS {
+        errs.push(format!("{n} samples to {} points, at most {SOLID_MARK_POINTS}", f.sampled));
+    }
+    *points += f.sampled;
+    errs
+}
+
+/// `solidOf(s)`: a solid as a bot stores it, the fields of its kind and
+/// nothing else.
+pub fn solid_of(s: &Value) -> Value {
+    let keys: &[&str] = match s.get("kind").and_then(Value::as_str) {
+        Some("lathe") => &["at", "tilt", "oval", "teeth", "profile"],
+        Some("shell") => &["offset", "edge", "scallop", "lobes"],
+        Some("tube") => &["path", "branches"],
+        _ => return s.clone(),
+    };
+    let keep = |from: &Value, names: &[&str]| -> Map<String, Value> {
+        names.iter().filter_map(|k| from.get(*k).map(|v| ((*k).to_owned(), v.clone()))).collect()
+    };
+    let mut o = keep(s, &["kind", "color"]);
+    o.extend(keep(s, keys));
+    if let Some(m) = s.get("marks").and_then(Value::as_array) {
+        o.insert("marks".into(), m.iter().map(|m| Value::Object(keep(m, &["path", "fill"]))).collect());
+    }
+    Value::Object(o)
+}
+
 /// The smallest and largest eye size multiplier, and the thickest rim.
 pub const EYE_SCALE: (f64, f64) = (0.6, 2.2);
 pub const RIM_MAX: f64 = 1.2;
@@ -610,7 +886,7 @@ pub fn eye_errors(eyes: Option<&Value>, outline: Option<&str>) -> Vec<String> {
 /// `validateAvatar({shape, color, outline, layers, eyes})`: `None` for a
 /// value that is not a string (`layers`, `eyes`: for undefined). Layers
 /// (with eyes) make it a rich avatar, which only a custom outline can be.
-pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>, layers: Option<&Value>, eyes: Option<&Value>, parts: Option<&Value>) -> Vec<String> {
+pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option<&str>, layers: Option<&Value>, eyes: Option<&Value>, parts: Option<&Value>, solids: Option<&Value>) -> Vec<String> {
     let mut errs = Vec::new();
     if shape != Some("custom") && !shape.is_some_and(is_kit) {
         errs.push(format!("shape must be one of {} or custom", KIT.iter().map(|k| k.0).collect::<Vec<_>>().join(", ")));
@@ -636,6 +912,16 @@ pub fn validate_avatar(shape: Option<&str>, color: Option<&str>, outline: Option
             errs.extend(part_errors(parts));
         }
     }
+    if let Some(solids) = solids {
+        if shape != Some("custom") {
+            errs.push("only a custom outline can have solids".into());
+        } else {
+            errs.extend(solid_errors(solids));
+            if solids.as_array().is_some_and(|s| !s.is_empty()) && !rich {
+                errs.push("solids need a rich avatar: at least one layer (the face)".into());
+            }
+        }
+    }
     errs
 }
 
@@ -651,6 +937,8 @@ pub struct Candidate {
     pub layers: Option<Vec<Value>>,
     /// a rich candidate's pieces `[{outline, color, layers?, z?}]` (custom only)
     pub parts: Option<Vec<Value>>,
+    /// a rich candidate's real 3D pieces (custom only)
+    pub solids: Option<Vec<Value>>,
     /// a rich candidate's eyes, a colour or a placement (custom only)
     pub eyes: Option<Value>,
     pub why: String,
@@ -661,7 +949,8 @@ impl Candidate {
         let layers = self.layers.clone().map(Value::Array);
         let eyes = self.eyes.clone();
         let parts = self.parts.clone().map(Value::Array);
-        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref(), parts.as_ref())
+        let solids = self.solids.clone().map(Value::Array);
+        validate_avatar(Some(&self.shape), Some(&self.color), self.outline.as_deref(), layers.as_ref(), eyes.as_ref(), parts.as_ref(), solids.as_ref())
     }
 
     /// `{name, shape, color, outline?, why}`
@@ -681,6 +970,9 @@ impl Candidate {
         }
         if let Some(x) = &self.parts {
             o.insert("parts".into(), Value::Array(x.clone()));
+        }
+        if let Some(x) = &self.solids {
+            o.insert("solids".into(), Value::Array(x.clone()));
         }
         o.insert("why".into(), json!(self.why));
         Value::Object(o)
@@ -813,6 +1105,7 @@ pub fn parse_candidates(text: &str) -> Vec<Candidate> {
                 layers: layers.filter(|_| custom),
                 eyes: eyes.filter(|_| custom),
                 parts: parts.filter(|_| custom),
+                solids: x.get("solids").and_then(Value::as_array).filter(|_| custom).map(|s| s.iter().map(solid_of).collect()),
                 shape,
                 color,
                 why: js::slice_utf16(js_trim(&or_empty(x.get("why"))), 240),
@@ -1229,7 +1522,7 @@ fn kit_fallback(shape: &str) -> Candidate {
     } else {
         "Blob".into()
     };
-    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, layers: None, eyes: None, parts: None, why: "A kit shape picked for the description.".into() }
+    Candidate { name, shape: shape.into(), color: "#FFFFFF".into(), outline: None, layers: None, eyes: None, parts: None, solids: None, why: "A kit shape picked for the description.".into() }
 }
 
 /// MOCK mode's outlines.
@@ -1239,7 +1532,7 @@ pub const MOCK_RECEIPT: &str = "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80
 
 /// `mockCandidates({image})`
 pub fn mock_candidates(image: bool) -> Vec<Candidate> {
-    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), layers: None, eyes: None, parts: None, why: why.into() };
+    let c = |name: &str, shape: &str, outline: Option<&str>, why: &str| Candidate { name: name.into(), shape: shape.into(), color: "#FFFFFF".into(), outline: outline.map(str::to_owned), layers: None, eyes: None, parts: None, solids: None, why: why.into() };
     let kit = c("Blob", "blob", None, "A friendly ball in the primary ink.");
     let cat = c("Cat Head", "custom", Some(MOCK_CAT), "A bold cat silhouette.");
     let pebble = c("Pebble", "custom", Some(MOCK_PEBBLE), "A calm, rounded pebble.");

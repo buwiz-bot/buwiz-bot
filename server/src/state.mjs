@@ -224,7 +224,7 @@ for (const col of ["pinned INTEGER DEFAULT 0", "section TEXT", "hidden INTEGER D
   "description TEXT", "instructions TEXT", "memories TEXT", "integrations TEXT",
   // a custom avatar shape's SVG path data (NULL for a kit shape)
   "outline TEXT",
-  // a rich avatar's painted layers, eyes and parts, as JSON {layers, eyes, parts}
+  // a rich avatar's painted layers, eyes, parts and solids, as JSON {layers, eyes, parts, solids}
   "art TEXT"]) {
   try { db.exec(`ALTER TABLE bots ADD COLUMN ${col}`); } catch {}
 }
@@ -321,7 +321,7 @@ function loadStore() {
       ...(() => {
         try {
           const a = b.art ? JSON.parse(b.art) : null;
-          return { ...(a?.layers?.length ? { layers: a.layers, eyes: a.eyes } : {}), ...(a?.parts?.length ? { parts: a.parts } : {}) };
+          return { ...(a?.layers?.length ? { layers: a.layers, eyes: a.eyes } : {}), ...(a?.parts?.length ? { parts: a.parts } : {}), ...(a?.solids?.length ? { solids: a.solids } : {}) };
         } catch {
           return {};
         }
@@ -428,8 +428,8 @@ export function persist() {
         b.description ?? null, b.instructions ?? null,
         JSON.stringify(b.memories || []), JSON.stringify(b.integrations || []), botExtra(b),
         b.shape === "custom" && b.outline ? b.outline : null,
-        b.shape === "custom" && (b.layers?.length || b.parts?.length)
-          ? JSON.stringify({ layers: b.layers, eyes: b.eyes, ...(b.parts?.length ? { parts: b.parts } : {}) })
+        b.shape === "custom" && (b.layers?.length || b.parts?.length || b.solids?.length)
+          ? JSON.stringify({ layers: b.layers, eyes: b.eyes, ...(b.parts?.length ? { parts: b.parts } : {}), ...(b.solids?.length ? { solids: b.solids } : {}) })
           : null),
     );
     store.list.forEach((t, i) => {
