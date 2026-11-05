@@ -85,15 +85,19 @@ fn grouped(n: &Seen) -> bool {
     n.states.iter().any(|s| s == "grouped")
 }
 
-/// The texts in `n`, and whether something is in it that keeps it unnamed:
-/// a control, or a `note`, whose words are never a label.
+/// The texts in `n`, and whether a control is.
 fn inside<'a>(n: &'a Seen, texts: &mut Vec<&'a str>) -> bool {
-    n.children.iter().fold(false, |blocked, c| {
+    n.children.iter().fold(false, |control, c| {
         if TEXT.contains(&c.role.as_str()) {
             texts.push(words(c));
         }
-        inside(c, texts) || is_control(&c.role) || c.role == "note" || blocked
+        inside(c, texts) || is_control(&c.role) || control
     })
+}
+
+/// Whether a `note` is in `n`: its words can repeat a name, but never give one.
+fn holds_note(n: &Seen) -> bool {
+    n.children.iter().any(|c| c.role == "note" || holds_note(c))
 }
 
 /// A button's label, or `None` for a button that may be a row.
@@ -105,7 +109,7 @@ fn button_label(n: &Seen) -> Option<&str> {
     let name = n.name.trim();
     let label = match texts[..] {
         [] => name,
-        [text] if name.is_empty() || name == text => text,
+        [text] if name == text || (name.is_empty() && !holds_note(n)) => text,
         _ => return None,
     };
     plain(label).then_some(label)
