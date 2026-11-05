@@ -56,6 +56,9 @@ const ACT_WAIT: Duration = ui_time::ACT_WAIT;
 const PRESS_WAIT: Duration = ui_time::PRESS_WAIT;
 const NOBODY: &str = "Nobody answered in time, so this press was refused and nothing was sent.";
 const PING: Duration = Duration::from_secs(25);
+/// How long a full stream gets to take the word that the agent is opening a screen.
+const OPENED_WAIT: Duration = Duration::from_secs(2);
+const NOT_TOLD: &str = "The Bot couldn't be told the AI is opening this, so it wasn't opened.";
 /// What Activity calls a press: its card's words stay in the Bot.
 const PRESSED: &str = "A press on a screen";
 
@@ -156,12 +159,12 @@ impl UiLink {
 
     /// The broker is opening a screen for the model. The Bot takes that as the agent acting, so
     /// nothing that opens now goes out as the person's. With no Bot there is no one to tell, and
-    /// no screen of the Bot's to mark.
-    pub fn agent_opened(&self) {
+    /// no screen of the Bot's to mark. `Err` holds the sentence: a Bot that can't be told would
+    /// read what opens as the person's, so nothing may open.
+    pub async fn agent_opened(&self) -> Result<(), String> {
         let bot = self.bot.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(bot) = bot {
-            let _ = bot.try_send(Bytes::from_static(ui_time::AGENT_OPENED_EVENT));
-        }
+        let Some(bot) = bot else { return Ok(()) };
+        bot.send_timeout(Bytes::from_static(ui_time::AGENT_OPENED_EVENT), OPENED_WAIT).await.map_err(|_| NOT_TOLD.to_owned())
     }
 
     /// Claims the one action in flight; `None` while another runs.
@@ -514,9 +517,9 @@ mod tests {
     #[tokio::test]
     async fn opening_a_screen_for_the_model_tells_the_bot() {
         let link = UiLink::default();
-        link.agent_opened();
+        assert_eq!(link.agent_opened().await, Ok(()), "no Bot, no screen of its to mark");
         let mut stream = link.attach();
-        link.agent_opened();
+        link.agent_opened().await.unwrap();
         let heard = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let chunk = stream.recv().await.expect("a chunk");
@@ -526,6 +529,19 @@ mod tests {
             }
         });
         assert_eq!(&heard.await.expect("the Bot hears it")[..], ui_time::AGENT_OPENED_EVENT);
+    }
+
+    /// A Bot that can't be told would take what opens for the person's.
+    #[tokio::test]
+    async fn a_bot_that_cant_be_told_stops_the_open() {
+        let link = UiLink::default();
+        let stream = link.attach();
+        for _ in 0..16 {
+            link.bot.lock().unwrap().as_ref().unwrap().try_send(Bytes::from_static(b": full\n\n")).ok();
+        }
+        assert_eq!(link.agent_opened().await, Err(NOT_TOLD.to_owned()), "a full stream");
+        drop(stream);
+        assert_eq!(link.agent_opened().await, Err(NOT_TOLD.to_owned()), "a stream that ended");
     }
 
     fn asked_of(input: Value) -> Result<Envelope, String> {

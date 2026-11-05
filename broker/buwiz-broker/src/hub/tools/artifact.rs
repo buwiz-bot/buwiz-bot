@@ -537,7 +537,9 @@ pub async fn artifact_tool(run: &Run, tool: &str, input: &Value) -> Result<Out, 
                 pop["v"] = json!(crate::hub::store::json::js_number(Some(v)));
             }
             // before it opens: what the screen calls as it comes up is the agent's
-            ctx.ui.agent_opened();
+            if let Err(why) = ctx.ui.agent_opened().await {
+                return Ok(Out::err(why));
+            }
             let r = self_post("/popout", &pop).await;
             let shown = v_in.map(|v| format!(" v{}", js::string_of(v))).unwrap_or_default();
             Ok(if ok(&r) { Out::ok(format!("{name}{shown} opened in its own window.")) } else { Out::err(format!("launch failed: {}", err(&r).unwrap_or_else(|| "no such module".into()))) })
