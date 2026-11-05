@@ -115,7 +115,8 @@ pub const TEST_GOOGLE_ENV: &str = "BUWIZ_TEST_GOOGLE";
 #[cfg(feature = "test-google")]
 fn stub_google(port: u16, base: &str) -> Option<AccountsConfig> {
     let base = base.trim_end_matches('/');
-    base.starts_with("http://127.0.0.1:").then(|| AccountsConfig {
+    let port_only = base.strip_prefix("http://127.0.0.1:").is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    port_only.then(|| AccountsConfig {
         port,
         google_authorize: format!("{base}/o/oauth2/v2/auth"),
         google_token: format!("{base}/token"),
@@ -1138,6 +1139,7 @@ mod tests {
         assert_eq!((cfg.google_authorize.as_str(), cfg.google_token.as_str()), ("http://127.0.0.1:9/o/oauth2/v2/auth", "http://127.0.0.1:9/token"));
         assert!(stub_google(8810, "https://accounts.example.com").is_none());
         assert!(stub_google(8810, "http://127.0.0.1.example.com").is_none(), "needs the port's colon");
+        assert!(stub_google(8810, "http://127.0.0.1:9@attacker.example").is_none(), "that's another host");
     }
 
     #[test]
