@@ -16,9 +16,8 @@
 //!   agents is judged in the turn of the `ui_act` in flight, as the model's
 //!   direct call is, and anything else is the person's. No word is a no:
 //!   nothing is kept here to fall back on.
-//!
-//! No approval exists yet (S4), so an agent's press on a person-only tool
-//! is refused at the bridge, before anything is signed or sent.
+//! - The broker's word can hold a call, never let one go. What a held call
+//!   waits for is the person's own press on the card ([`super::hold`]).
 
 use std::sync::Mutex;
 
@@ -29,7 +28,7 @@ use serde_json::{Value, json};
 use crate::mini_v1::{RoxError, host_api};
 
 /// Who the Hub says is pressing.
-const AGENT: &str = "agent.broker";
+pub const AGENT: &str = "agent.broker";
 
 /// The most refusals kept for the answer to one action.
 const KEPT: usize = 16;
@@ -65,7 +64,7 @@ fn op_id(op: &Op) -> Option<AgentId> {
 
 /// Decides `op` on `target`, for the agent.
 pub fn authorize_op(target: &Target, op: &Op) -> Result<Allowed, Refused> {
-    let action = op_effect(target, op).zip(op_id(op)).map(|(effect, id)| PressAction { target: target.clone(), id, effect, once: None });
+    let action = op_effect(target, op).zip(op_id(op)).map(|(effect, id)| PressAction { target: target.clone(), id, effect, once: None, args_hash: None, shown_hash: None });
     authorize_press(action.as_ref(), caller().as_ref())
 }
 
@@ -104,10 +103,26 @@ pub fn tool_refused(app: &str) -> String {
     format!("Only a person can do this in {app}, and this press came from the AI, so nothing was sent. To go ahead, press it yourself.")
 }
 
-/// Decides a call of `tool` made under an agent's press: the press record
-/// to sign with it, or the refusal. Nothing else may go out for a call of
-/// the agent's: asked before signing, this is what holds it back.
-pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str) -> Result<Value, RoxError> {
+/// What a call under an agent's press does next.
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    /// It goes out with this press record.
+    Go(Value),
+    /// It waits, unsent, for the person's answer on the card. `describe` is
+    /// the read that puts it in plain words.
+    Hold { effect: Effect, describe: Option<String> },
+}
+
+/// The agent's press of `tool` in the app `short`, as an action: what the
+/// bridge authorizes, held or not.
+pub fn action_of(short: &str, tool: &str, effect: Effect) -> Option<PressAction> {
+    Target::parse(short).ok().zip(tool_id(tool)).map(|(target, id)| PressAction { target, id, effect, once: None, args_hash: None, shown_hash: None })
+}
+
+/// Decides a call of `tool` made under an agent's press: what it does next,
+/// or the refusal. Nothing else may go out for a call of the agent's: asked
+/// before signing, this is what holds it back.
+pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str) -> Result<Verdict, RoxError> {
     let held = |held: Held, said: String| {
         note_refused(held);
         RoxError::new("permission_denied", said)
@@ -117,7 +132,11 @@ pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, titl
         return Err(held(Held::Said(unchecked()), unchecked()));
     };
     let effect = effect_of(word.get("effect").and_then(Value::as_str));
-    let action = Target::parse(short).ok().zip(tool_id(tool)).map(|(target, id)| PressAction { target, id, effect, once: None });
+    if word.get("hold") == Some(&Value::Bool(true)) {
+        let describe = word.get("describe").and_then(Value::as_str).map(str::to_owned);
+        return Ok(Verdict::Hold { effect, describe });
+    }
+    let action = action_of(short, tool, effect);
     let Ok(allowed) = authorize_press(action.as_ref(), caller().as_ref()) else {
         return Err(held(Held::Person, tool_refused(title)));
     };
@@ -125,7 +144,7 @@ pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, titl
         let said = word.get("said").and_then(Value::as_str).map_or_else(unchecked, str::to_owned);
         return Err(held(Held::Said(said.clone()), said));
     }
-    Ok(json!(allowed.pressed))
+    Ok(Verdict::Go(json!(allowed.pressed)))
 }
 
 /// Why a call under an agent's press was held back.
@@ -135,11 +154,16 @@ pub enum Held {
     Person,
     /// It would have reached the pasteboard.
     Pasteboard,
-    /// The broker's sentence.
+    /// The broker's sentence, or the card's.
     Said(String),
+    /// The person turned it down on the card: the model hears why, and they
+    /// need no telling.
+    Declined(String),
 }
 
 static REFUSED: Mutex<Vec<Held>> = Mutex::new(Vec::new());
+/// What happened to each held call, for Activity: `(tool, outcome)`.
+static OUTCOMES: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
 
 /// A call was held back under an agent's press: the action in flight tells
 /// the model.
@@ -155,9 +179,22 @@ pub fn take_refused() -> Vec<Held> {
     std::mem::take(&mut *REFUSED.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// A held call came to `outcome` (`allowed`, `declined`, `expired`).
+pub fn note_outcome(tool: &str, outcome: &'static str) {
+    let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
+    if o.len() < KEPT {
+        o.push((tool.to_owned(), outcome));
+    }
+}
+
+/// What came of the held calls since the last time this was asked.
+pub fn take_outcomes() -> Vec<(String, &'static str)> {
+    std::mem::take(&mut *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
-    use buwiz_agent::{Approval, DeliveryMode, KeybindingScope, OnceId, PressedBy, ScreenshotMode};
+    use buwiz_agent::{Approval, ContentHash, DeliveryMode, KeybindingScope, OnceId, PressedBy, SafeU64, ScreenshotMode};
 
     use super::*;
 
@@ -227,11 +264,20 @@ pub(crate) mod tests {
     #[test]
     fn the_hubs_caller_has_no_approval_and_a_person_only_action_needs_one() {
         assert!(matches!(caller(), Some(Caller::Agent { approval: None, .. })));
-        let action = PressAction { target: target("books"), id: id("tool.post"), effect: Effect::Write, once: None };
+        let action = PressAction { target: target("books"), id: id("tool.post"), effect: Effect::Write, once: None, args_hash: None, shown_hash: None };
         assert_eq!(authorize_press(Some(&action), caller().as_ref()), Err(Refused::ApprovalMissing));
+        let hash = ContentHash::parse(&format!("sha256:{}", "a1".repeat(32))).unwrap();
         let made_up = Caller::Agent {
             who: ActorId::parse(AGENT).unwrap(),
-            approval: Some(Approval { target: target("books"), action: id("tool.post"), once: OnceId::parse("made-up-once").unwrap(), approved_by: ActorId::parse("person.owner").unwrap() }),
+            approval: Some(Approval {
+                target: target("books"),
+                action: id("tool.post"),
+                once: OnceId::parse("made-up-once").unwrap(),
+                approved_by: ActorId::parse("person.owner").unwrap(),
+                args_hash: hash.clone(),
+                shown_hash: hash,
+                at: SafeU64::try_from(1).unwrap(),
+            }),
         };
         assert_eq!(authorize_press(Some(&action), Some(&made_up)), Err(Refused::NoOpenPress));
     }
@@ -258,7 +304,27 @@ pub(crate) mod tests {
     }
 
     fn check(word: Option<Value>) -> Result<Value, RoxError> {
-        check_tool(&Word(word), "app.buwiz.books", "books", "Books", "fx_tool")
+        check_tool(&Word(word), "app.buwiz.books", "books", "Books", "fx_tool").map(|v| match v {
+            Verdict::Go(press) => press,
+            held @ Verdict::Hold { .. } => panic!("held: {held:?}"),
+        })
+    }
+
+    /// The broker's word can hold a call, and nothing it says lets one go:
+    /// not `allow`, and not a record or an approval of its own.
+    #[test]
+    fn the_brokers_word_only_ever_holds_a_write() {
+        let hold = |word| check_tool(&Word(Some(word)), "app.buwiz.books", "books", "Books", "fx_tool").unwrap();
+        let held = Verdict::Hold { effect: Effect::Write, describe: None };
+        assert_eq!(hold(json!({"allow": false, "hold": true, "effect": "write"})), held);
+        assert_eq!(hold(json!({"allow": true, "hold": true, "effect": "write"})), held, "allow changes nothing");
+        let forged = json!({"allow": true, "hold": true, "effect": "write", "approval": {"once": "made-up-once"}, "press": {"by": "ai_approved"}});
+        assert_eq!(hold(forged), held);
+        assert_eq!(
+            hold(json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_card"})),
+            Verdict::Hold { effect: Effect::Draft, describe: Some("fx_card".to_owned()) }
+        );
+        assert!(check(Some(json!({"allow": true, "effect": "write", "press": {"by": "ai_approved"}}))).is_err());
     }
 
     const PRESSED: fn() -> Value = || json!({"by": "ai", "who": "agent.broker"});

@@ -431,7 +431,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buwiz-agent"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-agent?rev=638d2b886e0c88cb20cce02c5f96c1edd43c8357#638d2b886e0c88cb20cce02c5f96c1edd43c8357"
+source = "git+https://github.com/buwiz-app/buwiz-agent?rev=f60b63f1248846d42aeb28de471d3085bd886e02#f60b63f1248846d42aeb28de471d3085bd886e02"
 dependencies = [
  "schemars",
  "serde",
@@ -731,7 +731,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2251,7 +2251,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

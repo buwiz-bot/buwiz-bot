@@ -18,9 +18,14 @@
 //! What only this side can decide: each call of the agent's comes here first
 //! (`POST /v1/host/ui/press`, [`press_word`]), against the live tool list. A read passes, so a
 //! screen stays alive. A write open to agents is judged in the turn of the action in flight, on
-//! the app that action is on, as the model's direct call of that tool is: off refuses, Ask asks,
-//! and its card covers that one call. Anything else is the person's. With no action in flight
-//! there is no turn to judge a write in, and it is refused.
+//! the app that action is on, as the model's direct call of that tool is: off refuses, and Ask
+//! says `hold`. So does a person-only tool whose plugin opted in (`_meta["buwiz/press"]`, O3).
+//! Anything else is the person's. With no action in flight there is no turn to judge a write in,
+//! and it is refused.
+//!
+//! `hold` only ever says a call may wait for the person. The card, and the yes, are the Bot's
+//! alone: nothing this side says can let a held call go. The answer comes back with the action's,
+//! as what happened to each held call and never its values: the card stays in the Bot.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,8 +39,9 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{controls, v1, Out, Run};
+use crate::helper::sessions;
 use crate::hub::ctx::HubCtx;
-use crate::hub::policy::keys;
+use crate::hub::policy::{self, ask, keys};
 use crate::hub::store::Turn;
 use crate::js;
 
@@ -50,6 +56,8 @@ const ACT_WAIT: Duration = ui_time::ACT_WAIT;
 const PRESS_WAIT: Duration = ui_time::PRESS_WAIT;
 const NOBODY: &str = "Nobody answered in time, so this press was refused and nothing was sent.";
 const PING: Duration = Duration::from_secs(25);
+/// What Activity calls a press: its card's words stay in the Bot.
+const PRESSED: &str = "A press on a screen";
 
 /// The model's definition.
 pub fn def() -> Value {
@@ -64,7 +72,7 @@ pub fn def() -> Value {
 pub fn act_def() -> Value {
     json!({
         "name": ACT,
-        "description": "Act on the mini app screen on top in the Bot: press a button, or type in a field. Use the app and the node ids ui_look gave you, and look first: if the screen changed, nothing happens and you have to look again. It can fill in and save a draft. It can't do what only a person can do, such as post, void, close, confirm or send: that press is refused, nothing is sent, and you should say so and leave it to them. A node with no name can't be used. The answer is the screen after the action.",
+        "description": "Act on the mini app screen on top in the Bot: press a button, or type in a field. Use the app and the node ids ui_look gave you, and look first: if the screen changed, nothing happens and you have to look again. It can fill in and save a draft. Pressing Post or Close month holds the press unsent while the person sees exactly what it will do on a card, and it goes out only if they allow it: press it when they asked for it, and wait for the answer. Everything else only a person can do, such as void, reopen, confirm or send, is refused: nothing is sent, and you should say so and leave it to them. Never press again after Not now. A node with no name can't be used. The answer is the screen after the action.",
         "input_schema": {"type": "object", "properties": {
             "app": {"type": "string", "description": "the screen's app, from ui_look"},
             "node": {"type": "string", "description": "a node id from ui_look"},
@@ -95,7 +103,15 @@ struct Acting {
 struct PressAsk {
     plugin: String,
     tool: String,
-    answer: oneshot::Sender<Result<(), String>>,
+    answer: oneshot::Sender<Result<Word, String>>,
+}
+
+/// A turn's word on a write. Never a yes to a person-only call: that is the Bot's card's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Word {
+    Go,
+    /// It waits, unsent, for the person's answer on the Bot's card.
+    Hold,
 }
 
 /// Ends an action's claim on [`UiLink::acting`], however it ends.
@@ -150,7 +166,7 @@ impl UiLink {
     }
 
     /// `plugin`'s `tool`, which the Bot says the action in flight led to: `Err` holds the sentence.
-    pub async fn press(&self, plugin: &str, tool: &str) -> Result<(), String> {
+    pub async fn press(&self, plugin: &str, tool: &str) -> Result<Word, String> {
         let acting = self.acting.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let acting = acting.ok_or("No action of the AI's is running, so this press was refused and nothing was sent.")?;
         if acting.plugin.as_deref() != Some(plugin) {
@@ -182,8 +198,8 @@ fn request(id: String) -> Result<Envelope, String> {
 }
 
 /// The action the model asked for. Its input gives the app, the node, what to do and the text;
-/// whatever else it holds stays here, and who is asking is this side's to say.
-fn act_request(id: String, input: &Value) -> Result<Envelope, String> {
+/// whatever else it holds stays here, and who is asking, and for which Bot, is this side's to say.
+fn act_request(id: String, input: &Value, bot: Option<String>) -> Result<Envelope, String> {
     let text = |k: &str| input.get(k).and_then(Value::as_str);
     let target = text("app").and_then(|a| Target::parse(a).ok()).ok_or("That isn't an app from the last look, so nothing was pressed.")?;
     let node = text("node").and_then(|n| AgentId::parse(n).ok()).ok_or("That isn't a button or field from the last look, so nothing was pressed.")?;
@@ -197,6 +213,7 @@ fn act_request(id: String, input: &Value) -> Result<Envelope, String> {
     let mut e = Envelope::new(id, target, op);
     let who = ActorId::parse("agent.broker").map_err(|e| e.to_string())?;
     e.caller = Some(Caller::Agent { who, approval: None });
+    e.bot = bot;
     Ok(e)
 }
 
@@ -216,12 +233,23 @@ pub async fn press_word(ctx: &HubCtx, plugin: &str, tool: &str) -> Option<Value>
     if def.as_ref().is_some_and(keys::declared_read) {
         return Some(json!({"allow": true, "effect": "read"}));
     }
-    if !def.as_ref().is_some_and(crate::helper::sessions::open_to_agents) {
+    let open = def.as_ref().is_some_and(sessions::open_to_agents);
+    if !open && !def.as_ref().is_some_and(sessions::press_opted_in) {
         return Some(json!({"allow": false, "effect": "write"}));
     }
+    let effect = if open { "draft" } else { "write" };
     Some(match ctx.ui.press(plugin, tool).await {
-        Ok(()) => json!({"allow": true, "effect": "draft"}),
-        Err(said) => json!({"allow": false, "effect": "draft", "said": said}),
+        Ok(Word::Go) => json!({"allow": true, "effect": effect}),
+        Ok(Word::Hold) => {
+            let mut word = json!({"allow": false, "hold": true, "effect": effect});
+            // a card is read with a read of the plugin's own, or not at all
+            let describe = def.as_ref().and_then(sessions::press_describe).filter(|d| v1::tool_def(ctx, plugin, d).as_ref().is_some_and(keys::declared_read));
+            if let Some(d) = describe {
+                word["describe"] = json!(d);
+            }
+            word
+        }
+        Err(said) => json!({"allow": false, "effect": effect, "said": said}),
     })
 }
 
@@ -231,19 +259,26 @@ fn plugin_of(ctx: &HubCtx, short: &str) -> Option<String> {
 }
 
 /// Whether a write the action led to may go out, as this turn's direct call of the tool would.
-async fn judge(run: &Run, plugin: &str, tool: &str) -> Result<(), String> {
-    let (ctx, title) = (&run.ctx, keys::label_of(&run.ctx, &format!("v1:{plugin}")).map_or_else(|| plugin.to_owned(), |l| l.0));
-    let open = v1::tool_def(ctx, plugin, tool).is_some_and(|t| crate::helper::sessions::open_to_agents(&t));
-    if !open || keys::key_of(ctx, tool, run.turn.surface.as_ref()).as_deref() != Some(&format!("v1:{plugin}")) {
+fn judge(run: &Run, plugin: &str, tool: &str) -> Result<Word, String> {
+    let key = format!("v1:{plugin}");
+    let (ctx, title) = (&run.ctx, keys::label_of(&run.ctx, &key).map_or_else(|| plugin.to_owned(), |l| l.0));
+    let def = v1::tool_def(ctx, plugin, tool);
+    let open = def.as_ref().is_some_and(sessions::open_to_agents) && keys::key_of(ctx, tool, run.turn.surface.as_ref()).as_deref() == Some(&key);
+    if !open && !def.as_ref().is_some_and(sessions::press_opted_in) {
         return Err(format!("Only a person can do this in {title}, so the AI's press was refused and nothing was sent."));
     }
-    if controls::refusal(run, tool, &json!({})).is_some() {
+    if controls::press_off(run, &key) {
         return Err(format!("{title} is off here, so the AI's press was refused and nothing was sent. Only a person can turn it on."));
     }
-    if controls::ask_press(run, tool).await.is_some() {
-        return Err(format!("The AI's press in {title} wasn't allowed, so nothing was sent."));
+    if open && !controls::press_asks(run, &key) {
+        return Ok(Word::Go);
     }
-    Ok(())
+    if !ask::present(&run.turn) {
+        policy::log_ask(ctx, controls::screen_bot(run).as_deref(), PRESSED, tool, "needs_ok");
+        return Err(ask::NOBODY.to_owned());
+    }
+    run.set_job("waiting", ask::WAITING);
+    Ok(Word::Hold)
 }
 
 fn bot() -> Result<Target, String> {
@@ -293,16 +328,35 @@ pub async fn look(ctx: &HubCtx) -> Out {
     }
 }
 
-/// What an action's answer comes to: the screen after it, and what was refused.
+/// The sentences under `key` in an action's answer.
+fn sentences(r: &Response, key: &str) -> Vec<String> {
+    let list = r.result.as_ref().and_then(|v| v.get(key)).and_then(Value::as_array);
+    list.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
+}
+
+/// What an action's answer comes to: the screen after it, and what was refused for the person
+/// to read. `declined` is what the person turned down themselves: the model reads it, and they
+/// don't need telling.
 fn render_act(r: &Response) -> Result<(Value, Vec<String>), String> {
     let mut view = render(r)?;
-    let list = r.result.as_ref().and_then(|v| v.get("refused")).and_then(Value::as_array);
-    let refused: Vec<String> = list.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
-    view["done"] = json!(refused.is_empty());
-    if !refused.is_empty() {
-        view["refused"] = json!(refused);
+    let refused = sentences(r, "refused");
+    let all: Vec<String> = refused.iter().cloned().chain(sentences(r, "declined")).collect();
+    view["done"] = json!(all.is_empty());
+    if !all.is_empty() {
+        view["refused"] = json!(all);
     }
     Ok((view, refused))
+}
+
+/// Keeps what happened to each held call in Activity: the tool and the outcome, as every
+/// other answer on a card, and never its values.
+fn log_held(run: &Run, r: &Response) {
+    let list = r.result.as_ref().and_then(|v| v.get("held")).and_then(Value::as_array);
+    for h in list.into_iter().flatten() {
+        if let (Some(tool), Some(outcome)) = (h.get("tool").and_then(Value::as_str), h.get("outcome").and_then(Value::as_str)) {
+            policy::log_ask(&run.ctx, controls::screen_bot(run).as_deref(), PRESSED, tool, outcome);
+        }
+    }
 }
 
 /// Whether the Bot marked its refusal as one the person should read.
@@ -324,7 +378,7 @@ fn tell_person(run: &Run, said: &str) {
 pub async fn act(run: &Run, input: &Value) -> Out {
     let ui = &run.ctx.ui;
     let id = format!("ui-{}", ui.next.fetch_add(1, Ordering::Relaxed));
-    let e = match act_request(id, input) {
+    let e = match act_request(id, input, controls::screen_bot(run)) {
         Ok(e) => e,
         Err(why) => return Out::err(why),
     };
@@ -337,9 +391,7 @@ pub async fn act(run: &Run, input: &Value) -> Out {
         tokio::select! {
             r = &mut asked => break r,
             Some(p) = presses.recv() => {
-                // the wait ending takes the card with it
-                let said = tokio::time::timeout(PRESS_WAIT, judge(run, &p.plugin, &p.tool)).await;
-                let _ = p.answer.send(said.unwrap_or_else(|_| Err(NOBODY.to_owned())));
+                let _ = p.answer.send(judge(run, &p.plugin, &p.tool));
             }
         }
     };
@@ -347,6 +399,7 @@ pub async fn act(run: &Run, input: &Value) -> Out {
         Ok(r) => r,
         Err(why) => return Out::err(why),
     };
+    log_held(run, &r);
     match render_act(&r) {
         Ok((view, refused)) => {
             refused.iter().for_each(|said| tell_person(run, said));
@@ -440,7 +493,7 @@ mod tests {
     }
 
     fn asked_of(input: Value) -> Result<Envelope, String> {
-        act_request("ui-t".into(), &input)
+        act_request("ui-t".into(), &input, None)
     }
 
     #[test]

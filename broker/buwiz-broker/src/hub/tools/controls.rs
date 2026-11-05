@@ -184,34 +184,43 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
         return None;
     }
     let key = key_for(run, name, input)?;
-    let press = key == ui::ACT_KEY;
-    let outside = if press { run.state().beyond_screens } else { run.state().external };
-    ask_with(run, name, input, key, outside, press).await
-}
-
-/// [`ask_first`] for a write of plugin tool `name` that a press on a screen led to: the look the
-/// press needed doesn't make it ask, or every press would. A press stands alone (O2): no grant
-/// in this chat covers it, and its card leaves none.
-pub async fn ask_press(run: &Run, name: &str) -> Option<Out> {
-    let input = json!({});
-    let key = key_for(run, name, &input)?;
-    let outside = run.state().beyond_screens;
-    ask_with(run, name, &input, key, outside, true).await
-}
-
-async fn ask_with(run: &Run, name: &str, input: &Value, key: String, outside: bool, press: bool) -> Option<Out> {
+    // a chat card is covered by the screen a press is on: what a press leads to asks on the
+    // Bot's own card over that screen, with its values (`press_asks`)
+    if key == ui::ACT_KEY {
+        return None;
+    }
     let ctx = &run.ctx;
     let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
-    let external = outside && keys::guarded(&key);
-    if !external && (pos == Pos::On || (!press && asking::granted(ctx, &run.thread_id(), &key))) {
+    let external = run.state().external && keys::guarded(&key);
+    if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
         return None;
     }
     let (title, lines, preview) = describe(run, name, &key, input);
-    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None, once: press };
+    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None };
     asking::ask(run, a).await.err().map(Out::err)
+}
+
+/// Whether this turn's profile has `key` switched off, whichever way it came to.
+pub fn press_off(run: &Run, key: &str) -> bool {
+    off(run).is_some_and(|o| o.contains(key))
+}
+
+/// Whether a write under `key` that a press led to needs the person's OK first: `key` or
+/// `screen_actions` at Ask, or the turn read what lies beyond the screens. The look a press
+/// needed doesn't count, or every press would ask. A press stands alone (O2): no grant in this
+/// chat covers it, and its card leaves none.
+pub fn press_asks(run: &Run, key: &str) -> bool {
+    let (ctx, owner) = (&run.ctx, profile(run));
+    let at_ask = |k: &str| effective(run, policy::tool_state(ctx, &owner, k)) == Pos::Ask;
+    at_ask(key) || at_ask(ui::ACT_KEY) || (run.state().beyond_screens && keys::guarded(key))
+}
+
+/// What this turn's Bot is known by on a screen: none in a plain chat.
+pub fn screen_bot(run: &Run) -> Option<String> {
+    acting(run).map(|b| b.0).filter(|b| b != CHATS)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -273,10 +282,6 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
         "office_create" => {
             let file = s("path").rsplit('/').next().unwrap_or("").to_owned();
             (format!("Make the document{}?", quoted(file)), Vec::new(), String::new())
-        }
-        ui::ACT => {
-            let what = if s("action") == "click" { "Press" } else { "Type in" };
-            (format!("{what}{} on the screen?", quoted(s("node"))), Vec::new(), s("text"))
         }
         _ if name.starts_with("office_") => ("Change a document?".into(), vec![format!("Tool: {name}")], payload()),
         _ if key == "apps" => (format!("Change the card{}?", quoted(s("name"))), vec![format!("Tool: {name}")], payload()),
@@ -542,7 +547,6 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
             preview: gate::clip(line, 2000),
             external,
             prefix: asking::prefix_of(ctx, line),
-            once: false,
         };
         if let Err(e) = asking::ask(run, a).await {
             return Out::err(e);

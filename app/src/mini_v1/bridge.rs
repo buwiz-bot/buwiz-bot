@@ -29,6 +29,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use buwiz_agent::{Effect, OnceId};
 use nsh_engine::{HostCall, HostChannel, HostReply};
 use serde_json::{Map, Value, json};
 
@@ -39,8 +40,12 @@ use super::{
     host_api, keys,
     load::Prepared,
     perms,
-    session::{Ended, Session},
+    session::{self, Ended, Session},
     storage::AppStorage,
+};
+use crate::agent_hub::{
+    hold::{self, Answer, Card},
+    press::{self, Verdict},
 };
 
 /// What needs the person, or the app around the bridge.
@@ -66,6 +71,16 @@ pub trait HostUi: Send + Sync {
     /// next is still the agent's.
     fn agent_call(&self, running: bool) {
         let _ = running;
+    }
+    /// Shows the card of a held call over the open, which has to be on top;
+    /// `done` hears how it ended, once. Hosts with no card leave it to time
+    /// out, so nothing goes out.
+    fn hold(&self, once: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
+        let _ = (once, card, done);
+    }
+    /// The held call `once` is over: its card comes down, if it is up.
+    fn hold_over(&self, once: &OnceId) {
+        let _ = once;
     }
     /// Shows the native file dialog; `answer` gets the files chosen (none
     /// on Cancel).
@@ -175,6 +190,8 @@ pub struct Limits {
     pub in_flight: usize,
     pub per_second: usize,
     pub timeout: Duration,
+    /// How long a held call waits for the person.
+    pub hold: Duration,
 }
 
 impl Default for Limits {
@@ -186,6 +203,7 @@ impl Default for Limits {
             in_flight: 8,
             per_second: 20,
             timeout: host_api::CALL_TIMEOUT,
+            hold: buwiz_protocol::ui::HOLD,
         }
     }
 }
@@ -505,6 +523,18 @@ fn card_handlers(ctx: &Arc<OpenContext>, inline: bool, emit: Emit) -> Vec<(&'sta
     out
 }
 
+/// A call waiting for the person: what goes out if they allow it.
+struct HeldCall<'a> {
+    tool: &'a str,
+    args: &'a Value,
+    effect: Effect,
+    /// The plugin's read that puts it in plain words.
+    describe: Option<&'a str>,
+}
+
+const NOT_NOW: &str = "The person chose Not now, so nothing was sent. Don't press it again; ask them in words if you still need it.";
+const CANT_SHOW: &str = "The Bot couldn't show what this press would do, so nothing was sent.";
+
 fn reject(reply: AnyReply, e: RoxError) {
     reply.reject(e);
 }
@@ -591,10 +621,10 @@ impl OpenContext {
 
     /// A reply that a timer rejects with `timeout` unless it is answered
     /// first: `(answer, done)`; `done` stops the timer.
-    fn timed(&self, reply: AnyReply) -> (Arc<Mutex<Option<AnyReply>>>, mpsc::Sender<()>) {
+    fn timed(&self, reply: AnyReply, timeout: Duration) -> (Arc<Mutex<Option<AnyReply>>>, mpsc::Sender<()>) {
         let slot = Arc::new(Mutex::new(Some(reply)));
         let (done, rx) = mpsc::channel::<()>();
-        let (s, timeout) = (slot.clone(), self.limits.timeout);
+        let s = slot.clone();
         std::thread::spawn(move || {
             if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout)
                 && let Some(r) = s.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -612,10 +642,20 @@ impl OpenContext {
         reply: AnyReply,
         work: impl FnOnce(&OpenContext) -> Result<Value, RoxError> + Send + 'static,
     ) {
+        self.gated_for(reply, self.limits.timeout, work);
+    }
+
+    /// [`Self::gated`] with `timeout` on the call.
+    fn gated_for(
+        self: &Arc<Self>,
+        reply: AnyReply,
+        timeout: Duration,
+        work: impl FnOnce(&OpenContext) -> Result<Value, RoxError> + Send + 'static,
+    ) {
         if let Err(e) = self.admit() {
             return reject(reply, e);
         }
-        let (slot, done) = self.timed(reply);
+        let (slot, done) = self.timed(reply, timeout);
         let me = self.clone();
         self.run_gated(Box::new(move || {
             // timed out while it waited: nothing to send
@@ -631,17 +671,96 @@ impl OpenContext {
     }
 
     /// What an agent's press on `tool` signs with; for a tool that isn't
-    /// open to agents, the refusal, before anything is signed or sent.
-    fn press_of(&self, tool: &str, actor: Actor) -> Result<Option<Value>, RoxError> {
+    /// open to agents, the refusal, before anything is signed or sent. A
+    /// call that needs the person waits here for their answer. `args` is
+    /// what goes out, and `None` for what can't be held: it is refused.
+    fn press_of(&self, tool: &str, args: Option<&Value>, actor: Actor) -> Result<Option<Value>, RoxError> {
         if actor != Actor::Agent {
             return Ok(None);
         }
         let p = &self.prepared.plugin;
-        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool);
+        let press = match (press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool), args) {
+            (Ok(Verdict::Go(press)), _) => Ok(press),
+            (Ok(Verdict::Hold { effect, describe }), Some(args)) => self.held(&HeldCall { tool, args, effect, describe: describe.as_deref() }),
+            (Ok(Verdict::Hold { .. }), None) => {
+                press::note_refused(press::Held::Person);
+                Err(denied(&press::tool_refused(&p.title)))
+            }
+            (Err(e), _) => Err(e),
+        };
         if let Err(e) = &press {
             log::info!("mini v1: {}/{} an agent's press on {tool}: {}", p.id, self.prepared.key.app, e.code);
         }
         press.map(Some)
+    }
+
+    /// The card of a held call of `tool`, in the plugin's words. A call that
+    /// needs the person has to have them; a draft can show its arguments.
+    fn read_card(&self, call: &HeldCall) -> Result<Card, RoxError> {
+        let (title, needs_words) = (&self.prepared.plugin.title, hold::needs_plugin_words(call.effect));
+        let words = call.describe.map(|d| -> Result<Value, RoxError> {
+            let ask = json!({"tool": call.tool, "args": call.args});
+            let ai = press::caller().map(|_| json!({"by": "ai", "who": press::AGENT}));
+            let (envelope, sig) = self.session.sign_call(d, &ask, Actor::Agent, ai.as_ref())?;
+            tool_result(host_api::call(&*self.broker, &envelope, &sig, self.limits.timeout)?, self.limits.max_result)
+        });
+        match words {
+            Some(Ok(v)) => Card::from_plugin(title, &v).ok_or_else(|| denied(CANT_SHOW)),
+            Some(Err(e)) if needs_words => {
+                log::info!("mini v1: {} a held call's card: {}", self.prepared.plugin.id, e.code);
+                Err(denied(CANT_SHOW))
+            }
+            None if needs_words => Err(denied(CANT_SHOW)),
+            _ => Ok(Card::from_args(title, call.args)),
+        }
+    }
+
+    /// Holds `call` until the person answers: the press record to sign with
+    /// it, or why nothing goes out.
+    fn held(&self, call: &HeldCall) -> Result<Value, RoxError> {
+        let tool = call.tool;
+        let (wake, heard) = mpsc::channel();
+        let once = hold::open(tool, call.args, wake.clone())?;
+        let answer = self.ask_person(&once, call, wake, &heard);
+        self.ui.hold_over(&once);
+        hold::retire(&once);
+        let end = |outcome, held: press::Held, code, said: &str| {
+            press::note_outcome(tool, outcome);
+            press::note_refused(held);
+            RoxError::new(code, said)
+        };
+        let not_sent = |said: &str| end("expired", press::Held::Said(said.to_owned()), "permission_denied", said);
+        match answer {
+            Ok(press) => {
+                press::note_outcome(tool, "allowed");
+                Ok(press)
+            }
+            Err(Answer::NotNow) => Err(end("declined", press::Held::Declined(NOT_NOW.to_owned()), "consent_declined", NOT_NOW)),
+            Err(Answer::Closed) => Err(not_sent("The screen closed while the card was up, so nothing was sent.")),
+            Err(Answer::TimedOut) => Err(not_sent("Nobody answered the card in time, so nothing was sent.")),
+            Err(Answer::NoCard) => Err(not_sent(CANT_SHOW)),
+            Err(Answer::Changed | Answer::Allow(_)) => Err(not_sent("The screen changed while the card was up, so nothing was sent. The AI has to look again.")),
+        }
+    }
+
+    /// Shows the card and waits: what `release` gave on the person's yes,
+    /// or what else ended it.
+    fn ask_person(&self, once: &OnceId, call: &HeldCall, wake: mpsc::Sender<Answer>, heard: &mpsc::Receiver<Answer>) -> Result<Value, Answer> {
+        let shown = self.read_card(call).map_err(|_| Answer::NoCard)?;
+        hold::showing(once, shown.hash().ok_or(Answer::Changed)?);
+        self.ui.hold(once.clone(), shown, Box::new(move |answer| {
+            let _ = wake.send(answer);
+        }));
+        match heard.recv_timeout(self.limits.hold).unwrap_or(Answer::TimedOut) {
+            Answer::Allow(yes) => {
+                // the same read again: what goes out has to be what they read
+                let now = self.read_card(call).map_err(|_| Answer::NoCard)?;
+                let action = press::action_of(&self.prepared.plugin.short, call.tool, call.effect).ok_or(Answer::Changed)?;
+                self.session.check_live().map_err(|_| Answer::Closed)?;
+                hold::release(yes, once, action, call.args, now.hash(), session::now_ms()).map_err(|_| Answer::Changed)
+            }
+            other => Err(other),
+        }
     }
 
     /// `buwiz.call(tool, args)` (7.3).
@@ -664,10 +783,12 @@ impl OpenContext {
         }
         let max = self.limits.max_result;
         let who = CallActor::new(&self.ui);
-        self.gated(reply, move |me| {
+        // the agent's may wait on a card: a read of it before and after, the person, then the call
+        let timeout = if who.actor == Actor::Agent { self.limits.timeout * 3 + self.limits.hold + buwiz_protocol::ui::PRESS_ROUTE } else { self.limits.timeout };
+        self.gated_for(reply, timeout, move |me| {
             // the whole of it: a closure taking only `who.actor` would end the call here and now
             let who = who;
-            let press = me.press_of(&tool, who.actor)?;
+            let press = me.press_of(&tool, Some(&args), who.actor)?;
             // signed when it goes out: a queued call is not stale
             let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
@@ -896,7 +1017,7 @@ impl OpenContext {
         // the pasteboard is one shell command from the model, and what an
         // app copies is often what the screen keeps from it
         if self.ui.actor() == Actor::Agent {
-            crate::agent_hub::press::note_refused(crate::agent_hub::press::Held::Pasteboard);
+            press::note_refused(press::Held::Pasteboard);
             return reject(reply, denied(&format!("Only a person can copy from {}, and this press came from the AI, so nothing was copied.", self.prepared.plugin.title)));
         }
         match text(&data, "text") {
@@ -943,7 +1064,7 @@ impl OpenContext {
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
             let who = who;
-            let press = me.press_of(&tool, who.actor)?;
+            let press = me.press_of(&tool, None, who.actor)?;
             let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             let p = &me.prepared;

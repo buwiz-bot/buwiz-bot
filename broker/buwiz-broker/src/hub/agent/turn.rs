@@ -12,7 +12,7 @@ use super::user_content::user_content;
 use crate::hub::model::anthropic::{llm, parse_llm};
 use crate::hub::model::{agent_stream, set_agent_stream, sse};
 use crate::hub::store::{Thread, Turn};
-use crate::hub::tools::{activity, defs, exec_tool, server_search, set_server_search, tool_list, Run};
+use crate::hub::tools::{activity, defs, exec_tool, server_search, set_server_search, tool_list, ui, Out, Run};
 use crate::js;
 
 /// The thread's last ten turns as the model reads them (notices left out),
@@ -87,7 +87,13 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
         run.set_job("thinking", &p);
     };
     let mut reply = String::new();
-    for i in 0..8 {
+    let mut steps = Steps::default();
+    let mut answered = false;
+    let mut rounds = ROUNDS;
+    for i in 0..SCREEN_ROUNDS {
+        if i >= rounds {
+            break;
+        }
         if i == 0 {
             think();
         } else {
@@ -106,7 +112,7 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             });
             // the last round must answer: a turn still calling tools when the
             // rounds run out would otherwise end with no reply
-            if i == 7 {
+            if i == rounds - 1 {
                 params["tool_choice"] = json!({"type": "none"});
             }
             let api = ctx.model.clone().ok_or_else(|| llm(None, "no model client"))?;
@@ -164,6 +170,7 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             run.state().refused = true;
             drop_pending(run);
             reply = declined(&said, refused);
+            answered = true;
             break;
         }
         let uses: Vec<&Value> = content.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")).collect();
@@ -173,7 +180,14 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             ctx.store.write_index();
         }
         if stop != "tool_use" || uses.is_empty() {
+            // told to answer on the last round, a model can still say nothing
+            answered = i < rounds - 1 || !said.is_empty();
             reply = said;
+            break;
+        }
+        // told to answer and it called tools all the same: they don't run with nothing after them
+        if i == rounds - 1 {
+            steps.left = uses.iter().map(|u| step_line(ctx, u)).collect();
             break;
         }
         let mut results = Vec::new();
@@ -186,6 +200,8 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             if r.is_error == Some(true) {
                 println!("  ✗ {name}: {}", js::slice_utf16(&js::squeeze(&js::string_of(&r.content)), 200));
             }
+            steps.note(step_line(ctx, u), &r);
+            rounds = rounds_after(rounds, &name, &r);
             results.push(r.result_block(u.get("id").unwrap_or(&Value::Null)));
         }
         messages.push(json!({"role": "user", "content": results}));
@@ -194,7 +210,69 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
             break;
         }
     }
+    // out of rounds with the work unfinished: the person hears what got done and what didn't
+    if !answered && !steps.is_empty() {
+        reply = steps.said();
+    }
     Ok(reply)
+}
+
+/// The model calls a turn may make.
+const ROUNDS: usize = 8;
+/// The model calls of a turn that acts on a screen. Filling a form is a look and a press for
+/// each picker, whose options show only after it opens, so its steps can't go in one call.
+const SCREEN_ROUNDS: usize = 32;
+
+/// The turn's rounds after tool `name` answered `r`.
+fn rounds_after(rounds: usize, name: &str, r: &Out) -> usize {
+    if name == ui::ACT && r.is_error != Some(true) {
+        SCREEN_ROUNDS
+    } else {
+        rounds
+    }
+}
+
+/// What a turn's tools came to, for a turn that ends with no reply. Plain phrases, never a
+/// tool's input.
+#[derive(Default)]
+struct Steps {
+    done: Vec<String>,
+    failed: Vec<String>,
+    /// Called on the last round, and not run.
+    left: Vec<String>,
+}
+
+impl Steps {
+    fn is_empty(&self) -> bool {
+        self.done.is_empty() && self.failed.is_empty() && self.left.is_empty()
+    }
+
+    fn note(&mut self, line: String, r: &Out) {
+        let refused = serde_json::from_str::<Value>(&js::string_of(&r.content)).is_ok_and(|v| v.get("done") == Some(&json!(false)));
+        let list = if r.is_error == Some(true) || refused { &mut self.failed } else { &mut self.done };
+        if !list.contains(&line) {
+            list.push(line);
+        }
+    }
+
+    fn said(&self) -> String {
+        let list = |head: &str, l: &[String]| if l.is_empty() { String::new() } else { format!("\n\n{head}\n{}", l.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")) };
+        let not_done: Vec<String> = self.failed.iter().chain(&self.left).cloned().chain(std::iter::once("Anything else you asked for in this message".to_owned())).collect();
+        format!("I ran out of steps for this message and stopped here.{}{}\n\nAsk me to go on and I'll pick up from there.", list("Done:", &self.done), list("Not done:", &not_done))
+    }
+}
+
+/// A tool call in plain words: a screen's by the names on it, which the model reads anyway.
+fn step_line(ctx: &crate::hub::ctx::HubCtx, u: &Value) -> String {
+    let name = u.get("name").map(js::string_of).unwrap_or_default();
+    let input = u.get("input").cloned().unwrap_or(json!({}));
+    let node = |i: &Value| i.get("node").and_then(Value::as_str).map(|n| n.rsplit('.').next().unwrap_or(n).replace('-', " ")).unwrap_or_default();
+    match name.as_str() {
+        ui::NAME => "Looked at the screen".to_owned(),
+        ui::ACT if input.get("action").and_then(Value::as_str) == Some("click") => format!("Pressed \"{}\"", node(&input)),
+        ui::ACT => format!("Filled in \"{}\"", node(&input)),
+        _ => activity::tool_activity(ctx, &name, &input).1,
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +448,64 @@ mod tests {
         let app = again.store.touch(|s| crate::hub::store::json::out(&crate::hub::store::json::turns_json(s.thread_mut(&thread).unwrap(), &l, &gen)));
         assert!(!app.contains("\"tools\"") && !app.contains("ebirforms_penalty_estimate"), "{app}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Whether the last round's forced answer is honored or not, the turn ends in words.
+    #[tokio::test]
+    async fn turn_out_of_rounds_says_what_got_done_and_what_didnt() {
+        let tool = |id: &str| message(json!([{"type": "tool_use", "id": id, "name": "ebirforms_penalty_estimate", "input": {"tin": "123-456-789"}}]), "tool_use");
+        let answers: Vec<Value> = (0..ROUNDS).map(|i| tool(&format!("tu{i}"))).collect();
+        let (ctx, bodies, thread) = scripted_hub(answers);
+        chat(&ctx, &thread, "Do it all").await;
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), ROUNDS);
+        assert_eq!(bodies[ROUNDS - 1]["tool_choice"]["type"], "none");
+        let turns = ctx.store.read(|s| s.thread(&thread).unwrap().turns.clone());
+        let said = turns.last().unwrap().text.clone().unwrap_or_default();
+        assert!(said.starts_with("I ran out of steps"), "{said}");
+        assert!(said.contains("Done:\n- ") && said.contains("Not done:\n- "), "{said}");
+        assert!(!said.contains("123-456-789"), "{said}");
+    }
+
+    /// What the live run showed: told to answer, a model can end with nothing to say.
+    #[tokio::test]
+    async fn turn_a_last_round_with_no_words_still_says_what_got_done() {
+        let tool = |id: &str| message(json!([{"type": "tool_use", "id": id, "name": "ebirforms_penalty_estimate", "input": {}}]), "tool_use");
+        let mut answers: Vec<Value> = (0..ROUNDS - 1).map(|i| tool(&format!("tu{i}"))).collect();
+        answers.push(message(json!([{"type": "thinking", "thinking": "done"}]), "end_turn"));
+        let (ctx, _, thread) = scripted_hub(answers);
+        chat(&ctx, &thread, "Do it all").await;
+        let said = ctx.store.read(|s| s.thread(&thread).unwrap().turns.last().unwrap().text.clone()).unwrap_or_default();
+        assert!(said.starts_with("I ran out of steps"), "{said}");
+    }
+
+    #[test]
+    fn turn_an_action_that_ran_opens_the_rounds_of_a_form_and_a_refused_call_doesnt() {
+        assert_eq!(rounds_after(ROUNDS, ui::ACT, &Out::ok("{}".into())), SCREEN_ROUNDS);
+        assert_eq!(rounds_after(ROUNDS, ui::ACT, &Out::err("off".into())), ROUNDS);
+        assert_eq!(rounds_after(ROUNDS, ui::NAME, &Out::ok("{}".into())), ROUNDS);
+        assert_eq!(rounds_after(SCREEN_ROUNDS, "fx_echo", &Out::ok("{}".into())), SCREEN_ROUNDS);
+    }
+
+    #[test]
+    fn turn_a_step_on_a_screen_reads_as_what_it_did() {
+        let dir = std::env::temp_dir().join(format!("rox-turn-steps-{}", crate::hub::store::uuidv7()));
+        let ctx = crate::hub::ctx::HubCtx::new(dir, crate::hub::traits::Clock::manual());
+        let line = |u: Value| step_line(&ctx, &u);
+        assert_eq!(line(json!({"name": "ui_look"})), "Looked at the screen");
+        assert_eq!(line(json!({"name": "ui_act", "input": {"node": "button.save-draft", "action": "click"}})), "Pressed \"save draft\"");
+        assert_eq!(line(json!({"name": "ui_act", "input": {"node": "field.amount", "action": "type", "text": "1,350.00"}})), "Filled in \"amount\"");
+    }
+
+    #[test]
+    fn turn_a_refused_action_counts_as_not_done_and_a_list_has_each_line_once() {
+        let mut s = Steps::default();
+        s.note("Pressed \"post\"".into(), &Out::ok(r#"{"done":false,"refused":["no"]}"#.into()));
+        s.note("Looked at the screen".into(), &Out::ok("{}".into()));
+        s.note("Looked at the screen".into(), &Out::ok("{}".into()));
+        s.note("Filled in \"amount\"".into(), &Out::err("no".into()));
+        assert_eq!(s.done, ["Looked at the screen"]);
+        assert_eq!(s.failed, ["Pressed \"post\"", "Filled in \"amount\""]);
     }
 
     #[tokio::test]

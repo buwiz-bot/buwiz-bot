@@ -19,6 +19,7 @@ use std::{
     },
 };
 
+use crate::agent_hub::hold::{Answer, Card};
 use nsh_platform_macos::{
     AppView,
     objc2::{
@@ -28,6 +29,7 @@ use nsh_platform_macos::{
     },
     objc2_foundation::{NSArray, NSString, NSURL},
 };
+use buwiz_agent::OnceId;
 use serde_json::Value;
 
 use super::{
@@ -97,6 +99,14 @@ impl HostUi for MacUi {
 
     fn agent_call(&self, running: bool) {
         attribution::agent_call(running);
+    }
+
+    fn hold(&self, once: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
+        crate::agent_hub::show_card(self.n, once, card, done);
+    }
+
+    fn hold_over(&self, once: &OnceId) {
+        crate::agent_hub::hide_card(once.clone());
     }
 
     fn open_app(&self, target: V1Key) {

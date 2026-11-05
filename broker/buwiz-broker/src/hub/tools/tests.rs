@@ -86,7 +86,9 @@ impl Fake {
                 tool("fx_open", "Answer with a card", json!({})),
                 tool("fx_big", "A big answer", json!({})),
                 tool("fx_app_only", "For apps", json!({"_meta": {"buwiz/audience": ["app"]}})),
-                tool("fx_draft", "Saves a draft", json!({"_meta": {"buwiz/audience": ["app", "agent"]}})),
+                tool("fx_draft", "Saves a draft", json!({"_meta": {"buwiz/audience": ["app", "agent"], "buwiz/press": {"describe": "fx_search"}}})),
+                tool("fx_post", "Posts", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "describe": "fx_search"}}})),
+                tool("fx_close", "Closes", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "describe": "fx_draft"}}})),
                 tool("buwiz.provision", "reserved", json!({})),
                 tool("mcp_shadow", "a v0 name", json!({})),
                 tool("other_name", "not its short", json!({})),
@@ -648,30 +650,52 @@ async fn generate_app_refuses_when_nsh_cannot_run() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// What a test's Bot did with the broker's word.
+#[derive(Clone, Default)]
+struct Pressing {
+    sent: Arc<std::sync::atomic::AtomicUsize>,
+    held: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Pressing {
+    fn sent(&self) -> usize {
+        self.sent.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn held(&self) -> usize {
+        self.held.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// The Bot's side of `ui_act`: each action leads to a write of `tool`, and what the broker says of
-/// it comes back as the action's refusal. `sent` counts the writes that got through.
-fn bot_pressing(ctx: &Arc<HubCtx>, tool: &'static str) -> Arc<std::sync::atomic::AtomicUsize> {
-    let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (ctx, mine) = (ctx.clone(), sent.clone());
+/// it comes back as the action's refusal. A held call stays unsent: its answer is the Bot's, and
+/// here it never comes.
+fn bot_pressing(ctx: &Arc<HubCtx>, tool: &'static str) -> Pressing {
+    let seen = Pressing::default();
+    let (ctx, mine) = (ctx.clone(), seen.clone());
     let mut stream = ctx.ui.attach();
     tokio::spawn(async move {
         while let Some(chunk) = stream.recv().await {
             let text = String::from_utf8_lossy(&chunk).into_owned();
             let Some(line) = text.strip_prefix("event: ui\ndata: ") else { continue };
             let e: buwiz_agent::Envelope = serde_json::from_str(line.trim()).unwrap();
-            let refused: Vec<String> = match ctx.ui.press(FX, tool).await {
-                Ok(()) => {
-                    mine.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    Vec::new()
+            let (refused, declined): (Vec<String>, Vec<String>) = match ctx.ui.press(FX, tool).await {
+                Ok(super::ui::Word::Go) => {
+                    mine.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (Vec::new(), Vec::new())
                 }
-                Err(said) => vec![said],
+                Ok(super::ui::Word::Hold) => {
+                    mine.held.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (Vec::new(), vec!["held".to_owned()])
+                }
+                Err(said) => (vec![said], Vec::new()),
             };
             let mut r = buwiz_agent::Response::ok(e.id.clone(), e.target.clone());
-            r.result = Some(json!({"apps": [], "refused": refused}));
+            r.result = Some(json!({"apps": [], "refused": refused, "declined": declined}));
             ctx.ui.reply(r);
         }
     });
-    sent
+    seen
 }
 
 fn press_bed(label: &str, plugin: &str, wait: std::time::Duration) -> (Arc<HubCtx>, Run) {
@@ -716,53 +740,51 @@ fn cards(ctx: &HubCtx, chat: &str) -> Vec<Value> {
 #[tokio::test]
 async fn a_press_runs_where_the_plugins_switch_is_on() {
     let (ctx, run) = press_bed("press-on", "on", std::time::Duration::from_millis(50));
-    let sent = bot_pressing(&ctx, "fx_draft");
+    let bot = bot_pressing(&ctx, "fx_draft");
     assert_eq!(pressed(&run).await["done"], true);
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!((bot.sent(), bot.held()), (1, 0));
     assert!(cards(&ctx, &run.thread_id()).iter().all(|n| n["kind"] != "tool_ask"), "the look it needed doesn't make it ask");
 }
 
 #[tokio::test]
 async fn a_look_alone_doesnt_make_a_press_ask_but_a_page_read_does() {
     let (ctx, run) = press_bed("press-outside", "on", std::time::Duration::from_millis(50));
-    let sent = bot_pressing(&ctx, "fx_draft");
+    let bot = bot_pressing(&ctx, "fx_draft");
     super::controls::note_external(&run, "ui_look");
     assert_eq!(pressed(&run).await["done"], true);
     super::controls::note_external(&run, "query_source");
-    let out = exec_tool(&run, &json!({"name": "ui_act", "input": press_input()})).await;
-    assert_eq!(out.is_error, Some(true), "what it read may be asking for this");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(pressed(&run).await["done"], false, "what it read may be asking for this");
+    assert_eq!((bot.sent(), bot.held()), (1, 1));
 }
 
 #[tokio::test]
 async fn off_for_the_plugin_refuses_a_press_as_it_does_the_direct_call() {
     let (ctx, run) = press_bed("press-off", "off", std::time::Duration::from_millis(50));
-    let sent = bot_pressing(&ctx, "fx_draft");
+    let bot = bot_pressing(&ctx, "fx_draft");
     let got = pressed(&run).await;
     assert_eq!(got["done"], false);
     assert_eq!(got["refused"][0], "Fixture is off here, so the AI's press was refused and nothing was sent. Only a person can turn it on.");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!((bot.sent(), bot.held()), (0, 0));
     assert_eq!(exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await.is_error, Some(true), "the direct call too");
 }
 
+/// The chat is under the screen: what a press leads to waits on the Bot's card, not one here.
 #[tokio::test]
-async fn ask_for_the_plugin_asks_before_a_press_and_no_answer_is_no() {
+async fn ask_for_the_plugin_holds_a_press_and_posts_no_chat_card() {
     let (ctx, run) = press_bed("press-ask", "ask", std::time::Duration::from_millis(50));
-    let sent = bot_pressing(&ctx, "fx_draft");
-    let got = pressed(&run).await;
-    assert_eq!(got["refused"][0], "The AI's press in Fixture wasn't allowed, so nothing was sent.");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
-    let card = cards(&ctx, &run.thread_id()).into_iter().find(|n| n["kind"] == "tool_ask").expect("a card");
-    assert_eq!(card["tool"], "fx_draft");
+    let bot = bot_pressing(&ctx, "fx_draft");
+    assert_eq!(pressed(&run).await["done"], false);
+    assert_eq!((bot.sent(), bot.held()), (0, 1));
+    assert!(cards(&ctx, &run.thread_id()).iter().all(|n| n["kind"] != "tool_ask"));
 }
 
 #[tokio::test]
 async fn a_press_on_a_tool_not_open_to_agents_stops_at_the_live_list() {
     let (ctx, run) = press_bed("press-stale", "on", std::time::Duration::from_millis(50));
     // a Bot with a stale list asks about a tool that no longer says agent
-    let sent = bot_pressing(&ctx, "fx_app_only");
+    let bot = bot_pressing(&ctx, "fx_app_only");
     assert_eq!(pressed(&run).await["refused"][0], "Only a person can do this in Fixture, so the AI's press was refused and nothing was sent.");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!((bot.sent(), bot.held()), (0, 0));
 }
 
 /// A Bot that answers each ask card as told, as a person does.
@@ -781,50 +803,88 @@ fn answering(ctx: &Arc<HubCtx>, chat: &str, answer: &'static str) {
 }
 
 #[tokio::test]
-async fn one_allow_on_a_press_covers_that_call_and_no_other() {
-    let (ctx, run) = press_bed("press-once", "ask", std::time::Duration::from_millis(400));
-    let sent = bot_pressing(&ctx, "fx_draft");
-    let chat = run.thread_id();
-    answering(&ctx, &chat, "once");
-    assert_eq!(pressed(&run).await["done"], true);
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let asked = |c: &[Value]| c.iter().filter(|n| n["kind"] == "tool_ask").count();
-    assert_eq!(asked(&cards(&ctx, &chat)), 1);
-    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")), "no standing grant");
-    // the next write asks again
-    assert_eq!(pressed(&run).await["done"], true);
-    assert_eq!(asked(&cards(&ctx, &chat)), 2);
-    // and so does the model's direct call
-    exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await;
-    assert_eq!(asked(&cards(&ctx, &chat)), 3);
-}
-
-#[tokio::test]
-async fn a_press_card_refuses_allow_in_this_chat_and_grants_nothing() {
-    let (ctx, run) = press_bed("press-chat", "ask", std::time::Duration::from_millis(120));
-    let sent = bot_pressing(&ctx, "fx_draft");
-    let chat = run.thread_id();
-    answering(&ctx, &chat, "chat");
-    assert_eq!(pressed(&run).await["done"], false, "no answer it could take came");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
-    let card = cards(&ctx, &chat).into_iter().find(|n| n["kind"] == "tool_ask").unwrap();
-    assert_eq!(card["once"], true);
-}
-
-#[tokio::test]
 async fn a_grant_from_a_direct_call_doesnt_cover_a_press() {
     let (ctx, run) = press_bed("press-grant", "ask", std::time::Duration::from_millis(400));
-    let sent = bot_pressing(&ctx, "fx_draft");
+    let bot = bot_pressing(&ctx, "fx_draft");
     let chat = run.thread_id();
     answering(&ctx, &chat, "chat");
     assert_ne!(exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await.is_error, Some(true), "the direct call takes it");
     assert!(crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
     // as a turn of its own would be: what that call read doesn't make ui_act ask
     run.state().beyond_screens = false;
+    assert_eq!(pressed(&run).await["done"], false);
+    assert_eq!((bot.sent(), bot.held()), (0, 1), "it waits for its own answer");
+}
+
+/// The broker never lets a person-only call go: the yes is the Bot's alone.
+#[tokio::test]
+async fn a_tool_that_opted_in_is_only_ever_held() {
+    let (ctx, run) = press_bed("press-held", "on", std::time::Duration::from_millis(50));
+    let bot = bot_pressing(&ctx, "fx_post");
+    assert_eq!(pressed(&run).await["done"], false);
+    assert_eq!((bot.sent(), bot.held()), (0, 1));
+    assert!(cards(&ctx, &run.thread_id()).iter().all(|n| n["kind"] != "tool_ask"), "the card is the Bot's");
+}
+
+#[tokio::test]
+async fn off_for_the_plugin_refuses_a_person_only_press_with_no_card() {
+    let (ctx, run) = press_bed("press-held-off", "off", std::time::Duration::from_millis(50));
+    let bot = bot_pressing(&ctx, "fx_post");
+    assert!(js_text(&exec_tool(&run, &json!({"name": "ui_act", "input": press_input()})).await).contains("Fixture is off here"));
+    assert_eq!((bot.sent(), bot.held()), (0, 0));
+}
+
+#[tokio::test]
+async fn nobody_there_refuses_a_person_only_press() {
+    let (ctx, mut run) = press_bed("press-held-nobody", "on", std::time::Duration::from_millis(50));
+    run.turn.acting_bot = Some("another".to_owned());
+    let bot = bot_pressing(&ctx, "fx_post");
     let got = pressed(&run).await;
-    assert_eq!(got["done"], false, "{got}");
-    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(got["refused"][0], crate::hub::policy::ask::NOBODY);
+    assert_eq!((bot.sent(), bot.held()), (0, 0));
+}
+
+/// What a press route answers while a held tool's action runs.
+async fn word_in_flight(ctx: &Arc<HubCtx>, run: &Run, tool: &str, input: Value) -> Value {
+    use super::ui::press_word;
+    let mut stream = ctx.ui.attach();
+    let (word_of, mine, name) = (Arc::new(std::sync::Mutex::new(None)), ctx.clone(), tool.to_owned());
+    let word = word_of.clone();
+    tokio::spawn(async move {
+        while let Some(chunk) = stream.recv().await {
+            let text = String::from_utf8_lossy(&chunk).into_owned();
+            let Some(line) = text.strip_prefix("event: ui\ndata: ") else { continue };
+            let e: buwiz_agent::Envelope = serde_json::from_str(line.trim()).unwrap();
+            *word.lock().unwrap() = press_word(&mine, FX, &name).await;
+            let mut r = buwiz_agent::Response::ok(e.id.clone(), e.target.clone());
+            r.result = Some(json!({"apps": []}));
+            mine.ui.reply(r);
+        }
+    });
+    exec_tool(run, &json!({"name": "ui_act", "input": input})).await;
+    let got = word_of.lock().unwrap().take();
+    got.unwrap()
+}
+
+#[tokio::test]
+async fn the_press_route_says_hold_and_never_allow_for_a_person_only_tool() {
+    let (ctx, run) = press_bed("press-word-held", "on", std::time::Duration::from_millis(50));
+    let word = word_in_flight(&ctx, &run, "fx_post", press_input()).await;
+    assert_eq!(word, json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_search"}));
+}
+
+#[tokio::test]
+async fn a_card_is_read_only_with_a_read() {
+    let (ctx, run) = press_bed("press-word-write", "on", std::time::Duration::from_millis(50));
+    let word = word_in_flight(&ctx, &run, "fx_close", press_input()).await;
+    assert_eq!(word, json!({"allow": false, "hold": true, "effect": "write"}), "fx_draft writes, so it can't describe");
+}
+
+#[tokio::test]
+async fn at_ask_a_draft_is_held_as_a_draft() {
+    let (ctx, run) = press_bed("press-word-draft", "ask", std::time::Duration::from_millis(50));
+    let word = word_in_flight(&ctx, &run, "fx_draft", press_input()).await;
+    assert_eq!(word, json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_search"}));
 }
 
 #[tokio::test]
@@ -838,8 +898,32 @@ async fn the_press_route_judges_on_the_live_list() {
     }
     let word = press_word(&ctx, FX, "fx_draft").await.unwrap();
     assert_eq!((word["allow"].clone(), word["effect"].clone()), (json!(false), json!("draft")), "no action in flight");
+    let word = press_word(&ctx, FX, "fx_post").await.unwrap();
+    assert_eq!((word["allow"].clone(), word.get("hold").cloned()), (json!(false), None), "nothing in flight holds nothing");
     assert!(press_word(&ctx, "not a plugin", "fx_draft").await.is_none());
     let _ = run;
+}
+
+#[tokio::test]
+async fn a_bots_turn_says_which_bot_on_the_action_and_a_plain_chat_doesnt() {
+    let (ctx, run) = press_bed("act-bot", "on", std::time::Duration::from_millis(50));
+    let mut stream = ctx.ui.attach();
+    let (bots, mine, c) = (Arc::new(std::sync::Mutex::new(Vec::new())), Arc::new(std::sync::Mutex::new(())), ctx.clone());
+    let seen = bots.clone();
+    tokio::spawn(async move {
+        let _keep = mine;
+        while let Some(chunk) = stream.recv().await {
+            let text = String::from_utf8_lossy(&chunk).into_owned();
+            let Some(line) = text.strip_prefix("event: ui\ndata: ") else { continue };
+            let e: buwiz_agent::Envelope = serde_json::from_str(line.trim()).unwrap();
+            seen.lock().unwrap().push(e.bot.clone());
+            let mut r = buwiz_agent::Response::ok(e.id.clone(), e.target.clone());
+            r.result = Some(json!({"apps": []}));
+            c.ui.reply(r);
+        }
+    });
+    exec_tool(&run, &json!({"name": "ui_act", "input": press_input()})).await;
+    assert_eq!(bots.lock().unwrap().as_slice(), [None]);
 }
 
 #[tokio::test]
