@@ -21,6 +21,7 @@ pub mod drive;
 pub mod mcp;
 pub mod miniapps;
 pub mod office;
+pub mod ui;
 pub mod v1;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -204,6 +205,10 @@ async fn offered(run: &Run) -> Vec<Value> {
     }
     // the bot controls are Rust's own too, and always on
     out.extend(controls::defs());
+    // the screen is the person's: no routine looks at it (off until a person turns it on)
+    if run.turn.routine.is_none() {
+        out.push(ui::def());
+    }
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());
     out.extend(agent.iter().cloned());
@@ -255,6 +260,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "react" => return builtin::react(run, input),
         "app_tools_load" => return Ok(mcp::app_tools_load(run, input).await),
         "fetch_url" => return builtin::fetch_url(input).await,
+        ui::NAME if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::look(ctx).await),
         "shell_run" => return Ok(controls::shell_run(run, input).await),
         _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,
         // F3: switching a skill, a user's server or a mini app on proposes it

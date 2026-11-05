@@ -31,6 +31,8 @@ libc = "0.2"
 regex-lite = "0.1"
 buwiz-mcp = { path = "../buwiz-mcp" }
 buwiz-protocol = { path = "../buwiz-protocol" }
+# The Agent Hub's messages (`hub/tools/ui.rs`), shared with the Bot.
+buwiz-agent = { git = "https://github.com/buwiz-app/buwiz-agent", rev = "638d2b886e0c88cb20cce02c5f96c1edd43c8357" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

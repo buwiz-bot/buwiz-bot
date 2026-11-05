@@ -30,6 +30,9 @@
 //! this broker from a stranger on its port before a saved login leaves it
 //! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
 //!
+//! The Agent Hub (`hub::tools::ui`): `GET /v1/host/ui/stream` carries a look's request to the
+//! Bot, `POST /v1/host/ui/reply` brings its answer back.
+//!
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
 //! answer}` (yes or no on a pending `tools_change` card), `POST /v1/host/tools/ask {chat, id,
@@ -245,6 +248,12 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     }
     if req.method == Method::GET && path == "/v1/host/events" {
         return events(&ctx);
+    }
+    if req.method == Method::GET && path == "/v1/host/ui/stream" {
+        return ui_stream(&ctx);
+    }
+    if req.method == Method::POST && path == "/v1/host/ui/reply" {
+        return ui_reply(&ctx, &req.body);
     }
     if req.method == Method::GET && path == "/v1/host/tools" {
         let query = req.url.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -735,6 +744,26 @@ fn events(ctx: &HubCtx) -> HubResponse {
     h.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     h.insert("cache-control", HeaderValue::from_static("no-cache"));
     res
+}
+
+/// `GET /v1/host/ui/stream`: the Hub's requests to the Bot as SSE, for one Bot at a time.
+fn ui_stream(ctx: &HubCtx) -> HubResponse {
+    let mut res = Response::new(Channel(ctx.ui.attach()).boxed());
+    let h = res.headers_mut();
+    h.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+    h.insert("cache-control", HeaderValue::from_static("no-cache"));
+    res
+}
+
+/// `POST /v1/host/ui/reply`: the Bot's answer, a `buwiz-agent` `Response`.
+fn ui_reply(ctx: &HubCtx, body: &[u8]) -> HubResponse {
+    let parsed = read_body(body).and_then(|b| serde_json::from_value(b).ok());
+    let Some(r) = parsed else { return refusal(StatusCode::BAD_REQUEST, "invalid_args", "the body must be a UI response") };
+    if ctx.ui.reply(r) {
+        types::json(StatusCode::OK, &json!({"ok": true}))
+    } else {
+        refusal(StatusCode::NOT_FOUND, "not_found", "no request is waiting for this answer")
+    }
 }
 
 /// A response body fed from a channel (the event stream).

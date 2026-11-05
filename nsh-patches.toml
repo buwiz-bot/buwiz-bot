@@ -222,3 +222,10 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "gpui-agent-server splits the listener off the in-process tree and actions; provenance tells the app whose hands input came from. Agent Hub S2; on top of buwiz, not cut from main yet"
+
+[[topic]]
+branch = "feat/agent-hub-s1"
+kind = "feature"
+pr = 0
+status = "local"
+note = "AppView::ui_tree: the gpui-agent tree for a caller in the process, with no listener. Agent Hub S1; on top of feat/agent-hub, not cut from main yet"

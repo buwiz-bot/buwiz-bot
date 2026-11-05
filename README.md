@@ -120,6 +120,17 @@ Set `GPUI_AGENT_ACTOR=agent` to drive it as the AI: writes then reach the mini
 app as `origin: agent` until a real press in that surface, and a tool kept for
 apps refuses them. Reads still work.
 
+### The model's view of a screen (Agent Hub)
+
+`ui_look` lets the broker's model see open mini app screens. It is off for every
+Bot: turn on **Mini app screens** in that Bot's `/tools`. The Bot keeps a connection
+to the broker (`/v1/host/ui/stream`, `/v1/host/ui/reply`) and opens no port.
+
+The model gets each screen's name, which is on top, button labels and field names.
+Page text, field values, and the words on a row of data stay in the Bot
+(`app/src/agent_hub/filter.rs`). For fake data in a test Bot only,
+`BUWIZ_HUB_FULL_TEXT=1` adds page text. A release build doesn't have this setting.
+
 ## Dev app & links
 
 `app/bundle-dev.sh` creates `~/Applications/Buwiz Bot.app` and registers it

@@ -10,6 +10,7 @@ use rusqlite::Connection;
 
 use super::jobs::Jobs;
 use super::store::Store;
+use super::tools::ui::UiLink;
 use super::traits::{Clock, LocalTools, ModelApi, Nsh, ToolRegistry, TurnRunner};
 use crate::helper::mcp_servers::McpHost;
 use crate::helper::plugins::Host;
@@ -34,6 +35,8 @@ pub struct HubCtx {
     pub model: Option<Arc<dyn ModelApi>>,
     pub nsh: Option<Arc<dyn Nsh>>,
     pub local: Option<Arc<dyn LocalTools>>,
+    /// the Bot's connection for looking at its screens (`tools/ui.rs`)
+    pub ui: UiLink,
     /// seams one track fills for another, by type (see [`Ext`])
     pub ext: Ext,
 }
@@ -56,6 +59,7 @@ impl HubCtx {
             model: None,
             nsh: None,
             local: None,
+            ui: UiLink::default(),
             ext: Ext::default(),
         }
     }

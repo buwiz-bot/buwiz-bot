@@ -92,10 +92,16 @@ impl Pos {
     }
 }
 
-/// A switch's position with no row: a Bot's are on; the Chats profile has the web and
-/// office documents on and everything else at Ask.
+/// The switches that start off for every profile: looking at the screen is turned on per
+/// Bot. A person's data is on it.
+pub const OFF_BY_DEFAULT: [&str; 1] = ["screens"];
+
+/// A switch's position with no row: [`OFF_BY_DEFAULT`]'s are off; a Bot's others are on;
+/// the Chats profile has the web and office documents on and everything else at Ask.
 pub fn default_pos(owner: &str, key: &str) -> Pos {
-    if owner != CHATS || matches!(key, "web" | "office") {
+    if OFF_BY_DEFAULT.contains(&key) {
+        Pos::Off
+    } else if owner != CHATS || matches!(key, "web" | "office") {
         Pos::On
     } else {
         Pos::Ask
@@ -126,7 +132,7 @@ pub fn tool_state(ctx: &HubCtx, owner: &str, key: &str) -> Pos {
         // the unit tests of what came before Ask run their plain chats with every switch on;
         // the ones of Ask ask for the real defaults
         #[cfg(test)]
-        None if owner == CHATS && ctx.ext.get::<RealChatsDefaults>().is_none() => Pos::On,
+        None if owner == CHATS && !OFF_BY_DEFAULT.contains(&key) && ctx.ext.get::<RealChatsDefaults>().is_none() => Pos::On,
         None => default_pos(owner, key),
     }
 }
@@ -150,9 +156,12 @@ pub fn tool_rows(ctx: &HubCtx, owner: &str) -> Vec<(String, Pos, String, i64)> {
     .unwrap_or_default()
 }
 
-/// The keys switched off for `owner` (no default is off).
+/// The keys switched off for `owner`, by a row or by default.
 pub fn off_keys(ctx: &HubCtx, owner: &str) -> HashSet<String> {
-    tool_rows(ctx, owner).into_iter().filter(|r| r.1 == Pos::Off).map(|r| r.0).collect()
+    let rows = tool_rows(ctx, owner);
+    let default = OFF_BY_DEFAULT.iter().filter(|k| !rows.iter().any(|r| r.0 == **k)).map(|k| (*k).to_owned());
+    let off: Vec<String> = default.collect();
+    rows.into_iter().filter(|r| r.1 == Pos::Off).map(|r| r.0).chain(off).collect()
 }
 
 /// The Mac's shell mode.
