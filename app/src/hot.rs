@@ -738,6 +738,30 @@ fn routine_pill(name: String) -> impl IntoElement {
         )
 }
 
+/// A left click at (`x`, `y`) from the top left of this app's window, sent to that window alone.
+#[cfg(target_os = "macos")]
+#[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
+fn mouse_click(x: f64, y: f64) {
+    use nsh_platform_macos::objc2::MainThreadMarker;
+    use nsh_platform_macos::objc2_foundation::NSPoint;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(window) = app.keyWindow().or_else(|| app.windows().iter().find(|w| w.isVisible())) else { return };
+    let Some(content) = window.contentView() else { return };
+    let at = NSPoint::new(x, content.frame().size.height - y);
+    // to the view under the point: a window in the background would take a click as first mouse
+    let Some(hit) = content.hitTest(at) else { return };
+    for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(kind, at, NSEventModifierFlags::empty(), 0.0, window.windowNumber(), None, 0, 1, 1.0);
+        match event {
+            Some(e) if kind == NSEventType::LeftMouseDown => hit.mouseDown(&e),
+            Some(e) => hit.mouseUp(&e),
+            None => {}
+        }
+    }
+}
+
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
 #[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
@@ -782,6 +806,15 @@ fn agent_menu(line: &str) {
     // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
     if let Some(path) = line.strip_prefix("printpdf ") {
         crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");
+        return;
+    }
+    // `mouse <x> <y>`: a left click at that point of this window, as real mouse events through
+    // AppKit: the way into a web view, which the tree can't reach, on a window parked off screen
+    #[cfg(target_os = "macos")]
+    if let Some((x, y)) = line.strip_prefix("mouse ").and_then(|r| r.trim().split_once(' ')) {
+        if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
+            crate::mini_v1::native::on_main(move || mouse_click(x, y));
+        }
         return;
     }
     // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)
