@@ -89,33 +89,39 @@ pub struct AccountsConfig {
 }
 
 impl Default for AccountsConfig {
+    #[cfg(not(feature = "test-google"))]
     fn default() -> Self {
         Self { port: 8787, google_authorize: GOOGLE_AUTHORIZE.into(), google_token: GOOGLE_TOKEN.into(), open: Arc::new(oauth::open_url) }
+    }
+
+    /// A test build's sign-in goes nowhere until [`AccountsConfig::from_env`]'s
+    /// answer is set: no path to the real Google, no browser.
+    #[cfg(feature = "test-google")]
+    fn default() -> Self {
+        const NOWHERE: &str = "http://127.0.0.1:0/";
+        Self { port: 8787, google_authorize: NOWHERE.into(), google_token: NOWHERE.into(), open: Arc::new(|_| {}) }
     }
 }
 
 impl AccountsConfig {
-    /// The config for a front door on `port`. `stub` is [`TEST_GOOGLE_ENV`]'s value:
-    /// a test build signs in there, and refuses to start on a value it can't use
-    /// rather than fall back to Google and open the owner's browser. A release
-    /// has no such variable, so `stub` is `None` and changes nothing.
-    pub fn for_port(port: u16, stub: Option<&str>) -> Result<Self, String> {
-        match stub {
-            #[cfg(feature = "test-google")]
-            Some(base) => stub_google(port, base).ok_or_else(|| format!("{TEST_GOOGLE_ENV} must be http://127.0.0.1:<port>; not starting, so a test Bot can't reach the real Google")),
-            #[cfg(not(feature = "test-google"))]
-            Some(_) => Ok(Self { port, ..Self::default() }),
-            None => Ok(Self { port, ..Self::default() }),
-        }
+    /// A release: Google, and the system browser. Nothing can change that.
+    #[cfg(not(feature = "test-google"))]
+    pub fn from_env(port: u16) -> Result<Self, String> {
+        Ok(Self { port, ..Self::default() })
     }
 
-    /// [`Self::for_port`] with what this build reads from the environment.
+    /// A test build signs in at the stub or not at all: it never reaches the
+    /// real Google, which would open the owner's browser.
+    #[cfg(feature = "test-google")]
     pub fn from_env(port: u16) -> Result<Self, String> {
-        #[cfg(feature = "test-google")]
-        let stub = std::env::var(TEST_GOOGLE_ENV).ok();
-        #[cfg(not(feature = "test-google"))]
-        let stub: Option<String> = None;
-        Self::for_port(port, stub.as_deref())
+        Self::for_test(port, std::env::var_os(TEST_GOOGLE_ENV).as_deref())
+    }
+
+    /// [`Self::from_env`] with the variable's value in hand. A value that isn't
+    /// text, or isn't the loopback stub, is refused like a missing one.
+    #[cfg(feature = "test-google")]
+    fn for_test(port: u16, value: Option<&std::ffi::OsStr>) -> Result<Self, String> {
+        value.and_then(std::ffi::OsStr::to_str).and_then(|base| stub_google(port, base)).ok_or_else(|| format!("{TEST_GOOGLE_ENV} must be http://127.0.0.1:<port>; not starting, so a test Bot can't reach the real Google"))
     }
 }
 
@@ -123,13 +129,21 @@ impl AccountsConfig {
 #[cfg(feature = "test-google")]
 pub const TEST_GOOGLE_ENV: &str = "BUWIZ_TEST_GOOGLE";
 
+/// `http://127.0.0.1:<port>` and the rest, split: `None` for anything else.
+#[cfg(feature = "test-google")]
+fn loopback(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("http://")?;
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let port = host.strip_prefix("127.0.0.1:")?;
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then_some((host, path))
+}
+
 /// Sign-in against the stub at `base`, which must be on loopback: consent is
 /// a GET of its authorize page, so no browser opens on the owner's desktop.
 #[cfg(feature = "test-google")]
 fn stub_google(port: u16, base: &str) -> Option<AccountsConfig> {
     let base = base.trim_end_matches('/');
-    let port_only = base.strip_prefix("http://127.0.0.1:").is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
-    port_only.then(|| AccountsConfig {
+    loopback(base).filter(|(_, path)| path.is_empty()).map(|_| AccountsConfig {
         port,
         google_authorize: format!("{base}/o/oauth2/v2/auth"),
         google_token: format!("{base}/token"),
@@ -145,14 +159,17 @@ fn stub_google(port: u16, base: &str) -> Option<AccountsConfig> {
 }
 
 /// GETs a loopback `url` and the redirects it answers, as the browser would.
+/// Every hop must stay on loopback, and a silent server can't hold it for long.
 #[cfg(feature = "test-google")]
 fn follow(url: &str) -> Result<(), String> {
     use std::io::{Read as _, Write as _};
+    const WAIT: Duration = Duration::from_secs(10);
     let mut url = url.to_owned();
     for _ in 0..4 {
-        let rest = url.strip_prefix("http://").ok_or("not a loopback http URL")?;
-        let (host, path) = rest.split_once('/').map_or((rest, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
+        let (host, path) = loopback(&url).ok_or("a hop off loopback was refused")?;
+        let path = if path.is_empty() { "/" } else { path };
         let mut stream = std::net::TcpStream::connect(host).map_err(|e| e.to_string())?;
+        stream.set_read_timeout(Some(WAIT)).map_err(|e| e.to_string())?;
         stream.write_all(format!("GET {path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n").as_bytes()).map_err(|e| e.to_string())?;
         let mut answer = Vec::new();
         stream.read_to_end(&mut answer).map_err(|e| e.to_string())?;
@@ -275,6 +292,12 @@ fn subject_of(id_token: Option<&Value>) -> String {
     let payload = id_token.and_then(Value::as_str).and_then(|t| t.split('.').nth(1)).and_then(|p| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p.trim_end_matches('=')).ok());
     let claims: Value = payload.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     claims.get("email").or(claims.get("sub")).and_then(Value::as_str).map(|s| js::slice_utf16(s, 200)).unwrap_or_default()
+}
+
+/// Whether a sign-in lacks a scope its package now declares. A sign-in with no
+/// scopes on record says nothing either way, so it isn't flagged.
+fn lacks_scopes(declared: &[String], granted: &[String]) -> bool {
+    !granted.is_empty() && declared.iter().any(|d| !granted.contains(d))
 }
 
 fn scopes_of(s: Option<&Value>) -> Option<Vec<String>> {
@@ -411,7 +434,7 @@ impl Host {
     async fn promote_next(&self, plugin: &str, account: &str) -> Option<String> {
         while let Some(n) = self.active_label(plugin, account) {
             self.set_active(plugin, account, &n);
-            let Some(r) = self.account_row(plugin, account, &n) else { return None };
+            let r = self.account_row(plugin, account, &n)?;
             if self.push_label(&r).await {
                 self.account_changed(plugin, account, &n, "connected");
                 return Some(n);
@@ -536,6 +559,9 @@ impl Host {
             for r in mine {
                 let mut o = row(&r.label, Some(r.subject.as_str()).filter(|s| !s.is_empty()), &r.state);
                 o["active"] = json!(active.as_deref() == Some(r.label.as_str()));
+                if lacks_scopes(&a.scopes, &r.scopes) {
+                    o["needs_access"] = json!(true);
+                }
                 out.push(o);
             }
         }
@@ -1164,27 +1190,43 @@ mod tests {
         assert_eq!(flow_id("app.buwiz.x", "google", "default"), "account:app.buwiz.x/google/default");
     }
 
+    #[test]
+    fn a_sign_in_lacks_only_what_was_declared_and_not_granted() {
+        let (read, modify) = ("gmail.readonly".to_owned(), "gmail.modify".to_owned());
+        assert!(lacks_scopes(std::slice::from_ref(&modify), std::slice::from_ref(&read)));
+        assert!(!lacks_scopes(std::slice::from_ref(&read), &[read.clone(), modify.clone()]));
+        assert!(!lacks_scopes(&[modify], &[]), "none on record says nothing");
+        assert!(!lacks_scopes(&[], &[read]));
+    }
+
     /// A release build has no way to send a sign-in anywhere but Google.
     #[cfg(not(feature = "test-google"))]
     #[test]
-    fn a_release_signs_in_at_google_whatever_it_is_given() {
-        for stub in [None, Some("http://127.0.0.1:9"), Some("nonsense")] {
-            let cfg = AccountsConfig::for_port(8810, stub).unwrap();
-            assert_eq!((cfg.port, cfg.google_authorize.as_str(), cfg.google_token.as_str()), (8810, GOOGLE_AUTHORIZE, GOOGLE_TOKEN));
-        }
+    fn a_release_signs_in_at_google() {
+        let cfg = AccountsConfig::from_env(8810).unwrap();
+        assert_eq!((cfg.port, cfg.google_authorize.as_str(), cfg.google_token.as_str()), (8810, GOOGLE_AUTHORIZE, GOOGLE_TOKEN));
     }
 
     #[cfg(feature = "test-google")]
     #[test]
-    fn a_test_build_signs_in_at_the_stub_and_refuses_anything_else() {
-        let cfg = AccountsConfig::for_port(8810, Some("http://127.0.0.1:9/")).unwrap();
+    fn a_test_build_defaults_to_nowhere() {
+        let cfg = AccountsConfig::default();
+        assert!(![&cfg.google_authorize, &cfg.google_token].iter().any(|url| url.contains("google")));
+    }
+
+    #[cfg(feature = "test-google")]
+    #[test]
+    fn a_test_build_signs_in_at_the_stub_or_not_at_all() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let value = |s: &str| std::ffi::OsStr::new(s).to_owned();
+        let cfg = AccountsConfig::for_test(8810, Some(&value("http://127.0.0.1:9/"))).unwrap();
         assert_eq!((cfg.port, cfg.google_authorize.as_str(), cfg.google_token.as_str()), (8810, "http://127.0.0.1:9/o/oauth2/v2/auth", "http://127.0.0.1:9/token"));
-        // never a quiet fall back to the real Google
-        for base in ["https://accounts.example.com", "http://127.0.0.1.example.com", "http://127.0.0.1:9@attacker.example", "http://127.0.0.1:", ""] {
-            let refused = AccountsConfig::for_port(8810, Some(base)).err();
+        for base in ["https://accounts.example.com", "http://127.0.0.1.example.com", "http://127.0.0.1:9@attacker.example", "http://127.0.0.1:", "http://127.0.0.1:9/x", ""] {
+            let refused = AccountsConfig::for_test(8810, Some(&value(base))).err();
             assert!(refused.is_some_and(|e| e.contains(TEST_GOOGLE_ENV)), "{base}");
         }
-        assert_eq!(AccountsConfig::for_port(8810, None).unwrap().google_authorize, GOOGLE_AUTHORIZE, "no variable: as a release");
+        assert!(AccountsConfig::for_test(8810, None).is_err(), "no value: never the real Google");
+        assert!(AccountsConfig::for_test(8810, Some(std::ffi::OsStr::from_bytes(b"http://127.0.0.1:9\xff"))).is_err(), "not text");
     }
 
     /// The stub's consent: the authorize page redirects to the callback, and
@@ -1212,6 +1254,8 @@ mod tests {
         assert_eq!(called.recv().unwrap(), "GET /oauth/callback?code=c HTTP/1.1");
         let (refusal, _refusal_heard) = server("HTTP/1.1 500 No\r\ncontent-length: 0\r\n\r\n".to_owned());
         assert_eq!(follow(&format!("http://127.0.0.1:{refusal}/auth")), Err("HTTP/1.1 500 No".to_owned()), "a failure is said, not lost");
+        let (away, _away_heard) = server("HTTP/1.1 302 Found\r\nlocation: https://accounts.google.com/x\r\ncontent-length: 0\r\n\r\n".to_owned());
+        assert_eq!(follow(&format!("http://127.0.0.1:{away}/auth")), Err("a hop off loopback was refused".to_owned()));
     }
 
     #[test]

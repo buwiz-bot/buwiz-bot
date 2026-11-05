@@ -582,7 +582,7 @@ mod tests {
         let u = call(&run, "app_uninstall", json!({"id": FX})).await;
         assert_eq!(u, Out::ok("a card in this chat asks the user to confirm uninstalling Fixture; you cannot uninstall it yourself".into()));
         let (text, n) = last_notice(&ctx, &chat);
-        assert_eq!(text, "Uninstall Fixture? It removes its pins, attachments and data.");
+        assert_eq!(text, "Uninstall Fixture? It removes its pins, attachments, data and unsaved files.");
         assert_eq!(n, json!({"kind": "app_uninstall", "id": FX, "title": "Fixture", "version": "1.0.0", "state": "pending"}));
         assert!(host.row(FX).is_some(), "still installed");
         assert_eq!(settle(&ctx, &json!({"chat": chat, "kind": "app_uninstall", "id": FX, "state": "declined"})).unwrap_err().code, "invalid_args");

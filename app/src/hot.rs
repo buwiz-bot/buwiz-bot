@@ -779,6 +779,12 @@ fn agent_menu(line: &str) {
         store().mini_dev_type.set(format!("{n}|{rest}"));
         return;
     }
+    // `open <link>`: a link as the person's own click on it opens it, with no
+    // gesture, so a test never has to activate the app and take the keyboard
+    if let Some(link) = line.strip_prefix("open ") {
+        store().open_link(link.trim());
+        return;
+    }
     // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
     if let Some(path) = line.strip_prefix("printpdf ") {
         crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");

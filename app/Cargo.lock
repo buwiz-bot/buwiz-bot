@@ -1969,11 +1969,12 @@ dependencies = [
 [[package]]
 name = "gws-screens"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/google-workspace?rev=0183cf8092c076c4c3e317be3a79343a4c1e8d61#0183cf8092c076c4c3e317be3a79343a4c1e8d61"
+source = "git+https://github.com/buwiz-app/google-workspace?rev=2c2e2c17bc84507aae034fe36dc71c7ea5680735#2c2e2c17bc84507aae034fe36dc71c7ea5680735"
 dependencies = [
  "buwiz-app",
  "nsh-core",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

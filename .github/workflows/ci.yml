@@ -87,3 +87,7 @@ jobs:
       - name: Test
         working-directory: broker
         run: cargo test --locked
+      # the test Bots' stub sign-in, and that a test build never reaches Google
+      - name: Test (test-google)
+        working-directory: broker
+        run: cargo test --locked -p buwiz-broker --features test-google --lib -- accounts

@@ -42,12 +42,15 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    // a sign-in setting this build can't use stops it here: nothing downstream
-    // may carry on without one, or fall back to the real Google
-    if let Err(e) = buwiz_broker::helper::plugins::AccountsConfig::from_env(config.port) {
-        eprintln!("buwiz-broker: {e}");
-        std::process::exit(2);
-    }
+    // read once: a setting this build can't use stops it here, and nothing
+    // downstream carries on without one or falls back to the real Google
+    let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(config.port) {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            eprintln!("buwiz-broker: {e}");
+            std::process::exit(2);
+        }
+    };
     let hub_on = buwiz_protocol::env::var("BUWIZ_BROKER_HUB").as_deref() == Some("1");
     // `--no-node` (the broker inside Rox.app, 7.1) or BUWIZ_BROKER_NO_NODE=1
     let no_node = config.no_node || buwiz_protocol::env::var("BUWIZ_BROKER_NO_NODE").as_deref() == Some("1");
@@ -97,7 +100,7 @@ async fn main() {
         let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
         let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), config.port), McpHost::new(&db, config.port)) {
+        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
                 let token = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
                 config.node_env.push(("BUWIZ_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
@@ -129,7 +132,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), config.port) {
+            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), accounts.clone()) {
                 Ok(host) => {
                     ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -300,9 +303,9 @@ fn manifest_op(args: &[String]) -> i32 {
     }
 }
 
-/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`; `port`
-/// the front door's (account sign-ins redirect there).
-fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, port: u16) -> Result<Arc<Host>, String> {
+/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`; `accounts`
+/// where its sign-ins go.
+fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
     let keys = buwiz_broker::helper::keystore::Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default())?;
     let mut timeouts = Timeouts::default();
     // BUWIZ_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
@@ -311,7 +314,7 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
     }
     let clock = if manual_clock { Clock::manual() } else { Clock::system() };
     let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts, apps_dir })?;
-    host.set_accounts_config(buwiz_broker::helper::plugins::AccountsConfig::from_env(port)?);
+    host.set_accounts_config(accounts);
     // Rox's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
     match keys.move_from_rox(&ids, &db.with_file_name(buwiz_broker::helper::keystore::MOVED_MARKER)) {
@@ -349,7 +352,14 @@ async fn helper(args: &[String]) -> i32 {
     let trust = std::env::var("BUWIZ_TRUST_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| "src/v1/trust.json".into());
     // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
     let public = ["BUWIZ_PUBLIC_PORT", "PORT"].iter().find_map(|k| buwiz_protocol::env::var(k)?.parse::<u16>().ok()).unwrap_or(8787);
-    let host = match plugin_host(&db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, public) {
+    let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(public) {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            eprintln!("buwiz-broker: {e}");
+            return 2;
+        }
+    };
+    let host = match plugin_host(&db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("buwiz-broker helper: {e}");

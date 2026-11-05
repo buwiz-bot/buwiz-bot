@@ -30,3 +30,7 @@ const _: () = assert!(PRESS_WAIT.as_secs() < PRESS_ROUTE.as_secs());
 const _: () = assert!(CALLS_WAIT.as_secs() > PRESS_ROUTE.as_secs() + 3 * CALL.as_secs() + HOLD.as_secs());
 const _: () = assert!(ACT_LIMIT.as_secs() > INPUT.as_secs() + CALLS_WAIT.as_secs());
 const _: () = assert!(ACT_WAIT.as_secs() > ACT_LIMIT.as_secs());
+
+/// What uninstalling a mini app takes with it, as every place that asks the
+/// person says it. Unsaved files are named because they can't be fetched again.
+pub const UNINSTALL_REMOVES: &str = "pins, attachments, data and unsaved files";

@@ -116,6 +116,9 @@ if [ -z "$W" ]; then
   echo "pid $P: AeroSpace never listed its window; stopped" >&2
   exit 1
 fi
+# give focus back only if this window took it: the owner may have moved on
+# since $F was read, and refocusing $F then would take it from them
+G=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
 aerospace move-node-to-workspace 3 --window-id "$W"
-[ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
+[ "$G" = "$W" ] && [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
 echo "pid $P window $W"
