@@ -221,9 +221,11 @@ mod tests {
     #[test]
     fn google_workspace_screens_are_compiled_in_by_plugin_id() {
         let r = Registry::compiled();
-        assert_eq!(r.find("app.buwiz.google-workspace", "gws.workspace", sdk::ABI).map(|d| d.id), Some("gws.workspace"));
-        assert!(r.find("gws", "gws.workspace", sdk::ABI).is_none());
-        assert!(r.find("app.buwiz.books", "gws.workspace", sdk::ABI).is_none());
+        for screen in ["gws.mail", "gws.calendar", "gws.drive"] {
+            assert_eq!(r.find("app.buwiz.google-workspace", screen, sdk::ABI).map(|d| d.id), Some(screen));
+            assert!(r.find("gws", screen, sdk::ABI).is_none());
+            assert!(r.find("app.buwiz.books", screen, sdk::ABI).is_none());
+        }
     }
 
     /// The Books manifest at the pinned rev: every `apps[].native` it
