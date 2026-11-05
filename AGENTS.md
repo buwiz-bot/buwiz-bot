@@ -40,6 +40,9 @@ are lost at the next rebuild.
   (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is
   running, which can be the owner's own app or another agent's test bench.
   A test instance gets its own broker port, agent port and data dir.
+- Avatar work: `app/tools/mark-sheet` compiles `app/src/mark` in place, so
+  its spin sheets are the real engine's, its `cargo test` runs the engine's
+  tests in seconds, and `time` and `dump` compare builds.
 - Performance: the monitor (`dev.perf`) logs over-budget frames to
   `~/Library/Logs/Buwiz Bot/jank.log`; the `/perf` skill reads it.
 - A build that ignores a source change came from a rustc-wrapper cache:
