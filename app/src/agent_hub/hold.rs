@@ -10,7 +10,10 @@
 //!   leaves the card the person is reading alone. Changed values can't reach
 //!   the held call: what goes out is the arguments it was held with.
 //! - [`Card`] is what the person reads, from the plugin's own read of the
-//!   call. It stays in the app: it goes to no log and never to the model.
+//!   call. It stays in the app: it goes to no log and never to the model. A
+//!   card is whole or there is none: what is too long for the sheet refuses
+//!   the press, and nothing is ever cut to fit, because the hashes bind what
+//!   the card holds and the yes has to cover what the call does.
 //! - [`release`] is the only way to a press record, and it takes a
 //!   [`PersonYes`], which only a real press on the card makes (`card.rs`).
 //!   It retires the id first, so an Allow works once whatever follows. The
@@ -31,9 +34,11 @@ use crate::mini_v1::{RoxError, jcs, keys};
 
 /// Who says yes, as the record names them: the one person at this Bot.
 const PERSON: &str = "person.owner";
+/// What a sheet shows, by the scroll view in `card.rs`. Past this a press is
+/// refused: nobody reads more than this before pressing Allow.
 const MAX_TITLE: usize = 120;
-const MAX_LINE: usize = 200;
-const MAX_LINES: usize = 12;
+const MAX_LINE: usize = 400;
+const MAX_LINES: usize = 80;
 
 /// The person's own press of Allow. It can be made in two places: `card.rs`,
 /// after it saw the press come from a person's hand, and tests. A broker
@@ -87,36 +92,37 @@ impl Card {
         hash_of(&jcs::signed_bytes(&json!({"app": self.app, "title": self.title, "lines": self.lines})).ok()?)
     }
 
-    /// The card a plugin's read answered with: `{title, lines}`. `None`
-    /// without both, or with a ticket showing.
-    pub fn from_plugin(app: &str, v: &Value) -> Option<Card> {
-        let clip = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();
-        let title = clip(v.get("title")?.as_str()?, MAX_TITLE);
-        let lines: Vec<String> = v.get("lines")?.as_array()?.iter().filter_map(Value::as_str).map(|l| clip(l, MAX_LINE)).filter(|l| !l.is_empty()).take(MAX_LINES).collect();
-        let shown = !title.is_empty() && !lines.is_empty() && !lines.iter().chain([&title]).any(|l| l.contains("tkt_"));
+    /// A card of `title` and `lines`, if it can be shown whole: no ticket,
+    /// nothing empty, nothing past the sheet.
+    fn whole(app: &str, title: String, lines: Vec<String>) -> Option<Card> {
+        let fits = title.chars().count() <= MAX_TITLE && !lines.is_empty() && lines.len() <= MAX_LINES && lines.iter().all(|l| !l.is_empty() && l.chars().count() <= MAX_LINE);
+        let shown = !title.is_empty() && fits && !lines.iter().chain([&title]).any(|l| l.contains("tkt_"));
         shown.then(|| Card { app: app.to_owned(), title, lines })
     }
 
+    /// The card a plugin's read answered with: `{title, lines}`, each line
+    /// text. `None` for anything else, or a card that isn't [`Card::whole`].
+    pub fn from_plugin(app: &str, v: &Value) -> Option<Card> {
+        let title = v.get("title")?.as_str()?.trim().to_owned();
+        let lines: Option<Vec<String>> = v.get("lines")?.as_array()?.iter().map(|l| l.as_str().map(|l| l.trim().to_owned())).collect();
+        Card::whole(app, title, lines?)
+    }
+
     /// The card of a write whose plugin has no read for it: its arguments
-    /// as they are. Only a write the AI may do anyway gets one of these:
-    /// [`Effect::needs_person`] calls need the plugin's own words.
-    pub fn from_args(app: &str, args: &Value) -> Card {
+    /// as they are, all of them but `client_request_id`, which changes
+    /// nothing saved. Only a write the AI may do anyway gets one of these:
+    /// [`Effect::needs_person`] calls need the plugin's own words. A ticket
+    /// has no words to show here, so a call holding one has no card.
+    pub fn from_args(app: &str, args: &Value) -> Option<Card> {
         let mut lines = Vec::new();
-        for (key, value) in args.as_object().into_iter().flatten() {
-            let text = match value {
-                Value::String(s) => s.clone(),
-                Value::Null => continue,
-                other => other.to_string(),
-            };
-            if key != "client_request_id" && !text.contains("tkt_") && !text.is_empty() {
-                let label = key.replace('_', " ");
-                let mut chars = label.chars();
-                let label: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
-                lines.push(format!("{label}: {text}").chars().take(MAX_LINE).collect());
-            }
+        for (key, value) in args.as_object()?.iter().filter(|(k, _)| *k != "client_request_id") {
+            let text = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+            let label = key.replace('_', " ");
+            let mut chars = label.chars();
+            let label: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+            lines.push(format!("{label}: {text}"));
         }
-        lines.truncate(MAX_LINES);
-        Card { app: app.to_owned(), title: format!("Save this in {app}?"), lines }
+        Card::whole(app, format!("Save this in {app}?"), lines)
     }
 }
 
@@ -327,19 +333,49 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_plugins_card_needs_a_title_and_a_line_and_shows_no_ticket() {
-        let good = json!({"title": "Post this entry?", "lines": ["Rent, ₱1,350.00", "", 7]});
+    fn a_plugins_card_needs_a_title_and_lines_of_text_and_shows_no_ticket() {
+        let good = json!({"title": "Post this entry?", "lines": ["Rent, ₱1,350.00"]});
         assert_eq!(Card::from_plugin("Books", &good).unwrap().lines, ["Rent, ₱1,350.00"]);
-        for bad in [json!({"title": "x"}), json!({"lines": ["x"]}), json!({"title": "", "lines": ["x"]}), json!({"title": "x", "lines": []}), json!({"title": "x", "lines": ["tkt_0123"]})] {
+        for bad in [
+            json!({"title": "x"}),
+            json!({"lines": ["x"]}),
+            json!({"title": "", "lines": ["x"]}),
+            json!({"title": "x", "lines": []}),
+            json!({"title": "x", "lines": ["tkt_0123"]}),
+            json!({"title": "tkt_0123", "lines": ["x"]}),
+            json!({"title": "x", "lines": ["x", 7]}),
+            json!({"title": "x", "lines": ["x", ""]}),
+        ] {
             assert_eq!(Card::from_plugin("Books", &bad), None, "{bad}");
         }
     }
 
+    /// The hash binds what the card holds, so a card holds all of it or
+    /// there is no card: the last line past each limit is what would be lost.
     #[test]
-    fn a_bare_card_shows_the_values_and_leaves_out_ids_and_tickets() {
-        let c = Card::from_args("eBIRForms", &json!({"client_request_id": "x", "form": "tkt_0123", "tax_year": 2026, "due_amount": "1,350.00", "note": null}));
+    fn a_card_too_long_to_show_is_no_card_and_nothing_is_cut() {
+        let line = |n: usize| "x".repeat(n);
+        let lines = |n: usize| (0..n).map(|i| format!("Entry {i}")).collect::<Vec<_>>();
+        let card = |title: String, lines: Vec<String>| Card::from_plugin("Books", &json!({"title": title, "lines": lines}));
+        let full = card("t".into(), lines(MAX_LINES)).unwrap();
+        assert_eq!(full.lines.len(), MAX_LINES);
+        assert_eq!(full.lines[MAX_LINES - 1], format!("Entry {}", MAX_LINES - 1), "every line, as sent");
+        assert_eq!(card("t".into(), vec![line(MAX_LINE)]).unwrap().lines[0].len(), MAX_LINE);
+        assert_eq!(card(line(MAX_TITLE), lines(1)).unwrap().title.len(), MAX_TITLE);
+        assert_eq!(card("t".into(), lines(MAX_LINES + 1)), None, "too many lines");
+        assert_eq!(card("t".into(), vec![line(MAX_LINE + 1)]), None, "too long a line");
+        assert_eq!(card(line(MAX_TITLE + 1), lines(1)), None, "too long a title");
+    }
+
+    #[test]
+    fn a_bare_card_shows_every_value_and_a_ticket_refuses_it() {
+        let c = Card::from_args("eBIRForms", &json!({"client_request_id": "x", "tax_year": 2026, "due_amount": "1,350.00", "note": null})).unwrap();
         assert_eq!(c.title, "Save this in eBIRForms?");
-        assert_eq!(c.lines, ["Due amount: 1,350.00", "Tax year: 2026"]);
+        assert_eq!(c.lines, ["Due amount: 1,350.00", "Note: null", "Tax year: 2026"]);
+        assert_eq!(Card::from_args("eBIRForms", &json!({"form": "tkt_0123", "tax_year": 2026})), None, "no dropping it and carrying on");
+        assert_eq!(Card::from_args("eBIRForms", &json!({"forms": ["tkt_0123"]})), None, "nested too");
+        assert_eq!(Card::from_args("eBIRForms", &json!({"client_request_id": "x"})), None, "nothing to show");
+        assert_eq!(Card::from_args("eBIRForms", &json!({"note": "x".repeat(MAX_LINE)})), None, "too long");
     }
 
     #[test]

@@ -112,6 +112,11 @@ impl host_api::Broker for FakeBroker {
                         ],
                         "structuredContent": {"title": "Fixture document"}
                     }),
+                    "fx_long_card" => {
+                        let lines: Vec<String> = (0..500).map(|i| format!("Entry {i}")).collect();
+                        json!({"structuredContent": {"title": "Post these?", "lines": lines}})
+                    }
+                    "fx_no_card" => json!({"isError": true, "content": [{"type": "text", "text": "no card for that"}]}),
                     "fx_card" => {
                         // a card reads the entry: one read before it shows, one at Allow
                         let n = self.cards.fetch_add(1, Ordering::SeqCst);
@@ -132,6 +137,8 @@ impl host_api::Broker for FakeBroker {
                 Some("fx_echo" | "fx_slow") => json!({"allow": true, "effect": "draft"}),
                 Some("fx_read") => json!({"allow": true, "effect": "read"}),
                 Some("fx_post") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_card"}),
+                Some("fx_long") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_long_card"}),
+                Some("fx_refused_draft") => json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_no_card"}),
                 Some("fx_blank") => json!({"allow": false, "hold": true, "effect": "write"}),
                 Some("fx_ask") => json!({"allow": false, "hold": true, "effect": "draft"}),
                 _ => json!({"allow": false, "effect": "write"}),
@@ -622,9 +629,26 @@ fn an_entry_that_changed_under_the_card_cancels_the_yes() {
 #[test]
 fn a_person_only_call_with_no_words_for_its_card_never_shows_a_bare_one() {
     let (mut o, _one) = held_open("fx_blank", Some(by_hand), Limits::default());
-    assert!(o.wait("refused").starts_with("refused permission_denied: The Bot couldn't show what this press would do"));
+    assert!(o.wait("refused").starts_with("refused permission_denied: The Bot couldn't show all of what this press would do"));
     assert!(o.ui.cards.lock().unwrap().is_empty());
     assert!(sent_of(&o, "fx_blank").is_empty());
+}
+
+#[test]
+fn a_card_too_long_to_show_refuses_the_press_and_nothing_is_cut() {
+    let (mut o, _one) = held_open("fx_long", Some(by_hand), Limits::default());
+    assert!(o.wait("refused").starts_with("refused permission_denied: The Bot couldn't show all of what this press would do"));
+    assert!(o.ui.cards.lock().unwrap().is_empty(), "no card went up");
+    assert!(sent_of(&o, "fx_long").is_empty());
+}
+
+/// The plugin refusing its own card means the call holds what it can't show.
+#[test]
+fn a_draft_whose_plugin_refuses_its_card_doesnt_fall_back_on_its_arguments() {
+    let (mut o, _one) = held_open("fx_refused_draft", Some(by_hand), Limits::default());
+    assert!(o.wait("refused").contains("couldn't show all of"));
+    assert!(o.ui.cards.lock().unwrap().is_empty());
+    assert!(sent_of(&o, "fx_refused_draft").is_empty());
 }
 
 #[test]

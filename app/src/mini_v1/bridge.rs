@@ -554,7 +554,7 @@ struct HeldCall<'a> {
 }
 
 const NOT_NOW: &str = "The person chose Not now, so nothing was sent. Don't press it again; ask them in words if you still need it.";
-const CANT_SHOW: &str = "The Bot couldn't show what this press would do, so nothing was sent.";
+const CANT_SHOW: &str = "The Bot couldn't show all of what this press would do, so nothing was sent.";
 
 fn reject(reply: AnyReply, e: RoxError) {
     reply.reject(e);
@@ -730,15 +730,17 @@ impl OpenContext {
             let (envelope, sig) = self.session.sign_call(d, &ask, Actor::Agent, ai.as_ref())?;
             tool_result(host_api::call(&*self.broker, &envelope, &sig, self.limits.timeout)?, self.limits.max_result)
         });
-        match words {
-            Some(Ok(v)) => Card::from_plugin(title, &v).ok_or_else(|| denied(CANT_SHOW)),
-            Some(Err(e)) if needs_words => {
+        let card = match words {
+            Some(Ok(v)) => Card::from_plugin(title, &v),
+            // the plugin has words for this call and wouldn't give them: its arguments don't stand in
+            Some(Err(e)) => {
                 log::info!("mini v1: {} a held call's card: {}", self.prepared.plugin.id, e.code);
-                Err(denied(CANT_SHOW))
+                None
             }
-            None if needs_words => Err(denied(CANT_SHOW)),
-            _ => Ok(Card::from_args(title, call.args)),
-        }
+            None if needs_words => None,
+            None => Card::from_args(title, call.args),
+        };
+        card.ok_or_else(|| denied(CANT_SHOW))
     }
 
     /// Holds `call` until the person answers: the press record to sign with
