@@ -489,5 +489,18 @@ pub(crate) fn clear_local() {
     });
 }
 
+/// nativechat's recorded frames, which the wire tests read. CI has no copy, so
+/// those tests skip there; anywhere else a missing folder fails, so a moved
+/// checkout can't quietly stop them running.
+#[cfg(test)]
+pub(crate) fn wire_dir() -> Option<&'static std::path::Path> {
+    let dir = std::path::Path::new("/Volumes/goldcoders/hexuria/nativechat/fixtures/wire");
+    if dir.is_dir() {
+        return Some(dir);
+    }
+    assert!(std::env::var_os("CI").is_some(), "no wire fixtures at {}: has nativechat moved?", dir.display());
+    None
+}
+
 #[cfg(test)]
 mod tests;

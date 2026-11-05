@@ -130,8 +130,9 @@ mod tests {
 
     #[test]
     fn the_offer_fixture_parses_without_a_password() {
-        let path = "/Volumes/goldcoders/OSS/nativechat/fixtures/wire/agui/custom/credential.offer_save/an_agui_only_turn_still_mints_a_user_form_entry_id.json";
-        let Ok(text) = std::fs::read_to_string(path) else { return };
+        let Some(root) = crate::cards::wire_dir() else { return };
+        let path = root.join("agui/custom/credential.offer_save/an_agui_only_turn_still_mints_a_user_form_entry_id.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let v: Value = serde_json::from_str(&text).expect("json");
         let spec = SaveLoginSpec::from_wire(&v).expect("offer");
         assert_eq!(spec.origin, "accounts.google.com");
