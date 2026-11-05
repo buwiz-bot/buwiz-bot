@@ -149,6 +149,8 @@ def rebuild(push):
         # A topic cut on the fork branch names its own start in `base`: its
         # merge base with upstream would replay every commit under it.
         base = t.get("base") or git("merge-base", r, "upstream/main")
+        if subprocess.run(["git", "merge-base", "--is-ancestor", base, r], cwd=NSH).returncode != 0:
+            raise SystemExit(f"{t['branch']}: base {base[:8]} is not under it")
         for c in git("rev-list", "--reverse", "--no-merges", f"{base}..{r}").splitlines():
             if c in picked:
                 continue
