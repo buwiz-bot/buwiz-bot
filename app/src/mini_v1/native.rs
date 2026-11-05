@@ -351,6 +351,7 @@ impl Drop for V1Open {
     fn drop(&mut self) {
         self.close();
         let n = self.n;
+        crate::agent_hub::closed(n);
         super::to_store(move |st| st.v1_stopped(n));
     }
 }
@@ -373,6 +374,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
         n.get()
     });
     VIEWS.with_borrow_mut(|v| v.insert(id, Rc::downgrade(view)));
+    crate::agent_hub::opened(id, &key, &prepared.plugin.short, &prepared.plugin.title, &prepared.key.app, &prepared.title, Rc::downgrade(view));
     let channel = view.host();
     let surface = view.surface_key();
     let slot = Arc::new(Slot::default());

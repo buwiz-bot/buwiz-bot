@@ -23,6 +23,8 @@ base64 = "0.22"
 getrandom = "0.2"
 # the protocol pieces shared with the broker (JCS, keys, ids, tokens)
 buwiz-protocol = { path = "../broker/buwiz-protocol" }
+# The Agent Hub's messages (`agent_hub/`), shared with the broker.
+buwiz-agent = { git = "https://github.com/buwiz-app/buwiz-agent", rev = "638d2b886e0c88cb20cce02c5f96c1edd43c8357" }
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"

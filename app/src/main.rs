@@ -151,6 +151,7 @@ fn main() -> impl std::process::Termination {
     if let Some(mtm) = platform::objc2::MainThreadMarker::new() {
         buwiz_bot::mini_v1::attribution::watch(mtm);
     }
+    buwiz_bot::agent_hub::start();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: buwiz_bot::app_name().to_owned(),

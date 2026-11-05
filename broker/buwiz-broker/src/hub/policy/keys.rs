@@ -1,16 +1,16 @@
 //! A Bot's tool switches: each model tool's key (`shell`, `web`, `apps`, `office`,
-//! `routines`, `memory`, `agents`, `skill:<id>`, `mcp:<server>`, `v1:<plugin>`), or none for
+//! `routines`, `memory`, `agents`, `screens`, `skill:<id>`, `mcp:<server>`, `v1:<plugin>`), or none for
 //! a tool that is always on; whether a call only reads (a switch at Ask asks only before a
 //! call that changes something or reaches someone); and the rows This Bot and Chats show.
 
 use serde_json::{json, Value};
 
 use crate::hub::ctx::HubCtx;
-use crate::hub::tools::{defs, mcp, miniapps, v1};
+use crate::hub::tools::{defs, mcp, miniapps, ui, v1};
 use crate::js;
 
 /// The group keys, in the order This Bot lists them.
-pub const GROUPS: [&str; 7] = ["shell", "web", "apps", "office", "routines", "memory", "agents"];
+pub const GROUPS: [&str; 8] = ["shell", "web", "apps", "office", "routines", "memory", "agents", "screens"];
 
 /// The tools that switch with `apps` beside the mini app tools: the artifact tools.
 const APP_TOOLS: [&str; 8] = ["app_icon", "app_details_update", "launch_app", "close_app", "promote_app", "demote_app", "set_version", "view_code"];
@@ -21,6 +21,7 @@ fn group_of(name: &str) -> Option<&'static str> {
     match name {
         "shell_run" => Some("shell"),
         "fetch_url" | "web_search" | "query_source" => Some("web"),
+        ui::NAME => Some("screens"),
         _ if miniapps::NAMES.contains(&name) || APP_TOOLS.contains(&name) => Some("apps"),
         _ if name.starts_with("office_") => Some("office"),
         _ if defs::has(defs::routine_tools(), name) => Some("routines"),
@@ -69,6 +70,7 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         "routines" => return fixed("Routines", "Makes, changes and runs routines."),
         "memory" => return fixed("Memory", "Remembers things about you."),
         "agents" => return fixed("Other agents", "Messages and makes other agents."),
+        "screens" => return fixed("Mini app screens", "Reads the names of the buttons and fields on open mini app screens."),
         _ => {}
     }
     if let Some(id) = key.strip_prefix("skill:") {
@@ -100,6 +102,7 @@ pub fn phrase_of(ctx: &HubCtx, key: &str) -> String {
         "routines" => "routines".into(),
         "memory" => "its memory".into(),
         "agents" => "other agents".into(),
+        "screens" => "mini app screens".into(),
         _ => label_of(ctx, key).map(|(l, _)| l).unwrap_or_else(|| key.to_owned()),
     }
 }
@@ -114,6 +117,7 @@ const READS: &[&str] = &[
     "web_search",
     "fetch_url",
     "query_source",
+    ui::NAME,
     // opening or reading a mini app or a card
     "app_list",
     "launch_app",

@@ -412,9 +412,14 @@ impl HttpBroker {
     /// Follows the broker's server-sent events (`GET /v1/host/events`):
     /// `on_event(name, data)` for each until the stream ends or
     /// `on_event` returns false.
-    pub fn events(&self, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+    pub fn events(&self, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+        self.stream("/v1/host/events", on_event)
+    }
+
+    /// Follows the server-sent events of `route`, as [`Self::events`].
+    pub fn stream(&self, route: &str, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
         let (mut stream, authority) = self.connect(Duration::from_secs(3600))?;
-        let req = Self::head("GET", "/v1/host/events", &authority, &[], "text/event-stream");
+        let req = Self::head("GET", route, &authority, &[], "text/event-stream");
         stream.write_all(&req).map_err(|_| unavailable("the broker closed the connection"))?;
         let mut lines = std::io::BufReader::new(stream);
         let (mut name, mut data, mut in_body) = (String::new(), String::new(), false);

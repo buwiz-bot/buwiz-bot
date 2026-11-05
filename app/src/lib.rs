@@ -15,6 +15,8 @@
 #[cfg(all(feature = "dev-agent", not(debug_assertions)))]
 compile_error!("a release build has no gpui-agent server: build with --no-default-features");
 
+#[cfg(target_os = "macos")]
+pub mod agent_hub;
 mod agents;
 mod appdetails;
 mod avatar;

@@ -31,7 +31,7 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "tools_list",
-            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
+            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, screens, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({
@@ -263,7 +263,7 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
 
 /// Whether a tool that reads outside content (a page, a search, an app) ran this turn.
 pub fn note_external(run: &Run, name: &str) {
-    let ext = matches!(name, "fetch_url" | "web_search") || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
+    let ext = matches!(name, "fetch_url" | "web_search" | super::ui::NAME) || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
     if ext {
         run.state().external = true;
     }

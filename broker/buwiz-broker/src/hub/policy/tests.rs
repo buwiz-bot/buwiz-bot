@@ -618,6 +618,41 @@ async fn the_ceiling_hides_and_refuses_an_off_tool() {
 }
 
 #[tokio::test]
+async fn looking_at_the_screen_is_off_until_a_person_turns_it_on_for_that_bot() {
+    let b = bed("screens");
+    assert_eq!((default_pos("hex", "screens"), default_pos(CHATS, "screens")), (Pos::Off, Pos::Off));
+    let run = run_in(&b.ctx, &b.hex);
+    let plain = run_in(&b.ctx, &b.plain);
+    let look = json!({"name": "ui_look", "input": {}});
+    let off = "screens is off for this Bot. Only the user can turn it on; tools_set proposes it.";
+    assert!(!names(&tool_list(&run).await).contains(&"ui_look".to_owned()));
+    assert!(!names(&tool_list(&plain).await).contains(&"ui_look".to_owned()));
+    assert_eq!(exec_tool(&run, &look).await, Out::err(off.into()), "a model can name a tool it wasn't offered");
+    // the model can only ask: the switch moves on a person's word
+    let p = call(&run, "tools_set", json!({"key": "screens", "state": "on"})).await;
+    assert!(p["proposal"].is_string(), "{p}");
+    assert_eq!(tool_state(&b.ctx, "hex", "screens"), Pos::Off);
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "screens", "state": "on"})).unwrap();
+    assert!(names(&tool_list(&run).await).contains(&"ui_look".to_owned()));
+    assert!(!names(&tool_list(&plain).await).contains(&"ui_look".to_owned()), "on for that Bot alone");
+    // with no Bot connected the tool says so; it ran
+    assert_eq!(exec_tool(&run, &look).await, Out::err("The Bot isn't connected to the broker.".into()));
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "screens", "state": "off"})).unwrap();
+    assert!(!names(&tool_list(&run).await).contains(&"ui_look".to_owned()));
+    assert_eq!(exec_tool(&run, &look).await, Out::err(off.into()));
+}
+
+#[tokio::test]
+async fn a_routines_turn_doesnt_look_at_the_screen_even_with_the_switch_on() {
+    let b = bed("screens-routine");
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "screens", "state": "on"})).unwrap();
+    let job = b.ctx.jobs.create(&b.hex, Value::Null, None, false);
+    let routine = Run::new(b.ctx.clone(), TurnCtx { thread: b.hex.clone(), routine: Some("r1".into()), ..TurnCtx::default() }, job, Arc::new(Settings::from(|_| None)));
+    assert!(!names(&tool_list(&routine).await).contains(&"ui_look".to_owned()));
+    assert_eq!(exec_tool(&routine, &json!({"name": "ui_look", "input": {}})).await, Out::err("unknown tool ui_look".into()));
+}
+
+#[tokio::test]
 async fn shell_run_goes_through_the_gate_and_into_activity() {
     let b = bed("gate");
     let run = run_in(&b.ctx, &b.hex);
