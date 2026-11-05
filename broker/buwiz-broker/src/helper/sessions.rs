@@ -37,7 +37,6 @@ pub const PROMPT_MAX: usize = 4000;
 
 type Res<T = Value> = Result<T, V1Error>;
 
-/// `[...s].slice(0, n).join("")`: the first `n` code points.
 /// What a signed call's `caller.origin` says (16.1): `"app"`, the person's own act through the
 /// app, only for `"actor": "person"`. Anything else (`"agent"`, no actor, a word this broker
 /// doesn't know) is the agent's. The signed value picks between these two and is never copied
@@ -65,6 +64,7 @@ fn press_of(origin: &str, press: Option<&Value>) -> Option<Value> {
     Some(press.clone())
 }
 
+/// `[...s].slice(0, n).join("")`: the first `n` code points.
 fn cap(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }

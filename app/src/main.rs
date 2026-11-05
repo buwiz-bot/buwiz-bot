@@ -148,8 +148,10 @@ fn main() -> impl std::process::Termination {
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
     buwiz_bot::broker::ensure_started();
-    if let Some(mtm) = platform::objc2::MainThreadMarker::new() {
-        buwiz_bot::mini_v1::attribution::watch(mtm);
+    match platform::objc2::MainThreadMarker::new() {
+        Some(mtm) => buwiz_bot::mini_v1::attribution::watch(mtm),
+        // every mini app call then goes out as the agent's: a person-only press fails, safely
+        None => log::error!("rox: input isn't watched: main isn't on the main thread"),
     }
     buwiz_bot::agent_hub::start();
     platform::set_ui_sets(ui_sets());

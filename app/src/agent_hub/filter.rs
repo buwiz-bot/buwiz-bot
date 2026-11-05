@@ -18,7 +18,7 @@
 //! rows. Field values never go out, in any [`Reading`].
 
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
 
@@ -159,12 +159,18 @@ fn slug(s: &str) -> Option<String> {
     }
 }
 
+/// The longest a [`Ids`] base may be: an id is at most 128, and its number
+/// has to survive.
+const BASE_MAX: usize = 112;
+
 /// Makes ids that hold from run to run, as nsh's `n232` don't: a named
 /// node's come from its name, an unnamed one's from its place among its
-/// kind, and a repeat takes the next number.
+/// kind, and a repeat takes the next number no node has. Ids are unique in
+/// a screen: `ui_act` finds a node by its id.
 #[derive(Default)]
 struct Ids {
-    used: std::collections::HashMap<String, usize>,
+    seen: HashMap<String, usize>,
+    taken: HashSet<String>,
 }
 
 impl Ids {
@@ -173,10 +179,17 @@ impl Ids {
             Some(s) => format!("{kind}.{s}"),
             None => format!("{kind}.unnamed"),
         };
-        let seen = self.used.entry(base.clone()).or_default();
-        *seen += 1;
-        let id = if *seen == 1 && name.is_some() { base } else { format!("{base}-{seen}") };
-        let id = id.chars().take(128).collect::<String>();
+        let base: String = base.chars().take(BASE_MAX).collect();
+        let base = base.trim_end_matches('-').to_owned();
+        let seen = self.seen.entry(base.clone()).or_default();
+        let id = loop {
+            *seen += 1;
+            let id = if *seen == 1 && name.is_some() { base.clone() } else { format!("{base}-{seen}") };
+            if !self.taken.contains(&id) {
+                break id;
+            }
+        };
+        self.taken.insert(id.clone());
         AgentId::parse(&id).ok()
     }
 }
@@ -390,6 +403,38 @@ pub(crate) mod tests {
         assert!(got.iter().all(|n| n.value.is_none()));
         assert!(got.iter().filter(|n| n.role == "text").all(|n| n.id.as_str().starts_with("text.unnamed-")));
         assert!(!wire.contains("fakerson"));
+    }
+
+    #[test]
+    fn a_label_that_looks_like_a_repeat_never_shares_an_id() {
+        let ids = |labels: &[&str]| -> Vec<String> {
+            let screen: Vec<Seen> = labels.iter().enumerate().map(|(i, l)| button(&format!("n{i}"), l)).collect();
+            out(&screen).into_iter().map(|t| t.0).collect()
+        };
+        assert_eq!(ids(&["Save", "Save", "Save 2"]), ["button.save", "button.save-2", "button.save-2-2"]);
+        assert_eq!(ids(&["Save 2", "Save", "Save"]), ["button.save-2", "button.save", "button.save-3"]);
+        let many = ids(&["Save", "Save 2", "Save", "Save 3", "Save", "Save 2", "Save 2-2"]);
+        let unique: HashSet<&String> = many.iter().collect();
+        assert_eq!(unique.len(), many.len(), "{many:?}");
+    }
+
+    #[test]
+    fn each_id_leads_to_its_own_node_when_labels_collide() {
+        let screen = vec![button("n1", "Save"), button("n2", "Save"), button("n3", "Save 2")];
+        let map = mapped(&screen, Reading::Structure);
+        let back: Vec<(&str, &str)> = map.iter().map(|(n, s)| (n.id.as_str(), s.id.as_str())).collect();
+        assert_eq!(back, [("button.save", "n1"), ("button.save-2", "n2"), ("button.save-2-2", "n3")]);
+    }
+
+    #[test]
+    fn a_very_long_id_keeps_its_number() {
+        let long = |id: &str| seen(id, "button", &"a".repeat(40), None, vec![]);
+        let mut ids = Ids::default();
+        let name = "word ".repeat(40);
+        let first = ids.make("button", Some(&name)).unwrap();
+        let second = ids.make("button", Some(&name)).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(out(&[long("n1"), long("n2")]).len(), 2);
     }
 
     #[test]
