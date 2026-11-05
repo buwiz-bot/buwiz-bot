@@ -29,7 +29,7 @@ type Screens = fn() -> &'static [ScreenDef];
 
 /// The screens crates compiled in: each plugin's id and its crate's
 /// `screens()`, each crate pinned by git rev.
-const COMPILED: &[(&str, Screens)] = &[("app.buwiz.books", books_screens::screens)];
+const COMPILED: &[(&str, Screens)] = &[("app.buwiz.books", books_screens::screens), ("app.buwiz.google-workspace", gws_screens::screens)];
 
 /// Native screens by plugin.
 #[derive(Default)]
@@ -216,6 +216,24 @@ mod tests {
             // keyed by the plugin id, not its short name
             assert!(r.find("books", screen, sdk::ABI).is_none());
         }
+    }
+
+    #[test]
+    fn google_workspace_screens_are_compiled_in_by_plugin_id() {
+        let r = Registry::compiled();
+        for screen in ["gws.mail", "gws.calendar", "gws.drive"] {
+            assert_eq!(r.find("app.buwiz.google-workspace", screen, sdk::ABI).map(|d| d.id), Some(screen));
+            assert!(r.find("gws", screen, sdk::ABI).is_none());
+            assert!(r.find("app.buwiz.books", screen, sdk::ABI).is_none());
+        }
+    }
+
+    /// A screens crate's features reach the whole app. serde_json's
+    /// `preserve_order` changes the order `to_string` writes keys in, which
+    /// anything hashing serialised JSON would feel. It must stay off here.
+    #[test]
+    fn no_screens_crate_turns_on_preserve_order() {
+        assert_eq!(serde_json::json!({"b": 1, "a": 2}).to_string(), r#"{"a":2,"b":1}"#);
     }
 
     /// The Books manifest at the pinned rev: every `apps[].native` it
