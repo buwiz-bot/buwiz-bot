@@ -523,9 +523,209 @@ async fn the_shell_cant_reach_its_own_broker_and_reaches_a_dev_server() {
 #[test]
 fn the_port_in_the_profile_is_this_brokers() {
     let data = std::path::Path::new("/tmp/d");
-    let p = sandbox::profile(data, &[8890, 51000]).unwrap();
+    let p = sandbox::profile(data, &[8890, 51000], std::path::Path::new("/nowhere")).unwrap();
     assert!(p.contains("(remote ip \"*:8890\")") && p.contains("(remote ip \"*:51000\")"), "{p}");
     assert!(!sandbox::own_ports().is_empty());
+}
+
+/// The name of a stand-in for a file or service that may not be reached: nothing here touches
+/// the person's Keychain, launch agents or apps. `lookup` asks only whether a service's name
+/// resolves, which is all a shut door needs to show.
+const LOOKUP: &str = "import ctypes,sys\nl=ctypes.CDLL(None)\nb=ctypes.c_uint.in_dll(l,'bootstrap_port').value\nfor n in sys.argv[1:]:\n    p=ctypes.c_uint(0)\n    print(n,'reached' if l.bootstrap_look_up(b,n.encode(),ctypes.byref(p))==0 else 'shut')\n";
+
+async fn lookups(data: &std::path::Path, names: &[&str]) -> String {
+    let script = data.join("generated/files/lookup.py");
+    std::fs::write(&script, LOOKUP).unwrap();
+    sandboxed_on(data, &[], &format!("/usr/bin/python3 -I '{}' {}", script.display(), names.join(" "))).await.1
+}
+
+/// Waits for a stand-in helper's mark; a helper that ran leaves one within this.
+async fn left_a_mark(mark: &std::path::Path) -> bool {
+    for _ in 0..20 {
+        if mark.exists() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    false
+}
+
+/// An app that would run outside the sandbox: `Helper.app`, which reads `key` to `mark`.
+/// In the temp folder: an app started from another volume can wait on the person's consent.
+fn helper_app(data: &std::path::Path, key: &std::path::Path, mark: &std::path::Path) -> PathBuf {
+    let app = data.join("generated/files/Helper.app");
+    let macos = app.join("Contents/MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    std::fs::write(app.join("Contents/Info.plist"), "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>helper</string><key>CFBundleIdentifier</key><string>dev.buwiz.test.helper</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>").unwrap();
+    let source = data.join("helper.c");
+    std::fs::write(&source, format!("#include <stdlib.h>\nint main(){{return system(\"cat '{}' > '{}'\");}}\n", key.display(), mark.display())).unwrap();
+    assert!(std::process::Command::new("cc").arg("-o").arg(macos.join("helper")).arg(&source).status().unwrap().success());
+    assert!(std::process::Command::new("codesign").args(["-s", "-", "--force"]).arg(&app).output().unwrap().status.success());
+    app
+}
+
+#[tokio::test]
+async fn an_app_the_shell_makes_cant_be_started_outside_the_sandbox() {
+    let data = temp("sandbox-open");
+    let spare = temp("sandbox-open-spare");
+    let key = spare.join("app.buwiz.fake");
+    std::fs::create_dir_all(&key).unwrap();
+    let key = key.join("books.key");
+    std::fs::write(&key, "secret-stand-in").unwrap();
+    let mark = spare.join("helper-ran");
+    let app = helper_app(&data, &key, &mark);
+    let a = app.display();
+    let open_copy = spare.join("not-open");
+    std::fs::copy("/usr/bin/open", &open_copy).unwrap();
+    let ls = format!("import ctypes as c\nf=c.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')\nl=c.CDLL('/System/Library/Frameworks/CoreServices.framework/CoreServices')\nf.CFURLCreateFromFileSystemRepresentation.restype=c.c_void_p\nf.CFURLCreateFromFileSystemRepresentation.argtypes=[c.c_void_p,c.c_char_p,c.c_long,c.c_bool]\nl.LSOpenCFURLRef.argtypes=[c.c_void_p,c.c_void_p]\np=b'{a}'\nu=f.CFURLCreateFromFileSystemRepresentation(None,p,len(p),True)\nprint('ls',l.LSOpenCFURLRef(u,None))\n");
+    let by_api = data.join("generated/files/ls.py");
+    std::fs::write(&by_api, ls).unwrap();
+    for (how, script) in [
+        ("open -g", format!("open -g '{a}'")),
+        ("/usr/bin/open", format!("/usr/bin/open -g -a '{a}'")),
+        ("a copy of open", format!("'{}' -g '{a}'", open_copy.display())),
+        ("the LaunchServices call itself", format!("/usr/bin/python3 -I '{}'", by_api.display())),
+    ] {
+        let (_, out) = sandboxed_on(&data, &[], &script).await;
+        assert!(!left_a_mark(&mark).await, "{how} ran the helper: {out}");
+    }
+}
+
+#[tokio::test]
+async fn the_shell_cant_look_up_what_would_act_for_it() {
+    let data = temp("sandbox-mach");
+    let shut = [
+        "com.apple.SecurityServer",
+        "com.apple.securityd.xpc",
+        "com.apple.coreservices.launchservicesd",
+        "com.apple.lsd.open",
+        "com.apple.lsd.mapdb",
+        "com.apple.lsd.modifydb",
+        "com.apple.coreservices.appleevents",
+        "com.apple.CoreServices.coreservicesd",
+        "com.apple.windowserver.active",
+        "com.apple.dock.server",
+        "com.apple.pasteboard.1",
+        "com.apple.tccd",
+        "com.apple.iohideventsystem",
+        "com.apple.cfprefsd.agent",
+        "com.apple.cfprefsd.daemon",
+        "com.apple.metadata.mds",
+    ];
+    let out = lookups(&data, &shut).await;
+    for name in shut {
+        assert!(out.contains(&format!("{name} shut")), "{out}");
+    }
+    let open = lookups(&data, &sandbox::MACH_SERVICES).await;
+    assert!(open.contains("com.apple.trustd reached") && open.contains("com.apple.dnssd.service reached"), "{open}");
+}
+
+#[tokio::test]
+async fn the_programs_that_hand_work_on_dont_run_and_a_copy_reaches_nothing() {
+    let data = temp("sandbox-exec");
+    let spare = temp("sandbox-exec-spare");
+    // none of these gets as far as doing anything: each is refused at exec
+    for line in ["open -h", "/usr/bin/osascript -e 1", "/usr/bin/security help", "/bin/launchctl help", "/usr/bin/at -l", "/usr/bin/crontab -l", "/usr/bin/automator -h", "/usr/bin/shortcuts list"] {
+        let (ok, out) = sandboxed_on(&data, &[], line).await;
+        assert!(!ok && out.contains("not permitted"), "{line}: {out}");
+    }
+    // a stand-in for `security`: a copy under another name, asked for no item at all. What
+    // stops it isn't its name: it can't reach the service
+    let copy = spare.join("not-security");
+    std::fs::copy("/usr/bin/security", &copy).unwrap();
+    let (_, out) = sandboxed_on(&data, &[], &format!("'{}' show-keychain-info /nonexistent/stand-in.keychain", copy.display())).await;
+    assert!(!out.contains("no-timeout") && !out.contains("timeout="), "{out}");
+    // the Keychain's files are refused too: a stand-in by name
+    let stand_in = spare.join("Library/Keychains");
+    std::fs::create_dir_all(&stand_in).unwrap();
+    std::fs::write(stand_in.join("login.keychain-db"), "secret-stand-in").unwrap();
+    let (ok, out) = sandboxed_on(&data, &[], &format!("cat '{}'", stand_in.join("login.keychain-db").display())).await;
+    assert!(!ok && !out.contains("secret-stand-in"), "{out}");
+}
+
+#[tokio::test]
+async fn the_shell_cant_write_what_runs_later() {
+    let data = temp("sandbox-later");
+    let home = temp("sandbox-later-home");
+    for rel in [".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile", ".gitconfig", ".ssh/config", ".ssh/authorized_keys", ".claude/settings.json", ".claude/hooks/run.sh", ".codex/config.toml", ".cursor/mcp.json", ".config/fish/config.fish", ".config/git/config", ".config/karabiner/karabiner.json", ".aerospace.toml", ".cargo/bin/cargo", ".cargo/config.toml", ".local/bin/tool", ".gnupg/gpg-agent.conf", "Library/LaunchAgents/x.plist", "Library/LaunchDaemons/x.plist", "Library/Services/x", "Library/Preferences/com.apple.Terminal.plist", "repo/.git/hooks/pre-commit", "repo/.git/modules/nsh/hooks/post-checkout", "repo/.husky/pre-commit"] {
+        let file = home.join(rel);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "as it was").unwrap();
+        let f = file.display();
+        for (how, script) in [("append", format!("echo x >> '{f}'")), ("replace", format!("echo x > '{f}.new' && mv '{f}.new' '{f}'")), ("remove", format!("rm -f '{f}'"))] {
+            let (ok, _) = sandboxed_on(&data, &[], &script).await;
+            assert!(!ok, "{how} of {rel}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "as it was", "{how} of {rel}");
+        }
+    }
+    // nor made anew, nor the folder moved aside
+    for rel in ["Library/LaunchAgents/new.plist", ".claude/new.json", ".ssh/new", "repo/.git/hooks/post-merge"] {
+        let (ok, _) = sandboxed_on(&data, &[], &format!("echo x > '{}'", home.join(rel).display())).await;
+        assert!(!ok && !home.join(rel).exists(), "{rel}");
+    }
+    let (ok, _) = sandboxed_on(&data, &[], &format!("mv '{0}/.ssh' '{0}/ssh-moved'", home.display())).await;
+    assert!(!ok && home.join(".ssh/config").exists());
+    // what a startup file links to is closed with it: the file's own name is gone by then
+    let elsewhere = temp("sandbox-later-dotfiles").join("shell-profile");
+    std::fs::write(&elsewhere, "as it was").unwrap();
+    std::fs::remove_file(home.join(".zprofile")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, home.join(".zprofile")).unwrap();
+    let p = sandbox::profile(&data, &[], &home).unwrap();
+    let out = tokio::process::Command::new(sandbox::SANDBOX_EXEC).arg("-p").arg(p).arg("/bin/zsh").arg("-c").arg(format!("echo x >> '{}'", home.join(".zprofile").display())).output().await.unwrap();
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "as it was");
+    // and a new repository still gets its sample hooks
+    let (ok, out) = sandboxed_on(&data, &[], &format!("cd '{}' && git init -q fresh && ls fresh/.git/hooks | wc -l", home.display())).await;
+    assert!(ok && out.trim() != "0", "{out}");
+}
+
+/// A server on a unix socket of its own, answering `ok`.
+fn tiny_socket(at: &std::path::Path) {
+    let listener = tokio::net::UnixListener::bind(at).unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf).await;
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
+        }
+    });
+}
+
+/// tmux's, Docker's, any agent's: a server someone else started runs what it is told, outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_cant_reach_a_server_on_a_unix_socket() {
+    let data = temp("sandbox-unix");
+    let dir = PathBuf::from(format!("/tmp/bwz-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (tmux, docker) = (dir.join("default"), dir.join("docker.sock"));
+    tiny_socket(&tmux);
+    tiny_socket(&docker);
+    for socket in [&tmux, &docker] {
+        let (ok, out) = sandboxed_on(&data, &[], &format!("curl -s -S -m 5 --unix-socket '{}' http://localhost/", socket.display())).await;
+        assert!(!ok && !out.ends_with("ok"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_cant_stand_in_for_its_broker_or_signal_it() {
+    let data = temp("sandbox-bind");
+    // nothing on it now: a broker that went away leaves its port free
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let bind = format!("/usr/bin/python3 -I -c \"import socket;s=socket.socket();s.bind(('127.0.0.1',{free}));print('bound')\"");
+    let (ok, out) = sandboxed_on(&data, &[], &bind).await;
+    assert!(ok && out.contains("bound"), "another port binds: {out}");
+    let (ok, out) = sandboxed_on(&data, &[free], &bind).await;
+    assert!(!ok && !out.contains("bound"), "{out}");
+    let mut outside = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let (ok, out) = sandboxed_on(&data, &[], &format!("kill {}", outside.id())).await;
+    assert!(!ok, "{out}");
+    assert!(outside.try_wait().unwrap().is_none(), "the process outside lived");
+    outside.kill().unwrap();
+    let _ = outside.wait();
+    let (ok, out) = sandboxed_on(&data, &[], "/bin/sleep 30 & P=$!; kill $P && echo gone").await;
+    assert!(ok && out.contains("gone"), "its own child: {out}");
 }
 
 #[tokio::test]

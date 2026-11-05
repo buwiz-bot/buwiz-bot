@@ -12,6 +12,17 @@
 //! - A dev Bot's automation files ([`AUTOMATION_FILES`]).
 //! - The broker's own port: its open routes would let a shell start a turn or change a Bot.
 //!
+//! - Everything that would run a command outside this sandbox. A process started by something
+//!   else isn't sandboxed, so the rule is what the shell may ask of the rest of the Mac:
+//!   Mach services and unix sockets are closed but for short lists ([`MACH_SERVICES`],
+//!   [`UNIX_SOCKETS`]), which shuts LaunchServices, Apple events, the window server, the
+//!   Keychain, XPC to agents, Docker and tmux servers at once, under any program's name.
+//!   [`NO_EXEC`] only says it sooner: a copy of a program runs, and reaches nothing.
+//! - What runs later, outside it ([`RUNS_LATER_FOLDERS`], [`RUNS_LATER_FILES`], [`GIT_HOOKS`]):
+//!   a startup file or a launch agent would be run by someone else. This list is the part of
+//!   the profile that can't be whole: `(allow default)` leaves every other file writable, and
+//!   anything a person later runs is such a file.
+//!
 //! A path rule ends when the shell renames a folder above it, so what is denied by path also has
 //! every folder above it closed to renames ([`profile`]), and what can be denied by name is.
 //! Seatbelt judges the file a path reaches, under the name it was stored with: a symlink, a hard
@@ -52,6 +63,61 @@ pub const DATA_FILES: &str = r"/((books|ebirforms|fill-sources)\.key|(books|ebir
 /// The folder [`SUPPORT_FOLDERS`] stands on, wherever a home folder is.
 const SUPPORT: &str = "/Application Support$";
 
+/// The Mach services the shell may look up: what name lookups, DNS, TLS trust and logging need.
+/// Every other one is shut. Left out on purpose: `com.apple.cfprefsd.*`, which writes preference
+/// files for its caller, past every file rule here, and `com.apple.metadata.mds`, whose index
+/// answers for files the shell may not read.
+pub const MACH_SERVICES: [&str; 14] = [
+    "com.apple.system.notification_center",
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.system.opendirectoryd.membership",
+    "com.apple.system.logger",
+    "com.apple.logd",
+    "com.apple.logd.events",
+    "com.apple.diagnosticd",
+    "com.apple.SystemConfiguration.configd",
+    "com.apple.SystemConfiguration.DNSConfiguration",
+    "com.apple.dnssd.service",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.networkd",
+    "com.apple.sysmond",
+];
+
+/// The unix sockets the shell may connect to: DNS, syslog, the ssh agent, and gpg's, because
+/// signed commits are real work. Every other one is shut.
+pub const UNIX_SOCKETS: &str = r"^(/private/var/run/(mDNSResponder|syslog)|/private/(var/run|tmp)/com\.apple\.launchd\.[^/]+/Listeners|.*/\.gnupg/S\.(gpg-agent|keyboxd))$";
+
+/// Programs that hand work to something outside the sandbox or read the Keychain, in the places
+/// they are installed. A way to say no at once: [`MACH_SERVICES`] and [`UNIX_SOCKETS`] are what
+/// stop a copy of one.
+pub const NO_EXEC: &str = r"^(/usr/bin|/bin|/usr/sbin|/sbin|/usr/local/bin|/opt/homebrew/bin|/opt/homebrew/Cellar/[^/]+/[^/]+/bin)/(open|osascript|osacompile|security|launchctl|at|atq|atrm|batch|crontab|tmux|screen|automator|shortcuts|sfltool)$";
+
+/// Folders whose files something outside the sandbox runs or obeys later, by name, wherever they
+/// are. Agent hooks and settings, login items, ssh's config, and what comes first on a PATH.
+pub const RUNS_LATER_FOLDERS: &str = r"/(\.ssh|\.claude|\.codex|\.cursor|\.gemini|\.aider|\.continue|\.hammerspoon|\.husky|\.config/(claude|opencode|fish|git|gh|karabiner|aerospace|shell)|\.cargo/bin|\.local/bin|Library/(LaunchAgents|LaunchDaemons|StartupItems|ScriptingAdditions|Services|Workflows|Application Scripts)|Library/Application Support/com\.apple\.backgroundtaskmanagementagent|opt/homebrew/bin|usr/local/bin|usr/lib/cron|var/at)(/|$)";
+
+/// Files of the same kind, by name, wherever they are. Each home folder's own may be links:
+/// [`profile`] closes what they lead to as well.
+pub const RUNS_LATER_FILES: &str = r"/(\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.zlogout|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.profile|\.gitconfig|\.aerospace\.toml|\.tmux\.conf|\.screenrc|\.npmrc|\.netrc|\.curlrc|\.lldbinit|\.vimrc|\.cargo/config(\.toml)?|\.gnupg/(gpg|gpg-agent|dirmngr|scdaemon|common)\.conf|Library/Preferences/com\.apple\.(Terminal|loginitems|loginwindow)\.plist|Library/Preferences/com\.googlecode\.iterm2\.plist)$";
+
+/// A git hook, in any repository. [`SAMPLE_HOOKS`] stay open: `git init` writes them, and
+/// nothing runs one.
+pub const GIT_HOOKS: &str = r"/\.git/(.*/)?hooks/[^/]+$";
+
+/// A hook git only offers as an example.
+pub const SAMPLE_HOOKS: &str = r"/\.git/(.*/)?hooks/[^/]+\.sample$";
+
+/// Keychain files: encrypted, and still nobody's to copy.
+pub const KEYCHAIN_FILES: &str = "/Library/Keychains(/|$)";
+
+/// What on this Mac answers with a shell or the screen, to whoever holds the key to it: ssh,
+/// Screen Sharing and Remote Management. Local only: the shell reaches git hosts on 22.
+pub const LOCAL_SERVICES: [u16; 3] = [22, 5900, 3283];
+
+/// The files in a home folder that [`RUNS_LATER_FILES`] names by themselves.
+const STARTUP_FILES: [&str; 11] = [".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".gitconfig"];
+
 /// A path as an SBPL string; `None` for one the profile cannot quote safely.
 fn quoted(p: &Path) -> Option<String> {
     let s = p.to_str()?;
@@ -65,13 +131,18 @@ pub fn own_ports() -> Vec<u16> {
     ports
 }
 
+/// The home folder the shell starts in.
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+}
+
 /// The profile for a data dir at `data` (as given and resolved: `/tmp` is `/private/tmp`), for a
-/// broker on `ports`; `None` when a path cannot be written into it safely (the shell then does
-/// not run).
+/// broker on `ports` and a person whose home folder is `home`; `None` when a path cannot be
+/// written into it safely (the shell then does not run).
 ///
 /// A later rule wins: the open folders open inside what the data dir's rule closed, and the names
 /// come last, so a key that is in one of them stays closed.
-pub fn profile(data: &Path, ports: &[u16]) -> Option<String> {
+pub fn profile(data: &Path, ports: &[u16], home: &Path) -> Option<String> {
     let mut roots: Vec<PathBuf> = vec![real(data)];
     if data.is_absolute() && !roots.contains(&data.to_path_buf()) {
         roots.push(data.to_path_buf());
@@ -87,8 +158,32 @@ pub fn profile(data: &Path, ports: &[u16]) -> Option<String> {
     }
     out.push_str(&format!("(deny file-read* file-write* (regex #\"{AUTOMATION_FILES}\") (regex #\"{DATA_FILES}\"))(deny file-write* (regex #\"{SUPPORT}\"))"));
     for port in ports {
-        out.push_str(&format!("(deny network-outbound (remote ip \"*:{port}\"))"));
+        out.push_str(&format!("(deny network-outbound (remote ip \"*:{port}\"))(deny network-bind (local ip \"*:{port}\"))"));
     }
+    out.push_str(&escapes(home, &LOCAL_SERVICES)?);
+    Some(out)
+}
+
+/// The rules that keep the shell inside: see the module's words. `local` is what it may not
+/// reach on this Mac alone.
+fn escapes(home: &Path, local: &[u16]) -> Option<String> {
+    let services: Vec<String> = MACH_SERVICES.iter().map(|n| format!("(global-name \"{n}\")")).collect();
+    let mut out = format!("(deny mach-lookup)(allow mach-lookup {})", services.join(" "));
+    out.push_str("(deny lsopen)(deny appleevent-send)(deny signal)(allow signal (target same-sandbox))");
+    out.push_str(&format!("(deny process-exec* (regex #\"{NO_EXEC}\") (regex #\"/lsregister$\"))"));
+    out.push_str(&format!("(deny network-outbound (remote unix-socket))(allow network-outbound (regex #\"{UNIX_SOCKETS}\"))"));
+    for port in local {
+        out.push_str(&format!("(deny network-outbound (remote ip \"localhost:{port}\"))"));
+    }
+    out.push_str(&format!("(deny file-read* file-write* (regex #\"{KEYCHAIN_FILES}\"))"));
+    out.push_str(&format!("(deny file-write* (regex #\"{RUNS_LATER_FOLDERS}\") (regex #\"{RUNS_LATER_FILES}\") (regex #\"{GIT_HOOKS}\")"));
+    for name in STARTUP_FILES {
+        let (file, target) = (home.join(name), real(&home.join(name)));
+        if target != file {
+            out.push_str(&format!(" (literal {})", quoted(&target)?));
+        }
+    }
+    out.push_str(&format!(")(allow file-write* (regex #\"{SAMPLE_HOOKS}\"))"));
     Some(out)
 }
 
@@ -102,7 +197,7 @@ pub fn command_on(data: &Path, ports: &[u16], script: &str, args: &[&str]) -> Re
     if !Path::new(SANDBOX_EXEC).exists() {
         return Err(NO_SANDBOX.into());
     }
-    let Some(p) = profile(data, ports) else { return Err("shell_run can't run: the broker's data dir has a path the sandbox can't name.".into()) };
+    let Some(p) = profile(data, ports, &home()) else { return Err("shell_run can't run: the broker's data dir has a path the sandbox can't name.".into()) };
     let mut cmd = tokio::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(p).arg("/bin/zsh").arg("-lc").arg(script);
     if !args.is_empty() {
