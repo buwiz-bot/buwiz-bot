@@ -1969,7 +1969,7 @@ dependencies = [
 [[package]]
 name = "gws-screens"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/google-workspace?rev=0bc7709e9d7cbd337f715a55c9fbdaa1627bd5c8#0bc7709e9d7cbd337f715a55c9fbdaa1627bd5c8"
+source = "git+https://github.com/buwiz-app/google-workspace?rev=eecbc072c8bbd4b7e2ab43c6021d90f2dd13f09a#eecbc072c8bbd4b7e2ab43c6021d90f2dd13f09a"
 dependencies = [
  "buwiz-app",
  "nsh-core",
@@ -4688,8 +4688,6 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
- "foldhash 0.2.0",
- "indexmap",
  "itoa",
  "memchr",
  "serde",

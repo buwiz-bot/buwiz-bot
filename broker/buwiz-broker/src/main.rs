@@ -42,6 +42,12 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // a sign-in setting this build can't use stops it here: nothing downstream
+    // may carry on without one, or fall back to the real Google
+    if let Err(e) = buwiz_broker::helper::plugins::AccountsConfig::from_env(config.port) {
+        eprintln!("buwiz-broker: {e}");
+        std::process::exit(2);
+    }
     let hub_on = buwiz_protocol::env::var("BUWIZ_BROKER_HUB").as_deref() == Some("1");
     // `--no-node` (the broker inside Rox.app, 7.1) or BUWIZ_BROKER_NO_NODE=1
     let no_node = config.no_node || buwiz_protocol::env::var("BUWIZ_BROKER_NO_NODE").as_deref() == Some("1");
@@ -305,7 +311,7 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
     }
     let clock = if manual_clock { Clock::manual() } else { Clock::system() };
     let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts, apps_dir })?;
-    host.set_accounts_config(buwiz_broker::helper::plugins::AccountsConfig::for_port(port));
+    host.set_accounts_config(buwiz_broker::helper::plugins::AccountsConfig::from_env(port)?);
     // Rox's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
     match keys.move_from_rox(&ids, &db.with_file_name(buwiz_broker::helper::keystore::MOVED_MARKER)) {

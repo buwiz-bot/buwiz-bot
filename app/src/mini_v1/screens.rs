@@ -228,6 +228,14 @@ mod tests {
         }
     }
 
+    /// A screens crate's features reach the whole app. serde_json's
+    /// `preserve_order` changes the order `to_string` writes keys in, which
+    /// anything hashing serialised JSON would feel. It must stay off here.
+    #[test]
+    fn no_screens_crate_turns_on_preserve_order() {
+        assert_eq!(serde_json::json!({"b": 1, "a": 2}).to_string(), r#"{"a":2,"b":1}"#);
+    }
+
     /// The Books manifest at the pinned rev: every `apps[].native` it
     /// names opens here, and the registry holds first-party plugins only.
     #[test]
