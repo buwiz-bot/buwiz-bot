@@ -1,4 +1,4 @@
 #!/bin/sh
-# The old name of scripts/buwiz-agent, kept so existing commands still work.
-echo "scripts/rox-agent is an old name; use scripts/buwiz-agent" >&2
-exec "$(dirname "$0")/buwiz-agent" "$@"
+# The old name of scripts/buwiz-drive, kept so existing commands still work.
+echo "scripts/rox-agent is an old name; use scripts/buwiz-drive" >&2
+exec "$(dirname "$0")/buwiz-drive" "$@"

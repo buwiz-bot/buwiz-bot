@@ -147,7 +147,7 @@ cat > "$APP/Contents/MacOS/buwiz-bot" <<SH
 # preferred: started by LaunchServices, loading the binary straight off the
 # external volume waits on a files-and-folders permission.
 # A new automation token every launch, readable only by this user (the
-# per-user temp dir is 0700); \`scripts/buwiz-agent\` hands it to gpui-agent.
+# per-user temp dir is 0700); \`scripts/buwiz-drive\` hands it to gpui-agent.
 # The same token under its old name too (rox-gpui-agent-token), for a
 # scripts/rox-agent from before the rename.
 TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token"
