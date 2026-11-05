@@ -5,6 +5,9 @@
 //! blinking and poked.
 //! `mark-sheet dump <design.json> <out file>`: every frame of a fixed run
 //! as one text file, to compare two builds byte for byte.
+//! `mark-sheet states <design.json> <out dir> <ink> [box px]`: each status
+//! state, into its morph and settled, in that ink (`#FFFFFF` on dark,
+//! `#000000` on light).
 //! `mark-sheet time <design.json>...`: microseconds per frame.
 //! `mark-sheet paths <design.json> <out file> <box px>`: a turn's paths as
 //! text, for timing a rasterizer.
@@ -39,12 +42,16 @@ fn svg(tree: &MarkTree, out: &mut String) {
 }
 
 fn draw(frame: &Frame, tab: &std::rc::Rc<Tables>, box_: f64) -> MarkTree {
+    draw_in(frame, tab, box_, "#1884FC")
+}
+
+fn draw_in(frame: &Frame, tab: &std::rc::Rc<Tables>, box_: f64, ink: &str) -> MarkTree {
     let extent = (box_ * (0.92 / 0.6) * 100.0f64).round() / 100.0;
     uh(
         frame,
         &PaintOpts {
             cutout: true,
-            ink_paint: Some("#1884FC".to_owned()),
+            ink_paint: Some(ink.to_owned()),
             ..Default::default()
         },
         extent,
@@ -60,8 +67,12 @@ fn draw(frame: &Frame, tab: &std::rc::Rc<Tables>, box_: f64) -> MarkTree {
 /// The file a frame goes to, with room around the mark: the app's canvas is
 /// wider than the mark's extent, and an avatar may reach into it.
 fn write(frame: &Frame, tab: &std::rc::Rc<Tables>, box_: f64, path: &str) {
+    write_in(frame, tab, box_, path, "#1884FC");
+}
+
+fn write_in(frame: &Frame, tab: &std::rc::Rc<Tables>, box_: f64, path: &str, ink: &str) {
     let mut s = String::new();
-    svg(&draw(frame, tab, box_), &mut s);
+    svg(&draw_in(frame, tab, box_, ink), &mut s);
     let extent = (box_ * (0.92 / 0.6) * 100.0f64).round() / 100.0;
     let view = extent * 1.5 / 1.257;
     let pad = (view - extent) / 2.0;
@@ -131,6 +142,24 @@ fn load(path: &str) -> (&'static str, Value) {
 fn posed(frame: &mut Frame, yaw: f64, pitch: f64) {
     frame.quat = ib(pitch * MN, yaw * MN, 0.0);
     frame.turn = [pitch, yaw, 0.0];
+}
+
+fn states(path: &str, out: &str, ink: &str, box_: f64) {
+    let (body, _) = load(path);
+    let tab = shared_tables();
+    std::fs::create_dir_all(out).unwrap();
+    for (name, _) in STATES {
+        let mut m = Mark::new(&tab, Some(body), 1.0, false, false, 11);
+        let mut d = Director::new(&mut m, "idle", 11, false, false, None);
+        d.set_state_pub(&mut m, name);
+        for f in 1..=45 {
+            d.advance(&mut m, 1.0 / 30.0);
+            m.advance(1.0 / 30.0);
+            if [2, 4, 7, 45].contains(&f) {
+                write_in(&m.frame(), &tab, box_, &format!("{out}/{name}-{f:02}.svg"), ink);
+            }
+        }
+    }
 }
 
 fn spin(path: &str, out: &str, box_: f64) {
@@ -308,6 +337,7 @@ fn main() {
     match a.get(1).map(String::as_str) {
         Some("spin") => spin(&a[2], &a[3], a.get(4).map_or(300.0, |s| s.parse().unwrap())),
         Some("dump") => dump(&a[2], &a[3]),
+        Some("states") => states(&a[2], &a[3], &a[4], a.get(5).map_or(300.0, |s| s.parse().unwrap())),
         Some("time") => time(&a[2..]),
         Some("paths") => paths(&a[2], &a[3], a[4].parse().unwrap()),
         _ => eprintln!("mark-sheet spin|dump|time ..."),
