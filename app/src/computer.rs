@@ -140,7 +140,7 @@ pub(crate) fn delete_warning(status: Option<&Value>, name: &str) -> Option<Strin
     let bots = Status::parse(status).bots;
     let others: Vec<&str> = bots.iter().map(|(_, n)| n.as_str()).filter(|n| *n != name).collect();
     Some(if others.is_empty() {
-        format!("Its computer goes too, with everything on it: its files, downloads and recordings. This can't be undone.")
+        "Its computer goes too, with everything on it: its files, downloads and recordings. This can't be undone.".to_owned()
     } else {
         format!("It leaves the computer it shares with {}, which keeps running with what {name} left on it.", others.join(", "))
     })
