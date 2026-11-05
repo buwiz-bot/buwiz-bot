@@ -29,7 +29,7 @@ type Screens = fn() -> &'static [ScreenDef];
 
 /// The screens crates compiled in: each plugin's id and its crate's
 /// `screens()`, each crate pinned by git rev.
-const COMPILED: &[(&str, Screens)] = &[("app.buwiz.books", books_screens::screens)];
+const COMPILED: &[(&str, Screens)] = &[("app.buwiz.books", books_screens::screens), ("app.buwiz.google-workspace", gws_screens::screens)];
 
 /// Native screens by plugin.
 #[derive(Default)]
@@ -216,6 +216,14 @@ mod tests {
             // keyed by the plugin id, not its short name
             assert!(r.find("books", screen, sdk::ABI).is_none());
         }
+    }
+
+    #[test]
+    fn google_workspace_screens_are_compiled_in_by_plugin_id() {
+        let r = Registry::compiled();
+        assert_eq!(r.find("app.buwiz.google-workspace", "gws.workspace", sdk::ABI).map(|d| d.id), Some("gws.workspace"));
+        assert!(r.find("gws", "gws.workspace", sdk::ABI).is_none());
+        assert!(r.find("app.buwiz.books", "gws.workspace", sdk::ABI).is_none());
     }
 
     /// The Books manifest at the pinned rev: every `apps[].native` it

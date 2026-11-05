@@ -94,6 +94,37 @@ impl Default for AccountsConfig {
     }
 }
 
+impl AccountsConfig {
+    /// The live config for a front door on `port`: Google, and the system browser.
+    pub fn for_port(port: u16) -> Self {
+        let live = Self { port, ..Self::default() };
+        #[cfg(feature = "test-google")]
+        if let Some(cfg) = std::env::var(TEST_GOOGLE_ENV).ok().and_then(|base| stub_google(port, &base)) {
+            return cfg;
+        }
+        live
+    }
+}
+
+/// In a test build, names the stub Google on loopback. A release has no such variable.
+#[cfg(feature = "test-google")]
+pub const TEST_GOOGLE_ENV: &str = "BUWIZ_TEST_GOOGLE";
+
+/// Sign-in against the stub at `base`, which must be on loopback: consent is
+/// a GET of its authorize page, so no browser opens on the owner's desktop.
+#[cfg(feature = "test-google")]
+fn stub_google(port: u16, base: &str) -> Option<AccountsConfig> {
+    let base = base.trim_end_matches('/');
+    base.starts_with("http://127.0.0.1:").then(|| AccountsConfig {
+        port,
+        google_authorize: format!("{base}/o/oauth2/v2/auth"),
+        google_token: format!("{base}/token"),
+        open: Arc::new(|url: &str| {
+            let _ = std::process::Command::new("/usr/bin/curl").args(["-sL", "-o", "/dev/null", url]).spawn();
+        }),
+    })
+}
+
 /// A sign-in waiting for its callback.
 #[derive(Clone)]
 struct Pending {
@@ -1088,6 +1119,25 @@ mod tests {
         assert_eq!(label_of(&json!({"label": "a b"})).unwrap_err().code, "invalid_args");
         assert_eq!(label_of(&json!({"label": 5})).unwrap_err().code, "invalid_args");
         assert_eq!(flow_id("app.buwiz.x", "google", "default"), "account:app.buwiz.x/google/default");
+    }
+
+    /// A release build has no way to send a sign-in anywhere but Google.
+    #[cfg(not(feature = "test-google"))]
+    #[test]
+    fn a_release_signs_in_at_google_whatever_the_environment_says() {
+        std::env::set_var("BUWIZ_TEST_GOOGLE", "http://127.0.0.1:9");
+        let cfg = AccountsConfig::for_port(8810);
+        std::env::remove_var("BUWIZ_TEST_GOOGLE");
+        assert_eq!((cfg.port, cfg.google_authorize.as_str(), cfg.google_token.as_str()), (8810, GOOGLE_AUTHORIZE, GOOGLE_TOKEN));
+    }
+
+    #[cfg(feature = "test-google")]
+    #[test]
+    fn a_test_build_takes_only_a_stub_on_loopback() {
+        let cfg = stub_google(8810, "http://127.0.0.1:9/").unwrap();
+        assert_eq!((cfg.google_authorize.as_str(), cfg.google_token.as_str()), ("http://127.0.0.1:9/o/oauth2/v2/auth", "http://127.0.0.1:9/token"));
+        assert!(stub_google(8810, "https://accounts.example.com").is_none());
+        assert!(stub_google(8810, "http://127.0.0.1.example.com").is_none(), "needs the port's colon");
     }
 
     #[test]

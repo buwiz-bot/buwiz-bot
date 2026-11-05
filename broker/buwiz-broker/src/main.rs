@@ -305,7 +305,7 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
     }
     let clock = if manual_clock { Clock::manual() } else { Clock::system() };
     let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts, apps_dir })?;
-    host.set_accounts_config(buwiz_broker::helper::plugins::AccountsConfig { port, ..Default::default() });
+    host.set_accounts_config(buwiz_broker::helper::plugins::AccountsConfig::for_port(port));
     // Rox's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
     match keys.move_from_rox(&ids, &db.with_file_name(buwiz_broker::helper::keystore::MOVED_MARKER)) {

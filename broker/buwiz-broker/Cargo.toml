@@ -6,6 +6,11 @@ edition = "2021"
 description = "The Buwiz Bot broker: the front door on the broker's port, with the Node broker behind it until each route moves to Rust"
 publish = false
 
+[features]
+# Test Bots only: BUWIZ_TEST_GOOGLE points account sign-in at a stub Google on
+# loopback. A release is built without it, and the variable does nothing.
+test-google = []
+
 [dependencies]
 # office in Rust (plan 6.1): BetterOffice's engines, the crates its npm
 # packages are built from
