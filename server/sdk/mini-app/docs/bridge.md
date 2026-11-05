@@ -185,7 +185,24 @@ write, unsent, and tells the person why. Each of these calls, reads included,
 carries `press`, the record of the press: `{by: "ai", who}`. So `origin: "app"`
 with a `press` is your screen reading while the AI drives it, not the person's
 own act, and `readOnlyHint` has to be true of the tool: nothing it does may
-change anything. In a routine's turn the
+change anything.
+
+A tool that names no `agent` can still take the AI's press, one press at a time,
+if it opts in with `_meta["buwiz/press"] = {approved: true, effect: "post", describe: "<a read>"}`.
+`effect` is `post` or `close`. Anything else, a tool with no `effect`, or a tool whose
+name says file, submit, send, queue, pay, void or reopen, is refused: filing is never the AI's.
+The Bot holds the call unsent and shows the person a card with Not now and Allow.
+`describe` is a read of yours: it gets `{tool, args}` and answers
+`{title, lines}`, what the call will do with its real values, covering every
+argument the call uses. A tool with no such read is refused, and it should refuse
+an argument it can't show. Only the person's own press of Allow lets the call go, and it
+reaches you as `origin: "agent"` with `press` =
+`{by: "ai_approved", who, approved_by, once, args_hash, shown_hash, at}`. Check
+`args_hash` (`sha256:` over the arguments' JCS bytes) against the arguments you
+got. A write open to agents can name `describe` alone, for the same card at Ask, and
+a call allowed there carries the same record.
+
+In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
 `routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-67)). `startPlugin` passes it to
 your `run(args, caller)` as `caller`. Use it to authorize (see

@@ -24,7 +24,7 @@ getrandom = "0.2"
 # the protocol pieces shared with the broker (JCS, keys, ids, tokens)
 buwiz-protocol = { path = "../broker/buwiz-protocol" }
 # The Agent Hub's messages (`agent_hub/`), shared with the broker.
-buwiz-agent = { git = "https://github.com/buwiz-app/buwiz-agent", rev = "638d2b886e0c88cb20cce02c5f96c1edd43c8357" }
+buwiz-agent = { git = "https://github.com/buwiz-app/buwiz-agent", rev = "0610474fbf4e3e13bcfae1b1cb42137a09e74466" }
 # Settings › Logins' `site_logins` metadata table (the system SQLite; no
 # secret column — secrets are in the Keychain).
 rusqlite = "0.32"
@@ -75,7 +75,8 @@ dev-agent = ["nsh-platform-macos/gpui-agent-server"]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
 # The same AppKit crate nsh uses, with the print classes (the file viewer's
 # Print); features merge into nsh's copy.
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSFont"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "NSPrintOperation", "NSPrintInfo", "NSImageView", "NSControl", "NSImage", "NSView", "NSResponder", "NSText", "NSTextView", "NSFont", "NSAlert", "NSApplication", "NSButton", "NSEvent", "NSWindow", "NSPanel", "NSScrollView"] }
 # Saved site logins' secrets: Keychain generic passwords (`vault/keychain.rs`).
 security-framework = "3.7"
 # A v1 mini app's bridge answers from the main thread (file dialog,

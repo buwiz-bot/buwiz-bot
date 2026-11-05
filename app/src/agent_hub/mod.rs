@@ -31,12 +31,23 @@
 //! where the call is made, not here: a button doesn't say what it runs, its
 //! tool does ([`press::check_tool`], in the bridge).
 //!
+//! An action reaches a screen only for the Bot whose chat opened it: an open
+//! keeps its Bot ([`Open::bot`]), the message says whose turn it is, and they
+//! have to match. That word only narrows, so the broker saying it costs
+//! nothing: it could already refuse.
+//!
+//! A call that needs the person waits in the bridge ([`hold`]): its card goes
+//! up over the top screen ([`card`]) and comes down when the person answers,
+//! or when that screen changes, covers or closes ([`show_card`]).
+//!
 //! Nothing reads the Bot's own windows: only opens that [`opened`] named,
 //! and [`filter`] runs on each here, before anything leaves the app. The
 //! model's tools, and the per-Bot switches that leave them off, are the
 //! broker's (`hub/tools/ui.rs`).
 
+pub mod card;
 pub mod filter;
+pub mod hold;
 pub mod press;
 
 use std::{
@@ -56,7 +67,9 @@ use crate::mini_v1::{
     native::on_main,
     to_store,
 };
+use buwiz_agent::OnceId;
 use filter::Reading;
+use hold::{Answer, Card};
 use press::Held;
 
 const STREAM: &str = "/v1/host/ui/stream";
@@ -80,6 +93,9 @@ struct Open {
     name: String,
     /// The app in the manifest.
     app: String,
+    /// The Bot whose chat it was opened from: `Some(None)` is a plain chat,
+    /// and `None` not known yet.
+    bot: Option<Option<String>>,
     view: Weak<AppView>,
 }
 
@@ -122,7 +138,12 @@ fn look_after(ok: bool, current: bool, looked_meanwhile: bool, last: Option<Look
 /// An open started, on the main thread. `short` is its plugin's.
 pub fn opened(n: u64, key: &str, short: &str, plugin_title: &str, app: &str, title: &str, view: Weak<AppView>) {
     let name = if title.is_empty() || title == plugin_title { plugin_title.to_owned() } else { format!("{plugin_title}: {title}") };
-    OPENS.with_borrow_mut(|o| o.push(Open { n, key: key.to_owned(), target: short.to_owned(), name, app: app.to_owned(), view }));
+    OPENS.with_borrow_mut(|o| o.push(Open { n, key: key.to_owned(), target: short.to_owned(), name, app: app.to_owned(), bot: None, view }));
+    // ahead of any action: both go through the store, then the main thread
+    to_store(move |st| {
+        let bot = st.active_bot_untracked().map(|b| b.id);
+        on_main(move || OPENS.with_borrow_mut(|o| o.iter_mut().filter(|open| open.n == n).for_each(|open| open.bot = Some(bot.clone()))));
+    });
 }
 
 /// Open `n` ended, on the main thread.
@@ -138,6 +159,7 @@ struct Surface {
     target: String,
     name: String,
     app: String,
+    bot: Option<Option<String>>,
     nodes: Vec<Seen>,
 }
 
@@ -156,6 +178,7 @@ fn surfaces() -> Vec<Surface> {
                     target: o.target.clone(),
                     name: o.name.clone(),
                     app: o.app.clone(),
+                    bot: o.bot.clone(),
                     nodes: view.ui_tree().nodes,
                 })
             })
@@ -313,6 +336,15 @@ fn plan(surfaces: &[Surface], stack: &[String], target: &Target, op: &Op, looked
     Ok(Plan { at, node: seen.id.clone(), label: node.name.clone(), act })
 }
 
+/// Whether a turn of `acting` may act on `s`: only the Bot whose chat opened
+/// it, and a plain chat on what a plain chat opened.
+fn owned(s: &Surface, acting: &Option<String>) -> Result<(), No> {
+    if s.bot.as_ref() == Some(acting) {
+        return Ok(());
+    }
+    Err(No::policy(says("{} was opened from another chat, so this Bot can't act on it and nothing was pressed. Open it from this chat.", &s.name)))
+}
+
 /// What an action's failure says: nsh's errors start with a code.
 fn unready(error: &str, label: &str) -> String {
     let said = match error.split(':').next().unwrap_or_default() {
@@ -331,7 +363,7 @@ fn refused_line(held: &Held, label: &str) -> String {
     match held {
         Held::Pasteboard => says("\"{}\" copies to the pasteboard, which is a person's to do, so the AI's press was refused and nothing was copied.", label),
         Held::Person => says("\"{}\" needs a person, so the AI's press was refused and nothing was sent. A person has to press it.", label),
-        Held::Said(said) => said.clone(),
+        Held::Said(said) | Held::Declined(said) => said.clone(),
     }
 }
 
@@ -360,14 +392,17 @@ fn finish(id: String, target: Target, label: String, done: Result<(), String>, n
                 if current {
                     ACTING.set(None);
                 }
-                let refused: Vec<String> = press::take_refused().iter().map(|held| refused_line(held, &label)).collect();
+                let (declined, refused): (Vec<Held>, Vec<Held>) = press::take_refused().into_iter().partition(|h| matches!(h, Held::Declined(_)));
+                let lines = |list: &[Held]| list.iter().map(|held| refused_line(held, &label)).collect::<Vec<String>>();
+                let (declined, refused) = (lines(&declined), lines(&refused));
+                let held: Vec<_> = press::take_outcomes().into_iter().map(|(tool, outcome)| json!({"tool": tool, "outcome": outcome})).collect();
                 let now = surfaces();
-                if let (Err(e), true) = (&done, refused.is_empty()) {
+                if let (Err(e), true) = (&done, refused.is_empty() && declined.is_empty()) {
                     return refuse(id, target, No::model(unready(e, &label)));
                 }
                 LOOKED.set(look_after(done.is_ok(), current, LOOKS.get() != looks, LOOKED.get(), looked_now(&now, &stack)));
                 let mut r = Response::ok(id, target);
-                r.result = Some(json!({"apps": trees(&now, &stack, Reading::configured()), "refused": refused}));
+                r.result = Some(json!({"apps": trees(&now, &stack, Reading::configured()), "refused": refused, "declined": declined, "held": held}));
                 // the model never saw this screen: it can't go on from it
                 reply_or(r, || on_main(|| LOOKED.set(None)));
             });
@@ -375,13 +410,13 @@ fn finish(id: String, target: Target, label: String, done: Result<(), String>, n
     });
 }
 
-/// Runs `op` on `target`, if the screen as it is now lets it.
-fn act(id: String, target: Target, op: Op, stack: Vec<String>) {
+/// Runs `op` on `target` for the Bot `bot`, if the screen as it is now lets it.
+fn act(id: String, target: Target, op: Op, bot: Option<String>, stack: Vec<String>) {
     if busy(ACTING.get(), Instant::now()) {
         return refuse(id, target, No::model("The AI's last action is still running, so nothing was pressed."));
     }
     let now = surfaces();
-    let ready = plan(&now, &stack, &target, &op, LOOKED.get(), Reading::configured());
+    let ready = plan(&now, &stack, &target, &op, LOOKED.get(), Reading::configured()).and_then(|p| owned(&now[p.at], &bot).map(|()| p));
     let view = ready.as_ref().ok().and_then(|p| now[p.at].view.upgrade());
     let (plan, view): (Plan, Rc<AppView>) = match (ready, view) {
         (Ok(plan), Some(view)) => (plan, view),
@@ -392,6 +427,7 @@ fn act(id: String, target: Target, op: Op, stack: Vec<String>) {
     ACTIONS.set(n);
     ACTING.set(Some(Acting { n, since: Instant::now() }));
     press::take_refused();
+    press::take_outcomes();
     let (label, looks) = (plan.label.clone(), LOOKS.get());
     view.act(&plan.node, plan.act, move |done| finish(id, target, label, done, n, looks));
 }
@@ -400,7 +436,7 @@ fn act(id: String, target: Target, op: Op, stack: Vec<String>) {
 /// action goes through the store, for the stack, then the main thread, for
 /// the views.
 fn answer(request: Envelope) {
-    let Envelope { id, target, op, .. } = request;
+    let Envelope { id, target, op, bot, .. } = request;
     if press::authorize_op(&target, &op).is_err() {
         let why = press::op_refused(&target, &op);
         return refuse(id, target, No::policy(why));
@@ -409,7 +445,7 @@ fn answer(request: Envelope) {
         let stack: Vec<String> = st.mini_full.with_untracked(|v| v.iter().map(|o| o.key.clone()).collect());
         on_main(move || {
             if !matches!(op, Op::Snapshot { .. }) {
-                return act(id, target, op, stack);
+                return act(id, target, op, bot, stack);
             }
             let now = surfaces();
             LOOKS.set(LOOKS.get() + 1);
@@ -419,6 +455,73 @@ fn answer(request: Envelope) {
             reply(r);
         });
     });
+}
+
+/// Whether the card of open `n` still stands over what the person saw:
+/// `rev` is the top screen as it went up. Only a screen that moved takes it
+/// down: `None` keeps it.
+fn card_gone(surfaces: &[Surface], stack: &[String], n: u64, rev: u64) -> Option<Answer> {
+    let Some(s) = surfaces.iter().find(|s| s.n == n) else { return Some(Answer::Closed) };
+    let on_top = top_of(surfaces, stack).is_some_and(|i| surfaces[i].n == n);
+    (!on_top || filter::rev(&s.nodes) != rev).then_some(Answer::Changed)
+}
+
+/// How often a card looks at the screen under it.
+const CARD_WATCH: Duration = Duration::from_millis(300);
+/// How many looks the screen gets to settle: the press itself redraws it (a
+/// busy button, a spinner) as the card goes up. Nothing else can act in that
+/// time: the action holds the Hub, and the card takes the person's input.
+const CARD_SETTLE: u32 = 3;
+
+/// Watches the card of `once` until it is down.
+fn watch_card(once: OnceId, n: u64, rev: u64) {
+    std::thread::spawn(move || {
+        let rev = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(rev));
+        for look in 0u32.. {
+            std::thread::sleep(CARD_WATCH);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (once, rev) = (once.clone(), rev.clone());
+            to_store(move |st| {
+                let stack: Vec<String> = st.mini_full.with_untracked(|v| v.iter().map(|o| o.key.clone()).collect());
+                on_main(move || {
+                    let now = surfaces();
+                    let seen = now.iter().find(|s| s.n == n).map(|s| filter::rev(&s.nodes));
+                    if let Some(seen) = seen.filter(|_| look < CARD_SETTLE) {
+                        rev.store(seen, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(gone) = card_gone(&now, &stack, n, rev.load(std::sync::atomic::Ordering::Relaxed)) {
+                        card::end(&once, gone);
+                    }
+                    let _ = tx.send(card::is_up(&once));
+                });
+            });
+            if !rx.recv_timeout(Duration::from_secs(5)).unwrap_or(true) {
+                return;
+            }
+        }
+    });
+}
+
+/// Shows `c` over open `n`, which has to be the top screen. `done` hears how
+/// it ended. Any thread.
+pub fn show_card(n: u64, once: OnceId, c: Card, done: Box<dyn FnOnce(Answer) + Send>) {
+    to_store(move |st| {
+        let stack: Vec<String> = st.mini_full.with_untracked(|v| v.iter().map(|o| o.key.clone()).collect());
+        on_main(move || {
+            let now = surfaces();
+            let top = top_of(&now, &stack).filter(|i| now[*i].n == n);
+            let view = top.and_then(|i| now[i].view.upgrade());
+            let (Some(i), Some(window)) = (top, view.and_then(|v| v.view().window())) else { return done(Answer::Changed) };
+            let rev = filter::rev(&now[i].nodes);
+            card::show(once.clone(), &c, &window, done);
+            watch_card(once, n, rev);
+        });
+    });
+}
+
+/// Takes the card of `once` down, if it is still up. Any thread.
+pub fn hide_card(once: OnceId) {
+    on_main(move || card::end(&once, Answer::TimedOut));
 }
 
 /// Follows the broker's requests for as long as the app runs. This is the
@@ -456,7 +559,7 @@ mod tests {
     }
 
     fn surface(key: &str, target: &str, app: &str, name: &str, nodes: Vec<Seen>) -> Surface {
-        Surface { n: 7, view: Weak::new(), key: key.into(), target: target.into(), name: name.into(), app: app.into(), nodes }
+        Surface { n: 7, view: Weak::new(), key: key.into(), target: target.into(), name: name.into(), app: app.into(), bot: Some(None), nodes }
     }
 
     const FORM: &str = "v1:app.buwiz.ebirforms/taxprofile?ticket=ticket-secret";
@@ -581,6 +684,62 @@ mod tests {
         let s = [surface(ENTRY, "books", "books", "Books", after)];
         let l = look_after(true, true, false, None, looked(&s, &st));
         assert!(planned(&s, &st, &set("field.amount", "2"), l).is_ok());
+    }
+
+    #[test]
+    fn only_the_bot_whose_chat_opened_a_screen_acts_on_it() {
+        let hex = Some("hex".to_owned());
+        let mut s = surface(ENTRY, "books", "books", "Books", entry_form());
+        s.bot = Some(hex.clone());
+        assert!(owned(&s, &hex).is_ok());
+        let no = owned(&s, &Some("bigmom".to_owned())).unwrap_err();
+        assert!(no.tell && no.said.starts_with("Books was opened from another chat"), "{no:?}");
+        assert!(owned(&s, &None).is_err(), "a plain chat on a Bot's screen");
+        s.bot = Some(None);
+        assert!(owned(&s, &None).is_ok());
+        assert!(owned(&s, &hex).is_err(), "a Bot on a plain chat's screen");
+        s.bot = None;
+        assert!(owned(&s, &None).is_err() && owned(&s, &hex).is_err(), "not known is no");
+    }
+
+    fn gone(s: &[Surface], st: &[String], rev: u64) -> Option<&'static str> {
+        card_gone(s, st, 7, rev).map(|a| match a {
+            Answer::Closed => "closed",
+            Answer::Changed => "changed",
+            _ => "other",
+        })
+    }
+
+    #[test]
+    fn a_card_stands_only_over_the_screen_as_it_went_up() {
+        let (s, st, _) = ready(entry_form());
+        let rev = filter::rev(&s[0].nodes);
+        assert_eq!(gone(&s, &st, rev), None);
+        let mut other = entry_form();
+        other[3].children[1] = text("n6", "Utilities");
+        let changed = [surface(ENTRY, "books", "books", "Books", other)];
+        assert_eq!(gone(&changed, &st, rev), Some("changed"));
+        assert_eq!(gone(&[], &st, rev), Some("closed"));
+        assert_eq!(gone(&s, &[], rev), Some("changed"), "taken off the stack");
+        let mut over = surface(FORM, "ebirforms", "taxprofile", "eBIRForms", vec![]);
+        over.n = 8;
+        let covered = [surface(ENTRY, "books", "books", "Books", entry_form()), over];
+        assert_eq!(gone(&covered, &stack(&[ENTRY, FORM]), rev), Some("changed"), "covered");
+    }
+
+    /// The card is no node: a click the Hub is asked for can't name it, on
+    /// the Bot's window or on the screen under it.
+    #[test]
+    fn a_synthesized_click_on_allow_approves_nothing() {
+        let _one = hold::tests::serial();
+        let once = hold::open(&json!({"entry": "ticket-1"})).unwrap();
+        for target in ["bot", "books"] {
+            let t = Target::parse(target).unwrap();
+            let (s, st, l) = ready(entry_form());
+            let refused = press::authorize_op(&t, &click("button.allow")).is_err() || plan(&s, &st, &t, &click("button.allow"), l, Reading::Structure).is_err();
+            assert!(refused, "{target}");
+        }
+        hold::retire(&once);
     }
 
     #[test]

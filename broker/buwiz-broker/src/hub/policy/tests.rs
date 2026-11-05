@@ -754,22 +754,23 @@ async fn a_routines_turn_doesnt_act_on_the_screen_even_with_both_switches_on() {
     assert_eq!(exec_tool(&routine, &press_block()).await, Out::err("unknown tool ui_act".into()));
 }
 
+/// A chat card would be under the screen: at Ask, each write the action leads to waits on the
+/// Bot's card instead.
 #[tokio::test]
-async fn at_ask_each_action_waits_for_the_person() {
+async fn at_ask_an_action_posts_no_chat_card_and_its_writes_ask_on_the_bots_card() {
     let b = bed_waiting("act-ask", std::time::Duration::from_millis(50));
     turn_on(&b, &["screens"]);
     host_set(&b.ctx, &json!({"bot": "hex", "key": "screen_actions", "state": "ask"})).unwrap();
     let seen = bot_on(&b.ctx, |e| screen_after(e, json!([])));
     let run = run_in(&b.ctx, &b.hex);
-    let out = exec_tool(&run, &press_block()).await;
-    assert_eq!(out.is_error, Some(true), "no answer is no");
-    assert!(seen.lock().unwrap().is_empty(), "nothing reached the Bot");
-    let card = all_notices(&b.ctx, &b.hex).into_iter().find(|n| n["kind"] == "tool_ask").expect("a card");
-    assert_eq!(card["title"], "Press \"button.save-draft\" on the screen?");
+    assert_eq!(exec_tool(&run, &press_block()).await.is_error, None);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(all_notices(&b.ctx, &b.hex).iter().all(|n| n["kind"] != "tool_ask"));
+    assert!(crate::hub::tools::controls::press_asks(&run, "v1:app.buwiz.books"));
 }
 
 #[tokio::test]
-async fn at_on_a_look_doesnt_make_it_ask_but_a_page_read_this_turn_does() {
+async fn at_on_a_look_doesnt_make_a_write_ask_but_a_page_read_this_turn_does() {
     let b = bed_waiting("act-outside", std::time::Duration::from_millis(50));
     turn_on(&b, &["screens", "screen_actions"]);
     let seen = bot_on(&b.ctx, |e| screen_after(e, json!([])));
@@ -777,9 +778,9 @@ async fn at_on_a_look_doesnt_make_it_ask_but_a_page_read_this_turn_does() {
     crate::hub::tools::controls::note_external(&run, "ui_look");
     assert_eq!(exec_tool(&run, &press_block()).await.is_error, None);
     assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(!crate::hub::tools::controls::press_asks(&run, "v1:app.buwiz.books"));
     crate::hub::tools::controls::note_external(&run, "fetch_url");
-    assert_eq!(exec_tool(&run, &press_block()).await.is_error, Some(true), "what it read may be asking for this");
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(crate::hub::tools::controls::press_asks(&run, "v1:app.buwiz.books"), "what it read may be asking for this");
 }
 
 #[tokio::test]

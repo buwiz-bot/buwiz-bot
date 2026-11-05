@@ -6,7 +6,7 @@
 use std::{
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -84,6 +84,10 @@ struct FakeBroker {
     running: AtomicUsize,
     most_running: AtomicUsize,
     closed: Mutex<Vec<String>>,
+    /// How many times a card was read.
+    cards: AtomicUsize,
+    /// The entry changes after the card goes up.
+    moved: AtomicBool,
 }
 
 impl host_api::Broker for FakeBroker {
@@ -108,6 +112,17 @@ impl host_api::Broker for FakeBroker {
                         ],
                         "structuredContent": {"title": "Fixture document"}
                     }),
+                    "fx_long_card" => {
+                        let lines: Vec<String> = (0..500).map(|i| format!("Entry {i}")).collect();
+                        json!({"structuredContent": {"title": "Post these?", "lines": lines}})
+                    }
+                    "fx_no_card" => json!({"isError": true, "content": [{"type": "text", "text": "no card for that"}]}),
+                    "fx_card" => {
+                        // a card reads the entry: one read before it shows, one at Allow
+                        let n = self.cards.fetch_add(1, Ordering::SeqCst);
+                        let amount = if n > 0 && self.moved.load(Ordering::SeqCst) { "₱9,350.00" } else { "₱1,350.00" };
+                        json!({"structuredContent": {"title": "Post this entry?", "lines": [format!("Rent, {amount}")]}})
+                    }
                     "fx_nodoc" => json!({"content": [{"type": "text", "text": "<p>no resource</p>"}]}),
                     "fx_slow" | "fx_count" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(150)));
@@ -121,6 +136,11 @@ impl host_api::Broker for FakeBroker {
             "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
                 Some("fx_echo" | "fx_slow") => json!({"allow": true, "effect": "draft"}),
                 Some("fx_read") => json!({"allow": true, "effect": "read"}),
+                Some("fx_post") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_card"}),
+                Some("fx_long") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_long_card"}),
+                Some("fx_refused_draft") => json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_no_card"}),
+                Some("fx_blank") => json!({"allow": false, "hold": true, "effect": "write"}),
+                Some("fx_ask") => json!({"allow": false, "hold": true, "effect": "draft"}),
                 _ => json!({"allow": false, "effect": "write"}),
             }),
             "/v1/host/tickets/title" => Ok(json!({"valid": body["ticket"] == TICKET, "title": "Dela Cruz Jane"})),
@@ -136,6 +156,9 @@ impl host_api::Broker for FakeBroker {
 
 /// The page `fx_doc` answers with.
 const DOC: &str = "<!DOCTYPE html><html><body><p>BIR Form 2551Q</p></body></html>";
+
+/// How a test answers a card.
+type CardDone = Box<dyn FnOnce(Answer) + Send>;
 
 /// The person, as the tests play them.
 #[derive(Default)]
@@ -160,9 +183,36 @@ struct TestUi {
     /// Who the input says is acting now, the agent when true.
     agent: AtomicBool,
     agent_calls: Mutex<Vec<bool>>,
+    /// How the person answers a held call's card; never when `None`.
+    card: Mutex<Option<fn() -> Answer>>,
+    /// The answer to a card that waits for the test.
+    card_done: Mutex<Option<CardDone>>,
+    /// Calls that may write now, and whether any ever was.
+    writes: AtomicUsize,
+    cards: Mutex<Vec<Card>>,
+    cards_down: AtomicUsize,
 }
 
 impl HostUi for TestUi {
+    fn hold(&self, _: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
+        self.cards.lock().unwrap().push(card);
+        match *self.card.lock().unwrap() {
+            Some(answer) => {
+                std::thread::spawn(move || done(answer()));
+            }
+            None => *self.card_done.lock().unwrap() = Some(done),
+        }
+    }
+    fn agent_write(&self, running: bool) {
+        if running {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.writes.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    fn hold_over(&self, _: &OnceId) {
+        self.cards_down.fetch_add(1, Ordering::SeqCst);
+    }
     fn actor(&self) -> Actor {
         if self.agent.load(Ordering::SeqCst) { Actor::Agent } else { Actor::Person }
     }
@@ -491,6 +541,165 @@ fn an_agents_press_on_a_tool_open_to_agents_goes_out_with_a_signed_press_record(
         assert_eq!(env["press"], json!({"by": "ai", "who": "agent.broker"}));
         keys::verify(&o.ctx.session.public_key(), env, sig).expect("the press is under the signature");
     }
+}
+
+/// A held call of `tool` from an open that says the agent, answered as told.
+fn held_open(tool: &str, answer: Option<fn() -> Answer>, limits: Limits) -> (Open, MutexGuard<'static, ()>) {
+    let one = hold::tests::serial();
+    let perms = json!({"tools": [tool]});
+    let script = format!(r#"try {{ await buwiz.call("{tool}", {{"entry": "ticket-1", "client_request_id": "post-1"}}); return "sent"; }} catch (e) {{ return "refused " + e.code + ": " + e.message; }}"#);
+    let open = Open::start_with(FIXTURE, perms, &script, limits, |ui| {
+        ui.agent.store(true, Ordering::SeqCst);
+        *ui.card.lock().unwrap() = answer;
+    });
+    (open, one)
+}
+
+fn sent_of(o: &Open, tool: &str) -> Vec<Value> {
+    o.broker.calls.lock().unwrap().iter().filter(|(env, _)| env["tool"] == tool).map(|(env, _)| env.clone()).collect()
+}
+
+fn by_hand() -> Answer {
+    Answer::Allow(hold::tests::yes())
+}
+
+#[test]
+fn allow_releases_exactly_the_held_call_with_the_record_of_who_and_when() {
+    let (mut o, _one) = held_open("fx_post", Some(by_hand), Limits::default());
+    o.wait("sent");
+    let sent = sent_of(&o, "fx_post");
+    assert_eq!(sent.len(), 1, "once, and only after the yes");
+    assert_eq!(sent[0]["args"], json!({"entry": "ticket-1", "client_request_id": "post-1"}));
+    assert_eq!(sent[0]["actor"], "agent");
+    let press = &sent[0]["press"];
+    assert_eq!((press["by"].as_str(), press["who"].as_str(), press["approved_by"].as_str()), (Some("ai_approved"), Some("agent.broker"), Some("person.owner")));
+    assert_eq!(press["args_hash"].as_str(), Some(hold::args_hash(&sent[0]["args"]).unwrap().as_str()));
+    assert!(press["at"].as_u64().unwrap() > 1_700_000_000_000);
+    let cards = o.ui.cards.lock().unwrap();
+    assert_eq!(cards.as_slice(), [Card { app: "Fixture".into(), title: "Post this entry?".into(), lines: vec!["Rent, ₱1,350.00".into()] }]);
+    assert_eq!(press["shown_hash"].as_str(), Some(cards[0].hash().unwrap().as_str()));
+    assert_eq!(o.broker.cards.load(Ordering::SeqCst), 2, "read again at Allow");
+    assert_eq!(o.ui.cards_down.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn nothing_goes_out_while_a_call_is_held() {
+    let limits = Limits { hold: Duration::from_millis(300), ..Limits::default() };
+    let (mut o, _one) = held_open("fx_post", None, limits);
+    while o.ui.cards.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(sent_of(&o, "fx_post").is_empty(), "held unsent");
+    assert_eq!(o.wait("refused"), "refused permission_denied: Nobody answered the card in time, so nothing was sent.");
+    assert!(sent_of(&o, "fx_post").is_empty(), "a timeout leaves nothing sent");
+    assert_eq!(o.ui.cards_down.load(Ordering::SeqCst), 1, "its card comes down");
+    assert!(press::take_outcomes().contains(&("fx_post".to_owned(), "expired")));
+}
+
+#[test]
+fn not_now_changed_or_closed_leaves_nothing_sent() {
+    let not_now: fn() -> Answer = || Answer::NotNow;
+    let changed: fn() -> Answer = || Answer::Changed;
+    let closed: fn() -> Answer = || Answer::Closed;
+    for (answer, said) in [
+        (not_now, "refused consent_declined: The person chose Not now"),
+        (changed, "refused permission_denied: The screen changed while the card was up"),
+        (closed, "refused permission_denied: The screen closed while the card was up"),
+    ] {
+        let (mut o, _one) = held_open("fx_post", Some(answer), Limits::default());
+        assert!(o.wait("refused").starts_with(said));
+        assert!(sent_of(&o, "fx_post").is_empty(), "{said}");
+    }
+}
+
+#[test]
+fn an_entry_that_changed_under_the_card_cancels_the_yes() {
+    let (mut o, _one) = held_open("fx_post", None, Limits::default());
+    while o.ui.cards.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    o.broker.moved.store(true, Ordering::SeqCst);
+    // the person's yes to what the card said arrives after the entry moved
+    let done = o.ui.card_done.lock().unwrap().take().expect("a card up");
+    done(by_hand());
+    assert!(o.wait("refused").contains("The screen changed"), "what the card said has moved");
+    assert!(sent_of(&o, "fx_post").is_empty());
+}
+
+#[test]
+fn a_person_only_call_with_no_words_for_its_card_never_shows_a_bare_one() {
+    let (mut o, _one) = held_open("fx_blank", Some(by_hand), Limits::default());
+    assert!(o.wait("refused").starts_with("refused permission_denied: The Bot couldn't show all of what this press would do"));
+    assert!(o.ui.cards.lock().unwrap().is_empty());
+    assert!(sent_of(&o, "fx_blank").is_empty());
+}
+
+#[test]
+fn a_card_too_long_to_show_refuses_the_press_and_nothing_is_cut() {
+    let (mut o, _one) = held_open("fx_long", Some(by_hand), Limits::default());
+    assert!(o.wait("refused").starts_with("refused permission_denied: The Bot couldn't show all of what this press would do"));
+    assert!(o.ui.cards.lock().unwrap().is_empty(), "no card went up");
+    assert!(sent_of(&o, "fx_long").is_empty());
+}
+
+/// The plugin refusing its own card means the call holds what it can't show.
+#[test]
+fn a_draft_whose_plugin_refuses_its_card_doesnt_fall_back_on_its_arguments() {
+    let (mut o, _one) = held_open("fx_refused_draft", Some(by_hand), Limits::default());
+    assert!(o.wait("refused").contains("couldn't show all of"));
+    assert!(o.ui.cards.lock().unwrap().is_empty());
+    assert!(sent_of(&o, "fx_refused_draft").is_empty());
+}
+
+#[test]
+fn a_draft_at_ask_shows_its_values_on_the_same_card_and_carries_the_persons_yes() {
+    let (mut o, _one) = held_open("fx_ask", Some(by_hand), Limits::default());
+    o.wait("sent");
+    assert_eq!(o.ui.cards.lock().unwrap()[0].lines, ["Entry: ticket-1"]);
+    let sent = sent_of(&o, "fx_ask");
+    assert_eq!((sent[0]["press"]["by"].as_str(), sent[0]["press"]["approved_by"].as_str()), (Some("ai_approved"), Some("person.owner")));
+}
+
+/// Whatever the person presses in that time takes nothing back.
+#[test]
+fn a_call_on_a_card_counts_as_a_write_until_it_is_over_and_a_read_stops_counting() {
+    let (mut o, _one) = held_open("fx_post", None, Limits::default());
+    while o.ui.cards.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(o.ui.writes.load(Ordering::SeqCst), 1, "held");
+    let done = o.ui.card_done.lock().unwrap().take().expect("a card up");
+    done(by_hand());
+    o.wait("sent");
+    let by = Instant::now() + Duration::from_secs(2);
+    while o.ui.writes.load(Ordering::SeqCst) > 0 && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(o.ui.writes.load(Ordering::SeqCst), 0);
+
+    let script = r#"await buwiz.call("fx_slow", {ms: 300}); return "sent";"#;
+    let mut w = Open::start_with(FIXTURE, json!({"tools": ["fx_slow"]}), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    let by = Instant::now() + Duration::from_secs(2);
+    while w.ui.agent_calls.lock().unwrap().is_empty() && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(w.ui.writes.load(Ordering::SeqCst), 1, "a draft out at the broker");
+    w.wait("sent");
+
+    let script = r#"await buwiz.call("fx_read", {}); return "sent";"#;
+    let mut r = Open::start_with(FIXTURE, json!({"tools": ["fx_read"]}), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    r.wait("sent");
+    assert_eq!(r.ui.writes.load(Ordering::SeqCst), 0, "a read stops counting at its check");
+}
+
+#[test]
+fn a_preview_is_never_held() {
+    let _one = hold::tests::serial();
+    let perms = json!({"tools": ["fx_post"], "preview": {"max_bytes": 1000}});
+    let script = r#"try { await buwiz.preview({tool: "fx_post"}); return "shown"; } catch (e) { return "refused " + e.code; }"#;
+    let mut o = Open::start_with(FIXTURE, perms, script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    assert_eq!(o.wait("refused"), "refused permission_denied");
+    assert!(o.ui.cards.lock().unwrap().is_empty());
 }
 
 #[test]

@@ -72,7 +72,7 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         "memory" => return fixed("Memory", "Remembers things about you."),
         "agents" => return fixed("Other agents", "Messages and makes other agents."),
         "screens" => return fixed("Mini app screens", "Reads the names of the buttons and fields on open mini app screens."),
-        ui::ACT_KEY => return fixed("Act on mini app screens", "Presses buttons and fills fields on the mini app screen on top, up to saving a draft. Never what only you can do."),
+        ui::ACT_KEY => return fixed("Act on mini app screens", "Presses buttons and fills fields on the mini app screen on top, up to saving a draft. What only you can do waits on a card for your OK, each time."),
         _ => {}
     }
     if let Some(id) = key.strip_prefix("skill:") {

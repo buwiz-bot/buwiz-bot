@@ -29,8 +29,9 @@ const __buwizBridge = (() => {
     if (o && typeof o.code === "string") return new BuwizError(o.code, o.message, o.retryable, o.details);
     return new BuwizError("internal", String((e && e.message) || e), true);
   };
+  // timeout 0: the bridge times every call itself, and a call can wait on a person's card
   const ask = (name, data) =>
-    __buwizHost.call(name, data === undefined ? null : data).then(undefined, (e) => {
+    __buwizHost.call(name, data === undefined ? null : data, { timeout: 0 }).then(undefined, (e) => {
       throw toBuwizError(e);
     });
   const done = () => undefined;

@@ -431,7 +431,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buwiz-agent"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-agent?rev=638d2b886e0c88cb20cce02c5f96c1edd43c8357#638d2b886e0c88cb20cce02c5f96c1edd43c8357"
+source = "git+https://github.com/buwiz-app/buwiz-agent?rev=0610474fbf4e3e13bcfae1b1cb42137a09e74466#0610474fbf4e3e13bcfae1b1cb42137a09e74466"
 dependencies = [
  "schemars",
  "serde",
