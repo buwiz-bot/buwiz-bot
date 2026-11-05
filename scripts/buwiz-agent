@@ -1,0 +1,4 @@
+#!/bin/sh
+# The old name of scripts/buwiz-drive, kept so existing commands still work.
+echo "scripts/buwiz-agent is an old name; use scripts/buwiz-drive" >&2
+exec "$(dirname "$0")/buwiz-drive" "$@"

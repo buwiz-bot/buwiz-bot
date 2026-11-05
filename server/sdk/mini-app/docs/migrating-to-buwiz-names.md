@@ -203,6 +203,7 @@ dir by `BUWIZ_BROKER_DATA_DIR` (or `GROK_DATA_DIR`) is not affected.
 |---|---|
 | `scripts/test-rox` | `scripts/buwiz-test` (the old one runs it) |
 | `scripts/rox-agent` | `scripts/buwiz-drive` (the old one runs it) |
+| `scripts/buwiz-agent` | `scripts/buwiz-drive` (the old one runs it) |
 | `scripts/broker-live use-rox` | `scripts/broker-live use-bundled` (`status` says `mode: bundled`) |
 | `$TMPDIR/rox-gpui-agent-token` | `$TMPDIR/buwiz-gpui-agent-token` (the dev launcher writes both) |
 | `$TMPDIR/rox-agent-menu` | `$TMPDIR/buwiz-agent-menu` (the app reads both) |
