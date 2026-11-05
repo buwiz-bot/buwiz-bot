@@ -32,6 +32,7 @@ use serde_json::Value;
 
 use super::{
     RoxError, V1Key,
+    attribution::{self, Actor},
     bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     host_api, load,
@@ -74,6 +75,8 @@ pub struct MacUi {
     key: String,
     title: String,
     n: u64,
+    /// The open's nsh surface: whose input its calls follow.
+    surface: u64,
 }
 
 impl HostUi for MacUi {
@@ -86,6 +89,14 @@ impl HostUi for MacUi {
                 answer(false);
             }
         }
+    }
+
+    fn actor(&self) -> Actor {
+        attribution::actor(self.surface)
+    }
+
+    fn agent_call(&self, running: bool) {
+        attribution::agent_call(running);
     }
 
     fn open_app(&self, target: V1Key) {
@@ -363,6 +374,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
     });
     VIEWS.with_borrow_mut(|v| v.insert(id, Rc::downgrade(view)));
     let channel = view.host();
+    let surface = view.surface_key();
     let slot = Arc::new(Slot::default());
     let s = slot.clone();
     std::thread::spawn(move || {
@@ -395,7 +407,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                 return super::to_store(move |st| st.mini_err(&key).set(text));
             }
         };
-        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone(), n: id });
+        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone(), n: id, surface });
         let dir = super::plugins_dir();
         let ctx = OpenContext::new(prepared.clone(), session, broker, ui, &dir, bridge::Limits::default());
         {

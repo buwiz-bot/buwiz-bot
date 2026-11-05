@@ -34,6 +34,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     RoxError, V1Key,
+    attribution::Actor,
     cards::{self, CardAction, CardMeta},
     host_api, keys,
     load::Prepared,
@@ -56,6 +57,16 @@ pub trait HostUi: Send + Sync {
     /// Attaches canonical `token` (titled `title`) to the open's chat:
     /// false when it was attached already.
     fn attach(&self, token: &str, title: &str) -> bool;
+    /// Who a call the open makes now speaks for. A host that can't tell
+    /// says the agent.
+    fn actor(&self) -> Actor {
+        Actor::Agent
+    }
+    /// A call of the agent's began (`true`) or ended: what it starts
+    /// next is still the agent's.
+    fn agent_call(&self, running: bool) {
+        let _ = running;
+    }
     /// Shows the native file dialog; `answer` gets the files chosen (none
     /// on Cancel).
     fn pick_files(&self, pick: PickRequest, answer: Box<dyn FnOnce(Vec<PathBuf>) + Send>);
@@ -94,6 +105,31 @@ pub trait HostUi: Send + Sync {
     /// (`buwiz.settle`).
     fn settle(&self, line: String) {
         let _ = line;
+    }
+}
+
+/// A call's actor, for as long as the call lasts, whether it runs or not.
+struct CallActor {
+    actor: Actor,
+    ui: Arc<dyn HostUi>,
+}
+
+impl CallActor {
+    /// Takes the actor now: a call in the queue keeps who made it.
+    fn new(ui: &Arc<dyn HostUi>) -> CallActor {
+        let actor = ui.actor();
+        if actor == Actor::Agent {
+            ui.agent_call(true);
+        }
+        CallActor { actor, ui: ui.clone() }
+    }
+}
+
+impl Drop for CallActor {
+    fn drop(&mut self) {
+        if self.actor == Actor::Agent {
+            self.ui.agent_call(false);
+        }
     }
 }
 
@@ -613,9 +649,10 @@ impl OpenContext {
             return reject(reply, invalid("args are over 256 KiB"));
         }
         let max = self.limits.max_result;
+        let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
             // signed when it goes out: a queued call is not stale
-            let (envelope, sig) = me.session.sign_call(&tool, &args)?;
+            let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor)?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             // which signed call went where, never its arguments or result
             let p = &me.prepared;
@@ -880,8 +917,9 @@ impl OpenContext {
         };
         let grant = self.prepared.permissions.preview.unwrap_or(perms::MAX_PREVIEW) as usize;
         let max = grant.min(self.limits.max_preview);
+        let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
-            let (envelope, sig) = me.session.sign_preview(&tool, &args)?;
+            let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor)?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             let p = &me.prepared;
             match &result {

@@ -194,7 +194,7 @@ export async function openApp(sessions, manifest, app, { notAfter = Date.now() +
 /** A signed call envelope of `open` (8.1); `over` replaces fields,
  *  `signer` signs instead of the open's session key. */
 export function envelope(open, tool, args = {}, over = {}, signer = open.ks.seed) {
-  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128(), ...over };
+  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, actor: "person", ts: Date.now(), nonce: random128(), ...over };
 
   return { envelope: env, sig: sign(signer, signedBytes(env)) };
 }

@@ -27,6 +27,7 @@
 //! `?ticket=` and `&props=` as in its `buwiz://app/` link ([`V1Key`]); v0's
 //! `mcp:` and generated `R<n>` keys are untouched.
 
+pub mod attribution;
 pub mod bridge;
 pub mod cache;
 // JCS, keys and the composer's tokens: shared with the broker

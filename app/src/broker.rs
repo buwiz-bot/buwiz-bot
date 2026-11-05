@@ -227,7 +227,7 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
             ("NSH_CHUNK_DIR", data.join("chunks").into()),
         ])
         .collect();
-    let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "PORT"];
+    let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "GPUI_AGENT_ACTOR", "PORT"];
     env_remove.extend(buwiz_protocol::env::with_old("BUWIZ_PUBLIC_PORT"));
     let log = crate::identity::logs_dir(home).join("broker.log");
     Launch { program: broker.to_owned(), args, env, env_remove, data, log }

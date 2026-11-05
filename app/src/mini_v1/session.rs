@@ -21,7 +21,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use super::{RoxError, host_api, keys};
+use super::{RoxError, attribution::Actor, host_api, keys};
 
 /// The longest a certificate may live (spec 4.4, Q13).
 pub const MAX_LIFETIME_MS: i64 = 8 * 3600 * 1000;
@@ -119,23 +119,25 @@ impl Session {
 
     /// The signed envelope of a call of `tool` with `args` (8.1):
     /// `(envelope, sig)`.
-    pub fn sign_call(&self, tool: &str, args: &Value) -> Result<(Value, String), RoxError> {
-        self.sign(tool, args, None)
+    pub fn sign_call(&self, tool: &str, args: &Value, actor: Actor) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, None, actor)
     }
 
     /// [`Session::sign_call`] for `buwiz.preview`: the envelope says
     /// `"purpose": "preview"`, which the broker takes only from an app
     /// granted `preview`, and answers with the larger document limit.
-    pub fn sign_preview(&self, tool: &str, args: &Value) -> Result<(Value, String), RoxError> {
-        self.sign(tool, args, Some("preview"))
+    pub fn sign_preview(&self, tool: &str, args: &Value, actor: Actor) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, Some("preview"), actor)
     }
 
-    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>) -> Result<(Value, String), RoxError> {
+    /// `actor` is the host's own word, under the signature: an app gives
+    /// the bridge a tool and its arguments and nothing else.
+    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>, actor: Actor) -> Result<(Value, String), RoxError> {
         self.check_live()?;
         let mut envelope = json!({
             "v": 1, "typ": "buwiz-call",
             "plugin": self.plugin, "app": self.app, "open_id": self.open_id,
-            "tool": tool, "args": args,
+            "tool": tool, "args": args, "actor": actor.as_str(),
             "ts": now_ms(), "nonce": keys::random_id(),
         });
         if let Some(p) = purpose {
@@ -481,18 +483,19 @@ pub(crate) mod tests {
     fn brg_03_envelopes_are_signed_over_jcs_with_a_fresh_nonce() {
         let s = open_with(|_, _| {}).unwrap();
         let args = json!({"period": "2026-09", "code": "1601C"});
-        let (env, sig) = s.sign_call("fx_echo", &args).unwrap();
+        let (env, sig) = s.sign_call("fx_echo", &args, Actor::Agent).unwrap();
         assert_eq!(env["v"], 1);
         assert_eq!(env["typ"], "buwiz-call");
         assert_eq!(env["open_id"], s.open_id.as_str());
         assert_eq!(env["args"], args);
+        assert_eq!(env["actor"], "agent");
         let ts = env["ts"].as_i64().unwrap();
         assert!((now_ms() - ts).abs() < 5000);
         assert_eq!(keys::unb64(env["nonce"].as_str().unwrap()).unwrap().len(), 16);
         // an independent check: the canonical bytes written out by hand,
         // verified with ed25519-dalek directly (not through keys::verify)
         let by_hand = format!(
-            r#"{{"app":"card","args":{{"code":"1601C","period":"2026-09"}},"nonce":"{}","open_id":"{}","plugin":"app.buwiz.fixture","tool":"fx_echo","ts":{ts},"typ":"buwiz-call","v":1}}"#,
+            r#"{{"actor":"agent","app":"card","args":{{"code":"1601C","period":"2026-09"}},"nonce":"{}","open_id":"{}","plugin":"app.buwiz.fixture","tool":"fx_echo","ts":{ts},"typ":"buwiz-call","v":1}}"#,
             env["nonce"].as_str().unwrap(),
             s.open_id
         );
@@ -503,10 +506,10 @@ pub(crate) mod tests {
             .verify_strict(by_hand.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig))
             .expect("the envelope's signature verifies over its JCS bytes");
         // every call gets its own nonce
-        let (env2, _) = s.sign_call("fx_echo", &args).unwrap();
+        let (env2, _) = s.sign_call("fx_echo", &args, Actor::Agent).unwrap();
         assert_ne!(env["nonce"], env2["nonce"]);
         // floats are not signed
-        assert_eq!(s.sign_call("fx_echo", &json!({"x": 0.5})).unwrap_err().code, "invalid_args");
+        assert_eq!(s.sign_call("fx_echo", &json!({"x": 0.5}), Actor::Person).unwrap_err().code, "invalid_args");
     }
 
     /// Counts `sessions/open` and `sessions/close` and signs like
@@ -567,6 +570,6 @@ pub(crate) mod tests {
         assert_eq!(on_plugin_event(&json!({"id": plugin, "generation": 4, "state": "running"})), 1);
         assert_eq!(s.check_live().unwrap_err().code, "plugin_restarted");
         assert_eq!(*heard.lock().unwrap(), [Ended::Restarted]);
-        assert_eq!(s.sign_call("fx_echo", &json!({})).unwrap_err().code, "plugin_restarted");
+        assert_eq!(s.sign_call("fx_echo", &json!({}), Actor::Person).unwrap_err().code, "plugin_restarted");
     }
 }

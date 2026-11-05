@@ -13,6 +13,8 @@
 # Start that broker with BUWIZ_BROKER_HUB=1 and --no-node, as the Bot does:
 # without them Node answers in MOCK mode, replies are canned and
 # /v1/host/tools gives a 405.
+# Its clicks count as the person's. GPUI_AGENT_ACTOR=agent among the VAR=value
+# arguments drives it as the AI instead.
 # (scripts/test-rox is its old name.) Every variable it sets, and every
 # ROX_<X>=value given, goes in by its Buwiz name and its old ROX_ one, so a
 # binary built before the rename is a test instance too.
@@ -82,7 +84,8 @@ PLIST
 fi
 [ -n "$ONLY" ] && { echo "$APP"; exit 0; }
 umask 077
-head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/token"
+# by the name the broker's sandbox keeps the Bot's shell from
+head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
 # VAR=value arguments by both names: ROX_<X> and BUWIZ_<X> alike
@@ -96,7 +99,7 @@ for a in "$@"; do
 done
 env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
   GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
-  GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/token")" ${VARS[@]+"${VARS[@]}"} \
+  GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN="$(cat "$R/buwiz-gpui-agent-token")" ${VARS[@]+"${VARS[@]}"} \
   nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
 echo "$P" > "$R/pid"

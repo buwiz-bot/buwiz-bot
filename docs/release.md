@@ -22,7 +22,7 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 
 | Script | Does |
 | --- | --- |
-| `build.sh` | Release builds of the app, the broker workspace (`buwiz-broker`), the Google Workspace plugin (`buwiz-gws`, from buwiz-app/google-workspace at the commit `plugins/google-workspace/rev` pins, through `scripts/gws-build`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports). |
+| `build.sh` | Release builds of the app, the broker workspace (`buwiz-broker`), the Google Workspace plugin (`buwiz-gws`, from buwiz-app/google-workspace at the commit `plugins/google-workspace/rev` pins, through `scripts/gws-build`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports, and without the gpui-agent server: it builds with `--no-default-features` and refuses a binary that has it). |
 | `sign.sh [identity]` | Developer ID signing with the hardened runtime, inside out: every Mach-O, then nested bundles, then the app. `-` signs ad hoc (a dry run). |
 | `notarize.sh <app or dmg>` | `notarytool submit --wait`, then `stapler staple` and `stapler validate`. Skips, saying so, without the `NOTARY_*` env (`REQUIRE_NOTARIZATION=1` makes that an error). |
 | `dmg.sh [identity]` | A drag-to-Applications dmg (hdiutil, no new tools), signed, notarized and stapled; writes `<dmg>.sha256` and prints the sha256 and size. |

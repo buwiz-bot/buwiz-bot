@@ -637,7 +637,7 @@ async function openAs(sessions, m, app) {
 }
 
 function envelope(open, tool, args = {}, signer = open.ks.seed) {
-  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, ts: Date.now(), nonce: random128() };
+  const env = { v: 1, typ: "buwiz-call", plugin: open.plugin, app: open.app, open_id: open.open_id, tool, args, actor: "person", ts: Date.now(), nonce: random128() };
 
   return { envelope: env, sig: sign(signer, signedBytes(env)) };
 }

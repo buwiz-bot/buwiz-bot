@@ -328,6 +328,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // `refresh` reloads the Library and groups; `card <path>` adds a wire
     // JSON file's interactive cards to the open chat, `cards-clear` drops
     // them (and every card's state).
+    #[cfg(feature = "dev-agent")]
     if std::env::var("GPUI_AGENT").as_deref() == Ok("1") {
         spawn(async move {
             let paths = ["buwiz-agent-menu", "rox-agent-menu"].map(|f| std::env::temp_dir().join(f));
@@ -739,6 +740,7 @@ fn routine_pill(name: String) -> impl IntoElement {
 
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
+#[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
 fn agent_menu(line: &str) {
     // `card <path>`: a wire file's cards (a CUSTOM frame, a `form` call, an
     // array of them) as a local reply in the open chat; `cards-clear` drops

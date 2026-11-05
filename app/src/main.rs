@@ -148,6 +148,9 @@ fn main() -> impl std::process::Termination {
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
     buwiz_bot::broker::ensure_started();
+    if let Some(mtm) = platform::objc2::MainThreadMarker::new() {
+        buwiz_bot::mini_v1::attribution::watch(mtm);
+    }
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: buwiz_bot::app_name().to_owned(),

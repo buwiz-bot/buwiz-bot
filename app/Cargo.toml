@@ -62,6 +62,13 @@ ooxml-opc = { package = "betteroffice-opc", version = "0.5.1" }
 # The brand mascot's PNGs (`mark/brand.rs`), drawn from its outline.
 tiny-skia = "0.11"
 
+# The dev and test bundles' gpui-agent server. A release build leaves it
+# out (`--no-default-features`, scripts/release/build.sh) and can't have it:
+# lib.rs refuses to compile the two together.
+[features]
+default = ["dev-agent"]
+dev-agent = ["nsh-platform-macos/gpui-agent-server"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { path = "../nsh/crates/nsh-platform-macos", default-features = false, features = ["gpui-agent"] }
 # The same AppKit crate nsh uses, with the print classes (the file viewer's

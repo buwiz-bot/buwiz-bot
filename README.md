@@ -111,6 +111,15 @@ GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/buwiz-bot`.
 `GPUI_AGENT_ALLOW_RELEASE=1`: the dev profile builds dependencies without
 debug assertions, which gpui-agent's guard reads as a release build.
 
+The server is the `dev-agent` feature, on by default for dev and test builds.
+A release build has no server: `scripts/release/build.sh` builds with
+`--no-default-features`, and `--release` with the feature on doesn't compile.
+
+The channel's clicks count as yours, so a test Bot behaves as if you pressed.
+Set `GPUI_AGENT_ACTOR=agent` to drive it as the AI: writes then reach the mini
+app as `origin: agent` until a real press in that surface, and a tool kept for
+apps refuses them. Reads still work.
+
 ## Dev app & links
 
 `app/bundle-dev.sh` creates `~/Applications/Buwiz Bot.app` and registers it
