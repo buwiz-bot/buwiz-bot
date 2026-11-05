@@ -87,8 +87,10 @@ impl Fake {
                 tool("fx_big", "A big answer", json!({})),
                 tool("fx_app_only", "For apps", json!({"_meta": {"buwiz/audience": ["app"]}})),
                 tool("fx_draft", "Saves a draft", json!({"_meta": {"buwiz/audience": ["app", "agent"], "buwiz/press": {"describe": "fx_search"}}})),
-                tool("fx_post", "Posts", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "describe": "fx_search"}}})),
-                tool("fx_close", "Closes", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "describe": "fx_draft"}}})),
+                tool("fx_post", "Posts", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "effect": "post", "describe": "fx_search"}}})),
+                tool("fx_close", "Closes", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "effect": "close", "describe": "fx_draft"}}})),
+                tool("fx_file_return", "Files", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "effect": "file", "describe": "fx_search"}}})),
+                tool("fx_lodge", "Lodges a return", json!({"_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "describe": "fx_search"}}})),
                 tool("buwiz.provision", "reserved", json!({})),
                 tool("mcp_shadow", "a v0 name", json!({})),
                 tool("other_name", "not its short", json!({})),
@@ -871,6 +873,19 @@ async fn the_press_route_says_hold_and_never_allow_for_a_person_only_tool() {
     let (ctx, run) = press_bed("press-word-held", "on", std::time::Duration::from_millis(50));
     let word = word_in_flight(&ctx, &run, "fx_post", press_input()).await;
     assert_eq!(word, json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_search"}));
+}
+
+/// A plugin that tries to opt a filing in is back at a plain refusal: no hold, no card.
+#[tokio::test]
+async fn a_plugin_trying_to_opt_in_a_file_tool_gets_no_hold_and_no_card() {
+    let (ctx, run) = press_bed("press-file", "on", std::time::Duration::from_millis(50));
+    for tool in ["fx_file_return", "fx_lodge"] {
+        let word = word_in_flight(&ctx, &run, tool, press_input()).await;
+        assert_eq!(word, json!({"allow": false, "effect": "write"}), "{tool}");
+    }
+    let bot = bot_pressing(&ctx, "fx_file_return");
+    assert_eq!(pressed(&run).await["refused"][0], "Only a person can do this in Fixture, so the AI's press was refused and nothing was sent.");
+    assert_eq!((bot.sent(), bot.held()), (0, 0));
 }
 
 #[tokio::test]

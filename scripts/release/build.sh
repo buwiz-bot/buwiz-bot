@@ -124,6 +124,10 @@ fi
 if LC_ALL=C grep -q 'gpui-agent: serving' "$BUWIZ_BOT_BIN"; then
   die "$BUWIZ_BOT_BIN has the gpui-agent server in it: build with --no-default-features"
 fi
+# nor the setting that lets a posted click press Allow on the Hub's card
+if LC_ALL=C grep -q 'BUWIZ_HUB_POSTED_ALLOW' "$BUWIZ_BOT_BIN"; then
+  die "$BUWIZ_BOT_BIN takes posted clicks on the card: build with --no-default-features"
+fi
 if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
   cargo_release "$ROOT/broker" "$BROKER_TARGET" -p buwiz-broker
 fi

@@ -87,6 +87,7 @@ fn effect_of(word: Option<&str>) -> Effect {
     match word {
         Some("read") => Effect::Read,
         Some("draft") => Effect::Draft,
+        Some("file") => Effect::File,
         _ => Effect::Write,
     }
 }
@@ -106,8 +107,8 @@ pub fn tool_refused(app: &str) -> String {
 /// What a call under an agent's press does next.
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
-    /// It goes out with this press record.
-    Go(Value),
+    /// It goes out with this press record. `read` says it changes nothing.
+    Go { press: Value, read: bool },
     /// It waits, unsent, for the person's answer on the card. `describe` is
     /// the read that puts it in plain words.
     Hold { effect: Effect, describe: Option<String> },
@@ -132,7 +133,8 @@ pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, titl
         return Err(held(Held::Said(unchecked()), unchecked()));
     };
     let effect = effect_of(word.get("effect").and_then(Value::as_str));
-    if word.get("hold") == Some(&Value::Bool(true)) {
+    // O4: no word holds a filing, so no card ever shows one
+    if word.get("hold") == Some(&Value::Bool(true)) && effect != Effect::File {
         let describe = word.get("describe").and_then(Value::as_str).map(str::to_owned);
         return Ok(Verdict::Hold { effect, describe });
     }
@@ -144,7 +146,7 @@ pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, titl
         let said = word.get("said").and_then(Value::as_str).map_or_else(unchecked, str::to_owned);
         return Err(held(Held::Said(said.clone()), said));
     }
-    Ok(Verdict::Go(json!(allowed.pressed)))
+    Ok(Verdict::Go { press: json!(allowed.pressed), read: effect == Effect::Read })
 }
 
 /// Why a call under an agent's press was held back.
@@ -286,7 +288,8 @@ pub(crate) mod tests {
     fn a_word_the_bot_doesnt_know_is_the_persons() {
         assert_eq!(effect_of(Some("read")), Effect::Read);
         assert_eq!(effect_of(Some("draft")), Effect::Draft);
-        for word in [Some("write"), Some("Read"), Some("file"), Some(""), None] {
+        assert_eq!(effect_of(Some("file")), Effect::File);
+        for word in [Some("write"), Some("Read"), Some(""), None] {
             assert_eq!(effect_of(word), Effect::Write, "{word:?}");
         }
     }
@@ -305,9 +308,18 @@ pub(crate) mod tests {
 
     fn check(word: Option<Value>) -> Result<Value, RoxError> {
         check_tool(&Word(word), "app.buwiz.books", "books", "Books", "fx_tool").map(|v| match v {
-            Verdict::Go(press) => press,
+            Verdict::Go { press, .. } => press,
             held @ Verdict::Hold { .. } => panic!("held: {held:?}"),
         })
+    }
+
+    /// O4: whatever the broker says of a filing, it isn't held and it doesn't go.
+    #[test]
+    fn a_filing_is_never_held_and_never_goes() {
+        for word in [json!({"allow": false, "hold": true, "effect": "file"}), json!({"allow": true, "effect": "file"}), json!({"allow": true, "hold": true, "effect": "file"})] {
+            let e = check(Some(word.clone())).unwrap_err();
+            assert_eq!(e.code, "permission_denied", "{word}");
+        }
     }
 
     /// The broker's word can hold a call, and nothing it says lets one go:

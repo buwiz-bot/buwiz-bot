@@ -101,6 +101,10 @@ impl HostUi for MacUi {
         attribution::agent_call(running);
     }
 
+    fn agent_write(&self, running: bool) {
+        attribution::agent_write(running);
+    }
+
     fn hold(&self, once: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
         crate::agent_hub::show_card(self.n, once, card, done);
     }

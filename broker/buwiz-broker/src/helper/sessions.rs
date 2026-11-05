@@ -71,10 +71,22 @@ pub fn open_to_agents(t: &Value) -> bool {
     t.pointer("/_meta/buwiz~1audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("agent")))
 }
 
+/// What a tool may declare it does, to take the AI's press (D1). Filing never (O4), and neither
+/// voiding nor reopening.
+const PRESS_EFFECTS: [&str; 2] = ["post", "close"];
+/// Words in a tool's name that keep it out whatever it declares: a declaration is the plugin's
+/// own word, and these are the tools it must not be able to bring in by mistake or on purpose.
+const NEVER_PRESSED: [&str; 9] = ["file", "filing", "submit", "send", "queue", "pay", "paid", "void", "reopen"];
+
 /// Whether plugin tool `t` lets the AI press it once a person allowed that one press (O3): the
-/// plugin's own opt-in, `_meta["buwiz/press"].approved`. Only a clear `true`.
+/// plugin's own opt-in, `_meta["buwiz/press"]`, with a clear `approved: true` and an `effect` of
+/// [`PRESS_EFFECTS`], on a tool whose name says none of [`NEVER_PRESSED`].
 pub fn press_opted_in(t: &Value) -> bool {
+    let effect = t.pointer("/_meta/buwiz~1press/effect").and_then(Value::as_str);
+    let name = t.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
     t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true))
+        && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
+        && !name.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| NEVER_PRESSED.contains(&w))
 }
 
 /// The read plugin tool `t` names to put a held call in plain words, if any.
@@ -723,6 +735,22 @@ mod tests {
         assert_eq!(press_of(Some(&agent), Some(&approved)), Some(approved.clone()));
     }
 
+    /// O4 by machine: a plugin can't bring a filing, a void or a reopen in by asking.
+    #[test]
+    fn a_plugin_cant_opt_in_a_filing_or_anything_d1_doesnt_name() {
+        use super::press_opted_in;
+        let tool = |name: &str, press: Value| json!({"name": name, "_meta": {"buwiz/audience": ["app"], "buwiz/press": press}});
+        assert!(press_opted_in(&tool("books_app_post_entry", json!({"approved": true, "effect": "post"}))));
+        assert!(press_opted_in(&tool("books_app_month_close", json!({"approved": true, "effect": "close"}))));
+        for press in [json!({"approved": true}), json!({"approved": true, "effect": "file"}), json!({"approved": true, "effect": "void"}), json!({"approved": true, "effect": "reopen"}), json!({"approved": true, "effect": "Post"}), json!({"approved": true, "effect": 1}), json!({"effect": "post"})] {
+            assert!(!press_opted_in(&tool("fx_thing", press.clone())), "{press}");
+        }
+        for name in ["ebirforms_return_file", "fx_file_return", "fx_submit", "fx_send_form", "fx_queue", "fx_pay", "fx_void_entry", "fx_month_reopen", "FX_FILE"] {
+            assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: its own word doesn't bring it in");
+        }
+        assert!(press_opted_in(&tool("fx_profile_post", json!({"approved": true, "effect": "post"}))), "a word, not a part of one");
+    }
+
     #[test]
     fn a_write_that_isnt_the_persons_reaches_only_a_tool_open_to_agents() {
         use super::may_reach;
@@ -745,9 +773,9 @@ mod tests {
         let yes = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "press-0001", "args_hash": hash, "shown_hash": hash, "at": 1});
         let plain = json!({"by": "ai", "who": "agent.broker"});
         let forged = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "press-0001"});
-        let opted = json!({"name": "fx_post", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true}}});
+        let opted = json!({"name": "fx_post", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": true, "effect": "post"}}});
         let not = json!({"name": "fx_void", "_meta": {"buwiz/audience": ["app"]}});
-        let word = json!({"name": "fx_x", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": "true"}}});
+        let word = json!({"name": "fx_x", "_meta": {"buwiz/audience": ["app"], "buwiz/press": {"approved": "true", "effect": "post"}}});
         assert!(may_reach(Some(&agent), Some(&opted), Some(&yes)));
         assert!(!may_reach(Some(&agent), Some(&opted), None), "no record");
         assert!(!may_reach(Some(&agent), Some(&opted), Some(&plain)), "the AI's press with no yes");

@@ -732,15 +732,13 @@ mod tests {
     #[test]
     fn a_synthesized_click_on_allow_approves_nothing() {
         let _one = hold::tests::serial();
-        let (wake, heard) = std::sync::mpsc::channel();
-        let once = hold::open("books_app_post_entry", &json!({"entry": "ticket-1"}), wake).unwrap();
+        let once = hold::open(&json!({"entry": "ticket-1"})).unwrap();
         for target in ["bot", "books"] {
             let t = Target::parse(target).unwrap();
             let (s, st, l) = ready(entry_form());
             let refused = press::authorize_op(&t, &click("button.allow")).is_err() || plan(&s, &st, &t, &click("button.allow"), l, Reading::Structure).is_err();
             assert!(refused, "{target}");
         }
-        assert!(heard.try_recv().is_err(), "nothing answered");
         hold::retire(&once);
     }
 

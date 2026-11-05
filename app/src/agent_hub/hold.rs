@@ -6,9 +6,9 @@
 //! out, so there is nothing to copy back from the screen or the broker.
 //!
 //! - [`open`] mints the one-time id and is the only press open: one at a
-//!   time. The same call again is refused and leaves the first waiting; a
-//!   call with other values cancels the open press too (O2: changed values
-//!   cancel the approval).
+//!   time. Any other call, the same or with other values, is refused and
+//!   leaves the card the person is reading alone. Changed values can't reach
+//!   the held call: what goes out is the arguments it was held with.
 //! - [`Card`] is what the person reads, from the plugin's own read of the
 //!   call. It stays in the app: it goes to no log and never to the model.
 //! - [`release`] is the only way to a press record, and it takes a
@@ -20,7 +20,7 @@
 //! Nothing here is signed apart: an approval never leaves the process
 //! except inside the call's own envelope, under the session key.
 
-use std::sync::{Mutex, mpsc};
+use std::sync::Mutex;
 
 use buwiz_agent::{ActorId, Approval, Caller, ContentHash, Effect, OnceId, PressAction, Refused, SafeU64, authorize_press};
 use serde_json::{Value, json};
@@ -123,12 +123,9 @@ impl Card {
 /// The press open now.
 struct OpenPress {
     once: OnceId,
-    tool: String,
     args_hash: ContentHash,
     /// What the card showed, once it did.
     shown: Option<ContentHash>,
-    /// How the card's end reaches whoever waits.
-    wake: mpsc::Sender<Answer>,
 }
 
 static OPEN: Mutex<Option<OpenPress>> = Mutex::new(None);
@@ -138,7 +135,6 @@ fn lock() -> std::sync::MutexGuard<'static, Option<OpenPress>> {
 }
 
 const BUSY: &str = "A card for the AI's last press is still waiting, so this one was refused and nothing was sent.";
-const CANCELLED: &str = "The values changed while the card was up, so the press was cancelled and nothing was sent. The AI has to look again.";
 const NO_HASH: &str = "These values can't be shown exactly, so the press was refused and nothing was sent.";
 
 fn refused(said: &str) -> RoxError {
@@ -152,22 +148,15 @@ fn mint() -> Option<OnceId> {
     OnceId::parse(&format!("press-{hex}")).ok()
 }
 
-/// Opens a press for `tool` with `args`: its one-time id, and `wake` hears
-/// its end if something here cancels it.
-pub fn open(tool: &str, args: &Value, wake: mpsc::Sender<Answer>) -> Result<OnceId, RoxError> {
+/// Opens a press for a call with `args`: its one-time id.
+pub fn open(args: &Value) -> Result<OnceId, RoxError> {
     let hash = args_hash(args).ok_or_else(|| refused(NO_HASH))?;
     let mut open = lock();
-    if let Some(now) = open.as_ref() {
-        if now.tool == tool && now.args_hash == hash {
-            return Err(refused(BUSY));
-        }
-        if let Some(cancelled) = open.take() {
-            let _ = cancelled.wake.send(Answer::Changed);
-        }
-        return Err(refused(CANCELLED));
+    if open.is_some() {
+        return Err(refused(BUSY));
     }
     let once = mint().ok_or_else(|| refused(NO_HASH))?;
-    *open = Some(OpenPress { once: once.clone(), tool: tool.to_owned(), args_hash: hash, shown: None, wake });
+    *open = Some(OpenPress { once: once.clone(), args_hash: hash, shown: None });
     Ok(once)
 }
 
@@ -231,16 +220,6 @@ pub(crate) mod tests {
         guard
     }
 
-    /// The id of the press open now.
-    pub(crate) fn open_now() -> Option<OnceId> {
-        lock().as_ref().map(|o| o.once.clone())
-    }
-
-    /// How to answer the press open now, as the card does.
-    pub(crate) fn wake_of(once: &OnceId) -> mpsc::Sender<Answer> {
-        lock().as_ref().filter(|o| o.once == *once).map(|o| o.wake.clone()).expect("that press")
-    }
-
     fn post(effect: Effect) -> PressAction {
         PressAction { target: Target::parse("books").unwrap(), id: AgentId::parse("tool.books-app-post-entry").unwrap(), effect, once: None, args_hash: None, shown_hash: None }
     }
@@ -254,11 +233,10 @@ pub(crate) mod tests {
     }
 
     /// A press open on `args` with the card up.
-    fn opened(args: &Value) -> (OnceId, mpsc::Receiver<Answer>) {
-        let (tx, rx) = mpsc::channel();
-        let once = open("books_app_post_entry", args, tx).unwrap();
+    fn opened(args: &Value) -> OnceId {
+        let once = open(args).unwrap();
         showing(&once, card().hash().unwrap());
-        (once, rx)
+        once
     }
 
     pub(crate) fn yes() -> PersonYes {
@@ -272,7 +250,7 @@ pub(crate) mod tests {
     #[test]
     fn allow_gives_the_record_of_the_ai_and_the_person_and_when() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         let got = released(&once, &entry(), card()).unwrap();
         let p: PressedBy = serde_json::from_value(got.clone()).unwrap();
         assert!(matches!(&p, PressedBy::AiApproved { who, approved_by, once: o, .. } if who.as_str() == "agent.broker" && approved_by.as_str() == "person.owner" && *o == once));
@@ -284,7 +262,7 @@ pub(crate) mod tests {
     #[test]
     fn a_second_use_of_an_allow_finds_nothing() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         assert!(released(&once, &entry(), card()).is_ok());
         assert_eq!(released(&once, &entry(), card()), Err(Refused::NoOpenPress));
     }
@@ -292,7 +270,7 @@ pub(crate) mod tests {
     #[test]
     fn other_arguments_are_refused_and_the_id_is_spent() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         let other = json!({"entry": "ticket-2", "client_request_id": "post-1"});
         assert_eq!(released(&once, &other, card()), Err(Refused::ApprovalWrongArgs));
         assert_eq!(released(&once, &entry(), card()), Err(Refused::NoOpenPress), "changed values cancelled it");
@@ -301,7 +279,7 @@ pub(crate) mod tests {
     #[test]
     fn a_card_that_says_something_else_now_is_refused() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         let changed = Card { lines: vec!["Rent, ₱9,350.00".into()], ..card() };
         assert_eq!(released(&once, &entry(), changed), Err(Refused::ApprovalWrongShown));
     }
@@ -309,44 +287,33 @@ pub(crate) mod tests {
     #[test]
     fn a_press_whose_card_never_showed_cant_be_released() {
         let _one = serial();
-        let (tx, _rx) = mpsc::channel();
-        let once = open("books_app_post_entry", &entry(), tx).unwrap();
+        let once = open(&entry()).unwrap();
         assert_eq!(released(&once, &entry(), card()), Err(Refused::NoOpenPress));
     }
 
     #[test]
     fn a_forged_id_opens_nothing_and_leaves_the_press_open() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         let forged = OnceId::parse("press-made-up-by-the-model").unwrap();
         assert_eq!(released(&forged, &entry(), card()), Err(Refused::NoOpenPress));
         assert!(released(&once, &entry(), card()).is_ok());
     }
 
     #[test]
-    fn one_press_at_a_time_the_same_call_again_waits_behind_it() {
+    fn one_press_at_a_time_and_another_leaves_the_card_up() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
-        let (tx, _rx2) = mpsc::channel();
-        assert_eq!(open("books_app_post_entry", &entry(), tx).unwrap_err().message, BUSY);
-        assert!(released(&once, &entry(), card()).is_ok(), "the first still stands");
-    }
-
-    #[test]
-    fn a_call_with_other_values_cancels_the_open_press() {
-        let _one = serial();
-        let (once, rx) = opened(&entry());
-        let (tx, _rx2) = mpsc::channel();
+        let once = opened(&entry());
+        assert_eq!(open(&entry()).unwrap_err().message, BUSY);
         let other = json!({"entry": "ticket-2", "client_request_id": "post-2"});
-        assert_eq!(open("books_app_post_entry", &other, tx).unwrap_err().message, CANCELLED);
-        assert!(matches!(rx.try_recv(), Ok(Answer::Changed)));
-        assert_eq!(released(&once, &entry(), card()), Err(Refused::NoOpenPress));
+        assert_eq!(open(&other).unwrap_err().message, BUSY);
+        assert!(released(&once, &entry(), card()).is_ok(), "the card the person was reading still stands");
     }
 
     #[test]
     fn retiring_leaves_nothing_to_release() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         retire(&once);
         assert_eq!(released(&once, &entry(), card()), Err(Refused::NoOpenPress));
     }
@@ -384,7 +351,7 @@ pub(crate) mod tests {
     #[test]
     fn a_draft_allowed_on_the_card_goes_out_as_the_ais_press() {
         let _one = serial();
-        let (once, _rx) = opened(&entry());
+        let once = opened(&entry());
         let got = release(yes(), &once, post(Effect::Draft), &entry(), card().hash(), 1).unwrap();
         assert_eq!(got, json!({"by": "ai", "who": "agent.broker"}));
     }

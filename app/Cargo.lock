@@ -645,7 +645,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buwiz-agent"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-agent?rev=f60b63f1248846d42aeb28de471d3085bd886e02#f60b63f1248846d42aeb28de471d3085bd886e02"
+source = "git+https://github.com/buwiz-app/buwiz-agent?rev=0610474fbf4e3e13bcfae1b1cb42137a09e74466#0610474fbf4e3e13bcfae1b1cb42137a09e74466"
 dependencies = [
  "schemars",
  "serde",
@@ -694,6 +694,7 @@ dependencies = [
  "nsh-platform-ios",
  "nsh-platform-macos",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "pele",
  "ra-jit-live",
  "rusqlite",
@@ -1572,7 +1573,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4450,7 +4451,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5791,7 +5792,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

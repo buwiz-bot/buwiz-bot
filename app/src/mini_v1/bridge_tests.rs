@@ -150,6 +150,9 @@ impl host_api::Broker for FakeBroker {
 /// The page `fx_doc` answers with.
 const DOC: &str = "<!DOCTYPE html><html><body><p>BIR Form 2551Q</p></body></html>";
 
+/// How a test answers a card.
+type CardDone = Box<dyn FnOnce(Answer) + Send>;
+
 /// The person, as the tests play them.
 #[derive(Default)]
 struct TestUi {
@@ -175,6 +178,10 @@ struct TestUi {
     agent_calls: Mutex<Vec<bool>>,
     /// How the person answers a held call's card; never when `None`.
     card: Mutex<Option<fn() -> Answer>>,
+    /// The answer to a card that waits for the test.
+    card_done: Mutex<Option<CardDone>>,
+    /// Calls that may write now, and whether any ever was.
+    writes: AtomicUsize,
     cards: Mutex<Vec<Card>>,
     cards_down: AtomicUsize,
 }
@@ -182,8 +189,18 @@ struct TestUi {
 impl HostUi for TestUi {
     fn hold(&self, _: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
         self.cards.lock().unwrap().push(card);
-        if let Some(answer) = *self.card.lock().unwrap() {
-            std::thread::spawn(move || done(answer()));
+        match *self.card.lock().unwrap() {
+            Some(answer) => {
+                std::thread::spawn(move || done(answer()));
+            }
+            None => *self.card_done.lock().unwrap() = Some(done),
+        }
+    }
+    fn agent_write(&self, running: bool) {
+        if running {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.writes.fetch_sub(1, Ordering::SeqCst);
         }
     }
     fn hold_over(&self, _: &OnceId) {
@@ -596,8 +613,8 @@ fn an_entry_that_changed_under_the_card_cancels_the_yes() {
     }
     o.broker.moved.store(true, Ordering::SeqCst);
     // the person's yes to what the card said arrives after the entry moved
-    let once = hold::tests::open_now().expect("a press open");
-    let _ = hold::tests::wake_of(&once).send(by_hand());
+    let done = o.ui.card_done.lock().unwrap().take().expect("a card up");
+    done(by_hand());
     assert!(o.wait("refused").contains("The screen changed"), "what the card said has moved");
     assert!(sent_of(&o, "fx_post").is_empty());
 }
@@ -616,6 +633,38 @@ fn a_draft_at_ask_shows_its_values_on_the_same_card_and_goes_out_as_the_ais() {
     o.wait("sent");
     assert_eq!(o.ui.cards.lock().unwrap()[0].lines, ["Entry: ticket-1"]);
     assert_eq!(sent_of(&o, "fx_ask")[0]["press"], json!({"by": "ai", "who": "agent.broker"}));
+}
+
+/// Whatever the person presses in that time takes nothing back.
+#[test]
+fn a_call_on_a_card_counts_as_a_write_until_it_is_over_and_a_read_stops_counting() {
+    let (mut o, _one) = held_open("fx_post", None, Limits::default());
+    while o.ui.cards.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(o.ui.writes.load(Ordering::SeqCst), 1, "held");
+    let done = o.ui.card_done.lock().unwrap().take().expect("a card up");
+    done(by_hand());
+    o.wait("sent");
+    let by = Instant::now() + Duration::from_secs(2);
+    while o.ui.writes.load(Ordering::SeqCst) > 0 && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(o.ui.writes.load(Ordering::SeqCst), 0);
+
+    let script = r#"await buwiz.call("fx_slow", {ms: 300}); return "sent";"#;
+    let mut w = Open::start_with(FIXTURE, json!({"tools": ["fx_slow"]}), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    let by = Instant::now() + Duration::from_secs(2);
+    while w.ui.agent_calls.lock().unwrap().is_empty() && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(w.ui.writes.load(Ordering::SeqCst), 1, "a draft out at the broker");
+    w.wait("sent");
+
+    let script = r#"await buwiz.call("fx_read", {}); return "sent";"#;
+    let mut r = Open::start_with(FIXTURE, json!({"tools": ["fx_read"]}), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    r.wait("sent");
+    assert_eq!(r.ui.writes.load(Ordering::SeqCst), 0, "a read stops counting at its check");
 }
 
 #[test]

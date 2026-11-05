@@ -17,6 +17,19 @@
 //!   the agent's. A wrong refusal costs a second press; a wrong "person"
 //!   would run a person-only tool.
 //!
+//! - While a write of the agent's is out, or its card is up, nothing is
+//!   quiet, for as long as it takes. [`MAX_CHAIN`] is for polling reads alone.
+//!
+//! **What this can't do.** A call can't be tied to the press that caused it,
+//! so an app's delayed call goes by the moment it is made. If the AI presses
+//! and the app sits on a timer past the settle with nothing in flight, then
+//! the person's own press in that surface takes it back, and what fires next
+//! goes out as the person's, though the AI started it. Nothing here can see
+//! that: the app holds the timer, and no call is out to watch. It takes an
+//! app that delays a write after a press with no call between, and the
+//! person pressing in that surface in the gap. Closing it needs the app to
+//! say which press a call belongs to.
+//!
 //! A call takes its actor when the app makes it, not when it is signed: a
 //! queued call of the agent's stays the agent's. The broker turns the
 //! actor into the origin the plugin sees, and reads still go out as the
@@ -32,9 +45,9 @@ use std::{
 /// the person's input can't take a surface back: covers the debounce and
 /// the next step of what it started.
 const SETTLE: Duration = Duration::from_secs(2);
-/// How long after the agent's last action its calls can keep it from
-/// being quiet: a screen that polls would otherwise never settle. As long
-/// as one call may last.
+/// How long after the agent's last action its reads can keep it from being
+/// quiet: a screen that polls would otherwise never settle. As long as one
+/// call may last. A write has no such cap.
 const MAX_CHAIN: Duration = Duration::from_secs(30);
 
 /// Who a call speaks for.
@@ -62,6 +75,9 @@ pub struct Attribution {
     last_action: Option<Instant>,
     last_call_end: Option<Instant>,
     calls: usize,
+    /// Calls of the agent's that may write: out, or waiting on their card.
+    writes: usize,
+    last_write_end: Option<Instant>,
     /// The surfaces the person has taken back since the agent's last action.
     person: HashSet<u64>,
 }
@@ -89,6 +105,17 @@ impl Attribution {
         self.last_call_end = Some(now);
     }
 
+    /// A call of the agent's may write from now on.
+    pub fn write_began(&mut self) {
+        self.writes += 1;
+    }
+
+    /// That call is over, or turned out to read.
+    pub fn write_ended(&mut self, now: Instant) {
+        self.writes = self.writes.saturating_sub(1);
+        self.last_write_end = Some(now);
+    }
+
     /// The person pressed or typed in `surface`.
     pub fn person_pressed(&mut self, surface: u64, now: Instant) {
         if self.quiet(now) {
@@ -100,7 +127,7 @@ impl Attribution {
     fn quiet(&self, now: Instant) -> bool {
         let Some(action) = self.last_action else { return true };
         let since = |t: Instant| now.saturating_duration_since(t);
-        if since(action) < SETTLE {
+        if self.writes > 0 || since(action) < SETTLE || self.last_write_end.is_some_and(|t| since(t) < SETTLE) {
             return false;
         }
         since(action) >= MAX_CHAIN || (self.calls == 0 && self.last_call_end.is_none_or(|t| since(t) >= SETTLE))
@@ -131,6 +158,12 @@ pub fn agent_calls() -> usize {
 /// A call of the agent's began (`true`) or ended, in this process.
 pub fn agent_call(running: bool) {
     with(|a| if running { a.call_began() } else { a.call_ended(Instant::now()) });
+}
+
+/// A call of the agent's that may write began (`true`) or ended, in this
+/// process.
+pub fn agent_write(running: bool) {
+    with(|a| if running { a.write_began() } else { a.write_ended(Instant::now()) });
 }
 
 /// Starts listening to nsh's input. On the main thread, before the first
@@ -251,6 +284,50 @@ mod tests {
         a.person_pressed(FORM, t + MAX_CHAIN - Duration::from_secs(1));
         assert_eq!(a.actor(FORM), Actor::Agent);
         a.person_pressed(FORM, t + MAX_CHAIN);
+        assert_eq!(a.actor(FORM), Actor::Person);
+    }
+
+    /// Past the cap, a read that polls gives way, and a write doesn't.
+    #[test]
+    fn a_write_in_flight_keeps_the_agents_chain_however_long_it_takes() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.call_began();
+        a.write_began();
+        a.person_pressed(FORM, t + MAX_CHAIN);
+        a.person_pressed(FORM, secs(t, 600));
+        assert_eq!(a.actor(FORM), Actor::Agent, "a card can be up for minutes");
+        a.write_ended(secs(t, 601));
+        a.call_ended(secs(t, 601));
+        // what comes after its answer gets its settle, past the cap too
+        a.person_pressed(FORM, secs(t, 602));
+        assert_eq!(a.actor(FORM), Actor::Agent);
+        a.person_pressed(FORM, secs(t, 603));
+        assert_eq!(a.actor(FORM), Actor::Person);
+    }
+
+    #[test]
+    fn a_call_that_turned_out_to_read_leaves_only_the_cap() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.call_began();
+        a.write_began();
+        a.write_ended(t);
+        a.person_pressed(FORM, t + MAX_CHAIN);
+        assert_eq!(a.actor(FORM), Actor::Person);
+    }
+
+    /// The gap the module says it has: stated, so a change that closes it
+    /// has to say so.
+    #[test]
+    fn a_delayed_call_with_nothing_in_flight_cant_be_told_from_the_persons() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.person_pressed(FORM, secs(t, 5));
+        // the app's timer fires now, from the AI's press
         assert_eq!(a.actor(FORM), Actor::Person);
     }
 

@@ -25,7 +25,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -70,6 +74,12 @@ pub trait HostUi: Send + Sync {
     /// A call of the agent's began (`true`) or ended: what it starts
     /// next is still the agent's.
     fn agent_call(&self, running: bool) {
+        let _ = running;
+    }
+    /// A call of the agent's may write from now (`true`), or it is over or
+    /// only reads: for as long as it may, the person's input takes nothing
+    /// back.
+    fn agent_write(&self, running: bool) {
         let _ = running;
     }
     /// Shows the card of a held call over the open, which has to be on top;
@@ -127,6 +137,8 @@ pub trait HostUi: Send + Sync {
 struct CallActor {
     actor: Actor,
     ui: Arc<dyn HostUi>,
+    /// It may still write: an agent's call does until its check says it reads.
+    writing: AtomicBool,
 }
 
 impl CallActor {
@@ -135,13 +147,22 @@ impl CallActor {
         let actor = ui.actor();
         if actor == Actor::Agent {
             ui.agent_call(true);
+            ui.agent_write(true);
         }
-        CallActor { actor, ui: ui.clone() }
+        CallActor { actor, ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
+    }
+
+    /// The call turned out to change nothing.
+    fn only_reads(&self) {
+        if self.writing.swap(false, Ordering::SeqCst) {
+            self.ui.agent_write(false);
+        }
     }
 }
 
 impl Drop for CallActor {
     fn drop(&mut self) {
+        self.only_reads();
         if self.actor == Actor::Agent {
             self.ui.agent_call(false);
         }
@@ -674,13 +695,18 @@ impl OpenContext {
     /// open to agents, the refusal, before anything is signed or sent. A
     /// call that needs the person waits here for their answer. `args` is
     /// what goes out, and `None` for what can't be held: it is refused.
-    fn press_of(&self, tool: &str, args: Option<&Value>, actor: Actor) -> Result<Option<Value>, RoxError> {
-        if actor != Actor::Agent {
+    fn press_of(&self, tool: &str, args: Option<&Value>, who: &CallActor) -> Result<Option<Value>, RoxError> {
+        if who.actor != Actor::Agent {
             return Ok(None);
         }
         let p = &self.prepared.plugin;
         let press = match (press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool), args) {
-            (Ok(Verdict::Go(press)), _) => Ok(press),
+            (Ok(Verdict::Go { press, read }), _) => {
+                if read {
+                    who.only_reads();
+                }
+                Ok(press)
+            }
             (Ok(Verdict::Hold { effect, describe }), Some(args)) => self.held(&HeldCall { tool, args, effect, describe: describe.as_deref() }),
             (Ok(Verdict::Hold { .. }), None) => {
                 press::note_refused(press::Held::Person);
@@ -719,9 +745,8 @@ impl OpenContext {
     /// it, or why nothing goes out.
     fn held(&self, call: &HeldCall) -> Result<Value, RoxError> {
         let tool = call.tool;
-        let (wake, heard) = mpsc::channel();
-        let once = hold::open(tool, call.args, wake.clone())?;
-        let answer = self.ask_person(&once, call, wake, &heard);
+        let once = hold::open(call.args)?;
+        let answer = self.ask_person(&once, call);
         self.ui.hold_over(&once);
         hold::retire(&once);
         let end = |outcome, held: press::Held, code, said: &str| {
@@ -745,7 +770,8 @@ impl OpenContext {
 
     /// Shows the card and waits: what `release` gave on the person's yes,
     /// or what else ended it.
-    fn ask_person(&self, once: &OnceId, call: &HeldCall, wake: mpsc::Sender<Answer>, heard: &mpsc::Receiver<Answer>) -> Result<Value, Answer> {
+    fn ask_person(&self, once: &OnceId, call: &HeldCall) -> Result<Value, Answer> {
+        let (wake, heard) = mpsc::channel();
         let shown = self.read_card(call).map_err(|_| Answer::NoCard)?;
         hold::showing(once, shown.hash().ok_or(Answer::Changed)?);
         self.ui.hold(once.clone(), shown, Box::new(move |answer| {
@@ -788,7 +814,7 @@ impl OpenContext {
         self.gated_for(reply, timeout, move |me| {
             // the whole of it: a closure taking only `who.actor` would end the call here and now
             let who = who;
-            let press = me.press_of(&tool, Some(&args), who.actor)?;
+            let press = me.press_of(&tool, Some(&args), &who)?;
             // signed when it goes out: a queued call is not stale
             let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
@@ -1064,7 +1090,7 @@ impl OpenContext {
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
             let who = who;
-            let press = me.press_of(&tool, None, who.actor)?;
+            let press = me.press_of(&tool, None, &who)?;
             let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             let p = &me.prepared;
