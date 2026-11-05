@@ -2556,8 +2556,8 @@ mod tests {
 
     #[test]
     fn an_ask_card_says_what_will_happen_for_each_kind_of_tool() {
-        let send = ask_copy(&ask(json!({"key": "agents", "tool": "agent_send", "title": "Send a message to Bigmom?", "lines": ["Subject: hi"], "preview": "hi Bigmom"})));
-        assert_eq!((send.title.as_str(), send.lines.clone(), send.preview.as_str(), send.external.as_str()), ("Send a message to Bigmom?", vec!["Subject: hi".to_owned()], "hi Bigmom", ""));
+        let send = ask_copy(&ask(json!({"key": "agents", "tool": "agent_send", "title": "Send a message to Sam?", "lines": ["Subject: hi"], "preview": "hi Sam"})));
+        assert_eq!((send.title.as_str(), send.lines.clone(), send.preview.as_str(), send.external.as_str()), ("Send a message to Sam?", vec!["Subject: hi".to_owned()], "hi Sam", ""));
         let words = |c: &AskCopy| c.buttons.iter().map(|b| (b.0.clone(), b.1)).collect::<Vec<_>>();
         assert_eq!(words(&send), [("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat"), ("Allow".to_owned(), "once")]);
         let routine = ask_copy(&ask(json!({"key": "routines", "tool": "routine_create", "title": "Make the routine \"Daily sales\"?", "lines": ["Every 24 h"], "preview": "Sum the sales"})));

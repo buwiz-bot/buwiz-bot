@@ -714,7 +714,7 @@ mod tests {
         let mut s = surface(ENTRY, "books", "books", "Books", entry_form());
         s.bot = Some(hex.clone());
         assert!(owned(&s, &hex).is_ok());
-        let no = owned(&s, &Some("bigmom".to_owned())).unwrap_err();
+        let no = owned(&s, &Some("sam".to_owned())).unwrap_err();
         assert!(no.tell && no.said.starts_with("Books was opened from another chat"), "{no:?}");
         assert!(owned(&s, &None).is_err(), "a plain chat on a Bot's screen");
         s.bot = Some(None);
@@ -731,7 +731,7 @@ mod tests {
     }
 
     fn seen_by(bot: Option<&str>) -> Vec<String> {
-        let s = vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("bigmom"))), of(LIST, "plain", Some(None)), of("v1:x/y", "unknown", None)];
+        let s = vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("sam"))), of(LIST, "plain", Some(None)), of("v1:x/y", "unknown", None)];
         mine(s, &bot.map(str::to_owned)).iter().map(|s| s.target.clone()).collect()
     }
 
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn a_look_sees_only_what_its_own_chat_opened() {
         assert_eq!(seen_by(Some("hex")), ["books"]);
-        assert_eq!(seen_by(Some("bigmom")), ["ebirforms"]);
+        assert_eq!(seen_by(Some("sam")), ["ebirforms"]);
         assert_eq!(seen_by(None), ["plain"]);
         assert!(seen_by(Some("nobody")).is_empty());
     }
@@ -748,7 +748,7 @@ mod tests {
     /// The top screen is another Bot's: nothing of it, and nothing to act on.
     #[test]
     fn a_look_under_another_bots_top_screen_gets_no_top() {
-        let s = mine(vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("bigmom")))], &Some("hex".to_owned()));
+        let s = mine(vec![of(ENTRY, "books", Some(Some("hex"))), of(FORM, "ebirforms", Some(Some("sam")))], &Some("hex".to_owned()));
         let st = stack(&[ENTRY, FORM]);
         assert_eq!(looked(&s, &st), None);
         let got = trees(&s, &st, Reading::Structure);

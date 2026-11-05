@@ -2482,7 +2482,7 @@ mod tests {
 
     /// (a) a green brute: spiky hair in the outline, a dark fringe, a cream
     /// face patch, faint blush, bright green eyes.
-    const HULK: &str = r##"{"o":"M14 54 C14 34 24 24 34 19 L36 5 L45 16 L53 3 L60 16 L70 7 L70 21 C81 28 88 40 88 55 C88 80 72 96 50 96 C28 96 14 80 14 54 Z","c":"#5E9A2E","l":[["M16 42 C18 27 31 19 50 19 C69 19 83 27 85 42 C76 35 67 33 60 37 C54 31 45 31 39 37 C31 33 23 35 16 42 Z","#2B2019",1],["M22 62 C22 48 34 41 50 41 C66 41 79 48 79 62 C79 81 67 92 50 92 C33 92 22 81 22 62 Z","#F6EBD6",1],["M25 72 C25 68 34 68 34 72 C34 76 25 76 25 72 Z M66 72 C66 68 75 68 75 72 C75 76 66 76 66 72 Z","#F2B8A8",0.55]],"e":"#7CE03C"}"##;
+    const BRUTE: &str = r##"{"o":"M14 54 C14 34 24 24 34 19 L36 5 L45 16 L53 3 L60 16 L70 7 L70 21 C81 28 88 40 88 55 C88 80 72 96 50 96 C28 96 14 80 14 54 Z","c":"#5E9A2E","l":[["M16 42 C18 27 31 19 50 19 C69 19 83 27 85 42 C76 35 67 33 60 37 C54 31 45 31 39 37 C31 33 23 35 16 42 Z","#2B2019",1],["M22 62 C22 48 34 41 50 41 C66 41 79 48 79 62 C79 81 67 92 50 92 C33 92 22 81 22 62 Z","#F6EBD6",1],["M25 72 C25 68 34 68 34 72 C34 76 25 76 25 72 Z M66 72 C66 68 75 68 75 72 C75 76 66 76 66 72 Z","#F2B8A8",0.55]],"e":"#7CE03C"}"##;
     /// (b) a red masked hero: two black eye patches, white eyes.
     const HERO: &str = r##"{"o":"M50 4 C76 4 90 26 90 52 C90 80 72 96 50 96 C28 96 10 80 10 52 C10 26 24 4 50 4 Z","c":"#D62828","l":[["M25 46 C29 37 43 37 49 47 C45 56 31 58 25 46 Z M75 46 C71 37 57 37 51 47 C55 56 69 58 75 46 Z","#111111",1]],"e":"#FFFFFF"}"##;
     /// (c) an orange cat: a cream muzzle on the lower face, dark eyes.
@@ -2551,14 +2551,14 @@ mod tests {
 
     #[test]
     fn rich_body_names_and_errors() {
-        let a = rich_body(HULK).unwrap();
+        let a = rich_body(BRUTE).unwrap();
         assert!(a.starts_with("rich:"));
-        assert_eq!(rich_body(HULK).unwrap(), a);
-        assert_eq!(rich_body(&format!(" {HULK}\n")).unwrap(), a);
+        assert_eq!(rich_body(BRUTE).unwrap(), a);
+        assert_eq!(rich_body(&format!(" {BRUTE}\n")).unwrap(), a);
         assert_ne!(rich_body(HERO).unwrap(), a);
         assert_eq!(yn(a), a);
         // the geometry is the plain custom body's
-        let recipe: serde_json::Value = serde_json::from_str(HULK).unwrap();
+        let recipe: serde_json::Value = serde_json::from_str(BRUTE).unwrap();
         let plain = custom_body(recipe["o"].as_str().unwrap()).unwrap();
         assert!(Rc::ptr_eq(&find(a).unwrap(), &find(plain).unwrap()));
         assert!(super::super::paint::rest_bytes(a).is_none());
@@ -2585,7 +2585,7 @@ mod tests {
     #[test]
     fn rich_ignores_the_ink() {
         let tab = shared_tables();
-        let name = rich_body(HULK).unwrap();
+        let name = rich_body(BRUTE).unwrap();
         let mut a = 0xcbf29ce484222325u64;
         let mut b = a;
         let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
@@ -2619,7 +2619,7 @@ mod tests {
     #[test]
     fn rich_darkens_with_the_edit_shade() {
         let tab = shared_tables();
-        let name = rich_body(HULK).unwrap();
+        let name = rich_body(BRUTE).unwrap();
         let mark = Mark::new(&tab, Some(name), 1.0, false, false, 2);
         let plain = render_ink(&mark, 120.71, 78.72, "#000000");
         let dark = render_shaded(&mark, 120.71, 78.72, "#000000", 0.35);
@@ -2770,7 +2770,7 @@ mod tests {
     /// the limb without them, as it would on a real head.)
     #[test]
     fn decals_follow_the_eyes() {
-        for (recipe, patch, eye) in [(HULK, 1usize, "#7CE03C"), (ORANGE_CAT, 0, "#2A1E14")] {
+        for (recipe, patch, eye) in [(BRUTE, 1usize, "#7CE03C"), (ORANGE_CAT, 0, "#2A1E14")] {
             let name = rich_body(recipe).unwrap();
             for (extent, display) in [(80.47, 52.48), (120.71, 78.72), (50.29, 32.8)] {
                 let (mut with_eyes, mut frames) = (0, 0);
@@ -2799,7 +2799,7 @@ mod tests {
     /// silhouettes, a hair inside the true one; the clip trims the rest.
     #[test]
     fn decals_stay_inside_the_body() {
-        for recipe in [HULK, HERO, ORANGE_CAT] {
+        for recipe in [BRUTE, HERO, ORANGE_CAT] {
             let name = rich_body(recipe).unwrap();
             let mut worst = f64::INFINITY;
             for (label, tree, _, morph) in rich_run(name, 120.71, 78.72) {
@@ -2823,7 +2823,7 @@ mod tests {
     #[test]
     fn rich_frame_timing() {
         let tab = shared_tables();
-        for (label, body) in [("plain", custom_body(CAT).unwrap()), ("rich", rich_body(ORANGE_CAT).unwrap()), ("rich brute", rich_body(HULK).unwrap()), ("luffy", rich_body(LUFFY).unwrap()), ("chopper", rich_body(CHOPPER).unwrap())] {
+        for (label, body) in [("plain", custom_body(CAT).unwrap()), ("rich", rich_body(ORANGE_CAT).unwrap()), ("rich brute", rich_body(BRUTE).unwrap()), ("hat kid", rich_body(HAT_KID).unwrap()), ("antler hat", rich_body(ANTLER_HAT).unwrap())] {
             let mut mark = Mark::new(&tab, Some(body), 1.0, false, false, 2);
             let mut dir = Director::new(&mut mark, "curious", 2, false, false, None);
             // warm the atlas nodes the run visits
@@ -2858,7 +2858,7 @@ mod tests {
         let tab = shared_tables();
         let rows: Vec<(&str, &'static str)> = vec![
             ("blob", "sphere"),
-            ("brute", rich_body(HULK).unwrap()),
+            ("brute", rich_body(BRUTE).unwrap()),
             ("hero", rich_body(HERO).unwrap()),
             ("cat", rich_body(ORANGE_CAT).unwrap()),
         ];
@@ -2958,12 +2958,12 @@ mod tests {
     /// not read back from a rounded ink (0.7, it used to read 0.6984).
     #[test]
     fn rich_string_eyes_unchanged() {
-        for recipe in [HULK, HERO, ORANGE_CAT] {
+        for recipe in [BRUTE, HERO, ORANGE_CAT] {
             let r = rich(rich_body(recipe).unwrap()).unwrap();
             assert!(r.eye_box.is_none() && r.rim.is_none());
         }
         let mut got = Vec::new();
-        for recipe in [HULK, HERO, ORANGE_CAT] {
+        for recipe in [BRUTE, HERO, ORANGE_CAT] {
             let name = rich_body(recipe).unwrap();
             let mut h = body_hash(name, "hex");
             for (_, tree, _, _) in rich_run(name, 80.47, 52.48) {
@@ -3175,15 +3175,15 @@ mod tests {
 
     // -- multi-part rich bodies (round 5) --------------------------------------
 
-    /// (a) Luffy: a black-haired head with a skin face (the main part) under
+    /// (a) A hat kid: a black-haired head with a skin face (the main part) under
     /// a straw hat with a red band.
-    const LUFFY: &str = r##"{"o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#141414","l":[["M27 67 C27 55 37 49 50 49 C63 49 73 55 73 67 C73 83 63 92 50 92 C37 92 27 83 27 67 Z","#F2C9A0",1],["M37 71 L39 70 L43 76 L41 77 Z","#B5543E",1]],"e":{"c":"#111111","at":[50,64],"gap":16,"s":0.9},"p":[{"o":"M6 44 C6 37 24 35 33 35 C33 20 41 12 50 12 C59 12 67 20 67 35 C76 35 94 37 94 44 C94 50 72 52 50 52 C28 52 6 50 6 44 Z","c":"#E8C35A","l":[["M33 28 L67 28 L67 35 L33 35 Z","#C62828",1]],"z":0.1}]}"##;
-    /// (b) Chopper: a tan head with white-rimmed eyes and a blue nose, a pink
+    const HAT_KID: &str = r##"{"o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#141414","l":[["M27 67 C27 55 37 49 50 49 C63 49 73 55 73 67 C73 83 63 92 50 92 C37 92 27 83 27 67 Z","#F2C9A0",1],["M37 71 L39 70 L43 76 L41 77 Z","#B5543E",1]],"e":{"c":"#111111","at":[50,64],"gap":16,"s":0.9},"p":[{"o":"M6 44 C6 37 24 35 33 35 C33 20 41 12 50 12 C59 12 67 20 67 35 C76 35 94 37 94 44 C94 50 72 52 50 52 C28 52 6 50 6 44 Z","c":"#E8C35A","l":[["M33 28 L67 28 L67 35 L33 35 Z","#C62828",1]],"z":0.1}]}"##;
+    /// (b) An antlered hat: a tan head with white-rimmed eyes and a blue nose, a pink
     /// top hat with a white X and a rose brim band, brown antlers.
-    const CHOPPER: &str = r##"{"o":"M24 68 C24 52 36 46 50 46 C64 46 76 52 76 68 C76 85 64 95 50 95 C36 95 24 85 24 68 Z","c":"#C68A55","l":[["M46 80 C46 77 54 77 54 80 C54 83 46 83 46 80 Z","#3B6FD6",1]],"e":{"c":"#111111","at":[50,69],"gap":18,"s":1.0,"rim":"#FFFFFF","rw":0.5},"p":[{"o":"M26 50 C26 45 30 43 34 43 C34 26 40 18 50 18 C60 18 66 26 66 43 C70 43 74 45 74 50 C74 55 64 56 50 56 C36 56 26 55 26 50 Z","c":"#F2A0B6","l":[["M43 26 L46 23 L57 35 L54 38 Z M54 23 L57 26 L46 38 L43 35 Z","#FFFFFF",1],["M27 46 L73 46 L73 52 L27 52 Z","#D9667F",1]],"z":0.1},{"o":"M28 46 L21 31 L11 27 L13 23 L21 26 L17 14 L22 13 L25 24 L28 15 L33 16 L29 28 L33 44 Z","c":"#7A4A26","z":-0.05},{"o":"M72 46 L79 31 L89 27 L87 23 L79 26 L83 14 L78 13 L75 24 L72 15 L67 16 L71 28 L67 44 Z","c":"#7A4A26","z":-0.05}]}"##;
-    /// (c) Gear 5: a white cloud-hair head (main) with a skin face, and two
+    const ANTLER_HAT: &str = r##"{"o":"M24 68 C24 52 36 46 50 46 C64 46 76 52 76 68 C76 85 64 95 50 95 C36 95 24 85 24 68 Z","c":"#C68A55","l":[["M46 80 C46 77 54 77 54 80 C54 83 46 83 46 80 Z","#3B6FD6",1]],"e":{"c":"#111111","at":[50,69],"gap":18,"s":1.0,"rim":"#FFFFFF","rw":0.5},"p":[{"o":"M26 50 C26 45 30 43 34 43 C34 26 40 18 50 18 C60 18 66 26 66 43 C70 43 74 45 74 50 C74 55 64 56 50 56 C36 56 26 55 26 50 Z","c":"#F2A0B6","l":[["M43 26 L46 23 L57 35 L54 38 Z M54 23 L57 26 L46 38 L43 35 Z","#FFFFFF",1],["M27 46 L73 46 L73 52 L27 52 Z","#D9667F",1]],"z":0.1},{"o":"M28 46 L21 31 L11 27 L13 23 L21 26 L17 14 L22 13 L25 24 L28 15 L33 16 L29 28 L33 44 Z","c":"#7A4A26","z":-0.05},{"o":"M72 46 L79 31 L89 27 L87 23 L79 26 L83 14 L78 13 L75 24 L72 15 L67 16 L71 28 L67 44 Z","c":"#7A4A26","z":-0.05}]}"##;
+    /// (c) Cloud hair: a white cloud-hair head (main) with a skin face, and two
     /// small clouds floating off its upper left and right.
-    const GEAR5: &str = r##"{"o":"M30 40 C26 30 36 22 44 26 C46 16 60 16 62 26 C70 20 80 28 76 38 C86 42 84 56 76 58 C80 72 70 84 58 86 C54 94 40 92 38 86 C26 86 18 74 24 64 C14 58 18 44 30 40 Z","c":"#F4F4F4","l":[["M34 61 C34 51 42 47 50 47 C58 47 66 51 66 61 C66 75 58 84 50 84 C42 84 34 75 34 61 Z","#F2C9A0",1]],"e":{"c":"#E53935","at":[50,63],"gap":14,"s":0.8,"rim":"#FFFFFF","rw":0.3},"p":[{"o":"M4 22 C2 16 8 12 12 14 C14 8 22 8 24 14 C30 14 30 22 26 24 C24 28 8 28 4 22 Z","c":"#FFFFFF"},{"o":"M96 22 C98 16 92 12 88 14 C86 8 78 8 76 14 C70 14 70 22 74 24 C76 28 92 28 96 22 Z","c":"#FFFFFF"}]}"##;
+    const CLOUD_HAIR: &str = r##"{"o":"M30 40 C26 30 36 22 44 26 C46 16 60 16 62 26 C70 20 80 28 76 38 C86 42 84 56 76 58 C80 72 70 84 58 86 C54 94 40 92 38 86 C26 86 18 74 24 64 C14 58 18 44 30 40 Z","c":"#F4F4F4","l":[["M34 61 C34 51 42 47 50 47 C58 47 66 51 66 61 C66 75 58 84 50 84 C42 84 34 75 34 61 Z","#F2C9A0",1]],"e":{"c":"#E53935","at":[50,63],"gap":14,"s":0.8,"rim":"#FFFFFF","rw":0.3},"p":[{"o":"M4 22 C2 16 8 12 12 14 C14 8 22 8 24 14 C30 14 30 22 26 24 C24 28 8 28 4 22 Z","c":"#FFFFFF"},{"o":"M96 22 C98 16 92 12 88 14 C86 8 78 8 76 14 C70 14 70 22 74 24 C76 28 92 28 96 22 Z","c":"#FFFFFF"}]}"##;
     /// A head with a hair bun behind it (z -0.5), overlapping its top.
     const BUN: &str = r##"{"o":"M22 62 C22 44 34 36 50 36 C66 36 78 44 78 62 C78 82 66 94 50 94 C34 94 22 82 22 62 Z","c":"#F2C9A0","e":"#111111","p":[{"o":"M36 30 C36 18 42 10 50 10 C58 10 64 18 64 30 C64 40 58 44 50 44 C42 44 36 40 36 30 Z","c":"#3A2618","z":-0.5}]}"##;
 
@@ -3203,7 +3203,7 @@ mod tests {
     #[test]
     fn parts_keep_their_placement() {
         let front = bodies::Rot { yaw: 0.0, pitch: 0.0, roll: 0.0 };
-        for recipe in [LUFFY, CHOPPER, GEAR5] {
+        for recipe in [HAT_KID, ANTLER_HAT, CLOUD_HAIR] {
             let name = rich_body(recipe).unwrap();
             let r = rich(name).unwrap();
             let main = find(name).unwrap();
@@ -3237,7 +3237,7 @@ mod tests {
             let order = part_order(&r, &bodies::Rot { yaw, pitch: -16.0, roll: 0.0 });
             assert_eq!(pos(&order, 1) < pos(&order, 0), bun_first, "yaw {yaw}: {order:?}");
         }
-        let r = rich(rich_body(CHOPPER).unwrap()).unwrap();
+        let r = rich(rich_body(ANTLER_HAT).unwrap()).unwrap();
         // parts: 1 hat, 2 left antler, 3 right antler
         let order = part_order(&r, &bodies::Rot { yaw: 60.0, pitch: 0.0, roll: 0.0 });
         assert!(pos(&order, 2) > pos(&order, 3), "yaw 60: {order:?}");
@@ -3256,7 +3256,7 @@ mod tests {
     #[test]
     fn part_layers_clip_to_their_part() {
         let tab = shared_tables();
-        let name = rich_body(CHOPPER).unwrap();
+        let name = rich_body(ANTLER_HAT).unwrap();
         let mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
         let tree = render_ink(&mark, 120.71, 78.72, "#1884FC");
         fn walk<'a>(t: &'a MarkTree, out: &mut Vec<&'a MarkTree>) {
@@ -3284,13 +3284,13 @@ mod tests {
         assert!(main.children.iter().any(|c| c.attr("data-eye").is_some()));
     }
 
-    /// Luffy at rest: the hat draws over the head and the eyes stay
+    /// The hat kid at rest: the hat draws over the head and the eyes stay
     /// visible below its brim, at every avatar size and through a gaze
     /// sweep.
     #[test]
     fn eyes_show_under_a_hat() {
         let tab = shared_tables();
-        let name = rich_body(LUFFY).unwrap();
+        let name = rich_body(HAT_KID).unwrap();
         for (extent, display) in [(80.47, 52.48), (100.59, 65.6), (120.71, 78.72)] {
             let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
             for g in 0..=20 {
@@ -3327,7 +3327,7 @@ mod tests {
     /// and only a status morph, past the face, takes it to the ink.
     #[test]
     fn parts_follow_the_eyes() {
-        let name = rich_body(LUFFY).unwrap();
+        let name = rich_body(HAT_KID).unwrap();
         for (extent, display) in [(80.47, 52.48), (120.71, 78.72)] {
             for (label, tree, has_eyes, _) in rich_run(name, extent, display) {
                 let mut ps = Vec::new();
@@ -3373,9 +3373,9 @@ mod tests {
             "#2A2A2E",
             &[
                 ("blob", "sphere"),
-                ("luffy", rich_body(LUFFY).unwrap()),
-                ("chopper", rich_body(CHOPPER).unwrap()),
-                ("gear 5", rich_body(GEAR5).unwrap()),
+                ("hat kid", rich_body(HAT_KID).unwrap()),
+                ("antler hat", rich_body(ANTLER_HAT).unwrap()),
+                ("cloud hair", rich_body(CLOUD_HAIR).unwrap()),
             ],
         );
     }
@@ -3435,11 +3435,11 @@ mod tests {
         std::fs::write(format!("{dir}/turn.svg"), svg + "</svg>").unwrap();
     }
 
-    const LUFFY3: &str = r##"{"o":"M24 62 L17 58 L24 52 C26 38 38 32 50 32 C62 32 74 38 76 52 L83 58 L76 62 C74 80 62 92 50 93 C38 92 26 80 24 62 Z","c":"#F6D3B0","l":[["M27 48 L32 57 L37 50 L43 58 L50 50 L57 58 L63 50 L68 57 L73 48 Z","#151515"],["M18 58 L24 54 L24 61 Z","#E8B98F"],["M82 58 L76 54 L76 61 Z","#E8B98F"],["M58 74.5 L66 74 L66 75.6 L58 76.1 Z","#B5543E"],["M60 72.8 L60.9 72.8 L60.9 77.6 L60 77.6 Z","#B5543E"],["M63.2 72.6 L64.1 72.6 L64.1 77.4 L63.2 77.4 Z","#B5543E"]],"e":{"c":"#111111","at":[50,68],"gap":20,"s":0.85,"rim":"#FFFFFF","rw":0.6},"p":[{"o":"M20 66 L10 58 L18 54 L8 46 L18 42 L12 34 L24 32 C32 24 68 24 76 32 L88 34 L82 42 L92 46 L82 54 L90 58 L80 66 L72 64 C64 58 36 58 28 64 Z","c":"#151515","z":-0.1HAIRD},{"o":"M2 40 C2 33 16 30 28 30 C28 15 38 6 50 6 C62 6 72 15 72 30 C84 30 98 33 98 40 C98 47 76 50 50 50 C24 50 2 47 2 40 Z","c":"#F2C062","z":0.1HATD,"l":[["M28 22 C40 19 60 19 72 22 L72 30 L28 30 Z","#D7322E"],["M4 43 C20 47 80 47 96 43 C90 48 74 50 50 50 C26 50 10 48 4 43 Z","#D9A441"],["M36 12 C42 9 48 8 52 9 C46 11 42 14 38 18 Z","#F8D98A",0.8]]}]}"##;
+    const HAT_KID3: &str = r##"{"o":"M24 62 L17 58 L24 52 C26 38 38 32 50 32 C62 32 74 38 76 52 L83 58 L76 62 C74 80 62 92 50 93 C38 92 26 80 24 62 Z","c":"#F6D3B0","l":[["M27 48 L32 57 L37 50 L43 58 L50 50 L57 58 L63 50 L68 57 L73 48 Z","#151515"],["M18 58 L24 54 L24 61 Z","#E8B98F"],["M82 58 L76 54 L76 61 Z","#E8B98F"],["M58 74.5 L66 74 L66 75.6 L58 76.1 Z","#B5543E"],["M60 72.8 L60.9 72.8 L60.9 77.6 L60 77.6 Z","#B5543E"],["M63.2 72.6 L64.1 72.6 L64.1 77.4 L63.2 77.4 Z","#B5543E"]],"e":{"c":"#111111","at":[50,68],"gap":20,"s":0.85,"rim":"#FFFFFF","rw":0.6},"p":[{"o":"M20 66 L10 58 L18 54 L8 46 L18 42 L12 34 L24 32 C32 24 68 24 76 32 L88 34 L82 42 L92 46 L82 54 L90 58 L80 66 L72 64 C64 58 36 58 28 64 Z","c":"#151515","z":-0.1HAIRD},{"o":"M2 40 C2 33 16 30 28 30 C28 15 38 6 50 6 C62 6 72 15 72 30 C84 30 98 33 98 40 C98 47 76 50 50 50 C24 50 2 47 2 40 Z","c":"#F2C062","z":0.1HATD,"l":[["M28 22 C40 19 60 19 72 22 L72 30 L28 30 Z","#D7322E"],["M4 43 C20 47 80 47 96 43 C90 48 74 50 50 50 C26 50 10 48 4 43 Z","#D9A441"],["M36 12 C42 9 48 8 52 9 C46 11 42 14 38 18 Z","#F8D98A",0.8]]}]}"##;
 
-    fn luffy3(hair: Option<f64>, hat: Option<f64>) -> String {
+    fn hat_kid3(hair: Option<f64>, hat: Option<f64>) -> String {
         let d = |v: Option<f64>| v.map_or(String::new(), |v| format!(",\"d\":{v}"));
-        LUFFY3.replace("HAIRD", &d(hair)).replace("HATD", &d(hat))
+        HAT_KID3.replace("HAIRD", &d(hair)).replace("HATD", &d(hat))
     }
 
     /// The visible area of part `part` in a rich tree (grid-sampled, screen
@@ -3506,7 +3506,7 @@ mod tests {
         let tab = shared_tables();
         for (extent, display) in [(80.47, 52.48), (100.59, 65.6), (120.71, 78.72)] {
             let area = |hair: Option<f64>, rest: bool| {
-                let name = rich_body(&luffy3(hair, None)).unwrap();
+                let name = rich_body(&hat_kid3(hair, None)).unwrap();
                 let mut mark = Mark::new(&tab, Some(name), 1.0, false, false, 1);
                 if !rest {
                     mark.u = [0.0, 0.0, 0.0];
@@ -3534,30 +3534,30 @@ mod tests {
         let Ok(dir) = std::env::var("MARK_DEPTH_DIR") else {
             return;
         };
-        let thin = luffy3(None, None);
-        let deep = luffy3(Some(1.1), None);
+        let thin = hat_kid3(None, None);
+        let deep = hat_kid3(Some(1.1), None);
         part_sheets(
             &dir,
             "#D8D8DE",
             &[
                 ("blob", "sphere"),
-                ("luffy (no d)", rich_body(&thin).unwrap()),
-                ("luffy hair d1.1", rich_body(&deep).unwrap()),
-                ("chopper", rich_body(CHOPPER).unwrap()),
+                ("hat kid (no d)", rich_body(&thin).unwrap()),
+                ("hat kid hair d1.1", rich_body(&deep).unwrap()),
+                ("antler hat", rich_body(ANTLER_HAT).unwrap()),
             ],
         );
     }
 
     // -- shut eyes and over-layers (round 7) -----------------------------------
 
-    /// Zoro: a skin head with ears, a green crop (d 1.1, z -0.1), the
+    /// A green crop: a skin head with ears, a green crop (d 1.1, z -0.1), the
     /// viewer's right eye shut with a scar running through it (an over
     /// layer), three gold earrings on the viewer's left ear.
-    const ZORO: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M19.5 60.5 C19.5 59.3 21.3 59.3 21.3 60.5 C21.3 61.7 19.5 61.7 19.5 60.5 Z","#E0B23A"],["M19.2 63.5 C19.2 62.3 21 62.3 21 63.5 C21 64.7 19.2 64.7 19.2 63.5 Z","#E0B23A"],["M19.6 66.5 C19.6 65.3 21.4 65.3 21.4 66.5 C21.4 67.7 19.6 67.7 19.6 66.5 Z","#E0B23A"],["M58.6 51 L60.4 51 L60.9 74 L59.1 74 Z","#9C4A3A",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85,"shut":"r"},"p":[{"o":"M22 57 L18 45 L24 41 L22 31 L32 31 L34 23 L44 27 L50 19 L56 27 L66 23 L68 31 L78 31 L76 41 L82 45 L78 57 C74 45 64 41 50 41 C36 41 26 45 22 57 Z","c":"#3C8D3C","z":-0.1,"d":1.1}]}"##;
-    /// Sanji: a skin head, blond hair (d 1.1, z -0.1), a blond fringe over
+    const GREEN_CROP: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M19.5 60.5 C19.5 59.3 21.3 59.3 21.3 60.5 C21.3 61.7 19.5 61.7 19.5 60.5 Z","#E0B23A"],["M19.2 63.5 C19.2 62.3 21 62.3 21 63.5 C21 64.7 19.2 64.7 19.2 63.5 Z","#E0B23A"],["M19.6 66.5 C19.6 65.3 21.4 65.3 21.4 66.5 C21.4 67.7 19.6 67.7 19.6 66.5 Z","#E0B23A"],["M58.6 51 L60.4 51 L60.9 74 L59.1 74 Z","#9C4A3A",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85,"shut":"r"},"p":[{"o":"M22 57 L18 45 L24 41 L22 31 L32 31 L34 23 L44 27 L50 19 L56 27 L66 23 L68 31 L78 31 L76 41 L82 45 L78 57 C74 45 64 41 50 41 C36 41 26 45 22 57 Z","c":"#3C8D3C","z":-0.1,"d":1.1}]}"##;
+    /// A blond fringe: a skin head, blond hair (d 1.1, z -0.1), a blond fringe over
     /// the viewer's right eye (over), a curly eyebrow above the left eye and
     /// a small goatee.
-    const SANJI: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M33.5 52.5 C34 47.5 41 46 45.5 49 C48 51 47 55.5 43.5 55.8 C41 56 39.8 53.8 41.8 52.6 C43 52 44.4 52.8 44 54 L45.2 54.3 C45.8 52.2 44 50.6 41.6 51.2 C38.6 52 38.9 56.9 43.4 57.1 C48 57.3 50 52 46.5 48.3 C42 44 35 45.5 33.5 52.5 Z","#C9A23A"],["M47 85.5 L53 85.5 L51.2 90.5 L48.8 90.5 Z","#E0BE4A"],["M44 33 C59 32 74 39 78 53 C80 66 75 77 66 81 C63 74 59 72 53 70 C50 62 48 50 44 33 Z","#F2D15C",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85},"p":[{"o":"M21 60 C16 42 30 26 50 26 C70 26 84 42 79 60 C75 46 64 40 50 40 C36 40 25 46 21 60 Z","c":"#F2D15C","z":-0.1,"d":1.1}]}"##;
+    const BLOND_FRINGE: &str = r##"{"o":"M24 58 L19 56 C16 60 17 67 24 69 C28 83 38 92 50 92 C62 92 72 83 76 69 C83 67 84 60 81 56 L76 58 C75 42 64 34 50 34 C36 34 25 42 24 58 Z","c":"#F2C9A0","l":[["M33.5 52.5 C34 47.5 41 46 45.5 49 C48 51 47 55.5 43.5 55.8 C41 56 39.8 53.8 41.8 52.6 C43 52 44.4 52.8 44 54 L45.2 54.3 C45.8 52.2 44 50.6 41.6 51.2 C38.6 52 38.9 56.9 43.4 57.1 C48 57.3 50 52 46.5 48.3 C42 44 35 45.5 33.5 52.5 Z","#C9A23A"],["M47 85.5 L53 85.5 L51.2 90.5 L48.8 90.5 Z","#E0BE4A"],["M44 33 C59 32 74 39 78 53 C80 66 75 77 66 81 C63 74 59 72 53 70 C50 62 48 50 44 33 Z","#F2D15C",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85},"p":[{"o":"M21 60 C16 42 30 26 50 26 C70 26 84 42 79 60 C75 46 64 40 50 40 C36 40 25 46 21 60 Z","c":"#F2D15C","z":-0.1,"d":1.1}]}"##;
 
     /// The two eyes' loops of a rich tree, viewer's left first.
     fn eye_loops(tree: &MarkTree) -> Vec<Vec<V2>> {
@@ -3582,7 +3582,7 @@ mod tests {
     #[test]
     fn shut_eye_stays_shut() {
         let tab = shared_tables();
-        let name = rich_body(ZORO).unwrap();
+        let name = rich_body(GREEN_CROP).unwrap();
         let open = eye_loops(&render_ink(&Mark::new(&tab, Some(name), 1.0, false, false, 1), 120.71, 78.72, "#1884FC"));
         assert_eq!(open.len(), 2);
         let (left_open, right_shut) = (height(&open[0]), height(&open[1]));
@@ -3622,7 +3622,7 @@ mod tests {
     /// the layer covers in the design is not drawn at all.
     #[test]
     fn over_layer_hides_the_eye() {
-        let name = rich_body(SANJI).unwrap();
+        let name = rich_body(BLOND_FRINGE).unwrap();
         let mut covered = 0;
         for (label, tree, _, morph) in rich_run(name, 120.71, 78.72) {
             let mut ps = Vec::new();
@@ -3669,10 +3669,10 @@ mod tests {
         part_sheets(
             &dir,
             "#D8D8DE",
-            &[("blob", "sphere"), ("zoro", rich_body(ZORO).unwrap()), ("sanji", rich_body(SANJI).unwrap())],
+            &[("blob", "sphere"), ("green crop", rich_body(GREEN_CROP).unwrap()), ("blond fringe", rich_body(BLOND_FRINGE).unwrap())],
         );
         let mut svg = String::from("<svg xmlns='http://www.w3.org/2000/svg' width='330' height='170'><rect width='100%' height='100%' fill='#D8D8DE'/>");
-        for (c, recipe) in [ZORO, SANJI].iter().enumerate() {
+        for (c, recipe) in [GREEN_CROP, BLOND_FRINGE].iter().enumerate() {
             let mark = blink_mark(rich_body(recipe).unwrap());
             let mut t = render_ink(&mark, 144.0, 96.0, "#1884FC");
             t.attrs.retain(|(k, _)| *k != "id");
