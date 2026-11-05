@@ -370,7 +370,7 @@ pub struct ToolAskNotice {
     /// The switch it asks under (`shell`, `memory`, `mcp:<server>`…).
     pub key: String,
     pub tool: String,
-    /// What will happen: "Send a message to Bigmom?".
+    /// What will happen: "Send a message to Sam?".
     pub title: String,
     pub lines: Vec<String>,
     /// The exact payload.

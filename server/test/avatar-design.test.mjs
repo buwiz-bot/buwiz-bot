@@ -575,7 +575,7 @@ test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order
   const at = (s) => svg.indexOf(s);
   assert.ok(at(antler.outline) < at(hat.outline) && at(hat.outline) < at("<rect x=") && at("<rect x=") < at(hat.parts[0].outline), svg);
   // a bot keeps them
-  const made = await postJson("/bot/new", { name: "Luffy", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
+  const made = await postJson("/bot/new", { name: "Hat Kid", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
   assert.equal(made.status, 200, made.text);
   const id = made.json.bot.id;
   assert.deepEqual(made.json.bot.parts, hat.parts);

@@ -95,7 +95,7 @@ pub struct Asking {
     pub bot: String,
     pub key: String,
     pub tool: String,
-    /// what will happen: "Send a message to Bigmom?"
+    /// what will happen: "Send a message to Sam?"
     pub title: String,
     /// short facts under it ("Subject: …")
     pub lines: Vec<String>,
