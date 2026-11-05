@@ -799,10 +799,31 @@ async fn a_refusal_of_the_hub_reaches_the_person_too() {
     let b = bed("act-stale");
     turn_on(&b, &["screens", "screen_actions"]);
     let said = "The screen changed since the AI last looked at it, so nothing was pressed. It has to look again.";
-    bot_on(&b.ctx, move |e| buwiz_agent::Response::err(e.id.clone(), e.target.clone(), said));
+    bot_on(&b.ctx, move |e| {
+        let mut r = buwiz_agent::Response::err(e.id.clone(), e.target.clone(), said);
+        r.result = Some(json!({"tell": true}));
+        r
+    });
     let run = run_in(&b.ctx, &b.hex);
     assert_eq!(exec_tool(&run, &press_block()).await, Out::err(said.into()));
     assert_eq!(all_notices(&b.ctx, &b.hex).last().unwrap()["text"], said);
+}
+
+#[tokio::test]
+async fn a_malformed_id_or_an_unknown_app_goes_back_to_the_model_alone() {
+    let b = bed("act-mistake");
+    turn_on(&b, &["screens", "screen_actions"]);
+    let said = "That mini app isn't open, so nothing was pressed.";
+    bot_on(&b.ctx, move |e| {
+        let mut r = buwiz_agent::Response::err(e.id.clone(), e.target.clone(), said);
+        r.result = Some(json!({"tell": false}));
+        r
+    });
+    let run = run_in(&b.ctx, &b.hex);
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err(said.into()));
+    let bad = json!({"name": "ui_act", "input": {"app": "books", "node": "not an id", "action": "click"}});
+    assert_eq!(exec_tool(&run, &bad).await.is_error, Some(true));
+    assert!(all_notices(&b.ctx, &b.hex).is_empty());
 }
 
 #[tokio::test]

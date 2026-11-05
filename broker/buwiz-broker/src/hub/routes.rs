@@ -173,6 +173,7 @@ pub const ROUTES: &[Entry] = &[
     e(Get, X("/v1/host/events"), Hub(Host)),
     e(Get, X("/v1/host/ui/stream"), Hub(Host)),
     e(Post, X("/v1/host/ui/reply"), Hub(Host)),
+    e(Post, X("/v1/host/ui/press"), Hub(Host)),
     e(Post, X("/v1/host/plugins/inspect"), Hub(Host)),
     e(Post, X("/v1/host/plugins/install"), Hub(Host)),
     e(Post, S("/v1/host/plugins/*/enable"), Hub(Host)),
@@ -359,7 +360,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 124);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 125);
         assert_eq!(count(&|o| o == Rust), 32);
     }
 }

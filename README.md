@@ -138,6 +138,9 @@ agent's, so what it starts reaches the mini app as `origin: agent`. Each action 
 the screen again first, and refuses a screen that changed since the model looked, a
 covered screen, and a node with no name. The Bot holds back any write whose tool's
 `buwiz/audience` doesn't name `agent`, unsent, and says why in the app and the chat.
+A write that is open to agents still answers to that mini app's own switch for the
+Bot: off refuses, Ask asks. It also needs a `ui_act` in flight, so a test Bot driven
+with `GPUI_AGENT_ACTOR=agent` gets no writes.
 Keyboard shortcuts, presses at a point, the Bot's own window and the pasteboard are
 out of its reach (`app/src/agent_hub/press.rs`).
 

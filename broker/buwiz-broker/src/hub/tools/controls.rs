@@ -180,16 +180,29 @@ async fn reads(run: &Run, name: &str, key: &str) -> bool {
 /// at Ask, without a grant for this chat, or any write in a guarded key after outside
 /// content, waits for the user's OK. → the model's answer when it doesn't run.
 pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
-    let ctx = &run.ctx;
     if name == "shell_run" || name == "app_tools_load" {
         return None;
     }
     let key = key_for(run, name, input)?;
+    let outside = if key == ui::ACT_KEY { run.state().beyond_screens } else { run.state().external };
+    ask_with(run, name, input, key, outside).await
+}
+
+/// [`ask_first`] for a write of plugin tool `name` that a press on a screen led to: the look the
+/// press needed doesn't make it ask, or every press would.
+pub async fn ask_press(run: &Run, name: &str) -> Option<Out> {
+    let input = json!({});
+    let key = key_for(run, name, &input)?;
+    let outside = run.state().beyond_screens;
+    ask_with(run, name, &input, key, outside).await
+}
+
+async fn ask_with(run: &Run, name: &str, input: &Value, key: String, outside: bool) -> Option<Out> {
+    let ctx = &run.ctx;
     let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
-    let outside = if key == ui::ACT_KEY { run.state().beyond_screens } else { run.state().external };
     let external = outside && keys::guarded(&key);
     if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
         return None;
@@ -275,7 +288,7 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
 /// Whether a tool that reads outside content (a page, a search, an app) ran this turn.
 pub fn note_external(run: &Run, name: &str) {
     let screen = matches!(name, ui::NAME | ui::ACT);
-    let ext = matches!(name, "fetch_url" | "web_search") || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
+    let ext = matches!(name, "fetch_url" | "web_search" | "query_source") || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
     if ext || screen {
         run.state().external = true;
     }

@@ -31,7 +31,8 @@
 //! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
 //!
 //! The Agent Hub (`hub::tools::ui`): `GET /v1/host/ui/stream` carries a look's request to the
-//! Bot, `POST /v1/host/ui/reply` brings its answer back.
+//! Bot, `POST /v1/host/ui/reply` brings its answer back, `POST /v1/host/ui/press {plugin, tool}`
+//! asks whether the Bot's switches let a write an action led to go out (`{allow, said?}`).
 //!
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
@@ -254,6 +255,9 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     }
     if req.method == Method::POST && path == "/v1/host/ui/reply" {
         return ui_reply(&ctx, &req.body);
+    }
+    if req.method == Method::POST && path == "/v1/host/ui/press" {
+        return ui_press(&ctx, &req.body).await;
     }
     if req.method == Method::GET && path == "/v1/host/tools" {
         let query = req.url.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -764,6 +768,19 @@ fn ui_reply(ctx: &HubCtx, body: &[u8]) -> HubResponse {
     } else {
         refusal(StatusCode::NOT_FOUND, "not_found", "no request is waiting for this answer")
     }
+}
+
+/// `POST /v1/host/ui/press {plugin, tool}`: judged in the turn of the action in flight.
+async fn ui_press(ctx: &HubCtx, body: &[u8]) -> HubResponse {
+    let Some(b) = read_body(body) else { return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}") };
+    let (Some(plugin), Some(tool)) = (b.get("plugin").and_then(Value::as_str), b.get("tool").and_then(Value::as_str)) else {
+        return refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}");
+    };
+    let answer = match ctx.ui.press(plugin, tool).await {
+        Ok(()) => json!({"ok": true, "allow": true}),
+        Err(said) => json!({"ok": true, "allow": false, "said": said}),
+    };
+    types::json(StatusCode::OK, &answer)
 }
 
 /// A response body fed from a channel (the event stream).

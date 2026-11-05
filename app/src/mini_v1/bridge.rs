@@ -637,7 +637,7 @@ impl OpenContext {
             return Ok(None);
         }
         let p = &self.prepared.plugin;
-        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool);
+        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool, super::session::generation_of(&p.id));
         if let Err(e) = &press {
             log::info!("mini v1: {}/{} an agent's press on {tool}: {}", p.id, self.prepared.key.app, e.code);
         }
@@ -665,6 +665,8 @@ impl OpenContext {
         let max = self.limits.max_result;
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
+            // the whole of it: a closure taking only `who.actor` would end the call here and now
+            let who = who;
             let press = me.press_of(&tool, who.actor)?;
             // signed when it goes out: a queued call is not stale
             let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor, press.as_ref())?;
@@ -894,7 +896,7 @@ impl OpenContext {
         // the pasteboard is one shell command from the model, and what an
         // app copies is often what the screen keeps from it
         if self.ui.actor() == Actor::Agent {
-            crate::agent_hub::press::note_refused("the pasteboard");
+            crate::agent_hub::press::note_refused(crate::agent_hub::press::Held::Pasteboard);
             return reject(reply, denied(&format!("Only a person can copy from {}, and this press came from the AI, so nothing was copied.", self.prepared.plugin.title)));
         }
         match text(&data, "text") {
@@ -940,6 +942,7 @@ impl OpenContext {
         let max = grant.min(self.limits.max_preview);
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
+            let who = who;
             let press = me.press_of(&tool, who.actor)?;
             let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);

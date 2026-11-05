@@ -40,10 +40,23 @@ export function originOf(actor, tool) {
   return actor === "person" || tool?.annotations?.readOnlyHint === true ? "app" : "agent";
 }
 
-/** The press record an agent's call carries to the plugin: what the Bot's Hub allowed, under the
- *  signature. Only with `origin: agent`, and only a record the protocol knows. */
-export function pressOf(origin, press) {
-  return origin === "agent" && press?.by === "ai" && typeof press.who === "string" ? press : undefined;
+const HANDLE = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*$/;
+const isHandle = (v) => typeof v === "string" && v.length <= 64 && HANDLE.test(v);
+const isOnce = (v) => typeof v === "string" && /^[a-z][a-z0-9-]{7,63}$/.test(v);
+const keysAre = (o, names) => {
+  const keys = Object.keys(o).sort();
+  return keys.length === names.length && names.every((n, i) => keys[i] === n);
+};
+
+/** The press record a call carries to the plugin: what the Bot's Hub allowed, under the signature.
+ *  On every call that isn't the person's, reads too: a read goes out as `origin: app`, and this
+ *  is how the plugin tells it from the person's own. Only an AI's press, in exactly the protocol's
+ *  shape (`PressedBy`), as the Rust broker has it. */
+export function pressOf(actor, press) {
+  if (actor === "person" || press === null || typeof press !== "object" || Array.isArray(press)) return undefined;
+  const ai = press.by === "ai" && keysAre(press, ["by", "who"]) && isHandle(press.who);
+  const approved = press.by === "ai_approved" && keysAre(press, ["approved_by", "by", "once", "who"]) && isHandle(press.who) && isHandle(press.approved_by) && isOnce(press.once);
+  return ai || approved ? press : undefined;
 }
 
 const cap = (s, n) => {
@@ -324,7 +337,7 @@ export function createSessions(plugins) {
       const tool = rt.tools.find((t) => t.name === envelope.tool);
       const origin = originOf(envelope.actor, tool);
       const caller = { origin, plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
-      const press = pressOf(origin, envelope.press);
+      const press = pressOf(envelope.actor, envelope.press);
       if (press) caller.press = press;
 
       r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "buwiz/caller": caller } });

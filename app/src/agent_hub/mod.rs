@@ -22,7 +22,8 @@
 //! is never pressed: a name is what says what a press does, and what's left
 //! unnamed may be a row of data. The way from a Hub id to nsh's is made
 //! from that same read, in the Bot, so all that's taken from the model is
-//! the id.
+//! the id. Only an action that went through, and whose answer carries the
+//! screen, moves [`Looked`] on: after any other the model saw nothing new.
 //!
 //! The input goes through [`AppView::act`], which tells
 //! [`crate::mini_v1::attribution`] the agent is acting, so what it starts
@@ -55,6 +56,7 @@ use crate::mini_v1::{
     to_store,
 };
 use filter::Reading;
+use press::Held;
 
 const STREAM: &str = "/v1/host/ui/stream";
 const REPLY: &str = "/v1/host/ui/reply";
@@ -62,8 +64,11 @@ const REPLY: &str = "/v1/host/ui/reply";
 /// How long what an action started has to show: its calls have to be over
 /// for this long.
 const QUIET: Duration = Duration::from_millis(250);
-/// How long an action's answer waits for its calls at most.
-const CALLS_WAIT: Duration = Duration::from_secs(10);
+/// How long an action's answer waits for its calls at most: a person may
+/// have to answer the broker's card for one.
+const CALLS_WAIT: Duration = Duration::from_secs(30);
+/// How long an action counts as running, however its end went missing.
+const ACT_LIMIT: Duration = Duration::from_secs(40);
 
 /// A running open.
 struct Open {
@@ -90,8 +95,30 @@ struct Looked {
 thread_local! {
     static OPENS: RefCell<Vec<Open>> = const { RefCell::new(Vec::new()) };
     static LOOKED: Cell<Option<Looked>> = const { Cell::new(None) };
-    /// An action is running: one at a time.
-    static ACTING: Cell<bool> = const { Cell::new(false) };
+    /// How many looks there were: what an action started with.
+    static LOOKS: Cell<u64> = const { Cell::new(0) };
+    /// The action running: one at a time.
+    static ACTING: Cell<Option<Acting>> = const { Cell::new(None) };
+    static ACTIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// An action in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Acting {
+    n: u64,
+    since: Instant,
+}
+
+/// Whether `acting` still holds the Hub at `now`: one whose end went
+/// missing lets go.
+fn busy(acting: Option<Acting>, now: Instant) -> bool {
+    acting.is_some_and(|a| now.saturating_duration_since(a.since) < ACT_LIMIT)
+}
+
+/// The last look after an action: the screen it answered with, if it went
+/// through, is still the one in charge, and no look came in meanwhile.
+fn look_after(ok: bool, current: bool, looked_meanwhile: bool, last: Option<Looked>, now: Option<Looked>) -> Option<Looked> {
+    if ok && current && !looked_meanwhile { now } else { last }
 }
 
 /// An open started, on the main thread. `short` is its plugin's.
@@ -184,12 +211,42 @@ fn screen_id(app: &str, before: usize) -> Option<AgentId> {
 }
 
 fn reply(r: Response) {
-    let Ok(body) = serde_json::to_value(&r) else { return };
+    reply_or(r, || {});
+}
+
+/// [`reply`], with what to do when the broker never gets it.
+fn reply_or(r: Response, lost: impl FnOnce() + Send + 'static) {
+    let Ok(body) = serde_json::to_value(&r) else { return lost() };
     std::thread::spawn(move || {
         if let Err(e) = HttpBroker::configured().request("POST", REPLY, Some(body), Duration::from_secs(5)) {
             log::warn!("agent hub: the reply didn't reach the broker: {}", e.code);
+            lost();
         }
     });
+}
+
+/// A refusal: the sentence, and whether the person reads it too. A bad id
+/// is the model's own mistake, for the model alone.
+#[derive(Debug, PartialEq, Eq)]
+struct No {
+    said: String,
+    tell: bool,
+}
+
+impl No {
+    fn policy(said: impl Into<String>) -> No {
+        No { said: said.into(), tell: true }
+    }
+
+    fn model(said: impl Into<String>) -> No {
+        No { said: said.into(), tell: false }
+    }
+}
+
+fn refuse(id: String, target: Target, no: No) {
+    let mut r = Response::err(id, target, no.said);
+    r.result = Some(json!({"tell": no.tell}));
+    reply(r);
 }
 
 /// What an op asks of its node: the node, and the input.
@@ -223,37 +280,37 @@ fn says(s: &str, name: &str) -> String {
 /// Whether `op` on `target` may go ahead on `surfaces` as they are, or the
 /// sentence that says why not. `looked` is the top screen as the model saw
 /// it; nothing here reads anything else the model said but the node's id.
-fn plan(surfaces: &[Surface], stack: &[String], target: &Target, op: &Op, looked: Option<Looked>, reading: Reading) -> Result<Plan, String> {
-    let (id, act) = wanted(op).ok_or("The AI can't do that on a screen, so nothing happened.")?;
+fn plan(surfaces: &[Surface], stack: &[String], target: &Target, op: &Op, looked: Option<Looked>, reading: Reading) -> Result<Plan, No> {
+    let (id, act) = wanted(op).ok_or_else(|| No::policy("The AI can't do that on a screen, so nothing happened."))?;
     let top = top_of(surfaces, stack).filter(|i| surfaces[*i].target == target.as_str());
     let Some(at) = top else {
         return Err(match surfaces.iter().rfind(|s| s.target == target.as_str()) {
-            Some(s) => says("{} is covered by another screen or isn't full screen, so nothing was pressed.", &s.name),
-            None => "That mini app isn't open, so nothing was pressed.".to_owned(),
+            Some(s) => No::policy(says("{} is covered by another screen or isn't full screen, so nothing was pressed.", &s.name)),
+            None => No::model("That mini app isn't open, so nothing was pressed."),
         });
     };
     let s = &surfaces[at];
     if looked != Some(Looked { n: s.n, rev: filter::rev(&s.nodes) }) {
-        return Err(CHANGED.to_owned());
+        return Err(No::policy(CHANGED));
     }
     let map = filter::mapped(&s.nodes, reading);
     let Some((node, seen)) = map.iter().find(|(n, _)| n.id == *id) else {
-        return Err("That button or field isn't on this screen any more, so nothing was pressed. The AI has to look again.".to_owned());
+        return Err(No::model("That button or field isn't on this screen any more, so nothing was pressed. The AI has to look again."));
     };
     if node.name.is_empty() {
-        return Err("That control has no name the AI may read, so it may be a row of someone's data and nothing was pressed. Press it yourself, or name what you want in the chat.".to_owned());
+        return Err(No::policy("That control has no name the AI may read, so it may be a row of someone's data and nothing was pressed. Press it yourself, or name what you want in the chat."));
     }
     let fits = if matches!(act, UiAct::Press) { filter::pressable(&node.role) } else { filter::typable(&node.role) };
     if !fits {
-        return Err(says("\"{}\" doesn't take that action, so nothing happened.", &node.name));
+        return Err(No::model(says("\"{}\" doesn't take that action, so nothing happened.", &node.name)));
     }
     if !node.enabled {
-        return Err(says("\"{}\" is switched off on this screen, so nothing was pressed.", &node.name));
+        return Err(No::policy(says("\"{}\" is switched off on this screen, so nothing was pressed.", &node.name)));
     }
     if let UiAct::Type(text) | UiAct::SetValue(text) = &act
         && text.chars().any(char::is_control)
     {
-        return Err("The AI can type only plain text, with no line breaks or keys, so nothing was typed.".to_owned());
+        return Err(No::model("The AI can type only plain text, with no line breaks or keys, so nothing was typed."));
     }
     Ok(Plan { at, node: seen.id.clone(), label: node.name.clone(), act })
 }
@@ -272,11 +329,12 @@ fn unready(error: &str, label: &str) -> String {
 }
 
 /// What the model and the person read for a refused call of an action.
-fn refused_line(what: &str, label: &str) -> String {
-    if what == "the pasteboard" {
-        return says("\"{}\" copies to the pasteboard, which is a person's to do, so the AI's press was refused and nothing was copied.", label);
+fn refused_line(held: &Held, label: &str) -> String {
+    match held {
+        Held::Pasteboard => says("\"{}\" copies to the pasteboard, which is a person's to do, so the AI's press was refused and nothing was copied.", label),
+        Held::Person => says("\"{}\" needs a person, so the AI's press was refused and nothing was sent. A person has to press it.", label),
+        Held::Said(said) => said.clone(),
     }
-    says("\"{}\" needs a person, so the AI's press was refused and nothing was sent. A person has to press it.", label)
 }
 
 /// Waits for the calls of an action to be over and quiet.
@@ -294,22 +352,26 @@ fn wait_for_calls() {
 }
 
 /// Answers an action, once what it started has shown.
-fn finish(id: String, target: Target, label: String, done: Result<(), String>) {
+fn finish(id: String, target: Target, label: String, done: Result<(), String>, n: u64, looks: u64) {
     std::thread::spawn(move || {
         wait_for_calls();
         to_store(move |st| {
             let stack: Vec<String> = st.mini_full.with_untracked(|v| v.iter().map(|o| o.key.clone()).collect());
             on_main(move || {
-                ACTING.set(false);
-                let refused: Vec<String> = press::take_refused().iter().map(|what| refused_line(what, &label)).collect();
-                let now = surfaces();
-                LOOKED.set(looked_now(&now, &stack));
-                if let (Err(e), true) = (&done, refused.is_empty()) {
-                    return reply(Response::err(id, target, unready(e, &label)));
+                let current = ACTING.get().is_some_and(|a| a.n == n);
+                if current {
+                    ACTING.set(None);
                 }
+                let refused: Vec<String> = press::take_refused().iter().map(|held| refused_line(held, &label)).collect();
+                let now = surfaces();
+                if let (Err(e), true) = (&done, refused.is_empty()) {
+                    return refuse(id, target, No::model(unready(e, &label)));
+                }
+                LOOKED.set(look_after(done.is_ok(), current, LOOKS.get() != looks, LOOKED.get(), looked_now(&now, &stack)));
                 let mut r = Response::ok(id, target);
                 r.result = Some(json!({"apps": trees(&now, &stack, Reading::configured()), "refused": refused}));
-                reply(r);
+                // the model never saw this screen: it can't go on from it
+                reply_or(r, || on_main(|| LOOKED.set(None)));
             });
         });
     });
@@ -317,21 +379,23 @@ fn finish(id: String, target: Target, label: String, done: Result<(), String>) {
 
 /// Runs `op` on `target`, if the screen as it is now lets it.
 fn act(id: String, target: Target, op: Op, stack: Vec<String>) {
-    if ACTING.get() {
-        return reply(Response::err(id, target, "The AI's last action is still running, so nothing was pressed."));
+    if busy(ACTING.get(), Instant::now()) {
+        return refuse(id, target, No::model("The AI's last action is still running, so nothing was pressed."));
     }
     let now = surfaces();
     let ready = plan(&now, &stack, &target, &op, LOOKED.get(), Reading::configured());
     let view = ready.as_ref().ok().and_then(|p| now[p.at].view.upgrade());
     let (plan, view): (Plan, Rc<AppView>) = match (ready, view) {
         (Ok(plan), Some(view)) => (plan, view),
-        (Err(why), _) => return reply(Response::err(id, target, why)),
-        (Ok(_), None) => return reply(Response::err(id, target, CHANGED)),
+        (Err(no), _) => return refuse(id, target, no),
+        (Ok(_), None) => return refuse(id, target, No::policy(CHANGED)),
     };
-    ACTING.set(true);
+    let n = ACTIONS.get() + 1;
+    ACTIONS.set(n);
+    ACTING.set(Some(Acting { n, since: Instant::now() }));
     press::take_refused();
-    let label = plan.label.clone();
-    view.act(&plan.node, plan.act, move |done| finish(id, target, label, done));
+    let (label, looks) = (plan.label.clone(), LOOKS.get());
+    view.act(&plan.node, plan.act, move |done| finish(id, target, label, done, n, looks));
 }
 
 /// Answers `request`, for the agent whatever it says it is. A look or an
@@ -341,7 +405,7 @@ fn answer(request: Envelope) {
     let Envelope { id, target, op, .. } = request;
     if press::authorize_op(&target, &op).is_err() {
         let why = press::op_refused(&target, &op);
-        return reply(Response::err(id, target, why));
+        return refuse(id, target, No::policy(why));
     }
     to_store(move |st| {
         let stack: Vec<String> = st.mini_full.with_untracked(|v| v.iter().map(|o| o.key.clone()).collect());
@@ -350,6 +414,7 @@ fn answer(request: Envelope) {
                 return act(id, target, op, stack);
             }
             let now = surfaces();
+            LOOKS.set(LOOKS.get() + 1);
             LOOKED.set(looked_now(&now, &stack));
             let mut r = Response::ok(id, target);
             r.result = Some(json!({"apps": trees(&now, &stack, Reading::configured())}));
@@ -467,7 +532,77 @@ mod tests {
     }
 
     fn planned(s: &[Surface], st: &[String], op: &Op, l: Option<Looked>) -> Result<Plan, String> {
-        plan(s, st, &books(), op, l, Reading::Structure)
+        plan(s, st, &books(), op, l, Reading::Structure).map_err(|no| no.said)
+    }
+
+    #[test]
+    fn only_an_action_that_went_through_and_answered_with_the_screen_moves_the_look_on() {
+        let (last, now) = (Some(Looked { n: 1, rev: 1 }), Some(Looked { n: 1, rev: 2 }));
+        assert_eq!(look_after(true, true, false, last, now), now);
+        assert_eq!(look_after(false, true, false, last, now), last, "it failed: no screen went back");
+    }
+
+    #[test]
+    fn a_look_that_lands_during_an_action_stands() {
+        let (seen, now) = (Some(Looked { n: 1, rev: 5 }), Some(Looked { n: 1, rev: 6 }));
+        assert_eq!(look_after(true, true, true, seen, now), seen);
+    }
+
+    #[test]
+    fn an_action_that_lost_its_place_moves_nothing() {
+        let (last, now) = (Some(Looked { n: 1, rev: 1 }), Some(Looked { n: 1, rev: 2 }));
+        assert_eq!(look_after(true, false, false, last, now), last);
+    }
+
+    /// After a failed press the screen moved on: the model never saw this
+    /// id, and the look it holds no longer fits.
+    #[test]
+    fn a_failed_action_leaves_a_later_stale_id_refused() {
+        let (_, st, last) = ready(entry_form());
+        let mut after = entry_form();
+        after.push(button("n9", "Post anyway"));
+        let s = [surface(ENTRY, "books", "books", "Books", after)];
+        let kept = look_after(false, true, false, last, looked(&s, &st));
+        assert_eq!(planned(&s, &st, &click("button.post-anyway"), kept).unwrap_err(), CHANGED);
+    }
+
+    #[test]
+    fn a_person_typing_between_the_look_and_the_action_refuses() {
+        let (_, st, l) = ready(entry_form());
+        let mut typed_in = entry_form();
+        typed_in[0].value = Some("the person's text".into());
+        let s = [surface(ENTRY, "books", "books", "Books", typed_in)];
+        assert_eq!(planned(&s, &st, &typed("field.amount", "5"), l).unwrap_err(), CHANGED);
+    }
+
+    #[test]
+    fn the_models_own_typing_keeps_working_after_its_answer() {
+        let (_, st, _) = ready(entry_form());
+        let mut after = entry_form();
+        after[0].value = Some("1,350.00".into());
+        let s = [surface(ENTRY, "books", "books", "Books", after)];
+        let l = look_after(true, true, false, None, looked(&s, &st));
+        assert!(planned(&s, &st, &set("field.amount", "2"), l).is_ok());
+    }
+
+    #[test]
+    fn a_lost_end_stops_holding_the_hub() {
+        let t = Instant::now();
+        let a = Some(Acting { n: 1, since: t });
+        assert!(busy(a, t + ACT_LIMIT - Duration::from_secs(1)));
+        assert!(!busy(a, t + ACT_LIMIT));
+        assert!(!busy(None, t));
+    }
+
+    #[test]
+    fn only_a_real_refusal_reaches_the_person() {
+        let (s, st, l) = ready(entry_form());
+        let tell = |t: &Target, op: &Op, l| plan(&s, &st, t, op, l, Reading::Structure).unwrap_err().tell;
+        assert!(!tell(&books(), &click("button.never-was"), l), "an id it made up");
+        assert!(!tell(&Target::parse("nosuchapp").unwrap(), &click("button.save-draft"), l), "an app it made up");
+        assert!(!tell(&books(), &set("button.save-draft", "x"), l));
+        assert!(tell(&books(), &click("button.unnamed-1"), l));
+        assert!(tell(&books(), &click("button.save-draft"), None));
     }
 
     #[test]
@@ -499,7 +634,7 @@ mod tests {
     fn an_app_that_isnt_open_refuses() {
         let (s, st, l) = ready(entry_form());
         let e = plan(&s, &st, &Target::parse("ebirforms").unwrap(), &click("button.create"), l, Reading::Structure).unwrap_err();
-        assert_eq!(e, "That mini app isn't open, so nothing was pressed.");
+        assert_eq!(e.said, "That mini app isn't open, so nothing was pressed.");
     }
 
     #[test]

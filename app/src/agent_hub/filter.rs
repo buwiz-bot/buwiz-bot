@@ -237,17 +237,16 @@ pub fn mapped(nodes: &[Seen], reading: Reading) -> Vec<(UiNode, &Seen)> {
 
 /// What makes a screen this screen, as a number that never leaves the Bot:
 /// what shows, hidden from the model or not, so a row swapped under an id
-/// that stayed the same counts as a change. Left out: what a field holds,
-/// which an action changes, and a passing status line.
+/// that stayed the same, or a person typing in a field, counts as a change.
+/// An action's own typing doesn't get in its way: its answer is a new look.
+/// Left out: a passing status line.
 pub fn rev(nodes: &[Seen]) -> u64 {
     fn hash(nodes: &[Seen], h: &mut DefaultHasher) {
         for n in nodes.iter().filter(|n| n.visible && !["status", "alert"].contains(&n.role.as_str())) {
             n.role.hash(h);
             n.name.hash(h);
             n.enabled.hash(h);
-            if !FIELDS.contains(&n.role.as_str()) {
-                n.value.hash(h);
-            }
+            n.value.hash(h);
             n.children.len().hash(h);
             hash(&n.children, h);
         }
@@ -456,14 +455,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_fields_value_or_a_passing_status_doesnt_change_the_screen() {
+    fn a_passing_status_doesnt_change_the_screen_but_what_a_field_holds_does() {
         let screen = |v: &str, toast: &[Seen]| {
             let mut nodes = vec![seen("f", "textfield", "Memo", Some(v), vec![])];
             nodes.extend_from_slice(toast);
             nodes
         };
         let toast = [seen("s", "status", "Draft 4 saved", None, vec![])];
-        assert_eq!(rev(&screen("", &[])), rev(&screen("Rent", &toast)));
+        assert_eq!(rev(&screen("Rent", &[])), rev(&screen("Rent", &toast)));
+        assert_ne!(rev(&screen("Rent", &[])), rev(&screen("Rent, the person typing", &[])));
     }
 
     #[test]

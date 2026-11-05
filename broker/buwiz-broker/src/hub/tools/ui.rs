@@ -13,7 +13,12 @@
 //!
 //! What may be pressed is decided in the Bot. All this side does is say what the model asked
 //! for: the Bot takes nothing else from a message, not even its `caller`. What the Bot refuses
-//! the model reads as a sentence, and so does the person, in the chat ([`act`]).
+//! the model reads as a sentence, and a real refusal the person reads too, in the chat ([`act`]).
+//!
+//! One thing only this side can decide: whether the Bot's switches let a write through. While an
+//! action runs, each write it leads to comes back here (`POST /v1/host/ui/press`, [`UiLink::press`])
+//! and is judged in that action's turn, as the model's direct call of that tool is: off refuses,
+//! Ask asks. With no action in flight there is no turn to judge it in, and it is refused.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,8 +30,9 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Out, Run};
+use super::{controls, v1, Out, Run};
 use crate::hub::ctx::HubCtx;
+use crate::hub::policy::keys;
 use crate::hub::store::Turn;
 use crate::js;
 
@@ -38,7 +44,10 @@ pub const ACT_KEY: &str = "screen_actions";
 /// How long the Bot has to answer: it reads the tree on its main thread.
 const WAIT: Duration = Duration::from_secs(10);
 /// How long an action has: its press, the app settling, and the calls it starts.
-const ACT_WAIT: Duration = Duration::from_secs(20);
+const ACT_WAIT: Duration = Duration::from_secs(45);
+/// How long a press may wait for its answer, a person's included: a Bot's call lasts 30 s.
+const PRESS_WAIT: Duration = Duration::from_secs(25);
+const NOBODY: &str = "Nobody answered in time, so this press was refused and nothing was sent.";
 const PING: Duration = Duration::from_secs(25);
 
 /// The model's definition.
@@ -70,6 +79,24 @@ pub struct UiLink {
     bot: Mutex<Option<mpsc::Sender<Bytes>>>,
     waiting: Mutex<HashMap<String, oneshot::Sender<Response>>>,
     next: AtomicU64,
+    /// The action in flight: where its presses go.
+    acting: Mutex<Option<mpsc::Sender<PressAsk>>>,
+}
+
+/// A write an action led to, waiting for its turn's word.
+struct PressAsk {
+    plugin: String,
+    tool: String,
+    answer: oneshot::Sender<Result<(), String>>,
+}
+
+/// Ends an action's claim on [`UiLink::acting`], however it ends.
+struct Claim<'a>(&'a UiLink);
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        *self.0.acting.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 impl UiLink {
@@ -103,6 +130,31 @@ impl UiLink {
         answer.ok_or_else(|| "The Bot didn't answer.".to_owned())
     }
 
+    /// Claims the one action in flight; `None` while another runs.
+    fn claim(&self) -> Option<(Claim<'_>, mpsc::Receiver<PressAsk>)> {
+        let mut acting = self.acting.lock().unwrap_or_else(|e| e.into_inner());
+        if acting.is_some() {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel(8);
+        *acting = Some(tx);
+        Some((Claim(self), rx))
+    }
+
+    /// `plugin`'s `tool`, which the Bot says the action in flight led to: `Err` holds the sentence.
+    pub async fn press(&self, plugin: &str, tool: &str) -> Result<(), String> {
+        let acting = self.acting.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let acting = acting.ok_or("No action of the AI's is running, so this press was refused and nothing was sent.")?;
+        let (answer, heard) = oneshot::channel();
+        let ask = PressAsk { plugin: plugin.to_owned(), tool: tool.to_owned(), answer };
+        let lost = "The Bot couldn't check this press, so nothing was sent.";
+        acting.send(ask).await.map_err(|_| lost)?;
+        match tokio::time::timeout(PRESS_WAIT + Duration::from_secs(1), heard).await {
+            Ok(Ok(said)) => said,
+            _ => Err(NOBODY.to_owned()),
+        }
+    }
+
     /// The Bot's answer `r`; false when no look is waiting for it.
     pub fn reply(&self, r: Response) -> bool {
         let waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.id);
@@ -134,6 +186,22 @@ fn act_request(id: String, input: &Value) -> Result<Envelope, String> {
     let who = ActorId::parse("agent.broker").map_err(|e| e.to_string())?;
     e.caller = Some(Caller::Agent { who, approval: None });
     Ok(e)
+}
+
+/// Whether a write the action led to may go out, as this turn's direct call of the tool would.
+async fn judge(run: &Run, plugin: &str, tool: &str) -> Result<(), String> {
+    let (ctx, title) = (&run.ctx, keys::label_of(&run.ctx, &format!("v1:{plugin}")).map_or_else(|| plugin.to_owned(), |l| l.0));
+    let open = v1::tool_def(ctx, plugin, tool).is_some_and(|t| crate::helper::sessions::open_to_agents(&t));
+    if !open || keys::key_of(ctx, tool, run.turn.surface.as_ref()).as_deref() != Some(&format!("v1:{plugin}")) {
+        return Err(format!("Only a person can do this in {title}, so the AI's press was refused and nothing was sent."));
+    }
+    if controls::refusal(run, tool, &json!({})).is_some() {
+        return Err(format!("{title} is off here, so the AI's press was refused and nothing was sent. Only a person can turn it on."));
+    }
+    if controls::ask_press(run, tool).await.is_some() {
+        return Err(format!("The AI's press in {title} wasn't allowed, so nothing was sent."));
+    }
+    Ok(())
 }
 
 fn bot() -> Result<Target, String> {
@@ -195,6 +263,11 @@ fn render_act(r: &Response) -> Result<(Value, Vec<String>), String> {
     Ok((view, refused))
 }
 
+/// Whether the Bot marked its refusal as one the person should read.
+fn tells_person(r: &Response) -> bool {
+    !r.ok && r.result.as_ref().and_then(|v| v.get("tell")) == Some(&Value::Bool(true))
+}
+
 /// Tells the person what was refused, in the chat the model is working in. Its own line: what
 /// the model says next is up to the model.
 fn tell_person(run: &Run, said: &str) {
@@ -209,17 +282,38 @@ fn tell_person(run: &Run, said: &str) {
 pub async fn act(run: &Run, input: &Value) -> Out {
     let ui = &run.ctx.ui;
     let id = format!("ui-{}", ui.next.fetch_add(1, Ordering::Relaxed));
-    let answer = match act_request(id, input) {
-        Ok(e) => ui.ask(&e, ACT_WAIT).await,
-        Err(why) => Err(why),
+    let e = match act_request(id, input) {
+        Ok(e) => e,
+        Err(why) => return Out::err(why),
     };
-    match answer.and_then(|r| render_act(&r)) {
+    let Some((_claim, mut presses)) = ui.claim() else {
+        return Out::err("The AI's last action is still running, so nothing was pressed.".to_owned());
+    };
+    let asked = ui.ask(&e, ACT_WAIT);
+    tokio::pin!(asked);
+    let answer = loop {
+        tokio::select! {
+            r = &mut asked => break r,
+            Some(p) = presses.recv() => {
+                // the wait ending takes the card with it
+                let said = tokio::time::timeout(PRESS_WAIT, judge(run, &p.plugin, &p.tool)).await;
+                let _ = p.answer.send(said.unwrap_or_else(|_| Err(NOBODY.to_owned())));
+            }
+        }
+    };
+    let r = match answer {
+        Ok(r) => r,
+        Err(why) => return Out::err(why),
+    };
+    match render_act(&r) {
         Ok((view, refused)) => {
             refused.iter().for_each(|said| tell_person(run, said));
             Out::ok(js::stringify(&view))
         }
         Err(why) => {
-            tell_person(run, &why);
+            if tells_person(&r) {
+                tell_person(run, &why);
+            }
             Out::err(why)
         }
     }
@@ -343,6 +437,28 @@ mod tests {
             let why = asked_of(input).unwrap_err();
             assert!(why.ends_with('.') && why.contains("nothing"), "{why}");
         }
+    }
+
+    #[test]
+    fn only_a_refusal_the_bot_marked_reaches_the_person() {
+        let t = Target::parse("books").unwrap();
+        let mut policy = Response::err("ui-t", t.clone(), "covered");
+        policy.result = Some(json!({"tell": true}));
+        assert!(tells_person(&policy));
+        let mut model = Response::err("ui-t", t.clone(), "no such id");
+        model.result = Some(json!({"tell": false}));
+        assert!(!tells_person(&model));
+        assert!(!tells_person(&Response::err("ui-t", t, "unmarked")));
+    }
+
+    #[tokio::test]
+    async fn with_no_action_in_flight_a_press_is_refused() {
+        let link = UiLink::default();
+        assert!(link.press("app.buwiz.books", "books_entry_draft").await.unwrap_err().contains("No action"));
+        let (claim, _rx) = link.claim().unwrap();
+        assert!(link.claim().is_none(), "one at a time");
+        drop(claim);
+        assert!(link.claim().is_some(), "the claim ends with its action");
     }
 
     #[test]

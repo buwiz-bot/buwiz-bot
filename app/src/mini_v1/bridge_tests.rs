@@ -125,6 +125,7 @@ impl host_api::Broker for FakeBroker {
                 {"name": "fx_app", "audience": ["app"]},
                 {"name": "fx_bare"},
             ]}]})),
+            "/v1/host/ui/press" => Ok(json!({"allow": true})),
             "/v1/host/tickets/title" => Ok(json!({"valid": body["ticket"] == TICKET, "title": "Dela Cruz Jane"})),
             "/v1/host/resolve" => Ok(json!({"result": "token", "ticket": TICKET, "title": "Item One"})),
             "/v1/host/sessions/close" => {
@@ -431,6 +432,23 @@ fn a_call_carries_the_hosts_actor_and_the_app_has_no_say() {
     o.wait("ok");
     assert_eq!(o.broker.calls.lock().unwrap()[0].0["actor"], "person");
     assert!(o.ui.agent_calls.lock().unwrap().is_empty(), "the person's calls hold nothing");
+}
+
+#[test]
+fn an_agents_call_counts_as_running_for_as_long_as_it_runs() {
+    let script = r#"await buwiz.call("fx_slow", { ms: 300 }); return "ok";"#;
+    let perms = json!({"tools": ["fx_slow"]});
+    let mut o = Open::start_with(FIXTURE, perms, script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    while o.broker.calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*o.ui.agent_calls.lock().unwrap(), [true], "it is out at the broker");
+    o.wait("ok");
+    let by = Instant::now() + Duration::from_secs(2);
+    while o.ui.agent_calls.lock().unwrap().len() < 2 && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*o.ui.agent_calls.lock().unwrap(), [true, false]);
 }
 
 #[test]

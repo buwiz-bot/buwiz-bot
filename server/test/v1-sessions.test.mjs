@@ -256,11 +256,25 @@ test("app source: the fingerprint is checked; a one-byte change is fingerprint_m
   await k2.plugins.stopAll();
 });
 
-test("a press record goes out only with an agent's call", () => {
+test("a press record goes out with every call of the agent's, in exactly the protocol's shape", () => {
   const press = { by: "ai", who: "agent.broker" };
   assert.equal(pressOf("agent", press), press);
-  assert.equal(pressOf("app", press), undefined);
+  assert.equal(pressOf(undefined, press), press, "no actor is the agent's");
+  assert.equal(pressOf("person", press), undefined);
   assert.equal(pressOf("agent", undefined), undefined);
-  assert.equal(pressOf("agent", { by: "person", who: "person.owner" }), undefined);
-  assert.equal(pressOf("agent", "ai"), undefined);
+  const approved = { by: "ai_approved", who: "agent.broker", approved_by: "person.owner", once: "once-0001" };
+  assert.equal(pressOf("agent", approved), approved);
+  const bad = [
+    { by: "person", who: "person.owner" },
+    { by: "routine", who: "routine.x" },
+    { by: "ai" },
+    { by: "ai", who: "Not An Id" },
+    { by: "ai", who: "agent.broker", extra: 1 },
+    { by: "ai_approved", who: "agent.broker", approved_by: "person.owner" },
+    { by: "ai_approved", who: "agent.broker", approved_by: "person.owner", once: "short" },
+    "ai",
+    ["ai"],
+    null,
+  ];
+  for (const b of bad) assert.equal(pressOf("agent", b), undefined, JSON.stringify(b));
 });
