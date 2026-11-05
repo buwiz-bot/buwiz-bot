@@ -92,6 +92,8 @@ struct Pane {
     join: Vec<Joinable>,
     /// a screen fetch is on its way
     fetching: bool,
+    /// why a join failed, until the next try
+    note: String,
 }
 
 thread_local! {
@@ -186,11 +188,22 @@ fn sleep(bot: String) {
     });
 }
 
+/// Joins `computer`, and wakes it only if that worked: with no seat, a wake makes a new computer.
 fn attach(bot: String, computer: String) {
+    update(&bot, |p| p.note.clear());
     spawn_detached(async move {
-        let _ = client::post_any(&route(&bot, "/attach"), json!({"computer": computer})).await;
-        wake(bot);
+        let reply = client::post_any(&route(&bot, "/attach"), json!({"computer": computer})).await;
+        match refusal(reply.as_ref()) {
+            Some(why) => update(&bot, |p| p.note = why),
+            None => wake(bot),
+        }
     });
+}
+
+/// The sentence of a broker's refusal: `{ok: false, message}`, or no answer. `None` for a yes.
+pub(crate) fn refusal(reply: Option<&Value>) -> Option<String> {
+    let Some(v) = reply else { return Some("The broker didn't answer.".to_owned()) };
+    (v.get("ok").and_then(Value::as_bool) == Some(false)).then(|| v.get("message").and_then(Value::as_str).unwrap_or("The computer said no.").to_owned())
 }
 
 fn leave(bot: String) {
@@ -265,8 +278,8 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
         }
     };
     let mut out = view().child(tile).child(text(format!("{name}'s screen")).text_size(px(12.0)).text_color(theme::MUTED).pt(px(10.0)));
-    if !p.status.message.is_empty() {
-        out = out.child(view().test_id("computer-problem").child(note(p.status.message.clone())));
+    for words in [&p.status.message, &p.note].into_iter().filter(|w| !w.is_empty()) {
+        out = out.child(view().test_id("computer-problem").child(note(words.clone())));
     }
     let shared = p.status.shared_with(bot);
     if !shared.is_empty() {
@@ -398,6 +411,11 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
         ))
 }
 
+/// Whether a Stop's answer says the recording ended.
+pub(crate) fn stopped(reply: Option<&Value>) -> bool {
+    reply.and_then(|v| v.get("ok")).and_then(Value::as_bool) == Some(true)
+}
+
 /// Record, beside Pin: on demand, and the MP4 stays on the computer.
 pub(crate) fn record_button(key: &str) -> impl IntoElement {
     let bot = bot_of_key(key).unwrap_or_default();
@@ -422,8 +440,11 @@ pub(crate) fn record_button(key: &str) -> impl IntoElement {
                 let path = route(&bot, "/record");
                 match was {
                     Some(id) => {
-                        let _ = client::post_any(&path, json!({"action": "stop", "id": id})).await;
-                        recording.set(None);
+                        // a stop that failed leaves it recording: the button stays, to try again
+                        let reply = client::post_any(&path, json!({"action": "stop", "id": id})).await;
+                        if stopped(reply.as_ref()) {
+                            recording.set(None);
+                        }
                     }
                     None => {
                         let id = client::post_any(&path, json!({"action": "start"})).await.and_then(|v| v.get("id").and_then(Value::as_u64));
@@ -461,6 +482,20 @@ mod tests {
         assert_eq!(bot_of_key(&key_of("b_1")).as_deref(), Some("b_1"));
         assert_eq!(bot_of_key("mcp:apps/hello"), None);
         assert_eq!(bot_of_key("computer:"), None);
+    }
+
+    #[test]
+    fn a_failed_join_is_a_sentence_and_stops_there() {
+        assert_eq!(refusal(Some(&json!({"ok": false, "message": "A computer has room for 4 Bots."}))).as_deref(), Some("A computer has room for 4 Bots."));
+        assert_eq!(refusal(None).as_deref(), Some("The broker didn't answer."));
+        assert_eq!(refusal(Some(&json!({"state": "awake", "computer": "c"}))), None, "a status is a yes");
+    }
+
+    #[test]
+    fn only_a_yes_ends_a_recording() {
+        assert!(stopped(Some(&json!({"ok": true, "path": "x.mp4"}))));
+        assert!(!stopped(Some(&json!({"ok": false, "message": "no"}))));
+        assert!(!stopped(None));
     }
 
     #[test]

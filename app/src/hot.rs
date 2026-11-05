@@ -739,8 +739,7 @@ fn routine_pill(name: String) -> impl IntoElement {
 }
 
 /// A left click at (`x`, `y`) from the top left of this app's window, sent to that window alone.
-#[cfg(target_os = "macos")]
-#[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
+#[cfg(all(target_os = "macos", feature = "dev-agent"))]
 fn mouse_click(x: f64, y: f64) {
     use nsh_platform_macos::objc2::MainThreadMarker;
     use nsh_platform_macos::objc2_foundation::NSPoint;
@@ -810,7 +809,7 @@ fn agent_menu(line: &str) {
     }
     // `mouse <x> <y>`: a left click at that point of this window, as real mouse events through
     // AppKit: the way into a web view, which the tree can't reach, on a window parked off screen
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "dev-agent"))]
     if let Some((x, y)) = line.strip_prefix("mouse ").and_then(|r| r.trim().split_once(' ')) {
         if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
             crate::mini_v1::native::on_main(move || mouse_click(x, y));
@@ -847,4 +846,18 @@ fn agent_menu(line: &str) {
         _ => return,
     };
     crate::ctx::open_at(x, y, items);
+}
+
+#[cfg(test)]
+mod dev_only {
+    /// What drives the app from a file stays out of a build without the dev agent.
+    #[test]
+    fn the_mouse_hook_is_dev_only() {
+        let source = include_str!("hot.rs");
+        for gated in ["fn mouse_click(", "if let Some((x, y)) = line.strip_prefix(\"mouse \")"] {
+            let at = source.find(gated).unwrap();
+            let before = source[..at].trim_end().lines().last().unwrap();
+            assert_eq!(before.trim(), "#[cfg(all(target_os = \"macos\", feature = \"dev-agent\"))]", "{gated}");
+        }
+    }
 }

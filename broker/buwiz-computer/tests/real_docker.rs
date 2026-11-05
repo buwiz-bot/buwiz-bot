@@ -77,6 +77,15 @@ async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     let out = p.run(m, &a, "python3 -c \"import socket;s=socket.socket();s.settimeout(6);s.connect(('example.com',443));print('out')\"", 15_000).await.unwrap();
     assert!(out.stdout.contains("out"), "the internet stays: {}", out.stderr);
 
+    // files, by the path the box resolves: what computer_read_file and computer_write_file send
+    let path = format!("{}/notes/a.txt", a.folder);
+    let real = p.resolve(m, &path).await.unwrap();
+    assert_eq!(real, format!("/workspace/{path}"));
+    p.write_file(m, &real, b"hello from c2").await.unwrap();
+    assert_eq!(p.read_file(m, &real).await.unwrap(), b"hello from c2");
+    p.run(m, &a, "ln -s /etc/hostname out", 5000).await.unwrap();
+    assert_eq!(p.resolve(m, &format!("{}/out", a.folder)).await.unwrap(), "/etc/hostname", "a link resolves to where it leads");
+
     // box-exec ends a job's process group at 30 s: the browser must outlive that
     p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(36)).await;

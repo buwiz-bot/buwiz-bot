@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::{CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Sleep, Spec, Viewer};
+use crate::{CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Sleep, Spec, Viewer, Woke};
 
 /// Its computer's token and viewer password, for tests that look for them where they mustn't be.
 pub const TOKEN: &str = "mock-token-0123456789abcdef";
@@ -21,6 +21,12 @@ pub struct MockProvider {
     pub stdout: Mutex<String>,
     /// `wake` waits here until released, when set
     pub hold: AtomicBool,
+    /// asleep lightly: a wake resumes it
+    pub paused: AtomicBool,
+    /// `create` leaves a thing in the computer's folder that stops its record being saved
+    pub poison_save: AtomicBool,
+    /// `create` takes this long, for tests of two at once
+    pub create_ms: std::sync::atomic::AtomicU64,
     /// `guard` fails with this
     pub unsafe_now: Mutex<Option<Problem>>,
     /// what `resolve` answers for a path, instead of the path itself
@@ -31,7 +37,7 @@ pub struct MockProvider {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
     }
 }
 
@@ -84,8 +90,12 @@ impl Provider for MockProvider {
 
     async fn create(&self, spec: &Spec) -> Result<Machine> {
         self.check().await?;
+        tokio::time::sleep(std::time::Duration::from_millis(self.create_ms.load(Ordering::SeqCst))).await;
         self.note(format!("create {}", spec.id));
         self.set_power(Power::Asleep);
+        if self.poison_save.load(Ordering::SeqCst) {
+            std::fs::create_dir_all(spec.dir.join("machine.json.new")).map_err(|e| Problem::Failed(e.to_string()))?;
+        }
         Ok(Machine {
             provider: ProviderKind::Docker,
             reach: Reach::Container { name: format!("mock-{}", spec.id) },
@@ -93,6 +103,7 @@ impl Provider for MockProvider {
             token: Secret::new(TOKEN),
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
+            seen: None,
         })
     }
 
@@ -100,18 +111,19 @@ impl Provider for MockProvider {
         Ok(self.power.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
-    async fn wake(&self, _: &Machine) -> Result<()> {
+    async fn wake(&self, _: &Machine) -> Result<Woke> {
         self.check().await?;
         self.note("wake".to_owned());
         while self.hold.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         self.set_power(Power::Awake);
-        Ok(())
+        Ok(if self.paused.swap(false, Ordering::SeqCst) { Woke::Resumed } else { Woke::Started })
     }
 
     async fn sleep(&self, _: &Machine, depth: Sleep) -> Result<()> {
         self.note(format!("sleep {depth:?}"));
+        self.paused.store(depth == Sleep::Light, Ordering::SeqCst);
         self.set_power(Power::Asleep);
         Ok(())
     }

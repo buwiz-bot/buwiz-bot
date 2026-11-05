@@ -416,7 +416,7 @@ async fn bot_integration(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     ok(&json!({"ok": true, "integrations": xs}))
 }
 
-async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+pub(crate) async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     ready!(ctx);
     let b = match parse(&req.body) {
         Ok(b) => b,
@@ -433,12 +433,6 @@ async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if let Err(e) = sweep_modules(&ctx, &names) {
         return refused(&e, false);
     }
-    // its screen goes with it, and the computer with its last Bot
-    if let Some(computers) = crate::hub::computer::Computers::of(&ctx) {
-        if let Err(e) = computers.detach(&ctx, &bot_id).await {
-            return refused(&e.sentence(), false);
-        }
-    }
     wrote!(ctx.store.write(|s| {
         s.bots.retain(|b| b.id != bot_id);
         s.list.retain(|t| Some(&t.id) != thread.as_ref());
@@ -451,6 +445,13 @@ async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         }
     }));
     ctx.store.write_index();
+    // only now that it's gone for sure: its screen goes with it, and the computer, files and all,
+    // with its last Bot
+    if let Some(computers) = crate::hub::computer::Computers::of(&ctx) {
+        if let Err(e) = computers.detach(&ctx, &bot_id).await {
+            eprintln!("buwiz-broker: a deleted Bot's computer: {}", e.code());
+        }
+    }
     ok(&json!({"ok": true}))
 }
 

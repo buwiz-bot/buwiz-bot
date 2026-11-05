@@ -29,7 +29,7 @@ use tokio::process::Command;
 
 use crate::guest::BoxGuest;
 use crate::{
-    random_hex, CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Settled, Sleep, Spec, Viewer, WaitFor, DOCKER_PORT_LAST, PORT_FIRST,
+    random_hex, CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Seen, Settled, Sleep, Spec, Viewer, WaitFor, Woke, DOCKER_PORT_LAST, PORT_FIRST,
 };
 
 /// The image's tag on this Mac (the computer repo's compose file builds it).
@@ -171,10 +171,19 @@ impl DockerProvider {
         Inspected::parse(&self.docker(&["inspect", "--type", "container", name], None).await?)
     }
 
-    /// The running computer's services, at the ports Docker says now: a start can pick new ones,
-    /// and an old port can be another computer's by then, so nothing here is kept.
+    /// What this request's [`Provider::look`] saw, else a read now.
+    async fn seen(&self, machine: &Machine) -> Result<Inspected> {
+        match &machine.seen {
+            Some(seen) => Ok(seen.clone()),
+            None => self.inspect(container(machine)?).await,
+        }
+    }
+
+    /// The running computer's services, at the ports read for this request: nothing is kept
+    /// between requests, because a start can pick new ports, and an old one can be another
+    /// computer's by then.
     async fn guest(&self, machine: &Machine) -> Result<BoxGuest> {
-        let found = self.inspect(container(machine)?).await?;
+        let found = self.seen(machine).await?;
         if found.status != "running" {
             return Err(Problem::Asleep);
         }
@@ -383,6 +392,7 @@ impl Provider for DockerProvider {
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
+            seen: None,
         })
     }
 
@@ -394,16 +404,26 @@ impl Provider for DockerProvider {
         }
     }
 
-    async fn wake(&self, machine: &Machine) -> Result<()> {
+    async fn look(&self, machine: &Machine) -> Result<(Power, Machine)> {
+        match self.inspect(container(machine)?).await {
+            Ok(found) => Ok((power_of(&found.status), Machine { seen: Some(found), ..machine.clone() })),
+            Err(Problem::Gone) => Ok((Power::Absent, machine.clone())),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn wake(&self, machine: &Machine) -> Result<Woke> {
         let name = container(machine)?;
-        match self.inspect(name).await?.status.as_str() {
+        let found = self.inspect(name).await?;
+        match found.status.as_str() {
             "paused" => {
                 self.docker(&["unpause", name], None).await?;
                 // a pause keeps the network: the wall of this start still stands, if it went up
-                self.guard(machine).await
+                self.guard(&Machine { seen: Some(found), ..machine.clone() }).await?;
+                Ok(Woke::Resumed)
             }
-            "running" => self.wall_or_stop(name).await,
-            _ => self.start(machine, name).await,
+            "running" => self.wall_or_stop(name).await.map(|()| Woke::Started),
+            _ => self.start(machine, name).await.map(|()| Woke::Started),
         }
     }
 
@@ -437,7 +457,7 @@ impl Provider for DockerProvider {
 
     async fn guard(&self, machine: &Machine) -> Result<()> {
         let name = container(machine)?;
-        let started = self.inspect(name).await?.started;
+        let started = self.seen(machine).await?.started;
         if self.walled.lock().unwrap_or_else(|e| e.into_inner()).get(name) == Some(&started) {
             return Ok(());
         }
@@ -461,7 +481,7 @@ impl Provider for DockerProvider {
     }
 
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
-        let found = self.inspect(container(machine)?).await?;
+        let found = self.seen(machine).await?;
         Ok(found.published(screen.viewer_port).map(|addr| Viewer { addr, password: machine.viewer_password.clone() }))
     }
 
@@ -517,14 +537,7 @@ pub fn power_of(status: &str) -> Power {
 }
 
 /// What `docker inspect` said.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Inspected {
-    pub status: String,
-    /// when this start of it began: changes with every start, whoever made it
-    pub started: String,
-    /// guest port → `127.0.0.1:port`
-    pub ports: HashMap<u16, String>,
-}
+pub type Inspected = Seen;
 
 impl Inspected {
     pub fn parse(json: &str) -> Result<Self> {
@@ -636,6 +649,7 @@ mod tests {
             token: Secret::new("the-token"),
             viewer_password: Secret::new("the-password"),
             dir: dir.to_path_buf(),
+            seen: None,
         }
     }
 
@@ -781,14 +795,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_ports_are_read_fresh_every_time() {
+    async fn one_look_serves_a_request_and_the_next_request_looks_again() {
         let dir = tmp("ports");
         let p = running_docker(&dir, "true");
-        let m = machine(&dir);
-        std::fs::write(dir.join("state"), r#"[{"State":{"Status":"running"},"NetworkSettings":{"Ports":{"1337/tcp":[{"HostIp":"127.0.0.1","HostPort":"47001"}],"1340/tcp":[{"HostIp":"127.0.0.1","HostPort":"47002"}]}}}]"#).unwrap();
+        std::fs::write(dir.join("state"), r#"[{"State":{"Status":"running","StartedAt":"T1"},"NetworkSettings":{"Ports":{"1337/tcp":[{"HostIp":"127.0.0.1","HostPort":"47001"}],"1340/tcp":[{"HostIp":"127.0.0.1","HostPort":"47002"}],"6902/tcp":[{"HostIp":"127.0.0.1","HostPort":"47003"}]}}}]"#).unwrap();
+        let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/a".into(), profile: None };
+        p.guard(&machine(&dir)).await.unwrap();
+        let inspects = || calls(&dir).matches("inspect").count();
+        let before = inspects();
+        let (_, m) = p.look(&machine(&dir)).await.unwrap();
+        p.guard(&m).await.unwrap();
         p.guest(&m).await.unwrap();
         p.guest(&m).await.unwrap();
-        assert_eq!(calls(&dir).matches("inspect").count(), 2, "a cached guest could send this token to another computer's port");
+        assert!(p.viewer(&m, &screen).await.unwrap().is_some());
+        assert_eq!(inspects(), before + 1, "a request reads the container once");
+        p.look(&machine(&dir)).await.unwrap();
+        assert_eq!(inspects(), before + 2, "and each request reads it afresh: a cached port could be another computer's");
+    }
+
+    #[test]
+    fn what_was_seen_is_never_saved() {
+        let dir = PathBuf::from("/tmp/x");
+        let m = Machine { seen: Some(Seen::default()), ..machine(&dir) };
+        let back: Machine = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.seen, None);
     }
 
     #[test]
@@ -802,7 +832,7 @@ mod tests {
         let dir = tmp("pause");
         let program = fake_docker(&dir, "case \"$1\" in inspect) echo '[{\"State\":{\"Status\":\"paused\"}}]';; esac");
         let p = DockerProvider::new("img:1", "c2").with_program(program);
-        p.wake(&machine(&dir)).await.unwrap();
+        assert_eq!(p.wake(&machine(&dir)).await.unwrap(), Woke::Resumed);
         let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
         assert!(calls.contains("unpause c2-x") && !calls.contains("start c2-x"), "{calls}");
     }

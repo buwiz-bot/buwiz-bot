@@ -305,6 +305,12 @@ async fn a_bot_that_leaves_a_sleeping_computer_loses_its_screen_at_the_next_wake
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
     b.computers.detach(&b.ctx, &b.bea.0).await.unwrap();
     awake(&b, &b.ann.0).await;
+    for _ in 0..400 {
+        if b.mock.calls().contains(&"screen_down b_bea".to_owned()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert!(b.mock.calls().contains(&"screen_down b_bea".to_owned()), "{:?}", b.mock.calls());
     assert_eq!(*b.mock.screens.lock().unwrap(), ["b_ann"]);
 }
@@ -349,14 +355,114 @@ async fn sleep_is_the_computers_and_a_wake_from_any_bot_wakes_it_for_all() {
     let b = bed("sleep-all");
     let id = awake(&b, &b.ann.0).await;
     b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
-    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    b.computers.sleep(&b.ctx, &id, Sleep::Deep).await.unwrap();
     assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["state"], "asleep");
     assert_eq!(b.computers.status(&b.ctx, &b.bea.0).await["state"], "asleep");
     b.mock.calls.lock().unwrap().clear();
     awake(&b, &b.bea.0).await;
     assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["state"], "awake");
     let calls = b.mock.calls();
-    assert!(calls.contains(&"screen_up b_ann".to_owned()) && calls.contains(&"screen_up b_bea".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"screen_up b_ann".to_owned()) && calls.contains(&"screen_up b_bea".to_owned()), "a start brings every screen up: {calls:?}");
+}
+
+#[tokio::test]
+async fn a_resumed_computer_only_brings_up_the_screens_it_lacks() {
+    let b = bed("resume");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    b.mock.calls.lock().unwrap().clear();
+    awake(&b, &b.ann.0).await;
+    let calls = b.mock.calls();
+    assert!(!calls.contains(&"screen_up b_ann".to_owned()), "its screen is as it was: {calls:?}");
+    assert!(calls.contains(&"screen_up b_bea".to_owned()), "and the Bot that joined gets one: {calls:?}");
+}
+
+#[tokio::test]
+async fn a_computer_whose_container_is_gone_is_made_again_on_a_click() {
+    let b = bed("absent");
+    let old = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &old).await.unwrap();
+    b.mock.set_power(Power::Absent);
+    assert_eq!(b.computers.live(&b.ctx, &b.ann.0).await.err(), Some(Problem::Gone));
+    let new = awake(&b, &b.ann.0).await;
+    assert_ne!(new, old, "the record still read, and there was nothing to wake");
+    assert_eq!(Computers::seat(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
+    assert_eq!(Computers::ids(&b.ctx), [new]);
+    assert!(!Computers::dir(&b.ctx, &old).exists());
+}
+
+#[tokio::test]
+async fn a_docker_that_is_down_doesnt_read_as_a_gone_computer() {
+    let b = bed("down-click");
+    let old = awake(&b, &b.ann.0).await;
+    b.computers.sleep(&b.ctx, &old, Sleep::Light).await.unwrap();
+    *b.mock.problem.lock().unwrap() = Some(Problem::ProviderDown("Docker".into()));
+    b.computers.click(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!(Computers::seat(&b.ctx, &b.ann.0).unwrap().computer, old);
+}
+
+#[tokio::test]
+async fn two_first_clicks_make_one_computer() {
+    let b = bed("race");
+    b.mock.create_ms.store(30, Ordering::SeqCst);
+    let (one, two) = tokio::join!(b.computers.click(&b.ctx, &b.ann.0), b.computers.click(&b.ctx, &b.ann.0));
+    one.unwrap();
+    two.unwrap();
+    assert_eq!(b.mock.calls().iter().filter(|c| c.starts_with("create")).count(), 1, "{:?}", b.mock.calls());
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1").len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_computer_that_cant_get_its_seat_is_removed() {
+    let b = bed("no-seat");
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computer_seats RENAME TO seats_away", [])).unwrap();
+    let got = b.computers.click(&b.ctx, &b.ann.0).await;
+    b.ctx.db.with(|c| c.execute("ALTER TABLE seats_away RENAME TO computer_seats", [])).unwrap();
+    assert!(got.is_err());
+    assert!(b.mock.calls().contains(&"destroy".to_owned()), "{:?}", b.mock.calls());
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_computer_that_cant_be_recorded_doesnt_stay_behind() {
+    // its record can't be saved
+    let b = bed("no-save");
+    b.mock.poison_save.store(true, Ordering::SeqCst);
+    assert!(b.computers.click(&b.ctx, &b.ann.0).await.is_err());
+    assert!(b.mock.calls().contains(&"destroy".to_owned()), "{:?}", b.mock.calls());
+    assert_eq!(std::fs::read_dir(b.ctx.data.join("computers")).unwrap().count(), 0, "nor its folder");
+    // its row can't be written
+    let b = bed("no-row");
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME TO computers_away", [])).unwrap();
+    assert!(b.computers.click(&b.ctx, &b.ann.0).await.is_err());
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers_away RENAME TO computers", [])).unwrap();
+    assert!(b.mock.calls().contains(&"destroy".to_owned()), "{:?}", b.mock.calls());
+    assert_eq!(std::fs::read_dir(b.ctx.data.join("computers")).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn a_bot_delete_that_cant_be_written_leaves_its_computer_alone() {
+    let b = bed("delete");
+    let id = awake(&b, &b.ann.0).await;
+    b.ctx.db.with(|c| c.execute_batch("CREATE TRIGGER no_delete BEFORE DELETE ON bots BEGIN SELECT RAISE(ABORT, 'disk full'); END;")).unwrap();
+    let body = bytes::Bytes::from(json!({"id": b.ann.0}).to_string());
+    let req = HubRequest { method: hyper::Method::POST, url: "/bot/delete".into(), headers: hyper::HeaderMap::new(), body, params: Vec::new() };
+    let res = crate::hub::routes::bots::bot_delete(b.ctx.clone(), req).await;
+    assert_ne!(res.status(), StatusCode::OK);
+    assert!(!b.mock.calls().contains(&"destroy".to_owned()), "a live Bot lost its files: {:?}", b.mock.calls());
+    assert_eq!(Computers::seat(&b.ctx, &b.ann.0).map(|s| s.computer), Some(id));
+}
+
+#[tokio::test]
+async fn a_bot_delete_takes_its_computer_with_it() {
+    let b = bed("delete-ok");
+    awake(&b, &b.ann.0).await;
+    let body = bytes::Bytes::from(json!({"id": b.ann.0}).to_string());
+    let req = HubRequest { method: hyper::Method::POST, url: "/bot/delete".into(), headers: hyper::HeaderMap::new(), body, params: Vec::new() };
+    assert_eq!(crate::hub::routes::bots::bot_delete(b.ctx.clone(), req).await.status(), StatusCode::OK);
+    assert!(b.mock.calls().contains(&"destroy".to_owned()));
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
 }
 
 #[tokio::test]

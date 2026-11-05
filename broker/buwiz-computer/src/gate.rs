@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 
 use crate::{random_hex, Problem, Result, Viewer, DOCKER_PORT_LAST, PORT_LAST};
 
@@ -30,6 +31,8 @@ struct Session {
     viewer: Viewer,
     ticket: Option<(String, Instant)>,
     cookie: String,
+    /// dropped with the session, which ends every relay it has running
+    open: watch::Sender<()>,
 }
 
 #[derive(Default)]
@@ -67,7 +70,7 @@ impl Gate {
         let (id, ticket, cookie) = (random_hex(16)?, random_hex(16)?, random_hex(24)?);
         let mut s = self.lock();
         s.open.retain(|_, o| o.bot != bot);
-        s.open.insert(id.clone(), Session { bot: bot.to_owned(), viewer, ticket: Some((ticket.clone(), Instant::now() + TICKET_LIFE)), cookie });
+        s.open.insert(id.clone(), Session { bot: bot.to_owned(), viewer, ticket: Some((ticket.clone(), Instant::now() + TICKET_LIFE)), cookie, open: watch::channel(()).0 });
         Ok(format!("http://127.0.0.1:{}/s/{id}/?ticket={ticket}", self.port))
     }
 
@@ -97,7 +100,7 @@ enum Verdict {
     No(&'static str),
     /// the ticket is good: to the clean URL, with the cookie
     Enter { location: String, cookie: String },
-    Pass { bot: String, viewer: Viewer, path: String },
+    Pass { bot: String, viewer: Viewer, path: String, open: watch::Receiver<()> },
 }
 
 /// `target` (`/s/<id>/rest?query`) with `cookies` against the open sessions.
@@ -116,7 +119,7 @@ fn judge(sessions: &mut Sessions, target: &str, cookies: Option<&str>) -> Verdic
     if !cookies.unwrap_or_default().split(';').any(|c| c.trim() == wanted) {
         return Verdict::No("403 Forbidden");
     }
-    Verdict::Pass { bot: session.bot.clone(), viewer: session.viewer.clone(), path: format!("/{tail}") }
+    Verdict::Pass { bot: session.bot.clone(), viewer: session.viewer.clone(), path: format!("/{tail}"), open: session.open.subscribe() }
 }
 
 /// The request's head for the viewer: its own path, Host, Origin and password, and none of the
@@ -178,7 +181,7 @@ async fn connection(mut socket: TcpStream, sessions: Arc<Mutex<Sessions>>) -> st
     match verdict {
         Verdict::No(status) => answer(&mut socket, status, "").await,
         Verdict::Enter { location, cookie } => answer(&mut socket, "302 Found", &format!("Location: {location}\r\nSet-Cookie: {cookie}\r\nCache-Control: no-store\r\n")).await,
-        Verdict::Pass { bot, viewer, path } => {
+        Verdict::Pass { bot, viewer, path, mut open } => {
             let Ok(mut upstream) = TcpStream::connect(&viewer.addr).await else {
                 return answer(&mut socket, "502 Bad Gateway", "").await;
             };
@@ -188,14 +191,18 @@ async fn connection(mut socket: TcpStream, sessions: Arc<Mutex<Sessions>>) -> st
             if upgrade {
                 *sessions.lock().unwrap_or_else(|e| e.into_inner()).watching.entry(bot.clone()).or_default() += 1;
             }
-            let piped = tokio::io::copy_bidirectional(&mut socket, &mut upstream).await;
+            // until either side hangs up, or the session ends: a sleeping computer's viewer goes
+            let piped = tokio::select! {
+                done = tokio::io::copy_bidirectional(&mut socket, &mut upstream) => done.map(|_| ()),
+                _ = open.changed() => Ok(()),
+            };
             if upgrade {
                 let mut s = sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(n) = s.watching.get_mut(&bot) {
                     *n = n.saturating_sub(1);
                 }
             }
-            piped.map(|_| ())
+            piped
         }
     }
 }
@@ -290,6 +297,31 @@ mod tests {
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 200"));
         gate.close("b_1");
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 403"));
+    }
+
+    #[tokio::test]
+    async fn closing_a_session_cuts_a_live_viewer() {
+        let gate = Gate::start().await.unwrap();
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x") };
+        let (port, target) = parts(&gate.open("b_1", viewer).unwrap());
+        let cookie = cookie_of(&get(port, &target, "").await);
+        let clean = target.split('?').next().unwrap().to_owned();
+        let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        ws.write_all(format!("GET {clean}ws HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n").as_bytes()).await.unwrap();
+        let mut head = [0u8; 16];
+        ws.read_exact(&mut head).await.unwrap();
+        assert!(gate.watched("b_1"));
+        gate.close("b_1");
+        let mut rest = Vec::new();
+        let ended = tokio::time::timeout(Duration::from_secs(2), ws.read_to_end(&mut rest)).await;
+        assert!(ended.is_ok(), "the relay kept running after the session closed");
+        for _ in 0..100 {
+            if !gate.watched("b_1") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("a cut viewer still counts as watching");
     }
 
     #[tokio::test]

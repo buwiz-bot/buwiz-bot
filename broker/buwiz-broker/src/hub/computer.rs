@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use buwiz_computer::{provider_for, Gate, Machine, Power, Problem, Provider, ProviderKind, Screen, Sleep, Spec};
+use buwiz_computer::{provider_for, Gate, Machine, Power, Problem, Provider, ProviderKind, Screen, Sleep, Spec, Woke};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::header::{HeaderValue, CONTENT_TYPE};
@@ -74,6 +74,10 @@ pub struct Computers {
     machines: Mutex<HashMap<String, Machine>>,
     idle: Duration,
     deep: Duration,
+    /// one at a time: making a computer and changing who sits where. Two first clicks mustn't
+    /// make two computers. Global rather than per Bot, because a join changes two Bots' view of
+    /// one computer; it is held for a `docker create` at most, and a wake runs outside it.
+    seating: tokio::sync::Mutex<()>,
     /// which models see images, as opencodex says, and when it said
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
 }
@@ -96,7 +100,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), sight: Mutex::default() }
+        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), sight: Mutex::default() }
     }
 
     pub fn of(ctx: &HubCtx) -> Option<Arc<Self>> {
@@ -223,11 +227,21 @@ impl Computers {
                 return Err(e);
             }
         };
-        Self::save_machine(ctx, &id, &machine)?;
-        let at = policy::now(ctx);
-        ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, last_used) VALUES(?,?,?,?,?)", rusqlite::params![id, machine.provider.as_str(), at, bot, at])).map_err(db_problem)?;
+        // from here a container exists: no record means nothing would ever remove it
+        if let Err(e) = Self::record(ctx, &id, &machine, bot) {
+            let _ = self.provider.destroy(&machine).await;
+            let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [&id]));
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), machine);
         Ok(id)
+    }
+
+    fn record(ctx: &HubCtx, id: &str, machine: &Machine, bot: &str) -> Result<(), Problem> {
+        Self::save_machine(ctx, id, machine)?;
+        let at = policy::now(ctx);
+        ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, last_used) VALUES(?,?,?,?,?)", rusqlite::params![id, machine.provider.as_str(), at, bot, at])).map(|_| ()).map_err(db_problem)
     }
 
     /// A person clicked: makes the computer if `bot` has none, or if its record is lost (the Bots
@@ -253,16 +267,30 @@ impl Computers {
     }
 
     async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
+        let _seating = self.seating.lock().await;
         let Some(seat) = Self::seat(ctx, bot) else {
             let id = self.make(ctx, bot).await?;
-            Self::add_seat(ctx, bot, &id, "member")?;
+            if let Err(e) = Self::add_seat(ctx, bot, &id, "member") {
+                self.retire(ctx, &id).await;
+                return Err(e);
+            }
             return Ok(id);
         };
-        if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
+        // its record lost, or the record kept and the computer itself gone: there's nothing to
+        // wake, and a person was told a click makes a new one
+        let lost = match self.machine(ctx, &seat.computer) {
+            Err(Problem::Gone) => true,
+            Ok(m) => self.provider_of(&m).power(&m).await == Ok(Power::Absent),
+            Err(_) => false,
+        };
+        if !lost {
             return Ok(seat.computer);
         }
         let id = self.make(ctx, bot).await?;
-        ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])).map_err(db_problem)?;
+        if let Err(e) = ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])) {
+            self.retire(ctx, &id).await;
+            return Err(db_problem(e));
+        }
         self.retire(ctx, &seat.computer).await;
         Ok(id)
     }
@@ -271,37 +299,53 @@ impl Computers {
     async fn finish_wake(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
         let began = Instant::now();
         let woke = self.wake_all(ctx, id).await;
-        let mut now = self.now();
-        now.waking.remove(id);
-        match &woke {
-            Ok(()) => {
-                now.problems.remove(id);
-                now.wake_ms.insert(id.to_owned(), u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX));
-            }
-            Err(e) => {
-                now.problems.insert(id.to_owned(), e.clone());
+        {
+            let mut now = self.now();
+            now.waking.remove(id);
+            match &woke {
+                Ok(()) => {
+                    now.problems.remove(id);
+                    now.wake_ms.insert(id.to_owned(), u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX));
+                }
+                Err(e) => {
+                    now.problems.insert(id.to_owned(), e.clone());
+                }
             }
         }
-        drop(now);
         if woke.is_ok() {
             Self::touch(ctx, id);
             let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL WHERE id=?", [id]));
+            self.clear_empty_screens(ctx, id).await;
         }
         woke
     }
 
-    async fn wake_all(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
-        let machine = self.machine(ctx, id)?;
+    /// A Bot that left while it slept has its screen and slot taken down: after the wake, which
+    /// nobody should wait on for this.
+    async fn clear_empty_screens(&self, ctx: &HubCtx, id: &str) {
+        let Ok(machine) = self.machine(ctx, id) else { return };
         let provider = self.provider_of(&machine);
-        provider.wake(&machine).await?;
+        let Ok((_, machine)) = provider.look(&machine).await else { return };
         let seats = Self::seats(ctx, id);
-        // a Bot that left while it slept has its screen and slot taken down here
         for bot in provider.screens(&machine).await.unwrap_or_default() {
             if !seats.iter().any(|s| s.bot == bot) {
                 let _ = provider.screen_down(&machine, &bot).await;
             }
         }
-        for seat in seats {
+    }
+
+    async fn wake_all(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+        let machine = self.machine(ctx, id)?;
+        let provider = self.provider_of(&machine);
+        let woke = provider.wake(&machine).await?;
+        // resumed, the screens it had are as they were: only a Bot that joined meanwhile needs one
+        let seats = Self::seats(ctx, id);
+        let waiting: Vec<_> = seats.into_iter().filter(|s| woke == Woke::Started || s.screen.is_none()).collect();
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        let (_, machine) = provider.look(&machine).await?;
+        for seat in waiting {
             let screen = provider.screen_up(&machine, &seat.bot).await?;
             Self::set_screen(ctx, &seat.bot, Some(&screen));
         }
@@ -363,6 +407,7 @@ impl Computers {
 
     /// A person put `bot` at `computer`, which already serves other Bots.
     pub async fn attach(&self, ctx: &HubCtx, bot: &str, computer: &str) -> Result<(), Problem> {
+        let _seating = self.seating.lock().await;
         if Self::seat(ctx, bot).is_some() {
             return Err(Problem::Failed("this Bot already has a computer".to_owned()));
         }
@@ -375,7 +420,8 @@ impl Computers {
         }
         Self::add_seat(ctx, bot, computer, "member")?;
         let provider = self.provider_of(&machine);
-        if provider.power(&machine).await == Ok(Power::Awake) {
+        let (power, machine) = provider.look(&machine).await?;
+        if power == Power::Awake {
             match provider.screen_up(&machine, bot).await {
                 Ok(screen) => Self::set_screen(ctx, bot, Some(&screen)),
                 Err(e) => {
@@ -391,6 +437,7 @@ impl Computers {
     /// This never waits on the provider: with Docker off a Bot still goes, and what's left of its
     /// computer is removed when Docker is back.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
+        let _seating = self.seating.lock().await;
         let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
         if let Some(gate) = self.gate().await {
             gate.close(bot);
@@ -403,7 +450,7 @@ impl Computers {
         // asleep, its screen comes down at the next wake (`wake_all`)
         if let Ok(machine) = self.machine(ctx, &seat.computer) {
             let provider = self.provider_of(&machine);
-            if provider.power(&machine).await == Ok(Power::Awake) {
+            if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
                 let _ = provider.screen_down(&machine, bot).await;
             }
         }
@@ -413,10 +460,8 @@ impl Computers {
     /// `id` has no Bots left: it's marked, then removed as soon as the provider can.
     async fn retire(&self, ctx: &HubCtx, id: &str) {
         let at = policy::now(ctx);
-        let _ = ctx.db.with(|c| {
-            c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id])?;
-            c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id])
-        });
+        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id]));
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
         self.finish_retire(ctx, id).await;
     }
 
@@ -454,7 +499,9 @@ impl Computers {
         }
         let machine = self.machine(ctx, &seat.computer)?;
         let provider = self.provider_of(&machine);
-        match (provider.power(&machine).await?, seat.screen) {
+        // the one read of the computer for this request: what's below acts on it
+        let (power, machine) = provider.look(&machine).await?;
+        match (power, seat.screen) {
             (Power::Awake, Some(screen)) => {
                 if let Err(p) = provider.guard(&machine).await {
                     self.now().problems.insert(seat.computer.clone(), p.clone());

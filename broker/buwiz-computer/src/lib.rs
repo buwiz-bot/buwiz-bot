@@ -149,6 +149,20 @@ pub struct Machine {
     pub viewer_password: Secret,
     /// the folder the broker keeps for it
     pub dir: PathBuf,
+    /// what [`Provider::look`] found for this request; never saved
+    #[serde(skip)]
+    pub seen: Option<Seen>,
+}
+
+/// What a provider saw of a computer: one read, good for one request and no longer. Ports can
+/// change with a start, and an old port can be another computer's by then.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Seen {
+    pub status: String,
+    /// when this start of it began: changes with every start, whoever made it
+    pub started: String,
+    /// guest port → `127.0.0.1:port`
+    pub ports: std::collections::HashMap<u16, String>,
 }
 
 impl Machine {
@@ -187,6 +201,13 @@ impl Power {
             Self::Broken(_) => "error",
         }
     }
+}
+
+/// How a wake went: what was open is still there, or it started afresh and its screens are gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Woke {
+    Resumed,
+    Started,
 }
 
 /// How deep a sleep goes. Light keeps everything open and comes back at once, and costs its
@@ -396,8 +417,14 @@ pub trait Provider: Send + Sync {
     /// Where it is, from the provider itself: a saved word goes stale.
     async fn power(&self, machine: &Machine) -> Result<Power>;
 
+    /// [`Provider::power`], and the machine to use for the rest of this request: one read of
+    /// the computer serves all its calls.
+    async fn look(&self, machine: &Machine) -> Result<(Power, Machine)> {
+        Ok((self.power(machine).await?, machine.clone()))
+    }
+
     /// Brings it up. Returns once it answers: a person or the model can use it.
-    async fn wake(&self, machine: &Machine) -> Result<()>;
+    async fn wake(&self, machine: &Machine) -> Result<Woke>;
 
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()>;
 
@@ -509,6 +536,7 @@ mod tests {
             token: Secret::new("tok-123"),
             viewer_password: Secret::new("pw-456"),
             dir: PathBuf::from("/tmp/x"),
+            seen: None,
         }
     }
 

@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 
-use crate::{Machine, Power, Problem, Provider, ProviderKind, Result, Sleep, Spec};
+use crate::{Machine, Power, Problem, Provider, ProviderKind, Result, Sleep, Spec, Woke};
 
 pub struct Planned(pub ProviderKind);
 
@@ -26,7 +26,7 @@ impl Provider for Planned {
         Err(Problem::NotBuilt(self.0))
     }
 
-    async fn wake(&self, _: &Machine) -> Result<()> {
+    async fn wake(&self, _: &Machine) -> Result<Woke> {
         Err(Problem::NotBuilt(self.0))
     }
 
