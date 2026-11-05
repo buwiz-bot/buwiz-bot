@@ -18,6 +18,7 @@
 //!
 //! 1. A face that looks away is dropped. Every surface is closed (a hat's
 //!    profile runs back under it to the axis), so one always stands in front.
+//!    So is a face a lathe's own widest ring hides (see [`Ring`]).
 //! 2. Every face is near or far: in front of the plane through the head's
 //!    centre that faces the viewer, or behind it. Far faces draw before the
 //!    head and near ones after it, so one brim passes in front of the head
@@ -706,7 +707,34 @@ struct Face {
     shading: [V3; 4],
     centre: V3,
     paint: usize,
+    /// The ring of its own lathe it sits above (an index into
+    /// [`Scene::rings`]).
+    above: Option<usize>,
     fragments: Vec<Fragment>,
+}
+
+/// A lathe's widest ring. From below it, the disc it spans hides what's
+/// above it: a brim hides its crown's wall. The two meet at a crease, where
+/// sorting by distance can't tell them apart, so this is worked out exactly.
+struct Ring {
+    at: V3,
+    to_local: [V3; 3],
+    oval: f64,
+    height: f64,
+    radius: f64,
+}
+
+impl Ring {
+    /// Whether the disc stands between `p` and a viewer along `view`.
+    fn hides(&self, p: V3, view: V3) -> bool {
+        let v = apply(&self.to_local, view);
+        if v[1] >= -1e-3 {
+            return false;
+        }
+        let q = apply(&self.to_local, sub(p, self.at));
+        let t = (q[1] - self.height) / -v[1];
+        (q[0] + v[0] * t).hypot((q[2] + v[2] * t) / self.oval) < self.radius * 0.995
+    }
 }
 
 /// A surface's volume, for dropping the faces inside it.
@@ -855,6 +883,7 @@ pub(crate) struct Scene {
     faces: Vec<Face>,
     /// Each colour's lit, mid and dark tones.
     paints: Vec<[String; 3]>,
+    rings: Vec<Ring>,
     /// Where each step of distance starts in `faces`, nearest the centre
     /// first (and where the last ends).
     steps: Vec<usize>,
@@ -899,6 +928,7 @@ struct Builder<'a> {
     /// Which volume each face belongs to.
     owners: Vec<usize>,
     volumes: Vec<Volume>,
+    rings: Vec<Ring>,
     paints: Vec<String>,
 }
 
@@ -981,6 +1011,7 @@ impl Builder<'_> {
                     shading,
                     centre: scale(add(add(a, b), add(c, d)), 0.25),
                     paint: cover.unwrap_or(paint),
+                    above: None,
                     fragments: if cover.is_some() { vec![] } else { marks_on(g, i, j, marks, &shading) },
                 });
                 self.owners.push(owner);
@@ -1026,7 +1057,24 @@ impl Builder<'_> {
         let paint = self.paint(&s.color);
         let marks = self.mark_paints(s);
         let owner = self.volumes.len();
+        let first = self.faces.len();
         self.grid(&Grid { rows, u, v }, paint, &marks, owner);
+        let widest_ring = profile.iter().fold([0.0, 0.0], |a: V2, p| if p[0] > a[0] { *p } else { a });
+        let ring = Ring {
+            at: origin,
+            to_local: transpose(&m),
+            oval,
+            height: widest_ring[1] * self.k,
+            radius: widest_ring[0] * self.k,
+        };
+        for f in &mut self.faces[first..] {
+            // a face looking down is the ring's own underside, not behind it
+            let looks_down = apply(&ring.to_local, f.normal)[1] < -0.5;
+            if !looks_down && apply(&ring.to_local, sub(f.centre, origin))[1] > ring.height {
+                f.above = Some(self.rings.len());
+            }
+        }
+        self.rings.push(ring);
         self.volumes.push(Volume::Lathe {
             at: origin,
             to_local: transpose(&m),
@@ -1290,6 +1338,7 @@ impl Scene {
             faces: Vec::new(),
             owners: Vec::new(),
             volumes: Vec::new(),
+            rings: Vec::new(),
             paints: Vec::new(),
         };
         for s in specs {
@@ -1306,7 +1355,7 @@ impl Scene {
             }
         }
         // a face wholly inside the head or another solid never shows
-        let Builder { points, faces, owners, volumes, paints, .. } = b;
+        let Builder { points, faces, owners, volumes, rings, paints, .. } = b;
         let hidden = |f: &Face, owner: usize| -> bool {
             let samples = f.corners.map(|c| points[c as usize]);
             let mut all = samples.to_vec();
@@ -1332,6 +1381,7 @@ impl Scene {
             points,
             faces,
             paints: paints.iter().map(|p| tones(p)).collect(),
+            rings,
             steps,
             head: head.center,
         }
@@ -1369,7 +1419,7 @@ impl Scene {
             .faces
             .iter()
             .map(|f| {
-                if dot(rows[2], f.normal) <= 0.0 {
+                if dot(rows[2], f.normal) <= 0.0 || f.above.is_some_and(|r| self.rings[r].hides(f.centre, rows[2])) {
                     GONE
                 } else if dot(rows[2], f.centre) >= plane {
                     NEAR
@@ -1639,6 +1689,25 @@ mod tests {
             // near goes down the screen, far up it
             let (b, f) = (bounds(&behind), bounds(&front));
             assert!(f[3] > b[3] + 20.0, "{yaw}: {f:?} {b:?}");
+        }
+    }
+
+    /// Seen from below, a brim hides its crown: nothing of the band shows
+    /// through, at any turn, and it's back as soon as the view is level.
+    #[test]
+    fn a_brim_hides_its_crown_from_below() {
+        let mut hat = brim_hat();
+        hat["marks"] = serde_json::json!([{"path": "M-180 30 L180 30 L180 40 L-180 40 Z", "fill": "#E0393A"}]);
+        let (_, rich) = body(serde_json::json!([hat]));
+        let band = |rot: &Rot| {
+            let (a, b) = draw(&rich, rot);
+            a.iter().chain(&b).any(|p| tones("#E0393A").contains(&p.fill))
+        };
+        for i in 0..16 {
+            let yaw = i as f64 * 22.5;
+            assert!(band(&pose(yaw, 0.0)), "level at {yaw}");
+            assert!(band(&pose(yaw, 40.0)), "above at {yaw}");
+            assert!(!band(&pose(yaw, -55.0)), "below at {yaw}");
         }
     }
 
