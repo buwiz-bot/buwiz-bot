@@ -403,7 +403,11 @@ const MAX_SEGMENT_POINTS: f64 = 4096.0;
 
 /// How many steps of `t` a segment `len` long takes in `us`.
 fn sample_steps(len: f64, t: f64) -> usize {
-    (len / t).ceil().max(2.0).min(MAX_SEGMENT_POINTS) as usize
+    let steps = (len / t).ceil();
+    if steps.is_nan() {
+        return 2;
+    }
+    steps.clamp(2.0, MAX_SEGMENT_POINTS) as usize
 }
 
 /// `us` — the path-string parser/sampler: flattens `d` to points every ≤`t`px.
