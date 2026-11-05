@@ -3,20 +3,23 @@
 //! - **Ports** are published on loopback only, from a range the Bot's shell is kept off
 //!   ([`crate::PORT_FIRST`]). A `docker start` can pick new ones, so they are read back each wake.
 //! - **Secrets** never go on an argument list, where any process's `ps` reads them: the container
-//!   gets file paths. The files are put in a folder only it mounts just before it starts, and
-//!   taken away once it answers, because the model's commands run as the same user as the
-//!   daemons. A file that's gone can't be read.
+//!   gets file paths, in a folder it mounts read-only. They are put there before every start
+//!   (the box exits without them, so a plain `docker restart` fails safe) and taken away once it
+//!   answers. The image would unlink them as it reads them and says it couldn't: a mount the box
+//!   can write is a place to plant things in a Mac folder, so this side does the removing.
 //! - **Walled off from this Mac.** On Docker Desktop a container reaches the Mac's loopback
-//!   through the host gateway, broker included. So each start puts blackhole routes in the
-//!   container's network, as root, from outside it: the private ranges. The box keeps no
-//!   capability to take them out. If that fails the computer doesn't wake.
+//!   through the host gateway, broker included. So every start, and the first use of a computer
+//!   this broker didn't start, puts routes and rules in the container's network, as root, from
+//!   outside it: see [`WALL`]. The box keeps no capability to take them out. If that fails the
+//!   computer is stopped. A few hundred milliseconds of a start pass before the wall is up,
+//!   which is before anyone can use it but not before what's in the box's own autostart runs.
 //! - **Sleep** is `docker pause`: it comes back at once with everything open. Deep sleep is
 //!   `docker stop`: the memory is free, and the files stay on the volumes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -53,21 +56,64 @@ const STOP_SECONDS: &str = "5";
 /// Where Docker Desktop puts its CLI: an app started from Finder has a bare `PATH`.
 const DOCKER_DIRS: [&str; 4] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin", "~/.docker/bin"];
 
-/// Adds blackhole routes over netlink, with nothing but python3 in the image: the private
-/// ranges, which hold the host gateway (`192.168.65.x`, the way to the Mac's loopback). The
-/// container's own subnet stays, being more specific: its bridge gateway is where published
-/// ports come in from, and a reply has to get back there.
+/// The wall, over netlink, with nothing but python3 in the image. Its arguments are this Mac's
+/// own addresses. Safe to repeat.
+///
+/// - Blackhole routes for every range that isn't the open internet: the private ranges (which
+///   hold the host gateway, `192.168.65.x`, the way to the Mac's loopback), link-local, CGNAT, the
+///   benchmark range some VPNs use, the reserved block.
+/// - Blackhole routes for each of this Mac's addresses, wherever they are.
+/// - Any route the box has with a next hop of its own, beyond the default.
+/// - The box's own subnets, bridge gateway included, by rule: a route would stop the replies on
+///   published ports too, which come from that gateway. The rules first let through what leaves
+///   from those ports, then drop the rest. A default route keeps working: its next hop is
+///   resolved on the link and never looked up as a destination.
+/// - IPv6 is off (`create_args`); a box where it is on doesn't pass.
 const WALL: &str = r#"
-import socket, struct
+import socket, struct, sys
 s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 0)
+def ask(kind, flags, body):
+    s.send(struct.pack('=IHHII', 16 + len(body), kind, 0x1 | 0x4 | flags, 1, 0) + body)
+    return struct.unpack('=i', s.recv(4096)[16:20])[0]
+def attr(kind, data):
+    return struct.pack('=HH', 4 + len(data), kind) + data + b'\0' * (-len(data) % 4)
 def blackhole(dst, plen):
-    body = struct.pack('=BBBBBBBBI', 2, plen, 0, 0, 254, 4, 0, 6, 0) + struct.pack('=HH', 8, 1) + socket.inet_aton(dst)
-    s.send(struct.pack('=IHHII', 16 + len(body), 24, 0x1 | 0x4 | 0x400 | 0x100, 1, 0) + body)
-    err = struct.unpack('=i', s.recv(4096)[16:20])[0]
+    err = ask(24, 0x400 | 0x100, struct.pack('=BBBBBBBBI', 2, plen, 0, 0, 254, 4, 0, 6, 0) + attr(1, socket.inet_aton(dst)))
     if err:
         raise OSError(-err, dst)
-for dst, plen in [('10.0.0.0', 8), ('172.16.0.0', 12), ('192.168.0.0', 16), ('100.64.0.0', 10), ('169.254.0.0', 16)]:
+def rule(priority, action, dst=None, plen=0, ports=None):
+    body = struct.pack('=BBBBBBBBI', 2, plen, 0, 0, 254 if action == 1 else 0, 0, 0, action, 0) + attr(6, struct.pack('=I', priority))
+    if dst:
+        body += attr(1, socket.inet_aton(dst))
+    if ports:
+        body += attr(22, b'\x06') + attr(23, struct.pack('=HH', *ports))
+    err = ask(32, 0x400 | 0x200, body)
+    if err and err != -17:
+        raise OSError(-err, 'rule')
+for dst, plen in [('0.0.0.0', 8), ('10.0.0.0', 8), ('100.64.0.0', 10), ('169.254.0.0', 16), ('172.16.0.0', 12), ('192.0.0.0', 24), ('192.168.0.0', 16), ('198.18.0.0', 15), ('240.0.0.0', 4)]:
     blackhole(dst, plen)
+for address in sys.argv[1:]:
+    blackhole(address, 32)
+rule(100, 1, ports=(1337, 1337))
+rule(101, 1, ports=(1340, 1340))
+rule(102, 1, ports=(6901, 6905))
+priority = 200
+for line in open('/proc/net/route').read().splitlines()[1:]:
+    iface, dst, gateway, flags, _, _, _, mask = line.split()[:8]
+    ip = lambda h: socket.inet_ntoa(struct.pack('<I', int(h, 16)))
+    plen = bin(int(mask, 16)).count('1')
+    if iface == '*' or dst == '00000000':
+        continue
+    if gateway != '00000000':
+        blackhole(ip(dst), plen)
+    else:
+        rule(priority, 6, dst=ip(dst), plen=plen)
+        priority += 1
+try:
+    if open('/proc/sys/net/ipv6/conf/all/disable_ipv6').read().strip() != '1':
+        raise OSError('IPv6 is on')
+except FileNotFoundError:
+    pass
 "#;
 
 /// The local Docker computers.
@@ -76,12 +122,13 @@ pub struct DockerProvider {
     prefix: String,
     /// the program, when it isn't found the usual way (tests)
     program: Option<PathBuf>,
-    guests: Mutex<HashMap<String, Arc<BoxGuest>>>,
+    /// by container: the start of it the wall went up on
+    walled: Mutex<HashMap<String, String>>,
 }
 
 impl DockerProvider {
     pub fn new(image: impl Into<String>, prefix: impl Into<String>) -> Self {
-        Self { image: image.into(), prefix: prefix.into(), program: None, guests: Mutex::new(HashMap::new()) }
+        Self { image: image.into(), prefix: prefix.into(), program: None, walled: Mutex::new(HashMap::new()) }
     }
 
     /// From `BUWIZ_COMPUTER_IMAGE` and `BUWIZ_COMPUTER_PREFIX`.
@@ -124,23 +171,14 @@ impl DockerProvider {
         Inspected::parse(&self.docker(&["inspect", "--type", "container", name], None).await?)
     }
 
-    fn forget(&self, name: &str) {
-        self.guests.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
-    }
-
-    /// The running computer's services: a sleeping one has none.
-    async fn guest(&self, machine: &Machine) -> Result<Arc<BoxGuest>> {
-        let name = container(machine)?;
-        if let Some(g) = self.guests.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
-            return Ok(g.clone());
-        }
-        let found = self.inspect(name).await?;
+    /// The running computer's services, at the ports Docker says now: a start can pick new ones,
+    /// and an old port can be another computer's by then, so nothing here is kept.
+    async fn guest(&self, machine: &Machine) -> Result<BoxGuest> {
+        let found = self.inspect(container(machine)?).await?;
         if found.status != "running" {
             return Err(Problem::Asleep);
         }
-        let guest = Arc::new(connect(&found, machine)?);
-        self.guests.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_owned(), guest.clone());
-        Ok(guest)
+        connect(&found, machine)
     }
 
     /// `docker start`, walled off and answering. The secrets are there only for the start.
@@ -154,12 +192,8 @@ impl DockerProvider {
 
     async fn start_staged(&self, machine: &Machine, name: &str) -> Result<()> {
         self.docker(&["start", name], None).await?;
-        if let Err(e) = self.wall(name).await {
-            let _ = self.docker(&["stop", "-t", "0", name], None).await;
-            return Err(e);
-        }
-        let inspected = self.inspect(name).await?;
-        let plain = connect(&inspected, machine)?;
+        self.wall_or_stop(name).await?;
+        let plain = connect(&self.inspect(name).await?, machine)?;
         let deadline = Instant::now() + WAKE_PATIENCE;
         while !plain.ready().await {
             if Instant::now() > deadline {
@@ -174,13 +208,52 @@ impl DockerProvider {
         Ok(())
     }
 
-    /// The routes that keep the container off this Mac. Safe to repeat.
-    async fn wall(&self, name: &str) -> Result<()> {
-        self.docker(&["exec", "--user", "0", "--privileged", name, "python3", "-c", WALL], None).await.map(|_| ()).map_err(|e| match e {
-            Problem::Failed(why) => Problem::Unwalled(why),
-            other => other,
-        })
+    /// The wall, or the computer stops. Whatever Docker said, a box that isn't walled off doesn't
+    /// stay up.
+    async fn wall_or_stop(&self, name: &str) -> Result<()> {
+        match self.wall(name).await {
+            Ok(started) => {
+                self.walled.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_owned(), started);
+                Ok(())
+            }
+            Err(e) => {
+                self.walled.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
+                let _ = self.docker(&["unpause", name], None).await;
+                let _ = self.docker(&["stop", "-t", "0", name], None).await;
+                Err(e)
+            }
+        }
     }
+
+    /// The start of `name` the wall is now up on.
+    async fn wall(&self, name: &str) -> Result<String> {
+        let macs = mac_addresses().await;
+        let mut args = vec!["exec", "--user", "0", "--privileged", name, "python3", "-c", WALL];
+        args.extend(macs.iter().map(String::as_str));
+        match self.docker(&args, None).await {
+            Ok(_) => Ok(self.inspect(name).await?.started),
+            Err(Problem::Failed(why)) => Err(Problem::Unwalled(why)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// This Mac's own IPv4 addresses, loopback aside, as `ifconfig` lists them: a box must not reach
+/// what listens on them, whatever kind of address they are.
+async fn mac_addresses() -> Vec<String> {
+    let out = Command::new("/sbin/ifconfig").stdin(Stdio::null()).stderr(Stdio::null()).output().await;
+    out.map(|o| parse_inets(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+fn parse_inets(ifconfig: &str) -> Vec<String> {
+    let mut found: Vec<String> = ifconfig
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("inet ")?.split_whitespace().next())
+        .filter(|a| !a.starts_with("127.") && a.parse::<std::net::Ipv4Addr>().is_ok())
+        .map(str::to_owned)
+        .collect();
+    found.dedup();
+    found
 }
 
 fn connect(found: &Inspected, machine: &Machine) -> Result<BoxGuest> {
@@ -199,9 +272,9 @@ fn create_args(image: &str, name: &str, network: &str, id: &str, secrets: &Path)
         args.push(format!("type=volume,source={source},target={target}"));
     }
     args.push("--mount".to_owned());
-    args.push(format!("type=bind,source={},target={SECRET_MOUNT}", secrets.display()));
+    args.push(format!("type=bind,source={},target={SECRET_MOUNT},readonly", secrets.display()));
     // Chromium needs more than Docker's 64 MiB; no setuid program may lift the box's user
-    for a in ["--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges"] {
+    for a in ["--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges", "--sysctl", "net.ipv6.conf.all.disable_ipv6=1"] {
         args.push(a.to_owned());
     }
     for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS) {
@@ -244,7 +317,13 @@ fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(io_problem)?;
     for (file, secret) in [(TOKEN_FILE, &machine.token), (VIEWER_FILE, &machine.viewer_password)] {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(dir.join(file)).map_err(io_problem)?;
+        let path = dir.join(file);
+        // whatever is there goes, link or not, and this is a new file: a link is never followed
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io_problem(e)),
+            _ => {}
+        }
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).map_err(io_problem)?;
         f.write_all(secret.expose().as_bytes()).map_err(io_problem)?;
     }
     Ok(())
@@ -253,6 +332,24 @@ fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
 fn clear_secrets(dir: &Path) {
     for file in [TOKEN_FILE, VIEWER_FILE] {
         let _ = std::fs::remove_file(dir.join(file));
+    }
+}
+
+impl DockerProvider {
+    /// The container and its volumes. Already gone is fine.
+    async fn remove(&self, name: &str) -> Result<()> {
+        self.walled.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
+        match self.docker(&["rm", "-f", "-v", name], None).await {
+            Ok(_) | Err(Problem::Gone) => {}
+            Err(e) => return Err(e),
+        }
+        for volume in [format!("{name}-workspace"), format!("{name}-home")] {
+            match self.docker(&["volume", "rm", &volume], None).await {
+                Ok(_) | Err(Problem::Gone) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -299,17 +396,19 @@ impl Provider for DockerProvider {
 
     async fn wake(&self, machine: &Machine) -> Result<()> {
         let name = container(machine)?;
-        self.forget(name);
         match self.inspect(name).await?.status.as_str() {
-            "paused" => self.docker(&["unpause", name], None).await.map(|_| ()),
-            "running" => self.wall(name).await,
+            "paused" => {
+                self.docker(&["unpause", name], None).await?;
+                // a pause keeps the network: the wall of this start still stands, if it went up
+                self.guard(machine).await
+            }
+            "running" => self.wall_or_stop(name).await,
             _ => self.start(machine, name).await,
         }
     }
 
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()> {
         let name = container(machine)?;
-        self.forget(name);
         let status = self.inspect(name).await?.status;
         match (depth, status.as_str()) {
             (Sleep::Light, "running") => self.docker(&["pause", name], None).await.map(|_| ()),
@@ -324,19 +423,33 @@ impl Provider for DockerProvider {
     }
 
     async fn destroy(&self, machine: &Machine) -> Result<()> {
-        let name = container(machine)?;
-        self.forget(name);
-        match self.docker(&["rm", "-f", "-v", name], None).await {
-            Ok(_) | Err(Problem::Gone) => {}
-            Err(e) => return Err(e),
-        }
-        for volume in [format!("{name}-workspace"), format!("{name}-home")] {
-            match self.docker(&["volume", "rm", &volume], None).await {
-                Ok(_) | Err(Problem::Gone) => {}
-                Err(e) => return Err(e),
-            }
+        self.remove(container(machine)?).await
+    }
+
+    async fn sweep(&self, id: &str) -> Result<()> {
+        let filter = format!("label={LABEL}.id={id}");
+        let names = self.docker(&["ps", "-a", "--filter", &filter, "--format", "{{.Names}}"], None).await?;
+        for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
+            self.remove(name).await?;
         }
         Ok(())
+    }
+
+    async fn guard(&self, machine: &Machine) -> Result<()> {
+        let name = container(machine)?;
+        let started = self.inspect(name).await?.started;
+        if self.walled.lock().unwrap_or_else(|e| e.into_inner()).get(name) == Some(&started) {
+            return Ok(());
+        }
+        self.wall_or_stop(name).await
+    }
+
+    async fn screens(&self, machine: &Machine) -> Result<Vec<String>> {
+        self.guest(machine).await?.screens().await
+    }
+
+    async fn resolve(&self, machine: &Machine, path: &str) -> Result<String> {
+        self.guest(machine).await?.resolve(path).await
     }
 
     async fn screen_up(&self, machine: &Machine, bot: &str) -> Result<Screen> {
@@ -345,11 +458,6 @@ impl Provider for DockerProvider {
 
     async fn screen_down(&self, machine: &Machine, bot: &str) -> Result<()> {
         self.guest(machine).await?.screen_down(bot).await
-    }
-
-    async fn commands_stay_on_their_screen(&self, machine: &Machine) -> bool {
-        let Ok(guest) = self.guest(machine).await else { return false };
-        guest.info().await.ok().and_then(|i| i.pointer("/capabilities/exec/per_screen_user").and_then(Value::as_bool)).unwrap_or(false)
     }
 
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
@@ -412,6 +520,8 @@ pub fn power_of(status: &str) -> Power {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inspected {
     pub status: String,
+    /// when this start of it began: changes with every start, whoever made it
+    pub started: String,
     /// guest port → `127.0.0.1:port`
     pub ports: HashMap<u16, String>,
 }
@@ -421,6 +531,7 @@ impl Inspected {
         let v: Value = serde_json::from_str(json).map_err(|e| Problem::Failed(format!("docker inspect: {e}")))?;
         let entry = v.get(0).ok_or(Problem::Gone)?;
         let status = entry.pointer("/State/Status").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let started = entry.pointer("/State/StartedAt").and_then(Value::as_str).unwrap_or_default().to_owned();
         let mut ports = HashMap::new();
         for (spec, bindings) in entry.pointer("/NetworkSettings/Ports").and_then(Value::as_object).into_iter().flatten() {
             let Some(guest) = spec.strip_suffix("/tcp").and_then(|p| p.parse::<u16>().ok()) else { continue };
@@ -430,7 +541,7 @@ impl Inspected {
                 ports.insert(guest, format!("127.0.0.1:{port}"));
             }
         }
-        Ok(Self { status, ports })
+        Ok(Self { status, started, ports })
     }
 
     pub fn published(&self, guest_port: u16) -> Option<String> {
@@ -488,7 +599,7 @@ fn classify(status: Option<i32>, stderr: &str, image: &str) -> Problem {
     let said = |words: &[&str]| words.iter().any(|w| stderr.contains(w));
     if said(&["No such image", "Unable to find image", "pull access denied"]) {
         Problem::ImageMissing(image.to_owned())
-    } else if said(&["No such container", "No such object", "No such volume", "not found"]) {
+    } else if said(&["No such container", "No such object", "No such volume"]) {
         Problem::Gone
     } else if said(&["Cannot connect to the Docker daemon", "Is the docker daemon running", "docker daemon is not running", "failed to connect to the docker API"]) {
         Problem::ProviderDown("Docker".to_owned())
@@ -536,6 +647,7 @@ mod tests {
         }
         assert!(!args.contains("0.0.0.0"), "{args}");
         assert!(args.contains("BOX_TOKEN_FILE=/run/buwiz-computer/token"), "{args}");
+        assert!(args.contains("target=/run/buwiz-computer,readonly"), "the box can't plant anything there: {args}");
         assert!(args.contains("BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer"), "{args}");
         assert!(!args.contains("BOX_TOKEN=") && !args.contains("BOX_VIEWER_PASSWORD="), "{args}");
         assert!(args.contains("no-new-privileges") && args.contains("--pids-limit 2048"), "{args}");
@@ -609,6 +721,82 @@ mod tests {
         assert!(calls.contains("stop -t 0 c2-x"), "{calls}");
     }
 
+    const RUNNING: &str = r#"[{"State":{"Status":"running","StartedAt":"T1"}}]"#;
+
+    fn running_docker(dir: &Path, exec: &str) -> DockerProvider {
+        let body = format!("case \"$1\" in inspect) cat \"{}/state\";; exec) {exec};; esac", dir.display());
+        std::fs::write(dir.join("state"), RUNNING).unwrap();
+        DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body))
+    }
+
+    fn calls(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("calls")).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_box_this_broker_didnt_start_is_walled_on_first_use_and_once() {
+        let dir = tmp("first-use");
+        let p = running_docker(&dir, "true");
+        let m = machine(&dir);
+        p.guard(&m).await.unwrap();
+        p.guard(&m).await.unwrap();
+        assert_eq!(calls(&dir).matches("exec --user 0 --privileged").count(), 1, "{}", calls(&dir));
+        // restarted behind this broker's back: a new network, so a new wall
+        std::fs::write(dir.join("state"), RUNNING.replace("T1", "T2")).unwrap();
+        p.guard(&m).await.unwrap();
+        assert_eq!(calls(&dir).matches("exec --user 0 --privileged").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_guard_that_cant_wall_stops_the_box() {
+        let dir = tmp("guard-fail");
+        let p = running_docker(&dir, "echo 'OCI runtime exec failed: exec: \"python3\": executable file not found in $PATH' >&2; exit 127");
+        let e = p.guard(&machine(&dir)).await.unwrap_err();
+        assert_eq!(e.code(), "unwalled", "a missing python3 isn't a gone computer");
+        assert!(calls(&dir).contains("stop -t 0 c2-x"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn every_wake_that_cant_wall_stops_the_box() {
+        for status in ["running", "paused"] {
+            let dir = tmp(status);
+            let p = running_docker(&dir, "echo no >&2; exit 1");
+            std::fs::write(dir.join("state"), RUNNING.replace("running", status)).unwrap();
+            assert_eq!(p.wake(&machine(&dir)).await.unwrap_err().code(), "unwalled", "{status}");
+            assert!(calls(&dir).contains("stop -t 0 c2-x"), "{status}: {}", calls(&dir));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planted_link_gets_no_token_written_through_it() {
+        let dir = tmp("link");
+        let start = dir.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        std::os::unix::fs::symlink(&victim, start.join("token")).unwrap();
+        stage_secrets(&start, &machine(&dir)).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        assert!(!std::fs::symlink_metadata(start.join("token")).unwrap().file_type().is_symlink());
+    }
+
+    #[tokio::test]
+    async fn the_ports_are_read_fresh_every_time() {
+        let dir = tmp("ports");
+        let p = running_docker(&dir, "true");
+        let m = machine(&dir);
+        std::fs::write(dir.join("state"), r#"[{"State":{"Status":"running"},"NetworkSettings":{"Ports":{"1337/tcp":[{"HostIp":"127.0.0.1","HostPort":"47001"}],"1340/tcp":[{"HostIp":"127.0.0.1","HostPort":"47002"}]}}}]"#).unwrap();
+        p.guest(&m).await.unwrap();
+        p.guest(&m).await.unwrap();
+        assert_eq!(calls(&dir).matches("inspect").count(), 2, "a cached guest could send this token to another computer's port");
+    }
+
+    #[test]
+    fn this_macs_addresses_are_read_from_ifconfig() {
+        let out = "lo0: flags\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags\n\tinet6 fe80::1%en0\n\tinet 203.0.113.9 netmask 0xffffff00 broadcast 203.0.113.255\n";
+        assert_eq!(parse_inets(out), ["203.0.113.9"]);
+    }
+
     #[tokio::test]
     async fn a_paused_computer_wakes_without_a_start() {
         let dir = tmp("pause");
@@ -623,6 +811,7 @@ mod tests {
     fn a_daemon_that_is_down_isnt_a_gone_computer() {
         assert_eq!(classify(Some(1), "Cannot connect to the Docker daemon", "i"), Problem::ProviderDown("Docker".into()));
         assert_eq!(classify(Some(1), "Error: No such container: x", "i"), Problem::Gone);
+        assert_ne!(classify(Some(127), "exec: \"python3\": executable file not found in $PATH", "i"), Problem::Gone);
         assert_eq!(classify(Some(1), "Unable to find image 'i' locally", "i"), Problem::ImageMissing("i".into()));
     }
 }

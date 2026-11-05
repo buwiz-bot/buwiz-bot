@@ -45,6 +45,9 @@ pub const PORT_LAST: u16 = 47219;
 /// The part of that range Docker picks from; the gate binds in the rest.
 pub const DOCKER_PORT_LAST: u16 = 47199;
 
+/// Text on a screen stays readable to a model at this, at a quarter of the PNG's weight.
+const JPEG_QUALITY: u8 = 75;
+
 /// A value that must not reach a log, the model, the tree or the tile. It has no `Display`, and
 /// its `Debug` says nothing; [`Secret::expose`] is the one way out, for the wire to the computer.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +247,32 @@ pub struct Screenshot {
     pub height: u32,
 }
 
+impl Screenshot {
+    /// The picture for a model: JPEG, a fraction of the PNG's weight, at the same size, so a
+    /// point in the picture is a point on the screen. The PNG itself when it can't be read.
+    pub fn for_model(&self) -> (Vec<u8>, &'static str) {
+        jpeg(&self.png).map_or_else(|| (self.png.clone(), "image/png"), |j| (j, "image/jpeg"))
+    }
+}
+
+fn jpeg(png_bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut pixels).ok()?;
+    let (w, h) = (u16::try_from(info.width).ok()?, u16::try_from(info.height).ok()?);
+    let kind = match info.color_type {
+        png::ColorType::Rgb => jpeg_encoder::ColorType::Rgb,
+        png::ColorType::Rgba => jpeg_encoder::ColorType::Rgba,
+        png::ColorType::Grayscale => jpeg_encoder::ColorType::Luma,
+        _ => return None,
+    };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, JPEG_QUALITY).encode(pixels.get(..info.buffer_size())?, w, h, kind).ok()?;
+    Some(out)
+}
+
 /// What a person or the model does to the screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
@@ -375,21 +404,31 @@ pub trait Provider: Send + Sync {
     /// Removes it and everything it kept.
     async fn destroy(&self, machine: &Machine) -> Result<()>;
 
+    /// Removes whatever is left of computer `id` when its saved record is lost.
+    async fn sweep(&self, _id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Before anyone uses an awake computer: whatever must hold for it to be safe to use, checked
+    /// for this start of it. A computer that fails this is stopped.
+    async fn guard(&self, _machine: &Machine) -> Result<()> {
+        Ok(())
+    }
+
     /// Starts `bot`'s screen, or finds it running. Awake only; a bot keeps its screen's number
     /// and folder across sleeps.
     async fn screen_up(&self, _machine: &Machine, _bot: &str) -> Result<Screen> {
         unsupported("give a Bot a screen")
     }
 
-    /// Stops `bot`'s screen. What it made stays.
+    /// Stops `bot`'s screen and gives up its slot. What it made stays.
     async fn screen_down(&self, _machine: &Machine, _bot: &str) -> Result<()> {
         unsupported("give a Bot a screen")
     }
 
-    /// Whether commands on one screen are kept off the others. Until they are, a command run for
-    /// one Bot could reach the screen of another Bot on that computer.
-    async fn commands_stay_on_their_screen(&self, _machine: &Machine) -> bool {
-        false
+    /// The Bots with a screen on it, running or not.
+    async fn screens(&self, _machine: &Machine) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     /// `screen`'s live viewer, if it has one.
@@ -412,6 +451,11 @@ pub trait Provider: Send + Sync {
 
     async fn open_url(&self, _machine: &Machine, _screen: &Screen, _url: &str) -> Result<()> {
         unsupported("open a page")
+    }
+
+    /// Where `path`, relative to the workspace, really is inside the computer, links followed.
+    async fn resolve(&self, _machine: &Machine, _path: &str) -> Result<String> {
+        unsupported("read files")
     }
 
     async fn read_file(&self, _machine: &Machine, _path: &str) -> Result<Vec<u8>> {
@@ -490,6 +534,26 @@ mod tests {
             let saved = serde_json::to_string(&reach).unwrap();
             assert_eq!(serde_json::from_str::<Reach>(&saved).unwrap(), reach);
         }
+    }
+
+    #[test]
+    fn a_model_gets_a_jpeg_at_the_screens_size() {
+        let mut png_bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png_bytes, 64, 40);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&vec![200u8; 64 * 40 * 4]).unwrap();
+        writer.finish().unwrap();
+        let shot = Screenshot { png: png_bytes, width: 64, height: 40 };
+        let (bytes, media) = shot.for_model();
+        assert_eq!(media, "image/jpeg");
+        assert_eq!(&bytes[..2], [0xFF, 0xD8]);
+        // SOF0 holds the height and width: the same as the screen's, so clicks need no scaling
+        let at = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        assert_eq!(&bytes[at + 5..at + 9], [0, 40, 0, 64]);
+        let broken = Screenshot { png: b"not a png".to_vec(), width: 1, height: 1 };
+        assert_eq!(broken.for_model().1, "image/png");
     }
 
     #[test]

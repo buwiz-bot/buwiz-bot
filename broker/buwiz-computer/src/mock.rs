@@ -21,15 +21,17 @@ pub struct MockProvider {
     pub stdout: Mutex<String>,
     /// `wake` waits here until released, when set
     pub hold: AtomicBool,
-    /// what `commands_stay_on_their_screen` says
-    pub separate: AtomicBool,
+    /// `guard` fails with this
+    pub unsafe_now: Mutex<Option<Problem>>,
+    /// what `resolve` answers for a path, instead of the path itself
+    pub links: Mutex<std::collections::HashMap<String, String>>,
     /// the Bots with a screen, in the order they first got one
     pub screens: Mutex<Vec<String>>,
 }
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), separate: AtomicBool::new(false), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
     }
 }
 
@@ -52,6 +54,19 @@ impl MockProvider {
             _ => Err(Problem::Asleep),
         }
     }
+}
+
+/// A real 2x2 PNG.
+fn tiny_png() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    if let Ok(mut writer) = encoder.write_header() {
+        let _ = writer.write_image_data(&[0u8; 12]);
+        let _ = writer.finish();
+    }
+    out
 }
 
 #[async_trait]
@@ -102,6 +117,7 @@ impl Provider for MockProvider {
     }
 
     async fn destroy(&self, _: &Machine) -> Result<()> {
+        self.check().await?;
         self.note("destroy".to_owned());
         self.set_power(Power::Absent);
         Ok(())
@@ -121,11 +137,33 @@ impl Provider for MockProvider {
 
     async fn screen_down(&self, _: &Machine, bot: &str) -> Result<()> {
         self.note(format!("screen_down {bot}"));
+        self.screens.lock().unwrap_or_else(|e| e.into_inner()).retain(|b| b != bot);
         Ok(())
     }
 
-    async fn commands_stay_on_their_screen(&self, _: &Machine) -> bool {
-        self.separate.load(Ordering::SeqCst)
+    async fn screens(&self, _: &Machine) -> Result<Vec<String>> {
+        Ok(self.screens.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    async fn sweep(&self, id: &str) -> Result<()> {
+        self.note(format!("sweep {id}"));
+        Ok(())
+    }
+
+    async fn guard(&self, _: &Machine) -> Result<()> {
+        self.note("guard".to_owned());
+        match self.unsafe_now.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(p) => {
+                self.set_power(Power::Asleep);
+                Err(p)
+            }
+            None => Ok(()),
+        }
+    }
+
+    async fn resolve(&self, _: &Machine, path: &str) -> Result<String> {
+        let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(links.get(path).cloned().unwrap_or_else(|| format!("/workspace/{path}")))
     }
 
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
@@ -136,7 +174,7 @@ impl Provider for MockProvider {
     async fn screenshot(&self, _: &Machine, screen: &Screen) -> Result<Screenshot> {
         self.awake()?;
         self.note(format!("screenshot {}", screen.display));
-        Ok(Screenshot { png: b"\x89PNG-mock".to_vec(), width: 1280, height: 800 })
+        Ok(Screenshot { png: tiny_png(), width: 2, height: 2 })
     }
 
     async fn input(&self, _: &Machine, screen: &Screen, input: &Input) -> Result<()> {

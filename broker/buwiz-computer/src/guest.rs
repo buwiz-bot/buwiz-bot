@@ -6,6 +6,12 @@
 //! The contract is `computer.md`'s and the image's `docs/openapi.yaml`. Bearer on everything; a
 //! guest's error is `{error: {code, message}}`. What acts on a screen says which with
 //! `?display=:N`; the broker's model tools can't set it, the broker does, from the Bot.
+//!
+//! Until the image runs its services as another user, a process in the box can take one of these
+//! ports over, so nothing here is believed for a security decision: `box-screen`'s answer is
+//! checked, and no capability the box claims widens what a tool may do. The bearer goes to the
+//! port Docker maps to this box, freshly read, so at worst that same box's process hears its own
+//! box's token, which opens nothing else: each computer has its own.
 
 use std::time::Duration;
 
@@ -55,11 +61,25 @@ impl BoxGuest {
     /// `box-screen up <bot>`: the Bot's screen, started or found.
     pub async fn screen_up(&self, bot: &str) -> Result<Screen> {
         let out = self.run_argv(&["box-screen", "up", bot]).await?;
-        parse_screen(&out.stdout)
+        parse_screen(&out.stdout, bot)
     }
 
+    /// Stops `bot`'s screen and frees its slot: `box-screen down` keeps it, and there are few.
     pub async fn screen_down(&self, bot: &str) -> Result<()> {
-        self.run_argv(&["box-screen", "down", bot]).await.map(|_| ())
+        self.run_argv(&["box-screen", "down", bot]).await?;
+        self.run_argv(&["sh", "-c", r#"rm -f -- "$HOME/.box-screens/$1""#, "sh", bot]).await.map(|_| ())
+    }
+
+    /// `box-screen list`: the Bots with a slot.
+    pub async fn screens(&self) -> Result<Vec<String>> {
+        let out = self.run_argv(&["box-screen", "list"]).await?;
+        Ok(parse_screens(&out.stdout))
+    }
+
+    /// `path`, relative to the workspace, with its links followed.
+    pub async fn resolve(&self, path: &str) -> Result<String> {
+        let full = format!("/workspace/{path}");
+        Ok(self.run_argv(&["realpath", "-m", "--", &full]).await?.stdout.trim_end_matches('\n').to_owned())
     }
 
     pub async fn screenshot(&self, screen: &Screen) -> Result<Screenshot> {
@@ -81,9 +101,10 @@ impl BoxGuest {
         Ok(command_output(&v))
     }
 
-    /// Opens `url` in `screen`'s browser. No shell, so nothing in it is read as one.
+    /// Opens `url` in `screen`'s browser. No shell, so nothing in it is read as one, and a session
+    /// of its own: box-exec ends a job's process group at its timeout, and a browser outlives that.
     pub async fn open_url(&self, screen: &Screen, url: &str) -> Result<()> {
-        self.post("/v1/exec", &json!({"command": ["box-chromium", url], "detach": true, "cwd": screen.folder, "env": screen_env(screen)}), PATIENCE).await.map(|_| ())
+        self.post("/v1/exec", &json!({"command": open_command(url), "cwd": screen.folder, "env": screen_env(screen)}), PATIENCE).await.map(|_| ())
     }
 
     async fn run_argv(&self, argv: &[&str]) -> Result<CommandOutput> {
@@ -187,6 +208,10 @@ async fn pause() -> Settled {
     Settled { waited_ms: 500, fallback: true, ..Settled::default() }
 }
 
+fn open_command(url: &str) -> Value {
+    json!(["setsid", "-f", "box-chromium", url])
+}
+
 /// `path` on `screen`.
 fn on(path: &str, screen: &Screen) -> String {
     format!("{path}?display={}", query(&screen.display))
@@ -201,15 +226,21 @@ fn screen_env(screen: &Screen) -> Value {
     env
 }
 
-/// `box-screen up`'s line.
-pub fn parse_screen(stdout: &str) -> Result<Screen> {
+/// `box-screen up`'s line for `bot`. Each field is checked, and the folder is the one a Bot has
+/// whatever the box says: this comes from inside.
+pub fn parse_screen(stdout: &str, bot: &str) -> Result<Screen> {
+    let bad = || Problem::Guest { status: 502, message: "box-screen didn't name the screen".to_owned() };
     let v: Value = serde_json::from_str(stdout.trim()).map_err(|_| Problem::Guest { status: 502, message: "box-screen's answer wasn't JSON".to_owned() })?;
-    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
-    let port = v.get("viewer_port").and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok());
-    match (field("display"), port, field("workspace")) {
-        (Some(display), Some(viewer_port), Some(folder)) => Ok(Screen { display, viewer_port, folder, profile: field("profile") }),
-        _ => Err(Problem::Guest { status: 502, message: "box-screen didn't name the screen".to_owned() }),
-    }
+    let display = v.get("display").and_then(Value::as_str).filter(|d| d.strip_prefix(':').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))).ok_or_else(bad)?;
+    let viewer_port = v.get("viewer_port").and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok()).filter(|p| (6901..=6905).contains(p)).ok_or_else(bad)?;
+    let profile = v.get("profile").and_then(Value::as_str).map(str::to_owned);
+    Ok(Screen { display: display.to_owned(), viewer_port, folder: format!("agents/{bot}"), profile })
+}
+
+/// `box-screen list`'s Bots.
+pub fn parse_screens(stdout: &str) -> Vec<String> {
+    let v: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
+    v.get("screens").and_then(Value::as_array).into_iter().flatten().filter_map(|s| s.get("bot")?.as_str().map(str::to_owned)).collect()
 }
 
 fn parse(body: &[u8]) -> Result<Value> {
@@ -288,11 +319,30 @@ mod tests {
     #[test]
     fn box_screens_answer_is_a_screen() {
         let line = r#"{"bot":"b_1","slot":2,"display":":2","viewer_port":6902,"workspace":"agents/b_1","profile":"/home/box/chrome-profile/bots/b_1","running":true}"#;
-        let s = parse_screen(line).unwrap();
+        let s = parse_screen(line, "b_1").unwrap();
         assert_eq!((s.display.as_str(), s.viewer_port, s.folder.as_str()), (":2", 6902, "agents/b_1"));
         assert_eq!(screen_env(&s)["DISPLAY"], ":2");
         assert_eq!(on("/v1/cua/click", &s), "/v1/cua/click?display=%3A2");
-        assert!(parse_screen(r#"{"error":"full"}"#).is_err());
+        assert!(parse_screen(r#"{"error":"full"}"#, "b_1").is_err());
+    }
+
+    #[test]
+    fn what_box_screen_says_isnt_believed() {
+        let forged = r#"{"display":":2","viewer_port":6902,"workspace":"../.."}"#;
+        assert_eq!(parse_screen(forged, "b_1").unwrap().folder, "agents/b_1", "the folder is the Bot's own");
+        assert!(parse_screen(r#"{"display":":2","viewer_port":1337}"#, "b_1").is_err(), "a control port isn't a viewer");
+        assert!(parse_screen(r#"{"display":":2;x","viewer_port":6902}"#, "b_1").is_err());
+    }
+
+    #[test]
+    fn a_browser_runs_in_a_session_of_its_own() {
+        assert_eq!(open_command("https://a.example"), json!(["setsid", "-f", "box-chromium", "https://a.example"]));
+    }
+
+    #[test]
+    fn the_list_names_the_bots() {
+        assert_eq!(parse_screens(r#"{"screens":[{"bot":"a"},{"bot":"b"}]}"#), ["a", "b"]);
+        assert_eq!(parse_screens("junk"), Vec::<String>::new());
     }
 
     #[test]
