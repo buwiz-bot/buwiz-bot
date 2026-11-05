@@ -85,13 +85,14 @@ fn grouped(n: &Seen) -> bool {
     n.states.iter().any(|s| s == "grouped")
 }
 
-/// The texts in `n`, and whether a control is.
+/// The texts in `n`, and whether something is in it that keeps it unnamed:
+/// a control, or a `note`, whose words are never a label.
 fn inside<'a>(n: &'a Seen, texts: &mut Vec<&'a str>) -> bool {
-    n.children.iter().fold(false, |control, c| {
+    n.children.iter().fold(false, |blocked, c| {
         if TEXT.contains(&c.role.as_str()) {
             texts.push(words(c));
         }
-        inside(c, texts) || is_control(&c.role) || control
+        inside(c, texts) || is_control(&c.role) || c.role == "note" || blocked
     })
 }
 
@@ -403,9 +404,9 @@ pub(crate) mod tests {
     /// Nothing in the tree tells a row with one text from a button: the
     /// account options a draft needs are such rows, and have to stay named.
     /// So a one-text row an app forgot to label goes out by its text, and
-    /// only the two below keep a row in.
+    /// only the two below keep a row's name out.
     #[test]
-    fn a_rows_name_stays_in_only_by_a_second_text_or_a_fixed_label() {
+    fn only_a_second_text_or_a_fixed_label_keeps_a_rows_name_out() {
         let one_text = button("a", NAME);
         let two_texts = seen("b", "button", "", None, vec![text("c", NAME), text("d", "›")]);
         let named = labelled("e", "Show payments", NAME);
@@ -430,6 +431,8 @@ pub(crate) mod tests {
         let got = out(&[seen("a", "button", "Open Juan", None, vec![note("b", "Juan")]), seen("c", "button", "Save", None, vec![note("d", "Save")])]);
         assert_eq!(got.iter().map(|g| g.2.as_str()).collect::<Vec<_>>(), ["", "Save"]);
         assert!(out(&[note("e", NAME)]).is_empty(), "and says nothing by itself");
+        let nameless = seen("f", "button", "", None, vec![note("g", NAME)]);
+        assert_eq!(out(&[nameless])[0].2, "", "a note is never a button's label");
     }
 
     #[test]
