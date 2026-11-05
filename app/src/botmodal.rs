@@ -211,14 +211,7 @@ fn shapes() -> impl IntoElement {
                             st.bot_hover.set(String::new());
                         }
                     })
-                    .on_press(move || {
-                        let st = store();
-                        // a rich avatar's colour is its recipe's, not one the person picked
-                        if st.bot_shape.get_untracked().starts_with(crate::avatar::RICH) {
-                            st.bot_color.set("#FFFFFF".to_owned());
-                        }
-                        st.bot_shape.set(sh3.clone());
-                    })
+                    .on_press(move || store().draft_body(sh3.clone(), None))
                     .label(format!("{sh4} character shape"))
             },
         ))

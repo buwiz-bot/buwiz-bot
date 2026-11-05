@@ -1946,12 +1946,10 @@ fn bot_tab() -> impl IntoElement {
                         .label(format!("{sh} character shape"))
                         .on_press(move || {
                             let Some(b) = st.active_bot_untracked() else { return };
-                            let mut patch = serde_json::json!({"shape": sh, "image": "", "crop": serde_json::Value::Null});
-                            // a rich avatar's colour is its recipe's, not one the person picked
-                            if b.shape.starts_with(crate::avatar::RICH) {
-                                patch["color"] = "#FFFFFF".into();
-                            }
-                            st.update_bot(&b.id, patch);
+                            st.update_bot(
+                                &b.id,
+                                serde_json::json!({"shape": sh, "image": "", "crop": serde_json::Value::Null})
+                            );
                         })
                         .child(when(
                             move || {
