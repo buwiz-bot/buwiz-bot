@@ -397,6 +397,10 @@ fn notices(ctx: &HubCtx, chat: &str) -> Vec<Value> {
     ctx.store.read(|s| s.thread(chat).unwrap().turns.iter().filter_map(|u| u.notice.clone()).filter(|n| n["kind"] == "tools_change").collect())
 }
 
+fn all_notices(ctx: &HubCtx, chat: &str) -> Vec<Value> {
+    ctx.store.read(|s| s.thread(chat).unwrap().turns.iter().filter_map(|u| u.notice.clone()).collect())
+}
+
 fn step(ctx: &HubCtx, ms: f64) {
     let now = ctx.clock.now();
     ctx.clock.manual_step(Some(now + ms), false);
@@ -650,6 +654,176 @@ async fn a_routines_turn_doesnt_look_at_the_screen_even_with_the_switch_on() {
     let routine = Run::new(b.ctx.clone(), TurnCtx { thread: b.hex.clone(), routine: Some("r1".into()), ..TurnCtx::default() }, job, Arc::new(Settings::from(|_| None)));
     assert!(!names(&tool_list(&routine).await).contains(&"ui_look".to_owned()));
     assert_eq!(exec_tool(&routine, &json!({"name": "ui_look", "input": {}})).await, Out::err("unknown tool ui_look".into()));
+}
+
+/// The Bot's side: answers every request on `stream` with `answer`, keeping them.
+fn bot_on(ctx: &Arc<HubCtx>, answer: impl Fn(&buwiz_agent::Envelope) -> buwiz_agent::Response + Send + 'static) -> Arc<std::sync::Mutex<Vec<buwiz_agent::Envelope>>> {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (ctx, mine) = (ctx.clone(), seen.clone());
+    let mut stream = ctx.ui.attach();
+    tokio::spawn(async move {
+        while let Some(chunk) = stream.recv().await {
+            let text = String::from_utf8_lossy(&chunk).into_owned();
+            if let Some(line) = text.strip_prefix("event: ui\ndata: ") {
+                let e: buwiz_agent::Envelope = serde_json::from_str(line.trim()).unwrap();
+                ctx.ui.reply(answer(&e));
+                mine.lock().unwrap().push(e);
+            }
+        }
+    });
+    seen
+}
+
+fn screen_after(e: &buwiz_agent::Envelope, refused: Value) -> buwiz_agent::Response {
+    let mut r = buwiz_agent::Response::ok(e.id.clone(), e.target.clone());
+    r.result = Some(json!({"apps": [], "refused": refused}));
+    r
+}
+
+const PRESS: &str = r#"{"app": "books", "node": "button.save-draft", "action": "click"}"#;
+
+fn press() -> Value {
+    serde_json::from_str(PRESS).unwrap()
+}
+
+fn press_block() -> Value {
+    json!({"name": "ui_act", "input": press()})
+}
+
+fn turn_on(b: &Bed, keys: &[&str]) {
+    for key in keys {
+        host_set(&b.ctx, &json!({"bot": "hex", "key": key, "state": "on"})).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn acting_on_the_screen_has_its_own_switch_off_until_a_person_turns_it_on_for_that_bot() {
+    let b = bed("act");
+    assert_eq!((default_pos("hex", "screen_actions"), default_pos(CHATS, "screen_actions")), (Pos::Off, Pos::Off));
+    let run = run_in(&b.ctx, &b.hex);
+    let plain = run_in(&b.ctx, &b.plain);
+    let off = "screen_actions is off for this Bot. Only the user can turn it on; tools_set proposes it.";
+    assert!(!names(&tool_list(&run).await).contains(&"ui_act".to_owned()));
+    assert!(!names(&tool_list(&plain).await).contains(&"ui_act".to_owned()));
+    // turning on the view doesn't turn on acting
+    turn_on(&b, &["screens"]);
+    let tools = names(&tool_list(&run).await);
+    assert!(tools.contains(&"ui_look".to_owned()) && !tools.contains(&"ui_act".to_owned()));
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err(off.into()), "a model can name a tool it wasn't offered");
+    // the model can only ask: the switch moves on a person's word
+    let p = call(&run, "tools_set", json!({"key": "screen_actions", "state": "on"})).await;
+    assert!(p["proposal"].is_string(), "{p}");
+    assert_eq!(tool_state(&b.ctx, "hex", "screen_actions"), Pos::Off);
+    turn_on(&b, &["screen_actions"]);
+    assert!(names(&tool_list(&run).await).contains(&"ui_act".to_owned()));
+    assert!(!names(&tool_list(&plain).await).contains(&"ui_act".to_owned()), "on for that Bot alone");
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err("The Bot isn't connected to the broker.".into()), "it ran");
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "screen_actions", "state": "off"})).unwrap();
+    assert!(!names(&tool_list(&run).await).contains(&"ui_act".to_owned()));
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err(off.into()));
+}
+
+#[tokio::test]
+async fn plain_chats_keep_the_switch_too() {
+    let b = bed("act-chats");
+    let plain = run_in(&b.ctx, &b.plain);
+    for key in ["screens", "screen_actions"] {
+        host_set(&b.ctx, &json!({"bot": CHATS, "key": key, "state": "on"})).unwrap();
+    }
+    assert!(names(&tool_list(&plain).await).contains(&"ui_act".to_owned()));
+    assert!(!names(&tool_list(&run_in(&b.ctx, &b.hex)).await).contains(&"ui_act".to_owned()), "not a Bot's");
+}
+
+#[tokio::test]
+async fn acting_needs_the_look_its_answer_is() {
+    let b = bed("act-no-look");
+    turn_on(&b, &["screen_actions"]);
+    let run = run_in(&b.ctx, &b.hex);
+    assert!(!names(&tool_list(&run).await).contains(&"ui_act".to_owned()));
+    let out = exec_tool(&run, &press_block()).await;
+    assert_eq!(out, Out::err("screens is off for this Bot. Only the user can turn it on; tools_set proposes it.".into()));
+}
+
+#[tokio::test]
+async fn a_routines_turn_doesnt_act_on_the_screen_even_with_both_switches_on() {
+    let b = bed("act-routine");
+    turn_on(&b, &["screens", "screen_actions"]);
+    let job = b.ctx.jobs.create(&b.hex, Value::Null, None, false);
+    let routine = Run::new(b.ctx.clone(), TurnCtx { thread: b.hex.clone(), routine: Some("r1".into()), ..TurnCtx::default() }, job, Arc::new(Settings::from(|_| None)));
+    assert!(!names(&tool_list(&routine).await).contains(&"ui_act".to_owned()));
+    assert_eq!(exec_tool(&routine, &press_block()).await, Out::err("unknown tool ui_act".into()));
+}
+
+#[tokio::test]
+async fn at_ask_each_action_waits_for_the_person() {
+    let b = bed_waiting("act-ask", std::time::Duration::from_millis(50));
+    turn_on(&b, &["screens"]);
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "screen_actions", "state": "ask"})).unwrap();
+    let seen = bot_on(&b.ctx, |e| screen_after(e, json!([])));
+    let run = run_in(&b.ctx, &b.hex);
+    let out = exec_tool(&run, &press_block()).await;
+    assert_eq!(out.is_error, Some(true), "no answer is no");
+    assert!(seen.lock().unwrap().is_empty(), "nothing reached the Bot");
+    let card = all_notices(&b.ctx, &b.hex).into_iter().find(|n| n["kind"] == "tool_ask").expect("a card");
+    assert_eq!(card["title"], "Press \"button.save-draft\" on the screen?");
+}
+
+#[tokio::test]
+async fn at_on_a_look_doesnt_make_it_ask_but_a_page_read_this_turn_does() {
+    let b = bed_waiting("act-outside", std::time::Duration::from_millis(50));
+    turn_on(&b, &["screens", "screen_actions"]);
+    let seen = bot_on(&b.ctx, |e| screen_after(e, json!([])));
+    let run = run_in(&b.ctx, &b.hex);
+    crate::hub::tools::controls::note_external(&run, "ui_look");
+    assert_eq!(exec_tool(&run, &press_block()).await.is_error, None);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    crate::hub::tools::controls::note_external(&run, "fetch_url");
+    assert_eq!(exec_tool(&run, &press_block()).await.is_error, Some(true), "what it read may be asking for this");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_person_reads_in_the_chat_what_the_bot_refused() {
+    let b = bed("act-refused");
+    turn_on(&b, &["screens", "screen_actions"]);
+    let said = "\"Save & post\" needs a person, so the AI's press was refused and nothing was sent. A person has to press it.";
+    bot_on(&b.ctx, move |e| screen_after(e, json!([said])));
+    let run = run_in(&b.ctx, &b.hex);
+    let out = call(&run, "ui_act", press()).await;
+    assert_eq!((out["done"].clone(), out["refused"][0].clone()), (json!(false), json!(said)));
+    assert_eq!(all_notices(&b.ctx, &b.hex).last().unwrap()["text"], said);
+}
+
+#[tokio::test]
+async fn a_refusal_of_the_hub_reaches_the_person_too() {
+    let b = bed("act-stale");
+    turn_on(&b, &["screens", "screen_actions"]);
+    let said = "The screen changed since the AI last looked at it, so nothing was pressed. It has to look again.";
+    bot_on(&b.ctx, move |e| {
+        let mut r = buwiz_agent::Response::err(e.id.clone(), e.target.clone(), said);
+        r.result = Some(json!({"tell": true}));
+        r
+    });
+    let run = run_in(&b.ctx, &b.hex);
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err(said.into()));
+    assert_eq!(all_notices(&b.ctx, &b.hex).last().unwrap()["text"], said);
+}
+
+#[tokio::test]
+async fn a_malformed_id_or_an_unknown_app_goes_back_to_the_model_alone() {
+    let b = bed("act-mistake");
+    turn_on(&b, &["screens", "screen_actions"]);
+    let said = "That mini app isn't open, so nothing was pressed.";
+    bot_on(&b.ctx, move |e| {
+        let mut r = buwiz_agent::Response::err(e.id.clone(), e.target.clone(), said);
+        r.result = Some(json!({"tell": false}));
+        r
+    });
+    let run = run_in(&b.ctx, &b.hex);
+    assert_eq!(exec_tool(&run, &press_block()).await, Out::err(said.into()));
+    let bad = json!({"name": "ui_act", "input": {"app": "books", "node": "not an id", "action": "click"}});
+    assert_eq!(exec_tool(&run, &bad).await.is_error, Some(true));
+    assert!(all_notices(&b.ctx, &b.hex).is_empty());
 }
 
 #[tokio::test]

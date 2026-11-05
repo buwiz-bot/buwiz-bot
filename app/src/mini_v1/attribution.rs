@@ -4,6 +4,8 @@
 //! call can't be tied to the press that caused it. What is known is the
 //! input around it, so that decides:
 //!
+//! - With nothing watching the input, every call is the agent's: no one
+//!   can say the person made it.
 //! - Until an agent has acted, every call is the person's.
 //! - An agent's action, on any surface, makes every surface the agent's:
 //!   what it presses may open another surface, and a menu item it fires
@@ -55,6 +57,8 @@ impl Actor {
 /// The input seen so far.
 #[derive(Debug, Default)]
 pub struct Attribution {
+    /// Input reaches this: nothing below means anything without it.
+    watching: bool,
     last_action: Option<Instant>,
     last_call_end: Option<Instant>,
     calls: usize,
@@ -63,6 +67,11 @@ pub struct Attribution {
 }
 
 impl Attribution {
+    /// Input reaches this from now on.
+    fn watch(&mut self) {
+        self.watching = true;
+    }
+
     /// The agent is acting.
     pub fn agent_acted(&mut self, now: Instant) {
         self.last_action = Some(now);
@@ -99,7 +108,7 @@ impl Attribution {
 
     /// Who a call from `surface` speaks for now.
     pub fn actor(&self, surface: u64) -> Actor {
-        if self.last_action.is_none() || self.person.contains(&surface) { Actor::Person } else { Actor::Agent }
+        if self.watching && (self.last_action.is_none() || self.person.contains(&surface)) { Actor::Person } else { Actor::Agent }
     }
 }
 
@@ -112,6 +121,11 @@ fn with<R>(f: impl FnOnce(&mut Attribution) -> R) -> R {
 /// [`Attribution::actor`] of this process's input.
 pub fn actor(surface: u64) -> Actor {
     with(|a| a.actor(surface))
+}
+
+/// How many calls of the agent's are out, in this process.
+pub fn agent_calls() -> usize {
+    with(|a| a.calls)
 }
 
 /// A call of the agent's began (`true`) or ended, in this process.
@@ -128,6 +142,7 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
         Input::Agent => with(|a| a.agent_acted(Instant::now())),
         Input::Person { surface } => with(|a| a.person_pressed(surface, Instant::now())),
     });
+    with(Attribution::watch);
 }
 
 #[cfg(test)]
@@ -141,16 +156,31 @@ mod tests {
         t + Duration::from_secs(s)
     }
 
+    fn watched() -> Attribution {
+        Attribution { watching: true, ..Attribution::default() }
+    }
+
     #[test]
     fn with_no_agent_every_call_is_the_persons() {
-        let a = Attribution::default();
-        assert_eq!(a.actor(FORM), Actor::Person);
+        assert_eq!(watched().actor(FORM), Actor::Person);
+    }
+
+    #[test]
+    fn with_nothing_watching_every_call_is_the_agents() {
+        let t = Instant::now();
+        let mut a = Attribution::default();
+        assert_eq!(a.actor(FORM), Actor::Agent);
+        // nothing a stray report says makes it the person's
+        a.person_pressed(FORM, t);
+        assert_eq!(a.actor(FORM), Actor::Agent);
+        a.watch();
+        assert_eq!(a.actor(CHAT), Actor::Person);
     }
 
     #[test]
     fn an_agents_action_takes_every_surface_even_one_opened_later() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.person_pressed(CHAT, t);
         a.agent_acted(t);
         assert_eq!(a.actor(FORM), Actor::Agent);
@@ -161,7 +191,7 @@ mod tests {
     #[test]
     fn only_the_persons_press_in_that_surface_takes_it_back() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.agent_acted(t);
         // nothing clears by itself
         assert_eq!(a.actor(FORM), Actor::Agent);
@@ -175,7 +205,7 @@ mod tests {
     #[test]
     fn a_press_in_the_settle_window_changes_nothing_and_needs_doing_again() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.agent_acted(t);
         a.person_pressed(FORM, t + SETTLE - Duration::from_millis(1));
         assert_eq!(a.actor(FORM), Actor::Agent);
@@ -188,7 +218,7 @@ mod tests {
     #[test]
     fn a_new_action_takes_back_what_the_person_held() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.agent_acted(t);
         a.person_pressed(FORM, secs(t, 5));
         a.agent_acted(secs(t, 6));
@@ -198,7 +228,7 @@ mod tests {
     #[test]
     fn a_call_in_flight_and_the_settle_after_it_hold_the_agents_chain() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.agent_acted(t);
         a.call_began();
         // the action is long past, but its call is still out
@@ -215,7 +245,7 @@ mod tests {
     #[test]
     fn a_polling_screen_cant_keep_the_person_out_for_ever() {
         let t = Instant::now();
-        let mut a = Attribution::default();
+        let mut a = watched();
         a.agent_acted(t);
         a.call_began();
         a.person_pressed(FORM, t + MAX_CHAIN - Duration::from_secs(1));

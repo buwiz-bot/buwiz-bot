@@ -118,6 +118,11 @@ impl host_api::Broker for FakeBroker {
                 self.running.fetch_sub(1, Ordering::SeqCst);
                 Ok(json!({"ok": true, "result": result}))
             }
+            "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
+                Some("fx_echo" | "fx_slow") => json!({"allow": true, "effect": "draft"}),
+                Some("fx_read") => json!({"allow": true, "effect": "read"}),
+                _ => json!({"allow": false, "effect": "write"}),
+            }),
             "/v1/host/tickets/title" => Ok(json!({"valid": body["ticket"] == TICKET, "title": "Dela Cruz Jane"})),
             "/v1/host/resolve" => Ok(json!({"result": "token", "ticket": TICKET, "title": "Item One"})),
             "/v1/host/sessions/close" => {
@@ -424,6 +429,77 @@ fn a_call_carries_the_hosts_actor_and_the_app_has_no_say() {
     o.wait("ok");
     assert_eq!(o.broker.calls.lock().unwrap()[0].0["actor"], "person");
     assert!(o.ui.agent_calls.lock().unwrap().is_empty(), "the person's calls hold nothing");
+}
+
+#[test]
+fn an_agents_call_counts_as_running_for_as_long_as_it_runs() {
+    let script = r#"await buwiz.call("fx_slow", { ms: 300 }); return "ok";"#;
+    let perms = json!({"tools": ["fx_slow"]});
+    let mut o = Open::start_with(FIXTURE, perms, script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    while o.broker.calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*o.ui.agent_calls.lock().unwrap(), [true], "it is out at the broker");
+    o.wait("ok");
+    let by = Instant::now() + Duration::from_secs(2);
+    while o.ui.agent_calls.lock().unwrap().len() < 2 && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*o.ui.agent_calls.lock().unwrap(), [true, false]);
+}
+
+#[test]
+fn an_agents_press_on_a_person_only_tool_is_refused_and_nothing_goes_out() {
+    let script = r#"
+        const said = [];
+        for (const tool of ["fx_app", "fx_bare", "fx_gone"]) {
+            await buwiz.call(tool, {}).then(() => said.push("went out"), (e) => said.push(e.code + ": " + e.message));
+        }
+        return said.join("|");
+        "#;
+    let perms = json!({"tools": ["fx_app", "fx_bare", "fx_gone"]});
+    let mut o = Open::start_with(FIXTURE, perms, script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    let said = o.wait("permission_denied");
+    assert_eq!(said.matches("Only a person can do this in").count(), 3, "{said}");
+    assert!(!said.contains("went out"), "{said}");
+    assert!(o.broker.calls.lock().unwrap().is_empty(), "nothing is signed or sent");
+    // a refused call still ends, just after its answer
+    let ended = || o.ui.agent_calls.lock().unwrap().iter().filter(|r| !**r).count();
+    let by = Instant::now() + Duration::from_secs(2);
+    while ended() < 3 && Instant::now() < by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(ended(), 3);
+
+    // the person's own call of the same tool goes out as it always did
+    let script = r#"await buwiz.call("fx_app", {}); return "ok";"#;
+    let mut o = Open::start(json!({"tools": ["fx_app"]}), script);
+    o.wait("ok");
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!((calls[0].0["actor"].as_str(), calls[0].0.get("press")), (Some("person"), None));
+}
+
+#[test]
+fn an_agents_press_on_a_tool_open_to_agents_goes_out_with_a_signed_press_record() {
+    let script = r#"await buwiz.call("fx_echo", {}); await buwiz.call("fx_read", {}); return "ok";"#;
+    let perms = json!({"tools": ["fx_echo", "fx_read"]});
+    let mut o = Open::start_with(FIXTURE, perms, script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    o.wait("ok");
+    let calls = o.broker.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2, "what only reads keeps the screen alive");
+    for (env, sig) in calls.iter() {
+        assert_eq!(env["press"], json!({"by": "ai", "who": "agent.broker"}));
+        keys::verify(&o.ctx.session.public_key(), env, sig).expect("the press is under the signature");
+    }
+}
+
+#[test]
+fn an_agents_press_cant_reach_the_pasteboard() {
+    let script = r#"return await buwiz.copy("000-111-222").then(() => "copied", (e) => e.code + ": " + e.message);"#;
+    let mut o = Open::start_with(FIXTURE, board_perms(), script, Limits::default(), |ui| ui.agent.store(true, Ordering::SeqCst));
+    let said = o.wait("permission_denied");
+    assert!(said.contains("Only a person can copy from"), "{said}");
+    assert!(o.ui.copied.lock().unwrap().is_empty());
 }
 
 #[test]

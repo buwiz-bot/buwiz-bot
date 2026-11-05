@@ -31,7 +31,8 @@
 //! (GHSA-m7pv-qvp8-4mf2). The nonce is 22 to 128 base64url characters.
 //!
 //! The Agent Hub (`hub::tools::ui`): `GET /v1/host/ui/stream` carries a look's request to the
-//! Bot, `POST /v1/host/ui/reply` brings its answer back.
+//! Bot, `POST /v1/host/ui/reply` brings its answer back, `POST /v1/host/ui/press {plugin, tool}`
+//! asks of each call an agent's press leads to whether it may go out (`{allow, effect, said?}`).
 //!
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
@@ -254,6 +255,9 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     }
     if req.method == Method::POST && path == "/v1/host/ui/reply" {
         return ui_reply(&ctx, &req.body);
+    }
+    if req.method == Method::POST && path == "/v1/host/ui/press" {
+        return ui_press(&ctx, &req.body).await;
     }
     if req.method == Method::GET && path == "/v1/host/tools" {
         let query = req.url.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -763,6 +767,19 @@ fn ui_reply(ctx: &HubCtx, body: &[u8]) -> HubResponse {
         types::json(StatusCode::OK, &json!({"ok": true}))
     } else {
         refusal(StatusCode::NOT_FOUND, "not_found", "no request is waiting for this answer")
+    }
+}
+
+/// `POST /v1/host/ui/press {plugin, tool}`: `hub::tools::ui::press_word`.
+async fn ui_press(ctx: &HubCtx, body: &[u8]) -> HubResponse {
+    let bad = || refusal(StatusCode::BAD_REQUEST, "invalid_args", "send {plugin, tool}");
+    let Some(b) = read_body(body) else { return bad() };
+    let (Some(plugin), Some(tool)) = (b.get("plugin").and_then(Value::as_str), b.get("tool").and_then(Value::as_str)) else {
+        return bad();
+    };
+    match crate::hub::tools::ui::press_word(ctx, plugin, tool).await {
+        Some(word) => types::json(StatusCode::OK, &word),
+        None => bad(),
     }
 }
 

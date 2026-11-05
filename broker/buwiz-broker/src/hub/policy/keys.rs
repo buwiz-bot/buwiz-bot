@@ -1,5 +1,5 @@
 //! A Bot's tool switches: each model tool's key (`shell`, `web`, `apps`, `office`,
-//! `routines`, `memory`, `agents`, `screens`, `skill:<id>`, `mcp:<server>`, `v1:<plugin>`), or none for
+//! `routines`, `memory`, `agents`, `screens`, `screen_actions`, `skill:<id>`, `mcp:<server>`, `v1:<plugin>`), or none for
 //! a tool that is always on; whether a call only reads (a switch at Ask asks only before a
 //! call that changes something or reaches someone); and the rows This Bot and Chats show.
 
@@ -10,7 +10,7 @@ use crate::hub::tools::{defs, mcp, miniapps, ui, v1};
 use crate::js;
 
 /// The group keys, in the order This Bot lists them.
-pub const GROUPS: [&str; 8] = ["shell", "web", "apps", "office", "routines", "memory", "agents", "screens"];
+pub const GROUPS: [&str; 9] = ["shell", "web", "apps", "office", "routines", "memory", "agents", "screens", ui::ACT_KEY];
 
 /// The tools that switch with `apps` beside the mini app tools: the artifact tools.
 const APP_TOOLS: [&str; 8] = ["app_icon", "app_details_update", "launch_app", "close_app", "promote_app", "demote_app", "set_version", "view_code"];
@@ -22,6 +22,7 @@ fn group_of(name: &str) -> Option<&'static str> {
         "shell_run" => Some("shell"),
         "fetch_url" | "web_search" | "query_source" => Some("web"),
         ui::NAME => Some("screens"),
+        ui::ACT => Some(ui::ACT_KEY),
         _ if miniapps::NAMES.contains(&name) || APP_TOOLS.contains(&name) => Some("apps"),
         _ if name.starts_with("office_") => Some("office"),
         _ if defs::has(defs::routine_tools(), name) => Some("routines"),
@@ -71,6 +72,7 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         "memory" => return fixed("Memory", "Remembers things about you."),
         "agents" => return fixed("Other agents", "Messages and makes other agents."),
         "screens" => return fixed("Mini app screens", "Reads the names of the buttons and fields on open mini app screens."),
+        ui::ACT_KEY => return fixed("Act on mini app screens", "Presses buttons and fills fields on the mini app screen on top, up to saving a draft. Never what only you can do."),
         _ => {}
     }
     if let Some(id) = key.strip_prefix("skill:") {
@@ -103,6 +105,7 @@ pub fn phrase_of(ctx: &HubCtx, key: &str) -> String {
         "memory" => "its memory".into(),
         "agents" => "other agents".into(),
         "screens" => "mini app screens".into(),
+        ui::ACT_KEY => "acting on mini app screens".into(),
         _ => label_of(ctx, key).map(|(l, _)| l).unwrap_or_else(|| key.to_owned()),
     }
 }
@@ -149,7 +152,7 @@ pub fn declared_read(def: &Value) -> bool {
 /// Whether a write in `key` asks after the turn read outside content, even when its switch
 /// is on.
 pub fn guarded(key: &str) -> bool {
-    matches!(key, "shell" | "agents" | "routines" | "memory" | "apps") || key.starts_with("mcp:") || key.starts_with("v1:")
+    matches!(key, "shell" | "agents" | "routines" | "memory" | "apps" | ui::ACT_KEY) || key.starts_with("mcp:") || key.starts_with("v1:")
 }
 
 /// [`phrase_of`] for `owner`'s switch: the Plain chats profile's read "web search",

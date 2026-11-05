@@ -40,6 +40,33 @@ export function originOf(actor, tool) {
   return actor === "person" || tool?.annotations?.readOnlyHint === true ? "app" : "agent";
 }
 
+const HANDLE = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*$/;
+const isHandle = (v) => typeof v === "string" && v.length <= 64 && HANDLE.test(v);
+const isOnce = (v) => typeof v === "string" && /^[a-z][a-z0-9-]{7,63}$/.test(v);
+const keysAre = (o, names) => {
+  const keys = Object.keys(o).sort();
+  return keys.length === names.length && names.every((n, i) => keys[i] === n);
+};
+
+/** The press record a call carries to the plugin: what the Bot's Hub allowed, under the signature.
+ *  On every call that isn't the person's, reads too: a read goes out as `origin: app`, and this
+ *  is how the plugin tells it from the person's own. Only an AI's press, in exactly the protocol's
+ *  shape (`PressedBy`), as the Rust broker has it. */
+export function pressOf(actor, press) {
+  if (actor === "person" || press === null || typeof press !== "object" || Array.isArray(press)) return undefined;
+  const ai = press.by === "ai" && keysAre(press, ["by", "who"]) && isHandle(press.who);
+  const approved = press.by === "ai_approved" && keysAre(press, ["approved_by", "by", "once", "who"]) && isHandle(press.who) && isHandle(press.approved_by) && isOnce(press.once);
+  return ai || approved ? press : undefined;
+}
+
+/** Whether a signed call may reach `tool`: the person's may, and a read. A write for anyone else
+ *  needs a tool whose `buwiz/audience` names `agent`, however the Bot came to send it. */
+export function mayReach(actor, tool) {
+  if (originOf(actor, tool) === "app") return true;
+  const audience = tool?._meta?.["buwiz/audience"];
+  return Array.isArray(audience) && audience.includes("agent");
+}
+
 const cap = (s, n) => {
   const cs = [...String(s ?? "")];
 
@@ -310,13 +337,17 @@ export function createSessions(plugins) {
     if (Buffer.byteLength(canonicalize(args)) > ARGS_MAX) refuse("invalid_args", `args are over ${ARGS_MAX} bytes`);
 
     if (!rt.tools.some((t) => t.name === envelope.tool)) refuse("not_found", `${s.plugin} has no tool ${envelope.tool}`);
+    if (!mayReach(envelope.actor, rt.tools.find((t) => t.name === envelope.tool))) refuse("permission_denied", `${envelope.tool} is a person's to run`);
     rate(s);
     await slot(s);
     let r;
 
     try {
       const tool = rt.tools.find((t) => t.name === envelope.tool);
-      const caller = { origin: originOf(envelope.actor, tool), plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
+      const origin = originOf(envelope.actor, tool);
+      const caller = { origin, plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
+      const press = pressOf(envelope.actor, envelope.press);
+      if (press) caller.press = press;
 
       r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "buwiz/caller": caller } });
     } finally {

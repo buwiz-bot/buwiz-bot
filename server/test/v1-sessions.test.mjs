@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt, originOf } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, mayReach, originOf, pressOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -254,4 +254,42 @@ test("app source: the fingerprint is checked; a one-byte change is fingerprint_m
   assert.equal(e.code, "fingerprint_mismatch");
   assert.match(e.message, /does not match its signed manifest/);
   await k2.plugins.stopAll();
+});
+
+test("a press record goes out with every call of the agent's, in exactly the protocol's shape", () => {
+  const press = { by: "ai", who: "agent.broker" };
+  assert.equal(pressOf("agent", press), press);
+  assert.equal(pressOf(undefined, press), press, "no actor is the agent's");
+  assert.equal(pressOf("person", press), undefined);
+  assert.equal(pressOf("agent", undefined), undefined);
+  const approved = { by: "ai_approved", who: "agent.broker", approved_by: "person.owner", once: "once-0001" };
+  assert.equal(pressOf("agent", approved), approved);
+  const bad = [
+    { by: "person", who: "person.owner" },
+    { by: "routine", who: "routine.x" },
+    { by: "ai" },
+    { by: "ai", who: "Not An Id" },
+    { by: "ai", who: "agent.broker", extra: 1 },
+    { by: "ai_approved", who: "agent.broker", approved_by: "person.owner" },
+    { by: "ai_approved", who: "agent.broker", approved_by: "person.owner", once: "short" },
+    "ai",
+    ["ai"],
+    null,
+  ];
+  for (const b of bad) assert.equal(pressOf("agent", b), undefined, JSON.stringify(b));
+});
+
+test("a write that isn't the person's reaches only a tool open to agents", () => {
+  const app = { name: "fx_save", _meta: { "buwiz/audience": ["app"] } };
+  const bare = { name: "fx_bare" };
+  const open = { name: "fx_draft", _meta: { "buwiz/audience": ["app", "agent"] } };
+  const read = { name: "fx_list", annotations: { readOnlyHint: true }, _meta: { "buwiz/audience": ["app"] } };
+  assert.equal(mayReach("agent", open), true);
+  assert.equal(mayReach("agent", read), true);
+  for (const t of [app, bare, { name: "fx_word", _meta: { "buwiz/audience": "agent" } }, undefined]) {
+    assert.equal(mayReach("agent", t), false);
+    assert.equal(mayReach(undefined, t), false, "no actor is the agent's");
+  }
+  assert.equal(mayReach("person", app), true);
+  assert.equal(mayReach("person", bare), true);
 });

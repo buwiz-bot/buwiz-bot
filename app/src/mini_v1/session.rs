@@ -119,20 +119,21 @@ impl Session {
 
     /// The signed envelope of a call of `tool` with `args` (8.1):
     /// `(envelope, sig)`.
-    pub fn sign_call(&self, tool: &str, args: &Value, actor: Actor) -> Result<(Value, String), RoxError> {
-        self.sign(tool, args, None, actor)
+    pub fn sign_call(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, None, actor, press)
     }
 
     /// [`Session::sign_call`] for `buwiz.preview`: the envelope says
     /// `"purpose": "preview"`, which the broker takes only from an app
     /// granted `preview`, and answers with the larger document limit.
-    pub fn sign_preview(&self, tool: &str, args: &Value, actor: Actor) -> Result<(Value, String), RoxError> {
-        self.sign(tool, args, Some("preview"), actor)
+    pub fn sign_preview(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
+        self.sign(tool, args, Some("preview"), actor, press)
     }
 
-    /// `actor` is the host's own word, under the signature: an app gives
-    /// the bridge a tool and its arguments and nothing else.
-    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>, actor: Actor) -> Result<(Value, String), RoxError> {
+    /// `actor` and `press`, the record of an agent's press the Hub allowed,
+    /// are the host's own word, under the signature: an app gives the bridge
+    /// a tool and its arguments and nothing else.
+    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
         self.check_live()?;
         let mut envelope = json!({
             "v": 1, "typ": "buwiz-call",
@@ -142,6 +143,9 @@ impl Session {
         });
         if let Some(p) = purpose {
             envelope["purpose"] = json!(p);
+        }
+        if let Some(p) = press {
+            envelope["press"] = p.clone();
         }
         let sig = self.key.sign(&envelope).map_err(|e| RoxError::new("invalid_args", e))?;
         Ok((envelope, sig))
@@ -483,7 +487,7 @@ pub(crate) mod tests {
     fn brg_03_envelopes_are_signed_over_jcs_with_a_fresh_nonce() {
         let s = open_with(|_, _| {}).unwrap();
         let args = json!({"period": "2026-09", "code": "1601C"});
-        let (env, sig) = s.sign_call("fx_echo", &args, Actor::Agent).unwrap();
+        let (env, sig) = s.sign_call("fx_echo", &args, Actor::Agent, None).unwrap();
         assert_eq!(env["v"], 1);
         assert_eq!(env["typ"], "buwiz-call");
         assert_eq!(env["open_id"], s.open_id.as_str());
@@ -506,10 +510,10 @@ pub(crate) mod tests {
             .verify_strict(by_hand.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig))
             .expect("the envelope's signature verifies over its JCS bytes");
         // every call gets its own nonce
-        let (env2, _) = s.sign_call("fx_echo", &args, Actor::Agent).unwrap();
+        let (env2, _) = s.sign_call("fx_echo", &args, Actor::Agent, None).unwrap();
         assert_ne!(env["nonce"], env2["nonce"]);
         // floats are not signed
-        assert_eq!(s.sign_call("fx_echo", &json!({"x": 0.5}), Actor::Person).unwrap_err().code, "invalid_args");
+        assert_eq!(s.sign_call("fx_echo", &json!({"x": 0.5}), Actor::Person, None).unwrap_err().code, "invalid_args");
     }
 
     /// Counts `sessions/open` and `sessions/close` and signs like
@@ -570,6 +574,6 @@ pub(crate) mod tests {
         assert_eq!(on_plugin_event(&json!({"id": plugin, "generation": 4, "state": "running"})), 1);
         assert_eq!(s.check_live().unwrap_err().code, "plugin_restarted");
         assert_eq!(*heard.lock().unwrap(), [Ended::Restarted]);
-        assert_eq!(s.sign_call("fx_echo", &json!({}), Actor::Person).unwrap_err().code, "plugin_restarted");
+        assert_eq!(s.sign_call("fx_echo", &json!({}), Actor::Person, None).unwrap_err().code, "plugin_restarted");
     }
 }

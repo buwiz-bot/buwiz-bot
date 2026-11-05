@@ -86,6 +86,7 @@ impl Fake {
                 tool("fx_open", "Answer with a card", json!({})),
                 tool("fx_big", "A big answer", json!({})),
                 tool("fx_app_only", "For apps", json!({"_meta": {"buwiz/audience": ["app"]}})),
+                tool("fx_draft", "Saves a draft", json!({"_meta": {"buwiz/audience": ["app", "agent"]}})),
                 tool("buwiz.provision", "reserved", json!({})),
                 tool("mcp_shadow", "a v0 name", json!({})),
                 tool("other_name", "not its short", json!({})),
@@ -645,4 +646,208 @@ async fn generate_app_refuses_when_nsh_cannot_run() {
     let versions: i64 = ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM versions", [], |r| r.get(0))).unwrap();
     assert_eq!(versions, 0);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The Bot's side of `ui_act`: each action leads to a write of `tool`, and what the broker says of
+/// it comes back as the action's refusal. `sent` counts the writes that got through.
+fn bot_pressing(ctx: &Arc<HubCtx>, tool: &'static str) -> Arc<std::sync::atomic::AtomicUsize> {
+    let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ctx, mine) = (ctx.clone(), sent.clone());
+    let mut stream = ctx.ui.attach();
+    tokio::spawn(async move {
+        while let Some(chunk) = stream.recv().await {
+            let text = String::from_utf8_lossy(&chunk).into_owned();
+            let Some(line) = text.strip_prefix("event: ui\ndata: ") else { continue };
+            let e: buwiz_agent::Envelope = serde_json::from_str(line.trim()).unwrap();
+            let refused: Vec<String> = match ctx.ui.press(FX, tool).await {
+                Ok(()) => {
+                    mine.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Vec::new()
+                }
+                Err(said) => vec![said],
+            };
+            let mut r = buwiz_agent::Response::ok(e.id.clone(), e.target.clone());
+            r.result = Some(json!({"apps": [], "refused": refused}));
+            ctx.ui.reply(r);
+        }
+    });
+    sent
+}
+
+fn press_bed(label: &str, plugin: &str, wait: std::time::Duration) -> (Arc<HubCtx>, Run) {
+    use crate::hub::policy::{ask::AskWait, host_set, CHATS};
+    let fake = Fake::new("");
+    let dir = std::env::temp_dir().join(format!("rox-tools-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.store.load().unwrap();
+    ctx.ext.insert(PluginsSeam(Arc::new(fake.clone())));
+    ctx.ext.insert(AskWait(wait));
+    let ctx = Arc::new(ctx);
+    for (key, state) in [("screens", "on"), ("screen_actions", "on"), (&*format!("v1:{FX}"), plugin)] {
+        host_set(&ctx, &json!({"bot": CHATS, "key": key, "state": state})).unwrap();
+    }
+    let thread = ctx.store.write(|s| {
+        let t = s.fresh_thread("press");
+        let id = t.id.clone();
+        s.list.push(t);
+        id
+    });
+    let run = run_in(&ctx, TurnCtx { thread: thread.unwrap(), ..TurnCtx::default() });
+    (ctx, run)
+}
+
+fn press_input() -> Value {
+    json!({"app": "fx", "node": "button.save-draft", "action": "click"})
+}
+
+async fn pressed(run: &Run) -> Value {
+    let out = exec_tool(run, &json!({"name": "ui_act", "input": press_input()})).await;
+    serde_json::from_str(&js_text(&out)).unwrap_or(json!({"error": js_text(&out)}))
+}
+
+fn js_text(out: &Out) -> String {
+    crate::js::string_of(&out.content)
+}
+
+fn cards(ctx: &HubCtx, chat: &str) -> Vec<Value> {
+    ctx.store.read(|s| s.thread(chat).unwrap().turns.iter().filter_map(|u| u.notice.clone()).collect())
+}
+
+#[tokio::test]
+async fn a_press_runs_where_the_plugins_switch_is_on() {
+    let (ctx, run) = press_bed("press-on", "on", std::time::Duration::from_millis(50));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    assert_eq!(pressed(&run).await["done"], true);
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(cards(&ctx, &run.thread_id()).iter().all(|n| n["kind"] != "tool_ask"), "the look it needed doesn't make it ask");
+}
+
+#[tokio::test]
+async fn a_look_alone_doesnt_make_a_press_ask_but_a_page_read_does() {
+    let (ctx, run) = press_bed("press-outside", "on", std::time::Duration::from_millis(50));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    super::controls::note_external(&run, "ui_look");
+    assert_eq!(pressed(&run).await["done"], true);
+    super::controls::note_external(&run, "query_source");
+    let out = exec_tool(&run, &json!({"name": "ui_act", "input": press_input()})).await;
+    assert_eq!(out.is_error, Some(true), "what it read may be asking for this");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn off_for_the_plugin_refuses_a_press_as_it_does_the_direct_call() {
+    let (ctx, run) = press_bed("press-off", "off", std::time::Duration::from_millis(50));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let got = pressed(&run).await;
+    assert_eq!(got["done"], false);
+    assert_eq!(got["refused"][0], "Fixture is off here, so the AI's press was refused and nothing was sent. Only a person can turn it on.");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await.is_error, Some(true), "the direct call too");
+}
+
+#[tokio::test]
+async fn ask_for_the_plugin_asks_before_a_press_and_no_answer_is_no() {
+    let (ctx, run) = press_bed("press-ask", "ask", std::time::Duration::from_millis(50));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let got = pressed(&run).await;
+    assert_eq!(got["refused"][0], "The AI's press in Fixture wasn't allowed, so nothing was sent.");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let card = cards(&ctx, &run.thread_id()).into_iter().find(|n| n["kind"] == "tool_ask").expect("a card");
+    assert_eq!(card["tool"], "fx_draft");
+}
+
+#[tokio::test]
+async fn a_press_on_a_tool_not_open_to_agents_stops_at_the_live_list() {
+    let (ctx, run) = press_bed("press-stale", "on", std::time::Duration::from_millis(50));
+    // a Bot with a stale list asks about a tool that no longer says agent
+    let sent = bot_pressing(&ctx, "fx_app_only");
+    assert_eq!(pressed(&run).await["refused"][0], "Only a person can do this in Fixture, so the AI's press was refused and nothing was sent.");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A Bot that answers each ask card as told, as a person does.
+fn answering(ctx: &Arc<HubCtx>, chat: &str, answer: &'static str) {
+    use crate::hub::policy::ask::host_answer;
+    let (ctx, chat) = (ctx.clone(), chat.to_owned());
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let pending = cards(&ctx, &chat).into_iter().filter(|n| n["kind"] == "tool_ask" && n["state"] == "pending").collect::<Vec<_>>();
+            for n in pending {
+                let _ = host_answer(&ctx, &json!({"chat": chat, "id": n["id"], "answer": answer}));
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn one_allow_on_a_press_covers_that_call_and_no_other() {
+    let (ctx, run) = press_bed("press-once", "ask", std::time::Duration::from_millis(400));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "once");
+    assert_eq!(pressed(&run).await["done"], true);
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let asked = |c: &[Value]| c.iter().filter(|n| n["kind"] == "tool_ask").count();
+    assert_eq!(asked(&cards(&ctx, &chat)), 1);
+    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")), "no standing grant");
+    // the next write asks again
+    assert_eq!(pressed(&run).await["done"], true);
+    assert_eq!(asked(&cards(&ctx, &chat)), 2);
+    // and so does the model's direct call
+    exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await;
+    assert_eq!(asked(&cards(&ctx, &chat)), 3);
+}
+
+#[tokio::test]
+async fn a_press_card_refuses_allow_in_this_chat_and_grants_nothing() {
+    let (ctx, run) = press_bed("press-chat", "ask", std::time::Duration::from_millis(120));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "chat");
+    assert_eq!(pressed(&run).await["done"], false, "no answer it could take came");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
+    let card = cards(&ctx, &chat).into_iter().find(|n| n["kind"] == "tool_ask").unwrap();
+    assert_eq!(card["once"], true);
+}
+
+#[tokio::test]
+async fn a_grant_from_a_direct_call_doesnt_cover_a_press() {
+    let (ctx, run) = press_bed("press-grant", "ask", std::time::Duration::from_millis(400));
+    let sent = bot_pressing(&ctx, "fx_draft");
+    let chat = run.thread_id();
+    answering(&ctx, &chat, "chat");
+    assert_ne!(exec_tool(&run, &json!({"name": "fx_draft", "input": {}})).await.is_error, Some(true), "the direct call takes it");
+    assert!(crate::hub::policy::ask::granted(&ctx, &chat, &format!("v1:{FX}")));
+    // as a turn of its own would be: what that call read doesn't make ui_act ask
+    run.state().beyond_screens = false;
+    let got = pressed(&run).await;
+    assert_eq!(got["done"], false, "{got}");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn the_press_route_judges_on_the_live_list() {
+    use super::ui::press_word;
+    let (ctx, run) = press_bed("press-word", "on", std::time::Duration::from_millis(50));
+    // a read passes with no action in flight: a screen stays alive
+    assert_eq!(press_word(&ctx, FX, "fx_search").await.unwrap(), json!({"allow": true, "effect": "read"}));
+    for tool in ["fx_app_only", "fx_echo", "fx_no_such_tool"] {
+        assert_eq!(press_word(&ctx, FX, tool).await.unwrap(), json!({"allow": false, "effect": "write"}), "{tool}");
+    }
+    let word = press_word(&ctx, FX, "fx_draft").await.unwrap();
+    assert_eq!((word["allow"].clone(), word["effect"].clone()), (json!(false), json!("draft")), "no action in flight");
+    assert!(press_word(&ctx, "not a plugin", "fx_draft").await.is_none());
+    let _ = run;
+}
+
+#[tokio::test]
+async fn query_source_counts_as_outside_content() {
+    let fake = Fake::new("");
+    let ctx = with_plugins("query-source", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    assert!(!run.state().external);
+    super::controls::note_external(&run, "query_source");
+    assert!(run.state().external && run.state().beyond_screens);
 }

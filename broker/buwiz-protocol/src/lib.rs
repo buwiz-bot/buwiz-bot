@@ -17,3 +17,4 @@ pub mod keys;
 pub mod proof;
 pub mod setup;
 pub mod tokens;
+pub mod ui;

@@ -17,6 +17,11 @@
 //! `grouped` nodes are named from their children's text, so they count as
 //! rows. Field values never go out, in any [`Reading`].
 
+use std::{
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+};
+
 use buwiz_agent::{AgentId, Bounds, UiNode};
 use nsh_platform_macos::ui_tree::UiNode as Seen;
 
@@ -109,6 +114,16 @@ fn field_name(n: &Seen) -> Option<&str> {
     Some(n.name.trim()).filter(|name| !grouped(n) && plain(name))
 }
 
+/// Whether a press can do what a press does to a node of `role`.
+pub fn pressable(role: &str) -> bool {
+    ["button", "checkbox", "switch", "radio"].contains(&role)
+}
+
+/// Whether a node of `role` takes typed text.
+pub fn typable(role: &str) -> bool {
+    ["textfield", "search", "combobox", "spinbutton"].contains(&role)
+}
+
 struct Kept<'a> {
     role: &'a str,
     name: Option<&'a str>,
@@ -144,12 +159,18 @@ fn slug(s: &str) -> Option<String> {
     }
 }
 
+/// The longest a [`Ids`] base may be: an id is at most 128, and its number
+/// has to survive.
+const BASE_MAX: usize = 112;
+
 /// Makes ids that hold from run to run, as nsh's `n232` don't: a named
 /// node's come from its name, an unnamed one's from its place among its
-/// kind, and a repeat takes the next number.
+/// kind, and a repeat takes the next number no node has. Ids are unique in
+/// a screen: `ui_act` finds a node by its id.
 #[derive(Default)]
 struct Ids {
-    used: std::collections::HashMap<String, usize>,
+    seen: HashMap<String, usize>,
+    taken: HashSet<String>,
 }
 
 impl Ids {
@@ -158,10 +179,17 @@ impl Ids {
             Some(s) => format!("{kind}.{s}"),
             None => format!("{kind}.unnamed"),
         };
-        let seen = self.used.entry(base.clone()).or_default();
-        *seen += 1;
-        let id = if *seen == 1 && name.is_some() { base } else { format!("{base}-{seen}") };
-        let id = id.chars().take(128).collect::<String>();
+        let base: String = base.chars().take(BASE_MAX).collect();
+        let base = base.trim_end_matches('-').to_owned();
+        let seen = self.seen.entry(base.clone()).or_default();
+        let id = loop {
+            *seen += 1;
+            let id = if *seen == 1 && name.is_some() { base.clone() } else { format!("{base}-{seen}") };
+            if !self.taken.contains(&id) {
+                break id;
+            }
+        };
+        self.taken.insert(id.clone());
         AgentId::parse(&id).ok()
     }
 }
@@ -185,6 +213,12 @@ fn node(id: AgentId, role: &str, name: &str) -> UiNode {
 /// What the model gets of `nodes`, flat, in screen order. A node that can't
 /// be given an id stays out.
 pub fn readable(nodes: &[Seen], reading: Reading) -> Vec<UiNode> {
+    mapped(nodes, reading).into_iter().map(|(node, _)| node).collect()
+}
+
+/// [`readable`], each with the node it came from: the way back from a Hub
+/// id to nsh's, for this read of the screen alone.
+pub fn mapped(nodes: &[Seen], reading: Reading) -> Vec<(UiNode, &Seen)> {
     let mut kept = Vec::new();
     walk(nodes, reading, &mut kept);
     let mut ids = Ids::default();
@@ -196,9 +230,39 @@ pub fn readable(nodes: &[Seen], reading: Reading) -> Vec<UiNode> {
             let mut out = node(id, k.role, k.name.unwrap_or_default());
             out.enabled = k.node.enabled;
             out.focused = k.node.focused;
-            Some(out)
+            Some((out, k.node))
         })
         .collect()
+}
+
+/// What makes a screen this screen, as a number that never leaves the Bot.
+/// It covers every visible node's role, name and state, all the words on
+/// the screen, hidden from the model or not, and what a field holds. So a row
+/// swapped under an id that stayed the same counts as a change, whether its
+/// words are inside its button or beside it, and so does a person typing. An
+/// action's own typing doesn't get in its way: its answer is a new look.
+/// Left out: `status` and `alert` nodes, which pass by themselves, and values
+/// that aren't text and that an app moves on its own, a slider or a progress
+/// bar. Words that tick, a clock in the page, refuse as changed: the safe way
+/// round.
+pub fn rev(nodes: &[Seen]) -> u64 {
+    fn hash(nodes: &[Seen], in_control: bool, h: &mut DefaultHasher) {
+        for n in nodes.iter().filter(|n| n.visible && !["status", "alert"].contains(&n.role.as_str())) {
+            let role = n.role.as_str();
+            let words = TEXT.contains(&role) || (FIELDS.contains(&role) && role != "slider");
+            n.role.hash(h);
+            n.name.hash(h);
+            n.enabled.hash(h);
+            if words || in_control {
+                n.value.hash(h);
+            }
+            n.children.len().hash(h);
+            hash(&n.children, in_control || is_control(role), h);
+        }
+    }
+    let mut h = DefaultHasher::new();
+    hash(nodes, false, &mut h);
+    h.finish()
 }
 
 /// A screen as one node: `name` and `state` (`top`, `covered`, `card`) are
@@ -347,6 +411,85 @@ pub(crate) mod tests {
         assert!(got.iter().all(|n| n.value.is_none()));
         assert!(got.iter().filter(|n| n.role == "text").all(|n| n.id.as_str().starts_with("text.unnamed-")));
         assert!(!wire.contains("fakerson"));
+    }
+
+    #[test]
+    fn a_label_that_looks_like_a_repeat_never_shares_an_id() {
+        let ids = |labels: &[&str]| -> Vec<String> {
+            let screen: Vec<Seen> = labels.iter().enumerate().map(|(i, l)| button(&format!("n{i}"), l)).collect();
+            out(&screen).into_iter().map(|t| t.0).collect()
+        };
+        assert_eq!(ids(&["Save", "Save", "Save 2"]), ["button.save", "button.save-2", "button.save-2-2"]);
+        assert_eq!(ids(&["Save 2", "Save", "Save"]), ["button.save-2", "button.save", "button.save-3"]);
+        let many = ids(&["Save", "Save 2", "Save", "Save 3", "Save", "Save 2", "Save 2-2"]);
+        let unique: HashSet<&String> = many.iter().collect();
+        assert_eq!(unique.len(), many.len(), "{many:?}");
+    }
+
+    #[test]
+    fn each_id_leads_to_its_own_node_when_labels_collide() {
+        let screen = vec![button("n1", "Save"), button("n2", "Save"), button("n3", "Save 2")];
+        let map = mapped(&screen, Reading::Structure);
+        let back: Vec<(&str, &str)> = map.iter().map(|(n, s)| (n.id.as_str(), s.id.as_str())).collect();
+        assert_eq!(back, [("button.save", "n1"), ("button.save-2", "n2"), ("button.save-2-2", "n3")]);
+    }
+
+    #[test]
+    fn a_very_long_id_keeps_its_number() {
+        let long = |id: &str| seen(id, "button", &"a".repeat(40), None, vec![]);
+        let mut ids = Ids::default();
+        let name = "word ".repeat(40);
+        let first = ids.make("button", Some(&name)).unwrap();
+        let second = ids.make("button", Some(&name)).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(out(&[long("n1"), long("n2")]).len(), 2);
+    }
+
+    #[test]
+    fn a_hub_id_leads_back_to_the_node_it_was_made_from() {
+        let screen = vec![button("n400", "Save"), button("n7", "Save")];
+        let map = mapped(&screen, Reading::Structure);
+        assert_eq!((map[0].0.id.as_str(), map[0].1.id.as_str()), ("button.save", "n400"));
+        assert_eq!((map[1].0.id.as_str(), map[1].1.id.as_str()), ("button.save-2", "n7"));
+    }
+
+    #[test]
+    fn a_change_the_model_cant_see_still_changes_the_screen() {
+        let row = |who: &str| vec![seen("r", "button", "", None, vec![text("t", who), text("u", "3 branches")]), button("b", "Void")];
+        assert_ne!(rev(&row("Ana")), rev(&row("Ben")));
+        assert_eq!(readable(&row("Ana"), Reading::Structure), readable(&row("Ben"), Reading::Structure), "the same to the model");
+        let mut off = button("b", "Void");
+        off.enabled = false;
+        assert_ne!(rev(&[button("b", "Void")]), rev(&[off]));
+    }
+
+    #[test]
+    fn a_value_that_isnt_text_doesnt_change_the_screen() {
+        let screen = |level: &str, done: &str| vec![seen("s", "slider", "Volume", Some(level), vec![]), seen("p", "progressbar", "Upload", Some(done), vec![])];
+        assert_eq!(rev(&screen("10", "10")), rev(&screen("80", "90")));
+    }
+
+    #[test]
+    fn words_in_the_page_change_the_screen_even_a_ticking_clock() {
+        assert_ne!(rev(&[text("t", "10:41")]), rev(&[text("t", "10:42")]));
+        let locked = |v: &str| {
+            let mut n = seen("l", "textfield", "Locked", Some(v), vec![]);
+            n.enabled = false;
+            vec![n]
+        };
+        assert_ne!(rev(&locked("a")), rev(&locked("b")), "words in a field that is switched off too");
+    }
+
+    #[test]
+    fn a_passing_status_doesnt_change_the_screen_but_what_a_field_holds_does() {
+        let screen = |v: &str, toast: &[Seen]| {
+            let mut nodes = vec![seen("f", "textfield", "Memo", Some(v), vec![])];
+            nodes.extend_from_slice(toast);
+            nodes
+        };
+        let toast = [seen("s", "status", "Draft 4 saved", None, vec![])];
+        assert_eq!(rev(&screen("Rent", &[])), rev(&screen("Rent", &toast)));
+        assert_ne!(rev(&screen("Rent", &[])), rev(&screen("Rent, the person typing", &[])));
     }
 
     #[test]

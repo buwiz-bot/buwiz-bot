@@ -37,7 +37,6 @@ pub const PROMPT_MAX: usize = 4000;
 
 type Res<T = Value> = Result<T, V1Error>;
 
-/// `[...s].slice(0, n).join("")`: the first `n` code points.
 /// What a signed call's `caller.origin` says (16.1): `"app"`, the person's own act through the
 /// app, only for `"actor": "person"`. Anything else (`"agent"`, no actor, a word this broker
 /// doesn't know) is the agent's. The signed value picks between these two and is never copied
@@ -57,6 +56,28 @@ fn origin_of(actor: Option<&Value>, tool: Option<&Value>) -> &'static str {
     }
 }
 
+/// The press record a call carries to the plugin (O3): what the Bot's Hub allowed, under the
+/// signature. On every call that isn't the person's, reads too: a read goes out as `origin: app`,
+/// and this is how the plugin tells it from the person's own. Only a record of an AI's press.
+fn press_of(actor: Option<&Value>, press: Option<&Value>) -> Option<Value> {
+    let press = press.filter(|_| actor != Some(&json!("person")))?;
+    use buwiz_agent::PressedBy::{Ai, AiApproved};
+    matches!(serde_json::from_value(press.clone()), Ok(Ai { .. } | AiApproved { .. })).then(|| press.clone())
+}
+
+/// Whether plugin tool `t` says it is open to agents: the Hub's rule, the reverse of the model's
+/// list, so a missing or unknown audience is no.
+pub fn open_to_agents(t: &Value) -> bool {
+    t.pointer("/_meta/buwiz~1audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("agent")))
+}
+
+/// Whether a signed call may reach `tool`: the person's may, and a read. A write for anyone else
+/// needs a tool open to agents, however the Bot came to send it.
+fn may_reach(actor: Option<&Value>, tool: Option<&Value>) -> bool {
+    origin_of(actor, tool) == "app" || tool.is_some_and(open_to_agents)
+}
+
+/// `[...s].slice(0, n).join("")`: the first `n` code points.
 fn cap(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -427,13 +448,20 @@ impl Sessions {
         if !tools.iter().any(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str())) {
             return V1Error::err("not_found", format!("{plugin} has no tool {tool}"));
         }
+        let def = tools.iter().find(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str()));
+        if !may_reach(get(envelope, "actor"), def) {
+            return V1Error::err("permission_denied", format!("{tool} is a person's to run"));
+        }
         let open_id = tpl(get(envelope, "open_id"));
         self.rate(&open_id)?;
         queued.fetch_add(1, Ordering::SeqCst);
         let permit = slots.acquire_owned().await;
         queued.fetch_sub(1, Ordering::SeqCst);
-        let origin = origin_of(get(envelope, "actor"), tools.iter().find(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str())));
-        let caller = json!({"origin": origin, "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
+        let origin = origin_of(get(envelope, "actor"), def);
+        let mut caller = json!({"origin": origin, "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
+        if let Some(press) = press_of(get(envelope, "actor"), get(envelope, "press")) {
+            caller["press"] = press;
+        }
         let r = self.host.call_tool(&plugin, &tool, &args, Some(&json!({"buwiz/caller": caller})), None).await;
         drop(permit);
         let r = r?;
@@ -652,6 +680,41 @@ mod tests {
             }
         }
         assert_eq!(origin_of(Some(&json!("agent")), None), "agent");
+    }
+
+    #[test]
+    fn a_press_record_goes_out_with_every_agents_call_and_only_as_the_protocol_has_it() {
+        use super::{origin_of, press_of};
+        let press = json!({"by": "ai", "who": "agent.broker"});
+        let agent = json!("agent");
+        assert_eq!(press_of(Some(&agent), Some(&press)), Some(press.clone()));
+        // a read goes out as the app's, and still says whose press it was
+        let read = json!({"name": "fx_list", "annotations": {"readOnlyHint": true}});
+        assert_eq!(origin_of(Some(&agent), Some(&read)), "app");
+        assert_eq!(press_of(Some(&agent), Some(&press)), Some(press.clone()));
+        assert_eq!(press_of(None, Some(&press)), Some(press.clone()), "no actor is the agent's");
+        assert_eq!(press_of(Some(&json!("person")), Some(&press)), None, "the person's call has no press");
+        assert_eq!(press_of(Some(&agent), None), None);
+        let bad = [json!({"by": "person", "who": "person.owner"}), json!({"by": "routine", "who": "routine.x"}), json!({"by": "person"}), json!("ai"), json!({"by": "ai", "who": "agent.broker", "extra": 1}), json!({"by": "ai", "who": "Not An Id"}), Value::Null];
+        for bad in bad {
+            assert_eq!(press_of(Some(&agent), Some(&bad)), None, "{bad}");
+        }
+        let approved = json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "once-0001"});
+        assert_eq!(press_of(Some(&agent), Some(&approved)), Some(approved.clone()));
+    }
+
+    #[test]
+    fn a_write_that_isnt_the_persons_reaches_only_a_tool_open_to_agents() {
+        use super::may_reach;
+        let (agent, person) = (json!("agent"), json!("person"));
+        let app = json!({"name": "fx_save", "_meta": {"buwiz/audience": ["app"]}});
+        let bare = json!({"name": "fx_bare"});
+        let open = json!({"name": "fx_draft", "_meta": {"buwiz/audience": ["app", "agent"]}});
+        let read = json!({"name": "fx_list", "annotations": {"readOnlyHint": true}, "_meta": {"buwiz/audience": ["app"]}});
+        assert!(may_reach(Some(&agent), Some(&open)) && may_reach(Some(&agent), Some(&read)));
+        assert!(!may_reach(Some(&agent), Some(&app)) && !may_reach(Some(&agent), Some(&bare)) && !may_reach(None, Some(&bare)));
+        assert!(!may_reach(Some(&agent), None));
+        assert!(may_reach(Some(&person), Some(&app)) && may_reach(Some(&person), Some(&bare)));
     }
 
     use super::*;

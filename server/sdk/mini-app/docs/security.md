@@ -7,14 +7,17 @@ plugin owns the rest: P1 to P11 of spec 23.2. Tick each before release.
 - [ ] **P1 Authorize every resource, not only the app.** The broker has
   checked that the app may call the tool. It has not checked that the caller
   may use *this* ticket. Look the ticket up in your own store and refuse what
-  you did not issue or what this user may not see.
+  you did not issue or what this user may not see. Do this for every call
+  from an open, which is any call with an `open_id`, whatever its `origin`:
+  a press the AI makes on your screen comes as `origin: "agent"` and still
+  has one.
 
   ```js
   function greet(args, caller) {
     const subject = tickets.subject(args.ticket);
 
     if (subject === undefined) return fail("not_found", "That item is no longer available.");
-    if (caller?.origin === "app" && !mayUse(subject)) return fail("permission_denied", "Not yours.");
+    if (caller?.open_id && !mayUse(subject)) return fail("permission_denied", "Not yours.");
 
     return ok({ greeting: `Hello, ${subject.name}` });
   }
