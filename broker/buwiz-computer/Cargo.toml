@@ -1,0 +1,26 @@
+[package]
+name = "buwiz-computer"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "A Bot's computer: the provider trait, the local Docker provider, the guest client and the viewer gate"
+publish = false
+
+[features]
+# a provider that runs nothing, for the broker's tests
+mock = []
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+getrandom = "0.2"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
