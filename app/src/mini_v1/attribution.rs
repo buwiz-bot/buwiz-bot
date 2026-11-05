@@ -114,6 +114,11 @@ pub fn actor(surface: u64) -> Actor {
     with(|a| a.actor(surface))
 }
 
+/// How many calls of the agent's are out, in this process.
+pub fn agent_calls() -> usize {
+    with(|a| a.calls)
+}
+
 /// A call of the agent's began (`true`) or ended, in this process.
 pub fn agent_call(running: bool) {
     with(|a| if running { a.call_began() } else { a.call_ended(Instant::now()) });

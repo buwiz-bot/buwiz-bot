@@ -179,7 +179,10 @@ A bridge call reaches your tool as `tools/call` with the arguments as sent and
 routine's query and `resolve` for resolve tools. A bridge call made while the
 agent, not the person, is driving your screen comes as `agent` too, unless the
 tool has `readOnlyHint: true`: your screen's own reads keep working, and a tool
-you keep for apps refuses its writes. In a routine's turn the
+you keep for apps refuses its writes. Such a call reaches your tool only if the
+tool's `_meta["buwiz/audience"]` names `agent`: the Bot holds back every other
+write, unsent, and tells the person why. It carries `press`, the record of the
+press: `{by: "ai", who}`. In a routine's turn the
 model's calls to the routine's own plugin, and its query, also carry
 `routine: "<routine id>"` ([manifest.md](manifest.md#routines-spec-67)). `startPlugin` passes it to
 your `run(args, caller)` as `caller`. Use it to authorize (see

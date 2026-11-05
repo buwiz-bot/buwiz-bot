@@ -97,6 +97,9 @@ pub struct RunState {
     pub prompt: Option<String>,
     /// a tool that reads outside content ran this turn (a page, a search, an app)
     pub external: bool,
+    /// one ran that isn't a look at the Bot's own screens: acting on a screen needs a look, so
+    /// only this makes it ask
+    pub beyond_screens: bool,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -205,9 +208,11 @@ async fn offered(run: &Run) -> Vec<Value> {
     }
     // the bot controls are Rust's own too, and always on
     out.extend(controls::defs());
-    // the screen is the person's: no routine looks at it (off until a person turns it on)
+    // the screen is the person's: no routine looks at it or acts on it (off until a person
+    // turns each on)
     if run.turn.routine.is_none() {
         out.push(ui::def());
+        out.push(ui::act_def());
     }
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());
@@ -261,6 +266,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         "app_tools_load" => return Ok(mcp::app_tools_load(run, input).await),
         "fetch_url" => return builtin::fetch_url(input).await,
         ui::NAME if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::look(ctx).await),
+        ui::ACT if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::act(run, input).await),
         "shell_run" => return Ok(controls::shell_run(run, input).await),
         _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,
         // F3: switching a skill, a user's server or a mini app on proposes it

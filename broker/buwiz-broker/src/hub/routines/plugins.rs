@@ -181,6 +181,18 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
     Some(format!("## Routine: {} (approved plugin {})\n{}", approved_text(&s("name"), 80), row.id, approved_text(&s("prompt"), 4000)))
 }
 
+/// A tool as the plugin list has it. `audience` is the Bot's: its Hub reads it to tell what an
+/// agent's press may reach.
+pub fn listed_tool(t: &Value, off: &[String]) -> Value {
+    let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
+    let description = t.get("description").filter(|d| js::truthy(d)).cloned().unwrap_or(json!(""));
+    let mut entry = json!({"name": t.get("name"), "description": description, "disabled": off.iter().any(|o| o == name), "readOnly": read_only(t)});
+    if let Some(audience) = t.pointer("/_meta/buwiz~1audience") {
+        entry["audience"] = audience.clone();
+    }
+    entry
+}
+
 /// The plugin as GET /v1/host/plugins lists it (`describe`); `info` is a
 /// routine's user state (v1 routines' `info`). A package's record
 /// adds `package` (its folder), `skills`, `accounts` (no tokens), the
@@ -248,11 +260,7 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
     let listed: Vec<Value> = tools
         .iter()
         .filter(|t| !crate::v1::is_v1("reservedTool", t.get("name")))
-        .map(|t| {
-            let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
-            let description = t.get("description").filter(|d| js::truthy(d)).cloned().unwrap_or(json!(""));
-            json!({"name": t.get("name"), "description": description, "disabled": off.iter().any(|o| o == name), "readOnly": read_only(t)})
-        })
+        .map(|t| listed_tool(t, &off))
         .collect();
     out.insert("tools".into(), json!(listed));
     if let Some(dir) = &row.package {

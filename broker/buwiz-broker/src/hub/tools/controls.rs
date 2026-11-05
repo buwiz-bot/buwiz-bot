@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use super::{builtin, Out, Run};
+use super::{builtin, ui, Out, Run};
 use crate::hub::library::botctx;
 use crate::hub::policy::ask::{self as asking, Asking};
 use crate::hub::policy::gate::{self, Mode, Risk, Verdict};
@@ -31,7 +31,7 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "tools_list",
-            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, screens, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
+            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, screens, screen_actions, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({
@@ -117,9 +117,14 @@ pub fn ceiling(run: &Run, tools: Vec<Value>) -> Vec<Value> {
         .into_iter()
         .filter(|t| {
             let name = t.get("name").map(js::string_of).unwrap_or_default();
-            keys::key_of(&run.ctx, &name, run.turn.surface.as_ref()).is_none_or(|k| !off.contains(&k))
+            keys::key_of(&run.ctx, &name, run.turn.surface.as_ref()).is_none_or(|k| !off.contains(&k)) && !needs_screens(&name, &off)
         })
         .collect()
+}
+
+/// Whether `name` is `ui_act` and the look it depends on is off: its answer is a look.
+fn needs_screens(name: &str, off: &HashSet<String>) -> bool {
+    name == ui::ACT && off.contains("screens")
 }
 
 /// The deferred apps whose key is on for the acting Bot.
@@ -141,6 +146,7 @@ pub fn refusal(run: &Run, name: &str, input: &Value) -> Option<Out> {
     let off = off(run)?;
     let key = key_for(run, name, input)?;
     let whose = if acting(run).is_some() { "this Bot" } else { "plain chats" };
+    let key = if needs_screens(name, &off) { "screens".to_owned() } else { key };
     off.contains(&key).then(|| Out::err(format!("{key} is off for {whose}. Only the user can turn it on; tools_set proposes it.")))
 }
 
@@ -183,7 +189,8 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
-    let external = run.state().external && keys::guarded(&key);
+    let outside = if key == ui::ACT_KEY { run.state().beyond_screens } else { run.state().external };
+    let external = outside && keys::guarded(&key);
     if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
         return None;
     }
@@ -252,6 +259,10 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
             let file = s("path").rsplit('/').next().unwrap_or("").to_owned();
             (format!("Make the document{}?", quoted(file)), Vec::new(), String::new())
         }
+        ui::ACT => {
+            let what = if s("action") == "click" { "Press" } else { "Type in" };
+            (format!("{what}{} on the screen?", quoted(s("node"))), Vec::new(), s("text"))
+        }
         _ if name.starts_with("office_") => ("Change a document?".into(), vec![format!("Tool: {name}")], payload()),
         _ if key == "apps" => (format!("Change the card{}?", quoted(s("name"))), vec![format!("Tool: {name}")], payload()),
         _ => {
@@ -263,9 +274,13 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
 
 /// Whether a tool that reads outside content (a page, a search, an app) ran this turn.
 pub fn note_external(run: &Run, name: &str) {
-    let ext = matches!(name, "fetch_url" | "web_search" | super::ui::NAME) || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
-    if ext {
+    let screen = matches!(name, ui::NAME | ui::ACT);
+    let ext = matches!(name, "fetch_url" | "web_search") || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
+    if ext || screen {
         run.state().external = true;
+    }
+    if ext {
+        run.state().beyond_screens = true;
     }
 }
 

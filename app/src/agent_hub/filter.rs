@@ -17,6 +17,11 @@
 //! `grouped` nodes are named from their children's text, so they count as
 //! rows. Field values never go out, in any [`Reading`].
 
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
+
 use buwiz_agent::{AgentId, Bounds, UiNode};
 use nsh_platform_macos::ui_tree::UiNode as Seen;
 
@@ -109,6 +114,16 @@ fn field_name(n: &Seen) -> Option<&str> {
     Some(n.name.trim()).filter(|name| !grouped(n) && plain(name))
 }
 
+/// Whether a press can do what a press does to a node of `role`.
+pub fn pressable(role: &str) -> bool {
+    ["button", "checkbox", "switch", "radio"].contains(&role)
+}
+
+/// Whether a node of `role` takes typed text.
+pub fn typable(role: &str) -> bool {
+    ["textfield", "search", "combobox", "spinbutton"].contains(&role)
+}
+
 struct Kept<'a> {
     role: &'a str,
     name: Option<&'a str>,
@@ -185,6 +200,12 @@ fn node(id: AgentId, role: &str, name: &str) -> UiNode {
 /// What the model gets of `nodes`, flat, in screen order. A node that can't
 /// be given an id stays out.
 pub fn readable(nodes: &[Seen], reading: Reading) -> Vec<UiNode> {
+    mapped(nodes, reading).into_iter().map(|(node, _)| node).collect()
+}
+
+/// [`readable`], each with the node it came from: the way back from a Hub
+/// id to nsh's, for this read of the screen alone.
+pub fn mapped(nodes: &[Seen], reading: Reading) -> Vec<(UiNode, &Seen)> {
     let mut kept = Vec::new();
     walk(nodes, reading, &mut kept);
     let mut ids = Ids::default();
@@ -196,9 +217,31 @@ pub fn readable(nodes: &[Seen], reading: Reading) -> Vec<UiNode> {
             let mut out = node(id, k.role, k.name.unwrap_or_default());
             out.enabled = k.node.enabled;
             out.focused = k.node.focused;
-            Some(out)
+            Some((out, k.node))
         })
         .collect()
+}
+
+/// What makes a screen this screen, as a number that never leaves the Bot:
+/// what shows, hidden from the model or not, so a row swapped under an id
+/// that stayed the same counts as a change. Left out: what a field holds,
+/// which an action changes, and a passing status line.
+pub fn rev(nodes: &[Seen]) -> u64 {
+    fn hash(nodes: &[Seen], h: &mut DefaultHasher) {
+        for n in nodes.iter().filter(|n| n.visible && !["status", "alert"].contains(&n.role.as_str())) {
+            n.role.hash(h);
+            n.name.hash(h);
+            n.enabled.hash(h);
+            if !FIELDS.contains(&n.role.as_str()) {
+                n.value.hash(h);
+            }
+            n.children.len().hash(h);
+            hash(&n.children, h);
+        }
+    }
+    let mut h = DefaultHasher::new();
+    hash(nodes, &mut h);
+    h.finish()
 }
 
 /// A screen as one node: `name` and `state` (`top`, `covered`, `card`) are
@@ -347,6 +390,35 @@ pub(crate) mod tests {
         assert!(got.iter().all(|n| n.value.is_none()));
         assert!(got.iter().filter(|n| n.role == "text").all(|n| n.id.as_str().starts_with("text.unnamed-")));
         assert!(!wire.contains("fakerson"));
+    }
+
+    #[test]
+    fn a_hub_id_leads_back_to_the_node_it_was_made_from() {
+        let screen = vec![button("n400", "Save"), button("n7", "Save")];
+        let map = mapped(&screen, Reading::Structure);
+        assert_eq!((map[0].0.id.as_str(), map[0].1.id.as_str()), ("button.save", "n400"));
+        assert_eq!((map[1].0.id.as_str(), map[1].1.id.as_str()), ("button.save-2", "n7"));
+    }
+
+    #[test]
+    fn a_change_the_model_cant_see_still_changes_the_screen() {
+        let row = |who: &str| vec![seen("r", "button", "", None, vec![text("t", who), text("u", "3 branches")]), button("b", "Void")];
+        assert_ne!(rev(&row("Ana")), rev(&row("Ben")));
+        assert_eq!(readable(&row("Ana"), Reading::Structure), readable(&row("Ben"), Reading::Structure), "the same to the model");
+        let mut off = button("b", "Void");
+        off.enabled = false;
+        assert_ne!(rev(&[button("b", "Void")]), rev(&[off]));
+    }
+
+    #[test]
+    fn a_fields_value_or_a_passing_status_doesnt_change_the_screen() {
+        let screen = |v: &str, toast: &[Seen]| {
+            let mut nodes = vec![seen("f", "textfield", "Memo", Some(v), vec![])];
+            nodes.extend_from_slice(toast);
+            nodes
+        };
+        let toast = [seen("s", "status", "Draft 4 saved", None, vec![])];
+        assert_eq!(rev(&screen("", &[])), rev(&screen("Rent", &toast)));
     }
 
     #[test]

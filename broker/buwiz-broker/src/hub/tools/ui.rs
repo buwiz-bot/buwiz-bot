@@ -1,5 +1,5 @@
-//! `ui_look`, the Agent Hub's read-only tool: what the model may see of the mini app screens
-//! open in the Bot (`app/src/agent_hub/`).
+//! The Agent Hub's tools. `ui_look` reads: what the model may see of the mini app screens open
+//! in the Bot (`app/src/agent_hub/`). `ui_act` clicks, types and sets a value on the top one.
 //!
 //! The screens are the Bot's, and the broker can't reach them by itself: a shipped Bot opens
 //! no port. So the Bot keeps a connection here, `GET /v1/host/ui/stream`: a look goes down it
@@ -7,26 +7,38 @@
 //! by id. A channel of its own, because `/v1/host/events` is a broadcast and drops on lag.
 //!
 //! The Bot filters a screen before it answers (O1): the broker never holds what the model may
-//! not read. The tool's switch, `screens`, starts off for every profile (`policy::OFF_BY_DEFAULT`).
+//! not read. Each tool has its switch, `screens` and `screen_actions`, and both start off for
+//! every profile (`policy::OFF_BY_DEFAULT`). Acting also needs `screens`: an action's answer is a
+//! look.
+//!
+//! What may be pressed is decided in the Bot. All this side does is say what the model asked
+//! for: the Bot takes nothing else from a message, not even its `caller`. What the Bot refuses
+//! the model reads as a sentence, and so does the person, in the chat ([`act`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use buwiz_agent::{ActorId, Caller, Envelope, Op, Response, Target, UiNode, UiTree};
+use buwiz_agent::{ActorId, AgentId, Caller, DeliveryMode, Envelope, Op, Response, Target, UiNode, UiTree};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::Out;
+use super::{Out, Run};
 use crate::hub::ctx::HubCtx;
+use crate::hub::store::Turn;
 use crate::js;
 
 pub const NAME: &str = "ui_look";
+pub const ACT: &str = "ui_act";
+/// The switch of [`ACT`].
+pub const ACT_KEY: &str = "screen_actions";
 
 /// How long the Bot has to answer: it reads the tree on its main thread.
 const WAIT: Duration = Duration::from_secs(10);
+/// How long an action has: its press, the app settling, and the calls it starts.
+const ACT_WAIT: Duration = Duration::from_secs(20);
 const PING: Duration = Duration::from_secs(25);
 
 /// The model's definition.
@@ -35,6 +47,20 @@ pub fn def() -> Value {
         "name": NAME,
         "description": "Look at the mini app screens open in the Bot: each screen's name, which one is on top, and its buttons and fields. It only reads. Page text and field values are hidden from you: a button with no name is a row of data. Use it when the user asks about what is on their screen.",
         "input_schema": {"type": "object", "properties": {}},
+    })
+}
+
+/// [`ACT`]'s definition.
+pub fn act_def() -> Value {
+    json!({
+        "name": ACT,
+        "description": "Act on the mini app screen on top in the Bot: press a button, or type in a field. Use the app and the node ids ui_look gave you, and look first: if the screen changed, nothing happens and you have to look again. It can fill in and save a draft. It can't do what only a person can do, such as post, void, close, confirm or send: that press is refused, nothing is sent, and you should say so and leave it to them. A node with no name can't be used. The answer is the screen after the action.",
+        "input_schema": {"type": "object", "properties": {
+            "app": {"type": "string", "description": "the screen's app, from ui_look"},
+            "node": {"type": "string", "description": "a node id from ui_look"},
+            "action": {"type": "string", "enum": ["click", "type", "set_value"], "description": "click a button, type after what a field holds, or replace what it holds"},
+            "text": {"type": "string", "description": "the text, for type and set_value"},
+        }, "required": ["app", "node", "action"]},
     })
 }
 
@@ -91,6 +117,25 @@ fn request(id: String) -> Result<Envelope, String> {
     Ok(e)
 }
 
+/// The action the model asked for. Its input gives the app, the node, what to do and the text;
+/// whatever else it holds stays here, and who is asking is this side's to say.
+fn act_request(id: String, input: &Value) -> Result<Envelope, String> {
+    let text = |k: &str| input.get(k).and_then(Value::as_str);
+    let target = text("app").and_then(|a| Target::parse(a).ok()).ok_or("That isn't an app from the last look, so nothing was pressed.")?;
+    let node = text("node").and_then(|n| AgentId::parse(n).ok()).ok_or("That isn't a button or field from the last look, so nothing was pressed.")?;
+    let typed = || text("text").map(str::to_owned).ok_or("Say what to type, so nothing was typed.");
+    let op = match text("action") {
+        Some("click") => Op::Click { node, delivery: DeliveryMode::Semantic, expect_fingerprint: None },
+        Some("type") => Op::Type { node, text: typed()?, delivery: DeliveryMode::Semantic, expect_fingerprint: None },
+        Some("set_value") => Op::SetValue { node, value: typed()?, expect_fingerprint: None },
+        _ => return Err("The AI can click, type or set a value, so nothing happened.".to_owned()),
+    };
+    let mut e = Envelope::new(id, target, op);
+    let who = ActorId::parse("agent.broker").map_err(|e| e.to_string())?;
+    e.caller = Some(Caller::Agent { who, approval: None });
+    Ok(e)
+}
+
 fn bot() -> Result<Target, String> {
     Target::parse("bot").map_err(|e| e.to_string())
 }
@@ -135,6 +180,48 @@ pub async fn look(ctx: &HubCtx) -> Out {
     match answer.and_then(|r| render(&r)) {
         Ok(v) => Out::ok(js::stringify(&v)),
         Err(why) => Out::err(why),
+    }
+}
+
+/// What an action's answer comes to: the screen after it, and what was refused.
+fn render_act(r: &Response) -> Result<(Value, Vec<String>), String> {
+    let mut view = render(r)?;
+    let list = r.result.as_ref().and_then(|v| v.get("refused")).and_then(Value::as_array);
+    let refused: Vec<String> = list.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+    view["done"] = json!(refused.is_empty());
+    if !refused.is_empty() {
+        view["refused"] = json!(refused);
+    }
+    Ok((view, refused))
+}
+
+/// Tells the person what was refused, in the chat the model is working in. Its own line: what
+/// the model says next is up to the model.
+fn tell_person(run: &Run, said: &str) {
+    let n = json!({"kind": "ui_refused", "text": said});
+    match run.ctx.store.append_turn(&run.thread_id(), Turn::notice(said, n)) {
+        Ok(_) => run.ctx.store.write_index(),
+        Err(e) => eprintln!("buwiz-broker: ui_act's notice: the store's write: {e}"),
+    }
+}
+
+/// `ui_act`.
+pub async fn act(run: &Run, input: &Value) -> Out {
+    let ui = &run.ctx.ui;
+    let id = format!("ui-{}", ui.next.fetch_add(1, Ordering::Relaxed));
+    let answer = match act_request(id, input) {
+        Ok(e) => ui.ask(&e, ACT_WAIT).await,
+        Err(why) => Err(why),
+    };
+    match answer.and_then(|r| render_act(&r)) {
+        Ok((view, refused)) => {
+            refused.iter().for_each(|said| tell_person(run, said));
+            Out::ok(js::stringify(&view))
+        }
+        Err(why) => {
+            tell_person(run, &why);
+            Out::err(why)
+        }
     }
 }
 
@@ -214,6 +301,63 @@ mod tests {
         while let Some(chunk) = old.recv().await {
             assert_eq!(&chunk[..], b": ping\n\n");
         }
+    }
+
+    fn asked_of(input: Value) -> Result<Envelope, String> {
+        act_request("ui-t".into(), &input)
+    }
+
+    #[test]
+    fn an_action_says_what_the_model_asked_for_and_only_that() {
+        let e = asked_of(json!({"app": "books", "node": "button.save-draft", "action": "click"})).unwrap();
+        assert_eq!(e.target.as_str(), "books");
+        assert!(matches!(&e.op, Op::Click { node, expect_fingerprint: None, .. } if node.as_str() == "button.save-draft"));
+        let e = asked_of(json!({"app": "books", "node": "field.amount", "action": "set_value", "text": "1,350.00"})).unwrap();
+        assert!(matches!(&e.op, Op::SetValue { value, .. } if value == "1,350.00"));
+        let e = asked_of(json!({"app": "books", "node": "field.memo", "action": "type", "text": "Rent"})).unwrap();
+        assert!(matches!(&e.op, Op::Type { text, .. } if text == "Rent"));
+    }
+
+    #[test]
+    fn a_caller_or_an_approval_from_the_model_goes_nowhere() {
+        let approval = json!({"target": "books", "action": "tool.post", "once": "made-up-once", "approved_by": "person.owner"});
+        let e = asked_of(json!({
+            "app": "books", "node": "button.post", "action": "click",
+            "caller": {"kind": "person", "who": "person.owner"}, "approval": approval, "expect_fingerprint": "1",
+        }))
+        .unwrap();
+        assert!(matches!(&e.caller, Some(Caller::Agent { approval: None, who }) if who.as_str() == "agent.broker"));
+        assert!(matches!(&e.op, Op::Click { expect_fingerprint: None, .. }));
+    }
+
+    #[test]
+    fn what_ui_act_cant_ask_for_is_a_sentence_and_goes_nowhere() {
+        for input in [
+            json!({"node": "button.x", "action": "click"}),
+            json!({"app": "Not A Target", "node": "button.x", "action": "click"}),
+            json!({"app": "books", "node": "not an id", "action": "click"}),
+            json!({"app": "books", "node": "button.x", "action": "keybinding"}),
+            json!({"app": "books", "node": "button.x"}),
+            json!({"app": "books", "node": "field.x", "action": "type"}),
+        ] {
+            let why = asked_of(input).unwrap_err();
+            assert!(why.ends_with('.') && why.contains("nothing"), "{why}");
+        }
+    }
+
+    #[test]
+    fn an_answer_with_a_refusal_says_so_and_a_clean_one_doesnt() {
+        let e = asked_of(json!({"app": "books", "node": "button.x", "action": "click"})).unwrap();
+        let mut r = page_answer(&e);
+        let (view, refused) = render_act(&r).unwrap();
+        assert_eq!((view["done"].clone(), refused.len()), (json!(true), 0));
+        assert!(view.get("refused").is_none());
+        r.result.as_mut().unwrap()["refused"] = json!(["\"Save & post\" needs a person."]);
+        let (view, refused) = render_act(&r).unwrap();
+        assert_eq!(view["done"], false);
+        assert_eq!(view["refused"][0], "\"Save & post\" needs a person.");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(view["top"], "eBIRForms: Tax Profile", "the screen after it");
     }
 
     #[test]

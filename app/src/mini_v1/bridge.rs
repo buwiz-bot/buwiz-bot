@@ -630,6 +630,20 @@ impl OpenContext {
         }));
     }
 
+    /// What an agent's press on `tool` signs with; for a tool that isn't
+    /// open to agents, the refusal, before anything is signed or sent.
+    fn press_of(&self, tool: &str, actor: Actor) -> Result<Option<Value>, RoxError> {
+        if actor != Actor::Agent {
+            return Ok(None);
+        }
+        let p = &self.prepared.plugin;
+        let press = crate::agent_hub::press::check_tool(&*self.broker, &p.id, &p.short, &p.title, tool);
+        if let Err(e) = &press {
+            log::info!("mini v1: {}/{} an agent's press on {tool}: {}", p.id, self.prepared.key.app, e.code);
+        }
+        press.map(Some)
+    }
+
     /// `buwiz.call(tool, args)` (7.3).
     fn call(self: &Arc<Self>, data: Value, reply: AnyReply) {
         if let Err(e) = self.session.check_live() {
@@ -651,8 +665,9 @@ impl OpenContext {
         let max = self.limits.max_result;
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
+            let press = me.press_of(&tool, who.actor)?;
             // signed when it goes out: a queued call is not stale
-            let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor)?;
+            let (envelope, sig) = me.session.sign_call(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             // which signed call went where, never its arguments or result
             let p = &me.prepared;
@@ -876,6 +891,12 @@ impl OpenContext {
         if let Err(e) = self.session.check_live() {
             return reject(reply, e);
         }
+        // the pasteboard is one shell command from the model, and what an
+        // app copies is often what the screen keeps from it
+        if self.ui.actor() == Actor::Agent {
+            crate::agent_hub::press::note_refused("the pasteboard");
+            return reject(reply, denied(&format!("Only a person can copy from {}, and this press came from the AI, so nothing was copied.", self.prepared.plugin.title)));
+        }
         match text(&data, "text") {
             Some(t) if t.len() <= MAX_COPY => {
                 self.ui.copy(t);
@@ -919,7 +940,8 @@ impl OpenContext {
         let max = grant.min(self.limits.max_preview);
         let who = CallActor::new(&self.ui);
         self.gated(reply, move |me| {
-            let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor)?;
+            let press = me.press_of(&tool, who.actor)?;
+            let (envelope, sig) = me.session.sign_preview(&tool, &args, who.actor, press.as_ref())?;
             let result = host_api::call(&*me.broker, &envelope, &sig, me.limits.timeout);
             let p = &me.prepared;
             match &result {

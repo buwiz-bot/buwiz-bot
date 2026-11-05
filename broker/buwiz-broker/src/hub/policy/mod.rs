@@ -92,9 +92,9 @@ impl Pos {
     }
 }
 
-/// The switches that start off for every profile: looking at the screen is turned on per
-/// Bot. A person's data is on it.
-pub const OFF_BY_DEFAULT: [&str; 1] = ["screens"];
+/// The switches that start off for every profile: looking at the screen, and acting on it, are
+/// turned on per Bot, each by itself. A person's data is on it.
+pub const OFF_BY_DEFAULT: [&str; 2] = ["screens", "screen_actions"];
 
 /// A switch's position with no row: [`OFF_BY_DEFAULT`]'s are off; a Bot's others are on;
 /// the Chats profile has the web and office documents on and everything else at Ask.

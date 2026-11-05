@@ -57,6 +57,14 @@ fn origin_of(actor: Option<&Value>, tool: Option<&Value>) -> &'static str {
     }
 }
 
+/// The press record an agent's call carries to the plugin (O3): what the Bot's Hub allowed, under
+/// the signature. Only with `origin: agent`, and only a record of the shared protocol.
+fn press_of(origin: &str, press: Option<&Value>) -> Option<Value> {
+    let press = press.filter(|_| origin == "agent")?;
+    serde_json::from_value::<buwiz_agent::PressedBy>(press.clone()).ok()?;
+    Some(press.clone())
+}
+
 fn cap(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -433,7 +441,10 @@ impl Sessions {
         let permit = slots.acquire_owned().await;
         queued.fetch_sub(1, Ordering::SeqCst);
         let origin = origin_of(get(envelope, "actor"), tools.iter().find(|t| get(t, "name").and_then(Value::as_str) == Some(tool.as_str())));
-        let caller = json!({"origin": origin, "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
+        let mut caller = json!({"origin": origin, "plugin": plugin, "app": app, "open_id": open_id, "ts": get(envelope, "ts")});
+        if let Some(press) = press_of(origin, get(envelope, "press")) {
+            caller["press"] = press;
+        }
         let r = self.host.call_tool(&plugin, &tool, &args, Some(&json!({"buwiz/caller": caller})), None).await;
         drop(permit);
         let r = r?;
@@ -652,6 +663,18 @@ mod tests {
             }
         }
         assert_eq!(origin_of(Some(&json!("agent")), None), "agent");
+    }
+
+    #[test]
+    fn a_press_record_goes_out_only_with_an_agents_call_and_only_as_the_protocol_has_it() {
+        use super::press_of;
+        let press = json!({"by": "ai", "who": "agent.broker"});
+        assert_eq!(press_of("agent", Some(&press)), Some(press.clone()));
+        assert_eq!(press_of("app", Some(&press)), None, "a read or the person's call has no press");
+        assert_eq!(press_of("agent", None), None);
+        for bad in [json!({"by": "person"}), json!("ai"), json!({"by": "ai", "who": "agent.broker", "extra": 1}), Value::Null] {
+            assert_eq!(press_of("agent", Some(&bad)), None, "{bad}");
+        }
     }
 
     use super::*;

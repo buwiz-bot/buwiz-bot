@@ -40,6 +40,12 @@ export function originOf(actor, tool) {
   return actor === "person" || tool?.annotations?.readOnlyHint === true ? "app" : "agent";
 }
 
+/** The press record an agent's call carries to the plugin: what the Bot's Hub allowed, under the
+ *  signature. Only with `origin: agent`, and only a record the protocol knows. */
+export function pressOf(origin, press) {
+  return origin === "agent" && press?.by === "ai" && typeof press.who === "string" ? press : undefined;
+}
+
 const cap = (s, n) => {
   const cs = [...String(s ?? "")];
 
@@ -316,7 +322,10 @@ export function createSessions(plugins) {
 
     try {
       const tool = rt.tools.find((t) => t.name === envelope.tool);
-      const caller = { origin: originOf(envelope.actor, tool), plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
+      const origin = originOf(envelope.actor, tool);
+      const caller = { origin, plugin: s.plugin, app: s.app, open_id: s.open_id, ts: envelope.ts };
+      const press = pressOf(origin, envelope.press);
+      if (press) caller.press = press;
 
       r = await plugins.callTool(s.plugin, envelope.tool, args, { meta: { "buwiz/caller": caller } });
     } finally {

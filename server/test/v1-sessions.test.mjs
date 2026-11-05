@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt, originOf } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, originOf, pressOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -254,4 +254,13 @@ test("app source: the fingerprint is checked; a one-byte change is fingerprint_m
   assert.equal(e.code, "fingerprint_mismatch");
   assert.match(e.message, /does not match its signed manifest/);
   await k2.plugins.stopAll();
+});
+
+test("a press record goes out only with an agent's call", () => {
+  const press = { by: "ai", who: "agent.broker" };
+  assert.equal(pressOf("agent", press), press);
+  assert.equal(pressOf("app", press), undefined);
+  assert.equal(pressOf("agent", undefined), undefined);
+  assert.equal(pressOf("agent", { by: "person", who: "person.owner" }), undefined);
+  assert.equal(pressOf("agent", "ai"), undefined);
 });

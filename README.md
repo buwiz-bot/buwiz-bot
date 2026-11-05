@@ -131,6 +131,16 @@ Page text, field values, and the words on a row of data stay in the Bot
 (`app/src/agent_hub/filter.rs`). For fake data in a test Bot only,
 `BUWIZ_HUB_FULL_TEXT=1` adds page text. A release build doesn't have this setting.
 
+`ui_act` lets it press a named button and fill a named field on the screen on top.
+It is off for every Bot too, with its own switch: **Act on mini app screens** in
+`/tools`, which works only with **Mini app screens** on. Its input goes out as the
+agent's, so what it starts reaches the mini app as `origin: agent`. Each action reads
+the screen again first, and refuses a screen that changed since the model looked, a
+covered screen, and a node with no name. The Bot holds back any write whose tool's
+`buwiz/audience` doesn't name `agent`, unsent, and says why in the app and the chat.
+Keyboard shortcuts, presses at a point, the Bot's own window and the pasteboard are
+out of its reach (`app/src/agent_hub/press.rs`).
+
 ## Dev app & links
 
 `app/bundle-dev.sh` creates `~/Applications/Buwiz Bot.app` and registers it

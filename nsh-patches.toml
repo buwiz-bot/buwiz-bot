@@ -229,3 +229,10 @@ kind = "feature"
 pr = 0
 status = "local"
 note = "AppView::ui_tree: the gpui-agent tree for a caller in the process, with no listener. Agent Hub S1; on top of feat/agent-hub, not cut from main yet"
+
+[[topic]]
+branch = "feat/agent-hub-s3"
+kind = "feature"
+pr = 0
+status = "local"
+note = "AppView::act: an action for a caller in the process, with no listener, always an agent's and never activating the app. Agent Hub S3; on top of feat/agent-hub-s1, not cut from main yet"
