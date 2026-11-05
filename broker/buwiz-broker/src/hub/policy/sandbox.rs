@@ -1,8 +1,21 @@
 //! The shell's sandbox: `shell_run` and `shell_find_program` run under `sandbox-exec` with a
-//! profile that keeps the Bot's shell away from what would let it change its own rules or act
-//! as the app: the host token, app.db (with its -wal, -shm and -journal), the data dir's root
-//! and a dev Bot's automation files ([`AUTOMATION_FILES`]). The files folder (`generated/files`) stays open: replies read and write there. The
-//! policy lives in app.db, so there is no separate policy file to deny.
+//! profile that keeps the Bot's shell away from what would let it change its own rules, act as
+//! the app or go round a mini app:
+//!
+//! - The broker's data dir, all of it: the host token, app.db and its neighbours, the mini apps'
+//!   installs and logs. What stays open is what the model is sent to: the files folder
+//!   (`generated/files`), where replies read and write, and to read only `plugins`, the skills
+//!   whose SKILL.md it is told to `cat` (`market::install`). The policy lives in app.db, so there
+//!   is no separate policy file to deny.
+//! - Every mini app's data, by name ([`DATA_FOLDERS`], [`SUPPORT_FOLDERS`], [`DATA_FILES`]): its
+//!   key opens its database, and a process holding both skips every check the app makes.
+//! - A dev Bot's automation files ([`AUTOMATION_FILES`]).
+//! - The broker's own port: its open routes would let a shell start a turn or change a Bot.
+//!
+//! A path rule ends when the shell renames a folder above it, so what is denied by path also has
+//! every folder above it closed to renames ([`profile`]), and what can be denied by name is.
+//! Seatbelt judges the file a path reaches, under the name it was stored with: a symlink, a hard
+//! link, a clone and another spelling of the name are all refused at the call.
 
 use std::path::{Path, PathBuf};
 
@@ -21,58 +34,75 @@ pub const NO_SANDBOX: &str = "shell_run can't run: /usr/bin/sandbox-exec is miss
 /// and a path rule ends when the shell renames a parent folder.
 pub const AUTOMATION_FILES: &str = "/(buwiz|rox)-(gpui-agent-token|agent-menu)$";
 
+/// Data folders by name, wherever they are: a mini app's (`app.buwiz.<name>`, a test Bot's
+/// `dev.buwiz.*`, the older `com.buwiz.*`, `dev.goldcoders.*` and `com.goldcoders.*`) and the old
+/// desktop vault. A name matches as a whole path component, or a file's name (the keystore's
+/// `app.buwiz.books.key`), so moving a folder above it frees nothing.
+pub const DATA_FOLDERS: &str = r"/(app\.buwiz\.[^/]*|dev\.buwiz\.[^/]*|com\.buwiz\.[^/]*|dev\.goldcoders\.[^/]*|com\.[Gg]oldcoders\.[^/]*|com\.BIR\.Vault)(/|$)";
+
+/// Data folders whose names mean something only in Application Support: the Bot's (its logins,
+/// plugins and backups), the broker's under each name it had, and the older `buwiz` and eBIRForms
+/// stores. Application Support itself can't be renamed ([`SUPPORT`]), so this holds.
+pub const SUPPORT_FOLDERS: &str = r"/Application Support/(Buwiz Bot[^/]*|Buwiz Broker|Grok Shell|Rox[^/]*|buwiz|buwiz-[^/]*|ebirforms[^/]*|bir-egress-smoke)(/|$)";
+
+/// Keys, databases and sign-ins by file name, wherever they are: a test Bot's Books keeps them in
+/// a folder of any name (`BOOKS_DATA_DIR`, `EBIRFORMS_DATA_DIR`).
+pub const DATA_FILES: &str = r"/((books|ebirforms|fill-sources)\.key|(books|ebirforms|logins)\.db(-wal|-shm|-journal)?)$";
+
+/// The folder [`SUPPORT_FOLDERS`] stands on, wherever a home folder is.
+const SUPPORT: &str = "/Application Support$";
+
 /// A path as an SBPL string; `None` for one the profile cannot quote safely.
 fn quoted(p: &Path) -> Option<String> {
     let s = p.to_str()?;
     (!s.contains(['"', '\\', '\n', '\r'])).then(|| format!("\"{s}\""))
 }
 
-/// `s` with every regex metacharacter escaped.
-fn regex_escaped(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        if "\\.^$|?*+()[]{}".contains(c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
+/// The ports the shell may not reach: this broker's, and its Node's while one runs.
+pub fn own_ports() -> Vec<u16> {
+    let mut ports = vec![crate::hub::market::node_paths().1];
+    ports.extend(crate::node::running_port().filter(|p| !ports.contains(p)));
+    ports
 }
 
-/// The files the shell may neither read nor write, under `data`.
-pub fn guarded(data: &Path) -> Vec<PathBuf> {
-    let db = data.join("generated").join("app.db");
-    let mut out = vec![data.join("host-token"), db.clone()];
-    for ext in ["-wal", "-shm", "-journal"] {
-        out.push(PathBuf::from(format!("{}{ext}", db.display())));
-    }
-    out
-}
-
-/// The profile for a data dir at `data` (as given and resolved: `/tmp` is `/private/tmp`);
-/// `None` when a path cannot be written into it safely (the shell then does not run).
-pub fn profile(data: &Path) -> Option<String> {
+/// The profile for a data dir at `data` (as given and resolved: `/tmp` is `/private/tmp`), for a
+/// broker on `ports`; `None` when a path cannot be written into it safely (the shell then does
+/// not run).
+///
+/// A later rule wins: the open folders open inside what the data dir's rule closed, and the names
+/// come last, so a key that is in one of them stays closed.
+pub fn profile(data: &Path, ports: &[u16]) -> Option<String> {
     let mut roots: Vec<PathBuf> = vec![real(data)];
     if data.is_absolute() && !roots.contains(&data.to_path_buf()) {
         roots.push(data.to_path_buf());
     }
-    let mut out = format!("(version 1)(allow default)(deny file-read* file-write* (regex #\"{AUTOMATION_FILES}\"))");
+    let mut out = format!("(version 1)(allow default)(deny file-read* file-write* (regex #\"{DATA_FOLDERS}\") (regex #\"{SUPPORT_FOLDERS}\"))");
     for root in &roots {
         let r = quoted(root)?;
-        let text = root.to_str()?.trim_end_matches('/');
-        out.push_str(&format!("(deny file-write* (literal {r}) (regex #\"^{}/[^/]+$\"))", regex_escaped(text)));
-        let files: Vec<String> = guarded(root).iter().map(|f| quoted(f).map(|q| format!("(literal {q})"))).collect::<Option<_>>()?;
-        out.push_str(&format!("(deny file-read* file-write* {})", files.join(" ")));
+        let files = quoted(&root.join("generated").join("files"))?;
+        let skills = quoted(&root.join("plugins"))?;
+        let above: Vec<String> = root.ancestors().skip(1).map(|p| quoted(p).map(|q| format!("(literal {q})"))).collect::<Option<_>>()?;
+        out.push_str(&format!("(deny file-write* {})", above.join(" ")));
+        out.push_str(&format!("(deny file-read* file-write* (subpath {r}))(allow file-read* (subpath {skills}))(allow file-read* file-write* (subpath {files}))(deny file-write* (literal {files}))"));
+    }
+    out.push_str(&format!("(deny file-read* file-write* (regex #\"{AUTOMATION_FILES}\") (regex #\"{DATA_FILES}\"))(deny file-write* (regex #\"{SUPPORT}\"))"));
+    for port in ports {
+        out.push_str(&format!("(deny network-outbound (remote ip \"*:{port}\"))"));
     }
     Some(out)
 }
 
 /// `/usr/bin/sandbox-exec -p <profile> /bin/zsh -lc <cmd> [args]`, or why it cannot run.
 pub fn command(data: &Path, script: &str, args: &[&str]) -> Result<tokio::process::Command, String> {
+    command_on(data, &own_ports(), script, args)
+}
+
+/// [`command`], for a broker on `ports`.
+pub fn command_on(data: &Path, ports: &[u16], script: &str, args: &[&str]) -> Result<tokio::process::Command, String> {
     if !Path::new(SANDBOX_EXEC).exists() {
         return Err(NO_SANDBOX.into());
     }
-    let Some(p) = profile(data) else { return Err("shell_run can't run: the broker's data dir has a path the sandbox can't name.".into()) };
+    let Some(p) = profile(data, ports) else { return Err("shell_run can't run: the broker's data dir has a path the sandbox can't name.".into()) };
     let mut cmd = tokio::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(p).arg("/bin/zsh").arg("-lc").arg(script);
     if !args.is_empty() {
