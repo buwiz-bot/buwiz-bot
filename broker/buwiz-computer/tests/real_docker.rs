@@ -201,7 +201,8 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     for (what, cmd) in [("any port", any), ("exempt port", exempt)] {
         let out = p.run(a, &screen, &cmd, 10_000).await.unwrap();
         println!("to a peer from {what}: {}", out.stdout.trim());
-        assert!(out.stdout.contains("blocked"), "{what}: {} {}", out.stdout, out.stderr);
+        // refused here, by this box's own wall: a timeout would mean the packet left it
+        assert!(out.stdout.contains("blocked OSError"), "{what}: {} {}", out.stdout, out.stderr);
     }
 
     // files, through every way a container can go
