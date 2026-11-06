@@ -390,6 +390,12 @@ impl Computers {
         ctx.data.join("computers").join(id)
     }
 
+    /// There while a recovered computer's old process hasn't been stopped. A file, as the record
+    /// is: a broker restarted in between still owes the stop.
+    fn stop_owed(ctx: &HubCtx, id: &str) -> PathBuf {
+        Self::dir(ctx, id).join("stop-owed")
+    }
+
     /// Whole or not at all: the record goes to a new file, then takes the old one's place.
     fn save_machine(ctx: &HubCtx, id: &str, machine: &Machine) -> Result<(), Problem> {
         use std::io::Write;
@@ -510,8 +516,8 @@ impl Computers {
     /// it goes.
     pub async fn click(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
         self.now().problems.remove(bot);
-        let (id, recovered) = match self.computer_for_click(ctx, bot).await {
-            Ok(found) => found,
+        let id = match self.computer_for_click(ctx, bot).await {
+            Ok(id) => id,
             Err(e) => {
                 self.now().problems.insert(bot.to_owned(), e.clone());
                 return Err(e);
@@ -522,20 +528,13 @@ impl Computers {
         }
         let (me, ctx) = (self.clone(), ctx.clone());
         tokio::spawn(async move {
-            // what's running still has the old secrets. A real stop, so it can finish its writes,
-            // and here, with the seats' lock long released
-            if recovered {
-                if let Ok(machine) = me.machine(&ctx, &id) {
-                    let _ = me.provider_of(&machine).sleep(&machine, Sleep::Deep).await;
-                }
-            }
             let _ = me.finish_wake(&ctx, &id).await;
         });
         Ok(())
     }
 
-    /// The computer to wake, and whether it was recovered with new secrets.
-    async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<(String, bool), Problem> {
+    /// The computer to wake. One recovered with new secrets has a stop owed first.
+    async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
         let seating = self.seating.lock().await;
         let Some(seat) = Self::seat(ctx, bot)? else {
             let id = self.make(ctx, bot).await?;
@@ -546,11 +545,11 @@ impl Computers {
                 self.finish_retire(ctx, &id).await;
                 return Err(e);
             }
-            return Ok((id, false));
+            return Ok(id);
         };
         // a record that reads is all it takes: the wake rebuilds whatever went, on the same files
         if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
-            return Ok((seat.computer, false));
+            return Ok(seat.computer);
         }
         // nothing here can stand in for a machine a person connected
         if Self::is_remote(ctx, &seat.computer)? {
@@ -560,10 +559,12 @@ impl Computers {
         let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
         if let Some(machine) = self.provider.recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await? {
             std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
+            // before the record: once that reads, nothing else says the secrets changed
+            std::fs::write(Self::stop_owed(ctx, &seat.computer), "").map_err(|e| Problem::Failed(e.to_string()))?;
             Self::save_machine(ctx, &seat.computer, &machine)?;
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(seat.computer.clone(), machine);
             self.now().problems.remove(&seat.computer);
-            return Ok((seat.computer, true));
+            return Ok(seat.computer);
         }
         // nothing of it is left to find
         let id = self.make(ctx, bot).await?;
@@ -574,7 +575,7 @@ impl Computers {
             return Err(db_problem(e));
         }
         self.mark_retired(ctx, &seat.computer);
-        Ok((id, false))
+        Ok(id)
     }
 
     /// Up, with every Bot's screen. `id` is in `waking`.
@@ -633,6 +634,19 @@ impl Computers {
         }
         let machine = self.machine(ctx, id)?;
         let provider = self.provider_of(&machine);
+        // recovered, what's running still has the old secrets. A real stop, so it can finish its
+        // writes, and here, with the seats' lock long released. One that fails is the wake's
+        // problem, and stays owed, so the next click tries it again
+        let owed = Self::stop_owed(ctx, id);
+        if owed.exists() {
+            match provider.sleep(&machine, Sleep::Deep).await {
+                // only its files were left: nothing runs, and the wake rebuilds it
+                Ok(()) | Err(Problem::Gone) => {
+                    let _ = std::fs::remove_file(&owed);
+                }
+                Err(p) => return Err(p),
+            }
+        }
         let woke = provider.wake(&machine).await?;
         // resumed, the screens it had are as they were: only a Bot that joined meanwhile needs one
         let seats = Self::seats(ctx, id)?;

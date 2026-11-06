@@ -646,6 +646,67 @@ async fn a_recovered_computer_is_stopped_properly_with_the_seats_free() {
     assert!(at("sleep Deep") < at("wake"), "{calls:?}");
 }
 
+/// `b`'s computer, its record lost and found again by a new broker's first click: `sleep_problem`
+/// is what the stop then meets.
+async fn recovered_with(b: &Bed, stop: Option<Problem>) -> (String, Arc<Computers>) {
+    let old = awake(b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &old).join("machine.json")).unwrap();
+    *b.mock.recoverable.lock().unwrap() = Some(buwiz_computer::Reach::Container { name: "mock-kept".into() });
+    *b.mock.sleep_problem.lock().unwrap() = stop;
+    b.mock.calls.lock().unwrap().clear();
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.set_sight(std::collections::HashMap::new());
+    fresh.click(&b.ctx, &b.ann.0).await.unwrap();
+    (old, fresh)
+}
+
+async fn until_state(computers: &Computers, b: &Bed, want: &str) -> Value {
+    for _ in 0..400 {
+        let status = computers.status(&b.ctx, &b.ann.0).await;
+        if status["state"] == want {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("never {want}: {}", computers.status(&b.ctx, &b.ann.0).await);
+}
+
+#[tokio::test]
+async fn a_stop_that_fails_after_a_recovery_says_so_and_a_click_tries_it_again() {
+    let b = bed("recover-stop-fails");
+    let (old, fresh) = recovered_with(&b, Some(Problem::ProviderDown("Docker".into()))).await;
+    let status = until_state(&fresh, &b, "error").await;
+    assert_eq!(status["code"], Problem::ProviderDown("Docker".into()).code(), "{status}");
+    assert!(!b.mock.calls().contains(&"wake".to_owned()), "old secrets are still running: {:?}", b.mock.calls());
+
+    // a broker that restarts in between still owes it
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.set_sight(std::collections::HashMap::new());
+    *b.mock.sleep_problem.lock().unwrap() = None;
+    fresh.click(&b.ctx, &b.ann.0).await.unwrap();
+    until_state(&fresh, &b, "awake").await;
+    let calls = b.mock.calls();
+    let at = |c: &str| calls.iter().position(|x| x == c).unwrap_or_else(|| panic!("no {c}: {calls:?}"));
+    assert!(at("sleep Deep") < at("wake"), "{calls:?}");
+
+    // paid once: the next wake stops nothing
+    assert!(!Computers::stop_owed(&b.ctx, &old).exists());
+    fresh.sleep(&b.ctx, &old, Sleep::Light).await.unwrap();
+    b.mock.calls.lock().unwrap().clear();
+    fresh.click(&b.ctx, &b.ann.0).await.unwrap();
+    until_state(&fresh, &b, "awake").await;
+    assert!(!b.mock.calls().contains(&"sleep Deep".to_owned()), "{:?}", b.mock.calls());
+}
+
+#[tokio::test]
+async fn a_recovery_with_only_files_left_has_nothing_to_stop() {
+    let b = bed("recover-files-only");
+    let (old, fresh) = recovered_with(&b, Some(Problem::Gone)).await;
+    until_state(&fresh, &b, "awake").await;
+    assert!(b.mock.calls().contains(&"wake".to_owned()), "{:?}", b.mock.calls());
+    assert!(!Computers::stop_owed(&b.ctx, &old).exists());
+}
+
 #[tokio::test]
 async fn sleep_closes_its_viewers_with_the_seats_unreadable() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
