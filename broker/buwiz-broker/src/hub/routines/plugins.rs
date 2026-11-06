@@ -19,6 +19,11 @@ use crate::v1::V1Error;
 /// 5.3: the first-party publisher.
 pub const FIRST_PARTY: &str = "app.buwiz";
 
+/// Whether `row` is an approved plugin of the [`FIRST_PARTY`] publisher.
+pub fn first_party(row: &Row, trust: &Trust) -> bool {
+    row.manifest().get("publisher").and_then(|p| p.get("id")).and_then(Value::as_str) == Some(FIRST_PARTY) && trust.is_approved(&row.id, &row.publisher_key_id)
+}
+
 /// The plugin host as routines read it.
 pub trait PluginView: Send + Sync {
     /// `rowOf(id)`: the `v1_plugins` record.
@@ -208,8 +213,7 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
     out.insert("enabled".into(), json!(row.enabled));
     out.insert("generation".into(), json!(rt.generation));
     out.insert("plugin_pub".into(), json!(row.plugin_pub));
-    let first = m.get("publisher").and_then(|p| p.get("id")).and_then(Value::as_str) == Some(FIRST_PARTY) && p.trust().is_approved(&row.id, &row.publisher_key_id);
-    out.insert("first_party".into(), json!(first));
+    out.insert("first_party".into(), json!(first_party(row, &p.trust())));
     out.insert("manifest_sha256".into(), json!(row.manifest_sha256));
     let apps: Vec<Value> = m
         .get("apps")
