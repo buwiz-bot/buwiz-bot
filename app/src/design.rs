@@ -1,7 +1,7 @@
 //! The avatar Design panel: a prompt, an optional picture, and the 3 mark
-//! avatars the broker designs from them (`POST /avatar/design`). Edit
-//! Avatar's Design tab and the Create New Bot sheet both show it;
-//! `for_new` says where a choice lands (the sheet's draft, or the bot).
+//! avatars the broker designs from them (`POST /avatar/design`), on the
+//! Create New Bot sheet. "Your designs" is on the sheet and Edit Avatar's Own
+//! tab; `for_new` says where a tap lands (the sheet's draft, or the bot).
 
 use nsh_base::input;
 use nsh_core::prelude::*;
@@ -10,11 +10,11 @@ use crate::avatar::{bot_blob, cropped_image, BotBlobProps};
 use crate::live::store;
 use crate::theme;
 
-pub(crate) fn panel(for_new: bool) -> impl IntoElement {
+pub(crate) fn panel() -> impl IntoElement {
     view()
         .w_full()
         .gap(px(10.0))
-        .child(mode_switch(for_new))
+        .child(mode_switch())
         .child(prompt_field())
         .child(dynamic(|| picture_row().into_element()))
         .child(design_button())
@@ -23,22 +23,14 @@ pub(crate) fn panel(for_new: bool) -> impl IntoElement {
                 .text_size(px(12.0))
                 .text_color(theme::MUTED),
         )
-        .child(dynamic(move || if picture_mode() { view().into_element() } else { choices(for_new).into_element() }))
+        .child(dynamic(|| choices().into_element()))
         .child(error_line())
 }
 
-/// Whether Edit Avatar's Design is in Picture mode (tracked).
-fn picture_mode() -> bool {
-    let st = store();
-    st.design_mode.get() == "picture" && !st.bot_modal.get()
-}
-
 /// Mark (3 one-colour avatars that move) | Rich (3 multi-colour ones,
-/// their colours their own) | Picture (a "Bot"-style picture, set as a
-/// photo; Edit Avatar only).
-fn mode_switch(for_new: bool) -> impl IntoElement {
-    let modes: &[(&'static str, &'static str)] =
-        if for_new { &[("mark", "Mark"), ("rich", "Rich")] } else { &[("mark", "Mark"), ("rich", "Rich"), ("picture", "Picture")] };
+/// their colours their own).
+fn mode_switch() -> impl IntoElement {
+    let modes: &[(&'static str, &'static str)] = &[("mark", "Mark"), ("rich", "Rich")];
     view()
         .flex_row()
         .gap(px(4.0))
@@ -59,7 +51,6 @@ fn mode_switch(for_new: bool) -> impl IntoElement {
                     let st = store();
                     st.design_mode.set(m);
                     st.design_err.set(String::new());
-                    st.avatar_draft.set(None);
                 })
                 .into_element()
         }))
@@ -69,13 +60,7 @@ fn prompt_field() -> impl IntoElement {
     input()
         .value(|| store().design_prompt.get())
         .on_change(|v: &str| store().design_prompt.set(v.to_owned()))
-        .placeholder(|| {
-            if picture_mode() {
-                "Optional: what to add or change (the style is built in)".to_owned()
-            } else {
-                "Describe the bot, or add a picture and leave this empty".to_owned()
-            }
-        })
+        .placeholder(|| "Describe the bot, or add a picture and leave this empty".to_owned())
         .placeholder_color(|| color(theme::GHOST))
         .multiline(|| true)
         .readonly(|| store().design_busy.get())
@@ -175,14 +160,14 @@ fn current_color(for_new: bool) -> String {
 }
 
 /// The 3 choices, live; the picked one is outlined and named below. A
-/// choice in the primary ink shows in the bot's colour, which it keeps.
-fn choices(for_new: bool) -> impl IntoElement {
+/// choice in the primary ink shows in the draft's colour, which it keeps.
+fn choices() -> impl IntoElement {
     let st = store();
     let cands = st.design_cands.get();
     if cands.is_empty() {
         return view().into_element();
     }
-    let ink = current_color(for_new);
+    let ink = current_color(true);
     let picked = st.design_picked.get();
     let caption = match picked.and_then(|i| cands.get(i)) {
         Some(c) if c.why.is_empty() => c.name.clone(),
@@ -205,7 +190,7 @@ fn choices(for_new: bool) -> impl IntoElement {
                         .border_1()
                         .border_color(if picked == Some(i) { theme::TEXT } else { theme::BORDER_S })
                         .label(format!("Use the {} avatar", c.name))
-                        .on_press(move || store().design_pick(i, for_new))
+                        .on_press(move || store().design_pick(i))
                         .child(bot_blob(BotBlobProps {
                             shape: c.shape,
                             color: if crate::store::is_primary_ink(&c.color) { ink.clone() } else { c.color },

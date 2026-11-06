@@ -807,6 +807,49 @@ fn mark_errors(m: &Value, n: &str, points: &mut usize) -> Vec<String> {
     errs
 }
 
+/// A layer as a bot stores it: `{path, fill, opacity?, over?}`, and nothing else.
+pub fn layer_of(x: &Value) -> Value {
+    let mut m = Map::new();
+    m.insert("path".into(), x.get("path").cloned().unwrap_or(Value::Null));
+    m.insert("fill".into(), x.get("fill").cloned().unwrap_or(Value::Null));
+    if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
+        m.insert("opacity".into(), op.clone());
+    }
+    // stored only when true
+    if x.get("over") == Some(&Value::Bool(true)) {
+        m.insert("over".into(), json!(true));
+    }
+    Value::Object(m)
+}
+
+/// A part as a bot stores it: `{outline, color, layers?, z?, d?}`, and nothing else.
+pub fn part_of(x: &Value) -> Value {
+    let mut m = Map::new();
+    let o = x.get("outline").cloned().unwrap_or(Value::Null);
+    m.insert("outline".into(), match o {
+        Value::String(s) => json!(s.trim_matches(js::is_space)),
+        v => v,
+    });
+    m.insert("color".into(), x.get("color").cloned().unwrap_or(Value::Null));
+    if let Some(ls) = x.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty()) {
+        m.insert("layers".into(), Value::Array(ls.iter().map(layer_of).collect()));
+    }
+    for k in ["z", "d"] {
+        if let Some(n) = x.get(k).filter(|v| v.is_number()) {
+            m.insert(k.into(), n.clone());
+        }
+    }
+    Value::Object(m)
+}
+
+/// Eyes as a design holds them: a colour, or `{c, at, gap, s, rim, rw, shut}` and nothing else.
+pub fn eyes_of(e: &Value) -> Value {
+    match e.as_object() {
+        Some(o) => Value::Object(o.iter().filter(|(k, _)| ["c", "at", "gap", "s", "rim", "rw", "shut"].contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()),
+        None => e.clone(),
+    }
+}
+
 /// `solidOf(s)`: a solid as a bot stores it, the fields of its kind and
 /// nothing else.
 pub fn solid_of(s: &Value) -> Value {
