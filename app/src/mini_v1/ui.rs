@@ -800,8 +800,9 @@ impl Store {
     /// The composer's send for v1 plugins (9.3): true when it took the
     /// message. Typed tokens of v1 plugins are resolved and rewritten to
     /// canonical tokens first; a message of only tokens or one command is
-    /// resolved and not sent to the model; anything else is sent as
-    /// rewritten. Unresolved tokens stay as typed, with a warning.
+    /// resolved as typed and not sent to the model (15.3: what answers
+    /// `open` opens); anything else is sent as rewritten. Unresolved tokens
+    /// stay as typed, with a warning.
     pub fn v1_send(&'static self, text: &str) -> bool {
         let text = text.trim().to_owned();
         let entries = self.v1.entries.get_untracked();
@@ -841,6 +842,14 @@ impl Store {
         // nothing to resolve
         if ours.is_empty() || (!only && ours.iter().all(|canonical| *canonical)) {
             return false;
+        }
+        if only {
+            self.draft.set(String::new());
+            crate::slash::close();
+            for (plugin, scope, value) in sent_alone(&text, &entries) {
+                self.v1_resolve(plugin, "scope", scope, value);
+            }
+            return true;
         }
         let thread = self.active_id.get_untracked();
         let attached: Vec<Value> = self.v1.records.with_untracked(|r| r.model_tokens(&thread, &entries));
@@ -887,13 +896,6 @@ impl Store {
                 crate::slash::close();
                 // the person typed on meanwhile: their new draft stays
                 if self.draft.get_untracked().trim() != text.trim() {
-                    return;
-                }
-                if only {
-                    self.draft.set(String::new());
-                    for (tok, _) in r.tokens {
-                        self.v1_open_token(&tok);
-                    }
                     return;
                 }
                 self.draft.set(r.text);
@@ -975,14 +977,6 @@ impl Store {
                 });
             })
         });
-    }
-
-    /// A canonical token sent alone: its scope's resolve (`complete:
-    /// false`) opens what it answers (user-typed: no consent, 9.7).
-    fn v1_open_token(&'static self, tok: &str) {
-        let Some((short, scope, ticket)) = tokens::canonical(tok) else { return };
-        let Some(p) = self.v1.by_short(short) else { return };
-        self.v1_resolve(p.id, "scope", scope.to_owned(), ticket.to_owned());
     }
 
     fn v1_resolve_command(&'static self, plugin: String, name: String, args: String) {
@@ -1779,6 +1773,17 @@ fn url_names_plugin_id(url: &str) -> bool {
 /// The message an attachment is sent as: "Attached <canonical token>".
 pub fn attach_message(token: &str) -> String {
     format!("Attached {token}")
+}
+
+/// A message of only tokens, as `(plugin, scope, value)` to resolve (15.3):
+/// each enabled v1 plugin's token with its value as typed, since a scope may
+/// answer `open` and no ticket then stands for it.
+fn sent_alone(text: &str, entries: &[PluginEntry]) -> Vec<(String, String, String)> {
+    let resolve = |t: &tokens::Typed| {
+        let plugin = entries.iter().find(|p| p.short == t.short && p.enabled)?;
+        Some((plugin.id.clone(), t.scope.to_owned(), t.value.to_owned()))
+    };
+    tokens::typed_tokens(text).iter().filter_map(resolve).collect()
 }
 
 /// `@short:scope:value … attach` (one `attach` word, every other word a
@@ -2589,6 +2594,19 @@ mod tests {
         // shown with the ticket's title, never the ticket
         let (shown, _) = tokens::plain(&m, &|_| Some("Galang Alejandro Pascua".to_owned()));
         assert_eq!(shown, "Attached Galang Alejandro Pascua");
+    }
+
+    #[test]
+    fn tokens_sent_alone_resolve_as_typed() {
+        let on = |id: &str, short: &str, enabled: bool| PluginEntry::from_json(&json!({"id": id, "short": short, "enabled": enabled})).unwrap();
+        let entries = [on("app.buwiz.google-workspace", "gws", true), on("app.buwiz.ebirforms", "bir", false)];
+        let of = |text: &str| sent_alone(text, &entries);
+        let gws = "app.buwiz.google-workspace".to_owned();
+        // a view is no ticket: its scope answers `open`, which a rewrite to tickets would refuse
+        assert_eq!(of("@gws:mail:sent"), [(gws.clone(), "mail".to_owned(), "sent".to_owned())]);
+        let canonical = format!("@gws:file:{T}");
+        assert_eq!(of(&canonical), [(gws, "file".to_owned(), T.to_owned())]);
+        assert!(of("@bir:taxprofile:1 @other:x:y").is_empty(), "a disabled plugin's and another server's stay out");
     }
 
     #[test]
