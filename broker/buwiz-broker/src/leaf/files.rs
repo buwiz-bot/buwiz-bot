@@ -349,9 +349,16 @@ pub fn asset(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
 mod tests {
     use super::*;
 
+    /// A folder no other test here has: they run in parallel, often in the same millisecond.
+    fn scratch_dir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("buwiz-leaf-files-{}-{}-{n}", std::process::id(), crate::hub::store::now_ms()))
+    }
+
     /// A broker's folders, with one file of each kind under each route.
     fn leaf_with(names: &[&str]) -> (Leaf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("buwiz-leaf-files-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+        let dir = scratch_dir();
         for folder in ["files/m1", "attachments", "avatars", "assets"] {
             std::fs::create_dir_all(dir.join("generated").join(folder)).unwrap();
             for name in names {
@@ -363,6 +370,12 @@ mod tests {
 
     fn header<'a>(a: &'a Answer, name: &str) -> Option<&'a str> {
         a.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn two_tests_never_share_a_folder() {
+        let dirs: std::collections::HashSet<_> = (0..1000).map(|_| scratch_dir()).collect();
+        assert_eq!(dirs.len(), 1000);
     }
 
     #[test]
