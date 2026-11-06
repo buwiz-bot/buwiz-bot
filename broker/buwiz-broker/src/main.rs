@@ -373,9 +373,10 @@ async fn helper(args: &[String]) -> i32 {
         }
     };
     // `--db` is any file: its data dir, when not named, is its own folder;
-    // a bare file name has none, and keys never land in the working folder
-    let Some(data) = data.or_else(|| db.parent().filter(|p| !p.as_os_str().is_empty()).map(std::path::PathBuf::from)) else {
-        eprintln!("{usage} (a bare --db file name needs --data)");
+    // `app.db` and `./app.db` name none, and keys never land in the working folder
+    let named = |p: &&std::path::Path| p.components().any(|c| c != std::path::Component::CurDir);
+    let Some(data) = data.or_else(|| db.parent().filter(named).map(std::path::PathBuf::from)) else {
+        eprintln!("buwiz-broker helper: --db {} needs --data DIR: it names no folder to keep plugin keys in", db.display());
         return 2;
     };
     let host = match plugin_host(&data, &db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
