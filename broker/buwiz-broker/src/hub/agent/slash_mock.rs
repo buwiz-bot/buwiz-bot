@@ -183,9 +183,33 @@ fn names(files: &[Value]) -> String {
 }
 
 /// `/mock …`.
+/// `/mock computer <tool> <input as JSON>`, in a debug broker started with `MOCK=1`: the call a
+/// model would make, so a test Bot can reach a `computer_*` tool with no model behind it. A release
+/// build hasn't got it. Only what this turn is offered, of the computer's tools. The answer is
+/// left out, as the picture in it would be no use in a chat.
+#[cfg(debug_assertions)]
+pub(crate) async fn mock_computer(run: &Run, words: &str) -> Result<(), String> {
+    let (name, input) = words.split_once(' ').unwrap_or((words, "{}"));
+    let input: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    use crate::hub::tools::computer;
+    if !computer::NAMES.contains(&name) || !computer::offered(run).await || !computer::defs_for(run).iter().any(|d| d["name"] == name) {
+        return Err(format!("{name} isn't a computer tool this turn is offered"));
+    }
+    run.ctx.store.append_turn(&run.turn.thread, Turn::user(&format!("/mock computer {name}")))?;
+    let out = crate::hub::tools::exec_tool(run, &json!({"name": name, "input": input})).await;
+    let said = if out.is_error == Some(true) { format!("{name} failed") } else { format!("{name} done") };
+    run.ctx.store.append_turn(&run.turn.thread, Turn::ai(&said, "mock"))?;
+    run.ctx.store.write_index();
+    Ok(())
+}
+
 pub async fn mock(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> {
     let ctx = &run.ctx;
     let p = prompt.trim_matches(js::is_space);
+    #[cfg(debug_assertions)]
+    if let Some(words) = p.strip_prefix("/mock computer ").filter(|_| crate::hub::routes::chat::mock()) {
+        return mock_computer(run, words).await;
+    }
     let rel = format!("m{}", crate::hub::library::groups::now36());
     let files_dir = ctx.store.gen_dir().join("files");
     let dir = files_dir.join(&rel);

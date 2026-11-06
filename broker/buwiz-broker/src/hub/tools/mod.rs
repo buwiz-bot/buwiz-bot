@@ -101,6 +101,8 @@ pub struct RunState {
     /// one ran that isn't a look at the Bot's own screens: acting on a screen needs a look, so
     /// only this makes it ask
     pub beyond_screens: bool,
+    /// the screen this run touched first: its own until the run ends
+    pub screen_hold: Option<crate::hub::computer::Hold>,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -216,7 +218,7 @@ async fn offered(run: &Run) -> Vec<Value> {
         out.push(ui::act_def());
     }
     if computer::offered(run).await {
-        out.extend(computer::defs());
+        out.extend(computer::defs_for(run));
     }
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());

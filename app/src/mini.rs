@@ -465,7 +465,7 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                         ),
                 )
                 .child(view().flex_1())
-                .when(crate::computer::bot_of_key(&key).is_some(), |v| v.child(crate::computer::record_button(&key)))
+                .when(crate::computer::bot_of_key(&key).is_some(), |v| v.child(crate::computer::drive_button(&key)).child(crate::computer::record_button(&key)))
                 .child(pin_button(&key, n))
                 .when(crate::slash::attachable(&token), |v| v.child(attach_button(&key, n, &token)))
                 .child(

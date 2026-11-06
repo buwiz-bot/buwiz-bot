@@ -1171,14 +1171,23 @@ pub(crate) struct AskCopy {
 }
 
 pub(crate) fn ask_copy(n: &ToolAskNotice) -> AskCopy {
-    let mut buttons = vec![("Not now".to_owned(), "no"), ("Allow in this chat".to_owned(), "chat")];
-    if n.key == "shell" && !n.prefix.is_empty() {
-        buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
+    let mut buttons = vec![("Not now".to_owned(), "no")];
+    if n.tool == ASK_PERSON {
+        // a person's own hands: there's no standing yes to give
+        buttons.push(("Take over".to_owned(), "once"));
+    } else {
+        buttons.push(("Allow in this chat".to_owned(), "chat"));
+        if n.key == "shell" && !n.prefix.is_empty() {
+            buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
+        }
+        buttons.push(("Allow".to_owned(), "once"));
     }
-    buttons.push(("Allow".to_owned(), "once"));
     let title = if n.title.is_empty() { format!("Let it use {}?", n.tool) } else { n.title.clone() };
     AskCopy { title, lines: n.lines.clone(), preview: n.preview.clone(), external: if n.external { READ_A_PAGE.to_owned() } else { String::new() }, buttons }
 }
+
+/// The tool that asks a person to take over a Bot's computer.
+const ASK_PERSON: &str = "computer_ask_person";
 
 /// The one line an answered card leaves.
 pub(crate) fn answered_words(answer: &str) -> &'static str {
@@ -1342,6 +1351,10 @@ fn answer_ask(chat: &str, base: &ToolAskNotice, answer: &'static str) {
             Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
                 let n = ask_settled(Some(&v), &base, answer, now);
                 watch(now + RECEIPT_MS);
+                // they said they'd take over: the screen is where they do
+                if base.tool == ASK_PERSON && answer == "once" {
+                    crate::computer::open_full(&base.bot, &base.bot_name);
+                }
                 set_ask_local(&id, |l| {
                     l.busy = false;
                     l.settled = Some(n);
@@ -2572,6 +2585,9 @@ mod tests {
         // a shell card with no rule to offer, a card with no title
         assert_eq!(ask_copy(&ask(json!({"key": "shell", "tool": "shell_run", "title": "Run `ls && rm x` on this Mac?"}))).buttons.len(), 3);
         assert_eq!(ask_copy(&ask(json!({"key": "mcp:x", "tool": "mcp_x_send"}))).title, "Let it use mcp_x_send?");
+        // a hand-over is one person's one time: no standing yes
+        let takeover = ask_copy(&ask(json!({"key": "computer_takeover", "tool": "computer_ask_person", "title": "Take over Ann's computer?", "lines": ["Sign in to the shop"]})));
+        assert_eq!(words(&takeover), [("Not now".to_owned(), "no"), ("Take over".to_owned(), "once")]);
         // parsing: state and answer; another kind is no ask card
         let n = ask(json!({"state": "allowed", "answer": "chat"}));
         assert_eq!((n.state.as_str(), n.answer.as_str(), n.bot_name.as_str()), ("allowed", "chat", "A plain chat"));

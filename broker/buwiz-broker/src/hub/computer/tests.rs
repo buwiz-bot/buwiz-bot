@@ -27,12 +27,16 @@ struct Bed {
 }
 
 fn bed(label: &str) -> Bed {
+    bed_with(label, Computers::new)
+}
+
+fn bed_with(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers) -> Bed {
     let dir = std::env::temp_dir().join(format!("buwiz-computer-hub-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut ctx = HubCtx::new(dir, Clock::manual());
     ctx.store.load().unwrap();
     let mock = Arc::new(MockProvider::default());
-    let computers = Arc::new(Computers::new(mock.clone()));
+    let computers = Arc::new(make(mock.clone()));
     // no catalog: nothing here asks a real opencodex
     computers.set_sight(std::collections::HashMap::new());
     ctx.ext.insert(computers.clone());
@@ -618,7 +622,7 @@ async fn sleep_closes_its_viewers_with_the_seats_unreadable() {
     let id = awake(&b, &b.ann.0).await;
     let live = b.computers.live(&b.ctx, &b.ann.0).await.unwrap();
     let viewer = live.provider.viewer(&live.machine, &live.screen).await.unwrap().unwrap();
-    let url = b.computers.gate().await.unwrap().open(&b.ann.0, viewer).unwrap();
+    let url = b.computers.gate().await.unwrap().open(&b.ann.0, viewer, Mode::Watch).unwrap();
     break_the_seats_read(&b);
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
     let (host, target) = url.strip_prefix("http://").unwrap().split_once('/').unwrap();
@@ -880,10 +884,9 @@ async fn at_ask_a_read_runs_and_a_change_needs_someone_to_say_yes() {
     let b = bed("ask");
     awake(&b, &b.ann.0).await;
     set(&b, &b.ann.0, tools::KEY, "ask");
-    // an agent's request has nobody to ask: the change is refused rather than parked
-    let job = b.ctx.jobs.create(&b.ann.1, Value::Null, None, false);
-    let turn = TurnCtx { thread: b.ann.1.clone(), acting_bot: Some(b.ann.0.clone()), ..TurnCtx::default() };
-    let r = Run::new(b.ctx.clone(), turn, job, Arc::new(Settings::from(|_| None)));
+    // a routine has nobody to ask: the change is refused rather than parked
+    set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
+    let r = run(&b, &b.ann.1, Some("rt_1"));
     assert_eq!(call(&r, "computer_screenshot", json!({})).await.is_error, None);
     b.mock.calls.lock().unwrap().clear();
     let o = call(&r, "computer_click", json!({"x": 1, "y": 1})).await;
@@ -902,7 +905,7 @@ async fn a_routine_gets_it_only_if_a_person_turned_that_on() {
     assert_eq!(o.is_error, Some(true));
 
     set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
-    assert_eq!(offered(&r).await.len(), NAMES.len());
+    assert_eq!(offered(&r).await.len(), NAMES.len() - 1, "all but asking a person, who isn't there");
     // then it may wake it, with nobody to click
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
     assert_eq!(call(&r, "computer_screenshot", json!({})).await.is_error, None);
@@ -974,7 +977,7 @@ async fn the_open_url_holds_a_ticket_and_no_password() {
     awake(&b, &b.ann.0).await;
     let live = b.computers.live(&b.ctx, &b.ann.0).await.unwrap();
     let viewer = live.provider.viewer(&live.machine, &live.screen).await.unwrap().unwrap();
-    let url = b.computers.gate().await.unwrap().open(&b.ann.0, viewer).unwrap();
+    let url = b.computers.gate().await.unwrap().open(&b.ann.0, viewer, Mode::Watch).unwrap();
     assert!(url.contains("ticket=") && !url.contains(PASSWORD), "{url}");
 }
 
@@ -1006,3 +1009,5 @@ fn a_computer_can_be_pinned_to_a_group() {
     let bad = json!({"id": group["id"], "kind": "app", "ref": "computer:../x", "title": "x", "op": "add"});
     assert!(crate::hub::library::groups::group_item(&b.ctx, &bad).is_err());
 }
+
+mod together;
