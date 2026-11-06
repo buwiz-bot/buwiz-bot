@@ -18,11 +18,19 @@ async fn fetch_follow(url: &str, headers: &[(&str, &str)], ms: u64) -> Result<ht
     let mut u = Url::parse(url).map_err(|_| format!("Failed to parse URL from {url}"))?;
     let go = async {
         for _ in 0..=20 {
+            if resolves_to_a_computer(&u).await {
+                return Err("fetch failed".to_owned());
+            }
             let mut req = http::Req::get(u.clone());
             for (k, v) in headers {
                 req = req.header(k, v);
             }
             let res = http::send(&req).await.map_err(|_| "fetch failed".to_owned())?;
+            // a name can change between the look above and the connection: this is where it went
+            if res.peer.is_some_and(is_a_computer) {
+                res.cancel();
+                return Err("fetch failed".to_owned());
+            }
             match http::redirect_target(&res) {
                 Some(next) => {
                     res.cancel();
@@ -34,6 +42,21 @@ async fn fetch_follow(url: &str, headers: &[(&str, &str)], ms: u64) -> Result<ht
         Err("fetch failed".to_owned())
     };
     tokio::time::timeout(Duration::from_millis(ms), go).await.map_err(|_| "The operation was aborted due to timeout".to_owned())?
+}
+
+/// Whether `peer` is one of this Mac's computers' control or viewer ports: this tool runs in the
+/// broker, outside the shell's sandbox, so the same range is closed here.
+fn is_a_computer(peer: std::net::SocketAddr) -> bool {
+    let ip = peer.ip().to_canonical();
+    (ip.is_loopback() || ip.is_unspecified()) && (buwiz_computer::PORT_FIRST..=buwiz_computer::PORT_LAST).contains(&peer.port())
+}
+
+/// Whether any address `u`'s host resolves to is [`is_a_computer`]: by what it resolves to, so
+/// no spelling of a host gets by.
+async fn resolves_to_a_computer(u: &Url) -> bool {
+    let Some(port) = u.port_or_known_default().filter(|p| (buwiz_computer::PORT_FIRST..=buwiz_computer::PORT_LAST).contains(p)) else { return false };
+    let Some(host) = u.host_str().map(|h| h.trim_matches(['[', ']']).to_owned()) else { return false };
+    tokio::net::lookup_host((host, port)).await.is_ok_and(|mut found| found.any(is_a_computer))
 }
 
 /// `s.replace(/<tag[\s\S]*?<\/tag>/gi, "")`.

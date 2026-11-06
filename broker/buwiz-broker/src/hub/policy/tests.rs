@@ -520,6 +520,46 @@ async fn the_shell_cant_reach_its_own_broker_and_reaches_a_dev_server() {
     assert!(ok && out == "okok", "a dev server on another port: {out}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_cant_reach_a_computers_ports() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let data = temp("sandbox-computer");
+    // any free port of the range, listening as a computer's control port would
+    let mut bound = None;
+    for port in (buwiz_computer::PORT_FIRST + 150)..=buwiz_computer::DOCKER_PORT_LAST {
+        if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            bound = Some((l, port));
+            break;
+        }
+    }
+    let (listener, port) = bound.unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut buf = [0u8; 256];
+            let _ = s.read(&mut buf).await;
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
+        }
+    });
+    for url in [format!("http://127.0.0.1:{port}/v1/info"), format!("http://localhost:{port}/v1/info")] {
+        let (ok, out) = sandboxed_on(&data, &[], &format!("curl -s -S -m 5 {url}")).await;
+        assert!(!ok && !out.contains("ok"), "{url}: {out}");
+    }
+    let p = sandbox::profile(&data, &[], std::path::Path::new("/nowhere")).unwrap();
+    for port in [buwiz_computer::PORT_FIRST, buwiz_computer::PORT_LAST] {
+        assert!(p.contains(&sandbox::local_rule(port)), "{port}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_cant_read_a_computers_saved_token() {
+    let data = temp("sandbox-computer-token");
+    let dir = data.join("computers/cmp_1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("machine.json"), "the-token").unwrap();
+    let (ok, out) = sandboxed_on(&data, &[], &format!("cat '{}'", dir.join("machine.json").display())).await;
+    assert!(!ok && !out.contains("the-token"), "{out}");
+}
+
 #[test]
 fn the_port_in_the_profile_is_this_brokers() {
     let data = std::path::Path::new("/tmp/d");

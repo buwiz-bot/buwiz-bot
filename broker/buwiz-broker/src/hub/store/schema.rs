@@ -132,6 +132,15 @@ const TRIED: &[&str] = &[
     "ALTER TABLE bot_tools ADD COLUMN state TEXT",
     "CREATE TABLE IF NOT EXISTS ask_grant(thread TEXT, key TEXT, at INTEGER, PRIMARY KEY(thread, key))",
     "ALTER TABLE shell_activity ADD COLUMN tool TEXT",
+    // a computer is its own record; a Bot sits at one, with a screen of its own (`hub/computer.rs`)
+    "CREATE TABLE IF NOT EXISTS computers(
+    id TEXT PRIMARY KEY, provider TEXT NOT NULL, created_at INTEGER, created_for TEXT, last_used INTEGER, slept_at INTEGER);
+  CREATE TABLE IF NOT EXISTS computer_seats(
+    bot_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', screen TEXT, attached_at INTEGER);",
+    // no Bot is left at it: it goes as soon as its provider answers
+    "ALTER TABLE computers ADD COLUMN gone_at INTEGER",
+    // where it is, no secret in it: its files can be found with its record lost
+    "ALTER TABLE computers ADD COLUMN reach TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

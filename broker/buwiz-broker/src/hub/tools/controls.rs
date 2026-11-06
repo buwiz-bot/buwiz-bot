@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use super::{builtin, ui, Out, Run};
+use super::{builtin, computer, ui, Out, Run};
 use crate::hub::library::botctx;
 use crate::hub::policy::ask::{self as asking, Asking};
 use crate::hub::policy::gate::{self, Mode, Risk, Verdict};
@@ -31,7 +31,7 @@ pub fn defs() -> Vec<Value> {
     vec![
         json!({
             "name": "tools_list",
-            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, screens, screen_actions, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
+            "description": "List the tool switches of this Bot (in a plain chat: of Plain chats, the switches every plain chat shares): shell, web, apps, office, routines, memory, agents, screens, screen_actions, computer, computer_routines, skill:<id>, mcp:<server>, v1:<plugin>. Each is on, ask (the user OKs each call that changes something or reaches someone; reads still run) or off, with who changed it; and this Mac's shell mode with its rule counts.",
             "input_schema": {"type": "object", "properties": {}},
         }),
         json!({
@@ -190,7 +190,10 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
         return None;
     }
     let ctx = &run.ctx;
-    let pos = effective(run, policy::tool_state(ctx, &profile(run), &key));
+    // a routine's Ask stays Ask on the computer: the person turned routines on for it, and a card
+    // nobody can answer refuses
+    let state = policy::tool_state(ctx, &profile(run), &key);
+    let pos = if key == computer::KEY { state } else { effective(run, state) };
     if pos == Pos::Off || reads(run, name, &key).await {
         return None;
     }
@@ -295,7 +298,7 @@ fn describe(run: &Run, name: &str, key: &str, input: &Value) -> (String, Vec<Str
 /// Whether a tool that reads outside content (a page, a search, an app) ran this turn.
 pub fn note_external(run: &Run, name: &str) {
     let screen = matches!(name, ui::NAME | ui::ACT);
-    let ext = matches!(name, "fetch_url" | "web_search" | "query_source") || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
+    let ext = matches!(name, "fetch_url" | "web_search" | "query_source") || computer::NAMES.contains(&name) || keys::key_of(&run.ctx, name, run.turn.surface.as_ref()).is_some_and(|k| k.starts_with("mcp:") || k.starts_with("v1:"));
     if ext || screen {
         run.state().external = true;
     }
