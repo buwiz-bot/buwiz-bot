@@ -54,7 +54,15 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    token_in(&host_token_path(buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE").as_deref(), &home))
+    let env = buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE");
+    token_in(&token_file(env.as_deref(), &home, crate::broker::in_test_bundle())?)
+}
+
+/// Where to read the token, if anywhere: a test bundle's is its own or none, as
+/// the default is the owner's, and would go to whichever broker it names.
+fn token_file(env: Option<&str>, home: &str, test_bundle: bool) -> Option<std::path::PathBuf> {
+    let named = env.is_some_and(|v| !v.trim().is_empty());
+    (named || !test_bundle).then(|| host_token_path(env, home))
 }
 
 /// The token in `path`, trimmed; `None` when the file is missing or empty.
@@ -212,6 +220,16 @@ pub fn urldec(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_test_bundle_never_reads_the_default_token() {
+        let owners = std::path::PathBuf::from("/Users/u/Library/Application Support/Buwiz Broker/host-token");
+        assert_eq!(super::token_file(None, "/Users/u", false), Some(owners));
+        assert_eq!(super::token_file(None, "/Users/u", true), None);
+        assert_eq!(super::token_file(Some("  "), "/Users/u", true), None);
+        let own = std::path::PathBuf::from("/tmp/x/host-token");
+        assert_eq!(super::token_file(Some("/tmp/x/host-token"), "/Users/u", true), Some(own));
+    }
+
     #[test]
     fn the_backend_defaults_to_the_live_port_and_takes_rox_backend() {
         assert_eq!(super::backend_from(None), "http://127.0.0.1:8787");
