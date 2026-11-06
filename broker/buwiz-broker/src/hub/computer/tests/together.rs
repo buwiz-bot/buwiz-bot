@@ -39,13 +39,13 @@ async fn viewer(b: &Bed) {
     });
 }
 
-fn open_req(bot: &str, body: Value) -> HubRequest {
+pub(super) fn open_req(bot: &str, body: Value) -> HubRequest {
     let mut headers = hyper::HeaderMap::new();
     headers.insert("x-buwiz-host", HeaderValue::from_static(host::TEST_TOKEN));
     HubRequest { method: hyper::Method::POST, url: format!("/v1/host/computer/bot/{bot}/open"), headers, body: Bytes::from(body.to_string()), params: vec![bot.to_owned()] }
 }
 
-async fn answer_of(res: HubResponse) -> (StatusCode, Value) {
+pub(super) async fn answer_of(res: HubResponse) -> (StatusCode, Value) {
     let status = res.status();
     let body = res.into_body().collect().await.unwrap().to_bytes();
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
@@ -306,7 +306,7 @@ async fn a_delegate_gets_no_computer_tool() {
 }
 
 /// The card `computer_ask_person` posted in `chat`.
-async fn card(b: &Bed, chat: &str) -> Value {
+pub(super) async fn card(b: &Bed, chat: &str) -> Value {
     for _ in 0..600 {
         let found = b.ctx.store.read(|s| s.thread(chat).and_then(|t| t.turns.iter().filter_map(|u| u.notice.clone()).rfind(|n| n["kind"] == "tool_ask" && n["state"] == "pending")));
         if let Some(n) = found {
@@ -317,7 +317,7 @@ async fn card(b: &Bed, chat: &str) -> Value {
     panic!("no card");
 }
 
-fn answer(b: &Bed, chat: &str, card: &Value, ans: &str) {
+pub(super) fn answer(b: &Bed, chat: &str, card: &Value, ans: &str) {
     ask::host_answer(&b.ctx, &json!({"chat": chat, "id": card["id"], "answer": ans})).unwrap();
 }
 

@@ -14,7 +14,13 @@
 //! reaches the desktop and the agent waits while they use it. When a Bot asks a person to take over,
 //! the viewer drives for as long as that lasts, and Hand back ends it. The broker's status says
 //! what the viewer may be, so when a hand-over ends the ticket is swapped here, however it ended.
+//!
+//! A person can connect a remote computer instead ([`remote_form`]). What they type goes to the
+//! broker and stays in memory here only until the form closes. Its key is a file's path, so the
+//! key itself is never on screen. The tab says what's different, in words: nothing walls off that
+//! machine, sleeping is disconnecting, and removing forgets the connection.
 
+use nsh_base::input;
 use nsh_core::prelude::*;
 use serde_json::{json, Value};
 
@@ -40,6 +46,27 @@ pub(crate) struct Status {
     /// a run has this screen
     pub working: bool,
     pub takeover: Option<Takeover>,
+    pub remote: Option<Remote>,
+}
+
+/// A computer a person connected.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Remote {
+    /// a box: a screen and a viewer. Otherwise commands and files alone
+    pub screen: bool,
+    pub place: String,
+}
+
+impl Remote {
+    fn parse(v: &Value) -> Option<Self> {
+        Some(Self { screen: v.get("screen")?.as_bool()?, place: v.get("where")?.as_str()?.to_owned() })
+    }
+
+    /// What's different about it, for the tab.
+    fn words(&self) -> String {
+        let what = if self.screen { "" } else { " It has no screen: commands and files only." };
+        format!("Remote computer {}. The AI acts on that machine with whatever access you gave it, and nothing walls it off.{what} Disconnecting and removing don't touch the machine.", self.place)
+    }
 }
 
 /// The screen is with a person, because its Bot asked.
@@ -72,11 +99,26 @@ impl Status {
             viewer: text("viewer"),
             working: v.get("working").and_then(Value::as_bool).unwrap_or(false),
             takeover: v.get("takeover").and_then(Takeover::parse),
+            remote: v.get("remote").and_then(Remote::parse),
         }
+    }
+
+    /// Whether there's a screen to show.
+    fn has_screen(&self) -> bool {
+        self.remote.as_ref().is_none_or(|r| r.screen)
     }
 
     /// The words on the tile.
     pub fn headline(&self) -> &'static str {
+        if self.remote.is_some() {
+            return match self.state.as_str() {
+                "asleep" => "Not connected",
+                "waking" => "Connecting…",
+                "awake" => "Connected",
+                "error" => "Can't connect",
+                _ => "Checking…",
+            };
+        }
         match self.state.as_str() {
             "absent" => "Wake up a computer",
             "asleep" => "Computer is asleep",
@@ -131,6 +173,17 @@ pub(crate) fn button_words(status: &Status) -> &'static str {
 pub(crate) struct Joinable {
     pub id: String,
     pub bots: String,
+    pub remote: bool,
+}
+
+impl Joinable {
+    fn words(&self) -> String {
+        if self.remote {
+            format!("Share {}'s remote computer. The AI acts on that machine, and nothing walls it off.", self.bots)
+        } else {
+            format!("Share {}'s computer", self.bots)
+        }
+    }
 }
 
 /// Parses `GET /v1/host/computers`, less the full ones.
@@ -139,7 +192,7 @@ pub(crate) fn joinable(v: &Value) -> Vec<Joinable> {
     rows.filter(|c| c.get("full").and_then(Value::as_bool) != Some(true))
         .filter_map(|c| {
             let names: Vec<&str> = c.get("bots")?.as_array()?.iter().filter_map(Value::as_str).collect();
-            Some(Joinable { id: c.get("id")?.as_str()?.to_owned(), bots: names.join(", ") })
+            Some(Joinable { id: c.get("id")?.as_str()?.to_owned(), bots: names.join(", "), remote: c.get("remote").and_then(Value::as_bool).unwrap_or(false) })
         })
         .collect()
 }
@@ -169,6 +222,71 @@ thread_local! {
     static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
     /// What the viewer open full screen last heard, with whose it is.
     static SHOWN: Signal<(String, Status)> = Owner::detached().run(|| keep("computer.shown", Default::default));
+    /// The form for a remote computer. Secrets are in here for as long as it's open.
+    static FORM: Form = Owner::detached().run(Form::new);
+}
+
+/// How far the form has got.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) enum Stage {
+    #[default]
+    Closed,
+    Editing,
+    /// the far end is being asked
+    Busy,
+    /// a person is to check this before anything is sent
+    Trust { fingerprint: String, pin: String },
+    /// it works: `what` it is, and `consent` for them to read
+    Ready { what: String, consent: String },
+}
+
+/// What the broker's test said, for the form.
+pub(crate) fn stage_of(reply: Option<&Value>) -> Result<Stage, String> {
+    let Some(v) = reply else { return Err("The broker didn't answer.".to_owned()) };
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        let system = v.get("system").and_then(Value::as_str).unwrap_or("a plain SSH host");
+        let what = if v.get("screen").and_then(Value::as_bool) == Some(true) { "A Buwiz computer answered, with its screen.".to_owned() } else { format!("{system} answered over SSH. There's no screen: commands and files only.") };
+        return Ok(Stage::Ready { what, consent: text("consent") });
+    }
+    if text("code") == "trust" {
+        return Ok(Stage::Trust { fingerprint: text("fingerprint"), pin: text("pin") });
+    }
+    Err(v.get("message").and_then(Value::as_str).unwrap_or("That computer can't be used.").to_owned())
+}
+
+/// The form's fields, each its own signal so that typing redraws nothing around it.
+#[derive(Clone, Copy)]
+struct Form {
+    stage: Signal<Stage>,
+    url: Signal<String>,
+    key_file: Signal<String>,
+    token: Signal<String>,
+    viewer: Signal<String>,
+    pin: Signal<String>,
+    note: Signal<String>,
+}
+
+impl Form {
+    fn new() -> Self {
+        Self { stage: signal(Stage::Closed), url: signal(String::new()), key_file: signal(String::new()), token: signal(String::new()), viewer: signal(String::new()), pin: signal(String::new()), note: signal(String::new()) }
+    }
+
+    fn body(&self) -> Value {
+        json!({"url": self.url.get_untracked(), "keyFile": self.key_file.get_untracked(), "token": self.token.get_untracked(), "viewerPassword": self.viewer.get_untracked(), "pin": self.pin.get_untracked()})
+    }
+
+    /// Back to nothing: no secret stays once the form is done with.
+    fn clear(&self) {
+        for field in [self.url, self.key_file, self.token, self.viewer, self.pin, self.note] {
+            field.set(String::new());
+        }
+        self.stage.set(Stage::Closed);
+    }
+}
+
+fn form() -> Form {
+    FORM.with(|f| *f)
 }
 
 /// The recording under way on each Bot's screen: its id, by Bot.
@@ -204,9 +322,11 @@ pub(crate) fn delete_warning(status: Option<&Value>, bot: &str, name: &str) -> O
         return Some(format!("If {name} has a computer, it goes too, with everything on it. This can't be undone."));
     };
     status.get("computer")?;
-    let bots = Status::parse(status).bots;
-    let others: Vec<&str> = bots.iter().filter(|(id, _)| id != bot).map(|(_, n)| n.as_str()).collect();
-    Some(if others.is_empty() {
+    let parsed = Status::parse(status);
+    let others: Vec<&str> = parsed.bots.iter().filter(|(id, _)| id != bot).map(|(_, n)| n.as_str()).collect();
+    Some(if others.is_empty() && parsed.remote.is_some() {
+        "Its connection to the remote computer goes too. Nothing on that machine changes.".to_owned()
+    } else if others.is_empty() {
         "Its computer goes too, with everything on it: its files, downloads and recordings. This can't be undone.".to_owned()
     } else {
         format!("It leaves the computer it shares with {}, which keeps running with what {name} left on it.", others.join(", "))
@@ -296,6 +416,7 @@ async fn refresh(bot: String) {
     let status = Status::parse(&v);
     let want_list = status.state == "absent";
     let awake = status.state == "awake";
+    let show_tile = awake && status.has_screen();
     update(&bot, |p| {
         if !awake {
             p.tile = None;
@@ -307,7 +428,7 @@ async fn refresh(bot: String) {
         let join = client::get("/v1/host/computers").await.map(|v| joinable(&v)).unwrap_or_default();
         update(&bot, |p| p.join = join);
     }
-    if awake {
+    if show_tile {
         refresh_tile(bot).await;
     }
 }
@@ -367,6 +488,55 @@ fn attach(bot: String, computer: String) {
 pub(crate) fn refusal(reply: Option<&Value>) -> Option<String> {
     let Some(v) = reply else { return Some("The broker didn't answer.".to_owned()) };
     (v.get("ok").and_then(Value::as_bool) == Some(false)).then(|| v.get("message").and_then(Value::as_str).unwrap_or("The computer said no.").to_owned())
+}
+
+/// Asks the broker about what's in the form, with what's been trusted so far.
+fn test_remote() {
+    let f = form();
+    f.note.set(String::new());
+    f.stage.set(Stage::Busy);
+    spawn_detached(async move {
+        let reply = client::post_any("/v1/host/computer/remote/test", f.body()).await;
+        match stage_of(reply.as_ref()) {
+            Ok(stage) => f.stage.set(stage),
+            Err(why) => {
+                f.note.set(why);
+                f.stage.set(Stage::Editing);
+            }
+        }
+    });
+}
+
+/// A person read the words and said yes.
+fn add_remote(bot: String) {
+    let f = form();
+    f.note.set(String::new());
+    f.stage.set(Stage::Busy);
+    spawn_detached(async move {
+        let mut body = f.body();
+        body["consent"] = json!(true);
+        let reply = client::post_any(&route(&bot, "/remote"), body).await;
+        match refusal(reply.as_ref()) {
+            Some(why) => {
+                f.note.set(why);
+                f.stage.set(Stage::Editing);
+            }
+            None => {
+                f.clear();
+                refresh(bot).await;
+            }
+        }
+    });
+}
+
+/// Forgets the connection. Nothing on the machine changes.
+fn remove_remote(bot: String) {
+    spawn_detached(async move {
+        let reply = client::post_any(&route(&bot, "/remote/remove"), json!({})).await;
+        let why = refusal(reply.as_ref());
+        update(&bot, |p| p.note = why.clone().unwrap_or_default());
+        refresh(bot).await;
+    });
 }
 
 fn leave(bot: String) {
@@ -433,13 +603,81 @@ pub(crate) fn pane() -> impl IntoElement {
     }
     tick();
     set_interval(POLL, tick);
-    view().test_id("computer-pane").child(dynamic(|| {
-        let Some(b) = store().active_bot() else {
-            return note("A computer belongs to a Bot. Open a Bot to use one.".to_owned()).into_element();
-        };
-        let p = pane_signal().get();
-        body(&b.id, &b.name, &b.shape, &p).into_element()
-    }))
+    view()
+        .test_id("computer-pane")
+        .child(dynamic(|| {
+            let Some(b) = store().active_bot() else {
+                return note("A computer belongs to a Bot. Open a Bot to use one.".to_owned()).into_element();
+            };
+            let p = pane_signal().get();
+            body(&b.id, &b.name, &b.shape, &p).into_element()
+        }))
+        // outside the part a poll redraws, so a field keeps its focus
+        .child(when(|| pane_signal().with(|p| p.status.state == "absent"), || remote_form().into_element()))
+}
+
+/// A field of the form.
+fn field(id: &'static str, hint: &'static str, masked: bool, value: Signal<String>) -> impl IntoElement {
+    view().h(px(32.0)).rounded(px(8.0)).bg(theme::HOVER).px(px(10.0)).justify_center().child(
+        input()
+            .test_id(id)
+            .label(hint)
+            .value(move || value.get())
+            .placeholder(hint)
+            .placeholder_color(|| color(theme::GHOST))
+            .masked(masked)
+            .text_size(px(12.0))
+            .text_color(theme::TEXT)
+            .h(px(32.0))
+            .on_change(move |t: &str| value.set(t.to_owned())),
+    )
+}
+
+/// What the form shows under its fields, for the stage it's at.
+fn stage_part(stage: Stage) -> impl IntoElement {
+    let f = form();
+    let out = view().gap_2().pt(px(8.0));
+    match stage {
+        Stage::Closed => out,
+        Stage::Busy => out.child(note("Asking that machine…".to_owned())),
+        Stage::Editing => out.child(small_button("computer-remote-test", "Test", test_remote)),
+        Stage::Trust { fingerprint, pin } => out
+            .child(view().test_id("computer-remote-fingerprint").child(note(format!("Nothing has been sent yet. Check that this is that machine's key, on the machine itself, before you trust it: {fingerprint}"))))
+            .child(small_button("computer-remote-trust", "I checked, trust it", move || {
+                f.pin.set(pin.clone());
+                test_remote();
+            })),
+        Stage::Ready { what, consent } => out.child(note(what)).child(view().test_id("computer-remote-consent").child(note(consent))).child(small_button("computer-remote-add", "I understand, add it", || {
+            if let Some(b) = store().active_bot() {
+                add_remote(b.id);
+            }
+        })),
+    }
+}
+
+/// Connecting a remote computer: the address, what proves who you are, a test, then a yes.
+fn remote_form() -> impl IntoElement {
+    let f = form();
+    view()
+        .pt(px(10.0))
+        .child(when(move || f.stage.with(|s| *s == Stage::Closed), move || small_button("computer-remote-open", "Connect a remote computer", move || f.stage.set(Stage::Editing)).into_element()))
+        .child(when(
+            move || f.stage.with(|s| *s != Stage::Closed),
+            move || {
+                view()
+                    .test_id("computer-remote-form")
+                    .gap_2()
+                    .child(note("A running Buwiz computer, over ssh:// or https://, or any SSH host for commands and files.".to_owned()))
+                    .child(field("computer-remote-url", "ssh://you@host or https://box.example.com", false, f.url))
+                    .child(field("computer-remote-key", "SSH key file, like ~/.ssh/id_ed25519", false, f.key_file))
+                    .child(field("computer-remote-token", "The box's token (none for a plain SSH host)", true, f.token))
+                    .child(field("computer-remote-viewer", "The box's viewer password", true, f.viewer))
+                    .child(view().test_id("computer-remote-note").child(text(move || f.note.get()).number_of_lines(4).text_size(px(12.0)).text_color(theme::MUTED)))
+                    .child(dynamic(move || stage_part(f.stage.get()).into_element()))
+                    .child(view().flex_row().child(small_button("computer-remote-cancel", "Cancel", move || f.clear())))
+                    .into_element()
+            },
+        ))
 }
 
 fn note(words: String) -> impl IntoElement {
@@ -480,6 +718,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
         }
     };
     let mut out = view().child(tile).child(text(format!("{name}'s screen")).text_size(px(12.0)).text_color(theme::MUTED).pt(px(10.0)));
+    if let Some(r) = &p.status.remote {
+        out = out.child(view().test_id("computer-remote-words").child(note(r.words())));
+    }
     for words in [&p.status.message, &p.note].into_iter().filter(|w| !w.is_empty()) {
         out = out.child(view().test_id("computer-problem").child(note(words.clone())));
     }
@@ -505,14 +746,16 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     if awake {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
-        out = out.child(
-            view()
-                .flex_row()
-                .gap_2()
-                .pt(px(10.0))
-                .child(small_button("computer-open", "Open", move || open_full(&b1, &n1)))
-                .child(small_button("computer-sleep", "Sleep", move || sleep(b2.clone()))),
-        );
+        let sleep_words = if p.status.remote.is_some() { "Disconnect" } else { "Sleep" };
+        let mut row = view().flex_row().gap_2().pt(px(10.0));
+        if p.status.has_screen() {
+            row = row.child(small_button("computer-open", "Open", move || open_full(&b1, &n1)));
+        }
+        out = out.child(row.child(small_button("computer-sleep", sleep_words, move || sleep(b2.clone()))));
+    }
+    if p.status.remote.is_some() {
+        let b = bot.to_owned();
+        out = out.child(view().flex_row().pt(px(10.0)).child(small_button("computer-remote-remove", "Remove this computer", move || remove_remote(b.clone()))));
     }
     if p.status.bots.len() > 1 {
         let b = bot.to_owned();
@@ -526,7 +769,7 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
                     .test_id("computer-join")
                     .label("Share a computer")
                     .pt(px(10.0))
-                    .child(text(format!("Share {}'s computer", j.bots)).text_size(px(12.0)).text_color(theme::TEXT))
+                    .child(text(j.words()).text_size(px(12.0)).text_color(theme::TEXT))
                     .on_press(move || attach(b.clone(), id.clone())),
             );
         }
@@ -833,6 +1076,35 @@ mod tests {
     #[test]
     fn a_full_computer_isnt_offered() {
         let v = json!({"computers": [{"id": "c1", "bots": ["Ann", "Bea"], "full": false}, {"id": "c2", "bots": ["X"], "full": true}]});
-        assert_eq!(joinable(&v), [Joinable { id: "c1".into(), bots: "Ann, Bea".into() }]);
+        assert_eq!(joinable(&v), [Joinable { id: "c1".into(), bots: "Ann, Bea".into(), remote: false }]);
+    }
+
+    #[test]
+    fn a_remote_computer_says_what_it_is_in_every_place_a_person_decides() {
+        let v = json!({"state": "asleep", "remote": {"screen": false, "where": "me@h"}, "computer": "c", "bots": [{"id": "1", "name": "Ann"}]});
+        let s = Status::parse(&v);
+        assert_eq!(s.remote, Some(Remote { screen: false, place: "me@h".into() }));
+        assert_eq!(s.headline(), "Not connected");
+        assert_eq!(Status { state: "awake".into(), ..s.clone() }.headline(), "Connected");
+        assert!(!s.has_screen());
+        let words = s.remote.as_ref().unwrap().words();
+        assert!(words.contains("whatever access you gave it") && words.contains("nothing walls it off") && words.contains("no screen"), "{words}");
+        let warned = delete_warning(Some(&v), "1", "Ann").unwrap();
+        assert!(warned.contains("Nothing on that machine changes") && !warned.contains("everything on it"), "{warned}");
+        let row = json!({"computers": [{"id": "c1", "bots": ["Ann"], "full": false, "remote": true}]});
+        assert!(joinable(&row)[0].words().contains("nothing walls it off"));
+        assert!(Status::default().has_screen(), "a computer of ours has one");
+    }
+
+    #[test]
+    fn the_form_goes_by_what_the_broker_says() {
+        assert_eq!(stage_of(Some(&json!({"ok": false, "code": "trust", "fingerprint": "SHA256:x", "pin": "ssh-ed25519 A"}))), Ok(Stage::Trust { fingerprint: "SHA256:x".into(), pin: "ssh-ed25519 A".into() }));
+        assert_eq!(stage_of(Some(&json!({"ok": false, "code": "remote", "message": "That machine can't be reached."}))), Err("That machine can't be reached.".to_owned()));
+        assert!(stage_of(None).is_err());
+        let Ok(Stage::Ready { what, consent }) = stage_of(Some(&json!({"ok": true, "screen": false, "system": "Linux", "consent": "words"}))) else { panic!() };
+        assert!(what.contains("Linux") && what.contains("no screen"), "{what}");
+        assert_eq!(consent, "words");
+        let Ok(Stage::Ready { what, .. }) = stage_of(Some(&json!({"ok": true, "screen": true, "consent": "w"}))) else { panic!() };
+        assert!(what.contains("with its screen"));
     }
 }

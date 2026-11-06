@@ -41,6 +41,13 @@
 //!
 //! What these tools read is outside content (a page on that screen can say anything): it counts as
 //! such for the switches that ask after outside content.
+//!
+//! A remote computer isn't any of that wall. The tools are the same, and everything the model does
+//! there it does with whatever access a person gave, so the model is told that ([`prompt`]) and a
+//! person said yes to it when they added it. Nothing can check from outside that its users are
+//! apart: a shared one has no `computer_run`, and no screen on it is handed over, because the hand-
+//! over's card promises what can't be read there. A plain SSH host has no screen: those tools say
+//! so, and a model that can't see can still use it.
 
 use base64::Engine;
 use buwiz_computer::{Input, Problem, Settled, WaitFor};
@@ -116,10 +123,37 @@ pub fn defs() -> Vec<Value> {
     ]
 }
 
-/// The tools this turn is offered: a turn nobody can answer can't ask a person.
+const RUN_REMOTE: &str = "Run a shell command on your computer, in your own folder there, and get its output. This computer is a remote machine a person connected: the command runs there with whatever access they gave, and nothing walls it off from the rest of that machine.";
+const REMOTE_NO_HANDOVER: &str = "A remote computer's screen can't be handed over here: nothing can check from outside that what you run there can't see it. Ask the person in chat to open the viewer and take control, and say what you need.";
+
+/// The tools this turn is offered: a turn nobody can answer can't ask a person, and no screen on a
+/// remote computer is handed over. What a remote computer's `computer_run` does is said as it is.
 pub fn defs_for(run: &Run) -> Vec<Value> {
     let present = asking::present(&run.turn);
-    defs().into_iter().filter(|d| present || d["name"] != ASK_PERSON).collect()
+    let remote = remote_at(run).is_some();
+    let mut defs: Vec<Value> = defs().into_iter().filter(|d| (present && !remote) || d["name"] != ASK_PERSON).collect();
+    if remote {
+        if let Some(run_def) = defs.iter_mut().find(|d| d["name"] == "computer_run") {
+            run_def["description"] = json!(RUN_REMOTE);
+        }
+    }
+    defs
+}
+
+/// Whether this turn's Bot is at a remote computer, and whether that has a screen.
+fn remote_at(run: &Run) -> Option<bool> {
+    let (bot, computers) = (bot(run)?, Computers::of(&run.ctx)?);
+    computers.remote_at(&run.ctx, &bot)
+}
+
+/// What an Ask card adds for a remote computer: the wall the switch's words speak of isn't there.
+pub fn card_note(run: &Run) -> Option<String> {
+    remote_at(run).map(|_| "This is a remote machine. The AI acts there with whatever access you gave it, and nothing walls it off.".to_owned())
+}
+
+/// Whether this turn's computer has nothing to see: a model needs no eyes for it.
+fn screenless(run: &Run) -> bool {
+    remote_at(run) == Some(false)
 }
 
 /// The Bot this turn acts for, when it has one.
@@ -153,12 +187,13 @@ async fn sees(run: &Run) -> bool {
     }
 }
 
+const REMOTE_WORDS: &str = "\n\nYour computer is a remote machine a person connected, not a box made for you: what you do there happens on that machine, with whatever access they gave, and nothing walls it off. Do only what you were asked to do there, and never delete what you didn't make unless they say so.";
 const BLIND: &str = "This model can't see images, so it can't use the computer. Pick a model that sees images for this Bot.";
 
 /// Whether this turn is offered the tools: its Bot sits at a computer, it isn't a routine nobody
 /// let in, and its model can see the screen. A computer nobody made has nothing to offer.
 pub async fn offered(run: &Run) -> bool {
-    seated(run) && sees(run).await
+    seated(run) && (screenless(run) || sees(run).await)
 }
 
 /// Whether this turn's Bot sits at a computer it may use from here.
@@ -170,8 +205,12 @@ fn seated(run: &Run) -> bool {
 pub async fn prompt(run: &Run) -> String {
     if !seated(run) {
         String::new()
+    } else if screenless(run) {
+        format!("{REMOTE_WORDS} It has no screen: computer_run, computer_read_file and computer_write_file work there, and nothing else does.")
     } else if sees(run).await {
-        "\n\nYour computer: the screen is for acting. To read a page or a file, use a text route where one exists (fetch_url, computer_read_file, computer_run), because each screenshot is costly and only the latest few stay with you. When a page needs a person, such as a sign-in, use computer_ask_person rather than asking for a password.".to_owned()
+        let remote = if remote_at(run).is_some() { REMOTE_WORDS } else { "" };
+        let person = if remote.is_empty() { " When a page needs a person, such as a sign-in, use computer_ask_person rather than asking for a password." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
+        format!("{remote}\n\nYour computer: the screen is for acting. To read a page or a file, use a text route where one exists (fetch_url, computer_read_file, computer_run), because each screenshot is costly and only the latest few stay with you.{person}")
     } else {
         format!("\n\nYour computer: if asked to use it, say this in your own words: {BLIND}")
     }
@@ -272,6 +311,9 @@ fn hold_screen(run: &Run, computers: &std::sync::Arc<Computers>, live: &Live) ->
 /// `computer_ask_person`: a card, then the screen is the person's until it comes back.
 async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, input: &Value) -> Out {
     let Some(reason) = text(input, "reason").map(str::trim).filter(|r| !r.is_empty()) else { return Out::err("computer_ask_person needs a reason".to_owned()) };
+    if live.machine.link.is_some() {
+        return Out::err(REMOTE_NO_HANDOVER.to_owned());
+    }
     let reason = js::slice_utf16(reason, MAX_REASON).to_owned();
     let limit = input.get("time_limit_s").and_then(Value::as_u64).unwrap_or(TAKEOVER_S).clamp(TAKEOVER_MIN_S, TAKEOVER_MAX_S);
     // the card says commands can't see this screen, so that's checked, from outside, before it's
@@ -346,7 +388,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     if !routine_allowed(run, &bot) {
         return Out::err("A routine can use the computer only when a person turns that on.".to_owned());
     }
-    if !sees(run).await {
+    if !screenless(run) && !sees(run).await {
         return Out::err(BLIND.to_owned());
     }
     let ctx = &run.ctx;
