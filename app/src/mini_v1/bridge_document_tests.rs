@@ -41,8 +41,9 @@ impl Bed {
         })
     }
 
-    /// The person's press in a first-party plugin's open.
-    fn pressed(&self, file: &str) -> Open {
+    /// A call from the person's surface in a first-party plugin's open: what
+    /// the check can see, which isn't proof of a press.
+    fn call_on_the_persons_surface(&self, file: &str) -> Open {
         self.open(true, false, "fx_document", json!({"field": self.field(file)}))
     }
 }
@@ -67,10 +68,10 @@ fn in_flight(o: &Open) {
 }
 
 #[test]
-fn the_persons_press_in_a_first_party_app_opens_a_docx_and_an_xlsx() {
+fn a_call_call_on_the_persons_surface_in_a_first_party_app_opens_a_docx_and_an_xlsx() {
     let bed = Bed::new();
     for (file, name) in [("open/1/a.docx", "a.docx"), ("open/1/b.xlsx", "b.xlsx")] {
-        let mut o = bed.pressed(file);
+        let mut o = bed.call_on_the_persons_surface(file);
         assert_eq!(o.wait("{"), r#"{"opened":true}"#, "the app gets its answer, and nothing of the path");
         assert_eq!(opened(&o), [name]);
     }
@@ -133,10 +134,10 @@ fn a_result_after_the_screen_closed_opens_nothing() {
 fn the_viewers_job_asks_the_session_when_it_runs_not_at_the_check() {
     let bed = Bed::new();
     let live = |o: &Open| o.ui.lives.lock().unwrap().pop().expect("the bridge handed it over")();
-    let mut o = bed.pressed("open/1/a.docx");
+    let mut o = bed.call_on_the_persons_surface("open/1/a.docx");
     o.wait("{");
     assert!(live(&o), "the open lives");
-    let mut o = bed.pressed("open/1/a.docx");
+    let mut o = bed.call_on_the_persons_surface("open/1/a.docx");
     o.wait("{");
     o.ctx.close();
     assert!(!live(&o), "it closed between the check and the job");
@@ -160,7 +161,7 @@ fn a_path_the_check_refuses_never_reaches_the_viewer() {
     std::os::unix::fs::symlink(bed.folder.join("open/1/a.docx"), bed.folder.join("open/1/link.docx")).unwrap();
     fs::write(bed.folder.join("open/1/run.exe"), "x").unwrap();
     for file in ["../outside.docx", "open/1/link.docx", "open/1", "open/1/gone.docx", "open/1/run.exe"] {
-        let mut o = bed.pressed(file);
+        let mut o = bed.call_on_the_persons_surface(file);
         assert_eq!(o.wait("{"), r#"{"opened":true}"#, "{file}");
         assert!(opened(&o).is_empty(), "{file}");
     }
