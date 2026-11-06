@@ -76,7 +76,7 @@ impl BoxGuest {
         parse_screen(&self.screen(json!({"action": "up", "bot": bot})).await?, bot)
     }
 
-    /// Stops `bot`'s screen and its commands, and frees its slot.
+    /// Stops `bot`'s screen and frees its slot. Its commands are asked to stop, and get two seconds.
     pub async fn screen_down(&self, bot: &str) -> Result<()> {
         self.screen(json!({"action": "forget", "bot": bot})).await.map(|_| ())
     }

@@ -518,6 +518,24 @@ async fn a_computer_that_cant_be_cleared_isnt_handed_over() {
 }
 
 #[tokio::test]
+async fn a_hand_over_that_fails_after_the_recording_stopped_still_says_where_it_is() {
+    let b = timed("record-lost");
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    call(&r, "computer_record", json!({"action": "start"})).await;
+    *b.mock.stray_problem.lock().unwrap() = Some(Problem::Failed("no".into()));
+    let asking = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
+    };
+    answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it was handed over all the same").unwrap();
+    assert_eq!(out.is_error, Some(true));
+    assert!(words(&out).contains("7.mp4"), "{}", words(&out));
+}
+
+#[tokio::test]
 async fn a_computer_not_confirmed_walled_off_isnt_handed_over() {
     for answer_given in [Ok(false), Err(Problem::Failed("docker said no".into()))] {
         let b = bed("notapart");
@@ -528,12 +546,12 @@ async fn a_computer_not_confirmed_walled_off_isnt_handed_over() {
             let r = r.clone();
             tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
         };
-        answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
-        let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it was handed over all the same").unwrap();
+        let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it asked anyway").unwrap();
         assert_eq!(out.is_error, Some(true));
         assert!(words(&out).contains("nothing was handed over"), "{}", words(&out));
         assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
         assert!(!b.mock.calls().iter().any(|c| c == "clear_strays"), "{:?}", b.mock.calls());
+        assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("recording").is_none());
     }
 }
 

@@ -748,7 +748,7 @@ async fn watched_person(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &s
     assert_eq!(peek.exit_code, Some(0), "{}", peek.stderr);
 
     // the same, as the desktop: it's what proves the rest
-    let cookie = on_desktop(m, "c2p_a", &a, "xauth list | awk '{print $3}'");
+    let cookie = on_desktop(m, "c2p_a", &a, "xauth -i list | awk '{print $3}'");
     assert_eq!(cookie.len(), 32, "{cookie}");
     let quoted = KEYLOGGER.replace('\'', "'\\''");
     on_desktop(m, "c2p_a", &a, &format!("KL_COOKIE={cookie} setsid nohup python3 -c '{quoted}' {} $HOME/control.log >/dev/null 2>&1 &", a.display));
@@ -802,7 +802,7 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     let (na, nb) = (a.display.trim_start_matches(':'), b.display.trim_start_matches(':'));
     let targets = [
         "/run/box/x/svc.auth".to_owned(), format!("/run/box/x/{na}/auth"), format!("/run/box/x/{nb}/auth"), "/run/box/x/1/auth".to_owned(), "/run/box/keeper.sock".to_owned(),
-        "/home/box/desktops/c2r_a".to_owned(), "/home/box/desktops/c2r_a/chrome-profile".to_owned(), "/home/box/desktops/c2r_b/chrome-profile".to_owned(), "/home/box/desktops/main".to_owned(), "/home/box/desktops/main/chrome-profile".to_owned(), "/home/box/agents/c2r_b".to_owned(), "/workspace/agents/c2r_b".to_owned(), "/workspace/agents".to_owned(), "/home/box/agents".to_owned(),
+        "/home/box/desktops/c2r_a".to_owned(), "/home/box/desktops/c2r_a/chrome-profile".to_owned(), "/home/box/desktops/c2r_b/chrome-profile".to_owned(), "/home/box/desktops/main".to_owned(), "/home/box/desktops/main/chrome-profile".to_owned(), "/run/box/x".to_owned(), "/run/box/log".to_owned(), "/run/box/log/voxl-1.log".to_owned(), format!("/run/box/x/{na}/run"), "/home/box/agents/c2r_b".to_owned(), "/workspace/agents/c2r_b".to_owned(), "/workspace/agents".to_owned(), "/home/box/agents".to_owned(),
     ];
     let quoted = REACH_OUT.replace('\'', "'\\''");
     let out = p.run(m, &a, &format!("python3 -c '{quoted}' {}", targets.join(" ")), 30_000).await.unwrap();
@@ -851,7 +851,7 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     assert!(path.starts_with("agents/c2r_a/recordings/"), "{path}");
     let size = p.run(m, &a, &format!("stat -c '%u %s' /workspace/{path}"), 5000).await.unwrap().stdout;
     assert!(size.starts_with(&agent_a.to_string()) && !size.trim().ends_with(" 0"), "{size}");
-    let serve = "import http.server as h\nclass H(h.BaseHTTPRequestHandler):\n    def do_GET(s):\n        s.send_response(200);s.send_header('Content-Disposition','attachment; filename=got.txt');s.send_header('Content-Length','4');s.end_headers();s.wfile.write(b'got\\n')\nh.HTTPServer(('127.0.0.1',8124),H).serve_forever()\n";
+    let serve = "import http.server as h\nclass H(h.BaseHTTPRequestHandler):\n    def do_GET(s):\n        got=s.path.endswith('got.txt')\n        s.send_response(200);s.send_header('Content-Length','4')\n        s.send_header('Content-Disposition','attachment; filename=got.txt') if got else s.send_header('Content-Type','text/html')\n        s.end_headers();s.wfile.write(b'got\\n')\nh.HTTPServer(('127.0.0.1',8124),H).serve_forever()\n";
     p.write_file(m, "/workspace/agents/c2r_a/srv.py", serve.as_bytes()).await.unwrap();
     assert_eq!(p.run(m, &a, "setsid nohup python3 srv.py >srv.log 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -866,6 +866,30 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     }
     assert_eq!(got.trim(), "got", "a download the Bot can't read: {}", docker(&["exec", "--user", "0", &name_of(m), "ls", "-la", "/workspace/agents/c2r_a"]));
 
+    // each screen's address comes from its own browser, through a recipe's own receipt
+    let serve_b = p.open_url(m, &b, "http://127.0.0.1:8124/for-b").await;
+    serve_b.unwrap();
+    p.open_url(m, &a, "http://127.0.0.1:8124/for-a").await.unwrap();
+    let receipt = |screen: &Screen| {
+        docker(&["exec", "--user", "0", "-e", &format!("T={}", m.token.expose()), &name_of(m), "sh", "-c", &format!("curl -s -m 20 -H \"Authorization: Bearer $T\" -H 'content-type: application/json' -d '{{\"observe\":\"page\",\"steps\":[{{\"op\":\"click\",\"x\":640,\"y\":400}}]}}' 'http://127.0.0.1:1337/v1/cua/recipe?display=%3A{}'", screen.display.trim_start_matches(':'))])
+    };
+    let mut pages = (String::new(), String::new());
+    for _ in 0..40 {
+        pages = (receipt(&a), receipt(&b));
+        if pages.0.contains("/for-a") && pages.1.contains("/for-b") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let urls = |receipt: &str| receipt.split(",\"screenshot\"").next().unwrap_or_default().to_owned();
+    assert!(pages.0.contains("/for-a") && !urls(&pages.0).contains("/for-b"), "{}", urls(&pages.0));
+    assert!(pages.1.contains("/for-b") && !urls(&pages.1).contains("/for-a"), "{}", urls(&pages.1));
+
+    // nothing about X's folders is readable, and nothing was for a moment: nobody but root writes them
+    let modes = docker(&["exec", "--user", "0", &name_of(m), "stat", "-c", "%a %U %G", "/run/box/x", "/run/box/x/svc.auth", &format!("/run/box/x/{na}"), &format!("/run/box/x/{na}/auth"), "/run/box/log"]);
+    let desktop_name = format!("d{desktop_a}");
+    assert_eq!(modes.lines().collect::<Vec<_>>(), ["711 root root", "640 root boxsvc", "711 root root", format!("640 root {desktop_name}").as_str(), "700 root root"], "{modes}");
+
     // the check from outside: yes while it's so, and no the moment it isn't
     let bots = ["c2r_a".to_owned(), "c2r_b".to_owned()];
     assert!(p.users_apart(m, &bots).await.unwrap(), "the check from outside said no");
@@ -879,6 +903,54 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     docker(&["exec", "--user", "0", &name_of(m), "pkill", "-f", "Xvfb :70"]);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(!p.users_apart(m, &["nobody".to_owned()]).await.unwrap_or(false), "a Bot with no user passed");
+    // a cookie shared by group or by its folder, whichever way it's done
+    let cookie = format!("/run/box/x/{nb}/auth");
+    let as_root = |args: &[&str]| {
+        let mut all = vec!["exec", "--user", "0", &*Box::leak(name_of(m).into_boxed_str())];
+        all.extend_from_slice(args);
+        docker(&all)
+    };
+    let group = as_root(&["stat", "-c", "%g", &cookie]);
+    as_root(&["chgrp", "1400", &cookie]);
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "a cookie shared with every desktop passed");
+    as_root(&["chgrp", &group, &cookie]);
+    as_root(&["chmod", "0660", &cookie]);
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "a cookie its group can write passed");
+    as_root(&["chmod", "0640", &cookie]);
+    let folder = format!("/run/box/x/{nb}");
+    as_root(&["chmod", "0771", &folder]);
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "a cookie's open folder passed");
+    as_root(&["chmod", "0711", &folder]);
+    assert!(p.users_apart(m, &bots).await.unwrap());
+    // a copy of Xvfb with its door open: no path says it's X, the kernel's list of listeners does
+    as_root(&["sh", "-c", "cp /usr/bin/Xvfb /tmp/not-x && setpriv --reuid=1000 --regid=1000 --groups=1400 --inh-caps=-all setsid nohup /tmp/not-x :71 -ac -screen 0 64x64x24 >/dev/null 2>&1 &"]);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "a copied X server with -ac passed");
+    as_root(&["pkill", "-f", "not-x :71"]);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    as_root(&["sh", "-c", "unlink /tmp/.X11-unix/X71; unlink /tmp/.X71-lock; true"]);
+    assert!(p.users_apart(m, &bots).await.unwrap());
+    // a real server told by its own desktop to take anybody: `xhost +`, which no argument shows
+    let open_door = "import os,socket,struct,subprocess\nline=subprocess.check_output(['xauth','-i','list']).split()[2].decode()\ncookie=bytes.fromhex(line)\nname=b'MIT-MAGIC-COOKIE-1'\npad=lambda b:b+b'\\0'*(-len(b)%4)\ns=socket.socket(socket.AF_UNIX);s.connect('/tmp/.X11-unix/X'+os.environ['DISPLAY'].lstrip(':'))\ns.sendall(struct.pack('<BxHHHHxx',0x6c,11,0,len(name),len(cookie))+pad(name)+pad(cookie))\nh=s.recv(8);s.recv(struct.unpack('<H',h[6:8])[0]*4)\ns.sendall(struct.pack('<BBH',111,MODE,1))\ns.sendall(struct.pack('<BxHI',43,1,0)[:4])\ns.recv(32)\n";
+    let as_quoted = |mode: u8| open_door.replace("MODE", &mode.to_string()).replace('\'', "'\\''");
+    on_desktop(m, "c2r_a", &a, &format!("python3 -c '{}'", as_quoted(0)));
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "an X server open to anybody passed");
+    on_desktop(m, "c2r_a", &a, &format!("python3 -c '{}'", as_quoted(1)));
+    assert!(p.users_apart(m, &bots).await.unwrap(), "the door shut again");
+
+    // a screen that's down: the name is anybody's, and nothing of the box's connects to it
+    let bait = "import socket,time\ns=socket.socket(socket.AF_UNIX);s.bind('\\0/tmp/.X11-unix/X5');s.listen(5);s.settimeout(6)\ntry:\n    c,_=s.accept();print('HEARD',len(c.recv(256)))\nexcept socket.timeout:\n    print('heard nothing')\n";
+    p.write_file(m, "/workspace/agents/c2r_a/bait.py", bait.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 bait.py > bait.log 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let down = Screen { display: ":5".into(), viewer_port: 6905, folder: "agents/c2r_a".into(), profile: None };
+    let tried = p.screenshot(m, &down).await;
+    println!("a screen that's down: {:?}", tried.as_ref().map(|_| "a picture"));
+    assert!(tried.is_err(), "it took a picture of something");
+    assert!(p.input(m, &down, &Input::Move { x: 1, y: 1 }).await.is_err());
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+    let heard = p.run(m, &a, "cat bait.log", 5000).await.unwrap().stdout;
+    assert!(heard.contains("heard nothing"), "a service connected to a squatter: {heard}");
 
     // a process holding a screen's name before it's up gets no screen, and no cookie
     let squat = "import socket,time\ns=socket.socket(socket.AF_UNIX);s.bind('\\0/tmp/.X11-unix/X4');s.listen(5);s.settimeout(8)\ntry:\n    c,_=s.accept();print('HEARD',len(c.recv(256)))\nexcept socket.timeout:\n    print('heard nothing')\n";
@@ -894,11 +966,16 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     let c = p.screen_up(m, "c2r_c").await.expect("the name's free now");
     assert_eq!(c.display, ":4");
 
-    // a Bot that left: its screen and commands go, and its numbers stay its own
-    assert_eq!(p.run(m, &c, "setsid nohup sleep 300 >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    // a Bot that left: its screen and commands go, and its numbers stay its own. A command in the
+    // middle of something gets to finish it, and one that won't is ended all the same
+    let tidy = "setsid nohup sh -c 'trap \"echo finished > /workspace/agents/c2r_c/term.log; exit 0\" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 & setsid nohup sh -c 'trap \"\" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &";
+    assert_eq!(p.run(m, &c, tidy, 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let (agent_c, _) = users_of(m, "c2r_c");
     p.screen_down(m, "c2r_c").await.unwrap();
     assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &agent_c.to_string()]), "0", "its commands went on");
+    assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "cat", "/workspace/agents/c2r_c/term.log"]), "finished", "a command was killed mid-write");
+    assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", "xauth -f /run/box/x/svc.auth list | grep -c ':4 '"]), "0", "the services still hold a stopped screen's cookie");
     let d = p.screen_up(m, "c2r_d").await.unwrap();
     assert_eq!(d.display, ":4", "the slot is free for another");
     assert_ne!(users_of(m, "c2r_d").0, agent_c, "a new Bot got an old Bot's user, and so its files");
@@ -934,7 +1011,7 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     let hook = hook_library(dir);
     p.write_file(m, "/workspace/agents/c2k_a/hook.so", &hook).await.unwrap();
     let quoted = KEYLOGGER.replace('\'', "'\\''");
-    let cookie = on_desktop(m, "c2k_a", &a, "xauth list | awk '{print $3}'");
+    let cookie = on_desktop(m, "c2k_a", &a, "xauth -i list | awk '{print $3}'");
     on_desktop(m, "c2k_a", &a, &format!("KL_COOKIE={cookie} setsid nohup python3 -c '{quoted}' {} $HOME/keys.log >/dev/null 2>&1 &", a.display));
     on_desktop(m, "c2k_a", &a, "setsid nohup sh -c 'while true; do sleep 0.05 & done' >/dev/null 2>&1 & cp /usr/bin/python3 $HOME/innocent; setsid nohup $HOME/innocent -c 'import time;time.sleep(600)' >/dev/null 2>&1 &");
     on_desktop(m, "c2k_a", &a, "cp /workspace/agents/c2k_a/hook.so $HOME/hook.so; LD_PRELOAD=$HOME/hook.so setsid nohup /usr/bin/Xvfb :77 -screen 0 64x64x24 >/dev/null 2>&1 &");
@@ -964,8 +1041,18 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     let keys = || on_desktop(m, "c2k_a", &a, "cat ~/keys.log").matches("key ").count();
     assert_eq!(keys(), 1, "the keylogger must work, or this proves nothing");
 
-    let ended = p.clear_strays(m, &a).await.unwrap();
-    println!("ended: {ended:?}");
+    // a process that can't be read isn't one that's fine: this one's status read fails, as if the
+    // kernel said no, with the rest of the scan as it is
+    on_desktop(m, "c2k_a", &a, "setsid nohup python3 -c 'import os,time;open(os.path.expanduser(\"~/unread.pid\"),\"w\").write(str(os.getpid()));time.sleep(599)' >/dev/null 2>&1 &");
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let unread = on_desktop(m, "c2k_a", &a, "cat ~/unread.pid");
+    let wrap = "import builtins,sys\nsource=sys.argv.pop();pid=sys.argv.pop()\nreal=builtins.open\ndef refusing(path,*a,**k):\n    if path=='/proc/%s/status'%pid:\n        raise PermissionError(13,'no')\n    return real(path,*a,**k)\nbuiltins.open=refusing\nexec(source)\n";
+    let scanned = docker(&["exec", "--user", "0", "--privileged", &name_of(m), "/usr/bin/python3", "-I", "-S", "-c", wrap, "c2k_a", &unread, buwiz_computer::docker::CLEAR]);
+    println!("with one unreadable: {scanned}");
+    assert!(scanned.contains("unreadable"), "a process that can't be read was left: {scanned}");
+    assert_eq!(on_desktop(m, "c2k_a", &a, &format!("test -d /proc/{unread} && echo alive; true")), "", "it's still there");
+
+    let ended: Vec<String> = serde_json::from_str(&scanned).unwrap();
     assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
     assert!(ended.iter().any(|n| n == "Xvfb"), "the allowed program with a library was spared: {ended:?}");
     let after = docker(&["exec", "--user", "0", &name_of(m), "ps", "-eo", "pid,uid,stat,comm,args", "--forest"]);
@@ -992,6 +1079,72 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     assert_ne!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &desktop_a.to_string(), "chromium"]), "0", "the browser went");
 }
 
+/// With the box's own browser on, as Compose has it: there's no DevTools port for a command to use,
+/// a fake one changes nothing, and the browser's downloads land in the shared folder.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn the_main_browser_has_no_door_a_command_can_use() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (token, password) = ("c2m-token-of-enough-length-0123456789", "c2m-password-of-enough-length-0123456");
+    std::fs::write(dir.join("token"), token).unwrap();
+    std::fs::write(dir.join("viewer"), password).unwrap();
+    let name = format!("c2m-{}", std::process::id());
+    let caps: Vec<String> = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETUID"].iter().flat_map(|c| ["--cap-add".to_owned(), (*c).to_owned()]).collect();
+    let mut run = vec!["run", "-d", "--name", &name, "--cap-drop", "ALL", "--sysctl", "net.ipv4.ip_unprivileged_port_start=6906", "--security-opt", "no-new-privileges", "--shm-size", "1g", "-e", "BOX_TOKEN_FILE=/run/buwiz-computer/token", "-e", "BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer", "-e", "BOX_CHROME=1"];
+    run.extend(caps.iter().map(String::as_str));
+    let mount = format!("type=bind,source={},target=/run/buwiz-computer,readonly", dir.display());
+    run.extend(["--mount", &mount, &image]);
+    docker(&run);
+    let outcome = tokio::spawn({
+        let (name, token) = (name.clone(), token.to_owned());
+        async move { main_browser(&name, &token).await }
+    })
+    .await;
+    println!("{}", docker(&["logs", "--tail", "5", &name]));
+    docker(&["rm", "-f", "-v", &name]);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn main_browser(name: &str, token: &str) {
+    let mut up = String::new();
+    for _ in 0..80 {
+        up = docker(&["exec", "--user", "0", name, "sh", "-c", "pgrep -u 1000 -c chromium; true"]);
+        if up != "0" && !up.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(up != "0" && !up.is_empty(), "the main browser never started");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let args = docker(&["exec", "--user", "0", name, "sh", "-c", "tr '\\0' ' ' < /proc/$(cat /run/box/x/1/run/chrome.pid)/cmdline"]);
+    println!("{args}");
+    assert!(args.contains("--user-data-dir") && !args.contains("remote-debugging"), "{args}");
+    let listening = docker(&["exec", "--user", "0", name, "sh", "-c", "awk 'NR>1 && $4==\"0A\" {print $2}' /proc/net/tcp | cut -d: -f2 | sort -u"]);
+    let ports: Vec<u32> = listening.lines().map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+    println!("listening: {ports:?}");
+    assert!(ports.iter().all(|p| [1337, 1340, 6901].contains(p)), "something else listens: {ports:?}");
+    let door = "import socket,json\ntry:\n    s=socket.create_connection(('127.0.0.1',9222),2);print('REACHED')\nexcept OSError as e:\n    print('refused',e)\n";
+    let tried = docker(&["exec", "--user", "1500", name, "python3", "-c", door]);
+    assert!(tried.starts_with("refused"), "{tried}");
+    // a command listening there is nobody's business: the box asks it nothing
+    let fake = "import socket,time\ns=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('127.0.0.1',9222));s.listen(5);s.settimeout(5)\nopen('/tmp/fake.log','w').close()\ntry:\n    c,_=s.accept();open('/tmp/fake.log','w').write('asked')\nexcept socket.timeout:\n    pass\ntime.sleep(1)\n";
+    docker(&["exec", "-d", "--user", "1500", name, "python3", "-c", fake]);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let chrome = docker(&["exec", "--user", "0", "-e", &format!("T={token}"), name, "sh", "-c", "curl -s -m 5 -H \"Authorization: Bearer $T\" http://127.0.0.1:1340/v1/chrome"]);
+    println!("{chrome}");
+    assert!(chrome.contains("\"ready\":true"), "{chrome}");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert_eq!(docker(&["exec", "--user", "0", name, "cat", "/tmp/fake.log"]), "", "the box asked a command's port");
+    // item: its downloads go to the shared folder, and it can write there
+    let prefs = docker(&["exec", "--user", "0", name, "cat", "/home/box/desktops/main/chrome-profile/Default/Preferences"]);
+    assert!(prefs.contains("/workspace/shared"), "{prefs}");
+    let wrote = docker(&["exec", "--user", "0", name, "sh", "-c", "setpriv --reuid=1000 --regid=1000 --groups=1400,1500 --inh-caps=-all touch /workspace/shared/ok && stat -c '%U %G %a' /workspace/shared/ok /workspace/shared"]);
+    assert!(wrote.contains("box agent") && wrote.contains("agent agent 2775"), "{wrote}");
+}
+
 /// A computer made on an image from before users, with what that image left on its volumes: files
 /// owned by the one user, a planted autostart, a link. Waking it makes it again, keeps every file,
 /// gives each Bot its own and runs nothing that was planted.
@@ -1011,6 +1164,8 @@ async fn old_computer(p: &DockerProvider, m: &buwiz_computer::Machine) {
         echo loose > /workspace/loose.txt
         ln -s /etc/passwd /workspace/agents/c2o_a/link
         ln -s /etc /workspace/agents/c2o_a/dir-link
+        ln -s /usr/local/bin /workspace/agents/c2o_evil
+        echo stray > /workspace/agents/c2o_file
         echo cookies > /home/box/chrome-profile/bots/c2o_a/Default/Cookies
         echo 2 > /home/box/.box-screens/c2o_a
         printf '[Desktop Entry]\nType=Application\nName=old\nExec=touch /tmp/planted-ran\n' > /home/box/.config/autostart/old.desktop
@@ -1035,8 +1190,24 @@ async fn old_computer(p: &DockerProvider, m: &buwiz_computer::Machine) {
     assert_eq!(as_root("stat -c %u /workspace/agents/c2o_a/link"), agent.to_string());
     assert_eq!(as_root("cat /workspace/loose.txt"), "loose");
     assert_eq!(as_root("cat /home/box/old-home-*/chrome-profile/bots/c2o_a/Default/Cookies"), "cookies", "the old home went");
-    assert_eq!(as_root("stat -c %a /home/box/old-home-*"), "700");
-    assert_eq!(as_root("stat -c %u /home/box/old-home-*/.bashrc"), "1500");
+    assert_eq!(as_root("stat -c '%a %U %G' /home/box/old-home-*"), "700 root root", "old sign-ins are nobody's in the box");
+    // a link under `agents` must not hand a Bot what it leads to: that was root in the box
+    let evil = p.screen_up(m, "c2o_evil").await.unwrap();
+    assert_eq!(as_root("stat -c '%u %a' /usr/local/bin"), "0 755", "a Bot owns /usr/local/bin");
+    assert_eq!(as_root("stat -c %F /workspace/agents/c2o_evil"), "directory");
+    assert_eq!(as_root("readlink /workspace/old-agents-*/c2o_evil"), "/usr/local/bin", "the link should be kept, aside");
+    assert_eq!(as_root("cat /workspace/old-agents-*/c2o_file"), "stray");
+    assert_eq!(as_root("stat -c '%a %U' /workspace/old-agents-*"), "700 root");
+    assert_ne!(p.run(m, &evil, "touch /usr/local/bin/box-screen", 5000).await.unwrap().exit_code, Some(0));
+    // nor may a link in a desktop's own home, which that desktop could make at any time
+    as_root("pkill -KILL -f 'user-data-dir=/home/box/desktops/c2o_a' ; true");
+    let (_, desktop) = users_of(m, "c2o_a");
+    p.sleep(m, Sleep::Deep).await.unwrap();
+    p.wake(m).await.unwrap();
+    as_root(&format!("mv /home/box/desktops/c2o_a/chrome-profile /home/box/desktops/c2o_a/kept; ln -s /usr/local/sbin /home/box/desktops/c2o_a/chrome-profile; chown -h {desktop}:{desktop} /home/box/desktops/c2o_a/chrome-profile"));
+    let _ = p.screen_up(m, "c2o_a").await;
+    assert_eq!(as_root("stat -c '%u' /usr/local/sbin"), "0", "a desktop's link took root's chown");
+    as_root("unlink /home/box/desktops/c2o_a/chrome-profile; mv /home/box/desktops/c2o_a/kept /home/box/desktops/c2o_a/chrome-profile");
     assert_eq!(as_root("stat -c %u /home/box"), "0");
     assert_eq!(as_root("test -e /home/box/desktops/c2o_a/.config/autostart/old.desktop && echo there"), "", "the plant came along");
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;

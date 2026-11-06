@@ -168,12 +168,13 @@ except FileNotFoundError:
 /// any thread lives, and a leader that exited shows `Z` with its threads running, so a process only
 /// counts as gone when every thread has. `/proc/<pid>/exe` needs `CAP_SYS_PTRACE` for another user,
 /// so this needs `--privileged`: `docker exec` can't add just that. A file that can't be read makes
-/// a stray. The Bot's number comes from a file only root writes, and without it nothing is handed
-/// over.
+/// a stray, and so does a process of that user that can't be read at all. The Bot's number comes
+/// from a file only root writes, and without it nothing is handed over.
 ///
 /// It's no wall: a page in the browser is a page, and the list of what the desktop runs is kept by
 /// hand. It ends what was left running on that screen, which is what's there to be left.
-const CLEAR: &str = r#"
+#[doc(hidden)]
+pub const CLEAR: &str = r#"
 import fnmatch, json, os, signal, stat, sys, time
 ALLOWED = ['/usr/local/bin/voxl', '/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
 LIBRARIES = ('/usr/', '/lib/', '/opt/box/')
@@ -218,8 +219,15 @@ def table():
             except OSError:
                 exe, strange = '', True
             out[int(d)] = (exe, name, strange)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
         except (OSError, ValueError, IndexError):
-            pass
+            # alive, and not saying what it is: the folder's owner is the one thing left to go on
+            try:
+                if os.stat('/proc/%s' % d).st_uid == USER:
+                    out[int(d)] = ('', 'unreadable', True)
+            except OSError:
+                pass
     return out
 ended = []
 for _ in range(20):
@@ -246,11 +254,16 @@ raise SystemExit('programs kept coming')
 /// - The port floor is up, in this network.
 /// - Each Bot has its own two numbers, a folder only its users can open, and a desktop home only its
 ///   desktop user can.
-/// - The services are `boxsvc`'s, and each voxl a desktop's. Every X server wants a cookie it has,
-///   in a file nobody else reads, and no framebuffer is out in shared memory.
+/// - The services are `boxsvc`'s, and each voxl a desktop's.
+/// - Every X listener in the box, by the kernel's list and not by program: each is held by the real
+///   Xvfb as a desktop's user, with no `-ac` or `-shmem`, and turns away a client with no cookie,
+///   which is also what shows `xhost +` or an empty cookie file.
+/// - Each server's cookie and its folder are root's, for that desktop's group alone. The services'
+///   cookie is the same for theirs. A desktop can't pass a cookie on, by mode or by group.
+/// - No desktop has shared memory open.
 /// - No process of a Bot's user holds a capability, but voxl its port's.
 const APART: &str = r#"
-import os, stat, sys
+import os, re, socket, stat, struct, sys
 def no(why):
     print(why)
     raise SystemExit(0)
@@ -275,7 +288,22 @@ for bot in sys.argv[1:]:
     home = os.lstat('/home/box/desktops/' + bot)
     if not stat.S_ISDIR(home.st_mode) or home.st_uid != agent + 1 or home.st_mode & 0o077:
         no('a desktop home is open')
-servers = 0
+def closed_folder(path):
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        no('an X folder is open')
+def cookie(path, group):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_size == 0 or info.st_uid != 0 or info.st_gid != group or info.st_mode & 0o777 != 0o640:
+        no('an X cookie is open')
+closed_folder('/run/box/x')
+cookie('/run/box/x/svc.auth', SVC)
+listeners = {}
+for line in open('/proc/net/unix').read().splitlines()[1:]:
+    fields = line.split()
+    if len(fields) >= 8 and int(fields[3], 16) & 0x10000 and fields[7].lstrip('@').startswith('/tmp/.X11-unix/'):
+        listeners[fields[6]] = fields[7]
+held = {}
 for d in os.listdir('/proc'):
     if not d.isdigit():
         continue
@@ -283,28 +311,53 @@ for d in os.listdir('/proc'):
         status = open('/proc/%s/status' % d, 'rb').read().decode('utf-8', 'replace')
         exe = os.readlink('/proc/%s/exe' % d)
         args = open('/proc/%s/cmdline' % d, 'rb').read().split(b'\0')
+        sockets = [os.readlink('/proc/%s/fd/%s' % (d, f)) for f in os.listdir('/proc/%s/fd' % d)]
     except FileNotFoundError:
         continue
     except PermissionError:
         no('a process cannot be read')
     fields = dict(line.split(':', 1) for line in status.splitlines() if ':' in line)
     ids = [int(n) for n in fields['Uid'].split()]
+    for inode in re.findall(r'socket:\[(\d+)\]', ' '.join(sockets)):
+        if inode in listeners:
+            held[inode] = True
+            if exe != '/usr/bin/Xvfb':
+                no('something else is listening as an X server')
     if exe in ('/usr/local/bin/box-exec', '/usr/local/bin/box-host') and set(ids) != {SVC}:
         no('a service runs as another user')
     if exe == '/usr/local/bin/voxl' and not all(desktop(i) for i in ids):
         no('a viewer runs as another user')
     if exe == '/usr/bin/Xvfb':
-        servers += 1
-        if not all(desktop(i) for i in ids) or b'-ac' in args or b'-shmem' in args or b'-auth' not in args:
+        if not all(desktop(i) for i in ids) or len(set(ids)) != 1 or b'-ac' in args or b'-shmem' in args or b'-listen' in args or b'-auth' not in args:
             no('an X server is open')
-        cookie = os.stat(args[args.index(b'-auth') + 1])
-        if cookie.st_size == 0 or cookie.st_mode & 0o007:
+        number = args[1].decode('utf-8', 'replace').lstrip(':')
+        closed_folder('/run/box/x/' + number)
+        path = args[args.index(b'-auth') + 1].decode('utf-8', 'replace')
+        if path != '/run/box/x/%s/auth' % number:
             no('an X cookie is open')
+        cookie(path, ids[0])
+        run = os.lstat('/run/box/x/%s/run' % number)
+        if run.st_uid != ids[0] or run.st_mode & 0o007:
+            no('an X folder is open')
     allowed = 0x400 if exe == '/usr/local/bin/voxl' else 0
     if any(i >= 20000 for i in ids) and any(int(fields[c], 16) & ~allowed for c in ('CapEff', 'CapPrm', 'CapAmb')):
         no('a Bot user holds a capability')
-if not servers:
+if not listeners:
     no('no X server')
+if set(listeners) - set(held):
+    no('an X listener has no owner')
+for name in listeners.values():
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(2)
+    try:
+        s.connect('\0' + name[1:] if name.startswith('@') else name)
+        s.sendall(struct.pack('<BxHHHHxx', 0x6c, 11, 0, 0, 0))
+        answer = s.recv(1)
+    except OSError:
+        no('an X listener did not answer')
+    if answer != b'\0':
+        no('an X server lets anybody in')
+    s.close()
 lines = open('/proc/sysvipc/shm').read().splitlines()[1:]
 for line in lines:
     fields = line.split()

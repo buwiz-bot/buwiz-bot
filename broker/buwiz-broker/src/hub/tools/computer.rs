@@ -274,6 +274,11 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
     let Some(reason) = text(input, "reason").map(str::trim).filter(|r| !r.is_empty()) else { return Out::err("computer_ask_person needs a reason".to_owned()) };
     let reason = js::slice_utf16(reason, MAX_REASON).to_owned();
     let limit = input.get("time_limit_s").and_then(Value::as_u64).unwrap_or(TAKEOVER_S).clamp(TAKEOVER_MIN_S, TAKEOVER_MAX_S);
+    // the card says commands can't see this screen, so that's checked, from outside, before it's
+    // shown. A refusal here costs nobody a yes, and stops nothing the model had running
+    if !matches!(live.provider.users_apart(&live.machine, std::slice::from_ref(&live.bot)).await, Ok(true)) {
+        return Out::err("This computer's commands can't be confirmed walled off from its screen right now, so nothing was handed over.".to_owned());
+    }
     let name = run.ctx.store.read(|s| s.bot(&live.bot).map(|b| b.name.clone())).unwrap_or_default();
     let asked = Asking { bot: live.bot.clone(), key: ASK_KEY.to_owned(), tool: ASK_PERSON.to_owned(), title: format!("Take over {name}'s computer?"), lines: vec![reason.clone(), TAKEOVER_NOTE.to_owned()], ..Asking::default() };
     if let Err(no_answer) = asking::ask(run, asked).await {
@@ -288,18 +293,19 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         Ok(r) => r,
         Err(p) => return no(&p),
     };
-    // the card says commands can't see this screen, so that's checked, from outside, each time
-    if !matches!(live.provider.users_apart(&live.machine, std::slice::from_ref(&live.bot)).await, Ok(true)) {
-        return Out::err("This computer's commands can't be confirmed walled off from its screen right now, so nothing was handed over.".to_owned());
-    }
+    // what stopped is the model's to know, whatever happens next
+    let refused = |p: &Problem| match &recording {
+        Some(path) => Out::err(format!("{} Your recording was stopped and saved as {path}.", p.sentence())),
+        None => no(p),
+    };
     // nothing is handed over beside what can't be cleared: this Bot's desktop alone
     let ended_programs = match live.provider.clear_strays(&live.machine, &live.screen).await {
         Ok(names) => names,
-        Err(p) => return no(&p),
+        Err(p) => return refused(&p),
     };
     let mut handing = match computers.hand_over(&live, &reason, std::time::Duration::from_secs(limit)) {
         Ok(h) => h,
-        Err(p) => return no(&p),
+        Err(p) => return refused(&p),
     };
     run.set_job("waiting", asking::WAITING);
     let ended = handing.ended().await;
