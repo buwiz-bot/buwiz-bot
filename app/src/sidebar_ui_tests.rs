@@ -97,6 +97,15 @@ fn Side() -> impl IntoElement {
                 .child(view().label("reply").w(px(40.0)).h_full().on_press(reply))
                 .child(view().label("paint").w(px(40.0)).h_full().on_press(paint))
                 .child(view().label("group").w(px(40.0)).h_full().on_press(|| group(5)))
+                .child(view().label("pin").w(px(40.0)).h_full().on_press(|| {
+                    let mut v = threads("first words");
+                    v["bots"][20]["pinned"] = true.into();
+                    store().set_threads(v);
+                }))
+                .child(view().label("rename").w(px(40.0)).h_full().on_press(rename))
+                .child(view().label("open 1").w(px(40.0)).h_full().on_press(|| store().active_id.set("new1".to_owned())))
+                .child(view().label("open 10").w(px(40.0)).h_full().on_press(|| store().active_id.set("new10".to_owned())))
+                .child(view().label("open 20").w(px(40.0)).h_full().on_press(|| store().active_id.set("new20".to_owned())))
                 .child(view().label("shrink").w(px(40.0)).h_full().on_press(|| group(3)))
                 .child(view().label("work").w(px(40.0)).h_full().on_press(|| {
                     store().agent_set("t3".to_owned(), Some("b3".to_owned()), Some(("thinking".to_owned(), "Thinking".to_owned())));
@@ -141,6 +150,17 @@ fn a_status_write_rebuilds_no_avatar() {
     app.pump(Duration::from_millis(600));
     assert_eq!(start.difference(&app.live).count(), 0, "rebuilt after the last write");
     assert_eq!(built() - made, 0, "avatars built by status writes");
+}
+
+/// New names and threads for a grouped, an ungrouped and a pinned Bot.
+fn rename() {
+    let mut v = threads("first words");
+    v["bots"][20]["pinned"] = true.into();
+    for i in [1, 10, 20] {
+        v["bots"][i]["name"] = format!("Renamed {i}").into();
+        v["bots"][i]["threadId"] = format!("new{i}").into();
+    }
+    store().set_threads(v);
 }
 
 /// The first `n` Bots in a group, as the broker gives groups.
@@ -218,6 +238,33 @@ fn no_row_is_lost_when_a_group_changes_mid_reply() {
         let name = format!("Bot {i}");
         let rows = app.texts().iter().filter(|t| **t == name).count();
         assert_eq!(rows, 1, "rows for {name}");
+    }
+}
+
+/// A tile isn't rebuilt when its Bot changes, so it reads the record itself:
+/// a new name labels it, and a new thread lights it when that chat opens. In
+/// a group, loose, and pinned.
+#[test]
+fn a_tile_follows_its_bots_name_and_thread() {
+    if !in_child("a_tile_follows_its_bots_name_and_thread") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.press("group");
+    app.press("pin");
+    app.press("rail");
+    app.pump(Duration::from_millis(400));
+    app.press("rename");
+    app.pump(Duration::from_millis(300));
+    for i in [1, 10, 20] {
+        let name = format!("Renamed {i}");
+        assert!(app.has(&name), "{name}: the tile's label");
+        let tile = app.view(&name);
+        let dark = app.styles.get(&tile).map(|s| format!("{s:?}"));
+        app.press(&format!("open {i}"));
+        app.pump(Duration::from_millis(200));
+        assert_ne!(app.styles.get(&tile).map(|s| format!("{s:?}")), dark, "{name}: lit when its chat opens");
     }
 }
 

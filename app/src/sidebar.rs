@@ -455,10 +455,8 @@ fn rail_rule() -> impl IntoElement {
 /// and the ambient overlay over a photo.
 fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
-    let name = b0.name.clone();
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
@@ -478,7 +476,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .bg(move || {
-            if store().active_id.get() == tid2 {
+            if store().active_id.get() == b.get().thread_id {
                 theme::tc("#f5f5f514")
             } else if hovered.get() {
                 plate_hover()
@@ -565,7 +563,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(name)
+        .label(move || b.get().name)
 }
 
 /// What a Bot's avatar is drawn from. A rebuilt avatar starts its animation
@@ -701,7 +699,6 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
     let t0 = t.get();
     let id = t0.id.clone();
     let id2 = t0.id.clone();
-    let name = t0.name.clone();
     let hovered = signal(false);
     view()
         .size(px(54.0))
@@ -745,7 +742,7 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::chat_items(&t.get()))
         })
-        .label(name)
+        .label(move || t.get().name)
 }
 
 fn full_sidebar() -> impl IntoElement {
@@ -2288,8 +2285,6 @@ fn main_badge(b: ReadSignal<RoxBot>, size: f32) -> impl IntoElement {
 
 fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let name = b0.name.clone();
-    let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
     let gaze = crate::avatar::BlobGaze::new();
@@ -2315,7 +2310,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .gap(px(6.0))
         .items_center()
         .bg(move || {
-            if store().active_id.get() == tid2 {
+            if store().active_id.get() == b.get().thread_id {
                 theme::ACTIVE
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -2419,7 +2414,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(name)
+        .label(move || b.get().name)
 }
 
 /// `railPop` (App.tsx:3011) — the bot hover card: avatar + name over a
