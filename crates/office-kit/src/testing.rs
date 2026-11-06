@@ -143,6 +143,12 @@ impl Headless {
         })
     }
 
+    /// The scroll view `id` scrolled to `y`, as a platform reports it: the
+    /// offset moves, and its `onScroll` comes after.
+    pub fn scroll(&self, id: NodeId, y: f32) {
+        self.engine.control().scroll(id, point(px(0.0), px(y)), u32::MAX);
+    }
+
     pub fn send(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
         self.engine.control().dispatch_event(id, kind, payload);
     }
