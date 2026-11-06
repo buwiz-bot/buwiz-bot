@@ -13,6 +13,15 @@
 //! frame that can't be read ends the connection. A page and its assets are the only other thing
 //! that passes, by GET, with nothing read after the head, so the viewer's other routes are shut.
 //!
+//! A viewer at the far end of a connection ([`crate::Far`]) isn't ours, and what it answers runs in
+//! a web view on the person's Mac. So there the head coming back is read too: only a page or the
+//! socket's upgrade passes, with its headers cut to a short list, no redirect, no cookie, and a
+//! policy of this gate's own that keeps the page's requests and forms here. The broker's open
+//! routes are on this Mac's loopback, which is why that matters. A policy can't stop the page
+//! navigating the whole web view, so one top-level GET can leave it: the viewer in the app notices
+//! and shuts the view, after the fact (`app/src/computer.rs`). Only a rule in `web_view` would stop
+//! it first.
+//!
 //! One connection per request: a head is only ever read once. Its port is in the range the Bot's
 //! shell is kept off; a computer's own traffic never comes here.
 
@@ -31,6 +40,12 @@ const TICKET_LIFE: Duration = Duration::from_secs(60);
 const COOKIE: &str = "buwiz_viewer";
 const MAX_HEAD: usize = 32 * 1024;
 const HEAD_PATIENCE: Duration = Duration::from_secs(15);
+/// The most a far end's page or asset may be, and how long it gets to send it.
+const MAX_PAGE: u64 = 32 * 1024 * 1024;
+const PAGE_PATIENCE: Duration = Duration::from_secs(60);
+/// All of a far end's head that passes: what a page and a socket need, and nothing that can send a
+/// web view elsewhere, set a cookie or lift this gate's policy.
+const FAR_HEADERS: [&str; 12] = ["content-type", "content-length", "transfer-encoding", "content-encoding", "cache-control", "etag", "last-modified", "date", "vary", "connection", "upgrade", "sec-websocket-accept"];
 /// How long the gate waits after an accept failed.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 /// The most a frame to the viewer may hold: a pasted picture. Past this the connection ends.
@@ -222,11 +237,14 @@ fn judge(sessions: &mut Sessions, method: &str, target: &str, cookies: Option<&s
 fn rewrite(lines: &[&str], method: &str, path: &str, viewer: &Viewer) -> (String, bool) {
     let header = |line: &&str| line.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()));
     let upgrade = path.split('?').next() == Some(SOCKET) && lines.iter().filter_map(header).any(|(k, v)| k == "upgrade" && !v.is_empty());
-    let mut out = format!("{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n", viewer.addr, viewer.password.expose());
+    let named = viewer.far.as_ref().and_then(|f| f.name.as_deref());
+    let mut out = format!("{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n", named.unwrap_or(&viewer.addr), viewer.password.expose());
     for line in lines {
         let Some((name, _)) = header(line) else { continue };
         match name.as_str() {
             "host" | "authorization" | "cookie" | "sec-websocket-extensions" => {}
+            // voxl goes by its own Host: behind a name, a proxy has changed that, and Origin stays out
+            "origin" if named.is_some() => {}
             "origin" => out.push_str(&format!("Origin: http://{}\r\n", viewer.addr)),
             "connection" | "upgrade" if !upgrade => {}
             _ => {
@@ -240,6 +258,59 @@ fn rewrite(lines: &[&str], method: &str, path: &str, viewer: &Viewer) -> (String
     }
     out.push_str("\r\n");
     (out, upgrade)
+}
+
+/// What of a far end's `head` goes to the web view: `None` for anything but the page or socket
+/// that was asked for.
+fn far_head(head: &str, upgrade: bool, gate_port: u16) -> Option<String> {
+    // a line ending of any other kind would carry a header past the list inside an allowed one
+    if head.replace("\r\n", "").contains(['\r', '\n']) {
+        return None;
+    }
+    let mut lines = head.split("\r\n");
+    let status = lines.next()?;
+    let code = status.split(' ').nth(1)?;
+    let wanted = if upgrade { code == "101" } else { matches!(code, "200" | "304") };
+    if !wanted || !status.starts_with("HTTP/1.1 ") {
+        return None;
+    }
+    let mut out = format!("{status}\r\n");
+    for line in lines {
+        let Some((name, _)) = line.split_once(':') else { continue };
+        if FAR_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    if !upgrade {
+        out.push_str(&format!("Content-Security-Policy: {}\r\nX-Content-Type-Options: nosniff\r\n", far_policy(gate_port)));
+    }
+    out.push_str("\r\n");
+    Some(out)
+}
+
+/// What a far end's page may load and reach: itself, through this gate. Anything else, a loopback
+/// port above all, is refused by the web view.
+fn far_policy(gate_port: u16) -> String {
+    format!("default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' ws://127.0.0.1:{gate_port}; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'")
+}
+
+/// The far end's answer to a request, to the web view: `false` when it isn't one that goes on,
+/// and the web view has had a 502.
+async fn pass_far_head(socket: &mut TcpStream, upstream: &mut TcpStream, upgrade: bool) -> std::io::Result<bool> {
+    let gate_port = socket.local_addr()?.port();
+    let read = tokio::time::timeout(HEAD_PATIENCE, read_head(upstream)).await.ok().flatten();
+    let Some((head, rest)) = read else {
+        answer(socket, "502 Bad Gateway", "").await?;
+        return Ok(false);
+    };
+    let Some(out) = far_head(&head, upgrade, gate_port) else {
+        answer(socket, "502 Bad Gateway", "").await?;
+        return Ok(false);
+    };
+    socket.write_all(out.as_bytes()).await?;
+    socket.write_all(&rest).await?;
+    Ok(true)
 }
 
 async fn answer(socket: &mut TcpStream, status: &str, extra: &str) -> std::io::Result<()> {
@@ -433,6 +504,18 @@ async fn connection(mut socket: TcpStream, sessions: Arc<Mutex<Sessions>>) -> st
             };
             let (out, upgrade) = rewrite(&lines[1..], method, &path, &viewer);
             upstream.write_all(out.as_bytes()).await?;
+            let far = viewer.far.is_some();
+            if far && !pass_far_head(&mut socket, &mut upstream, upgrade).await? {
+                return Ok(());
+            }
+            if far && !upgrade {
+                let mut page = (&mut upstream).take(MAX_PAGE);
+                return tokio::select! {
+                    biased;
+                    _ = open.changed() => Ok(()),
+                    done = tokio::time::timeout(PAGE_PATIENCE, tokio::io::copy(&mut page, &mut socket)) => done.map_or(Ok(()), |d| d.map(|_| ())),
+                };
+            }
             if !upgrade {
                 // a GET: nothing the page says after its head reaches the viewer
                 return tokio::select! {
@@ -503,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn a_ticket_opens_once_and_the_password_is_put_in_here() {
         let gate = Gate::start().await.unwrap();
-        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("sesame") };
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("sesame"), far: None };
         let url = gate.open("b_1", viewer.clone(), Mode::Watch).unwrap();
         assert!(!url.contains("sesame"), "the URL holds no password");
         let (port, target) = parts(&url);
@@ -532,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_cookie_a_stale_ticket_and_a_closed_session_are_refused() {
         let gate = Gate::start().await.unwrap();
-        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x") };
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x"), far: None };
         let (port, target) = parts(&gate.open("b_1", viewer.clone(), Mode::Watch).unwrap());
         let clean = target.split('?').next().unwrap().to_owned();
         assert!(get(port, &clean, "Cookie: buwiz_viewer=nope\r\n").await.starts_with("HTTP/1.1 403"));
@@ -546,6 +629,100 @@ mod tests {
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 200"));
         gate.close("b_1");
         assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 403"));
+    }
+
+    /// A far end that answers every request with `reply`, and says what it heard.
+    async fn far_viewer(reply: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let (h, _keep) = (heard.clone(), ());
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let h = h.clone();
+                tokio::spawn(async move {
+                    let (head, _) = read_head(&mut s).await.unwrap();
+                    h.lock().unwrap().push(head);
+                    let _ = s.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        (addr, heard)
+    }
+
+    async fn enter_far(gate: &Gate, addr: String, far: crate::Far) -> (u16, String, String) {
+        let (port, target) = parts(&gate.open("b_1", Viewer { addr, password: Secret::new("x"), far: Some(far) }, Mode::Watch).unwrap());
+        let cookie = cookie_of(&get(port, &target, "").await);
+        (port, target.split('?').next().unwrap().to_owned(), cookie)
+    }
+
+    #[tokio::test]
+    async fn a_far_ends_redirect_doesnt_reach_the_web_view() {
+        let gate = Gate::start().await.unwrap();
+        let (addr, _) = far_viewer("HTTP/1.1 302 Found\r\nLocation: https://evil.example/\r\nContent-Length: 0\r\n\r\n").await;
+        let (port, clean, cookie) = enter_far(&gate, addr, crate::Far::default()).await;
+        let page = get(port, &clean, &format!("Cookie: {cookie}\r\n")).await;
+        assert!(page.starts_with("HTTP/1.1 502") && !page.contains("evil.example"), "{page}");
+    }
+
+    #[tokio::test]
+    async fn a_far_ends_page_gets_the_gates_policy_and_none_of_its_own_headers() {
+        let gate = Gate::start().await.unwrap();
+        let body = "<html>";
+        let (addr, _) = far_viewer("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: a=b\r\nContent-Security-Policy: default-src *\r\nRefresh: 0;url=https://evil.example\r\nLink: <https://evil.example>; rel=preload\r\nContent-Length: 6\r\n\r\n<html>").await;
+        let (port, clean, cookie) = enter_far(&gate, addr, crate::Far::default()).await;
+        let page = get(port, &clean, &format!("Cookie: {cookie}\r\n")).await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.ends_with(body), "{page}");
+        assert!(page.contains("Content-Type: text/html"), "{page}");
+        for gone in ["Set-Cookie", "evil.example", "default-src *"] {
+            assert!(!page.contains(gone), "{gone}: {page}");
+        }
+        assert!(page.contains(&format!("connect-src 'self' ws://127.0.0.1:{port};")), "{page}");
+        assert!(page.contains("form-action 'none'"), "{page}");
+    }
+
+    #[test]
+    fn a_bare_line_ending_carries_no_header_past_the_list() {
+        for head in [
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\nSet-Cookie: a=b",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\rLocation: https://evil.example/",
+            "HTTP/1.1 200 OK\nSet-Cookie: a=b",
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\n",
+        ] {
+            assert_eq!(far_head(head, false, 47200), None, "{head:?}");
+        }
+        assert!(far_head("HTTP/1.1 200 OK\r\nContent-Type: text/html", false, 47200).is_some());
+        let folded = far_head("HTTP/1.1 200 OK\r\n content-type: text/html\r\nDate: x", false, 47200).unwrap();
+        assert!(!folded.contains("text/html"), "a folded line isn't a header: {folded}");
+    }
+
+    #[tokio::test]
+    async fn a_far_end_that_says_nothing_useful_is_a_bad_gateway() {
+        let gate = Gate::start().await.unwrap();
+        let (addr, _) = far_viewer("junk").await;
+        let (port, clean, cookie) = enter_far(&gate, addr, crate::Far::default()).await;
+        assert!(get(port, &clean, &format!("Cookie: {cookie}\r\n")).await.starts_with("HTTP/1.1 502"));
+    }
+
+    #[tokio::test]
+    async fn a_named_far_end_is_asked_for_by_its_name_with_no_origin() {
+        let gate = Gate::start().await.unwrap();
+        let (addr, heard) = far_viewer("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let (port, clean, cookie) = enter_far(&gate, addr, crate::Far { name: Some("desktop-6902.a.example".into()) }).await;
+        get(port, &clean, &format!("Cookie: {cookie}\r\nOrigin: http://127.0.0.1:{port}\r\n")).await;
+        let head = heard.lock().unwrap().pop().unwrap();
+        assert!(head.contains("Host: desktop-6902.a.example"), "{head}");
+        assert!(!head.to_lowercase().contains("origin:"), "{head}");
+    }
+
+    #[tokio::test]
+    async fn a_box_of_ours_answers_as_it_did() {
+        let gate = Gate::start().await.unwrap();
+        let (addr, _) = far_viewer("HTTP/1.1 200 OK\r\nX-Own: 1\r\nContent-Length: 0\r\n\r\n").await;
+        let (port, target) = parts(&gate.open("b_1", Viewer { addr, password: Secret::new("x"), far: None }, Mode::Watch).unwrap());
+        let cookie = cookie_of(&get(port, &target, "").await);
+        let page = get(port, target.split('?').next().unwrap(), &format!("Cookie: {cookie}\r\n")).await;
+        assert!(page.contains("X-Own: 1") && !page.contains("Content-Security-Policy"), "{page}");
     }
 
     #[tokio::test]
@@ -577,9 +754,9 @@ mod tests {
         let gate = Gate::start().await.unwrap();
         let addr = echo_viewer().await;
         let (ours, theirs) = (Secret::new("ours"), Secret::new("theirs"));
-        let (port, ann) = parts(&gate.open("ann", Viewer { addr: addr.clone(), password: ours.clone() }, Mode::Watch).unwrap());
-        let (_, bea) = parts(&gate.open("bea", Viewer { addr: addr.clone(), password: ours.clone() }, Mode::Watch).unwrap());
-        let (_, cal) = parts(&gate.open("cal", Viewer { addr, password: theirs }, Mode::Watch).unwrap());
+        let (port, ann) = parts(&gate.open("ann", Viewer { addr: addr.clone(), password: ours.clone(), far: None }, Mode::Watch).unwrap());
+        let (_, bea) = parts(&gate.open("bea", Viewer { addr: addr.clone(), password: ours.clone(), far: None }, Mode::Watch).unwrap());
+        let (_, cal) = parts(&gate.open("cal", Viewer { addr, password: theirs, far: None }, Mode::Watch).unwrap());
         gate.close_computer(&ours);
         assert!(get(port, &ann, "").await.starts_with("HTTP/1.1 403"));
         assert!(get(port, &bea, "").await.starts_with("HTTP/1.1 403"));
@@ -589,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn closing_a_session_cuts_a_live_viewer() {
         let gate = Gate::start().await.unwrap();
-        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x") };
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x"), far: None };
         let (port, target) = parts(&gate.open("b_1", viewer, Mode::Watch).unwrap());
         let cookie = cookie_of(&get(port, &target, "").await);
         let clean = target.split('?').next().unwrap().to_owned();
@@ -614,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn an_open_websocket_counts_as_watching() {
         let gate = Gate::start().await.unwrap();
-        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x") };
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x"), far: None };
         let (port, target) = parts(&gate.open("b_1", viewer, Mode::Watch).unwrap());
         let cookie = cookie_of(&get(port, &target, "").await);
         let clean = target.split('?').next().unwrap().to_owned();
@@ -687,7 +864,7 @@ mod tests {
 
     /// A socket through a `mode` ticket of `bot`.
     async fn socket(gate: &Gate, bot: &str, addr: &str, mode: Mode) -> TcpStream {
-        let (port, target) = parts(&gate.open(bot, Viewer { addr: addr.to_owned(), password: Secret::new("x") }, mode).unwrap());
+        let (port, target) = parts(&gate.open(bot, Viewer { addr: addr.to_owned(), password: Secret::new("x"), far: None }, mode).unwrap());
         let cookie = cookie_of(&get(port, &target, "").await);
         let clean = target.split('?').next().unwrap().to_owned();
         let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -834,7 +1011,7 @@ mod tests {
     #[tokio::test]
     async fn a_ticket_opens_the_page_and_the_socket_and_none_of_the_viewers_other_routes() {
         let gate = Gate::start().await.unwrap();
-        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x") };
+        let viewer = Viewer { addr: echo_viewer().await, password: Secret::new("x"), far: None };
         for mode in [Mode::Watch, Mode::Drive] {
             let (port, target) = parts(&gate.open("b_1", viewer.clone(), mode).unwrap());
             let cookie = format!("Cookie: {}\r\n", cookie_of(&get(port, &target, "").await));
@@ -857,7 +1034,7 @@ mod tests {
     async fn a_page_cant_send_a_second_request_after_its_first() {
         let gate = Gate::start().await.unwrap();
         let (addr, heard, heads) = listening_viewer().await;
-        let (port, target) = parts(&gate.open("b_1", Viewer { addr, password: Secret::new("x") }, Mode::Watch).unwrap());
+        let (port, target) = parts(&gate.open("b_1", Viewer { addr, password: Secret::new("x"), far: None }, Mode::Watch).unwrap());
         let cookie = cookie_of(&get(port, &target, "").await);
         let clean = target.split('?').next().unwrap().to_owned();
         let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

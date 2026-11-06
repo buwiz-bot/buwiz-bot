@@ -18,6 +18,10 @@
 //! `com.buwiz.bot.account-token`, account `<plugin>/<account>/<label>`, the
 //! token JSON as base64url (so `security -i` takes it bare); a file store
 //! keeps `account-tokens/<plugin>~<account>~<label>.json`.
+//!
+//! A remote computer's SSH key lives beside them too: service
+//! `com.buwiz.bot.computer-key`, account the computer's id, the key's text
+//! as base64url; a file store keeps `computer-keys/<id>.key`.
 
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -31,6 +35,8 @@ use buwiz_protocol::keys::SessionKey;
 pub const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.plugin-key";
 /// Mini app account tokens (§20).
 pub const ACCOUNT_SERVICE: &str = "com.buwiz.bot.account-token";
+/// A remote computer's SSH key.
+pub const COMPUTER_SERVICE: &str = "com.buwiz.bot.computer-key";
 /// Rox's service, before the rename: its keys are moved over once.
 pub const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";
 const SECURITY: &str = "/usr/bin/security";
@@ -44,6 +50,7 @@ struct Items<'a> {
 
 const ITEMS: Items<'static> = Items { service: KEYCHAIN_SERVICE, keychain: None };
 const ACCOUNT_ITEMS: Items<'static> = Items { service: ACCOUNT_SERVICE, keychain: None };
+const COMPUTER_ITEMS: Items<'static> = Items { service: COMPUTER_SERVICE, keychain: None };
 
 impl Items<'_> {
     fn put(&self, id: &str, seed: &str) -> Result<(), String> {
@@ -101,6 +108,12 @@ fn check_id(id: &str) -> Result<(), String> {
     } else {
         Err(format!("not a plugin id: {}", id.chars().take(80).collect::<String>()))
     }
+}
+
+/// A computer's id: `cmp_` and hex. It's a file's name and a Keychain account on a `security -i` line.
+fn check_computer(id: &str) -> Result<(), String> {
+    let sound = id.strip_prefix("cmp_").is_some_and(|h| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    sound.then_some(()).ok_or_else(|| "not a computer's id".to_owned())
 }
 
 /// An account label: `^[A-Za-z0-9][A-Za-z0-9._@+-]{0,59}$` (no spaces or
@@ -242,6 +255,57 @@ impl Keystore {
         }
     }
 
+    fn computer_file(dir: &Path, id: &str) -> PathBuf {
+        dir.join("computer-keys").join(format!("{id}.key"))
+    }
+
+    /// Keeps computer `id`'s SSH key. What the Keychain holds is read back: `security -i` takes one
+    /// line, and a key cut by it mustn't pass for one that's kept.
+    pub fn put_computer_key(&self, id: &str, key: &str) -> Result<(), String> {
+        check_computer(id)?;
+        match self {
+            Keystore::File(dir) => {
+                let sub = dir.join("computer-keys");
+                std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let path = Self::computer_file(dir, id);
+                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                f.write_all(key.as_bytes()).map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+            }
+            Keystore::Keychain => {
+                COMPUTER_ITEMS.put(id, &buwiz_protocol::keys::b64(key.as_bytes()))?;
+                if self.get_computer_key(id)?.as_deref() != Some(key) {
+                    COMPUTER_ITEMS.remove(id);
+                    return Err("the Keychain didn't keep this key whole: it may be too long, so use an ed25519 key".to_owned());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Computer `id`'s SSH key, or `None` when there is none (or the Keychain refused).
+    pub fn get_computer_key(&self, id: &str) -> Result<Option<String>, String> {
+        check_computer(id)?;
+        Ok(match self {
+            Keystore::File(dir) => std::fs::read_to_string(Self::computer_file(dir, id)).ok(),
+            Keystore::Keychain => COMPUTER_ITEMS.get(id).and_then(|b| buwiz_protocol::keys::unb64(&b).ok()).and_then(|b| String::from_utf8(b).ok()),
+        })
+    }
+
+    /// `Err` when it's still there.
+    pub fn remove_computer_key(&self, id: &str) -> Result<(), String> {
+        check_computer(id)?;
+        match self {
+            Keystore::File(dir) => match std::fs::remove_file(Self::computer_file(dir, id)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            },
+            Keystore::Keychain => COMPUTER_ITEMS.remove(id).then_some(()).ok_or_else(|| "the Keychain kept this computer's key".to_owned()),
+        }
+    }
+
     /// Moves the keys of `ids` (the installed plugins) from Rox's service
     /// to ours, once: `marker` (a file beside the database, which the Node
     /// broker shares) says it is done, and a failure writes none, so the
@@ -309,6 +373,34 @@ pub(crate) fn security(args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_computers_key_is_kept_private_and_goes_when_asked() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("buwiz-keystore-computer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let keys = Keystore::File(dir.clone());
+        let id = "cmp_0123abcd";
+        assert_eq!(keys.get_computer_key(id).unwrap(), None);
+        let text = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+        // whatever was there, and whatever this process's umask
+        let path = dir.join("computer-keys/cmp_0123abcd.key");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        keys.put_computer_key(id, text).unwrap();
+        assert_eq!(keys.get_computer_key(id).unwrap().as_deref(), Some(text));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        keys.remove_computer_key(id).unwrap();
+        assert!(!path.exists());
+        keys.remove_computer_key(id).unwrap();
+        for bad in ["", "cmp_", "../x", "cmp_zz", "cmp_12 -w x"] {
+            assert!(keys.put_computer_key(bad, "k").is_err(), "{bad}");
+            assert!(keys.get_computer_key(bad).is_err(), "{bad}");
+            assert!(keys.remove_computer_key(bad).is_err(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     const ID: &str = "dev.example.fixture";
 
