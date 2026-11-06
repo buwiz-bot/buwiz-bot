@@ -671,7 +671,7 @@ fn top_bar() -> impl IntoElement {
 }
 
 /// The header pill of an agents' conversation: the first two
-/// participants' avatars and "Piccolo ↔ Boss" ("+N" past two); pressing
+/// participants' avatars and "Scout ↔ Boss" ("+N" past two); pressing
 /// it toggles its Details pane.
 fn agents_pill(a: crate::agents::AgentsOf, shadow_a: f32) -> impl IntoElement {
     let hov = signal(false);

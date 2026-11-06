@@ -29,7 +29,7 @@ Parts (optional, up to 6): pieces of their own beside the head, each its own 3D 
 - The head stays the main outline, with the face layers and the eyes. A part's outline and layers follow the same rules, in the same 0 0 100 100 box; a part may be small (a brim, an antler) and need not touch the head.
 - z: -1 behind the head, 1 in front of it (default 0, in front). A hat or brim over the forehead is in front; hair falling behind the shoulders is behind.
 - d (optional, 0.05..1.6): a part's half-depth as a multiple of the head's. Hair masses use z below 0 (behind the head) and d about 1.1, so the hair wraps the head and shows at side angles.
-- Examples: Luffy is a black-hair head (with the face layer) plus a straw-hat part, yellow with a red band layer, in front. Chopper is a tan head plus a pink hat part with a white cross layer, plus two brown antler parts behind the hat.
+- Examples: a gardener is a brown-hair head (with the face layer) plus a sun-hat part, green with a white band layer, in front. A forest spirit is a pale head plus a round cap part with a leaf layer, plus two grey antler parts behind the cap.
 
 Reply with JSON only:
 {"candidates":[{"name":"…","shape":"custom","color":"#RRGGBB","outline":"M … Z","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"eyes":{"c":"#RRGGBB","at":[50,52],"gap":20,"s":1},"parts":[{"outline":"M … Z","color":"#RRGGBB","layers":[{"path":"M … Z","fill":"#RRGGBB"}],"z":1}],"why":"…"}]}

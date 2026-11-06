@@ -23,7 +23,7 @@ function world({ post = async () => 200 } = {}) {
   const clock = { t: Date.parse("2026-10-29T08:00:00Z") };
   const store = { list: [], bots: [] };
 
-  for (const name of ["Piccolo", "Boss"]) {
+  for (const name of ["Scout", "Boss"]) {
     store.list.push({ id: `t${++n}`, uid: `u${n}`, title: name, turns: [] });
     store.bots.push({ id: name.toLowerCase(), name, threadId: `t${n}`, integrations: [] });
   }
@@ -88,7 +88,7 @@ test("HOOK-01 a signed message is accepted; a bad or stale signature, a replay w
   const v2 = env({ v: 2, id: "msg_hook00000002" });
 
   assert.deepEqual(status(() => w.externals.incoming(hook.id, hook.secret, v2, signed(w, hook.secret, v2))), [400, "unsupported_version"]);
-  const elsewhere = env({ id: "msg_hook00000003", to: ["piccolo"] });
+  const elsewhere = env({ id: "msg_hook00000003", to: ["scout"] });
 
   assert.deepEqual(status(() => w.externals.incoming(hook.id, hook.secret, elsewhere, signed(w, hook.secret, elsewhere))), [400, "not_allowed"], "a hook reaches only its own agent");
 });
@@ -146,7 +146,7 @@ test("HOOK-03 an agent's answer goes out signed; 5xx is retried, 4xx dropped wit
   assert.ok(w.agents.conversation(got.conversation).turns.some((u) => u.notice?.kind === "agents_undelivered"));
   assert.equal(w.timers.length, 0, "a 4xx is not retried");
   // another agent cannot write to Boss's endpoint
-  assert.throws(() => w.agents.send(w.bot("piccolo"), { to: [`ext:${hook.id}`], subject: "x", text: "y" }), /not one of your outside endpoints/);
+  assert.throws(() => w.agents.send(w.bot("scout"), { to: [`ext:${hook.id}`], subject: "x", text: "y" }), /not one of your outside endpoints/);
 });
 
 test("a bridge receives what its agent sends, waiting for it when asked", NODE_ONLY, async () => {

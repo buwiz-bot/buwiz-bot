@@ -48,7 +48,7 @@ const { plugins, db } = broker(b, { clock });
 const turns = [];
 const chats = new Set(["chat-1"]);
 // the chat store's shape, as routine-threads.mjs sees it
-const store = { list: [{ id: "chat-1", uid: "uid-chat-1", title: "Piccolo", turns: [] }] };
+const store = { list: [{ id: "chat-1", uid: "uid-chat-1", title: "Scout", turns: [] }] };
 let ids = 0;
 let failTurn = false;
 const threads = createRoutineThreads({ store, nextId: () => `t${100 + ++ids}`, uid: () => `uid-${++ids}`, save: () => {} });

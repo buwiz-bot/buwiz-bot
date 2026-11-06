@@ -125,7 +125,7 @@ const SEED: &str = r##"
     { id: "cy", name: "Cy", shape: "custom", color: "#FFFFFF", outline: "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 30 L40 30 L35 40 Z", fill: "#F2C3B5", opacity: 0.6 }], eyes: "#58D63A", threadId: t3.id },
     { id: "dee", name: "Dee", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], threadId: null },
     { id: "eve", name: "Eve", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], eyes: { c: "#58D63A", at: [50, 45.5], gap: 20, s: 1.25, rim: "#111111", rw: 0.3 }, threadId: null },
-    { id: "fay", name: "Fay", shape: "custom", color: "#1E1E1E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5D7B5" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }], eyes: { c: "#1E1E1E", shut: "l" }, parts: [{ outline: "M14 36 L86 36 L86 42 L14 42 Z", color: "#E8C85A", layers: [{ path: "M34 22 L66 22 L66 28 L34 28 Z", fill: "#C8302C" }], z: 1 }, { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -0.5, d: 1.1 }], threadId: null },
+    { id: "fay", name: "Fay", shape: "custom", color: "#1E1E1E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5D7B5" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }], eyes: { c: "#1E1E1E", shut: "l" }, parts: [{ outline: "M12 38 L86 36 L86 42 L14 42 Z", color: "#4C8CC9", layers: [{ path: "M32 24 L68 24 L68 30 L32 30 Z", fill: "#F4F4F4" }], z: 1 }, { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -0.5, d: 1.1 }], threadId: null },
     { id: "gus", name: "Gus", shape: "custom", color: "#1E1E1E", outline: "M26 14 L74 14 L74 80 L26 80 Z", parts: [{ outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22" }], threadId: null },
     { id: "hal", name: "Hal", shape: "blob", color: "#1E1E1E", parts: [{ outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22" }], threadId: null },
   );
@@ -189,7 +189,7 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
             s.bots.push(Bot { description: None, instructions: None, outline: Some("M1 1 L9 1 L9 9 Z".into()), layers: Some(vec![json!({"path": "M1 1 L9 1 L9 9 Z", "fill": "#000000"})]), eyes: Some(json!("#FFFFFF")), ..Bot::new("bob", "Bob", "blob", "#1084FE", None) });
             s.bots.push(Bot {
                 layers: Some(vec![json!({"path": "M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z", "fill": "#FBEBD3"}), json!({"path": "M30 66 L38 66 L34 70 Z", "fill": "#F2C3B5", "opacity": 0.6}), json!({"path": "M30 40 L50 40 L40 56 Z", "fill": "#2B1D12", "over": true})]),
-                parts: Some(vec![json!({"outline": "M14 36 C14 30 30 28 34 28 C34 16 42 10 50 10 C58 10 66 16 66 28 C70 28 86 30 86 36 C86 42 70 42 50 42 C30 42 14 42 14 36 Z", "color": "#E8C85A", "layers": [{"path": "M34 22 L66 22 L66 28 L34 28 Z", "fill": "#C8302C"}], "z": 1}), json!({"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -0.5, "d": 1.1})]),
+                parts: Some(vec![json!({"outline": "M12 38 L28 34 L34 10 L66 10 L72 34 L88 38 L88 44 L12 44 Z", "color": "#4C8CC9", "layers": [{"path": "M32 24 L68 24 L68 30 L32 30 Z", "fill": "#F4F4F4"}], "z": 1}), json!({"outline": "M40 30 L60 30 L60 50 L40 50 Z", "color": "#7A4A22", "z": -0.5, "d": 1.1})]),
                 eyes: Some(json!({"c": "#2B1D12", "at": [50, 52.5], "gap": 21, "s": 1.1, "rim": "#111111", "rw": 0.25, "shut": "r"})),
                 outline: Some("M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z".into()), ..Bot::new("cy", "Cy", "custom", "#FFFFFF", Some(agents.clone())) });
             s.sections = json!(["Work"]);
@@ -217,7 +217,7 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     assert_eq!(node_threads.matches("\"fill\":\"#2B1D12\",\"over\":true}").count(), 2, "an over-layer");
     // the custom bot's head layers and its hat's, in bots[] and list[].bot; bob's stray ones never
     assert_eq!(node_threads.matches("\"layers\"").count(), 4, "only the custom bot's");
-    assert_eq!(node_threads.matches("\"parts\":[{\"outline\":\"M14 36").count(), 2, "its parts, in bots[] and list[].bot");
+    assert_eq!(node_threads.matches("\"parts\":[{\"outline\":\"M12 38").count(), 2, "its parts, in bots[] and list[].bot");
     assert_eq!(node_threads.matches("\"z\":-0.5,\"d\":1.1}").count(), 2, "a part's depth");
     assert_eq!(db_diff(&twin, &dir), "", "Node's persist() writes what Rust wrote, the placeholder's gap closed");
     for d in [dir, twin] {
